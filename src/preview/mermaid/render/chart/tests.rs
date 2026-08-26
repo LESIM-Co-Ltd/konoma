@@ -1314,10 +1314,6 @@ fn gallery() {
             }
             Err(e) => eprintln!("{name}: {e}"),
         }
-        // The crate's rendering of the same source, for the side-by-side.
-        if let Ok(svg) = crate::preview::markdown::mermaid_rs_for_comparison(src, "dark") {
-            std::fs::write(format!("{dir}/{name}--crate.svg"), svg).expect("write");
-        }
     }
     eprintln!("wrote the chart gallery to {dir}");
 }

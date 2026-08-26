@@ -93,7 +93,7 @@ pub fn render_page(path: &Path, page: u32, allow_external: bool) -> Option<Dynam
 /// (encrypted, corrupt, page out of range, or a caught panic), never a crash: [`render_page`] then
 /// tries the macOS fallback tools (if allowed, and if this is page 1).
 fn render_page_native(path: &Path, page: u32) -> Option<DynamicImage> {
-    // hayro is pre-1.0 and (like resvg/mermaid-rs-renderer) gets the same defense-in-depth as
+    // hayro is pre-1.0 and (like resvg) gets the same defense-in-depth as
     // `render_mermaid_safe`/`decode_gif`: a hostile/malformed PDF must degrade to the fallback
     // chain, not take down the whole preview. `Pdf::new` itself already returned zero panics across
     // a 3000-iteration byte-mutation fuzz of the bundled sample (see `page_count`'s doc), but this

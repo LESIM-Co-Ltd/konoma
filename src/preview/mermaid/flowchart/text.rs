@@ -39,7 +39,7 @@ fn strip_quotes(t: &str) -> &str {
 /// `/<\/?br\s*\/?>/gi` — the four spellings `<br>`, `<br/>`, `<br />` and the malformed but
 /// common `</br>`, in any case. Written out because getting this wrong leaves the tag as
 /// visible text in the box.
-fn replace_breaks(t: &str) -> String {
+pub fn replace_breaks(t: &str) -> String {
     let chars: Vec<char> = t.chars().collect();
     let mut out = String::with_capacity(t.len());
     let mut i = 0;

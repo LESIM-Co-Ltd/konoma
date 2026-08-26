@@ -251,6 +251,13 @@ fn chart_mark(glyph: Glyph) -> Option<shapes::Mark> {
             spokes: 5,
             polygon: false,
         }),
+        Glyph::Face => Some(shapes::Mark::Face { score: 4.0 }),
+        Glyph::BlockArrow => Some(shapes::Mark::BlockArrow {
+            left: false,
+            right: true,
+            up: false,
+            down: false,
+        }),
         _ => None,
     }
 }
@@ -440,6 +447,20 @@ fn glyph_table() -> Vec<(&'static str, Glyph, &'static str, &'static str)> {
             "rings and spokes",
             "rings and spokes",
         ),
+        // --- stage 5b --------------------------------------------------------------------------
+        ("cloud", Glyph::Cloud, "bumpy blob", "bumpy blob"),
+        ("bang", Glyph::Bang, "spiky burst", "spiky burst"),
+        // A rule and nothing else. Distinct from `text`, which draws no mark at all: the rule is
+        // what makes an unadorned mindmap node read as a node rather than as a stray word.
+        ("underline", Glyph::Underline, "words on a rule", "a rule"),
+        ("face", Glyph::Face, "mood face", "mood face"),
+        (
+            "block-arrow",
+            Glyph::BlockArrow,
+            "arrow block",
+            "arrow block",
+        ),
+        ("reverted", Glyph::Reverted, "crossed dot", "crossed dot"),
     ]
 }
 
@@ -482,7 +503,13 @@ fn every_glyph_draws_a_mark_that_tells_it_from_its_siblings() {
             | Glyph::Ribbon
             | Glyph::ChartLabel
             | Glyph::PlotFrame
-            | Glyph::Graticule => true,
+            | Glyph::Graticule
+            | Glyph::Cloud
+            | Glyph::Bang
+            | Glyph::Underline
+            | Glyph::Face
+            | Glyph::BlockArrow
+            | Glyph::Reverted => true,
         }
     }
 
@@ -607,6 +634,7 @@ fn tip_document(tip: Tip) -> String {
         end_label: None,
         badge: None,
         series: None,
+        straight: false,
     });
     drawn(&d)
 }
@@ -812,6 +840,7 @@ fn decoration_document(decoration: Decoration, on: bool) -> String {
                     label: text,
                 }),
                 series: None,
+                straight: false,
             });
         }
         Decoration::Lifeline | Decoration::ActivationBar | Decoration::DestroyCross => {

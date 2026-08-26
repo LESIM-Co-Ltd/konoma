@@ -19,6 +19,7 @@
 //! (it is a px-space idea), so a line breaks only where the author wrote `<br>` or `\n` — which
 //! the parser has already turned into a real newline by the time the text arrives here.
 
+use crate::preview::mermaid::flowchart;
 use crate::preview::mermaid::text_metrics::{self, FONT_SIZE};
 
 /// Line spacing as a multiple of the font size. mermaid's SVG-label spacing (§4-4).
@@ -64,6 +65,13 @@ impl Label {
     /// per-line and drawn as something else. With every line already trimmed there is nothing at
     /// a line boundary to fold.
     pub fn measure(text: &str) -> Label {
+        // `common.getRows` — mermaid splits a label into rows **at render time**, for every
+        // diagram kind, on the four `<br>` spellings *and* on a literal `\n`. Doing it here rather
+        // than in each parser is what makes it true for all of them at once: the flowchart parser
+        // has already done it (`flowchart::text::decode_label`), so this is idempotent there and
+        // the flowchart goldens do not move.
+        let text = flowchart::text::replace_breaks(text);
+        let text = text.replace("\\n", "\n");
         let lines: Vec<String> = text
             .split('\n')
             .map(|l| text_metrics::collapse_spaces(l).into_owned())

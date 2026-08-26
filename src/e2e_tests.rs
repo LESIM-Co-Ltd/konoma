@@ -11264,7 +11264,7 @@ fn e2e_ui_math_expression_decodes_through_real_worker_and_reserves_image_row() {
 }
 
 /// Failure path (design principle #3): when the real background render fails — a mermaid fence
-/// mermaid-rs-renderer can't lay out, and a math expression RaTeX can't parse — the async result
+/// no diagram grammar claims, and a math expression RaTeX can't parse — the async result
 /// still arrives (never silently drops) and must degrade safely to the raw source text: never stuck
 /// on "loading…" forever, and never a crash. Both failures go through the very same
 /// `md_img_tx`/`apply_md_image` real-thread pipeline as the success-path tests above; only the
@@ -11295,8 +11295,8 @@ fn e2e_ui_mermaid_and_math_render_failure_degrades_safely_to_raw_source() {
         "失敗した図/式は画像プレースメントを持たないはず"
     );
     s.dont_see("loading…");
-    // mermaid: mermaid-rs-renderer fails on garbage, and so does the legacy text renderer,
-    // degrading all the way to the raw fence source (`fallback_raw`).
+    // mermaid: no grammar claims the garbage, and the text renderer fails on it too, so it
+    // degrades all the way to the raw fence source (`fallback_raw`).
     s.see("definitely not a diagram");
     // math: RaTeX fails on unbalanced LaTeX, degrading to the raw `$...$` text.
     s.see("\\frac{");

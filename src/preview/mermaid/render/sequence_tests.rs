@@ -1685,6 +1685,7 @@ fn synthetic_sequence() -> Diagram {
                 label: label("1", 8.0),
             }),
             series: None,
+            straight: false,
         });
     }
     // A self-message: a loop out to the right and back.
@@ -1709,6 +1710,7 @@ fn synthetic_sequence() -> Diagram {
         end_label: None,
         badge: None,
         series: None,
+        straight: false,
     });
 
     let lifelines = vec![
@@ -1904,13 +1906,13 @@ fn sequence_error(src: &str) -> crate::preview::mermaid::sequence::ParseError {
 // 8. The gallery, and the crate this replaces
 // ---------------------------------------------------------------------------------------------
 
-/// Writes both renderers' output for every case, side by side, for a person to look at.
+/// Writes every case out for a person to look at.
 ///
 /// §6 is explicit that a comparison with mermaid is **not** an automatic judgement: pixel equality
-/// is structurally impossible. What the acceptance criterion for this stage *is* — `mermaid-rs-
-/// renderer`'s sequence output being the one kind it does well — is a question only a pair of eyes
-/// can answer, so this writes the two SVGs and the decision is recorded in the commit message and
-/// in `docs/STATUS.md`.
+/// is structurally impossible, so what a drawing looks like is a question only a pair of eyes can
+/// answer. This used to write the crate's rendering of the same source beside konoma's; stage 5b
+/// removed the crate, so there is one file per case now and the decision is recorded in the commit
+/// message and in `docs/STATUS.md`.
 ///
 /// `KONOMA_GALLERY=/some/dir cargo test -- --ignored sequence_tests::gallery`
 #[test]
@@ -1921,11 +1923,5 @@ fn gallery() {
     for (name, src) in CASES {
         let out = render(src, "dark").unwrap_or_else(|e| panic!("{name}: {e}"));
         std::fs::write(format!("{dir}/{name}.svg"), out).expect("write the SVG");
-        match crate::preview::markdown::mermaid_rs_for_comparison(src, "dark") {
-            Ok(other) => {
-                std::fs::write(format!("{dir}/{name}.crate.svg"), other).expect("write the SVG")
-            }
-            Err(e) => eprintln!("the crate refused {name}: {e}"),
-        }
     }
 }

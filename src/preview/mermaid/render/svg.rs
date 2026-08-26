@@ -416,6 +416,20 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
             theme.node_stroke,
             theme.series_text,
         ),
+        // …and the general rule the four above are the special cases of: **a node that carries a
+        // series is drawn in that series' colour**, whatever its outline. That is what makes a
+        // timeline's events, a kanban board's cards, a journey's faces and a git graph's commits
+        // tell their group apart at a glance — and it is why a `series` on a node is never
+        // decoration: it is the one thing that says which group the node belongs to.
+        //
+        // Nothing that existed before stage 5b reaches this arm: every node with a series in the
+        // four graph languages and the seven charts is one of the four kinds above, which the
+        // checked-in goldens confirm by not moving.
+        _ if node.series.is_some() => (
+            node.series.map_or(theme.node_fill, |i| theme.series(i)),
+            theme.node_stroke,
+            theme.series_text,
+        ),
         _ => (theme.node_fill, theme.node_stroke, theme.node_text),
     };
     let sw = num(NODE_STROKE_WIDTH);
@@ -688,6 +702,90 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
                 ));
             }
         }
+        // A mindmap cloud: the box's outline with a bump in the middle of each side, drawn as
+        // four quadratic curves so the bumps are part of the same closed path as the corners.
+        Outline::Cloud { w, h } => {
+            let (l, r) = (cx - w / 2.0, cx + w / 2.0);
+            let (t, b) = (cy - h / 2.0, cy + h / 2.0);
+            out.push_str(&format!(
+                "<path d=\"M{l},{cy} Q{l},{t} {cx},{t} Q{r},{t} {r},{cy} Q{r},{b} {cx},{b} \
+                 Q{l},{b} {l},{cy} Z\" fill=\"{fill}\" stroke=\"{stroke}\" \
+                 stroke-width=\"{sw}\"/>\n",
+                l = num(l),
+                r = num(r),
+                t = num(t),
+                b = num(b),
+                cx = num(cx),
+                cy = num(cy),
+            ));
+        }
+        // A mindmap node written with no brackets: a rule under the words and nothing else.
+        Outline::Underline { w, h } => {
+            let y = cy + h / 2.0;
+            out.push_str(&format!(
+                "<path d=\"M{},{y} L{},{y}\" stroke=\"{stroke}\" stroke-width=\"{sw}\" \
+                 fill=\"none\"/>\n",
+                num(cx - w / 2.0),
+                num(cx + w / 2.0),
+                y = num(y)
+            ));
+        }
+        // A user journey's score. The eyes are fixed and the mouth is the score: a smile at 5, a
+        // straight line at 3, a frown at 1 — so the *shape of the curve* carries the number, and
+        // a mutation that moves the score draws a different face rather than a different colour.
+        Outline::Face { r, score } => {
+            let s = score.clamp(1.0, 5.0);
+            out.push_str(&format!(
+                "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{fill}\" stroke=\"{stroke}\" \
+                 stroke-width=\"{sw}\"/>\n",
+                num(cx),
+                num(cy),
+                num(r)
+            ));
+            for dx in [-r * 0.35, r * 0.35] {
+                out.push_str(&format!(
+                    "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{text}\"/>\n",
+                    num(cx + dx),
+                    num(cy - r * 0.25),
+                    num(r * 0.12)
+                ));
+            }
+            // The control point runs from well below the mouth line (a smile) to well above it
+            // (a frown) as the score falls.
+            let lift = (s - 3.0) / 2.0 * r * 0.9;
+            out.push_str(&format!(
+                "<path d=\"M{},{y} Q{},{qy} {},{y}\" fill=\"none\" stroke=\"{text}\" \
+                 stroke-width=\"{sw}\"/>\n",
+                num(cx - r * 0.45),
+                num(cx),
+                num(cx + r * 0.45),
+                y = num(cy + r * 0.25),
+                qy = num(cy + r * 0.25 + lift)
+            ));
+        }
+        // A reverted commit: the dot, and a cross through it.
+        Outline::Crossed { r } => {
+            out.push_str(&format!(
+                "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{fill}\" stroke=\"{stroke}\" \
+                 stroke-width=\"{sw}\"/>\n",
+                num(cx),
+                num(cy),
+                num(r)
+            ));
+            let d = r * 0.6;
+            out.push_str(&format!(
+                "<path d=\"M{},{} L{},{} M{},{} L{},{}\" stroke=\"{stroke}\" \
+                 stroke-width=\"{sw}\" fill=\"none\"/>\n",
+                num(cx - d),
+                num(cy - d),
+                num(cx + d),
+                num(cy + d),
+                num(cx - d),
+                num(cy + d),
+                num(cx + d),
+                num(cy - d)
+            ));
+        }
         Outline::None => {}
     }
     // A box that holds a table draws its table instead of a centred label.
@@ -793,7 +891,7 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
     // A data path is drawn straight and a route is drawn smooth — see `PlacedEdge::drawn_points`
     // and `edges::polyline_path`. `series` is the thing that tells them apart, because a series is
     // exactly what makes a line a series.
-    let d = if edge.series.is_some() {
+    let d = if edge.series.is_some() || edge.straight {
         edges::polyline_path(&trimmed)
     } else {
         edges::curve_basis_path(&trimmed)

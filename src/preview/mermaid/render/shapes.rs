@@ -107,6 +107,21 @@ pub const ACTOR_FIGURE_HEIGHT: f64 = 32.0;
 /// Radius of that figure's head.
 pub const ACTOR_HEAD_RADIUS: f64 = 6.0;
 
+/// How far a mindmap cloud's bumps and a bang's spikes reach past the box that holds the words.
+pub const BUMP: f64 = 6.0;
+
+/// Space above and below the words of a mindmap node drawn with no border.
+pub const UNDERLINE_GAP: f64 = 3.0;
+
+/// Radius of a user journey's mood face.
+pub const FACE_RADIUS: f64 = 11.0;
+
+/// How far a block arrow's head reaches past its body.
+pub const ARROW_HEAD: f64 = 10.0;
+
+/// Radius of a git graph's commit dot.
+pub const COMMIT_RADIUS: f64 = 8.0;
+
 /// What a node is drawn as.
 ///
 /// See the module docs: one enum over both diagram families, so that everything downstream is
@@ -176,6 +191,23 @@ pub enum Glyph {
     PlotFrame,
     /// A radar chart's background: concentric rings and the spokes, from [`Mark::Graticule`].
     Graticule,
+
+    // --- stage 5b: the marks the last eleven languages needed --------------------------------
+    /// A mindmap's `)text(` — a rounded outline with bumps along it.
+    Cloud,
+    /// A mindmap's `))text((` — the spiky one.
+    Bang,
+    /// A mindmap node written with no brackets at all: the words with a rule under them, which
+    /// is what mermaid's `no-border` draws and what makes an unadorned mindmap read as a tree.
+    Underline,
+    /// A user journey's score: a face, from [`Mark::Face`]. Five moods, and the *only* thing that
+    /// distinguishes a journey diagram from a table of numbers.
+    Face,
+    /// A block diagram's `<["Label"]>(right)` — a rectangle with arrowheads on the sides
+    /// [`Mark::BlockArrow`] names.
+    BlockArrow,
+    /// A git graph's `type: REVERSE` — a commit dot with a cross through it.
+    Reverted,
 }
 
 /// Continuous geometry a chart mark needs that its bounding box cannot express.
@@ -204,6 +236,23 @@ pub enum Mark {
         right_top: f64,
         /// Bottom of the right end.
         right_bottom: f64,
+    },
+    /// A user journey's mood, 1 (unhappy) to 5 (happy). Out-of-range values are clamped, which
+    /// is what upstream's face picker does too.
+    Face {
+        /// The score written on the task.
+        score: f64,
+    },
+    /// Which sides of a block arrow carry a head.
+    BlockArrow {
+        /// A head on the left edge.
+        left: bool,
+        /// A head on the right edge.
+        right: bool,
+        /// A head on the top edge.
+        up: bool,
+        /// A head on the bottom edge.
+        down: bool,
     },
     /// A radar chart's rings and spokes.
     Graticule {
@@ -372,6 +421,32 @@ pub enum Outline {
         h: f64,
         /// Vertical radius of a cap.
         ry: f64,
+    },
+    /// A mindmap cloud: a rounded box with bumps along its outline.
+    Cloud {
+        /// Width.
+        w: f64,
+        /// Height.
+        h: f64,
+    },
+    /// A rule under the words, and nothing else.
+    Underline {
+        /// Width of the rule.
+        w: f64,
+        /// Height of the box the rule sits at the bottom of.
+        h: f64,
+    },
+    /// A journey score, drawn as a face.
+    Face {
+        /// Radius.
+        r: f64,
+        /// The mood, 1 to 5.
+        score: f64,
+    },
+    /// A circle with a cross through it — a reverted commit.
+    Crossed {
+        /// Radius.
+        r: f64,
     },
     /// A filled dot with no outline — the `[*]` an arrow leaves.
     Disc {
@@ -668,6 +743,28 @@ pub fn size(glyph: Glyph, label: Size) -> Size {
         // ink, with no padding at all, so that "two tick labels do not overlap" is a statement
         // about what a reader sees.
         Glyph::ChartLabel => label,
+
+        // A cloud and a bang are a rectangle plus the room their bumps and spikes stick out into.
+        // Without it the outline crosses its own words, which is the one thing a decorated shape
+        // must not do.
+        Glyph::Cloud | Glyph::Bang => Size::new(
+            label.w + PADDING * 2.0 + BUMP * 2.0,
+            label.h + PADDING * 2.0 + BUMP * 2.0,
+        ),
+        // The rule is drawn at the bottom of the box, so the box is the words plus a little room
+        // for it and no side padding at all — a mindmap's default node is *text*.
+        Glyph::Underline => Size::new(label.w + PADDING, label.h + UNDERLINE_GAP * 2.0),
+        // A face is a fixed disc: its size says nothing, its expression says everything.
+        Glyph::Face => Size::new(FACE_RADIUS * 2.0, FACE_RADIUS * 2.0),
+        // A block arrow is its label plus a head's worth of room on every side that has one. The
+        // heads are in the mark, which `size` does not see, so all four are allowed for — an
+        // arrow whose label ran into its own point would be worse than one that is slightly wide.
+        Glyph::BlockArrow => Size::new(
+            label.w + PADDING * 2.0 + ARROW_HEAD * 2.0,
+            label.h + PADDING * 2.0 + ARROW_HEAD * 2.0,
+        ),
+        // A commit dot, whatever it is called.
+        Glyph::Reverted => Size::new(COMMIT_RADIUS * 2.0, COMMIT_RADIUS * 2.0),
     }
 }
 
@@ -723,8 +820,62 @@ pub fn outline(glyph: Glyph, size: Size, mark: Option<Mark>) -> Outline {
             r: size.w.min(size.h) / 2.0,
         },
         Glyph::ChartLabel => Outline::None,
+        Glyph::Face => match mark {
+            Some(Mark::Face { score }) => Outline::Face {
+                r: size.w.min(size.h) / 2.0,
+                score,
+            },
+            _ => Outline::None,
+        },
+        Glyph::BlockArrow => match mark {
+            Some(Mark::BlockArrow {
+                left,
+                right,
+                up,
+                down,
+            }) => Outline::Polygon(block_arrow_polygon(size, left, right, up, down)),
+            _ => Outline::None,
+        },
         _ => flow_outline_or_glyph(glyph, size),
     }
+}
+
+/// The outline of a block arrow: a rectangle whose sides with a head are pushed out into one.
+///
+/// Walked clockwise from the top-left corner, inserting a triangle wherever a head was asked for,
+/// so the result is one closed polygon and the invariant tests can treat it like any other.
+fn block_arrow_polygon(size: Size, left: bool, right: bool, up: bool, down: bool) -> Vec<Point> {
+    let (hw, hh) = (size.w / 2.0, size.h / 2.0);
+    let (bw, bh) = (
+        hw - if left || right { ARROW_HEAD } else { 0.0 },
+        hh - if up || down { ARROW_HEAD } else { 0.0 },
+    );
+    let mut p: Vec<Point> = Vec::new();
+    p.push(Point::new(-bw, -bh));
+    if up {
+        p.push(Point::new(-bw * 0.5, -bh));
+        p.push(Point::new(0.0, -hh));
+        p.push(Point::new(bw * 0.5, -bh));
+    }
+    p.push(Point::new(bw, -bh));
+    if right {
+        p.push(Point::new(bw, -bh * 0.5));
+        p.push(Point::new(hw, 0.0));
+        p.push(Point::new(bw, bh * 0.5));
+    }
+    p.push(Point::new(bw, bh));
+    if down {
+        p.push(Point::new(bw * 0.5, bh));
+        p.push(Point::new(0.0, hh));
+        p.push(Point::new(-bw * 0.5, bh));
+    }
+    p.push(Point::new(-bw, bh));
+    if left {
+        p.push(Point::new(-bw, bh * 0.5));
+        p.push(Point::new(-hw, 0.0));
+        p.push(Point::new(-bw, -bh * 0.5));
+    }
+    p
 }
 
 fn flow_outline_or_glyph(glyph: Glyph, size: Size) -> Outline {
@@ -768,6 +919,18 @@ fn flow_outline_or_glyph(glyph: Glyph, size: Size) -> Outline {
             h: size.h,
             figure_h: ACTOR_FIGURE_HEIGHT.min(size.h),
         },
+        Glyph::Cloud => Outline::Cloud {
+            w: size.w,
+            h: size.h,
+        },
+        Glyph::Bang => Outline::Polygon(bang_polygon(size)),
+        Glyph::Underline => Outline::Underline {
+            w: size.w,
+            h: size.h,
+        },
+        Glyph::Reverted => Outline::Crossed {
+            r: size.w.min(size.h) / 2.0,
+        },
         // Handled by `outline` before it delegates here.
         Glyph::Wedge
         | Glyph::ChartBar
@@ -775,8 +938,30 @@ fn flow_outline_or_glyph(glyph: Glyph, size: Size) -> Outline {
         | Glyph::Ribbon
         | Glyph::ChartLabel
         | Glyph::PlotFrame
-        | Glyph::Graticule => Outline::None,
+        | Glyph::Graticule
+        | Glyph::Face
+        | Glyph::BlockArrow => Outline::None,
     }
+}
+
+/// The spikes of a `))text((`.
+///
+/// Sixteen points alternating between the box and a little outside it. Enough teeth to read as an
+/// explosion at the size a terminal shows, few enough that each one is still a triangle.
+fn bang_polygon(size: Size) -> Vec<Point> {
+    const TEETH: usize = 16;
+    let (rx, ry) = (size.w / 2.0, size.h / 2.0);
+    (0..TEETH * 2)
+        .map(|i| {
+            let a = std::f64::consts::TAU * i as f64 / (TEETH * 2) as f64;
+            let k = if i % 2 == 0 {
+                1.0
+            } else {
+                1.0 - BUMP / rx.max(1.0)
+            };
+            Point::new(rx * k * a.cos(), ry * k * a.sin())
+        })
+        .collect()
 }
 
 /// The vertices of a polygonal glyph, relative to the node centre, in boundary order. Empty for
@@ -785,6 +970,7 @@ pub fn polygon(glyph: Glyph, size: Size) -> Vec<Point> {
     match glyph {
         Glyph::Flow(shape) => flow_polygon(shape, size),
         Glyph::Choice => flow_polygon(Shape::Diamond, size),
+        Glyph::Bang => bang_polygon(size),
         _ => Vec::new(),
     }
 }
@@ -816,6 +1002,17 @@ pub fn intersect(glyph: Glyph, center: Point, size: Size, target: &Point) -> Poi
         | Glyph::Ribbon
         | Glyph::ChartLabel
         | Glyph::PlotFrame
-        | Glyph::Graticule => intersect_rect(center.x, center.y, size.w, size.h, target),
+        | Glyph::Graticule
+        // A cloud, a bang, an underline and a block arrow all clip against their box: the bumps
+        // and the spikes are a decoration a few pixels deep, and cutting a line to them would put
+        // an arrowhead inside a tooth.
+        | Glyph::Cloud
+        | Glyph::Bang
+        | Glyph::Underline
+        | Glyph::BlockArrow => intersect_rect(center.x, center.y, size.w, size.h, target),
+        // A commit dot is a circle, and a line between two commits ends on it.
+        Glyph::Face | Glyph::Reverted => {
+            intersect_ellipse(center.x, center.y, size.w / 2.0, size.h / 2.0, target)
+        }
     }
 }

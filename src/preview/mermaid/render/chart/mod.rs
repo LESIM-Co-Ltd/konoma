@@ -150,6 +150,12 @@ pub fn rule(from: Point, to: Point, stroke: Stroke, series: Option<usize>) -> Pl
         end_label: None,
         badge: None,
         series,
+        // **Deliberately `false`.** A rule is two points, so a spline through it *is* the straight
+        // line — the geometry is identical either way and only the path's spelling differs
+        // (`M…C…` against `M…L…`). Setting it would move six checked-in goldens for no change a
+        // reader could see, and §6 says a golden that moves has to be explained rather than
+        // regenerated. The flag exists for routes with a corner in them.
+        straight: false,
     }
 }
 

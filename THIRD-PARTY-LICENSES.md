@@ -9,7 +9,7 @@ regenerate it with `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`.
 
 ## Overview
 
-- MIT License (360)
+- MIT License (357)
 - Apache License 2.0 (12)
 - BSD 3-Clause "New" or "Revised" License (10)
 - Unicode License v3 (6)
@@ -5488,36 +5488,6 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- json5 1.3.1
-
-```
-MIT License
-
-Copyright (c) 2025 Callum Oakley
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-```
-
-## MIT License
-
-Used by:
 - rust_h264 0.4.0
 - rust_h265 0.1.0
 
@@ -5584,36 +5554,6 @@ Used by:
 MIT License
 
 Copyright (c) 2026 LESIM
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-```
-
-## MIT License
-
-Used by:
-- mermaid-rs-renderer 0.3.1
-
-```
-MIT License
-
-Copyright (c) 2026 mermaid-rs-renderer contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -6427,7 +6367,6 @@ Used by:
 - globset 0.4.20
 - ignore 0.4.33
 - memchr 2.8.3
-- ucd-trie 0.1.7
 - walkdir 2.5.0
 
 ```

@@ -74,7 +74,7 @@
 // general.
 //
 // The whole pure-Rust path runs inside `catch_silent`, like every other pre-1.0 decoder konoma
-// drives (resvg, hayro, mermaid-rs-renderer): a hostile or malformed file must degrade to the
+// drives (resvg, hayro): a hostile or malformed file must degrade to the
 // external chain, not take down the preview. It genuinely earns its keep here — both `rust_h264`
 // (an index-out-of-bounds on interlaced H.264, which is `profile_idc` 100 and so passes every guard
 // above) and `re_mp4` (a capacity overflow parsing a fuzzed `avcC`) were observed panicking on real

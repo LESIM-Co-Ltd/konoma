@@ -65,7 +65,7 @@ use crate::preview::svg::shared_fontdb;
 /// spelling, both label notations, all four directions, multi-line labels, CJK, a long edge that
 /// skips ranks, a cycle, a self-loop, and a subgraph — which stage 1c must survive without
 /// drawing (§7).
-const CORPUS: &[(&str, &str)] = &[
+pub(super) const CORPUS: &[(&str, &str)] = &[
     (
         "branch",
         "flowchart TD\n  A[Start] --> B{Ready?}\n  B -->|yes| C([Ship])\n  B -->|no| D[Fix it]\n  D --> B",
@@ -2183,6 +2183,7 @@ fn synthetic_diagram() -> Diagram {
             end_label: None,
             badge: None,
             series: None,
+            straight: false,
         });
     }
 

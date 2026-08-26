@@ -83,7 +83,7 @@ pub fn parse(src: &str) -> Result<ClassDiagram, ParseError> {
 ///
 /// This is the routing predicate `preview::markdown::mermaid_to_svg` asks. Like its two siblings
 /// it is deliberately *not* "does [`parse`] succeed": a class diagram this parser refuses is
-/// still konoma's to answer for, and handing it to `mermaid-rs-renderer` would let the old crate
+/// still konoma's to answer for, and handing it to a second renderer would let that renderer
 /// paint over a bug in the new one (§6).
 pub fn is_class_diagram(src: &str) -> bool {
     let pre = preprocess(src);

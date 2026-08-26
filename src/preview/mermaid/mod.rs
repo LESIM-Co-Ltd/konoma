@@ -18,11 +18,11 @@
 //! * **Stage 1d** framed subgraphs.
 //! * **Stage 1e** put it on the drawing path. `preview::markdown::mermaid_to_svg` now asks
 //!   [`flowchart::is_flowchart`] which renderer owns a diagram: a `flowchart` / `graph` /
-//!   `flowchart-elk` is drawn here, and every other kind still goes to `mermaid-rs-renderer`
-//!   until the later stages take those over too (§7 — the migration must not shrink the set of
-//!   diagrams konoma can draw). A flowchart this module refuses is **not** handed to the crate:
-//!   it degrades to the Unicode text diagram, so a bug here stays visible instead of being
-//!   painted over by the renderer it is replacing.
+//!   `flowchart-elk` is drawn here. At the time, every other kind still went to
+//!   `mermaid-rs-renderer`; a flowchart this module refused was **not** handed to it, so a bug
+//!   here stayed visible instead of being painted over by the renderer it was replacing. Stage 5b
+//!   finished the job and removed that crate, and the discipline outlived it: a diagram konoma
+//!   refuses degrades to the Unicode text diagram.
 //! * **Stage 2** added [`state`], the `stateDiagram` language, and — this is the part worth
 //!   copying — added *no layout*. It builds the same language-neutral `render::GraphSpec` a
 //!   flowchart does and shares everything downstream of it.
@@ -41,12 +41,23 @@
 //!   `Diagram` field**: a chart's marks are nodes and its lines are edges, so `svg::emit` and
 //!   `normalise` are the ones stage 1 wrote.
 
+pub mod architecture;
+pub mod block;
+pub mod c4;
 pub mod chart;
 pub mod class;
 pub mod er;
 pub mod flowchart;
+pub mod gantt;
+pub mod gitgraph;
+pub mod journey;
+pub mod kanban;
 pub mod layout;
+pub mod mindmap;
 pub mod render;
+pub mod requirement;
 pub mod sequence;
 pub mod state;
 pub mod text_metrics;
+pub mod timeline;
+pub mod zenuml;

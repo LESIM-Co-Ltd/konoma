@@ -94,7 +94,7 @@ pub fn parse(src: &str) -> Result<Flowchart, ParseError> {
 ///
 /// This is the routing predicate `preview::markdown::mermaid_to_svg` asks before it decides which
 /// renderer to run (stage 1e). It is deliberately *not* "does [`parse`] succeed": a flowchart this
-/// parser refuses is still konoma's to answer for, and handing it to `mermaid-rs-renderer` would
+/// parser refuses is still konoma's to answer for, and handing it to a second renderer would
 /// let the old crate paint over a bug in the new one — the shape
 /// `docs/FEATURE-MERMAID-RENDERER.md` §7 warns about, and the same failure mode as the markdown
 /// diff harness that ended up comparing a renderer with itself.

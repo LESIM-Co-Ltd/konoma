@@ -7,23 +7,33 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Changed
-- **Most mermaid diagrams are now drawn by konoma itself** — flowcharts, state, class, entity-relationship and sequence diagrams, and the pie, xy, quadrant, radar, treemap, packet and sankey charts. They used to go through
+- **Every mermaid diagram is now drawn by konoma itself**, and the renderer it used to call is no longer a
+  dependency. All twenty-three kinds mermaid documents — flowcharts, state, class,
+  entity-relationship, sequence, mindmap, journey, timeline, gantt, requirement, gitGraph, C4,
+  ZenUML, block, kanban and architecture diagrams, and the pie, xy, quadrant, radar, treemap, packet
+  and sankey charts — go through konoma's own parser, layout and SVG writer. They used to go through
   `mermaid-rs-renderer`, which measured text with a font database of its own — a different one from
   the database that later drew the picture, so boxes were sized for glyphs that were never used and
   came out visibly too wide. konoma now parses the diagram, lays it out, and writes the SVG, using
-  the same font database it draws with, so a box is the size of the text inside it. Other diagram
-  kinds still go through the crate and are unaffected; which renderer runs is decided from the
-  diagram's header before either one starts, and a diagram konoma refuses degrades to the text
-  diagram rather than being quietly redrawn by the crate.
-  Sequence diagrams gained the most: the previous renderer silently dropped every `-)` and `-x`
+  the same font database it draws with, so a box is the size of the text inside it. A diagram konoma
+  cannot draw degrades to the text diagram and says why, rather than being quietly redrawn as
+  something else.
+  Sequence diagrams changed the most: the previous renderer silently dropped every `-)` and `-x`
   message, ignored `create` and `destroy`, lost the titles of `box` groups, and refused `rect`
   blocks and multi-line labels outright, so a diagram could lose a step without saying so. All of
   those now draw, `actor` is drawn as a figure rather than a second box, and `->` and `-->` correctly
   draw no arrowhead.
-  The charts gained the most correctness: the previous renderer drew a treemap with no area
+  The charts had the most that was simply wrong: the previous renderer drew a treemap with no area
   proportionality at all — two leaves holding the same number came out as a thin band and a large
   box — showed only three of a radar's six axes, and gave every field of a packet diagram the same
   width, which is the one thing that diagram exists to show. Those now mean what they draw.
+  Three things go away with the old renderer: 3.1 MB it wrote, undocumented, to `~/.cache/mmdr`
+  (more than konoma's entire cache); a second scan of the system's fonts at startup, because it
+  measured text with a font database separate from the one konoma draws with; and `venn-beta`
+  drawing a confident three-box picture labelled "venn", "beta" and "sets" — a diagram konoma cannot
+  draw now says so and shows the source instead of inventing one. Diagrams also render about 145×
+  faster at the median and 218× faster at the worst case (0.09 ms / 0.74 ms / 3.04 ms for the
+  median, 90th percentile and slowest of 161 diagrams, against 13.2 / 86.8 / 662 ms).
 
 ### Fixed
 - **Five `[external]` switches in the two shipped example configs were silently doing nothing.**

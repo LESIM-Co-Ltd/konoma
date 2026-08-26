@@ -1,0 +1,295 @@
+=== dark ===
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="320" viewBox="0 0 900 320">
+<rect width="900" height="320" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M20,60 Q20,30 80,30 Q140,30 140,60 Q140,90 80,90 Q20,90 20,60 Z" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="80" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="80" dy="0">label</tspan></text>
+<polygon points="300,60 292.962,65.267 295.433,71.481 284.899,75 282.426,81.213 270.001,82.45 262.961,87.716 250.535,86.481 240,90 229.465,86.481 217.039,87.716 209.999,82.45 197.574,81.213 195.101,75 184.567,71.481 187.038,65.267 180,60 187.038,54.733 184.567,48.519 195.101,45 197.574,38.787 209.999,37.55 217.039,32.284 229.465,33.519 240,30 250.535,33.519 262.961,32.284 270.001,37.55 282.426,38.787 284.899,45 295.433,48.519 292.962,54.733" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="240" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="240" dy="0">label</tspan></text>
+<path d="M350,72 L450,72" stroke="#cccccc" stroke-width="1.5" fill="none"/>
+<text x="400" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="400" dy="0">label</tspan></text>
+<circle cx="540" cy="60" r="12" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<path d="M532.8,52.8 L547.2,67.2 M532.8,67.2 L547.2,52.8" stroke="#cccccc" stroke-width="1.5" fill="none"/>
+<text x="540" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="540" dy="0">label</tspan></text>
+<circle cx="80" cy="160" r="12" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<circle cx="75.8" cy="157" r="1.44" fill="#cccccc"/>
+<circle cx="84.2" cy="157" r="1.44" fill="#cccccc"/>
+<path d="M74.6,163 Q80,152.2 85.4,163" fill="none" stroke="#cccccc" stroke-width="1.5"/>
+<text x="80" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="80" dy="0">label</tspan></text>
+<circle cx="130" cy="160" r="12" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<circle cx="125.8" cy="157" r="1.44" fill="#cccccc"/>
+<circle cx="134.2" cy="157" r="1.44" fill="#cccccc"/>
+<path d="M124.6,163 Q130,157.6 135.4,163" fill="none" stroke="#cccccc" stroke-width="1.5"/>
+<text x="130" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="130" dy="0">label</tspan></text>
+<circle cx="180" cy="160" r="12" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<circle cx="175.8" cy="157" r="1.44" fill="#cccccc"/>
+<circle cx="184.2" cy="157" r="1.44" fill="#cccccc"/>
+<path d="M174.6,163 Q180,163 185.4,163" fill="none" stroke="#cccccc" stroke-width="1.5"/>
+<text x="180" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="180" dy="0">label</tspan></text>
+<circle cx="230" cy="160" r="12" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<circle cx="225.8" cy="157" r="1.44" fill="#cccccc"/>
+<circle cx="234.2" cy="157" r="1.44" fill="#cccccc"/>
+<path d="M224.6,163 Q230,168.4 235.4,163" fill="none" stroke="#cccccc" stroke-width="1.5"/>
+<text x="230" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="230" dy="0">label</tspan></text>
+<circle cx="280" cy="160" r="12" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<circle cx="275.8" cy="157" r="1.44" fill="#cccccc"/>
+<circle cx="284.2" cy="157" r="1.44" fill="#cccccc"/>
+<path d="M274.6,163 Q280,173.8 285.4,163" fill="none" stroke="#cccccc" stroke-width="1.5"/>
+<text x="280" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="280" dy="0">label</tspan></text>
+<polygon points="40,210 120,210 120,270 40,270 40,255 30,240 40,225" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="80" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="80" dy="0">label</tspan></text>
+<polygon points="150,210 230,210 230,225 240,240 230,255 230,270 150,270" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="190" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="190" dy="0">label</tspan></text>
+<polygon points="250,220 275,220 300,210 325,220 350,220 350,260 250,260" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="300" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="300" dy="0">label</tspan></text>
+<polygon points="360,220 460,220 460,260 435,260 410,270 385,260 360,260" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="410" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="410" dy="0">label</tspan></text>
+<polygon points="480,210 560,210 560,225 570,240 560,255 560,270 480,270 480,255 470,240 480,225" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="520" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="520" dy="0">label</tspan></text>
+<polygon points="580,220 605,220 630,210 655,220 680,220 680,260 655,260 630,270 605,260 580,260" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="630" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="630" dy="0">label</tspan></text>
+<polygon points="700,220 720,220 740,210 760,220 780,220 780,230 790,240 780,250 780,260 760,260 740,270 720,260 700,260 700,250 690,240 700,230" fill="#1f2020" stroke="#cccccc" stroke-width="1.5"/>
+<text x="740" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="740" dy="0">label</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== light ===
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="320" viewBox="0 0 900 320">
+<rect width="900" height="320" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M20,60 Q20,30 80,30 Q140,30 140,60 Q140,90 80,90 Q20,90 20,60 Z" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="80" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="80" dy="0">label</tspan></text>
+<polygon points="300,60 292.962,65.267 295.433,71.481 284.899,75 282.426,81.213 270.001,82.45 262.961,87.716 250.535,86.481 240,90 229.465,86.481 217.039,87.716 209.999,82.45 197.574,81.213 195.101,75 184.567,71.481 187.038,65.267 180,60 187.038,54.733 184.567,48.519 195.101,45 197.574,38.787 209.999,37.55 217.039,32.284 229.465,33.519 240,30 250.535,33.519 262.961,32.284 270.001,37.55 282.426,38.787 284.899,45 295.433,48.519 292.962,54.733" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="240" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="240" dy="0">label</tspan></text>
+<path d="M350,72 L450,72" stroke="#94a3b8" stroke-width="1.5" fill="none"/>
+<text x="400" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="400" dy="0">label</tspan></text>
+<circle cx="540" cy="60" r="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<path d="M532.8,52.8 L547.2,67.2 M532.8,67.2 L547.2,52.8" stroke="#94a3b8" stroke-width="1.5" fill="none"/>
+<text x="540" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="540" dy="0">label</tspan></text>
+<circle cx="80" cy="160" r="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<circle cx="75.8" cy="157" r="1.44" fill="#0f172a"/>
+<circle cx="84.2" cy="157" r="1.44" fill="#0f172a"/>
+<path d="M74.6,163 Q80,152.2 85.4,163" fill="none" stroke="#0f172a" stroke-width="1.5"/>
+<text x="80" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="80" dy="0">label</tspan></text>
+<circle cx="130" cy="160" r="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<circle cx="125.8" cy="157" r="1.44" fill="#0f172a"/>
+<circle cx="134.2" cy="157" r="1.44" fill="#0f172a"/>
+<path d="M124.6,163 Q130,157.6 135.4,163" fill="none" stroke="#0f172a" stroke-width="1.5"/>
+<text x="130" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="130" dy="0">label</tspan></text>
+<circle cx="180" cy="160" r="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<circle cx="175.8" cy="157" r="1.44" fill="#0f172a"/>
+<circle cx="184.2" cy="157" r="1.44" fill="#0f172a"/>
+<path d="M174.6,163 Q180,163 185.4,163" fill="none" stroke="#0f172a" stroke-width="1.5"/>
+<text x="180" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="180" dy="0">label</tspan></text>
+<circle cx="230" cy="160" r="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<circle cx="225.8" cy="157" r="1.44" fill="#0f172a"/>
+<circle cx="234.2" cy="157" r="1.44" fill="#0f172a"/>
+<path d="M224.6,163 Q230,168.4 235.4,163" fill="none" stroke="#0f172a" stroke-width="1.5"/>
+<text x="230" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="230" dy="0">label</tspan></text>
+<circle cx="280" cy="160" r="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<circle cx="275.8" cy="157" r="1.44" fill="#0f172a"/>
+<circle cx="284.2" cy="157" r="1.44" fill="#0f172a"/>
+<path d="M274.6,163 Q280,173.8 285.4,163" fill="none" stroke="#0f172a" stroke-width="1.5"/>
+<text x="280" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="280" dy="0">label</tspan></text>
+<polygon points="40,210 120,210 120,270 40,270 40,255 30,240 40,225" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="80" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="80" dy="0">label</tspan></text>
+<polygon points="150,210 230,210 230,225 240,240 230,255 230,270 150,270" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="190" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="190" dy="0">label</tspan></text>
+<polygon points="250,220 275,220 300,210 325,220 350,220 350,260 250,260" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="300" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="300" dy="0">label</tspan></text>
+<polygon points="360,220 460,220 460,260 435,260 410,270 385,260 360,260" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="410" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="410" dy="0">label</tspan></text>
+<polygon points="480,210 560,210 560,225 570,240 560,255 560,270 480,270 480,255 470,240 480,225" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="520" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="520" dy="0">label</tspan></text>
+<polygon points="580,220 605,220 630,210 655,220 680,220 680,260 655,260 630,270 605,260 580,260" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="630" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="630" dy="0">label</tspan></text>
+<polygon points="700,220 720,220 740,210 760,220 780,220 780,230 790,240 780,250 780,260 760,260 740,270 720,260 700,260 700,250 690,240 700,230" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="740" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="740" dy="0">label</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== classic ===
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="320" viewBox="0 0 900 320">
+<rect width="900" height="320" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M20,60 Q20,30 80,30 Q140,30 140,60 Q140,90 80,90 Q20,90 20,60 Z" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="80" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">label</tspan></text>
+<polygon points="300,60 292.962,65.267 295.433,71.481 284.899,75 282.426,81.213 270.001,82.45 262.961,87.716 250.535,86.481 240,90 229.465,86.481 217.039,87.716 209.999,82.45 197.574,81.213 195.101,75 184.567,71.481 187.038,65.267 180,60 187.038,54.733 184.567,48.519 195.101,45 197.574,38.787 209.999,37.55 217.039,32.284 229.465,33.519 240,30 250.535,33.519 262.961,32.284 270.001,37.55 282.426,38.787 284.899,45 295.433,48.519 292.962,54.733" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="240" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="240" dy="0">label</tspan></text>
+<path d="M350,72 L450,72" stroke="#7b88a8" stroke-width="1.5" fill="none"/>
+<text x="400" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="400" dy="0">label</tspan></text>
+<circle cx="540" cy="60" r="12" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<path d="M532.8,52.8 L547.2,67.2 M532.8,67.2 L547.2,52.8" stroke="#7b88a8" stroke-width="1.5" fill="none"/>
+<text x="540" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="540" dy="0">label</tspan></text>
+<circle cx="80" cy="160" r="12" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<circle cx="75.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="84.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M74.6,163 Q80,152.2 85.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="80" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">label</tspan></text>
+<circle cx="130" cy="160" r="12" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<circle cx="125.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="134.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M124.6,163 Q130,157.6 135.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="130" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="130" dy="0">label</tspan></text>
+<circle cx="180" cy="160" r="12" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<circle cx="175.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="184.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M174.6,163 Q180,163 185.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="180" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="180" dy="0">label</tspan></text>
+<circle cx="230" cy="160" r="12" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<circle cx="225.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="234.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M224.6,163 Q230,168.4 235.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="230" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="230" dy="0">label</tspan></text>
+<circle cx="280" cy="160" r="12" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<circle cx="275.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="284.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M274.6,163 Q280,173.8 285.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="280" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="280" dy="0">label</tspan></text>
+<polygon points="40,210 120,210 120,270 40,270 40,255 30,240 40,225" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="80" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">label</tspan></text>
+<polygon points="150,210 230,210 230,225 240,240 230,255 230,270 150,270" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="190" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="190" dy="0">label</tspan></text>
+<polygon points="250,220 275,220 300,210 325,220 350,220 350,260 250,260" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="300" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="300" dy="0">label</tspan></text>
+<polygon points="360,220 460,220 460,260 435,260 410,270 385,260 360,260" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="410" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="410" dy="0">label</tspan></text>
+<polygon points="480,210 560,210 560,225 570,240 560,255 560,270 480,270 480,255 470,240 480,225" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="520" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="520" dy="0">label</tspan></text>
+<polygon points="580,220 605,220 630,210 655,220 680,220 680,260 655,260 630,270 605,260 580,260" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="630" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="630" dy="0">label</tspan></text>
+<polygon points="700,220 720,220 740,210 760,220 780,220 780,230 790,240 780,250 780,260 760,260 740,270 720,260 700,260 700,250 690,240 700,230" fill="#ececff" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="740" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="740" dy="0">label</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== forest ===
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="320" viewBox="0 0 900 320">
+<rect width="900" height="320" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M20,60 Q20,30 80,30 Q140,30 140,60 Q140,90 80,90 Q20,90 20,60 Z" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="80" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">label</tspan></text>
+<polygon points="300,60 292.962,65.267 295.433,71.481 284.899,75 282.426,81.213 270.001,82.45 262.961,87.716 250.535,86.481 240,90 229.465,86.481 217.039,87.716 209.999,82.45 197.574,81.213 195.101,75 184.567,71.481 187.038,65.267 180,60 187.038,54.733 184.567,48.519 195.101,45 197.574,38.787 209.999,37.55 217.039,32.284 229.465,33.519 240,30 250.535,33.519 262.961,32.284 270.001,37.55 282.426,38.787 284.899,45 295.433,48.519 292.962,54.733" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="240" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="240" dy="0">label</tspan></text>
+<path d="M350,72 L450,72" stroke="#13540c" stroke-width="1.5" fill="none"/>
+<text x="400" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="400" dy="0">label</tspan></text>
+<circle cx="540" cy="60" r="12" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<path d="M532.8,52.8 L547.2,67.2 M532.8,67.2 L547.2,52.8" stroke="#13540c" stroke-width="1.5" fill="none"/>
+<text x="540" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="540" dy="0">label</tspan></text>
+<circle cx="80" cy="160" r="12" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<circle cx="75.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="84.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M74.6,163 Q80,152.2 85.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="80" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">label</tspan></text>
+<circle cx="130" cy="160" r="12" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<circle cx="125.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="134.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M124.6,163 Q130,157.6 135.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="130" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="130" dy="0">label</tspan></text>
+<circle cx="180" cy="160" r="12" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<circle cx="175.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="184.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M174.6,163 Q180,163 185.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="180" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="180" dy="0">label</tspan></text>
+<circle cx="230" cy="160" r="12" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<circle cx="225.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="234.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M224.6,163 Q230,168.4 235.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="230" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="230" dy="0">label</tspan></text>
+<circle cx="280" cy="160" r="12" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<circle cx="275.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="284.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M274.6,163 Q280,173.8 285.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="280" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="280" dy="0">label</tspan></text>
+<polygon points="40,210 120,210 120,270 40,270 40,255 30,240 40,225" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="80" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">label</tspan></text>
+<polygon points="150,210 230,210 230,225 240,240 230,255 230,270 150,270" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="190" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="190" dy="0">label</tspan></text>
+<polygon points="250,220 275,220 300,210 325,220 350,220 350,260 250,260" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="300" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="300" dy="0">label</tspan></text>
+<polygon points="360,220 460,220 460,260 435,260 410,270 385,260 360,260" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="410" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="410" dy="0">label</tspan></text>
+<polygon points="480,210 560,210 560,225 570,240 560,255 560,270 480,270 480,255 470,240 480,225" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="520" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="520" dy="0">label</tspan></text>
+<polygon points="580,220 605,220 630,210 655,220 680,220 680,260 655,260 630,270 605,260 580,260" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="630" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="630" dy="0">label</tspan></text>
+<polygon points="700,220 720,220 740,210 760,220 780,220 780,230 790,240 780,250 780,260 760,260 740,270 720,260 700,260 700,250 690,240 700,230" fill="#cde498" stroke="#13540c" stroke-width="1.5"/>
+<text x="740" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="740" dy="0">label</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== neutral ===
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="320" viewBox="0 0 900 320">
+<rect width="900" height="320" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M20,60 Q20,30 80,30 Q140,30 140,60 Q140,90 80,90 Q20,90 20,60 Z" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="80" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">label</tspan></text>
+<polygon points="300,60 292.962,65.267 295.433,71.481 284.899,75 282.426,81.213 270.001,82.45 262.961,87.716 250.535,86.481 240,90 229.465,86.481 217.039,87.716 209.999,82.45 197.574,81.213 195.101,75 184.567,71.481 187.038,65.267 180,60 187.038,54.733 184.567,48.519 195.101,45 197.574,38.787 209.999,37.55 217.039,32.284 229.465,33.519 240,30 250.535,33.519 262.961,32.284 270.001,37.55 282.426,38.787 284.899,45 295.433,48.519 292.962,54.733" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="240" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="240" dy="0">label</tspan></text>
+<path d="M350,72 L450,72" stroke="#999999" stroke-width="1.5" fill="none"/>
+<text x="400" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="400" dy="0">label</tspan></text>
+<circle cx="540" cy="60" r="12" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<path d="M532.8,52.8 L547.2,67.2 M532.8,67.2 L547.2,52.8" stroke="#999999" stroke-width="1.5" fill="none"/>
+<text x="540" y="64.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="540" dy="0">label</tspan></text>
+<circle cx="80" cy="160" r="12" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<circle cx="75.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="84.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M74.6,163 Q80,152.2 85.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="80" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">label</tspan></text>
+<circle cx="130" cy="160" r="12" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<circle cx="125.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="134.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M124.6,163 Q130,157.6 135.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="130" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="130" dy="0">label</tspan></text>
+<circle cx="180" cy="160" r="12" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<circle cx="175.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="184.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M174.6,163 Q180,163 185.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="180" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="180" dy="0">label</tspan></text>
+<circle cx="230" cy="160" r="12" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<circle cx="225.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="234.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M224.6,163 Q230,168.4 235.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="230" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="230" dy="0">label</tspan></text>
+<circle cx="280" cy="160" r="12" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<circle cx="275.8" cy="157" r="1.44" fill="#333333"/>
+<circle cx="284.2" cy="157" r="1.44" fill="#333333"/>
+<path d="M274.6,163 Q280,173.8 285.4,163" fill="none" stroke="#333333" stroke-width="1.5"/>
+<text x="280" y="164.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="280" dy="0">label</tspan></text>
+<polygon points="40,210 120,210 120,270 40,270 40,255 30,240 40,225" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="80" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="80" dy="0">label</tspan></text>
+<polygon points="150,210 230,210 230,225 240,240 230,255 230,270 150,270" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="190" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="190" dy="0">label</tspan></text>
+<polygon points="250,220 275,220 300,210 325,220 350,220 350,260 250,260" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="300" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="300" dy="0">label</tspan></text>
+<polygon points="360,220 460,220 460,260 435,260 410,270 385,260 360,260" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="410" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="410" dy="0">label</tspan></text>
+<polygon points="480,210 560,210 560,225 570,240 560,255 560,270 480,270 480,255 470,240 480,225" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="520" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="520" dy="0">label</tspan></text>
+<polygon points="580,220 605,220 630,210 655,220 680,220 680,260 655,260 630,270 605,260 580,260" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="630" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="630" dy="0">label</tspan></text>
+<polygon points="700,220 720,220 740,210 760,220 780,220 780,230 790,240 780,250 780,260 760,260 740,270 720,260 700,260 700,250 690,240 700,230" fill="#eeeeee" stroke="#999999" stroke-width="1.5"/>
+<text x="740" y="244.9" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="740" dy="0">label</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+

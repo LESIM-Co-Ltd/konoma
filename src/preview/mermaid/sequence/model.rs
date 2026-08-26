@@ -155,6 +155,10 @@ pub enum BlockKind {
     Break,
     /// `rect` — a background highlight. The colour is parsed and not drawn.
     Rect,
+    /// `try { … } catch { … }` — **ZenUML only**. `sequenceDiagram` has no such keyword, and
+    /// mapping it onto `critical` would draw a frame labelled "critical" around a try block,
+    /// which says something the author did not.
+    Try,
 }
 
 impl BlockKind {
@@ -168,6 +172,7 @@ impl BlockKind {
             BlockKind::Critical => "critical",
             BlockKind::Break => "break",
             BlockKind::Rect => "rect",
+            BlockKind::Try => "try",
         }
     }
 }
@@ -181,6 +186,10 @@ pub enum SectionKind {
     And,
     /// `option`, inside `critical`.
     Option,
+    /// `catch`, inside a ZenUML `try`.
+    Catch,
+    /// `finally`, inside a ZenUML `try`.
+    Finally,
 }
 
 impl SectionKind {
@@ -190,6 +199,8 @@ impl SectionKind {
             SectionKind::Else => "else",
             SectionKind::And => "and",
             SectionKind::Option => "option",
+            SectionKind::Catch => "catch",
+            SectionKind::Finally => "finally",
         }
     }
 }
@@ -286,6 +297,27 @@ impl SequenceDiagram {
     /// Whether a participant with this id has been declared.
     pub fn has(&self, id: &str) -> bool {
         self.index.contains_key(id)
+    }
+
+    /// Puts a participant at the **front**, keeping the id index correct.
+    ///
+    /// Only [`zenuml`] needs this. Its implicit starter is discovered when the first top-level
+    /// sync call is read, by which time other participants may already have been declared — and
+    /// the starter has to be the leftmost lifeline, because "the call came from outside" is what
+    /// its position says. Nothing happens if the id is already declared.
+    ///
+    /// [`zenuml`]: crate::preview::mermaid::zenuml
+    pub fn push_front(&mut self, participant: Participant) {
+        if self.index.contains_key(&participant.id) {
+            return;
+        }
+        self.participants.insert(0, participant);
+        self.index = self
+            .participants
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.id.clone(), i))
+            .collect();
     }
 
     /// Registers a participant if it is new, and returns its index either way.

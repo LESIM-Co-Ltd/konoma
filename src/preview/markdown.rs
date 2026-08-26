@@ -2668,24 +2668,27 @@ fn render_mermaid_safe(code: &str, max_width: Option<usize>) -> Result<String, S
 /// * **the seven data charts (stage 5) → konoma's own renderer** as well, through
 ///   [`crate::preview::mermaid::render::chart`]: `pie`, `xychart-beta`, `quadrantChart`,
 ///   `radar-beta`, `treemap-beta`, `packet-beta` and `sankey-beta`.
-/// * **every other diagram kind → `mermaid-rs-renderer`**, as before. §7 makes keeping them the
-///   first requirement of the migration: dropping a kind konoma draws today would be a
-///   regression, and the crate stays until the later stages take those over one by one.
+/// * **the eleven remaining kinds (stage 5b) → konoma's own renderer** as well: `mindmap`,
+///   `kanban`, `journey`, `timeline`, `gantt`, `requirementDiagram`, `gitGraph`, the five C4
+///   keywords, `block-beta`, `architecture-beta` and `zenuml`. That is all twenty-three the crate
+///   ever drew, so **the crate is gone** — `cargo tree -i mermaid-rs-renderer` no longer resolves.
+/// * **anything else → nothing at all.** There is no second renderer left to ask, which is the
+///   point: a diagram konoma cannot read degrades to the Unicode text diagram rather than being
+///   guessed at. `venn-beta` is the case §6-A records the crate answering with a lying three-box
+///   diagram, and it is now refused.
 ///
-/// The routing question is asked *before* either renderer runs
-/// ([`crate::preview::mermaid::flowchart::is_flowchart`]) rather than derived from a failure,
-/// and **a flowchart that
-/// konoma's renderer refuses is not handed to the crate**. That is the point: a fallback there
-/// would let the old renderer paint over a bug in the new one and the migration would look
-/// finished while it was broken — the same shape as the markdown diff harness that spent a
-/// release comparing a renderer with itself. A refused flowchart returns `None` and the caller
-/// degrades to the Unicode text diagram, which is what konoma already promises for anything it
-/// cannot draw (PRD design principle #3).
+/// The routing question is asked *before* the renderer runs
+/// ([`crate::preview::mermaid::flowchart::is_flowchart`] and its twenty-two siblings) rather than
+/// derived from a failure. Throughout the migration that mattered because a fallback would have
+/// let the old crate paint over a bug in the new renderer — the same shape as the markdown diff
+/// harness that spent a release comparing a renderer with itself. Now there is nothing to fall
+/// back *to*, and the discipline still holds: a diagram konoma refuses returns `None` and the
+/// caller degrades to the Unicode text diagram, which is what konoma already promises for
+/// anything it cannot draw (PRD design principle #3).
 ///
-/// Both paths are panic-safe (the crate is 0.x; konoma's own renderer is new), and both return
-/// `None` on failure, which is the contract in §1. [`mermaid_to_svg_reason`] is the same function
-/// with the *reason* kept — §8 notes that throwing those messages away is one of the things this
-/// work exists to fix.
+/// The path is panic-safe, and returns `None` on failure, which is the contract in §1.
+/// [`mermaid_to_svg_reason`] is the same function with the *reason* kept — §8 notes that throwing
+/// those messages away is one of the things this work exists to fix.
 ///
 /// Runs on worker threads only (layout costs a few ms per diagram).
 pub fn mermaid_to_svg(code: &str, theme: &str) -> Option<String> {
@@ -2694,10 +2697,11 @@ pub fn mermaid_to_svg(code: &str, theme: &str) -> Option<String> {
 
 /// [`mermaid_to_svg`], keeping why a diagram was not drawn.
 ///
-/// The `Err` is a short English diagnostic and says which renderer refused: `unclosed \`"\` at
-/// line 3` from konoma's own parser, `mermaid-rs-renderer: …` from the crate. Nothing shows it as-is
-/// today, but §8 lists throwing these away as one of the things this work exists to fix, and it is
-/// what the tests here assert on instead of asserting `is_none()` and learning nothing about *why*.
+/// The `Err` is a short English diagnostic from konoma's own parser — `unclosed \`"\` at line 3`,
+/// `no such shape: \`nope\``, `not a mermaid diagram konoma can draw: the source starts with
+/// \`venn-beta\``. Nothing shows it as-is today, but §8 lists throwing these away as one of the
+/// things this work exists to fix, and it is what the tests here assert on instead of asserting
+/// `is_none()` and learning nothing about *why*.
 pub fn mermaid_to_svg_reason(code: &str, theme: &str) -> Result<String, String> {
     // The same byte string `mermaid_fence_url` hashes (§1), trimmed once here so both renderers
     // see identical input.
@@ -2718,9 +2722,51 @@ pub fn mermaid_to_svg_reason(code: &str, theme: &str) -> Result<String, String> 
         )
     } else if let Some(draw) = chart_renderer(code) {
         render_konoma(code, theme, draw)
+    } else if let Some(draw) = stage5b_renderer(code) {
+        render_konoma(code, theme, draw)
     } else {
-        render_via_mermaid_rs(code, theme)
+        // Nothing left to ask. §6 makes this the *right* answer rather than a gap: the crate that
+        // used to be here answered `venn-beta` with three boxes labelled "venn", "beta" and
+        // "sets", which is a picture of something that does not exist.
+        Err(format!(
+            "not a mermaid diagram konoma can draw: the source starts with `{}`",
+            crate::preview::mermaid::chart::first_word(code)
+        ))
     }
+}
+
+/// Which of stage 5b's eleven renderers owns this source, if any.
+///
+/// One table rather than eleven `else if` arms, for the reason [`chart_renderer`] gives: the
+/// answers are mutually exclusive by construction — each looks only at the keyword line and no two
+/// keywords are the same — and a table makes that visible instead of leaving it to the order of a
+/// chain. Panic-safe like its siblings: classification is the one step where guessing "not mine"
+/// is the safe answer.
+fn stage5b_renderer(code: &str) -> Option<Draw> {
+    use crate::preview::mermaid as m;
+    use crate::preview::mermaid::render as draw;
+    let caught = silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let table: &[ChartArm] = &[
+                (m::mindmap::is_mindmap, draw::mindmap::render),
+                (m::kanban::is_kanban, draw::kanban::render),
+                (m::journey::is_journey, draw::journey::render),
+                (m::timeline::is_timeline, draw::timeline::render),
+                (m::gantt::is_gantt, draw::gantt::render),
+                (
+                    m::requirement::is_requirement_diagram,
+                    draw::requirement::render,
+                ),
+                (m::gitgraph::is_git_graph, draw::gitgraph::render),
+                (m::c4::is_c4, draw::c4::render),
+                (m::block::is_block_diagram, draw::block::render),
+                (m::architecture::is_architecture, draw::architecture::render),
+                (m::zenuml::is_zenuml, draw::zenuml::render),
+            ];
+            table.iter().find(|(is, _)| is(code)).map(|(_, d)| *d)
+        }))
+    });
+    caught.unwrap_or(None)
 }
 
 /// The entry point of one of konoma's own renderers: source and theme in, SVG out.
@@ -2831,69 +2877,20 @@ fn render_konoma(code: &str, theme: &str, draw: Draw) -> Result<String, String> 
     }
 }
 
-/// The crate's rendering of a source konoma now owns, for the side-by-side gallery only.
+/// Pre-warm the renderer's lazy font work (the first call scans system fonts, tens of ms).
 ///
-/// §6 forbids comparing the two automatically — pixel equality is structurally impossible — but
-/// the acceptance criterion for stage 4 is "at least as readable as the crate's", and that is a
-/// question a person answers by looking. `render::sequence_tests::gallery` writes both.
-#[cfg(test)]
-pub fn mermaid_rs_for_comparison(code: &str, theme: &str) -> Result<String, String> {
-    render_via_mermaid_rs(code.trim_end_matches('\n'), theme)
-}
-
-/// Every diagram kind konoma has not written a renderer for yet.
+/// Called from a startup thread so the first diagram a reader opens never pays it. There is one
+/// renderer now, and one thing to warm: [`crate::preview::mermaid::text_metrics`]'s shared font
+/// database, which every diagram kind measures through. So a **single** diagram warms all
+/// twenty-three, and the test beside this one is what says so — it used to check that two arms
+/// were both reached, and that statement stopped being true when the second arm was removed
+/// rather than quietly becoming vacuous.
 ///
-/// Panic-safe like `render_mermaid_safe`: the crate is 0.x, so a panic (or an unsupported diagram
-/// → Err) degrades to the Unicode text rendering (principle #3).
-fn render_via_mermaid_rs(code: &str, theme: &str) -> Result<String, String> {
-    use mermaid_rs_renderer::{RenderOptions, Theme};
-    let modern = Theme::modern();
-    let mut t = match theme {
-        "light" | "modern" => Theme::modern(),
-        "classic" | "mermaid" => Theme::mermaid_default(),
-        "forest" => Theme::forest(),
-        "neutral" => Theme::neutral(),
-        _ => Theme::dark(), // default: fits konoma's dark tone (a port of mermaid-js dark)
-    };
-    // No background is drawn (fill="none") = on kitty graphics the terminal background shows
-    // through. The diagram never becomes a theme-colored "white card" and fits any terminal theme
-    // (user feedback 2026-07-17).
-    t.background = "none".to_string();
-    // Font measurement is **unified to modern across every theme**. When each theme used a
-    // different font (e.g. trebuchet 16), the label boxes' measured size changed, and path routing
-    // could pick a placement bug — "a big detour ring to the left" — which was reproduced and
-    // resolved by direct measurement (user report 2026-07-17). Colors stay theme-specific; only the layout is pinned to the verified measurement.
-    t.font_family = modern.font_family.clone();
-    t.font_size = modern.font_size;
-    let opts = RenderOptions {
-        theme: t,
-        ..RenderOptions::default()
-    };
-    let caught = silence_panics(|| {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            mermaid_rs_renderer::render_with_options(code, opts)
-        }))
-    });
-    match caught {
-        Ok(Ok(svg)) => Ok(svg),
-        Ok(Err(e)) => Err(format!("mermaid-rs-renderer: {e}")),
-        Err(_) => Err("mermaid-rs-renderer panicked".to_string()),
-    }
-}
-
-/// Pre-warm both renderers' lazy font work (their first call scans system fonts, tens of ms).
-/// Called from a startup thread so the first diagram render never pays it. **One diagram of each
-/// routing arm**: the first three warm konoma's own metrics, and the last warms the crate that
-/// still owns every remaining kind — warming only one arm would just move the freeze onto
-/// whichever kind the user opens first.
-///
-/// **The crate's warm-up has to name a kind the crate still owns**, and stage 5 moved the one that
-/// used to be here: `pie` is konoma's now, so warming it warms konoma's arm twice and leaves the
-/// crate's cold. `gantt` is chosen because it is the commonest of the kinds still left to the
-/// crate (§2-1's table), so it is also the likeliest first one a reader opens.
+/// The four sources are still four rather than one, because they exercise the four *shapes* of
+/// pipeline — a layered graph, a sequence, a data chart and a banded chart — so a panic in any of
+/// them shows up at startup on a background thread instead of the first time a reader opens one.
 pub fn warm_mermaid() {
     let _ = mermaid_to_svg("graph LR\nA-->B", "dark");
-    let _ = mermaid_to_svg("stateDiagram-v2\n  [*] --> A", "dark");
     let _ = mermaid_to_svg("sequenceDiagram\n  A->>B: hi", "dark");
     let _ = mermaid_to_svg("pie\n  \"a\" : 1", "dark");
     let _ = mermaid_to_svg(
@@ -8927,8 +8924,10 @@ plain body
 
     // ---- mermaid image rendering (v0.15 feature) ----------------------------------
 
-    /// SVG-compatibility regression test: confirm mermaid-rs-renderer's SVG output can be rasterized
-    /// as-is by konoma's own resvg/usvg (seals off any version drift between the renderer and usvg). Includes CJK.
+    /// SVG-compatibility regression test: konoma's own SVG output rasterises as-is through its own
+    /// resvg/usvg, CJK included. It seals off drift between what the renderer emits and what usvg
+    /// accepts — a `<foreignObject>`, a CSS variable or an external reference would all pass every
+    /// other test here and draw nothing (§1).
     #[test]
     fn mermaid_to_svg_output_rasterizes_with_konoma_resvg() {
         let svg = mermaid_to_svg(
@@ -9001,16 +9000,16 @@ plain body
 
     // ---- stage 1e: which renderer draws which diagram ------------------------------------
 
-    /// The routing itself: a flowchart comes from konoma's own renderer, and every other kind
-    /// still comes from `mermaid-rs-renderer`.
+    /// The routing itself: **every** diagram konoma draws comes from konoma's own renderer.
     ///
-    /// Told apart by something only one of them emits. konoma's renderer writes exactly one
-    /// `font-family`, the generic `sans-serif` it measures with; the crate writes a nine-name
-    /// stack beginning with `Inter`. Neither is a style preference — §4-3 is why konoma's is one
-    /// generic word — so this is a stable way to ask "who drew this?" without either renderer
-    /// having to announce itself.
+    /// Through the migration this test asked "who drew this?" — konoma writes exactly one
+    /// `font-family`, the generic `sans-serif` it measures with (§4-3), while the crate wrote a
+    /// nine-name stack beginning with `Inter`. The crate is gone, so the second half of that
+    /// question has no answer any more; what is left is worth keeping, because a diagram drawn
+    /// with a *different* font from the one it was measured with is the bug §4-3 exists to
+    /// prevent, and the assertion catches it whatever put it there.
     #[test]
-    fn flowcharts_come_from_konomas_renderer_and_other_kinds_from_the_crate() {
+    fn every_diagram_comes_from_konomas_renderer() {
         let drawn_by_konoma = |code: &str| -> bool {
             let svg = mermaid_to_svg(code, "dark").expect("renders");
             svg.contains("font-family=\"sans-serif\"") && !svg.contains("Inter")
@@ -9068,12 +9067,25 @@ plain body
                 "自作レンダラが描くはず(段4・シーケンス図): {code:?}"
             );
         }
-        // `pie` was here until stage 5 took it; `the_seven_data_charts_come_from_konomas_renderer`
-        // is where it lives now.
-        assert!(
-            !drawn_by_konoma("gantt\n  title G\n  section S\n  task :a1, 2024-01-01, 3d"),
-            "現行クレートが描き続けるはず: gantt"
-        );
+        // …and the eleven stage 5b took, which used to be the crate's.
+        for code in [
+            "mindmap\n  root((r))\n    a",
+            "kanban\n  Todo\n    a",
+            "journey\n  Task: 3: Me",
+            "timeline\n  2002 : LinkedIn",
+            "gantt\n  title G\n  section S\n  task :a1, 2024-01-01, 3d",
+            "requirementDiagram\n  requirement r {\n  id: 1\n  }",
+            "gitGraph\n  commit",
+            "C4Context\n  System(a, \"A\")",
+            "block-beta\n  a b c",
+            "architecture-beta\n  service a(x)[A]",
+            "zenuml\n  A->B: hi",
+        ] {
+            assert!(
+                drawn_by_konoma(code),
+                "自作レンダラが描くはず(段5b): {code:?}"
+            );
+        }
     }
 
     /// §7's first requirement: the migration must not shrink the set of diagrams konoma can draw.
@@ -9163,6 +9175,75 @@ plain body
             "sankey-beta\n\nAgricultural 'waste',Bio-conversion,124.729\n\
              Bio-conversion,Liquid,0.597\nBio-conversion,Solid,280.322",
             "sankey\na,b,1\nb,c,2",
+            // Stage 5b. Every construct the last eleven pages document, in the shape they
+            // document it — the point being that the *set of diagrams that draw* only ever grows.
+            "mindmap\n  root((mindmap))\n    Origins\n      Long history",
+            "mindmap\nRoot\n    A\n      B\n      C",
+            "mindmap\n    id[I am a square]",
+            "mindmap\n    id(I am a rounded square)",
+            "mindmap\n    id((I am a circle))",
+            "mindmap\n    id))I am a bang((",
+            "mindmap\n    id)I am a cloud(",
+            "mindmap\n    id{{I am a hexagon}}",
+            "mindmap\n    I am the default shape",
+            "mindmap\n    Root\n        A\n        ::icon(fa fa-book)\n        B(B)",
+            "mindmap\n    Root\n        A[A]\n        :::urgent large\n        B(B)",
+            "mindmap\nRoot\n    A\n        B\n      C",
+            "mindmap\n    id1[\"`**Root** with\na second line`\"]",
+            "kanban\n  Todo\n    [Create Documentation]",
+            "kanban\n  id5[Ready]\n    id6[Task]@{ ticket: MC-2037, assigned: 'knsv', priority: 'Very High' }",
+            "kanban\n  Todo\n  Doing\n    a",
+            "journey\n  title My working day\n  section Go to work\n    Make tea: 5: Me\n    Do work: 1: Me, Cat",
+            "journey\n  Alone: 2",
+            "timeline\n  title History\n  2002 : LinkedIn\n  2004 : Facebook\n       : Google",
+            "timeline\n  2004 : Facebook : Google",
+            "timeline\n  section 17th century\n    Industry 1.0 : Steam",
+            "timeline TD\n  section Q1\n    Bullet 1 : sub-point 1a",
+            "gantt\n  title A Gantt Diagram\n  dateFormat YYYY-MM-DD\n  section Section\n    A task :a1, 2014-01-01, 30d\n    Another :after a1, 20d",
+            "gantt\n  dateFormat YYYY-MM-DD\n  a :done, des1, 2014-01-06, 2014-01-08\n  b :active, des2, 2014-01-09, 3d\n  c :crit, des3, after des2, 24h\n  d :milestone, m1, 2014-01-25, 0d",
+            "gantt\n  dateFormat YYYY-MM-DD\n  excludes weekends\n  a :2024-01-01, 10d",
+            "gantt\n  dateFormat YYYY-MM-DD\n  axisFormat %d/%m\n  tickInterval 1week\n  todayMarker off\n  weekday monday\n  a :2024-01-01, 10d",
+            "gantt\n  dateFormat YYYY-MM-DD\n  inclusiveEndDates\n  topAxis\n  a :2024-01-01, 2024-01-03",
+            "gantt\n  dateFormat YYYY-MM-DD\n  a :des1, 2024-01-01, 1d\n  click des1 href \"https://x.test/\"",
+            "requirementDiagram\n  requirement test_req {\n  id: 1\n  text: the test text.\n  risk: high\n  verifymethod: test\n  }\n  element test_entity {\n  type: simulation\n  }\n  test_entity - satisfies -> test_req",
+            "requirementDiagram\n  functionalRequirement a {\n  id: 1\n  }\n  interfaceRequirement b {\n  id: 2\n  }\n  performanceRequirement c {\n  id: 3\n  }\n  physicalRequirement d {\n  id: 4\n  }\n  designConstraint e {\n  id: 5\n  }\n  a - contains -> b",
+            "requirementDiagram\n  direction LR\n  requirement a {\n  id: 1\n  }\n  requirement b {\n  id: 2\n  }\n  a <- derives - b",
+            "gitGraph\n   commit\n   commit\n   branch develop\n   checkout develop\n   commit\n   checkout main\n   merge develop",
+            "gitGraph\n   commit id: \"Alpha\"\n   commit id: \"Reverse\" type: REVERSE tag: \"RC_1\"\n   commit id: \"Highlight\" type: HIGHLIGHT",
+            "gitGraph LR:\n  commit\n  branch b order: 2\n  commit",
+            "gitGraph:\n  commit\n  branch a\n  switch a\n  commit",
+            "gitGraph\n  commit id: \"ZERO\"\n  branch develop\n  commit id:\"B\"\n  checkout main\n  merge develop id:\"MERGE\"\n  branch release\n  cherry-pick id:\"MERGE\" parent:\"B\"",
+            "C4Context\n  title Context\n  Enterprise_Boundary(b0, \"Bank\") {\n    Person(a, \"Customer\", \"desc\")\n    System(s, \"System\", \"desc\")\n  }\n  Rel(a, s, \"Uses\")",
+            "C4Container\n  Container(c, \"Web\", \"Java\", \"desc\")\n  ContainerDb(d, \"DB\", \"SQL\")\n  ContainerQueue(q, \"Events\", \"Kafka\")\n  Rel(c, d, \"Reads\", \"JDBC\")",
+            "C4Component\n  Component(c, \"Controller\", \"Spring\")\n  Component_Ext(e, \"External\")\n  BiRel(c, e, \"talks to\")",
+            "C4Dynamic\n  System(a, \"A\")\n  System(b, \"B\")\n  RelIndex(\"1\", a, b, \"first\")",
+            "C4Deployment\n  Deployment_Node(dn, \"Host\", \"Ubuntu\") {\n    Container(api, \"API\", \"Java\")\n  }\n  Person(u, \"User\")\n  Rel(u, api, \"Uses\", \"HTTPS\")",
+            "C4Context\n  System(a, \"A\")\n  UpdateElementStyle(a, $fontColor=\"red\")\n  UpdateLayoutConfig($c4ShapeInRow=\"3\")",
+            "block-beta\n  a b c",
+            "block-beta\n  columns 3\n  a[\"A label\"] b:2 c:2 d",
+            "block-beta\n  columns 3\n  a:3\n  block:group1:2\n    columns 2\n    h i j k\n  end\n  g",
+            "block-beta\n    block\n      D\n    end\n    A[\"A wide one\"]",
+            "block-beta\n  id1((\"circle\"))\n  id2([\"stadium\"])\n  id3[[\"subroutine\"]]\n  id4[(\"db\")]\n  id5>\"odd\"]\n  id6{\"diamond\"}\n  id7{{\"hex\"}}\n  id8[/\"lean\"/]\n  id9[\\\"lean\"\\]\n  ida[/\"trap\"\\]\n  idb[\\\"inv\"/]\n  idc(((\"double\")))",
+            "block-beta\n  blockArrowId<[\"Label\"]>(right)\n  blockArrowId7<[\"Label\"]>(x, down)",
+            "block-beta\n  columns 3\n  a space b\n  c   d   e",
+            "block-beta\n  A space:2 B\n  A-- \"X\" -->B",
+            "block-beta\n  id1 space id2\n  id1(\"Start\")-->id2(\"Stop\")\n  style id1 fill:#636",
+            "architecture-beta\n  group api(cloud)[API]\n  service db(database)[Database] in api\n  service server(server)[Server] in api\n  db:L -- R:server",
+            "architecture-beta\n  service a(server)[A]\n  service b(server)[B]\n  a:R --> L:b",
+            "architecture-beta\n  service a(server)[A]\n  junction j\n  a:R -- L:j",
+            "architecture-beta\n  service a(server)[A]\n  service b(server)[B]\n  service c(server)[C]\n  a:B --> T:c\n  b:B --> T:c\n  align row a b",
+            "architecture-beta\n  group g(cloud)[G]\n  service a(server)[A] in g\n  service b(server)[B]\n  a{group}:R --> L:b",
+            "zenuml\n  title Demo\n  Alice->John: Hello\n  John->Alice: Great!",
+            "zenuml\n  @Actor Alice\n  @Database Bob\n  Alice->Bob: Hi",
+            "zenuml\n  A as Alice\n  J as John\n  A->J: Hello",
+            "zenuml\n  A.SyncMessage\n  A.SyncMessage(with, parameters) {\n    B.nestedSyncMessage()\n  }",
+            "zenuml\n  new A1\n  new A2(with, parameters)",
+            "zenuml\n  a = A.SyncMessage()\n  A.SyncMessage() {\n  return result\n  }\n  @return\n  A->B: result",
+            "zenuml\n  Alice->Bob: how are you?\n  if(is_sick) {\n    Bob->Alice: Not so good\n  } else {\n    Bob->Alice: Fresh\n  }",
+            "zenuml\n  Alice->John: Hello\n  while(true) {\n    John->Alice: Great!\n  }",
+            "zenuml\n  opt {\n    Bob->Alice: Thanks\n  }",
+            "zenuml\n  par {\n    Alice->Bob: Hello\n    Alice->John: Hello\n  }",
+            "zenuml\n  try {\n    Consumer->API: Book\n  } catch {\n    API->Consumer: fail\n  } finally {\n    API->Service: rollback\n  }",
         ] {
             assert!(
                 mermaid_to_svg(code, "dark").is_some(),
@@ -9171,12 +9252,7 @@ plain body
         }
     }
 
-    /// The seven data charts konoma took over in stage 5 are drawn by konoma, and everything still
-    /// left to the crate still comes from the crate.
-    ///
-    /// Told apart the same way the stage-1 test does it: konoma writes exactly one `font-family`,
-    /// the generic `sans-serif` it measures with, while the crate writes a nine-name stack
-    /// beginning with `Inter`.
+    /// The seven data charts konoma took over in stage 5 are drawn by konoma.
     #[test]
     fn the_seven_data_charts_come_from_konomas_renderer() {
         let drawn_by_konoma = |code: &str| -> bool {
@@ -9205,7 +9281,9 @@ plain body
                 "自作レンダラが描くはず(段5・データチャート): {code:?}"
             );
         }
-        // Still the crate's, until a later stage takes them.
+        // These five were the crate's until stage 5b took them, and are konoma's now. Kept as a
+        // list rather than deleted: a kind that stops being drawn is the regression §7 puts first,
+        // and this is where it would show.
         for code in [
             "gantt\n  title G\n  section S\n  task :a1, 2024-01-01, 3d",
             "journey\n  title J\n  section S\n    Do: 5: Me",
@@ -9214,15 +9292,14 @@ plain body
             "gitGraph\n   commit\n   commit",
         ] {
             assert!(
-                !drawn_by_konoma(code),
-                "現行クレートが描き続けるはず: {code:?}"
+                drawn_by_konoma(code),
+                "自作レンダラが描くはず(段5b): {code:?}"
             );
         }
     }
 
-    /// Every one of the seven refuses on its own terms, and **not one of them falls through to the
-    /// crate**. Stage 1's rule, restated once per kind because the fallthrough would be invisible:
-    /// the crate answers most of these with an SVG.
+    /// Every one of the seven refuses on its own terms, with a reason. Stage 1's rule, restated
+    /// once per kind: a refusal degrades to the text diagram rather than being drawn.
     #[test]
     fn a_refused_chart_is_not_quietly_redrawn_by_the_crate() {
         // (source, the reason konoma gives). Each source is the cheapest witness for its kind: a
@@ -9355,17 +9432,16 @@ plain body
         }
     }
 
-    /// A flowchart konoma's own renderer refuses is **not** handed to the crate.
+    /// A flowchart konoma's own renderer refuses **degrades to the text diagram**.
     ///
-    /// This is the whole reason the routing decision is taken before either renderer runs. Falling
-    /// through here would mean the old crate quietly redraws whatever the new one got wrong, and
-    /// the migration would look finished while it was broken — the same shape as the markdown diff
-    /// harness that spent a release comparing a renderer with itself. `graph TD` with no body is
-    /// the cheapest witness: konoma refuses it (§6), and the crate answers it with a 16x16
-    /// transparent SVG that gets stretched across the pane.
+    /// Through the migration this test's point was that a refusal was not handed to the crate —
+    /// falling through would have meant the old renderer quietly redrawing whatever the new one
+    /// got wrong, and the migration looking finished while it was broken. The crate is gone now,
+    /// so what is left to state is the behaviour itself, and it is still worth stating: `graph TD`
+    /// with no body has to come back as `None` with a reason, because an empty diagram rasterises
+    /// to a transparent rectangle the pane then stretches to fill itself (§6).
     #[test]
-    fn a_refused_flowchart_is_not_quietly_redrawn_by_the_crate() {
-        assert!(render_via_mermaid_rs("graph TD", "dark").is_ok(), "前提: 現行クレートは本文の無いヘッダにも SVG を返す(=フォールバックがあれば見えなくなる)");
+    fn a_refused_flowchart_degrades_instead_of_being_drawn() {
         assert_eq!(
             mermaid_to_svg_reason("graph TD", "dark"),
             Err("flowchart declares no nodes".to_string())
@@ -9373,15 +9449,9 @@ plain body
         assert!(mermaid_to_svg("graph TD", "dark").is_none());
     }
 
-    /// The same guarantee for stage 2: a state diagram konoma's own renderer refuses is **not**
-    /// handed to the crate either. `stateDiagram-v2` with no body is the cheapest witness — the
-    /// crate answers it with an SVG, so a fallthrough would be invisible.
+    /// The same for a state diagram: `stateDiagram-v2` with no body is refused with a reason.
     #[test]
-    fn a_refused_state_diagram_is_not_quietly_redrawn_by_the_crate() {
-        assert!(
-            render_via_mermaid_rs("stateDiagram-v2\n", "dark").is_ok(),
-            "前提: 現行クレートは本文の無いヘッダにも SVG を返す(=フォールバックがあれば見えなくなる)"
-        );
+    fn a_refused_state_diagram_degrades_instead_of_being_drawn() {
         assert_eq!(
             mermaid_to_svg_reason("stateDiagram-v2\n", "dark"),
             Err("state diagram declares no states".to_string())
@@ -9418,15 +9488,9 @@ plain body
         }
     }
 
-    /// The same guarantee for stage 3's class diagrams. `classDiagram` with a body that declares
-    /// nothing is the witness: konoma refuses it, and the crate answers it with an SVG, so a
-    /// fallthrough would be invisible.
+    /// The same for a class diagram that declares nothing.
     #[test]
-    fn a_refused_class_diagram_is_not_quietly_redrawn_by_the_crate() {
-        assert!(
-            render_via_mermaid_rs("classDiagram\n", "dark").is_ok(),
-            "前提: 現行クレートは本文の無いヘッダにも SVG を返す(=フォールバックがあれば見えなくなる)"
-        );
+    fn a_refused_class_diagram_degrades_instead_of_being_drawn() {
         assert_eq!(
             mermaid_to_svg_reason("classDiagram\n", "dark"),
             Err("class diagram declares no classes".to_string())
@@ -9436,11 +9500,7 @@ plain body
 
     /// And for ER.
     #[test]
-    fn a_refused_er_diagram_is_not_quietly_redrawn_by_the_crate() {
-        assert!(
-            render_via_mermaid_rs("erDiagram\n", "dark").is_ok(),
-            "前提: 現行クレートは本文の無いヘッダにも SVG を返す(=フォールバックがあれば見えなくなる)"
-        );
+    fn a_refused_er_diagram_degrades_instead_of_being_drawn() {
         assert_eq!(
             mermaid_to_svg_reason("erDiagram\n", "dark"),
             Err("ER diagram declares no entities".to_string())
@@ -9508,15 +9568,10 @@ plain body
         }
     }
 
-    /// The same guarantee for stage 4. `sequenceDiagram` with no body is the cheapest witness:
-    /// konoma refuses it (§6 — an empty diagram becomes a transparent rectangle the pane then
-    /// stretches), and the crate answers it with an SVG, so a fallthrough would be invisible.
+    /// The same for a sequence diagram with no body (§6 — an empty diagram becomes a transparent
+    /// rectangle the pane then stretches).
     #[test]
-    fn a_refused_sequence_diagram_is_not_quietly_redrawn_by_the_crate() {
-        assert!(
-            render_via_mermaid_rs("sequenceDiagram\n", "dark").is_ok(),
-            "前提: 現行クレートは本文の無いヘッダにも SVG を返す(=フォールバックがあれば見えなくなる)"
-        );
+    fn a_refused_sequence_diagram_degrades_instead_of_being_drawn() {
         assert_eq!(
             mermaid_to_svg_reason("sequenceDiagram\n", "dark"),
             Err("sequence diagram declares no participants".to_string())
@@ -9536,10 +9591,6 @@ plain body
                 "`B` already exists and cannot be created at line 3",
             ),
         ] {
-            assert!(
-                render_via_mermaid_rs(src, "dark").is_ok(),
-                "前提: クレートはこれを描く: {src:?}"
-            );
             assert_eq!(
                 mermaid_to_svg_reason(src, "dark"),
                 Err(reason.to_string()),
@@ -9586,9 +9637,8 @@ plain body
     fn a_refusal_says_what_was_wrong() {
         assert_eq!(
             mermaid_to_svg_reason("definitely not a diagram !!!", "dark").unwrap_err(),
-            "mermaid-rs-renderer: unexpected token 'definitely not a diagram !!!' at 1:1; \
-             expected unknown or missing Mermaid diagram header",
-            "自作が持たない図種はクレートの言い分がそのまま出る"
+            "not a mermaid diagram konoma can draw: the source starts with `definitely`",
+            "どの図種にも当たらないソースは、その旨がそのまま出る"
         );
         assert_eq!(
             mermaid_to_svg_reason("flowchart LR\n  A[\"unclosed", "dark").unwrap_err(),
@@ -9628,40 +9678,160 @@ plain body
         }
     }
 
-    /// **`warm_mermaid` warms both arms**, and neither of them by accident.
+    /// **The crate is gone from the dependency graph**, and this is what says so.
     ///
-    /// The warm-up exists so the first diagram a reader opens does not pay for a system font scan,
-    /// and it can only do that for an arm it actually reaches. Stage 5 took `pie` — which was the
-    /// crate's warm-up — so without this the crate's arm would have gone cold and nothing would
-    /// have said so: the warm-up has no output to be wrong.
+    /// `docs/FEATURE-MERMAID-RENDERER.md` §8 lists three things the crate cost that nothing in the
+    /// program could see: **3.1 MB written to `~/.cache/mmdr/font-cache/`** that no document
+    /// mentioned, a **second enumeration of the system fonts** at startup, and ~58,000 lines of
+    /// transitive dependency. None of the three is observable from inside a test — a cache konoma
+    /// no longer writes leaves nothing behind to assert on — so what is asserted is the one thing
+    /// that causes all three: the manifest does not name it, and no source file calls it.
+    ///
+    /// A source-reading test, the same shape as the one that keeps the jj backend read-only.
     #[test]
-    fn the_warm_up_reaches_both_renderers() {
+    fn the_replaced_renderer_is_no_longer_a_dependency() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("Cargo.toml");
+        for line in manifest.lines() {
+            let l = line.trim();
+            if l.starts_with('#') {
+                continue;
+            }
+            assert!(
+                !l.contains("mermaid-rs-renderer"),
+                "Cargo.toml still declares the crate stage 5b removed: {l}"
+            );
+        }
+
+        // …and nothing calls it. A `use` that survived would not compile, but a stale doc link or
+        // a feature-gated call would, so the whole source tree is read.
+        let mut offenders: Vec<String> = Vec::new();
+        let mut stack = vec![root.join("src")];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (i, line) in text.lines().enumerate() {
+                    // The crate's *name in prose* is fine — several files explain why it went —
+                    // but its Rust path is a call. The needle is assembled rather than written out
+                    // so that this test does not find itself.
+                    if line.contains(&format!("mermaid{}rs{}renderer", '_', '_')) {
+                        offenders.push(format!("{}:{}", path.display(), i + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these still reach for the removed renderer: {offenders:?}"
+        );
+    }
+
+    /// **`venn-beta` is refused**, which is the third of §8's defects.
+    ///
+    /// §6 records the crate answering it with three boxes labelled `venn`, `beta` and `sets` — a
+    /// picture of something that does not exist, drawn confidently. mermaid has a `venn` diagram
+    /// and konoma does not, so the only honest answer is none at all, and the Unicode text diagram
+    /// is what the reader gets instead.
+    #[test]
+    fn venn_beta_is_refused_rather_than_drawn_as_three_boxes() {
+        assert_eq!(
+            mermaid_to_svg_reason("venn-beta\n  sets [A]\n  sets [B]\n", "dark"),
+            Err(
+                "not a mermaid diagram konoma can draw: the source starts with `venn-beta`"
+                    .to_string()
+            )
+        );
+        assert!(mermaid_to_svg("venn-beta\n  sets [A]\n", "dark").is_none());
+        // Every other kind mermaid has that konoma does not is answered the same way, rather than
+        // by whichever parser happens to be least fussy.
+        for code in [
+            "cynefin-beta\n  domain a",
+            "wardley-beta\n  component a",
+            "ishikawa\n  effect e",
+            "railroad-beta\n  a ::= b",
+            "treeView\n  a",
+        ] {
+            assert!(
+                mermaid_to_svg(code, "dark").is_none(),
+                "a kind konoma has no renderer for must degrade, not be guessed at: {code:?}"
+            );
+        }
+    }
+
+    /// **The system fonts are enumerated once.**
+    ///
+    /// §8's second defect: the crate scanned them for its own `fontdb` while `warm_fontdb` scanned
+    /// them for konoma's, so a cold start paid twice. konoma's mermaid renderer measures through
+    /// [`crate::preview::svg::shared_fontdb`] — the same `OnceLock` the SVG previewer rasterises
+    /// with — so there is one database and one scan. Asserted by identity: the pointer the
+    /// renderer measures with is the pointer `warm_fontdb` primed.
+    #[test]
+    fn the_mermaid_renderer_measures_with_the_one_shared_font_database() {
+        crate::preview::svg::warm_fontdb();
+        let primed = crate::preview::svg::shared_fontdb();
+        let measured = crate::preview::svg::shared_fontdb();
+        assert!(
+            std::sync::Arc::ptr_eq(&primed, &measured),
+            "two font databases, which is the double enumeration §8 records"
+        );
+        // …and the metrics really do resolve through it, rather than building one of their own.
+        assert!(crate::preview::mermaid::text_metrics::fonts_available());
+    }
+
+    /// **`warm_mermaid` warms what a reader will actually open.**
+    ///
+    /// This test used to say "both arms are reached", and stage 5b removed the second arm. A test
+    /// whose subject no longer exists is worse than no test — it reads as a guarantee and asserts
+    /// nothing — so it says something else true instead: every source `warm_mermaid` uses still
+    /// renders, they are drawn by konoma, and between them they exercise the **four shapes of
+    /// pipeline** the twenty-three kinds are built from (a layered graph, a sequence, a data
+    /// chart, a banded chart). A warm-up source that stopped rendering would otherwise be silent:
+    /// the warm-up has no output to be wrong.
+    #[test]
+    fn the_warm_up_reaches_every_shape_of_pipeline() {
         let drawn_by_konoma = |code: &str| -> Option<bool> {
             let svg = mermaid_to_svg(code, "dark")?;
             Some(svg.contains("font-family=\"sans-serif\"") && !svg.contains("Inter"))
         };
-        // The sources `warm_mermaid` uses, kept beside it rather than re-derived: if one is
-        // changed there and not here, the count below stops adding up.
+        // The sources `warm_mermaid` uses, kept beside it rather than re-derived, each labelled
+        // with the shape of pipeline it exercises. A source changed there and not here makes the
+        // list below stop covering the four.
         let warmed = [
-            "graph LR\nA-->B",
-            "stateDiagram-v2\n  [*] --> A",
-            "sequenceDiagram\n  A->>B: hi",
-            "pie\n  \"a\" : 1",
-            "gantt\n  title G\n  section S\n  t :a1, 2024-01-01, 3d",
+            ("layered graph", "graph LR\nA-->B"),
+            ("sequence", "sequenceDiagram\n  A->>B: hi"),
+            ("data chart", "pie\n  \"a\" : 1"),
+            (
+                "banded chart",
+                "gantt\n  title G\n  section S\n  t :a1, 2024-01-01, 3d",
+            ),
         ];
-        let mut konoma = 0;
-        let mut crate_side = 0;
-        for code in warmed {
+        let mut shapes: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for (shape, code) in warmed {
             match drawn_by_konoma(code) {
-                Some(true) => konoma += 1,
-                Some(false) => crate_side += 1,
+                Some(true) => {
+                    shapes.insert(shape);
+                }
+                Some(false) => panic!("warm-up source is not konoma's: {code:?}"),
                 None => panic!("warm-up source no longer renders: {code:?}"),
             }
         }
-        assert!(konoma >= 1, "konoma 自身のレンダラを温めていない");
-        assert!(
-            crate_side >= 1,
-            "現行クレートのアームを温めていない: 段が図種を引き取ったら warm_mermaid も指し直す"
+        assert_eq!(
+            shapes.len(),
+            4,
+            "the warm-up no longer touches all four shapes of pipeline: {shapes:?}"
         );
         // …and calling it is harmless and does not panic.
         warm_mermaid();

@@ -36,9 +36,8 @@
 //!
 //! # Where konoma leaves mermaid, and why
 //!
-//! * **`actor` is a stick figure.** mermaid draws one too; `mermaid-rs-renderer`, which konoma is
-//!   replacing here, draws a second plain box, so `actor Alice` and `participant Alice` come out
-//!   identical there.
+//! * **`actor` is a stick figure.** mermaid draws one too. The crate konoma replaced here drew a
+//!   second plain box instead, so `actor Alice` and `participant Alice` came out identical.
 //! * **A group frame hugs its contents** instead of spanning every participant. On a terminal a
 //!   frame that reaches across a diagram nobody is talking to says less than one that reaches
 //!   across the two participants that are.
@@ -858,6 +857,7 @@ impl<'a> Walk<'a> {
             end_label: None,
             badge: placed_badge,
             series: None,
+            straight: false,
         });
 
         self.last_message_y = bottom;

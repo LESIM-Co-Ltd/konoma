@@ -173,10 +173,6 @@ ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] 
 # 手書きスキャナ自体を廃してこのパーサへ問い合わせる方式に置き換えた)。
 pulldown-cmark = { version = "0.13.4", default-features = false }
 mermaid-text = "0.57"
-# mermaid → SVG(純 Rust・ブラウザ/Node 不要=配布容易性 PRD §5 維持)。ラスタライズは konoma 側の
-# resvg に統一するので default features(cli/png=clap/同梱resvg)は切る。fontdb/ttf-parser は
-# 既存依存と同版=重複ビルドなし。画像化に失敗した図は mermaid-text のテキスト描画へ降格(原則#3)。
-mermaid-rs-renderer = { version = "0.3", default-features = false }
 # 拡張子付き単体コードファイル・md フェンスコードとも共通のハイライト用(konoma 自身のレンダラが
 # 両方でこれを呼ぶ)。既定の onig バックエンドは oniguruma(C ライブラリ)を要求し配布容易性(PRD §5)
 # に反するため、default-features を切り純 Rust の fancy-regex(default-fancy) を使う

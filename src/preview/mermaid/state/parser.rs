@@ -109,7 +109,7 @@ pub fn parse(src: &str) -> Result<StateDiagram, ParseError> {
 /// This is the routing predicate `preview::markdown::mermaid_to_svg` asks. Like
 /// [`flowchart::is_flowchart`](crate::preview::mermaid::flowchart::is_flowchart) it is
 /// deliberately *not* "does [`parse`] succeed": a state diagram this parser refuses is still
-/// konoma's to answer for, and handing it to `mermaid-rs-renderer` would let the old crate paint
+/// konoma's to answer for, and handing it to a second renderer would let that renderer paint
 /// over a bug in the new one.
 pub fn is_state_diagram(src: &str) -> bool {
     let pre = preprocess(src);

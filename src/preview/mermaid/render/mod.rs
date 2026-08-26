@@ -41,29 +41,39 @@
 //! # On the drawing path (stage 1e)
 //!
 //! [`render`] is what `preview::markdown::mermaid_to_svg` calls for every `flowchart` / `graph` /
-//! `flowchart-elk` konoma shows, and its three siblings — [`state::render`], [`class::render`],
-//! [`er::render`] — own the other three languages. Every remaining diagram kind still comes from
-//! `mermaid-rs-renderer`, and a diagram one of these four modules *refuses* is not sent there as
-//! a second opinion — it degrades to the Unicode text diagram, so a failure here is visible
-//! rather than papered over.
+//! `flowchart-elk` konoma shows, and its siblings own the other twenty-two languages. There is no
+//! second renderer left to ask: a diagram one of them *refuses* degrades to the Unicode text
+//! diagram, so a failure here is visible rather than papered over.
 
 // konoma is a binary crate, so `pub` marks nothing as used: the parts of this module's surface that
 // exist for the tests and for the stages still to come look unreachable to rustc. Same reasoning,
 // and the same lint, as the sibling `flowchart` and `layout` modules.
 #![allow(dead_code)]
 
+pub mod architecture;
+pub mod band;
+pub mod block;
+pub mod c4;
 pub mod chart;
 pub mod class;
 pub mod clusters;
 pub mod edges;
 pub mod er;
+pub mod gantt;
+pub mod gitgraph;
+pub mod journey;
+pub mod kanban;
 pub mod labels;
+pub mod mindmap;
 pub mod panel;
+pub mod requirement;
 pub mod sequence;
 pub mod shapes;
 pub mod state;
 pub mod svg;
 pub mod theme;
+pub mod timeline;
+pub mod zenuml;
 
 #[cfg(test)]
 mod class_tests;
@@ -72,11 +82,15 @@ mod decoration_tests;
 #[cfg(test)]
 mod er_tests;
 #[cfg(test)]
+mod kinds_tests;
+#[cfg(test)]
 mod sequence_tests;
 #[cfg(test)]
 mod state_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_placement_tests;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -287,6 +301,18 @@ pub struct PlacedEdge {
     /// chart's line plot and a radar chart's curve are the only things that set it, and they must:
     /// a legend that names three series is meaningless if all three are the same colour.
     pub series: Option<usize>,
+    /// Whether the route is drawn as a **polyline** rather than as a smooth curve.
+    ///
+    /// A route through a layered layout is smoothed, because dagre's waypoints are a suggestion
+    /// and the curve is what makes a long edge read as one line. A route on a **grid** is not: an
+    /// architecture edge's elbow and a block link's detour are right angles the author asked for,
+    /// and a spline through them draws a wide arc that wanders across the cells in between.
+    ///
+    /// Before this field existed, `series` doubled as the flag — a data path is straight for the
+    /// same reason — so a straight route had to pretend to be a series and take a series colour
+    /// with it. Saying it directly is what lets a grid route be [`Theme::line`] and straight at
+    /// once.
+    pub straight: bool,
 }
 
 impl PlacedEdge {
@@ -298,7 +324,7 @@ impl PlacedEdge {
     /// the data, and two consecutive equal values make exactly the right angle `fix_corners`
     /// would take out.
     pub fn drawn_points(&self) -> Vec<Point> {
-        if self.series.is_some() {
+        if self.series.is_some() || self.straight {
             return self.points.clone();
         }
         edges::fix_corners(&self.points)
@@ -892,6 +918,7 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             end_label,
             badge: None,
             series: None,
+            straight: false,
         });
     }
 
