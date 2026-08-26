@@ -62,6 +62,63 @@ pub const LIFELINE_DASH: &str = "3 4";
 /// Half the diagonal of the cross drawn where a `destroy`ed participant's lifeline ends.
 pub const DESTROY_HALF: f64 = 7.0;
 
+/// How opaque a Sankey ribbon is.
+///
+/// Flows cross, and an opaque band hides whatever runs under it — which for a Sankey is exactly
+/// the comparison the diagram exists to make. Low enough that two crossing bands read as two, high
+/// enough that one band on the terminal's own ground still reads as a band.
+pub const RIBBON_OPACITY: f64 = 0.45;
+
+/// The path of a pie slice of radius `r`, from `start` to `start + sweep` degrees clockwise from
+/// twelve o'clock.
+///
+/// A full turn is drawn as a circle rather than as an arc: SVG's elliptical arc command cannot
+/// express 360°, because its start and end points coincide and the renderer draws nothing at all.
+/// A one-slice pie is the commonest chart there is, so this is not a corner case.
+pub fn wedge_path(cx: f64, cy: f64, r: f64, start: f64, sweep: f64) -> String {
+    let sweep = sweep.clamp(0.0, 360.0);
+    if sweep >= 360.0 - 1e-9 {
+        return format!(
+            "M{cx},{top} A{r},{r} 0 1 1 {cx2},{bottom} A{r},{r} 0 1 1 {cx3},{top2} Z",
+            cx = num(cx),
+            cx2 = num(cx),
+            cx3 = num(cx),
+            top = num(cy - r),
+            top2 = num(cy - r),
+            bottom = num(cy + r),
+            r = num(r)
+        );
+    }
+    let at = |deg: f64| {
+        let a = (deg - 90.0).to_radians();
+        (cx + r * a.cos(), cy + r * a.sin())
+    };
+    let (x0, y0) = at(start);
+    let (x1, y1) = at(start + sweep);
+    let large = usize::from(sweep > 180.0);
+    format!(
+        "M{},{} L{},{} A{r},{r} 0 {large} 1 {},{} Z",
+        num(cx),
+        num(cy),
+        num(x0),
+        num(y0),
+        num(x1),
+        num(y1),
+        r = num(r)
+    )
+}
+
+/// The vertices of a regular `sides`-gon of radius `r`, first vertex at twelve o'clock.
+fn radial_polygon(cx: f64, cy: f64, r: f64, sides: usize) -> String {
+    (0..sides)
+        .map(|k| {
+            let a = -std::f64::consts::FRAC_PI_2 + std::f64::consts::TAU * k as f64 / sides as f64;
+            format!("{},{}", num(cx + r * a.cos()), num(cy + r * a.sin()))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// A number as SVG writes it: at most three decimals, no trailing zeros, no negative zero.
 ///
 /// Three decimals is well under a rasterised pixel at any zoom konoma reaches (`SvgReraster` caps
@@ -128,15 +185,32 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
         }
         out.push_str("</g>\n");
     }
+    // Every edge that is *not* a data path. That is every edge in every diagram kind before
+    // stage 5, so the group is byte for byte what it was; a chart's axes, ticks and grid lines
+    // join it, and they belong under the marks for the same reason a flowchart's lines belong
+    // under its boxes.
     out.push_str("<g class=\"edges\">\n");
-    for e in &diagram.edges {
+    for e in diagram.edges.iter().filter(|e| e.series.is_none()) {
         emit_edge(&mut out, e, theme);
     }
     out.push_str("</g>\n<g class=\"nodes\">\n");
     for n in &diagram.nodes {
         emit_node(&mut out, n, theme);
     }
-    out.push_str("</g>\n<g class=\"edge-labels\">\n");
+    out.push_str("</g>\n");
+    // A data path goes **over** the marks. A line plot drawn under the bars disappears behind the
+    // tall ones, which is the one place it most needs to be visible; and unlike a route, it is not
+    // structure the boxes are allowed to cover — it is a second reading of the same numbers, laid
+    // on the first so the two can be compared. Omitted entirely when there is none, so a diagram
+    // with no series is unchanged.
+    if diagram.edges.iter().any(|e| e.series.is_some()) {
+        out.push_str("<g class=\"series\">\n");
+        for e in diagram.edges.iter().filter(|e| e.series.is_some()) {
+            emit_edge(&mut out, e, theme);
+        }
+        out.push_str("</g>\n");
+    }
+    out.push_str("<g class=\"edge-labels\">\n");
     for e in &diagram.edges {
         if let Some(l) = &e.label {
             // The patch exists to keep the words readable where the line runs under them, so it
@@ -321,10 +395,31 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
         Glyph::StateStart | Glyph::StateEnd | Glyph::Bar { .. } => {
             (theme.state_marker, theme.state_marker, theme.node_text)
         }
+        // A chart's furniture: an outline in the axis colour with nothing behind it, because §1
+        // forbids painting over the terminal.
+        Glyph::PlotFrame | Glyph::Graticule => ("none", theme.axis, theme.node_text),
+        // Words and nothing else. The colour depends on what they are drawn *on*: a tick label
+        // sits on the terminal, a percentage sits on its own wedge.
+        Glyph::ChartLabel => (
+            "none",
+            "none",
+            if node.series.is_some() {
+                theme.series_text
+            } else {
+                theme.node_text
+            },
+        ),
+        // A datum. Its fill is its series, and the text on it is the one colour every series
+        // colour was chosen to carry.
+        Glyph::Wedge | Glyph::ChartBar | Glyph::ChartPoint | Glyph::Ribbon => (
+            node.series.map_or(theme.node_fill, |i| theme.series(i)),
+            theme.node_stroke,
+            theme.series_text,
+        ),
         _ => (theme.node_fill, theme.node_stroke, theme.node_text),
     };
     let sw = num(NODE_STROKE_WIDTH);
-    match shapes::outline(node.shape, node.size) {
+    match shapes::outline(node.shape, node.size, node.mark) {
         Outline::Rect { w, h, r } => {
             out.push_str(&format!(
                 "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" ry=\"{}\" \
@@ -510,6 +605,89 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
                 foot = num(foot)
             ));
         }
+        // A pie slice. Drawn as an explicit path rather than as a stroked arc so that the
+        // straight edges are part of the same shape as the curve — an arc with two separate
+        // radii leaves a seam at every boundary once the terminal shows through the joins.
+        Outline::Wedge { r, start, sweep } => {
+            out.push_str(&format!(
+                "<path d=\"{}\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{sw}\"/>\n",
+                wedge_path(cx, cy, r, start, sweep)
+            ));
+        }
+        // A Sankey flow: two cubics, one along each edge of the band, closed at the ends.
+        // Translucent, because flows cross and an opaque one hides whatever it passes over —
+        // which for a Sankey is the very comparison the diagram exists to make.
+        Outline::Ribbon {
+            w,
+            left_top,
+            left_bottom,
+            right_top,
+            right_bottom,
+        } => {
+            let (l, r) = (cx - w / 2.0, cx + w / 2.0);
+            let mid = (l + r) / 2.0;
+            out.push_str(&format!(
+                "<path d=\"M{l},{lt} C{mid},{lt} {mid},{rt} {r},{rt} L{r},{rb} \
+                 C{mid},{rb} {mid},{lb} {l},{lb} Z\" fill=\"{fill}\" \
+                 fill-opacity=\"{RIBBON_OPACITY}\" stroke=\"none\"/>\n",
+                l = num(l),
+                r = num(r),
+                mid = num(mid),
+                lt = num(cy + left_top),
+                lb = num(cy + left_bottom),
+                rt = num(cy + right_top),
+                rb = num(cy + right_bottom),
+            ));
+        }
+        // A radar chart's background. The rings and the spokes are one element because they are
+        // one thing to a reader — the scale — and drawing them apart would let a mutation delete
+        // half of it and leave a picture that still looks deliberate.
+        Outline::Graticule {
+            r,
+            rings,
+            spokes,
+            polygon,
+        } => {
+            for i in 1..=rings.max(1) {
+                let rr = r * i as f64 / rings.max(1) as f64;
+                if polygon && spokes >= 3 {
+                    let pts = radial_polygon(cx, cy, rr, spokes);
+                    out.push_str(&format!(
+                        "<polygon points=\"{pts}\" fill=\"none\" stroke=\"{stroke}\" \
+                         stroke-width=\"{}\"/>\n",
+                        num(clusters::STROKE_WIDTH)
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"none\" \
+                         stroke=\"{stroke}\" stroke-width=\"{}\"/>\n",
+                        num(cx),
+                        num(cy),
+                        num(rr),
+                        num(clusters::STROKE_WIDTH)
+                    ));
+                }
+            }
+            let mut d = String::new();
+            for k in 0..spokes {
+                let a =
+                    -std::f64::consts::FRAC_PI_2 + std::f64::consts::TAU * k as f64 / spokes as f64;
+                d.push_str(&format!(
+                    "M{},{} L{},{} ",
+                    num(cx),
+                    num(cy),
+                    num(cx + r * a.cos()),
+                    num(cy + r * a.sin())
+                ));
+            }
+            if !d.is_empty() {
+                out.push_str(&format!(
+                    "<path d=\"{}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"{}\"/>\n",
+                    d.trim_end(),
+                    num(clusters::STROKE_WIDTH)
+                ));
+            }
+        }
         Outline::None => {}
     }
     // A box that holds a table draws its table instead of a centred label.
@@ -609,10 +787,21 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
         Stroke::Normal | Stroke::Invalid => (EDGE_STROKE_WIDTH, None),
         Stroke::Invisible => return,
     };
+    // A chart's line plot and a radar chart's curve are drawn in their own series colour; every
+    // other edge in every diagram kind is `theme.line`, exactly as before this field existed.
+    let line = edge.series.map_or(theme.line, |i| theme.series(i));
+    // A data path is drawn straight and a route is drawn smooth — see `PlacedEdge::drawn_points`
+    // and `edges::polyline_path`. `series` is the thing that tells them apart, because a series is
+    // exactly what makes a line a series.
+    let d = if edge.series.is_some() {
+        edges::polyline_path(&trimmed)
+    } else {
+        edges::curve_basis_path(&trimmed)
+    };
     out.push_str(&format!(
         "<path d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"{}/>\n",
-        edges::curve_basis_path(&trimmed),
-        theme.line,
+        d,
+        line,
         num(width),
         dash.map_or(String::new(), |d| format!(" stroke-dasharray=\"{d}\""))
     ));

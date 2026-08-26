@@ -582,21 +582,87 @@ pub fn fonts_available() -> bool {
     shared().is_ok()
 }
 
+/// The text usvg will really shape, for a run of characters written into a `<text>` element.
+///
+/// **This is the shared measuring path's one piece of policy, and it exists because measuring the
+/// author's bytes measures something that never gets drawn.** usvg folds whitespace *before* it
+/// shapes (`usvg/src/parser/svgtree/text.rs`, `trim_text` plus `trim_text_nodes`), so
+/// `"loop  Every minute"` is drawn exactly as wide as `"loop Every minute"` — while a renderer
+/// that measured the two spaces sizes a box that is one space too wide, and every coordinate
+/// downstream of that box moves with it. Stage 4 hit this for real; `docs/STATUS.md` recorded it
+/// as a hole in *every* diagram kind's measurement, which is why the fix is here rather than in
+/// the one language that noticed.
+///
+/// usvg's rule, transcribed rather than recalled:
+///
+/// 1. `\r`, `\n` and `\t` each become a space (note: a *space*, not nothing — usvg deviates from
+///    SVG 1.1's "remove all newline characters" here, and konoma follows usvg, which is what
+///    actually draws);
+/// 2. runs of spaces collapse to one (this is `xml:space="default"`, which is what
+///    [`super::render::svg`] emits — it writes no `xml:space` attribute at all);
+/// 3. one leading and one trailing space are dropped, which after step 2 is a plain trim.
+///
+/// **Only U+0020 collapses.** No-break space (U+00A0) and ideographic space (U+3000) are ordinary
+/// glyphs to a shaper, so `str::split_whitespace` and `str::trim` would both be wrong here: they
+/// would fold characters resvg is going to draw.
+pub fn collapse_spaces(text: &str) -> std::borrow::Cow<'_, str> {
+    let needs = |t: &str| {
+        let b = t.as_bytes();
+        b.first() == Some(&b' ')
+            || b.last() == Some(&b' ')
+            || t.contains("  ")
+            || t.contains(['\r', '\n', '\t'])
+    };
+    if !needs(text) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut prev_space = false;
+    for c in text.chars() {
+        let c = match c {
+            '\r' | '\n' | '\t' => ' ',
+            _ => c,
+        };
+        if c == ' ' {
+            if prev_space {
+                continue;
+            }
+            prev_space = true;
+        } else {
+            prev_space = false;
+        }
+        out.push(c);
+    }
+    // Steps 3: after collapsing there is at most one space at each end.
+    if out.starts_with(' ') {
+        out.remove(0);
+    }
+    if out.ends_with(' ') {
+        out.pop();
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// Width in px of `text` at `font_size`, measured against the shared font DB.
+///
+/// [`collapse_spaces`] is applied first, so this answers "how wide will resvg draw this?" rather
+/// than "how wide are these bytes?" — see that function for why the two differ.
 ///
 /// Call only when [`fonts_available`] is true. With no font resolvable this returns a crude
 /// em-based estimate rather than zero, purely so that a caller that skipped the gate produces a
 /// misshapen diagram instead of a degenerate one; it is not a supported mode.
 pub fn measure(text: &str, font_size: f32) -> f32 {
+    let text = collapse_spaces(text);
     match shared() {
-        Ok(m) => m.measure(text, font_size),
-        Err(_) => estimate_without_font(text, font_size),
+        Ok(m) => m.measure(&text, font_size),
+        Err(_) => estimate_without_font(&text, font_size),
     }
 }
 
 /// Same as [`measure`] but says so when there is no font, for callers that want to branch.
 pub fn try_measure(text: &str, font_size: f32) -> Result<f32, FontUnavailable> {
-    shared().map(|m| m.measure(text, font_size))
+    let text = collapse_spaces(text);
+    shared().map(|m| m.measure(&text, font_size))
 }
 
 /// Last-resort width estimate with no font at all: full-width characters count as one em, the rest
@@ -678,6 +744,31 @@ mod tests {
     /// faces it used. `None` when usvg produced no text node at all (empty string, or no fonts).
     fn probe(text: &str, font_size: f32) -> Option<Probe> {
         probe_with_family(FONT_FAMILY, text, font_size)
+    }
+
+    /// `probe` **without** `xml:space="preserve"` — the whitespace mode konoma's own documents
+    /// are in, since [`super::render::svg`] writes no `xml:space` attribute at all.
+    ///
+    /// [`probe`] preserves on purpose: it isolates *shaping* from whitespace policy, which is what
+    /// makes it a clean test of the advance-summing primitive. This one is the counterpart that
+    /// asks the production question, and the two together are why the hole in
+    /// `docs/STATUS.md` could exist — the instrument's reference document differed from the
+    /// emitted one in exactly the attribute that governs folding.
+    fn probe_default(text: &str) -> Option<Probe> {
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="6000" height="400"><text x="0" y="200" font-family="{FONT_FAMILY}" font-size="{FONT_SIZE}">{}</text></svg>"#,
+            xml_escape(text)
+        );
+        let opt = usvg::Options {
+            fontdb: shared_fontdb(),
+            ..usvg::Options::default()
+        };
+        let tree = usvg::Tree::from_data(svg.as_bytes(), &opt).ok()?;
+        Some(Probe {
+            width: find_text_width(tree.root())?,
+            primary: None,
+            fallbacks: Vec::new(),
+        })
     }
 
     /// `probe` against an arbitrary `font-family` string (used by the cross-font test).
@@ -845,6 +936,79 @@ mod tests {
             "strict={strict} fallback={fallback} worst={:.6}px ({})",
             worst.0, worst.1
         );
+    }
+
+    /// **[`collapse_spaces`] is the shared measuring path's whitespace policy, and it is checked
+    /// against usvg rather than against itself.**
+    ///
+    /// The reference here is deliberately *not* another copy of konoma's rule: each case is put
+    /// through usvg twice, once as konoma emits it (no `xml:space`, so usvg folds) and once as the
+    /// already-folded string, and the two must come out the same width. If konoma folded more or
+    /// less than usvg does, the two widths would part company — so this cannot degenerate into
+    /// "konoma agrees with konoma".
+    ///
+    /// The negative half matters as much: no-break space and ideographic space are ordinary glyphs
+    /// to a shaper, so a rule written with `str::trim` / `split_whitespace` would fold characters
+    /// resvg is going to draw. Those cases are here to fail such a rule.
+    #[test]
+    fn collapsing_matches_what_usvg_folds_before_shaping() {
+        let Some(_) = metrics() else { return };
+        // (name, as written, what usvg will shape)
+        let cases: &[(&str, &str, &str)] = &[
+            ("plain", "one two", "one two"),
+            ("double", "loop  Every minute", "loop Every minute"),
+            ("many", "a  b   c    d", "a b c d"),
+            ("edges", "  spaced  out  ", "spaced out"),
+            ("tab", "a\tb", "a b"),
+            ("tab-run", "a\t\tb", "a b"),
+            ("cr", "a\rb", "a b"),
+            ("only-spaces", "   ", ""),
+            ("empty", "", ""),
+            // U+00A0 and U+3000 are glyphs, not whitespace, as far as a shaper is concerned.
+            ("nbsp", "a\u{a0}\u{a0}b", "a\u{a0}\u{a0}b"),
+            (
+                "ideographic",
+                "全\u{3000}\u{3000}角",
+                "全\u{3000}\u{3000}角",
+            ),
+            ("nbsp-edge", "\u{a0}x\u{a0}", "\u{a0}x\u{a0}"),
+        ];
+        for (name, written, folded) in cases {
+            assert_eq!(
+                collapse_spaces(written).as_ref(),
+                *folded,
+                "{name}: collapse_spaces disagrees with the rule usvg implements"
+            );
+            // Idempotent, or a label measured twice would shrink.
+            assert_eq!(
+                collapse_spaces(folded).as_ref(),
+                *folded,
+                "{name}: not idempotent"
+            );
+
+            // The external check: what usvg draws from the two spellings is the same width.
+            let (Some(raw), Some(pre)) = (probe_default(written), probe_default(folded)) else {
+                assert!(
+                    folded.is_empty(),
+                    "{name}: usvg drew nothing for a non-empty string"
+                );
+                continue;
+            };
+            assert!(
+                (raw.width - pre.width).abs() <= STRICT_TOLERANCE_PX,
+                "{name}: usvg drew {written:?} at {} and {folded:?} at {} — the fold is not what \
+                 usvg does",
+                raw.width,
+                pre.width
+            );
+            // …and konoma's measurement of the *written* form is that width.
+            assert!(
+                (measure(written, FONT_SIZE) - raw.width).abs() <= STRICT_TOLERANCE_PX,
+                "{name}: konoma measured {} where resvg drew {}",
+                measure(written, FONT_SIZE),
+                raw.width
+            );
+        }
     }
 
     /// The corpus is part of the instrument, so guard it the way the instrument is guarded: every

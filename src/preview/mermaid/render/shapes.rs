@@ -147,6 +147,73 @@ pub enum Glyph {
     /// node's [`Panel`](super::panel::Panel), which is also what sized the node — the figure needs
     /// a band of its own above the text, and a centred label cannot express that.
     Actor,
+
+    // --- stage 5: the marks a data chart is made of -------------------------------------------
+    //
+    // Seven kinds, and not one of them is a box with a word in it. What they have in common with
+    // everything above is that they are *kinds*, with no continuous geometry of their own: an
+    // angle, a ribbon's four corners and a graticule's ring count live in [`Mark`], for the same
+    // reason a compartment's rows live in a `Panel` — a bounding box cannot say them, and putting
+    // them here would cost `Glyph` its `Eq` and `Hash`.
+    /// A pie slice. Its angles come from [`Mark::Wedge`] and its radius from the node's box.
+    Wedge,
+    /// A rectangle painted in a series colour: a bar, a treemap tile, a packet field, a Sankey
+    /// node's column, a legend swatch.
+    ChartBar,
+    /// A small filled disc marking one datum. No outline — at four pixels across, a stroke is
+    /// most of the mark.
+    ChartPoint,
+    /// A Sankey flow: a band whose two ends have different heights, sized by [`Mark::Ribbon`].
+    Ribbon,
+    /// Words and nothing else, in a box that is exactly the words.
+    ///
+    /// Not `Flow(Shape::Text)`, which pads its box by `PADDING` on every side: a tick label whose
+    /// box is fifteen pixels wider than its ink cannot be checked for overlapping its neighbour,
+    /// and overlapping tick labels are the commonest way a chart becomes unreadable.
+    ChartLabel,
+    /// The rectangle a plot is drawn inside — an outline in the axis colour, with nothing behind
+    /// it, because §1 forbids painting over the terminal.
+    PlotFrame,
+    /// A radar chart's background: concentric rings and the spokes, from [`Mark::Graticule`].
+    Graticule,
+}
+
+/// Continuous geometry a chart mark needs that its bounding box cannot express.
+///
+/// The same idea as [`super::panel::Panel`], and for the same reason: [`Glyph`] says *what kind of
+/// mark*, the node's `size` says *how big*, and anything left over — an angle, a ribbon's four
+/// corners — goes here, so that `Glyph` stays a plain enumeration that a `match` can be exhaustive
+/// over and a `HashSet` can hold.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Mark {
+    /// A pie slice, in degrees clockwise from twelve o'clock.
+    Wedge {
+        /// Where the slice begins.
+        start: f64,
+        /// How far round it goes.
+        sweep: f64,
+    },
+    /// A Sankey flow. All four are y offsets from the node's centre; the node's width is the
+    /// horizontal span between the two ends.
+    Ribbon {
+        /// Top of the left end.
+        left_top: f64,
+        /// Bottom of the left end.
+        left_bottom: f64,
+        /// Top of the right end.
+        right_top: f64,
+        /// Bottom of the right end.
+        right_bottom: f64,
+    },
+    /// A radar chart's rings and spokes.
+    Graticule {
+        /// How many rings, the outermost included.
+        rings: usize,
+        /// How many spokes radiate from the centre.
+        spokes: usize,
+        /// Whether a ring is a copy of the spoke polygon rather than a circle.
+        polygon: bool,
+    },
 }
 
 impl From<Shape> for Glyph {
@@ -342,6 +409,40 @@ pub enum Outline {
         h: f64,
         /// Height of the band the figure occupies, measured down from the top.
         figure_h: f64,
+    },
+    /// A pie slice: a sector of radius `r`, from `start` to `start + sweep` degrees clockwise
+    /// from twelve o'clock.
+    Wedge {
+        /// Radius.
+        r: f64,
+        /// Where the slice begins, in degrees.
+        start: f64,
+        /// How far round it goes, in degrees.
+        sweep: f64,
+    },
+    /// A Sankey flow, as four y offsets from the centre across a span of `w`.
+    Ribbon {
+        /// Horizontal span.
+        w: f64,
+        /// Top of the left end.
+        left_top: f64,
+        /// Bottom of the left end.
+        left_bottom: f64,
+        /// Top of the right end.
+        right_top: f64,
+        /// Bottom of the right end.
+        right_bottom: f64,
+    },
+    /// A radar background: `rings` rings of radius `r * i / rings`, and `spokes` spokes.
+    Graticule {
+        /// Outer radius.
+        r: f64,
+        /// How many rings.
+        rings: usize,
+        /// How many spokes.
+        spokes: usize,
+        /// Whether the rings are polygons rather than circles.
+        polygon: bool,
     },
     /// Nothing is drawn.
     None,
@@ -553,11 +654,80 @@ pub fn size(glyph: Glyph, label: Size) -> Size {
         // Sized by its panel, like the two compartmented boxes, and for the same reason: the
         // figure's band and the name's band are two rows, not one centred label.
         Glyph::Actor => label,
+        // Every chart mark is sized by the chart, not by a label: a bar's height is its value
+        // against the axis scale, a tile's area is its share of the whole, a wedge's radius is the
+        // room the pie was given. Passing the size straight through is the same contract the two
+        // compartmented boxes have — one place decides, and nothing here second-guesses it.
+        Glyph::Wedge
+        | Glyph::ChartBar
+        | Glyph::ChartPoint
+        | Glyph::Ribbon
+        | Glyph::PlotFrame
+        | Glyph::Graticule => label,
+        // …with one exception, and it is the point of the glyph: a chart label's box **is** its
+        // ink, with no padding at all, so that "two tick labels do not overlap" is a statement
+        // about what a reader sees.
+        Glyph::ChartLabel => label,
     }
 }
 
 /// The outline of `glyph` inside a bounding box of `size`.
-pub fn outline(glyph: Glyph, size: Size) -> Outline {
+///
+/// `mark` carries the continuous geometry the box cannot say — see [`Mark`]. Every glyph that
+/// needs one draws **nothing** without it, rather than guessing: a wedge with no angles is not a
+/// full circle, it is a bug, and a silent full circle would be a lying picture.
+pub fn outline(glyph: Glyph, size: Size, mark: Option<Mark>) -> Outline {
+    match glyph {
+        Glyph::Wedge => match mark {
+            Some(Mark::Wedge { start, sweep }) => Outline::Wedge {
+                r: size.w / 2.0,
+                start,
+                sweep,
+            },
+            _ => Outline::None,
+        },
+        Glyph::Ribbon => match mark {
+            Some(Mark::Ribbon {
+                left_top,
+                left_bottom,
+                right_top,
+                right_bottom,
+            }) => Outline::Ribbon {
+                w: size.w,
+                left_top,
+                left_bottom,
+                right_top,
+                right_bottom,
+            },
+            _ => Outline::None,
+        },
+        Glyph::Graticule => match mark {
+            Some(Mark::Graticule {
+                rings,
+                spokes,
+                polygon,
+            }) => Outline::Graticule {
+                r: size.w / 2.0,
+                rings,
+                spokes,
+                polygon,
+            },
+            _ => Outline::None,
+        },
+        Glyph::ChartBar | Glyph::PlotFrame => Outline::Rect {
+            w: size.w,
+            h: size.h,
+            r: 0.0,
+        },
+        Glyph::ChartPoint => Outline::Disc {
+            r: size.w.min(size.h) / 2.0,
+        },
+        Glyph::ChartLabel => Outline::None,
+        _ => flow_outline_or_glyph(glyph, size),
+    }
+}
+
+fn flow_outline_or_glyph(glyph: Glyph, size: Size) -> Outline {
     match glyph {
         Glyph::Flow(shape) => flow_outline(shape, size),
         Glyph::StateStart => Outline::Disc { r: size.w / 2.0 },
@@ -598,6 +768,14 @@ pub fn outline(glyph: Glyph, size: Size) -> Outline {
             h: size.h,
             figure_h: ACTOR_FIGURE_HEIGHT.min(size.h),
         },
+        // Handled by `outline` before it delegates here.
+        Glyph::Wedge
+        | Glyph::ChartBar
+        | Glyph::ChartPoint
+        | Glyph::Ribbon
+        | Glyph::ChartLabel
+        | Glyph::PlotFrame
+        | Glyph::Graticule => Outline::None,
     }
 }
 
@@ -628,6 +806,16 @@ pub fn intersect(glyph: Glyph, center: Point, size: Size, target: &Point) -> Poi
         | Glyph::ClassBox
         | Glyph::ErBox
         | Glyph::Participant
-        | Glyph::Actor => intersect_rect(center.x, center.y, size.w, size.h, target),
+        | Glyph::Actor
+        // A chart mark is never an edge's endpoint: a grid line runs the width of the plot, a
+        // line plot passes *through* its own points, and a radar curve closes on itself. Clipping
+        // against the box is the harmless answer for a question nothing asks.
+        | Glyph::Wedge
+        | Glyph::ChartBar
+        | Glyph::ChartPoint
+        | Glyph::Ribbon
+        | Glyph::ChartLabel
+        | Glyph::PlotFrame
+        | Glyph::Graticule => intersect_rect(center.x, center.y, size.w, size.h, target),
     }
 }

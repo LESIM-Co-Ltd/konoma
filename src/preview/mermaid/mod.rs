@@ -31,7 +31,17 @@
 //!   whose contents are a *table* rather than one centred label, which is
 //!   [`render::panel`](render::panel). Everything else — the layout, the frames, the clipping,
 //!   the curve, the viewBox, the eleven geometric invariants — is stage 1's, unchanged.
+//! * **Stage 4** added [`sequence`], and with it the first language that does **not** go through
+//!   `lay_out_spec`: a sequence diagram is not a layered graph, so it walks its own events and
+//!   builds a `Diagram` in one pass. Everything below layout is still shared.
+//! * **Stage 5** added [`chart`] — seven data charts (`pie`, `xychart-beta`, `quadrantChart`,
+//!   `radar-beta`, `treemap-beta`, `packet-beta`, `sankey-beta`), none of which is a graph either.
+//!   They needed seven [`render::shapes::Glyph`] variants, three
+//!   [`render::shapes::Mark`]s and a categorical palette, and **no second SVG writer and no new
+//!   `Diagram` field**: a chart's marks are nodes and its lines are edges, so `svg::emit` and
+//!   `normalise` are the ones stage 1 wrote.
 
+pub mod chart;
 pub mod class;
 pub mod er;
 pub mod flowchart;

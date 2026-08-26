@@ -185,6 +185,13 @@ const LABELS: &[(&str, &str)] = &[
     ),
     ("digits", "0123456789"),
     ("one", "x"),
+    // usvg folds runs of whitespace *before* it shapes, so a label written with two spaces is
+    // drawn one space narrower than its bytes suggest. Measuring the bytes sizes a box the text
+    // does not fill, and every coordinate downstream of that box moves with it. Stage 4 met this
+    // for real on a sequence diagram's `loop  Every minute`; `docs/STATUS.md` recorded it as a
+    // hole in every kind's measurement, so each kind's instrument now carries a case of it.
+    ("double-space", "loop  Every minute"),
+    ("edge-space", "  padded out  "),
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -210,6 +217,23 @@ pub(super) fn text_widths(group: &usvg::Group, out: &mut Vec<f32>) {
         match node {
             usvg::Node::Text(t) => out.push(t.bounding_box().width()),
             usvg::Node::Group(g) => text_widths(g, out),
+            _ => {}
+        }
+    }
+}
+
+/// Every `<text>` in the tree, as the string it holds and the width resvg laid it out at.
+///
+/// The content is what makes an instrument precise: a document usually has several kinds of label
+/// in it, and comparing the widest one would only ever measure the widest kind.
+pub(super) fn measured_texts(group: &usvg::Group, out: &mut Vec<(String, f64)>) {
+    for node in group.children() {
+        match node {
+            usvg::Node::Text(t) => {
+                let s: String = t.chunks().iter().map(|c| c.text().to_string()).collect();
+                out.push((s, t.bounding_box().width() as f64));
+            }
+            usvg::Node::Group(g) => measured_texts(g, out),
             _ => {}
         }
     }
@@ -1336,7 +1360,7 @@ fn stadium_height_takes_a_single_padding() {
     assert_eq!(s.w, L.w + h / 4.0 + shapes::PADDING);
     // The outline is a rectangle whose corner radius closes the ends into semicircles.
     assert_eq!(
-        shapes::outline(Glyph::Flow(Shape::Stadium), s),
+        shapes::outline(Glyph::Flow(Shape::Stadium), s, None),
         shapes::Outline::Rect {
             w: s.w,
             h: s.h,
@@ -1430,6 +1454,8 @@ fn every_shape_holds_the_label_it_was_sized_for() {
                 height: L.h,
             },
             panel: None,
+            series: None,
+            mark: None,
         };
         let outline = boundary(&node);
         for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
@@ -2112,6 +2138,8 @@ fn synthetic_diagram() -> Diagram {
             size,
             label: l,
             panel: None,
+            series: None,
+            mark: None,
         });
     }
 
@@ -2154,6 +2182,7 @@ fn synthetic_diagram() -> Diagram {
             start_label: None,
             end_label: None,
             badge: None,
+            series: None,
         });
     }
 

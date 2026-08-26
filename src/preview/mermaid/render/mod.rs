@@ -52,6 +52,7 @@
 // and the same lint, as the sibling `flowchart` and `layout` modules.
 #![allow(dead_code)]
 
+pub mod chart;
 pub mod class;
 pub mod clusters;
 pub mod edges;
@@ -66,6 +67,8 @@ pub mod theme;
 
 #[cfg(test)]
 mod class_tests;
+#[cfg(test)]
+mod decoration_tests;
 #[cfg(test)]
 mod er_tests;
 #[cfg(test)]
@@ -88,7 +91,8 @@ use crate::preview::mermaid::text_metrics;
 pub use edges::Tip;
 pub use labels::Label;
 pub use panel::Panel;
-pub use shapes::{Glyph, Size};
+#[allow(unused_imports)]
+pub use shapes::{Glyph, Mark, Size};
 pub use theme::Theme;
 
 /// Blank space kept around the drawing, in px. mermaid's `marginx`/`marginy` for dagre.
@@ -122,6 +126,18 @@ pub enum RenderError {
     ErParse(crate::preview::mermaid::er::ParseError),
     /// The source is not a sequence diagram konoma can read.
     SequenceParse(crate::preview::mermaid::sequence::ParseError),
+    /// The source is not the data chart konoma took it for.
+    ChartParse(crate::preview::mermaid::chart::ParseError),
+    /// The chart parsed, and then turned out to have no extent to draw on: every value zero,
+    /// every point on one spot, an axis whose two ends are the same number.
+    ///
+    /// A separate variant from a parse error because it is a different kind of fact — the source
+    /// is well formed and the *picture* is the thing that cannot exist — and because §1 says the
+    /// message is the point.
+    ChartHasNoExtent {
+        /// What has no extent, in words.
+        what: &'static str,
+    },
     /// No sans-serif font could be resolved, so usvg would draw the boxes and silently drop every
     /// glyph inside them. Checked *before* an SVG is built, because there is no error later.
     NoFonts,
@@ -137,6 +153,8 @@ impl fmt::Display for RenderError {
             RenderError::ClassParse(e) => write!(f, "{e}"),
             RenderError::ErParse(e) => write!(f, "{e}"),
             RenderError::SequenceParse(e) => write!(f, "{e}"),
+            RenderError::ChartParse(e) => write!(f, "{e}"),
+            RenderError::ChartHasNoExtent { what } => write!(f, "{what}"),
             RenderError::NoFonts => write!(f, "no sans-serif font available for diagram labels"),
             RenderError::NothingToDraw => write!(f, "flowchart has nothing to draw"),
         }
@@ -175,6 +193,12 @@ impl From<crate::preview::mermaid::sequence::ParseError> for RenderError {
     }
 }
 
+impl From<crate::preview::mermaid::chart::ParseError> for RenderError {
+    fn from(e: crate::preview::mermaid::chart::ParseError) -> RenderError {
+        RenderError::ChartParse(e)
+    }
+}
+
 /// One node, placed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlacedNode {
@@ -193,6 +217,16 @@ pub struct PlacedNode {
     /// The compartments drawn inside a `classBox` / `erBox`, in coordinates relative to the box's
     /// top-left corner. `None` for every glyph whose whole content is one centred label.
     pub panel: Option<Panel>,
+    /// Which entry of the palette's categorical [`series`](Theme::series) paints this node.
+    ///
+    /// `None` — every node in every diagram kind before stage 5 — means the ordinary node colours,
+    /// so the four graph languages emit exactly what they emitted before this field existed. A
+    /// chart's *data* carries one and a chart's *furniture* (frame, axis, tick label) does not,
+    /// which is what makes "a legend entry is the colour of its series" a thing a test can state.
+    pub series: Option<usize>,
+    /// Geometry the bounding box cannot express — a wedge's angles, a ribbon's four corners.
+    /// `None` for every glyph that does not need one; see [`shapes::Mark`].
+    pub mark: Option<shapes::Mark>,
 }
 
 impl PlacedNode {
@@ -247,11 +281,26 @@ pub struct PlacedEdge {
     /// cardinality and wrong for a sequence number. mermaid puts the number on the shaft, and the
     /// disc is what stops the shaft running through the digits.
     pub badge: Option<PlacedEdgeLabel>,
+    /// Which entry of the palette's categorical [`series`](Theme::series) this line is drawn in.
+    ///
+    /// `None` is [`Theme::line`], which is every edge in every diagram kind before stage 5. A
+    /// chart's line plot and a radar chart's curve are the only things that set it, and they must:
+    /// a legend that names three series is meaningless if all three are the same colour.
+    pub series: Option<usize>,
 }
 
 impl PlacedEdge {
     /// The polyline the curve is actually built from: corners rounded off (`edges::fix_corners`).
+    ///
+    /// **A series edge keeps its own vertices.** Rounding a right angle replaces the corner with
+    /// two points either side of it, which for a route is an improvement and for a *data path* is
+    /// a value moved: an xy chart's line and a radar chart's curve both have vertices that are
+    /// the data, and two consecutive equal values make exactly the right angle `fix_corners`
+    /// would take out.
     pub fn drawn_points(&self) -> Vec<Point> {
+        if self.series.is_some() {
+            return self.points.clone();
+        }
         edges::fix_corners(&self.points)
     }
 }
@@ -764,6 +813,8 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             size: node.size,
             label: node.label.clone(),
             panel: node.panel.clone(),
+            series: None,
+            mark: None,
         });
     }
     if nodes.is_empty() {
@@ -840,6 +891,7 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             start_label,
             end_label,
             badge: None,
+            series: None,
         });
     }
 

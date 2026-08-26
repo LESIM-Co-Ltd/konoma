@@ -84,6 +84,24 @@ pub struct Theme {
     pub activation_fill: &'static str,
     /// Outline of an activation bar.
     pub activation_stroke: &'static str,
+
+    // --- stage 5: the colours a data chart needs ----------------------------------------------
+    /// Axis lines, a plot's frame, a radar's graticule. Structure, so quieter than [`Theme::line`]
+    /// — an axis that competes with the data is an axis drawn wrong.
+    pub axis: &'static str,
+    /// Grid lines inside a plot. Quieter again: a reader should be able to *find* a gridline, not
+    /// be unable to look past it.
+    pub grid: &'static str,
+    /// The categorical palette. One entry per series, wrapped when a chart has more series than
+    /// the palette has colours.
+    ///
+    /// **Chosen so that [`Theme::series_text`] reads on every one of them**, which is what
+    /// `super::tests` holds them to: a pie's percentage, a treemap's tile name and a packet
+    /// field's label are all drawn *on* one of these, so a palette entry that swallows the text is
+    /// not a style preference, it is a datum the reader cannot get at.
+    pub series: &'static [&'static str],
+    /// Text drawn on top of a [`Theme::series`] colour.
+    pub series_text: &'static str,
 }
 
 /// mermaid's `dark`, which is konoma's default and the only theme tuned for a dark terminal
@@ -109,6 +127,12 @@ pub const DARK: Theme = Theme {
     lifeline: "#8a8a8a",
     activation_fill: "#5a5a66",
     activation_stroke: "#cccccc",
+    axis: "#8a8a8a",
+    grid: "#4a4a4a",
+    series: &[
+        "#4e79a7", "#4a8a42", "#b07aa1", "#9c755f", "#3f6b78", "#8c6d31", "#a8564c", "#6b6ecf",
+    ],
+    series_text: "#f2f2f2",
 };
 
 /// konoma's `light` (the crate calls it `modern`): a slate palette for a light terminal.
@@ -132,6 +156,12 @@ pub const LIGHT: Theme = Theme {
     lifeline: "#94a3b8",
     activation_fill: "#dbe3ec",
     activation_stroke: "#64748b",
+    axis: "#94a3b8",
+    grid: "#c8d4e0",
+    series: &[
+        "#7ea6d8", "#8fc98a", "#d3a7cb", "#c9ab97", "#86b3bd", "#cfae6a", "#e39b93", "#a4a7e0",
+    ],
+    series_text: "#1a2230",
 };
 
 /// mermaid's `default`, which konoma spells `classic`. The lavender boxes are the look most
@@ -157,6 +187,12 @@ pub const CLASSIC: Theme = Theme {
     lifeline: "#9aa4bd",
     activation_fill: "#dcdcf5",
     activation_stroke: "#7b88a8",
+    axis: "#9aa4bd",
+    grid: "#cfd4de",
+    series: &[
+        "#9fb3d9", "#a7d3a0", "#dcb6d6", "#d5bda9", "#8bc0cc", "#e0c079", "#eeaaa2", "#b3b6ea",
+    ],
+    series_text: "#242a36",
 };
 
 /// mermaid's `forest`. The deliberate deviation §4-1 asks to keep: the line stays green instead
@@ -181,6 +217,12 @@ pub const FOREST: Theme = Theme {
     lifeline: "#6eaa49",
     activation_fill: "#e2f3cf",
     activation_stroke: "#13540c",
+    axis: "#6eaa49",
+    grid: "#c3dfae",
+    series: &[
+        "#8fbf6a", "#b6dd9a", "#cfe3a8", "#7aa9a0", "#c8c07a", "#a2c3d6", "#d6b48f", "#8fa8d8",
+    ],
+    series_text: "#1f2a17",
 };
 
 /// mermaid's `neutral`: greyscale, and the one light theme whose own line colour already sits in
@@ -205,12 +247,25 @@ pub const NEUTRAL: Theme = Theme {
     lifeline: "#999999",
     activation_fill: "#e0e0e0",
     activation_stroke: "#666666",
+    axis: "#999999",
+    grid: "#d6d6d6",
+    series: &[
+        "#e7e7e7", "#818181", "#c5c5c5", "#929292", "#d6d6d6", "#a3a3a3", "#b4b4b4", "#707070",
+    ],
+    series_text: "#1f1f1f",
 };
 
 /// Every palette, for the tests that have to hold each one to the same rule.
 pub const ALL: &[Theme] = &[DARK, LIGHT, CLASSIC, FOREST, NEUTRAL];
 
 impl Theme {
+    /// The `i`th series colour, wrapping when a chart has more series than the palette has
+    /// colours. Wrapping rather than fading out: eight is already more series than a terminal-sized
+    /// chart can be read at, and a ninth drawn in the first colour is at least a colour.
+    pub fn series(&self, i: usize) -> &'static str {
+        self.series[i % self.series.len()]
+    }
+
     /// Resolves `ui.mermaid_theme`'s raw string.
     ///
     /// **An unrecognised value is `dark`, silently** — that is the contract

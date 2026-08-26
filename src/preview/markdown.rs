@@ -2665,6 +2665,9 @@ fn render_mermaid_safe(code: &str, max_width: Option<usize>) -> Result<String, S
 ///   renderer** as well, through [`crate::preview::mermaid::render::state`],
 ///   [`crate::preview::mermaid::render::class`] and [`crate::preview::mermaid::render::er`].
 ///   With ER at 10% of what people write, §2-1's running total is 90%.
+/// * **the seven data charts (stage 5) → konoma's own renderer** as well, through
+///   [`crate::preview::mermaid::render::chart`]: `pie`, `xychart-beta`, `quadrantChart`,
+///   `radar-beta`, `treemap-beta`, `packet-beta` and `sankey-beta`.
 /// * **every other diagram kind → `mermaid-rs-renderer`**, as before. §7 makes keeping them the
 ///   first requirement of the migration: dropping a kind konoma draws today would be a
 ///   regression, and the crate stays until the later stages take those over one by one.
@@ -2713,9 +2716,46 @@ pub fn mermaid_to_svg_reason(code: &str, theme: &str) -> Result<String, String> 
             theme,
             crate::preview::mermaid::render::sequence::render,
         )
+    } else if let Some(draw) = chart_renderer(code) {
+        render_konoma(code, theme, draw)
     } else {
         render_via_mermaid_rs(code, theme)
     }
+}
+
+/// The entry point of one of konoma's own renderers: source and theme in, SVG out.
+type Draw = fn(&str, &str) -> Result<String, crate::preview::mermaid::render::RenderError>;
+
+/// One row of the chart routing table: the predicate that claims a source, and the renderer that
+/// then owns it.
+type ChartArm = (fn(&str) -> bool, Draw);
+
+/// Which of stage 5's seven chart renderers owns this source, if any.
+///
+/// One function rather than seven `*_is_ours` predicates: the seven answers are mutually exclusive
+/// by construction (each looks at the keyword line and no two keywords are the same), so asking
+/// them in one place makes that visible instead of leaving it to the order of an `else if` chain.
+/// Panic-safe like its siblings, and for the same reason — classification is the one step where
+/// guessing "not ours" is the safe answer, because it only ever means a diagram keeps being drawn
+/// by the crate.
+fn chart_renderer(code: &str) -> Option<Draw> {
+    use crate::preview::mermaid::chart;
+    use crate::preview::mermaid::render::chart as draw;
+    let caught = silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let table: &[ChartArm] = &[
+                (chart::pie::is_pie, draw::pie::render),
+                (chart::xychart::is_xychart, draw::xychart::render),
+                (chart::quadrant::is_quadrant_chart, draw::quadrant::render),
+                (chart::radar::is_radar, draw::radar::render),
+                (chart::treemap::is_treemap, draw::treemap::render),
+                (chart::packet::is_packet, draw::packet::render),
+                (chart::sankey::is_sankey, draw::sankey::render),
+            ];
+            table.iter().find(|(is, _)| is(code)).map(|(_, d)| *d)
+        }))
+    });
+    caught.unwrap_or(None)
 }
 
 /// The routing predicate for a flowchart, made panic-safe.
@@ -2780,11 +2820,7 @@ fn sequence_is_ours(code: &str) -> bool {
 /// `draw` is the entry point of whichever of konoma's renderers owns this diagram kind. Routing
 /// picked it *before* either renderer ran, and that is the whole point: falling through to the
 /// crate on failure would let the old renderer quietly redraw whatever the new one got wrong.
-fn render_konoma(
-    code: &str,
-    theme: &str,
-    draw: fn(&str, &str) -> Result<String, crate::preview::mermaid::render::RenderError>,
-) -> Result<String, String> {
+fn render_konoma(code: &str, theme: &str, draw: Draw) -> Result<String, String> {
     let caught = silence_panics(|| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| draw(code, theme)))
     });
@@ -2847,14 +2883,23 @@ fn render_via_mermaid_rs(code: &str, theme: &str) -> Result<String, String> {
 
 /// Pre-warm both renderers' lazy font work (their first call scans system fonts, tens of ms).
 /// Called from a startup thread so the first diagram render never pays it. **One diagram of each
-/// routing arm**: a flowchart warms konoma's own metrics, and a `pie` warms the crate that still
-/// owns every remaining kind — warming only one arm would just move the freeze onto whichever kind
-/// the user opens first.
+/// routing arm**: the first three warm konoma's own metrics, and the last warms the crate that
+/// still owns every remaining kind — warming only one arm would just move the freeze onto
+/// whichever kind the user opens first.
+///
+/// **The crate's warm-up has to name a kind the crate still owns**, and stage 5 moved the one that
+/// used to be here: `pie` is konoma's now, so warming it warms konoma's arm twice and leaves the
+/// crate's cold. `gantt` is chosen because it is the commonest of the kinds still left to the
+/// crate (§2-1's table), so it is also the likeliest first one a reader opens.
 pub fn warm_mermaid() {
     let _ = mermaid_to_svg("graph LR\nA-->B", "dark");
     let _ = mermaid_to_svg("stateDiagram-v2\n  [*] --> A", "dark");
     let _ = mermaid_to_svg("sequenceDiagram\n  A->>B: hi", "dark");
     let _ = mermaid_to_svg("pie\n  \"a\" : 1", "dark");
+    let _ = mermaid_to_svg(
+        "gantt\n  title G\n  section S\n  t :a1, 2024-01-01, 3d",
+        "dark",
+    );
 }
 
 /// Synthetic inline-image key for a ```mermaid fence, derived from its content (FNV-1a 64).
@@ -9023,15 +9068,12 @@ plain body
                 "自作レンダラが描くはず(段4・シーケンス図): {code:?}"
             );
         }
-        for code in [
-            "pie title P\n  \"a\" : 10\n  \"b\" : 20",
-            "gantt\n  title G\n  section S\n  task :a1, 2024-01-01, 3d",
-        ] {
-            assert!(
-                !drawn_by_konoma(code),
-                "現行クレートが描き続けるはず: {code:?}"
-            );
-        }
+        // `pie` was here until stage 5 took it; `the_seven_data_charts_come_from_konomas_renderer`
+        // is where it lives now.
+        assert!(
+            !drawn_by_konoma("gantt\n  title G\n  section S\n  task :a1, 2024-01-01, 3d"),
+            "現行クレートが描き続けるはず: gantt"
+        );
     }
 
     /// §7's first requirement: the migration must not shrink the set of diagrams konoma can draw.
@@ -9096,11 +9138,220 @@ plain body
             "sequenceDiagram\n  participant A\n  link A: Dash @ https://x.test/a\n  A->>B: x",
             "sequenceDiagram\n  A->>A: retry",
             "sequenceDiagram\n  A<<->>B: both ways\n  A-xB: cross\n  A-)B: async",
+            // Stage 5. Every construct the seven data-chart pages document, in the shape they
+            // document it — the point being that the *set of diagrams that draw* only ever grows.
+            "pie title Pets adopted by volunteers\n    \"Dogs\" : 386\n    \"Cats\" : 85",
+            "pie showData\n    title Key elements\n    \"Calcium\" : 42.96\n    \"Iron\" : 5",
+            "xychart-beta\n    title \"Sales Revenue\"\n    x-axis [jan, feb, mar]\n    \
+             y-axis \"Revenue (in $)\" 4000 --> 11000\n    bar [5000, 6000, 7500]\n    \
+             line [5000, 6000, 7500]",
+            "xychart\n  bar [1, 2, 3]",
+            "xychart-beta horizontal\n  bar [1, 2, 3]",
+            "quadrantChart\n    x-axis Low Reach --> High Reach\n    \
+             y-axis Low Engagement --> High Engagement\n    quadrant-1 We should expand\n    \
+             Campaign A: [0.3, 0.6]",
+            "quadrantChart\n  classDef hot color: #ff0000\n  A:::hot: [0.2, 0.3]",
+            "radar-beta\n  axis a[\"Math\"], b[\"Science\"], c[\"English\"]\n  \
+             curve x[\"Alice\"]{85, 90, 80}\n  max 100",
+            "radar-beta\n  axis a, b, c\n  curve x{c: 3, a: 1, b: 2}\n  graticule polygon",
+            "treemap-beta\n\"Section 1\"\n    \"Leaf 1.1\": 12\n\"Section 2\"\n    \
+             \"Leaf 2.1\": 20",
+            "treemap\n\"a\": 1\n\"b\": 2",
+            "packet-beta\n0-15: \"Source Port\"\n16-31: \"Destination Port\"\n\
+             32-63: \"Sequence Number\"",
+            "packet\n+8: \"a\"\n+8: \"b\"",
+            "sankey-beta\n\nAgricultural 'waste',Bio-conversion,124.729\n\
+             Bio-conversion,Liquid,0.597\nBio-conversion,Solid,280.322",
+            "sankey\na,b,1\nb,c,2",
         ] {
             assert!(
                 mermaid_to_svg(code, "dark").is_some(),
                 "図種が描けなくなった(=退行): {code:?}"
             );
+        }
+    }
+
+    /// The seven data charts konoma took over in stage 5 are drawn by konoma, and everything still
+    /// left to the crate still comes from the crate.
+    ///
+    /// Told apart the same way the stage-1 test does it: konoma writes exactly one `font-family`,
+    /// the generic `sans-serif` it measures with, while the crate writes a nine-name stack
+    /// beginning with `Inter`.
+    #[test]
+    fn the_seven_data_charts_come_from_konomas_renderer() {
+        let drawn_by_konoma = |code: &str| -> bool {
+            let svg =
+                mermaid_to_svg(code, "dark").unwrap_or_else(|| panic!("should render: {code:?}"));
+            svg.contains("font-family=\"sans-serif\"") && !svg.contains("Inter")
+        };
+        for code in [
+            "pie\n  \"a\" : 1",
+            "pie showData\n  \"a\" : 1",
+            "xychart-beta\n  bar [1, 2]",
+            "xychart\n  bar [1, 2]",
+            "quadrantChart\n  A: [0.5, 0.5]",
+            "radar-beta\n  axis a, b, c\n  curve x{1, 2, 3}",
+            "treemap-beta\n\"a\": 1",
+            "treemap\n\"a\": 1",
+            "packet-beta\n0-7: \"a\"",
+            "packet\n0-7: \"a\"",
+            "sankey-beta\na,b,1",
+            "sankey\na,b,1",
+            "  \n%% a comment first\npie\n  \"a\" : 1",
+            "---\ntitle: t\n---\npie\n  \"a\" : 1",
+        ] {
+            assert!(
+                drawn_by_konoma(code),
+                "自作レンダラが描くはず(段5・データチャート): {code:?}"
+            );
+        }
+        // Still the crate's, until a later stage takes them.
+        for code in [
+            "gantt\n  title G\n  section S\n  task :a1, 2024-01-01, 3d",
+            "journey\n  title J\n  section S\n    Do: 5: Me",
+            "timeline\n  title T\n  2002 : LinkedIn",
+            "mindmap\n  root((r))\n    a",
+            "gitGraph\n   commit\n   commit",
+        ] {
+            assert!(
+                !drawn_by_konoma(code),
+                "現行クレートが描き続けるはず: {code:?}"
+            );
+        }
+    }
+
+    /// Every one of the seven refuses on its own terms, and **not one of them falls through to the
+    /// crate**. Stage 1's rule, restated once per kind because the fallthrough would be invisible:
+    /// the crate answers most of these with an SVG.
+    #[test]
+    fn a_refused_chart_is_not_quietly_redrawn_by_the_crate() {
+        // (source, the reason konoma gives). Each source is the cheapest witness for its kind: a
+        // header with nothing under it, which is the case §6 records the crate answering with a
+        // transparent rectangle that the pane then stretches.
+        for (code, reason) in [
+            ("pie", "pie declares no slice"),
+            ("xychart-beta", "xychart declares no plot"),
+            ("quadrantChart", "quadrantChart declares no point or axis"),
+            ("radar-beta", "radar-beta declares no axis"),
+            ("treemap-beta", "treemap declares no node"),
+            ("packet-beta", "packet declares no field"),
+            ("sankey-beta", "sankey declares no link"),
+        ] {
+            assert_eq!(
+                mermaid_to_svg_reason(code, "dark"),
+                Err(reason.to_string()),
+                "{code:?} は自作が拒否し、その理由がそのまま出るはず"
+            );
+            assert!(mermaid_to_svg(code, "dark").is_none(), "{code:?}");
+        }
+        // …and a chart that parses but has no picture in it is refused too, rather than drawn as
+        // an empty frame.
+        for (code, reason) in [
+            (
+                "pie\n  \"a\" : 0\n  \"b\" : 0",
+                "every slice is zero, so no slice has a share",
+            ),
+            (
+                "radar-beta\n  axis a, b\n  curve x{1, 2}",
+                "a radar chart needs at least three axes",
+            ),
+            (
+                "treemap-beta\n\"a\": 0",
+                "every value is zero, so no tile has any area",
+            ),
+        ] {
+            assert_eq!(mermaid_to_svg_reason(code, "dark"), Err(reason.to_string()));
+        }
+    }
+
+    /// Each of the seven routing predicates agrees with its own parser about what it owns.
+    ///
+    /// They share `chart::find_header`, so this pins that they keep sharing it rather than growing
+    /// two answers — the same thing `the_routing_predicate_agrees_with_the_parser` says for the
+    /// flowchart.
+    #[test]
+    fn the_chart_routing_predicates_agree_with_their_parsers() {
+        use crate::preview::mermaid::chart::{self, ParseError};
+        type Pair = (fn(&str) -> bool, fn(&str) -> Result<(), ParseError>);
+        let pairs: &[(&str, Pair)] = &[
+            (
+                "pie",
+                (chart::pie::is_pie, |s| chart::pie::parse(s).map(|_| ())),
+            ),
+            (
+                "xychart",
+                (chart::xychart::is_xychart, |s| {
+                    chart::xychart::parse(s).map(|_| ())
+                }),
+            ),
+            (
+                "quadrant",
+                (chart::quadrant::is_quadrant_chart, |s| {
+                    chart::quadrant::parse(s).map(|_| ())
+                }),
+            ),
+            (
+                "radar",
+                (chart::radar::is_radar, |s| {
+                    chart::radar::parse(s).map(|_| ())
+                }),
+            ),
+            (
+                "treemap",
+                (chart::treemap::is_treemap, |s| {
+                    chart::treemap::parse(s).map(|_| ())
+                }),
+            ),
+            (
+                "packet",
+                (chart::packet::is_packet, |s| {
+                    chart::packet::parse(s).map(|_| ())
+                }),
+            ),
+            (
+                "sankey",
+                (chart::sankey::is_sankey, |s| {
+                    chart::sankey::parse(s).map(|_| ())
+                }),
+            ),
+        ];
+        let sources = [
+            "pie\n  \"a\" : 1",
+            "pie",
+            "pieces\n  a",
+            "xychart-beta\n  bar [1]",
+            "xychart",
+            "quadrantChart\n  A: [0, 0]",
+            "quadrantChart",
+            "radar-beta\n  axis a,b,c\n  curve x{1,2,3}",
+            "radar-beta",
+            "treemap\n\"a\": 1",
+            "treemap-beta",
+            "packet-beta\n0: \"a\"",
+            "packet",
+            "sankey-beta\na,b,1",
+            "sankey",
+            "flowchart TD\n  A --> B",
+            "sequenceDiagram\n  A->>B: hi",
+            "gantt\n  title G",
+            "",
+            "   \n\n",
+            "%% only a comment\n",
+        ];
+        for (name, (is_ours, parse)) in pairs {
+            for code in sources {
+                // "not mine" is the one answer the predicate is allowed to disagree about, and it
+                // is not allowed to: a `NotThisChart` from the parser and a `false` from the
+                // predicate have to be the same set of sources, or a chart would be routed to a
+                // parser that then refuses it and the diagram would vanish.
+                let parser_says_not_ours =
+                    matches!(parse(code), Err(ParseError::NotThisChart { .. }));
+                assert_eq!(
+                    is_ours(code),
+                    !parser_says_not_ours,
+                    "{name}: 振り分けとパーサの見解が食い違った: {code:?}"
+                );
+            }
         }
     }
 
@@ -9375,6 +9626,45 @@ plain body
                 "振り分けとパーサの見解が食い違った: {code:?}"
             );
         }
+    }
+
+    /// **`warm_mermaid` warms both arms**, and neither of them by accident.
+    ///
+    /// The warm-up exists so the first diagram a reader opens does not pay for a system font scan,
+    /// and it can only do that for an arm it actually reaches. Stage 5 took `pie` — which was the
+    /// crate's warm-up — so without this the crate's arm would have gone cold and nothing would
+    /// have said so: the warm-up has no output to be wrong.
+    #[test]
+    fn the_warm_up_reaches_both_renderers() {
+        let drawn_by_konoma = |code: &str| -> Option<bool> {
+            let svg = mermaid_to_svg(code, "dark")?;
+            Some(svg.contains("font-family=\"sans-serif\"") && !svg.contains("Inter"))
+        };
+        // The sources `warm_mermaid` uses, kept beside it rather than re-derived: if one is
+        // changed there and not here, the count below stops adding up.
+        let warmed = [
+            "graph LR\nA-->B",
+            "stateDiagram-v2\n  [*] --> A",
+            "sequenceDiagram\n  A->>B: hi",
+            "pie\n  \"a\" : 1",
+            "gantt\n  title G\n  section S\n  t :a1, 2024-01-01, 3d",
+        ];
+        let mut konoma = 0;
+        let mut crate_side = 0;
+        for code in warmed {
+            match drawn_by_konoma(code) {
+                Some(true) => konoma += 1,
+                Some(false) => crate_side += 1,
+                None => panic!("warm-up source no longer renders: {code:?}"),
+            }
+        }
+        assert!(konoma >= 1, "konoma 自身のレンダラを温めていない");
+        assert!(
+            crate_side >= 1,
+            "現行クレートのアームを温めていない: 段が図種を引き取ったら warm_mermaid も指し直す"
+        );
+        // …and calling it is harmless and does not panic.
+        warm_mermaid();
     }
 
     /// The one byte string both renderers must see. §1 ties `mermaid_to_svg`'s input to the bytes

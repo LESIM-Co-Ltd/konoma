@@ -233,6 +233,9 @@ fn state_box_width_matches_resvg() {
         "開始、処理。「確認」",
         "build 🚀 ship",
         "0123456789",
+        // usvg folds runs of whitespace before shaping, so this is drawn one space narrower than
+        // its bytes. `docs/STATUS.md` recorded that hole as belonging to every diagram kind.
+        "loop  Every minute",
     ] {
         let src = format!("stateDiagram-v2\n  s : {label}\n  [*] --> s");
         let d = laid_out(&src);
@@ -275,7 +278,7 @@ fn note_box_width_matches_resvg() {
     if !text_metrics::fonts_available() {
         return;
     }
-    let src = "stateDiagram-v2\n  A --> B\n  note right of A : 全画面のファイル一覧";
+    let src = "stateDiagram-v2\n  A --> B\n  note right of A : 全画面の  ファイル一覧";
     let d = laid_out(src);
     let svg = render(src, "dark").expect("renders");
     let note = d
@@ -369,8 +372,12 @@ fn a_start_and_an_end_are_told_apart() {
     assert_eq!(glyph_of(&d, "root_start"), Glyph::StateStart);
     assert_eq!(glyph_of(&d, "root_end"), Glyph::StateEnd);
 
-    let start = shapes::outline(Glyph::StateStart, d.node("root_start").expect("start").size);
-    let end = shapes::outline(Glyph::StateEnd, d.node("root_end").expect("end").size);
+    let start = shapes::outline(
+        Glyph::StateStart,
+        d.node("root_start").expect("start").size,
+        None,
+    );
+    let end = shapes::outline(Glyph::StateEnd, d.node("root_end").expect("end").size, None);
     assert_ne!(start, end, "the two markers must not be the same outline");
     assert!(
         matches!(start, shapes::Outline::Disc { .. }),
@@ -853,6 +860,8 @@ fn synthetic_state_diagram() -> Diagram {
             size,
             label: l,
             panel: None,
+            series: None,
+            mark: None,
         });
     }
 
@@ -872,6 +881,7 @@ fn synthetic_state_diagram() -> Diagram {
             start_label: None,
             end_label: None,
             badge: None,
+            series: None,
         },
         super::PlacedEdge {
             from: "n7".to_string(),
@@ -884,6 +894,7 @@ fn synthetic_state_diagram() -> Diagram {
             start_label: None,
             end_label: None,
             badge: None,
+            series: None,
         },
     ];
 

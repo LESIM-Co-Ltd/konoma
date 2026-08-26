@@ -205,6 +205,9 @@ const LABELS: &[(&str, &str)] = &[
         "mixed",
         "konoma のプレビュー preview を全画面 fullscreen で",
     ),
+    // usvg folds runs of whitespace before it shapes, so this row is drawn one space narrower
+    // than its bytes. `docs/STATUS.md` recorded that hole as belonging to every diagram kind.
+    ("double-space", "String  owner"),
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -954,7 +957,7 @@ fn a_class_box_is_sized_by_its_panel() {
     assert_eq!(shapes::size(Glyph::ClassBox, size), size);
     assert_eq!(shapes::size(Glyph::ErBox, size), size);
     assert!(matches!(
-        shapes::outline(Glyph::ClassBox, size),
+        shapes::outline(Glyph::ClassBox, size, None),
         shapes::Outline::Rect { r, .. } if r == 0.0
     ));
 }

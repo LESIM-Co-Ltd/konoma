@@ -249,6 +249,8 @@ fn place_notes(out: &mut Diagram, model: &StateDiagram) {
             size,
             label,
             panel: None,
+            series: None,
+            mark: None,
         });
         out.edges.push(PlacedEdge {
             from: link.from.clone(),
@@ -261,6 +263,7 @@ fn place_notes(out: &mut Diagram, model: &StateDiagram) {
             start_label: None,
             end_label: None,
             badge: None,
+            series: None,
         });
     }
     // The drawing grew sideways, so the extent has to be recomputed over what is now on it.

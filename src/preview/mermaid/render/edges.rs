@@ -613,6 +613,29 @@ fn unit(from: &Point, tip: &Point) -> (f64, f64) {
     }
 }
 
+/// The `d` of a straight polyline through `points`.
+///
+/// **A data path has to touch its data.** [`curve_basis_path`] passes through the first and last
+/// point and through *none* of the others, which is exactly what a flowchart edge wants — the
+/// waypoints between the ends are a route, not a claim — and exactly wrong for a line plot or a
+/// radar curve, where every vertex *is* a value. Smoothing one of those moves the reader's eye off
+/// the number it is meant to land on.
+pub fn polyline_path(points: &[Point]) -> String {
+    let mut d = String::new();
+    for (i, p) in points.iter().enumerate() {
+        d.push_str(&format!(
+            "{}{},{}",
+            if i == 0 { "M" } else { "L" },
+            num(p.x),
+            num(p.y)
+        ));
+        if i + 1 < points.len() {
+            d.push(' ');
+        }
+    }
+    d
+}
+
 /// The `d` of a uniform cubic B-spline through `points` — d3's `curveBasis`, which is mermaid's
 /// default `flowchart.curve`.
 ///

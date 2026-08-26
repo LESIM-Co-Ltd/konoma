@@ -34,14 +34,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path as FsPath;
 
-use resvg::usvg;
-
 use super::clusters;
 use super::sequence::{lay_out, render};
 use super::tests::{
     assert_snapshot, check_clusters_hold_their_members, check_edges_stay_out_of_shapes,
     check_nested_clusters_sit_inside_their_parent, check_nodes_do_not_overlap,
-    check_panels_stay_inside_their_box, check_view_box_contains_everything, mask_numbers, tree_of,
+    check_panels_stay_inside_their_box, check_view_box_contains_everything, mask_numbers,
+    measured_texts, tree_of,
 };
 use super::{
     labels, svg, theme, ClusterSection, Diagram, Glyph, Label, PlacedActivation, PlacedCluster,
@@ -235,6 +234,10 @@ const LABELS: &[(&str, &str)] = &[
         "konoma のプレビュー preview を全画面 fullscreen で",
     ),
     ("digits", "0123456789"),
+    // The case stage 4 met for real. usvg folds runs of whitespace before shaping, so this is
+    // drawn one space narrower than its bytes; `docs/STATUS.md` recorded the hole as belonging to
+    // every diagram kind, and each kind's instrument now carries a case of it.
+    ("double-space", "loop  Every minute"),
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -257,31 +260,20 @@ fn lifeline<'a>(d: &'a Diagram, id: &str) -> &'a PlacedLifeline {
         .unwrap_or_else(|| panic!("no lifeline for {id}"))
 }
 
-/// Every `<text>` in the tree, as the string it holds and the width resvg laid it out at.
-///
-/// The content is what makes the instrument precise here: a sequence diagram has several kinds of
-/// label in one document, and comparing the widest one would only ever measure the widest kind.
-fn measured_texts(group: &usvg::Group, out: &mut Vec<(String, f64)>) {
-    for node in group.children() {
-        match node {
-            usvg::Node::Text(t) => {
-                let s: String = t.chunks().iter().map(|c| c.text().to_string()).collect();
-                out.push((s, t.bounding_box().width() as f64));
-            }
-            usvg::Node::Group(g) => measured_texts(g, out),
-            _ => {}
-        }
-    }
-}
-
 /// What resvg actually drew `text` at, in the SVG a source produced.
+///
+/// The lookup key is `text` **after [`text_metrics::collapse_spaces`]**, because that is the
+/// string konoma writes into the document: usvg folds runs of whitespace before it shapes, so
+/// `Label::measure` folds them once, up front, and measures what will be drawn. Searching for the
+/// author's bytes would make a double-space case unfindable rather than measurable.
 fn drawn_width(src: &str, text: &str) -> f64 {
+    let text = text_metrics::collapse_spaces(text).into_owned();
     let svg = render(src, "dark").expect("renders");
     let mut all = Vec::new();
     measured_texts(tree_of(&svg).root(), &mut all);
     let hits: Vec<f64> = all
         .iter()
-        .filter(|(s, _)| s == text)
+        .filter(|(s, _)| *s == text)
         .map(|(_, w)| *w)
         .collect();
     assert!(
@@ -1608,6 +1600,8 @@ fn synthetic_sequence() -> Diagram {
         size: Size::new(80.0, 36.0),
         label: label(id, 40.0),
         panel: None,
+        series: None,
+        mark: None,
     };
     let actor = |id: &str, x: f64, y: f64| PlacedNode {
         id: id.to_string(),
@@ -1628,6 +1622,8 @@ fn synthetic_sequence() -> Diagram {
             columns: Vec::new(),
             size: Size::new(80.0, 56.0),
         }),
+        series: None,
+        mark: None,
     };
 
     let mut nodes = vec![
@@ -1642,6 +1638,8 @@ fn synthetic_sequence() -> Diagram {
             size: Size::new(180.0, 44.0),
             label: label("a note\nover both", 90.0),
             panel: None,
+            series: None,
+            mark: None,
         },
     ];
     nodes.push(PlacedNode {
@@ -1651,6 +1649,8 @@ fn synthetic_sequence() -> Diagram {
         size: Size::new(120.0, 24.0),
         label: label("A title", 80.0),
         panel: None,
+        series: None,
+        mark: None,
     });
 
     // One message per terminator, solid and dotted, plus a self-loop and a badge.
@@ -1684,6 +1684,7 @@ fn synthetic_sequence() -> Diagram {
                 size: Size::new(22.0, 22.0),
                 label: label("1", 8.0),
             }),
+            series: None,
         });
     }
     // A self-message: a loop out to the right and back.
@@ -1707,6 +1708,7 @@ fn synthetic_sequence() -> Diagram {
         start_label: None,
         end_label: None,
         badge: None,
+        series: None,
     });
 
     let lifelines = vec![

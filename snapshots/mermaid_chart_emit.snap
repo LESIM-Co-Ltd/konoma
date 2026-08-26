@@ -1,0 +1,180 @@
+=== dark ===
+<svg xmlns="http://www.w3.org/2000/svg" width="690" height="336.7" viewBox="0 0 690 336.7">
+<rect width="690" height="336.7" fill="none"/>
+<g class="edges">
+<path d="M23,63.7L223,63.7" fill="none" stroke="#d3d3d3" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M19,63.7L23,63.7" fill="none" stroke="#d3d3d3" stroke-width="2"/>
+</g>
+<g class="nodes">
+<rect x="23" y="33.7" width="200" height="120" rx="0" ry="0" fill="none" stroke="#8a8a8a" stroke-width="1.5"/>
+<rect x="48" y="73.7" width="30" height="80" rx="0" ry="0" fill="#4e79a7" stroke="#cccccc" stroke-width="1.5"/>
+<rect x="88" y="113.7" width="30" height="40" rx="0" ry="0" fill="#4a8a42" stroke="#cccccc" stroke-width="1.5"/>
+<circle cx="163" cy="63.7" r="3" fill="#b07aa1"/>
+<path d="M403,93.7 L433,41.738 A60,60 0 0 1 413.419,152.788 Z" fill="#9c755f" stroke="#cccccc" stroke-width="1.5"/>
+<path d="M173,233.7 C253,233.7 253,269.7 333,269.7 L333,293.7 C253,293.7 253,257.7 173,257.7 Z" fill="#3f6b78" fill-opacity="0.45" stroke="none"/>
+<polygon points="563,102.033 583.606,117.005 575.735,141.229 550.265,141.229 542.394,117.005" fill="none" stroke="#8a8a8a" stroke-width="1"/>
+<polygon points="563,80.367 604.212,110.309 588.471,158.757 537.529,158.757 521.788,110.309" fill="none" stroke="#8a8a8a" stroke-width="1"/>
+<polygon points="563,58.7 624.819,103.614 601.206,176.286 524.794,176.286 501.181,103.614" fill="none" stroke="#8a8a8a" stroke-width="1"/>
+<path d="M563,123.7 L563,58.7 M563,123.7 L624.819,103.614 M563,123.7 L601.206,176.286 M563,123.7 L524.794,176.286 M563,123.7 L501.181,103.614" fill="none" stroke="#8a8a8a" stroke-width="1"/>
+<circle cx="563" cy="283.7" r="22.5" fill="none" stroke="#8a8a8a" stroke-width="1"/>
+<circle cx="563" cy="283.7" r="45" fill="none" stroke="#8a8a8a" stroke-width="1"/>
+<path d="M563,283.7 L563,238.7 M563,283.7 L608,283.7 M563,283.7 L563,328.7 M563,283.7 L518,283.7" fill="none" stroke="#8a8a8a" stroke-width="1"/>
+<text x="23" y="158.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="23" dy="0">4000</tspan></text>
+<text x="203" y="20.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="203" dy="0">Sales Revenue</tspan></text>
+<text x="403" y="68.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#f2f2f2"><tspan x="403" dy="0">42%</tspan></text>
+<rect x="623" y="35.9" width="11" height="11" rx="0" ry="0" fill="#4e79a7" stroke="#cccccc" stroke-width="1.5"/>
+<text x="660" y="46.3" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="660" dy="0">North</tspan></text>
+<rect x="623" y="55.3" width="11" height="11" rx="0" ry="0" fill="#4a8a42" stroke="#cccccc" stroke-width="1.5"/>
+<text x="661" y="65.7" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#cccccc"><tspan x="661" dy="0">South</tspan></text>
+</g>
+<g class="series">
+<path d="M43,143.7 L103,103.7 L163,63.7 L203,43.7" fill="none" stroke="#b07aa1" stroke-width="2"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== light ===
+<svg xmlns="http://www.w3.org/2000/svg" width="690" height="336.7" viewBox="0 0 690 336.7">
+<rect width="690" height="336.7" fill="none"/>
+<g class="edges">
+<path d="M23,63.7L223,63.7" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M19,63.7L23,63.7" fill="none" stroke="#64748b" stroke-width="2"/>
+</g>
+<g class="nodes">
+<rect x="23" y="33.7" width="200" height="120" rx="0" ry="0" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+<rect x="48" y="73.7" width="30" height="80" rx="0" ry="0" fill="#7ea6d8" stroke="#94a3b8" stroke-width="1.5"/>
+<rect x="88" y="113.7" width="30" height="40" rx="0" ry="0" fill="#8fc98a" stroke="#94a3b8" stroke-width="1.5"/>
+<circle cx="163" cy="63.7" r="3" fill="#d3a7cb"/>
+<path d="M403,93.7 L433,41.738 A60,60 0 0 1 413.419,152.788 Z" fill="#c9ab97" stroke="#94a3b8" stroke-width="1.5"/>
+<path d="M173,233.7 C253,233.7 253,269.7 333,269.7 L333,293.7 C253,293.7 253,257.7 173,257.7 Z" fill="#86b3bd" fill-opacity="0.45" stroke="none"/>
+<polygon points="563,102.033 583.606,117.005 575.735,141.229 550.265,141.229 542.394,117.005" fill="none" stroke="#94a3b8" stroke-width="1"/>
+<polygon points="563,80.367 604.212,110.309 588.471,158.757 537.529,158.757 521.788,110.309" fill="none" stroke="#94a3b8" stroke-width="1"/>
+<polygon points="563,58.7 624.819,103.614 601.206,176.286 524.794,176.286 501.181,103.614" fill="none" stroke="#94a3b8" stroke-width="1"/>
+<path d="M563,123.7 L563,58.7 M563,123.7 L624.819,103.614 M563,123.7 L601.206,176.286 M563,123.7 L524.794,176.286 M563,123.7 L501.181,103.614" fill="none" stroke="#94a3b8" stroke-width="1"/>
+<circle cx="563" cy="283.7" r="22.5" fill="none" stroke="#94a3b8" stroke-width="1"/>
+<circle cx="563" cy="283.7" r="45" fill="none" stroke="#94a3b8" stroke-width="1"/>
+<path d="M563,283.7 L563,238.7 M563,283.7 L608,283.7 M563,283.7 L563,328.7 M563,283.7 L518,283.7" fill="none" stroke="#94a3b8" stroke-width="1"/>
+<text x="23" y="158.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="23" dy="0">4000</tspan></text>
+<text x="203" y="20.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="203" dy="0">Sales Revenue</tspan></text>
+<text x="403" y="68.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#1a2230"><tspan x="403" dy="0">42%</tspan></text>
+<rect x="623" y="35.9" width="11" height="11" rx="0" ry="0" fill="#7ea6d8" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="660" y="46.3" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="660" dy="0">North</tspan></text>
+<rect x="623" y="55.3" width="11" height="11" rx="0" ry="0" fill="#8fc98a" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="661" y="65.7" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#0f172a"><tspan x="661" dy="0">South</tspan></text>
+</g>
+<g class="series">
+<path d="M43,143.7 L103,103.7 L163,63.7 L203,43.7" fill="none" stroke="#d3a7cb" stroke-width="2"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== classic ===
+<svg xmlns="http://www.w3.org/2000/svg" width="690" height="336.7" viewBox="0 0 690 336.7">
+<rect width="690" height="336.7" fill="none"/>
+<g class="edges">
+<path d="M23,63.7L223,63.7" fill="none" stroke="#5c6b8a" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M19,63.7L23,63.7" fill="none" stroke="#5c6b8a" stroke-width="2"/>
+</g>
+<g class="nodes">
+<rect x="23" y="33.7" width="200" height="120" rx="0" ry="0" fill="none" stroke="#9aa4bd" stroke-width="1.5"/>
+<rect x="48" y="73.7" width="30" height="80" rx="0" ry="0" fill="#9fb3d9" stroke="#7b88a8" stroke-width="1.5"/>
+<rect x="88" y="113.7" width="30" height="40" rx="0" ry="0" fill="#a7d3a0" stroke="#7b88a8" stroke-width="1.5"/>
+<circle cx="163" cy="63.7" r="3" fill="#dcb6d6"/>
+<path d="M403,93.7 L433,41.738 A60,60 0 0 1 413.419,152.788 Z" fill="#d5bda9" stroke="#7b88a8" stroke-width="1.5"/>
+<path d="M173,233.7 C253,233.7 253,269.7 333,269.7 L333,293.7 C253,293.7 253,257.7 173,257.7 Z" fill="#8bc0cc" fill-opacity="0.45" stroke="none"/>
+<polygon points="563,102.033 583.606,117.005 575.735,141.229 550.265,141.229 542.394,117.005" fill="none" stroke="#9aa4bd" stroke-width="1"/>
+<polygon points="563,80.367 604.212,110.309 588.471,158.757 537.529,158.757 521.788,110.309" fill="none" stroke="#9aa4bd" stroke-width="1"/>
+<polygon points="563,58.7 624.819,103.614 601.206,176.286 524.794,176.286 501.181,103.614" fill="none" stroke="#9aa4bd" stroke-width="1"/>
+<path d="M563,123.7 L563,58.7 M563,123.7 L624.819,103.614 M563,123.7 L601.206,176.286 M563,123.7 L524.794,176.286 M563,123.7 L501.181,103.614" fill="none" stroke="#9aa4bd" stroke-width="1"/>
+<circle cx="563" cy="283.7" r="22.5" fill="none" stroke="#9aa4bd" stroke-width="1"/>
+<circle cx="563" cy="283.7" r="45" fill="none" stroke="#9aa4bd" stroke-width="1"/>
+<path d="M563,283.7 L563,238.7 M563,283.7 L608,283.7 M563,283.7 L563,328.7 M563,283.7 L518,283.7" fill="none" stroke="#9aa4bd" stroke-width="1"/>
+<text x="23" y="158.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="23" dy="0">4000</tspan></text>
+<text x="203" y="20.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="203" dy="0">Sales Revenue</tspan></text>
+<text x="403" y="68.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#242a36"><tspan x="403" dy="0">42%</tspan></text>
+<rect x="623" y="35.9" width="11" height="11" rx="0" ry="0" fill="#9fb3d9" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="660" y="46.3" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="660" dy="0">North</tspan></text>
+<rect x="623" y="55.3" width="11" height="11" rx="0" ry="0" fill="#a7d3a0" stroke="#7b88a8" stroke-width="1.5"/>
+<text x="661" y="65.7" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="661" dy="0">South</tspan></text>
+</g>
+<g class="series">
+<path d="M43,143.7 L103,103.7 L163,63.7 L203,43.7" fill="none" stroke="#dcb6d6" stroke-width="2"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== forest ===
+<svg xmlns="http://www.w3.org/2000/svg" width="690" height="336.7" viewBox="0 0 690 336.7">
+<rect width="690" height="336.7" fill="none"/>
+<g class="edges">
+<path d="M23,63.7L223,63.7" fill="none" stroke="#008000" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M19,63.7L23,63.7" fill="none" stroke="#008000" stroke-width="2"/>
+</g>
+<g class="nodes">
+<rect x="23" y="33.7" width="200" height="120" rx="0" ry="0" fill="none" stroke="#6eaa49" stroke-width="1.5"/>
+<rect x="48" y="73.7" width="30" height="80" rx="0" ry="0" fill="#8fbf6a" stroke="#13540c" stroke-width="1.5"/>
+<rect x="88" y="113.7" width="30" height="40" rx="0" ry="0" fill="#b6dd9a" stroke="#13540c" stroke-width="1.5"/>
+<circle cx="163" cy="63.7" r="3" fill="#cfe3a8"/>
+<path d="M403,93.7 L433,41.738 A60,60 0 0 1 413.419,152.788 Z" fill="#7aa9a0" stroke="#13540c" stroke-width="1.5"/>
+<path d="M173,233.7 C253,233.7 253,269.7 333,269.7 L333,293.7 C253,293.7 253,257.7 173,257.7 Z" fill="#c8c07a" fill-opacity="0.45" stroke="none"/>
+<polygon points="563,102.033 583.606,117.005 575.735,141.229 550.265,141.229 542.394,117.005" fill="none" stroke="#6eaa49" stroke-width="1"/>
+<polygon points="563,80.367 604.212,110.309 588.471,158.757 537.529,158.757 521.788,110.309" fill="none" stroke="#6eaa49" stroke-width="1"/>
+<polygon points="563,58.7 624.819,103.614 601.206,176.286 524.794,176.286 501.181,103.614" fill="none" stroke="#6eaa49" stroke-width="1"/>
+<path d="M563,123.7 L563,58.7 M563,123.7 L624.819,103.614 M563,123.7 L601.206,176.286 M563,123.7 L524.794,176.286 M563,123.7 L501.181,103.614" fill="none" stroke="#6eaa49" stroke-width="1"/>
+<circle cx="563" cy="283.7" r="22.5" fill="none" stroke="#6eaa49" stroke-width="1"/>
+<circle cx="563" cy="283.7" r="45" fill="none" stroke="#6eaa49" stroke-width="1"/>
+<path d="M563,283.7 L563,238.7 M563,283.7 L608,283.7 M563,283.7 L563,328.7 M563,283.7 L518,283.7" fill="none" stroke="#6eaa49" stroke-width="1"/>
+<text x="23" y="158.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="23" dy="0">4000</tspan></text>
+<text x="203" y="20.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="203" dy="0">Sales Revenue</tspan></text>
+<text x="403" y="68.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#1f2a17"><tspan x="403" dy="0">42%</tspan></text>
+<rect x="623" y="35.9" width="11" height="11" rx="0" ry="0" fill="#8fbf6a" stroke="#13540c" stroke-width="1.5"/>
+<text x="660" y="46.3" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="660" dy="0">North</tspan></text>
+<rect x="623" y="55.3" width="11" height="11" rx="0" ry="0" fill="#b6dd9a" stroke="#13540c" stroke-width="1.5"/>
+<text x="661" y="65.7" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="661" dy="0">South</tspan></text>
+</g>
+<g class="series">
+<path d="M43,143.7 L103,103.7 L163,63.7 L203,43.7" fill="none" stroke="#cfe3a8" stroke-width="2"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== neutral ===
+<svg xmlns="http://www.w3.org/2000/svg" width="690" height="336.7" viewBox="0 0 690 336.7">
+<rect width="690" height="336.7" fill="none"/>
+<g class="edges">
+<path d="M23,63.7L223,63.7" fill="none" stroke="#666666" stroke-width="2" stroke-dasharray="4 4"/>
+<path d="M19,63.7L23,63.7" fill="none" stroke="#666666" stroke-width="2"/>
+</g>
+<g class="nodes">
+<rect x="23" y="33.7" width="200" height="120" rx="0" ry="0" fill="none" stroke="#999999" stroke-width="1.5"/>
+<rect x="48" y="73.7" width="30" height="80" rx="0" ry="0" fill="#e7e7e7" stroke="#999999" stroke-width="1.5"/>
+<rect x="88" y="113.7" width="30" height="40" rx="0" ry="0" fill="#818181" stroke="#999999" stroke-width="1.5"/>
+<circle cx="163" cy="63.7" r="3" fill="#c5c5c5"/>
+<path d="M403,93.7 L433,41.738 A60,60 0 0 1 413.419,152.788 Z" fill="#929292" stroke="#999999" stroke-width="1.5"/>
+<path d="M173,233.7 C253,233.7 253,269.7 333,269.7 L333,293.7 C253,293.7 253,257.7 173,257.7 Z" fill="#d6d6d6" fill-opacity="0.45" stroke="none"/>
+<polygon points="563,102.033 583.606,117.005 575.735,141.229 550.265,141.229 542.394,117.005" fill="none" stroke="#999999" stroke-width="1"/>
+<polygon points="563,80.367 604.212,110.309 588.471,158.757 537.529,158.757 521.788,110.309" fill="none" stroke="#999999" stroke-width="1"/>
+<polygon points="563,58.7 624.819,103.614 601.206,176.286 524.794,176.286 501.181,103.614" fill="none" stroke="#999999" stroke-width="1"/>
+<path d="M563,123.7 L563,58.7 M563,123.7 L624.819,103.614 M563,123.7 L601.206,176.286 M563,123.7 L524.794,176.286 M563,123.7 L501.181,103.614" fill="none" stroke="#999999" stroke-width="1"/>
+<circle cx="563" cy="283.7" r="22.5" fill="none" stroke="#999999" stroke-width="1"/>
+<circle cx="563" cy="283.7" r="45" fill="none" stroke="#999999" stroke-width="1"/>
+<path d="M563,283.7 L563,238.7 M563,283.7 L608,283.7 M563,283.7 L563,328.7 M563,283.7 L518,283.7" fill="none" stroke="#999999" stroke-width="1"/>
+<text x="23" y="158.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="23" dy="0">4000</tspan></text>
+<text x="203" y="20.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="203" dy="0">Sales Revenue</tspan></text>
+<text x="403" y="68.6" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#1f1f1f"><tspan x="403" dy="0">42%</tspan></text>
+<rect x="623" y="35.9" width="11" height="11" rx="0" ry="0" fill="#e7e7e7" stroke="#999999" stroke-width="1.5"/>
+<text x="660" y="46.3" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="660" dy="0">North</tspan></text>
+<rect x="623" y="55.3" width="11" height="11" rx="0" ry="0" fill="#818181" stroke="#999999" stroke-width="1.5"/>
+<text x="661" y="65.7" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#333333"><tspan x="661" dy="0">South</tspan></text>
+</g>
+<g class="series">
+<path d="M43,143.7 L103,103.7 L163,63.7 L203,43.7" fill="none" stroke="#c5c5c5" stroke-width="2"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+

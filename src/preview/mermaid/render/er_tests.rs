@@ -22,7 +22,7 @@ use super::tests::{
     check_labels_ride_their_edge, check_nested_clusters_sit_inside_their_parent,
     check_nodes_do_not_overlap, check_panels_stay_inside_their_box,
     check_unrelated_clusters_do_not_overlap, check_view_box_contains_everything, mask_numbers,
-    text_widths, tree_of,
+    measured_texts, text_widths, tree_of,
 };
 use super::{
     clusters, edges, labels, panel, shapes, svg, Diagram, Glyph, Label, PlacedCluster, PlacedEdge,
@@ -233,6 +233,51 @@ fn entity_box_width_matches_resvg() {
             svg::num(expected)
         );
     }
+}
+
+/// The same instrument for a name that carries **two spaces in a row**.
+///
+/// It cannot ride [`LABELS`]: those are used as `type name` inside `{ }`, where the ER grammar
+/// splits on whitespace, so a doubled space there would be a parse error rather than a
+/// measurement. An aliased name — `e["…"]` — is where an ER diagram can actually hold one.
+///
+/// usvg folds runs of whitespace *before* it shapes, so this name is drawn one space narrower
+/// than its bytes. Measuring the bytes would size a band the text does not fill, and every
+/// coordinate downstream would move with it. `docs/STATUS.md` recorded that hole as belonging to
+/// every diagram kind, which is why each kind's instrument now carries a case of it.
+#[test]
+fn entity_name_band_with_a_doubled_space_matches_resvg() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = "erDiagram\n  e[\"Customer  Account\"] ||--|| B : x";
+    let d = laid_out(src);
+    let svg = render(src, "dark").expect("renders");
+    let node = d.node("e").expect("the aliased entity");
+
+    // The string konoma emits is the folded one — `Label::measure` folds once, up front, so what
+    // was measured and what is drawn cannot drift apart.
+    let mut texts = Vec::new();
+    measured_texts(tree_of(&svg).root(), &mut texts);
+    assert!(
+        texts.iter().any(|(s, _)| s == "Customer Account"),
+        "the emitted name should be the folded one; got {:?}",
+        texts.iter().map(|(s, _)| s).collect::<Vec<_>>()
+    );
+    let drawn = texts
+        .iter()
+        .find(|(s, _)| s == "Customer Account")
+        .map(|(_, w)| *w)
+        .expect("resvg drew the name");
+    let slack = node.size.w - drawn;
+    assert!(
+        (slack - panel::ER_NAME_PAD_X * 2.0).abs() <= 1.0,
+        "name band {} vs resvg's {} → {} of padding, declared {}",
+        svg::num(node.size.w),
+        svg::num(drawn),
+        svg::num(slack),
+        svg::num(panel::ER_NAME_PAD_X * 2.0)
+    );
 }
 
 /// An entity with no attributes is the other branch, and it has its own exact rule: the name band
@@ -888,6 +933,8 @@ fn synthetic_panel_diagram() -> Diagram {
             size: class.size,
             label: label("", 0.0),
             panel: Some(class),
+            series: None,
+            mark: None,
         },
         PlacedNode {
             id: "PERSON".to_string(),
@@ -896,6 +943,8 @@ fn synthetic_panel_diagram() -> Diagram {
             size: entity.size,
             label: label("", 0.0),
             panel: Some(entity),
+            series: None,
+            mark: None,
         },
     ];
     // Two plain boxes for the terminator strip to point at.
@@ -907,6 +956,8 @@ fn synthetic_panel_diagram() -> Diagram {
             size: Size::new(60.0, 30.0),
             label: label(id, 30.0),
             panel: None,
+            series: None,
+            mark: None,
         });
     }
 
@@ -947,6 +998,7 @@ fn synthetic_panel_diagram() -> Diagram {
                 label: label("0..*", 30.0),
             }),
             badge: None,
+            series: None,
         });
     }
 

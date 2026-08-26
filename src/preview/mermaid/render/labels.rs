@@ -50,8 +50,24 @@ pub struct Label {
 
 impl Label {
     /// Measures `text`, splitting it on the newlines the parser already normalised.
+    ///
+    /// Each line is put through [`text_metrics::collapse_spaces`] **and kept in that form**, so
+    /// the string this label carries is the string [`super::svg`] writes and the string usvg
+    /// shapes. Collapsing only for the measurement and emitting the author's bytes would still be
+    /// correct about the width — usvg folds them either way — but it leaves two spellings of the
+    /// same line in the program, and the one a golden pins would not be the one a box was sized
+    /// from. Folding once, here, means "measured" and "drawn" cannot drift apart.
+    ///
+    /// It also removes a second-order trap: usvg folds whitespace across the *whole* `<text>`
+    /// element, so a line ending in a space and the next line beginning with one collapse into a
+    /// single space that belongs to the second line — a multi-line label would be measured
+    /// per-line and drawn as something else. With every line already trimmed there is nothing at
+    /// a line boundary to fold.
     pub fn measure(text: &str) -> Label {
-        let lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+        let lines: Vec<String> = text
+            .split('\n')
+            .map(|l| text_metrics::collapse_spaces(l).into_owned())
+            .collect();
         let width = lines
             .iter()
             .map(|l| text_metrics::measure(l, FONT_SIZE) as f64)
