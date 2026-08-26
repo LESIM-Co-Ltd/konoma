@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-08-26
+
 ### Fixed
 - **One picture shown at two sizes in the same document pinned a CPU and left one of the two
   blank.** A Markdown table sizes an image to its own column, so a file drawn both as a block image
@@ -2094,7 +2096,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.5...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.5...v0.27.0
 [0.26.5]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.4...v0.26.5
 [0.26.4]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.3...v0.26.4
 [0.26.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.2...v0.26.3
