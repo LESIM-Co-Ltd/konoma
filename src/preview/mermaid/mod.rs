@@ -11,11 +11,16 @@
 //! * **Stage 1b** added [`flowchart`], which reads mermaid's flowchart language — three quarters
 //!   of the mermaid people actually write — into a structural model. It parses and stops: no
 //!   measuring, no layout, no SVG.
+//! * **Stage 1c** added [`render`], which is where the three of them meet and a picture comes
+//!   out: labels measured by [`text_metrics`], boxes sized by mermaid's own shape formulas,
+//!   positions from [`layout`], and then the part that is konoma's alone — clipping each edge to
+//!   the shape it touches, curving it, and putting its label back on the middle of the line.
 //!
-//! Shape geometry and SVG emission are still to come. Until they land,
-//! `preview::markdown::mermaid_to_svg` is untouched and every diagram still goes through
-//! `mermaid-rs-renderer`; nothing in this module is on the drawing path yet.
+//! Subgraph frames are still to come. Until stage 1e swaps it,
+//! `preview::markdown::mermaid_to_svg` is untouched and every diagram konoma actually shows still
+//! goes through `mermaid-rs-renderer`; nothing in this module is on the drawing path yet.
 
 pub mod flowchart;
 pub mod layout;
+pub mod render;
 pub mod text_metrics;
