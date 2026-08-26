@@ -28,6 +28,8 @@ Used by:
 {{/each}}
 ## Derived code (not a dependency)
 
+### Markdown renderer, from `tui-markdown` (MIT)
+
 konoma's Markdown renderer (`src/preview/markdown/render.rs`) reimplements
 `tui_markdown::TextWriter` method-for-method -- the module doc there spells out
 the correspondence. `tui-markdown` itself is no longer a Cargo dependency (see
@@ -57,3 +59,37 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+### Mermaid layout engine, from `dagre` (Apache-2.0)
+
+konoma's mermaid renderer lays diagrams out with a vendored copy of the `dagre`
+crate, version 0.1.1 (https://github.com/kookyleo/dagre-rs, archived). The source
+lives in `src/preview/mermaid/layout/` and ships inside the konoma crate; it is not
+a Cargo dependency, because `[patch.crates-io]` is stripped by `cargo publish` and
+konoma has to be able to fix the layout engine in a released build. `cargo-about`
+walks the dependency graph, so it cannot see this code -- the notice below is
+maintained by hand.
+
+The vendored files were modified by the konoma authors (edition-2024 let-chains
+desugared for konoma's edition 2021, module paths rewritten, unused graph algorithms
+dropped). Every file says so in its header and
+`src/preview/mermaid/layout/PROVENANCE.md` lists each change, as Apache-2.0 section
+4(b) requires. Upstream ships no `NOTICE` file, so there is none to reproduce here.
+The full license text is in `src/preview/mermaid/layout/LICENSE-APACHE` and is also
+reproduced above under "Apache License 2.0".
+
+```
+Copyright (c) kookyleo <kookyleo@gmail.com>
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```

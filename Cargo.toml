@@ -269,6 +269,20 @@ similar = "3.1.1"
 nucleo-matcher = "0.3"
 ignore = "0.4.33"
 
+# `src/preview/mermaid/layout/` (the vendored dagre layout engine) emits one `trace!`
+# call. The facade is a no-op unless a logger is installed and konoma installs none,
+# but keeping the call means the vendored subtree stays byte-identical to upstream
+# there. No new package: `log` is already in Cargo.lock via symphonia/ignore.
+log = "0.4"
+
+[dev-dependencies]
+# Only the mermaid layout cross-validation test (`src/preview/mermaid/layout/
+# cross_validate.rs`) reads JSON: it parses `cross-validate/reference_data.json`,
+# the recorded output of the real `@dagrejs/dagre` JavaScript implementation.
+# A dev-dependency keeps serde_json out of the shipped binary; it is already in
+# Cargo.lock via re_mp4, so this adds no package.
+serde_json = "1"
+
 [features]
 default = ["git"]
 git = ["dep:git2"]
