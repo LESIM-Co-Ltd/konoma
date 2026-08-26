@@ -2654,11 +2654,90 @@ fn render_mermaid_safe(code: &str, max_width: Option<usize>) -> Result<String, S
     }
 }
 
-/// mermaid source → SVG string via the pure-Rust mermaid-rs-renderer (mermaid.js-quality layout;
-/// no browser/Node — PRD §5). Panic-safe like `render_mermaid_safe`: the crate is 0.x, so a panic
-/// (or an unsupported diagram → Err) returns None and the caller degrades to the Unicode text
-/// rendering (principle #3). Runs on worker threads only (layout costs a few ms per diagram).
+/// mermaid source → SVG string, routed to whichever renderer owns that kind of diagram.
+///
+/// # Which renderer draws what (stage 1e)
+///
+/// * **`flowchart` / `graph` / `flowchart-elk` → konoma's own renderer**
+///   ([`crate::preview::mermaid::render`]). Three quarters of the mermaid people write
+///   (`docs/FEATURE-MERMAID-RENDERER.md` §2-1).
+/// * **every other diagram kind → `mermaid-rs-renderer`**, as before. §7 makes keeping them the
+///   first requirement of the migration: dropping a kind konoma draws today would be a
+///   regression, and the crate stays until the later stages take those over one by one.
+///
+/// The routing question is asked *before* either renderer runs
+/// ([`crate::preview::mermaid::flowchart::is_flowchart`]) rather than derived from a failure,
+/// and **a flowchart that
+/// konoma's renderer refuses is not handed to the crate**. That is the point: a fallback there
+/// would let the old renderer paint over a bug in the new one and the migration would look
+/// finished while it was broken — the same shape as the markdown diff harness that spent a
+/// release comparing a renderer with itself. A refused flowchart returns `None` and the caller
+/// degrades to the Unicode text diagram, which is what konoma already promises for anything it
+/// cannot draw (PRD design principle #3).
+///
+/// Both paths are panic-safe (the crate is 0.x; konoma's own renderer is new), and both return
+/// `None` on failure, which is the contract in §1. [`mermaid_to_svg_reason`] is the same function
+/// with the *reason* kept — §8 notes that throwing those messages away is one of the things this
+/// work exists to fix.
+///
+/// Runs on worker threads only (layout costs a few ms per diagram).
 pub fn mermaid_to_svg(code: &str, theme: &str) -> Option<String> {
+    mermaid_to_svg_reason(code, theme).ok()
+}
+
+/// [`mermaid_to_svg`], keeping why a diagram was not drawn.
+///
+/// The `Err` is a short English diagnostic and says which renderer refused: `unclosed \`"\` at
+/// line 3` from konoma's own parser, `mermaid-rs-renderer: …` from the crate. Nothing shows it as-is
+/// today, but §8 lists throwing these away as one of the things this work exists to fix, and it is
+/// what the tests here assert on instead of asserting `is_none()` and learning nothing about *why*.
+pub fn mermaid_to_svg_reason(code: &str, theme: &str) -> Result<String, String> {
+    // The same byte string `mermaid_fence_url` hashes (§1), trimmed once here so both renderers
+    // see identical input.
+    let code = code.trim_end_matches('\n');
+    if flowchart_is_ours(code) {
+        render_flowchart_konoma(code, theme)
+    } else {
+        render_via_mermaid_rs(code, theme)
+    }
+}
+
+/// The routing predicate, made panic-safe.
+///
+/// Classifying reads only the header — [`preprocess`](crate::preview::mermaid::flowchart::preprocess)
+/// plus the keyword scan — so a source of some other kind never reaches the flowchart grammar
+/// proper. A panic in *that* much is answered with "not ours", because the cost of guessing wrong
+/// in this direction is that a diagram konoma draws today stops being drawn, and §7 puts that
+/// first. Guessing wrong in the other direction (a broken flowchart quietly redrawn by the old
+/// crate) is the one this function exists to make impossible.
+fn flowchart_is_ours(code: &str) -> bool {
+    let caught = silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::preview::mermaid::flowchart::is_flowchart(code)
+        }))
+    });
+    caught.unwrap_or(false)
+}
+
+/// konoma's own renderer. A failure is a failure: no second opinion from the crate.
+fn render_flowchart_konoma(code: &str, theme: &str) -> Result<String, String> {
+    let caught = silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::preview::mermaid::render::render(code, theme)
+        }))
+    });
+    match caught {
+        Ok(Ok(svg)) => Ok(svg),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("konoma's mermaid renderer panicked".to_string()),
+    }
+}
+
+/// Every diagram kind konoma has not written a renderer for yet.
+///
+/// Panic-safe like `render_mermaid_safe`: the crate is 0.x, so a panic (or an unsupported diagram
+/// → Err) degrades to the Unicode text rendering (principle #3).
+fn render_via_mermaid_rs(code: &str, theme: &str) -> Result<String, String> {
     use mermaid_rs_renderer::{RenderOptions, Theme};
     let modern = Theme::modern();
     let mut t = match theme {
@@ -2684,19 +2763,24 @@ pub fn mermaid_to_svg(code: &str, theme: &str) -> Option<String> {
     };
     let caught = silence_panics(|| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            mermaid_rs_renderer::render_with_options(code.trim_end_matches('\n'), opts)
+            mermaid_rs_renderer::render_with_options(code, opts)
         }))
     });
     match caught {
-        Ok(Ok(svg)) => Some(svg),
-        _ => None,
+        Ok(Ok(svg)) => Ok(svg),
+        Ok(Err(e)) => Err(format!("mermaid-rs-renderer: {e}")),
+        Err(_) => Err("mermaid-rs-renderer panicked".to_string()),
     }
 }
 
-/// Pre-warm the mermaid renderer's lazy text-measurer (its first call scans system fonts, tens of
-/// ms). Called from a startup thread so the first diagram render never pays it.
+/// Pre-warm both renderers' lazy font work (their first call scans system fonts, tens of ms).
+/// Called from a startup thread so the first diagram render never pays it. **One diagram of each
+/// routing arm**: a flowchart warms konoma's own metrics, and a sequence diagram warms the crate
+/// that still owns every other kind — warming only one arm would just move the freeze onto
+/// whichever kind the user opens first.
 pub fn warm_mermaid() {
     let _ = mermaid_to_svg("graph LR\nA-->B", "dark");
+    let _ = mermaid_to_svg("sequenceDiagram\n  A->>B: hi", "dark");
 }
 
 /// Synthetic inline-image key for a ```mermaid fence, derived from its content (FNV-1a 64).
@@ -8743,19 +8827,196 @@ plain body
         assert!(img.width() > 0 && img.height() > 0);
     }
 
-    /// Layout measurement is pinned to modern across every theme (regression guard against the
-    /// placement bug where a dark-theme font-metric difference made an edge draw a detour ring — measured 2026-07-17).
+    /// A theme changes colours and never metrics — the regression guard for the placement bug
+    /// where a dark-theme font-metric difference made an edge draw a detour ring (reported from a
+    /// real terminal, 2026-07-17).
+    ///
+    /// It used to spell that as `svg.contains("Inter")`, because the crate konoma rendered with
+    /// took a font *stack* per theme and the fix was to pin every theme to `modern`'s. The name of
+    /// the font was a proxy for the property; konoma's own renderer names a different font
+    /// (`sans-serif` — §4-3: usvg resolves exactly five generic families and looks up anything else
+    /// as a named family, so the one word it is measured with is the one word it is drawn with),
+    /// which would make the old assertion fail while the property it stood for held. So the
+    /// property is asserted directly instead, in two halves:
+    ///
+    /// 1. **the SVG names the font it was measured with** — whatever that font is, the two agree;
+    /// 2. **the geometry is byte-identical across all five themes** — which is the thing the detour
+    ///    ring was a symptom of, and it cannot be satisfied by naming a font at all.
     #[test]
-    fn mermaid_dark_theme_uses_modern_font_metrics() {
+    fn mermaid_themes_change_colours_but_never_font_metrics() {
+        use crate::preview::mermaid::text_metrics::{FONT_FAMILY, FONT_SIZE};
         let svg = mermaid_to_svg("graph LR\nA-->B", "dark").unwrap();
-        assert!(svg.contains("Inter"), "modern のフォントファミリで計測");
-        assert!(!svg.contains("trebuchet"), "dark 固有フォントは使わない");
+        assert!(
+            svg.contains(&format!("font-family=\"{FONT_FAMILY}\"")),
+            "描画に指定するフォントは計測に使ったフォントと同じであるべき: {svg}"
+        );
+        assert!(
+            svg.contains(&format!("font-size=\"{}\"", FONT_SIZE as i32)),
+            "描画のフォントサイズも計測値に固定されているべき: {svg}"
+        );
+
+        // Strip every colour, keep everything else: a palette that quietly moved a coordinate — or
+        // measured with a different font and resized a label box — cannot pass this.
+        let geometry_of = |s: &str| {
+            s.split_whitespace()
+                .filter(|w| !w.starts_with("fill=") && !w.starts_with("stroke=\""))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let base = geometry_of(&svg);
+        for name in ["light", "modern", "classic", "mermaid", "forest", "neutral"] {
+            let other = mermaid_to_svg("graph LR\nA-->B", name).unwrap();
+            assert_eq!(
+                base,
+                geometry_of(&other),
+                "テーマ {name} が色以外(=配置)を動かした"
+            );
+        }
     }
 
     #[test]
     fn mermaid_to_svg_fails_safely_on_garbage() {
         // Unsupported/broken input is None (the caller degrades to the text diagram). Never panics.
         assert!(mermaid_to_svg("definitely not a diagram !!!", "dark").is_none());
+    }
+
+    // ---- stage 1e: which renderer draws which diagram ------------------------------------
+
+    /// The routing itself: a flowchart comes from konoma's own renderer, and every other kind
+    /// still comes from `mermaid-rs-renderer`.
+    ///
+    /// Told apart by something only one of them emits. konoma's renderer writes exactly one
+    /// `font-family`, the generic `sans-serif` it measures with; the crate writes a nine-name
+    /// stack beginning with `Inter`. Neither is a style preference — §4-3 is why konoma's is one
+    /// generic word — so this is a stable way to ask "who drew this?" without either renderer
+    /// having to announce itself.
+    #[test]
+    fn flowcharts_come_from_konomas_renderer_and_other_kinds_from_the_crate() {
+        let drawn_by_konoma = |code: &str| -> bool {
+            let svg = mermaid_to_svg(code, "dark").expect("renders");
+            svg.contains("font-family=\"sans-serif\"") && !svg.contains("Inter")
+        };
+        for code in [
+            "flowchart TD\n  A[Start] --> B{Ok?}",
+            "graph LR\n  A --> B",
+            "flowchart-elk LR\n  A --> B",
+            "  \n%% a comment first\nflowchart LR\n  A --> B",
+            "---\ntitle: t\n---\nflowchart LR\n  A --> B",
+        ] {
+            assert!(drawn_by_konoma(code), "自作レンダラが描くはず: {code:?}");
+        }
+        for code in [
+            "sequenceDiagram\n  A->>B: hi",
+            "classDiagram\n  class A\n  class B\n  A --> B",
+            "erDiagram\n  CUSTOMER ||--o{ ORDER : places",
+            "pie title P\n  \"a\" : 10\n  \"b\" : 20",
+            "stateDiagram-v2\n  [*] --> S1\n  S1 --> [*]",
+        ] {
+            assert!(
+                !drawn_by_konoma(code),
+                "現行クレートが描き続けるはず: {code:?}"
+            );
+        }
+    }
+
+    /// §7's first requirement: the migration must not shrink the set of diagrams konoma can draw.
+    /// Every kind that produced a picture before stage 1e still produces one.
+    #[test]
+    fn no_diagram_kind_stopped_rendering_when_the_flowchart_renderer_landed() {
+        for code in [
+            "flowchart TD\n  A --> B",
+            "graph LR\n  A --> B",
+            "sequenceDiagram\n  A->>B: hi",
+            "classDiagram\n  class A\n  class B\n  A --> B",
+            "erDiagram\n  CUSTOMER ||--o{ ORDER : places",
+            "pie title P\n  \"a\" : 10\n  \"b\" : 20",
+            "stateDiagram-v2\n  [*] --> S1\n  S1 --> [*]",
+            "gantt\n  title G\n  section S\n  task :a1, 2024-01-01, 3d",
+            "journey\n  title J\n  section S\n    Do: 5: Me",
+        ] {
+            assert!(
+                mermaid_to_svg(code, "dark").is_some(),
+                "図種が描けなくなった(=退行): {code:?}"
+            );
+        }
+    }
+
+    /// A flowchart konoma's own renderer refuses is **not** handed to the crate.
+    ///
+    /// This is the whole reason the routing decision is taken before either renderer runs. Falling
+    /// through here would mean the old crate quietly redraws whatever the new one got wrong, and
+    /// the migration would look finished while it was broken — the same shape as the markdown diff
+    /// harness that spent a release comparing a renderer with itself. `graph TD` with no body is
+    /// the cheapest witness: konoma refuses it (§6), and the crate answers it with a 16x16
+    /// transparent SVG that gets stretched across the pane.
+    #[test]
+    fn a_refused_flowchart_is_not_quietly_redrawn_by_the_crate() {
+        assert!(render_via_mermaid_rs("graph TD", "dark").is_ok(), "前提: 現行クレートは本文の無いヘッダにも SVG を返す(=フォールバックがあれば見えなくなる)");
+        assert_eq!(
+            mermaid_to_svg_reason("graph TD", "dark"),
+            Err("flowchart declares no nodes".to_string())
+        );
+        assert!(mermaid_to_svg("graph TD", "dark").is_none());
+    }
+
+    /// The reason survives the seam. §8 lists throwing these away as one of the things this work
+    /// exists to fix, so they are asserted rather than left to `is_none()`.
+    #[test]
+    fn a_refusal_says_what_was_wrong() {
+        assert_eq!(
+            mermaid_to_svg_reason("definitely not a diagram !!!", "dark").unwrap_err(),
+            "mermaid-rs-renderer: unexpected token 'definitely not a diagram !!!' at 1:1; \
+             expected unknown or missing Mermaid diagram header",
+            "自作が持たない図種はクレートの言い分がそのまま出る"
+        );
+        assert_eq!(
+            mermaid_to_svg_reason("flowchart LR\n  A[\"unclosed", "dark").unwrap_err(),
+            "unclosed `\"` at line 2"
+        );
+        assert_eq!(
+            mermaid_to_svg_reason("flowchart LR\n  A@{ shape: nope }", "dark").unwrap_err(),
+            "no such shape: `nope` at line 2 (shape names are lowercase and use `-`)"
+        );
+    }
+
+    /// The routing predicate and the parser agree about what a flowchart is. They share
+    /// `find_header`, so this pins that they keep sharing it rather than growing two answers.
+    #[test]
+    fn the_routing_predicate_agrees_with_the_parser() {
+        use crate::preview::mermaid::flowchart::{is_flowchart, parse, ParseError};
+        for code in [
+            "flowchart TD\n  A --> B",
+            "graph LR\n  A --> B",
+            "graph TD",
+            "flowchart LR\n  A[\"unclosed",
+            "sequenceDiagram\n  A->>B: hi",
+            "graphs --> B",
+            "",
+            "   \n\n",
+            "%% only a comment\n",
+        ] {
+            let parser_says_not_ours = matches!(
+                parse(code),
+                Err(ParseError::NotAFlowchart { .. }) | Err(ParseError::Empty)
+            );
+            assert_eq!(
+                is_flowchart(code),
+                !parser_says_not_ours,
+                "振り分けとパーサの見解が食い違った: {code:?}"
+            );
+        }
+    }
+
+    /// The one byte string both renderers must see. §1 ties `mermaid_to_svg`'s input to the bytes
+    /// `mermaid_fence_url` hashes; a fence body arrives with its trailing newline, and trimming it
+    /// once at the seam is what keeps the cache key and the drawing in step.
+    #[test]
+    fn a_trailing_newline_does_not_change_the_drawing() {
+        let a = mermaid_to_svg("graph LR\nA-->B", "dark").unwrap();
+        let b = mermaid_to_svg("graph LR\nA-->B\n", "dark").unwrap();
+        let c = mermaid_to_svg("graph LR\nA-->B\n\n\n", "dark").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a, c);
     }
 
     #[test]

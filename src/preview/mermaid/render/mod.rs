@@ -27,15 +27,16 @@
 //!
 //! **`direction` inside a block is read and not applied** — see [`lay_out`] for why.
 //!
-//! # What this stage still does not do
+//! # On the drawing path (stage 1e)
 //!
-//! * **Feeding `preview::markdown::mermaid_to_svg`.** Stage 1e changes that one function. Until
-//!   then every diagram konoma actually shows still comes from `mermaid-rs-renderer`, and the
-//!   golden files that pin the markdown renderer's output cannot move.
+//! [`render`] is what `preview::markdown::mermaid_to_svg` calls for every `flowchart` / `graph` /
+//! `flowchart-elk` konoma shows. Other diagram kinds still come from `mermaid-rs-renderer`, and a
+//! flowchart this module *refuses* is not sent there as a second opinion — it degrades to the
+//! Unicode text diagram, so a failure here is visible rather than papered over.
 
-// This module is not on the drawing path yet — `mermaid_to_svg` is swapped in stage 1e — and konoma
-// is a binary crate, so `pub` marks nothing as used. Same reasoning, and the same lint, as the
-// sibling `flowchart` and `layout` modules.
+// konoma is a binary crate, so `pub` marks nothing as used: the parts of this module's surface that
+// exist for the tests and for the stages still to come look unreachable to rustc. Same reasoning,
+// and the same lint, as the sibling `flowchart` and `layout` modules.
 #![allow(dead_code)]
 
 pub mod clusters;

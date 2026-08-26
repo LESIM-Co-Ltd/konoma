@@ -10071,6 +10071,21 @@ fn e2e_ui_md_table_align_moves_the_box_and_keeps_cell_images_inside_it() {
 
 /// `md_image_align`: a block image and a mermaid diagram both follow it, and the diagram's caption
 /// line stays directly above the picture (the two are derived from one number).
+///
+/// # Why `right` only gets the inequality
+///
+/// `mermaid_placeholder_lines` bounds the caption's indent so the label itself cannot be pushed
+/// off the row and wrapped — a deliberate upper bound that "can only pull the label back toward
+/// the diagram, never away from it". A tall, narrow `flowchart TD` right-aligned in an 88-column
+/// pane is exactly the case it exists for, so there the caption is *left* of the picture's column
+/// by design. `left` and `center` still get the exact equality, and cannot stop getting it: the
+/// bound only bites past `width - caption_width`, and a centered column is never past `width / 2`.
+///
+/// It used to be an unconditional equality, and passed with **one column to spare** — the crate
+/// konoma rendered with put this diagram at 29 cells wide, one more than the 28 it needed to keep
+/// the right-aligned caption unclamped (measured 2026-08-26, when konoma's own renderer drew the
+/// same diagram 26 cells wide and the spare column was gone). The clamp was always reachable; the
+/// old assertion just never reached it.
 #[test]
 fn e2e_ui_md_image_align_moves_block_images_and_mermaid_together_with_their_caption() {
     let dir = sandbox("ui_md_image_align_cfg");
@@ -10108,11 +10123,17 @@ fn e2e_ui_md_image_align_moves_block_images_and_mermaid_together_with_their_capt
             .map(|l| l.to_string())
             .expect("キャプション行");
         let at = caption.chars().position(|c| c == '◇').expect("◇");
-        assert_eq!(
-            at,
-            p[0].col as usize + 1, // +1: the preview frame's own left border column
-            "{v}: キャプションが図の桁からずれた ({caption:?})"
+        let diagram_col = p[0].col as usize + 1; // +1: the preview frame's own left border column
+        assert!(
+            at <= diagram_col,
+            "{v}: キャプションが図より右へ出た at={at} 図の桁={diagram_col} ({caption:?})"
         );
+        if v != "right" {
+            assert_eq!(
+                at, diagram_col,
+                "{v}: キャプションが図の桁からずれた ({caption:?})"
+            );
+        }
     }
     assert_eq!(img_cols[0], 0, "left の単独画像は左端");
     assert!(

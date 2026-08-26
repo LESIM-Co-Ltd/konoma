@@ -33,10 +33,10 @@
 //! `%%` comments, `%%{init}%%`, front matter, `accTitle`, `accDescr` in both forms, and edge
 //! metadata — is recognised.
 
-// Stage 1b is the parser only: nothing calls it until the geometry and SVG stages land
-// (`docs/FEATURE-MERMAID-RENDERER.md` §7). konoma is a binary crate, so `pub` marks nothing as
-// used and every entry point — and every re-export below — looks unreachable to rustc until
-// then. Same reasoning, and same pair of lints, as the vendored `layout` subtree.
+// konoma is a binary crate, so `pub` marks nothing as used: the parts of this model that only the
+// tests and the stages still to come read look unreachable to rustc, even though [`parse`] and
+// [`is_flowchart`] are both on the drawing path as of stage 1e. Same reasoning, and same pair of
+// lints, as the vendored `layout` subtree.
 #![allow(dead_code, unused_imports)]
 
 pub mod model;
@@ -49,7 +49,7 @@ pub use model::{
     Arrow, ClassDef, Direction, Edge, Flowchart, LinkStyle, LinkStyleTarget, Node, ParseError,
     Shape, Stroke, Subgraph,
 };
-pub use parser::parse;
+pub use parser::{is_flowchart, parse};
 
 #[cfg(test)]
 mod tests;

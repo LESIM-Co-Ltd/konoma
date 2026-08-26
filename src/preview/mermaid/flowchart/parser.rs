@@ -89,6 +89,25 @@ pub fn parse(src: &str) -> Result<Flowchart, ParseError> {
     builder.finish()
 }
 
+/// Whether this source is a diagram konoma's own renderer owns — i.e. whether its header keyword
+/// is `flowchart`, `graph` or `flowchart-elk`.
+///
+/// This is the routing predicate `preview::markdown::mermaid_to_svg` asks before it decides which
+/// renderer to run (stage 1e). It is deliberately *not* "does [`parse`] succeed": a flowchart this
+/// parser refuses is still konoma's to answer for, and handing it to `mermaid-rs-renderer` would
+/// let the old crate paint over a bug in the new one — the shape
+/// `docs/FEATURE-MERMAID-RENDERER.md` §7 warns about, and the same failure mode as the markdown
+/// diff harness that ended up comparing a renderer with itself.
+///
+/// It runs the same [`preprocess`] and the same `find_header` [`parse`] does, so the two cannot
+/// drift apart; [`super::tests`] pins the equivalence over a corpus. Preprocessing runs twice for
+/// a flowchart, which is a handful of string passes over a few hundred bytes.
+pub fn is_flowchart(src: &str) -> bool {
+    let pre = preprocess(src);
+    let lines: Vec<&str> = pre.text.split('\n').collect();
+    find_header(&lines).is_ok()
+}
+
 // ---------------------------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------------------------

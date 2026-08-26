@@ -15,10 +15,14 @@
 //!   out: labels measured by [`text_metrics`], boxes sized by mermaid's own shape formulas,
 //!   positions from [`layout`], and then the part that is konoma's alone — clipping each edge to
 //!   the shape it touches, curving it, and putting its label back on the middle of the line.
-//!
-//! Subgraph frames are still to come. Until stage 1e swaps it,
-//! `preview::markdown::mermaid_to_svg` is untouched and every diagram konoma actually shows still
-//! goes through `mermaid-rs-renderer`; nothing in this module is on the drawing path yet.
+//! * **Stage 1d** framed subgraphs.
+//! * **Stage 1e** put it on the drawing path. `preview::markdown::mermaid_to_svg` now asks
+//!   [`flowchart::is_flowchart`] which renderer owns a diagram: a `flowchart` / `graph` /
+//!   `flowchart-elk` is drawn here, and every other kind still goes to `mermaid-rs-renderer`
+//!   until the later stages take those over too (§7 — the migration must not shrink the set of
+//!   diagrams konoma can draw). A flowchart this module refuses is **not** handed to the crate:
+//!   it degrades to the Unicode text diagram, so a bug here stays visible instead of being
+//!   painted over by the renderer it is replacing.
 
 pub mod flowchart;
 pub mod layout;
