@@ -18,6 +18,13 @@
 //! which table the kerning is read from ([`KernSource`]), that only the Latin script's features
 //! count, and that a variable face's `opsz` axis follows `font-size`.
 //!
+//! **A character the measuring face has no glyph for is measured out of the face resvg will fall
+//! back to** — resolved by handing that character to usvg's own
+//! `FontResolver::default_fallback_selector`, against the same database. That is a fourth rule of
+//! the same kind, and it arrived the same way: the approximation it replaced (count such a
+//! character as one em) was verified against CJK, where it holds, and a Linux box with an emoji
+//! font showed it is 24% wrong for an emoji. See [`TextMetrics::measure`].
+//!
 //! The difference between the two is what the module's main instrument measures (see the tests): a
 //! minimal `<text>` SVG is put through usvg with the same font DB and [`measure`] is compared
 //! against `Text::bounding_box().width()`, which usvg computes from the very advances it used to
@@ -33,6 +40,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use resvg::usvg;
 use resvg::usvg::fontdb;
 use skrifa::instance::{Location, LocationRef, Size};
 use skrifa::raw::tables::gpos::{ExtensionSubtable, Gpos, PairPos, PositionLookup};
@@ -65,10 +73,15 @@ pub const FONT_SIZE: f32 = 14.0;
 /// not there — a diagram of empty boxes, with no error anywhere. So the renderer has to ask *before*
 /// it builds an SVG, and degrade to the text diagram when the answer is `Err` (PRD design
 /// principle #3: never show a broken preview).
+///
+/// Through the shared database both variants are now **nearly unreachable**:
+/// [`crate::preview::svg::shared_fontdb`] registers an embedded sans-serif face when the machine
+/// resolves none of its own, so a font-less container gets Latin labels rather than an `Err`.
+/// What is left is the case where even that embedded face fails to load, and the case of a
+/// database built by something other than `shared_fontdb`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FontUnavailable {
     /// The font database has no face for [`FONT_FAMILY`] (nor for usvg's `serif` last resort).
-    /// A minimal Linux container with no fonts installed lands here.
     NoMatch,
     /// A face matched but its data could not be parsed as an OpenType face (or reported a
     /// nonsensical units-per-em). Treated the same as "no font": do not draw.
@@ -111,7 +124,14 @@ pub enum KernSource {
 struct CharAdvance {
     /// Glyph in the measuring face, or `None` when the face has no glyph for this character.
     gid: Option<u32>,
-    /// Horizontal advance in font units.
+    /// Horizontal advance, **always expressed in the measuring face's units** so that the whole
+    /// sum is scaled to px exactly once.
+    ///
+    /// For a character the measuring face does have, that is simply its advance. For one it does
+    /// not, it is the advance of the face resvg will fall back to, rescaled by the ratio of the
+    /// two faces' units-per-em — resvg scales each glyph by *its own* face's upem
+    /// (`form_glyph_clusters` in usvg's `text::layout`), and rescaling here is how a single
+    /// multiply at the end reproduces that.
     units: f32,
 }
 
@@ -136,10 +156,18 @@ pub struct TextMetrics {
     /// Whether the face has an `opsz` variation axis, which usvg drives from `font-size`.
     has_opsz: bool,
     cache: Mutex<Cache>,
-    /// How many times the face data has been opened. Only the cold path touches it; the cache test
-    /// uses it as a deterministic stand-in for "did this call do real work" (konoma prefers a
-    /// structural guard over a wall-clock one — see `speed_tests.rs`).
+    /// How many times the **measuring** face's data has been opened. Only the cold path touches it;
+    /// the cache test uses it as a deterministic stand-in for "did this call do real work" (konoma
+    /// prefers a structural guard over a wall-clock one — see `speed_tests.rs`).
     face_opens: AtomicUsize,
+    /// How many times usvg's fallback selector has been consulted — once per character the
+    /// measuring face has no glyph for, and never again for that character.
+    ///
+    /// Counted separately from [`Self::face_opens`] because it is by far the more expensive of the
+    /// two: the selector walks the whole database asking each face whether it has the character,
+    /// and each of those questions opens that face. It is the number this module's cache exists to
+    /// hold down, so it is the number the cache's guard test asserts on.
+    fallback_probes: AtomicUsize,
 }
 
 impl TextMetrics {
@@ -193,6 +221,7 @@ impl TextMetrics {
             has_opsz,
             cache: Mutex::new(Cache::default()),
             face_opens: AtomicUsize::new(0),
+            fallback_probes: AtomicUsize::new(0),
         })
     }
 
@@ -217,7 +246,8 @@ impl TextMetrics {
     }
 
     /// Whether the measuring face lacks a glyph for at least one character of `text` (so usvg would
-    /// fall back to another face and konoma's one-em rule takes over).
+    /// re-shape that character with a fallback face, and [`measure`](Self::measure) reads the
+    /// advance out of that face instead).
     pub fn has_missing_glyph(&self, text: &str) -> bool {
         let chars: Vec<char> = text.chars().collect();
         let key = self.size_key(FONT_SIZE);
@@ -242,17 +272,53 @@ impl TextMetrics {
         self.face_opens.load(Ordering::Relaxed)
     }
 
+    /// How many times usvg's fallback selector has been consulted so far — once per character the
+    /// measuring face has no glyph for, and never again for that character.
+    pub fn fallback_probes(&self) -> usize {
+        self.fallback_probes.load(Ordering::Relaxed)
+    }
+
     /// Width, in px, of `text` drawn on a single line at `font_size`.
     ///
-    /// Sum of horizontal advances plus pair kerning. A character the measuring face has no glyph
-    /// for counts as **one em** — usvg will re-shape such a run with a fallback face, and for the
-    /// CJK ranges that dominate that case the fallback's advance is exactly 1em (verified against
-    /// usvg in this module's tests).
+    /// Sum of horizontal advances plus pair kerning.
     ///
-    /// Known approximation: on a variable face the advances follow the `opsz` axis (as usvg does)
-    /// but the kern values are read from the default instance, so a face that also varies its
-    /// kerning is off by a fraction of a pixel per pair (≤1.6px on a 12-character label, measured on
-    /// macOS's system face).
+    /// # Characters the measuring face has no glyph for
+    ///
+    /// **Their advance is read out of the face resvg will actually fall back to**, resolved through
+    /// usvg's own `FontResolver::default_fallback_selector` against this same database — not
+    /// guessed. When no face in the database has the character either, the advance is the measuring
+    /// face's `.notdef` glyph, which is exactly what usvg then leaves in the run.
+    ///
+    /// This used to be "one em", justified against CJK, where it happens to hold. **It does not
+    /// hold generally**: an emoji taken from Noto Color Emoji is *wider* than an em and an
+    /// unresolvable character is narrower, so on Linux an emoji label was given a box of the wrong
+    /// size and the text overflowed it. Measuring what will actually be drawn is the whole premise
+    /// of this module; one em was a hole in it.
+    ///
+    /// # Known approximations
+    ///
+    /// 1. **Kerning is not applied across a fallback seam**, and neither is the re-shaping usvg
+    ///    does when a fallback face happens to cover the *entire* run: in that one case usvg keeps
+    ///    the fallback's shaping for every character, including the ones the measuring face could
+    ///    have drawn, while this sum keeps the measuring face's advances for those. That is the
+    ///    residue the instrument's fallback tolerance covers, and it is why a mixed-script string
+    ///    is judged by that tolerance rather than by the strict one.
+    /// 2. On a variable face the advances follow the `opsz` axis (as usvg does) but the kern values
+    ///    are read from the default instance, so a face that also varies its kerning is off by a
+    ///    fraction of a pixel per pair (≤1.6px on a 12-character label, measured on macOS's system
+    ///    face).
+    /// 3. **A few characters never reach a fallback face at all**, because harfrust resolves them
+    ///    itself and hands usvg a glyph that is not `.notdef`, so usvg's selector is never called
+    ///    for them: the space characters it synthesises an advance for when the face has none
+    ///    (U+3000, U+202F, U+205F …) and the default-ignorables it hides (U+FEFF, U+180E — drawn at
+    ///    zero width). konoma reads a fallback face for those and is out by ~1.5px per character
+    ///    (measured on macOS/Arial: U+3000 drawn at 12.455px against 14.0 measured). This is not a
+    ///    new gap — the one-em rule gave the same 14.0 — and it is left rather than guessed at,
+    ///    because the synthesised value is *not* a fixed fraction of the em (the same character
+    ///    comes out at 1.000em against a 1000-upem face and 0.890em against Arial), so writing the
+    ///    rule down here would mean writing down a number this code cannot derive.
+    ///    `the_fallback_face_konoma_reads_is_the_one_usvg_uses` marks the boundary: every character
+    ///    that *does* reach the selector is checked to reach the same face resvg used.
     ///
     /// `text` is expected to be a single line: callers split on `<br>` and `\n` first. A literal
     /// newline here is measured as whatever the face does with it, which is not what an SVG renderer
@@ -305,7 +371,8 @@ impl TextMetrics {
         units * (font_size / self.upem)
     }
 
-    /// Populate the per-character and per-pair caches for `chars`, opening the face at most once.
+    /// Populate the per-character and per-pair caches for `chars`, opening the measuring face at
+    /// most once and each fallback face at most once.
     fn fill(&self, cache: &mut Cache, chars: &[char], font_size: f32, key: u32) {
         let need_chars = chars.iter().any(|c| !cache.chars.contains_key(&(*c, key)));
         let need_pairs = need_chars || {
@@ -323,7 +390,11 @@ impl TextMetrics {
         if !need_chars && !need_pairs {
             return;
         }
-        let upem = self.upem;
+        // Characters this pass finds the measuring face has no glyph for. Collected rather than
+        // resolved inline: resolving one means asking usvg's selector, which walks the database and
+        // opens other faces, and doing that while the measuring face is open would nest a scan
+        // inside a borrow for no reason.
+        let mut missing: Vec<char> = Vec::new();
         self.face_opens.fetch_add(1, Ordering::Relaxed);
         let _ = self.db.with_face_data(self.face, |data, index| {
             let Ok(font) = FontRef::from_index(data, index) else {
@@ -339,6 +410,10 @@ impl TextMetrics {
                 font.axes().location::<[(Tag, f32); 0]>([])
             };
             let metrics = font.glyph_metrics(Size::unscaled(), &location);
+            // What resvg leaves in the run for a character *nothing* in the database can draw: the
+            // shaper maps it to glyph 0 and keeps glyph 0's advance. Read at the same location as
+            // the rest, so an optical-size axis moves it too.
+            let notdef = metrics.advance_width(GlyphId::new(0)).unwrap_or(0.0);
             for &c in chars {
                 if cache.chars.contains_key(&(c, key)) {
                     continue;
@@ -348,12 +423,17 @@ impl TextMetrics {
                         gid: Some(gid.to_u32()),
                         units: metrics.advance_width(gid).unwrap_or(0.0),
                     },
-                    // No glyph here: usvg re-shapes with a fallback face. One em is the
-                    // approximation (see `measure`).
-                    _ => CharAdvance {
-                        gid: None,
-                        units: upem,
-                    },
+                    // No glyph here. usvg re-shapes the character with a fallback face, so the
+                    // advance has to come out of *that* face; `fill_fallbacks` below goes and gets
+                    // it. `.notdef` is what is left standing when no face in the database has the
+                    // character either — which is also exactly what usvg leaves standing.
+                    _ => {
+                        missing.push(c);
+                        CharAdvance {
+                            gid: None,
+                            units: notdef,
+                        }
+                    }
                 };
                 cache.chars.insert((c, key), entry);
             }
@@ -379,6 +459,107 @@ impl TextMetrics {
                 prev = gid;
             }
         });
+        if !missing.is_empty() {
+            self.fill_fallbacks(cache, &missing, font_size, key);
+        }
+    }
+
+    /// Replace the seeded `.notdef` advance of every character in `missing` with the advance of the
+    /// face **usvg will really fall back to** for it.
+    ///
+    /// `missing` holds only characters this call newly inserted, so every entry here is a genuine
+    /// first sighting; a character measured a second time is answered out of `cache.chars` and
+    /// never reaches this function. That is what keeps the cost of the walk below off the hot path,
+    /// and the walk is not cheap: measured on macOS (release, ~700 system faces), resolving one
+    /// character costs **0.5 ms for CJK and 12.8 ms for an emoji** — the selector asks every face
+    /// in turn whether it has the character, and each question maps that face's file, so a
+    /// character only the last face can draw pays for all of them. A warm `measure` is unchanged at
+    /// ~340 ns (measured either side of this change; the warm path never gets here). Once per
+    /// character for the life of the process is therefore the only acceptable rate, and
+    /// `a_fallback_face_is_resolved_once_per_character_and_never_again` is what holds it there.
+    ///
+    /// The cache lock is held across the walk, so a second thread measuring at the same moment
+    /// waits for it. That is bounded by the same once-per-character rule, and mermaid rendering is
+    /// always on a worker thread (`docs/FEATURE-MERMAID-RENDERER.md` §1), never the UI one.
+    ///
+    /// # How the face is chosen
+    ///
+    /// By [`Self::fallback_face`], which asks usvg rather than reimplementing it, against the same
+    /// `Arc` the preview draws with — **one database, one lookup path**.
+    ///
+    /// # What is copied out of it
+    ///
+    /// The glyph's horizontal advance, at the same optical size usvg would shape it at, rescaled
+    /// from the fallback face's units-per-em into the measuring face's. usvg scales each glyph by
+    /// its own face's upem, so rescaling here is what lets the caller keep summing in one unit
+    /// system and scale once at the end.
+    ///
+    /// A character is left on `.notdef` when the selector names no face (nothing in the database
+    /// has it — usvg then stops looking too and draws the same `.notdef`), when the named face is
+    /// one usvg would itself refuse for its units-per-em, or when that face turns out to map the
+    /// character to glyph 0 after all.
+    /// The face usvg will fall back to for `c`, or `None` when it would find none.
+    ///
+    /// **Asked of usvg, not reimplemented.** `FontResolver::default_fallback_selector` is the very
+    /// closure usvg's shaping loop calls when a glyph comes back missing, and the excluded-font
+    /// list is the one usvg passes at that moment: the face that just failed. Anything cleverer
+    /// here would be a second opinion about which face draws the character, which is the mismatch
+    /// this whole module exists to prevent.
+    ///
+    /// Public to the crate so the instrument can check konoma reads the same face resvg draws with.
+    pub fn fallback_face(&self, c: char) -> Option<fontdb::ID> {
+        self.fallback_probes.fetch_add(1, Ordering::Relaxed);
+        // The selector wants `&mut Arc<Database>` so that a *custom* resolver may load fonts on
+        // demand. The default one only reads, and this clone points at the same database either
+        // way — it is deliberately not a second font database (see the module docs).
+        let mut db = self.db.clone();
+        usvg::FontResolver::default_fallback_selector()(c, &[self.face], &mut db)
+    }
+
+    fn fill_fallbacks(&self, cache: &mut Cache, missing: &[char], font_size: f32, key: u32) {
+        // Group by face: a CJK label is a dozen characters that all land on the same fallback, and
+        // opening a face is a file mapping.
+        let mut by_face: HashMap<fontdb::ID, Vec<char>> = HashMap::new();
+        for &c in missing {
+            if let Some(id) = self.fallback_face(c) {
+                by_face.entry(id).or_default().push(c);
+            }
+        }
+        for (id, chars) in by_face {
+            let _ = self.db.with_face_data(id, |data, index| {
+                let Ok(font) = FontRef::from_index(data, index) else {
+                    return;
+                };
+                let fb_upem = font
+                    .metrics(Size::unscaled(), LocationRef::default())
+                    .units_per_em;
+                // usvg's `load_font` rejects this range and then gives up on falling back at all,
+                // leaving the `.notdef` already in the cache.
+                if !(16..=16384).contains(&fb_upem) {
+                    return;
+                }
+                let location: Location = if font.axes().get_by_tag(Tag::new(b"opsz")).is_some() {
+                    font.axes().location([(Tag::new(b"opsz"), font_size)])
+                } else {
+                    font.axes().location::<[(Tag, f32); 0]>([])
+                };
+                let metrics = font.glyph_metrics(Size::unscaled(), &location);
+                let charmap = font.charmap();
+                let rescale = self.upem / fb_upem as f32;
+                for c in chars {
+                    let Some(gid) = charmap.map(c) else { continue };
+                    if gid.to_u32() == 0 {
+                        continue;
+                    }
+                    let Some(advance) = metrics.advance_width(gid) else {
+                        continue;
+                    };
+                    if let Some(entry) = cache.chars.get_mut(&(c, key)) {
+                        entry.units = advance * rescale;
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -773,6 +954,21 @@ mod tests {
 
     /// `probe` against an arbitrary `font-family` string (used by the cross-font test).
     fn probe_with_family(family: &str, text: &str, font_size: f32) -> Option<Probe> {
+        probe_in(shared_fontdb(), family, text, font_size)
+    }
+
+    /// `probe_with_family` against an arbitrary font database.
+    ///
+    /// The fallback tests hand-build a two-face database, because "the advance of the face resvg
+    /// falls back to" is a different number on every machine and a pin has to be a number this
+    /// code could not have invented. Everything else is unchanged, so what those tests compare
+    /// against is still resvg's own shaper.
+    fn probe_in(
+        db: Arc<fontdb::Database>,
+        family: &str,
+        text: &str,
+        font_size: f32,
+    ) -> Option<Probe> {
         let svg = format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="6000" height="400"><text x="0" y="200" font-family="{}" font-size="{font_size}" xml:space="preserve">{}</text></svg>"#,
             xml_escape(family),
@@ -784,7 +980,7 @@ mod tests {
         let default_select = usvg::FontResolver::default_font_selector();
         let default_fallback = usvg::FontResolver::default_fallback_selector();
         let opt = usvg::Options {
-            fontdb: shared_fontdb(),
+            fontdb: db,
             font_resolver: usvg::FontResolver {
                 select_font: Box::new(move |font, db| {
                     let id = default_select(font, db);
@@ -863,14 +1059,22 @@ mod tests {
 
     /// Agreement tolerance for a string that made usvg fall back to another face.
     ///
-    /// Here konoma is deliberately approximating: a character the measuring face has no glyph for is
-    /// counted as one em, while usvg re-shapes the run with whatever face the font database happens
-    /// to offer. That face is platform-dependent (macOS picks `Arial Unicode MS`, a Linux box will
-    /// pick something else), so exactness cannot be required without pinning a font. One em is exact
-    /// for CJK ideographs and emoji in every mainstream fallback face, which is why on this machine
-    /// these cases also land on 0.000000; the 2% band is for the case where a fallback face's *Latin*
-    /// advances differ from the primary's, which is the one way this approximation can drift. It is
-    /// still four times tighter than the smallest structural bug the instrument guards against.
+    /// Since konoma reads the fallback face's own advance, these cases are no longer approximate
+    /// per character — measured on macOS 2026-08, every fallback case in `CORPUS` now comes out
+    /// **bit-identical** to resvg (delta 0.000000), where the one-em rule they were written for was
+    /// merely close. What the band still covers is the one place konoma and usvg genuinely do
+    /// different things: when a fallback face happens to cover the *whole* run, usvg re-shapes all
+    /// of it with that face, including the characters the measuring face could have drawn, while
+    /// this sum keeps the measuring face's advances for those (see [`TextMetrics::measure`]). How
+    /// far apart the two faces' Latin advances are is a property of the machine's font book, so
+    /// exactness cannot be demanded here without pinning a font — which
+    /// `a_missing_character_takes_the_advance_of_the_face_resvg_falls_back_to` does instead, at the
+    /// strict tolerance, on a database it builds itself.
+    ///
+    /// Left at 2% rather than tightened to the measured 0: the numbers above are one machine's, and
+    /// a band that fails on the next machine's font book would be reporting the font book, not
+    /// konoma. It is still four times tighter than the smallest structural bug the instrument
+    /// guards against, and the emoji regression this rule replaced was 24% — well outside it.
     const FALLBACK_TOLERANCE_RATIO: f32 = 0.02;
     const FALLBACK_TOLERANCE_FLOOR_PX: f32 = 0.5;
 
@@ -1075,20 +1279,245 @@ mod tests {
         );
     }
 
-    /// The one-em rule for characters the measuring face has no glyph for, stated as an equality so
-    /// a change to it cannot hide inside a tolerance.
+    /// A database holding exactly the faces named, with the first of them registered as the
+    /// `sans-serif` generic — a stand-in for what fontconfig does on a real machine.
+    ///
+    /// The faces are KaTeX's, because `Cargo.toml` already embeds them for the math previewer, so
+    /// no fixture file has to be carried; and because they are the right shape for a fallback test:
+    /// `KaTeX_SansSerif-Regular` is Latin-only, `KaTeX_Main-Regular` adds mathematical symbols it
+    /// does not have, and their advances for those symbols are nothing like one em.
+    fn katex_db(files: &[&str]) -> Arc<fontdb::Database> {
+        let mut db = fontdb::Database::new();
+        for file in files {
+            let bytes = ratex_katex_fonts::ttf_bytes(file)
+                .unwrap_or_else(|| panic!("the embedded KaTeX set carries {file}"))
+                .into_owned();
+            db.load_font_data(bytes);
+        }
+        let first = db
+            .faces()
+            .next()
+            .and_then(|f| f.families.first().map(|(name, _)| name.clone()))
+            .expect("the first face registers a family");
+        db.set_sans_serif_family(first);
+        Arc::new(db)
+    }
+
+    /// **The rule for a character the measuring face has no glyph for, pinned to a number this
+    /// code could not have invented.**
+    ///
+    /// This test used to assert that such a character counts as **one em**, and it passed — on
+    /// macOS, against CJK, where a fallback face's advance happens to be exactly one em. One em is
+    /// not the rule, it was a coincidence that held for the case it was checked against. A Linux
+    /// box says so plainly: with `fonts-noto-color-emoji` installed resvg draws `🚀` at 1.245em, so
+    /// an emoji label was handed a box 3.4px too narrow and the text ran out of the far side of it;
+    /// with no emoji font at all resvg draws 0.8em and the box was too wide.
+    ///
+    /// Since "the advance of the face resvg falls back to" is a different number on every machine,
+    /// the pin is staged rather than borrowed: two faces, the second holding a character the first
+    /// does not, and three numbers that are far apart — 0.556em is what the fallback face says,
+    /// 1em is what the old rule said, 0.25em is this face's `.notdef`. Only reading the fallback
+    /// face gets the first one.
     #[test]
-    fn characters_without_a_glyph_count_as_one_em() {
-        let Some(m) = metrics() else { return };
-        let cjk = "処理を実行する";
-        assert_eq!(
-            m.measure(cjk, FONT_SIZE),
-            cjk.chars().count() as f32 * FONT_SIZE,
-            "グリフの無い CJK は 1 文字 = 1em"
+    fn a_missing_character_takes_the_advance_of_the_face_resvg_falls_back_to() {
+        // `KaTeX_SansSerif-Regular` has no `∀`; `KaTeX_Main-Regular` draws it 556/1000 em wide.
+        let text = "∀";
+        let expected = 0.556 * FONT_SIZE;
+        let db = katex_db(&["KaTeX_SansSerif-Regular.ttf", "KaTeX_Main-Regular.ttf"]);
+        let m = TextMetrics::resolve(db.clone()).expect("the staged sans-serif resolves");
+        assert!(
+            m.has_missing_glyph(text),
+            "setup: the measuring face must be the one *without* the character"
         );
-        // ... and that rule is not a private convention: resvg agrees.
-        let actual = probe(cjk, FONT_SIZE).expect("描かれる").width;
-        assert!((m.measure(cjk, FONT_SIZE) - actual).abs() <= STRICT_TOLERANCE_PX);
+
+        let mine = m.measure(text, FONT_SIZE);
+        assert!(
+            (mine - expected).abs() <= STRICT_TOLERANCE_PX,
+            "measured {mine} where the fallback face's advance is {expected}"
+        );
+        // The two answers this is not, spelled out so the assertion above cannot be met by luck.
+        assert!(
+            (mine - FONT_SIZE).abs() > 6.0,
+            "one em would be {FONT_SIZE}, and that is the rule this replaced"
+        );
+        assert!(
+            (mine - 0.25 * FONT_SIZE).abs() > 4.0,
+            "the measuring face's own .notdef would be {}",
+            0.25 * FONT_SIZE
+        );
+
+        // …and it is not a private convention: resvg, handed the same two faces, draws it there.
+        let p = probe_in(db, FONT_FAMILY, text, FONT_SIZE).expect("resvg draws it");
+        assert_eq!(
+            p.fallbacks.len(),
+            1,
+            "setup: resvg must actually have fallen back for this character"
+        );
+        assert!(
+            (mine - p.width).abs() <= STRICT_TOLERANCE_PX,
+            "konoma={mine} resvg={}",
+            p.width
+        );
+    }
+
+    /// The other end of the same rule: a character **no** face in the database has.
+    ///
+    /// usvg's selector names nobody, usvg stops looking, and the run keeps the glyph the measuring
+    /// face already put there — `.notdef`. So that is the advance to use, and it is a quarter of an
+    /// em in this face, not a whole one. This is the case a font-less Linux box is in for every CJK
+    /// label, so it is not hypothetical.
+    #[test]
+    fn a_character_no_face_can_draw_takes_the_measuring_faces_notdef() {
+        let text = "∀";
+        let expected = 0.25 * FONT_SIZE;
+        let db = katex_db(&["KaTeX_SansSerif-Regular.ttf"]);
+        let m = TextMetrics::resolve(db.clone()).expect("the staged sans-serif resolves");
+        assert!(m.has_missing_glyph(text), "setup: the face must lack it");
+
+        let mine = m.measure(text, FONT_SIZE);
+        assert!(
+            (mine - expected).abs() <= STRICT_TOLERANCE_PX,
+            "measured {mine} where this face's .notdef is {expected} wide"
+        );
+        assert!(
+            (mine - FONT_SIZE).abs() > 9.0,
+            "one em would be {FONT_SIZE}, and that is the rule this replaced"
+        );
+
+        let p = probe_in(db, FONT_FAMILY, text, FONT_SIZE).expect("resvg draws it");
+        assert!(
+            p.fallbacks.is_empty(),
+            "setup: there is nothing for resvg to fall back to"
+        );
+        assert!(
+            (mine - p.width).abs() <= STRICT_TOLERANCE_PX,
+            "konoma={mine} resvg={}",
+            p.width
+        );
+    }
+
+    /// The same rule against **this machine's** fonts, which is where the units-per-em rescaling
+    /// gets exercised: a Linux box falls back from FreeSans (1000 upem) to Noto Color Emoji or
+    /// Droid Sans Fallback (2048), so an advance copied across without rescaling is out by 2x.
+    ///
+    /// Stated at the strict tolerance, not the fallback one. A run the measuring face covers
+    /// nowhere is the case where konoma and usvg do the same thing for every character in it, so
+    /// there is no approximation left to leave room for.
+    ///
+    /// **Both branches assert**, so the test cannot go quiet by running somewhere it has nothing to
+    /// say: on a machine with a CJK or emoji face it checks the fallback advance, and on one
+    /// without — a font-less container, where konoma's own embedded Latin face is doing the
+    /// drawing — it checks that the `.notdef` the run keeps is the width resvg lays out.
+    #[test]
+    fn a_run_the_measuring_face_cannot_draw_matches_resvg_exactly() {
+        let Some(m) = metrics() else { return };
+        let mut with_fallback = 0usize;
+        let mut without = 0usize;
+        for text in ["処理を実行する", "全画面プレビュー", "🚀"] {
+            assert!(
+                m.has_missing_glyph(text),
+                "{text:?} is expected to be beyond any sans-serif face konoma measures with"
+            );
+            let Some(p) = probe(text, FONT_SIZE) else {
+                continue;
+            };
+            if p.fallbacks.is_empty() {
+                without += 1;
+            } else {
+                with_fallback += 1;
+            }
+            let mine = m.measure(text, FONT_SIZE);
+            assert!(
+                (mine - p.width).abs() <= STRICT_TOLERANCE_PX,
+                "{text:?}: konoma={mine:.4} resvg={:.4} (fallback faces: {})",
+                p.width,
+                p.fallbacks.len()
+            );
+        }
+        assert!(
+            with_fallback + without >= 3,
+            "usvg drew nothing for one of these strings, so the test skipped it silently"
+        );
+        eprintln!("fell back for {with_fallback}, kept .notdef for {without}");
+    }
+
+    /// **konoma reads the advance out of the face resvg really uses — checked face by face.**
+    ///
+    /// The advance comparisons above would pass if konoma happened to pick a face with the same
+    /// metrics, which on a machine full of metric-compatible Latin faces is not far-fetched. This
+    /// asks the sharper question directly: for every character in the corpus the measuring face
+    /// cannot draw, the face [`TextMetrics::fallback_face`] names must be *the* face usvg reports
+    /// falling back to for that character. The reference is usvg's own resolver, recorded through
+    /// the probe's `select_fallback` hook, so this is not konoma checking its own arithmetic.
+    ///
+    /// Characters that usvg resolves **without** consulting the selector are outside the rule and
+    /// say so by reporting no fallback at all — see [`TextMetrics::measure`]'s third approximation.
+    #[test]
+    fn the_fallback_face_konoma_reads_is_the_one_usvg_uses() {
+        let Some(m) = metrics() else { return };
+        let mut chars: Vec<char> = CORPUS
+            .iter()
+            .flat_map(|(_, t)| t.chars())
+            .filter(|c| m.has_missing_glyph(&c.to_string()))
+            .collect();
+        chars.sort_unstable();
+        chars.dedup();
+        let mut checked = 0usize;
+        for c in chars {
+            let text = c.to_string();
+            let Some(p) = probe(&text, FONT_SIZE) else {
+                continue;
+            };
+            let Some(&used) = p.fallbacks.first() else {
+                continue;
+            };
+            checked += 1;
+            assert_eq!(
+                m.fallback_face(c),
+                Some(used),
+                "U+{:04X}: konoma would read {:?}, resvg drew it from {:?}",
+                c as u32,
+                m.fallback_face(c).map(family_name),
+                family_name(used)
+            );
+        }
+        assert!(
+            checked >= 3,
+            "only {checked} corpus characters made usvg fall back, so this checked almost nothing"
+        );
+    }
+
+    /// The cache, guarded structurally the way `face_data_is_opened_only_on_a_cache_miss` guards
+    /// the measuring face — and for a sharper reason.
+    ///
+    /// Resolving a fallback is not a cheap lookup: usvg's selector walks **every** face in the
+    /// database asking whether it has the character, opening each one to ask. Doing that per
+    /// character per render would put a font-book scan on the path that sizes every box in every
+    /// diagram. It has to happen once per character for the life of the process, and the count says
+    /// so in a way a stopwatch could not.
+    #[test]
+    fn a_fallback_face_is_resolved_once_per_character_and_never_again() {
+        let db = katex_db(&["KaTeX_SansSerif-Regular.ttf", "KaTeX_Main-Regular.ttf"]);
+        let m = TextMetrics::resolve(db).expect("the staged sans-serif resolves");
+        assert_eq!(m.fallback_probes(), 0, "resolving alone probes nothing");
+
+        // Three distinct characters the measuring face lacks, each written twice.
+        let text = "∀ℵ√∀ℵ√";
+        let _ = m.measure(text, FONT_SIZE);
+        assert_eq!(
+            m.fallback_probes(),
+            3,
+            "one probe per distinct character, not per occurrence"
+        );
+        for _ in 0..500 {
+            let _ = m.measure(text, FONT_SIZE);
+            let _ = m.measure(text, FONT_SIZE * 2.0);
+        }
+        assert_eq!(
+            m.fallback_probes(),
+            3,
+            "a warm measurement re-ran usvg's font-book walk = the cache is not holding"
+        );
     }
 
     #[test]
@@ -1252,8 +1681,8 @@ mod tests {
                 if p.primary != Some(m.face_id()) {
                     continue;
                 }
-                // Skip strings the face cannot draw itself: there konoma is deliberately
-                // approximating another face's advances (the documented one-em rule).
+                // Skip strings the face cannot draw itself: this test is about how konoma reads
+                // *this* face, and a string it cannot draw is answered out of another one.
                 if m.has_missing_glyph(t) {
                     continue;
                 }
@@ -1398,6 +1827,27 @@ mod tests {
                 None => eprintln!("{name:<14} {mine:>9.3} {:>9} (usvg: no text node)", "-"),
             }
         }
+        // Cost of the *cold* path, which is where resolving a fallback face lives: usvg's selector
+        // walks the whole database asking each face whether it has the character. Reported per
+        // character rather than per call, because that is how often it happens — once, ever, for
+        // each distinct character a diagram uses (`a_fallback_face_is_resolved_once_per_character…`
+        // is the assertion; this is the number).
+        for (name, text) in [
+            ("latin", "Preview label"),
+            ("cjk", "処理を実行する"),
+            ("emoji", "build 🚀 ship"),
+        ] {
+            let cold = TextMetrics::resolve(shared_fontdb()).expect("解決できる");
+            let t0 = std::time::Instant::now();
+            let _ = cold.measure(text, FONT_SIZE);
+            let us = t0.elapsed().as_micros();
+            eprintln!(
+                "cold measure({name}) = {us} us total, {} fallback probes, {} face opens",
+                cold.fallback_probes(),
+                cold.face_opens()
+            );
+        }
+
         // Wall-clock cost of a warm call, for the record (the asserting guard is structural —
         // `face_data_is_opened_only_on_a_cache_miss`).
         for (_, t) in CORPUS {

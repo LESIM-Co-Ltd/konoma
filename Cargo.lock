@@ -1664,6 +1664,7 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "ratatui-image",
+ "ratex-katex-fonts",
  "ratex-layout",
  "ratex-parser",
  "ratex-svg",

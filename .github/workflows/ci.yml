@@ -79,10 +79,38 @@ jobs:
         with:
           key: linux-check
 
-      # System libraries for the C-backed dependencies (libgit2 / arboard / trash).
+      # System libraries for the C-backed dependencies (libgit2 / arboard / trash), plus fonts.
       # Each attempt is bounded: on 2026-08-19 this step hung on a mirror for 90 minutes, having
       # taken 35 seconds on the run before it. A stuck connection now fails in minutes and is
       # retried on a fresh one rather than holding the whole job open.
+      #
+      # The fonts are not decoration. konoma draws mermaid diagrams itself now, measuring and
+      # drawing through one `fontdb`, and the runner ships no font a diagram can use — so this job
+      # was exercising only konoma's font-less fallback. Which packages, and why these:
+      #
+      # * `fontconfig-config` supplies /etc/fonts, without which fontdb leaves the generic
+      #   `sans-serif` pointing at its built-in default of "Arial" and nothing on a Linux box
+      #   answers to that name.
+      # * `fonts-freefont-ttf` supplies the family the configuration actually names. fontdb takes
+      #   the *last* `sans-serif` alias in the merged fontconfig files, which on Debian/Ubuntu is
+      #   `69-unifont.conf`, and its first preference is FreeSans. Measured: with
+      #   `fonts-dejavu-core` alone — the obvious choice — the generic still resolves to nothing,
+      #   because DejaVu Sans is never what the alias asks for.
+      # * `fonts-dejavu-core` comes along as a dependency of `fontconfig-config` anyway; it is
+      #   named so the list says what it relies on.
+      #
+      # The last two are there because konoma measures a character its primary face has no glyph
+      # for by reading the face usvg falls back to, and with neither of these installed there is no
+      # such face — the Linux job would only ever test the branch where the fallback search comes
+      # back empty. Both are dimensions konoma advertises:
+      #
+      # * `fonts-droid-fallback` (~3.9 MB) covers CJK. Handling CJK widths correctly is a headline
+      #   konoma feature; without a CJK face, 6 of the label-measurement cases were measuring
+      #   nothing but `.notdef`.
+      # * `fonts-noto-color-emoji` covers emoji. The GitHub runner image happens to ship it, but a
+      #   container does not, and a test that depends on what an image happens to include is a test
+      #   that changes meaning without anyone editing it. It is also the exact font that exposed
+      #   the one-em measurement bug: it draws an emoji 1.245em wide.
       - name: Install Linux system dependencies
         run: |
           set -eu
@@ -92,7 +120,9 @@ jobs:
                 pkg-config cmake \
                 libssl-dev libssh2-1-dev zlib1g-dev \
                 libdbus-1-dev \
-                libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev; then
+                libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+                fontconfig-config fonts-dejavu-core fonts-freefont-ttf \
+                fonts-droid-fallback fonts-noto-color-emoji; then
               exit 0
             fi
             echo "apt attempt $attempt did not finish; retrying"
@@ -125,6 +155,16 @@ jobs:
 
       - name: Test (default features)
         run: cargo test
+
+      # Checks that the font install above actually worked, rather than assuming it. konoma falls
+      # back to an embedded face when the machine resolves no sans-serif, so a botched font list
+      # would not turn this job red — it would quietly stop testing the path every real Linux user
+      # is on, which is the failure mode this whole change exists to fix. The test is `#[ignore]`d
+      # because it asserts a fact about the host and a font-less container is a legitimate host;
+      # here it is run by name, on a host whose fonts we just chose. It reuses the binary the step
+      # above built, so it costs seconds.
+      - name: Check the runner really has a usable sans-serif
+        run: cargo test -- --ignored --exact preview::svg::tests::the_system_resolves_sans_serif_without_the_fallback
 
       - name: Test (no default features)
         run: cargo test --no-default-features

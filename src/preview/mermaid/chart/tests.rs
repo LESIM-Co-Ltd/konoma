@@ -459,10 +459,20 @@ pub const CASES: &[(&str, &str)] = &[
         "treemap-cjk",
         "treemap-beta\ntitle 面積図\n\"果物\"\n  \"りんご\": 30\n  \"みかん\": 20\n\"野菜\"\n  \"にんじん\": 25\n",
     ),
+    // The two long names are long by a **wide** margin, and that is the point of them.
+    //
+    // They used to be long by 0.06px: `A section whose name is far too long…` measured 470.06 on
+    // macOS against a 480px map with 10px of padding, so it was dropped — and 451.92 on a Linux
+    // box, where it fitted and was drawn. A 4% difference between two ordinary sans-serif faces
+    // flipped the case, which means the corpus was not testing the rule, it was reporting the
+    // machine. `no_treemap_case_sits_on_the_label_fit_threshold` now keeps every case in this
+    // corpus away from that edge; these two are written with roughly 2x of room to spare.
     (
         "treemap-long-names",
         "treemap-beta\n\"A section whose name is far too long to fit inside the band above its childr\
-         en\"\n  \"and a leaf whose name is also much too long\": 60\n  \"s\": 40\n",
+         en, and long enough that no font on any machine is going to squeeze it in\"\n  \"and a leaf \
+         whose name is also much too long for the tile it belongs to, by the same wide margin\": 60\
+         \n  \"s\": 40\n",
     ),
     (
         "treemap-many",

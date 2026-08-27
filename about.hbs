@@ -60,6 +60,26 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+### Embedded KaTeX fonts (SIL Open Font License 1.1)
+
+konoma embeds the KaTeX TrueType faces through `ratex-katex-fonts`, which enables
+`ratex-svg`'s `embed-fonts` feature. They typeset LaTeX math, and
+`KaTeX_SansSerif-Regular` is also registered as the last-resort `sans-serif` face
+for mermaid diagrams, so a machine with no system fonts -- a slim container, a CI
+runner -- still draws them.
+
+`cargo-about` reports that crate's declared license, which is MIT and covers its
+Rust code. **The font binaries it ships are separately licensed under the SIL Open
+Font License 1.1**, as `fonts/OFL.txt` and `fonts/FONT_NOTICE.txt` inside the crate
+state; the faces come from the KaTeX project (https://github.com/KaTeX/KaTeX).
+Because the distinction is inside the crate rather than in its metadata, the
+dependency graph cannot express it and this notice is maintained by hand.
+
+The faces are embedded unmodified. OFL 1.1 permits bundling them in a larger work,
+including a commercial one, and konoma does not sell them on their own or use the
+Reserved Font Name for a modified version. The full license text is the copy shipped
+at `fonts/OFL.txt` in `ratex-katex-fonts`.
+
 ### Mermaid layout engine, from `dagre` (Apache-2.0)
 
 konoma's mermaid renderer lays diagrams out with a vendored copy of the `dagre`

@@ -1835,6 +1835,78 @@ fn a_treemap_tile_carries_its_own_name_and_its_sections_colour() {
     assert!(checked >= 20, "only {checked} tile names were read");
 }
 
+/// **No treemap in the corpus may sit near the width at which a label stops being drawn.**
+///
+/// A tile is labelled only if the label fits in it (`treemap`'s module docs), so every treemap case
+/// carries a decision that is made out of a *measured* width — and a measured width is a property
+/// of the machine's fonts. `treemap-long-names` was written 0.06px on the "does not fit" side of
+/// that line as measured on macOS, which put it 18px on the *other* side of it on a Linux box with
+/// FreeSans: the label was drawn there, `chart_corpus_golden` drifted, and what the golden was
+/// reporting was which font the host has.
+///
+/// The corpus is meant to say the same thing everywhere — `chart_emit_golden` exists precisely
+/// because `chart_corpus_golden` goes through real fonts — so the rule is stated here for the whole
+/// kind rather than patched into the one case that tripped: **every tile must be clearly on one
+/// side or the other.** 10% is four times the ~4% spread measured between two ordinary sans-serif
+/// faces, which is the size of drift this has to survive.
+///
+/// The widths come from `Label::measure`, the same function `treemap::tile_panel` sizes with, so
+/// this asks production's question rather than a re-derived one (§6-A item 19).
+#[test]
+fn no_treemap_case_sits_on_the_label_fit_threshold() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    const MARGIN: f64 = 0.10;
+    let mut checked = 0usize;
+    for (name, src) in cases_of(chart::treemap::is_treemap) {
+        let model = chart::treemap::parse(src).expect("parses");
+        let mut names = std::collections::HashMap::new();
+        collect_treemap_names(&model.roots, 0, &mut names);
+        let d = laid_out(src);
+        for tile in of_kind(&d, Glyph::ChartBar) {
+            // The name the tile was made for, or would have been labelled with: taken from the
+            // model **by the tile's id**, which carries the node's place in the source.
+            let Some(text) = tile
+                .id
+                .strip_prefix("tile#")
+                .and_then(|i| i.parse::<usize>().ok())
+                .and_then(|i| names.get(&i))
+            else {
+                continue;
+            };
+            let needed = super::super::Label::measure(text).width + super::treemap::TEXT_PAD * 2.0;
+            let have = tile.size.w;
+            checked += 1;
+            assert!(
+                (needed - have).abs() > needed * MARGIN,
+                "{name}: {text:?} needs {} of a {} tile — {:.1}% apart, so which side of the                  fit rule this case lands on is decided by the host's fonts rather than by the                  case. Make the name clearly too long or clearly short enough.",
+                svg::num(needed),
+                svg::num(have),
+                (needed - have).abs() / needed * 100.0
+            );
+        }
+    }
+    assert!(checked >= 20, "only {checked} tiles were examined");
+}
+
+/// Every treemap node's name against the depth-first index its tile is numbered by — the same
+/// arithmetic `dfs_index` and `a_treemap_tile_carries_its_own_name_and_its_sections_colour` use, so
+/// a tile is matched to a node **by position**, never by looking up the words that were drawn
+/// (§6-A item 15).
+fn collect_treemap_names(
+    items: &[chart::treemap::Node],
+    base: usize,
+    out: &mut std::collections::HashMap<usize, String>,
+) {
+    let mut index = base;
+    for item in items {
+        out.insert(index, item.name.clone());
+        collect_treemap_names(&item.children, index + 1, out);
+        index += super::treemap::subtree_len(item);
+    }
+}
+
 /// **A section is as big as everything under it added up.**
 ///
 /// Stated against a total the test works out itself. `treemap_tile_areas…` asks

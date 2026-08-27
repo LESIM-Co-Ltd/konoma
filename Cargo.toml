@@ -256,6 +256,12 @@ ratex-layout = "0.1"
 ratex-svg = { version = "0.1", default-features = false, features = ["embed-fonts"] }
 # MathStyle(Display=ブロック / Text=インライン)を渡すため(ratex-layout は再エクスポートしない・推移依存)。
 ratex-types = "0.1"
+# The same embedded KaTeX TTFs, read directly: `preview::svg::shared_fontdb` registers
+# `KaTeX_SansSerif-Regular.ttf` as a last-resort `sans-serif` so that a machine with no usable
+# system font still gets mermaid diagrams instead of nothing. `ratex-svg`'s `embed-fonts` above
+# already puts this crate in the graph and its bytes in the binary, so naming it here adds no
+# package and no size — only a second reader of what is already linked in.
+ratex-katex-fonts = "0.1"
 similar = "3.1.1"
 
 # ツリー絞り込み(`/`)のファジー照合(`[ui] filter_mode = "fuzzy"`, 既定)。Helix editor 由来の純 Rust

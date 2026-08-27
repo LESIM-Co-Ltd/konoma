@@ -154,6 +154,12 @@ pub enum RenderError {
     },
     /// No sans-serif font could be resolved, so usvg would draw the boxes and silently drop every
     /// glyph inside them. Checked *before* an SVG is built, because there is no error later.
+    ///
+    /// A machine with no fonts of its own no longer lands here:
+    /// [`crate::preview::svg::shared_fontdb`] registers an embedded sans-serif face as a
+    /// last resort, so this is reachable only if even that face fails to load. The message stays
+    /// as it is because it still says the true thing when it happens — there is no sans-serif to
+    /// draw the labels with — and it is what sends the reader to the text diagram.
     NoFonts,
     /// Every node was dropped (only reachable if a chart's whole node list names subgraphs).
     NothingToDraw,
