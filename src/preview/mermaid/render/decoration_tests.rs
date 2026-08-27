@@ -640,6 +640,7 @@ fn tip_document(tip: Tip) -> String {
         badge: None,
         series: None,
         straight: false,
+        overlay: false,
     });
     drawn(&d)
 }
@@ -846,6 +847,7 @@ fn decoration_document(decoration: Decoration, on: bool) -> String {
                 }),
                 series: None,
                 straight: false,
+                overlay: false,
             });
         }
         Decoration::Lifeline | Decoration::ActivationBar | Decoration::DestroyCross => {

@@ -2184,6 +2184,7 @@ fn synthetic_diagram() -> Diagram {
             badge: None,
             series: None,
             straight: false,
+            overlay: false,
         });
     }
 

@@ -1719,54 +1719,71 @@ fn a_git_graphs_commits_run_in_order_along_their_own_lanes() {
     }
 }
 
-/// **A tag is drawn above its commit and the id below it, and a commit that has both gets both.**
+/// **A tag and an id sit on opposite sides of their commit, across the lanes, and a commit that
+/// has both gets both.**
 ///
-/// The three things this states are the three the renderer used to get wrong: a tag was drawn
-/// *under* the dot, in the same band as the id; a tag **replaced** the id, so
-/// `merge renderer tag: "v0.27.0"` lost whatever the author had called that merge; and there was
-/// no shape to tell one from the other. mermaid draws both, on opposite sides of the dot
-/// (`gitGraphRenderer.ts`: `drawCommitLabel` at `y + 25`, `drawCommitTags` at `y - 16 - yOffset`).
+/// The three things this states are the three the renderer used to get wrong: a tag was drawn in
+/// the same band as the id; a tag **replaced** the id, so `merge renderer tag: "v0.27.0"` lost
+/// whatever the author had called that merge; and there was no shape to tell one from the other.
+/// mermaid draws both, on opposite sides of the dot (`gitGraphRenderer.ts`: `drawCommitLabel` at
+/// `y + 25`, `drawCommitTags` at `y - 16 - yOffset`).
+///
+/// **Stated across the lanes rather than up and down the page**, which is the fourth thing it used
+/// to get wrong: in `TB:`/`BT:` up and down is the *time* axis, so a tag hung above its commit sat
+/// on that lane's own line and the line was drawn through the middle of the ticket.
 ///
 /// Everything here is looked up **by id** — `{commit}#tag{i}` and `{commit}#caption` — rather than
 /// searched for by the words it holds, which is §6-A item 15: a test that finds a label by its
 /// text is blind to the two labels swapping places.
 #[test]
-fn a_git_graph_draws_a_tag_above_its_commit_and_the_id_below_it() {
+fn a_git_graph_draws_a_tag_and_an_id_on_opposite_sides_of_their_commit() {
     if !text_metrics::fonts_available() {
         return;
     }
-    use crate::preview::mermaid::gitgraph;
+    use crate::preview::mermaid::gitgraph::{self, Direction};
     let mut with_both = 0usize;
     let mut tags_seen = 0usize;
     for (name, src) in cases_of(gitgraph::is_git_graph) {
         let model = gitgraph::parse(src).expect("parses");
         let d = laid_out(src);
+        // How far out across the lanes a point is. `LR:` spaces the lanes down the page and
+        // `TB:`/`BT:` space them across it; the caption's side is the increasing one either way.
+        let lr = matches!(model.direction, Direction::LeftToRight);
+        let across = |p: &Point| if lr { p.y } else { p.x };
+        let across_span = |n: &super::PlacedNode| {
+            let (l, t, r, b) = n.bounds();
+            if lr {
+                (t, b)
+            } else {
+                (l, r)
+            }
+        };
         for commit in &model.commits {
             let dot = d
                 .node(&commit.id)
                 .unwrap_or_else(|| panic!("{name}: commit {:?} was not drawn", commit.id));
-            let (_, dot_top, _, dot_bottom) = dot.bounds();
+            let (dot_near, dot_far) = across_span(dot);
 
-            // The id, below — **only** when the author wrote one, which is the rule that keeps a
-            // history of generated ids from being captioned with noise.
+            // The id, on the far side — **only** when the author wrote one, which is the rule that
+            // keeps a history of generated ids from being captioned with noise.
             let caption = d.node(&format!("{}#caption", commit.id));
             match (commit.explicit_id, caption) {
                 (true, Some(c)) => {
                     assert_eq!(
                         c.label.lines.join(" "),
                         commit.id,
-                        "{name}: the caption under {:?} does not read as its id — a tag is drawn \
-                         above the commit and never in place of the id",
+                        "{name}: the caption beside {:?} does not read as its id — a tag is drawn \
+                         on the other side of the commit and never in place of the id",
                         commit.id
                     );
                     assert!(
-                        c.bounds().1 >= dot_bottom - 0.01,
-                        "{name}: the id under {:?} is drawn at or above its own commit",
+                        across_span(c).0 >= dot_far - 0.01,
+                        "{name}: the id beside {:?} reaches back over its own commit",
                         commit.id
                     );
                 }
                 (true, None) => panic!(
-                    "{name}: {:?} was given an id by the source and nothing is drawn under it",
+                    "{name}: {:?} was given an id by the source and nothing is drawn beside it",
                     commit.id
                 ),
                 (false, Some(c)) => panic!(
@@ -1777,7 +1794,8 @@ fn a_git_graph_draws_a_tag_above_its_commit_and_the_id_below_it() {
                 (false, None) => {}
             }
 
-            // The tags, above — one node each, in source order, each holding its own words.
+            // The tags, on the near side — one node each, in source order, each holding its own
+            // words.
             for (i, tag) in commit.tags.iter().enumerate() {
                 let node = d.node(&format!("{}#tag{i}", commit.id)).unwrap_or_else(|| {
                     panic!("{name}: tag {tag:?} on {:?} was not drawn", commit.id)
@@ -1796,17 +1814,17 @@ fn a_git_graph_draws_a_tag_above_its_commit_and_the_id_below_it() {
                     commit.id
                 );
                 assert!(
-                    node.bounds().3 <= dot_top + 0.01,
-                    "{name}: the tag {tag:?} is drawn at or below its commit {:?} — a tag belongs \
-                     above the dot, on the other side of it from the id",
+                    across_span(node).1 <= dot_near + 0.01,
+                    "{name}: the tag {tag:?} is drawn on its commit {:?} or past it — a tag \
+                     belongs on the other side of the dot from the id",
                     commit.id
                 );
-                // Above the dot **and** clear of the line its commit sits on, which runs straight
+                // Beside the dot **and** clear of the line its commit sits on, which runs straight
                 // through the commit's own centre: a tag drawn on the lane is a tag with a rule
                 // through the middle of it.
                 assert!(
-                    node.bounds().3 < dot.center.y - super::shapes::COMMIT_RADIUS,
-                    "{name}: the tag {tag:?} reaches down onto its own lane line",
+                    across_span(node).1 < across(&dot.center) - super::shapes::COMMIT_RADIUS,
+                    "{name}: the tag {tag:?} reaches back onto its own lane line",
                 );
                 tags_seen += 1;
             }
@@ -1823,24 +1841,35 @@ fn a_git_graph_draws_a_tag_above_its_commit_and_the_id_below_it() {
     );
 }
 
-/// **Several tags on one commit stack upward, in the order they were written, without touching.**
+/// **Several tags on one commit stack outward, in the order they were written, without touching.**
 ///
 /// Nearest the commit is the tag written first, so the column reads the way the source does.
 /// (mermaid stacks the *last* one nearest, because `drawCommitTags` walks `commit.tags.reverse()`;
-/// §0-1 lets konoma read the column top-down like the source rather than bottom-up.)
+/// §0-1 lets konoma read the column in source order rather than backwards.)
 ///
-/// Stated as a gap rather than as a coordinate, so it catches the collapse — every tag drawn at
-/// one height — as well as a stack that runs the wrong way.
+/// Stated as a gap rather than as a coordinate, so it catches the collapse — every tag drawn in
+/// one place — as well as a stack that runs the wrong way. "Outward" is away from the lane across
+/// the lanes, which is up the page in `LR:` and to the left of it in `TB:`/`BT:`.
 #[test]
-fn a_git_graphs_tags_stack_upward_in_the_order_they_were_written() {
+fn a_git_graphs_tags_stack_outward_in_the_order_they_were_written() {
     if !text_metrics::fonts_available() {
         return;
     }
-    use crate::preview::mermaid::gitgraph;
+    use crate::preview::mermaid::gitgraph::{self, Direction};
     let mut stacks = 0usize;
     for (name, src) in cases_of(gitgraph::is_git_graph) {
         let model = gitgraph::parse(src).expect("parses");
         let d = laid_out(src);
+        let lr = matches!(model.direction, Direction::LeftToRight);
+        // (near, far) across the lanes: the edge of the box toward the lane, and away from it.
+        let span = |n: &super::PlacedNode| {
+            let (l, t, r, b) = n.bounds();
+            if lr {
+                (b, t)
+            } else {
+                (r, l)
+            }
+        };
         for commit in model.commits.iter().filter(|c| c.tags.len() > 1) {
             stacks += 1;
             let tags: Vec<&super::PlacedNode> = (0..commit.tags.len())
@@ -1850,17 +1879,20 @@ fn a_git_graphs_tags_stack_upward_in_the_order_they_were_written() {
                 })
                 .collect();
             for (i, pair) in tags.windows(2).enumerate() {
-                let (lower, upper) = (pair[0], pair[1]);
+                let (inner, outer) = (pair[0], pair[1]);
+                // Outward is the *decreasing* coordinate in both projections — up the page in
+                // `LR:`, left across it in `TB:`/`BT:` — so one comparison covers all three.
+                let gap = span(inner).1 - span(outer).0;
                 assert!(
-                    upper.bounds().3 <= lower.bounds().1 + 0.01,
-                    "{name}: the tags {:?} and {:?} on {:?} are drawn at the same height — a \
+                    gap >= -0.01,
+                    "{name}: the tags {:?} and {:?} on {:?} are drawn in the same place — a \
                      stack that collapsed is one tag on top of another",
                     commit.tags[i],
                     commit.tags[i + 1],
                     commit.id
                 );
                 assert!(
-                    lower.bounds().1 - upper.bounds().3 >= super::gitgraph::TAG_STACK - 0.01,
+                    gap >= super::gitgraph::TAG_STACK - 0.01,
                     "{name}: the tags {:?} and {:?} on {:?} touch",
                     commit.tags[i],
                     commit.tags[i + 1],
@@ -1927,6 +1959,60 @@ fn a_tag_on_the_top_lane_makes_the_drawing_taller_instead_of_being_clipped() {
         tag.bounds().3 <= d.height + 0.01 && tag.bounds().1 >= -0.01,
         "{name}: the tag is outside the viewBox"
     );
+}
+
+/// **A `TB:`/`BT:` git graph does not open with a band of empty page.**
+///
+/// Time starts at `widest branch name + NAME_GAP` in every direction, which is right in `LR:` —
+/// the names really do sit before the first commit there, and their width is what has to be got
+/// past. In `TB:`/`BT:` they sit *above* the lanes instead, so the same offset is added to the top
+/// of the drawing as blank page: `gitGraph TB:` opens with about sixty pixels of nothing between
+/// its branch names and its first commit. What should be true is that the gap is [`NAME_GAP`], the
+/// same as the one the names were placed with.
+///
+/// Left ignored deliberately. It is a defect with a cause of its own — an `LR:` sentence applied
+/// to three directions — and not part of the label-aware steps, which is what the work around it
+/// was for; fixing it moves every `TB:`/`BT:` golden a second time for an unrelated reason.
+/// `docs/STATUS.md` is where it belongs.
+///
+/// [`NAME_GAP`]: super::gitgraph::NAME_GAP
+#[test]
+#[ignore = "known defect, out of scope of the label-aware steps: a `TB:`/`BT:` git graph uses the \
+            `LR:` origin, so the widest branch name's *width* is added to the top of the drawing \
+            as blank page"]
+fn a_top_to_bottom_git_graph_does_not_open_with_a_band_of_empty_page() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::gitgraph::{self, Direction};
+    for (name, src) in cases_of(gitgraph::is_git_graph) {
+        let model = gitgraph::parse(src).expect("parses");
+        if matches!(model.direction, Direction::LeftToRight) {
+            continue;
+        }
+        let d = laid_out(src);
+        // How far down the page the drawing starts, and how far down the names stop. In `BT:` time
+        // runs the other way but the names are still at the top, so both are read in page order.
+        let names_end = d
+            .nodes
+            .iter()
+            .filter(|n| n.id.starts_with("branch#"))
+            .map(|n| n.bounds().3)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let first = d
+            .nodes
+            .iter()
+            .filter(|n| !n.id.starts_with("branch#"))
+            .map(|n| n.bounds().1)
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            first - names_end <= super::gitgraph::NAME_GAP + 0.01,
+            "{name}: {} of empty page between the branch names and the drawing, where {} was \
+             asked for",
+            svg::num(first - names_end),
+            svg::num(super::gitgraph::NAME_GAP)
+        );
+    }
 }
 
 /// **An architecture edge leaves and arrives by the sides the source named.**
@@ -2690,39 +2776,91 @@ fn a_timelines_periods_run_in_source_order() {
     }
 }
 
+/// Everything in a git graph that is made of words: the captions, the tickets, the branch names
+/// and the title.
+///
+/// Read off the drawing by **glyph**, not by id, so a label added later is covered by every test
+/// below without one of them being edited — §6-A item 10 (a test that enumerates what it checks
+/// stops being a net the moment something new is drawn).
+fn git_graph_labels(d: &Diagram) -> Vec<&super::PlacedNode> {
+    d.nodes
+        .iter()
+        .filter(|n| matches!(n.shape, Glyph::Tag | Glyph::ChartLabel))
+        .collect()
+}
+
+/// Whether the segment `a`–`b` passes through the axis-aligned box `(l, t, r, bottom)`.
+///
+/// Liang–Barsky, exactly, rather than sampling the segment: a 2px line crossing a box is a thin
+/// thing to hit with samples, and "the test missed it" is the failure this whole file exists to
+/// avoid. The box is shrunk by a hair first so that a line ending *on* a boundary — which is what
+/// every line into a dot does — is not counted as passing through.
+fn segment_meets_box(a: &Point, b: &Point, (l, t, r, bottom): (f64, f64, f64, f64)) -> bool {
+    let (l, t, r, bottom) = (l + 0.01, t + 0.01, r - 0.01, bottom - 0.01);
+    if l >= r || t >= bottom {
+        return false;
+    }
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    for (p, q) in [
+        (-dx, a.x - l),
+        (dx, r - a.x),
+        (-dy, a.y - t),
+        (dy, bottom - a.y),
+    ] {
+        if p.abs() < f64::EPSILON {
+            if q < 0.0 {
+                return false;
+            }
+        } else {
+            let at = q / p;
+            if p < 0.0 {
+                if at > hi {
+                    return false;
+                }
+                lo = lo.max(at);
+            } else {
+                if at < lo {
+                    return false;
+                }
+                hi = hi.min(at);
+            }
+        }
+    }
+    lo <= hi
+}
+
 /// **Two of a git graph's labels do not overlap.**
 ///
-/// Seen in the gallery, not by a test: a commit whose caption is wider than [`COMMIT_STEP`] is
-/// drawn over its neighbour's, and the two sets of words become one unreadable smear. The step
-/// between commits is a constant, so the label is the only thing that can move — and making the
-/// step follow the widest label is a change to where every commit in every git graph is drawn,
-/// which is a piece of work with its own golden churn rather than a correction.
+/// Seen in the gallery, not by a test: `Reverse` and `Highlight`, two commits apart, were drawn
+/// over one another and read as the single word `ReverseHighlight`. The step between commits used
+/// to be a constant, so nothing in the drawing could give way — and a constant cannot know how
+/// wide a label is. Both steps are now derived from the measured labels
+/// ([`COMMIT_STEP`] and [`LANE_STEP`] are the *floors* they start from), which is how every other
+/// renderer here sizes a column.
 ///
-/// **A tag is in the same family**, and is checked here rather than in a second ignored test: a
-/// ticket is a label too, the same constant fails to make room for it, and one piece of work
-/// fixes both. [`LANE_STEP`] is the other half of it — a tag hangs above its commit, so a tall
-/// stack on lane *k* reaches into lane *k-1* for the same reason.
+/// **A tag is in the same family** and is checked here rather than in a test of its own: a ticket
+/// is a label too, and one piece of work fixes both. So is a **branch name**, which sits on its
+/// own lane in `LR:` and takes up room in that lane's rows.
+///
+/// Nothing is clipped, truncated or wrapped to make it fit; konoma does not do that anywhere, so
+/// the only thing that can give way is the step.
 ///
 /// [`COMMIT_STEP`]: super::gitgraph::COMMIT_STEP
 /// [`LANE_STEP`]: super::gitgraph::LANE_STEP
 #[test]
-#[ignore = "known defect, recorded in docs/STATUS.md: a git graph label — a caption or a tag — \
-            bigger than the step between commits is drawn over the one beside it; the fix is a \
-            label-aware step, which moves every existing git graph"]
 fn no_two_git_graph_captions_are_drawn_on_top_of_each_other() {
     if !text_metrics::fonts_available() {
         return;
     }
     use crate::preview::mermaid::gitgraph;
+    let mut pairs = 0usize;
     for (name, src) in cases_of(gitgraph::is_git_graph) {
         let d = laid_out(src);
-        let captions: Vec<&super::PlacedNode> = d
-            .nodes
-            .iter()
-            .filter(|n| n.id.ends_with("#caption") || n.id.contains("#tag"))
-            .collect();
-        for (i, a) in captions.iter().enumerate() {
-            for b in &captions[i + 1..] {
+        let labels = git_graph_labels(&d);
+        for (i, a) in labels.iter().enumerate() {
+            for b in &labels[i + 1..] {
+                pairs += 1;
                 let (al, at, ar, ab) = a.bounds();
                 let (bl, bt, br, bb) = b.bounds();
                 let overlap = al < br && bl < ar && at < bb && bt < ab;
@@ -2734,6 +2872,212 @@ fn no_two_git_graph_captions_are_drawn_on_top_of_each_other() {
                 );
             }
         }
+    }
+    assert!(pairs > 100, "only {pairs} pairs of labels were compared");
+}
+
+/// **Every git graph label stays inside its own lane's column.**
+///
+/// The other half of the collision: a caption hangs toward the next lane and a stack of tags
+/// toward the previous one, and both used to be drawn at a fixed pitch. `cherry-pick:MERGE` on the
+/// `release` lane came within 6px of `develop`'s line and 38 from its own, so it read as
+/// `develop`'s ticket. [`LANE_STEP`] is now a floor and the pitch is derived from the labels.
+///
+/// A lane's **column** is its own side of the midline between it and the next lane, and the
+/// midline is what this checks against. "Does not overlap anything on the next lane" is the
+/// tempting weaker sentence and it is not enough: it was true of `cherry-pick:MERGE` the whole
+/// time — the ticket lay across `develop`'s row at a point in time where `develop` happened to
+/// have no label — and a mutation putting the pitch back to a constant passed a test written that
+/// way.
+///
+/// Every lane's position is **read off a commit drawn on it**, so nothing here recomputes the
+/// spacing it is checking.
+///
+/// [`LANE_STEP`]: super::gitgraph::LANE_STEP
+#[test]
+fn no_git_graph_label_reaches_into_a_neighbouring_lane() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::gitgraph::{self, Direction};
+    let mut checked = 0usize;
+    for (name, src) in cases_of(gitgraph::is_git_graph) {
+        let model = gitgraph::parse(src).expect("parses");
+        let d = laid_out(src);
+        let lr = matches!(model.direction, Direction::LeftToRight);
+        let across = |p: &Point| if lr { p.y } else { p.x };
+        let span = |n: &super::PlacedNode| {
+            let (l, t, r, b) = n.bounds();
+            if lr {
+                (t, b)
+            } else {
+                (l, r)
+            }
+        };
+        let lanes: Vec<&str> = model.lanes().iter().map(|b| b.name.as_str()).collect();
+        // Where each lane runs, and what it is called — from the drawing, not from the constants.
+        let at_lane: Vec<Option<f64>> = lanes
+            .iter()
+            .map(|b| {
+                model
+                    .commits
+                    .iter()
+                    .find(|c| c.branch == **b)
+                    .and_then(|c| d.node(&c.id))
+                    .map(|n| across(&n.center))
+            })
+            .collect();
+        // Which lane a label belongs to: a caption or a ticket belongs to its commit's branch, a
+        // branch name to the branch it names. Looked up rather than guessed from where it is
+        // drawn, so a label drawn on the wrong lane is caught instead of being explained away.
+        let owner = |id: &str| -> Option<usize> {
+            if let Some(branch) = id.strip_prefix("branch#") {
+                return lanes.iter().position(|b| *b == branch);
+            }
+            let commit = id.split('#').next()?;
+            let branch = &model.commits.iter().find(|c| c.id == commit)?.branch;
+            lanes.iter().position(|b| *b == branch)
+        };
+        for label in git_graph_labels(&d) {
+            let Some(mine) = owner(&label.id) else {
+                continue;
+            };
+            let Some(home) = at_lane[mine] else { continue };
+            let (lo, hi) = span(label);
+            for (k, line) in at_lane.iter().enumerate() {
+                let Some(line) = line else { continue };
+                if k == mine {
+                    continue;
+                }
+                checked += 1;
+                // The boundary between two columns is halfway between the two lines.
+                let midline = (home + *line) / 2.0;
+                assert!(
+                    midline <= lo + 0.01 || midline >= hi - 0.01,
+                    "{name}: the label {:?} belongs to lane {:?} and reaches into lane {:?}'s \
+                     column",
+                    label.label.lines.join(" "),
+                    lanes[mine],
+                    lanes[k]
+                );
+            }
+        }
+    }
+    assert!(checked > 40, "only {checked} label/lane pairs were checked");
+}
+
+/// **No line in a git graph crosses a label.**
+///
+/// Two separate things put a line through a word, and this states the geometry of both.
+///
+/// * A **lane's own line** ran through its commits' captions and tickets in `TB:`/`BT:`, because
+///   the labels were offset up and down the page and up and down the page is the *time* axis
+///   there. They are offset across the lanes now, which is the one direction the lane line is not
+///   in.
+/// * A **line that changes lanes** turned at its child's own position, which is exactly where the
+///   child's caption is: the merge into `MERGE` was drawn straight down the middle of the word.
+///   It crosses in the strip between two commits instead — a strip the step leaves empty, because
+///   every consecutive pair is pushed apart until their labels clear each other.
+///
+/// Every segment against every label, exactly (see [`segment_meets_box`]) — not the pairs that
+/// look likely.
+#[test]
+fn a_git_graphs_lines_never_cross_a_label() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::gitgraph;
+    let mut segments = 0usize;
+    for (name, src) in cases_of(gitgraph::is_git_graph) {
+        let d = laid_out(src);
+        let labels = git_graph_labels(&d);
+        for e in &d.edges {
+            let points = e.drawn_points();
+            for w in points.windows(2) {
+                segments += 1;
+                for label in &labels {
+                    assert!(
+                        !segment_meets_box(&w[0], &w[1], label.bounds()),
+                        "{name}: the line {:?} → {:?} is drawn through the label {:?}",
+                        e.from,
+                        e.to,
+                        label.label.lines.join(" ")
+                    );
+                }
+            }
+        }
+    }
+    assert!(segments > 30, "only {segments} segments were checked");
+}
+
+/// **A git graph's lines are drawn under its labels; a chart's data path is drawn over its
+/// marks.**
+///
+/// The two halves of one rule, stated together because the rule is the difference between them.
+/// [`PlacedEdge::overlay`] says which of the two a line is, and it is asked of the line rather
+/// than read off its `series`: a git graph's lane line carries a series — a lane *is* a colour —
+/// so inferring depth from that put every lane line in the group emitted after the nodes, and the
+/// lane was drawn over the captions and the tickets with the words struck through.
+///
+/// Read off the **emitted document**, because draw order is a property of the document and of
+/// nothing else. The corpus golden sees this too, and that is exactly why it is written out here:
+/// §6-A records twice over that a behaviour only a golden guards is lost the next time the golden
+/// is regenerated.
+///
+/// [`PlacedEdge::overlay`]: super::PlacedEdge::overlay
+#[test]
+fn a_git_graphs_lines_go_under_its_labels_and_a_charts_data_path_over_its_marks() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::gitgraph;
+    let group = |doc: &str, class: &str| doc.find(&format!("<g class=\"{class}\">"));
+
+    // (a) a git graph. Every one of its lines is in the group that comes before the nodes, and
+    // every one of its labels is a node — so no line is drawn over any word in it.
+    let mut graphs = 0usize;
+    for (name, src) in cases_of(gitgraph::is_git_graph) {
+        let doc = rendered(src);
+        graphs += 1;
+        assert!(
+            group(&doc, "series").is_none(),
+            "{name}: a git graph line is in the group drawn after the nodes"
+        );
+        let edges = group(&doc, "edges").unwrap_or_else(|| panic!("{name}: no edge group"));
+        let nodes = group(&doc, "nodes").unwrap_or_else(|| panic!("{name}: no node group"));
+        assert!(
+            edges < nodes,
+            "{name}: the lines are emitted after the nodes"
+        );
+        if let Some(text) = doc.find("<text") {
+            assert!(
+                text > nodes,
+                "{name}: a word is emitted before the nodes, where a line could still cover it"
+            );
+        }
+    }
+    assert!(graphs >= 8, "only {graphs} git graphs were checked");
+
+    // (b) a chart. Its line plot is in the group after the nodes, over the bars — which is the
+    // half of the rule that must survive the fix to the other half.
+    for (name, src) in [
+        (
+            "xychart",
+            "xychart-beta\n  x-axis [a, b, c]\n  bar [3, 7, 2]\n  line [3, 7, 2]\n",
+        ),
+        (
+            "radar",
+            "radar-beta\n  axis a, b, c\n  curve x{1, 2, 3}\n  max 3\n",
+        ),
+    ] {
+        let doc = rendered(src);
+        let nodes = group(&doc, "nodes").unwrap_or_else(|| panic!("{name}: no node group"));
+        let series =
+            group(&doc, "series").unwrap_or_else(|| panic!("{name}: the data path is not drawn"));
+        assert!(
+            series > nodes,
+            "{name}: the data path is drawn under the marks, where a tall bar hides it"
+        );
     }
 }
 

@@ -15,9 +15,15 @@
 //!   `system-ui` or `-apple-system` is searched as *named* families and, when they all miss, usvg
 //!   quietly falls back to Serif — a face nothing measured.
 //!
-//! Drawing order is frames, then edges, then nodes, then edge labels, then frame titles. Nodes
-//! cover the lines that run under them and labels cover the line they belong to, which is what
-//! makes a label readable without an opaque patch big enough to hide the diagram.
+//! Drawing order is frames, then edges, then nodes, then **data paths**, then edge labels, then
+//! frame titles. Nodes cover the lines that run under them and labels cover the line they belong
+//! to, which is what makes a label readable without an opaque patch big enough to hide the
+//! diagram.
+//!
+//! A data path is the one exception, and it is one an edge declares for itself
+//! ([`PlacedEdge::overlay`]): an xy chart's plot drawn under the bars disappears behind the tall
+//! ones. Reading that off an edge's `series` instead — which is a *colour* — put a git graph's
+//! branch lines over its commit ids and struck the words through.
 //!
 //! The frames are split across that order on purpose. Their rectangles go **first**, behind
 //! everything, so a frame reads as ground rather than as another box; mermaid does the same. Their
@@ -190,7 +196,7 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
     // join it, and they belong under the marks for the same reason a flowchart's lines belong
     // under its boxes.
     out.push_str("<g class=\"edges\">\n");
-    for e in diagram.edges.iter().filter(|e| e.series.is_none()) {
+    for e in diagram.edges.iter().filter(|e| !e.overlay) {
         emit_edge(&mut out, e, theme);
     }
     out.push_str("</g>\n<g class=\"nodes\">\n");
@@ -198,14 +204,15 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
         emit_node(&mut out, n, theme);
     }
     out.push_str("</g>\n");
-    // A data path goes **over** the marks. A line plot drawn under the bars disappears behind the
-    // tall ones, which is the one place it most needs to be visible; and unlike a route, it is not
-    // structure the boxes are allowed to cover — it is a second reading of the same numbers, laid
-    // on the first so the two can be compared. Omitted entirely when there is none, so a diagram
-    // with no series is unchanged.
-    if diagram.edges.iter().any(|e| e.series.is_some()) {
+    // A data path goes **over** the marks; every other line goes under them. Which of the two a
+    // line is is asked of the line itself ([`PlacedEdge::overlay`]) rather than read off its
+    // `series`, because `series` says what colour it takes and nothing about depth — a git graph's
+    // lane line carries one, and inferring depth from it drew the lane over the commit ids and
+    // struck the words through. Omitted entirely when there is no data path, so a diagram that has
+    // none is unchanged.
+    if diagram.edges.iter().any(|e| e.overlay) {
         out.push_str("<g class=\"series\">\n");
-        for e in diagram.edges.iter().filter(|e| e.series.is_some()) {
+        for e in diagram.edges.iter().filter(|e| e.overlay) {
             emit_edge(&mut out, e, theme);
         }
         out.push_str("</g>\n");

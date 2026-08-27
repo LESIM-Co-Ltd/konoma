@@ -319,6 +319,26 @@ pub struct PlacedEdge {
     /// with it. Saying it directly is what lets a grid route be [`Theme::line`] and straight at
     /// once.
     pub straight: bool,
+    /// Whether this line is drawn **over** the nodes rather than under them.
+    ///
+    /// `false` is the ordinary depth and the one every route wants: a flowchart's arrow, a
+    /// sequence message, a chart's axes and grid, a git graph's lane. Structure goes under the
+    /// marks that stand on it, so a box covers the line that arrives at it and a label covers the
+    /// line that runs beneath it — which is what makes a label readable without an opaque patch.
+    ///
+    /// `true` is for a **data path** — an xy chart's line plot and a radar chart's curve. A line
+    /// plot drawn under the bars disappears behind the tall ones, which is the one place it most
+    /// needs to be visible; and unlike a route it is not structure the marks are allowed to cover,
+    /// it is a second reading of the same numbers laid on the first so the two can be compared.
+    ///
+    /// **This is the same mistake [`straight`] was made to fix**, one field along: `series` used to
+    /// double as the flag, so anything that wanted to be drawn on top had to claim to be a series
+    /// — and a git graph's lane line, which carries a series because a lane is a colour, was drawn
+    /// over its own captions and tags and struck the words through. Depth is a property of *what a
+    /// line is*, not of which colour it takes.
+    ///
+    /// [`straight`]: PlacedEdge::straight
+    pub overlay: bool,
 }
 
 impl PlacedEdge {
@@ -925,6 +945,7 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             badge: None,
             series: None,
             straight: false,
+            overlay: false,
         });
     }
 

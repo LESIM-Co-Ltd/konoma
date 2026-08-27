@@ -19,13 +19,12 @@
 //! being composited onto whatever the terminal is showing (§0-1 is what allows the difference).
 
 use crate::preview::mermaid::chart::radar::{Graticule, Radar};
-use crate::preview::mermaid::flowchart::Stroke;
 use crate::preview::mermaid::layout::Point;
 
 use super::super::shapes::Mark;
 use super::super::{normalise, Diagram, Glyph, Label, PlacedNode, RenderError, Size, Theme};
 use super::{
-    add_title, label_node, legend_nodes, legend_size, rule, LegendEntry, LEGEND_GAP, TICK_GAP,
+    add_title, data_path, label_node, legend_nodes, legend_size, LegendEntry, LEGEND_GAP, TICK_GAP,
 };
 
 /// Radius of the outermost ring.
@@ -150,14 +149,7 @@ pub fn lay_out(radar: &Radar) -> Result<Diagram, RenderError> {
         // Closed: the last vertex joins the first, which is what makes it an area rather than a
         // path with two loose ends.
         points.push(points[0].clone());
-        let mut e = rule(
-            points[0].clone(),
-            points[points.len() - 1].clone(),
-            Stroke::Normal,
-            Some(i),
-        );
-        e.points = points;
-        edges.push(e);
+        edges.push(data_path(points, i));
     }
 
     if !edges.iter().any(|e| e.series.is_some()) {

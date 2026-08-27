@@ -142,6 +142,7 @@ pub fn lay_out(arch: &Architecture) -> Result<Diagram, RenderError> {
             // The elbow is the port directions, drawn: a spline through it would round the corner
             // off and cross the cell beside it.
             straight: true,
+            overlay: false,
         });
         if !e.title.trim().is_empty() {
             let label = Label::measure(&e.title);

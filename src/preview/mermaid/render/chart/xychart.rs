@@ -26,8 +26,8 @@ use crate::preview::mermaid::layout::Point;
 
 use super::super::{normalise, Diagram, Glyph, Label, PlacedNode, RenderError, Size, Theme};
 use super::{
-    add_title, axis_tick_texts, bar_node, label_node, legend_nodes, legend_size, rule, text_node,
-    ticks, LegendEntry, AXIS_TITLE_GAP, LEGEND_GAP, POINT_RADIUS, TICK_GAP, TICK_LEN,
+    add_title, axis_tick_texts, bar_node, data_path, label_node, legend_nodes, legend_size, rule,
+    text_node, ticks, LegendEntry, AXIS_TITLE_GAP, LEGEND_GAP, POINT_RADIUS, TICK_GAP, TICK_LEN,
 };
 
 /// How wide the plotting area is before the categories ask for more.
@@ -429,14 +429,7 @@ fn draw_line(
         .map(|(i, (_, v))| Point::new(frame.slot_center(i, slots), frame.value_to_y(*v)))
         .collect();
     if points.len() >= 2 {
-        let mut e = rule(
-            points[0].clone(),
-            points[points.len() - 1].clone(),
-            Stroke::Normal,
-            Some(series),
-        );
-        e.points = points.clone();
-        edges.push(e);
+        edges.push(data_path(points.clone(), series));
     }
     for (i, p) in points.iter().enumerate() {
         nodes.push(PlacedNode {

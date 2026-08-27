@@ -858,6 +858,7 @@ impl<'a> Walk<'a> {
             badge: placed_badge,
             series: None,
             straight: false,
+            overlay: false,
         });
 
         self.last_message_y = bottom;

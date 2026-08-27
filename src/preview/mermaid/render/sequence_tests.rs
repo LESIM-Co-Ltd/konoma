@@ -1686,6 +1686,7 @@ fn synthetic_sequence() -> Diagram {
             }),
             series: None,
             straight: false,
+            overlay: false,
         });
     }
     // A self-message: a loop out to the right and back.
@@ -1711,6 +1712,7 @@ fn synthetic_sequence() -> Diagram {
         badge: None,
         series: None,
         straight: false,
+        overlay: false,
     });
 
     let lifelines = vec![

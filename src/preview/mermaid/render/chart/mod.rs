@@ -156,7 +156,25 @@ pub fn rule(from: Point, to: Point, stroke: Stroke, series: Option<usize>) -> Pl
         // reader could see, and §6 says a golden that moves has to be explained rather than
         // regenerated. The flag exists for routes with a corner in them.
         straight: false,
+        overlay: false,
     }
+}
+
+/// The line one series traces through the marks: an xy chart's plot, a radar chart's curve.
+///
+/// The one kind of edge that is drawn **over** the nodes — see [`PlacedEdge::overlay`] for why,
+/// and for why saying it here rather than inferring it from `series` is what stopped a git graph's
+/// lane line being drawn through its own captions.
+pub fn data_path(points: Vec<Point>, series: usize) -> PlacedEdge {
+    let mut e = rule(
+        points[0].clone(),
+        points[points.len() - 1].clone(),
+        Stroke::Normal,
+        Some(series),
+    );
+    e.points = points;
+    e.overlay = true;
+    e
 }
 
 /// A rectangle painted in a series colour.

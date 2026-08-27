@@ -142,6 +142,7 @@ pub fn lay_out(diagram: &BlockDiagram) -> Result<Diagram, RenderError> {
             // wide arc across the cells in between, which is the picture this language exists to
             // avoid.
             straight: elbow,
+            overlay: false,
         });
     }
 

@@ -2454,19 +2454,17 @@ fn synthetic_chart_diagram() -> Diagram {
             None,
         ),
     ];
-    let mut series_edge = super::rule(
-        Point::new(40.0, 140.0),
-        Point::new(200.0, 40.0),
-        crate::preview::mermaid::flowchart::Stroke::Normal,
-        Some(2),
-    );
-    series_edge.points = vec![
-        Point::new(40.0, 140.0),
-        Point::new(100.0, 100.0),
-        Point::new(160.0, 60.0),
-        Point::new(200.0, 40.0),
-    ];
-    edges.push(series_edge);
+    // Built with the constructor production uses, so the golden pins the depth a data path is
+    // actually given rather than one this fixture chose for itself (§6-A item 19).
+    edges.push(super::data_path(
+        vec![
+            Point::new(40.0, 140.0),
+            Point::new(100.0, 100.0),
+            Point::new(160.0, 60.0),
+            Point::new(200.0, 40.0),
+        ],
+        2,
+    ));
 
     let mut d = Diagram {
         nodes,

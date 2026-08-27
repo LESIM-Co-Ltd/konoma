@@ -265,6 +265,7 @@ fn place_notes(out: &mut Diagram, model: &StateDiagram) {
             badge: None,
             series: None,
             straight: false,
+            overlay: false,
         });
     }
     // The drawing grew sideways, so the extent has to be recomputed over what is now on it.

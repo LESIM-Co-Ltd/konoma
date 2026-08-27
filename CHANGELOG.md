@@ -18,6 +18,29 @@ All notable changes to konoma are documented in this file. The format is based o
   carries both shows both. The diagram grows upward to make room, so a tag on the topmost lane is
   not cut off. konoma's own `samples/mermaid.md` already said "Tags sit above the commit they
   mark"; now it is true.
+- **A `gitGraph`'s branch lines were drawn through its words, and its labels were drawn through
+  each other.** Four things a reader saw. In a `gitGraph TB:` the branch's own line ran down the
+  middle of every commit id and every tag on it, striking the words out. Two commits whose ids were
+  wider than the fixed gap between commits were drawn on top of one another — `Reverse` and
+  `Highlight` came out as the single word `ReverseHighlight`. A tag wider than the fixed gap
+  between branches was drawn across the neighbouring branch's row, so `cherry-pick:MERGE` on
+  `release` came within 6px of `develop`'s line and 38 from its own and read as `develop`'s. And a
+  merge line turned into its commit exactly where that commit's id is, so the line into `MERGE` ran
+  straight down the middle of the word `MERGE`.
+  The causes were two constants and one inference. The gap between two commits and the gap between
+  two branches were fixed numbers, and a fixed number cannot know how wide a label is; a commit's
+  id and tags were offset up and down the page, which in `TB:`/`BT:` is the *time* axis that the
+  branch's own line runs along; and the SVG writer decided which lines were drawn on top of the
+  boxes from the line's **series**, which says what colour it takes — so a branch line, which
+  carries one because a branch *is* a colour, ended up in the group drawn after the labels.
+  Both gaps are now measured from the labels themselves, the way konoma sizes every other diagram's
+  columns, with the old constants kept as the closest two commits or two branches are ever drawn; a
+  commit's id and tags are offset across the branches, which is the one direction its own line is
+  not in; a line that changes branch crosses in the gap between two commits rather than over one;
+  and whether a line goes over the boxes is now something the line says, so a chart's plotted line
+  still sits over its bars where a tall bar would otherwise hide it. Nothing is shortened or
+  clipped to fit — konoma does not do that anywhere — so a graph carrying wide ids or long tags is
+  drawn wider than before.
 
 ## [0.28.0] - 2026-08-27
 

@@ -1039,6 +1039,7 @@ fn synthetic_panel_diagram() -> Diagram {
             badge: None,
             series: None,
             straight: false,
+            overlay: false,
         });
     }
 
