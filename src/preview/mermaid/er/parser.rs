@@ -217,7 +217,7 @@ impl Scanner {
         if let Some(i) = block_open(text)? {
             let head = text[..i].trim().to_string();
             let rest = text[i + 1..].to_string();
-            let Some(id) = self.declare_entity(&head) else {
+            let Some(id) = self.declare_entity(&head, line)? else {
                 return Ok(());
             };
             self.block = Some(OpenBlock { entity: id, line });
@@ -269,24 +269,48 @@ impl Scanner {
             return Ok(());
         }
         if starts_with_word(t, "subgraph") {
-            self.open_subgraph(&t[8..], line);
-            return Ok(());
+            return self.open_subgraph(&t[8..], line);
         }
         if let Some((r, from_css, to_css)) = read_relationship(t) {
             self.add_relationship(r, &from_css, &to_css);
             return Ok(());
         }
         // `ENTITY`, `ENTITY["alias"]`, `ENTITY:::css` — a declaration on its own.
-        self.declare_entity(t);
+        self.declare_entity(t, line)?;
         Ok(())
     }
 
-    fn open_subgraph(&mut self, rest: &str, line: usize) {
+    /// `subgraph id`, `subgraph id[title]`.
+    ///
+    /// `subgraphHeader` is `SUBGRAPH entityName SQS subgraphTitle SQE separator`: the bracket is
+    /// followed by the end of the line and nothing else — not even a style separator, which the
+    /// entity forms do allow. Anything after it is refused for the reason [`Self::declare_entity`]
+    /// gives.
+    fn open_subgraph(&mut self, rest: &str, line: usize) -> Result<(), ParseError> {
         if self.frames.len() > MAX_DEPTH {
-            return;
+            return Ok(());
         }
         let t = rest.trim();
-        let (name, title) = read_bracket_title(t);
+        let (name, title) = match read_bracket_title(t) {
+            Alias::Absent => (t.to_string(), None),
+            Alias::Unclosed => {
+                return Err(ParseError::UnclosedBracket {
+                    text: format!("subgraph {t}"),
+                    line,
+                })
+            }
+            Alias::Present {
+                name,
+                title,
+                rest: "",
+            } => (name, Some(title)),
+            Alias::Present { .. } => {
+                return Err(ParseError::BracketIsNotADeclaration {
+                    text: format!("subgraph {t}"),
+                    line,
+                })
+            }
+        };
         let id = if name.trim().is_empty() {
             self.subgraphs += 1;
             format!("subGraph{}", self.subgraphs - 1)
@@ -314,19 +338,67 @@ impl Scanner {
             }
         }
         self.frames.push((id, line));
+        Ok(())
     }
 
     /// `ENTITY`, `ENTITY["alias"]`, `"Quoted Name"`, with an optional `:::cssClass`.
-    fn declare_entity(&mut self, raw: &str) -> Option<String> {
+    ///
+    /// # A bracket that is not an alias makes the whole diagram refuse
+    ///
+    /// `erDiagram.jison` puts `SQS entityName SQE` in the **declaration** rules only
+    /// (`entityName SQS entityName SQE`, plus the same with `STYLE_SEPARATOR idList` and/or an
+    /// attribute block after it). **No relationship rule takes a bracket**, and a `subgraph`
+    /// header's bracket must be followed by a separator. So a line like
+    /// `p[Person] ||--o| a["Customer Account"] : has` is not a diagram mermaid draws differently
+    /// — it is one mermaid throws on.
+    ///
+    /// Anything else that reaches here is prose, and this parser's rule for prose is that it
+    /// declares nothing (`a_bare_word_declares_nothing`). But *silently* declaring nothing is the
+    /// wrong answer for a statement that is clearly trying to be one: the reader gets a diagram
+    /// with an entity or an edge quietly missing, which is the same lie as a phantom node wearing
+    /// the other face. **So the diagram is refused**, `mermaid_to_svg` gets `None`, and the fence
+    /// degrades to the text diagram with the source in it — konoma's standing promise for a
+    /// diagram it cannot draw, and the outcome mermaid's own syntax error produces.
+    ///
+    /// Skipping just the statement was the alternative and it is worse in exactly the way
+    /// konoma's "no symptomatic fixes" rule describes: the symptom (a wrong label) goes away and
+    /// the reader is left with a drawing that disagrees with the source and says nothing about it.
+    ///
+    /// **Known divergence.** `A[one] B[two]` on one line is two declarations upstream — `line` is
+    /// `statement` and statements need no separator between them — and konoma refuses it. This
+    /// scanner is line-based and has nowhere to put a second statement, and of the two ways to be
+    /// wrong, refusing is the one that does not invent a label.
+    fn declare_entity(&mut self, raw: &str, line: usize) -> Result<Option<String>, ParseError> {
         let t = raw.trim();
         if t.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let (name, alias) = read_bracket_title(t);
-        let (name, css) = split_style_separator(&name);
+        let (head, alias, mut css) = match read_bracket_title(t) {
+            Alias::Absent => (t.to_string(), None, Vec::new()),
+            Alias::Unclosed => {
+                return Err(ParseError::UnclosedBracket {
+                    text: t.to_string(),
+                    line,
+                })
+            }
+            Alias::Present { name, title, rest } => {
+                // Only `:::classes` may follow the alias. The `{` of an attribute block never
+                // reaches here — `Scanner::line` splits the statement at it before calling.
+                let (before, classes) = split_style_separator(rest);
+                if !before.trim().is_empty() {
+                    return Err(ParseError::BracketIsNotADeclaration {
+                        text: t.to_string(),
+                        line,
+                    });
+                }
+                (name, Some(title), classes)
+            }
+        };
+        let (name, own_css) = split_style_separator(&head);
+        css.extend(own_css);
         let id = unquote(&name);
         if id.is_empty() || !(is_quoted(&name) || is_entity_name(&id)) {
-            return None;
+            return Ok(None);
         }
         let alias = alias.map(|a| decode_label(&unquote(&a)));
         self.out.intern(&id, alias.as_deref());
@@ -340,7 +412,7 @@ impl Scanner {
                 }
             }
         }
-        Some(id)
+        Ok(Some(id))
     }
 
     /// One line of an attribute block: `type name [PK, FK] ["comment"]`.
@@ -704,22 +776,70 @@ fn split_comment(s: &str, line: usize) -> Result<(String, String), ParseError> {
     ))
 }
 
-/// Splits `NAME["title"]` / `NAME [title]` into the two.
-fn read_bracket_title(s: &str) -> (String, Option<String>) {
+/// What a statement reads as once its `NAME[title]` has been taken off the front.
+enum Alias<'a> {
+    /// No `[` outside quotes — the whole statement is the name.
+    Absent,
+    /// `NAME [title] rest`, with `rest` whatever follows the closing bracket.
+    Present {
+        /// Everything before the `[`.
+        name: String,
+        /// Everything between the brackets.
+        title: String,
+        /// Everything after the `]`, trimmed. Empty when the bracket ends the statement.
+        rest: &'a str,
+    },
+    /// A `[` outside quotes that no `]` outside quotes closes.
+    Unclosed,
+}
+
+/// Splits `NAME["title"]` / `NAME [title]` into the name, the title, and what follows.
+///
+/// # Both brackets are found outside quotes, and the closing one is the **first** that matches
+///
+/// `ENTITY_NAME` is `\"[^"%\r\n\v\b\\]+\"`, so a name or a title may hold a bracket of its own:
+/// `A["a ] b"]` is one entity and `"a [ b"[t]` is another. Scanning with `find`/`rfind` gets both
+/// of those wrong, and `rfind` gets something worse wrong — it reads to the **last** `]` on the
+/// line, so a bracket pair can span everything that comes after the declaration. That is what
+/// made `p[Person] ||--o| a["Customer Account"] : has` — a line mermaid's grammar has no rule for
+/// — into one entity labelled `Person] ||--o| a["Customer Account"`, with the relationship gone.
+fn read_bracket_title(s: &str) -> Alias<'_> {
     let t = s.trim();
-    let Some(open) = t.find('[') else {
-        return (t.to_string(), None);
-    };
-    let Some(close) = t.rfind(']') else {
-        return (t.to_string(), None);
-    };
-    if close < open {
-        return (t.to_string(), None);
+    let mut quoted = false;
+    let mut open = None;
+    for (i, c) in t.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '[' if !quoted => {
+                open = Some(i);
+                break;
+            }
+            _ => {}
+        }
     }
-    (
-        t[..open].trim().to_string(),
-        Some(t[open + 1..close].trim().to_string()),
-    )
+    let Some(open) = open else {
+        return Alias::Absent;
+    };
+    let mut quoted = false;
+    let mut close = None;
+    for (i, c) in t[open + 1..].char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            ']' if !quoted => {
+                close = Some(open + 1 + i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close else {
+        return Alias::Unclosed;
+    };
+    Alias::Present {
+        name: t[..open].trim().to_string(),
+        title: t[open + 1..close].trim().to_string(),
+        rest: t[close + 1..].trim(),
+    }
 }
 
 /// Removes one enclosing pair of `"`.

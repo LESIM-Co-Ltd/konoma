@@ -580,11 +580,20 @@ fn a_quadrant_charts_names_are_drawn_in_the_regions_and_beside_the_points_they_n
         let (mx, my) = ((fl + fr) / 2.0, (ft + fb) / 2.0);
 
         // (a) quadrant-1 is the top right, and mermaid numbers anticlockwise from there.
-        for (text, want_right, want_top) in [
-            (&model.quadrant1, true, true),
-            (&model.quadrant2, false, true),
-            (&model.quadrant3, false, false),
-            (&model.quadrant4, true, false),
+        //
+        // **By the label's id**, not by finding whichever node happens to draw these words. The
+        // id is the corner's own place in reading order — `quadrant#0` is the top left,
+        // `quadrant#1` the top right, then the two below (`render::chart::quadrant`) — so it says
+        // which corner is being asked about without saying what is written there, and the words
+        // can then be asserted as well. The older form could only ask where a string had landed,
+        // which is one half of the statement and the wrong half to keep on its own: it says
+        // nothing at all about a corner, and two quadrants written with the same words would have
+        // made it fail for a reason that is not a defect.
+        for (text, id, want_right, want_top) in [
+            (&model.quadrant1, "quadrant#1", true, true),
+            (&model.quadrant2, "quadrant#0", false, true),
+            (&model.quadrant3, "quadrant#2", false, false),
+            (&model.quadrant4, "quadrant#3", true, false),
         ] {
             let drawn = as_drawn(text);
             if drawn.trim().is_empty() {
@@ -593,8 +602,13 @@ fn a_quadrant_charts_names_are_drawn_in_the_regions_and_beside_the_points_they_n
             let node = d
                 .nodes
                 .iter()
-                .find(|n| n.shape == Glyph::ChartLabel && words(&n.label) == drawn)
-                .unwrap_or_else(|| panic!("{name}: {drawn:?} was not drawn at all"));
+                .find(|n| n.shape == Glyph::ChartLabel && n.id == id)
+                .unwrap_or_else(|| panic!("{name}: {id} was not drawn at all"));
+            assert_eq!(
+                words(&node.label),
+                drawn,
+                "{name}: {id} is where {drawn:?} belongs and it names another quadrant"
+            );
             assert_eq!(
                 node.center.x > mx,
                 want_right,
@@ -776,8 +790,24 @@ fn angular_gap(a: f64, b: f64) -> f64 {
 /// **treemap** — a tile's words name the datum whose area it is, and a child's tile is inside the
 /// tile of the section that owns it.
 ///
-/// Containment is what makes this a *placement* test rather than a spelling one: shuffle the
-/// names between tiles and a leaf ends up outside the section it is named under.
+/// # The tile is found by its id, never by the words it draws
+///
+/// The first version of this test built a map from *drawn text* to tile and looked each datum up
+/// by its own name. That is §6-A item 15 exactly, and it was demonstrated rather than argued:
+/// making every leaf draw its **next sibling's** name left this test green, because a rotation
+/// does not change the multiset of strings — every name still found a tile, and for siblings the
+/// tile it found was still inside the same section, so the nesting half passed too. The only test
+/// that went red was [`super::chart::tests::a_treemap_tile_carries_its_own_name_and_its_sections_colour`],
+/// which anchors on the id.
+///
+/// So this anchors on the id as well. `tile#k` is the node's own index in a depth-first walk of
+/// the source (`render::chart::treemap::place`), which the walk below recomputes from
+/// [`super::chart::treemap::subtree_len`] — the same arithmetic the renderer does, but driven off
+/// the *model's* shape rather than off anything the renderer drew. What is then stated about that
+/// tile is what it says and where it sits, and both halves fail under a rotation.
+///
+/// Containment is what keeps this a *placement* test rather than a spelling one: a leaf whose
+/// tile has moved out of its section fails even when every name is right.
 #[test]
 fn a_treemaps_tiles_name_their_own_data_and_nest_the_way_the_source_nests() {
     if !text_metrics::fonts_available() {
@@ -787,52 +817,66 @@ fn a_treemaps_tiles_name_their_own_data_and_nest_the_way_the_source_nests() {
         let model = chart::treemap::parse(src).expect("parses");
         let d = chart_diagram(src);
 
-        // Where each name was drawn. A name drawn twice is not usable as an anchor, so those are
-        // recorded and skipped rather than silently taking the first.
-        let mut seen: HashMap<String, Vec<(f64, f64, f64, f64)>> = HashMap::new();
-        for node in d.nodes.iter().filter(|n| n.shape == Glyph::ChartBar) {
-            let Some(first) = panel_rows(node).into_iter().next() else {
-                continue;
-            };
-            seen.entry(first).or_default().push(node.bounds());
-        }
-
-        // Walk the model's tree and state the two things about each node.
+        /// Walks the model's tree, stating for each node what its own tile says and where it sits.
+        ///
+        /// `base` is the depth-first index of `items[0]`; a node owns the span of indices its
+        /// whole subtree covers, so the next sibling starts `subtree_len` further along.
         fn walk(
             name: &str,
             items: &[chart::treemap::Node],
+            base: usize,
             outer: Option<(f64, f64, f64, f64)>,
-            seen: &HashMap<String, Vec<(f64, f64, f64, f64)>>,
+            d: &Diagram,
             hit: &mut usize,
         ) {
+            let mut index = base;
             for item in items {
-                let text = as_drawn(&item.name);
-                // A tile too small for its words draws none, which is a deliberate drop
-                // (`tile_panel`), so a missing entry is not a failure — a *misplaced* one is.
-                let boxes = match seen.get(&text) {
-                    Some(b) if b.len() == 1 => b,
-                    _ => {
-                        walk(name, &item.children, None, seen, hit);
-                        continue;
-                    }
+                let me = index;
+                index += draw_chart::treemap::subtree_len(item);
+                // A tile with no area is not drawn at all, and neither is anything under it.
+                let Some(tile) = d.nodes.iter().find(|n| n.id == format!("tile#{me}")) else {
+                    walk(name, &item.children, me + 1, None, d, hit);
+                    continue;
                 };
-                let mine = boxes[0];
+                let mine = tile.bounds();
                 if let Some(o) = outer {
                     assert!(
                         contains(o, mine),
-                        "{name}: the tile reading {text:?} is drawn outside the section that \
-                         owns it"
+                        "{name}: tile#{me} is the tile for {:?}, and it is drawn outside the \
+                         section that owns it",
+                        item.name
                     );
                 }
-                *hit += 1;
-                walk(name, &item.children, Some(mine), seen, hit);
+                // A tile too small for its words draws none, which is a deliberate drop
+                // (`tile_panel`), so an empty panel is not a failure — the wrong words are.
+                let rows = panel_rows(tile);
+                if let Some(first) = rows.first() {
+                    assert_eq!(
+                        *first,
+                        as_drawn(&item.name),
+                        "{name}: tile#{me} is where {:?} belongs and it reads {first:?}",
+                        item.name
+                    );
+                    *hit += 1;
+                }
+                // A leaf also carries its own number, and a rotation moves that too.
+                if let (Some(v), Some(second)) = (item.value, rows.get(1)) {
+                    assert_eq!(
+                        *second,
+                        as_drawn(&draw_chart::tick_text(v)),
+                        "{name}: tile#{me} is where {:?} belongs and the number under its name \
+                         reads {second:?}",
+                        item.name
+                    );
+                }
+                walk(name, &item.children, me + 1, Some(mine), d, hit);
             }
         }
         let mut hit = 0usize;
-        walk(name, &model.roots, None, &seen, &mut hit);
+        walk(name, &model.roots, 0, None, &d, &mut hit);
         assert!(
             hit > 0,
-            "{name}: no tile's words could be matched to a datum"
+            "{name}: not one tile carried words, so nothing was read back"
         );
     }
 }
@@ -1663,6 +1707,21 @@ fn a_git_graphs_captions_and_lane_names_belong_to_their_own_commits_and_branches
 /// The place is the **line**: both of its ends have been clipped to the outline they meet, so the
 /// pair of boxes a line joins is read off the drawing. Shuffle the labels and the branches the
 /// picture shows stop being the branches the source wrote, whichever way the tree was laid out.
+///
+/// # …except when the shuffle is between two leaves of one parent
+///
+/// That last sentence is not true of every shuffle, and the exception was demonstrated rather
+/// than argued: making every **childless** node draw its next childless sibling's words left both
+/// halves of this test green. The bag of drawn words is unchanged by any permutation at all, and
+/// the branches are unchanged by this one, because a leaf's only appearance in a parent–child
+/// pair is as the child — so rotating a parent's leaves rotates the second element of a set of
+/// pairs that share a first, and the set comes back the same. **In the whole suite only the
+/// corpus golden went red**, which is §6-A item 15 with the golden as the sole guard.
+///
+/// So the words are anchored on the id as well. A box's id is `n{i}`, its node's own index in the
+/// source (`render::mindmap::spec_of` assigns it, because a mindmap's written ids are not unique
+/// and cannot identify anything); the label beside it comes from `map.nodes[i].label`, which is a
+/// different read of the same node, so a rotation moves one and not the other.
 #[test]
 fn a_mindmaps_boxes_hold_their_own_words_and_hang_off_their_own_parents() {
     if !text_metrics::fonts_available() {
@@ -1672,6 +1731,18 @@ fn a_mindmaps_boxes_hold_their_own_words_and_hang_off_their_own_parents() {
     for (name, src) in kind_cases_of(mindmap::is_mindmap) {
         let model = mindmap::parse(src).expect("parses");
         let d = kind_diagram(src);
+
+        for (i, node) in model.nodes.iter().enumerate() {
+            let placed = d
+                .node(&format!("n{i}"))
+                .unwrap_or_else(|| panic!("{name}: node {i} was not drawn"));
+            assert_eq!(
+                words(&placed.label),
+                as_drawn(&node.label),
+                "{name}: n{i} is the box for {:?} and it holds another node's words",
+                node.label
+            );
+        }
 
         let mut drawn: Vec<String> = d.nodes.iter().map(|n| words(&n.label)).collect();
         let mut wanted: Vec<String> = model.nodes.iter().map(|n| as_drawn(&n.label)).collect();
@@ -1977,11 +2048,16 @@ fn a_timelines_events_sit_under_their_own_periods_in_their_own_sections() {
 
 /// **requirement** — a box holds its own body rows in order, and a verb belongs to its own line.
 ///
-/// The place for the rows is **containment**: [`panel_rows`] reads out what one box says, so
-/// comparing a whole page of boxes against the source's is a statement about which box each row
-/// landed in — a row that moved next door changes two entries at once. The place for a verb is
-/// the **line's two ends**, clipped to the outlines they meet, so a verb on the wrong pair of
-/// boxes is caught wherever the layout happened to put them.
+/// The place for a verb is the **line's two ends**, clipped to the outlines they meet, so a verb
+/// on the wrong pair of boxes is caught wherever the layout happened to put them. That is also
+/// what used to pin which box was which, and it only reaches a box some link names: making the
+/// boxes **no link names** swap rows with each other left this test green, and in the whole suite
+/// only the corpus golden went red (§6-A item 15). The corpus has such a box — `tested`, in the
+/// case that writes four requirements and one link.
+///
+/// So the rows are anchored on the id, which for both a requirement and an element is its own
+/// name (`render::requirement::box_node`). The bag comparison is kept underneath it because it is
+/// the half that catches a row the drawing *added*.
 #[test]
 fn a_requirement_boxs_rows_and_a_verbs_line_belong_to_their_own_datum() {
     if !text_metrics::fonts_available() {
@@ -2004,29 +2080,51 @@ fn a_requirement_boxs_rows_and_a_verbs_line_belong_to_their_own_datum() {
             );
             rows
         };
-        let mut wanted: Vec<Vec<String>> = model
+        // Every box the source declares, with the id it is drawn under.
+        let mut declared: Vec<(&str, Vec<String>)> = model
             .requirements
             .iter()
             .map(|r| {
-                rows_of(
-                    r.kind.title(),
-                    &r.name,
-                    &[
-                        ("Id", &r.id),
-                        ("Text", &r.text),
-                        ("Risk", &r.risk),
-                        ("Verification", &r.verify_method),
-                    ],
+                (
+                    r.name.as_str(),
+                    rows_of(
+                        r.kind.title(),
+                        &r.name,
+                        &[
+                            ("Id", &r.id),
+                            ("Text", &r.text),
+                            ("Risk", &r.risk),
+                            ("Verification", &r.verify_method),
+                        ],
+                    ),
                 )
             })
             .collect();
-        wanted.extend(model.elements.iter().map(|e| {
-            rows_of(
-                "Element",
-                &e.name,
-                &[("Type", &e.kind), ("Doc Ref", &e.doc_ref)],
+        declared.extend(model.elements.iter().map(|e| {
+            (
+                e.name.as_str(),
+                rows_of(
+                    "Element",
+                    &e.name,
+                    &[("Type", &e.kind), ("Doc Ref", &e.doc_ref)],
+                ),
             )
         }));
+
+        // **By the id**, which is the box's own name — never by looking the rows up among the
+        // rows that were drawn, and never only through a link, which an isolated box has none of.
+        for (id, want) in &declared {
+            let placed = d
+                .node(id)
+                .unwrap_or_else(|| panic!("{name}: the box {id:?} was not drawn"));
+            assert_eq!(
+                &panel_rows(placed),
+                want,
+                "{name}: the box {id:?} does not hold that datum's own rows in order"
+            );
+        }
+
+        let mut wanted: Vec<Vec<String>> = declared.into_iter().map(|(_, rows)| rows).collect();
         let mut drawn: Vec<Vec<String>> = d.nodes.iter().map(panel_rows).collect();
         drawn.sort();
         wanted.sort();
@@ -2086,6 +2184,17 @@ fn a_requirement_boxs_rows_and_a_verbs_line_belong_to_their_own_datum() {
 /// enough and the corpus says why: a `Deployment_Node` inside a `Deployment_Node` holds exactly
 /// the same element as its parent, so the two frames are told apart by depth — which is read off
 /// the drawing, not off the `depth` the renderer wrote on them.
+///
+/// # What the bag and the lines together still cannot see
+///
+/// Both statements below are about *bags*, and what pins an entry of one to a datum is the line
+/// that names it. So an element **no relationship names** is pinned by nothing: two of them, of
+/// the same shape, could swap captions unseen. It is not the case today — the mutation that says
+/// so is vacuous on this corpus, because every untied element is the only one of its shape — and
+/// that is precisely the kind of guarantee §6-A item 10 says stops holding the moment a case is
+/// added. The caption is therefore anchored on the id (`e.alias`) first, which needs nothing from
+/// the corpus, and the bags are kept for what they alone catch: a caption or a frame the drawing
+/// *added*.
 #[test]
 fn a_c4_boxs_caption_and_a_boundarys_title_belong_to_their_own_datum() {
     if !text_metrics::fonts_available() {
@@ -2108,6 +2217,19 @@ fn a_c4_boxs_caption_and_a_boundarys_title_belong_to_their_own_datum() {
             }
             Label::measure(&lines.join("\n")).lines
         };
+        // **By the alias**, which is the id the element's own box is drawn under.
+        for e in &model.elements {
+            let placed = d
+                .node(&e.alias)
+                .unwrap_or_else(|| panic!("{name}: the element {:?} was not drawn", e.alias));
+            assert_eq!(
+                node_lines(placed),
+                caption(e),
+                "{name}: the box {:?} reads another element's caption",
+                e.alias
+            );
+        }
+
         let mut wanted: Vec<Vec<String>> = model.elements.iter().map(caption).collect();
         let mut drawn: Vec<Vec<String>> = d.nodes.iter().map(node_lines).collect();
         drawn.sort();
@@ -2168,6 +2290,29 @@ fn a_c4_boxs_caption_and_a_boundarys_title_belong_to_their_own_datum() {
             "{name}: the lines say {joined:?}, and the source's relationships are {rels:?}"
         );
 
+        // What one boundary's frame says. Two boundaries holding the same elements at the same
+        // depth are indistinguishable in the bag below, so the title is anchored on the alias too.
+        let frame_title = |b: &c4::Boundary| -> Vec<String> {
+            let title = if b.kind_line.trim().is_empty() {
+                b.label.clone()
+            } else {
+                format!("{}\n[{}]", b.label, b.kind_line)
+            };
+            Label::measure(&title).lines
+        };
+        for b in &model.boundaries {
+            // A boundary with nothing under it draws no frame at all.
+            let Some(frame) = d.cluster(&b.alias) else {
+                continue;
+            };
+            assert_eq!(
+                frame.title.lines,
+                frame_title(b),
+                "{name}: the frame {:?} is titled with another boundary's words",
+                b.alias
+            );
+        }
+
         // A frame, as the drawing gives it: what it holds, how deep it is, and what it says.
         let head = |n: &PlacedNode| node_lines(n).first().cloned().unwrap_or_default();
         let mut frames: Vec<(Vec<String>, usize, Vec<String>)> = d
@@ -2226,12 +2371,7 @@ fn a_c4_boxs_caption_and_a_boundarys_title_belong_to_their_own_datum() {
                 let mut held = Vec::new();
                 under(&model, &b.alias, &mut held, model.boundaries.len() + 1);
                 held.sort();
-                let title = if b.kind_line.trim().is_empty() {
-                    b.label.clone()
-                } else {
-                    format!("{}\n[{}]", b.label, b.kind_line)
-                };
-                (held, depth_of(b), Label::measure(&title).lines)
+                (held, depth_of(b), frame_title(b))
             })
             .collect();
         frames.sort();
@@ -2356,6 +2496,14 @@ fn a_block_grids_cells_hold_their_own_words_in_grid_order() {
 /// the outline they meet, so the pair of boxes a line joins is read off the drawing and a name
 /// that moved to its neighbour makes the picture disagree with the source. A group's place is
 /// what its frame holds and how deeply it is nested, as it is for a C4 boundary.
+///
+/// Both of those reach a service only through something else that names it: a line, or a frame it
+/// changes the contents of. A service **no edge names**, in the same group as another such, is
+/// reached by neither — the bag of drawn words is unchanged by any permutation, and a swap inside
+/// one group changes no frame's contents. As with C4 the mutation proving it is vacuous on this
+/// corpus (no two unwired services share a group) and that is exactly the guarantee §6-A item 10
+/// says a corpus can withdraw without anyone noticing, so the words are anchored on the service's
+/// own id first.
 #[test]
 fn an_architectures_boxes_and_group_titles_belong_to_their_own_services_and_groups() {
     if !text_metrics::fonts_available() {
@@ -2376,6 +2524,19 @@ fn an_architectures_boxes_and_group_titles_belong_to_their_own_services_and_grou
                 as_drawn(&s.title)
             }
         };
+        // **By the service's own id**, which is the id its box is drawn under.
+        for s in &model.services {
+            let placed = d
+                .node(&s.id)
+                .unwrap_or_else(|| panic!("{name}: the service {:?} was not drawn", s.id));
+            assert_eq!(
+                words(&placed.label),
+                says(s),
+                "{name}: the box for {:?} reads another service's words",
+                s.id
+            );
+        }
+
         let mut drawn: Vec<String> = d.nodes.iter().map(|n| words(&n.label)).collect();
         let mut wanted: Vec<String> = model.services.iter().map(says).collect();
         drawn.sort();
@@ -2416,6 +2577,21 @@ fn an_architectures_boxes_and_group_titles_belong_to_their_own_services_and_grou
             joined, wired,
             "{name}: the lines join {joined:?}, and the source wires {wired:?}"
         );
+
+        // The groups. Two groups holding the same services at the same depth cannot be told apart
+        // in the bag below, so the title is anchored on the group's own id first.
+        for g in &model.groups {
+            // A group nothing is in draws no frame at all.
+            let Some(frame) = d.cluster(&g.id) else {
+                continue;
+            };
+            assert_eq!(
+                words(&frame.title),
+                as_drawn(&g.title),
+                "{name}: the frame for {:?} is titled with another group's words",
+                g.id
+            );
+        }
 
         // The groups: what each frame holds, how deep it is, and what it says.
         let mut frames: Vec<(Vec<String>, usize, String)> = d

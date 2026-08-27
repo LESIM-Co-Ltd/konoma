@@ -490,9 +490,154 @@ fn awkward_sources_produce_a_model_or_an_error_and_never_a_panic() {
         "erDiagram\n  A {\n    string x PK, FK, UK, ZZ\n  }",
         "erDiagram\n  direction",
         "erDiagram\n  direction NOPE\n  A",
+        "erDiagram\n  A[",
+        "erDiagram\n  A]",
+        "erDiagram\n  [",
+        "erDiagram\n  []",
+        "erDiagram\n  A[]",
+        "erDiagram\n  A[[x]]",
+        "erDiagram\n  A[\"x",
+        "erDiagram\n  A[一]",
+        "erDiagram\n  subgraph [",
+        "erDiagram\n  subgraph S[\n  end",
         &deep,
     ];
     for src in cases {
         let _ = parse(src);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 7. A bracket is an alias, and only ever that
+// ---------------------------------------------------------------------------------------------
+
+/// **`SQS entityName SQE` is in the declaration rules and nowhere else.**
+///
+/// `erDiagram.jison` at 11.17.2 has four statement forms with brackets in them —
+/// `entityName SQS entityName SQE`, the same with `STYLE_SEPARATOR idList`, and both again with an
+/// attribute block — plus `subgraphHeader: SUBGRAPH entityName SQS subgraphTitle SQE separator`.
+/// **No relationship rule takes a bracket.** So `p[Person] ||--o| a["Customer Account"] : has` is
+/// not a diagram drawn some other way; it is a line mermaid throws on.
+///
+/// konoma used to draw it, because the bracket was closed with `rfind(']')` — the *last* `]` on
+/// the line — so the pair spanned the relationship operator and everything after it. The result
+/// was one entity called `p`, labelled `Person] ||--o| a["Customer Account"`, with no relationship
+/// and no `a` at all: the phantom-node failure `a_bare_word_declares_nothing` exists to stop,
+/// wearing the other face.
+///
+/// This pins both halves of the rule — what a bracket may be followed by, and what it may not.
+#[test]
+fn a_bracket_alias_is_only_a_declaration() {
+    // The forms the grammar has. Each is `(source, entity ids, labels, relationship count)`.
+    for (src, ids, labels, rels) in [
+        // `entityName SQS entityName SQE`
+        ("erDiagram\n  p[Person]", vec!["p"], vec!["Person"], 0),
+        // …with a style separator after it.
+        ("erDiagram\n  p[Person]:::vip", vec!["p"], vec!["Person"], 0),
+        // …with an attribute block after it. `Scanner::line` splits the `{` off first.
+        (
+            "erDiagram\n  p[Person] {\n    string firstName\n  }",
+            vec!["p"],
+            vec!["Person"],
+            0,
+        ),
+        // …with both.
+        (
+            "erDiagram\n  p[Person]:::vip {\n    string firstName\n  }",
+            vec!["p"],
+            vec!["Person"],
+            0,
+        ),
+        // A quoted title may hold a `]` of its own: `ENTITY_NAME` is `\"[^"%\r\n\v\b\\]+\"`,
+        // which excludes neither bracket. This is the case the old `rfind` got right by accident
+        // and a naive "first `]`" would get wrong.
+        ("erDiagram\n  A[\"a ] b\"]", vec!["A"], vec!["a ] b"], 0),
+        // …and so may a quoted *name*, which the old `find('[')` got wrong: it took the bracket
+        // inside the quotes for the alias's, and the entity was dropped altogether.
+        ("erDiagram\n  \"a [ b\"[t]", vec!["a [ b"], vec!["t"], 0),
+        // The aliases are ids; the relationship names them by id, on its own line.
+        (
+            "erDiagram\n  p[Person]\n  a[\"Customer Account\"]\n  p ||--o| a : has",
+            vec!["p", "a"],
+            vec!["Person", "Customer Account"],
+            1,
+        ),
+    ] {
+        let d = ok(src);
+        assert_eq!(d.entity_ids(), ids, "entities of {src:?}");
+        let drawn: Vec<&str> = d.entities.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(drawn, labels, "labels of {src:?}");
+        assert_eq!(d.relationships.len(), rels, "relationships of {src:?}");
+    }
+
+    // A style separator after an alias applies its classes. It used to drop them on the floor:
+    // `split_style_separator` was run on the *name*, and `:::vip` was past the closing bracket.
+    let d = ok("erDiagram\n  p[Person]:::vip\n  classDef vip fill:#f96");
+    assert_eq!(d.entity("p").unwrap().css_classes, ["vip"]);
+
+    // The forms the grammar does not have. Every one of them is refused, and the diagram with it.
+    for src in [
+        // The line this was found on.
+        "erDiagram\n  p[Person] ||--o| a[\"Customer Account\"] : has",
+        // …with the bracket on one end only, either end.
+        "erDiagram\n  p[Person] ||--o| a : has",
+        "erDiagram\n  A ||--o| a[\"x\"] : has",
+        // The word spelling of the operator reaches the same place.
+        "erDiagram\n  p[Person] one to many a : has",
+        // Two declarations on one line. Upstream this is two statements — `line` is `statement`
+        // and no separator is required between them — and konoma refuses it instead, because a
+        // line-based scanner has nowhere to put the second one. Of the two ways to be wrong,
+        // this is the one that does not invent a label.
+        "erDiagram\n  A[one] B[two]",
+        // A subgraph header's bracket must be followed by the end of the line: `subgraphHeader`
+        // ends in `separator`, and unlike the entity forms it does not even take `:::`.
+        "erDiagram\n  subgraph a[b] c[d]\n    Z\n  end",
+        "erDiagram\n  subgraph a[b]:::hot\n    Z\n  end",
+    ] {
+        let e = parse(src).unwrap_err();
+        assert!(
+            matches!(e, ParseError::BracketIsNotADeclaration { .. }),
+            "{src:?} should be refused as a non-declaration, and was {e:?}"
+        );
+    }
+
+    // An unclosed `[` is `SQS` with no `SQE`, which is the same kind of syntax error. It is
+    // refused **even when other entities parsed**: dropping the statement quietly would leave a
+    // diagram missing a box, with nothing anywhere to say so.
+    for src in [
+        "erDiagram\n  A[unclosed",
+        "erDiagram\n  A\n  B[unclosed",
+        "erDiagram\n  subgraph S[unclosed\n    A\n  end",
+    ] {
+        let e = parse(src).unwrap_err();
+        assert!(
+            matches!(e, ParseError::UnclosedBracket { .. }),
+            "{src:?} should be refused for the unclosed bracket, and was {e:?}"
+        );
+    }
+}
+
+/// The messages, so a reader of the fallback text has something to act on.
+#[test]
+fn a_refused_bracket_says_which_line_and_why() {
+    assert_eq!(
+        parse("erDiagram\n  p[Person] ||--o| a : has")
+            .unwrap_err()
+            .to_string(),
+        "line 2: `p[Person] ||--o| a : has` — `[…]` names an entity's alias and only \
+         `:::classes` or an attribute block may follow it"
+    );
+    assert_eq!(
+        parse("erDiagram\n  A\n  B[unclosed")
+            .unwrap_err()
+            .to_string(),
+        "unclosed `[` at line 3: `B[unclosed`"
+    );
+    assert_eq!(
+        parse("erDiagram\n  subgraph a[b] c[d]\n  end")
+            .unwrap_err()
+            .to_string(),
+        "line 2: `subgraph a[b] c[d]` — `[…]` names an entity's alias and only `:::classes` or \
+         an attribute block may follow it"
+    );
 }

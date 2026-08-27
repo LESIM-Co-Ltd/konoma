@@ -137,6 +137,21 @@ pub const CASES: &[(&str, &str)] = &[
         "self",
         "erDiagram\n  NODE ||--o{ NODE : parent-of",
     ),
+    (
+        // **Every legal thing that can follow a `[…]`**, which nothing else here draws: `aliases`
+        // always pairs its alias with an attribute block, so a bare alias, an alias carrying a
+        // style separator, and a title with a `]` of its own were all undrawn. That is the corpus
+        // gap the bracket defect fell through — it was found while writing a sample, not by a
+        // test.
+        //
+        // **Be exact about what the golden of this case can see.** It sees that these forms lay
+        // out and emit, and that the `]` inside a quoted title reaches the box rather than cutting
+        // the name short. It does *not* see the `:::vip` — the ER renderer draws no `classDef`
+        // styling at all (the `styled` case above is the same), so the class is a parse-level fact
+        // and `er::tests::a_bracket_alias_is_only_a_declaration` is what states it.
+        "alias-forms",
+        "erDiagram\n    p[Person]\n    a[\"Customer Account\"]:::vip\n             b[\"Bracket ] In Title\"]\n    p ||--o| a : has\n    p ||--o{ b : notes\n             classDef vip fill:#f96",
+    ),
 ];
 
 /// Label strings the measuring instrument runs over.
@@ -239,7 +254,11 @@ fn entity_box_width_matches_resvg() {
 ///
 /// It cannot ride [`LABELS`]: those are used as `type name` inside `{ }`, where the ER grammar
 /// splits on whitespace, so a doubled space there would be a parse error rather than a
-/// measurement. An aliased name — `e["…"]` — is where an ER diagram can actually hold one.
+/// measurement. An aliased name — `e["…"]` — is where an ER diagram can actually hold one, and it
+/// has to be written **as its own declaration**: `SQS entityName SQE` is in the declaration rules
+/// only, so `e["…"] ||--|| B : x` on one line is a statement mermaid throws on and konoma refuses
+/// (`a_bracket_alias_is_only_a_declaration`). This fixture used to be written that way and drew a
+/// one-entity diagram with the relationship silently gone.
 ///
 /// usvg folds runs of whitespace *before* it shapes, so this name is drawn one space narrower
 /// than its bytes. Measuring the bytes would size a band the text does not fill, and every
@@ -250,7 +269,7 @@ fn entity_name_band_with_a_doubled_space_matches_resvg() {
     if !text_metrics::fonts_available() {
         return;
     }
-    let src = "erDiagram\n  e[\"Customer  Account\"] ||--|| B : x";
+    let src = "erDiagram\n  e[\"Customer  Account\"]\n  e ||--|| B : x";
     let d = laid_out(src);
     let svg = render(src, "dark").expect("renders");
     let node = d.node("e").expect("the aliased entity");
@@ -737,6 +756,26 @@ fn another_diagram_kind_is_refused() {
             matches!(render(src, "dark"), Err(RenderError::ErParse(_))),
             "{src:?}"
         );
+    }
+}
+
+/// **A bracket that is not an alias refuses the whole diagram**, which is how the fence ends up
+/// showing the text diagram instead of a drawing that disagrees with it.
+///
+/// The parser's own statement of the rule is `er::tests::a_bracket_alias_is_only_a_declaration`;
+/// what this adds is that the refusal survives the trip through `render`, since that is the entry
+/// `preview::markdown::mermaid_to_svg` calls and the only one whose `None` reaches a reader.
+#[test]
+fn a_bracket_outside_a_declaration_is_refused() {
+    for src in [
+        "erDiagram\n  p[Person] ||--o| a[\"Customer Account\"] : has",
+        "erDiagram\n  p[Person] ||--o| a : has",
+        "erDiagram\n  A[one] B[two]",
+        "erDiagram\n  A\n  B[unclosed",
+        "erDiagram\n  subgraph a[b] c[d]\n    Z\n  end",
+    ] {
+        let e = render(src, "dark").unwrap_err();
+        assert!(matches!(e, RenderError::ErParse(_)), "{src:?} gave {e}");
     }
 }
 

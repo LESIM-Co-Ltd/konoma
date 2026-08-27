@@ -667,3 +667,34 @@
 </g>
 </svg>
 
+=== alias-forms ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#1f2020" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+<line x1="#" y1="#" x2="#" y2="#" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">Person</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">Customer Account</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">Bracket ] In Title</text>
+</g>
+<g class="edge-labels">
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">has</tspan></text>
+<rect x="#" y="#" width="#" height="#" fill="#333333"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">notes</tspan></text>
+</g>
+</svg>
+

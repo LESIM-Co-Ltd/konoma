@@ -203,6 +203,25 @@ pub enum ParseError {
         /// 1-based line in the original source.
         line: usize,
     },
+    /// A `[` was opened and never closed. `SQS` with no `SQE` is a syntax error upstream.
+    UnclosedBracket {
+        /// The statement, for the message.
+        text: String,
+        /// 1-based line in the original source.
+        line: usize,
+    },
+    /// A `[…]` was followed by something that cannot be part of a declaration.
+    ///
+    /// `SQS entityName SQE` appears in `erDiagram.jison` only in the entity declaration rules and
+    /// in a `subgraph` header, so a bracket on a relationship — or a second bracket pair on the
+    /// same line — is a line mermaid throws on. Refusing lets the fence fall back to the text
+    /// diagram; the alternative was to draw an entity named after the rest of the statement.
+    BracketIsNotADeclaration {
+        /// The statement, for the message.
+        text: String,
+        /// 1-based line in the original source.
+        line: usize,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -220,6 +239,14 @@ impl fmt::Display for ParseError {
                 write!(f, "unclosed `subgraph {id}` opened at line {line}")
             }
             ParseError::UnclosedString { line } => write!(f, "unclosed `\"` at line {line}"),
+            ParseError::UnclosedBracket { text, line } => {
+                write!(f, "unclosed `[` at line {line}: `{text}`")
+            }
+            ParseError::BracketIsNotADeclaration { text, line } => write!(
+                f,
+                "line {line}: `{text}` — `[…]` names an entity's alias and only `:::classes` or \
+                 an attribute block may follow it"
+            ),
         }
     }
 }
