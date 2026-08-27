@@ -26,7 +26,7 @@ fn main() {
 | 種別 | ライブラリ | 依存 |
 |------|------------|------|
 | md   | konoma（ブロックモデル） | pulldown-cmark |
-| 図   | mermaid-rs-renderer | fontdb |
+| 図   | konoma（自作レンダラ） | fontdb |
 
 ### 表のインライン装飾・整列・エスケープ
 
@@ -53,7 +53,7 @@ HTML で書かれた `<table>` も本物の表として描かれる。README が
     <td align="center">装飾つきスパン</td>
   </tr>
   <tr>
-    <td><code>mermaid-rs-renderer</code></td>
+    <td><code>konoma（mermaid）</code></td>
     <td align="center">SVG を実ピクセルに</td>
   </tr>
 </table>

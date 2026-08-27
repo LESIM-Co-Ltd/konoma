@@ -26,7 +26,7 @@ fn main() {
 | Kind | Library | Depends on |
 |------|---------|------------|
 | md   | konoma (block model) | pulldown-cmark |
-| diagram | mermaid-rs-renderer | fontdb |
+| diagram | konoma (own renderer) | fontdb |
 
 ### Inline styling, alignment, and escapes in tables
 
@@ -54,7 +54,7 @@ are styled.
     <td align="center">styled spans</td>
   </tr>
   <tr>
-    <td><code>mermaid-rs-renderer</code></td>
+    <td><code>konoma (mermaid)</code></td>
     <td align="center">SVG to pixels</td>
   </tr>
 </table>

@@ -11968,8 +11968,8 @@ L0033 style=fg=-,bg=-,mod=- align=-
   s03 fg=-,bg=-,mod=- "   "
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
   s05 fg=-,bg=-,mod=- " "
-  s06 fg=-,bg=-,mod=- "mermaid-rs-renderer"
-  s07 fg=-,bg=-,mod=- "      "
+  s06 fg=-,bg=-,mod=- "konoma（自作レンダラ）"
+  s07 fg=-,bg=-,mod=- "   "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
   s09 fg=-,bg=-,mod=- " "
   s10 fg=-,bg=-,mod=- "fontdb"
@@ -12061,24 +12061,24 @@ L0046 style=fg=-,bg=-,mod=- align=-
   s19 fg=white,bg=-,mod=- "<a>"
   s20 fg=-,bg=-,mod=- " も装飾される。"
 L0047 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────────────────┬────────────────────┐"
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────────────────┬────────────────────┐"
 L0048 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "工程"
-  s03 fg=cyan,bg=-,mod=B "                "
+  s03 fg=cyan,bg=-,mod=B "              "
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
   s05 fg=cyan,bg=-,mod=B "        "
   s06 fg=cyan,bg=-,mod=B "出力"
   s07 fg=cyan,bg=-,mod=B "        "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0049 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├─────────────────────┼────────────────────┤"
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───────────────────┼────────────────────┤"
 L0050 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=B "ブロックモデル"
-  s03 fg=-,bg=-,mod=- "      "
+  s03 fg=-,bg=-,mod=- "    "
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
   s05 fg=-,bg=-,mod=- "   "
   s06 fg=-,bg=-,mod=- "装飾つきスパン"
@@ -12087,7 +12087,7 @@ L0050 style=fg=-,bg=-,mod=- align=-
 L0051 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=white,bg=-,mod=- "mermaid-rs-renderer"
+  s02 fg=white,bg=-,mod=- "konoma（mermaid）"
   s03 fg=-,bg=-,mod=- " "
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
   s05 fg=-,bg=-,mod=- " "
@@ -12095,7 +12095,7 @@ L0051 style=fg=-,bg=-,mod=- align=-
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0052 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────────────────┴────────────────────┘"
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└───────────────────┴────────────────────┘"
 L0053 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "未対応: "
   s01 fg=white,bg=-,mod=- "colspan"
@@ -12461,8 +12461,8 @@ L0146 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "fn main() {\n    let msg = \"syntect ハイライトが効くはず\";\n    println!(\"{msg}\");\n}"
 -- TASKS (2) --
-  t00 state=' ' state_at=3045
-  t01 state='x' state_at=3168
+  t00 state=' ' state_at=3056
+  t01 state='x' state_at=3179
 -- DETAILS_OPEN (2) --
   d00 false
   d01 true
@@ -12485,8 +12485,8 @@ L0146 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (14) --
   m00 line=0003 kind=Link{target="https://example.com"}
   m01 line=0020 kind=CodeBlock{body=Some("fn main() {\n    let msg = \"syntect ハイライトが効くはず\";\n    println!(\"{msg}\");\n}")}
-  m02 line=0078 kind=Task{state=' ',state_at=Some(3045)}
-  m03 line=0079 kind=Task{state='x',state_at=Some(3168)}
+  m02 line=0078 kind=Task{state=' ',state_at=Some(3056)}
+  m03 line=0079 kind=Task{state='x',state_at=Some(3179)}
   m04 line=0087 kind=Details{ordinal=0}
   m05 line=0088 kind=Details{ordinal=1}
   m06 line=0095 kind=Link{target="https://github.com/LESIM-Co-Ltd/konoma"}
@@ -12593,7 +12593,7 @@ L0027 style=fg=cyan,bg=-,mod=B align=-
 L0028 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0029 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────┬──────────────────────┬────────────────┐"
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────┬───────────────────────┬────────────────┐"
 L0030 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
@@ -12602,14 +12602,14 @@ L0030 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
   s05 fg=cyan,bg=-,mod=B " "
   s06 fg=cyan,bg=-,mod=B "Library"
-  s07 fg=cyan,bg=-,mod=B "              "
+  s07 fg=cyan,bg=-,mod=B "               "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
   s09 fg=cyan,bg=-,mod=B " "
   s10 fg=cyan,bg=-,mod=B "Depends on"
   s11 fg=cyan,bg=-,mod=B "     "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0031 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├─────────┼──────────────────────┼────────────────┤"
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├─────────┼───────────────────────┼────────────────┤"
 L0032 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
@@ -12618,7 +12618,7 @@ L0032 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
   s05 fg=-,bg=-,mod=- " "
   s06 fg=-,bg=-,mod=- "konoma (block model)"
-  s07 fg=-,bg=-,mod=- " "
+  s07 fg=-,bg=-,mod=- "  "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
   s09 fg=-,bg=-,mod=- " "
   s10 fg=-,bg=-,mod=- "pulldown-cmark"
@@ -12631,15 +12631,15 @@ L0033 style=fg=-,bg=-,mod=- align=-
   s03 fg=-,bg=-,mod=- " "
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
   s05 fg=-,bg=-,mod=- " "
-  s06 fg=-,bg=-,mod=- "mermaid-rs-renderer"
-  s07 fg=-,bg=-,mod=- "  "
+  s06 fg=-,bg=-,mod=- "konoma (own renderer)"
+  s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
   s09 fg=-,bg=-,mod=- " "
   s10 fg=-,bg=-,mod=- "fontdb"
   s11 fg=-,bg=-,mod=- "         "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0034 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────┴──────────────────────┴────────────────┘"
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────┴───────────────────────┴────────────────┘"
 L0035 style=fg=cyan,bg=-,mod=BI align=-
   s00 fg=-,bg=-,mod=- "Inline styling, alignment, and escapes in tables"
 L0036 style=fg=-,bg=-,mod=- align=-
@@ -12726,24 +12726,24 @@ L0046 style=fg=-,bg=-,mod=- align=-
   s21 fg=-,bg=-,mod=- " "
   s22 fg=-,bg=-,mod=- "are styled."
 L0047 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────────────────┬───────────────┐"
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────────────────┬───────────────┐"
 L0048 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "Stage"
-  s03 fg=cyan,bg=-,mod=B "               "
+  s03 fg=cyan,bg=-,mod=B "            "
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
   s05 fg=cyan,bg=-,mod=B "    "
   s06 fg=cyan,bg=-,mod=B "Output"
   s07 fg=cyan,bg=-,mod=B "     "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0049 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├─────────────────────┼───────────────┤"
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├──────────────────┼───────────────┤"
 L0050 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=B "block model"
-  s03 fg=-,bg=-,mod=- "         "
+  s03 fg=-,bg=-,mod=- "      "
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
   s05 fg=-,bg=-,mod=- " "
   s06 fg=-,bg=-,mod=- "styled spans"
@@ -12752,7 +12752,7 @@ L0050 style=fg=-,bg=-,mod=- align=-
 L0051 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
-  s02 fg=white,bg=-,mod=- "mermaid-rs-renderer"
+  s02 fg=white,bg=-,mod=- "konoma (mermaid)"
   s03 fg=-,bg=-,mod=- " "
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
   s05 fg=-,bg=-,mod=- " "
@@ -12760,7 +12760,7 @@ L0051 style=fg=-,bg=-,mod=- align=-
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0052 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────────────────┴───────────────┘"
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────────────────┴───────────────┘"
 L0053 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Not modeled: "
   s01 fg=white,bg=-,mod=- "colspan"
@@ -13128,8 +13128,8 @@ L0146 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "fn main() {\n    let msg = \"syntect highlighting should work\";\n    println!(\"{msg}\");\n}"
 -- TASKS (2) --
-  t00 state=' ' state_at=2596
-  t01 state='x' state_at=2690
+  t00 state=' ' state_at=2595
+  t01 state='x' state_at=2689
 -- DETAILS_OPEN (2) --
   d00 false
   d01 true
@@ -13152,8 +13152,8 @@ L0146 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (14) --
   m00 line=0003 kind=Link{target="https://example.com"}
   m01 line=0020 kind=CodeBlock{body=Some("fn main() {\n    let msg = \"syntect highlighting should work\";\n    println!(\"{msg}\");\n}")}
-  m02 line=0078 kind=Task{state=' ',state_at=Some(2596)}
-  m03 line=0079 kind=Task{state='x',state_at=Some(2690)}
+  m02 line=0078 kind=Task{state=' ',state_at=Some(2595)}
+  m03 line=0079 kind=Task{state='x',state_at=Some(2689)}
   m04 line=0087 kind=Details{ordinal=0}
   m05 line=0088 kind=Details{ordinal=1}
   m06 line=0095 kind=Link{target="https://github.com/LESIM-Co-Ltd/konoma"}
