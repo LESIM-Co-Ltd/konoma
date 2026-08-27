@@ -1958,3 +1958,166 @@ fn cfg_external_field_wrong_type_fails_whole_parse_like_other_bool_fields() {
     // Sanity: the same failure mode already exists for an established bool field.
     assert!(toml::from_str::<Config>("[ui]\nicons = \"nope\"\n").is_err());
 }
+
+// =============================================================================
+// Shipped example configs: every key must land on the struct that owns it
+// =============================================================================
+//
+// Regression coverage for a0dbe2f: a `[jj]` header sitting in the middle of `[external]`'s keys is
+// still valid TOML, so `shipped_example_configs_parse` (which only checks that the files parse as a
+// `Config`, plus a couple of `[ui]` spot-checks) stayed green while five `[external]` switches
+// silently parsed into `JjConfig` — a table with no such fields — and were dropped by serde. This
+// test asserts, for every top-level and nested section in both example configs, that each key
+// written there is actually a field of the struct that section deserializes into.
+
+/// Extracts the `pub <name>:` field names of `pub struct <struct_name> { ... }`, in declaration
+/// order, straight from `source`. Deliberately NOT a hard-coded list: a field added to the struct
+/// and forgotten in the example config must show up here as a new key to check, not silently drop
+/// out of coverage. Mirrors the technique `.claude/skills/konoma-docs/SKILL.md` uses for its
+/// config-vs-reference cross-check (find the struct marker, find its closing `\n}`, then take every
+/// line whose first token is `pub`).
+fn struct_pub_field_names(source: &str, struct_name: &str) -> Vec<String> {
+    let marker = format!("pub struct {struct_name} {{");
+    let start = source.find(&marker).unwrap_or_else(|| {
+        panic!("`{marker}` not found in src/config/mod.rs — struct renamed or moved?")
+    });
+    let body_start = start + marker.len();
+    let end = source[body_start..]
+        .find("\n}")
+        .map(|p| body_start + p)
+        .unwrap_or_else(|| panic!("no closing `}}` found for struct {struct_name}"));
+    let body = &source[body_start..end];
+    body.lines()
+        .filter_map(|line| {
+            let rest = line.trim_start().strip_prefix("pub ")?;
+            let colon = rest.find(':')?;
+            let name = rest[..colon].trim();
+            (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                .then(|| name.to_string())
+        })
+        .collect()
+}
+
+/// Looks up a dotted TOML path (e.g. `"ui.sort"`) from the root table, returning the sub-table only
+/// if every segment exists and is itself a table.
+fn toml_subtable<'a>(root: &'a toml::Table, dotted: &str) -> Option<&'a toml::Table> {
+    let mut cur = root;
+    for part in dotted.split('.') {
+        cur = cur.get(part)?.as_table()?;
+    }
+    Some(cur)
+}
+
+#[test]
+fn shipped_example_configs_keys_land_on_the_struct_that_owns_them() {
+    let src_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config/mod.rs");
+    let source = std::fs::read_to_string(&src_path)
+        .unwrap_or_else(|e| panic!("cannot read src/config/mod.rs: {e}"));
+
+    // (TOML path, owning struct). The field *list* for each is read live from `source` above, but
+    // which struct a nested path belongs to (`ui.sort` -> `SortConfig`) is structural knowledge a
+    // field-name scan can't derive on its own, so it's named here.
+    //
+    // Deliberately NOT covered below, with reasons (do not add a path here without one):
+    //   - `[keys]` / `[keys.<surface>]`: `KeysConfig::surfaces` is `#[serde(flatten)]`, so every
+    //     key not matching a named field is legal there (captured as a keymap surface/chord) — there
+    //     is no fixed field list a key could be "misplaced" against.
+    //   - `[editor.ext]`: `EditorConfig::ext` is an open `HashMap<extension, command>` — any
+    //     extension name is a legal key by design (see its doc comment in config/mod.rs).
+    //   - `[[preview.rules]]`: not a plain table but a TOML array of tables, so it can't be walked
+    //     via `toml_subtable` like the others; it is checked separately below against `Rule`'s
+    //     fields directly.
+    let sections: &[(&str, &str)] = &[
+        ("ui", "UiConfig"),
+        ("ui.sort", "SortConfig"),
+        ("ui.theme", "ThemeConfig"),
+        ("preview", "PreviewConfig"),
+        ("git", "GitConfig"),
+        ("jj", "JjConfig"),
+        ("external", "ExternalConfig"),
+        ("editor", "EditorConfig"),
+    ];
+
+    let fields_by_section: HashMap<&str, Vec<String>> = sections
+        .iter()
+        .map(|&(path, s)| (path, struct_pub_field_names(&source, s)))
+        .collect();
+    assert!(
+        fields_by_section.values().all(|f| !f.is_empty()),
+        "a struct's field extraction came back empty (extraction likely broke): {fields_by_section:?}"
+    );
+
+    // Reverse index (field name -> owning section path(s)) so a failure can name where a misplaced
+    // key actually belongs, not just that it doesn't belong where it sits.
+    let mut owner_of: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (&path, fields) in &fields_by_section {
+        for f in fields {
+            owner_of.entry(f.as_str()).or_default().push(path);
+        }
+    }
+
+    let rule_fields = struct_pub_field_names(&source, "Rule");
+    assert!(!rule_fields.is_empty());
+
+    for name in ["config.example.toml", "config.example.ja.toml"] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            eprintln!("skipping {name} — not present (published-crate build?)");
+            continue;
+        };
+        let root: toml::Table = toml::from_str(&text)
+            .unwrap_or_else(|e| panic!("{name} does not parse as raw TOML: {e}"));
+
+        for &(section_path, struct_name) in sections {
+            let Some(sub) = toml_subtable(&root, section_path) else {
+                continue; // section absent (fully commented out) — nothing to check
+            };
+            let owned = &fields_by_section[section_path];
+            for key in sub.keys() {
+                if owned.iter().any(|f| f == key) {
+                    continue;
+                }
+                let elsewhere: Vec<&str> = owner_of
+                    .get(key.as_str())
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|p| *p != section_path)
+                    .collect();
+                let hint = if elsewhere.is_empty() {
+                    "no struct covered by this test declares it either — likely a typo".to_string()
+                } else {
+                    format!("it belongs under [{}]", elsewhere.join("] / ["))
+                };
+                panic!(
+                    "{name}: key `{key}` is written in [{section_path}] but `{struct_name}` \
+                     (which [{section_path}] deserializes into) has no such field — {hint}. This is \
+                     the a0dbe2f bug shape: a misplaced section header lets keys parse into the wrong \
+                     table, where serde drops them silently instead of erroring."
+                );
+            }
+        }
+
+        // `[[preview.rules]]`: a TOML array of tables, checked against `Rule`'s fields directly
+        // rather than through `toml_subtable` (which only understands plain sub-tables).
+        if let Some(rules) = root
+            .get("preview")
+            .and_then(|v| v.as_table())
+            .and_then(|t| t.get("rules"))
+            .and_then(|v| v.as_array())
+        {
+            for (i, rule) in rules.iter().enumerate() {
+                let Some(rt) = rule.as_table() else {
+                    panic!("{name}: [[preview.rules]] #{i} is not a table");
+                };
+                for key in rt.keys() {
+                    assert!(
+                        rule_fields.iter().any(|f| f == key),
+                        "{name}: [[preview.rules]] #{i} has key `{key}` but `Rule` has no such \
+                         field (Rule's fields: {rule_fields:?})"
+                    );
+                }
+            }
+        }
+    }
+}
