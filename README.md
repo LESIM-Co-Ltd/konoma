@@ -70,6 +70,11 @@ in-between split view.
 <p align="center"><b>Markdown</b> — Mermaid diagrams and LaTeX math, typeset and drawn as real images in the preview</p>
 
 <p align="center">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/mermaid-gallery.png" alt="A sequence diagram with an actor, an activation bar and an alt block, drawn by konoma's own Mermaid renderer" width="860">
+</p>
+<p align="center"><b>Mermaid</b> — all 23 diagram kinds, parsed, laid out and drawn by konoma itself, with no browser and no external renderer</p>
+
+<p align="center">
   <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/markdown-richtext.png" alt="Tables with inline styling and alignment, a horizontal rule, and interactive task lists in a Markdown preview" width="860">
 </p>
 <p align="center"><b>Rich text</b> — tables with inline styling and alignment, a horizontal rule, and interactive task lists</p>
