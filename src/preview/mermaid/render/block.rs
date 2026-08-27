@@ -282,6 +282,18 @@ fn place(
                 }
                 for mut f in inner_frames[i].clone() {
                     f.center = Point::new(f.center.x + dx, f.center.y + dy);
+                    // **Whose frame this one is inside.** The recursion above laid `c2`'s
+                    // children out and gave each of *their* nested frames a parent; whichever
+                    // came back without one is a direct child of `c2`. Without this the link is
+                    // never made, and a `PlacedCluster` with no parent is not a frame that
+                    // merely lacks an attribute: `check_nested_clusters_sit_inside_their_parent`
+                    // skips it (so nothing checks that a nested block stays in its own box) and
+                    // `check_unrelated_clusters_do_not_overlap` reads the two as strangers and
+                    // calls their nesting a collision. Both are §6's "green and checking
+                    // nothing" shape.
+                    if f.parent.is_none() {
+                        f.parent = Some(c2.id.clone());
+                    }
                     clusters.push(f);
                 }
                 clusters.push(composite_frame(

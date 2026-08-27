@@ -161,38 +161,51 @@ pub fn lay_out(arch: &Architecture) -> Result<Diagram, RenderError> {
     }
 
     // --- the group frames -----------------------------------------------------------------------
+    //
+    // **Deepest first**, and a frame is grown around the *frames* of the groups inside it as well
+    // as around its own boxes. Both halves of that are the fix to one defect: the frames used to
+    // be built in declaration order around a group's transitive services, with the padding scaled
+    // by depth — and scaled the wrong way, so a nested group took a **wider** margin than the
+    // group holding it and its frame came out around the outside of its own parent's. A frame has
+    // to clear the border and the title band of every frame it holds, and the only thing that
+    // knows how much room those need is the child frame itself, so it is built first and taken
+    // whole.
     let mut clusters: Vec<PlacedCluster> = Vec::new();
-    for group in &arch.groups {
-        let members: Vec<&PlacedNode> = arch
-            .services
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| in_group(arch, s.group.as_deref(), &group.id))
-            .map(|(i, _)| &nodes[i])
-            .collect();
-        if members.is_empty() {
-            continue;
-        }
+    let mut order: Vec<usize> = (0..arch.groups.len()).collect();
+    order.sort_by_key(|i| std::cmp::Reverse(depth_of(arch, &arch.groups[*i].id)));
+    for gi in order {
+        let group = &arch.groups[gi];
         let (mut l, mut t, mut r, mut b) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-        for m in members {
-            let (ml, mt, mr, mb) = m.bounds();
+        let mut grow = |(ml, mt, mr, mb): (f64, f64, f64, f64)| {
             l = l.min(ml);
             t = t.min(mt);
             r = r.max(mr);
             b = b.max(mb);
+        };
+        for (i, s) in arch.services.iter().enumerate() {
+            if s.group.as_deref() == Some(group.id.as_str()) {
+                grow(nodes[i].bounds());
+            }
         }
-        let depth = depth_of(arch, &group.id);
-        let pad = GROUP_PAD * (depth + 1) as f64;
+        for c in &clusters {
+            if c.parent.as_deref() == Some(group.id.as_str()) {
+                grow(c.bounds());
+            }
+        }
+        // A group holding neither a service nor another group's frame has nothing to draw round.
+        if l > r {
+            continue;
+        }
         let mut frame = band::frame(
             group.id.clone(),
             &group.title,
-            l - pad,
-            t - pad,
-            r + pad,
-            b + pad,
+            l - GROUP_PAD,
+            t - GROUP_PAD,
+            r + GROUP_PAD,
+            b + GROUP_PAD,
         );
         frame.parent = group.parent.clone();
-        frame.depth = depth;
+        frame.depth = depth_of(arch, &group.id);
         clusters.push(frame);
     }
     clusters.sort_by_key(|c| c.depth);
@@ -206,24 +219,6 @@ pub fn lay_out(arch: &Architecture) -> Result<Diagram, RenderError> {
     band::add_title(&mut diagram, arch.preamble.title.as_deref());
     normalise(&mut diagram);
     Ok(diagram)
-}
-
-/// Whether a service whose `in` is `group` belongs to `want`, directly or through a nested group.
-fn in_group(arch: &Architecture, group: Option<&str>, want: &str) -> bool {
-    let mut at = group;
-    // The guard is on the count: a source can declare `group a in b` and `group b in a`.
-    for _ in 0..arch.groups.len() + 1 {
-        let Some(id) = at else { return false };
-        if id == want {
-            return true;
-        }
-        at = arch
-            .groups
-            .iter()
-            .find(|g| g.id == id)
-            .and_then(|g| g.parent.as_deref());
-    }
-    false
 }
 
 /// How many groups a group is inside.

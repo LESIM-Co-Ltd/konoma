@@ -1357,9 +1357,14 @@ fn an_architecture_edges_ports_decide_where_the_boxes_go() {
     }
 }
 
-/// **A service is inside its own group's frame, and inside no other.**
+/// **A service is inside every group it is written in, and inside no other.**
+///
+/// *Every* group, not one: `group inner in outer` is documented syntax, and a service in `inner`
+/// is in `outer` too — a frame drawn inside another frame holds what that one holds. Saying
+/// "inside exactly one" would be a statement about the language that is not true, and it would
+/// come due the first time a nested group reached the corpus.
 #[test]
-fn every_architecture_service_is_inside_its_own_group_only() {
+fn every_architecture_service_is_inside_the_groups_it_is_written_in() {
     if !text_metrics::fonts_available() {
         return;
     }
@@ -1367,6 +1372,24 @@ fn every_architecture_service_is_inside_its_own_group_only() {
     for (name, src) in cases_of(architecture::is_architecture) {
         let model = architecture::parse(src).expect("parses");
         let d = laid_out(src);
+        // Whether a service written into `group` is, directly or through the groups between,
+        // written into `want`. Walked here rather than borrowed from the renderer, which has the
+        // same walk and would be checking itself.
+        let written_in = |group: Option<&str>, want: &str| {
+            let mut at = group;
+            for _ in 0..model.groups.len() + 1 {
+                let Some(id) = at else { return false };
+                if id == want {
+                    return true;
+                }
+                at = model
+                    .groups
+                    .iter()
+                    .find(|g| g.id == id)
+                    .and_then(|g| g.parent.as_deref());
+            }
+            false
+        };
         for s in &model.services {
             let Some(node) = d.node(&s.id) else { continue };
             let (l, t, r, b) = node.bounds();
@@ -1376,7 +1399,7 @@ fn every_architecture_service_is_inside_its_own_group_only() {
                 };
                 let (fl, ft, fr, fb) = frame.bounds();
                 let inside = l >= fl - 0.5 && t >= ft - 0.5 && r <= fr + 0.5 && b <= fb + 0.5;
-                let mine = s.group.as_deref() == Some(group.id.as_str());
+                let mine = written_in(s.group.as_deref(), &group.id);
                 assert_eq!(
                     inside,
                     mine,
@@ -1386,6 +1409,79 @@ fn every_architecture_service_is_inside_its_own_group_only() {
                     group.id
                 );
             }
+        }
+    }
+}
+
+/// The two languages that draw a frame **inside another frame**, on sources that do it.
+///
+/// `architecture-beta`'s `group … in …` and `block-beta`'s `block:` inside a `block:` are both
+/// documented, and neither shape is in [`CASES`] — which is how two defects lived here until a
+/// mutation campaign went looking. They are written out rather than added to the corpus because a
+/// corpus case would move `mermaid_kinds.snap`, and §6-A item 10's rule about not naming cases is
+/// about tests that claim *coverage*; this one claims one shape of source.
+const NESTED_FRAMES: &[(&str, &str)] = &[
+    (
+        "architecture-nested",
+        "architecture-beta\n  group outer(cloud)[Outer]\n  group inner(cloud)[Inner] in outer\n  \
+         service s1(server)[S1] in inner\n  service s2(server)[S2] in outer\n  s1:R --> L:s2",
+    ),
+    (
+        "architecture-nested-thrice",
+        "architecture-beta\n  group a(cloud)[A]\n  group b(cloud)[B] in a\n  group c(cloud)[C] in \
+         b\n  service s(server)[S] in c\n  service t(server)[T] in a",
+    ),
+    (
+        "block-nested-twice",
+        "block-beta\n  columns 1\n  block:outer\n    columns 2\n    x y\n    block:inner\n      \
+         columns 1\n      z w\n    end\n    q\n  end\n  tail",
+    ),
+];
+
+/// **A frame drawn inside another stays inside it — and says whose it is.**
+///
+/// The second half is not decoration. A [`PlacedCluster`] with no `parent` is not a frame missing
+/// an attribute, it is a **switched-off check**: `check_nested_clusters_sit_inside_their_parent`
+/// skips a parentless frame, so a test that only called it would have gone green on exactly the
+/// defect it was written for, and `check_unrelated_clusters_do_not_overlap` would read a frame
+/// and the frame around it as strangers and call their nesting a collision. So the count is
+/// asserted before the invariants are called.
+///
+/// [`PlacedCluster`]: super::PlacedCluster
+#[test]
+fn a_frame_drawn_inside_another_stays_inside_it() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in NESTED_FRAMES {
+        let d = laid_out(src);
+        let nested = d.clusters.iter().filter(|c| c.parent.is_some()).count();
+        assert!(
+            nested > 0,
+            "{name}: not one frame says which frame it is inside, so the two invariants below \
+             would assert nothing about this source"
+        );
+        check_nested_clusters_sit_inside_their_parent(name, &d);
+        check_unrelated_clusters_do_not_overlap(name, &d);
+        check_view_box_contains_everything(name, &d);
+
+        // …and a child's frame is *strictly* smaller than its parent's, which is what makes the
+        // nesting readable rather than two borders drawn on top of each other.
+        for c in d.clusters.iter().filter(|c| c.parent.is_some()) {
+            let parent = d
+                .cluster(c.parent.as_deref().expect("has one"))
+                .unwrap_or_else(|| {
+                    panic!("{name}: frame {} names a parent that is not drawn", c.id)
+                });
+            assert!(
+                c.size.w < parent.size.w && c.size.h < parent.size.h,
+                "{name}: frame {} is {}x{} inside a parent that is {}x{}",
+                c.id,
+                svg::num(c.size.w),
+                svg::num(c.size.h),
+                svg::num(parent.size.w),
+                svg::num(parent.size.h)
+            );
         }
     }
 }

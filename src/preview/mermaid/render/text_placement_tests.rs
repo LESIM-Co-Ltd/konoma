@@ -57,7 +57,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::labels::Label;
 use super::shapes::{Glyph, Mark};
-use super::{class, er, sequence, state, Diagram, PlacedNode, RenderError};
+use super::{class, er, sequence, state, Diagram, PlacedCluster, PlacedNode, RenderError};
 use crate::preview::mermaid::chart;
 use crate::preview::mermaid::layout::Point;
 use crate::preview::mermaid::text_metrics;
@@ -73,6 +73,12 @@ use super::sequence_tests::CASES as SEQUENCE_CASES;
 use super::state_tests::CASES as STATE_CASES;
 use super::tests::CORPUS as FLOW_CASES;
 use crate::preview::mermaid::chart::tests::CASES as CHART_CASES;
+
+/// Stage 5b's own corpus, and its dispatcher. The eleven languages this module's second
+/// half is about are laid out by [`super::kinds_tests::laid_out`] — the same entry every
+/// other stage-5b test goes through, so there is one place that knows which parser claims a
+/// source and a case added to the corpus reaches these tests without being mentioned again.
+use super::kinds_tests::{cases_of as kind_cases_of, laid_out as kind_diagram};
 
 /// Every chart-corpus case of one kind, **found by that kind's own routing predicate**.
 ///
@@ -213,6 +219,148 @@ fn contains(outer: (f64, f64, f64, f64), inner: (f64, f64, f64, f64)) -> bool {
         && inner.1 >= outer.1 - 0.5
         && inner.2 <= outer.2 + 0.5
         && inner.3 <= outer.3 + 0.5
+}
+
+/// `f64` order, with this file's usual answer for a comparison that cannot be made.
+fn cmp(a: f64, b: f64) -> std::cmp::Ordering {
+    a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+}
+
+/// The one box that holds `p`, or `None` when no box does or more than one does.
+///
+/// The workhorse for the second half of this module. An edge's endpoint has been clipped to the
+/// outline it meets, so it lies inside *that* node's box — and the kinds this is used on are the
+/// ones whose boxes do not overlap (`kinds_tests`' first invariant), so it lies inside no other.
+/// That is what makes "the box at this end of this line" a statement about the drawing rather
+/// than about the ids the renderer wrote on the edge, which is the whole difference between a
+/// placement test and a spelling one.
+fn node_at<'a>(d: &'a Diagram, p: &Point) -> Option<&'a PlacedNode> {
+    let mut hit = d.nodes.iter().filter(|n| {
+        let (l, t, r, b) = n.bounds();
+        p.x >= l - 0.75 && p.x <= r + 0.75 && p.y >= t - 0.75 && p.y <= b + 0.75
+    });
+    let first = hit.next()?;
+    hit.next().is_none().then_some(first)
+}
+
+/// Every word a node draws, whether they live in its own label or in its panel's rows.
+fn node_text(n: &PlacedNode) -> String {
+    match n.panel {
+        Some(_) => panel_rows(n).join(" "),
+        None => words(&n.label),
+    }
+}
+
+/// The lines a node draws, top to bottom — a C4 caption is three of them.
+fn node_lines(n: &PlacedNode) -> Vec<String> {
+    match n.panel {
+        Some(_) => panel_rows(n),
+        None => n
+            .label
+            .lines
+            .iter()
+            .filter(|l| !l.trim().is_empty())
+            .cloned()
+            .collect(),
+    }
+}
+
+/// How many frames strictly hold this one — its nesting depth, read off the drawing.
+///
+/// Needed wherever two frames hold the same boxes: a `Deployment_Node` inside a `Deployment_Node`
+/// contains exactly the same elements as its parent, so *what a frame contains* cannot tell the
+/// two apart and *how deep it is* has to.
+fn frame_depth(d: &Diagram, i: usize) -> usize {
+    let me = d.clusters[i].bounds();
+    d.clusters
+        .iter()
+        .enumerate()
+        .filter(|(j, o)| *j != i && contains(o.bounds(), me))
+        .count()
+}
+
+/// One grid's cells, read the way a grid is read: rows top to bottom, cells left to right.
+///
+/// A row is found by which boxes **overlap in y**, not by a row height, so a row holding a tall
+/// block beside a short one is still one row — and a block that has landed on the wrong row stops
+/// being read where its source says it is.
+fn grid_order<'a>(cells: &[&'a PlacedNode]) -> Vec<&'a PlacedNode> {
+    let mut sorted: Vec<&PlacedNode> = cells.to_vec();
+    sorted.sort_by(|a, b| cmp(a.bounds().1, b.bounds().1));
+    let mut out: Vec<&PlacedNode> = Vec::new();
+    let mut row: Vec<&PlacedNode> = Vec::new();
+    // The shallowest box in the row so far: a box whose top is below it shares no y with the row.
+    let mut floor = f64::INFINITY;
+    for n in sorted {
+        let (_, t, _, b) = n.bounds();
+        if !row.is_empty() && t > floor - 0.5 {
+            row.sort_by(|a, b| cmp(a.center.x, b.center.x));
+            out.append(&mut row);
+            floor = f64::INFINITY;
+        }
+        floor = floor.min(b);
+        row.push(n);
+    }
+    row.sort_by(|a, b| cmp(a.center.x, b.center.x));
+    out.append(&mut row);
+    out
+}
+
+/// The runs of consecutive items that share a band's name, as `(name, member indices)`.
+///
+/// A journey's sections, a gantt's and a timeline's are all this: `band` opens a frame when the
+/// name changes and closes it when it changes again, so a name written twice with something else
+/// between draws two frames — which is what the source says happened. A run with no name draws no
+/// frame at all (`sections.retain`), so those are dropped here too.
+fn bands(names: &[String]) -> Vec<(String, Vec<usize>)> {
+    let mut runs: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        match runs.last_mut() {
+            Some((open, members)) if open == name => members.push(i),
+            _ => runs.push((name.clone(), vec![i])),
+        }
+    }
+    runs.retain(|(name, _)| !Label::measure(name).is_blank());
+    runs
+}
+
+/// States, for one banded diagram, that each frame is titled with its own band's name and holds
+/// exactly its own band's marks — with the frames taken **in the order they are drawn along the
+/// axis**, which is the order the bands were written in.
+fn check_bands(
+    name: &str,
+    d: &Diagram,
+    marks: &[&PlacedNode],
+    runs: &[(String, Vec<usize>)],
+    along: impl Fn(&Point) -> f64,
+) {
+    let mut frames: Vec<&PlacedCluster> = d.clusters.iter().collect();
+    frames.sort_by(|a, b| cmp(along(&a.center), along(&b.center)));
+    assert_eq!(
+        frames.len(),
+        runs.len(),
+        "{name}: {} frames were drawn for {} bands",
+        frames.len(),
+        runs.len()
+    );
+    for (frame, (band, members)) in frames.iter().zip(runs.iter()) {
+        assert_eq!(
+            words(&frame.title),
+            as_drawn(band),
+            "{name}: a frame is titled with another band's words"
+        );
+        let inside: Vec<usize> = marks
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| contains(frame.bounds(), m.bounds()))
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(
+            &inside, members,
+            "{name}: the frame reading {band:?} holds the marks at {inside:?}, and that band's \
+             own are at {members:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1124,147 +1272,1278 @@ fn a_sequence_diagrams_messages_participants_and_notes_each_carry_their_own_text
         let model = crate::preview::mermaid::sequence::parse(src).expect("parses");
         let d = sequence::lay_out(&model).expect("lays out");
 
-        // (a) participants: name in the box, box over the lifeline.
-        for p in &model.participants {
-            let Some(node) = d.nodes.iter().find(|n| n.id == p.id) else {
-                continue;
-            };
-            let drawn = match &node.panel {
-                Some(_) => panel_rows(node).join(" "),
-                None => words(&node.label),
-            };
-            assert_eq!(
-                drawn,
-                as_drawn(&p.label),
-                "{name}: the head box for {:?} holds another participant's name",
-                p.id
-            );
-            let line = d
-                .lifelines
+        check_sequence_text_placement(name, &model, &d);
+    }
+}
+
+/// The three statements above, as one function, because **two languages reach this geometry**.
+///
+/// A `zenuml` source is read into the sequence *model* and drawn by the sequence renderer, so
+/// these are exactly the right statements to make about one — see
+/// [`a_zenuml_diagrams_participants_messages_and_notes_carry_their_own_translated_text`]. Calling
+/// this rather than copying it is the rule stages 3, 4 and 5a settled: a copy that stops matching
+/// its original is the failure konoma keeps hitting.
+fn check_sequence_text_placement(
+    name: &str,
+    model: &crate::preview::mermaid::sequence::SequenceDiagram,
+    d: &Diagram,
+) {
+    // (a) participants: name in the box, box over the lifeline.
+    for p in &model.participants {
+        let Some(node) = d.nodes.iter().find(|n| n.id == p.id) else {
+            continue;
+        };
+        let drawn = match &node.panel {
+            Some(_) => panel_rows(node).join(" "),
+            None => words(&node.label),
+        };
+        assert_eq!(
+            drawn,
+            as_drawn(&p.label),
+            "{name}: the head box for {:?} holds another participant's name",
+            p.id
+        );
+        let line = d
+            .lifelines
+            .iter()
+            .find(|l| l.id == p.id)
+            .unwrap_or_else(|| panic!("{name}: {:?} has no lifeline", p.id));
+        assert!(
+            (node.center.x - line.x).abs() <= 0.5,
+            "{name}: the box naming {:?} does not stand on that participant's own lifeline",
+            p.id
+        );
+    }
+
+    // (b) messages, in the order the events list them.
+    let messages: Vec<&crate::preview::mermaid::sequence::Message> = model
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            crate::preview::mermaid::sequence::Event::Message(m) => Some(m),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages.len(), d.edges.len(), "{name}: message count");
+    let x_of: HashMap<&str, f64> = d.lifelines.iter().map(|l| (l.id.as_str(), l.x)).collect();
+    for (k, (m, e)) in messages.iter().zip(d.edges.iter()).enumerate() {
+        let expected = as_drawn(&m.text);
+        let drawn = e.label.as_ref().map(|l| words(&l.label));
+        if expected.trim().is_empty() {
+            assert!(drawn.is_none(), "{name}: message {k} grew words of its own");
+            continue;
+        }
+        assert_eq!(
+            drawn.as_deref(),
+            Some(expected.as_str()),
+            "{name}: the words on message {k} ({} -> {}) are not that message's own",
+            m.from,
+            m.to
+        );
+        // …and they are drawn over that arrow: within its own horizontal span (a self-call
+        // loops out to the right, so the span is the shaft's, not the two lifelines'), and
+        // above its own shaft, which is where mermaid puts a message's text.
+        let label = e.label.as_ref().expect("a label");
+        let lo = e.points.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+        let hi = e
+            .points
+            .iter()
+            .map(|p| p.x)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            label.center.x >= lo - label.size.w && label.center.x <= hi + label.size.w,
+            "{name}: the words on message {k} are drawn away from the arrow they name"
+        );
+        let line_y = e.points.first().map(|p| p.y).unwrap_or(0.0);
+        if m.from == m.to {
+            // A self-call is a loop, so there is nothing above it but the message before; its
+            // words go *beside* the loop, inside its own vertical extent.
+            let foot = e
+                .points
                 .iter()
-                .find(|l| l.id == p.id)
-                .unwrap_or_else(|| panic!("{name}: {:?} has no lifeline", p.id));
+                .map(|p| p.y)
+                .fold(f64::NEG_INFINITY, f64::max);
             assert!(
-                (node.center.x - line.x).abs() <= 0.5,
-                "{name}: the box naming {:?} does not stand on that participant's own lifeline",
-                p.id
+                label.center.y >= line_y - 0.5 && label.center.y <= foot + 0.5,
+                "{name}: the words on the self-call {k} are drawn off its own loop"
+            );
+            assert!(
+                label.center.x > hi,
+                "{name}: the words on the self-call {k} are drawn over its own loop"
+            );
+        } else {
+            assert!(
+                label.center.y < line_y + 0.5,
+                "{name}: the words on message {k} are drawn below their own arrow"
             );
         }
-
-        // (b) messages, in the order the events list them.
-        let messages: Vec<&crate::preview::mermaid::sequence::Message> = model
-            .events
-            .iter()
-            .filter_map(|e| match e {
-                crate::preview::mermaid::sequence::Event::Message(m) => Some(m),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(messages.len(), d.edges.len(), "{name}: message count");
-        let x_of: HashMap<&str, f64> = d.lifelines.iter().map(|l| (l.id.as_str(), l.x)).collect();
-        for (k, (m, e)) in messages.iter().zip(d.edges.iter()).enumerate() {
-            let expected = as_drawn(&m.text);
-            let drawn = e.label.as_ref().map(|l| words(&l.label));
-            if expected.trim().is_empty() {
-                assert!(drawn.is_none(), "{name}: message {k} grew words of its own");
-                continue;
-            }
-            assert_eq!(
-                drawn.as_deref(),
-                Some(expected.as_str()),
-                "{name}: the words on message {k} ({} -> {}) are not that message's own",
+        // The two lifelines it joins are still what the message is *about*, so a message
+        // whose text drifted onto a different pair of columns is caught too.
+        if let (Some(&a), Some(&b)) = (x_of.get(m.from.as_str()), x_of.get(m.to.as_str())) {
+            assert!(
+                lo >= a.min(b) - 0.5 && hi <= a.max(b) + SELF_CALL_REACH,
+                "{name}: message {k} ({} -> {}) is not drawn between its own participants",
                 m.from,
                 m.to
             );
-            // …and they are drawn over that arrow: within its own horizontal span (a self-call
-            // loops out to the right, so the span is the shaft's, not the two lifelines'), and
-            // above its own shaft, which is where mermaid puts a message's text.
-            let label = e.label.as_ref().expect("a label");
-            let lo = e.points.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
-            let hi = e
-                .points
-                .iter()
-                .map(|p| p.x)
-                .fold(f64::NEG_INFINITY, f64::max);
-            assert!(
-                label.center.x >= lo - label.size.w && label.center.x <= hi + label.size.w,
-                "{name}: the words on message {k} are drawn away from the arrow they name"
-            );
-            let line_y = e.points.first().map(|p| p.y).unwrap_or(0.0);
-            if m.from == m.to {
-                // A self-call is a loop, so there is nothing above it but the message before; its
-                // words go *beside* the loop, inside its own vertical extent.
-                let foot = e
-                    .points
-                    .iter()
-                    .map(|p| p.y)
-                    .fold(f64::NEG_INFINITY, f64::max);
-                assert!(
-                    label.center.y >= line_y - 0.5 && label.center.y <= foot + 0.5,
-                    "{name}: the words on the self-call {k} are drawn off its own loop"
-                );
-                assert!(
-                    label.center.x > hi,
-                    "{name}: the words on the self-call {k} are drawn over its own loop"
-                );
-            } else {
-                assert!(
-                    label.center.y < line_y + 0.5,
-                    "{name}: the words on message {k} are drawn below their own arrow"
-                );
-            }
-            // The two lifelines it joins are still what the message is *about*, so a message
-            // whose text drifted onto a different pair of columns is caught too.
-            if let (Some(&a), Some(&b)) = (x_of.get(m.from.as_str()), x_of.get(m.to.as_str())) {
-                assert!(
-                    lo >= a.min(b) - 0.5 && hi <= a.max(b) + SELF_CALL_REACH,
-                    "{name}: message {k} ({} -> {}) is not drawn between its own participants",
-                    m.from,
-                    m.to
-                );
-            }
         }
+    }
 
-        // (c) notes: the right text, over the right participants.
-        let notes: Vec<&crate::preview::mermaid::sequence::Note> = model
-            .events
+    // (c) notes: the right text, over the right participants.
+    let notes: Vec<&crate::preview::mermaid::sequence::Note> = model
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            crate::preview::mermaid::sequence::Event::Note(n) => Some(n),
+            _ => None,
+        })
+        .collect();
+    let mut drawn_notes: Vec<&PlacedNode> =
+        d.nodes.iter().filter(|n| n.shape == Glyph::Note).collect();
+    drawn_notes.sort_by_key(|n| {
+        n.id.trim_start_matches("note#")
+            .parse::<usize>()
+            .unwrap_or(usize::MAX)
+    });
+    assert_eq!(drawn_notes.len(), notes.len(), "{name}: note count");
+    for (k, (want, got)) in notes.iter().zip(drawn_notes.iter()).enumerate() {
+        assert_eq!(
+            words(&got.label),
+            as_drawn(&want.text),
+            "{name}: note {k} holds another note's words"
+        );
+        let named: HashSet<&str> = want.actors.iter().map(|s| s.as_str()).collect();
+        let mut mine: Vec<f64> = x_of
             .iter()
-            .filter_map(|e| match e {
-                crate::preview::mermaid::sequence::Event::Note(n) => Some(n),
-                _ => None,
+            .filter(|(id, _)| named.contains(*id))
+            .map(|(_, x)| *x)
+            .collect();
+        if mine.is_empty() {
+            continue;
+        }
+        mine.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let (lo, hi) = (mine[0], mine[mine.len() - 1]);
+        let reach = got.size.w.max(hi - lo) + 40.0;
+        assert!(
+            got.center.x >= lo - reach && got.center.x <= hi + reach,
+            "{name}: note {k} is drawn away from the participants it names ({:?})",
+            want.actors
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The eleven of stage 5b
+// ---------------------------------------------------------------------------------------------
+//
+// The twelve tests above were written for the kinds that existed when this module was; the eleven
+// languages `cba308a` added had none, and the gap was not a guess. Labelling every gantt row with
+// the **next** task's name — a rotation, which is what a real off-by-one produces — turned exactly
+// one test red, the masked corpus golden, and no named test at all. A snapshot is the thing this
+// project has twice lost behaviour to by regenerating it (§6-A), so a chart whose every row names
+// the wrong task shipped green.
+//
+// A rotation is also the right acceptance test for what is written below, and for the same reason
+// it defeats the older instruments: it leaves the **multiset of strings unchanged**. The size
+// check in `kinds_tests` looks each drawn string up by *whichever* node owns it, so under a
+// permutation every string still finds an owner and every box is still wide enough; it is
+// structurally blind to mis-pairing. "Is this text somewhere on the page" is worth nothing here.
+// Only "is this text at **this datum's** place" is.
+
+/// **gantt** — the name beside a bar is that bar's own task, the ticks read in date order, and a
+/// task sits in its own section's frame.
+///
+/// The place is the **row**, read off the drawing: a gantt's rows are its tasks in source order,
+/// so the `k`th mark down the page is the `k`th task and the label sharing its row is that task's
+/// name. Nothing here recomputes a y.
+#[test]
+fn a_gantt_charts_rows_ticks_and_sections_each_carry_their_own_tasks_words() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::gantt::{self, time};
+    for (name, src) in kind_cases_of(gantt::is_gantt) {
+        let model = gantt::parse(src).expect("parses");
+        let d = kind_diagram(src);
+
+        // The marks — a bar, or the diamond a milestone is drawn as — read down the page.
+        let mut marks: Vec<&PlacedNode> = d
+            .nodes
+            .iter()
+            .filter(|n| n.id.starts_with("task#") && !n.id.ends_with("#name"))
+            .collect();
+        marks.sort_by(|a, b| cmp(a.center.y, b.center.y));
+        assert_eq!(
+            marks.len(),
+            model.tasks.len(),
+            "{name}: {} marks were drawn for {} tasks",
+            marks.len(),
+            model.tasks.len()
+        );
+
+        // (1) the row names, top to bottom, spell the source's tasks. A label shares a row with
+        // exactly one mark and stands to its left, which is where a gantt puts a row's name.
+        let mut rows: Vec<String> = Vec::new();
+        for mark in &marks {
+            let beside: Vec<&PlacedNode> = d
+                .nodes
+                .iter()
+                .filter(|n| n.shape == Glyph::ChartLabel)
+                .filter(|n| {
+                    (n.center.y - mark.center.y).abs() < 0.5 && n.center.x < mark.bounds().0
+                })
+                .collect();
+            assert!(
+                beside.len() <= 1,
+                "{name}: {} labels share one row, so no one of them is that row's name",
+                beside.len()
+            );
+            rows.push(beside.first().map(|n| words(&n.label)).unwrap_or_default());
+        }
+        let wanted: Vec<String> = model.tasks.iter().map(|t| as_drawn(&t.name)).collect();
+        assert_eq!(
+            rows, wanted,
+            "{name}: the rows read {rows:?} top to bottom, but the source's tasks are {wanted:?} \
+             — the name beside a bar has to be that bar's own task"
+        );
+
+        // (2) the ticks. Each carries the date its own mark stands on, written the way the source
+        // asked for it, and they run left to right in date order.
+        let mut ticks: Vec<(f64, time::Instant, String)> = d
+            .nodes
+            .iter()
+            .filter(|n| n.shape == Glyph::ChartLabel && n.id.starts_with("tick#"))
+            .map(|n| {
+                let iso = n.id.trim_start_matches("tick#");
+                let at = time::parse(iso, "YYYY-MM-DDTHH:mm")
+                    .unwrap_or_else(|| panic!("{name}: a tick standing on no date: {}", n.id));
+                (n.center.x, at, words(&n.label))
             })
             .collect();
-        let mut drawn_notes: Vec<&PlacedNode> =
-            d.nodes.iter().filter(|n| n.shape == Glyph::Note).collect();
-        drawn_notes.sort_by_key(|n| {
-            n.id.trim_start_matches("note#")
-                .parse::<usize>()
-                .unwrap_or(usize::MAX)
-        });
-        assert_eq!(drawn_notes.len(), notes.len(), "{name}: note count");
-        for (k, (want, got)) in notes.iter().zip(drawn_notes.iter()).enumerate() {
-            assert_eq!(
-                words(&got.label),
-                as_drawn(&want.text),
-                "{name}: note {k} holds another note's words"
-            );
-            let named: HashSet<&str> = want.actors.iter().map(|s| s.as_str()).collect();
-            let mut mine: Vec<f64> = x_of
-                .iter()
-                .filter(|(id, _)| named.contains(*id))
-                .map(|(_, x)| *x)
-                .collect();
-            if mine.is_empty() {
-                continue;
-            }
-            mine.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            let (lo, hi) = (mine[0], mine[mine.len() - 1]);
-            let reach = got.size.w.max(hi - lo) + 40.0;
+        ticks.sort_by(|a, b| cmp(a.0, b.0));
+        assert!(!ticks.is_empty(), "{name}: the time axis carries no ticks");
+        let drawn: Vec<String> = ticks.iter().map(|(_, _, t)| t.clone()).collect();
+        let expected: Vec<String> = ticks
+            .iter()
+            .map(|(_, at, _)| as_drawn(&time::format(*at, &model.axis_format)))
+            .collect();
+        assert_eq!(
+            drawn, expected,
+            "{name}: the axis reads {drawn:?} left to right, and the dates its ticks stand on are \
+             {expected:?}"
+        );
+        for w in ticks.windows(2) {
             assert!(
-                got.center.x >= lo - reach && got.center.x <= hi + reach,
-                "{name}: note {k} is drawn away from the participants it names ({:?})",
-                want.actors
+                w[1].1 > w[0].1,
+                "{name}: the axis reads {drawn:?} left to right, which is not date order"
             );
         }
+
+        // (3) a task is in its own section's frame, and the frame carries that section's name.
+        let sections: Vec<String> = model.tasks.iter().map(|t| t.section.clone()).collect();
+        check_bands(name, &d, &marks, &bands(&sections), |p| p.y);
+    }
+}
+
+/// **gitGraph** — a caption belongs to its own commit's dot, and a branch's name to its own lane.
+///
+/// The place is stated twice over, once for each axis of the picture. A caption is drawn half a
+/// dot plus a gap **below** its own commit in all three directions, so the commit directly above
+/// it on its own column is the one it captions. A lane's position is read off the commits made on
+/// it, so nothing here recomputes the lane spacing.
+#[test]
+fn a_git_graphs_captions_and_lane_names_belong_to_their_own_commits_and_branches() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::gitgraph::{self, Commit, Direction};
+    for (name, src) in kind_cases_of(gitgraph::is_git_graph) {
+        let model = gitgraph::parse(src).expect("parses");
+        let d = kind_diagram(src);
+        let across = |p: &Point| match model.direction {
+            Direction::LeftToRight => p.y,
+            _ => p.x,
+        };
+
+        // What a commit has to say for itself: its tags, or the id **the author wrote**. A
+        // generated id names nothing, so a commit that was given none is captioned with nothing.
+        let says = |c: &Commit| -> String {
+            if !c.tags.is_empty() {
+                as_drawn(&c.tags.join(", "))
+            } else if c.explicit_id {
+                as_drawn(&c.id)
+            } else {
+                String::new()
+            }
+        };
+
+        // (a) the captions.
+        let dots: Vec<&PlacedNode> = model
+            .commits
+            .iter()
+            .map(|c| {
+                d.node(&c.id)
+                    .unwrap_or_else(|| panic!("{name}: commit {:?} was not drawn", c.id))
+            })
+            .collect();
+        let captions: Vec<&PlacedNode> = d
+            .nodes
+            .iter()
+            .filter(|n| n.shape == Glyph::ChartLabel && n.id.ends_with("#caption"))
+            .collect();
+        for caption in &captions {
+            let owner = dots
+                .iter()
+                .enumerate()
+                .filter(|(_, dot)| {
+                    (dot.center.x - caption.center.x).abs() < 0.5 && dot.center.y < caption.center.y
+                })
+                .max_by(|a, b| cmp(a.1.center.y, b.1.center.y))
+                .map(|(i, _)| i)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{name}: the caption {:?} stands under no commit at all",
+                        words(&caption.label)
+                    )
+                });
+            assert_eq!(
+                words(&caption.label),
+                says(&model.commits[owner]),
+                "{name}: the caption under commit {:?} says something another commit said",
+                model.commits[owner].id
+            );
+        }
+        let carried = model.commits.iter().filter(|c| !says(c).is_empty()).count();
+        assert_eq!(
+            captions.len(),
+            carried,
+            "{name}: {} captions were drawn, and {carried} commits carry one",
+            captions.len()
+        );
+
+        // (b) the lane names, read across the page.
+        let lanes: Vec<&str> = model.lanes().iter().map(|b| b.name.as_str()).collect();
+        let mut named: Vec<(f64, String)> = d
+            .nodes
+            .iter()
+            .filter(|n| n.shape == Glyph::ChartLabel && n.id.starts_with("branch#"))
+            .map(|n| (across(&n.center), words(&n.label)))
+            .collect();
+        named.sort_by(|a, b| cmp(a.0, b.0));
+        let drawn: Vec<String> = named.iter().map(|(_, t)| t.clone()).collect();
+        let expected: Vec<String> = lanes.iter().map(|b| as_drawn(b)).collect();
+        assert_eq!(
+            drawn, expected,
+            "{name}: the lanes are named {drawn:?} across the page, and the source's branches are \
+             {expected:?}"
+        );
+        // …and each name stands on the lane its own branch's commits are on.
+        for (k, lane) in lanes.iter().enumerate() {
+            let Some(sample) = model
+                .commits
+                .iter()
+                .find(|c| c.branch == **lane)
+                .and_then(|c| d.node(&c.id))
+            else {
+                continue;
+            };
+            assert!(
+                (named[k].0 - across(&sample.center)).abs() < 0.5,
+                "{name}: {:?} names branch {lane:?} and does not stand on the lane its commits \
+                 are drawn on",
+                named[k].1
+            );
+        }
+    }
+}
+
+/// **mindmap** — a box holds its own node's words, and a line joins a parent's box to its own
+/// child's.
+///
+/// The place is the **line**: both of its ends have been clipped to the outline they meet, so the
+/// pair of boxes a line joins is read off the drawing. Shuffle the labels and the branches the
+/// picture shows stop being the branches the source wrote, whichever way the tree was laid out.
+#[test]
+fn a_mindmaps_boxes_hold_their_own_words_and_hang_off_their_own_parents() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::mindmap;
+    for (name, src) in kind_cases_of(mindmap::is_mindmap) {
+        let model = mindmap::parse(src).expect("parses");
+        let d = kind_diagram(src);
+
+        let mut drawn: Vec<String> = d.nodes.iter().map(|n| words(&n.label)).collect();
+        let mut wanted: Vec<String> = model.nodes.iter().map(|n| as_drawn(&n.label)).collect();
+        drawn.sort();
+        wanted.sort();
+        assert_eq!(
+            drawn, wanted,
+            "{name}: the boxes read {drawn:?}, and the source's nodes are {wanted:?}"
+        );
+
+        let mut joined: Vec<(String, String)> = Vec::new();
+        for e in &d.edges {
+            let ends = (e.points.first(), e.points.last());
+            let (Some(from), Some(to)) = ends else {
+                panic!("{name}: a line with no ends")
+            };
+            let a =
+                node_at(&d, from).unwrap_or_else(|| panic!("{name}: a line starts on no one box"));
+            let b = node_at(&d, to).unwrap_or_else(|| panic!("{name}: a line ends on no one box"));
+            joined.push((words(&a.label), words(&b.label)));
+        }
+        let mut branches: Vec<(String, String)> = model
+            .nodes
+            .iter()
+            .filter_map(|n| {
+                let parent = n.parent?;
+                Some((as_drawn(&model.nodes[parent].label), as_drawn(&n.label)))
+            })
+            .collect();
+        joined.sort();
+        branches.sort();
+        assert_eq!(
+            joined, branches,
+            "{name}: the lines join {joined:?}, and the source's branches are {branches:?} — a \
+             child has to hang off its own parent's box"
+        );
+    }
+}
+
+/// **kanban** — a card's words are in its own column, in the order the column lists them.
+///
+/// The place is **containment plus reading order**: the columns run left to right in source
+/// order, so the `k`th frame across is the `k`th column, and the cards inside it read down.
+#[test]
+fn a_kanban_boards_cards_are_in_their_own_columns_in_source_order() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::kanban;
+    for (name, src) in kind_cases_of(kanban::is_kanban) {
+        let model = kanban::parse(src).expect("parses");
+        let d = kind_diagram(src);
+
+        let mut frames: Vec<&PlacedCluster> = d.clusters.iter().collect();
+        frames.sort_by(|a, b| cmp(a.center.x, b.center.x));
+        assert_eq!(
+            frames.len(),
+            model.columns.len(),
+            "{name}: {} frames for {} columns",
+            frames.len(),
+            model.columns.len()
+        );
+
+        for (frame, column) in frames.iter().zip(model.columns.iter()) {
+            let title = match column.ticket.as_deref().filter(|t| !t.trim().is_empty()) {
+                Some(t) => format!("{} ({t})", column.label),
+                None => column.label.clone(),
+            };
+            assert_eq!(
+                words(&frame.title),
+                as_drawn(&title),
+                "{name}: a column's frame is titled with another column's words"
+            );
+
+            let mut inside: Vec<&PlacedNode> = d
+                .nodes
+                .iter()
+                .filter(|n| contains(frame.bounds(), n.bounds()))
+                .collect();
+            inside.sort_by(|a, b| cmp(a.center.y, b.center.y));
+            let drawn: Vec<Vec<String>> = inside.iter().map(|n| panel_rows(n)).collect();
+            let wanted: Vec<Vec<String>> = column
+                .cards
+                .iter()
+                .map(|c| {
+                    // A card says its own words, and then whatever the source pinned to it.
+                    let mut rows = vec![as_drawn(&c.label)];
+                    for (key, value) in [
+                        ("assigned", &c.assigned),
+                        ("ticket", &c.ticket),
+                        ("priority", &c.priority),
+                    ] {
+                        if let Some(v) = value.as_deref().filter(|v| !v.trim().is_empty()) {
+                            rows.push(as_drawn(&format!("{key}: {v}")));
+                        }
+                    }
+                    rows
+                })
+                .collect();
+            assert_eq!(
+                drawn, wanted,
+                "{name}: the column titled {title:?} holds {drawn:?} top to bottom, and its own \
+                 cards are {wanted:?}"
+            );
+        }
+    }
+}
+
+/// **journey** — a step's name, its score and the people on it all belong to that step, and the
+/// step is in its own section's frame.
+///
+/// The place is the **column**: a journey is a row of steps in source order, and a step's face
+/// stands above its own box and the people under it, on that box's own centre line. A score is
+/// not text, so it is stated through the mark that carries it — the mouth curve **is** the number
+/// (`journey`'s module docs), which is what makes a face on the wrong step a wrong reading rather
+/// than a wrong colour.
+#[test]
+fn a_journeys_steps_carry_their_own_names_scores_and_people_in_their_own_sections() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::flowchart::Shape;
+    use crate::preview::mermaid::journey;
+    for (name, src) in kind_cases_of(journey::is_journey) {
+        let model = journey::parse(src).expect("parses");
+        let d = kind_diagram(src);
+
+        let mut boxes: Vec<&PlacedNode> = d
+            .nodes
+            .iter()
+            .filter(|n| n.shape == Glyph::Flow(Shape::RoundedRect))
+            .collect();
+        boxes.sort_by(|a, b| cmp(a.center.x, b.center.x));
+        assert_eq!(
+            boxes.len(),
+            model.tasks.len(),
+            "{name}: {} boxes were drawn for {} steps",
+            boxes.len(),
+            model.tasks.len()
+        );
+        let drawn: Vec<String> = boxes.iter().map(|n| words(&n.label)).collect();
+        let wanted: Vec<String> = model.tasks.iter().map(|t| as_drawn(&t.name)).collect();
+        assert_eq!(
+            drawn, wanted,
+            "{name}: the steps read {drawn:?} left to right, and the source's are {wanted:?}"
+        );
+
+        for (k, step) in boxes.iter().enumerate() {
+            let task = &model.tasks[k];
+            let column = |n: &PlacedNode| (n.center.x - step.center.x).abs() < 0.5;
+
+            // The face above this step's own box.
+            let face = d
+                .nodes
+                .iter()
+                .find(|n| n.shape == Glyph::Face && column(n) && n.center.y < step.center.y);
+            match task.score {
+                Some(score) => {
+                    let face = face.unwrap_or_else(|| {
+                        panic!(
+                            "{name}: the step {:?} has no face over it",
+                            words(&step.label)
+                        )
+                    });
+                    assert_eq!(
+                        face.mark,
+                        Some(Mark::Face { score }),
+                        "{name}: the face over {:?} is drawn at another step's score",
+                        words(&step.label)
+                    );
+                }
+                // An unreadable score draws no face, because a neutral one is a claim.
+                None => assert!(
+                    face.is_none(),
+                    "{name}: the step {:?} has no readable score and grew a face anyway",
+                    words(&step.label)
+                ),
+            }
+
+            // The people under it, on the same column.
+            let below: Vec<&PlacedNode> = d
+                .nodes
+                .iter()
+                .filter(|n| n.shape == Glyph::ChartLabel && column(n) && n.center.y > step.center.y)
+                .collect();
+            let people = as_drawn(&task.people.join(", "));
+            let said = below.first().map(|n| words(&n.label)).unwrap_or_default();
+            assert!(
+                below.len() <= 1,
+                "{name}: {} names stand under the step {:?}",
+                below.len(),
+                words(&step.label)
+            );
+            assert_eq!(
+                said,
+                people,
+                "{name}: {said:?} is drawn under the step {:?}, whose own people are {people:?}",
+                words(&step.label)
+            );
+        }
+
+        let sections: Vec<String> = model.tasks.iter().map(|t| t.section.clone()).collect();
+        check_bands(name, &d, &boxes, &bands(&sections), |p| p.x);
+    }
+}
+
+/// **timeline** — an event sits under its own period, and a period is in its own section's frame.
+///
+/// The place is a different relation in each direction, and that is the point: a left-to-right
+/// timeline hangs a period's events in **its own column**, and a top-to-bottom one lays them
+/// along **its own row** — where every event of every period shares one column, so the column
+/// says nothing. Both are read off the drawing; neither is the id the renderer wrote.
+#[test]
+fn a_timelines_events_sit_under_their_own_periods_in_their_own_sections() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::flowchart::Shape;
+    use crate::preview::mermaid::timeline::{self, Direction};
+    for (name, src) in kind_cases_of(timeline::is_timeline) {
+        let model = timeline::parse(src).expect("parses");
+        let d = kind_diagram(src);
+        let along = |p: &Point| match model.direction {
+            Direction::LeftToRight => p.x,
+            Direction::TopToBottom => p.y,
+        };
+
+        let mut periods: Vec<&PlacedNode> = d
+            .nodes
+            .iter()
+            .filter(|n| n.shape == Glyph::Flow(Shape::RoundedRect))
+            .collect();
+        periods.sort_by(|a, b| cmp(along(&a.center), along(&b.center)));
+        assert_eq!(
+            periods.len(),
+            model.periods.len(),
+            "{name}: {} periods were drawn for {}",
+            periods.len(),
+            model.periods.len()
+        );
+        let drawn: Vec<String> = periods.iter().map(|n| words(&n.label)).collect();
+        let wanted: Vec<String> = model.periods.iter().map(|p| as_drawn(&p.name)).collect();
+        assert_eq!(
+            drawn, wanted,
+            "{name}: the spine reads {drawn:?} along the axis, and the source's periods are \
+             {wanted:?}"
+        );
+
+        let events: Vec<&PlacedNode> = d
+            .nodes
+            .iter()
+            .filter(|n| n.shape == Glyph::Flow(Shape::Rect))
+            .collect();
+        // Which period each event belongs to, by the relation this direction makes available.
+        let owner = |e: &PlacedNode| -> usize {
+            match model.direction {
+                Direction::LeftToRight => periods
+                    .iter()
+                    .position(|p| (p.center.x - e.center.x).abs() < 0.5)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{name}: the event {:?} hangs in no period's column",
+                            words(&e.label)
+                        )
+                    }),
+                Direction::TopToBottom => periods
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| {
+                        cmp(
+                            (a.1.center.y - e.center.y).abs(),
+                            (b.1.center.y - e.center.y).abs(),
+                        )
+                    })
+                    .map(|(i, _)| i)
+                    .expect("a timeline has periods"),
+            }
+        };
+        for (k, period) in model.periods.iter().enumerate() {
+            let mut mine: Vec<&PlacedNode> =
+                events.iter().copied().filter(|e| owner(e) == k).collect();
+            mine.sort_by(|a, b| cmp(a.center.y, b.center.y));
+            let drawn: Vec<String> = mine.iter().map(|e| words(&e.label)).collect();
+            let wanted: Vec<String> = period.events.iter().map(|e| as_drawn(e)).collect();
+            assert_eq!(
+                drawn, wanted,
+                "{name}: the period {:?} carries {drawn:?}, and its own events are {wanted:?}",
+                period.name
+            );
+        }
+
+        let sections: Vec<String> = model.periods.iter().map(|p| p.section.clone()).collect();
+        check_bands(name, &d, &periods, &bands(&sections), along);
+    }
+}
+
+/// **requirement** — a box holds its own body rows in order, and a verb belongs to its own line.
+///
+/// The place for the rows is **containment**: [`panel_rows`] reads out what one box says, so
+/// comparing a whole page of boxes against the source's is a statement about which box each row
+/// landed in — a row that moved next door changes two entries at once. The place for a verb is
+/// the **line's two ends**, clipped to the outlines they meet, so a verb on the wrong pair of
+/// boxes is caught wherever the layout happened to put them.
+#[test]
+fn a_requirement_boxs_rows_and_a_verbs_line_belong_to_their_own_datum() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::requirement;
+    for (name, src) in kind_cases_of(requirement::is_requirement_diagram) {
+        let model = requirement::parse(src).expect("parses");
+        let d = kind_diagram(src);
+
+        // What one box says: its stereotype, its name, then the fields the source declared. A
+        // field left out is a row that is not there, which is what "declares nothing" looks like.
+        let rows_of = |stereotype: &str, subject: &str, fields: &[(&str, &str)]| -> Vec<String> {
+            let mut rows = vec![as_drawn(&format!("«{stereotype}»")), as_drawn(subject)];
+            rows.extend(
+                fields
+                    .iter()
+                    .filter(|(_, v)| !v.trim().is_empty())
+                    .map(|(k, v)| as_drawn(&format!("{k}: {v}"))),
+            );
+            rows
+        };
+        let mut wanted: Vec<Vec<String>> = model
+            .requirements
+            .iter()
+            .map(|r| {
+                rows_of(
+                    r.kind.title(),
+                    &r.name,
+                    &[
+                        ("Id", &r.id),
+                        ("Text", &r.text),
+                        ("Risk", &r.risk),
+                        ("Verification", &r.verify_method),
+                    ],
+                )
+            })
+            .collect();
+        wanted.extend(model.elements.iter().map(|e| {
+            rows_of(
+                "Element",
+                &e.name,
+                &[("Type", &e.kind), ("Doc Ref", &e.doc_ref)],
+            )
+        }));
+        let mut drawn: Vec<Vec<String>> = d.nodes.iter().map(panel_rows).collect();
+        drawn.sort();
+        wanted.sort();
+        assert_eq!(
+            drawn, wanted,
+            "{name}: the boxes hold {drawn:?}, and the source declares {wanted:?}"
+        );
+
+        // A box's second row is its name, which is what a line's ends have to be read back as.
+        let subject = |n: &PlacedNode| panel_rows(n).get(1).cloned().unwrap_or_default();
+        let mut joined: Vec<(String, String, String)> = Vec::new();
+        for e in &d.edges {
+            let (Some(from), Some(to)) = (e.points.first(), e.points.last()) else {
+                panic!("{name}: a line with no ends")
+            };
+            let a =
+                node_at(&d, from).unwrap_or_else(|| panic!("{name}: a line starts on no one box"));
+            let b = node_at(&d, to).unwrap_or_else(|| panic!("{name}: a line ends on no one box"));
+            joined.push((
+                subject(a),
+                subject(b),
+                e.label
+                    .as_ref()
+                    .map(|l| words(&l.label))
+                    .unwrap_or_default(),
+            ));
+        }
+        let known = |id: &str| {
+            model.requirements.iter().any(|r| r.name == id)
+                || model.elements.iter().any(|e| e.name == id)
+        };
+        let mut links: Vec<(String, String, String)> = model
+            .links
+            .iter()
+            .filter(|l| known(&l.src) && known(&l.dst))
+            .map(|l| {
+                (
+                    as_drawn(&l.src),
+                    as_drawn(&l.dst),
+                    as_drawn(l.relation.word()),
+                )
+            })
+            .collect();
+        joined.sort();
+        links.sort();
+        assert_eq!(
+            joined, links,
+            "{name}: the lines say {joined:?}, and the source's relationships are {links:?}"
+        );
+    }
+}
+
+/// **C4** — a box holds its own element's name, type and description, and a frame carries its own
+/// boundary's title.
+///
+/// A boundary's place is **what it holds and how deeply it is nested**. Containment alone is not
+/// enough and the corpus says why: a `Deployment_Node` inside a `Deployment_Node` holds exactly
+/// the same element as its parent, so the two frames are told apart by depth — which is read off
+/// the drawing, not off the `depth` the renderer wrote on them.
+#[test]
+fn a_c4_boxs_caption_and_a_boundarys_title_belong_to_their_own_datum() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::c4;
+    for (name, src) in kind_cases_of(c4::is_c4) {
+        let model = c4::parse(src).expect("parses");
+        let d = kind_diagram(src);
+
+        // The three lines inside a box: who it is, what it is, and what it does.
+        let caption = |e: &c4::Element| -> Vec<String> {
+            let mut lines = vec![e.label.clone()];
+            if !e.kind_line.trim().is_empty() {
+                let external = if e.external { ", external" } else { "" };
+                lines.push(format!("[{}{external}]", e.kind_line));
+            }
+            if !e.descr.trim().is_empty() {
+                lines.push(e.descr.clone());
+            }
+            Label::measure(&lines.join("\n")).lines
+        };
+        let mut wanted: Vec<Vec<String>> = model.elements.iter().map(caption).collect();
+        let mut drawn: Vec<Vec<String>> = d.nodes.iter().map(node_lines).collect();
+        drawn.sort();
+        wanted.sort();
+        assert_eq!(
+            drawn, wanted,
+            "{name}: the boxes read {drawn:?}, and the source's elements are {wanted:?}"
+        );
+
+        // …and each caption is on the box the source's *lines* reach, which is what turns the
+        // multiset above into a placement. A rotation leaves that multiset untouched — it is the
+        // whole reason a permutation defeats a size check — so the relationships are what say
+        // which box is which: both ends of a line have been clipped to the outline they meet.
+        let head = |n: &PlacedNode| node_lines(n).first().cloned().unwrap_or_default();
+        let mut joined: Vec<(String, String, String)> = Vec::new();
+        for e in &d.edges {
+            let (Some(from), Some(to)) = (e.points.first(), e.points.last()) else {
+                panic!("{name}: a line with no ends")
+            };
+            let a =
+                node_at(&d, from).unwrap_or_else(|| panic!("{name}: a line starts on no one box"));
+            let b = node_at(&d, to).unwrap_or_else(|| panic!("{name}: a line ends on no one box"));
+            joined.push((
+                head(a),
+                head(b),
+                e.label
+                    .as_ref()
+                    .map(|l| words(&l.label))
+                    .unwrap_or_default(),
+            ));
+        }
+        let named = |alias: &str| {
+            model
+                .elements
+                .iter()
+                .find(|e| e.alias == alias)
+                .map(|e| as_drawn(&e.label))
+                .unwrap_or_default()
+        };
+        let drawable = |id: &str| model.elements.iter().any(|e| e.alias == id);
+        let mut rels: Vec<(String, String, String)> = model
+            .rels
+            .iter()
+            .filter(|r| drawable(&r.from) && drawable(&r.to))
+            .map(|r| {
+                let text = if r.techn.trim().is_empty() {
+                    r.label.clone()
+                } else {
+                    format!("{}\n[{}]", r.label, r.techn)
+                };
+                (named(&r.from), named(&r.to), as_drawn(&text))
+            })
+            .collect();
+        joined.sort();
+        rels.sort();
+        assert_eq!(
+            joined, rels,
+            "{name}: the lines say {joined:?}, and the source's relationships are {rels:?}"
+        );
+
+        // A frame, as the drawing gives it: what it holds, how deep it is, and what it says.
+        let head = |n: &PlacedNode| node_lines(n).first().cloned().unwrap_or_default();
+        let mut frames: Vec<(Vec<String>, usize, Vec<String>)> = d
+            .clusters
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let mut held: Vec<String> = d
+                    .nodes
+                    .iter()
+                    .filter(|n| contains(c.bounds(), n.bounds()))
+                    .map(head)
+                    .collect();
+                held.sort();
+                (held, frame_depth(&d, i), c.title.lines.clone())
+            })
+            .collect();
+
+        // …and as the source gives it. A boundary's members are elements *and* boundaries, so the
+        // elements under one are found by walking down through the boundaries it names.
+        fn under(model: &c4::C4, alias: &str, out: &mut Vec<String>, guard: usize) {
+            if guard == 0 {
+                return;
+            }
+            for m in model
+                .boundaries
+                .iter()
+                .filter(|b| b.alias == alias)
+                .flat_map(|b| b.members.iter())
+            {
+                if let Some(e) = model.elements.iter().find(|e| e.alias == *m) {
+                    out.push(as_drawn(&e.label));
+                } else {
+                    under(model, m, out, guard - 1);
+                }
+            }
+        }
+        let depth_of = |b: &c4::Boundary| -> usize {
+            let mut at = b.parent.clone();
+            let mut n = 0usize;
+            for _ in 0..model.boundaries.len() + 1 {
+                let Some(id) = at else { break };
+                n += 1;
+                at = model
+                    .boundaries
+                    .iter()
+                    .find(|o| o.alias == id)
+                    .and_then(|o| o.parent.clone());
+            }
+            n
+        };
+        let mut wanted: Vec<(Vec<String>, usize, Vec<String>)> = model
+            .boundaries
+            .iter()
+            .map(|b| {
+                let mut held = Vec::new();
+                under(&model, &b.alias, &mut held, model.boundaries.len() + 1);
+                held.sort();
+                let title = if b.kind_line.trim().is_empty() {
+                    b.label.clone()
+                } else {
+                    format!("{}\n[{}]", b.label, b.kind_line)
+                };
+                (held, depth_of(b), Label::measure(&title).lines)
+            })
+            .collect();
+        frames.sort();
+        wanted.sort();
+        assert_eq!(
+            frames, wanted,
+            "{name}: the frames hold and say {frames:?}, and the source's boundaries are {wanted:?}"
+        );
+    }
+}
+
+/// **block** — a cell holds its own words, in grid order, spans and nested blocks included.
+///
+/// The place is the **reading order of the grid**, which is what `columns` and `:n` exist to
+/// decide: rows top to bottom, cells left to right, with a row found by which boxes overlap in y.
+/// A nested `block:` is its own grid inside its own frame, so it is asked the same question about
+/// its own cells and the outer grid is asked about the ones outside every frame.
+#[test]
+fn a_block_grids_cells_hold_their_own_words_in_grid_order() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::block::{self, Item};
+    for (name, src) in kind_cases_of(block::is_block_diagram) {
+        let model = block::parse(src).expect("parses");
+        let d = kind_diagram(src);
+
+        // Which frame each box and each frame sits *directly* inside — the deepest one holding it.
+        let deepest = |bounds: (f64, f64, f64, f64), not: Option<usize>| -> Option<usize> {
+            d.clusters
+                .iter()
+                .enumerate()
+                .filter(|(i, c)| Some(*i) != not && contains(c.bounds(), bounds))
+                .max_by_key(|(i, _)| frame_depth(&d, *i))
+                .map(|(i, _)| i)
+        };
+        let owner: Vec<Option<usize>> = d.nodes.iter().map(|n| deepest(n.bounds(), None)).collect();
+        let holder: Vec<Option<usize>> = (0..d.clusters.len())
+            .map(|i| deepest(d.clusters[i].bounds(), Some(i)))
+            .collect();
+
+        // One grid, stated: the cells directly in it, read in grid order, spell its own items.
+        fn check(
+            name: &str,
+            where_: &str,
+            items: &[Item],
+            region: Option<usize>,
+            d: &Diagram,
+            owner: &[Option<usize>],
+            holder: &[Option<usize>],
+        ) {
+            let cells: Vec<&PlacedNode> = d
+                .nodes
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| owner[*i] == region)
+                .map(|(_, n)| n)
+                .collect();
+            let drawn: Vec<String> = grid_order(&cells).iter().map(|n| words(&n.label)).collect();
+            let wanted: Vec<String> = items
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Node(n) => Some(as_drawn(&n.label)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                drawn, wanted,
+                "{name}: {where_} reads {drawn:?} in grid order, and its own blocks are {wanted:?}"
+            );
+
+            // …and every block nested in it is its own grid, in the same order.
+            let frames: Vec<usize> = {
+                let mut v: Vec<usize> = (0..d.clusters.len())
+                    .filter(|i| holder[*i] == region)
+                    .collect();
+                v.sort_by(|a, b| {
+                    cmp(d.clusters[*a].bounds().1, d.clusters[*b].bounds().1)
+                        .then(cmp(d.clusters[*a].center.x, d.clusters[*b].center.x))
+                });
+                v
+            };
+            let nested: Vec<&block::Composite> = items
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Composite(c) => Some(c),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                frames.len(),
+                nested.len(),
+                "{name}: {where_} drew {} frames for {} nested blocks",
+                frames.len(),
+                nested.len()
+            );
+            for (frame, c) in frames.iter().zip(nested.iter()) {
+                assert_eq!(
+                    words(&d.clusters[*frame].title),
+                    as_drawn(if c.named { c.id.as_str() } else { "" }),
+                    "{name}: a nested block's frame is titled with other words"
+                );
+                check(
+                    name,
+                    &format!("the block {:?}", c.id),
+                    &c.children,
+                    Some(*frame),
+                    d,
+                    owner,
+                    holder,
+                );
+            }
+        }
+        check(name, "the grid", &model.items, None, &d, &owner, &holder);
+    }
+}
+
+/// **architecture** — a box holds its own service's name, and a frame carries its own group's
+/// title.
+///
+/// The place for a service is the **line**: an edge names a side at each end, both ends are on
+/// the outline they meet, so the pair of boxes a line joins is read off the drawing and a name
+/// that moved to its neighbour makes the picture disagree with the source. A group's place is
+/// what its frame holds and how deeply it is nested, as it is for a C4 boundary.
+#[test]
+fn an_architectures_boxes_and_group_titles_belong_to_their_own_services_and_groups() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::architecture;
+    for (name, src) in kind_cases_of(architecture::is_architecture) {
+        let model = architecture::parse(src).expect("parses");
+        let d = kind_diagram(src);
+
+        // A junction is a dot and says nothing; a service with no title is named by its own id.
+        let says = |s: &architecture::Service| -> String {
+            if s.junction {
+                String::new()
+            } else if s.title.trim().is_empty() {
+                as_drawn(&s.id)
+            } else {
+                as_drawn(&s.title)
+            }
+        };
+        let mut drawn: Vec<String> = d.nodes.iter().map(|n| words(&n.label)).collect();
+        let mut wanted: Vec<String> = model.services.iter().map(says).collect();
+        drawn.sort();
+        wanted.sort();
+        assert_eq!(
+            drawn, wanted,
+            "{name}: the boxes read {drawn:?}, and the source's services are {wanted:?}"
+        );
+
+        let mut joined: Vec<(String, String)> = Vec::new();
+        for e in &d.edges {
+            let (Some(from), Some(to)) = (e.points.first(), e.points.last()) else {
+                panic!("{name}: a line with no ends")
+            };
+            let a =
+                node_at(&d, from).unwrap_or_else(|| panic!("{name}: a line starts on no one box"));
+            let b = node_at(&d, to).unwrap_or_else(|| panic!("{name}: a line ends on no one box"));
+            joined.push((words(&a.label), words(&b.label)));
+        }
+        let known = |id: &str| model.services.iter().any(|s| s.id == id);
+        let service = |id: &str| {
+            model
+                .services
+                .iter()
+                .find(|s| s.id == id)
+                .map(says)
+                .unwrap_or_default()
+        };
+        let mut wired: Vec<(String, String)> = model
+            .edges
+            .iter()
+            .filter(|e| known(&e.from) && known(&e.to))
+            .map(|e| (service(&e.from), service(&e.to)))
+            .collect();
+        joined.sort();
+        wired.sort();
+        assert_eq!(
+            joined, wired,
+            "{name}: the lines join {joined:?}, and the source wires {wired:?}"
+        );
+
+        // The groups: what each frame holds, how deep it is, and what it says.
+        let mut frames: Vec<(Vec<String>, usize, String)> = d
+            .clusters
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let mut held: Vec<String> = d
+                    .nodes
+                    .iter()
+                    .filter(|n| contains(c.bounds(), n.bounds()))
+                    .map(|n| words(&n.label))
+                    .collect();
+                held.sort();
+                (held, frame_depth(&d, i), words(&c.title))
+            })
+            .collect();
+        let inside = |group: Option<&str>, want: &str| -> bool {
+            let mut at = group;
+            for _ in 0..model.groups.len() + 1 {
+                let Some(id) = at else { return false };
+                if id == want {
+                    return true;
+                }
+                at = model
+                    .groups
+                    .iter()
+                    .find(|g| g.id == id)
+                    .and_then(|g| g.parent.as_deref());
+            }
+            false
+        };
+        let mut wanted: Vec<(Vec<String>, usize, String)> = model
+            .groups
+            .iter()
+            .filter_map(|g| {
+                let mut held: Vec<String> = model
+                    .services
+                    .iter()
+                    .filter(|s| inside(s.group.as_deref(), &g.id))
+                    .map(says)
+                    .collect();
+                // A group nothing is in draws no frame at all.
+                if held.is_empty() {
+                    return None;
+                }
+                held.sort();
+                Some((held, inside_depth(&model, &g.id), as_drawn(&g.title)))
+            })
+            .collect();
+        frames.sort();
+        wanted.sort();
+        assert_eq!(
+            frames, wanted,
+            "{name}: the frames hold and say {frames:?}, and the source's groups are {wanted:?}"
+        );
+    }
+}
+
+/// How many groups a group is written inside.
+fn inside_depth(model: &crate::preview::mermaid::architecture::Architecture, id: &str) -> usize {
+    let mut at = model
+        .groups
+        .iter()
+        .find(|g| g.id == id)
+        .and_then(|g| g.parent.as_deref());
+    let mut n = 0usize;
+    for _ in 0..model.groups.len() + 1 {
+        let Some(parent) = at else { break };
+        n += 1;
+        at = model
+            .groups
+            .iter()
+            .find(|g| g.id == parent)
+            .and_then(|g| g.parent.as_deref());
+    }
+    n
+}
+
+/// **zenuml** — each name, message and note is drawn on its own datum, and the words on the
+/// arrows came out of the source in the order it wrote them.
+///
+/// ZenUML is read into the **sequence model** and drawn by stage 4's renderer; `render::zenuml`
+/// is those two calls and nothing else. So the first half of this is deliberately not a new set
+/// of statements — it is [`check_sequence_text_placement`], the same function
+/// [`a_sequence_diagrams_messages_participants_and_notes_each_carry_their_own_text`] calls, over
+/// sources `SEQUENCE_CASES` does not contain: a nested sync call, an `@Actor`, an `if`/`else` and
+/// a `while`. Writing those statements again would be the copy this project keeps being bitten
+/// by.
+///
+/// **Be exact about what that half can see.** `zenuml::parse` produces *both* the model the
+/// checker compares against and the diagram it compares, so a translation that shuffled the
+/// messages between arrows would move both sides together and the checker would stay green —
+/// the self-comparison §6-A records konoma being caught by twice. That is why the second half is
+/// here, and why it reads the **source bytes**, which the translation cannot move: a ZenUML
+/// message's words are written literally on its own line, so "each arrow's words occur in the
+/// source after the arrow before it" holds for every diagram this language can express and fails
+/// the moment two messages change places.
+#[test]
+fn a_zenuml_diagrams_participants_messages_and_notes_carry_their_own_translated_text() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::zenuml;
+    for (name, src) in kind_cases_of(zenuml::is_zenuml) {
+        let model = zenuml::parse(src).expect("parses");
+        let d = super::zenuml::lay_out(src).expect("lays out");
+        check_sequence_text_placement(name, &model, &d);
+
+        let mut cursor = 0usize;
+        let mut read = 0usize;
+        for e in &d.edges {
+            let Some(label) = e.label.as_ref() else {
+                continue;
+            };
+            let text = words(&label.label);
+            // Words the reader had to change on the way in — a `<br>`, a doubled space — cannot
+            // be looked back up in the source, so they are left to the checker above rather than
+            // reported as being out of order.
+            if text.trim().is_empty() || !src.contains(text.as_str()) {
+                continue;
+            }
+            let at = src[cursor..].find(text.as_str()).unwrap_or_else(|| {
+                panic!(
+                    "{name}: the arrow reading {text:?} is drawn after one whose words the source \
+                     writes later — the messages have changed places"
+                )
+            });
+            cursor += at + text.len();
+            read += 1;
+        }
+        assert!(
+            read > 0,
+            "{name}: not one arrow's words could be found in the source, so nothing was read \
+             back and this half of the test asserted nothing"
+        );
     }
 }
