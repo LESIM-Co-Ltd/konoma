@@ -101,6 +101,528 @@ pub const CASES: &[(&str, &str)] = &[
         "cjk",
         "pie title 円グラフ\n    \"りんご\" : 30\n    \"みかん\" : 20\n    \"ぶどう\" : 50\n",
     ),
+    // ------------------------------------------------------------------------------------------
+    // The case distinctions each grammar makes, one row each — read at `mermaid@11.17.2` and
+    // enumerated from the grammar and the DB, **not** from a list of bugs (memory
+    // `corpus-from-spec-not-from-bugs`).
+    //
+    // Appended rather than interleaved so that the blocks already in `mermaid_chart.snap` keep
+    // their byte offsets: a corpus that grows must not move what is already pinned.
+    //
+    // The axes every kind gets a row for, because a chart that is wrong along one of them still
+    // reads as data rather than as a broken picture:
+    //
+    // * **numbers** — a single datum, every value equal, a zero among non-zeroes, one value
+    //   dwarfing the rest, magnitudes at both ends, values that do not divide evenly, a repeated
+    //   label;
+    // * **scale and axis** — a `min` that is not zero, a range narrower than one tick, data
+    //   outside a declared range, and an axis declared *after* the data (`hasSetXAxis` makes that
+    //   a different chart);
+    // * **structure** — deep nesting, a field spanning the 32-bit row boundary, a fan-in and a
+    //   fan-out, a curve with fewer entries than there are axes;
+    // * **text** — CJK, emoji, very long, empty.
+    (
+        "pie-single",
+        "pie\n    \"Only one\" : 1\n",
+    ),
+    (
+        "pie-equal",
+        "pie title Three equal ways\n    \"A\" : 10\n    \"B\" : 10\n    \"C\" : 10\n",
+    ),
+    (
+        "pie-dominant",
+        "pie\n    \"Bulk\" : 9990\n    \"Trace\" : 8\n    \"Residue\" : 2\n",
+    ),
+    (
+        "pie-zero-slice",
+        "pie showData\n    \"Present\" : 5\n    \"Absent\" : 0\n    \"Also here\" : 5\n",
+    ),
+    (
+        "pie-many",
+        "pie showData\n    \"Series 01\" : 1\n    \"Series 02\" : 2\n    \"Series 03\" : 3\n    \"Ser\
+         ies 04\" : 4\n    \"Series 05\" : 5\n    \"Series 06\" : 6\n    \"Series 07\" : 7\n    \"Ser\
+         ies 08\" : 8\n    \"Series 09\" : 9\n    \"Series 10\" : 10\n",
+    ),
+    (
+        "pie-thirds",
+        "pie\n    \"one\" : 1\n    \"two\" : 1\n    \"three\" : 1\n",
+    ),
+    (
+        "pie-huge",
+        "pie\n    \"Ocean\" : 999999999999\n    \"Puddle\" : 1\n",
+    ),
+    (
+        "pie-small",
+        "pie showData\n    \"a\" : 0.0001\n    \"b\" : 0.0002\n    \"c\" : 0.0003\n",
+    ),
+    (
+        "pie-long-label",
+        "pie\n    \"A slice whose name runs on for very much longer than the wedge it belongs to\" : \
+         3\n    \"Short\" : 1\n",
+    ),
+    (
+        "pie-repeated-label",
+        "pie\n    \"Dup\" : 1\n    \"Dup\" : 99\n    \"Other\" : 1\n",
+    ),
+    (
+        "pie-single-quotes",
+        "pie title Apostrophes\n    'Agricultural waste' : 4\n    'Bio-conversion' : 6\n",
+    ),
+    (
+        "pie-escaped-quote",
+        "pie\n    \"a \\\"quoted\\\" word\" : 1\n    \"plain\" : 2\n",
+    ),
+    (
+        "pie-emoji",
+        "pie\n    \"🚀 launch\" : 5\n    \"日本語のラベル\" : 3\n    \"plain\" : 2\n",
+    ),
+    (
+        "pie-blank-label",
+        "pie showData\n    \"\" : 5\n    \"named\" : 5\n",
+    ),
+    (
+        "xychart-linear-axis",
+        "xychart-beta\n  title \"Linear x\"\n  x-axis \"Depth\" 0 --> 10\n  y-axis \"Reading\" 0 --> \
+         100\n  line [10, 35, 60, 80, 95]\n",
+    ),
+    (
+        "xychart-single-datum",
+        "xychart-beta\n  bar [42]\n",
+    ),
+    (
+        "xychart-point-labels",
+        "xychart-beta\n  x-axis [mon, tue, wed]\n  line \"Load\" [5 \"five\", 6 \"six\", 7]\n",
+    ),
+    (
+        "xychart-flat",
+        "xychart-beta\n  x-axis [a, b, c, d]\n  bar [7, 7, 7, 7]\n",
+    ),
+    (
+        "xychart-zeroes",
+        "xychart-beta\n  x-axis [a, b, c]\n  bar [0, 0, 0]\n",
+    ),
+    (
+        "xychart-truncated",
+        "xychart-beta\n  x-axis [a, b, c]\n  bar [1, 2, 3, 4, 5]\n",
+    ),
+    (
+        "xychart-fewer-than-categories",
+        "xychart-beta\n  x-axis [a, b, c, d]\n  bar [3, 4]\n",
+    ),
+    (
+        "xychart-plot-before-axis",
+        "xychart-beta\n  bar [1, 2, 3, 4, 5]\n  x-axis [a, b, c]\n",
+    ),
+    (
+        "xychart-two-plots-no-axis",
+        "xychart-beta\n  bar \"Short\" [1, 2, 3]\n  bar \"Long\" [1, 2, 3, 4, 5]\n",
+    ),
+    (
+        "xychart-all-negative",
+        "xychart-beta\n  y-axis -100 --> -10\n  x-axis [a, b, c]\n  bar [-20, -50, -90]\n",
+    ),
+    (
+        "xychart-narrow-range",
+        "xychart-beta\n  x-axis [a, b, c]\n  y-axis 0 --> 0.001\n  bar [0.0002, 0.0007, 0.001]\n",
+    ),
+    (
+        "xychart-huge",
+        "xychart-beta\n  x-axis [a, b, c]\n  bar [1000000000, 2000000000, 1500000000]\n",
+    ),
+    (
+        "xychart-out-of-range",
+        "xychart-beta\n  x-axis [a, b, c]\n  y-axis 0 --> 10\n  bar [5, 25, 8]\n",
+    ),
+    (
+        "xychart-cjk",
+        "xychart-beta\n  title \"売上の推移\"\n  x-axis [一月, 二月, 三月, 四月]\n  y-axis \"億円\" 0 --> 10\n  bar \
+         [3, 5, 8, 6]\n",
+    ),
+    (
+        "xychart-long-categories",
+        "xychart-beta\n  x-axis [\"a really quite long category name\", \"another long one\", \"third\
+         \"]\n  bar [3, 5, 8]\n",
+    ),
+    (
+        "xychart-many-categories",
+        "xychart-beta\n  x-axis [c01, c02, c03, c04, c05, c06, c07, c08, c09, c10, c11, c12]\n  line \
+         [8, 2, 9, 3, 10, 4, 11, 5, 12, 6, 13, 7]\n",
+    ),
+    (
+        "xychart-horizontal",
+        "xychart-beta horizontal\n  x-axis [a, b, c]\n  bar [4, 8, 2]\n",
+    ),
+    (
+        "xychart-line-only",
+        "xychart-beta\n  x-axis [a, b, c, d]\n  line \"Trend\" [2, 9, 4, 7]\n",
+    ),
+    (
+        "xychart-semicolons",
+        "xychart-beta\n  x-axis [a, b, c]; y-axis 0 --> 10; bar [2, 5, 9]\n",
+    ),
+    (
+        "quadrant-points-only",
+        "quadrantChart\n  Alpha: [0.2, 0.8]\n  Beta: [0.7, 0.3]\n",
+    ),
+    (
+        "quadrant-names-only",
+        "quadrantChart\n  quadrant-1 Expand\n  quadrant-2 Promote\n  quadrant-3 Re-evaluate\n  quadra\
+         nt-4 Improve\n",
+    ),
+    (
+        "quadrant-x-axis-only",
+        "quadrantChart\n  x-axis Cheap --> Dear\n  P: [0.5, 0.25]\n",
+    ),
+    (
+        "quadrant-dangling-arrow",
+        "quadrantChart\n  x-axis Low Reach -->\n  y-axis Low -->\n  P: [0.25, 0.75]\n",
+    ),
+    (
+        "quadrant-corners",
+        "quadrantChart\n  x-axis Left --> Right\n  y-axis Bottom --> Top\n  SW: [0, 0]\n  NW: [0, 1]\
+         \n  NE: [1, 1]\n  SE: [1, 0]\n",
+    ),
+    (
+        // Exactly on both dividers, which is the boundary the placement arithmetic turns on. The
+        // second point is far away on purpose: two points a millionth apart also collide their
+        // labels, and label collision is a defect already on the record rather than this case's
+        // subject (`docs/STATUS.md`).
+        // Exactly on both dividers, which is the boundary the placement arithmetic turns
+        // on. The second point is far away on purpose: two points a millionth apart also
+        // collide their labels, and label collision is a defect already on the record
+        // rather than this case's subject (`docs/STATUS.md`).
+        "quadrant-centre",
+        "quadrantChart\n  Dead centre: [0.5, 0.5]\n  Far corner: [1, 1]\n",
+    ),
+    (
+        "quadrant-classes",
+        "quadrantChart\n  classDef hot radius: 8, color: #ff0000\n  Hot one:::hot: [0.2, 0.3]\n  Cool\
+         : [0.8, 0.9]\n",
+    ),
+    (
+        "quadrant-styles",
+        "quadrantChart\n  Styled: [0.2, 0.3] radius: 10, color: #ff0000\n  Plain: [0.7, 0.6]\n",
+    ),
+    (
+        // Three points on one spot. Legal, and the tiles/dots are right; the *labels* land on top
+        // of one another, which `docs/STATUS.md` already records. Kept out of the rendered corpus
+        // for that reason and pinned by an ignored test instead
+        // (`render::chart::tests::coincident_quadrant_points_should_not_stack_their_labels`).
+        "quadrant-near-neighbours",
+        "quadrantChart\n  First: [0.4, 0.4]\n  Second: [0.44, 0.28]\n  Third: [0.36, 0.52]\n",
+    ),
+    (
+        "quadrant-cjk",
+        "quadrantChart\n  title 四象限図\n  x-axis 低い --> 高い\n  y-axis 小さい --> 大きい\n  顧客A: [0.3, 0.7]\n  \
+         顧客B: [0.8, 0.2]\n",
+    ),
+    (
+        "quadrant-long-labels",
+        "quadrantChart\n  x-axis A rather long axis label on the left --> And a long one on the right\
+         \n  A campaign with a very long descriptive name indeed: [0.3, 0.6]\n",
+    ),
+    (
+        "quadrant-colon-label",
+        "quadrantChart\n  Phase 1: build: [0.3, 0.4]\n  Phase 2: ship: [0.6, 0.7]\n",
+    ),
+    (
+        "quadrant-quoted",
+        "quadrantChart\n  \"Quoted, with a comma\": [0.2, 0.3]\n  Plain: [0.6, 0.7]\n",
+    ),
+    (
+        // Twelve points, all on distinct coordinates. The first draft generated them
+        // arithmetically and put two of them on the same spot, which is a *label*
+        // collision — a defect already on the record — rather than this case's subject.
+        "quadrant-many",
+        "quadrantChart\n  P01: [0.05, 0.12]\n  P02: [0.17, 0.88]\n  P03: [0.29, 0.35]\n  P04: [0.41, 0.66]\n  P05: [0.53, 0.09]\n  P06: [0.65, 0.94]\n  P07: [0.77, 0.41]\n  P08: [0.89, 0.73]\n  P09: [0.11, 0.55]\n  P10: [0.23, 0.21]\n  P11: [0.35, 0.82]\n  P12: [0.47, 0.47]\n",
+    ),
+    (
+        "quadrant-semicolons",
+        "quadrantChart\n  x-axis Low --> High; A: [0.2, 0.3]; B: [0.8, 0.9]\n",
+    ),
+    (
+        "quadrant-emoji",
+        "quadrantChart\n  🚀 launch: [0.8, 0.8]\n  🐌 crawl: [0.2, 0.2]\n",
+    ),
+    (
+        "radar-named-entries",
+        "radar-beta\n  axis a[\"Alpha\"], b[\"Beta\"], c[\"Gamma\"]\n  curve one[\"One\"]{c: 3, a: 1, \
+         b: 2}\n  max 5\n",
+    ),
+    (
+        "radar-multiline-curve",
+        "radar-beta\n  axis a, b, c, d\n  curve x{\n    10,\n    20,\n    30,\n    40\n  }\n  max 50\
+         \n",
+    ),
+    (
+        "radar-no-legend",
+        "radar-beta\n  axis a, b, c, d\n  curve x[\"Hidden\"]{1, 2, 3, 4}\n  showLegend false\n",
+    ),
+    (
+        "radar-one-ring",
+        "radar-beta\n  axis a, b, c\n  curve x{1, 2, 3}\n  ticks 1\n",
+    ),
+    (
+        "radar-many-rings",
+        "radar-beta\n  axis a, b, c, d\n  curve x{1, 2, 3, 4}\n  ticks 99\n",
+    ),
+    (
+        "radar-clamped-high",
+        "radar-beta\n  axis a, b, c, d\n  curve x{5, 50, 200, 20}\n  max 100\n  min 0\n",
+    ),
+    (
+        "radar-clamped-low",
+        "radar-beta\n  axis a, b, c, d\n  curve x{5, 30, 60, 90}\n  max 100\n  min 25\n",
+    ),
+    (
+        "radar-flat",
+        "radar-beta\n  axis a, b, c, d, e\n  curve x{7, 7, 7, 7, 7}\n  max 10\n",
+    ),
+    (
+        "radar-spike",
+        "radar-beta\n  axis a, b, c, d, e, f\n  curve x{1, 1, 1, 100, 1, 1}\n",
+    ),
+    (
+        // A curve that is short and one that is full length, together: the short one is skipped
+        // (upstream's rule — see `render::chart::radar::is_drawable`) and the chart still draws.
+        // The two on their own are *refused*, which is why they are in
+        // [`a_radar_curve_without_an_entry_for_every_axis_is_not_drawn`] and not here.
+        "radar-mixed-lengths",
+        "radar-beta\n  axis a, b, c, d\n  curve full[\"Full\"]{1, 2, 3, 4}\n  \
+         curve short[\"Short\"]{1, 2}\n  max 5\n",
+    ),
+    (
+        "radar-cjk",
+        "radar-beta\n  title 能力値\n  axis 攻[\"攻撃\"], 守[\"防御\"], 速[\"素早さ\"], 技[\"技術\"]\n  curve 甲[\"甲選手\
+         \"]{80, 60, 90, 70}\n  max 100\n",
+    ),
+    (
+        "radar-many-axes",
+        "radar-beta\n  axis a01, a02, a03, a04, a05, a06, a07, a08, a09, a10, a11, a12\n  curve x{6, \
+         11, 5, 10, 4, 9, 3, 8, 2, 7, 1, 6}\n  max 12\n",
+    ),
+    (
+        "radar-colon-header",
+        "radar-beta:\n  axis a, b, c\n  curve x{1, 2, 3}\n",
+    ),
+    (
+        "radar-three-curves",
+        "radar-beta\n  axis a, b, c, d\n  curve p[\"P\"]{1, 4, 2, 3}\n  curve q[\"Q\"]{4, 1, 3, 2}\n  \
+         curve r[\"R\"]{2, 2, 4, 1}\n  max 5\n",
+    ),
+    (
+        "treemap-flat",
+        "treemap-beta\n\"Alpha\": 30\n\"Beta\": 20\n\"Gamma\": 50\n",
+    ),
+    (
+        "treemap-deep",
+        "treemap-beta\n\"L1\"\n  \"L2\"\n    \"L3\"\n      \"leaf a\": 10\n      \"leaf b\": 20\n    \
+         \"L3 sibling\": 30\n  \"L2 sibling\": 40\n\"Other\": 60\n",
+    ),
+    (
+        "treemap-comma-separator",
+        "treemap-beta\n\"Alpha\", 30\n\"Beta\", 20\n",
+    ),
+    (
+        "treemap-classes",
+        "treemap-beta\nclassDef leafy fill:#f9f\n\"a\": 1:::leafy\n\"b\": 2\n",
+    ),
+    (
+        "treemap-tabs",
+        "treemap-beta\n\"Section\"\n	\"leaf a\": 10\n	\"leaf b\": 20\n",
+    ),
+    (
+        "treemap-dominant",
+        "treemap-beta\n\"Bulk\": 9990\n\"Trace\": 8\n\"Residue\": 2\n",
+    ),
+    (
+        "treemap-equal",
+        "treemap-beta\n\"a\": 25\n\"b\": 25\n\"c\": 25\n\"d\": 25\n",
+    ),
+    (
+        // **A zero-valued node first.** `squarify` lays only the nodes with a value, so the k-th
+        // rectangle it produces belongs to the k-th *live* node — and the two indices agree for
+        // every source whose leading values are positive. This one makes them disagree, which is
+        // what a mis-indexed write has to be measured against.
+        "treemap-leading-zero",
+        "treemap-beta\n\"nothing\": 0\n\"half\": 50\n\"the rest\": 50\n",
+    ),
+    (
+        "treemap-zero-leaf",
+        "treemap-beta\n\"present\": 50\n\"absent\": 0\n\"also here\": 50\n",
+    ),
+    (
+        "treemap-single",
+        "treemap-beta\n\"only\": 1\n",
+    ),
+    (
+        "treemap-cjk",
+        "treemap-beta\ntitle 面積図\n\"果物\"\n  \"りんご\": 30\n  \"みかん\": 20\n\"野菜\"\n  \"にんじん\": 25\n",
+    ),
+    (
+        "treemap-long-names",
+        "treemap-beta\n\"A section whose name is far too long to fit inside the band above its childr\
+         en\"\n  \"and a leaf whose name is also much too long\": 60\n  \"s\": 40\n",
+    ),
+    (
+        "treemap-many",
+        "treemap-beta\n\"n01\": 8\n\"n02\": 15\n\"n03\": 22\n\"n04\": 6\n\"n05\": 13\n\"n06\": 20\n\"\
+         n07\": 4\n\"n08\": 11\n\"n09\": 18\n\"n10\": 2\n\"n11\": 9\n\"n12\": 16\n\"n13\": 23\n\"n14\
+         \": 7\n\"n15\": 14\n\"n16\": 21\n\"n17\": 5\n\"n18\": 12\n\"n19\": 19\n\"n20\": 3\n",
+    ),
+    (
+        "treemap-title",
+        "treemap-beta\ntitle Where the budget went\n\"build\": 60\n\"run\": 40\n",
+    ),
+    (
+        "treemap-fractional",
+        "treemap-beta\n\"a\": 0.125\n\"b\": 0.25\n\"c\": 0.625\n",
+    ),
+    (
+        "treemap-thousands",
+        "treemap-beta\n\"a\": 1,234.5\n\"b\": 2,469\n",
+    ),
+    (
+        "treemap-sibling-leaf",
+        "treemap-beta\n\"a\": 1\n  \"b\": 2\n  \"c\": 3\n",
+    ),
+    (
+        "packet-relative",
+        "packet-beta\n+8: \"type\"\n+8: \"code\"\n+16: \"checksum\"\n",
+    ),
+    (
+        "packet-crossing",
+        "packet-beta\n0-15: \"head\"\n16-63: \"spans the row boundary\"\n",
+    ),
+    (
+        "packet-one-row",
+        "packet-beta\n0-7: \"a\"\n8-15: \"b\"\n16-31: \"c\"\n",
+    ),
+    (
+        "packet-full-row",
+        "packet-beta\n0-31: \"the whole word\"\n",
+    ),
+    (
+        "packet-many-rows",
+        "packet-beta\n0-31: \"row 0\"\n32-63: \"row 1\"\n64-95: \"row 2\"\n96-127: \"row 3\"\n128-159\
+         : \"row 4\"\n160-191: \"row 5\"\n",
+    ),
+    (
+        "packet-title",
+        "packet-beta\ntitle A framed header\n0-15: \"length\"\n16-31: \"flags\"\n",
+    ),
+    (
+        "packet-cjk",
+        "packet-beta\n0-15: \"送信元ポート\"\n16-31: \"宛先ポート\"\n",
+    ),
+    (
+        "packet-long-label",
+        "packet-beta\n0-3: \"a label far too long for four bits\"\n4-31: \"roomy\"\n",
+    ),
+    (
+        "packet-mixed",
+        "packet-beta\n0-15: \"absolute\"\n+8: \"relative\"\n24-31: \"absolute again\"\n",
+    ),
+    (
+        "packet-partial-row",
+        "packet-beta\n0-31: \"full\"\n32-39: \"and a bit\"\n",
+    ),
+    (
+        "packet-64",
+        "packet-beta\n0-63: \"a sixty-four bit field\"\n",
+    ),
+    (
+        "packet-empty-label",
+        "packet-beta\n0-7: \"\"\n8-31: \"named\"\n",
+    ),
+    (
+        "packet-single-bit-only",
+        "packet-beta\n0: \"f\"\n",
+    ),
+    (
+        "packet-all-single-bits",
+        "packet-beta\n0: \"b0\"\n1: \"b1\"\n2: \"b2\"\n3: \"b3\"\n4: \"b4\"\n5: \"b5\"\n6: \"b6\"\n7: \
+         \"b7\"\n",
+    ),
+    (
+        "packet-duplicate-labels",
+        "packet-beta\n0-7: \"pad\"\n8-15: \"data\"\n16-23: \"pad\"\n24-31: \"more\"\n",
+    ),
+    (
+        "sankey-chain",
+        "sankey-beta\na,b,10\nb,c,10\nc,d,10\n",
+    ),
+    (
+        "sankey-diamond",
+        "sankey-beta\nsource,left,6\nsource,right,4\nleft,sink,6\nright,sink,4\n",
+    ),
+    (
+        "sankey-fan-out",
+        "sankey-beta\nhub,one,5\nhub,two,3\nhub,three,2\nhub,four,1\n",
+    ),
+    (
+        "sankey-fan-in",
+        "sankey-beta\none,hub,5\ntwo,hub,3\nthree,hub,2\nfour,hub,1\n",
+    ),
+    (
+        "sankey-repeated-pair",
+        "sankey-beta\na,b,3\na,b,7\nb,c,10\n",
+    ),
+    (
+        "sankey-zero-link",
+        "sankey-beta\na,b,10\na,c,0\n",
+    ),
+    (
+        "sankey-tiny-vs-huge",
+        "sankey-beta\nbig,out,10000\nsmall,out,1\n",
+    ),
+    (
+        "sankey-quoted-comma",
+        "sankey-beta\n\"a, with comma\",b,5\nb,\"c, also\",5\n",
+    ),
+    (
+        "sankey-escaped-quote",
+        "sankey-beta\n\"say \"\"hi\"\"\",b,4\nb,c,4\n",
+    ),
+    (
+        "sankey-cjk",
+        "sankey-beta\n顧客,注文,12\n注文,発送,8\n注文,キャンセル,4\n",
+    ),
+    (
+        "sankey-long-names",
+        "sankey-beta\nA node whose name runs on quite a long way,B,5\nB,Another node with a very long \
+         name indeed,5\n",
+    ),
+    (
+        "sankey-many",
+        "sankey-beta\nn01,sink,1\nn02,sink,2\nn03,sink,3\nn04,sink,4\nn05,sink,5\nn06,sink,6\nn07,sin\
+         k,7\nn08,sink,8\nn09,sink,9\nn10,sink,10\nn11,sink,11\nn12,sink,12\n",
+    ),
+    (
+        "sankey-disconnected",
+        "sankey-beta\na,b,5\nc,d,3\n",
+    ),
+    (
+        "sankey-title",
+        "sankey-beta\ntitle Where the energy went\na,b,5\nb,c,5\n",
+    ),
+    (
+        "sankey-equal",
+        "sankey-beta\na,x,5\nb,x,5\nc,x,5\n",
+    ),
+    (
+        // **Branches of different lengths.** Every other Sankey here has all its sinks at the same
+        // depth, so `justify` — which pulls a node with nothing leaving it out to the last column —
+        // could be removed without moving anything. `e` is a sink one step from the source while
+        // the other branch is three steps long.
+        "sankey-uneven-depths",
+        "sankey-beta\na,b,5\nb,c,5\nc,d,5\na,e,3\n",
+    ),
+    (
+        "sankey-long-chain",
+        "sankey-beta\nn0,n1,4\nn1,n2,4\nn2,n3,4\nn3,n4,4\nn4,n5,4\nn5,n6,4\n",
+    ),
+
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -283,6 +805,27 @@ fn an_xychart_resolves_its_data_against_the_axis_in_source_order() {
     assert_eq!(
         before.x,
         xychart::XAxis::Band(vec!["a".into(), "b".into(), "c".into()])
+    );
+
+    // **The range a plot infers is then fixed**, because upstream reaches the inference through
+    // `setXAxisRangeData`, whose last line is `hasSetXAxis = true` (`xychartDb.ts:91-93`). So the
+    // first plot decides the span and a longer second plot is spread across that same span — it
+    // does not widen it. Without this, the two plots resolve their keys against two different
+    // ranges and the chart has two x axes.
+    let two = xychart::parse("xychart-beta\n  bar [1, 2, 3]\n  bar [1, 2, 3, 4, 5]\n").unwrap();
+    assert_eq!(
+        two.x,
+        xychart::XAxis::Linear { min: 1.0, max: 3.0 },
+        "the second plot widened the range the first one fixed"
+    );
+    assert_eq!(
+        two.plots[1]
+            .data
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect::<Vec<_>>(),
+        vec!["1", "1.5", "2", "2.5", "3"],
+        "the longer plot is spread across the first plot's span"
     );
 }
 

@@ -22,8 +22,11 @@ use crate::preview::mermaid::layout::Point;
 use super::super::{normalise, Diagram, Glyph, Label, PlacedNode, RenderError, Size, Theme};
 use super::{add_title, label_node, rule, text_node, POINT_RADIUS, TICK_GAP};
 
-/// Side of the square the four quadrants fill.
+/// Side of the square the four quadrants fill, before the words round it ask for more.
 pub const SIDE: f64 = 340.0;
+
+/// Blank space kept between two words that sit side by side along one edge.
+pub const WORD_GAP: f64 = 8.0;
 
 /// Blank space between a quadrant's corner and the label in it.
 pub const CORNER_PAD: f64 = 8.0;
@@ -42,9 +45,31 @@ pub fn render(code: &str, theme: &str) -> Result<String, RenderError> {
 
 /// Where a `[x, y]` pair lands, in px.
 ///
-/// `left`/`top` are the square's corner. **y is inverted**: `y = 1` is the top of the square.
-pub fn place(left: f64, top: f64, x: f64, y: f64) -> Point {
-    Point::new(left + x * SIDE, top + (1.0 - y) * SIDE)
+/// `left`/`top` are the square's corner and `side` its length. **y is inverted**: `y = 1` is the
+/// top of the square.
+pub fn place(left: f64, top: f64, side: f64, x: f64, y: f64) -> Point {
+    Point::new(left + x * side, top + (1.0 - y) * side)
+}
+
+/// How big the square has to be for the words along its edges not to run into each other.
+///
+/// The two x words sit at a quarter and three quarters across, and the two names in the top half
+/// do the same — so **the words decide the size**, exactly as a category name decides how wide an
+/// `xychart`'s plot is and a node name decides how wide a Sankey is. At the fixed 340 the two
+/// halves of a long axis ran together into one string: `…on the leftAnd a long one on the right`
+/// is not a chart with untidy labels, it is a chart with a word in it that nobody wrote.
+///
+/// Half the side separates the two centres, and each word claims half its own width, so the pair
+/// needs `w₁ + w₂ + 2·WORD_GAP` of side between them.
+fn square_side(chart: &QuadrantChart) -> f64 {
+    let w = |t: &str| Label::measure(t).width;
+    [
+        w(&chart.x_left) + w(&chart.x_right),
+        w(&chart.quadrant2) + w(&chart.quadrant1),
+        w(&chart.quadrant3) + w(&chart.quadrant4),
+    ]
+    .into_iter()
+    .fold(SIDE, |side, pair| side.max(pair + WORD_GAP * 2.0))
 }
 
 /// Works out where the axes, the quadrant names and every point go.
@@ -53,9 +78,10 @@ pub fn lay_out(chart: &QuadrantChart) -> Result<Diagram, RenderError> {
         return Err(RenderError::NoFonts);
     }
     let (left, top) = (0.0, 0.0);
-    let (right, bottom) = (SIDE, SIDE);
-    let mid_x = left + SIDE / 2.0;
-    let mid_y = top + SIDE / 2.0;
+    let side = square_side(chart);
+    let (right, bottom) = (side, side);
+    let mid_x = left + side / 2.0;
+    let mid_y = top + side / 2.0;
 
     let mut nodes: Vec<PlacedNode> = Vec::new();
     let mut edges = Vec::new();
@@ -64,7 +90,7 @@ pub fn lay_out(chart: &QuadrantChart) -> Result<Diagram, RenderError> {
         id: "frame".to_string(),
         shape: Glyph::PlotFrame,
         center: Point::new(mid_x, mid_y),
-        size: Size::new(SIDE, SIDE),
+        size: Size::new(side, side),
         label: Label::measure(""),
         panel: None,
         series: None,
@@ -102,8 +128,8 @@ pub fn lay_out(chart: &QuadrantChart) -> Result<Diagram, RenderError> {
             continue;
         }
         // Centred across its own half, tucked under the top edge of it.
-        let cx = left + SIDE * 0.25 + qx * SIDE * 0.5;
-        let band_top = top + (1.0 - qy) * SIDE * 0.5;
+        let cx = left + side * 0.25 + qx * side * 0.5;
+        let band_top = top + (1.0 - qy) * side * 0.5;
         let cy = band_top + CORNER_PAD + label.height / 2.0;
         if let Some(n) = label_node(
             format!(
@@ -120,7 +146,7 @@ pub fn lay_out(chart: &QuadrantChart) -> Result<Diagram, RenderError> {
 
     // --- the points ---------------------------------------------------------------------------
     for (i, p) in chart.points.iter().enumerate() {
-        let c = place(left, top, p.x, p.y);
+        let c = place(left, top, side, p.x, p.y);
         nodes.push(PlacedNode {
             id: format!("point#{i}"),
             shape: Glyph::ChartPoint,
@@ -145,8 +171,8 @@ pub fn lay_out(chart: &QuadrantChart) -> Result<Diagram, RenderError> {
     // --- the axis texts, one per side ---------------------------------------------------------
     let x_label_gap = POINT_RADIUS + TICK_GAP * 2.0;
     for (text, cx, below) in [
-        (&chart.x_left, left + SIDE * 0.25, true),
-        (&chart.x_right, left + SIDE * 0.75, true),
+        (&chart.x_left, left + side * 0.25, true),
+        (&chart.x_right, left + side * 0.75, true),
     ] {
         let label = Label::measure(text);
         if let Some(n) = label_node(
@@ -163,8 +189,8 @@ pub fn lay_out(chart: &QuadrantChart) -> Result<Diagram, RenderError> {
     }
     // The y texts sit outside the left edge, upright — see `xychart`'s note on rotated text.
     for (text, cy, name) in [
-        (&chart.y_bottom, top + SIDE * 0.75, "bottom"),
-        (&chart.y_top, top + SIDE * 0.25, "top"),
+        (&chart.y_bottom, top + side * 0.75, "bottom"),
+        (&chart.y_top, top + side * 0.25, "top"),
     ] {
         let label = Label::measure(text);
         if let Some(n) = label_node(

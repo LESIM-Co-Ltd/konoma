@@ -449,3 +449,2856 @@
 </g>
 </svg>
 
+=== pie-single ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# A#,# # # # #,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">100%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Only one</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-equal ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">33%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">33%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">33%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">B</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">C</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Three equal ways</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-dominant ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">100%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Bulk</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Trace</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Residue</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-zero-slice ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">50%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">50%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Present [5]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Absent [0]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Also here [5]</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-many ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#3f6b78" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#8c6d31" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#a8564c" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#6b6ecf" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">7%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">9%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">11%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">13%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">15%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">16%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">18%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Series 01 [1]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Series 02 [2]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Series 03 [3]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Series 04 [4]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#3f6b78" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Series 05 [5]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#8c6d31" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Series 06 [6]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#a8564c" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Series 07 [7]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#6b6ecf" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Series 08 [8]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Series 09 [9]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Series 10 [10]</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-thirds ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">33%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">33%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">33%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">one</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">two</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">three</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-huge ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# A#,# # # # #,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">100%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Ocean</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Puddle</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-small ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">17%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">33%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">50%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a [0.0001]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b [0.0002]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c [0.0003]</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-long-label ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">75%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">25%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A slice whose name runs on for very much longer than the wedge it belongs to</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Short</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-repeated-label ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">50%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">50%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Dup</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Other</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-single-quotes ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">40%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">60%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Agricultural waste</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Bio-conversion</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Apostrophes</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-escaped-quote ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">33%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">67%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a &quot;quoted&quot; word</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">plain</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-emoji ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">50%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">30%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">20%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">🚀 launch</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">日本語のラベル</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">plain</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== pie-blank-label ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# L#,# A#,# # # # #,# Z" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">50%</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">50%</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">[5]</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">named [5]</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-linear-axis ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">20</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">40</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">60</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">80</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">100</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">2.5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">7.5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">10</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Depth</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Reading</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Linear x</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-single-datum ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">41.6</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">41.8</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">42</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">42.2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">42.4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">1</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-point-labels ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">5.5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">6</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">6.5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">7</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">mon</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">tue</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">wed</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">five</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">six</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Load</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-flat ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">6.6</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">6.8</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">7</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">7.2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">7.4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-zeroes ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">-0.4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">-0.2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0.2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0.4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-truncated ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">1</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">1.5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">2.5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">3</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-fewer-than-categories ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">3</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">3.2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">3.4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">3.6</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">3.8</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-plot-before-axis ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">1</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">3</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-two-plots-no-axis ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">1</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">3</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">1</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">3</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Short</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Long</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-all-negative ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">-100</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">-80</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">-60</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">-40</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">-20</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-narrow-range ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0.0002</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0.0004</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0.0006</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0.0008</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0.001</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-huge ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">1000000000</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">1200000000</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">1400000000</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">1600000000</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">1800000000</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">2000000000</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-out-of-range ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">10</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">15</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">20</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">25</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-cjk ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">6</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">8</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">10</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">一月</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">二月</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">三月</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">四月</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">億円</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">売上の推移</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-long-categories ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">3</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">6</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">7</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">8</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a really quite long category name</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">another long one</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">third</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-many-categories ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">10</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c01</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c02</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c03</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c04</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c05</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c06</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c07</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c08</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c09</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c10</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c11</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c12</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,# L#,# L#,# L#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-horizontal ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">6</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">8</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-line-only ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">6</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">8</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Trend</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== xychart-semicolons ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#" stroke-dasharray="# #"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">0</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">6</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">8</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">10</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-points-only ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Alpha</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Beta</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-names-only ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Expand</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Promote</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Re-evaluate</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Improve</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-x-axis-only ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Cheap</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Dear</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-dangling-arrow ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Low Reach ⟶</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Low ⟶</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-corners ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">SW</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">NW</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#b07aa1"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">NE</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#9c755f"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">SE</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Left</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Right</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Bottom</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Top</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-centre ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Dead centre</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Far corner</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-classes ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Hot one</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Cool</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-styles ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Styled</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Plain</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-near-neighbours ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">First</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Second</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#b07aa1"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Third</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-cjk ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">顧客A</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">顧客B</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">低い</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">高い</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">小さい</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">大きい</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">四象限図</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-long-labels ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A campaign with a very long descriptive name indeed</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A rather long axis label on the left</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">And a long one on the right</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-colon-label ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Phase 1: build</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Phase 2: ship</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-quoted ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Quoted, with a comma</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Plain</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-many ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P01</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P02</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#b07aa1"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P03</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#9c755f"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P04</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#3f6b78"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P05</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#8c6d31"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P06</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#a8564c"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P07</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#6b6ecf"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P08</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P09</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P10</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#b07aa1"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P11</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#9c755f"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P12</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-semicolons ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">B</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Low</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">High</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== quadrant-emoji ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+<path d="M#,#L#,#" fill="none" stroke="#d3d3d3" stroke-width="#"/>
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">🚀 launch</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">🐌 crawl</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-named-entries ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Alpha</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Beta</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Gamma</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">One</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-multiline-curve ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">x</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-no-legend ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-one-ring ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">x</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-many-rings ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">x</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-clamped-high ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">x</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-clamped-low ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">x</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-flat ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">e</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">x</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-spike ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">e</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">f</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">x</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-mixed-lengths ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Full</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Short</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-cjk ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">攻撃</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">防御</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">素早さ</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">技術</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">甲選手</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">能力値</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-many-axes ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a01</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a02</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a03</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a04</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a05</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a06</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a07</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a08</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a09</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a10</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a11</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a12</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">x</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,# L#,# L#,# L#,# L#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-colon-header ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">x</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== radar-three-curves ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<path d="M#,# L#,# M#,# L#,# M#,# L#,# M#,# L#,#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">P</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Q</tspan></text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">R</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+<path d="M#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#4a8a42" stroke-width="#"/>
+<path d="M#,# L#,# L#,# L#,# L#,#" fill="none" stroke="#b07aa1" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-flat ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">Alpha</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">30</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">Beta</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">20</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">Gamma</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">50</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-deep ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">L1</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">L2</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">L3</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">leaf a</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">10</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">leaf b</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">20</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">L3 sibling</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">30</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">L2 sibling</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">40</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">Other</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">60</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-comma-separator ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">Alpha</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">30</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">Beta</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">20</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-classes ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">a</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">1</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">b</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">2</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-tabs ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">Section</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">leaf a</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">10</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">leaf b</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">20</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-dominant ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">Bulk</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">9990</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-equal ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">a</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">25</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">b</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">25</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">c</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">25</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">d</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">25</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-leading-zero ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">half</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">50</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">the rest</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">50</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-zero-leaf ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">present</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">50</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">also here</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">50</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-single ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">only</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">1</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-cjk ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">果物</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">りんご</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">30</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">みかん</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">20</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">野菜</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">にんじん</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">25</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">面積図</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-long-names ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">s</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">40</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-many ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n01</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">8</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n02</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">15</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n03</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">22</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n04</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">6</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#3f6b78" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n05</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">13</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#8c6d31" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n06</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">20</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#a8564c" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n07</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">4</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#6b6ecf" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n08</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">11</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n09</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">18</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n11</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">9</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n12</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">16</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#3f6b78" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n13</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">23</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#8c6d31" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n14</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">7</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#a8564c" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n15</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">14</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#6b6ecf" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n16</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">21</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n17</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">5</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n18</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">12</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">n19</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">19</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-title ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">build</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">60</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">run</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">40</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Where the budget went</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-fractional ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">a</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">0.125</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">b</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">0.25</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">c</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">0.625</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-thousands ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">a</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">1234</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">b</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">2469</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== treemap-sibling-leaf ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">a</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">1</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">b</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">2</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">c</text>
+<text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">3</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-relative ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-7</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">type</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">8-15</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">code</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">16-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">checksum</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-crossing ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-15</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">head</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">16-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">spans the row boundary</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">32-63</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">spans the row boundary</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-one-row ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-7</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">a</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">8-15</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">b</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">16-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">c</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-full-row ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">the whole word</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-many-rows ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">row 0</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">32-63</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">row 1</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">64-95</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">row 2</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">96-127</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">row 3</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#3f6b78" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">128-159</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">row 4</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#8c6d31" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">160-191</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">row 5</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-title ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-15</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">length</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">16-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">flags</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A framed header</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-cjk ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-15</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">送信元ポート</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">16-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">宛先ポート</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-long-label ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-3</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">4-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">roomy</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-mixed ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-15</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">absolute</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">16-23</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">relative</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">24-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">absolute again</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-partial-row ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">full</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">32-39</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">and a bit</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-64 ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">a sixty-four bit field</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">32-63</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">a sixty-four bit field</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-empty-label ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-7</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">8-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">named</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-single-bit-only ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">f</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-all-single-bits ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#3f6b78" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#8c6d31" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#a8564c" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#6b6ecf" stroke="#cccccc" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== packet-duplicate-labels ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">0-7</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">pad</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">8-15</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">data</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">16-23</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">pad</text>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">24-31</text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2">more</text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-chain ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4a8a42" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#b07aa1" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-diamond ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4a8a42" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#b07aa1" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">source</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">left</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">right</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">sink</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-fan-out ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#3f6b78" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">hub</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">one</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">two</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">three</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">four</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-fan-in ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#3f6b78" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#b07aa1" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#9c755f" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#3f6b78" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">one</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">hub</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">two</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">three</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">four</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-repeated-pair ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4a8a42" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-zero-link ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-tiny-vs-huge ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#b07aa1" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">big</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">out</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">small</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-quoted-comma ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4a8a42" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a, with comma</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c, also</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-escaped-quote ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4a8a42" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">say &quot;hi&quot;</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-cjk ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4a8a42" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4a8a42" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">顧客</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">注文</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">発送</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">キャンセル</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-long-names ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4a8a42" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A node whose name runs on quite a long way</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">B</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Another node with a very long name indeed</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-many ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#3f6b78" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#8c6d31" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#a8564c" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#6b6ecf" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#3f6b78" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#b07aa1" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#9c755f" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#3f6b78" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#8c6d31" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#a8564c" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#6b6ecf" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4a8a42" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#b07aa1" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#9c755f" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#3f6b78" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n01</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">sink</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n02</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n03</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n04</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n05</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n06</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n07</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n08</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n09</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n10</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n11</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n12</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-disconnected ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#b07aa1" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-title ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4a8a42" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Where the energy went</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-equal ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#b07aa1" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#9c755f" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">x</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-uneven-depths ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#3f6b78" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4a8a42" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#b07aa1" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">a</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">b</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">c</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">d</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">e</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== sankey-long-chain ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#9c755f" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#3f6b78" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#8c6d31" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#a8564c" stroke="#cccccc" stroke-width="#"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4e79a7" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#4a8a42" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#b07aa1" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#9c755f" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#3f6b78" fill-opacity="0.45" stroke="none"/>
+<path d="M#,# C#,# #,# #,# L#,# C#,# #,# #,# Z" fill="#8c6d31" fill-opacity="0.45" stroke="none"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n0</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n1</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n2</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n3</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n4</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n5</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">n6</tspan></text>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+

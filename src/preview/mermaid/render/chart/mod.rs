@@ -275,6 +275,49 @@ pub fn ticks(min: f64, max: f64, target: usize) -> Vec<f64> {
     out
 }
 
+/// The whole run of tick labels for one axis, spelled so that **no two of them read the same**.
+///
+/// [`tick_text`] decides how many decimals a number gets from that number's own magnitude, which
+/// is the right question for a value standing on its own — a treemap tile's `12.5` — and the wrong
+/// one for a tick. How much precision a tick needs is a property of the *axis*: it is however much
+/// separates it from the tick beside it. `y-axis 0 --> 0.001` steps by 0.0002 and every value in
+/// it is under 1, so the per-value rule gave three decimals and the axis read
+/// `0, 0, 0, 0.001, 0.001, 0.001` from the bottom up — six grid lines carrying three numbers, half
+/// of them another tick's. That is a chart that lies rather than a chart that looks untidy: a
+/// reader takes the line labelled `0` two fifths of the way up as the zero line.
+///
+/// So the decimals are chosen once, for the run: the fewest that tell every tick apart.
+pub fn axis_tick_texts(values: &[f64]) -> Vec<String> {
+    // 15 is where an `f64` runs out of significant decimal digits; past it more places cannot
+    // separate anything and the loop would spin producing noise.
+    for decimals in 0..=15usize {
+        let out: Vec<String> = values.iter().map(|v| fixed(*v, decimals)).collect();
+        let mut seen = std::collections::HashSet::with_capacity(out.len());
+        if out.iter().all(|t| seen.insert(t.clone())) {
+            return out;
+        }
+    }
+    values.iter().map(|v| fixed(*v, 15)).collect()
+}
+
+/// One value at a fixed number of decimals, with the trailing zeros taken off.
+///
+/// Trimming cannot re-collide two labels: two different numbers written to the same number of
+/// decimals differ in some place, and dropping trailing zeros keeps that place.
+fn fixed(v: f64, decimals: usize) -> String {
+    let s = format!("{v:.decimals$}");
+    let s = if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    };
+    if s.is_empty() || s == "-0" {
+        "0".to_string()
+    } else {
+        s
+    }
+}
+
 /// A tick value as a reader wants to see it: no trailing zeros, and no exponent for the
 /// magnitudes a chart in a terminal actually shows.
 pub fn tick_text(v: f64) -> String {

@@ -26,8 +26,8 @@ use crate::preview::mermaid::layout::Point;
 
 use super::super::{normalise, Diagram, Glyph, Label, PlacedNode, RenderError, Size, Theme};
 use super::{
-    add_title, bar_node, label_node, legend_nodes, legend_size, rule, text_node, tick_text, ticks,
-    LegendEntry, AXIS_TITLE_GAP, LEGEND_GAP, POINT_RADIUS, TICK_GAP, TICK_LEN,
+    add_title, axis_tick_texts, bar_node, label_node, legend_nodes, legend_size, rule, text_node,
+    ticks, LegendEntry, AXIS_TITLE_GAP, LEGEND_GAP, POINT_RADIUS, TICK_GAP, TICK_LEN,
 };
 
 /// How wide the plotting area is before the categories ask for more.
@@ -111,16 +111,45 @@ impl Frame {
     }
 }
 
-/// Works out where every bar, line, tick and legend row goes.
-pub fn lay_out(chart: &XyChart) -> Result<Diagram, RenderError> {
-    if !crate::preview::mermaid::text_metrics::fonts_available() {
-        return Err(RenderError::NoFonts);
-    }
+/// The value range the plot is actually drawn against.
+///
+/// **The one place the y domain is decided**, so that a test stating "a bar's height is its value
+/// through the axis scale" measures the scale the drawing used rather than a second copy of the
+/// arithmetic. `docs/FEATURE-MERMAID-RENDERER.md` §6-A item 12 is the reason: an instrument that
+/// recomputes what it is measuring drifts away from production without anything going red — here
+/// it would divide by zero on `bar [7, 7, 7]` and report a scale of `inf`.
+///
+/// `None` when the source gives no finite range at all.
+pub fn effective_range(chart: &XyChart) -> Option<(f64, f64)> {
     let (mut min, mut max) = chart.y;
     if !min.is_finite() || !max.is_finite() {
-        return Err(RenderError::ChartHasNoExtent {
-            what: "the value axis has no range",
-        });
+        return None;
+    }
+    // **The axis has to hold the data.** A declared range narrower than the values in the chart —
+    // `y-axis 0 --> 10` with a `25` in the data — leaves the mark for that datum with nowhere to
+    // be: `value_to_y` puts it two and a half plot-heights above the frame, so the picture is a
+    // small empty box near the bottom with a bar towering over it and no scale anywhere near its
+    // top. The reader cannot recover `25` from that, and upstream draws it the same way.
+    //
+    // Growing the range is the only one of the three answers where the reader gets the right
+    // number: clipping the bar at the frame would make `25` read as `10`, and leaving it outside
+    // is what produced the picture in the first place. The declared range still sets the *floor*
+    // — `y-axis 4000 --> 11000` with data inside it is untouched, so a deliberately zoomed axis
+    // stays zoomed.
+    //
+    // Turned the right way round *first*: `y-axis 100 --> 0` is a range from 0 to 100 written
+    // backwards, and folding the data into `(100, 0)` before straightening it would collapse both
+    // ends onto the data instead.
+    if max < min {
+        std::mem::swap(&mut min, &mut max);
+    }
+    for plot in &chart.plots {
+        for (_, v) in &plot.data {
+            if v.is_finite() {
+                min = min.min(*v);
+                max = max.max(*v);
+            }
+        }
     }
     if (max - min).abs() < f64::EPSILON {
         // Every value the same. A zero-height scale divides by zero everywhere; widening it by one
@@ -129,9 +158,36 @@ pub fn lay_out(chart: &XyChart) -> Result<Diagram, RenderError> {
         min -= 0.5;
         max += 0.5;
     }
-    if max < min {
-        std::mem::swap(&mut min, &mut max);
+    Some((min, max))
+}
+
+/// How many of a plot's data points the axis has room to name.
+///
+/// **A datum the axis has no slot for is not drawn.** Upstream's own words, in
+/// `transformDataWithoutCategory`, are "prevent orphaned bars/lines from rendering in unlabeled
+/// chart space" — but it can only apply that guard to a plot it reads *after* the axis, because it
+/// transforms each plot as the statement arrives. A plot written *before* the `x-axis` line keeps
+/// every one of its points, and konoma used to hand all of them to [`Frame::slot_center`], which
+/// places slot `i` of `n` at `(i + 0.5) / n` across the plot: slot 3 of 3 is past the right-hand
+/// edge. The bars for the extra data were drawn **outside the frame**, in the margin, under no
+/// tick and beside the legend.
+///
+/// So the guard is applied here as well, which is the only place konoma can apply it — and the
+/// rule is stated once, for bars and for lines alike, rather than in each.
+pub fn drawn_len(plot: &Plot, slots: usize) -> usize {
+    plot.data.len().min(slots)
+}
+
+/// Works out where every bar, line, tick and legend row goes.
+pub fn lay_out(chart: &XyChart) -> Result<Diagram, RenderError> {
+    if !crate::preview::mermaid::text_metrics::fonts_available() {
+        return Err(RenderError::NoFonts);
     }
+    let Some((min, max)) = effective_range(chart) else {
+        return Err(RenderError::ChartHasNoExtent {
+            what: "the value axis has no range",
+        });
+    };
 
     // The x labels decide how wide the plot has to be: two categories whose names touch is the
     // commonest way one of these charts becomes unreadable.
@@ -142,10 +198,10 @@ pub fn lay_out(chart: &XyChart) -> Result<Diagram, RenderError> {
 
     // The y tick labels decide how far the plot's left edge is from the origin.
     let tick_values = ticks(min, max, Y_TICKS);
-    let tick_labels: Vec<Label> = tick_values
-        .iter()
-        .map(|v| Label::measure(&tick_text(*v)))
-        .collect();
+    // Spelled as a run, not one at a time: the decimals a tick needs are however many separate it
+    // from its neighbour, which is a fact about the axis (`axis_tick_texts`).
+    let tick_texts = axis_tick_texts(&tick_values);
+    let tick_labels: Vec<Label> = tick_texts.iter().map(|t| Label::measure(t)).collect();
     let widest_tick = tick_labels.iter().map(|l| l.width).fold(0.0_f64, f64::max);
 
     let y_title = Label::measure(&chart.y_title);
@@ -185,7 +241,11 @@ pub fn lay_out(chart: &XyChart) -> Result<Diagram, RenderError> {
         series: None,
         mark: None,
     });
-    for (v, label) in tick_values.iter().zip(tick_labels.iter()) {
+    for ((v, text), label) in tick_values
+        .iter()
+        .zip(tick_texts.iter())
+        .zip(tick_labels.iter())
+    {
         let y = frame.value_to_y(*v);
         edges.push(rule(
             Point::new(frame.left, y),
@@ -200,7 +260,7 @@ pub fn lay_out(chart: &XyChart) -> Result<Diagram, RenderError> {
             None,
         ));
         if let Some(n) = label_node(
-            format!("ytick#{}", tick_text(*v)),
+            format!("ytick#{text}"),
             label.clone(),
             Point::new(frame.left - TICK_LEN - TICK_GAP - label.width / 2.0, y),
             None,
@@ -335,7 +395,7 @@ fn draw_bars(
     let each =
         ((usable - BAR_GAP * (total.saturating_sub(1)) as f64) / total.max(1) as f64).max(1.0);
     let base = frame.baseline_y();
-    for (i, (_, v)) in plot.data.iter().enumerate() {
+    for (i, (_, v)) in plot.data.iter().enumerate().take(drawn_len(plot, slots)) {
         let cx = frame.slot_center(i, slots) - usable / 2.0
             + which as f64 * (each + BAR_GAP)
             + each / 2.0;
@@ -365,6 +425,7 @@ fn draw_line(
         .data
         .iter()
         .enumerate()
+        .take(drawn_len(plot, slots))
         .map(|(i, (_, v))| Point::new(frame.slot_center(i, slots), frame.value_to_y(*v)))
         .collect();
     if points.len() >= 2 {

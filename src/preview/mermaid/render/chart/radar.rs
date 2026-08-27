@@ -6,6 +6,11 @@
 //! transcribed. Everything on the chart that stands for a value goes through it, so "a vertex is
 //! as far out as its value is up the scale" is a property of one function.
 //!
+//! # A curve is drawn only if it has an entry for every axis
+//!
+//! [`is_drawable`], which is upstream's rule and konoma's for the same reason: a partial polygon
+//! is not a partial reading, it is a whole shape of the wrong shape.
+//!
 //! # konoma draws the curves as outlines, not as translucent fills
 //!
 //! mermaid fills each curve at 20% opacity. Two filled curves on a terminal's own ground stack
@@ -44,6 +49,22 @@ pub fn radius_of(v: f64, min: f64, max: f64) -> f64 {
         return 0.0;
     }
     RADIUS * (v.clamp(min, max) - min) / (max - min)
+}
+
+/// Whether a curve can be drawn at all: it needs **an entry for every axis**.
+///
+/// Upstream's rule, transcribed — `radarRenderer.ts` opens its loop with
+/// `if (curve.entries.length !== numAxes) { // Skip curves that do not have an entry for each
+/// axis. return; }` — and it is a rule konoma wants for its own reason. A curve with three
+/// entries on a five-axis chart is not a curve with two gaps in it: drawn on the first three
+/// spokes it is a closed triangle, a perfectly ordinary-looking shape that says the series is
+/// absent from two dimensions it was never measured on. Truncating a *longer* curve is the same
+/// lie from the other end.
+///
+/// konoma used to draw both, taking `min(entries, axes)` vertices and skipping only when fewer
+/// than three were left.
+fn is_drawable(curve: &crate::preview::mermaid::chart::radar::Curve, axes: usize) -> bool {
+    curve.entries.len() == axes
 }
 
 /// The direction of spoke `k` of `n`, in radians, starting at twelve o'clock.
@@ -116,11 +137,10 @@ pub fn lay_out(radar: &Radar) -> Result<Diagram, RenderError> {
 
     // --- the curves ----------------------------------------------------------------------------
     for (i, curve) in radar.curves.iter().enumerate() {
-        let take = curve.entries.len().min(n);
-        if take < 3 {
+        if !is_drawable(curve, n) {
             continue;
         }
-        let mut points: Vec<Point> = (0..take)
+        let mut points: Vec<Point> = (0..n)
             .map(|k| {
                 let a = angle_of(k, n);
                 let r = radius_of(curve.entries[k], min, max);
@@ -140,12 +160,25 @@ pub fn lay_out(radar: &Radar) -> Result<Diagram, RenderError> {
         edges.push(e);
     }
 
+    if !edges.iter().any(|e| e.series.is_some()) {
+        // Every curve was skipped. What is left is a graticule with axis names round it and no
+        // data at all — the transparent-rectangle failure §6 records, dressed up as a chart. Stage
+        // 1's rule is to refuse rather than to draw it.
+        return Err(RenderError::ChartHasNoExtent {
+            what: "no curve has an entry for every axis, so there is nothing to plot",
+        });
+    }
+
     // --- the legend ------------------------------------------------------------------------
     if radar.options.show_legend {
         let entries: Vec<LegendEntry> = radar
             .curves
             .iter()
             .enumerate()
+            // **Every curve, drawable or not.** A row naming a curve that was skipped is not a
+            // row pointing at nothing: it is the only place the reader is told the series is in
+            // the source and could not be plotted. Upstream builds its legend from `curves` the
+            // same way, outside the loop that skips.
             .map(|(i, c)| LegendEntry {
                 label: Label::measure(&c.label),
                 series: i,

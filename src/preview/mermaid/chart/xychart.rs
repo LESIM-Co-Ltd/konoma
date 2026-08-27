@@ -11,9 +11,9 @@
 //!   NUMBER` — there is no textual form, unlike `quadrantChart`, whose arrow separates two labels.
 //! * **The x-axis and the plot data are resolved against each other in source order.** A `bar`
 //!   read before the `x-axis` line sets the x range from its own length (`hasSetXAxis` is still
-//!   false); one read after a band axis is **truncated to the number of categories**. Two sources
-//!   with the same lines in a different order are two different charts, and
-//!   [`super::tests`] pins that.
+//!   false) **and thereby fixes it**, because `setXAxisRangeData` sets the flag; one read after a
+//!   band axis is **truncated to the number of categories**. Two sources with the same lines in a
+//!   different order are two different charts, and [`super::tests`] pins that.
 //! * **A chart with no `bar` and no `line` is an error**, not an empty frame:
 //!   `getDrawableElem` throws "No Plot to render". That matches stage 1's rule for `graph TD`.
 //!
@@ -336,8 +336,17 @@ impl Builder {
                 min: prev_min.min(1.0),
                 max: prev_max.max(len),
             };
-            // Note: upstream does *not* set `hasSetXAxis` here, so a later plot with more points
-            // widens the range again.
+            // **The inferred range is then fixed**, exactly as upstream's `setXAxisRangeData`
+            // fixes it: that function's last line is `hasSetXAxis = true`, and
+            // `transformDataWithoutCategory` reaches the inference through it. So the *first*
+            // plot decides the x range and a later, longer plot is spread across the same span
+            // rather than widening it. Read at `mermaid@11.17.2`, `xychartDb.ts:91-93` and
+            // `:130-133`.
+            //
+            // konoma had this the other way round, on a comment claiming upstream did not set the
+            // flag. It does. Leaving the range open let two plots of different lengths resolve
+            // their keys against two different spans, so the same chart had two x axes.
+            self.x_set = true;
         }
         if let XAxis::Band(categories) = &self.chart.x {
             // "prevent orphaned bars from rendering in unlabeled chart space" — upstream's words.

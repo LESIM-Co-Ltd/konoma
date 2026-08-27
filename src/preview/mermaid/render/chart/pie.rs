@@ -138,7 +138,15 @@ pub fn lay_out(pie: &Pie) -> Result<Diagram, RenderError> {
 /// across it with room at each end; its height has to fit in the radial direction too, which for
 /// a very thin slice is what rules it out.
 fn fits_inside_wedge(label: &Label, at: f64, sweep_deg: f64) -> bool {
-    let half = (sweep_deg / 2.0).to_radians();
+    // **Half the sweep, but never more than a right angle.** `2 * at * sin(sweep/2)` is the chord
+    // across the wedge only while the wedge is at most a half turn; past that the sine comes back
+    // down and reaches zero again at a full turn, so a slice that fills the whole circle measured
+    // as having no room in it at all. A one-slice pie therefore drew no `100%`, and
+    // `"Bulk": 9990` beside `"Trace": 8` and `"Residue": 2` drew no share on the bulk either — the
+    // two cases where the number is least in doubt were the two konoma left off. Beyond a half
+    // turn the wedge contains the whole disc of radius `at` about its bisector, so the width
+    // available is `2 * at`, which is what clamping the half-angle to 90° gives.
+    let half = (sweep_deg / 2.0).min(90.0).to_radians();
     let chord = 2.0 * at * half.sin();
     label.width + POINT_RADIUS * 2.0 <= chord && label.height <= RADIUS - at + RADIUS * 0.3
 }

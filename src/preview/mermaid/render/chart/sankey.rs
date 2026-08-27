@@ -131,12 +131,49 @@ pub fn lay_out(sankey: &Sankey) -> Result<Diagram, RenderError> {
     }
     let scale = Scale(k);
 
+    // --- how wide the diagram has to be ----------------------------------------------------------
+    //
+    // A name is drawn beside its bar, in the gap between that column and the next, so **the names
+    // decide the width** — the same rule `xychart` follows for its categories, and for the same
+    // reason: a name that reaches past the middle of the gap is nearer to the *next* column's bar
+    // than to its own, and a reader has no way to tell which bar it belongs to. The label's centre
+    // sits `LABEL_GAP + w/2` from its own bar's centre and `gap + NODE_WIDTH/2 - LABEL_GAP - w/2`
+    // from the next one's, so the gap has to be more than `w + 2 * LABEL_GAP`; the extra pixel
+    // keeps a name that fits exactly from landing on the tie.
+    //
+    // **The gap before the last column holds two sets of names**, because every column but the
+    // last writes its names to the right and the last writes its own to the left — so that one
+    // gap has to fit the widest of both. Without it, `B` and the long name to its left ran
+    // together into one string with no space between them.
+    let widest_in = |want: usize| -> f64 {
+        sankey
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| column[*i] == want)
+            .map(|(_, n)| Label::measure(n).width)
+            .fold(0.0_f64, f64::max)
+    };
+    let mut needed_gap = 0.0_f64;
+    for c in 0..last {
+        let mut want = widest_in(c) + LABEL_GAP * 2.0 + 1.0;
+        if c + 1 == last {
+            want += widest_in(last) + LABEL_GAP;
+        }
+        needed_gap = needed_gap.max(want);
+    }
+    let width = if last == 0 {
+        WIDTH
+    } else {
+        WIDTH.max(NODE_WIDTH + last as f64 * (NODE_WIDTH + needed_gap))
+    };
+
     // --- the node bars -------------------------------------------------------------------------
     let column_x = |c: usize| -> f64 {
         if last == 0 {
             0.0
         } else {
-            c as f64 * (WIDTH - NODE_WIDTH) / last as f64
+            c as f64 * (width - NODE_WIDTH) / last as f64
         }
     };
     let mut top = vec![0.0_f64; n];

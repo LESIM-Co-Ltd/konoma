@@ -105,7 +105,12 @@ pub fn lay_out(tm: &Treemap) -> Result<Diagram, RenderError> {
 /// Lays `items` out inside `rect`, recursing into every section.
 ///
 /// `series` is the top-level ancestor's colour, threaded down so a whole section is one colour;
-/// `counter` numbers the tiles so their ids are unique whatever the shape of the tree.
+/// `counter` is **the index of the next node in the source's own depth-first order**, not a count
+/// of the tiles drawn. The two differ whenever a tile is skipped for having no area, and it is the
+/// first of them that a test can use to ask "where did *this* node go" — with a running count of
+/// what was drawn, a single zero-valued leaf shifts every later id by one and every check after it
+/// is comparing a node with its neighbour's tile. Nothing is skipped in a treemap whose values are
+/// all positive, so this changes no id in any chart that had one.
 fn place(
     items: &[Node],
     rect: Rect,
@@ -116,14 +121,23 @@ fn place(
     let values: Vec<f64> = items.iter().map(Node::total).collect();
     let rects = squarify(&values, rect);
     for (i, (item, r)) in items.iter().zip(rects.iter()).enumerate() {
-        // A tile with no area cannot be drawn; a zero-value datum is not a thin sliver, it is a
-        // stroke that reads as a boundary between the two tiles either side of it.
-        if r.w <= 0.5 || r.h <= 0.5 {
+        let id = *counter;
+        *counter += 1;
+        // A tile with **no** area cannot be drawn; a zero-value datum is not a thin sliver, it is
+        // a stroke that reads as a boundary between the two tiles either side of it. Its children
+        // have nowhere to go either, so the whole subtree is stepped over — by *number*, so the
+        // nodes after it keep the ids their position in the source gives them.
+        //
+        // The test is `<= 0.0` and not `<= 0.5`: a *positive* value always gets its rectangle,
+        // however thin. With the half-pixel floor, `"Bulk": 9990` beside `"Trace": 8` made the
+        // trace vanish altogether — an eight-thousandth of the map is a hairline, but a hairline
+        // is what the reader is owed, and a datum that is simply absent cannot be told from one
+        // that was never written.
+        if r.w <= 0.0 || r.h <= 0.0 {
+            *counter += item.children.iter().map(subtree_len).sum::<usize>();
             continue;
         }
         let colour = series.unwrap_or(i);
-        let id = *counter;
-        *counter += 1;
         let mut tile = bar_node(
             format!("tile#{id}"),
             r.center(),
@@ -147,8 +161,16 @@ fn place(
         };
         if inner.w > 1.0 && inner.h > 1.0 {
             place(&item.children, inner, Some(colour), out, counter);
+        } else {
+            *counter += item.children.iter().map(subtree_len).sum::<usize>();
         }
     }
+}
+
+/// How many nodes a subtree holds, itself included — the width of the span of depth-first indices
+/// it owns.
+pub fn subtree_len(node: &Node) -> usize {
+    1 + node.children.iter().map(subtree_len).sum::<usize>()
 }
 
 /// The name (and value) drawn inside a tile, or `None` when they would not fit.
