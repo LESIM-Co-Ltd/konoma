@@ -155,20 +155,26 @@ pub fn lay_out(journey: &Journey) -> Result<Diagram, RenderError> {
     let people_h = people.iter().map(|l| l.height).fold(0.0_f64, f64::max);
     let bottom = people_top + people_h;
     let mut run: Option<(String, f64, f64)> = None;
+    // The band's **ordinal**, counted over every run including the blank-titled ones dropped
+    // below, is what makes its id unique: a section name written twice with another between the
+    // two is two bands, and two frames carrying one id make `Diagram::cluster` answer with the
+    // first of them whichever was asked for.
+    let mut ordinal = 0usize;
     for (i, left, right) in &boxes {
         let name = journey.tasks[*i].section.clone();
         match &mut run {
             Some((open, _, end)) if *open == name => *end = *right,
             _ => {
                 if let Some((open, start, end)) = run.take() {
-                    sections.push(section_frame(&open, start, end, face_top, bottom));
+                    sections.push(section_frame(ordinal, &open, start, end, face_top, bottom));
+                    ordinal += 1;
                 }
                 run = Some((name, *left, *right));
             }
         }
     }
     if let Some((open, start, end)) = run.take() {
-        sections.push(section_frame(&open, start, end, face_top, bottom));
+        sections.push(section_frame(ordinal, &open, start, end, face_top, bottom));
     }
     sections.retain(|s| !s.title.is_blank());
 
@@ -184,9 +190,16 @@ pub fn lay_out(journey: &Journey) -> Result<Diagram, RenderError> {
 }
 
 /// A section's frame, grown to hold its title above the tasks in it.
-fn section_frame(title: &str, left: f64, right: f64, top: f64, bottom: f64) -> PlacedCluster {
+fn section_frame(
+    ordinal: usize,
+    title: &str,
+    left: f64,
+    right: f64,
+    top: f64,
+    bottom: f64,
+) -> PlacedCluster {
     band::frame(
-        format!("section#{title}"),
+        format!("section#{ordinal}#{title}"),
         title,
         left - SECTION_PAD,
         top - SECTION_PAD,

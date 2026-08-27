@@ -1758,7 +1758,10 @@ fn a_kanban_boards_cards_are_in_their_own_columns_in_source_order() {
                 .iter()
                 .map(|c| {
                     // A card says its own words, and then whatever the source pinned to it.
-                    let mut rows = vec![as_drawn(&c.label)];
+                    // A panel row is **one drawn line**, so a card written with a two-line
+                    // label is two rows — the same rule `panel::class_panel` follows, stated
+                    // here so the model side and the drawing are counting the same things.
+                    let mut rows: Vec<String> = Label::measure(&c.label).lines.clone();
                     for (key, value) in [
                         ("assigned", &c.assigned),
                         ("ticket", &c.ticket),
@@ -1768,6 +1771,10 @@ fn a_kanban_boards_cards_are_in_their_own_columns_in_source_order() {
                             rows.push(as_drawn(&format!("{key}: {v}")));
                         }
                     }
+                    // A card written `[]` has no words, and a row with no words draws nothing —
+                    // `panel_rows` reads what was drawn, so the model side has to drop the blank
+                    // row too or the two would disagree about a card that is simply empty.
+                    rows.retain(|r| !r.trim().is_empty());
                     rows
                 })
                 .collect();
@@ -2518,6 +2525,12 @@ fn a_zenuml_diagrams_participants_messages_and_notes_carry_their_own_translated_
         let d = super::zenuml::lay_out(src).expect("lays out");
         check_sequence_text_placement(name, &model, &d);
 
+        // **Lines, not bytes.** One ZenUML statement can put two arrows' words on one line and
+        // put them in the other order while it is at it: `total = Order.total()` is the call
+        // `total()` *and* the reply labelled `total`, and the reply's word is written to the
+        // left of the call's. So what holds for every diagram this language can express is that
+        // the arrows read down the source — never that they read along it.
+        let lines: Vec<&str> = src.lines().collect();
         let mut cursor = 0usize;
         let mut read = 0usize;
         for e in &d.edges {
@@ -2531,13 +2544,19 @@ fn a_zenuml_diagrams_participants_messages_and_notes_carry_their_own_translated_
             if text.trim().is_empty() || !src.contains(text.as_str()) {
                 continue;
             }
-            let at = src[cursor..].find(text.as_str()).unwrap_or_else(|| {
-                panic!(
-                    "{name}: the arrow reading {text:?} is drawn after one whose words the source \
-                     writes later — the messages have changed places"
-                )
-            });
-            cursor += at + text.len();
+            let at = lines
+                .iter()
+                .enumerate()
+                .skip(cursor)
+                .find(|(_, line)| line.contains(text.as_str()))
+                .map(|(i, _)| i)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{name}: the arrow reading {text:?} is drawn after one whose words the \
+                         source writes on a later line — the messages have changed places"
+                    )
+                });
+            cursor = at;
             read += 1;
         }
         assert!(

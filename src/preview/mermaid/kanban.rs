@@ -336,6 +336,21 @@ mod tests {
         ));
     }
 
+    /// A card written `[]` has no words, so `nodeWithoutId` gives it no name either — and
+    /// `kanbanDb` falls back to `kbn` plus a counter. **Two of them have to get two ids**: the
+    /// counter is the whole of what tells them apart, and a mutation that dropped it survived a
+    /// whole campaign because no case had a second nameless card.
+    #[test]
+    fn two_nameless_cards_are_given_two_different_ids() {
+        let b = ok("kanban\n  Todo\n    []\n    []\n");
+        assert_eq!(b.columns[0].cards.len(), 2);
+        assert_ne!(
+            b.columns[0].cards[0].id, b.columns[0].cards[1].id,
+            "two cards with no name of their own were given one id between them"
+        );
+        assert!(b.columns[0].cards[0].id.starts_with("kbn"));
+    }
+
     #[test]
     fn a_column_with_no_cards_is_still_a_column() {
         let b = ok("kanban\n  Todo\n  Doing\n    a\n");

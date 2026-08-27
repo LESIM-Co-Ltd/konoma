@@ -204,3 +204,19 @@ fn the_extent_spans_every_task() {
     assert_eq!(day(lo), (2024, 1, 1));
     assert_eq!(day(hi), (2024, 6, 3));
 }
+
+/// **A milestone is a moment, whatever duration the source gave it.**
+///
+/// `ganttDb.compileTasks` sets `endTime = startTime` for a milestone unconditionally, and the
+/// documentation's examples always write `0d` — which makes that rule and *no rule at all* the
+/// same answer. A mutation that deleted it therefore survived a whole campaign: every milestone
+/// the corpus could reach it with was zero-length already.
+#[test]
+fn a_milestone_ends_when_it_starts_even_when_a_duration_was_written() {
+    let g = ok("gantt\n  dateFormat YYYY-MM-DD\n  m :milestone, m1, 2024-01-01, 5d\n");
+    assert_eq!(g.tasks[0].start, g.tasks[0].end, "a milestone took time");
+    assert_eq!(day(g.tasks[0].end), (2024, 1, 1));
+    // …and the chart's own extent does not stretch to cover a duration it never had.
+    let (_, hi) = g.extent().expect("tasks");
+    assert_eq!(day(hi), (2024, 1, 1));
+}

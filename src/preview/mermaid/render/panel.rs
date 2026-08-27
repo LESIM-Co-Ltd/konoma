@@ -153,10 +153,17 @@ pub fn class_panel(compartments: &[Compartment]) -> Panel {
             rules.push(y);
         }
         y += CLASS_PAD_Y;
-        for line in &compartment.lines {
+        // **A panel row is one drawn line.** `svg::emit_line_of_text` writes a cell as a single
+        // `<text>` — a panel is a table, and a table's cell is a row of it — so a `Label` that
+        // carries two lines has to become two rows here. Left whole it was drawn as its lines
+        // joined with a space, which is wider than the `label.width` the box was sized to and
+        // wider than the `cell_bounds` the panel invariant checks: the words ran out of the card
+        // and every assertion passed. Found by a kanban card written with a two-line markdown
+        // string, which is documented syntax.
+        for line in compartment.lines.iter().flat_map(rows_of) {
             rows.push(PanelRow {
                 cells: vec![PanelCell {
-                    label: line.clone(),
+                    label: line,
                     x: if compartment.centered {
                         width / 2.0
                     } else {
@@ -177,6 +184,18 @@ pub fn class_panel(compartments: &[Compartment]) -> Panel {
         columns: Vec::new(),
         size: Size::new(width, y),
     }
+}
+
+/// One [`Label`] per line the label will actually draw.
+///
+/// A single-line label — which is every label a class, an entity or a requirement has ever had —
+/// comes back unchanged, so this is a no-op wherever it was already true and a fix wherever it
+/// was not.
+fn rows_of(label: &Label) -> Vec<Label> {
+    if label.lines.len() <= 1 {
+        return vec![label.clone()];
+    }
+    label.lines.iter().map(|l| Label::measure(l)).collect()
 }
 
 /// One attribute of an entity, already measured.

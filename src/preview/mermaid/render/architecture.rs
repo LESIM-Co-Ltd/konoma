@@ -20,7 +20,7 @@
 //!
 //! Which means the cluster invariants apply, exactly as they do for a C4 boundary.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::preview::mermaid::architecture::{Architecture, Side};
 use crate::preview::mermaid::flowchart::{Shape, Stroke};
@@ -38,6 +38,13 @@ pub const CELL_W: f64 = 132.0;
 
 /// The same, down.
 pub const CELL_H: f64 = 84.0;
+
+/// The narrowest gap left between two boxes in neighbouring cells.
+///
+/// [`CELL_W`] and [`CELL_H`] are the *minimum* pitch, not the answer: a service whose name is
+/// wider than the pitch would otherwise be drawn over the box beside it, which is what happened
+/// the first time a long label reached the corpus.
+pub const CELL_GAP: f64 = 20.0;
 
 /// Blank space between a group frame and what is inside it.
 pub const GROUP_PAD: f64 = 12.0;
@@ -64,40 +71,33 @@ pub fn lay_out(arch: &Architecture) -> Result<Diagram, RenderError> {
     }
 
     let cells = place_on_grid(arch);
+    // **Every box is measured before any of them is placed.** The grid used to step by a fixed
+    // `CELL_W`, which says a box is never wider than 132px — and a service whose name is longer
+    // than that was drawn straight over its neighbour, with the line between them ending inside
+    // the other box. The pitch is now whatever the two boxes on either side of a gap need, with
+    // `CELL_W` / `CELL_H` as the floor, so the grid still reads as a grid when the labels are
+    // short and stops colliding when they are not.
+    let boxes: Vec<(Glyph, Label, Size)> = arch.services.iter().map(measure).collect();
+    let sizes: Vec<Size> = boxes.iter().map(|(_, _, size)| *size).collect();
+    let xs = axis(&cells, &sizes, true);
+    let ys = axis(&cells, &sizes, false);
+
     let mut nodes: Vec<PlacedNode> = Vec::new();
     for (i, s) in arch.services.iter().enumerate() {
         let (col, row) = cells[i];
-        let center = Point::new(col as f64 * CELL_W, row as f64 * CELL_H);
-        if s.junction {
-            nodes.push(PlacedNode {
-                id: s.id.clone(),
-                shape: Glyph::ChartPoint,
-                center,
-                size: Size::new(JUNCTION, JUNCTION),
-                label: Label::measure(""),
-                panel: None,
-                series: None,
-                mark: None,
-            });
-            continue;
-        }
-        let text = if s.title.trim().is_empty() {
-            s.id.clone()
-        } else {
-            s.title.clone()
-        };
-        let label = Label::measure(&text);
-        let glyph = Glyph::Flow(Shape::RoundedRect);
+        let center = Point::new(xs[&col], ys[&row]);
+        let (glyph, label, size) = boxes[i].clone();
         nodes.push(PlacedNode {
             id: s.id.clone(),
             shape: glyph,
             center,
-            size: shapes::size(glyph, Size::new(label.width, label.height)),
+            size,
             label,
             panel: None,
             series: None,
             mark: None,
         });
+        let _ = s;
     }
 
     // --- the edges ------------------------------------------------------------------------------
@@ -250,6 +250,58 @@ fn port(node: &PlacedNode, side: Side) -> Point {
         Side::Top => Point::new(node.center.x, t),
         Side::Bottom => Point::new(node.center.x, b),
     }
+}
+
+/// What one service is drawn as, and how big.
+///
+/// Separated from the placing because the placing needs the sizes: a cell is as big as what is
+/// in it, and nothing knows that until every label has been measured.
+fn measure(s: &crate::preview::mermaid::architecture::Service) -> (Glyph, Label, Size) {
+    if s.junction {
+        return (
+            Glyph::ChartPoint,
+            Label::measure(""),
+            Size::new(JUNCTION, JUNCTION),
+        );
+    }
+    let text = if s.title.trim().is_empty() {
+        s.id.clone()
+    } else {
+        s.title.clone()
+    };
+    let label = Label::measure(&text);
+    let glyph = Glyph::Flow(Shape::RoundedRect);
+    let size = shapes::size(glyph, Size::new(label.width, label.height));
+    (glyph, label, size)
+}
+
+/// Where each occupied column (`across`) or row has its centre line.
+///
+/// Two neighbouring lines are whichever is further apart: the fixed pitch, or half of each
+/// side's widest box plus [`CELL_GAP`]. A cell nobody occupies still costs the fixed pitch,
+/// because a gap in the grid is a gap the walk deliberately stepped over.
+fn axis(cells: &[(i32, i32)], sizes: &[Size], across: bool) -> HashMap<i32, f64> {
+    let pitch = if across { CELL_W } else { CELL_H };
+    let extent = |s: &Size| if across { s.w } else { s.h };
+    let key = |c: &(i32, i32)| if across { c.0 } else { c.1 };
+
+    let mut widest: BTreeMap<i32, f64> = BTreeMap::new();
+    for (i, c) in cells.iter().enumerate() {
+        let at = widest.entry(key(c)).or_insert(0.0);
+        *at = at.max(extent(&sizes[i]));
+    }
+    let mut out: HashMap<i32, f64> = HashMap::new();
+    let mut coordinate = 0.0_f64;
+    let mut previous: Option<(i32, f64)> = None;
+    for (&k, &size) in &widest {
+        if let Some((last_k, last_size)) = previous {
+            let steps = (k - last_k) as f64;
+            coordinate += (pitch * steps).max((last_size + size) / 2.0 + CELL_GAP);
+        }
+        out.insert(k, coordinate);
+        previous = Some((k, size));
+    }
+    out
 }
 
 /// The grid cell of every service, from the ports its edges name.

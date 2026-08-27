@@ -75,6 +75,71 @@ pub const CASES: &[(&str, &str)] = &[
         "mindmap-cjk",
         "mindmap\n  root((全画面プレビュー))\n    ツリー\n      種別を解決\n    窓読み",
     ),
+    (
+        // `SPACELIST` is counted in **characters** and `getParent` takes the last node with a strictly
+        // smaller count, so indentation does not have to be consistent. This is the documentation's own
+        // uneven example: C at 6 hangs off A at 4, not off B at 8.
+        "mindmap-uneven-indent",
+        "mindmap\nRoot\n    A\n        B\n      C\n        D\n",
+    ),
+    (
+        "mindmap-deep",
+        "mindmap\n  root((core))\n   l1\n    l2\n     l3\n      l4\n       l5\n        l6\n",
+    ),
+    (
+        "mindmap-wide",
+        "mindmap\n  root((hub))\n    one\n    two\n    three\n    four\n    five\n    six\n    seven\n    eight\n",
+    ),
+    (
+        // `::icon(...)` and `:::class` are statements of their own that decorate the node before them —
+        // read so the line does not become a phantom node, drawn as neither.
+        "mindmap-decorations",
+        "mindmap\n  Root\n    Reading\n    ::icon(fa fa-book)\n    Writing\n    :::urgent large\n    Plain\n",
+    ),
+    (
+        // Inside `NODE` a `["]` opens `NSTR`, which runs to the next quotation mark — brackets and all.
+        // Without that state a bracket in the words closes the node early.
+        "mindmap-quoted-brackets",
+        "mindmap\n  Root\n    a[\"a (b) and [c]\"]\n    b(\"one ) two\")\n",
+    ),
+    (
+        // `["][`]` … `[`]["]` spans lines, because `NSTR2` has no rule for a newline.
+        "mindmap-markdown-string",
+        "mindmap\n  id1[\"`**Root** with\na second line`\"]\n    id2[\"`a *child*\nover two lines`\"]\n",
+    ),
+    (
+        // `nodeWithoutId` — the description becomes the id too.
+        "mindmap-no-id",
+        "mindmap\n  (a rounded label)\n    [a square label]\n    ((a circle))\n",
+    ),
+    (
+        "mindmap-one-node",
+        "mindmap\n  Only\n",
+    ),
+    (
+        "mindmap-comments",
+        "mindmap\n%% a comment is a blank line here\n  Root\n\n    A\n  %% and so is an indented one\n    B\n",
+    ),
+    (
+        // Three siblings with the same words are three nodes with the **same id** upstream too, because
+        // `nodeWithId` uses what was written. A drawing that collapsed them would lose two branches.
+        "mindmap-duplicate-labels",
+        "mindmap\n  Root\n    Same\n    Same\n    Same\n",
+    ),
+    (
+        "mindmap-long-label",
+        "mindmap\n  root((centre))\n    A label long enough that a terminal cannot show it on one line without wrapping it somewhere sensible\n    short\n",
+    ),
+    (
+        // The first node's own count is the baseline and is subtracted from every later one, so a whole
+        // diagram indented by eight is the same diagram.
+        "mindmap-indented-whole",
+        "mindmap\n        Root\n            A\n                B\n            C\n",
+    ),
+    (
+        "mindmap-cjk-shapes",
+        "mindmap\n  ルート((全体))\n    四角[設定を読む]\n    丸(描画する)\n    雲)ここは雲(\n    六角{{判定}}\n",
+    ),
     // --- kanban ------------------------------------------------------------------------------
     (
         "kanban",
@@ -87,6 +152,82 @@ pub const CASES: &[(&str, &str)] = &[
         "kanban\n  Backlog\n    id1[Ticket]@{ assigned: 'knsv', ticket: MC-2038, priority: 'Very \
          High' }\n    id2[Another]@{ priority: 'Low' }\n  Done\n",
     ),
+    (
+        // A column with no cards is still a column: `getSection` makes one for every node at the first
+        // node's level, whatever follows it.
+        "kanban-empty-column",
+        "kanban\n  Todo\n    a[First]\n  Blocked\n  Done\n    b[Second]\n",
+    ),
+    (
+        "kanban-shapes",
+        "kanban\n  Todo\n    a(rounded)\n    b((circle))\n    c{{hexagon}}\n    d[square]\n    plain\n",
+    ),
+    (
+        "kanban-decorations",
+        "kanban\n  Todo\n    a[Card]\n    ::icon(fa fa-bug)\n    b[Another]\n    :::urgent\n",
+    ),
+    (
+        "kanban-cjk",
+        "kanban\n  やること\n    [設計を書く]\n    id2[レンダラを実装する]@{ assigned: '担当', priority: 'Very High' }\n  完了\n    [調査]\n",
+    ),
+    (
+        "kanban-many-columns",
+        "kanban\n  Backlog\n    a1[One]\n  Todo\n    a2[Two]\n  Doing\n    a3[Three]\n  Review\n    a4[Four]\n  Done\n    a5[Five]\n",
+    ),
+    (
+        "kanban-tall-column",
+        "kanban\n  Todo\n    c1[One]\n    c2[Two]\n    c3[Three]\n    c4[Four]\n    c5[Five]\n    c6[Six]\n  Done\n    d1[Shipped]\n",
+    ),
+    (
+        "kanban-long-card",
+        "kanban\n  Todo\n    a[A card whose text is far longer than any column header and has to be wrapped to be read]\n  Done\n    b[ok]\n",
+    ),
+    (
+        // Two columns written with the same words. Upstream makes two of them, so konoma does too, and
+        // the frames have to stay apart — a lookup that collapsed them would hide a card in the wrong one.
+        "kanban-duplicate-columns",
+        "kanban\n  Todo\n    a[One]\n  Doing\n    b[Two]\n  Todo\n    c[Three]\n",
+    ),
+    (
+        "kanban-markdown-card",
+        "kanban\n  Todo\n    a[\"`**bold** card\nsecond line`\"]\n  Done\n    b[plain]\n",
+    ),
+    (
+        "kanban-comments",
+        "kanban\n%% the board\n  Todo\n\n    a[One]\n  %% between columns\n  Done\n    b[Two]\n",
+    ),
+    (
+        "kanban-meta-all",
+        "kanban\n  Backlog\n    a[Card]@{ assigned: 'knsv', ticket: MC-1, priority: 'Very Low', icon: 'bug' }\n    b[Other]@{ priority: 'High' }\n    c[Third]@{ priority: 'Low' }\n",
+    ),
+    (
+        // Everything below the section level is a card in the last column, however deep — `getSection`
+        // compares against `nodes[0].level` and not against the level of the node before it.
+        "kanban-deeper-card",
+        "kanban\n  Todo\n    a[One]\n        b[Deeper still]\n  Done\n    c[Two]\n",
+    ),
+    (
+        "kanban-one-card",
+        "kanban\n  Todo\n    a[Only]\n",
+    ),
+    (
+        "kanban-label-override",
+        "kanban\n  Todo\n    a[written in the brackets]@{ label: 'written in the metadata' }\n  Done\n    b[plain]\n",
+    ),
+    (
+        // Cards written with nothing in their brackets. `nodeWithoutId` names a card by its own
+        // words, so a card with no words has no name — and `kanbanDb` falls back to `kbn` plus a
+        // counter. Nothing in the corpus reached that branch, so a mutation that made every
+        // generated id the same string survived: there was never a second card that needed one.
+        "kanban-empty-cards",
+        "kanban\n  Todo\n    []\n    []\n  Done\n    a[Real]\n",
+    ),
+    (
+        // The same words on two cards in two columns. `nodeWithId` names a card by what was
+        // written, so these two are asking to be told apart by something other than their text.
+        "kanban-repeated-card-words",
+        "kanban\n  Todo\n    [Review]\n  Doing\n    [Review]\n  Done\n    [Ship]\n",
+    ),
     // --- journey -----------------------------------------------------------------------------
     (
         "journey",
@@ -97,6 +238,67 @@ pub const CASES: &[(&str, &str)] = &[
     (
         "journey-no-section",
         "journey\n  Wake: 4\n  Sleep: 2: Me, You",
+    ),
+    (
+        // The mouth **is** the number, so every one of the five has to be drawn somewhere in the corpus.
+        "journey-all-scores",
+        "journey\n  title Every face\n  section Scores\n    One: 1: Me\n    Two: 2: Me\n    Three: 3: Me\n    Four: 4: Me\n    Five: 5: Me\n",
+    ),
+    (
+        "journey-cjk",
+        "journey\n  title 一日の流れ\n  section 出社\n    お茶をいれる: 5: 私\n    階段をのぼる: 3: 私, 猫\n  section 帰宅\n    座る: 4: 私\n",
+    ),
+    (
+        "journey-many-people",
+        "journey\n  title Handover\n  section Release\n    Cut the tag: 3: Alice, Bob, Carol, Dave, Erin\n    Announce: 5: Alice\n",
+    ),
+    (
+        // `Number('n/a')` is `NaN` upstream. A face drawn anyway would be a claim the source never made,
+        // so the task keeps its box and gets none.
+        "journey-unreadable-score",
+        "journey\n  title Missing scores\n  Ready: n/a: Me\n  Set: 4: Me\n  Go: : Me\n",
+    ),
+    (
+        // The grammar takes any number. A face has five mouths, so what happens at 0 and at 9 is a
+        // question the corpus has to ask rather than assume.
+        "journey-out-of-range-score",
+        "journey\n  title Out of range\n  Low: 0: Me\n  High: 9: Me\n  Fine: 3: Me\n",
+    ),
+    (
+        "journey-many-sections",
+        "journey\n  title A long day\n  section Morning\n    Wake: 3: Me\n  section Noon\n    Eat: 5: Me\n  section Afternoon\n    Work: 2: Me\n  section Evening\n    Rest: 5: Me\n",
+    ),
+    (
+        // A section name used twice, not next to each other, is **two bands**. They have to stay apart,
+        // and each has to hold its own tasks.
+        "journey-repeated-section",
+        "journey\n  title Back and forth\n  section Office\n    Arrive: 4: Me\n  section Home\n    Lunch: 5: Me\n  section Office\n    Leave: 2: Me\n",
+    ),
+    (
+        "journey-accessibility",
+        "journey\n  title Checkout\n  accTitle: The checkout journey\n  accDescr: How a customer pays\n  section Pay\n    Enter card: 4: Customer\n",
+    ),
+    (
+        // `journey` is one of the two languages where `#` starts a comment anywhere on a line.
+        "journey-comments",
+        "journey\n  %% a mermaid comment\n  title Comments\n  section Work # this is dropped\n    Do it: 3: Me\n",
+    ),
+    (
+        "journey-long-name",
+        "journey\n  title Long\n  section Work\n    A task whose name is long enough that the box under the face has to wrap it: 4: Me\n    Short: 2: Me\n",
+    ),
+    (
+        "journey-one-task",
+        "journey\n  Only: 3: Me\n",
+    ),
+    (
+        // `getActors` is first-appearance order over the whole journey, not per section.
+        "journey-actors-across-sections",
+        "journey\n  title Who is here\n  section First\n    A: 3: Ann\n    B: 4: Bob, Ann\n  section Second\n    C: 5: Cara, Bob\n",
+    ),
+    (
+        "journey-no-people-mixed",
+        "journey\n  title Some have people\n  section Solo\n    Alone: 4\n    Together: 5: Me, You\n",
     ),
     // --- timeline ----------------------------------------------------------------------------
     (
@@ -117,6 +319,70 @@ pub const CASES: &[(&str, &str)] = &[
          sub-point 1a : sub-point 1b\n    Bullet 2 : sub-point 2a\n  section 2023 Q2\n    Bullet 3 \
          : sub-point 3a",
     ),
+    (
+        "timeline-lr",
+        "timeline LR\n  title Explicit direction\n  2020 : Started\n  2021 : Grew\n  2022 : Shipped\n",
+    ),
+    (
+        // An event line begins with `: ` and belongs to the period above it, which is how the
+        // documentation writes a period with several events.
+        "timeline-events-on-their-own-lines",
+        "timeline\n  title Continuations\n  2002 : LinkedIn\n  2004 : Facebook\n       : Google\n       : Orkut\n",
+    ),
+    (
+        // `":"\s(?:[^:\n]|":"(?!\s))+` — a colon **not** followed by whitespace stays inside the event,
+        // and one that is followed by whitespace starts another.
+        "timeline-colon-inside-an-event",
+        "timeline\n  title Times\n  Monday : Stand-up at 09:30\n  Tuesday : Review at 14:00 : Retro at 16:00\n",
+    ),
+    (
+        "timeline-cjk",
+        "timeline\n  title 日本語の年表\n  section 前半\n    2002年 : 創業 : 最初の製品\n    2004年 : 上場\n  section 後半\n    2010年 : 海外展開\n",
+    ),
+    (
+        // A period with no events is still a period — `addTask` runs on the `period` rule alone.
+        "timeline-no-events",
+        "timeline\n  title Periods only\n  2019\n  2020\n  2021\n",
+    ),
+    (
+        "timeline-many-events",
+        "timeline\n  title Busy\n  2023 : One : Two : Three : Four : Five\n  2024 : Only one\n",
+    ),
+    (
+        "timeline-one-period",
+        "timeline\n  2020 : Alone\n",
+    ),
+    (
+        "timeline-long-event",
+        "timeline\n  title Long\n  2024 : An event whose text is long enough that it has to wrap inside the column its period owns\n  2025 : short\n",
+    ),
+    (
+        "timeline-repeated-section",
+        "timeline\n  title Back and forth\n  section Growth\n    2019 : Hired\n  section Pause\n    2020 : Waited\n  section Growth\n    2021 : Hired again\n",
+    ),
+    (
+        // Two different rules, one line apart. `"title"\s[^\n]+` takes the **rest of the line**,
+        // `#` included — unlike `journey`, whose title rule is `[^#\n;]+` — while a period line
+        // is reached only after `\#[^\n]*` has been skipped. So the title here keeps its `#` and
+        // the period loses everything after one.
+        "timeline-comments",
+        "timeline\n  %% a mermaid comment\n  title Comments # kept, because the title rule takes \
+         the whole line\n  2020 : Fine # and this half is dropped\n",
+    ),
+    (
+        // Direction crossed with *no* sections: the vertical renderer and the banding are separate
+        // decisions, and the corpus only had them together.
+        "timeline-td-no-sections",
+        "timeline TD\n  title Down the page\n  Q1 : Plan\n  Q2 : Build\n  Q3 : Ship\n",
+    ),
+    (
+        "timeline-accessibility",
+        "timeline\n  title Accessible\n  accTitle: A short timeline\n  accDescr: Three years\n  2020 : One\n  2021 : Two\n",
+    ),
+    (
+        "timeline-uneven-sections",
+        "timeline\n  title Uneven\n  section Long\n    2001 : a\n    2002 : b\n    2003 : c\n  section Short\n    2004 : d\n",
+    ),
     // --- gantt -------------------------------------------------------------------------------
     (
         "gantt",
@@ -134,6 +400,82 @@ pub const CASES: &[(&str, &str)] = &[
         "gantt-weekends",
         "gantt\n  dateFormat YYYY-MM-DD\n  excludes weekends\n  section S\n    long :2024-01-01, 10d",
     ),
+    (
+        // Every corpus case had a `section`, so the un-banded chart — which is what a short gantt in a
+        // README looks like — was never drawn.
+        "gantt-no-section",
+        "gantt\n  title No sections at all\n  dateFormat YYYY-MM-DD\n  first :a1, 2024-01-01, 5d\n  second :after a1, 3d\n",
+    ),
+    (
+        // `until x` is the other half of `after x`, and neither is in the documentation's own example.
+        "gantt-until",
+        "gantt\n  dateFormat YYYY-MM-DD\n  section Work\n    build :b1, 2024-01-01, 10d\n    watch :w1, 2024-01-02, until b1\n",
+    ),
+    (
+        "gantt-tick-interval",
+        "gantt\n  title Weekly ticks\n  dateFormat YYYY-MM-DD\n  axisFormat %d/%m\n  tickInterval 1week\n  weekday monday\n  section S\n    long :2024-01-01, 28d\n",
+    ),
+    (
+        "gantt-unix-dates",
+        "gantt\n  title Unix seconds\n  dateFormat X\n  axisFormat %H:%M\n  section S\n    a :0, 3600\n    b :3600, 7200\n",
+    ),
+    (
+        "gantt-inclusive-and-top-axis",
+        "gantt\n  title Inclusive end dates\n  dateFormat YYYY-MM-DD\n  inclusiveEndDates\n  topAxis\n  section S\n    a :2024-01-01, 2024-01-05\n    b :2024-01-06, 2024-01-08\n",
+    ),
+    (
+        // Both are read and not drawn — a terminal has nothing to click, and an unread line becomes a
+        // phantom task called `click a1 href` (§2-3).
+        "gantt-today-marker-and-click",
+        "gantt\n  dateFormat YYYY-MM-DD\n  todayMarker off\n  section S\n    a :a1, 2024-01-01, 5d\n    click a1 href \"https://example.invalid\"\n",
+    ),
+    (
+        "gantt-cjk",
+        "gantt\n  title 開発計画\n  dateFormat YYYY-MM-DD\n  section 設計\n    要件をまとめる :a1, 2024-01-01, 7d\n    設計書を書く :after a1, 5d\n  section 実装\n    実装する :2024-01-15, 20d\n",
+    ),
+    (
+        "gantt-includes",
+        "gantt\n  dateFormat YYYY-MM-DD\n  excludes weekends\n  includes 2024-01-06\n  section S\n    a :2024-01-01, 8d\n",
+    ),
+    (
+        // A section written twice, apart, is **two bands**. Every band is a frame, and two frames with
+        // the same name still have to be told apart — which is what a repeated title tests.
+        "gantt-repeated-section",
+        "gantt\n  title Back to the first section\n  dateFormat YYYY-MM-DD\n  section Design\n    a :2024-01-01, 3d\n  section Build\n    b :2024-01-04, 3d\n  section Design\n    c :2024-01-07, 3d\n",
+    ),
+    (
+        // Three fields means **id**, start, end; two means start, end; one means end alone. Getting the
+        // count rule wrong turns `i1` into a date.
+        "gantt-explicit-ids",
+        "gantt\n  dateFormat YYYY-MM-DD\n  section Chain\n    one :i1, 2024-01-01, 2d\n    two :i2, after i1, 2d\n    three :i3, after i2, 2d\n    four :after i3, 2d\n",
+    ),
+    (
+        "gantt-long-names",
+        "gantt\n  dateFormat YYYY-MM-DD\n  section S\n    A task whose name is much longer than the bar it labels :2024-01-01, 2d\n    b :2024-01-03, 2d\n",
+    ),
+    (
+        "gantt-one-task",
+        "gantt\n  dateFormat YYYY-MM-DD\n  section S\n    only :2024-01-01, 4d\n",
+    ),
+    (
+        // A milestone is a moment, so it contributes a centre and not a bar — and the chart's own extent
+        // starts and ends on one here, which is where a bound that only allowed for the plot fails.
+        "gantt-milestone-only",
+        "gantt\n  title Milestones and a bar\n  dateFormat YYYY-MM-DD\n  section S\n    kickoff :milestone, m1, 2024-01-01, 0d\n    work :2024-01-01, 5d\n    launch :milestone, m2, 2024-01-06, 0d\n",
+    ),
+    (
+        "gantt-vert",
+        "gantt\n  dateFormat YYYY-MM-DD\n  section S\n    a :2024-01-01, 5d\n    marker :vert, v1, 2024-01-03, 0d\n",
+    ),
+    (
+        // A milestone written **with a duration**. `ganttDb` sets a milestone's end to its start
+        // whatever the source asked for, because a milestone is a moment — and every milestone in
+        // the corpus was written `0d`, which makes that rule and *no rule at all* the same
+        // drawing. A mutation that deleted it therefore survived.
+        "gantt-milestone-with-a-duration",
+        "gantt\n  dateFormat YYYY-MM-DD\n  section S\n    review :milestone, m1, 2024-01-01, \
+         5d\n    work :2024-01-02, 6d\n",
+    ),
     // --- requirement -------------------------------------------------------------------------
     (
         "requirement",
@@ -147,6 +489,77 @@ pub const CASES: &[(&str, &str)] = &[
         "requirement-directions",
         "requirementDiagram\n  direction LR\n  requirement a {\n  id: 1\n  }\n  requirement b {\n  \
          id: 2\n  }\n  a <- derives - b",
+    ),
+    (
+        "requirement-every-type",
+        "requirementDiagram\n  requirement r1 {\n  id: 1\n  text: plain\n  }\n  functionalRequirement r2 {\n  id: 2\n  }\n  interfaceRequirement r3 {\n  id: 3\n  }\n  performanceRequirement r4 {\n  id: 4\n  }\n  physicalRequirement r5 {\n  id: 5\n  }\n  designConstraint r6 {\n  id: 6\n  }\n  r1 - contains -> r2\n  r1 - contains -> r3\n",
+    ),
+    (
+        // All seven `relationship` terminals. The corpus had two.
+        "requirement-every-relation",
+        "requirementDiagram\n  requirement a {\n  id: 1\n  }\n  requirement b {\n  id: 2\n  }\n  element e {\n  type: test\n  }\n  a - contains -> b\n  a - copies -> b\n  a - derives -> b\n  e - satisfies -> a\n  e - verifies -> b\n  a - refines -> b\n  a - traces -> b\n",
+    ),
+    (
+        "requirement-risks-and-methods",
+        "requirementDiagram\n  requirement low {\n  id: 1\n  risk: low\n  verifymethod: analysis\n  }\n  requirement medium {\n  id: 2\n  risk: medium\n  verifymethod: inspection\n  }\n  requirement high {\n  id: 3\n  risk: high\n  verifymethod: demonstration\n  }\n  requirement tested {\n  id: 4\n  verifymethod: test\n  }\n  low - traces -> high\n",
+    ),
+    (
+        "requirement-element-docref",
+        "requirementDiagram\n  requirement r {\n  id: 1\n  text: needs a source\n  }\n  element doc {\n  type: document\n  docRef: docs/PRD.md\n  }\n  doc - traces -> r\n",
+    ),
+    (
+        "requirement-quoted",
+        "requirementDiagram\n  requirement \"a quoted name\" {\n  id: \"1.2.3\"\n  text: \"a quoted, comma-bearing text\"\n  risk: high\n  }\n  element \"a quoted element\" {\n  type: \"a quoted type\"\n  }\n  \"a quoted element\" - satisfies -> \"a quoted name\"\n",
+    ),
+    (
+        // Colour rules are read and dropped. A line the grammar has a rule for and the parser has none
+        // for becomes a phantom box (§2-3), which is the defect this shape guards.
+        "requirement-styles",
+        "requirementDiagram\n  requirement a {\n  id: 1\n  }\n  requirement b {\n  id: 2\n  }\n  classDef hot fill:#f96\n  class a hot\n  style b fill:#333\n  a - derives -> b\n",
+    ),
+    (
+        "requirement-cjk",
+        "requirementDiagram\n  requirement 要件A {\n  id: 1\n  text: 全画面で読めること\n  risk: high\n  verifymethod: test\n  }\n  element 検証環境 {\n  type: simulation\n  }\n  検証環境 - verifies -> 要件A\n",
+    ),
+    (
+        "requirement-direction-tb",
+        "requirementDiagram\n  direction TB\n  requirement a {\n  id: 1\n  }\n  requirement b {\n  id: 2\n  }\n  a - contains -> b\n",
+    ),
+    (
+        "requirement-direction-rl",
+        "requirementDiagram\n  direction RL\n  requirement a {\n  id: 1\n  }\n  requirement b {\n  id: 2\n  }\n  b <- derives - a\n",
+    ),
+    (
+        // Every field is optional, so a body with nothing in it is legal and draws a box with only a
+        // name in it.
+        "requirement-empty-body",
+        "requirementDiagram\n  requirement bare {\n  }\n  element thing {\n  }\n  thing - satisfies -> bare\n",
+    ),
+    (
+        "requirement-chain",
+        "requirementDiagram\n  requirement top {\n  id: 1\n  }\n  functionalRequirement mid {\n  id: 1.1\n  }\n  functionalRequirement leaf {\n  id: 1.1.1\n  }\n  element impl {\n  type: code\n  }\n  top - contains -> mid\n  mid - contains -> leaf\n  impl - satisfies -> leaf\n",
+    ),
+    (
+        // `A - r -> B` and `A <- r - B` put the source at opposite ends. Both, on the same pair, is what
+        // makes a swapped reading visible.
+        "requirement-both-arrows",
+        "requirementDiagram\n  requirement a {\n  id: 1\n  }\n  requirement b {\n  id: 2\n  }\n  a - derives -> b\n  a <- traces - b\n",
+    ),
+    (
+        "requirement-long-text",
+        "requirementDiagram\n  requirement r {\n  id: 1\n  text: a requirement text long enough that the box has to wrap it over more than one line to stay readable\n  }\n  element e {\n  type: manual\n  }\n  e - verifies -> r\n",
+    ),
+    (
+        "requirement-one-box",
+        "requirementDiagram\n  requirement alone {\n  id: 1\n  text: nothing points at it\n  }\n",
+    ),
+    (
+        // **Two** elements. Every case had one, so "an element box holds its own element's rows"
+        // and "every element box holds the first element's rows" were the same drawing.
+        "requirement-two-elements",
+        "requirementDiagram\n  requirement r {\n  id: 1\n  }\n  element rig {\n  type: \
+         simulation\n  docRef: docs/rig.md\n  }\n  element bench {\n  type: hardware\n  \
+         docRef: docs/bench.md\n  }\n  rig - verifies -> r\n  bench - satisfies -> r\n",
     ),
     // --- gitgraph ----------------------------------------------------------------------------
     (
@@ -169,6 +582,60 @@ pub const CASES: &[(&str, &str)] = &[
     (
         "gitgraph-tb",
         "gitGraph TB:\n  commit\n  branch develop\n  commit\n  checkout main\n  merge develop",
+    ),
+    (
+        "gitgraph-lr-explicit",
+        "gitGraph LR:\n  commit\n  branch feature\n  commit\n  checkout main\n  merge feature\n",
+    ),
+    (
+        "gitgraph-bt",
+        "gitGraph BT:\n  commit\n  branch develop\n  commit\n  checkout main\n  commit\n  merge develop\n",
+    ),
+    (
+        // `switch` is `checkout` — the langium grammar lists both spellings.
+        "gitgraph-switch",
+        "gitGraph\n  commit\n  branch topic\n  switch topic\n  commit\n  switch main\n  merge topic\n",
+    ),
+    (
+        // `order:` overrides which lane a branch is drawn on, which is a statement about the picture and
+        // not about the history.
+        "gitgraph-branch-order",
+        "gitGraph\n  commit\n  branch last order: 9\n  branch first order: 1\n  checkout first\n  commit\n  checkout last\n  commit\n",
+    ),
+    (
+        // Every field may come in any order and `tag:` **accumulates** while the others overwrite.
+        "gitgraph-fields-in-any-order",
+        "gitGraph\n  commit tag: \"v1\" id: \"one\" type: REVERSE\n  commit type: HIGHLIGHT id: \"two\"\n  commit id: \"three\" tag: \"v2\" tag: \"v3\"\n",
+    ),
+    (
+        // A bare string is the message; `msg:` is optional.
+        "gitgraph-messages",
+        "gitGraph\n  commit msg: \"with the keyword\"\n  commit \"without it\"\n  commit id: \"third\" msg: \"both\"\n",
+    ),
+    (
+        "gitgraph-many-branches",
+        "gitGraph\n  commit\n  branch a\n  commit\n  branch b\n  commit\n  branch c\n  commit\n  checkout main\n  merge a\n  merge b\n  merge c\n",
+    ),
+    (
+        "gitgraph-merge-fields",
+        "gitGraph\n  commit\n  branch topic\n  commit\n  checkout main\n  merge topic id: \"the merge\" tag: \"v2.0\" type: HIGHLIGHT\n",
+    ),
+    (
+        "gitgraph-cjk",
+        "gitGraph\n  commit id: \"最初\" tag: \"リリース\"\n  branch 開発\n  commit id: \"作業\"\n  checkout main\n  merge 開発\n",
+    ),
+    (
+        "gitgraph-one-commit",
+        "gitGraph\n  commit\n",
+    ),
+    (
+        "gitgraph-long-ids",
+        "gitGraph\n  commit id: \"a commit message long enough to be wider than the lane it sits on\"\n  commit id: \"short\"\n",
+    ),
+    (
+        // Direction crossed with a cherry-pick: the two were only ever exercised apart.
+        "gitgraph-cherry-pick-tb",
+        "gitGraph TB:\n  commit id: \"ZERO\"\n  branch develop\n  commit id: \"A\"\n  checkout main\n  cherry-pick id: \"A\"\n",
     ),
     // --- c4 ----------------------------------------------------------------------------------
     (
@@ -195,6 +662,64 @@ pub const CASES: &[(&str, &str)] = &[
          Application\", \"Java\")\n    }\n  }\n  Person(user, \"Customer\")\n  Rel(user, api, \
          \"Uses\", \"HTTPS\")",
     ),
+    (
+        "c4-component",
+        "C4Component\n  title Components of the API\n  Container_Boundary(api, \"API Application\") {\n    Component(sign, \"Sign In Controller\", \"MVC Rest Controller\", \"Allows users to sign in.\")\n    ComponentDb(store, \"Session Store\", \"Redis\", \"Holds sessions.\")\n    ComponentQueue(events, \"Events\", \"Kafka\")\n  }\n  Rel(sign, store, \"Reads and writes\", \"Jedis\")\n",
+    ),
+    (
+        "c4-dynamic",
+        "C4Dynamic\n  title A dynamic diagram\n  Person(customer, \"Customer\")\n  Container(spa, \"Single Page App\", \"JavaScript\")\n  Container(api, \"API\", \"Java\")\n  RelIndex(1, customer, spa, \"Submits\")\n  RelIndex(2, spa, api, \"Calls\")\n",
+    ),
+    (
+        "c4-external-and-shapes",
+        "C4Context\n  Person(a, \"Inside\", \"A person here.\")\n  Person_Ext(b, \"Outside\", \"A person elsewhere.\")\n  System(c, \"Ours\")\n  System_Ext(d, \"Theirs\")\n  SystemDb(e, \"Our database\")\n  SystemQueue(f, \"Our queue\")\n  Rel(a, c, \"Uses\")\n  Rel(b, d, \"Uses\")\n",
+    ),
+    (
+        "c4-relationship-directions",
+        "C4Context\n  System(a, \"A\")\n  System(b, \"B\")\n  System(c, \"C\")\n  Rel_U(a, b, \"up\")\n  Rel_D(a, c, \"down\")\n  Rel_L(b, c, \"left\")\n  Rel_R(c, b, \"right\")\n  BiRel(a, c, \"both ways\")\n  Rel_Back(b, a, \"back\")\n",
+    ),
+    (
+        // `$key="value"` does not consume a position, which is the part a positional reader gets wrong.
+        "c4-named-arguments",
+        "C4Context\n  Person(a, \"A person\", $tags=\"v1\", \"a description that is still the third positional\")\n  System(b, \"A system\", \"its description\", $tags=\"v2\")\n  Rel(a, b, \"Uses\", $tags=\"v1\")\n",
+    ),
+    (
+        // Appearance, read and dropped — §0-1 settles that konoma decides its own.
+        "c4-update-styles",
+        "C4Context\n  Person(a, \"A\")\n  System(b, \"B\")\n  Rel(a, b, \"Uses\")\n  UpdateElementStyle(a, $fontColor=\"red\", $bgColor=\"grey\")\n  UpdateRelStyle(a, b, $textColor=\"blue\", $offsetY=\"-10\")\n  UpdateLayoutConfig($c4ShapeInRow=\"3\", $c4BoundaryInRow=\"1\")\n",
+    ),
+    (
+        "c4-cjk",
+        "C4Context\n  title システム構成\n  Enterprise_Boundary(b0, \"社内\") {\n    Person(user, \"利用者\", \"社内の担当者。\")\n    System(app, \"業務システム\", \"申請を受け付ける。\")\n  }\n  System_Ext(mail, \"メール基盤\", \"社外の配信基盤。\")\n  Rel(user, app, \"利用する\")\n  Rel(app, mail, \"送信する\", \"SMTP\")\n",
+    ),
+    (
+        // Three frames inside one another, which is where a frame that forgot its parent stops being
+        // checked at all (§6-A item 14).
+        "c4-boundaries-three-deep",
+        "C4Deployment\n  Deployment_Node(dc, \"Data centre\", \"Ubuntu\") {\n    Deployment_Node(host, \"Host\", \"Docker\") {\n      Deployment_Node(pod, \"Pod\", \"Kubernetes\") {\n        Container(api, \"API\", \"Java\")\n      }\n    }\n  }\n  Person(u, \"User\")\n  Rel(u, api, \"Uses\", \"HTTPS\")\n",
+    ),
+    (
+        "c4-boundary-brace-on-the-next-line",
+        "C4Context\n  System_Boundary(b1, \"Boundary\")\n  {\n    System(a, \"A\")\n    System(b, \"B\")\n  }\n  Rel(a, b, \"Uses\")\n",
+    ),
+    (
+        "c4-flat",
+        "C4Context\n  title No boundaries at all\n  Person(a, \"A\")\n  System(b, \"B\")\n  System(c, \"C\")\n  Rel(a, b, \"Uses\")\n  Rel(b, c, \"Calls\", \"gRPC\")\n",
+    ),
+    (
+        "c4-long-descriptions",
+        "C4Context\n  Person(a, \"A person with a long name indeed\", \"A description long enough that the box has to wrap it over several lines before it can be read.\")\n  System(b, \"B\")\n  Rel(a, b, \"Uses in a way that needs explaining at length\", \"HTTPS/1.1\")\n",
+    ),
+    (
+        // Two frames side by side with a line between them: the case that separates "inside its own
+        // frame" from "inside some frame".
+        "c4-two-boundaries",
+        "C4Context\n  Enterprise_Boundary(left, \"Left\") {\n    System(a, \"A\")\n  }\n  Enterprise_Boundary(right, \"Right\") {\n    System(b, \"B\")\n  }\n  Rel(a, b, \"Crosses\")\n",
+    ),
+    (
+        "c4-direction",
+        "C4Context\n  direction LR\n  Person(a, \"A\")\n  System(b, \"B\")\n  Rel(a, b, \"Uses\")\n",
+    ),
     // --- block -------------------------------------------------------------------------------
     (
         "block",
@@ -219,6 +744,65 @@ pub const CASES: &[(&str, &str)] = &[
     (
         "block-link",
         "block-beta\n  columns 5\n  a b c d e\n  a --> e\n  a-- \"labelled\" -->c",
+    ),
+    (
+        // A `block:` inside a `block:` is documented syntax and was not in the corpus, which is how a
+        // nested frame that never recorded its parent survived (§6-A item 14).
+        "block-nested",
+        "block-beta\n  columns 1\n  block:outer\n    columns 2\n    x y\n    block:inner\n      columns 1\n      z w\n    end\n    q\n  end\n  tail\n",
+    ),
+    (
+        // An edge between two blocks **inside** different frames, and one between the frames themselves.
+        "block-nested-edge",
+        "block-beta\n  columns 2\n  block:left\n    columns 1\n    a\n    b\n  end\n  block:right\n    columns 1\n    c\n  end\n  a --> c\n  left --> right\n",
+    ),
+    (
+        "block-shapes",
+        "block-beta\n  columns 4\n  a[\"square\"] b(\"round\") c([\"stadium\"]) d[[\"subroutine\"]]\n  e[(\"cylinder\")] f((\"circle\")) g{\"diamond\"} h{{\"hexagon\"}}\n  i[/\"lean right\"/] j[\\\"lean left\"\\] k[/\"trapezoid\"\\] l[\\\"inv trapezoid\"/]\n",
+    ),
+    (
+        // `space:n` leaves n cells empty, which is the only way to say "nothing here" on this grid.
+        "block-space-sized",
+        "block-beta\n  columns 4\n  a space:2 b\n  c d e f\n",
+    ),
+    (
+        "block-arrows-vertical",
+        "block-beta\n  columns 3\n  up<[\"up\"]>(up) down<[\"down\"]>(down) both<[\"y\"]>(y)\n",
+    ),
+    (
+        // A composite may span columns too — `block:id:n`.
+        "block-composite-width",
+        "block-beta\n  columns 3\n  block:wide:2\n    columns 1\n    a\n    b\n  end\n  c\n  d e f\n",
+    ),
+    (
+        "block-cjk",
+        "block-beta\n  columns 3\n  設定[\"設定を読む\"] 解決[\"種別を解決\"] 描画[\"全画面で描く\"]\n  設定 --> 解決\n  解決 --> 描画\n",
+    ),
+    (
+        // `columns auto` is `-1` and means one row as wide as it needs to be. It is also the default,
+        // so writing it is the only way to tell the two apart.
+        "block-columns-auto",
+        "block-beta\n  columns auto\n  a b c d\n",
+    ),
+    (
+        "block-styles",
+        "block-beta\n  columns 2\n  a b\n  classDef hot fill:#f96\n  class a hot\n  style b fill:#333\n  a --> b\n",
+    ),
+    (
+        "block-one",
+        "block-beta\n  only\n",
+    ),
+    (
+        "block-long-label",
+        "block-beta\n  columns 2\n  a[\"A label long enough that the cell it sits in has to grow or wrap it\"] b[\"ok\"]\n",
+    ),
+    (
+        "block-twelve",
+        "block-beta\n  columns 4\n  a b c d\n  e f g h\n  i j k l\n  a --> l\n",
+    ),
+    (
+        "block-edges-every-stroke",
+        "block-beta\n  columns 5\n  a b c d e\n  a --> b\n  b --- c\n  c -.-> d\n  d ==> e\n  a -- \"labelled\" --> e\n",
     ),
     // --- architecture ------------------------------------------------------------------------
     (
@@ -248,6 +832,71 @@ pub const CASES: &[(&str, &str)] = &[
          service proc(server)[Processor]\n    src1:B --> T:proc\n    src2:B --> T:proc\n    align \
          row src1 src2",
     ),
+    (
+        // `group … in …` is documented syntax and was not in the corpus, which is how a group frame that
+        // escaped its parent by twelve pixels survived a whole stage.
+        "architecture-nested",
+        "architecture-beta\n  group outer(cloud)[Outer]\n  group inner(cloud)[Inner] in outer\n  service s1(server)[S1] in inner\n  service s2(server)[S2] in outer\n  s1:R --> L:s2\n",
+    ),
+    (
+        "architecture-nested-thrice",
+        "architecture-beta\n  group a(cloud)[A]\n  group b(cloud)[B] in a\n  group c(cloud)[C] in b\n  service s(server)[S] in c\n  service t(server)[T] in a\n",
+    ),
+    (
+        "architecture-titled-edges",
+        "architecture-beta\n  service web(server)[Web]\n  service db(database)[Database]\n  service cache(disk)[Cache]\n  web:R -[reads]- L:db\n  web:B -[writes]- T:cache\n",
+    ),
+    (
+        // All four end decorations: none, one at the far end, one at the near end, and both.
+        //
+        // Written as one chain on purpose. Two edges reaching the same service is a *different*
+        // case — the grid walk honours the first and contradicts the second — and it is stated
+        // on its own below rather than being smuggled in here, where it would only look like an
+        // arrowhead test that fails.
+        "architecture-arrow-forms",
+        "architecture-beta\n  service a(server)[A]\n  service b(server)[B]\n  service c(server)[C]\n  service d(server)[D]\n  service e(server)[E]\n  a:R -- L:b\n  b:R --> L:c\n  c:R <-- L:d\n  d:R <--> L:e\n",
+    ),
+    (
+        // `{group}` attaches the line to the group's border upstream. konoma reads it and draws to the
+        // service, which is the same two things joined — but it has to be *read*, or it becomes part of
+        // the id.
+        "architecture-group-edge-end",
+        "architecture-beta\n  group g(cloud)[G]\n  service a(server)[A] in g\n  service b(server)[B]\n  a{group}:R --> L:b\n",
+    ),
+    (
+        "architecture-cjk",
+        "architecture-beta\n  group 社内(cloud)[社内ネットワーク]\n  service 蓄積(database)[データベース] in 社内\n  service 配信(server)[配信サーバ] in 社内\n  蓄積:R -- L:配信\n",
+    ),
+    (
+        "architecture-quoted-icon",
+        "architecture-beta\n  service a(\"🚀\")[Launcher]\n  service b(\"📦\")[Store]\n  a:R --> L:b\n",
+    ),
+    (
+        "architecture-align-column",
+        "architecture-beta\n  service a(server)[A]\n  service b(server)[B]\n  service c(server)[C]\n  a:R --> L:c\n  b:R --> L:c\n  align column a b\n",
+    ),
+    (
+        "architecture-one-service",
+        "architecture-beta\n  service alone(server)[Alone]\n",
+    ),
+    (
+        "architecture-long-labels",
+        "architecture-beta\n  service a(server)[A service whose name is long enough to widen its own cell]\n  service b(disk)[Short]\n  a:R -- L:b\n",
+    ),
+    (
+        "architecture-many-services",
+        "architecture-beta\n  service s1(server)[S1]\n  service s2(server)[S2]\n  service s3(server)[S3]\n  service s4(server)[S4]\n  service s5(server)[S5]\n  service s6(server)[S6]\n  s1:R -- L:s2\n  s2:R -- L:s3\n  s4:R -- L:s5\n  s5:R -- L:s6\n  s1:B -- T:s4\n",
+    ),
+    (
+        "architecture-junction-cross",
+        "architecture-beta\n  service n(server)[North]\n  service s(server)[South]\n  service e(server)[East]\n  service w(server)[West]\n  junction j\n  n:B -- T:j\n  s:T -- B:j\n  e:L -- R:j\n  w:R -- L:j\n",
+    ),
+    (
+        // A service in no group at all, beside two that are: "inside the groups it is written in, and
+        // inside no other" has to hold for a service written in none.
+        "architecture-groups-and-a-loose-service",
+        "architecture-beta\n  group g1(cloud)[One]\n  service a(server)[A] in g1\n  group g2(cloud)[Two]\n  service b(server)[B] in g2\n  service loose(server)[Loose]\n  a:R --> L:b\n  b:B --> T:loose\n",
+    ),
     // --- zenuml ------------------------------------------------------------------------------
     (
         "zenuml",
@@ -264,6 +913,62 @@ pub const CASES: &[(&str, &str)] = &[
         "zenuml\n  @Actor Alice\n  Alice->Bob: Hello Bob, how are you?\n  if(is_sick) {\n    \
          Bob->Alice: Not so good\n  } else {\n    Bob->Alice: Fresh as a daisy\n  }\n  while(true) \
          {\n    Alice->Bob: again\n  }",
+    ),
+    (
+        "zenuml-par-and-opt",
+        "zenuml\n  A->B: start\n  par {\n    A->B: one\n    A->C: two\n  }\n  opt {\n    B->A: maybe\n  }\n",
+    ),
+    (
+        "zenuml-try-catch-finally",
+        "zenuml\n  Client->Service: call\n  try {\n    Service->Db: read\n  } catch {\n    Service->Client: error\n  } finally {\n    Service->Client: done\n  }\n",
+    ),
+    (
+        "zenuml-new",
+        "zenuml\n  @Starter(Client)\n  new Order(id)\n  Order.total() {\n    return 42\n  }\n",
+    ),
+    (
+        // `x = A.m()` is the call **and** a dotted reply labelled `x`; a typed declaration in front of it
+        // is the same statement.
+        "zenuml-assignment",
+        "zenuml\n  total = Order.total()\n  int count = Cart.size()\n  Cart.clear()\n",
+    ),
+    (
+        "zenuml-else-if",
+        "zenuml\n  A->B: ask\n  if(first) {\n    B->A: one\n  } else if(second) {\n    B->A: two\n  } else {\n    B->A: three\n  }\n",
+    ),
+    (
+        "zenuml-annotators",
+        "zenuml\n  @Actor Alice\n  @Database Store\n  @Boundary Gate\n  Alice->Gate: request\n  Gate->Store: query\n  Store->Alice: rows\n",
+    ),
+    (
+        "zenuml-cjk",
+        "zenuml\n  title 注文の流れ\n  @Actor 利用者\n  利用者->受付: 注文する\n  受付->倉庫: 在庫を確認\n  倉庫->受付: 在庫あり\n  受付->利用者: 受け付けました\n",
+    ),
+    (
+        "zenuml-comments",
+        "zenuml\n  // a comment, not a participant\n  A->B: one\n  // another\n  B->A: two\n",
+    ),
+    (
+        "zenuml-one-message",
+        "zenuml\n  A->B: only\n",
+    ),
+    (
+        "zenuml-deep-nesting",
+        "zenuml\n  Client->A.one() {\n    B.two() {\n      C.three() {\n        D.four() {\n          return d\n        }\n        return c\n      }\n      return b\n    }\n    return a\n  }\n",
+    ),
+    (
+        "zenuml-long-message",
+        "zenuml\n  A->B: a message long enough that the arrow it labels has to be widened or the words wrapped\n  B->A: ok\n",
+    ),
+    (
+        // A frame inside a frame, in the one language here that is a sequence diagram: the nesting case
+        // the corpus had in no other form.
+        "zenuml-loop-inside-alt",
+        "zenuml\n  A->B: begin\n  if(needed) {\n    while(more) {\n      A->B: again\n    }\n  } else {\n    A->B: skip\n  }\n",
+    ),
+    (
+        "zenuml-reply-forms",
+        "zenuml\n  Client->Service: call\n  @return\n  Service->Client: reply\n  Service.work() {\n    return done\n  }\n",
     ),
 ];
 
@@ -283,6 +988,28 @@ pub fn cases_of(is_ours: fn(&str) -> bool) -> Vec<(&'static str, &'static str)> 
         .collect();
     assert!(!found.is_empty(), "the corpus has no case of this kind");
     found
+}
+
+/// Which band each row of a banded diagram belongs to, counted in **runs**.
+///
+/// The four banded languages all draw one frame per run of consecutive rows sharing a section
+/// name, so a name written twice with another between the two is two frames. Counting the runs
+/// here — from the model, by the language's own rule — is what lets a test name the *second*
+/// `Design` band rather than asking for `Design` and being handed the first.
+fn section_runs<'a>(names: impl Iterator<Item = &'a str>) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut open: Option<&str> = None;
+    let mut run = 0usize;
+    for name in names {
+        match open {
+            Some(previous) if previous == name => {}
+            Some(_) => run += 1,
+            None => {}
+        }
+        open = Some(name);
+        out.push(run);
+    }
+    out
 }
 
 /// Lays a source out, whichever of the eleven it is.
@@ -938,6 +1665,38 @@ fn a_git_graphs_commits_run_in_order_along_their_own_lanes() {
                 commit.id, commit.branch
             );
         }
+
+        // **A merge's two lines come down two different lanes.** That is the whole of what a
+        // merge dot says — this history joined two branches — and it was guarded by the corpus
+        // golden alone: a mutation that routed both lines down the child's own lane left every
+        // commit on its own lane, every commit in order, and a picture that no longer showed
+        // where the merge came from.
+        for commit in model.commits.iter().filter(|c| c.parents.len() > 1) {
+            let tails: HashSet<String> = commit
+                .parents
+                .iter()
+                .filter_map(|p| model.commit(p))
+                .map(|p| p.branch.clone())
+                .collect();
+            if tails.len() < 2 {
+                continue;
+            }
+            let mut arrived: Vec<f64> = d
+                .edges
+                .iter()
+                .filter(|e| e.to == commit.id)
+                .filter_map(|e| e.points.first())
+                .map(across)
+                .collect();
+            arrived.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            arrived.dedup_by(|a, b| (*a - *b).abs() < 0.5);
+            assert!(
+                arrived.len() >= 2,
+                "{name}: the merge {:?} joins {:?} and its lines all come down one lane",
+                commit.id,
+                tails
+            );
+        }
     }
 }
 
@@ -1127,14 +1886,23 @@ fn a_gantt_chart_is_no_wider_than_its_names_and_its_plot() {
             .fold(0.0_f64, f64::max);
         let plot = super::gantt::PLOT_WIDTH
             .max((widest_tick + super::chart::TICK_GAP * 2.0) * ticks.len().max(1) as f64);
-        // Everything that legitimately reaches past the plot, named: the gap between the names
-        // and the plot, the tick label centred on the right-hand end (half of it hangs over), half
-        // a milestone's diamond, the section frames' padding on each side, and the two margins
-        // `normalise` adds.
-        let bound = names
-            + super::chart::TICK_GAP * 2.0
+        // Everything that legitimately reaches past the plot, named: the names column and the
+        // gap to the plot, the tick label centred on **each** end of the axis (half of it hangs
+        // over), half a milestone's diamond, the section frames' padding on each side, and the
+        // two margins `normalise` adds.
+        //
+        // The left-hand overhang is not decoration. A tick label is centred on the plot's left
+        // edge, so half of it reaches back into the names column — and where the row names are
+        // short it reaches past them, which pushes the whole drawing right when `normalise`
+        // moves the origin. A bound that only allowed for the right-hand half therefore called a
+        // correctly drawn chart too wide the first time one came along with narrow names.
+        let names_column = names + super::chart::TICK_GAP * 2.0;
+        let overhang_left = (widest_tick / 2.0 - names_column).max(0.0);
+        let overhang_right = (widest_tick / 2.0).max(super::gantt::MILESTONE / 2.0);
+        let bound = overhang_left
+            + names_column
             + plot
-            + (widest_tick / 2.0).max(super::gantt::MILESTONE / 2.0)
+            + overhang_right
             + super::gantt::SECTION_PAD * 2.0
             + super::MARGIN * 2.0;
         assert!(
@@ -1202,15 +1970,22 @@ fn a_gantt_bar_shares_a_row_with_its_own_name() {
         // …and inside its own section's frame, which is drawn across the plot at a fixed width.
         // A time scale that has lost its origin sends every bar off the end of its own band, and
         // nothing else in this file would notice: everything else on the time axis moves with it.
+        //
+        // A band is **a run of consecutive tasks sharing a section**, which is the language's own
+        // rule and not the renderer's — a section name written twice with another between the two
+        // is two bands. So the ordinal is counted here rather than the name being looked up, and
+        // a chart that put the third task in the first `Design` band would be caught instead of
+        // being read as correct.
+        let ordinals = section_runs(model.tasks.iter().map(|t| t.section.as_str()));
         for (i, task) in model.tasks.iter().enumerate() {
             if task.section.trim().is_empty() {
                 continue;
             }
             let (Some(bar), Some(frame)) = (
                 d.node(&format!("task#{i}")),
-                d.cluster(&format!("section#{}", task.section)),
+                d.cluster(&format!("section#{}#{}", ordinals[i], task.section)),
             ) else {
-                continue;
+                panic!("{name}: task {i} has no bar or its own band was not drawn");
             };
             let (fl, ft, fr, fb) = frame.bounds();
             let (l, t, r, b) = bar.bounds();
@@ -1357,6 +2132,52 @@ fn an_architecture_edges_ports_decide_where_the_boxes_go() {
     }
 }
 
+/// **The same statement, on a source where two ported edges reach one service.**
+///
+/// `a:R -- L:b`, `b:R --> L:c`, `c:R <-- L:d` and `a:B <--> T:d` are all satisfiable together —
+/// `a(0,0) b(1,0) c(2,0) d(3,1)` honours every one of them — and konoma does not find it. The
+/// placement is a single walk of the edges (`place_on_grid`): a service is put one cell along
+/// from whichever edge reached it **first**, and any later edge that also names it is drawn and
+/// not obeyed. Repairing it afterwards does not converge — moving `c` to satisfy `b:R` breaks
+/// `c:R`, and moving it back breaks `b:R` again — so the fix is a constraint solve over the
+/// grid, not a patch to the walk, and that is a piece of work rather than a correction.
+///
+/// Left here, ignored, because the alternative is that nothing states it at all: the live test
+/// above runs on chains, where each service is reached once, and would go on passing forever
+/// while this shape stayed broken.
+#[test]
+#[ignore = "known limitation, recorded in docs/STATUS.md: the architecture grid is placed by one \
+            greedy walk, so a service reached by two ported edges honours the first and \
+            contradicts the second; satisfying both needs a constraint solve"]
+fn an_architecture_edges_ports_are_honoured_even_when_two_edges_reach_one_service() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::architecture::{self, Side};
+    let name = "architecture-two-edges-reach-one-service";
+    let src = "architecture-beta\n  service a(server)[A]\n  service b(server)[B]\n  service \
+               c(server)[C]\n  service d(server)[D]\n  a:R -- L:b\n  b:R --> L:c\n  c:R <-- \
+               L:d\n  a:B <--> T:d\n";
+    let model = architecture::parse(src).expect("parses");
+    let d = laid_out(src);
+    for e in &model.edges {
+        let (Some(from), Some(to)) = (d.node(&e.from), d.node(&e.to)) else {
+            continue;
+        };
+        let ok = match e.from_side {
+            Side::Left => to.center.x < from.center.x,
+            Side::Right => to.center.x > from.center.x,
+            Side::Top => to.center.y < from.center.y,
+            Side::Bottom => to.center.y > from.center.y,
+        };
+        assert!(
+            ok,
+            "{name}: `{}:{:?}` says {:?} is on that side of {:?}, and it is not",
+            e.from, e.from_side, e.to, e.from
+        );
+    }
+}
+
 /// **A service is inside every group it is written in, and inside no other.**
 ///
 /// *Every* group, not one: `group inner in outer` is documented syntax, and a service in `inner`
@@ -1413,30 +2234,43 @@ fn every_architecture_service_is_inside_the_groups_it_is_written_in() {
     }
 }
 
-/// The two languages that draw a frame **inside another frame**, on sources that do it.
+/// Whether a block diagram puts a `block:` inside a `block:`.
+fn a_composite_holds_a_composite(items: &[crate::preview::mermaid::block::Item]) -> bool {
+    use crate::preview::mermaid::block::Item;
+    items.iter().any(|item| match item {
+        Item::Composite(c) => {
+            c.children.iter().any(|k| matches!(k, Item::Composite(_)))
+                || a_composite_holds_a_composite(&c.children)
+        }
+        _ => false,
+    })
+}
+
+/// Whether **this source** nests one frame inside another, read from its own model.
 ///
-/// `architecture-beta`'s `group … in …` and `block-beta`'s `block:` inside a `block:` are both
-/// documented, and neither shape is in [`CASES`] — which is how two defects lived here until a
-/// mutation campaign went looking. They are written out rather than added to the corpus because a
-/// corpus case would move `mermaid_kinds.snap`, and §6-A item 10's rule about not naming cases is
-/// about tests that claim *coverage*; this one claims one shape of source.
-const NESTED_FRAMES: &[(&str, &str)] = &[
-    (
-        "architecture-nested",
-        "architecture-beta\n  group outer(cloud)[Outer]\n  group inner(cloud)[Inner] in outer\n  \
-         service s1(server)[S1] in inner\n  service s2(server)[S2] in outer\n  s1:R --> L:s2",
-    ),
-    (
-        "architecture-nested-thrice",
-        "architecture-beta\n  group a(cloud)[A]\n  group b(cloud)[B] in a\n  group c(cloud)[C] in \
-         b\n  service s(server)[S] in c\n  service t(server)[T] in a",
-    ),
-    (
-        "block-nested-twice",
-        "block-beta\n  columns 1\n  block:outer\n    columns 2\n    x y\n    block:inner\n      \
-         columns 1\n      z w\n    end\n    q\n  end\n  tail",
-    ),
-];
+/// Read from the model and not from the drawing, because the drawing is what is on trial: a
+/// renderer that lost the nesting would answer "no frames nest here" and skip its own defect.
+/// Read from the model and not from a list of case names, because a name list stops covering the
+/// corpus the moment somebody adds a case — the rule §6-A item 10 settled.
+fn the_source_nests_a_frame(src: &str) -> bool {
+    use crate::preview::mermaid as m;
+    if m::architecture::is_architecture(src) {
+        return m::architecture::parse(src)
+            .map(|a| a.groups.iter().any(|g| g.parent.is_some()))
+            .unwrap_or(false);
+    }
+    if m::block::is_block_diagram(src) {
+        return m::block::parse(src)
+            .map(|b| a_composite_holds_a_composite(&b.items))
+            .unwrap_or(false);
+    }
+    if m::c4::is_c4(src) {
+        return m::c4::parse(src)
+            .map(|c| c.boundaries.iter().any(|b| b.parent.is_some()))
+            .unwrap_or(false);
+    }
+    false
+}
 
 /// **A frame drawn inside another stays inside it — and says whose it is.**
 ///
@@ -1444,8 +2278,9 @@ const NESTED_FRAMES: &[(&str, &str)] = &[
 /// an attribute, it is a **switched-off check**: `check_nested_clusters_sit_inside_their_parent`
 /// skips a parentless frame, so a test that only called it would have gone green on exactly the
 /// defect it was written for, and `check_unrelated_clusters_do_not_overlap` would read a frame
-/// and the frame around it as strangers and call their nesting a collision. So the count is
-/// asserted before the invariants are called.
+/// and the frame around it as strangers and call their nesting a collision. So the drawing is
+/// required to say whose each nested frame is *before* the invariants are called — and which
+/// sources are required to say it is decided by [`the_source_nests_a_frame`], from the source.
 ///
 /// [`PlacedCluster`]: super::PlacedCluster
 #[test]
@@ -1453,13 +2288,18 @@ fn a_frame_drawn_inside_another_stays_inside_it() {
     if !text_metrics::fonts_available() {
         return;
     }
-    for (name, src) in NESTED_FRAMES {
+    let mut checked = 0usize;
+    for (name, src) in CASES {
+        if !the_source_nests_a_frame(src) {
+            continue;
+        }
+        checked += 1;
         let d = laid_out(src);
         let nested = d.clusters.iter().filter(|c| c.parent.is_some()).count();
         assert!(
             nested > 0,
-            "{name}: not one frame says which frame it is inside, so the two invariants below \
-             would assert nothing about this source"
+            "{name}: the source puts one frame inside another and not one drawn frame says which \
+             frame it is inside, so the two invariants below would assert nothing about it"
         );
         check_nested_clusters_sit_inside_their_parent(name, &d);
         check_unrelated_clusters_do_not_overlap(name, &d);
@@ -1484,6 +2324,47 @@ fn a_frame_drawn_inside_another_stays_inside_it() {
             );
         }
     }
+    assert!(
+        checked >= 3,
+        "only {checked} corpus sources put a frame inside a frame, and all three languages that \
+         can (architecture, block, C4) are supposed to be represented"
+    );
+}
+
+/// **Two things drawn in one diagram do not share an id.**
+///
+/// `Diagram::node` and `Diagram::cluster` answer with the *first* match, so a duplicate id is not
+/// an untidy label — it is a lookup that silently reads the wrong thing, and every test that goes
+/// through one of them stops being able to tell the two apart. That is how a gantt section
+/// written twice, and a kanban column written twice, made a correctly drawn diagram look wrong
+/// while hiding the case where it really would have been.
+///
+/// Stated over the whole corpus rather than for the kinds it has already bitten, because the ids
+/// several of these renderers use come from the author's own text and an author may repeat it.
+#[test]
+fn no_two_things_in_one_diagram_share_an_id() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in CASES {
+        let d = laid_out(src);
+        for (what, ids) in [
+            ("nodes", d.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()),
+            (
+                "frames",
+                d.clusters.iter().map(|c| &c.id).collect::<Vec<_>>(),
+            ),
+        ] {
+            let mut seen: HashSet<&String> = HashSet::new();
+            for id in ids {
+                assert!(
+                    seen.insert(id),
+                    "{name}: two {what} are both called {id:?}, so a lookup for it answers with \
+                     one of them and never the other"
+                );
+            }
+        }
+    }
 }
 
 /// **Every kanban card is inside its own column's frame.**
@@ -1496,14 +2377,14 @@ fn every_kanban_card_is_inside_its_own_column() {
     for (name, src) in cases_of(kanban::is_kanban) {
         let model = kanban::parse(src).expect("parses");
         let d = laid_out(src);
-        for column in &model.columns {
+        for (ci, column) in model.columns.iter().enumerate() {
             let frame = d
-                .cluster(&column.id)
+                .cluster(&format!("column#{ci}"))
                 .unwrap_or_else(|| panic!("{name}: column {:?} has no frame", column.id));
             let (fl, ft, fr, fb) = frame.bounds();
-            for card in &column.cards {
+            for (k, card) in column.cards.iter().enumerate() {
                 let node = d
-                    .node(&card.id)
+                    .node(&format!("card#{ci}#{k}"))
                     .unwrap_or_else(|| panic!("{name}: card {:?} was not drawn", card.id));
                 let (l, t, r, b) = node.bounds();
                 assert!(
@@ -1544,6 +2425,24 @@ fn a_timelines_periods_run_in_source_order() {
                 );
             }
             previous = Some(at);
+            // …and the **tie** between the period and its events runs down that period's own
+            // column. Found by a mutation that moved the line one column over and was caught by
+            // nothing at all: the events were still checked to be in their own column, and the
+            // line that claims them was checked by nobody — so the drawing said the events below
+            // belonged to the period beside them and every assertion passed.
+            if !model.periods[i].events.is_empty() {
+                let mine = d.edges.iter().any(|e| {
+                    e.points.iter().all(|p| match model.direction {
+                        Direction::LeftToRight => (p.x - node.center.x).abs() < 0.5,
+                        Direction::TopToBottom => (p.y - node.center.y).abs() < 0.5,
+                    })
+                });
+                assert!(
+                    mine,
+                    "{name}: period {i} has events and no line joining them runs along its own \
+                     column"
+                );
+            }
             // …and every event is on its own period's line.
             for k in 0..model.periods[i].events.len() {
                 let event = d
@@ -1560,6 +2459,611 @@ fn a_timelines_periods_run_in_source_order() {
             }
         }
     }
+}
+
+/// **Two commits' captions do not overlap.**
+///
+/// Seen in the gallery, not by a test: a commit whose caption is wider than [`COMMIT_STEP`] is
+/// drawn over its neighbour's, and the two sets of words become one unreadable smear. The step
+/// between commits is a constant, so the caption is the only thing that can move — and making the
+/// step follow the widest caption is a change to where every commit in every git graph is drawn,
+/// which is a piece of work with its own golden churn rather than a correction.
+///
+/// [`COMMIT_STEP`]: super::gitgraph::COMMIT_STEP
+#[test]
+#[ignore = "known defect, recorded in docs/STATUS.md: a commit caption wider than COMMIT_STEP is \
+            drawn over the caption of the commit beside it; the fix is a caption-aware step, \
+            which moves every existing git graph"]
+fn no_two_git_graph_captions_are_drawn_on_top_of_each_other() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::gitgraph;
+    for (name, src) in cases_of(gitgraph::is_git_graph) {
+        let d = laid_out(src);
+        let captions: Vec<&super::PlacedNode> = d
+            .nodes
+            .iter()
+            .filter(|n| n.id.ends_with("#caption"))
+            .collect();
+        for (i, a) in captions.iter().enumerate() {
+            for b in &captions[i + 1..] {
+                let (al, at, ar, ab) = a.bounds();
+                let (bl, bt, br, bb) = b.bounds();
+                let overlap = al < br && bl < ar && at < bb && bt < ab;
+                assert!(
+                    !overlap,
+                    "{name}: the captions {:?} and {:?} are drawn on top of one another",
+                    a.label.lines.join(" "),
+                    b.label.lines.join(" ")
+                );
+            }
+        }
+    }
+}
+
+/// **A box is drawn as the shape its own source named.**
+///
+/// Seven of the mutations in this file's campaign were killed by [`kinds_corpus_golden`] and by
+/// nothing else, and every one of them was of this shape: a datum drawn with the *other* datum's
+/// mark. That is the failure §6-A keeps recording — a behaviour only a golden guards is lost
+/// silently the next time the golden is regenerated — so the mapping is written out here, where
+/// changing it means changing a test that says what it is for.
+///
+/// [`kinds_corpus_golden`]: kinds_corpus_golden
+#[test]
+fn every_box_is_drawn_as_the_shape_its_own_source_named() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::flowchart::Shape;
+    use crate::preview::mermaid::mindmap::NodeShape;
+    use crate::preview::mermaid::{c4, gitgraph, mindmap};
+    let mut checked = 0usize;
+    for (name, src) in CASES {
+        if mindmap::is_mindmap(src) {
+            let model = mindmap::parse(src).expect("parses");
+            let d = laid_out(src);
+            for (i, node) in model.nodes.iter().enumerate() {
+                let want = match node.shape {
+                    NodeShape::NoBorder => Glyph::Underline,
+                    NodeShape::RoundedRect => Glyph::Flow(Shape::RoundedRect),
+                    NodeShape::Rect => Glyph::Flow(Shape::Rect),
+                    NodeShape::Circle => Glyph::Flow(Shape::Circle),
+                    NodeShape::Cloud => Glyph::Cloud,
+                    NodeShape::Bang => Glyph::Bang,
+                    NodeShape::Hexagon => Glyph::Flow(Shape::Hexagon),
+                };
+                let placed = d.node(&format!("n{i}")).expect("drawn");
+                checked += 1;
+                assert_eq!(
+                    placed.shape, want,
+                    "{name}: {:?} was written as a {:?} and is drawn as a {:?}",
+                    node.label, node.shape, placed.shape
+                );
+            }
+        }
+        if c4::is_c4(src) {
+            let model = c4::parse(src).expect("parses");
+            let d = laid_out(src);
+            for e in &model.elements {
+                let want = match e.shape {
+                    c4::ShapeKind::Person => Glyph::Actor,
+                    c4::ShapeKind::Box => Glyph::Flow(Shape::Rect),
+                    c4::ShapeKind::Database => Glyph::Flow(Shape::Cylinder),
+                    c4::ShapeKind::Queue => Glyph::Flow(Shape::Stadium),
+                };
+                let Some(placed) = d.node(&e.alias) else {
+                    continue;
+                };
+                checked += 1;
+                assert_eq!(
+                    placed.shape, want,
+                    "{name}: {:?} was declared a {:?} and is drawn as a {:?}",
+                    e.alias, e.shape, placed.shape
+                );
+            }
+        }
+        if gitgraph::is_git_graph(src) {
+            use crate::preview::mermaid::gitgraph::CommitKind;
+            let model = gitgraph::parse(src).expect("parses");
+            let d = laid_out(src);
+            for commit in &model.commits {
+                let want = match commit.custom_type.unwrap_or(commit.kind) {
+                    // A highlight has to be told from an ordinary dot at a terminal's scale, and
+                    // a square is what does that; a revert is the crossed dot.
+                    CommitKind::Reverse => Glyph::Reverted,
+                    CommitKind::Highlight => Glyph::Flow(Shape::Rect),
+                    CommitKind::Merge => Glyph::Flow(Shape::DoubleCircle),
+                    CommitKind::CherryPick | CommitKind::Normal => Glyph::Flow(Shape::Circle),
+                };
+                let placed = d.node(&commit.id).expect("drawn");
+                checked += 1;
+                assert_eq!(
+                    placed.shape, want,
+                    "{name}: commit {:?} is a {:?} and is drawn as a {:?}",
+                    commit.id, commit.kind, placed.shape
+                );
+            }
+        }
+    }
+    assert!(checked > 0, "no box was checked");
+}
+
+/// **A gantt bar is painted by its own tags, and the four states take four colours.**
+///
+/// Which colour goes with which state is konoma's decision (§0-1) and it was recorded *only* in
+/// the corpus golden: a mutation that rotated the four survived every named test. The palette is
+/// categorical, so the numbers below are the decision, not an accident of it.
+#[test]
+fn a_gantt_bars_colour_is_its_own_state() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::gantt;
+    let mut seen: HashSet<usize> = HashSet::new();
+    for (name, src) in cases_of(gantt::is_gantt) {
+        let model = gantt::parse(src).expect("parses");
+        let d = laid_out(src);
+        for (i, task) in model.tasks.iter().enumerate() {
+            let want = match (task.tags.crit, task.tags.done, task.tags.active) {
+                (true, _, _) => 3,
+                (_, true, _) => 1,
+                (_, _, true) => 2,
+                _ => 0,
+            };
+            let Some(bar) = d.node(&format!("task#{i}")) else {
+                continue;
+            };
+            seen.insert(want);
+            assert_eq!(
+                bar.series,
+                Some(want),
+                "{name}: task {:?} is {}{}{}and is painted in another state's colour",
+                task.name,
+                if task.tags.crit { "critical " } else { "" },
+                if task.tags.done { "done " } else { "" },
+                if task.tags.active { "active " } else { "" },
+            );
+        }
+    }
+    assert!(
+        seen.len() >= 4,
+        "only {} of the four task states are in the corpus, so this states less than it looks",
+        seen.len()
+    );
+}
+
+/// **`contains` is the one relationship drawn solid.**
+///
+/// It is the only *structural* verb — it says the destination is part of the source — and every
+/// other one is drawn dashed, upstream and here. Also golden-only until now.
+#[test]
+fn only_a_contains_relationship_is_drawn_with_an_unbroken_line() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::flowchart::Stroke;
+    use crate::preview::mermaid::requirement::{self, Relation};
+    let mut solid = 0usize;
+    let mut dashed = 0usize;
+    for (name, src) in cases_of(requirement::is_requirement_diagram) {
+        let model = requirement::parse(src).expect("parses");
+        let d = laid_out(src);
+        if model.links.len() != d.edges.len() {
+            continue;
+        }
+        for (edge, link) in d.edges.iter().zip(model.links.iter()) {
+            let want = if link.relation == Relation::Contains {
+                Stroke::Normal
+            } else {
+                Stroke::Dotted
+            };
+            if want == Stroke::Normal {
+                solid += 1;
+            } else {
+                dashed += 1;
+            }
+            assert_eq!(
+                edge.stroke,
+                want,
+                "{name}: `{}` is drawn {}",
+                link.relation.word(),
+                if edge.stroke == Stroke::Normal {
+                    "solid"
+                } else {
+                    "dashed"
+                }
+            );
+        }
+    }
+    assert!(
+        solid > 0 && dashed > 0,
+        "the corpus has {solid} `contains` links and {dashed} others, so one side of this is \
+         asserting nothing"
+    );
+}
+
+/// **A panel row holds one drawn line.**
+///
+/// `svg::emit_line_of_text` writes a panel cell as a *single* `<text>`, and `Panel::cell_bounds`
+/// measures it as one line — so a cell whose label carries two is drawn as its lines joined with
+/// a space, which is wider than the box the panel sized for it and wider than the rectangle
+/// `check_panels_stay_inside_their_box` checks. The words run out of the box and every assertion
+/// passes. A kanban card written with a two-line markdown string did exactly that.
+///
+/// Stated as the contract rather than as the symptom: if a cell never holds two lines, the
+/// overflow cannot happen at all.
+#[test]
+fn no_panel_cell_holds_more_than_one_line() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let mut checked = 0usize;
+    for (name, src) in CASES {
+        let d = laid_out(src);
+        for node in &d.nodes {
+            let Some(panel) = &node.panel else { continue };
+            for row in &panel.rows {
+                for cell in &row.cells {
+                    checked += 1;
+                    assert!(
+                        cell.label.lines.len() <= 1,
+                        "{name}: a cell of {:?} holds {:?}, and a panel row is drawn as one line",
+                        node.id,
+                        cell.label.lines
+                    );
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "no panel cell was checked");
+}
+
+/// **The arrowhead is at the end the source pointed to.**
+///
+/// Found by a mutation that moved it to the other end and was caught by *nothing* — the corpus
+/// golden included. A tip is drawn as a `<path d="…">`, and `mask_numbers` replaces a `d`
+/// wholesale, so which end of a line an arrowhead sits on is invisible to the golden by
+/// construction. That is §6-A item 15 again: the mark is there, on the wrong datum.
+///
+/// The links are paired with the drawn lines **by position**, not by looking one up by its two
+/// endpoints: `Rel_D(a, c, …)` and `BiRel(a, c, …)` in one source are two lines between the same
+/// pair, and a lookup by endpoints answers with the first of them for both — which is the
+/// mis-pairing this whole file is written to avoid.
+#[test]
+fn an_arrowhead_is_drawn_at_the_end_the_source_points_to() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use super::edges::Tip;
+    use crate::preview::mermaid::{c4, requirement};
+    let mut checked = 0usize;
+    for (name, src) in CASES {
+        // (what the two ends should carry, how to say which line it was).
+        let wanted: Vec<((Tip, Tip), String)> = if requirement::is_requirement_diagram(src) {
+            let model = requirement::parse(src).expect("parses");
+            model
+                .links
+                .iter()
+                .map(|l| {
+                    (
+                        (Tip::None, Tip::Arrow),
+                        format!("{:?} - {} -> {:?}", l.src, l.relation.word(), l.dst),
+                    )
+                })
+                .collect()
+        } else if c4::is_c4(src) {
+            let model = c4::parse(src).expect("parses");
+            model
+                .rels
+                .iter()
+                .map(|r| {
+                    // `BiRel` is the only one that carries two heads, and it carries them
+                    // because the source said the two talk both ways.
+                    let start = if r.bidirectional {
+                        Tip::Arrow
+                    } else {
+                        Tip::None
+                    };
+                    ((start, Tip::Arrow), format!("{:?} -> {:?}", r.from, r.to))
+                })
+                .collect()
+        } else {
+            continue;
+        };
+        let d = laid_out(src);
+        if wanted.len() != d.edges.len() {
+            // A line whose end never became a box is not drawn; nothing here is about that.
+            continue;
+        }
+        for (edge, (tips, what)) in d.edges.iter().zip(wanted.iter()) {
+            checked += 1;
+            assert_eq!(
+                (edge.tip_start, edge.tip_end),
+                *tips,
+                "{name}: {what} is drawn with its heads at the wrong ends"
+            );
+        }
+    }
+    assert!(checked > 0, "no line was checked");
+}
+
+/// **`direction` decides which way the ranks run.**
+///
+/// Also found by a mutation that was caught by nothing: forcing every diagram to `TB` left the
+/// masked golden byte-identical, because a rotation moves *every* coordinate and the golden pins
+/// none of them. So a documented keyword was being read and thrown away, and the corpus's four
+/// `direction` cases were asserting that it parsed and nothing more.
+///
+/// Stated only over the sources whose own edges form a **DAG**: `lay_out_spec` reverses an edge
+/// to break a cycle, so "every line runs forward along the axis" is not true of a diagram that
+/// contains one — and that is a fact about the source, worked out here from the source.
+#[test]
+fn the_direction_a_source_names_is_the_axis_its_lines_run_along() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::flowchart::Direction;
+    use crate::preview::mermaid::{c4, requirement};
+    let mut seen: HashSet<Direction> = HashSet::new();
+    for (name, src) in CASES {
+        let (direction, pairs): (Direction, Vec<(String, String)>) =
+            if requirement::is_requirement_diagram(src) {
+                let m = requirement::parse(src).expect("parses");
+                (
+                    m.direction,
+                    m.links
+                        .iter()
+                        .map(|l| (l.src.clone(), l.dst.clone()))
+                        .collect(),
+                )
+            } else if c4::is_c4(src) {
+                let m = c4::parse(src).expect("parses");
+                (
+                    m.direction,
+                    m.rels
+                        .iter()
+                        .map(|r| (r.from.clone(), r.to.clone()))
+                        .collect(),
+                )
+            } else {
+                continue;
+            };
+        if pairs.is_empty() || !is_a_dag(&pairs) {
+            continue;
+        }
+        let d = laid_out(src);
+        let mut any = false;
+        for (from, to) in &pairs {
+            let (Some(a), Some(b)) = (d.node(from), d.node(to)) else {
+                continue;
+            };
+            let ok = match direction {
+                Direction::TopToBottom => b.center.y > a.center.y,
+                Direction::BottomToTop => b.center.y < a.center.y,
+                Direction::LeftToRight => b.center.x > a.center.x,
+                Direction::RightToLeft => b.center.x < a.center.x,
+            };
+            assert!(
+                ok,
+                "{name}: the source says `direction {}` and {from:?} -> {to:?} does not run that \
+                 way",
+                direction.as_str()
+            );
+            any = true;
+        }
+        if any {
+            seen.insert(direction);
+        }
+    }
+    assert!(
+        seen.len() >= 3,
+        "only {} of the four directions were exercised, so this states less than it looks",
+        seen.len()
+    );
+}
+
+/// Whether a list of (from, to) pairs has no cycle in it.
+fn is_a_dag(pairs: &[(String, String)]) -> bool {
+    let mut left: Vec<(String, String)> = pairs.to_vec();
+    // Kahn's algorithm, written on the pairs themselves: repeatedly drop every edge whose source
+    // nothing points at. What cannot be dropped is a cycle.
+    for _ in 0..=pairs.len() {
+        let before = left.len();
+        let targets: HashSet<String> = left.iter().map(|(_, t)| t.clone()).collect();
+        left.retain(|(f, _)| targets.contains(f));
+        if left.len() == before {
+            break;
+        }
+    }
+    left.is_empty()
+}
+
+/// **`columns auto` is one row.**
+///
+/// `-1` means "one row, as wide as it needs to be" and it is also the default, so most block
+/// diagrams in the wild are this shape. A mutation that made it one *column* survived everything:
+/// reading order — top to bottom, then left to right — is the same for a row and a column, so the
+/// text tests could not see it, and the golden masks every coordinate.
+#[test]
+fn a_block_grid_written_columns_auto_is_one_row() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::block::{self, Item, AUTO};
+    let mut checked = 0usize;
+    for (name, src) in cases_of(block::is_block_diagram) {
+        let model = block::parse(src).expect("parses");
+        if model.columns != AUTO {
+            continue;
+        }
+        let d = laid_out(src);
+        let drawn: Vec<&super::PlacedNode> = model
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Node(n) => d.node(&n.id),
+                _ => None,
+            })
+            .collect();
+        if drawn.len() < 2 {
+            continue;
+        }
+        checked += 1;
+        let first = drawn[0].center.y;
+        for n in &drawn {
+            assert!(
+                (n.center.y - first).abs() < 0.5,
+                "{name}: {:?} is not on the same row as the block written first, and `columns \
+                 auto` is one row",
+                n.id
+            );
+        }
+    }
+    assert!(checked > 0, "no `columns auto` case had two blocks in it");
+}
+
+/// **A block arrow points the way it was written.**
+///
+/// `<["left"]>(left)` is an arrow that points left, and that is the whole content of the mark.
+/// A mutation that swapped left for right survived: the outline is a `<path d="…">`, which the
+/// golden masks, and `new_glyph_emit_golden` pins the outline for a mark *assembled by hand* —
+/// so the step from the source's `(left)` to the mark was checked by nothing.
+#[test]
+fn a_block_arrow_points_the_way_the_source_wrote_it() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::block::{self, Dir, Item};
+    let mut checked = 0usize;
+    for (name, src) in cases_of(block::is_block_diagram) {
+        let model = block::parse(src).expect("parses");
+        let d = laid_out(src);
+        for item in &model.items {
+            let Item::Node(n) = item else { continue };
+            let Some(dirs) = n.arrow.as_ref() else {
+                continue;
+            };
+            let Some(placed) = d.node(&n.id) else {
+                continue;
+            };
+            checked += 1;
+            assert_eq!(
+                placed.mark,
+                Some(Mark::BlockArrow {
+                    left: dirs.iter().any(|x| matches!(x, Dir::Left | Dir::X)),
+                    right: dirs.iter().any(|x| matches!(x, Dir::Right | Dir::X)),
+                    up: dirs.iter().any(|x| matches!(x, Dir::Up | Dir::Y)),
+                    down: dirs.iter().any(|x| matches!(x, Dir::Down | Dir::Y)),
+                }),
+                "{name}: the arrow {:?} was written {dirs:?} and points somewhere else",
+                n.id
+            );
+        }
+    }
+    assert!(checked > 0, "no block arrow was checked");
+}
+
+/// **A composite's frame is drawn round its contents, not beside them.**
+///
+/// A cell is levelled to the grid's column width, so a frame may be *wider* than the blocks in
+/// it — but it is drawn round them, which means the room left over is the same on both sides. A
+/// mutation that shifted every cell one column right kept the reading order, kept the
+/// containment, and left a blank column inside every nested frame; nothing noticed, because a
+/// uniform shift is exactly what a relative check cannot see (§6-A item 12).
+#[test]
+fn a_composite_frame_is_centred_on_what_is_inside_it() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::block;
+    let mut checked = 0usize;
+    for (name, src) in cases_of(block::is_block_diagram) {
+        let d = laid_out(src);
+        for frame in &d.clusters {
+            let (fl, _, fr, _) = frame.bounds();
+            let mut left = f64::INFINITY;
+            let mut right = f64::NEG_INFINITY;
+            for n in &d.nodes {
+                let (l, t, r, b) = n.bounds();
+                let (_, ft, _, fb) = frame.bounds();
+                if l >= fl - 0.5 && r <= fr + 0.5 && t >= ft - 0.5 && b <= fb + 0.5 {
+                    left = left.min(l);
+                    right = right.max(r);
+                }
+            }
+            if !left.is_finite() {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                ((left - fl) - (fr - right)).abs() < 1.0,
+                "{name}: frame {} leaves {} on its left and {} on its right",
+                frame.id,
+                svg::num(left - fl),
+                svg::num(fr - right)
+            );
+        }
+    }
+    assert!(checked > 0, "no block frame was checked");
+}
+
+/// **`align row` puts its members on one row, and `align column` in one column.**
+///
+/// Two documented statements whose whole content is a coordinate. A mutation that swapped the two
+/// survived: both keep every box on the grid, both keep every frame nesting, and the golden masks
+/// the coordinates that are the difference between them.
+#[test]
+fn an_architecture_alignment_lines_its_members_up_the_way_it_says() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::architecture;
+    let mut checked = 0usize;
+    for (name, src) in cases_of(architecture::is_architecture) {
+        let model = architecture::parse(src).expect("parses");
+        let d = laid_out(src);
+        for a in &model.alignments {
+            let placed: Vec<&super::PlacedNode> =
+                a.members.iter().filter_map(|m| d.node(m)).collect();
+            if placed.len() < 2 {
+                continue;
+            }
+            checked += 1;
+            let first = placed[0];
+            for n in &placed[1..] {
+                if a.row {
+                    assert!(
+                        (n.center.y - first.center.y).abs() < 0.5,
+                        "{name}: `align row` names {:?} and {:?} and they are on two rows",
+                        first.id,
+                        n.id
+                    );
+                    assert!(
+                        (n.center.x - first.center.x).abs() > 0.5,
+                        "{name}: `align row` names {:?} and {:?} and drew them on one another",
+                        first.id,
+                        n.id
+                    );
+                } else {
+                    assert!(
+                        (n.center.x - first.center.x).abs() < 0.5,
+                        "{name}: `align column` names {:?} and {:?} and they are in two columns",
+                        first.id,
+                        n.id
+                    );
+                    assert!(
+                        (n.center.y - first.center.y).abs() > 0.5,
+                        "{name}: `align column` names {:?} and {:?} and drew them on one another",
+                        first.id,
+                        n.id
+                    );
+                }
+            }
+        }
+    }
+    assert!(checked > 0, "no alignment was checked");
 }
 
 /// Every kind draws **something**: a diagram that lays out to no marks at all is a blank page.

@@ -222,20 +222,27 @@ pub fn lay_out(gantt: &Gantt) -> Result<Diagram, RenderError> {
         .fold(scale.right, f64::max);
     let mut sections: Vec<PlacedCluster> = Vec::new();
     let mut run: Option<(String, f64, f64)> = None;
+    // The band's **ordinal**, counted over every run including the blank-titled ones dropped
+    // below, is what makes its id unique. A section name may be written twice with another
+    // section between the two, which is two bands — and two frames carrying one id is not a
+    // cosmetic problem: `Diagram::cluster` answers with the first of them, so a lookup for the
+    // second silently reads the first and a test that used it reported a correct chart as wrong.
+    let mut ordinal = 0usize;
     for (i, start, end) in &spans {
         let name = gantt.tasks[*i].section.clone();
         match &mut run {
             Some((open, _, last)) if *open == name => *last = *end,
             _ => {
                 if let Some((open, t0, t1)) = run.take() {
-                    sections.push(section(&open, t0, t1, 0.0, content_right));
+                    sections.push(section(ordinal, &open, t0, t1, 0.0, content_right));
+                    ordinal += 1;
                 }
                 run = Some((name, *start, *end));
             }
         }
     }
     if let Some((open, t0, t1)) = run.take() {
-        sections.push(section(&open, t0, t1, 0.0, content_right));
+        sections.push(section(ordinal, &open, t0, t1, 0.0, content_right));
     }
     sections.retain(|s| !s.title.is_blank());
 
@@ -266,9 +273,16 @@ fn section_bands(gantt: &Gantt) -> f64 {
 }
 
 /// A section's frame across the rows in it.
-fn section(title: &str, top: f64, bottom: f64, left: f64, right: f64) -> PlacedCluster {
+fn section(
+    ordinal: usize,
+    title: &str,
+    top: f64,
+    bottom: f64,
+    left: f64,
+    right: f64,
+) -> PlacedCluster {
     band::frame(
-        format!("section#{title}"),
+        format!("section#{ordinal}#{title}"),
         title,
         left - SECTION_PAD,
         top - SECTION_PAD,

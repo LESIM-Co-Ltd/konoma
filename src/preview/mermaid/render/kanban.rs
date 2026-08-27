@@ -75,8 +75,7 @@ pub fn lay_out(board: &Kanban) -> Result<Diagram, RenderError> {
     let mut n = 0usize;
     for (ci, column) in board.columns.iter().enumerate() {
         let mut y = 0.0_f64;
-        for (k, card) in column.cards.iter().enumerate() {
-            let panel = &panels[ci][k];
+        for (k, panel) in panels[ci].iter().enumerate() {
             let size = Size::new(widest, panel.size.h);
             // The panel decides the box, so a card whose panel is narrower than the column is
             // *widened* rather than left ragged — and the panel's own size has to say so, or
@@ -84,7 +83,12 @@ pub fn lay_out(board: &Kanban) -> Result<Diagram, RenderError> {
             let mut panel = panel.clone();
             panel.size = size;
             nodes.push(PlacedNode {
-                id: card.id.clone(),
+                // **Its place on the board, not its name.** A card written with no id of its own
+                // is named by its own words (`nodeWithoutId`), so the same words on two cards
+                // give the two one id between them — and `Diagram::node` answers with whichever
+                // it meets first, which is a lookup that silently reads the wrong card. The same
+                // reasoning, and the same fix, as the column frames below.
+                id: format!("card#{ci}#{k}"),
                 shape: Glyph::Flow(Shape::RoundedRect),
                 center: Point::new(x + widest / 2.0, y + size.h / 2.0),
                 size,
@@ -102,7 +106,11 @@ pub fn lay_out(board: &Kanban) -> Result<Diagram, RenderError> {
             y - CARD_GAP
         };
         clusters.push(band::frame(
-            column.id.clone(),
+            // **Its place on the board, not its name.** Two columns written with the same words
+            // are two columns, and a frame id taken from the source's own text would give them
+            // one id between them — which makes `Diagram::cluster` answer with the left-hand one
+            // whichever was asked for, and hides a card in the wrong column.
+            format!("column#{ci}"),
             &column_title(column.label.as_str(), column.ticket.as_deref()),
             x - COLUMN_PAD,
             -COLUMN_PAD,

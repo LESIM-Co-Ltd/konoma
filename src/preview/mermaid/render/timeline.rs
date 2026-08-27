@@ -186,20 +186,26 @@ pub fn lay_out(timeline: &Timeline) -> Result<Diagram, RenderError> {
     // --- the section frames -------------------------------------------------------------------
     let mut sections: Vec<PlacedCluster> = Vec::new();
     let mut run: Option<(String, f64, f64)> = None;
+    // The band's **ordinal**, counted over every run including the blank-titled ones dropped
+    // below, is what makes its id unique: a section name written twice with another between the
+    // two is two bands, and two frames carrying one id make `Diagram::cluster` answer with the
+    // first of them whichever was asked for.
+    let mut ordinal = 0usize;
     for (i, start, end) in &spans {
         let name = timeline.periods[*i].section.clone();
         match &mut run {
             Some((open, _, last)) if *open == name => *last = *end,
             _ => {
                 if let Some((open, from, to)) = run.take() {
-                    sections.push(frame(&open, from, to, extent, horizontal));
+                    sections.push(frame(ordinal, &open, from, to, extent, horizontal));
+                    ordinal += 1;
                 }
                 run = Some((name, *start, *end));
             }
         }
     }
     if let Some((open, from, to)) = run.take() {
-        sections.push(frame(&open, from, to, extent, horizontal));
+        sections.push(frame(ordinal, &open, from, to, extent, horizontal));
     }
     sections.retain(|s| !s.title.is_blank());
 
@@ -243,7 +249,14 @@ fn event_node(i: usize, k: usize, label: Label, center: Point, size: Size) -> Pl
 }
 
 /// A section's frame across the periods in it.
-fn frame(title: &str, from: f64, to: f64, extent: f64, horizontal: bool) -> PlacedCluster {
+fn frame(
+    ordinal: usize,
+    title: &str,
+    from: f64,
+    to: f64,
+    extent: f64,
+    horizontal: bool,
+) -> PlacedCluster {
     let (l, t, r, b) = if horizontal {
         (
             from - SECTION_PAD,
@@ -259,5 +272,5 @@ fn frame(title: &str, from: f64, to: f64, extent: f64, horizontal: bool) -> Plac
             to + SECTION_PAD,
         )
     };
-    band::frame(format!("section#{title}"), title, l, t, r, b)
+    band::frame(format!("section#{ordinal}#{title}"), title, l, t, r, b)
 }
