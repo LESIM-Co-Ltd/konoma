@@ -11413,7 +11413,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
   m00 line=0002 kind=CodeBlock{body=Some("<br>")}
 
 === samples: README.md ===
--- LINES (17) --
+-- LINES (18) --
 L0000 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Sample files"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -11542,17 +11542,36 @@ L0011 style=fg=-,bg=-,mod=- align=-
   s33 fg=-,bg=-,mod=- ") — no third-party content, same as everything else here."
 L0012 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
-  s01 fg=white,bg=rgb(43,48,59),mod=- "sequence.mmd"
-  s02 fg=-,bg=-,mod=- " — a hand-written Mermaid sequence diagram, for the standalone "
-  s03 fg=white,bg=rgb(43,48,59),mod=- ".mmd"
-  s04 fg=-,bg=-,mod=- " "
-  s05 fg=-,bg=-,mod=- "preview (a whole file rendered as one full-screen diagram, as opposed to the "
+  s01 fg=white,bg=rgb(43,48,59),mod=- "mermaid.md"
+  s02 fg=-,bg=-,mod=- " / "
+  s03 fg=white,bg=rgb(43,48,59),mod=- "mermaid.ja.md"
+  s04 fg=-,bg=-,mod=- " — a gallery of every diagram kind konoma draws, one"
+  s05 fg=-,bg=-,mod=- " "
   s06 fg=white,bg=rgb(43,48,59),mod=- "```mermaid"
-  s07 fg=-,bg=-,mod=- " "
-  s08 fg=-,bg=-,mod=- "fences inside "
-  s09 fg=white,bg=rgb(43,48,59),mod=- "markdown.md"
-  s10 fg=-,bg=-,mod=- ")."
+  s07 fg=-,bg=-,mod=- " fence each: flowchart, state, class, ER, sequence, zenuml, mindmap, kanban,"
+  s08 fg=-,bg=-,mod=- " "
+  s09 fg=-,bg=-,mod=- "journey, timeline, gantt, requirement, gitGraph, C4, block, architecture, and the pie, xy,"
+  s10 fg=-,bg=-,mod=- " "
+  s11 fg=-,bg=-,mod=- "quadrant, radar, treemap, packet and sankey charts. Written by hand for konoma."
 L0013 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=white,bg=rgb(43,48,59),mod=- "sequence.mmd"
+  s02 fg=-,bg=-,mod=- ", "
+  s03 fg=white,bg=rgb(43,48,59),mod=- "flowchart.mmd"
+  s04 fg=-,bg=-,mod=- ", "
+  s05 fg=white,bg=rgb(43,48,59),mod=- "gantt.mmd"
+  s06 fg=-,bg=-,mod=- ", "
+  s07 fg=white,bg=rgb(43,48,59),mod=- "architecture.mmd"
+  s08 fg=-,bg=-,mod=- ", "
+  s09 fg=white,bg=rgb(43,48,59),mod=- "pie.mmd"
+  s10 fg=-,bg=-,mod=- " — hand-written"
+  s11 fg=-,bg=-,mod=- " "
+  s12 fg=-,bg=-,mod=- "standalone Mermaid files, for the "
+  s13 fg=white,bg=rgb(43,48,59),mod=- ".mmd"
+  s14 fg=-,bg=-,mod=- " preview (a whole file rendered as one full-screen"
+  s15 fg=-,bg=-,mod=- " "
+  s16 fg=-,bg=-,mod=- "diagram, as opposed to the fences above). The five cover different internal layouts."
+L0014 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "sample.svg"
   s02 fg=-,bg=-,mod=- ", the text / Markdown files, and everything under "
@@ -11560,7 +11579,7 @@ L0013 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- " — written by hand"
   s05 fg=-,bg=-,mod=- " "
   s06 fg=-,bg=-,mod=- "for konoma."
-L0014 style=fg=-,bg=-,mod=- align=-
+L0015 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "The walkthrough demos are "
   s02 fg=-,bg=-,mod=B "English by default"
@@ -11571,20 +11590,22 @@ L0014 style=fg=-,bg=-,mod=- align=-
   s07 fg=-,bg=-,mod=- "("
   s08 fg=white,bg=rgb(43,48,59),mod=- "markdown.ja.md"
   s09 fg=-,bg=-,mod=- ", "
-  s10 fg=white,bg=rgb(43,48,59),mod=- "links.ja.md"
+  s10 fg=white,bg=rgb(43,48,59),mod=- "mermaid.ja.md"
   s11 fg=-,bg=-,mod=- ", "
-  s12 fg=white,bg=rgb(43,48,59),mod=- "long-lines.ja.txt"
+  s12 fg=white,bg=rgb(43,48,59),mod=- "links.ja.md"
   s13 fg=-,bg=-,mod=- ", "
-  s14 fg=white,bg=rgb(43,48,59),mod=- "tutorial.ja.md"
-  s15 fg=-,bg=-,mod=- "). "
-  s16 fg=white,bg=rgb(43,48,59),mod=- "japanese.txt"
-  s17 fg=-,bg=-,mod=- " and the"
-  s18 fg=-,bg=-,mod=- " "
-  s19 fg=-,bg=-,mod=- "full-width cells in "
-  s20 fg=white,bg=rgb(43,48,59),mod=- "sample.csv"
-  s21 fg=-,bg=-,mod=- " stay as CJK demos (they exercise konoma's CJK-width handling)."
-L0015 style=fg=-,bg=-,mod=- align=-
+  s14 fg=white,bg=rgb(43,48,59),mod=- "long-lines.ja.txt"
+  s15 fg=-,bg=-,mod=- ", "
+  s16 fg=white,bg=rgb(43,48,59),mod=- "tutorial.ja.md"
+  s17 fg=-,bg=-,mod=- "). "
+  s18 fg=white,bg=rgb(43,48,59),mod=- "japanese.txt"
+  s19 fg=-,bg=-,mod=- " and the"
+  s20 fg=-,bg=-,mod=- " "
+  s21 fg=-,bg=-,mod=- "full-width cells in "
+  s22 fg=white,bg=rgb(43,48,59),mod=- "sample.csv"
+  s23 fg=-,bg=-,mod=- " stay as CJK demos (they exercise konoma's CJK-width handling)."
 L0016 style=fg=-,bg=-,mod=- align=-
+L0017 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "If you add new sample files, only commit material you have the right to redistribute"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "under MIT (your own work, CC0, or public domain)."

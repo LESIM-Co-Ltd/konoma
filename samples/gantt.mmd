@@ -1,0 +1,14 @@
+gantt
+  title Adding a preview kind
+  dateFormat YYYY-MM-DD
+  axisFormat %m/%d
+  section Design
+    Read the format   :d1, 2026-08-01, 4d
+    Write it down     :after d1, 3d
+  section Build
+    Renderer          :b1, 2026-08-08, 8d
+    Wire up the keys  :after b1, 2d
+  section Ship
+    Adversarial audit :crit, s1, 2026-08-18, 3d
+    Release           :milestone, s2, after s1, 0d
+    Write it up       :after s2, 1d

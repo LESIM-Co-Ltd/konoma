@@ -1,0 +1,14 @@
+flowchart TD
+  F[A file is selected] --> R{Match a config rule}
+  R -->|built-in| B[Built-in renderer]
+  R -->|command| X[External command]
+  R -->|no rule| N[can not preview]
+  subgraph builtin [Built in]
+    B --> M[Markdown]
+    B --> I[Image or PDF]
+    B --> T[CSV table]
+  end
+  M --> S[Full-screen preview]
+  I --> S
+  T --> S
+  X --> S

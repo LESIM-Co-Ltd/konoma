@@ -26,13 +26,17 @@ and are covered by the project's MIT license.
   *other* sample files with the system `zip`/`tar` tools (`sample.zip` = `code/hello.rs`,
   `code/app.ts`, `code/calc.c`, `code/main.go`; `sample.tar.gz` = `sample.csv`, `sample.tsv`,
   `japanese.txt`) — no third-party content, same as everything else here.
-- `sequence.mmd` — a hand-written Mermaid sequence diagram, for the standalone `.mmd`
-  preview (a whole file rendered as one full-screen diagram, as opposed to the ```` ```mermaid ````
-  fences inside `markdown.md`).
+- `mermaid.md` / `mermaid.ja.md` — a gallery of every diagram kind konoma draws, one
+  ```` ```mermaid ```` fence each: flowchart, state, class, ER, sequence, zenuml, mindmap, kanban,
+  journey, timeline, gantt, requirement, gitGraph, C4, block, architecture, and the pie, xy,
+  quadrant, radar, treemap, packet and sankey charts. Written by hand for konoma.
+- `sequence.mmd`, `flowchart.mmd`, `gantt.mmd`, `architecture.mmd`, `pie.mmd` — hand-written
+  standalone Mermaid files, for the `.mmd` preview (a whole file rendered as one full-screen
+  diagram, as opposed to the fences above). The five cover different internal layouts.
 - `sample.svg`, the text / Markdown files, and everything under `code/` — written by hand
   for konoma.
 - The walkthrough demos are **English by default**; the Japanese versions use a `.ja` suffix
-  (`markdown.ja.md`, `links.ja.md`, `long-lines.ja.txt`, `tutorial.ja.md`). `japanese.txt` and the
+  (`markdown.ja.md`, `mermaid.ja.md`, `links.ja.md`, `long-lines.ja.txt`, `tutorial.ja.md`). `japanese.txt` and the
   full-width cells in `sample.csv` stay as CJK demos (they exercise konoma's CJK-width handling).
 
 If you add new sample files, only commit material you have the right to redistribute

@@ -1,0 +1,12 @@
+architecture-beta
+  group ui(cloud)[konoma]
+    service tree(server)[Tree] in ui
+    service prev(server)[Preview] in ui
+  group bg(cloud)[Background]
+    service scan(server)[Git scan] in bg
+    service dec(server)[Decoders] in bg
+    service cache(disk)[Image cache] in bg
+  tree:R --> L:prev
+  tree:B --> T:scan
+  prev:B --> T:dec
+  dec:R --> L:cache
