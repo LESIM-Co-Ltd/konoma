@@ -461,6 +461,10 @@ fn glyph_table() -> Vec<(&'static str, Glyph, &'static str, &'static str)> {
             "arrow block",
         ),
         ("reverted", Glyph::Reverted, "crossed dot", "crossed dot"),
+        // A tag has to be told from a *caption* — the bare words under a commit — because a git
+        // graph draws both, and telling them apart is the whole reason this glyph exists. The
+        // ticket's outline is what does it: `chart-label` above draws no outline at all.
+        ("tag", Glyph::Tag, "ticket with a hole", "pointed ticket"),
     ]
 }
 
@@ -509,7 +513,8 @@ fn every_glyph_draws_a_mark_that_tells_it_from_its_siblings() {
             | Glyph::Underline
             | Glyph::Face
             | Glyph::BlockArrow
-            | Glyph::Reverted => true,
+            | Glyph::Reverted
+            | Glyph::Tag => true,
         }
     }
 

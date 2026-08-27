@@ -6,6 +6,19 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **A `gitGraph`'s tags sat under the commits with everything else, and a tag hid the commit's
+  id.** Every label in the diagram — a tag and an id alike — was drawn as bare words in one band
+  below the dots, at whatever height the lane happened to sit, so the tags a reader is meant to
+  pick a history out by were scattered among the ids and indistinguishable from them. Worse, a
+  commit that had both showed only the tag: `merge renderer tag: "v0.27.0"` threw away whatever
+  the author had called that merge. A tag is now drawn **above** its commit, as a ticket with a
+  hole punched in it, in its branch's colour; several tags on one commit stack upward in the order
+  they were written, nearest the commit first; and the id keeps its place below, so a commit that
+  carries both shows both. The diagram grows upward to make room, so a tag on the topmost lane is
+  not cut off. konoma's own `samples/mermaid.md` already said "Tags sit above the commit they
+  mark"; now it is true.
+
 ## [0.28.0] - 2026-08-27
 
 ### Changed

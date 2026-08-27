@@ -786,6 +786,38 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
                 num(cy - d)
             ));
         }
+        // A git graph's tag: the ticket, then the hole punched through it. The hole is filled
+        // with the colour an edge label's backing patch uses — the palette's own ground — rather
+        // than left unpainted, because the ticket is filled and a hole that showed the fill
+        // through it would not be a hole. (It is a mark a few pixels across, not a page
+        // background, so §1's rule against painting over the terminal is not in play.)
+        Outline::Tag {
+            w,
+            h,
+            point,
+            tip,
+            hole,
+        } => {
+            let pts = shapes::tag_points(w, h, point, tip)
+                .into_iter()
+                .map(|p| format!("{},{}", num(cx + p.x), num(cy + p.y)))
+                .collect::<Vec<_>>()
+                .join(" ");
+            out.push_str(&format!(
+                "<polygon points=\"{pts}\" fill=\"{fill}\" stroke=\"{stroke}\" \
+                 stroke-width=\"{sw}\"/>\n"
+            ));
+            let at = shapes::tag_hole_center(w, point);
+            out.push_str(&format!(
+                "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{}\" stroke=\"{stroke}\" \
+                 stroke-width=\"{}\"/>\n",
+                num(cx + at.x),
+                num(cy + at.y),
+                num(hole),
+                theme.background_ref,
+                num(NODE_STROKE_WIDTH / 2.0)
+            ));
+        }
         Outline::None => {}
     }
     // A box that holds a table draws its table instead of a centred label.

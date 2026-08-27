@@ -3114,11 +3114,17 @@
 <g class="nodes">
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">main</tspan></text>
 <circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
-<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">v1.0.0</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Normal</tspan></text>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">v1.0.0</tspan></text>
 <circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
 <circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
 <path d="M#,# L#,# M#,# L#,#" stroke="#cccccc" stroke-width="#" fill="none"/>
-<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">RC_1</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Reverse</tspan></text>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">RC_1</tspan></text>
 <rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Highlight</tspan></text>
 </g>
@@ -3154,7 +3160,9 @@
 <circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">TWO</tspan></text>
 <circle cx="#" cy="#" r="#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
-<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">cherry-pick:MERGE</tspan></text>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#b07aa1" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">cherry-pick:MERGE</tspan></text>
 </g>
 <g class="series">
 <path d="M#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
@@ -3289,11 +3297,20 @@
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">main</tspan></text>
 <circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
 <path d="M#,# L#,# M#,# L#,#" stroke="#cccccc" stroke-width="#" fill="none"/>
-<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">v1</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">one</tspan></text>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">v1</tspan></text>
 <rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">two</tspan></text>
 <circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
-<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">v2, v3</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">three</tspan></text>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">v2</tspan></text>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">v3</tspan></text>
 </g>
 <g class="series">
 <path d="M#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
@@ -3370,7 +3387,10 @@
 <circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
 <circle cx="#" cy="#" r="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
 <rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
-<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">v2.0</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">the merge</tspan></text>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">v2.0</tspan></text>
 </g>
 <g class="series">
 <path d="M#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
@@ -3390,7 +3410,10 @@
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">main</tspan></text>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">開発</tspan></text>
 <circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
-<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">リリース</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">最初</tspan></text>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">リリース</tspan></text>
 <circle cx="#" cy="#" r="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">作業</tspan></text>
 <circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
@@ -3450,10 +3473,66 @@
 <circle cx="#" cy="#" r="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">A</tspan></text>
 <circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
-<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">cherry-pick:A</tspan></text>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">cherry-pick:A</tspan></text>
 </g>
 <g class="series">
 <path d="M#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+<path d="M#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== gitgraph-tag-on-the-top-lane ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">main</tspan></text>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">develop</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">v1.0</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">v1.1</tspan></text>
+</g>
+<g class="series">
+<path d="M#,# L#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+<path d="M#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
+</g>
+<g class="edge-labels">
+</g>
+</svg>
+
+=== gitgraph-tags-over-an-id ===
+<svg xmlns="http://www.w3.org/2000/svg" width="#" height="#" viewBox="# # # #">
+<rect width="#" height="#" fill="none"/>
+<g class="edges">
+</g>
+<g class="nodes">
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">main</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">cut</tspan></text>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">v2.0.0</tspan></text>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">stable</tspan></text>
+<polygon points="#,# #,# #,# #,# #,# #,# #,# #,#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<circle cx="#" cy="#" r="#" fill="#333333" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#f2f2f2"><tspan x="#" dy="#">lts</tspan></text>
+<circle cx="#" cy="#" r="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">after</tspan></text>
+</g>
+<g class="series">
 <path d="M#,# L#,#" fill="none" stroke="#4e79a7" stroke-width="#"/>
 </g>
 <g class="edge-labels">

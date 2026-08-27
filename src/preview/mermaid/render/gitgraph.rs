@@ -37,8 +37,14 @@ pub const LANE_STEP: f64 = 44.0;
 /// Blank space between a branch's name and the first commit on its lane.
 pub const NAME_GAP: f64 = 10.0;
 
-/// Blank space between a commit and the tag or id under it.
+/// Blank space between a commit and the id under it.
 pub const CAPTION_GAP: f64 = 6.0;
+
+/// Blank space between a commit and the first tag above it.
+pub const TAG_GAP: f64 = 5.0;
+
+/// Blank space between one tag and the next one stacked above it.
+pub const TAG_STACK: f64 = 3.0;
 
 /// Reads a mermaid git graph and draws it.
 ///
@@ -128,12 +134,15 @@ pub fn lay_out(graph: &GitGraph) -> Result<Diagram, RenderError> {
             mark: None,
         });
 
-        // The caption under a commit: its tags, or the id **if the author wrote one**. A
-        // generated id is a random string that names nothing, and captioning every commit with
-        // one buries the two or three a reader is actually meant to follow.
-        let caption = if !commit.tags.is_empty() {
-            commit.tags.join(", ")
-        } else if commit.explicit_id {
+        // The caption under a commit: the id **if the author wrote one**. A generated id is a
+        // random string that names nothing, and captioning every commit with one buries the two
+        // or three a reader is actually meant to follow.
+        //
+        // A tag does **not** stand in for it. mermaid draws both — `drawCommitLabel` under the
+        // dot and `drawCommitTags` over it — and it has to: a tag is a name somebody pinned onto
+        // a commit, and a commit can have an id of its own as well. Replacing one with the other
+        // threw away whichever the author wrote first.
+        let caption = if commit.explicit_id {
             commit.id.clone()
         } else {
             String::new()
@@ -145,6 +154,38 @@ pub fn lay_out(graph: &GitGraph) -> Result<Diagram, RenderError> {
         );
         if let Some(n) = label_node(format!("{}#caption", commit.id), label, at, None) {
             nodes.push(n);
+        }
+
+        // --- the tags, above the commit -------------------------------------------------------
+        //
+        // Above, because that is where a tag belongs (`gitGraphRenderer.ts` puts it at
+        // `commitPosition.y - 16 - yOffset`) and because the id is already below: a tag drawn in
+        // the same band as the caption is one more word in an undifferentiated row, which is
+        // exactly what a reader cannot read. Several tags on one commit stack **upward in source
+        // order**, so the first one written is the one nearest its commit and the column reads
+        // the way the source does.
+        //
+        // "Above" is `-y` in every direction. `TB:` and `BT:` run time down and up the page, so
+        // there is no direction in which up is unambiguously "earlier" or "later" — but the
+        // caption is below the dot in every direction too, and keeping the tag on the opposite
+        // side of the dot from the caption is what keeps the two apart.
+        let mut above = shapes::COMMIT_RADIUS + TAG_GAP;
+        for (i, tag) in commit.tags.iter().enumerate() {
+            let label = Label::measure(tag);
+            let size = shapes::size(Glyph::Tag, Size::new(label.width, label.height));
+            nodes.push(PlacedNode {
+                id: format!("{}#tag{i}", commit.id),
+                shape: Glyph::Tag,
+                center: Point::new(center.x, center.y - above - size.h / 2.0),
+                size,
+                label,
+                panel: None,
+                // A tag takes its commit's lane colour, which is what says *which* commit it
+                // belongs to when it is sitting a couple of rows above the dot.
+                series: Some(lane),
+                mark: None,
+            });
+            above += size.h + TAG_STACK;
         }
     }
 

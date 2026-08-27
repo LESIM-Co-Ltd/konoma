@@ -637,6 +637,20 @@ pub const CASES: &[(&str, &str)] = &[
         "gitgraph-cherry-pick-tb",
         "gitGraph TB:\n  commit id: \"ZERO\"\n  branch develop\n  commit id: \"A\"\n  checkout main\n  cherry-pick id: \"A\"\n",
     ),
+    (
+        // A tag on **lane 0**, which is the top of the drawing: a tag hangs above its commit, so
+        // this is the case whose viewBox has to grow *upward* to hold it. Nothing else in the
+        // corpus put anything above the topmost lane.
+        "gitgraph-tag-on-the-top-lane",
+        "gitGraph\n  commit tag: \"v1.0\"\n  branch develop\n  commit\n  checkout main\n  commit tag: \"v1.1\"\n",
+    ),
+    (
+        // Several tags on one commit **that also has an id**: the tags stack upward and the id
+        // stays below, so one commit carries three separate things a reader has to be able to
+        // tell apart.
+        "gitgraph-tags-over-an-id",
+        "gitGraph\n  commit id: \"cut\" tag: \"v2.0.0\" tag: \"stable\" tag: \"lts\"\n  commit id: \"after\"\n",
+    ),
     // --- c4 ----------------------------------------------------------------------------------
     (
         "c4-context",
@@ -1133,7 +1147,11 @@ fn every_new_label_kind_is_drawn_at_the_width_konoma_measured() {
             "gitgraph branch",
             "gitGraph\n  commit\n  branch {}\n  commit\n",
         ),
-        ("gitgraph caption", "gitGraph\n  commit tag: \"{}\"\n"),
+        // A git graph's caption is the commit's **id**. It used to be spelled with a `tag:` here,
+        // which stopped being a bare label the moment a tag grew a ticket round it — and a tag is
+        // instrumented in `a_boxed_label_still_fits_the_box_konoma_sized_for_it` instead, because
+        // its box is its ink plus what `shapes::size` adds.
+        ("gitgraph caption", "gitGraph\n  commit id: \"{}\"\n"),
     ];
 
     let mut checked = 0usize;
@@ -1221,6 +1239,7 @@ fn a_boxed_label_still_fits_the_box_konoma_sized_for_it() {
         ),
         ("kanban card", "kanban\n  Todo\n    c[{}]\n"),
         ("journey task", "journey\n  {}: 3: Me\n"),
+        ("gitgraph tag", "gitGraph\n  commit tag: \"{}\"\n"),
     ];
     let mut checked = 0usize;
     for (kind, template) in kinds {
@@ -1698,6 +1717,216 @@ fn a_git_graphs_commits_run_in_order_along_their_own_lanes() {
             );
         }
     }
+}
+
+/// **A tag is drawn above its commit and the id below it, and a commit that has both gets both.**
+///
+/// The three things this states are the three the renderer used to get wrong: a tag was drawn
+/// *under* the dot, in the same band as the id; a tag **replaced** the id, so
+/// `merge renderer tag: "v0.27.0"` lost whatever the author had called that merge; and there was
+/// no shape to tell one from the other. mermaid draws both, on opposite sides of the dot
+/// (`gitGraphRenderer.ts`: `drawCommitLabel` at `y + 25`, `drawCommitTags` at `y - 16 - yOffset`).
+///
+/// Everything here is looked up **by id** — `{commit}#tag{i}` and `{commit}#caption` — rather than
+/// searched for by the words it holds, which is §6-A item 15: a test that finds a label by its
+/// text is blind to the two labels swapping places.
+#[test]
+fn a_git_graph_draws_a_tag_above_its_commit_and_the_id_below_it() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::gitgraph;
+    let mut with_both = 0usize;
+    let mut tags_seen = 0usize;
+    for (name, src) in cases_of(gitgraph::is_git_graph) {
+        let model = gitgraph::parse(src).expect("parses");
+        let d = laid_out(src);
+        for commit in &model.commits {
+            let dot = d
+                .node(&commit.id)
+                .unwrap_or_else(|| panic!("{name}: commit {:?} was not drawn", commit.id));
+            let (_, dot_top, _, dot_bottom) = dot.bounds();
+
+            // The id, below — **only** when the author wrote one, which is the rule that keeps a
+            // history of generated ids from being captioned with noise.
+            let caption = d.node(&format!("{}#caption", commit.id));
+            match (commit.explicit_id, caption) {
+                (true, Some(c)) => {
+                    assert_eq!(
+                        c.label.lines.join(" "),
+                        commit.id,
+                        "{name}: the caption under {:?} does not read as its id — a tag is drawn \
+                         above the commit and never in place of the id",
+                        commit.id
+                    );
+                    assert!(
+                        c.bounds().1 >= dot_bottom - 0.01,
+                        "{name}: the id under {:?} is drawn at or above its own commit",
+                        commit.id
+                    );
+                }
+                (true, None) => panic!(
+                    "{name}: {:?} was given an id by the source and nothing is drawn under it",
+                    commit.id
+                ),
+                (false, Some(c)) => panic!(
+                    "{name}: {:?} has a generated id and is captioned {:?} anyway",
+                    commit.id,
+                    c.label.lines.join(" ")
+                ),
+                (false, None) => {}
+            }
+
+            // The tags, above — one node each, in source order, each holding its own words.
+            for (i, tag) in commit.tags.iter().enumerate() {
+                let node = d.node(&format!("{}#tag{i}", commit.id)).unwrap_or_else(|| {
+                    panic!("{name}: tag {tag:?} on {:?} was not drawn", commit.id)
+                });
+                assert_eq!(
+                    node.shape,
+                    Glyph::Tag,
+                    "{name}: the tag {tag:?} is drawn as a {:?} — a tag a reader cannot tell from \
+                     a caption is the defect this glyph exists to fix",
+                    node.shape
+                );
+                assert_eq!(
+                    node.label.lines.join(" "),
+                    text_metrics::collapse_spaces(tag).into_owned(),
+                    "{name}: the {i}th tag of {:?} holds another tag's words",
+                    commit.id
+                );
+                assert!(
+                    node.bounds().3 <= dot_top + 0.01,
+                    "{name}: the tag {tag:?} is drawn at or below its commit {:?} — a tag belongs \
+                     above the dot, on the other side of it from the id",
+                    commit.id
+                );
+                // Above the dot **and** clear of the line its commit sits on, which runs straight
+                // through the commit's own centre: a tag drawn on the lane is a tag with a rule
+                // through the middle of it.
+                assert!(
+                    node.bounds().3 < dot.center.y - super::shapes::COMMIT_RADIUS,
+                    "{name}: the tag {tag:?} reaches down onto its own lane line",
+                );
+                tags_seen += 1;
+            }
+            if !commit.tags.is_empty() && commit.explicit_id {
+                with_both += 1;
+            }
+        }
+    }
+    assert!(tags_seen >= 8, "only {tags_seen} tags were checked");
+    assert!(
+        with_both > 0,
+        "no corpus case has a commit carrying a tag **and** an id, which is the case where \
+         drawing one in place of the other loses something"
+    );
+}
+
+/// **Several tags on one commit stack upward, in the order they were written, without touching.**
+///
+/// Nearest the commit is the tag written first, so the column reads the way the source does.
+/// (mermaid stacks the *last* one nearest, because `drawCommitTags` walks `commit.tags.reverse()`;
+/// §0-1 lets konoma read the column top-down like the source rather than bottom-up.)
+///
+/// Stated as a gap rather than as a coordinate, so it catches the collapse — every tag drawn at
+/// one height — as well as a stack that runs the wrong way.
+#[test]
+fn a_git_graphs_tags_stack_upward_in_the_order_they_were_written() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::gitgraph;
+    let mut stacks = 0usize;
+    for (name, src) in cases_of(gitgraph::is_git_graph) {
+        let model = gitgraph::parse(src).expect("parses");
+        let d = laid_out(src);
+        for commit in model.commits.iter().filter(|c| c.tags.len() > 1) {
+            stacks += 1;
+            let tags: Vec<&super::PlacedNode> = (0..commit.tags.len())
+                .map(|i| {
+                    d.node(&format!("{}#tag{i}", commit.id))
+                        .unwrap_or_else(|| panic!("{name}: {:?} lost a tag", commit.id))
+                })
+                .collect();
+            for (i, pair) in tags.windows(2).enumerate() {
+                let (lower, upper) = (pair[0], pair[1]);
+                assert!(
+                    upper.bounds().3 <= lower.bounds().1 + 0.01,
+                    "{name}: the tags {:?} and {:?} on {:?} are drawn at the same height — a \
+                     stack that collapsed is one tag on top of another",
+                    commit.tags[i],
+                    commit.tags[i + 1],
+                    commit.id
+                );
+                assert!(
+                    lower.bounds().1 - upper.bounds().3 >= super::gitgraph::TAG_STACK - 0.01,
+                    "{name}: the tags {:?} and {:?} on {:?} touch",
+                    commit.tags[i],
+                    commit.tags[i + 1],
+                    commit.id
+                );
+            }
+        }
+    }
+    assert!(
+        stacks > 0,
+        "no corpus case puts more than one tag on a commit"
+    );
+}
+
+/// **A tag on the topmost lane makes the drawing taller instead of being clipped.**
+///
+/// A tag hangs above its commit, so a tag on lane 0 hangs above everything — and `normalise` is
+/// what has to notice. The invariant suite already runs
+/// [`check_view_box_contains_everything`] over the corpus; this says the *reason* it passes,
+/// because "nothing is outside the box" is also true of a drawing that never grew the thing that
+/// would have stuck out.
+#[test]
+fn a_tag_on_the_top_lane_makes_the_drawing_taller_instead_of_being_clipped() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::gitgraph;
+    let (name, src) = CASES
+        .iter()
+        .find(|(n, _)| *n == "gitgraph-tag-on-the-top-lane")
+        .copied()
+        .expect("the corpus has a tag on the top lane");
+    let model = gitgraph::parse(src).expect("parses");
+    let d = laid_out(src);
+    let top = model
+        .commits
+        .iter()
+        .find(|c| !c.tags.is_empty())
+        .expect("a tagged commit");
+    let tag = d
+        .node(&format!("{}#tag0", top.id))
+        .expect("the tag is drawn");
+    let dot = d.node(&top.id).expect("the commit is drawn");
+
+    // It is the highest thing on the page: above its own commit, and above every lane name.
+    assert!(
+        tag.bounds().1 < dot.bounds().1,
+        "{name}: the tag is not above its commit"
+    );
+    for n in &d.nodes {
+        assert!(
+            n.bounds().1 >= tag.bounds().1 - 0.01,
+            "{name}: {} is drawn above the tag on the topmost lane",
+            n.id
+        );
+    }
+    // …and the page starts at the margin above it, rather than cutting it off.
+    assert!(
+        (tag.bounds().1 - super::MARGIN).abs() < 0.01,
+        "{name}: the drawing starts {} above the tag instead of at the margin",
+        svg::num(tag.bounds().1)
+    );
+    assert!(
+        tag.bounds().3 <= d.height + 0.01 && tag.bounds().1 >= -0.01,
+        "{name}: the tag is outside the viewBox"
+    );
 }
 
 /// **An architecture edge leaves and arrives by the sides the source named.**
@@ -2461,19 +2690,25 @@ fn a_timelines_periods_run_in_source_order() {
     }
 }
 
-/// **Two commits' captions do not overlap.**
+/// **Two of a git graph's labels do not overlap.**
 ///
 /// Seen in the gallery, not by a test: a commit whose caption is wider than [`COMMIT_STEP`] is
 /// drawn over its neighbour's, and the two sets of words become one unreadable smear. The step
-/// between commits is a constant, so the caption is the only thing that can move — and making the
-/// step follow the widest caption is a change to where every commit in every git graph is drawn,
+/// between commits is a constant, so the label is the only thing that can move — and making the
+/// step follow the widest label is a change to where every commit in every git graph is drawn,
 /// which is a piece of work with its own golden churn rather than a correction.
 ///
+/// **A tag is in the same family**, and is checked here rather than in a second ignored test: a
+/// ticket is a label too, the same constant fails to make room for it, and one piece of work
+/// fixes both. [`LANE_STEP`] is the other half of it — a tag hangs above its commit, so a tall
+/// stack on lane *k* reaches into lane *k-1* for the same reason.
+///
 /// [`COMMIT_STEP`]: super::gitgraph::COMMIT_STEP
+/// [`LANE_STEP`]: super::gitgraph::LANE_STEP
 #[test]
-#[ignore = "known defect, recorded in docs/STATUS.md: a commit caption wider than COMMIT_STEP is \
-            drawn over the caption of the commit beside it; the fix is a caption-aware step, \
-            which moves every existing git graph"]
+#[ignore = "known defect, recorded in docs/STATUS.md: a git graph label — a caption or a tag — \
+            bigger than the step between commits is drawn over the one beside it; the fix is a \
+            label-aware step, which moves every existing git graph"]
 fn no_two_git_graph_captions_are_drawn_on_top_of_each_other() {
     if !text_metrics::fonts_available() {
         return;
@@ -2484,7 +2719,7 @@ fn no_two_git_graph_captions_are_drawn_on_top_of_each_other() {
         let captions: Vec<&super::PlacedNode> = d
             .nodes
             .iter()
-            .filter(|n| n.id.ends_with("#caption"))
+            .filter(|n| n.id.ends_with("#caption") || n.id.contains("#tag"))
             .collect();
         for (i, a) in captions.iter().enumerate() {
             for b in &captions[i + 1..] {
@@ -2493,7 +2728,7 @@ fn no_two_git_graph_captions_are_drawn_on_top_of_each_other() {
                 let overlap = al < br && bl < ar && at < bb && bt < ab;
                 assert!(
                     !overlap,
-                    "{name}: the captions {:?} and {:?} are drawn on top of one another",
+                    "{name}: the labels {:?} and {:?} are drawn on top of one another",
                     a.label.lines.join(" "),
                     b.label.lines.join(" ")
                 );

@@ -1589,12 +1589,14 @@ fn a_gantt_charts_rows_ticks_and_sections_each_carry_their_own_tasks_words() {
     }
 }
 
-/// **gitGraph** — a caption belongs to its own commit's dot, and a branch's name to its own lane.
+/// **gitGraph** — a caption belongs to its own commit's dot, a tag to the commit under it, and a
+/// branch's name to its own lane.
 ///
-/// The place is stated twice over, once for each axis of the picture. A caption is drawn half a
-/// dot plus a gap **below** its own commit in all three directions, so the commit directly above
-/// it on its own column is the one it captions. A lane's position is read off the commits made on
-/// it, so nothing here recomputes the lane spacing.
+/// The place is stated once for each axis of the picture. A caption is drawn half a dot plus a gap
+/// **below** its own commit in all three directions, so the commit directly above it on its own
+/// column is the one it captions; a tag is drawn **above**, so the nearest dot below it is the
+/// commit it marks. A lane's position is read off the commits made on it, so nothing here
+/// recomputes the lane spacing.
 #[test]
 fn a_git_graphs_captions_and_lane_names_belong_to_their_own_commits_and_branches() {
     if !text_metrics::fonts_available() {
@@ -1609,12 +1611,11 @@ fn a_git_graphs_captions_and_lane_names_belong_to_their_own_commits_and_branches
             _ => p.x,
         };
 
-        // What a commit has to say for itself: its tags, or the id **the author wrote**. A
-        // generated id names nothing, so a commit that was given none is captioned with nothing.
+        // What a commit is captioned with: the id **the author wrote**, and nothing else. A
+        // generated id names nothing, so a commit that was given none is captioned with nothing —
+        // and a tag is not a caption at all, it is drawn above the dot in a ticket of its own.
         let says = |c: &Commit| -> String {
-            if !c.tags.is_empty() {
-                as_drawn(&c.tags.join(", "))
-            } else if c.explicit_id {
+            if c.explicit_id {
                 as_drawn(&c.id)
             } else {
                 String::new()
@@ -1663,6 +1664,45 @@ fn a_git_graphs_captions_and_lane_names_belong_to_their_own_commits_and_branches
             carried,
             "{name}: {} captions were drawn, and {carried} commits carry one",
             captions.len()
+        );
+
+        // (a2) the tags, on the other side of the dot. Found the same way and from the opposite
+        // direction: the nearest dot **below** a ticket is the commit it marks. Nothing here reads
+        // the tag's id, so a tag hung over the wrong commit is caught by where it is drawn rather
+        // than by what it was called.
+        let tickets: Vec<&PlacedNode> = d.nodes.iter().filter(|n| n.shape == Glyph::Tag).collect();
+        for ticket in &tickets {
+            let owner = dots
+                .iter()
+                .enumerate()
+                .filter(|(_, dot)| {
+                    (dot.center.x - ticket.center.x).abs() < 0.5 && dot.center.y > ticket.center.y
+                })
+                .min_by(|a, b| cmp(a.1.center.y, b.1.center.y))
+                .map(|(i, _)| i)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{name}: the tag {:?} hangs over no commit at all",
+                        words(&ticket.label)
+                    )
+                });
+            assert!(
+                model.commits[owner]
+                    .tags
+                    .iter()
+                    .any(|t| as_drawn(t) == words(&ticket.label)),
+                "{name}: the tag {:?} hangs over commit {:?}, which is tagged {:?}",
+                words(&ticket.label),
+                model.commits[owner].id,
+                model.commits[owner].tags
+            );
+        }
+        assert_eq!(
+            tickets.len(),
+            model.commits.iter().map(|c| c.tags.len()).sum::<usize>(),
+            "{name}: {} tickets were drawn, and the source writes {} tags",
+            tickets.len(),
+            model.commits.iter().map(|c| c.tags.len()).sum::<usize>()
         );
 
         // (b) the lane names, read across the page.

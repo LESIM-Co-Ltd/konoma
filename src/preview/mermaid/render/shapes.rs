@@ -122,6 +122,31 @@ pub const ARROW_HEAD: f64 = 10.0;
 /// Radius of a git graph's commit dot.
 pub const COMMIT_RADIUS: f64 = 8.0;
 
+/// How far each pointed end of a git graph's tag runs, horizontally.
+///
+/// mermaid points only the end nearest the commit and leaves the other flat
+/// (`gitGraphRenderer.ts`'s `tag-label-bkg` polygon). konoma points **both** ends, because every
+/// other glyph here draws its label centred on the node and a one-sided point would put the words
+/// off-centre in the shape they sit in — the whole of `svg::emit_node`'s text placement would need
+/// a per-glyph exception to say otherwise. Two points and the hole still read as a tag, which is
+/// the bar §0-1 sets.
+pub const TAG_POINT: f64 = 7.0;
+
+/// Blank space between a tag's words and where its pointed end begins.
+pub const TAG_PAD_X: f64 = 5.0;
+
+/// Blank space above and below a tag's words.
+pub const TAG_PAD_Y: f64 = 3.0;
+
+/// Half the height of the short flat edge each of a tag's points is truncated to.
+///
+/// mermaid truncates its point the same way (its left edge spans `2 * PY`): a needle-sharp point
+/// disappears into the stroke at a terminal's scale.
+pub const TAG_TIP: f64 = 3.0;
+
+/// Radius of the hole punched in a tag, near its leading point (mermaid's `tag-hole`).
+pub const TAG_HOLE_RADIUS: f64 = 1.5;
+
 /// What a node is drawn as.
 ///
 /// See the module docs: one enum over both diagram families, so that everything downstream is
@@ -208,6 +233,12 @@ pub enum Glyph {
     BlockArrow,
     /// A git graph's `type: REVERSE` — a commit dot with a cross through it.
     Reverted,
+    /// A git graph's `tag:` — a ticket with a hole punched in it, holding the tag's own words.
+    ///
+    /// A tag is not a caption: it is a name someone pinned onto a commit, and a reader picks the
+    /// two or three tagged commits out of a history by looking for the shape. Drawn as bare words
+    /// it is indistinguishable from the commit's id, which is what this glyph exists to fix.
+    Tag,
 }
 
 /// Continuous geometry a chart mark needs that its bounding box cannot express.
@@ -447,6 +478,19 @@ pub enum Outline {
     Crossed {
         /// Radius.
         r: f64,
+    },
+    /// A git graph's tag: a ticket with a point at each end and a hole near the leading one.
+    Tag {
+        /// Width of the bounding box.
+        w: f64,
+        /// Height of the bounding box.
+        h: f64,
+        /// How far each pointed end runs, horizontally.
+        point: f64,
+        /// Half the height of the flat edge each point is truncated to.
+        tip: f64,
+        /// Radius of the hole.
+        hole: f64,
     },
     /// A filled dot with no outline — the `[*]` an arrow leaves.
     Disc {
@@ -765,6 +809,11 @@ pub fn size(glyph: Glyph, label: Size) -> Size {
         ),
         // A commit dot, whatever it is called.
         Glyph::Reverted => Size::new(COMMIT_RADIUS * 2.0, COMMIT_RADIUS * 2.0),
+        // A tag is its words, the room its two points run into, and a little air.
+        Glyph::Tag => Size::new(
+            label.w + (TAG_PAD_X + TAG_POINT) * 2.0,
+            label.h + TAG_PAD_Y * 2.0,
+        ),
     }
 }
 
@@ -931,6 +980,16 @@ fn flow_outline_or_glyph(glyph: Glyph, size: Size) -> Outline {
         Glyph::Reverted => Outline::Crossed {
             r: size.w.min(size.h) / 2.0,
         },
+        Glyph::Tag => Outline::Tag {
+            w: size.w,
+            h: size.h,
+            // A box narrower than its own two points would turn inside out, so the run is capped
+            // at the half-width. Nothing sizes a tag that small, and a glyph that draws a valid
+            // shape for every box it is handed is one fewer thing a caller can get wrong.
+            point: TAG_POINT.min(size.w / 2.0),
+            tip: TAG_TIP.min(size.h / 2.0),
+            hole: TAG_HOLE_RADIUS,
+        },
         // Handled by `outline` before it delegates here.
         Glyph::Wedge
         | Glyph::ChartBar
@@ -964,6 +1023,37 @@ fn bang_polygon(size: Size) -> Vec<Point> {
         .collect()
 }
 
+/// The outline of a git graph's tag: a rectangle whose two ends are drawn out into truncated
+/// points, walked clockwise from the top of the leading one.
+///
+/// Takes `point` and `tip` rather than reading the constants, so that the shape [`svg`] draws is
+/// built from the numbers [`Outline::Tag`] carries and there is no second copy of the capping to
+/// drift (`docs/FEATURE-MERMAID-RENDERER.md` §6-A item 19).
+///
+/// The hole is not part of it — a polygon is a boundary, and a hole punched inside one is a second
+/// mark drawn on top of it.
+///
+/// [`svg`]: super::svg
+pub fn tag_points(w: f64, h: f64, point: f64, tip: f64) -> Vec<Point> {
+    let (hw, hh) = (w / 2.0, h / 2.0);
+    vec![
+        Point::new(-hw, -tip),
+        Point::new(-hw + point, -hh),
+        Point::new(hw - point, -hh),
+        Point::new(hw, -tip),
+        Point::new(hw, tip),
+        Point::new(hw - point, hh),
+        Point::new(-hw + point, hh),
+        Point::new(-hw, tip),
+    ]
+}
+
+/// Where a tag's hole is punched, relative to the node centre: inside the leading point, where a
+/// string would go through it.
+pub fn tag_hole_center(w: f64, point: f64) -> Point {
+    Point::new(-w / 2.0 + point * 0.6, 0.0)
+}
+
 /// The vertices of a polygonal glyph, relative to the node centre, in boundary order. Empty for
 /// a glyph whose boundary is not a polygon.
 pub fn polygon(glyph: Glyph, size: Size) -> Vec<Point> {
@@ -971,6 +1061,14 @@ pub fn polygon(glyph: Glyph, size: Size) -> Vec<Point> {
         Glyph::Flow(shape) => flow_polygon(shape, size),
         Glyph::Choice => flow_polygon(Shape::Diamond, size),
         Glyph::Bang => bang_polygon(size),
+        // The same capping `outline` applies, so the boundary the invariants sample is the
+        // boundary the page shows.
+        Glyph::Tag => tag_points(
+            size.w,
+            size.h,
+            TAG_POINT.min(size.w / 2.0),
+            TAG_TIP.min(size.h / 2.0),
+        ),
         _ => Vec::new(),
     }
 }
@@ -1009,7 +1107,10 @@ pub fn intersect(glyph: Glyph, center: Point, size: Size, target: &Point) -> Poi
         | Glyph::Cloud
         | Glyph::Bang
         | Glyph::Underline
-        | Glyph::BlockArrow => intersect_rect(center.x, center.y, size.w, size.h, target),
+        | Glyph::BlockArrow
+        // A tag is never an edge's endpoint either: it hangs above its commit and nothing is
+        // drawn to it.
+        | Glyph::Tag => intersect_rect(center.x, center.y, size.w, size.h, target),
         // A commit dot is a circle, and a line between two commits ends on it.
         Glyph::Face | Glyph::Reverted => {
             intersect_ellipse(center.x, center.y, size.w / 2.0, size.h / 2.0, target)
