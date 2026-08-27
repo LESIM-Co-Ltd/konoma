@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-08-27
+
 ### Changed
 - **Every mermaid diagram is now drawn by konoma itself**, and the renderer it used to call is no longer a
   dependency. All twenty-three kinds mermaid documents — flowcharts, state, class,
@@ -34,8 +36,36 @@ All notable changes to konoma are documented in this file. The format is based o
   draw now says so and shows the source instead of inventing one. Diagrams also render about 145×
   faster at the median and 218× faster at the worst case (0.09 ms / 0.74 ms / 3.04 ms for the
   median, 90th percentile and slowest of 161 diagrams, against 13.2 / 86.8 / 662 ms).
+- **A few `erDiagram` sources that used to draw a picture now show their source instead.** A
+  bracket alias belongs to a declaration — `CUSTOMER["The customer"]` — and mermaid's grammar does
+  not allow one anywhere else. konoma used to accept it anyway and close the bracket on the last
+  `]` on the line, so `p[Person] ||--o| a["Customer Account"] : has` became a single entity named
+  `Person] ||--o| a["Customer Account"` with the relationship silently gone. Such a line is now
+  refused and the fence keeps its source, which says something is wrong instead of inventing a
+  diagram. Two forms are affected: an alias on a relationship or `subgraph` line, and two
+  declarations written on one line (`A[one] B[two]`), which mermaid accepts and konoma does not.
+  Write them on separate lines, or declare the alias once and use the short name after that.
+  Being precise about the bracket also fixed three cases that were quietly wrong the other way: an
+  entity whose quoted name contains `[` was dropped, a `:::class` after an alias was dropped, and a
+  relationship whose right-hand entity carried an alias lost that entity entirely.
 
 ### Fixed
+- **Fifteen ways a diagram could be drawn wrong, found by auditing the new renderer against each
+  grammar rather than against past bugs.** The corpus went from 47 cases to 309 and every
+  behaviour that only a snapshot was guarding now has a test that names it. The ones a reader
+  would have noticed: a pie chart with a single slice drew no percentage at all, and one slice
+  dwarfing the others lost its label too; a radar chart whose curve did not name every axis was
+  drawn as a partial polygon, reading as zero on axes that were never measured; a treemap dropped
+  any tile under half a pixel, so a small value beside a large one vanished from the map; two
+  plots of different lengths in one xy chart resolved against two different x axes; data outside a
+  declared range was drawn outside the frame, at a height with no tick to read it against; a
+  narrow y axis labelled its ticks `0, 0, 0, 0.001`; architecture boxes with long labels
+  overlapped each other and an edge ended inside a box; a nested architecture group's frame
+  escaped its parent; a multi-line label in a class or kanban cell was drawn as one line and ran
+  out of its box; a timeline's tie line ran down the next period's column; a requirement
+  relationship drew its arrowhead at the source end; `direction` was parsed and discarded by two
+  kinds; a `columns auto` block was laid out in a single column; and a block arrow pointed away
+  from the direction it was written in.
 - **Five `[external]` switches in the two shipped example configs were silently doing nothing.**
   The `[jj]` section header had been placed in the middle of `[external]`'s keys, so `pdf`, `video`,
   `remote_images`, `open_links` and `preview_commands` were parsed as part of `[jj]` — a table with
@@ -2135,7 +2165,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.5...v0.27.0
 [0.26.5]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.4...v0.26.5
 [0.26.4]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.3...v0.26.4
