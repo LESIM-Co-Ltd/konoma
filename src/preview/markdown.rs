@@ -8998,6 +8998,25 @@ plain body
         assert!(mermaid_to_svg("definitely not a diagram !!!", "dark").is_none());
     }
 
+    /// **A statement mermaid throws on becomes no drawing at all, at the entry a reader reaches.**
+    ///
+    /// `erDiagram` with `p[Person] ||--o| a["Customer Account"] : has` used to come back as one
+    /// entity called `p`, labelled with the rest of the line, and no relationship — a picture
+    /// invented from a line that has no meaning. `er::tests::a_bracket_alias_is_only_a_declaration`
+    /// states the grammar rule; this states the consequence a reader sees, which is that the
+    /// fence keeps its source instead. The reason is checked too, because a `None` on its own
+    /// cannot tell "refused for the right cause" from "refused for some other one".
+    #[test]
+    fn a_diagram_invented_from_a_meaningless_line_is_not_drawn() {
+        let src = "erDiagram\n  p[Person] ||--o| a[\"Customer Account\"] : has";
+        assert!(mermaid_to_svg(src, "dark").is_none());
+        let reason = mermaid_to_svg_reason(src, "dark").unwrap_err();
+        assert!(
+            reason.contains("names an entity's alias"),
+            "the reason should name the cause; got {reason:?}"
+        );
+    }
+
     // ---- stage 1e: which renderer draws which diagram ------------------------------------
 
     /// The routing itself: **every** diagram konoma draws comes from konoma's own renderer.
