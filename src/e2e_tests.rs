@@ -11263,6 +11263,56 @@ fn e2e_ui_math_expression_decodes_through_real_worker_and_reserves_image_row() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// End-to-end confirmation of the inline-math-placement feature itself, through the **real**
+/// production pipeline this file's other math tests already trust (`math_slot`'s real closure in
+/// `md_render.rs`, the real `math_cells` sizing formula, and a real RaTeX render via
+/// `drain_md_images`) — not just the `render.rs`-level unit tests, which control `MathSlot` directly
+/// and can't by themselves confirm `math_cells` actually asks for `rows == 1` on a real expression.
+/// `before $E=mc^2$ after` is the exact shape `samples/markdown.ja.md`'s own real regression was
+/// reported against (it used to get lifted onto its own line, splitting the sentence in two).
+#[test]
+fn e2e_ui_inline_math_that_fits_stays_on_the_same_decorated_line() {
+    let dir = sandbox("math_inline_same_line");
+    std::fs::write(dir.join("d.md"), "before $E=mc^2$ after\n").unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images(); // real background RaTeX render + math_cells sizing
+
+    let placements = s.app.md_images();
+    assert_eq!(placements.len(), 1, "1つの数式プレースメントが立つはず");
+    assert_eq!(
+        placements[0].rows, 1,
+        "小さい数式は文中(1行)に収まるはず: {:?}",
+        placements[0]
+    );
+    assert!(placements[0].cols > 0);
+    // `col` is the exact cell "before " ends at — not 0 (that would mean the text before the math
+    // was dropped) and not off past `cols`+"before "'s width (that would mean it landed past the
+    // text that should still follow it).
+    assert!(
+        placements[0].col > 0,
+        "\"before \" precedes the math: {:?}",
+        placements[0]
+    );
+
+    // `decorated_lines` is what `md_layout`/`md_slice` actually draw from — the same width the
+    // automatic post-key draw already cached at (Sim's own default terminal, minus the 2-column
+    // border), so this reads the *same* cache `md_images` above was just read from, not a fresh
+    // rebuild at a different width.
+    let inner_width = s.term.size().unwrap().width - 2;
+    let lines = s.app.decorated_lines(inner_width);
+    assert_eq!(
+        lines.len(),
+        1,
+        "\"before … after\" は 1 行のまま(自前の行に持ち上がらない): {:?}",
+        lines.iter().map(|l| l.to_string()).collect::<Vec<_>>()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Failure path (design principle #3): when the real background render fails — a mermaid fence
 /// no diagram grammar claims, and a math expression RaTeX can't parse — the async result
 /// still arrives (never silently drops) and must degrade safely to the raw source text: never stuck
@@ -12749,5 +12799,279 @@ fn e2e_ui_a_pane_with_no_room_for_a_column_draws_no_inline_image() {
         kitty_placeholder_rows(&s.term).is_empty(),
         "1桁も入らないペインに placeholder を描いている"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- Inline math `col` survives post-decoration width changes (coordinator-reported, reproduced on
+// real terminal output: a link/checkbox/emoji/autolink earlier on the same line as an inline math
+// expression changes that line's own display width during `postprocess_md` — collapsing a link's own
+// `label (URL)` to `icon label`, a checkbox's `[ ] ` to a Nerd Font glyph, `:shortcode:` to one emoji
+// glyph — all of which run strictly *after* `render_inline_math` records `col` against the
+// **pre**-decoration line. Fixed via a sentinel span (`inline_math_reservation_style`) the app re-locates
+// post-decoration (`App::resolve_inline_math_cols`) — see that function's, and `render_inline_math`'s,
+// own doc comments. Every test below drives the **real** production pipeline (`Sim` + `drain_md_images`,
+// real RaTeX render + real `math_cells` + real `postprocess_md`), not a mocked slot, and asserts against
+// `App::decorated_lines` (the exact lines the preview actually draws) cross-checked with `md_images()`'s
+// own `col`/`cols` — matching the coordinator's own explicit instruction: assert that the reserved cells
+// are genuinely blank in the decorated output, and that the text on either side is exactly what is
+// expected, rather than merely re-deriving `col` the same way the fix itself does. ----
+
+/// Splits a decorated `Line`'s own plain text into (before, reserved, after) by **display column**
+/// (unicode-width aware — wide glyphs like Nerd Font icons/emoji included), given an `ImagePlacement`'s
+/// own `col`/`cols`. Deliberately does **not** reuse `App::resolve_inline_math_cols`'s own column-summing
+/// logic (that would only prove the fix agrees with itself) — this walks the line's own plain text
+/// independently, by `char`, via `unicode_width::UnicodeWidthChar`.
+fn slice_by_display_col(
+    line: &ratatui::text::Line<'_>,
+    col: u16,
+    cols: u16,
+) -> (String, String, String) {
+    use unicode_width::UnicodeWidthChar;
+    let text: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+    let (mut before, mut reserved, mut after) = (String::new(), String::new(), String::new());
+    let (start, end) = (col as u32, col as u32 + cols as u32);
+    let mut w: u32 = 0;
+    for ch in text.chars() {
+        if w < start {
+            before.push(ch);
+        } else if w < end {
+            reserved.push(ch);
+        } else {
+            after.push(ch);
+        }
+        w += UnicodeWidthChar::width(ch).unwrap_or(0) as u32;
+    }
+    (before, reserved, after)
+}
+
+/// The decorated text occupying display columns `[start, end)` of `line` — used to extract exactly
+/// the gap *between* two `ImagePlacement`s (`start` = the first one's own `col + cols`, `end` = the
+/// second one's own `col`), independent of `slice_by_display_col`'s own fixed "from column 0" start.
+fn text_between_cols(line: &ratatui::text::Line<'_>, start: u16, end: u16) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let text: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+    let (start, end) = (start as u32, end as u32);
+    let mut out = String::new();
+    let mut w: u32 = 0;
+    for ch in text.chars() {
+        if w >= start && w < end {
+            out.push(ch);
+        }
+        w += UnicodeWidthChar::width(ch).unwrap_or(0) as u32;
+    }
+    out
+}
+
+/// Drives the real production pipeline for `md` under `cfg` and returns (the single inline math
+/// placement, the decorated line it landed on) — the shared setup every test in this section uses.
+/// Panics (via the `assert_eq!`) if the document did not yield exactly one inline (`rows == 1`)
+/// placement — every source string in this section is deliberately shaped so that is always true.
+fn inline_math_placement_and_line(
+    dir_name: &str,
+    md: &str,
+    cfg: Config,
+) -> (
+    crate::preview::markdown::ImagePlacement,
+    ratatui::text::Line<'static>,
+) {
+    let dir = sandbox(dir_name);
+    std::fs::write(dir.join("d.md"), md).unwrap();
+    let root = canon(&dir);
+    let mut s = Sim::with_config(&root, cfg).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images();
+    let placements = s.app.md_images();
+    assert_eq!(placements.len(), 1, "{placements:?}");
+    let p = placements[0].clone();
+    assert_eq!(
+        p.rows, 1,
+        "this section's own source strings are all small inline math: {p:?}"
+    );
+    let w = s.term.size().unwrap().width - 2;
+    let lines = s.app.decorated_lines(w);
+    let line = lines[p.line].clone();
+    std::fs::remove_dir_all(&dir).ok();
+    (p, line)
+}
+
+/// A link (long URL) before inline math: `collapse_links` folds `[ratatui](<long URL>)` down to
+/// `icon ratatui` — a large shrink, since the URL (discarded entirely from the decorated form) is much
+/// longer than the label. `col` must land right after the *decorated* prefix, not the raw one.
+#[test]
+fn e2e_ui_inline_math_col_survives_link_collapsing_long_url() {
+    let (p, line) = inline_math_placement_and_line(
+        "mathcol_link_long",
+        "See [ratatui](https://github.com/ratatui-org/ratatui/blob/main/README.md) and $E=mc^2$ here.\n",
+        Config::default(),
+    );
+    let (before, reserved, after) = slice_by_display_col(&line, p.col, p.cols);
+    assert_eq!(reserved, " ".repeat(p.cols as usize), "line: {line:?}");
+    let icon = crate::ui::icons::link_icon();
+    assert_eq!(before, format!("See {icon} ratatui and "), "line: {line:?}");
+    assert_eq!(after, " here.", "line: {line:?}");
+}
+
+/// The identical document, with a *short* URL instead — the decorated form is unaffected either way
+/// (the URL is discarded from display, only the label survives), so `col` must come out **identical**
+/// to the long-URL case: proof the fix tracks the *decorated* width, not something tied to how much the
+/// original URL happened to shrink by.
+#[test]
+fn e2e_ui_inline_math_col_survives_link_collapsing_short_url() {
+    let (p, line) = inline_math_placement_and_line(
+        "mathcol_link_short",
+        "See [ratatui](https://r.rs) and $E=mc^2$ here.\n",
+        Config::default(),
+    );
+    let (before, reserved, after) = slice_by_display_col(&line, p.col, p.cols);
+    assert_eq!(reserved, " ".repeat(p.cols as usize), "line: {line:?}");
+    let icon = crate::ui::icons::link_icon();
+    assert_eq!(before, format!("See {icon} ratatui and "), "line: {line:?}");
+    assert_eq!(after, " here.", "line: {line:?}");
+}
+
+/// A task checkbox (`ui.icons = true`, the default) before inline math: `"- [ ] "` collapses to
+/// `"- " + icon + " "`.
+#[test]
+fn e2e_ui_inline_math_col_survives_checkbox_icon_collapsing_icons_on() {
+    let (p, line) = inline_math_placement_and_line(
+        "mathcol_checkbox_icons_on",
+        "- [ ] energy $E=mc^2$ here\n",
+        Config::default(),
+    );
+    let (before, reserved, after) = slice_by_display_col(&line, p.col, p.cols);
+    assert_eq!(reserved, " ".repeat(p.cols as usize), "line: {line:?}");
+    let icon = crate::ui::icons::task_icon(false);
+    assert_eq!(before, format!("- {icon} energy "), "line: {line:?}");
+    assert_eq!(after, " here", "line: {line:?}");
+}
+
+/// The same document with `ui.icons = false`: the checkbox marker stays ASCII (`"[ ]"`, no Nerd Font
+/// glyph) — still a real, confirmed width change from the raw `"[ ] "` (this pass folds the marker's
+/// own trailing source space into its replaced range regardless of `icons`), so this is not a "nothing
+/// to fix" case even without icons.
+#[test]
+fn e2e_ui_inline_math_col_survives_checkbox_icon_collapsing_icons_off() {
+    let mut cfg = Config::default();
+    cfg.ui.icons = false;
+    let (p, line) = inline_math_placement_and_line(
+        "mathcol_checkbox_icons_off",
+        "- [ ] energy $E=mc^2$ here\n",
+        cfg,
+    );
+    let (before, reserved, after) = slice_by_display_col(&line, p.col, p.cols);
+    assert_eq!(reserved, " ".repeat(p.cols as usize), "line: {line:?}");
+    assert_eq!(before, "- [ ] energy ", "line: {line:?}");
+    assert_eq!(after, " here", "line: {line:?}");
+}
+
+/// A `:shortcode:` emoji before inline math: `substitute_emoji` folds `:tada:` (6 cells) down to `🎉`
+/// (2 cells, a wide glyph) — a case `slice_by_display_col`'s own unicode-width walk has to get right on
+/// *both* sides of the fix (measuring the emoji's own width, and `col` landing past it).
+#[test]
+fn e2e_ui_inline_math_col_survives_emoji_substitution() {
+    let (p, line) = inline_math_placement_and_line(
+        "mathcol_emoji",
+        "party :tada: $E=mc^2$ time\n",
+        Config::default(),
+    );
+    let (before, reserved, after) = slice_by_display_col(&line, p.col, p.cols);
+    assert_eq!(reserved, " ".repeat(p.cols as usize), "line: {line:?}");
+    assert_eq!(before, "party \u{1f389} ", "line: {line:?}");
+    assert_eq!(after, " time", "line: {line:?}");
+}
+
+/// A bare URL autolink (`ui.md_autolink`, the default) before inline math. `autolink_bare_urls`
+/// (`app/md_text.rs`) only **restyles** a recognized bare URL as a link (blue + underline) — it never
+/// changes the text or adds an icon (confirmed directly, reading that function's own implementation:
+/// unlike `collapse_links`, it never calls `crate::ui::icons::link_icon()` at all) — so this case, unlike
+/// the others in this section, involves **no actual width change** for `col` to have to track. Kept as
+/// its own test anyway (matching the coordinator's own explicit request to cover autolink) precisely
+/// *because* it pins that "no width change" fact: `col` must still land exactly where the raw,
+/// pre-decoration width already put it.
+#[test]
+fn e2e_ui_inline_math_col_unaffected_by_bare_url_autolinking() {
+    let (p, line) = inline_math_placement_and_line(
+        "mathcol_autolink",
+        "visit https://ratatui.rs and $E=mc^2$ now\n",
+        Config::default(),
+    );
+    let (before, reserved, after) = slice_by_display_col(&line, p.col, p.cols);
+    assert_eq!(reserved, " ".repeat(p.cols as usize), "line: {line:?}");
+    assert_eq!(before, "visit https://ratatui.rs and ", "line: {line:?}");
+    assert_eq!(after, " now", "line: {line:?}");
+}
+
+/// The combination the coordinator's own explicit instruction asked for: a link, an emoji, *and* a
+/// bare-URL autolink all on the same line as the inline math, all before it — a link collapsing (large
+/// shrink), an emoji substituting (glyph-width change), and a no-op autolink restyle, compounding in a
+/// single line. `col` must still land exactly past the fully-decorated prefix.
+#[test]
+fn e2e_ui_inline_math_col_survives_a_combination_of_every_decoration() {
+    let (p, line) = inline_math_placement_and_line(
+        "mathcol_combo",
+        "See [ratatui](https://ratatui.rs) :tada: $E=mc^2$ now https://example.com end\n",
+        Config::default(),
+    );
+    let (before, reserved, after) = slice_by_display_col(&line, p.col, p.cols);
+    assert_eq!(reserved, " ".repeat(p.cols as usize), "line: {line:?}");
+    let icon = crate::ui::icons::link_icon();
+    assert_eq!(
+        before,
+        format!("See {icon} ratatui \u{1f389} "),
+        "line: {line:?}"
+    );
+    assert_eq!(after, " now https://example.com end", "line: {line:?}");
+}
+
+/// Two inline math expressions sharing a *decorated* line, with a link between them — checks that
+/// `App::resolve_inline_math_cols` matches each placement to its own sentinel *positionally* (the
+/// *k*-th sentinel on a line belongs to the *k*-th placement, in document order, that names that
+/// line), not merely "the first sentinel found", which would give both placements the identical,
+/// wrong `col`. `render.rs`'s own `two_inline_math_expressions_on_the_same_line_each_get_their_own_
+/// placement` pins the identical property one layer down, with no decoration involved at all — this
+/// is the same property surviving `postprocess_md`.
+#[test]
+fn e2e_ui_two_inline_math_placements_on_one_decorated_line_each_keep_their_own_col() {
+    let dir = sandbox("mathcol_two_on_one_line");
+    std::fs::write(
+        dir.join("d.md"),
+        "before [ratatui](https://ratatui.rs) mid $E=mc^2$ then $H_2O$ end\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    s.drain_md_images(); // two distinct expressions render on two separate background completions
+    s.drain_md_images();
+    let placements = s.app.md_images();
+    assert_eq!(placements.len(), 2, "{placements:?}");
+    assert!(placements.iter().all(|p| p.rows == 1), "{placements:?}");
+    assert_eq!(placements[0].line, placements[1].line, "{placements:?}");
+    let w = s.term.size().unwrap().width - 2;
+    let lines = s.app.decorated_lines(w);
+    let line = &lines[placements[0].line];
+    let (p0, p1) = (&placements[0], &placements[1]);
+    assert!(
+        p0.col + p0.cols <= p1.col,
+        "the two placements must not overlap: {p0:?} {p1:?}"
+    );
+    let (before0, reserved0, _) = slice_by_display_col(line, p0.col, p0.cols);
+    assert_eq!(reserved0, " ".repeat(p0.cols as usize), "line: {line:?}");
+    let icon = crate::ui::icons::link_icon();
+    assert_eq!(
+        before0,
+        format!("before {icon} ratatui mid "),
+        "line: {line:?}"
+    );
+    // Everything strictly between the two reservations must be exactly " then " — not (were the two
+    // placements swapped, or given the same `col`) empty, overlapping either reservation, or missing
+    // the text a "first found" (rather than positional) sentinel match would have misattributed.
+    let mid = text_between_cols(line, p0.col + p0.cols, p1.col);
+    assert_eq!(mid, " then ", "line: {line:?}");
+    let (_, reserved1, after1) = slice_by_display_col(line, p1.col, p1.cols);
+    assert_eq!(reserved1, " ".repeat(p1.cols as usize), "line: {line:?}");
+    assert_eq!(after1, " end", "line: {line:?}");
     std::fs::remove_dir_all(&dir).ok();
 }

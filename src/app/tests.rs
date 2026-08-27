@@ -14087,24 +14087,73 @@ fn fence_crop_clamps_and_scales() {
 }
 
 /// A math expression's cell dimensions (pure function): the SVG's em unit (40/em) → rows,
-/// aspect ratio → columns. display is taller than inline; exceeding the width clamps while
-/// preserving aspect ratio; an extremely tall expression is capped at 24 rows. The sibling
-/// functions `mermaid_cells`/`fence_crop` were already tested, but these two were uncovered.
+/// aspect ratio → columns. Inline math always tries one row first (placed in the running text,
+/// like ordinary Markdown); it only falls back to the taller, multi-row layout when the expression
+/// is too *wide* to fit even at one row's height (a physical limit, not a height preference — see
+/// `math_cells`'s own doc comment for why an earlier, height-based cutoff was wrong). Display math
+/// is unchanged: still taller (`rows_per_em == 1.5`), still capped at 24 rows for an extremely tall
+/// expression. The sibling functions `mermaid_cells`/`fence_crop` were already tested, but these two
+/// were uncovered.
 #[test]
 fn math_cells_size_from_em_units() {
-    // inline: 1em (uh=40), aspect ratio 5:1 → 1 row × 10 columns.
+    // inline: 1em (uh=40), aspect ratio 5:1 → fits at one row's height → 1 row × 10 columns.
     assert_eq!(math_cells(200, 40, 8, 16, 100, false), (10, 1));
     // display has a larger rows_per_em (1.5>1.3) → even the same expression comes out taller
     // (inline above was 1 row).
     let (dc, dr) = math_cells(200, 40, 8, 16, 100, true);
     assert!(dr > 1, "display は inline(1行)より背が高い: {dr}");
     assert_eq!((dc, dr), (20, 2));
-    // Width exceeded: clamped preserving aspect ratio at avail=30 (columns stick to avail).
-    let (cc, _cr) = math_cells(1600, 40, 8, 16, 30, false);
-    assert_eq!(cc, 30, "幅は avail に張り付く");
-    // An extremely tall expression (like a matrix) tops out at 24 rows.
-    let (_bc, br) = math_cells(1200, 1200, 8, 16, 1000, false);
-    assert_eq!(br, 24, "行数は 24 で上限");
+    // A tall, narrow expression (aspect ratio 1:1, e.g. a stacked fraction or a small matrix) still
+    // fits comfortably at one row's height once there is enough available width — this is exactly
+    // the shape an earlier, em-height-based cutoff used to lift onto its own line for no reason a
+    // reader would recognize (see `math_cells`'s own doc comment on why that was wrong).
+    assert_eq!(
+        math_cells(1200, 1200, 8, 16, 1000, false),
+        (2, 1),
+        "縦横比 1:1 の背の高い式でも、幅さえあれば文中(1行)に収まる"
+    );
+    // A narrow `avail` (like a table cell) forces the width-triggered fallback branch to run for an
+    // expression that would otherwise sit comfortably at one row (aspect ratio 5:1 → 10 columns at
+    // one row — same shape as the very first assertion above, but with avail=8 instead of 100).
+    // `rows` still comes out `1`, not greater: once the one-row `cols` already exceeds `avail`, the
+    // *unconditional* avail clamp right below the fallback always re-fires too (its own `cols` only
+    // ever grows going from the fallback's `rows` back down from 1), and that clamp recomputes `rows`
+    // straight from `avail`/the aspect ratio alone — a value provably `< 1` (hence clamped to exactly
+    // `1`) whenever the trigger condition holds: continuous algebra, `ar > avail·fw/fh` (trigger) implies
+    // `avail·fw/(ar·fh) < 1` (the reclaimed `rows`) directly. So — a real, load-bearing property of this
+    // exact formula, not a loose choice of numbers — **inline math's own `rows` is always exactly `1`,
+    // for every width**: a too-wide expression is squeezed down to `avail` columns at one row's height
+    // rather than ever growing a second row. `render_math_slot` therefore always takes its own
+    // `!display && rows == 1` "place inline" branch for non-display math; the multi-row inline lift
+    // path it also still has is reachable only via a directly-supplied `MathSlot::Image { rows: 2.. }`
+    // (as this file's `render.rs` tests do), never via `math_cells` itself.
+    let (wc, wr) = math_cells(200, 40, 8, 16, 8, false);
+    assert_eq!(wc, 8, "幅は avail に張り付く");
+    assert_eq!(
+        wr, 1,
+        "縦横比 5:1 の式は avail=8 に収まらなくても rows は 1 のまま(cols だけ avail に張り付く)"
+    );
+    // The identical expression at ample width: still `(10, 1)`, matching the very first assertion —
+    // included here so the pair reads as a clean before/after of the same expression across a narrow
+    // vs. a generous `avail`.
+    assert_eq!(
+        math_cells(200, 40, 8, 16, 10, false),
+        (10, 1),
+        "avail が式の幅ちょうどなら文中(1行)に収まる"
+    );
+    // Width exceeded (display math — its own row formula never tries `rows == 1` first, so this
+    // exercises the ordinary avail clamp directly, unrelated to the inline fallback above): clamped
+    // preserving aspect ratio at avail=30 (columns stick to avail).
+    let (cc, _cr) = math_cells(1600, 40, 8, 16, 30, true);
+    assert_eq!(cc, 30, "幅は avail に張り付く(display)");
+    // An extremely tall *display* expression (like a large matrix) tops out at 24 rows. Inline math
+    // can never reach this cap at all (proof: whenever the width-triggered fallback fires, the
+    // fallback's own `cols` is always >= the one-row `cols` that already exceeded `avail` — so the
+    // very next `if cols > avail` clamp always re-fires too, and its own recomputed `rows` is bounded
+    // by `avail`, never by the taller pre-clamp formula) — so this case is display-only by
+    // construction, not merely by choice of numbers.
+    let (_bc, br) = math_cells(1200, 1200, 8, 16, 1000, true);
+    assert_eq!(br, 24, "行数は 24 で上限(display)");
 }
 
 /// An inline image's cell dimensions (pure function): based on its natural size, shrinks if the

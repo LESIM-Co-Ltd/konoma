@@ -179,8 +179,9 @@ graph TD
 
 ## Math (LaTeX → image)
 
-Inline math $E = mc^2$ and $H_2O$ cannot sit mid-line in a terminal, so they are **lifted
-onto their own line** and drawn as images (`[ui] math`). Display math is centered:
+Inline math $E = mc^2$ and $H_2O$ are drawn **in the running text**, like ordinary Markdown
+(`[ui] math`). An expression too wide for the line shrinks to fit instead of being lifted onto
+its own line. Display math is centered:
 
 $$
 \int_{-\infty}^{\infty} e^{-x^2}\,dx = \sqrt{\pi}

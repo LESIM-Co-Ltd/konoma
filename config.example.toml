@@ -245,8 +245,9 @@ mermaid_rows = 24
 
 # How LaTeX math is rendered.
 #   "image" (default) … rasterize $...$ / $$...$$ in-process via RaTeX (pure Rust, KaTeX quality, no browser/Node)
-#                       and show each as an inline image. A terminal cannot place an image mid-text, so inline
-#                       math is lifted onto its own line; display math ($$...$$, \[...\]) is centered.
+#                       and show each as an inline image. Inline math is always drawn in the running text, like
+#                       ordinary Markdown; an expression too wide for the line shrinks to fit instead of being
+#                       lifted onto its own line. Display math ($$...$$, \[...\]) is centered.
 #                       Non-graphics terminals and render failures degrade to the raw LaTeX text automatically.
 #   "text"            … leave the raw LaTeX ($...$) as plain text (no rendering).
 math = "image"

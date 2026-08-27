@@ -465,6 +465,7 @@ pub(super) fn autolink_bare_urls(
                 || crate::preview::markdown::is_code_header_span(&span)
                 || crate::preview::markdown::is_mermaid_header_span(&span)
                 || crate::preview::markdown::is_hidden_link_target(&span)
+                || crate::preview::markdown::is_inline_math_reservation_span(&span)
             {
                 new.push(span);
                 continue;
@@ -558,6 +559,7 @@ pub(super) fn substitute_emoji(lines: Vec<Line<'static>>) -> Vec<Line<'static>> 
                         || crate::preview::markdown::is_code_header_span(&span)
                         || crate::preview::markdown::is_mermaid_header_span(&span)
                         || crate::preview::markdown::is_hidden_link_target(&span)
+                        || crate::preview::markdown::is_inline_math_reservation_span(&span)
                     {
                         return span;
                     }

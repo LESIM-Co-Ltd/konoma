@@ -12423,12 +12423,15 @@ L0136 style=fg=-,bg=-,mod=- align=-
 L0137 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=D "$H_2O$"
 L0138 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "は、文中に置けないので"
-  s01 fg=-,bg=-,mod=B "自前の行に持ち上がって"
-  s02 fg=-,bg=-,mod=- " "
-  s03 fg=-,bg=-,mod=- "画像で描かれる（"
-  s04 fg=white,bg=-,mod=- "[ui] math"
-  s05 fg=-,bg=-,mod=- "）。ディスプレイ数式は中央寄せ:"
+  s00 fg=-,bg=-,mod=- "は、通常の Markdown と同じく"
+  s01 fg=-,bg=-,mod=B "文中"
+  s02 fg=-,bg=-,mod=- "に画像で描かれる"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=-,bg=-,mod=- "（"
+  s05 fg=white,bg=-,mod=- "[ui] math"
+  s06 fg=-,bg=-,mod=- "）。幅が広すぎる式は利用可能幅まで縮めて文中に置く（持ち上がらない）。"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=-,bg=-,mod=- "ディスプレイ数式は中央寄せ:"
 L0139 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=D "$$ \\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi} $$"
 L0140 style=fg=-,bg=-,mod=- align=-
@@ -13088,13 +13091,15 @@ L0136 style=fg=-,bg=-,mod=- align=-
 L0137 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=D "$H_2O$"
 L0138 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "cannot sit mid-line in a terminal, so they are "
-  s01 fg=-,bg=-,mod=B "lifted"
-  s02 fg=-,bg=-,mod=- " "
-  s03 fg=-,bg=-,mod=B "onto their own line"
-  s04 fg=-,bg=-,mod=- " and drawn as images ("
+  s00 fg=-,bg=-,mod=- "are drawn "
+  s01 fg=-,bg=-,mod=B "in the running text"
+  s02 fg=-,bg=-,mod=- ", like ordinary Markdown"
+  s03 fg=-,bg=-,mod=- " "
+  s04 fg=-,bg=-,mod=- "("
   s05 fg=white,bg=-,mod=- "[ui] math"
-  s06 fg=-,bg=-,mod=- "). Display math is centered:"
+  s06 fg=-,bg=-,mod=- "). An expression too wide for the line shrinks to fit instead of being lifted onto"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=-,bg=-,mod=- "its own line. Display math is centered:"
 L0139 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=D "$$ \\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi} $$"
 L0140 style=fg=-,bg=-,mod=- align=-

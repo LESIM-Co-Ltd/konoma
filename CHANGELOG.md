@@ -7,6 +7,21 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Fixed
+- **Inline LaTeX math split the sentence around it onto its own line.** Every `$…$`/`\(…\)`
+  expression was lifted onto a placeholder line of its own regardless of its size, so
+  `"inline math $E = mc^2$ and $H_2O$ are..."` rendered as three separate lines with the
+  surrounding prose cut apart mid-sentence — never how ordinary Markdown/browser rendering treats
+  inline math. Inline math is now always drawn **in the running text**, at roughly text scale,
+  with the reserved cell(s) wrapping to the next line along with the surrounding text when they
+  would not fit the remaining width; an expression too wide for the line shrinks to fit instead of
+  ever being lifted onto its own line. Display math (`$$…$$`/`\[…\]`) is unchanged: still centered
+  on its own line. Also fixed as part of the same change: `\(…\)`/`\[…\]` (not just `$…$`) now
+  keeps the space on either side of an inline expression instead of trimming it away, in every
+  code path that lifts math (including the one spanning multiple Markdown events, e.g. `$a **b**
+  c$`); and an inline expression sharing a line with a link, task checkbox, `:shortcode:` emoji, or
+  autolinked bare URL now lands at its actual post-decoration column instead of the pre-decoration
+  one, which used to leave the reserved cells (and the math drawn into them) visibly offset from
+  where the surrounding text actually put them.
 - **A `gitGraph`'s tags sat under the commits with everything else, and a tag hid the commit's
   id.** Every label in the diagram — a tag and an id alike — was drawn as bare words in one band
   below the dots, at whatever height the lane happened to sit, so the tags a reader is meant to

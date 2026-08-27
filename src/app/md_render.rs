@@ -71,12 +71,19 @@ impl App {
                     || live.contains(k)
             });
         }
-        let decorated = if resync {
+        let mut decorated = if resync {
             self.build_decorated(&path, width)
         } else {
             decorated
         };
         let (lines, targets) = self.postprocess_md(decorated.lines);
+        // Re-resolve every inline math placement's own `col` against these **decorated** lines — see
+        // `render_inline_math`'s own doc comment ("`col` recorded here is *provisional*") for the full
+        // reasoning and the real, confirmed bug this closes (a link/checkbox/emoji/autolink earlier on
+        // the same line changing width during `postprocess_md` left the math visibly offset from its
+        // own reserved cells). Must run after `postprocess_md`, before `lines`/`decorated.images` are
+        // stored into the cache below.
+        Self::resolve_inline_math_cols(&lines, &mut decorated.images);
         // The render pass's own record (`DecoratedMarkdown::extras`) plus the drawn mermaid
         // placements — see `build_md_items_from_render`, the one function both this and the
         // golden-snapshot harness build their items through.

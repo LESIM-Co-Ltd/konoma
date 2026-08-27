@@ -675,6 +675,42 @@ fn math_raw_lines(latex: &str, display: bool) -> Vec<Line<'static>> {
     vec![Line::from(Span::from(text).dim())]
 }
 
+/// Sentinel style for an inline math reservation span (`render::render_inline_math`'s own reserved
+/// cells — `cols` literal spaces, appended onto whatever paragraph line the expression sits on).
+/// Doubles as how `App::resolve_inline_math_cols` (`app/md_items.rs`) finds this exact span again in
+/// the **decorated** lines (`postprocess_md`'s own output) — same trick as the task-marker /
+/// hidden-link-target / mermaid-caption sentinels (`task_marker_style`/`hidden_link_target_style`/
+/// `mermaid_header_style`).
+///
+/// This exists because `ImagePlacement.col`, as `render_inline_math` first records it, is measured
+/// against the **pre**-decoration line — but `postprocess_md`'s own passes (`collapse_links`/
+/// `autolink_bare_urls`/`substitute_emoji`) can all change a line's own display width to the *left* of
+/// that reservation (a link's `label (URL)` collapsing to `icon label`, a task checkbox's `"[ ] "`
+/// collapsing to a Nerd Font glyph, `:shortcode:` becoming one glyph, a bare URL gaining an icon
+/// prefix) — none of which `render_inline_math` can see at record time, since it runs *before* any of
+/// them. A real, confirmed bug this sentinel exists to close: reserving `col` at record time and never
+/// revisiting it left the math visibly offset from its own reserved cells whenever an earlier link/
+/// checkbox/emoji/autolink on the *same* line changed width during decoration.
+///
+/// HIDDEN carries no visual meaning on its own (the content is already blank spaces, so nothing would
+/// be visible regardless) — it exists purely so `Color::Magenta` + `HIDDEN` together can never collide
+/// with `is_hidden_link_target`'s own `Color::Blue` + `UNDERLINED` + `HIDDEN` combination, nor with any
+/// other sentinel in this file.
+fn inline_math_reservation_style() -> Style {
+    Style::default()
+        .fg(Color::Magenta)
+        .add_modifier(Modifier::HIDDEN)
+}
+
+/// Whether `span` is an inline math reservation span produced by `render::render_inline_math` — style
+/// match plus a content-shape check (non-empty, every character a literal space), the same
+/// belt-and-suspenders pattern `is_task_span` already uses (style match plus `task_span_state`).
+pub(crate) fn is_inline_math_reservation_span(span: &Span<'_>) -> bool {
+    span.style == inline_math_reservation_style()
+        && !span.content.is_empty()
+        && span.content.chars().all(|c| c == ' ')
+}
+
 /// Sentinel style of the caption line above an inline mermaid diagram. Doubles as the Tab-focus
 /// marker (`is_mermaid_header_span`) — same trick as the task-marker / code-header sentinels.
 fn mermaid_header_style() -> Style {

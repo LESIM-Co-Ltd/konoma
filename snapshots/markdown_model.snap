@@ -3120,14 +3120,14 @@ Paragraph{inline=485..491:"リモート画像・SVG バッジ・取得失敗時�
 Heading{level=2, inline=493..494:"Mermaid（md 内フェンス→図に合成）", id=None, classes=[], attrs=[]} src=6416..6466 text="## Mermaid（md 内フェンス→図に合成）\n"
 CodeBlock{lang=Some("mermaid"), fenced=true, body_spans=[6478..6675:"graph TD\n  A[ツリー] -->|Enter| B{種別解決}\n  B -->|.md| C[ブロックモデルレンダラ]\n  B -->|mermaid"…], text="graph TD\n  A[ツリー] -->|Enter| B{種別解決}\n  B -->|.md| C[ブロックモデルレンダラ]\n  B -->|mermaid"…} src=6467..6678 text="```mermaid\ngraph TD\n  A[ツリー] -->|Enter| B{種別解決}\n  B -->|.md| C[ブロックモデルレンダラ]\n  B "…
 Heading{level=2, inline=499..500:"数式（LaTeX → 画像）", id=None, classes=[], attrs=[]} src=6680..6712 text="## 数式（LaTeX → 画像）\n"
-Paragraph{inline=502..510:"インライン数式 $E = mc^2$ や $H_2O$ は、文中に置けないので自前の行に持ち上がって 画像で描かれる（[ui] math）。ディスプレイ数式は中"…} src=6713..6910 text="インライン数式 $E = mc^2$ や $H_2O$ は、文中に置けないので**自前の行に持ち上がって**\n画像で描かれる（`[ui] math`）。ディスプ"…
-Paragraph{inline=512..524:"$$ \\int_{-\\infty}{\\infty} e{-x^2},dx = \\sqrt{\\pi} $$"} src=6911..6967 text="$$\n\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}\n$$\n"
-Paragraph{inline=526..540:"通貨（$5 や $10）・コード内の `$x$`・エスケープ \\$ は数式と誤認しない。 RaTeX（純 Rust・KaTeX 品質）でラスタライズするのでブラ"…} src=6968..7264 text="通貨（`$5` や `$10`）・コード内の `` `$x$` ``・エスケープ `\\$` は数式と誤認しない。\nRaTeX（純 Rust・KaTeX 品質）で"…
-Paragraph{inline=542..543:"終わり。長い段落の折返し確認用にダミーテキストを続けます。あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん。"} src=7265..7494 text="終わり。長い段落の折返し確認用にダミーテキストを続けます。あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん。\n"
-ThematicBreak src=7495..7499 text="---\n"
-List{ordered=true, start=Some(1)} src=7500..7570 text="1. これが脚注の定義。文書のどこに書いてもよい。\n"
-  ListItem{task=None} src=7500..7570 text="1. これが脚注の定義。文書のどこに書いてもよい。\n"
-    Paragraph{inline=547..548:"これが脚注の定義。文書のどこに書いてもよい。"} src=7503..7569 text="これが脚注の定義。文書のどこに書いてもよい。"
+Paragraph{inline=502..513:"インライン数式 $E = mc^2$ や $H_2O$ は、通常の Markdown と同じく文中に画像で描かれる （[ui] math）。幅が広すぎる式は利用"…} src=6713..6990 text="インライン数式 $E = mc^2$ や $H_2O$ は、通常の Markdown と同じく**文中**に画像で描かれる\n（`[ui] math`）。幅が広す"…
+Paragraph{inline=515..527:"$$ \\int_{-\\infty}{\\infty} e{-x^2},dx = \\sqrt{\\pi} $$"} src=6991..7047 text="$$\n\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}\n$$\n"
+Paragraph{inline=529..543:"通貨（$5 や $10）・コード内の `$x$`・エスケープ \\$ は数式と誤認しない。 RaTeX（純 Rust・KaTeX 品質）でラスタライズするのでブラ"…} src=7048..7344 text="通貨（`$5` や `$10`）・コード内の `` `$x$` ``・エスケープ `\\$` は数式と誤認しない。\nRaTeX（純 Rust・KaTeX 品質）で"…
+Paragraph{inline=545..546:"終わり。長い段落の折返し確認用にダミーテキストを続けます。あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん。"} src=7345..7574 text="終わり。長い段落の折返し確認用にダミーテキストを続けます。あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん。\n"
+ThematicBreak src=7575..7579 text="---\n"
+List{ordered=true, start=Some(1)} src=7580..7650 text="1. これが脚注の定義。文書のどこに書いてもよい。\n"
+  ListItem{task=None} src=7580..7650 text="1. これが脚注の定義。文書のどこに書いてもよい。\n"
+    Paragraph{inline=550..551:"これが脚注の定義。文書のどこに書いてもよい。"} src=7583..7649 text="これが脚注の定義。文書のどこに書いてもよい。"
 
 === samples: markdown.md ===
 -- BLOCKS (57) --
@@ -3207,14 +3207,14 @@ Paragraph{inline=483..489:"A full demo covering remote images, an SVG badge, and
 Heading{level=2, inline=491..492:"Mermaid (fenced diagram in Markdown)", id=None, classes=[], attrs=[]} src=5328..5368 text="## Mermaid (fenced diagram in Markdown)\n"
 CodeBlock{lang=Some("mermaid"), fenced=true, body_spans=[5380..5544:"graph TD\n  A[Tree] -->|Enter| B{Resolve kind}\n  B -->|.md| C[block-model rendere"…], text="graph TD\n  A[Tree] -->|Enter| B{Resolve kind}\n  B -->|.md| C[block-model rendere"…} src=5369..5547 text="```mermaid\ngraph TD\n  A[Tree] -->|Enter| B{Resolve kind}\n  B -->|.md| C[block-mo"…
 Heading{level=2, inline=497..498:"Math (LaTeX → image)", id=None, classes=[], attrs=[]} src=5549..5575 text="## Math (LaTeX → image)\n"
-Paragraph{inline=500..509:"Inline math $E = mc^2$ and $H_2O$ cannot sit mid-line in a terminal, so they are"…} src=5576..5749 text="Inline math $E = mc^2$ and $H_2O$ cannot sit mid-line in a terminal, so they are"…
-Paragraph{inline=511..523:"$$ \\int_{-\\infty}{\\infty} e{-x^2},dx = \\sqrt{\\pi} $$"} src=5750..5806 text="$$\n\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}\n$$\n"
-Paragraph{inline=525..540:"Currency ($5 and $10), `$x$` inside code, and escaped \\$ are never mistaken for "…} src=5807..6039 text="Currency (`$5` and `$10`), `` `$x$` `` inside code, and escaped `\\$` are never m"…
-Paragraph{inline=542..543:"That's the end — here is a long paragraph to exercise wrapping: the quick brown "…} src=6040..6286 text="That's the end — here is a long paragraph to exercise wrapping: the quick brown "…
-ThematicBreak src=6287..6291 text="---\n"
-List{ordered=true, start=Some(1)} src=6292..6364 text="1. This is the footnote definition. It can go anywhere in the document.\n"
-  ListItem{task=None} src=6292..6364 text="1. This is the footnote definition. It can go anywhere in the document.\n"
-    Paragraph{inline=547..548:"This is the footnote definition. It can go anywhere in the document."} src=6295..6363 text="This is the footnote definition. It can go anywhere in the document."
+Paragraph{inline=500..511:"Inline math $E = mc^2$ and $H_2O$ are drawn in the running text, like ordinary M"…} src=5576..5803 text="Inline math $E = mc^2$ and $H_2O$ are drawn **in the running text**, like ordina"…
+Paragraph{inline=513..525:"$$ \\int_{-\\infty}{\\infty} e{-x^2},dx = \\sqrt{\\pi} $$"} src=5804..5860 text="$$\n\\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi}\n$$\n"
+Paragraph{inline=527..542:"Currency ($5 and $10), `$x$` inside code, and escaped \\$ are never mistaken for "…} src=5861..6093 text="Currency (`$5` and `$10`), `` `$x$` `` inside code, and escaped `\\$` are never m"…
+Paragraph{inline=544..545:"That's the end — here is a long paragraph to exercise wrapping: the quick brown "…} src=6094..6340 text="That's the end — here is a long paragraph to exercise wrapping: the quick brown "…
+ThematicBreak src=6341..6345 text="---\n"
+List{ordered=true, start=Some(1)} src=6346..6418 text="1. This is the footnote definition. It can go anywhere in the document.\n"
+  ListItem{task=None} src=6346..6418 text="1. This is the footnote definition. It can go anywhere in the document.\n"
+    Paragraph{inline=549..550:"This is the footnote definition. It can go anywhere in the document."} src=6349..6417 text="This is the footnote definition. It can go anywhere in the document."
 
 === samples: tutorial.ja.md ===
 -- BLOCKS (32) --

@@ -5349,14 +5349,28 @@ fn mermaid_cells(pw: u32, ph: u32, fw: u16, fh: u16, avail: u16, target_rows: u1
 /// (RaTeX renders at 40 units/em) so equations sit at roughly text scale: em-height → rows, intrinsic
 /// aspect → cols. Display math gets a touch more height than inline. Clamped to the available width
 /// (aspect preserved) and a sane row cap. Vector-backed, so the once-rendered raster is fit crisply.
+///
+/// Inline math (`display == false`) is always `rows == 1` — placed **in the running text**, like
+/// ordinary Markdown/browser rendering (`render_math_slot`'s own `!display && rows == 1` branch reads
+/// that as "place this expression in the current line, not on a placeholder line of its own"). An
+/// expression too wide for `avail` at one row's height is shrunk to `avail` columns, still at one row
+/// — never lifted onto a taller line of its own (confirmed exhaustively, not merely derived: an
+/// earlier version of this function had a "fall back to the taller lifted-line formula" branch for
+/// this case, and a sweep of 212,520 `(uw, uh, fw, fh, avail)` combinations found it changed the
+/// output in exactly zero of them — the avail clamp below always overrides both `cols` *and* `rows`
+/// regardless, making that branch dead code; removed rather than kept for a distinction it never
+/// actually produced).
 fn math_cells(uw: u32, uh: u32, fw: u16, fh: u16, avail: u16, display: bool) -> (u16, u16) {
     let (fw, fh) = (fw.max(1) as f64, fh.max(1) as f64);
     let em_h = (uh.max(1) as f64) / 40.0;
-    let rows_per_em = if display { 1.5 } else { 1.3 };
-    let mut rows = (em_h * rows_per_em).round().max(1.0);
     let ar = (uw.max(1) as f64) / (uh.max(1) as f64);
-    let mut cols = (rows * fh * ar / fw).round().max(1.0);
     let avail = avail.max(1) as f64;
+    let mut rows = if display {
+        (em_h * 1.5).round().max(1.0)
+    } else {
+        1.0
+    };
+    let mut cols = (rows * fh * ar / fw).round().max(1.0);
     if cols > avail {
         cols = avail;
         rows = (cols * fw / ar / fh).round().max(1.0);

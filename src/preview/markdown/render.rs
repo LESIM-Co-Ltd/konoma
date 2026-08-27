@@ -167,13 +167,13 @@ use super::model::{
 use super::{
     alert_bar, alert_header_line, code_header, decorate_headings_and_extras, details_bar,
     details_marker_line, gutter_span, highlight_body, html_cell_to_markdown, image_loading_line,
-    image_placeholder_lines, image_text_fallback, is_mermaid_info, math_placeholder_lines,
-    math_raw_lines, math_url, mermaid_diagram_col, mermaid_fence_url, mermaid_placeholder_lines,
-    next_details_open, normalize_cell, pad_to_width, parse_cell_segments, prefix_link_icons,
-    render_html_block, render_mermaid_block, render_table_cells, scan_inline_math,
-    task_prefix_state, BlockAligns, CellAttrs, CellImage, CellSeg, CodeStyle, ColAlign,
-    ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot, MermaidSlot, SourceRun,
-    TableCells,
+    image_placeholder_lines, image_text_fallback, inline_math_reservation_style, is_mermaid_info,
+    math_placeholder_lines, math_raw_lines, math_url, mermaid_diagram_col, mermaid_fence_url,
+    mermaid_placeholder_lines, next_details_open, normalize_cell, pad_to_width,
+    parse_cell_segments, prefix_link_icons, render_html_block, render_mermaid_block,
+    render_table_cells, scan_inline_math, task_prefix_state, BlockAligns, CellAttrs, CellImage,
+    CellSeg, CodeStyle, ColAlign, ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot,
+    MermaidSlot, SourceRun, TableCells,
 };
 
 /// What `render_doc` produced: the decorated lines (same shape `render_markdown_with_images`
@@ -2850,7 +2850,8 @@ fn render_multiline_display_math<'a>(
             if let Some(p) = pending {
                 render_text_with_math(w, &p, true);
             }
-            render_math_slot(w, body, true);
+            let slot = resolve_math_slot(w, body, true);
+            render_math_slot(w, body, true, slot);
             return;
         }
         fallback.push(ev);
@@ -2922,10 +2923,21 @@ fn backslash_math_opener(gap: Option<&str>, t: &str) -> Option<(bool, char)> {
 /// `pending`, when `Some`, is the plain `Text` event `walk_inline_math`'s own loop was holding back
 /// (see that function's own doc comment on "Why a plain `Text` event's own rendering is deferred") —
 /// this function is what finally decides whether it gets the trailing-whitespace trim that precedes a
-/// real lift or not, and flushes it accordingly at whichever of the three exits below actually fires:
-/// trimmed (`true`) only on the "closer found, this really was math" exit; untouched (`false`) on
-/// either "gave up" exit (ran out of events, or hit a line-scoping break with no closer yet) — both of
-/// those mean the opener never actually panned out, so nothing before it should be trimmed either.
+/// real *lift* or not, and flushes it accordingly at whichever of the three exits below actually fires.
+/// Untouched (`false`) on either "gave up" exit (ran out of events, or hit a line-scoping break with no
+/// closer yet) — both of those mean the opener never actually panned out, so nothing before it should
+/// be trimmed either. On the "closer found, this really was math" exit, the trim is no longer
+/// unconditionally `true`: the math's own slot is resolved first (`resolve_math_slot`, exactly once —
+/// reused, not re-resolved, by the `render_math_slot` call just below), and `pending` is trimmed only
+/// when that resolves to a genuine *lift* — `!display && matches!(slot, Some(MathSlot::Image { rows: 1,
+/// .. }))` answering `true` means this `\(…\)`/`\[…\]` expression is about to be placed **in the running
+/// text** instead (`render_math_slot`'s own `!display && rows == 1` branch), the identical shape
+/// `render_math_parts`'s own `inline_at`/`slots` already handle for `$…$` math — trimming `pending`'s
+/// own trailing space in that case would glue it straight onto the reserved image cells with no space
+/// between them (confirmed as a real, user-visible regression on real terminal output, not merely
+/// inferred: `前のテキスト \(E = mc^2\) 後ろのテキスト` was losing the space before `\(` while the
+/// `$…$` equivalent, already fixed, kept it — the exact same rendering path applied inconsistently to
+/// two syntactically-equivalent LaTeX delimiters).
 ///
 /// Any text trailing the closer *within that same event's own payload* (`"] more text"`) is handed to
 /// `render_text_with_math` unchanged (`trailing_lift: false`) — not exercised by the parity corpus (no
@@ -3015,9 +3027,6 @@ fn render_backslash_math<'a>(
         if depth == 0 {
             if let Event::Text(t) = &ev {
                 if gap == Some("\\") && t.starts_with(closer) {
-                    if let Some(p) = pending {
-                        render_text_with_math(w, &p, true);
-                    }
                     // `range.start` is the closer *character*'s own position — but the `gap ==
                     // Some("\\")` check just above confirms the one byte immediately before it is
                     // the closer's own escaping backslash (ASCII, always exactly one byte), which
@@ -3025,7 +3034,54 @@ fn render_backslash_math<'a>(
                     // excluded here (`- 1`) the same way `opener.len_utf8()` is added, not
                     // subtracted, on `content_start`'s own side.
                     let content = &src[content_start..range.start - 1];
-                    render_math_slot(w, content.trim(), display);
+                    let trimmed = content.trim();
+                    // `pending`'s own trailing-space trim needs to know, *before* `pending` itself
+                    // renders, whether this `\(…\)`/`\[…\]` will be placed inline (no trim needed —
+                    // text flows right up against it) or lifted (the pre-existing trim still applies) —
+                    // the identical question `render_math_parts`'s own `inline_at`/`slots` answer for
+                    // `$…$` math (see that function's own doc comment). Answering it means calling
+                    // `resolve_math_slot` *before* `pending` renders — safe only when `pending` itself
+                    // has no math of its own to discover: `resolve_math_slot`'s own doc comment explains
+                    // why a caller-supplied `math_slot` cannot be called more than once (some real
+                    // callers are side-effecting, not a pure cache lookup — `extraction_targets`'s own
+                    // `math_slot`, backing `collect_math_exprs`, records every call it receives into a
+                    // shared, **document-order** accumulator), and the *same* concern applies to calling
+                    // it out of order: resolving this expression before `pending` renders would resolve
+                    // it before whatever `$…$` math `pending` itself contains, reordering that
+                    // accumulator relative to source order (confirmed directly: `math_inline_and_
+                    // display_detection`'s own document-order assertion failed exactly this way — "a+b"
+                    // reported before "x^2" — the first version of this fix attempted, which resolved
+                    // unconditionally early).
+                    //
+                    // `pending_has_its_own_math` (a pure, non-side-effecting pre-scan via
+                    // `scan_inline_math` — never `w.math`'s own closure) tells the two cases apart. When
+                    // `pending` has no math of its own (the common, and the reported-regression, shape —
+                    // plain text immediately before `\(…\)`/`\[…\]`, e.g. `"前のテキスト \(E = mc^2\)"`),
+                    // resolving early costs nothing: `pending` would not have called `math_slot` at all
+                    // either way, so there is no order to disturb. When it does (`$…$` embedded directly
+                    // in the very same event as this opener, with nothing between them — narrow enough
+                    // that the parity corpus does not exercise it), this falls back to the exact
+                    // pre-existing behavior instead (`trailing_lift: true`, unconditional) rather than
+                    // resolving early and risking the same reordering — a documented, narrow residual
+                    // gap, not a silent one (see `docs/STATUS.md`'s own "★未修正" note for this feature).
+                    let pending_has_its_own_math = pending
+                        .as_deref()
+                        .is_some_and(text_contains_its_own_scannable_math);
+                    if pending_has_its_own_math {
+                        if let Some(p) = pending {
+                            render_text_with_math(w, &p, true);
+                        }
+                        let slot = resolve_math_slot(w, trimmed, display);
+                        render_math_slot(w, trimmed, display, slot);
+                    } else {
+                        let slot = resolve_math_slot(w, trimmed, display);
+                        let will_be_inline =
+                            !display && matches!(slot, Some(MathSlot::Image { rows: 1, .. }));
+                        if let Some(p) = pending {
+                            render_text_with_math(w, &p, !will_be_inline);
+                        }
+                        render_math_slot(w, trimmed, display, slot);
+                    }
                     let rest = &t[closer.len_utf8()..];
                     if !rest.is_empty() {
                         // No lookahead available here for whether *this* trailing text is itself
@@ -3259,16 +3315,56 @@ fn render_dollar_math_tail<'a>(
             // stopped because the (now fully re-scanned) text genuinely has no `$` left in it at all.
             // Either way, `parts`/`buf` are this pass's own correct, final answer — render them. Gated
             // on `depth == 0` for the identical reason the "keep growing" branch below is — see "Never
-            // stop mid-construct".
-            let pending_trailing_lift = matches!(parts.first(), Some(MathPart::Math { .. }));
-            if let Some(p) = pending {
-                render_text_with_math(w, &p, pending_trailing_lift);
-            }
+            // stop mid-construct". `parts` is finalized (the trailing `buf` text, if any, appended)
+            // *before* anything below reads `parts.first()` or calls `resolve_parts` — both need the
+            // complete, final list, not the pre-append one (`resolve_parts`'s own `slots`/`inline_at`
+            // have to be the same length as `parts`, or `render_math_parts`'s own index-based reads of
+            // them at the bottom would be wrong).
             if !buf.is_empty() {
                 mask.push(false);
                 parts.push(MathPart::Text(SourceRun::new(buf, mask)));
             }
-            render_math_parts(w, parts, false);
+            // `pending`'s own trailing-space trim needs to know whether `parts.first()` — if it is
+            // math at all — will be placed **inline** or lifted, the identical question
+            // `render_backslash_math`'s own `pending`/`\(…\)` fix answers (see that function's own doc
+            // comment for the full reasoning, including the concrete regression a naive "just resolve
+            // early" fix caused there). The same order-preservation gate applies here: resolving
+            // `parts`'s own math before `pending` renders is safe only when `pending` has no math of
+            // its own to discover — `text_contains_its_own_scannable_math`, a pure pre-scan, never
+            // `w.math`'s own closure, decides which of the two orders below is safe to use.
+            let pending_has_its_own_math = pending
+                .as_deref()
+                .is_some_and(text_contains_its_own_scannable_math);
+            let (slots, inline_at) = if pending_has_its_own_math {
+                // Documented residual (identical shape to `render_backslash_math`'s own
+                // `pending_has_its_own_math` branch): fall back to the pre-existing, unconditional-
+                // trim behavior rather than resolve `parts` early and risk reordering `pending`'s own
+                // embedded math relative to it for a side-effecting `math_slot` closure.
+                let old_trailing_lift = matches!(parts.first(), Some(MathPart::Math { .. }));
+                if let Some(p) = pending {
+                    render_text_with_math(w, &p, old_trailing_lift);
+                }
+                resolve_parts(w, &parts)
+            } else {
+                let (slots, inline_at) = resolve_parts(w, &parts);
+                // Trim only when `parts.first()` is math **and** it is a genuine lift
+                // (`Some(Some(false))`): `None` (`parts` is empty) and `Some(None)` (`parts.first()`
+                // is a `Text` fragment — real, literal text can precede the first match within the
+                // same raw slice, e.g. an escaped character right before the opener; this function's
+                // own doc comment on `render_dollar_math_tail` — "arbitrary literal text can precede
+                // it within the same payload") both mean *no* trim, matching `old_trailing_lift`'s own
+                // identical answer for those same two shapes (`matches!(parts.first(), Some(MathPart
+                // ::Math {..}))` is `false` for both). An earlier version of this line inverted the
+                // wrong condition (`!matches!(.., Some(Some(true)))`, trimming by default) and broke
+                // `dollar_math_that_resolves_across_a_nested_strong_span_flushes_a_pending_text_first`
+                // — confirmed directly, not merely reasoned about.
+                let trailing_lift = matches!(inline_at.first(), Some(Some(false)));
+                if let Some(p) = pending {
+                    render_text_with_math(w, &p, trailing_lift);
+                }
+                (slots, inline_at)
+            };
+            render_math_parts(w, parts, slots, inline_at, false);
             return;
         }
         let Some((ev, range)) = events.next() else {
@@ -3431,8 +3527,74 @@ fn render_text_with_math(w: &mut Writer<'_>, text: &str, trailing_lift: bool) {
             parts.push(MathPart::Text(SourceRun::new(buf, mask)));
         }
         let is_last_line = i + 1 == line_count;
-        render_math_parts(w, parts, trailing_lift && is_last_line);
+        let (slots, inline_at) = resolve_parts(w, &parts);
+        render_math_parts(w, parts, slots, inline_at, trailing_lift && is_last_line);
     }
+}
+
+/// Resolves `(latex, display)`'s own `MathSlot` at most **once** per occurrence — `w.math.as_ref().map(|m|
+/// (m.slot)(latex, display))` — and hands the result to whichever `render_math_slot` call actually
+/// renders it, rather than letting that function re-derive the same answer internally. A caller-supplied
+/// `math_slot` closure is not guaranteed to be a pure cache lookup the way production's own
+/// implementation (`md_render.rs`) is: `preview::markdown::extraction_targets`'s own `math_slot` closure
+/// records every call it receives into a shared, side-effecting accumulator (`collect_math_exprs`'s own
+/// backing store, in turn read by `md_render.rs`'s own kick-off-a-background-render logic) — calling it
+/// twice for the same occurrence would double-record that expression. Every caller of this file's
+/// `render_math_slot` now resolves through here exactly once (see that function's own doc comment for
+/// the concrete regression this closes, confirmed directly against five real test failures).
+fn resolve_math_slot(w: &Writer<'_>, latex: &str, display: bool) -> Option<MathSlot> {
+    w.math.as_ref().map(|m| (m.slot)(latex, display))
+}
+
+/// Whether `text` (a plain `Event::Text` payload — `render_backslash_math`'s own `pending`) contains
+/// any `$…$`/`$$…$$` math of its own, scanned per physical line the same way `render_text_with_math`
+/// itself splits `text.lines()` before scanning each one — a **pure** check: `scan_inline_math` never
+/// calls `math_slot` (it only classifies raw text into `MathPart`s), so this can safely run *before*
+/// `pending` itself renders, to decide whether resolving a *different* math expression early (this
+/// function's one caller, `render_backslash_math`) would call a side-effecting `math_slot` closure out
+/// of the document order it is entitled to expect calls in — see that call site's own doc comment for
+/// the full reasoning and the concrete regression this check exists to prevent.
+fn text_contains_its_own_scannable_math(text: &str) -> bool {
+    text.lines().any(|line| {
+        let mut parts = Vec::new();
+        let mut buf = String::new();
+        let mut mask = Vec::new();
+        scan_inline_math(line, &mut parts, &mut buf, &mut mask);
+        parts
+            .iter()
+            .any(|part| matches!(part, MathPart::Math { .. }))
+    })
+}
+
+/// Resolves every `MathPart::Math` in `parts` to its own slot, exactly once each
+/// (`resolve_math_slot`), plus (`inline_at`) whether each resolves to a genuine **inline** placement
+/// rather than a lift — the shared precomputation `render_math_parts` itself needs (to actually render
+/// each part, and to decide a neighboring `Text` fragment's own edge trim) and that
+/// `render_dollar_math_tail` *also* needs, one step earlier, to decide `pending`'s own trailing trim
+/// before calling `render_math_parts` at all (see that function's own doc comment for why, and for the
+/// order-preservation gate — `text_contains_its_own_scannable_math` — that decides whether it is safe
+/// to call this *before* `pending` renders). Extracted specifically so neither caller ever resolves the
+/// same occurrence twice — `resolve_math_slot`'s own doc comment on why a caller-supplied `math_slot`
+/// closure must not be called more than once per occurrence.
+fn resolve_parts(w: &Writer<'_>, parts: &[MathPart]) -> (Vec<Option<MathSlot>>, Vec<Option<bool>>) {
+    let slots: Vec<Option<MathSlot>> = parts
+        .iter()
+        .map(|p| match p {
+            MathPart::Math { latex, display } => resolve_math_slot(w, latex, *display),
+            MathPart::Text(_) => None,
+        })
+        .collect();
+    let inline_at: Vec<Option<bool>> = parts
+        .iter()
+        .zip(slots.iter())
+        .map(|(p, s)| match p {
+            MathPart::Math { display, .. } => {
+                Some(!*display && matches!(s, Some(MathSlot::Image { rows: 1, .. })))
+            }
+            MathPart::Text(_) => None,
+        })
+        .collect();
+    (slots, inline_at)
 }
 
 /// The per-fragment rendering loop `render_text_with_math` itself drives, over one physical line's
@@ -3440,18 +3602,57 @@ fn render_text_with_math(w: &mut Writer<'_>, text: &str, trailing_lift: bool) {
 /// event-**spanning** group's own resolved parts, not confined to one `Event::Text`'s own payload) can
 /// share the identical trim/dispatch logic rather than a second, hand-copied near-duplicate of it. See
 /// `render_text_with_math`'s own doc comment ("Trimming: reproducing what an independent re-parse does
-/// to a fragment's own edges") for exactly what `trailing_lift` means and why the `idx`-based trim
-/// rules below are correct; unchanged here, verbatim, from that function's own former inline loop.
-fn render_math_parts(w: &mut Writer<'_>, parts: Vec<MathPart>, trailing_lift: bool) {
+/// to a fragment's own edges") for what `trailing_lift` means and why the `idx`-based trim rules below
+/// exist at all.
+///
+/// `slots`/`inline_at` are **not** resolved here — both are passed in, already resolved once, by the
+/// caller (`resolve_parts`; `None` at every `MathPart::Text` position, `Some(_)` at every
+/// `MathPart::Math` one) — because both of this function's own callers need to know `inline_at` for at
+/// least `parts.first()` *before* calling this function at all, to decide their own preceding
+/// `pending` text's trailing trim (`render_text_with_math`'s own `trailing_lift` parameter;
+/// `render_dollar_math_tail`'s own, identical need — see that function's own doc comment). Resolving
+/// here too, a second time, would call a possibly side-effecting `math_slot` closure twice for the same
+/// occurrence — `resolve_math_slot`'s own doc comment covers the concrete regression that caused.
+///
+/// `inline_at` (whether a `Math` part will be placed **inline** — `render_math_slot`'s own `!display &&
+/// rows == 1` branch — rather than lifted onto its own line(s)) is what lets the trim rules below go
+/// beyond `render_text_with_math`'s own pre-existing, purely positional ones: a genuine lift still needs
+/// the trim production's own independent-reparse convention calls for, but inline math does not — text
+/// keeps flowing right up against it, the same as it would around any other inline construct such as a
+/// link or emphasis span, so trimming the whitespace there would glue the text and the image together
+/// with no space between them. `parts` always alternates `Text?, Math, Text?, Math, ..., Text?`
+/// (`scan_inline_math`'s own accumulation never produces two adjacent `Text`s or two adjacent `Math`s),
+/// so a `Text` at `idx > 0` always sits right after `parts[idx - 1]`'s own `Math`, and a `Text` at
+/// `idx + 1 < n` always sits right before `parts[idx + 1]`'s own `Math` — trimming that edge is correct
+/// only when *that* neighboring math is a genuine lift, not when it is placed inline right next to this
+/// very fragment. The one case `inline_at` cannot answer is the trailing edge of this call's own *last*
+/// fragment when `trailing_lift` is set (a backslash-math opener detected in a *later*, not-yet-parsed
+/// event — see `render_text_with_math`'s own doc comment on `trailing_lift`): that math's own `latex`
+/// isn't resolved yet at this point (it lives in a wholly separate `Event`, not this call's own
+/// `parts`), so this narrow case keeps the pre-existing, always-trim behavior unchanged (a known,
+/// narrow gap — no worse than before this function gained inline placement at all, and not exercised by
+/// the parity corpus, matching several other documented narrow gaps in this file).
+fn render_math_parts(
+    w: &mut Writer<'_>,
+    parts: Vec<MathPart>,
+    slots: Vec<Option<MathSlot>>,
+    inline_at: Vec<Option<bool>>,
+    trailing_lift: bool,
+) {
     let n = parts.len();
     for (idx, part) in parts.into_iter().enumerate() {
         match part {
             MathPart::Text(run) => {
                 let mut t = run.text().to_string();
-                if idx > 0 {
+                if idx > 0 && inline_at[idx - 1] != Some(true) {
                     t = t.trim_start_matches([' ', '\t']).to_string();
                 }
-                if idx + 1 < n || (trailing_lift && idx + 1 == n) {
+                let trim_end = if idx + 1 < n {
+                    inline_at[idx + 1] != Some(true)
+                } else {
+                    trailing_lift
+                };
+                if trim_end {
                     t = t.trim_end_matches([' ', '\t']).to_string();
                 }
                 if t.is_empty() {
@@ -3462,13 +3663,16 @@ fn render_math_parts(w: &mut Writer<'_>, parts: Vec<MathPart>, trailing_lift: bo
                 w.append_span(Span::styled(t, style));
             }
             MathPart::Math { latex, display } => {
-                // Unlike a `MathPart::Text` fragment, a lift never opens a fresh-paragraph
+                // Unlike a `MathPart::Text` fragment, a *lift* never opens a fresh-paragraph
                 // boundary of its own first — production appends its own placeholder line(s)
                 // directly, with no gap check of any kind, regardless of what came immediately
                 // before it (verified directly: `code_span_corpus`'s own cases show the math
                 // placeholder line landing right after the preceding text line, never a blank
-                // line apart from it).
-                render_math_slot(w, &latex, display);
+                // line apart from it). Inline math (`render_inline_math`) does its own, different
+                // "is real content about to render" check (`ensure_fresh_after_math`) internally —
+                // see that function's own doc comment — so this call site does not need one either
+                // way; `render_math_slot` itself dispatches to whichever behavior applies.
+                render_math_slot(w, &latex, display, slots[idx].clone());
             }
         }
     }
@@ -3488,22 +3692,69 @@ fn render_math_parts(w: &mut Writer<'_>, parts: Vec<MathPart>, trailing_lift: bo
 /// but principle #3 (`CLAUDE.md`) applies regardless: degrade to rendering nothing for this one
 /// expression rather than panic if that invariant is ever wrong.
 ///
-/// `w.drop_pending_para_start()` runs first, unconditionally — this is the one place a math-lifting
-/// paragraph's own still-pending leading-blank-line slot (see `pending_para_start`'s own doc comment)
-/// can be resolved by a *lift*, rather than by real text (`ensure_fresh_after_math`'s own
-/// `open_pending_para_start` call): a no-op whenever nothing is pending (the overwhelmingly common
-/// case — a lift preceded by real text on the same line, or not the walk's own first content at all),
-/// but exactly the fix for the shape that motivated this pending-slot mechanism in the first place —
-/// a math expression that is a paragraph's own entire, only content — where dropping it here (never
-/// opening it) is what keeps that paragraph's own placeholder from being preceded by an orphaned blank
-/// row nothing else ever fills.
-fn render_math_slot(w: &mut Writer<'_>, latex: &str, display: bool) {
-    w.drop_pending_para_start();
+/// `w.drop_pending_para_start()` runs first, unconditionally, for the two branches below that still
+/// **lift** the expression onto its own line(s) (display math, or an inline expression whose own
+/// `rows >= 2` — see `render_inline_math`'s own doc comment for the third branch this function now has,
+/// which deliberately does *not* call it) — this is the one place a math-lifting paragraph's own still-
+/// pending leading-blank-line slot (see `pending_para_start`'s own doc comment) can be resolved by a
+/// *lift*, rather than by real text (`ensure_fresh_after_math`'s own `open_pending_para_start` call): a
+/// no-op whenever nothing is pending (the overwhelmingly common case — a lift preceded by real text on
+/// the same line, or not the walk's own first content at all), but exactly the fix for the shape that
+/// motivated this pending-slot mechanism in the first place — a math expression that is a paragraph's
+/// own entire, only content — where dropping it here (never opening it) is what keeps that paragraph's
+/// own placeholder from being preceded by an orphaned blank row nothing else ever fills.
+///
+/// ## The third branch: small inline math placed *in* the running text, not lifted at all
+///
+/// `math_cells` (`app.rs`) answers `!display && rows == 1` for an inline expression small enough to sit
+/// at roughly text scale (see that function's own doc comment for the threshold and how it was
+/// measured). That is read here, before anything else, as "this is not a lift" — `render_inline_math`
+/// takes over and returns early, never reaching `w.drop_pending_para_start()`/the `match`/the
+/// unconditional `w.pending_block_gap = false; w.after_math = true;` this function's own two lifting
+/// branches still end with. Those three pieces of state exist purely to reproduce the "independent
+/// re-parse" boundary a genuine lift creates (see `Writer`'s own doc comments on `pending_para_start`/
+/// `after_math`) — an inline placement creates no such boundary at all: it is exactly a `MathPart::Text`
+/// span with a small image floating over part of it, and `render_inline_math` treats it that way (see
+/// its own doc comment).
+///
+/// `slot` is the already-resolved answer for `(latex, display)` — `resolve_math_slot(w, latex,
+/// display)`, called *once* by this function's own caller (never recomputed here) — rather than a
+/// closure this function calls itself. Every real call site already needs that same resolved value
+/// before it decides how to render/trim whatever text sits next to this math (see
+/// `render_math_parts`'s own doc comment on `inline_at`/`slots` for the concrete case this closes): a
+/// caller-supplied `math_slot` is not guaranteed to be a pure cache lookup the way production's own
+/// implementation is — `preview::markdown::extraction_targets`'s own `math_slot` closure records every
+/// call it receives into a shared, side-effecting accumulator (used by `collect_math_exprs`, in turn
+/// by `md_render.rs`'s own kick-off-a-background-render logic) — so calling it a *second* time here,
+/// purely to re-derive what the caller already knew, would double-record every expression whose
+/// closure happens to have a side effect like that one. Confirmed directly: an earlier version of this
+/// refactor had `render_math_slot` resolve its own slot internally while `render_math_parts` *also*
+/// peeked it ahead of time for the identical trim decision — `math_extraction_covers_delimiters_and_
+/// rejects_lookalikes`/`math_inline_and_display_detection`/`math_cjk_and_url_key_are_safe`/`math_url_
+/// matches_production_for_the_same_expression`/`math_delimiters_straddling_a_code_span_still_swallow_
+/// it_known_limitation` all failed with every expression reported *twice*, tracing directly back to
+/// that double call.
+fn render_math_slot(w: &mut Writer<'_>, latex: &str, display: bool, slot: Option<MathSlot>) {
     let Some(math) = w.math.as_ref() else {
+        w.drop_pending_para_start();
         return;
     };
-    let slot = (math.slot)(latex, display);
     let width = math.width;
+    let Some(slot) = slot else {
+        // Defensive only (principle #3, `CLAUDE.md`): every real call site resolves `slot` from the
+        // same `w.math` this function just confirmed is `Some`, via the identical `resolve_math_slot`
+        // helper, so this should never actually trigger — kept regardless, degrading to "render
+        // nothing for this one expression" rather than panicking if that invariant is ever wrong.
+        w.drop_pending_para_start();
+        return;
+    };
+    if let MathSlot::Image { cols, rows } = slot {
+        if !display && rows == 1 {
+            render_inline_math(w, latex, cols);
+            return;
+        }
+    }
+    w.drop_pending_para_start();
     match slot {
         MathSlot::Image { cols, rows } => {
             // `+ w.heading_rule_shift`: converts the *pre*-decoration row index this line is about
@@ -3542,6 +3793,96 @@ fn render_math_slot(w: &mut Writer<'_>, latex: &str, display: bool) {
     }
     w.pending_block_gap = false;
     w.after_math = true;
+}
+
+/// Places a small inline math expression **in the running text**, rather than lifting it onto its own
+/// placeholder line(s) — `render_math_slot`'s own `!display && rows == 1` branch (see that function's
+/// own doc comment for why this is reached instead of the lift path, and for the design's own D1–D4).
+///
+/// This is treated as ordinary *real* content, not a lift: `ensure_fresh_after_math` — the identical
+/// checkpoint every other real-content arm of `walk_inline_math`'s own dispatch loop already calls
+/// (`Event::Code`/`SoftBreak`/`HardBreak`/`Start`) — runs first, so a still-pending paragraph start
+/// opens normally (the math is simply this paragraph's own first rendered content, the same as if it
+/// had been a span of text) and a fresh boundary left by an *earlier*, genuinely lifted expression is
+/// honored the same way real text honors it. Unlike the lift path in `render_math_slot`, this never
+/// touches `pending_para_start`/`after_math`/`fresh_boundary` on its own way out — those three exist
+/// only to reproduce the boundary a lift creates, and this creates none: text keeps flowing on the very
+/// same logical line both before and after this call, exactly as if a `MathPart::Text` span had been
+/// appended in its place.
+///
+/// `cols` reserved cells (blank spans — the same convention `math_placeholder_lines` uses for a lifted
+/// expression's own placeholder line) are appended to the current line at its current display width,
+/// read via `Line::width()` (already Unicode-width aware — CJK text included — the same measure
+/// `md_render.rs`'s own `max_line_cols` and every other cell count in this file already use), not a
+/// separately-tracked running column: that stays correct across an earlier inline-math reservation on
+/// the same line, list/heading indentation already on it (`w.width` is not narrowed for list
+/// indentation — see `push_item_marker`'s own call site — so it is the exact same budget an image row
+/// group already packs against, `flush_row_group`'s own `w.width`), and any inline styling already
+/// pushed.
+///
+/// If the reservation would not fit in what remains of `w.width` on the current line, a fresh line is
+/// started first — a plain word-wrap, not a paragraph boundary (`w.lines.push(Line::default())`, not
+/// `emit_row`, which would also clear `after_math`/`fresh_boundary` this call has no business touching).
+/// This is the *only* place in this file a paragraph's own running text can end up spanning more than
+/// one `Line` in `w.lines` purely because of available width — production otherwise leaves all of that
+/// to ratatui's own `Wrap` at draw time, which this file cannot see or predict the break point of.
+///
+/// ## `col` recorded here is *provisional* — `App::resolve_inline_math_cols` corrects it later
+///
+/// `ImagePlacement.col`/`.line` have to name the exact cell the image overlay lands on
+/// (`ui::preview::overlay_inline_images` converts a placement's `line` to a *visual* row via
+/// `App::md_visual_span`, then uses `col` unchanged as a column offset within that one visual row) —
+/// an assumption that only holds when the logical line carrying the placement itself never wraps under
+/// ratatui's own `Wrap`. Every existing placement already guarantees *that* by construction (a
+/// placeholder-only line is never wider than `width`); this function reproduces the identical guarantee
+/// for a line that also carries real text, by never letting the reservation's own right edge exceed
+/// `width` on the line it lands on.
+///
+/// What this function's own `col` cannot account for, though, is anything that runs *after* it: the
+/// app's own post-processing pass (`app::md_items::postprocess_md` — `collapse_links`/
+/// `autolink_bare_urls`/`substitute_emoji`) can change a line's own display width to the *left* of this
+/// reservation (a link's `label (URL)` collapsing to `icon label`, a task checkbox's `"[ ] "` collapsing
+/// to a Nerd Font glyph, `:shortcode:` becoming one glyph, a bare URL gaining an icon prefix), none of
+/// which this function can see — `render_doc` runs entirely before any of them. A real, confirmed bug
+/// this exists to close: reserving `col` here and never revisiting it left the math visibly offset from
+/// its own reserved cells whenever an earlier link/checkbox/emoji/autolink on the *same* line changed
+/// width during decoration (reproduced directly against a real terminal: `See [ratatui](https://ratatui.rs)
+/// and $E=mc^2$ here.` rendered the reserved cells over `"here."` while the actual gap sat empty, one
+/// URL-length further left).
+///
+/// The fix is not to make this function decoration-aware (it has no access to `ui.icons`/`ui.md_autolink`/
+/// `ui.md_emoji`, nor to what a later paragraph's own links will collapse to) — it is to record the span
+/// itself with a unique sentinel style (`inline_math_reservation_style`), and let `col` be re-derived,
+/// once, against the **decorated** lines, by locating that sentinel and summing what precedes it —
+/// exactly the trick `is_task_span`/`is_hidden_link_target`/`is_mermaid_header_span` already use for
+/// other post-decoration lookups. `App::resolve_inline_math_cols` (`app/md_items.rs`) is where that
+/// happens, called once, right after `postprocess_md`, before the cache is stored.
+fn render_inline_math(w: &mut Writer<'_>, latex: &str, cols: u16) {
+    ensure_fresh_after_math(w);
+    let width = w.width;
+    let mut col = w
+        .lines
+        .last()
+        .and_then(|l| u16::try_from(l.width()).ok())
+        .unwrap_or(u16::MAX);
+    if col > 0 && col.saturating_add(cols) > width {
+        w.lines.push(Line::default());
+        col = 0;
+    }
+    let placement_line = w.lines.len().saturating_sub(1) + w.heading_rule_shift;
+    w.append_span(Span::styled(
+        " ".repeat(cols as usize),
+        inline_math_reservation_style(),
+    ));
+    w.images.push(ImagePlacement {
+        url: math_url(latex, false),
+        alt: "math".into(),
+        line: placement_line,
+        col,
+        cols,
+        rows: 1,
+        fence_ord: None,
+    });
 }
 
 /// Renders a `ThematicBreak` into `w`, in place — a literal `Line::from("---")`. `decorate_extras`
@@ -9633,7 +9974,7 @@ mod tests {
     #[test]
     fn render_math_slot_with_no_math_context_at_all_renders_nothing() {
         let mut w = fresh_writer();
-        render_math_slot(&mut w, "x", false);
+        render_math_slot(&mut w, "x", false, None);
         assert!(w.lines.is_empty());
     }
 
@@ -9685,7 +10026,532 @@ mod tests {
         assert!(!w.pending_block_gap);
     }
 
-    // ---- `render_block`/`trim_leading_header`: lines 3797-3798, 3832, 4342, 4408-4410, 4414 ----
+    // ---- Inline math placement (`render_inline_math`/`render_math_slot`'s own `!display && rows ==
+    // 1` branch): small inline math is placed *in* the running text instead of being lifted onto its
+    // own line — see `render_math_slot`'s own doc comment ("The third branch") and
+    // `render_inline_math`'s own. `ImagePlacement.col`/`.line`/`.cols`/`.rows` are asserted directly
+    // (never via the golden snapshots — `mask_numbers` hides coordinates from those on purpose; see
+    // `CLAUDE.md`) ----
+
+    /// A `render_doc` caller for this section: a `math_slot` the test itself controls per-`latex`, so
+    /// different tests can answer `MathSlot::Image { rows: 1, .. }` (inline) or `{ rows: 2, .. }`
+    /// (still a lift) for the identical expression text.
+    fn render_math(src: &str, width: u16, math_slot: &dyn Fn(&str, bool) -> MathSlot) -> RenderOut {
+        let doc = Doc::parse(src);
+        let code = CodeStyle::default();
+        render_doc(
+            &doc,
+            src,
+            width,
+            code,
+            "TwoDark",
+            false,
+            &[' ', 'x'],
+            &no_images,
+            &no_mermaid,
+            "Enter: full screen",
+            true,
+            math_slot,
+            true,
+        )
+    }
+
+    /// Requirement 1/2: a small inline expression stays on the *same* line as the text around it (no
+    /// line lift at all — `out.lines.len()` does not grow), and its `ImagePlacement` names the exact
+    /// cell it lands on: `col` is the display width of `"before "` (7 cells — plain ASCII, so 1 cell
+    /// per character), `line` is the paragraph's own single line (`0`), and `cols`/`rows` are exactly
+    /// what the `math_slot` answered. The one space on each side of `$x$` in the source is preserved
+    /// as real text immediately touching the reserved image cells on both sides (`render_math_parts`'s
+    /// own inline-aware trim fix) — checked here via the *total* line width, not by hand-reconstructing
+    /// the exact span text (fragile): `"before "` (7) + reserved `cols` (3) + `" after"` (6) == 16.
+    #[test]
+    fn small_inline_math_stays_on_the_same_line_and_records_its_exact_cell() {
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 3, rows: 1 };
+        let out = render_math("before $x$ after\n", 80, &math_slot);
+        assert_eq!(
+            out.lines.len(),
+            1,
+            "no line lift at all: {:?}",
+            lines_text(&out)
+        );
+        assert_eq!(out.images.len(), 1);
+        let p = &out.images[0];
+        assert_eq!(p.line, 0);
+        assert_eq!(p.cols, 3);
+        assert_eq!(p.rows, 1);
+        assert_eq!(p.col, 7, "\"before \" is 7 cells wide");
+        assert_eq!(
+            out.lines[0].width(),
+            7 + 3 + 6,
+            "\"before \" + the 3 reserved cells + \" after\" — the single space on each side of \
+             the source's own $x$ must survive, not be trimmed away: {:?}",
+            out.lines[0]
+        );
+    }
+
+    /// Requirement 3: math at the very start of a line (`col == 0`) and at the very end of a line
+    /// (the reservation's own right edge names the line's own new total width, with nothing after it).
+    #[test]
+    fn inline_math_at_the_start_and_end_of_a_line() {
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 4, rows: 1 };
+        let start = render_math("$x$ leads\n", 80, &math_slot);
+        assert_eq!(start.images.len(), 1);
+        assert_eq!(
+            start.images[0].col, 0,
+            "math at the very start of the paragraph"
+        );
+        assert_eq!(start.images[0].line, 0);
+
+        let end = render_math("trails $x$\n", 80, &math_slot);
+        assert_eq!(end.images.len(), 1);
+        // "trails " is 7 cells wide.
+        assert_eq!(end.images[0].col, 7);
+        assert_eq!(end.images[0].line, 0);
+        assert_eq!(
+            end.lines[0].width(),
+            7 + 4,
+            "nothing trails the math itself — the line ends right at its own reserved cells"
+        );
+    }
+
+    /// Requirement 6: two (or more) inline expressions on the same source line each get their own,
+    /// correctly-positioned `ImagePlacement` — `cols` distinguished per `latex` so the test itself can
+    /// tell which placement is which, rather than relying on document order alone.
+    #[test]
+    fn two_inline_math_expressions_on_the_same_line_each_get_their_own_placement() {
+        let math_slot = |latex: &str, _: bool| match latex {
+            "a" => MathSlot::Image { cols: 2, rows: 1 },
+            "b" => MathSlot::Image { cols: 5, rows: 1 },
+            _ => MathSlot::Raw,
+        };
+        let out = render_math("one $a$ two $b$ three\n", 80, &math_slot);
+        assert_eq!(out.lines.len(), 1, "{:?}", lines_text(&out));
+        assert_eq!(out.images.len(), 2);
+        let (pa, pb) = (&out.images[0], &out.images[1]);
+        // "one " is 4 cells wide.
+        assert_eq!((pa.line, pa.col, pa.cols, pa.rows), (0, 4, 2, 1));
+        // "one " (4) + the first reservation (2) + " two " (5) == 11.
+        assert_eq!((pb.line, pb.col, pb.cols, pb.rows), (0, 11, 5, 1));
+    }
+
+    /// Requirement 5: CJK text on either side of an inline expression is measured in **display**
+    /// cells (each CJK character is 2 cells wide), not `char`/byte count — `Line::width()` is already
+    /// Unicode-width aware, and `render_inline_math` reads the current line's width through exactly
+    /// that (see its own doc comment), so this pins the behavior end to end rather than just at the
+    /// width-measuring primitive.
+    #[test]
+    fn inline_math_after_cjk_text_measures_display_width_not_char_count() {
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 3, rows: 1 };
+        // "日本語" is 3 CJK characters (6 display cells), then a space (1 cell) = 7 cells before the
+        // math — the exact same `col` the plain-ASCII "before " case above produced, confirming the
+        // measurement is cell-based, not char-count-based (char count here would be 4, not 7).
+        let out = render_math("日本語 $x$ 文章\n", 80, &math_slot);
+        assert_eq!(out.images.len(), 1);
+        assert_eq!(
+            out.images[0].col, 7,
+            "3 CJK chars (6 cells) + 1 space = 7 cells"
+        );
+    }
+
+    /// Requirement 4: wrapping — a reservation that would not fit in what remains of the current line
+    /// starts a fresh logical `Line` first (a plain word-wrap, not a paragraph boundary: no blank row
+    /// in between), landing at `col == 0` on that new line, not at some column that would have
+    /// overflowed `width`. `width` is set tightly (`"already here "` is 13 cells; the math is 3 cells
+    /// wide; `width: 15` leaves only 2 cells free, not enough) so the wrap is forced deterministically.
+    #[test]
+    fn inline_math_that_does_not_fit_the_remaining_width_wraps_to_a_fresh_line() {
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 3, rows: 1 };
+        let out = render_math("already here $x$ tail\n", 15, &math_slot);
+        assert_eq!(out.images.len(), 1);
+        let p = &out.images[0];
+        assert_eq!(
+            p.col, 0,
+            "wrapped to a fresh line, not squeezed in at column 13"
+        );
+        assert_eq!(
+            p.line, 1,
+            "the wrap actually produced a second logical line"
+        );
+        assert_eq!(
+            out.lines.len(),
+            2,
+            "a plain word-wrap, not a paragraph boundary: exactly one extra line, no blank \
+             separator row: {:?}",
+            lines_text(&out)
+        );
+        // Nothing on the first line overflows `width` (the whole point of wrapping *before* placing
+        // the reservation rather than after).
+        assert!(out.lines[0].width() as u16 <= 15, "{:?}", out.lines[0]);
+    }
+
+    /// The boundary's other side: widen `width` to exactly the reservation's own required space and
+    /// the identical expression now fits on the original line — `col == 13` (right after `"already
+    /// here "`), no wrap, exactly one logical line.
+    #[test]
+    fn inline_math_that_exactly_fits_the_remaining_width_does_not_wrap() {
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 3, rows: 1 };
+        let out = render_math("already here $x$ tail\n", 16, &math_slot);
+        assert_eq!(out.lines.len(), 1, "{:?}", lines_text(&out));
+        assert_eq!(out.images.len(), 1);
+        assert_eq!(out.images[0].line, 0);
+        assert_eq!(out.images[0].col, 13, "\"already here \" is 13 cells wide");
+    }
+
+    /// Regression (requirement 7, retracted per the confirmed design's own correction — inline math no
+    /// longer has a height-based lift threshold — but the *mechanism* `render_math_slot` still has for
+    /// a `MathSlot::Image` with `rows >= 2` must keep working: `math_cells` itself may still hand back
+    /// such a slot for an expression too *wide* to fit at one row, and any future change to that
+    /// formula should not silently break the lift path). A directly-supplied `rows: 2` slot still lifts
+    /// onto its own placeholder line(s), unchanged from before this feature existed: `"before"`/
+    /// `"after"` land on their own lines, either side of the 2-row placeholder band (`1 + 2 + 1 == 4`
+    /// lines total), and the placement is left-aligned at column 0 (inline math's own convention —
+    /// `math_placeholder_lines`'s own `pad` formula), not appended into the running text.
+    #[test]
+    fn a_multi_row_inline_math_slot_still_lifts_onto_its_own_line() {
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 6, rows: 2 };
+        let out = render_math("before $x$ after\n", 80, &math_slot);
+        assert_eq!(out.lines.len(), 1 + 2 + 1, "{:?}", lines_text(&out));
+        assert_eq!(out.images.len(), 1);
+        assert_eq!(out.images[0].cols, 6);
+        assert_eq!(out.images[0].rows, 2);
+        assert_eq!(
+            out.images[0].col, 0,
+            "inline math's own lift is left-aligned, not centered"
+        );
+    }
+
+    /// Regression (coordinator-reported, fix 3), the **`render_math_parts`-internal** half:
+    /// `render_dollar_math_tail` (the event-**spanning** `$…$` path — a nested inline construct, here
+    /// `**b**`, sits *between* the opener and the closer, so pulldown-cmark reports the whole span as
+    /// several separate events, forcing the growing-slice re-scan this function drives) resolves the
+    /// re-scanned `parts` — `[Text("lead "), Math("a **b** c"), Text(" tail")]` here — through the
+    /// identical `inline_at`-aware trim `render_math_parts` already applies to `$…$` math reached the
+    /// single-event way (this document's own first event is `"lead $a "` in full, so `pending` is
+    /// `None` here — see this section's own next test, below, for the *separate* half this one does
+    /// **not** cover: `render_dollar_math_tail`'s own `pending`-specific trim decision, when `pending`
+    /// genuinely is `Some`). `"lead "`, `parts`'s own first entry, must keep its own trailing space
+    /// when the resolved math is placed inline, exactly like every other inline-math case in this file.
+    #[test]
+    fn dollar_math_across_a_nested_strong_span_preserves_surrounding_space_when_placed_inline() {
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 5, rows: 1 };
+        let out = render_math("lead $a **b** c$ tail\n", 80, &math_slot);
+        assert_eq!(out.lines.len(), 1, "{:?}", lines_text(&out));
+        assert_eq!(out.images.len(), 1);
+        let p = &out.images[0];
+        assert_eq!(p.rows, 1);
+        assert_eq!(
+            p.col, 5,
+            "\"lead \" is 5 cells wide — its own trailing space must survive"
+        );
+        assert_eq!(
+            out.lines[0].width(),
+            5 + 5 + 5,
+            "\"lead \" + the 5 reserved cells + \" tail\" (5 cells): {:?}",
+            out.lines[0]
+        );
+    }
+
+    /// The paired regression, the lift side: an event-spanning `$…$` that resolves to a genuine lift
+    /// (`rows: 2`) must still trim `parts`'s own leading `Text("lead ")`, unchanged from before this
+    /// feature existed — mirrors `backslash_math_that_still_lifts_keeps_trimming_the_space_before_it`.
+    #[test]
+    fn dollar_math_across_a_nested_strong_span_that_lifts_still_trims_the_space_before_it() {
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 6, rows: 2 };
+        let out = render_math("lead $a **b** c$ tail\n", 80, &math_slot);
+        assert_eq!(
+            out.lines.len(),
+            1 + 2 + 1,
+            "\"lead\"/\"tail\" land on their own lines around the 2-row lift: {:?}",
+            lines_text(&out)
+        );
+        assert_eq!(out.images.len(), 1);
+        assert_eq!(out.images[0].rows, 2);
+    }
+
+    /// Regression (coordinator-reported, fix 3), the **`pending`-specific** half `render_dollar_math_
+    /// tail`'s own doc comment names directly (see there: "the math's own slot is resolved first ...
+    /// the one value both decides `pending`'s own trailing-space trim ..."). A *natural* CommonMark
+    /// document reaching this exact branch — `pending: Some(_)`, and `parts.first()` genuinely `Math`
+    /// (not `Text`) — was searched for and not found: every mechanism that splits two adjacent
+    /// `Event::Text`s apart (the only way `pending` survives into this function at all — every *other*
+    /// kind of event flushes it immediately, per `walk_inline_math`'s own dispatch) either flushes
+    /// `pending` before the split (an inline code span, a nested tag, a line break) or leaves literal
+    /// content at the very start of the *second* event (a backslash escape's own escaped character —
+    /// confirmed directly: `"lead \*$a"` tokenizes as `Text("lead ")`, `Text("*$a ")`, the `*` landing
+    /// inside the second event, not vanishing) — **except** an HTML entity (`&amp;` → `&`), which
+    /// decodes to its own, wholly separate `Event::Text` with nothing left over on either side
+    /// (confirmed directly against real `pulldown_cmark::Parser` output: `"lead &amp;$a **b** c$
+    /// tail"` tokenizes as `Text("lead ")`, `Text("&")`, `Text("$a ")`, `Start(Strong)`, ... — the
+    /// third event starts *exactly* at `$`, with `pending == Some("&")` by the time it triggers
+    /// `dollar_math_still_open`). That real repro exists but is not useful as a *test*: the entity's
+    /// own decoded output (`"&"`) has no trailing whitespace of its own for a trim to be observable
+    /// either way, and no named HTML entity decodes to one that does.
+    ///
+    /// So — matching this file's own established precedent for exactly this situation (see, e.g.,
+    /// `ensure_fresh_after_math_with_needs_newline_and_after_math_both_set_pushes_two_blanks`'s own
+    /// doc comment: "was not found; this is a direct, low-level construction of the state instead,
+    /// which is honest about that") — this calls `render_dollar_math_tail` directly, constructing
+    /// exactly the state a real document was not found to produce *with an observable trailing
+    /// space*, rather than pretending a natural repro exists. `src`/`first_text`/`first_range`/
+    /// `events` are all taken verbatim from the real, confirmed `pulldown_cmark` tokenization of
+    /// `"lead &amp;$a **b** c$ tail\n"` above (so the growing-slice re-scan itself sees genuine,
+    /// consistent byte ranges) — only `pending`'s own *content* is substituted (`"synthetic "`,
+    /// carrying a trailing space the real entity output does not) for the one property a real
+    /// document could not be found to make observable.
+    #[test]
+    fn dollar_math_tail_with_a_genuinely_separate_pending_preserves_its_own_trailing_space_when_inline(
+    ) {
+        let mut w = fresh_writer();
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 5, rows: 1 };
+        w.math = Some(MathCtx {
+            slot: &math_slot,
+            width: 80,
+        });
+        let src = "lead &amp;$a **b** c$ tail\n";
+        let events: Vec<(Event<'_>, Range<usize>)> = vec![
+            (Event::Start(Tag::Strong), 13..18),
+            (Event::Text("b".into()), 15..16),
+            (Event::End(TagEnd::Strong), 13..18),
+            (Event::Text(" c$ tail".into()), 18..26),
+        ];
+        let mut it = events.into_iter();
+        let mut prev_end = Some(10usize);
+        render_dollar_math_tail(
+            &mut w,
+            &mut it,
+            Some(pulldown_cmark::CowStr::from("synthetic ")),
+            pulldown_cmark::CowStr::from("$a "),
+            10..13,
+            src,
+            &mut prev_end,
+        );
+        assert_eq!(
+            lines_text(&RenderOut {
+                lines: w.lines.clone(),
+                images: Vec::new(),
+                unsupported: Vec::new(),
+                code_blocks: Vec::new(),
+                tasks: Vec::new(),
+            }),
+            vec!["synthetic       tail"],
+            "\"synthetic \" (10 cells) keeps its own trailing space — the math is inline, not a \
+             lift: {:?}",
+            w.lines
+        );
+        assert_eq!(w.images.len(), 1);
+        assert_eq!(w.images[0].rows, 1);
+        assert_eq!(
+            w.images[0].col, 10,
+            "\"synthetic \" is 10 cells wide — its own trailing space must survive: {:?}",
+            w.images[0]
+        );
+    }
+
+    /// The paired regression, the lift side: the identical direct construction, with a `math_slot`
+    /// that resolves to a genuine lift (`rows: 2`) instead — `pending` ("synthetic ") must still have
+    /// its own trailing space trimmed, unchanged from before this feature existed. This is the one
+    /// case in this whole section that a mutation reverting `render_dollar_math_tail`'s own trim
+    /// decision back to its pre-fix, unconditional form (`matches!(parts.first(), Some(MathPart::
+    /// Math {..}))`) does **not** actually falsify — both the old and the new logic answer `true` for
+    /// a lift — kept anyway, as the honest paired case, not silently dropped because it happens not to
+    /// discriminate the fix.
+    #[test]
+    fn dollar_math_tail_with_a_genuinely_separate_pending_that_lifts_still_trims_its_own_trailing_space(
+    ) {
+        let mut w = fresh_writer();
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 6, rows: 2 };
+        w.math = Some(MathCtx {
+            slot: &math_slot,
+            width: 80,
+        });
+        let src = "lead &amp;$a **b** c$ tail\n";
+        let events: Vec<(Event<'_>, Range<usize>)> = vec![
+            (Event::Start(Tag::Strong), 13..18),
+            (Event::Text("b".into()), 15..16),
+            (Event::End(TagEnd::Strong), 13..18),
+            (Event::Text(" c$ tail".into()), 18..26),
+        ];
+        let mut it = events.into_iter();
+        let mut prev_end = Some(10usize);
+        render_dollar_math_tail(
+            &mut w,
+            &mut it,
+            Some(pulldown_cmark::CowStr::from("synthetic ")),
+            pulldown_cmark::CowStr::from("$a "),
+            10..13,
+            src,
+            &mut prev_end,
+        );
+        assert_eq!(
+            lines_text(&RenderOut {
+                lines: w.lines.clone(),
+                images: Vec::new(),
+                unsupported: Vec::new(),
+                code_blocks: Vec::new(),
+                tasks: Vec::new(),
+            }),
+            vec!["synthetic", "", "", "tail"],
+            "\"synthetic\" has lost its own trailing space (a lift): {:?}",
+            w.lines
+        );
+        assert_eq!(w.images.len(), 1);
+        assert_eq!(w.images[0].rows, 2);
+    }
+
+    /// Requirement 8 (regression): **display** math (`$$...$$`) with `rows == 1` — a real shape
+    /// `math_cells`'s own display formula can produce for a very small expression — must still be
+    /// lifted and centered, never mistaken for the new inline-placement branch (`render_math_slot`'s
+    /// own `!display &&` guard). This is the one case that most directly exercises that guard: `rows`
+    /// alone is `1`, exactly the inline trigger value, so only the `display` flag tells the two apart.
+    #[test]
+    fn display_math_with_rows_one_still_lifts_and_centers_never_treated_as_inline() {
+        let math_slot = |_: &str, display: bool| {
+            assert!(display, "this document only ever asks for display math");
+            MathSlot::Image { cols: 4, rows: 1 }
+        };
+        let out = render_math("$$x$$\n", 80, &math_slot);
+        assert_eq!(
+            out.lines.len(),
+            1,
+            "a single reserved placeholder line, not text folded back into the running line: {:?}",
+            lines_text(&out)
+        );
+        assert_eq!(out.images.len(), 1);
+        let p = &out.images[0];
+        assert_eq!(p.rows, 1);
+        assert_eq!(p.cols, 4);
+        assert_eq!(
+            p.col,
+            (80 - 4) / 2,
+            "display math is centered, not left-aligned at column 0"
+        );
+    }
+
+    /// Requirement 9 (regression, D5): inline placement must never reach *inside* a blockquote — the
+    /// same `structure_mask`-driven exclusion `math_inside_blockquote_is_left_literal` already pins
+    /// for the lift path (in `preview::markdown::fence_and_math_extraction_tests`) — checked here with
+    /// a `math_slot` that would answer `rows: 1` if it were ever consulted at all, so a regression that
+    /// widened the exclusion's scope would show up as the literal `$x$` disappearing (replaced by a
+    /// placement), not merely as a differently-shaped placement.
+    #[test]
+    fn inline_math_slot_is_never_reached_inside_a_blockquote() {
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 3, rows: 1 };
+        let out = render_math("> before $x$ after\n", 80, &math_slot);
+        assert!(
+            out.images.is_empty(),
+            "math inside a quote is never extracted at all"
+        );
+        assert!(
+            lines_text(&out).iter().any(|l| l.contains("$x$")),
+            "the literal source text stays untouched: {:?}",
+            lines_text(&out)
+        );
+    }
+
+    /// Regression (coordinator-reported, reproduced on real terminal output —
+    /// `target/debug/konoma` on `前のテキスト \(E = mc^2\) 後ろのテキスト`): the space immediately
+    /// *before* a `\(…\)`/`\[…\]` expression disappeared when the expression turned out to be placed
+    /// inline, while the `$…$` equivalent (already fixed by `render_math_parts`'s own `inline_at`/
+    /// `slots`) kept it — the same rendering path applied inconsistently to two syntactically
+    /// equivalent LaTeX delimiters. `\(…\)` reaches a *structurally different* code path
+    /// (`render_backslash_math`: opener and closer straddle separate pulldown-cmark events, never one
+    /// `scan_inline_math` pass over a single `Event::Text` the way `$…$` does), so it needed its own,
+    /// parallel fix rather than being covered "for free" by the `$…$` one.
+    ///
+    /// `$…$` and `\(…\)` around the *identical* expression are compared directly against each other,
+    /// not just each against its own hand-picked expected value — a future change that fixes one
+    /// delimiter and not the other is caught by the pair diverging, not merely by one of them being
+    /// individually wrong. `"前のテキスト \(…\)"` is also, incidentally, the exact "opener is preceded
+    /// directly by other text, splitting across an event boundary" shape `backslash_math_opener` exists
+    /// for at all (see that function's own doc comment) — this is not a *different*, additional shape
+    /// from the reported bug, it is the same one, since a backslash escape always forces pulldown-cmark
+    /// to split the preceding text into its own event.
+    #[test]
+    fn backslash_math_preserves_surrounding_space_exactly_like_dollar_math_when_placed_inline() {
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 5, rows: 1 };
+        let dollar = render_math("前のテキスト $E = mc^2$ 後ろのテキスト\n", 80, &math_slot);
+        let backslash = render_math(
+            "前のテキスト \\(E = mc^2\\) 後ろのテキスト\n",
+            80,
+            &math_slot,
+        );
+        assert_eq!(dollar.lines.len(), 1, "{:?}", lines_text(&dollar));
+        assert_eq!(
+            backslash.lines.len(),
+            1,
+            "\\(…\\) must stay on one line exactly like $…$: {:?}",
+            lines_text(&backslash)
+        );
+        assert_eq!(dollar.images.len(), 1);
+        assert_eq!(backslash.images.len(), 1);
+        // "前のテキスト " is 6 CJK characters (12 cells) + 1 space = 13 cells — pinned absolutely for
+        // the delimiter under test (`\(…\)`), not merely relative to `$…$`, so a mutation that breaks
+        // *both* delimiters identically still gets caught.
+        assert_eq!(
+            backslash.images[0].col, 13,
+            "\\(…\\): {:?}",
+            backslash.images[0]
+        );
+        // The two delimiter styles must land the math at the identical cell and produce the identical
+        // total line width — if they diverge, one delimiter is trimming a space the other is not.
+        assert_eq!(
+            (
+                dollar.images[0].col,
+                dollar.images[0].cols,
+                dollar.lines[0].width()
+            ),
+            (
+                backslash.images[0].col,
+                backslash.images[0].cols,
+                backslash.lines[0].width()
+            ),
+            "$…$ (left) and \\(…\\) (right) must render identically:\n  $…$:   {:?}\n  \\(…\\): {:?}",
+            dollar.lines[0],
+            backslash.lines[0]
+        );
+    }
+
+    /// Regression, the paired case: a genuine *lift* (a directly-supplied `rows: 2` slot, mirroring
+    /// `a_multi_row_inline_math_slot_still_lifts_onto_its_own_line`'s own `$…$` case) must still trim
+    /// the trailing space before a `\(…\)`/`\[…\]` opener, unchanged from before this feature existed —
+    /// the fix above only removes the trim when the math turns out to be inline, never unconditionally.
+    #[test]
+    fn backslash_math_that_still_lifts_keeps_trimming_the_space_before_it() {
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 6, rows: 2 };
+        let out = render_math(
+            "前のテキスト \\(E = mc^2\\) 後ろのテキスト\n",
+            80,
+            &math_slot,
+        );
+        assert_eq!(
+            out.lines.len(),
+            1 + 2 + 1,
+            "\"前のテキスト\"/\"後ろのテキスト\" land on their own lines around the 2-row lift: {:?}",
+            lines_text(&out)
+        );
+        assert_eq!(out.images.len(), 1);
+        assert_eq!(out.images[0].rows, 2);
+    }
+
+    /// Regression, the documented residual: when `pending` (the text immediately before a `\(…\)`/
+    /// `\[…\]` opener) contains its own `$…$` math in the very same source event, this file falls back
+    /// to the pre-existing, unconditional-trim behavior rather than risk reordering a side-effecting
+    /// `math_slot` closure's own calls (see `render_backslash_math`'s own doc comment on
+    /// `pending_has_its_own_math`, and `docs/STATUS.md`'s "★未修正" note for this feature) — pinned
+    /// here so a future attempt to "fix" this narrow shape is a deliberate, tested decision, not an
+    /// accidental one. `collect_math_exprs`'s own document-order guarantee for a case shaped exactly
+    /// like this is what `math_inline_and_display_detection` (`preview::markdown::tests`) already pins.
+    #[test]
+    fn backslash_math_right_after_dollar_math_in_the_same_event_keeps_the_old_trim_behavior() {
+        let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 5, rows: 1 };
+        let out = render_math("lead $x$ mid \\(y\\) tail\n", 80, &math_slot);
+        // Not asserting a specific shape here beyond "does not panic and produces exactly the two
+        // expected placements" — this is the documented residual, not a fixed contract; what matters
+        // is that this narrow combination degrades safely (principle #3) rather than mis-ordering
+        // `collect_math_exprs`'s own accumulator, which `math_inline_and_display_detection` already
+        // pins directly against the real, side-effecting `extraction_targets` closure.
+        assert_eq!(out.images.len(), 2, "{:?}", out.images);
+    }
 
     /// `render_block`'s own generic `BlockKind::Quote { alert: Some(_), .. } if !w.alerts` arm
     /// (lines 3797-3798) — the *nested* sibling of the identical top-level-dispatch arm already

@@ -33,11 +33,12 @@ as real pixels).
   keeps the legacy Unicode rendering; unsupported diagrams fall back to it
   automatically.
 - **LaTeX math**: `$…$` and `$$…$$` (or `\(…\)` / `\[…\]`) are typeset in pure
-  Rust and drawn as images — no browser, no Node, no TeX installation. A
-  terminal cannot place a picture inside a line of text, so an inline formula is
-  lifted onto a line of its own and a display formula is centered. `$5` and
-  anything inside code stays literal. Set `ui.math = "text"` to keep the raw
-  LaTeX instead, and `ui.math_color` to match your terminal's foreground.
+  Rust and drawn as images — no browser, no Node, no TeX installation. An
+  inline formula is always drawn in the running text, like ordinary Markdown;
+  one too wide for the line shrinks to fit instead of being lifted onto a line
+  of its own. A display formula is centered. `$5` and anything inside code
+  stays literal. Set `ui.math = "text"` to keep the raw LaTeX instead, and
+  `ui.math_color` to match your terminal's foreground.
 - **Block alignment**: `ui.md_table_align` (default `"left"`) and
   `ui.md_image_align` (default `"center"`) place a table's box and a block image
   — a standalone `![alt](url)`, a row of badges, a Mermaid diagram — at the
