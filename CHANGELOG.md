@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-08-28
+
 ### Fixed
 - **Inline LaTeX math drew smaller than the surrounding text, and different expressions drew at
   different sizes from each other.** `math_cells` always reserves exactly one terminal row for an
@@ -2234,7 +2236,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.1...HEAD
+[0.28.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.5...v0.27.0
 [0.26.5]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.4...v0.26.5
