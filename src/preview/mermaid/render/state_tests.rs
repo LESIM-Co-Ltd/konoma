@@ -886,6 +886,7 @@ fn synthetic_state_diagram() -> Diagram {
             straight: false,
             overlay: false,
             style: None,
+            curve: super::Curve::Basis,
         },
         super::PlacedEdge {
             from: "n7".to_string(),
@@ -902,6 +903,7 @@ fn synthetic_state_diagram() -> Diagram {
             straight: false,
             overlay: false,
             style: None,
+            curve: super::Curve::Basis,
         },
     ];
 

@@ -46,7 +46,7 @@ use std::collections::{BTreeMap, HashSet};
 use super::edges::Tip;
 use super::shapes::Glyph;
 use super::{
-    labels, panel, shapes, svg, theme, ClusterSection, Diagram, Label, PlacedActivation,
+    labels, panel, shapes, svg, theme, ClusterSection, Curve, Diagram, Label, PlacedActivation,
     PlacedCluster, PlacedEdge, PlacedEdgeLabel, PlacedLifeline, PlacedNode, Size,
 };
 use crate::preview::mermaid::flowchart::{Shape, Stroke};
@@ -643,6 +643,7 @@ fn tip_document(tip: Tip) -> String {
         straight: false,
         overlay: false,
         style: None,
+        curve: Curve::Basis,
     });
     drawn(&d)
 }
@@ -851,6 +852,7 @@ fn decoration_document(decoration: Decoration, on: bool) -> String {
                 straight: false,
                 overlay: false,
                 style: None,
+                curve: Curve::Basis,
             });
         }
         Decoration::Lifeline | Decoration::ActivationBar | Decoration::DestroyCross => {

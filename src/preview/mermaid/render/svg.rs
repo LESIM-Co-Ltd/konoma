@@ -960,11 +960,13 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
     }
     // A data path is drawn straight and a route is drawn smooth — see `PlacedEdge::drawn_points`
     // and `edges::polyline_path`. `series` is the thing that tells them apart, because a series is
-    // exactly what makes a line a series.
+    // exactly what makes a line a series. Everything else draws in `edge.curve` (mermaid's
+    // `flowchart.curve` / `linkStyle interpolate`; `Curve::Basis` — the only value any diagram
+    // kind but a flowchart's own edges ever carries — reproduces `curve_basis_path` exactly).
     let d = if edge.series.is_some() || edge.straight {
         edges::polyline_path(&trimmed)
     } else {
-        edges::curve_basis_path(&trimmed)
+        edge.curve.path(&trimmed)
     };
     out.push_str(&format!(
         "<path d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"{}/>\n",

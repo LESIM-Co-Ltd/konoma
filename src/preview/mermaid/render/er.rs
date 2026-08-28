@@ -36,7 +36,8 @@ use super::panel::{self, AttributeRow};
 use super::shapes::{self, Glyph};
 use super::svg;
 use super::{
-    lay_out_spec, Diagram, GraphSpec, Label, RenderError, SpecBlock, SpecEdge, SpecNode, Theme,
+    lay_out_spec, Curve, Diagram, GraphSpec, Label, RenderError, SpecBlock, SpecEdge, SpecNode,
+    Theme,
 };
 
 /// Reads a mermaid ER source and draws it.
@@ -129,6 +130,7 @@ pub fn spec_of(diagram: &ErDiagram) -> GraphSpec {
             start_label: None,
             end_label: None,
             style: None,
+            curve: Curve::Basis,
         })
         .collect();
 

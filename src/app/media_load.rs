@@ -114,6 +114,7 @@ impl App {
                     path.to_path_buf(),
                     self.mermaid_px(),
                     self.cfg.ui.mermaid_theme.clone(),
+                    self.cfg.ui.mermaid_curve.clone(),
                 ))
             }
             // Full-screen fence display: re-fetch the fence body from the md by ordinal (count-guard,
@@ -124,6 +125,7 @@ impl App {
                         code,
                         self.mermaid_px(),
                         self.cfg.ui.mermaid_theme.clone(),
+                        self.cfg.ui.mermaid_curve.clone(),
                     ));
                 }
             }

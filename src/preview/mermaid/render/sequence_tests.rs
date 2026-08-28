@@ -43,9 +43,9 @@ use super::tests::{
     measured_texts, tree_of,
 };
 use super::{
-    labels, svg, theme, ClusterSection, Diagram, Glyph, Label, PlacedActivation, PlacedCluster,
-    PlacedEdge, PlacedEdgeLabel, PlacedLifeline, PlacedNode, RenderError, Size, SpecBlock, Theme,
-    Tip, ACTIVATION_WIDTH,
+    labels, svg, theme, ClusterSection, Curve, Diagram, Glyph, Label, PlacedActivation,
+    PlacedCluster, PlacedEdge, PlacedEdgeLabel, PlacedLifeline, PlacedNode, RenderError, Size,
+    SpecBlock, Theme, Tip, ACTIVATION_WIDTH,
 };
 use crate::preview::mermaid::flowchart::{Shape, Stroke};
 use crate::preview::mermaid::layout::Point;
@@ -1692,6 +1692,7 @@ fn synthetic_sequence() -> Diagram {
             straight: false,
             overlay: false,
             style: None,
+            curve: Curve::Basis,
         });
     }
     // A self-message: a loop out to the right and back.
@@ -1719,6 +1720,7 @@ fn synthetic_sequence() -> Diagram {
         straight: false,
         overlay: false,
         style: None,
+        curve: Curve::Basis,
     });
 
     let lifelines = vec![

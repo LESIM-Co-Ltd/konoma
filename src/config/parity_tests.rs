@@ -605,6 +605,25 @@ fn cfg_ui_mermaid_theme_default_and_parse() {
     );
 }
 
+/// `mermaid_curve`: default `"basis"`; round-trips any string through the config parser (the
+/// permissive fallback to `Curve::Basis` for an unrecognised spelling happens downstream in
+/// `preview::mermaid::render::edges::Curve::parse`, not here — this is only the raw string
+/// making it from TOML into `UiConfig`, same as `mermaid_theme` above).
+#[test]
+fn cfg_ui_mermaid_curve_default_and_parse() {
+    assert_eq!(
+        toml::from_str::<Config>("[ui]\n").unwrap().ui.mermaid_curve,
+        "basis"
+    );
+    assert_eq!(
+        toml::from_str::<Config>("[ui]\nmermaid_curve = \"linear\"\n")
+            .unwrap()
+            .ui
+            .mermaid_curve,
+        "linear"
+    );
+}
+
 /// `math_color`: default light gray; validated against usvg's own color parser (`svgtypes::Color`) so a
 /// value that passes is one usvg renders — never one it silently falls back to *black* for (invisible on
 /// dark = the "blank equation" bug). A real color passes; a typo / `none` / `currentColor` / a
@@ -651,6 +670,7 @@ commit_meta_align = "center"
 follow_view = "hologram"
 mermaid = "ascii-art"
 mermaid_theme = "chartreuse"
+mermaid_curve = "monotoneX"
 math = "vector-art"
 md_details = "sideways"
 "#,
@@ -667,6 +687,7 @@ md_details = "sideways"
     assert_eq!(cfg.ui.follow_view, "hologram");
     assert_eq!(cfg.ui.mermaid, "ascii-art");
     assert_eq!(cfg.ui.mermaid_theme, "chartreuse");
+    assert_eq!(cfg.ui.mermaid_curve, "monotoneX");
     assert_eq!(cfg.ui.math, "vector-art");
     assert_eq!(cfg.ui.md_details, "sideways");
 }
@@ -769,6 +790,7 @@ fn cfg_ui_empty_toml_yields_all_scalar_defaults() {
     assert!(ui.busy_indicator);
     assert_eq!(ui.mermaid, "image");
     assert_eq!(ui.mermaid_theme, "dark");
+    assert_eq!(ui.mermaid_curve, "basis");
     assert_eq!(ui.mermaid_rows, 24);
     assert_eq!(ui.follow_view, "diff");
     assert!(ui.restore_tabs);

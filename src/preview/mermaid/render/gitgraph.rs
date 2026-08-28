@@ -33,8 +33,8 @@ use crate::preview::mermaid::text_metrics;
 use super::band;
 use super::chart::label_node;
 use super::{
-    normalise, shapes, svg, Diagram, Glyph, Label, PlacedEdge, PlacedNode, RenderError, Size,
-    Theme, Tip,
+    normalise, shapes, svg, Curve, Diagram, Glyph, Label, PlacedEdge, PlacedNode, RenderError,
+    Size, Theme, Tip,
 };
 
 /// The closest two commits are ever drawn along the time axis. Two whose labels want more get it.
@@ -427,6 +427,7 @@ pub fn lay_out(graph: &GitGraph) -> Result<Diagram, RenderError> {
                 straight: true,
                 overlay: false,
                 style: None,
+                curve: Curve::Basis,
             });
         }
     }

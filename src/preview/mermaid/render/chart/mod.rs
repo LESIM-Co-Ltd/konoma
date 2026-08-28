@@ -58,7 +58,7 @@ use crate::preview::mermaid::layout::Point;
 
 use super::labels::line_height;
 use super::shapes::Glyph;
-use super::{Diagram, Label, PlacedEdge, PlacedNode, Size, Tip};
+use super::{Curve, Diagram, Label, PlacedEdge, PlacedNode, Size, Tip};
 use crate::preview::mermaid::flowchart::Stroke;
 
 /// Blank space between the title and the chart under it.
@@ -159,6 +159,7 @@ pub fn rule(from: Point, to: Point, stroke: Stroke, series: Option<usize>) -> Pl
         straight: false,
         overlay: false,
         style: None,
+        curve: Curve::Basis,
     }
 }
 

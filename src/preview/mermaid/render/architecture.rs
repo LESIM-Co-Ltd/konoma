@@ -29,7 +29,7 @@ use crate::preview::mermaid::text_metrics;
 
 use super::band;
 use super::{
-    normalise, shapes, svg, Diagram, Glyph, Label, PlacedCluster, PlacedEdge, PlacedNode,
+    normalise, shapes, svg, Curve, Diagram, Glyph, Label, PlacedCluster, PlacedEdge, PlacedNode,
     RenderError, Size, Theme, Tip,
 };
 
@@ -145,6 +145,7 @@ pub fn lay_out(arch: &Architecture) -> Result<Diagram, RenderError> {
             straight: true,
             overlay: false,
             style: None,
+            curve: Curve::Basis,
         });
         if !e.title.trim().is_empty() {
             let label = Label::measure(&e.title);

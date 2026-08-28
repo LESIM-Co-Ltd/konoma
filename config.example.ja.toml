@@ -223,6 +223,27 @@ mermaid = "image"
 #   "light"       … モダンなライト配色 / "classic" … mermaid.js 既定 / "forest" / "neutral"
 mermaid_theme = "dark"
 
+# flowchart の辺(エッジ)の線の形 — mermaid の `flowchart.curve`(mermaid-js#2817 / #2549、
+# mermaid で最も要望の多い flowchart 機能=スプラインでなく直線・直角の線)。
+# mermaid 自身が持つ曲線名 13 種すべてに対応済み。未知の値は "basis" にフォールバックする。
+#   "basis" (既定) … 滑らかなスプライン。mermaid 自身の既定であり、この設定が無かった頃と
+#                    見え方は変わらない(明示的に変えない限り常に basis)。
+#   "linear"       … 経由点を直線で結ぶ。
+#   "step"         … 直角。各区間の中間点で水平⇄垂直が切り替わる。
+#   "stepBefore"   … 直角。先に垂直、次に水平。
+#   "stepAfter"    … 直角。先に水平、次に垂直。
+#   "natural" / "cardinal" / "catmullRom" … 経由点をすべて通る滑らかなスプライン
+#                    ("basis" と違い経由点上を通る)。d3-shape の異なる補間方式。
+#   "monotoneX" / "monotoneY" … 経由点を行き過ぎない滑らかなスプライン。指定した軸方向。
+#   "bumpX" / "bumpY" … 経由点どうしを S 字カーブで結ぶ。指定した軸方向にふくらむ。
+#   "rounded"      … 直線区間＋角だけ小さく丸める。"linear" と同じ直角基調で角だけ丸い。
+#                    mermaid 独自の曲線(d3-shape 由来ではない)。
+# 曲線の指定は 3 段階(弱い順): この設定 < 図側の
+# `%%{init: {"flowchart": {"curve": "..."}}}%%`(図ごとに指定) < 特定の辺だけを指す
+# `linkStyle <n> interpolate <curve>`。それぞれ指定されていれば、より弱い指定を上書きする。
+# この設定を読むのは flowchart 自身の辺だけ — 他の図種は常に "basis" で描く。
+mermaid_curve = "basis"
+
 # Markdown 内のインライン mermaid 図の表示高さの**上限**(行数・既定 24)。図は本文と同じ文字の
 # 大きさになる自然なサイズで表示され、**拡大はしない**(小さい図は小さいまま)。自然サイズが
 # この上限や本文幅を超えるときだけ、縦横比を保って上限まで縮小する。図はベクタ由来なので、

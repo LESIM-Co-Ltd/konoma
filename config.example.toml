@@ -235,6 +235,30 @@ mermaid = "image"
 #   "light"          … a modern light palette / "classic" … mermaid.js default / "forest" / "neutral".
 mermaid_theme = "dark"
 
+# Curve a flowchart's edges are drawn in — mermaid's `flowchart.curve` (mermaid-js#2817 / #2549,
+# mermaid's most-requested flowchart feature: a straight/right-angle line instead of a spline).
+# All 13 of mermaid's own curve names are implemented; an unknown value falls back to "basis".
+#   "basis" (default) … a smooth spline; mermaid's own default, and what every diagram drew before
+#                       this setting existed — the look never changes unless you set this.
+#   "linear"          … straight segments through every waypoint.
+#   "step"            … right-angle line, the turn at the midpoint of each segment.
+#   "stepBefore"      … right-angle line, vertical leg first.
+#   "stepAfter"       … right-angle line, horizontal leg first.
+#   "natural" / "cardinal" / "catmullRom" … smooth splines that pass through every waypoint
+#                       (unlike "basis"), each a different d3-shape interpolation.
+#   "monotoneX" / "monotoneY" … a smooth spline that never overshoots a waypoint, along the named
+#                       axis.
+#   "bumpX" / "bumpY" … an S-curve between every pair of waypoints, offset on the named axis.
+#   "rounded"         … straight segments with every corner cut to a small rounded curve — right
+#                       angles like "linear", without the sharp corner. mermaid's own curve, not
+#                       part of d3-shape.
+# Three ways to set the curve, weakest first: this setting < the diagram's own
+# `%%{init: {"flowchart": {"curve": "..."}}}%%` (see the diagram's own docs) < a
+# `linkStyle <n> interpolate <curve>` naming one specific edge — each one, if present, overrides
+# this setting and every weaker source. Only a flowchart's own edges read any of this — every
+# other diagram kind always draws "basis".
+mermaid_curve = "basis"
+
 # Upper limit on the height (rows) of an inline mermaid diagram inside Markdown (default 24). A
 # diagram is shown at its natural size — matching the surrounding body text — and is never
 # enlarged (a small diagram stays small). Only when that natural size exceeds this cap, or the

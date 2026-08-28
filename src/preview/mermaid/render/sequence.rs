@@ -62,8 +62,8 @@ use super::panel::{Panel, PanelCell, PanelRow};
 use super::shapes::{self, Glyph, Size};
 use super::{clusters, labels, svg};
 use super::{
-    ClusterSection, Diagram, Label, PlacedActivation, PlacedCluster, PlacedEdge, PlacedEdgeLabel,
-    PlacedLifeline, PlacedNode, RenderError, Theme, ACTIVATION_WIDTH,
+    ClusterSection, Curve, Diagram, Label, PlacedActivation, PlacedCluster, PlacedEdge,
+    PlacedEdgeLabel, PlacedLifeline, PlacedNode, RenderError, Theme, ACTIVATION_WIDTH,
 };
 
 /// Gap between two participants' boxes. mermaid's `sequence.actorMargin`, schema default 50.
@@ -863,6 +863,7 @@ impl<'a> Walk<'a> {
             straight: false,
             overlay: false,
             style: None,
+            curve: Curve::Basis,
         });
 
         self.last_message_y = bottom;

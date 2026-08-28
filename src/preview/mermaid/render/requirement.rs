@@ -24,8 +24,8 @@ use crate::preview::mermaid::text_metrics;
 
 use super::panel::{class_panel, Compartment};
 use super::{
-    lay_out_spec, shapes, svg, Diagram, Glyph, GraphSpec, Label, RenderError, SpecEdge, SpecNode,
-    Theme, Tip,
+    lay_out_spec, shapes, svg, Curve, Diagram, Glyph, GraphSpec, Label, RenderError, SpecEdge,
+    SpecNode, Theme, Tip,
 };
 
 /// Reads a mermaid requirement diagram and draws it.
@@ -80,6 +80,7 @@ pub fn spec_of(diagram: &RequirementDiagram) -> GraphSpec {
             start_label: None,
             end_label: None,
             style: None,
+            curve: Curve::Basis,
         })
         .collect();
 

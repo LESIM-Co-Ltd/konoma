@@ -28,8 +28,8 @@ use crate::preview::mermaid::mindmap::{Mindmap, NodeShape};
 use crate::preview::mermaid::text_metrics;
 
 use super::{
-    lay_out_spec, shapes, svg, Diagram, Glyph, GraphSpec, Label, RenderError, SpecEdge, SpecNode,
-    Theme, Tip,
+    lay_out_spec, shapes, svg, Curve, Diagram, Glyph, GraphSpec, Label, RenderError, SpecEdge,
+    SpecNode, Theme, Tip,
 };
 
 /// Reads a mermaid mindmap source and draws it.
@@ -96,6 +96,7 @@ pub fn spec_of(map: &Mindmap) -> GraphSpec {
                 start_label: None,
                 end_label: None,
                 style: None,
+                curve: Curve::Basis,
             })
         })
         .collect();

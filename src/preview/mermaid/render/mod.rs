@@ -105,7 +105,7 @@ use crate::preview::mermaid::layout::{
 };
 use crate::preview::mermaid::text_metrics;
 
-pub use edges::Tip;
+pub use edges::{Curve, Tip};
 pub use labels::Label;
 pub use panel::Panel;
 #[allow(unused_imports)]
@@ -351,18 +351,34 @@ pub struct PlacedEdge {
     /// edge. `None` draws exactly what every edge drew before `style::cascade_edge` existed; see
     /// [`style`] for why this is not folded into [`PlacedEdge::series`].
     pub style: Option<ShapeStyle>,
+    /// Which curve draws the line, when neither [`PlacedEdge::series`] nor
+    /// [`PlacedEdge::straight`] already decided it (`svg::emit_edge`'s branch).
+    ///
+    /// Only a flowchart's own edges ever resolve to anything but [`Curve::Basis`] — `curve` is
+    /// mermaid's `flowchart.curve` / `linkStyle ... interpolate`, and every other diagram kind
+    /// that reaches this struct (state, class, ER, C4, requirement, mindmap, sequence, git graph,
+    /// architecture, block) sets this to `Basis` unconditionally, which is exactly what it drew
+    /// before this field existed.
+    pub curve: Curve,
 }
 
 impl PlacedEdge {
-    /// The polyline the curve is actually built from: corners rounded off (`edges::fix_corners`).
+    /// The polyline the curve is actually built from: corners rounded off (`edges::fix_corners`)
+    /// **only when [`PlacedEdge::curve`] wants that** ([`Curve::rounds_corners`]).
     ///
     /// **A series edge keeps its own vertices.** Rounding a right angle replaces the corner with
     /// two points either side of it, which for a route is an improvement and for a *data path* is
     /// a value moved: an xy chart's line and a radar chart's curve both have vertices that are
     /// the data, and two consecutive equal values make exactly the right angle `fix_corners`
     /// would take out.
+    ///
+    /// **Every route curve but `Rounded` gets its corners rounded first, `linear`/`step*`
+    /// included** — see [`Curve::rounds_corners`]'s own doc for the versioned evidence
+    /// (`mermaid@11.4.1`/`mermaid@11.12.0` run `fixCorners` unconditionally). `Rounded` is the
+    /// one exception, and only because it rounds every corner itself at its own radius, so
+    /// running `fix_corners` first would round the same corner twice.
     pub fn drawn_points(&self) -> Vec<Point> {
-        if self.series.is_some() || self.straight {
+        if self.series.is_some() || self.straight || !self.curve.rounds_corners() {
             return self.points.clone();
         }
         edges::fix_corners(&self.points)
@@ -532,10 +548,20 @@ impl Diagram {
 /// gets — `docs/FEATURE-MERMAID-RENDERER.md` §6 ("ゴールデンは本番の入口関数を通すこと"), after
 /// konoma was once caught pinning a function that was not the one in production.
 ///
-/// `theme` is `ui.mermaid_theme`'s raw string; an unknown value silently means `dark`.
+/// `theme` is `ui.mermaid_theme`'s raw string; an unknown value silently means `dark`. Draws every
+/// edge in [`Curve::Basis`] — the same as [`render_curve`] called with `"basis"` — which is what
+/// keeps this the byte-stable entry point every golden test and every non-flowchart caller goes
+/// through.
 pub fn render(code: &str, theme: &str) -> Result<String, RenderError> {
+    render_curve(code, theme, "basis")
+}
+
+/// [`render`], with the curve every edge draws in resolved from `curve` — `ui.mermaid_curve`'s raw
+/// string, `Curve::Basis`("basis") reproducing [`render`] exactly. An individual edge's own
+/// `linkStyle ... interpolate <curve>` wins over this default; see [`spec_of`].
+pub fn render_curve(code: &str, theme: &str, curve: &str) -> Result<String, RenderError> {
     let chart = flowchart::parse(code)?;
-    let diagram = lay_out(&chart)?;
+    let diagram = lay_out_curve(&chart, curve)?;
     Ok(svg::emit(&diagram, &Theme::named(theme)))
 }
 
@@ -572,6 +598,12 @@ pub fn render(code: &str, theme: &str) -> Result<String, RenderError> {
 /// stage wants the axis back, the place to start is a nested layout — and
 /// [`super::tests::a_block_direction_does_not_move_anything`] is the test it has to change.
 pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
+    lay_out_curve(chart, "basis")
+}
+
+/// [`lay_out`], with every edge's curve resolved from `curve` the way [`render_curve`] resolves
+/// it — see [`spec_of`] for exactly how a per-edge `linkStyle interpolate` overrides it.
+pub fn lay_out_curve(chart: &Flowchart, curve: &str) -> Result<Diagram, RenderError> {
     // The gate. usvg does not fail on a missing font, it just drops the glyphs, so the only place
     // this can be caught is before anything is built (PRD design principle #3).
     if !text_metrics::fonts_available() {
@@ -580,7 +612,7 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
     if chart.nodes.is_empty() {
         return Err(RenderError::NothingToDraw);
     }
-    lay_out_spec(&spec_of(chart))
+    lay_out_spec(&spec_of(chart, curve))
 }
 
 /// A flowchart, measured and sized, as the language-neutral [`GraphSpec`] the layout reads.
@@ -589,7 +621,26 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
 /// is sized around it, and a `subgraph` becomes a block. Everything after this point —
 /// [`lay_out_spec`] — is shared with the state diagram, and that sharing is the point
 /// (`docs/FEATURE-MERMAID-RENDERER.md` §7: stage 2 reuses stage 1's layout).
-fn spec_of(chart: &Flowchart) -> GraphSpec {
+///
+/// `curve` is the caller's own default (`ui.mermaid_curve`'s raw string — permissive, so an
+/// unknown spelling reaching here still ends up `Curve::Basis` once [`Curve::parse`] sees it). The
+/// full priority order, weakest first, mirrors mermaid's own config cascade exactly:
+///
+/// 1. `curve` — this function's own parameter, `[ui] mermaid_curve`;
+/// 2. `chart.curve` — `%%{init: {"flowchart": {"curve": ...}}}%%`, read once per chart
+///    (`preprocess::init_flowchart_curve`) and overriding 1 whenever the source declared one;
+/// 3. `linkStyle default interpolate` — overrides 1 and 2 for every edge that names no index of
+///    its own, the same `style::cascade_edge` already runs for paint;
+/// 4. `linkStyle <n> interpolate` — this edge's own index, overriding all three.
+///
+/// Only the flowchart language reads any of `%%{init}%%`'s `flowchart.curve` or `interpolate` at
+/// all — every other diagram kind's own `spec_of` sets [`SpecEdge::curve`] to `Curve::Basis`
+/// unconditionally.
+fn spec_of(chart: &Flowchart, curve: &str) -> GraphSpec {
+    // Step 2 of the priority order above: `%%{init}%%`'s own `flowchart.curve`, read once, wins
+    // over the caller's `ui.mermaid_curve` default for the rest of this function — every
+    // `linkStyle interpolate` cascade below now overrides *this*, not the raw parameter.
+    let curve = chart.curve.as_deref().unwrap_or(curve);
     // `classDef default` → the classes a node/edge carries, in applied order → its own `style` —
     // see `style::cascade`'s docs for the pipeline this closure feeds.
     let class_of = |name: &str| {
@@ -640,6 +691,26 @@ fn spec_of(chart: &Flowchart) -> GraphSpec {
                 LinkStyleTarget::Indices(idx) if idx.contains(&i) => Some(ls.styles.as_slice()),
                 _ => None,
             });
+            // Same cascade as the paint above, over `interpolate` instead of `styles`: chart-wide
+            // default, then `linkStyle default interpolate`, then this edge's own
+            // `linkStyle <n> interpolate` — each iterator's *last* match wins, exactly as
+            // `style::cascade_edge` applies its declarations in order and lets a later one
+            // overwrite an earlier one.
+            let default_interpolate = chart
+                .link_styles
+                .iter()
+                .filter(|ls| matches!(ls.target, LinkStyleTarget::Default))
+                .filter_map(|ls| ls.interpolate.as_deref())
+                .next_back();
+            let indexed_interpolate = chart
+                .link_styles
+                .iter()
+                .filter(
+                    |ls| matches!(&ls.target, LinkStyleTarget::Indices(idx) if idx.contains(&i)),
+                )
+                .filter_map(|ls| ls.interpolate.as_deref())
+                .next_back();
+            let resolved_curve = indexed_interpolate.or(default_interpolate).unwrap_or(curve);
             SpecEdge {
                 id: edge.id.clone(),
                 from: edge.from.clone(),
@@ -656,6 +727,7 @@ fn spec_of(chart: &Flowchart) -> GraphSpec {
                 start_label: None,
                 end_label: None,
                 style: style::cascade_edge(class_of, &edge.classes, link_default, link_indexed),
+                curve: Curve::parse(resolved_curve),
             }
         })
         .collect();
@@ -710,6 +782,9 @@ pub struct SpecEdge {
     pub end_label: Option<Label>,
     /// The resolved `class`/`linkStyle` paint, carried through to [`PlacedEdge::style`] unchanged.
     pub style: Option<ShapeStyle>,
+    /// Carried through to [`PlacedEdge::curve`] unchanged — see that field's docs for why every
+    /// spec builder but the flowchart's own sets this to [`Curve::Basis`].
+    pub curve: Curve,
 }
 
 /// One frame to lay out: a flowchart's `subgraph`, or a state diagram's composite state.
@@ -987,6 +1062,7 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             straight: false,
             overlay: false,
             style: edge.style.clone(),
+            curve: edge.curve,
         });
     }
 

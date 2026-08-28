@@ -25,8 +25,8 @@ use crate::preview::mermaid::text_metrics;
 
 use super::panel::{class_panel, Compartment};
 use super::{
-    lay_out_spec, shapes, svg, Diagram, Glyph, GraphSpec, Label, RenderError, Size, SpecBlock,
-    SpecEdge, SpecNode, Theme, Tip,
+    lay_out_spec, shapes, svg, Curve, Diagram, Glyph, GraphSpec, Label, RenderError, Size,
+    SpecBlock, SpecEdge, SpecNode, Theme, Tip,
 };
 
 /// Reads a mermaid C4 source and draws it.
@@ -94,6 +94,7 @@ pub fn spec_of(diagram: &C4) -> GraphSpec {
                 start_label: None,
                 end_label: None,
                 style: None,
+                curve: Curve::Basis,
             }
         })
         .collect();

@@ -248,6 +248,11 @@ pub struct Flowchart {
     pub link_styles: Vec<LinkStyle>,
     /// `title:` from a YAML front matter block, if there was one.
     pub title: Option<String>,
+    /// `flowchart.curve` from an `%%{init}%%` directive, if the source had one and it named that
+    /// key (`preprocess::init_flowchart_curve`). The chart-wide default `[ui] mermaid_curve`
+    /// falls back to when this is `None`; a per-edge `linkStyle ... interpolate` still wins over
+    /// both (`render::spec_of`'s own doc has the full priority order).
+    pub curve: Option<String>,
     /// `accTitle:` — an accessibility title. Not drawn.
     pub acc_title: Option<String>,
     /// `accDescr:` or `accDescr { ... }` — an accessibility description. Not drawn.
@@ -257,12 +262,18 @@ pub struct Flowchart {
 }
 
 impl Flowchart {
-    /// An empty chart with a direction and (optionally) a front matter title. Used by the
-    /// parser; the id index is private, so a struct literal cannot be written from outside.
-    pub(super) fn new(direction: Direction, title: Option<String>) -> Flowchart {
+    /// An empty chart with a direction and (optionally) a front matter title and an `%%{init}%%`
+    /// `flowchart.curve`. Used by the parser; the id index is private, so a struct literal cannot
+    /// be written from outside.
+    pub(super) fn new(
+        direction: Direction,
+        title: Option<String>,
+        curve: Option<String>,
+    ) -> Flowchart {
         Flowchart {
             direction,
             title,
+            curve,
             ..Flowchart::default()
         }
     }

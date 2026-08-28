@@ -6,6 +6,39 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **`[ui] mermaid_curve` — a flowchart's edges can now draw in any of mermaid's own 13 curve
+  shapes, not just a straight/right-angle line.** mermaid's most-requested flowchart feature
+  (mermaid-js#2817, 129 reactions; mermaid-js#2549, 75 reactions; both open 4+ years):
+  `flowchart.curve`, now implemented in full. Default `"basis"` reproduces today's spline
+  exactly, byte for byte (checked against every mermaid golden snapshot). New values: `"linear"`
+  (straight segments through every waypoint); `"step"` / `"stepBefore"` / `"stepAfter"` (a right
+  angle, differing in where the corner sits — midpoint / vertical-first / horizontal-first);
+  `"natural"` / `"cardinal"` / `"catmullRom"` (smooth splines that pass through every waypoint,
+  unlike `"basis"` — three different d3-shape interpolations); `"monotoneX"` / `"monotoneY"` (a
+  smooth spline that never overshoots a waypoint, along the named axis); `"bumpX"` / `"bumpY"`
+  (an S-curve between every pair of waypoints, offset on the named axis); and mermaid's own
+  `"rounded"` (straight segments with every corner cut to a small rounded curve — not a d3-shape
+  curve at all, ported from mermaid's own `generateRoundedPath`). The seven d3-shape curves are
+  pinned against the actual npm `d3-shape` package (run through Node, not hand-derived); `rounded`
+  is pinned against mermaid's own `edges.js` the same way. A `linkStyle <n> interpolate <curve>`
+  in the diagram's own source — previously parsed and silently discarded — overrides the config
+  default for that one edge, and `linkStyle default interpolate <curve>` overrides it for every
+  edge with no index override, matching the existing `linkStyle` paint cascade. **A diagram's own
+  `%%{init: {"flowchart": {"curve": "..."}}}%%` directive is now read too** — one value,
+  `flowchart.curve`, permissively extracted (any quote style, whitespace, key order); every other
+  key an init directive can carry (`theme`, `look`, …) is still completely ignored, unchanged from
+  before. Priority order, weakest first: `[ui] mermaid_curve` < the diagram's own `%%{init}%%` <
+  `linkStyle default interpolate` < a specific edge's own `linkStyle <n> interpolate`. Every curve
+  but `"rounded"` still has its right-angle corners pre-rounded (`edges::fix_corners`) before
+  drawing — `"linear"` and the three `"step"` variants included, matching every released mermaid
+  version's own `edges.js` (`fixCorners` runs unconditionally there; the exemption for `"rounded"`
+  only exists so it does not double-round the corners it already rounds itself at its own radius).
+  An unrecognized value still falls back to `"basis"`, same as before. Only a flowchart's own edges
+  read any of this — every other diagram kind (state, class, ER, sequence, C4, requirement, mindmap, git graph,
+  architecture, block, and every chart) is unaffected. mermaid v11.10.0+'s `e1@{ curve: ... }`
+  edge-metadata syntax is not parsed yet (only per-node `@{...}` metadata is), so it has no effect.
+
 ### Fixed
 - **An inline mermaid diagram was always enlarged, drawing its text noticeably bigger than the
   surrounding body text — even a trivial diagram filled the screen.** `mermaid_cells` treated

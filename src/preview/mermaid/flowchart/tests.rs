@@ -961,6 +961,42 @@ fn a_comment_line_is_removed_but_a_directive_line_is_not_mistaken_for_one() {
     assert_eq!(p.text.matches('\n').count(), 3);
 }
 
+/// `%%{init}%%`'s `flowchart.curve` reaches [`Flowchart::curve`] — the one piece of a directive
+/// this crate actually reads, per `preprocess.rs`'s own doc on why every other key stays ignored.
+#[test]
+fn an_init_directives_flowchart_curve_reaches_the_parsed_chart() {
+    let c = ok("%%{init: {\"flowchart\": {\"curve\": \"linear\"}}}%%\nflowchart TD\n  A --> B\n");
+    assert_eq!(c.curve.as_deref(), Some("linear"));
+    assert_eq!(
+        c.node_ids(),
+        ["A", "B"],
+        "no phantom nodes from the directive"
+    );
+}
+
+/// A directive naming no `flowchart.curve` at all — the existing `%%{init: {"theme":
+/// "dark"}}%%` corpus shape — leaves [`Flowchart::curve`] at `None`, exactly as before this crate
+/// read directives for anything.
+#[test]
+fn a_directive_without_a_flowchart_curve_leaves_the_chart_curve_none() {
+    let c = ok("%%{init: {\"theme\": \"dark\"}}%%\nflowchart TD\n  A --> B\n");
+    assert_eq!(c.curve, None);
+}
+
+/// A `%%{init: ...}%%`-shaped **string literal sitting inside front matter** (already regression-
+/// tested for `title` — see the case just above this one in source, `note: "%%{init: {}}%%"` — is
+/// not mistaken for a real directive) must not leak a `flowchart.curve` either: front matter is
+/// stripped *before* directives are ever looked for, so text quoted inside it is just YAML data.
+#[test]
+fn a_directive_look_alike_inside_front_matter_does_not_set_curve() {
+    let c = ok(
+        "---\ntitle: t\nnote: \"%%{init: {\\\"flowchart\\\": {\\\"curve\\\": \\\"linear\\\"}}}%%\"\n---\n\
+         flowchart TD\n  A --> B\n",
+    );
+    assert_eq!(c.curve, None);
+    assert_eq!(c.title.as_deref(), Some("t"));
+}
+
 #[test]
 fn a_horizontal_rule_further_down_is_not_taken_for_front_matter() {
     let c = ok("flowchart TD\n  A --- B\n");

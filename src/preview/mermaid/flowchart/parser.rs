@@ -82,7 +82,7 @@ pub fn parse(src: &str) -> Result<Flowchart, ParseError> {
     let body: Vec<char> = body.chars().collect();
 
     let statements = split_statements(&body)?;
-    let mut builder = Builder::new(header.direction, pre.title);
+    let mut builder = Builder::new(header.direction, pre.title, pre.flowchart_curve);
     for stmt in &statements {
         builder.statement(&stmt.chars, stmt.line)?;
     }
@@ -336,9 +336,9 @@ struct Builder {
 }
 
 impl Builder {
-    fn new(direction: Direction, title: Option<String>) -> Self {
+    fn new(direction: Direction, title: Option<String>, curve: Option<String>) -> Self {
         Builder {
-            chart: Flowchart::new(direction, title),
+            chart: Flowchart::new(direction, title, curve),
             stack: Vec::new(),
             sub_count: 0,
         }

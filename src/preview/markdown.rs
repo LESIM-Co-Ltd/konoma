@@ -2731,6 +2731,14 @@ pub fn mermaid_to_svg(code: &str, theme: &str) -> Option<String> {
     mermaid_to_svg_reason(code, theme).ok()
 }
 
+/// [`mermaid_to_svg`], with a flowchart's edges drawn in `curve` (`ui.mermaid_curve`'s raw
+/// string — `"basis"` reproduces [`mermaid_to_svg`] exactly, byte for byte). Every other diagram
+/// kind ignores `curve` entirely, the same as [`crate::preview::mermaid::render::render_curve`]
+/// it is threaded into.
+pub fn mermaid_to_svg_curve(code: &str, theme: &str, curve: &str) -> Option<String> {
+    mermaid_to_svg_reason_curve(code, theme, curve).ok()
+}
+
 /// [`mermaid_to_svg`], keeping why a diagram was not drawn.
 ///
 /// The `Err` is a short English diagnostic from konoma's own parser — `unclosed \`"\` at line 3`,
@@ -2739,11 +2747,17 @@ pub fn mermaid_to_svg(code: &str, theme: &str) -> Option<String> {
 /// things this work exists to fix, and it is what the tests here assert on instead of asserting
 /// `is_none()` and learning nothing about *why*.
 pub fn mermaid_to_svg_reason(code: &str, theme: &str) -> Result<String, String> {
+    mermaid_to_svg_reason_curve(code, theme, "basis")
+}
+
+/// [`mermaid_to_svg_reason`] / [`mermaid_to_svg_curve`] combined — the one function both delegate
+/// to.
+pub fn mermaid_to_svg_reason_curve(code: &str, theme: &str, curve: &str) -> Result<String, String> {
     // The same byte string `mermaid_fence_url` hashes (§1), trimmed once here so both renderers
     // see identical input.
     let code = code.trim_end_matches('\n');
     if flowchart_is_ours(code) {
-        render_konoma(code, theme, crate::preview::mermaid::render::render)
+        render_konoma_curve(code, theme, curve)
     } else if state_is_ours(code) {
         render_konoma(code, theme, crate::preview::mermaid::render::state::render)
     } else if class_is_ours(code) {
@@ -2905,6 +2919,22 @@ fn sequence_is_ours(code: &str) -> bool {
 fn render_konoma(code: &str, theme: &str, draw: Draw) -> Result<String, String> {
     let caught = silence_panics(|| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| draw(code, theme)))
+    });
+    match caught {
+        Ok(Ok(svg)) => Ok(svg),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("konoma's mermaid renderer panicked".to_string()),
+    }
+}
+
+/// [`render_konoma`], for the flowchart branch alone: the one diagram kind whose own `render`
+/// takes a `curve` (`render_curve`), so it cannot be a [`Draw`] and routed through the table the
+/// other ten diagram kinds share.
+fn render_konoma_curve(code: &str, theme: &str, curve: &str) -> Result<String, String> {
+    let caught = silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::preview::mermaid::render::render_curve(code, theme, curve)
+        }))
     });
     match caught {
         Ok(Ok(svg)) => Ok(svg),

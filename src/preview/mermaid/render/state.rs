@@ -57,7 +57,7 @@ use super::edges::Tip;
 use super::shapes::{self, Glyph, Size};
 use super::svg;
 use super::{
-    lay_out_spec, Diagram, GraphSpec, Label, PlacedEdge, PlacedNode, RenderError, SpecBlock,
+    lay_out_spec, Curve, Diagram, GraphSpec, Label, PlacedEdge, PlacedNode, RenderError, SpecBlock,
     SpecEdge, SpecNode, Theme,
 };
 
@@ -161,6 +161,7 @@ pub fn spec_of(diagram: &StateDiagram) -> GraphSpec {
             start_label: None,
             end_label: None,
             style: None,
+            curve: Curve::Basis,
         })
         .collect();
 
@@ -270,6 +271,7 @@ fn place_notes(out: &mut Diagram, model: &StateDiagram) {
             straight: false,
             overlay: false,
             style: None,
+            curve: Curve::Basis,
         });
     }
     // The drawing grew sideways, so the extent has to be recomputed over what is now on it.

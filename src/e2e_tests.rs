@@ -8931,6 +8931,10 @@ const UI_CONFIG_COVERAGE: &[(&str, Coverage)] = &[
         Coverage::Covered("e2e_ui_mermaid_theme_changes_rendered_pixel_brightness"),
     ),
     (
+        "mermaid_curve",
+        Coverage::Covered("e2e_ui_mermaid_curve_changes_rendered_pixels"),
+    ),
+    (
         "mermaid_rows",
         Coverage::Covered("e2e_ui_mermaid_rows_changes_reserved_diagram_height"),
     ),
@@ -9957,6 +9961,71 @@ fn e2e_ui_mermaid_theme_changes_rendered_pixel_brightness() {
         avg_dark < avg_neutral,
         "dark は neutral より暗い(低RGB)はず: dark_avg={avg_dark:.1} neutral_avg={avg_neutral:.1}"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `mermaid_curve`: a flowchart whose one long edge bends around the direct column (`A --> E`
+/// alongside `A --> B --> C --> D --> E`, the same shape as `render::tests::CORPUS`'s
+/// `"long-edge"`) draws a visibly different line under `"basis"`'s spline than under `"step"`'s
+/// right angle — confirmed directly at the `PlacedEdge`/SVG-`d` level by
+/// `preview::mermaid::render::tests::different_curves_draw_different_svg_path_data`; this is the
+/// pixel-level half of that proof. Same driven-encode-worker technique as `mermaid_theme` above,
+/// but comparing the whole ordered sequence of foreground colours rather than their average: a
+/// curve change moves *where* the line's ink falls without changing the diagram's overall size
+/// (node positions do not depend on `curve` at all), so **every** cell in the image's bounding
+/// box gets some foreground colour under halfblocks either way — brightness or cell-position
+/// alone would not tell the two apart, but the exact colour sequence does.
+#[test]
+fn e2e_ui_mermaid_curve_changes_rendered_pixels() {
+    let dir = sandbox("ui_mermaid_curve_cfg");
+    std::fs::write(
+        dir.join("d.md"),
+        "```mermaid\nflowchart TD\nA-->B-->C-->D-->E\nA-->E\n```\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    fn render_and_get_fgs(cfg: Config, dir: &std::path::Path) -> Vec<(u8, u8, u8)> {
+        let mut s = Sim::with_config(dir, cfg).with_picker();
+        let (enc_tx, enc_worker_rx) = std::sync::mpsc::channel();
+        let (enc_res_tx, enc_res_rx) = std::sync::mpsc::channel();
+        s.app.attach_md_encoder(enc_tx);
+        let picker = ratatui_image::picker::Picker::halfblocks();
+        std::thread::spawn(move || crate::app::md_encode_worker(picker, enc_worker_rx, enc_res_tx));
+        s.select("d.md");
+        s.enter();
+        let res = enc_res_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("encode worker returns a result");
+        assert!(s.app.apply_md_encode(res));
+        s.draw();
+        let buf = s.term.backend().buffer();
+        let mut out = Vec::new();
+        for cell in buf.content().iter() {
+            if let Some(ratatui::style::Color::Rgb(r, g, b)) = cell.style().fg {
+                out.push((r, g, b));
+            }
+        }
+        out
+    }
+
+    let mut cfg_basis = Config::default();
+    cfg_basis.ui.mermaid_curve = "basis".into();
+    cfg_basis.ui.mermaid_rows = 10; // keep the whole diagram inside the test terminal
+    let fg_basis = render_and_get_fgs(cfg_basis, &root);
+
+    let mut cfg_step = Config::default();
+    cfg_step.ui.mermaid_curve = "step".into();
+    cfg_step.ui.mermaid_rows = 10;
+    let fg_step = render_and_get_fgs(cfg_step, &root);
+
+    assert!(!fg_basis.is_empty(), "basis でも実ピクセルが描かれるはず");
+    assert!(!fg_step.is_empty(), "step でも実ピクセルが描かれるはず");
+    assert_ne!(
+        fg_basis, fg_step,
+        "basis と step では辺の描画ピクセル列が異なるはず(スプライン vs 直角)"
+    );
+
     std::fs::remove_dir_all(&dir).ok();
 }
 

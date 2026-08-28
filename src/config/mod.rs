@@ -513,6 +513,25 @@ pub struct UiConfig {
     /// `"light"`, `"classic"` (mermaid.js default), `"forest"`, `"neutral"`. The diagram background
     /// is always transparent so it blends with the terminal.
     pub mermaid_theme: String,
+    /// Curve a flowchart's edges are drawn in — mermaid's `flowchart.curve`. All 13 of mermaid's
+    /// own curve names are implemented (`Curve`'s own variant docs describe each); an
+    /// unrecognised value falls back to `"basis"` rather than erroring, like every unrecognised
+    /// value in this file. `"basis"` (default; mermaid's own default) is the spline every diagram
+    /// drew before this setting existed. `"linear"` draws straight segments through every
+    /// waypoint; `"step"` / `"stepBefore"` / `"stepAfter"` draw right-angle lines, differing in
+    /// where the corner sits (midpoint / vertical-first / horizontal-first) — the shape mermaid's
+    /// most-requested flowchart feature asks for (mermaid-js#2817, mermaid-js#2549). `"natural"` /
+    /// `"cardinal"` / `"catmullRom"` are smooth splines that pass through every waypoint (unlike
+    /// `"basis"`); `"monotoneX"` / `"monotoneY"` never overshoot a waypoint, along the named axis;
+    /// `"bumpX"` / `"bumpY"` draw an S-curve offset on the named axis; `"rounded"` is straight
+    /// segments with every corner cut to a small rounded curve — mermaid's own curve, not part of
+    /// d3-shape. Three ways to set it, weakest first: this setting < the diagram's own
+    /// `%%{init: {"flowchart": {"curve": "..."}}}%%` directive < a `linkStyle <n> interpolate
+    /// <curve>` naming one specific edge — each, if present, overrides every weaker source
+    /// (`render::spec_of`'s own doc has the exact priority chain). Only a flowchart's own edges
+    /// read any of this — every other diagram kind (state, class, ER, sequence, C4, requirement,
+    /// mindmap, git graph, architecture, block, and every chart) always draws `"basis"`.
+    pub mermaid_curve: String,
     /// Max height (terminal rows) of an inline mermaid diagram inside Markdown (default 24).
     /// Bigger = larger diagrams in the document flow (still width-capped and aspect-preserving;
     /// a diagram taller than the viewport scrolls in bands like any inline image). 0/invalid
@@ -792,6 +811,7 @@ impl Default for UiConfig {
             math: "image".into(),
             math_color: "#d0d0d0".into(),
             mermaid_theme: "dark".into(),
+            mermaid_curve: "basis".into(),
             mermaid_rows: 24,
             restore_tabs: true,
             restore_single_tab: true,

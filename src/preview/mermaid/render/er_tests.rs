@@ -25,8 +25,8 @@ use super::tests::{
     measured_texts, text_widths, tree_of,
 };
 use super::{
-    clusters, edges, labels, panel, shapes, svg, Diagram, Glyph, Label, PlacedCluster, PlacedEdge,
-    PlacedEdgeLabel, PlacedNode, RenderError, Size,
+    clusters, edges, labels, panel, shapes, svg, Curve, Diagram, Glyph, Label, PlacedCluster,
+    PlacedEdge, PlacedEdgeLabel, PlacedNode, RenderError, Size,
 };
 use crate::preview::mermaid::er::{self, ErDiagram};
 use crate::preview::mermaid::flowchart::{Shape, Stroke};
@@ -1044,6 +1044,7 @@ fn synthetic_panel_diagram() -> Diagram {
             straight: false,
             overlay: false,
             style: None,
+            curve: Curve::Basis,
         });
     }
 

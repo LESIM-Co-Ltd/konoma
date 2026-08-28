@@ -691,6 +691,756 @@ pub fn curve_basis_path(points: &[Point]) -> String {
     d
 }
 
+/// `M{x},{y}` for one point, empty for none — the two cases a real edge (always 2+ waypoints from
+/// [`clip`]) never reaches, but every curve function in this module still has to answer *something*
+/// for, so they all share one guard instead of each reproducing d3's own answer for them.
+///
+/// d3's own answer, run through a plain line-drawing `context`, is actually `moveTo` **then
+/// `closePath`**: every curve's `lineEnd` checks `this._line !== 0 && this._point === 1` before
+/// closing, and `this._line` is only ever set to `0`/`1` by `areaStart`/`areaEnd` — which a plain
+/// `d3.line()` (what mermaid, and every path in this module, actually draws with) never calls, so
+/// `this._line` stays `undefined`, and `undefined !== 0` is `true`. That is a real, checkable
+/// quirk of d3-shape used through `d3.line()` with exactly one point — not a mistake in this
+/// doc — but [`curve_basis_path`] already declined to reproduce it (its own one-point branch is a
+/// bare `M`), and every curve below stays consistent with that established answer rather than
+/// each re-deciding it. It is moot in practice: `clip` never hands a curve fewer than two points.
+fn degenerate_path(points: &[Point]) -> Option<String> {
+    match points.len() {
+        0 => Some(String::new()),
+        1 => {
+            let mut d = String::new();
+            push_move(&mut d, points[0].x, points[0].y);
+            Some(d)
+        }
+        _ => None,
+    }
+}
+
+fn push_move(d: &mut String, x: f64, y: f64) {
+    d.push_str(&format!("M{},{}", num(x), num(y)));
+}
+
+fn push_line(d: &mut String, x: f64, y: f64) {
+    d.push_str(&format!("L{},{}", num(x), num(y)));
+}
+
+fn push_bezier(d: &mut String, x1: f64, y1: f64, x2: f64, y2: f64, x: f64, y: f64) {
+    d.push_str(&format!(
+        "C{},{} {},{} {},{}",
+        num(x1),
+        num(y1),
+        num(x2),
+        num(y2),
+        num(x),
+        num(y)
+    ));
+}
+
+fn push_quad(d: &mut String, x1: f64, y1: f64, x: f64, y: f64) {
+    d.push_str(&format!("Q{},{} {},{}", num(x1), num(y1), num(x), num(y)));
+}
+
+/// The `d` of d3-shape's `curveNatural` through `points`: a natural cubic spline that touches
+/// **every** point (unlike [`curve_basis_path`]'s uniform B-spline), each segment's tangent
+/// solved so the whole curve's second derivative is continuous.
+///
+/// Ported from `d3-shape`'s `curve/natural.js`, whose own comment cites
+/// <https://www.particleincell.com/2012/bezier-splines/> for the tridiagonal system
+/// [`natural_control_points`] solves.
+pub fn curve_natural_path(points: &[Point]) -> String {
+    if let Some(d) = degenerate_path(points) {
+        return d;
+    }
+    let mut d = String::new();
+    push_move(&mut d, points[0].x, points[0].y);
+    if points.len() == 2 {
+        push_line(&mut d, points[1].x, points[1].y);
+        return d;
+    }
+    let xs: Vec<f64> = points.iter().map(|p| p.x).collect();
+    let ys: Vec<f64> = points.iter().map(|p| p.y).collect();
+    let (cx0, cx1) = natural_control_points(&xs);
+    let (cy0, cy1) = natural_control_points(&ys);
+    for i in 1..points.len() {
+        push_bezier(
+            &mut d,
+            cx0[i - 1],
+            cy0[i - 1],
+            cx1[i - 1],
+            cy1[i - 1],
+            points[i].x,
+            points[i].y,
+        );
+    }
+    d
+}
+
+/// d3-shape's `controlPoints`: the two Bezier control-point arrays for a natural cubic spline
+/// through the values in `x` (one coordinate at a time — [`curve_natural_path`] calls this once
+/// for the x's and once for the y's), each returned array holding one entry per segment.
+///
+/// Requires `x.len() >= 3` (the caller special-cases 0, 1 and 2 points before ever reaching
+/// this), which is what keeps every `n - 1` index below in bounds.
+fn natural_control_points(x: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let n = x.len() - 1;
+    let mut a = vec![0.0; n];
+    let mut b = vec![0.0; n];
+    let mut r = vec![0.0; n];
+    a[0] = 0.0;
+    b[0] = 2.0;
+    r[0] = x[0] + 2.0 * x[1];
+    for i in 1..n - 1 {
+        a[i] = 1.0;
+        b[i] = 4.0;
+        r[i] = 4.0 * x[i] + 2.0 * x[i + 1];
+    }
+    a[n - 1] = 2.0;
+    b[n - 1] = 7.0;
+    r[n - 1] = 8.0 * x[n - 1] + x[n];
+    for i in 1..n {
+        let m = a[i] / b[i - 1];
+        b[i] -= m;
+        r[i] -= m * r[i - 1];
+    }
+    a[n - 1] = r[n - 1] / b[n - 1];
+    for i in (0..n - 1).rev() {
+        a[i] = (r[i] - a[i + 1]) / b[i];
+    }
+    b[n - 1] = (x[n] + a[n - 1]) / 2.0;
+    for i in 0..n - 1 {
+        b[i] = 2.0 * x[i + 1] - a[i + 1];
+    }
+    (a, b)
+}
+
+/// The online state d3-shape's `Cardinal` and `CatmullRom` curves both keep — three most-recently
+/// seen points, shifted in on every call — ported field-for-field from `cardinal.js` /
+/// `catmullRom.js` so the control flow (including a `switch` case that falls through into the
+/// next, and a `lineEnd` that calls back into the *middle* of that same state machine) stays the
+/// shape it has upstream rather than being re-derived and risking a subtly different curve.
+struct SplineState {
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    point: u8,
+}
+
+impl SplineState {
+    fn new() -> Self {
+        Self {
+            x0: f64::NAN,
+            y0: f64::NAN,
+            x1: f64::NAN,
+            y1: f64::NAN,
+            x2: f64::NAN,
+            y2: f64::NAN,
+            point: 0,
+        }
+    }
+
+    fn shift(&mut self, x: f64, y: f64) {
+        self.x0 = self.x1;
+        self.x1 = self.x2;
+        self.x2 = x;
+        self.y0 = self.y1;
+        self.y1 = self.y2;
+        self.y2 = y;
+    }
+}
+
+/// The `d` of d3-shape's `curveCardinal` (tension `0`, d3's own default) through `points`.
+///
+/// Ported from `d3-shape`'s `curve/cardinal.js`.
+pub fn curve_cardinal_path(points: &[Point]) -> String {
+    // `k = (1 - tension) / 6` at tension 0.
+    curve_cardinal_like(points, 1.0 / 6.0)
+}
+
+fn curve_cardinal_like(points: &[Point], k: f64) -> String {
+    if let Some(d) = degenerate_path(points) {
+        return d;
+    }
+    let mut d = String::new();
+    let mut st = SplineState::new();
+    let emit = |st: &SplineState, d: &mut String, x: f64, y: f64| {
+        push_bezier(
+            d,
+            st.x1 + k * (st.x2 - st.x0),
+            st.y1 + k * (st.y2 - st.y0),
+            st.x2 + k * (st.x1 - x),
+            st.y2 + k * (st.y1 - y),
+            st.x2,
+            st.y2,
+        );
+    };
+    for p in points {
+        match st.point {
+            0 => {
+                st.point = 1;
+                push_move(&mut d, p.x, p.y);
+            }
+            1 => {
+                st.point = 2;
+                st.x1 = p.x;
+                st.y1 = p.y;
+            }
+            2 => {
+                st.point = 3;
+                emit(&st, &mut d, p.x, p.y);
+            }
+            _ => emit(&st, &mut d, p.x, p.y),
+        }
+        st.shift(p.x, p.y);
+    }
+    match st.point {
+        2 => push_line(&mut d, st.x2, st.y2),
+        3 => emit(&st, &mut d, st.x1, st.y1),
+        _ => {}
+    }
+    d
+}
+
+/// d3-shape's epsilon (`src/math.js`), used by `curveCatmullRom` to decide a neighbour segment is
+/// long enough to weight the tangent by.
+const D3_EPSILON: f64 = 1e-12;
+
+/// The `d` of d3-shape's `curveCatmullRom` — d3's default `alpha = 0.5` (centripetal), which is
+/// what mermaid draws for `catmullRom` (it imports the curve unparametrised) — through `points`.
+///
+/// Ported from `d3-shape`'s `curve/catmullRom.js`. Centripetal Catmull-Rom reduces to the same
+/// tangent as [`curve_cardinal_path`] when consecutive segments happen to be the same length
+/// (uniform parametrisation and centripetal parametrisation agree there); the two curves differ
+/// only once the waypoints are unevenly spaced, which is why the fixed test points below include
+/// an uneven set.
+pub fn curve_catmull_rom_path(points: &[Point]) -> String {
+    if let Some(d) = degenerate_path(points) {
+        return d;
+    }
+    let mut d = String::new();
+    let mut st = SplineState::new();
+    let mut l01_a = 0.0_f64;
+    let mut l12_a = 0.0_f64;
+    let mut l23_a = 0.0_f64;
+    let mut l01_2a = 0.0_f64;
+    let mut l12_2a = 0.0_f64;
+    let mut l23_2a = 0.0_f64;
+    let alpha = 0.5;
+
+    // The free `point(that, x, y)` helper both `.point()` below and `line_end` (which calls back
+    // into it with the last-seen point) use.
+    let emit = |st: &SplineState,
+                l01_a: f64,
+                l12_a: f64,
+                l23_a: f64,
+                l01_2a: f64,
+                l12_2a: f64,
+                l23_2a: f64,
+                d: &mut String,
+                x: f64,
+                y: f64| {
+        let (mut x1, mut y1) = (st.x1, st.y1);
+        let (mut x2, mut y2) = (st.x2, st.y2);
+        if l01_a > D3_EPSILON {
+            let a = 2.0 * l01_2a + 3.0 * l01_a * l12_a + l12_2a;
+            let n = 3.0 * l01_a * (l01_a + l12_a);
+            x1 = (x1 * a - st.x0 * l12_2a + st.x2 * l01_2a) / n;
+            y1 = (y1 * a - st.y0 * l12_2a + st.y2 * l01_2a) / n;
+        }
+        if l23_a > D3_EPSILON {
+            let b = 2.0 * l23_2a + 3.0 * l23_a * l12_a + l12_2a;
+            let m = 3.0 * l23_a * (l23_a + l12_a);
+            x2 = (x2 * b + st.x1 * l23_2a - x * l12_2a) / m;
+            y2 = (y2 * b + st.y1 * l23_2a - y * l12_2a) / m;
+        }
+        push_bezier(d, x1, y1, x2, y2, st.x2, st.y2);
+    };
+
+    for p in points {
+        if st.point != 0 {
+            let x23 = st.x2 - p.x;
+            let y23 = st.y2 - p.y;
+            l23_2a = (x23 * x23 + y23 * y23).powf(alpha);
+            l23_a = l23_2a.sqrt();
+        }
+        match st.point {
+            0 => {
+                st.point = 1;
+                push_move(&mut d, p.x, p.y);
+            }
+            1 => st.point = 2,
+            2 => {
+                st.point = 3;
+                emit(
+                    &st, l01_a, l12_a, l23_a, l01_2a, l12_2a, l23_2a, &mut d, p.x, p.y,
+                );
+            }
+            _ => emit(
+                &st, l01_a, l12_a, l23_a, l01_2a, l12_2a, l23_2a, &mut d, p.x, p.y,
+            ),
+        }
+        l01_a = l12_a;
+        l12_a = l23_a;
+        l01_2a = l12_2a;
+        l12_2a = l23_2a;
+        st.shift(p.x, p.y);
+    }
+    match st.point {
+        2 => push_line(&mut d, st.x2, st.y2),
+        // `lineEnd`'s `case 3` calls `this.point(this._x2, this._y2)` — the full method, with the
+        // last point fed back in as a "new" one, not the free `point()` helper directly. That
+        // recomputes `l23` as the distance from the last point to itself (zero), so the `l23_a >
+        // epsilon` branch never fires here and the emitted control point is `st.x2, st.y2`
+        // unweighted — reproduced directly rather than re-running the whole state machine for a
+        // point whose only effect is this one, now-known, degenerate case.
+        3 => emit(
+            &st, l01_a, l12_a, 0.0, l01_2a, l12_2a, l23_2a, &mut d, st.x2, st.y2,
+        ),
+        _ => {}
+    }
+    d
+}
+
+fn js_sign(x: f64) -> f64 {
+    if x < 0.0 {
+        -1.0
+    } else {
+        1.0
+    }
+}
+
+/// d3-shape's `h0 || h1 < 0 && -0` — used by `slope3` to substitute a signed zero for a
+/// coincident x (or y, for the reflected [`curve_monotone_y_path`]) so the division that follows
+/// produces a correctly-signed infinity rather than a NaN. Real, not a corner case this crate
+/// invented to worry about: two waypoints sharing a coordinate is what an axis-aligned dagre
+/// route (an ordinary flowchart corner) *is*.
+fn signed_zero_or(h0: f64, h1: f64) -> f64 {
+    if h0 != 0.0 {
+        h0
+    } else if h1 < 0.0 {
+        -0.0
+    } else {
+        0.0
+    }
+}
+
+/// d3-shape's `slope3` (Steffen 1990) — the two-sided tangent at the middle of three points.
+fn slope3(x0: f64, y0: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+    let h0 = x1 - x0;
+    let h1 = x2 - x1;
+    let s0 = (y1 - y0) / signed_zero_or(h0, h1);
+    let s1 = (y2 - y1) / signed_zero_or(h1, h0);
+    let p = (s0 * h1 + s1 * h0) / (h0 + h1);
+    let m = (js_sign(s0) + js_sign(s1)) * s0.abs().min(s1.abs()).min(0.5 * p.abs());
+    if m.is_nan() || m == 0.0 {
+        0.0
+    } else {
+        m
+    }
+}
+
+/// d3-shape's `slope2` — the one-sided tangent at a line's first or last point.
+fn slope2(x0: f64, y0: f64, x1: f64, y1: f64, t: f64) -> f64 {
+    let h = x1 - x0;
+    if h != 0.0 {
+        (3.0 * (y1 - y0) / h - t) / 2.0
+    } else {
+        t
+    }
+}
+
+/// The online state d3-shape's `MonotoneX` keeps, generalised to draw `curveMonotoneY` too: every
+/// coordinate below is named `a`/`b` rather than `x`/`y` because `curveMonotoneY` is, upstream,
+/// the *exact same* `MonotoneX` state machine run through a `ReflectContext` that swaps every
+/// `x`/`y` on the way in and back out again (`monotone.js`'s own `MonotoneY.prototype.point =
+/// function(x,y) { MonotoneX.prototype.point.call(this, y, x); }`). `reflect` here is that swap,
+/// applied at the two edges of this struct — [`Monotone::point`]'s caller and every `push_*` call
+/// — instead of wrapping a context object, which is what makes one state machine answer both
+/// curves without the two ever drifting apart.
+struct Monotone {
+    reflect: bool,
+    a0: f64,
+    b0: f64,
+    a1: f64,
+    b1: f64,
+    t0: f64,
+    point: u8,
+}
+
+impl Monotone {
+    fn new(reflect: bool) -> Self {
+        Self {
+            reflect,
+            a0: f64::NAN,
+            b0: f64::NAN,
+            a1: f64::NAN,
+            b1: f64::NAN,
+            t0: f64::NAN,
+            point: 0,
+        }
+    }
+
+    fn push_move(&self, d: &mut String, a: f64, b: f64) {
+        if self.reflect {
+            push_move(d, b, a);
+        } else {
+            push_move(d, a, b);
+        }
+    }
+
+    fn push_line(&self, d: &mut String, a: f64, b: f64) {
+        if self.reflect {
+            push_line(d, b, a);
+        } else {
+            push_line(d, a, b);
+        }
+    }
+
+    /// d3-shape's `point(that, t0, t1)`: the Hermite-to-Bezier conversion.
+    fn emit_hermite(&self, d: &mut String, t0: f64, t1: f64) {
+        let dx = (self.a1 - self.a0) / 3.0;
+        let (c1a, c1b) = (self.a0 + dx, self.b0 + dx * t0);
+        let (c2a, c2b) = (self.a1 - dx, self.b1 - dx * t1);
+        let (ea, eb) = (self.a1, self.b1);
+        if self.reflect {
+            push_bezier(d, c1b, c1a, c2b, c2a, eb, ea);
+        } else {
+            push_bezier(d, c1a, c1b, c2a, c2b, ea, eb);
+        }
+    }
+
+    /// `x`, `y` here are the *real* (unreflected) coordinates a caller hands every curve
+    /// function in this module — the swap into `a`/`b` space happens once, right here, exactly
+    /// where upstream's `ReflectContext` would have.
+    fn point(&mut self, d: &mut String, x: f64, y: f64) {
+        let (a, b) = if self.reflect { (y, x) } else { (x, y) };
+        if a == self.a1 && b == self.b1 {
+            return; // Ignore coincident points.
+        }
+        let mut t1 = f64::NAN;
+        match self.point {
+            0 => {
+                self.point = 1;
+                self.push_move(d, a, b);
+            }
+            1 => self.point = 2,
+            2 => {
+                self.point = 3;
+                t1 = slope3(self.a0, self.b0, self.a1, self.b1, a, b);
+                let t0 = slope2(self.a0, self.b0, self.a1, self.b1, t1);
+                self.emit_hermite(d, t0, t1);
+            }
+            _ => {
+                t1 = slope3(self.a0, self.b0, self.a1, self.b1, a, b);
+                self.emit_hermite(d, self.t0, t1);
+            }
+        }
+        self.a0 = self.a1;
+        self.a1 = a;
+        self.b0 = self.b1;
+        self.b1 = b;
+        self.t0 = t1;
+    }
+
+    fn line_end(&mut self, d: &mut String) {
+        match self.point {
+            2 => self.push_line(d, self.a1, self.b1),
+            3 => {
+                let t1 = slope2(self.a0, self.b0, self.a1, self.b1, self.t0);
+                self.emit_hermite(d, self.t0, t1);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn curve_monotone_path(points: &[Point], reflect: bool) -> String {
+    if let Some(d) = degenerate_path(points) {
+        return d;
+    }
+    let mut d = String::new();
+    let mut st = Monotone::new(reflect);
+    for p in points {
+        st.point(&mut d, p.x, p.y);
+    }
+    st.line_end(&mut d);
+    d
+}
+
+/// The `d` of d3-shape's `curveMonotoneX` through `points`: a Hermite spline whose tangents are
+/// clamped (Steffen 1990) so the curve never overshoots a waypoint — the property "monotone" is
+/// named for, along the x axis.
+///
+/// Ported from `d3-shape`'s `curve/monotone.js`.
+pub fn curve_monotone_x_path(points: &[Point]) -> String {
+    curve_monotone_path(points, false)
+}
+
+/// [`curve_monotone_x_path`], monotone along the y axis instead of the x axis — d3-shape's
+/// `curveMonotoneY`, which upstream is the identical state machine with x and y swapped
+/// end to end (see [`Monotone`]'s own doc).
+pub fn curve_monotone_y_path(points: &[Point]) -> String {
+    curve_monotone_path(points, true)
+}
+
+fn curve_bump_path(points: &[Point], is_x: bool) -> String {
+    if let Some(d) = degenerate_path(points) {
+        return d;
+    }
+    let mut d = String::new();
+    push_move(&mut d, points[0].x, points[0].y);
+    let (mut x0, mut y0) = (points[0].x, points[0].y);
+    for p in &points[1..] {
+        if is_x {
+            let mx = (x0 + p.x) / 2.0;
+            push_bezier(&mut d, mx, y0, mx, p.y, p.x, p.y);
+        } else {
+            let my = (y0 + p.y) / 2.0;
+            push_bezier(&mut d, x0, my, p.x, my, p.x, p.y);
+        }
+        x0 = p.x;
+        y0 = p.y;
+    }
+    d
+}
+
+/// The `d` of d3-shape's `curveBumpX` through `points`: every segment, including the first, is
+/// its own S-shaped cubic Bezier whose two control points sit at the segment's horizontal
+/// midpoint — unlike every other curve in this module, a two-point `curveBumpX` is **already a
+/// curve**, not a straight line (there is no `lineTo` fallback in d3-shape's own `Bump.point`).
+///
+/// Ported from `d3-shape`'s `curve/bump.js`.
+pub fn curve_bump_x_path(points: &[Point]) -> String {
+    curve_bump_path(points, true)
+}
+
+/// [`curve_bump_x_path`], with the S-curve's midpoint taken on the vertical axis instead — d3-
+/// shape's `curveBumpY`.
+pub fn curve_bump_y_path(points: &[Point]) -> String {
+    curve_bump_path(points, false)
+}
+
+/// The `d` of mermaid's own `rounded` curve through `points`: every corner cut to a quadratic
+/// Bezier of radius `radius`, every straight run between corners left exactly straight — mermaid's
+/// answer to the same "give me a right-angle line" request `linear`/`step*` answer with a sharp
+/// corner instead (module docs, and mermaid-js#2817/#2549).
+///
+/// Ported from `edges.js`'s `generateRoundedPath` (mermaid's own function, not d3-shape's — no
+/// curve of that name exists upstream). Two differences from upstream, both because konoma's
+/// pipeline already handles what the two are for:
+///
+/// * upstream's caller skips `fixCorners` for `rounded` and instead calls
+///   `applyMarkerOffsetsToPoints` before this — a *different* corner-relevant adjustment that
+///   shortens a line's two end segments so mermaid's SVG `<marker>` arrow heads do not draw over
+///   it. konoma draws no SVG markers: an arrow head is explicit triangle geometry built from the
+///   clipped polyline's own last segment (module docs, point 4), already landing exactly on the
+///   boundary [`shapes::intersect`] computed — so there is nothing here for a marker offset to
+///   correct for, and reproducing it would visibly shorten a line konoma's own arrow-head math
+///   depends on ending where it does.
+/// * this crate's own `radius` parameter, rather than upstream's hardcoded `5` — [`CORNER_RADIUS`]
+///   is the same constant [`fix_corners`] already uses for every other curve, kept as one named
+///   value rather than two copies of the literal `5.0`.
+pub fn rounded_path(points: &[Point], radius: f64) -> String {
+    if points.len() < 2 {
+        return degenerate_path(points).unwrap_or_default();
+    }
+    // mermaid's own epsilon for this function (`generateRoundedPath`'s `const epsilon = 1e-5`) —
+    // deliberately not [`EPS`] or [`D3_EPSILON`], which belong to different algorithms upstream
+    // chose different tolerances for.
+    const EPSILON: f64 = 1e-5;
+    let mut d = String::new();
+    let last = points.len() - 1;
+    for i in 0..points.len() {
+        let curr = &points[i];
+        if i == 0 {
+            push_move(&mut d, curr.x, curr.y);
+            continue;
+        }
+        if i == last {
+            push_line(&mut d, curr.x, curr.y);
+            continue;
+        }
+        let prev = &points[i - 1];
+        let next = &points[i + 1];
+        let (dx1, dy1) = (curr.x - prev.x, curr.y - prev.y);
+        let (dx2, dy2) = (next.x - curr.x, next.y - curr.y);
+        let len1 = dx1.hypot(dy1);
+        let len2 = dx2.hypot(dy2);
+        if len1 < EPSILON || len2 < EPSILON {
+            push_line(&mut d, curr.x, curr.y);
+            continue;
+        }
+        let (nx1, ny1) = (dx1 / len1, dy1 / len1);
+        let (nx2, ny2) = (dx2 / len2, dy2 / len2);
+        let dot = (nx1 * nx2 + ny1 * ny2).clamp(-1.0, 1.0);
+        let angle = dot.acos();
+        if angle < EPSILON || (std::f64::consts::PI - angle).abs() < EPSILON {
+            push_line(&mut d, curr.x, curr.y);
+            continue;
+        }
+        let cut_len = (radius / (angle / 2.0).sin())
+            .min(len1 / 2.0)
+            .min(len2 / 2.0);
+        let (start_x, start_y) = (curr.x - nx1 * cut_len, curr.y - ny1 * cut_len);
+        let (end_x, end_y) = (curr.x + nx2 * cut_len, curr.y + ny2 * cut_len);
+        push_line(&mut d, start_x, start_y);
+        push_quad(&mut d, curr.x, curr.y, end_x, end_y);
+    }
+    d
+}
+
+/// Which curve draws an edge's line — mermaid's `flowchart.curve` / `linkStyle ... interpolate` /
+/// `%%{init: {"flowchart": {"curve": ...}}}%%`.
+///
+/// mermaid's most-requested flowchart feature is a straight/right-angle line rather than the
+/// default spline (mermaid-js#2817, 129 reactions; mermaid-js#2549, 75 reactions; both open 4+
+/// years), which `Linear`/`Step`/`StepBefore`/`StepAfter` answer directly. The rest of d3-shape's
+/// curve family — `Natural`, `Cardinal`, `CatmullRom`, `MonotoneX`, `MonotoneY`, `BumpX`, `BumpY`
+/// — and mermaid's own `Rounded` are implemented for the same reason `Basis` is: whatever a
+/// document actually says, `%%{init}%%` and `linkStyle interpolate` included, is what has to
+/// reach the page (module docs' "what a line has to touch its data" — that principle, and
+/// GitHub's own picture, apply just as much to a route as to a data path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Curve {
+    /// d3's `curveBasis` — mermaid's own default. A uniform cubic B-spline: touches the first and
+    /// last point and none of the others. See [`curve_basis_path`].
+    #[default]
+    Basis,
+    /// d3's `curveLinear` — straight segments through every waypoint, corners un-rounded.
+    Linear,
+    /// d3's `curveStep` — a right angle at the midpoint of each segment.
+    Step,
+    /// d3's `curveStepBefore` — vertical first, then horizontal.
+    StepBefore,
+    /// d3's `curveStepAfter` — horizontal first, then vertical.
+    StepAfter,
+    /// d3's `curveNatural`. See [`curve_natural_path`].
+    Natural,
+    /// d3's `curveCardinal` (tension `0`). See [`curve_cardinal_path`].
+    Cardinal,
+    /// d3's `curveCatmullRom` (`alpha = 0.5`). See [`curve_catmull_rom_path`].
+    CatmullRom,
+    /// d3's `curveMonotoneX`. See [`curve_monotone_x_path`].
+    MonotoneX,
+    /// d3's `curveMonotoneY`. See [`curve_monotone_y_path`].
+    MonotoneY,
+    /// d3's `curveBumpX`. See [`curve_bump_x_path`].
+    BumpX,
+    /// d3's `curveBumpY`. See [`curve_bump_y_path`].
+    BumpY,
+    /// mermaid's own `rounded` — not a d3-shape curve. See [`rounded_path`].
+    Rounded,
+}
+
+impl Curve {
+    /// Parses `[ui] mermaid_curve` / a `linkStyle ... interpolate <curve>` /
+    /// `%%{init}%%`'s `flowchart.curve` argument. Case-sensitive, matching mermaid's own
+    /// spellings (`stepBefore`, not `stepbefore`; `catmullRom`, not `catmullrom`); anything not in
+    /// the table becomes [`Curve::Basis`] — this crate's convention for a config value nothing
+    /// understands (an unknown value never blocks a render).
+    pub fn parse(s: &str) -> Curve {
+        match s {
+            "linear" => Curve::Linear,
+            "step" => Curve::Step,
+            "stepBefore" => Curve::StepBefore,
+            "stepAfter" => Curve::StepAfter,
+            "natural" => Curve::Natural,
+            "cardinal" => Curve::Cardinal,
+            "catmullRom" => Curve::CatmullRom,
+            "monotoneX" => Curve::MonotoneX,
+            "monotoneY" => Curve::MonotoneY,
+            "bumpX" => Curve::BumpX,
+            "bumpY" => Curve::BumpY,
+            "rounded" => Curve::Rounded,
+            _ => Curve::Basis,
+        }
+    }
+
+    /// Whether right-angle corners should be rounded off ([`fix_corners`]) before this curve
+    /// draws them.
+    ///
+    /// **Every curve but `Rounded` wants that — including `Linear` and the three `Step*`
+    /// curves**, matching upstream exactly: `mermaid@11.4.1` and `mermaid@11.12.0` (both released
+    /// versions; checked directly in `edges.js`, `insertEdge`) call `fixCorners` unconditionally,
+    /// with no curve-type check at all. The condition only exists on the `develop` branch, added
+    /// the same commit that introduced `rounded` — `if (edgeCurveType !== 'rounded') { lineData =
+    /// fixCorners(lineData); }` — purely so `rounded`'s own corner-rounding
+    /// ([`rounded_path`]) does not get run twice. So `Rounded` is the *only* exception here, for
+    /// exactly that reason: it rounds every corner itself, at its own radius, and running
+    /// `fix_corners` first would round the same corner twice.
+    ///
+    /// This crate got this wrong once: an earlier version of this method exempted
+    /// `Linear`/`Step`/`StepBefore`/`StepAfter` too, on the reasoning that they are chosen
+    /// *because* they keep an angle sharp and rounding one off would undo the shape asked for —
+    /// a plausible-sounding rule invented from the *look*, never checked against upstream. It was
+    /// wrong: a real `linear`/`step` flowchart on GitHub has its right angles softened by
+    /// `fixCorners` too (a 5px radius — subtle, but present, on every release checked). Kept here
+    /// as a durable note, not as a "some day" TODO: this crate's whole acceptance test is drawing
+    /// what GitHub actually draws, so a plausible-looking rule that was never checked against
+    /// upstream is exactly the failure mode to distrust on sight next time one is proposed.
+    pub fn rounds_corners(self) -> bool {
+        !matches!(self, Curve::Rounded)
+    }
+
+    /// The `d` path through `points`, in this curve.
+    pub fn path(self, points: &[Point]) -> String {
+        match self {
+            Curve::Basis => curve_basis_path(points),
+            Curve::Linear => polyline_path(points),
+            Curve::Step => step_path(points, 0.5),
+            Curve::StepBefore => step_path(points, 0.0),
+            Curve::StepAfter => step_path(points, 1.0),
+            Curve::Natural => curve_natural_path(points),
+            Curve::Cardinal => curve_cardinal_path(points),
+            Curve::CatmullRom => curve_catmull_rom_path(points),
+            Curve::MonotoneX => curve_monotone_x_path(points),
+            Curve::MonotoneY => curve_monotone_y_path(points),
+            Curve::BumpX => curve_bump_x_path(points),
+            Curve::BumpY => curve_bump_y_path(points),
+            Curve::Rounded => rounded_path(points, CORNER_RADIUS),
+        }
+    }
+}
+
+/// The `d` of d3-shape's `Step` curve family: a strictly axis-aligned path whose right-angle
+/// transition, within each segment `p0 -> p1`, sits `t` of the way from `p0` to `p1` —
+/// `t = 0` draws the vertical leg first (`curveStepBefore`), `t = 1` draws the horizontal leg
+/// first (`curveStepAfter`), and `t = 0.5` splits the two at the midpoint (`curveStep`).
+///
+/// **Every segment lands exactly on `p1`.** d3-shape's own `Step.point` does not, for `0 < t <
+/// 1`: it draws to `(mid, p1.y)` and leaves the last leg — `(mid, p1.y) -> (p1.x, p1.y)` — for
+/// its `lineEnd` to patch on, *once, over the whole line* rather than once per segment, so an
+/// interior waypoint of a 3+-point `curveStep` route is not actually touched. An edge's waypoints
+/// are dagre's own routing, not decoration, so leaving one of them un-met is the wrong trade here
+/// (the tail end of the arrow head is built from this polyline's own last segment — see the
+/// module docs' step 4 — and it has to land on the boundary the clipping step put there). This
+/// closes that gap by drawing the leftover leg inline, immediately, for every segment: for `t = 0`
+/// or `t = 1` the leftover leg has zero length and is skipped, so those two curves are unaffected
+/// and match d3 exactly regardless of point count; only `curveStep` (`t = 0.5`) draws a shape
+/// distinct from upstream's, and only when a route has three or more points — on the two-point
+/// case (an ordinary flowchart edge) it is identical, `lineEnd`'s patch included.
+pub fn step_path(points: &[Point], t: f64) -> String {
+    let mut d = String::new();
+    let Some(first) = points.first() else {
+        return d;
+    };
+    d.push_str(&format!("M{},{}", num(first.x), num(first.y)));
+    for w in points.windows(2) {
+        let (p0, p1) = (&w[0], &w[1]);
+        let mid_x = p0.x * (1.0 - t) + p1.x * t;
+        if (mid_x - p0.x).abs() > EPS {
+            d.push_str(&format!("L{},{}", num(mid_x), num(p0.y)));
+        }
+        d.push_str(&format!("L{},{}", num(mid_x), num(p1.y)));
+        if (mid_x - p1.x).abs() > EPS {
+            d.push_str(&format!("L{},{}", num(p1.x), num(p1.y)));
+        }
+    }
+    d
+}
+
 /// The three points of a filled arrow head whose tip is at `tip` and which points along
 /// `from -> tip`.
 pub fn arrow_head(from: &Point, tip: &Point) -> [Point; 3] {

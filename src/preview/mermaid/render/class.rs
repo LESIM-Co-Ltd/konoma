@@ -39,7 +39,8 @@ use super::panel::{self, Compartment};
 use super::shapes::{self, Glyph};
 use super::svg;
 use super::{
-    lay_out_spec, Diagram, GraphSpec, Label, RenderError, SpecBlock, SpecEdge, SpecNode, Theme,
+    lay_out_spec, Curve, Diagram, GraphSpec, Label, RenderError, SpecBlock, SpecEdge, SpecNode,
+    Theme,
 };
 
 /// Reads a mermaid class-diagram source and draws it.
@@ -141,6 +142,7 @@ pub fn spec_of(diagram: &ClassDiagram) -> GraphSpec {
                 .map(Label::measure)
                 .filter(|l| !l.is_blank()),
             style: None,
+            curve: Curve::Basis,
         })
         .collect();
 
@@ -160,6 +162,7 @@ pub fn spec_of(diagram: &ClassDiagram) -> GraphSpec {
             start_label: None,
             end_label: None,
             style: None,
+            curve: Curve::Basis,
         });
     }
 

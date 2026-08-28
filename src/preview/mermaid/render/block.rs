@@ -26,7 +26,7 @@ use crate::preview::mermaid::text_metrics;
 use super::band;
 use super::shapes::Mark;
 use super::{
-    edges, normalise, shapes, svg, Diagram, Glyph, Label, PlacedCluster, PlacedEdge,
+    edges, normalise, shapes, svg, Curve, Diagram, Glyph, Label, PlacedCluster, PlacedEdge,
     PlacedEdgeLabel, PlacedNode, RenderError, Size, Theme,
 };
 
@@ -144,6 +144,7 @@ pub fn lay_out(diagram: &BlockDiagram) -> Result<Diagram, RenderError> {
             straight: elbow,
             overlay: false,
             style: None,
+            curve: Curve::Basis,
         });
     }
 

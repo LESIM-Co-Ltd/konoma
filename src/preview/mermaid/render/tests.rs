@@ -47,7 +47,8 @@ use super::shapes::{self, Glyph, Size};
 use super::svg::num;
 use super::theme::{self, Theme};
 use super::{
-    lay_out, render, Diagram, PlacedCluster, PlacedEdge, PlacedNode, RenderError, Tip, MARGIN,
+    lay_out, lay_out_curve, render, render_curve, Curve, Diagram, PlacedCluster, PlacedEdge,
+    PlacedNode, RenderError, Tip, MARGIN,
 };
 use crate::preview::mermaid::flowchart::{parse, Arrow, Shape, Stroke};
 use crate::preview::mermaid::layout::Point;
@@ -220,6 +221,13 @@ const LABELS: &[(&str, &str)] = &[
 fn laid_out(src: &str) -> Diagram {
     let chart = parse(src).unwrap_or_else(|e| panic!("corpus source must parse: {e}"));
     lay_out(&chart).unwrap_or_else(|e| panic!("corpus source must lay out: {e}"))
+}
+
+/// [`laid_out`], with every edge's curve resolved from `curve` (`ui.mermaid_curve`'s raw
+/// string) the way [`lay_out_curve`] resolves it.
+fn laid_out_curve(src: &str, curve: &str) -> Diagram {
+    let chart = parse(src).unwrap_or_else(|e| panic!("corpus source must parse: {e}"));
+    lay_out_curve(&chart, curve).unwrap_or_else(|e| panic!("corpus source must lay out: {e}"))
 }
 
 pub(super) fn tree_of(svg: &str) -> usvg::Tree {
@@ -2207,6 +2215,7 @@ fn synthetic_diagram() -> Diagram {
             straight: false,
             overlay: false,
             style: None,
+            curve: Curve::Basis,
         });
     }
 
@@ -2664,4 +2673,895 @@ fn an_invalid_color_falls_back_to_the_theme_instead_of_black() {
     // `tree_of` itself `.expect()`s a successful parse, so simply calling it is the assertion:
     // the document is still valid SVG usvg can read.
     tree_of(&svg);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 10. `curve` (`[ui] mermaid_curve` / `linkStyle ... interpolate`)
+// ---------------------------------------------------------------------------------------------
+//
+// mermaid's most-requested flowchart feature is a straight/right-angle line instead of the
+// default spline (mermaid-js#2817, 129 reactions; mermaid-js#2549, 75 reactions; both open 4+
+// years). The unconditional requirement this section exists to pin: `render_curve(..., "basis")`
+// — and so `render` itself, which is defined as exactly that call — must draw byte-for-byte what
+// it drew before `curve` existed. `corpus_golden` staying green already implies this; these tests
+// state the reason directly, the way §9 states its own bug by name instead of by an
+// unrelated-looking snapshot diff.
+
+/// D5's invariant, stated directly: the default curve changes nothing. `render` is `render_curve`
+/// called with `"basis"` (`mod.rs`'s own definition), so this is really pinning that the
+/// delegation stays what it is — but a future edit could still break it by, say, giving `render`
+/// its own copy of the pipeline that drifts from `render_curve`'s.
+#[test]
+fn basis_curve_is_byte_identical_to_render() {
+    for (name, src) in CORPUS {
+        let via_curve =
+            render_curve(src, "dark", "basis").unwrap_or_else(|e| panic!("{name}: {e}"));
+        let via_render = render(src, "dark").unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(
+            via_curve, via_render,
+            "{name}: render_curve(..., \"basis\") must match render() exactly"
+        );
+    }
+}
+
+/// `Curve::Basis` still rounds right-angle corners off (`edges::fix_corners`) — today's look,
+/// unchanged. Segment lengths are past `fix_corners`' short-corner guard (`CORNER_RADIUS`'s own
+/// module docs use 10px as the threshold), so the corner really is rounded, not left alone by a
+/// guard this test failed to clear.
+#[test]
+fn basis_curve_still_rounds_corners() {
+    let raw = vec![
+        Point::new(0.0, 0.0),
+        Point::new(0.0, 40.0),
+        Point::new(40.0, 40.0),
+    ];
+    let edge = bent_edge(raw.clone(), Curve::Basis);
+    assert_eq!(edge.drawn_points(), edges::fix_corners(&raw));
+    assert_ne!(
+        edge.drawn_points(),
+        raw,
+        "a real right angle must actually be rounded under Curve::Basis"
+    );
+}
+
+/// `Curve::Linear` still runs `fix_corners`, the same as every curve but `Rounded`
+/// (`Curve::rounds_corners`'s own doc has the versioned evidence). **This test used to assert the
+/// opposite** — that `linear` kept a sharp right angle — on the reasoning that `linear`/`step*`
+/// are chosen *because* they draw a sharp angle, so rounding one off would undo the shape asked
+/// for. That reasoning was never checked against upstream, and it was wrong: `mermaid@11.4.1` and
+/// `mermaid@11.12.0` (both released versions) call `fixCorners` unconditionally in `edges.js`, no
+/// curve-type check at all, so a real `linear` flowchart on GitHub has this exact corner softened
+/// too. This crate's acceptance test is "the same source reads the same picture GitHub draws"
+/// (this session's own brief), so the fixed expectation is the one that matches that picture, not
+/// the one that looked most consistent with `linear`'s own name.
+#[test]
+fn linear_curve_also_rounds_corners() {
+    let raw = vec![
+        Point::new(0.0, 0.0),
+        Point::new(0.0, 40.0),
+        Point::new(40.0, 40.0),
+    ];
+    let edge = bent_edge(raw.clone(), Curve::Linear);
+    assert_eq!(
+        edge.drawn_points(),
+        edges::fix_corners(&raw),
+        "Curve::Linear must run fix_corners, matching every released mermaid version"
+    );
+    assert_ne!(
+        edge.drawn_points(),
+        raw,
+        "a real right angle must actually be rounded under Curve::Linear too"
+    );
+    // `Curve::Linear.path` itself is still an unmodified `polyline_path` — straight segments
+    // through whatever points it is given. What changed is which points it is given: the
+    // fix_corners-rounded ones (`drawn_points`), not the raw waypoints. `polyline_path` drawing a
+    // straight line between two rounded-corner points is exactly how `fixCorners` + `curveLinear`
+    // reads upstream too — the corner becomes a short straight chamfer, not a smooth arc.
+    assert_eq!(
+        Curve::Linear.path(&edge.drawn_points()),
+        edges::polyline_path(&edge.drawn_points())
+    );
+}
+
+/// `Curve::Step` also runs `fix_corners` — same evidence, same fix as `Curve::Linear`'s own test
+/// just above. Checked separately because `step`'s own shape (an explicit right-angle transition
+/// mid-segment) makes it easy to assume, wrongly, that `fixCorners` would be redundant on it; it
+/// is not — `fixCorners` acts on the edge's *waypoints*, before `step_path` ever sees them, so a
+/// real right-angle waypoint (not `step`'s own synthetic transition point) is softened exactly
+/// like it is for every other non-`Rounded` curve.
+#[test]
+fn step_curve_also_rounds_corners() {
+    let raw = vec![
+        Point::new(0.0, 0.0),
+        Point::new(0.0, 40.0),
+        Point::new(40.0, 40.0),
+    ];
+    let edge = bent_edge(raw.clone(), Curve::Step);
+    assert_eq!(
+        edge.drawn_points(),
+        edges::fix_corners(&raw),
+        "Curve::Step must run fix_corners, matching every released mermaid version"
+    );
+    assert_ne!(edge.drawn_points(), raw);
+}
+
+/// `Curve::Rounded` is the one curve `PlacedEdge::drawn_points` does **not** run `fix_corners`
+/// for — it rounds every corner itself, at its own radius (`rounded_path`), so pre-rounding would
+/// round the same corner twice. The regression this guards: a mutation that made `Rounded` *also*
+/// run `fix_corners` (double-rounding) must be caught here, not just inferred from
+/// `Curve::rounds_corners`'s own boolean.
+#[test]
+fn rounded_curve_does_not_also_run_fix_corners() {
+    let raw = vec![
+        Point::new(0.0, 0.0),
+        Point::new(0.0, 40.0),
+        Point::new(40.0, 40.0),
+    ];
+    let edge = bent_edge(raw.clone(), Curve::Rounded);
+    assert_eq!(
+        edge.drawn_points(),
+        raw,
+        "Curve::Rounded must not run fix_corners — it rounds corners itself"
+    );
+}
+
+/// The three step variants draw three different shapes for the same waypoints — the regression
+/// guard against copy-pasting one branch over another. Values are worked out from d3-shape's own
+/// `Step` class (`edges.rs`'s `step_path` docs): `stepBefore` goes vertical first, `stepAfter`
+/// goes horizontal first, `step` splits at the midpoint.
+#[test]
+fn step_variants_differ_from_each_other_and_match_d3() {
+    let pts = vec![Point::new(0.0, 0.0), Point::new(40.0, 60.0)];
+    let step = Curve::Step.path(&pts);
+    let before = Curve::StepBefore.path(&pts);
+    let after = Curve::StepAfter.path(&pts);
+
+    assert_ne!(step, before, "step and stepBefore must draw differently");
+    assert_ne!(step, after, "step and stepAfter must draw differently");
+    assert_ne!(
+        before, after,
+        "stepBefore and stepAfter must draw differently"
+    );
+
+    let m = |x: f64, y: f64| format!("M{},{}", num(x), num(y));
+    let l = |x: f64, y: f64| format!("L{},{}", num(x), num(y));
+    assert_eq!(
+        before,
+        format!("{}{}{}", m(0.0, 0.0), l(0.0, 60.0), l(40.0, 60.0)),
+        "stepBefore: vertical leg first, at the segment's starting x"
+    );
+    assert_eq!(
+        after,
+        format!("{}{}{}", m(0.0, 0.0), l(40.0, 0.0), l(40.0, 60.0)),
+        "stepAfter: horizontal leg first, at the segment's ending x"
+    );
+    assert_eq!(
+        step,
+        format!(
+            "{}{}{}{}",
+            m(0.0, 0.0),
+            l(20.0, 0.0),
+            l(20.0, 60.0),
+            l(40.0, 60.0)
+        ),
+        "step: the transition sits at the segment's midpoint x, and the line still reaches p1"
+    );
+}
+
+/// `linkStyle <n> interpolate <curve>` reaches exactly the edge it names, and no other — the
+/// wiring `flowchart/model.rs` used to say konoma does not have (§2-5, now implemented).
+#[test]
+fn link_style_interpolate_affects_only_that_edge() {
+    let d = laid_out_curve(
+        "flowchart TD\n  A --> B\n  C --> D\n  linkStyle 0 interpolate linear",
+        "basis",
+    );
+    assert_eq!(d.edges[0].curve, Curve::Linear);
+    assert_eq!(d.edges[1].curve, Curve::Basis);
+}
+
+/// An edge's own `linkStyle interpolate` wins over the chart-wide `[ui] mermaid_curve` default —
+/// the priority order D4 requires, stated as the strongest case: the two disagree outright.
+#[test]
+fn link_style_interpolate_overrides_the_chart_wide_default() {
+    let d = laid_out_curve(
+        "flowchart TD\n  A --> B\n  linkStyle 0 interpolate linear",
+        "step",
+    );
+    assert_eq!(
+        d.edges[0].curve,
+        Curve::Linear,
+        "the edge's own interpolate must win over ui.mermaid_curve"
+    );
+}
+
+/// `linkStyle default interpolate` sets the chart-wide default for every edge that names no
+/// index of its own, exactly the way `style::cascade_edge` already treats `linkStyle default`
+/// styles — and an indexed `linkStyle` still wins over it, the same cascade order.
+#[test]
+fn link_style_default_interpolate_applies_unless_an_index_overrides_it() {
+    let d = laid_out_curve(
+        "flowchart TD\n  A --> B\n  C --> D\n  linkStyle default interpolate linear\n  \
+         linkStyle 1 interpolate step",
+        "basis",
+    );
+    assert_eq!(
+        d.edges[0].curve,
+        Curve::Linear,
+        "linkStyle default interpolate applies to an edge with no index override"
+    );
+    assert_eq!(
+        d.edges[1].curve,
+        Curve::Step,
+        "linkStyle 1's own interpolate must still win over linkStyle default"
+    );
+}
+
+/// An unrecognised curve name falls back to `Curve::Basis` rather than erroring, both directly
+/// through `Curve::parse` and through the whole config → render pipeline. Never crashes.
+///
+/// All 13 of mermaid's own `flowchart.curve` values are implemented as of this test (see the
+/// "eight newly implemented curves" section below), so "a real d3 curve this crate does not
+/// implement" is no longer an example this test can give — `curveBasisClosed` stands in instead:
+/// a real d3-shape curve name, just not one mermaid's `flowchart.curve` schema ever accepts.
+#[test]
+fn unknown_curve_falls_back_to_basis_without_crashing() {
+    assert_eq!(
+        Curve::parse("basisClosed"),
+        Curve::Basis,
+        "a real d3-shape curve, but not one of mermaid's flowchart.curve values"
+    );
+    assert_eq!(
+        Curve::parse("Basis"),
+        Curve::Basis,
+        "wrong case — Curve::parse is case-sensitive, matching mermaid's own spellings"
+    );
+    assert_eq!(
+        Curve::parse("nonsense"),
+        Curve::Basis,
+        "not a curve name at all"
+    );
+    assert_eq!(Curve::parse(""), Curve::Basis, "empty string");
+
+    let d = laid_out_curve("flowchart TD\n  A --> B", "basisClosed");
+    assert_eq!(d.edges[0].curve, Curve::Basis);
+
+    let svg = render_curve("flowchart TD\n  A --> B", "dark", "nonsense")
+        .expect("an unknown curve must still render, as Curve::Basis");
+    assert!(svg.contains("<svg"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// 10-b. The eight curves implemented after the five above: d3-shape's `natural`, `cardinal`,
+// `catmullRom`, `monotoneX`, `monotoneY`, `bumpX`, `bumpY`, and mermaid's own `rounded`.
+// ---------------------------------------------------------------------------------------------
+//
+// Every `_matches_d3` test below pins geometry generated by actually running the real npm
+// `d3-shape` package (v3, the version mermaid itself depends on) through a small Node context
+// object that records `moveTo`/`lineTo`/`bezierCurveTo` calls in exactly the string convention
+// this module's own `push_move`/`push_line`/`push_bezier` use (comma inside a coordinate pair,
+// space between pairs, three-decimal rounding via the same formula as `svg::num`) — not hand-
+// derived, and not `curve_basis_matches_d3`'s approach of working the control-point algebra out
+// by hand, because a spline family this size (five distinct state machines, one of them with an
+// epsilon-gated weighting term) is exactly where hand arithmetic is most likely to be the thing
+// that is wrong. The three point sets are chosen on purpose: `RIGHT_ANGLE` and `FOUR_POINT` have
+// evenly-spaced waypoints, under which centripetal Catmull-Rom (`catmullRom`) and the classic
+// Cardinal spline (`cardinal`) are mathematically the same curve — so `UNEVEN` (unequal segment
+// lengths) is the set that actually exercises `catmullRom`'s own epsilon-gated weighting and
+// tells the two apart; without it a `cardinal`/`catmullRom` copy-paste bug would pass silently.
+
+const RIGHT_ANGLE: [(f64, f64); 3] = [(0.0, 0.0), (60.0, 0.0), (60.0, 60.0)];
+const FOUR_POINT: [(f64, f64); 4] = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (80.0, 40.0)];
+const UNEVEN: [(f64, f64); 4] = [(0.0, 0.0), (10.0, 0.0), (40.0, 30.0), (90.0, 35.0)];
+
+fn pts(raw: &[(f64, f64)]) -> Vec<Point> {
+    raw.iter().map(|&(x, y)| Point::new(x, y)).collect()
+}
+
+#[test]
+fn curve_natural_matches_d3() {
+    assert_eq!(
+        edges::curve_natural_path(&pts(&RIGHT_ANGLE)),
+        "M0,0C25,-5 50,-10 60,0C70,10 65,35 60,60"
+    );
+    assert_eq!(
+        edges::curve_natural_path(&pts(&FOUR_POINT)),
+        "M0,0C17.778,-4.444 35.556,-8.889 40,0C44.444,8.889 35.556,31.111 40,40\
+         C44.444,48.889 62.222,44.444 80,40"
+    );
+    assert_eq!(
+        edges::curve_natural_path(&pts(&UNEVEN)),
+        "M0,0C2,-3.222 4,-6.444 10,0C16,6.444 26,22.556 40,30C54,37.444 72,36.222 90,35"
+    );
+    // Two points are a line; one is a bare move; zero is empty — the shared degenerate cases.
+    assert_eq!(
+        edges::curve_natural_path(&pts(&RIGHT_ANGLE[..2])),
+        "M0,0L60,0"
+    );
+    assert_eq!(edges::curve_natural_path(&pts(&RIGHT_ANGLE[..1])), "M0,0");
+    assert_eq!(edges::curve_natural_path(&[]), "");
+}
+
+#[test]
+fn curve_cardinal_matches_d3() {
+    assert_eq!(
+        edges::curve_cardinal_path(&pts(&RIGHT_ANGLE)),
+        "M0,0C0,0 50,-10 60,0C70,10 60,60 60,60"
+    );
+    assert_eq!(
+        edges::curve_cardinal_path(&pts(&FOUR_POINT)),
+        "M0,0C0,0 33.333,-6.667 40,0C46.667,6.667 33.333,33.333 40,40\
+         C46.667,46.667 80,40 80,40"
+    );
+    assert_eq!(
+        edges::curve_cardinal_path(&pts(&UNEVEN)),
+        "M0,0C0,0 3.333,-5 10,0C16.667,5 26.667,24.167 40,30C53.333,35.833 90,35 90,35"
+    );
+    assert_eq!(
+        edges::curve_cardinal_path(&pts(&RIGHT_ANGLE[..2])),
+        "M0,0L60,0"
+    );
+    assert_eq!(edges::curve_cardinal_path(&pts(&RIGHT_ANGLE[..1])), "M0,0");
+    assert_eq!(edges::curve_cardinal_path(&[]), "");
+}
+
+#[test]
+fn curve_catmull_rom_matches_d3() {
+    assert_eq!(
+        edges::curve_catmull_rom_path(&pts(&RIGHT_ANGLE)),
+        "M0,0C0,0 50,-10 60,0C70,10 60,60 60,60"
+    );
+    assert_eq!(
+        edges::curve_catmull_rom_path(&pts(&FOUR_POINT)),
+        "M0,0C0,0 33.333,-6.667 40,0C46.667,6.667 33.333,33.333 40,40\
+         C46.667,46.667 80,40 80,40"
+    );
+    // The one point set that actually tells `catmullRom` apart from `cardinal` — see this
+    // section's own module doc.
+    assert_eq!(
+        edges::curve_catmull_rom_path(&pts(&UNEVEN)),
+        "M0,0C0,0 6.169,-1.587 10,0C17.89,3.268 27.455,24.055 40,30C53.653,36.47 90,35 90,35"
+    );
+    assert_ne!(
+        edges::curve_catmull_rom_path(&pts(&UNEVEN)),
+        edges::curve_cardinal_path(&pts(&UNEVEN)),
+        "catmullRom and cardinal must differ once waypoints are unevenly spaced"
+    );
+    assert_eq!(
+        edges::curve_catmull_rom_path(&pts(&RIGHT_ANGLE[..2])),
+        "M0,0L60,0"
+    );
+    assert_eq!(
+        edges::curve_catmull_rom_path(&pts(&RIGHT_ANGLE[..1])),
+        "M0,0"
+    );
+    assert_eq!(edges::curve_catmull_rom_path(&[]), "");
+}
+
+#[test]
+fn curve_monotone_x_matches_d3() {
+    assert_eq!(
+        edges::curve_monotone_x_path(&pts(&RIGHT_ANGLE)),
+        "M0,0C20,0 40,0 60,0C60,0 60,60 60,60"
+    );
+    assert_eq!(
+        edges::curve_monotone_x_path(&pts(&FOUR_POINT)),
+        "M0,0C13.333,0 26.667,0 40,0C40,0 40,40 40,40C53.333,40 66.667,40 80,40"
+    );
+    assert_eq!(
+        edges::curve_monotone_x_path(&pts(&UNEVEN)),
+        "M0,0C3.333,0 6.667,0 10,0C20,0 30,28 40,30C56.667,33.333 73.333,34.167 90,35"
+    );
+    assert_eq!(
+        edges::curve_monotone_x_path(&pts(&RIGHT_ANGLE[..2])),
+        "M0,0L60,0"
+    );
+    assert_eq!(
+        edges::curve_monotone_x_path(&pts(&RIGHT_ANGLE[..1])),
+        "M0,0"
+    );
+    assert_eq!(edges::curve_monotone_x_path(&[]), "");
+}
+
+#[test]
+fn curve_monotone_y_matches_d3() {
+    assert_eq!(
+        edges::curve_monotone_y_path(&pts(&RIGHT_ANGLE)),
+        "M0,0C0,0 60,0 60,0C60,20 60,40 60,60"
+    );
+    assert_eq!(
+        edges::curve_monotone_y_path(&pts(&FOUR_POINT)),
+        "M0,0C0,0 40,0 40,0C40,13.333 40,26.667 40,40C40,40 80,40 80,40"
+    );
+    assert_eq!(
+        edges::curve_monotone_y_path(&pts(&UNEVEN)),
+        "M0,0C0,0 10,0 10,0C30,10 20,20 40,30C43.333,31.667 66.667,33.333 90,35"
+    );
+    assert_ne!(
+        edges::curve_monotone_x_path(&pts(&UNEVEN)),
+        edges::curve_monotone_y_path(&pts(&UNEVEN)),
+        "monotoneX and monotoneY must draw differently — the whole point of the reflected axis"
+    );
+    assert_eq!(
+        edges::curve_monotone_y_path(&pts(&RIGHT_ANGLE[..2])),
+        "M0,0L60,0"
+    );
+    assert_eq!(
+        edges::curve_monotone_y_path(&pts(&RIGHT_ANGLE[..1])),
+        "M0,0"
+    );
+    assert_eq!(edges::curve_monotone_y_path(&[]), "");
+}
+
+#[test]
+fn curve_bump_x_matches_d3() {
+    assert_eq!(
+        edges::curve_bump_x_path(&pts(&RIGHT_ANGLE)),
+        "M0,0C30,0 30,0 60,0C60,0 60,60 60,60"
+    );
+    assert_eq!(
+        edges::curve_bump_x_path(&pts(&FOUR_POINT)),
+        "M0,0C20,0 20,0 40,0C40,0 40,40 40,40C60,40 60,40 80,40"
+    );
+    assert_eq!(
+        edges::curve_bump_x_path(&pts(&UNEVEN)),
+        "M0,0C5,0 5,0 10,0C25,0 25,30 40,30C65,30 65,35 90,35"
+    );
+    // Unlike every other curve in this module, `bumpX` draws a curve — not a straight `L` — even
+    // between just two points: d3-shape's own `Bump.point` has no `case 2` that falls back to a
+    // line (`edges.rs`'s own `curve_bump_x_path` doc).
+    assert_eq!(
+        edges::curve_bump_x_path(&pts(&RIGHT_ANGLE[..2])),
+        "M0,0C30,0 30,0 60,0"
+    );
+    assert_eq!(edges::curve_bump_x_path(&pts(&RIGHT_ANGLE[..1])), "M0,0");
+    assert_eq!(edges::curve_bump_x_path(&[]), "");
+}
+
+#[test]
+fn curve_bump_y_matches_d3() {
+    assert_eq!(
+        edges::curve_bump_y_path(&pts(&RIGHT_ANGLE)),
+        "M0,0C0,0 60,0 60,0C60,30 60,30 60,60"
+    );
+    assert_eq!(
+        edges::curve_bump_y_path(&pts(&FOUR_POINT)),
+        "M0,0C0,0 40,0 40,0C40,20 40,20 40,40C40,40 80,40 80,40"
+    );
+    assert_eq!(
+        edges::curve_bump_y_path(&pts(&UNEVEN)),
+        "M0,0C0,0 10,0 10,0C10,15 40,15 40,30C40,32.5 90,32.5 90,35"
+    );
+    assert_ne!(
+        edges::curve_bump_x_path(&pts(&UNEVEN)),
+        edges::curve_bump_y_path(&pts(&UNEVEN)),
+        "bumpX and bumpY must draw differently"
+    );
+    assert_eq!(
+        edges::curve_bump_y_path(&pts(&RIGHT_ANGLE[..2])),
+        "M0,0C0,0 60,0 60,0"
+    );
+    assert_eq!(edges::curve_bump_y_path(&pts(&RIGHT_ANGLE[..1])), "M0,0");
+    assert_eq!(edges::curve_bump_y_path(&[]), "");
+}
+
+/// `rounded` is mermaid's own curve, not d3-shape's — so what it is pinned against is mermaid's
+/// own `edges.js::generateRoundedPath`, ported the same way (real function, run through Node,
+/// same string convention) rather than hand-derived. `radius` is [`edges::CORNER_RADIUS`] (5),
+/// the same value `Curve::path` calls this with — matching what `fix_corners` uses for every
+/// other curve, per this module's own "why `radius` is a parameter" doc on `rounded_path`.
+#[test]
+fn rounded_curve_matches_mermaid() {
+    let radius = edges::CORNER_RADIUS;
+    assert_eq!(
+        edges::rounded_path(&pts(&[(0.0, 0.0), (0.0, 40.0), (40.0, 40.0)]), radius),
+        "M0,0L0,32.929Q0,40 7.071,40L40,40"
+    );
+    assert_eq!(
+        edges::rounded_path(&pts(&UNEVEN), radius),
+        "M0,0L5,0Q10,0 13.536,3.536L29.483,19.483Q40,30 54.799,31.48L90,35"
+    );
+    // A straight run (no bend at all — every point collinear) is left exactly straight: the
+    // corner-detection angle is `π`, which trips `generateRoundedPath`'s own "too close to 180°"
+    // guard, the same guard a real flowchart route can hit on an unbent middle waypoint.
+    assert_eq!(
+        edges::rounded_path(&pts(&[(0.0, 0.0), (50.0, 0.0), (100.0, 0.0)]), radius),
+        "M0,0L50,0L100,0"
+    );
+    assert_eq!(
+        edges::rounded_path(&pts(&RIGHT_ANGLE[..2]), radius),
+        "M0,0L60,0",
+        "two points is just a line, corner or not"
+    );
+    assert_eq!(edges::rounded_path(&pts(&RIGHT_ANGLE[..1]), radius), "M0,0");
+    assert_eq!(edges::rounded_path(&[], radius), "");
+}
+
+/// All 13 of mermaid's `flowchart.curve` spellings parse to their own, distinct [`Curve`] — the
+/// mutation guard against `Curve::parse`'s match arms drifting out of sync with the enum (a copy-
+/// pasted arm pointing at the wrong variant would make two names parse to the same curve and this
+/// test would be the only thing that notices, since nothing else compares parse results against
+/// each other).
+#[test]
+fn every_curve_name_parses_to_a_distinct_curve() {
+    let names = [
+        "basis",
+        "linear",
+        "step",
+        "stepBefore",
+        "stepAfter",
+        "natural",
+        "cardinal",
+        "catmullRom",
+        "monotoneX",
+        "monotoneY",
+        "bumpX",
+        "bumpY",
+        "rounded",
+    ];
+    let parsed: Vec<Curve> = names.iter().map(|s| Curve::parse(s)).collect();
+    for (i, a) in parsed.iter().enumerate() {
+        for (j, b) in parsed.iter().enumerate() {
+            if i != j {
+                assert_ne!(
+                    a, b,
+                    "{} and {} must not parse to the same Curve",
+                    names[i], names[j]
+                );
+            }
+        }
+    }
+}
+
+/// The eight new curves draw eight different shapes for the same bent waypoints — the same
+/// "must differ from each other" guard `step_variants_differ_from_each_other_and_match_d3` runs
+/// for the first five, extended to the rest, over a point set with an actual bend (two points
+/// would let several of these agree by accident: `curveLinear`-shaped coincidences already bit
+/// this file once, `different_curves_draw_different_svg_path_data`'s own doc).
+#[test]
+fn the_eight_new_curves_draw_different_paths_from_each_other() {
+    let p = pts(&UNEVEN);
+    let named: Vec<(&str, String)> = vec![
+        ("natural", edges::curve_natural_path(&p)),
+        ("cardinal", edges::curve_cardinal_path(&p)),
+        ("catmullRom", edges::curve_catmull_rom_path(&p)),
+        ("monotoneX", edges::curve_monotone_x_path(&p)),
+        ("monotoneY", edges::curve_monotone_y_path(&p)),
+        ("bumpX", edges::curve_bump_x_path(&p)),
+        ("bumpY", edges::curve_bump_y_path(&p)),
+        ("rounded", edges::rounded_path(&p, edges::CORNER_RADIUS)),
+    ];
+    for i in 0..named.len() {
+        for j in (i + 1)..named.len() {
+            assert_ne!(
+                named[i].1, named[j].1,
+                "{} and {} must draw differently",
+                named[i].0, named[j].0
+            );
+        }
+    }
+}
+
+/// `Curve::parse(name).path(points)` reaches the exact free function this section's own
+/// `_matches_d3`/`_matches_mermaid` tests already pinned against upstream — for every one of the
+/// 13 names, not just the eight new ones.
+///
+/// This is not redundant with the `_matches_d3` tests above: those call `edges::curve_natural_path`
+/// (etc.) **directly**, so a mistake in `Curve::parse`'s match arms or in `Curve::path`'s dispatch
+/// — the wiring between a config string and the function that actually draws it — is invisible to
+/// them. A mutation proved the gap real: swapping `Curve::path`'s `MonotoneX` arm to call
+/// `curve_natural_path` instead of `curve_monotone_x_path` left every other test in this file
+/// green, `curve_monotone_x_matches_d3` included, because that test never goes through
+/// `Curve::path` at all. This test is the one built to catch exactly that swap.
+type CurvePathFn = fn(&[Point]) -> String;
+
+#[test]
+fn curve_parse_and_path_reach_the_function_that_was_pinned_against_upstream() {
+    let p = pts(&UNEVEN);
+    let cases: &[(&str, CurvePathFn)] = &[
+        ("basis", edges::curve_basis_path),
+        ("linear", edges::polyline_path),
+        ("natural", edges::curve_natural_path),
+        ("cardinal", edges::curve_cardinal_path),
+        ("catmullRom", edges::curve_catmull_rom_path),
+        ("monotoneX", edges::curve_monotone_x_path),
+        ("monotoneY", edges::curve_monotone_y_path),
+        ("bumpX", edges::curve_bump_x_path),
+        ("bumpY", edges::curve_bump_y_path),
+    ];
+    for (name, f) in cases {
+        assert_eq!(
+            Curve::parse(name).path(&p),
+            f(&p),
+            "Curve::parse(\"{name}\").path(...) must reach the same function {name} was pinned \
+             against upstream with"
+        );
+    }
+    // `rounded` takes a radius, so it is checked against `Curve::path`'s own hardcoded
+    // `CORNER_RADIUS` argument rather than fitting the `fn(&[Point]) -> String` shape above.
+    assert_eq!(
+        Curve::parse("rounded").path(&p),
+        edges::rounded_path(&p, edges::CORNER_RADIUS)
+    );
+    // `step`/`stepBefore`/`stepAfter` take a `t` argument `step_variants_differ_from_each_other_
+    // and_match_d3` already pins by value; checked here for wiring completeness the same way.
+    assert_eq!(Curve::parse("step").path(&p), edges::step_path(&p, 0.5));
+    assert_eq!(
+        Curve::parse("stepBefore").path(&p),
+        edges::step_path(&p, 0.0)
+    );
+    assert_eq!(
+        Curve::parse("stepAfter").path(&p),
+        edges::step_path(&p, 1.0)
+    );
+}
+
+/// `Curve::rounds_corners` matches every released mermaid version's actual gate in `edges.js`:
+/// `fixCorners` runs unconditionally, for **every** curve, `rounded` included on `develop` only
+/// by an exemption added the same commit that introduced it (`Curve::rounds_corners`'s own doc
+/// has the versioned evidence — `mermaid@11.4.1`/`mermaid@11.12.0` have no condition at all).
+/// `Rounded` is the *only* curve this crate exempts, and only because it rounds every corner
+/// itself at its own radius — running `fix_corners` first would double-round the same corner.
+///
+/// This test used to assert the opposite for `Linear`/`Step`/`StepBefore`/`StepAfter` — a rule
+/// invented from how those curves *look* (chosen for a sharp angle, so surely nothing should
+/// round it) rather than checked against upstream. It was wrong on both released versions
+/// checked; the corrected list below is every curve *but* `Rounded`.
+#[test]
+fn rounds_corners_matches_mermaids_fix_corners_gate() {
+    for curve in [
+        Curve::Basis,
+        Curve::Linear,
+        Curve::Step,
+        Curve::StepBefore,
+        Curve::StepAfter,
+        Curve::Natural,
+        Curve::Cardinal,
+        Curve::CatmullRom,
+        Curve::MonotoneX,
+        Curve::MonotoneY,
+        Curve::BumpX,
+        Curve::BumpY,
+    ] {
+        assert!(curve.rounds_corners(), "{curve:?} must run fix_corners");
+    }
+    assert!(
+        !Curve::Rounded.rounds_corners(),
+        "Curve::Rounded must not run fix_corners — it rounds corners itself"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// 10-c. `%%{init}%%`'s `flowchart.curve` — the priority order `spec_of`'s own doc states:
+// `linkStyle <n> interpolate` > `linkStyle default interpolate` > `%%{init}%%`'s `flowchart.curve`
+// > `[ui] mermaid_curve`.
+// ---------------------------------------------------------------------------------------------
+
+/// `%%{init: {"flowchart": {"curve": "linear"}}}%%` overrides `[ui] mermaid_curve` — the weakest
+/// link in the priority chain beating the weaker-still config default.
+#[test]
+fn init_directive_curve_overrides_the_config_default() {
+    let d = laid_out_curve(
+        "%%{init: {\"flowchart\": {\"curve\": \"linear\"}}}%%\nflowchart TD\n  A --> B",
+        "step",
+    );
+    assert_eq!(
+        d.edges[0].curve,
+        Curve::Linear,
+        "the init directive must win over ui.mermaid_curve"
+    );
+}
+
+/// An edge's own `linkStyle interpolate` still wins over `%%{init}%%` — the strongest link in the
+/// chain beating the middle one, with a config default that agrees with neither so the test
+/// cannot pass by two of the three coinciding.
+#[test]
+fn link_style_interpolate_overrides_init_directive_curve() {
+    let d = laid_out_curve(
+        "%%{init: {\"flowchart\": {\"curve\": \"linear\"}}}%%\n\
+         flowchart TD\n  A --> B\n  linkStyle 0 interpolate step",
+        "basis",
+    );
+    assert_eq!(
+        d.edges[0].curve,
+        Curve::Step,
+        "linkStyle interpolate must win over both the init directive and the config default"
+    );
+}
+
+/// `linkStyle default interpolate` sits between the two: it loses to this edge's own indexed
+/// `linkStyle`, but beats the init directive for every edge that names no index of its own.
+#[test]
+fn link_style_default_interpolate_sits_between_init_and_indexed_link_style() {
+    let d = laid_out_curve(
+        "%%{init: {\"flowchart\": {\"curve\": \"linear\"}}}%%\n\
+         flowchart TD\n  A --> B\n  C --> D\n  \
+         linkStyle default interpolate step\n  linkStyle 1 interpolate stepBefore",
+        "basis",
+    );
+    assert_eq!(
+        d.edges[0].curve,
+        Curve::Step,
+        "linkStyle default interpolate must win over the init directive for an edge with no index override"
+    );
+    assert_eq!(
+        d.edges[1].curve,
+        Curve::StepBefore,
+        "linkStyle 1's own interpolate must still win over linkStyle default"
+    );
+}
+
+/// `%%{init: {"theme": "dark"}}%%` — a directive that names no `flowchart.curve` at all — is still
+/// completely ignored for curve purposes, exactly as it always was (the corpus already has this
+/// exact shape, and `docs/STATUS.md`'s "既定の出力は変わらない" invariant is precisely this: only
+/// `flowchart.curve` reaching in is new, every other key must draw exactly what it drew before
+/// this crate started reading `%%{init}%%` at all).
+#[test]
+fn init_directive_naming_only_theme_still_does_not_touch_curve() {
+    let d = laid_out_curve(
+        "%%{init: {\"theme\": \"dark\"}}%%\nflowchart TD\n  A --> B",
+        "step",
+    );
+    assert_eq!(
+        d.edges[0].curve,
+        Curve::Step,
+        "a theme-only init directive must leave the config default untouched"
+    );
+}
+
+/// Quote style, whitespace, multi-line bodies and key order are all noise `init_flowchart_curve`
+/// has to see through — the exact axes the task called out. Every source below sets the same
+/// `flowchart.curve: linear` and must resolve to the same [`Curve::Linear`].
+#[test]
+fn init_directive_curve_survives_formatting_variation() {
+    let sources = [
+        // Double-quoted, single line — the canonical shape.
+        "%%{init: {\"flowchart\": {\"curve\": \"linear\"}}}%%\nflowchart TD\n  A --> B",
+        // Single-quoted — mermaid's own examples use this spelling just as often.
+        "%%{init: {'flowchart': {'curve': 'linear'}}}%%\nflowchart TD\n  A --> B",
+        // Multi-line, indented, mixed quoting.
+        "%%{init: {\n  \"flowchart\": {\n    'curve': \"linear\"\n  }\n}}%%\n\
+         flowchart TD\n  A --> B",
+        // `flowchart` is not the first key in the init object.
+        "%%{init: {\"theme\": \"dark\", \"flowchart\": {\"curve\": \"linear\"}}}%%\n\
+         flowchart TD\n  A --> B",
+        // `curve` is not the first key inside `flowchart`.
+        "%%{init: {\"flowchart\": {\"htmlLabels\": false, \"curve\": \"linear\"}}}%%\n\
+         flowchart TD\n  A --> B",
+        // Bare (unquoted) keys and value — valid JSON5, which is what mermaid's directive body
+        // actually is.
+        "%%{init: {flowchart: {curve: linear}}}%%\nflowchart TD\n  A --> B",
+        // No space after the colons.
+        "%%{init:{\"flowchart\":{\"curve\":\"linear\"}}}%%\nflowchart TD\n  A --> B",
+    ];
+    for src in sources {
+        let d = laid_out_curve(src, "basis");
+        assert_eq!(
+            d.edges[0].curve,
+            Curve::Linear,
+            "must resolve to Linear regardless of formatting: {src}"
+        );
+    }
+}
+
+/// A malformed `%%{init}%%` — bad JSON, a `curve` of the wrong type, `flowchart` misplaced — must
+/// never crash, and must fall back all the way to the config default, exactly like an unrecognised
+/// curve *name* already does (PRD design principle #3: an unknown or malformed value never blocks
+/// a render).
+#[test]
+fn malformed_init_directive_falls_back_without_crashing() {
+    let sources = [
+        // `curve` is a number, not a string.
+        "%%{init: {\"flowchart\": {\"curve\": 5}}}%%\nflowchart TD\n  A --> B",
+        // `curve` is itself an object.
+        "%%{init: {\"flowchart\": {\"curve\": {\"x\": 1}}}}%%\nflowchart TD\n  A --> B",
+        // `flowchart` is a string, not an object — nothing to look a `curve` up inside.
+        "%%{init: {\"flowchart\": \"oops\"}}%%\nflowchart TD\n  A --> B",
+        // The directive's own JSON never closes.
+        "%%{init: {\"flowchart\": {\"curve\": \"linear\"\nflowchart TD\n  A --> B",
+        // `curve` at the top level, not nested under `flowchart` at all.
+        "%%{init: {\"curve\": \"linear\"}}%%\nflowchart TD\n  A --> B",
+        // Empty object.
+        "%%{init: {}}%%\nflowchart TD\n  A --> B",
+    ];
+    for src in sources {
+        let d = laid_out_curve(src, "step");
+        assert_eq!(
+            d.edges[0].curve,
+            Curve::Step,
+            "a malformed init directive must fall back to the config default: {src}"
+        );
+        let svg = render_curve(src, "dark", "step")
+            .unwrap_or_else(|e| panic!("must still render despite a malformed directive: {e}"));
+        assert!(svg.contains("<svg"));
+    }
+}
+
+/// CJK labels alongside a real `%%{init}%%` `flowchart.curve` — the one combination this section's
+/// other tests never exercise together, and the exact kind of "two features nobody tried at once"
+/// gap `CLAUDE.md`'s testing policy calls out by name.
+#[test]
+fn cjk_labels_render_with_an_init_directive_curve() {
+    let src = "%%{init: {\"flowchart\": {\"curve\": \"monotoneX\"}}}%%\n\
+               flowchart TD\n  A[ツリー] -->|Enter| B{種別を解決}\n  B -->|画像| C[全画面プレビュー]";
+    let d = laid_out_curve(src, "basis");
+    assert_eq!(d.edges[0].curve, Curve::MonotoneX);
+    let svg = render_curve(src, "dark", "basis").unwrap_or_else(|e| panic!("must render: {e}"));
+    assert!(svg.contains("<svg"));
+}
+
+/// The wiring reaches all the way to the emitted `d=` attribute, over a corpus source with a real
+/// bend (`long-edge`'s `A --> E` spans multiple ranks, so dagre gives it waypoints in between —
+/// on two points `curve_basis_path` and `polyline_path` already agree, which would make this test
+/// pass by accident).
+#[test]
+fn different_curves_draw_different_svg_path_data() {
+    let (_, src) = CORPUS
+        .iter()
+        .find(|(name, _)| *name == "long-edge")
+        .expect("corpus must still have `long-edge`");
+    let basis = render_curve(src, "dark", "basis").expect("renders");
+    let linear = render_curve(src, "dark", "linear").expect("renders");
+    let step = render_curve(src, "dark", "step").expect("renders");
+    assert_ne!(
+        basis, linear,
+        "a bent edge must draw differently under linear"
+    );
+    assert_ne!(basis, step, "a bent edge must draw differently under step");
+    assert_ne!(
+        linear, step,
+        "linear and step must draw differently from each other too"
+    );
+}
+
+/// CJK labels — konoma's standing gap in test coverage (`CLAUDE.md`'s own reminder) — must render
+/// under every implemented curve without panicking.
+#[test]
+fn cjk_labels_render_under_every_curve() {
+    let src = "flowchart TD\n  A[ツリー] -->|Enter| B{種別を解決}\n  \
+               B -->|画像| C[全画面プレビュー]\n  B -->|テキスト| D[窓読み]\n  D --> A";
+    for curve in [
+        "basis",
+        "linear",
+        "step",
+        "stepBefore",
+        "stepAfter",
+        "natural",
+        "cardinal",
+        "catmullRom",
+        "monotoneX",
+        "monotoneY",
+        "bumpX",
+        "bumpY",
+        "rounded",
+    ] {
+        let svg = render_curve(src, "dark", curve).unwrap_or_else(|e| panic!("{curve}: {e}"));
+        assert!(
+            svg.contains("<svg"),
+            "{curve}: CJK labels must still render"
+        );
+    }
+}
+
+/// A hand-built two-point-or-more edge in `curve`, for the geometry tests above — the same shape
+/// [`chart::rule`] builds for a chart's rule line, minus the theme/tip decisions this section
+/// does not care about.
+fn bent_edge(points: Vec<Point>, curve: Curve) -> PlacedEdge {
+    PlacedEdge {
+        from: "a".to_string(),
+        to: "b".to_string(),
+        points,
+        tip_start: Tip::None,
+        tip_end: Tip::None,
+        stroke: Stroke::Normal,
+        label: None,
+        start_label: None,
+        end_label: None,
+        badge: None,
+        series: None,
+        straight: false,
+        overlay: false,
+        style: None,
+        curve,
+    }
 }
