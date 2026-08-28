@@ -47,6 +47,46 @@ flowchart LR
   linkStyle 3 stroke:#d4a017
 ```
 
+### 大きさ — 図は必要なだけの大きさで描かれる
+
+konoma は図を**周囲の文字と同じ大きさ**で組み、**拡大はしません**。小さい図は小さいままです。
+中身の多い図は本当に横に長いので、その分だけ画面を使います — これは konoma 自身のプレビューの
+振り分けで、扱える全形式と、絵が端末に届く 3 通りの経路です。`Tab` で選び `Enter` で全画面、
+`+`/`-` でズーム、`0` でフィットします。
+
+```mermaid
+flowchart LR
+  F[ファイル] --> C{設定のルール}
+  C -->|テキスト| T[窓読み]
+  C -->|コード| S[構文強調]
+  C -->|Markdown| MD[ブロックモデル]
+  C -->|CSV / TSV| TB[表]
+  C -->|画像| IM[デコード]
+  C -->|PDF| PD[ページ描画]
+  C -->|SVG| SV[usvg]
+  C -->|動画| VD[キーフレーム]
+  C -->|書庫| AR[一覧]
+  C -->|なし| NA[プレビュー不可]
+  MD --> MM[mermaid]
+  MD --> MA[数式]
+  MM --> RS[ラスタライズ]
+  MA --> RS
+  SV --> RS
+  PD --> RS
+  IM --> FIT[セルに合わせる]
+  RS --> FIT
+  VD --> FIT
+  FIT --> K{端末}
+  K -->|kitty| KT[圧縮転送]
+  K -->|sixel / iTerm2| RI[画像プロトコル]
+  K -->|それ以外| HB[ハーフブロック]
+  classDef pix fill:#132a3a,stroke:#1f6feb,color:#c9d1d9
+  classDef txt fill:#12291c,stroke:#2da44e,color:#c9d1d9
+  class IM,PD,SV,VD,MM,MA,RS,FIT,KT,RI,HB pix
+  class T,S,MD,TB,AR txt
+  style NA fill:#2d2418,stroke:#d4a017,color:#c9d1d9
+```
+
 ### `stateDiagram-v2` — モードと遷移
 
 konoma の UI は 2 つのモードと、その間の行き来だけでできています。`[*]` は開始と終了の印です。

@@ -432,9 +432,12 @@ impl App {
                         Some(e) => match e.decoded.as_ref() {
                             Some(img) => {
                                 use image::GenericImageView;
-                                // The layout is fixed at **the first raster's dimensions** (layout_px):
-                                // even when a sharp re-raster raises the density on zoom, the
-                                // reserved cell count = display size stays unchanged.
+                                // The layout is fixed at the **first** result's `layout_px` — the
+                                // SVG's intrinsic size (px user units, the domain `mermaid_cells`
+                                // sizes text against), not the raster's own pixel dimensions — so a
+                                // sharp re-raster on zoom (higher density, same layout_px) never
+                                // changes the reserved cell count. Falls back to the raster's
+                                // dimensions only if intrinsic-size extraction ever failed.
                                 let (pw, ph) = e.layout_px.unwrap_or_else(|| img.dimensions());
                                 let (cols, rows) = mermaid_cells(
                                     pw,

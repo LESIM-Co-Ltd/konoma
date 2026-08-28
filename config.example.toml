@@ -235,10 +235,13 @@ mermaid = "image"
 #   "light"          … a modern light palette / "classic" … mermaid.js default / "forest" / "neutral".
 mermaid_theme = "dark"
 
-# Target height (rows) of an inline mermaid diagram inside Markdown (default 24). It scales UP too:
-# diagrams are vector-backed, so growing beyond the base raster re-rasterizes at the needed density and stays
-# sharp (width-capped, aspect-preserving). The initial view also fits the viewport: when the window is shorter
-# than the target, it shrinks so the whole block is visible.
+# Upper limit on the height (rows) of an inline mermaid diagram inside Markdown (default 24). A
+# diagram is shown at its natural size — matching the surrounding body text — and is never
+# enlarged (a small diagram stays small). Only when that natural size exceeds this cap, or the
+# available width, is it shrunk to fit, aspect preserved. Diagrams are vector-backed, so zooming
+# re-rasterizes at the needed density and stays sharp (the display size itself doesn't change).
+# The initial view also fits the viewport: when the window is shorter than this cap, it shrinks
+# further so the whole block is visible.
 # A focused diagram can be zoomed in place with +/- (reserved area unchanged) and fit with 0.
 # 0 or an invalid value falls back to the default 24.
 mermaid_rows = 24

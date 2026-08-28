@@ -27,8 +27,13 @@ as real pixels).
 - **Mermaid diagrams**: ```` ```mermaid ```` fences render inline as real
   images — laid out and rasterized fully in-process (no browser or Node),
   dark-themed with a transparent background so they blend into the terminal.
-  `Tab` focuses a diagram; `+` / `-` zoom it in place (`h j k l` pan, `0`
-  fits), and `Enter` opens it full screen (`q` returns to the same spot).
+  A diagram is drawn at its **natural size** (its own text matching the size
+  of the surrounding body text) and is never enlarged; a small diagram stays
+  small, while a genuinely busy one is wide and uses the pane. `ui.mermaid_rows`
+  sets an upper limit on the height, not a target — the diagram only shrinks
+  below that (aspect preserved) if its natural size exceeds it or the pane's
+  width. `Tab` focuses a diagram; `+` / `-` zoom it in place (`h j k l` pan,
+  `0` fits), and `Enter` opens it full screen (`q` returns to the same spot).
   Standalone `.mmd` files open full screen directly. `ui.mermaid = "text"`
   keeps the legacy Unicode rendering; unsupported diagrams fall back to it
   automatically.

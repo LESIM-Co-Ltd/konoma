@@ -13801,13 +13801,37 @@ fn fence_focus_scrolls_block_and_draws_border() {
         "前提: 先頭表示・フェンスは画面外"
     );
 
-    // Tab (the only item = the fence) → scrolls to a position that shows the entire block.
+    // Tab (the only item = the fence) → scrolls to a position that shows the entire block
+    // (caption through the bottom margin row), never leaving either edge cut off. Computed the
+    // same way `md_focus_move` itself derives the block's extent (`mermaid_placement` +
+    // `md_visual_span`) rather than a hardcoded proximity-to-caption threshold — that threshold
+    // assumed the diagram's reserved rows always exceeded the viewport height, which stopped
+    // being true once `mermaid_cells` sizes a diagram to its own natural size instead of always
+    // filling `[ui] mermaid_rows` (this fixture's 1-edge `graph LR` diagram is small enough to fit
+    // in the 20-row test terminal, so the scroll only needs to reveal the bottom margin, not jump
+    // all the way to the caption).
     app.md_focus_move(1);
-    let caption_line = app.md_items[app.tab.focused_item.unwrap()].line;
+    let idx = app.tab.focused_item.unwrap();
+    let caption_line = app.md_items[idx].line;
+    let ordinal = match app.md_items[idx].kind {
+        MdItemKind::MermaidFence { ordinal } => ordinal,
+        _ => panic!("唯一のアイテムは mermaid フェンスのはず"),
+    };
+    let (placement_line, placement_rows) = app.mermaid_placement(ordinal).expect("配置が見つかる");
+    let block_end_line = placement_line + placement_rows as usize; // bottom-margin row
+    let (caption_top, _) = app.md_visual_span_for_test(caption_line);
+    let (block_bottom_top, block_bottom_h) = app.md_visual_span_for_test(block_end_line);
+    let block_bottom = block_bottom_top + block_bottom_h;
+    let vh = app.preview_viewport_for_test() as usize;
+    let scroll = app.tab.preview_scroll as usize;
     assert!(
-        app.tab.preview_scroll as usize >= caption_line.saturating_sub(2),
-        "図ブロックの先頭(キャプション)近くまでスクロールする: scroll={} caption={caption_line}",
-        app.tab.preview_scroll
+        scroll <= caption_top,
+        "スクロールが図のキャプションより下に行き過ぎない: scroll={scroll} caption_top={caption_top}"
+    );
+    assert!(
+        block_bottom <= scroll + vh,
+        "図ブロックの下端(マージン行)まで画面内に入る: block_bottom={block_bottom} scroll+vh={}",
+        scroll + vh
     );
 
     // Re-rendering shows the focus border (the ┌ corner and title) outside the image.
@@ -13878,9 +13902,16 @@ fn encode_worker_scales_fence_diagrams_up_to_grid() {
     }
 }
 
-/// An inline diagram's initial size **fits the display area**: target rows = min(mermaid_rows,
-/// viewport-2). Only documents containing a diagram get re-laid-out when the viewport changes;
-/// documents without one are not rebuilt (user request 2026-07-17: "fit the display area at first").
+/// An inline diagram's initial size **fits the display area, never exceeding the diagram's own
+/// natural size**: `mermaid_fit_rows` (the effective target passed to `mermaid_cells`) is
+/// `min(mermaid_rows, viewport-2)`, but that's an upper limit on the *cap* — the actual rows only
+/// reach it when the diagram's natural size (its own text at terminal-text scale) is at least that
+/// tall. This fixture's 3-node diagram has a natural size of 15 rows, so a roomy cap (24, or a wide
+/// viewport that doesn't shrink the cap below 15) shows the diagram at its natural 15 rows, not
+/// stretched to fill the cap — only a viewport tight enough to push the cap *below* 15 actually
+/// shrinks the display. Only documents containing a diagram get re-laid-out when the viewport
+/// changes; documents without one are not rebuilt (user request 2026-07-17: "fit the display area
+/// at first").
 #[test]
 fn mermaid_initial_size_fits_viewport_and_refits_on_change() {
     let dir = unique_tmp("konoma_mermaid_fit_test");
@@ -13896,16 +13927,30 @@ fn mermaid_initial_size_fits_viewport_and_refits_on_change() {
     app.enter_preview(&md);
     app.ensure_md_cache(80);
     app.ensure_md_cache(80);
-    // Viewport not measured yet (0) = follows the cap.
-    assert_eq!(app.md_images()[0].rows, 24, "既定 cap=24");
-    // A short viewport → shrinks to a height that fits including the caption + margin.
+    // Viewport not measured yet (0) = follows the cap (24), but the diagram's own natural size
+    // (15 rows, well under the cap) is what actually shows — never stretched to 24.
+    assert_eq!(
+        app.md_images()[0].rows,
+        15,
+        "自然サイズ(cap=24 未満なので拡大されない)"
+    );
+    // A short viewport → the cap itself shrinks below the natural size, which *does* shrink the display.
     app.tab.preview_viewport = 10;
     app.ensure_md_cache(80);
-    assert_eq!(app.md_images()[0].rows, 8, "vp10 → 8 行にフィット");
-    // A wide viewport → back to the cap.
+    assert_eq!(
+        app.md_images()[0].rows,
+        8,
+        "vp10 → cap が自然サイズ(15)を下回り 8 行にフィット"
+    );
+    // A wide viewport → the cap stays at 24 (unclamped by viewport), and the diagram is back to
+    // its own natural 15 rows (not stretched to fill the now-roomy cap).
     app.tab.preview_viewport = 60;
     app.ensure_md_cache(80);
-    assert_eq!(app.md_images()[0].rows, 24, "vp60 → cap 24");
+    assert_eq!(
+        app.md_images()[0].rows,
+        15,
+        "vp60 → cap 24 は非拘束、自然サイズ 15 に復帰"
+    );
 
     // A document with no diagram isn't rebuilt on a viewport change (lines' pointer is unchanged).
     app.enter_preview(&plain);
@@ -14196,7 +14241,8 @@ fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
     let small = app.md_images()[0].rows;
     assert!(small <= 10, "mermaid_rows=10 で高さが縮む: {small}");
 
-    // With the default (24) it's bigger (the diagram is tall, so the rows cap takes effect).
+    // With the default (24, an upper limit this diagram's natural size doesn't reach) it's bigger
+    // than the rows=10 case above, where the cap of 10 *does* clip the natural size down.
     let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
     app2.picker = Some(test_picker());
     app2.enter_preview(&md);
@@ -14239,22 +14285,60 @@ fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// mermaid_rows is **a target for the actual display size**: it can upscale past the base
-/// raster's natural size (being vector-derived, density follows via re-rasterizing = it stays
-/// sharp while the layout is unchanged), and the theme is dark by default with a transparent
-/// background.
+/// `mermaid_rows` (`[ui] mermaid_rows`) is an **upper limit**, never a fill target: `mermaid_cells`
+/// sizes a diagram so its own text matches the terminal's body text (natural size, derived from
+/// the SVG's intrinsic px size and `text_metrics::FONT_SIZE`), and only shrinks — aspect preserved
+/// — when that natural size exceeds the cap or the available width. It never grows a diagram past
+/// its natural size (the bug this sizing exists to fix: a small diagram used to always be blown up
+/// to fill `target_rows`).
 #[test]
-fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
-    // Pure function: upscales to the target row count (independent of natural size), clamped by width.
-    let (c, r) = mermaid_cells(400, 800, 8, 16, 200, 40);
-    assert_eq!(r, 40, "目標行数まで拡大");
+fn mermaid_rows_is_an_upper_limit_not_a_fill_target() {
+    // A: natural size well under both caps -> NOT scaled at all (this is the direct regression
+    // test for the reported bug: pw/ph=400x200 at fw=8/fh=16 naturally needs
+    // 200/(1.2*14)=11.9 -> 12 rows and 400*16/(1.2*14*8)=47.6 -> 48 cols, both under target_rows=40
+    // and avail=200, so the output must equal the *natural* size, not 40 (the old "always fill"
+    // behavior would have produced (40-ish, 40) here).
     assert_eq!(
-        c, 40,
-        "アスペクト維持(400/800 → 40行×16px=640px 高, 幅320px=40セル)"
+        mermaid_cells(400, 200, 8, 16, 200, 40),
+        (48, 12),
+        "上限より小さい自然サイズは拡大されない"
     );
-    let (c2, r2) = mermaid_cells(1600, 400, 8, 16, 60, 40);
-    assert_eq!(c2, 60, "幅上限でクランプ");
-    assert!(r2 < 40, "幅クランプに合わせ行数も縮む: {r2}");
+
+    // B: natural rows (1000/(1.2*14)=59.5) exceed target_rows=40 -> shrink to the cap, aspect
+    // preserved: cols_nat=400*16/(1.2*14*8)=47.6, shrink factor 40/59.5=0.672 -> cols≈32.
+    assert_eq!(
+        mermaid_cells(400, 1000, 8, 16, 200, 40),
+        (32, 40),
+        "自然サイズが上限行数を超えたら、上限まで縦横比を保って縮小"
+    );
+
+    // C: target_rows (200) is NOT binding (natural rows=200/(1.2*14)=11.9 stays under it), but the
+    // natural width (1600*16/(1.2*14*8)=190.5 cols) exceeds avail=60 -> shrink to avail, rows
+    // follow the same shrink factor (60/190.5=0.315 -> ~3.75 rounds to 4).
+    assert_eq!(
+        mermaid_cells(1600, 200, 8, 16, 60, 200),
+        (60, 4),
+        "上限行数の余地があっても、幅は avail までしか使わない"
+    );
+
+    // Extremes: no panics, no zero cells.
+    assert_eq!(mermaid_cells(1, 1, 8, 16, 200, 40), (1, 1), "極小図");
+    let (c, r) = mermaid_cells(100_000, 100_000, 8, 16, 200, 40);
+    assert!(
+        c >= 1 && r >= 1,
+        "巨大図でも 0 やパニックにならない: {c}x{r}"
+    );
+    assert_eq!(mermaid_cells(400, 200, 8, 16, 1, 40), (1, 1), "avail=1");
+    assert_eq!(
+        mermaid_cells(400, 1000, 8, 16, 200, 1),
+        (1, 1),
+        "target_rows=1"
+    );
+    let (c0, r0) = mermaid_cells(400, 200, 0, 0, 200, 40);
+    assert!(
+        c0 >= 1 && r0 >= 1,
+        "fw=fh=0 でもパニックにならない: {c0}x{r0}"
+    );
 
     // Theme: the dark default has a background fill="none" (transparent) and no white background.
     let svg = crate::preview::markdown::mermaid_to_svg("graph LR\nA-->B", "dark").unwrap();
@@ -14264,9 +14348,10 @@ fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
         "dark テーマに白背景が無い"
     );
 
-    // Density follow-up: to match a display size enlarged by increasing mermaid_rows,
-    // ensure_md_fence_density re-rasterizes at higher density from the retained SVG
-    // (synchronous fallback). The layout (reserved cells) is unchanged.
+    // Density follow-up: raising the display size beyond the base raster's density (here forced
+    // low by a small svg_max_px, not by mermaid_rows upscaling) still triggers a re-raster via
+    // ensure_md_fence_density (synchronous fallback), and the layout (reserved cells, layout_px)
+    // stays fixed across it.
     use image::GenericImageView;
     let dir = unique_tmp("konoma_mermaid_density_test");
     let _ = std::fs::remove_dir_all(&dir);
@@ -14274,8 +14359,7 @@ fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
     let md = dir.join("doc.md");
     std::fs::write(&md, "```mermaid\ngraph TD\n  A --> B\n```\n").unwrap();
     let mut cfg = Config::default();
-    cfg.ui.mermaid_rows = 60;
-    cfg.ui.svg_max_px = 300; // shrinks the base raster = creates a density shortfall
+    cfg.ui.svg_max_px = 40; // forces a tiny base raster = guarantees a density shortfall on zoom
     let mut app = App::new(dir.clone(), cfg).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
@@ -14283,6 +14367,7 @@ fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
     app.ensure_md_cache(120);
     let p = app.md_images()[0].clone();
     let key = std::path::PathBuf::from(&p.url);
+    let layout_before = app.md_image_cache[&key].layout_px;
     let before = app.md_image_cache[&key]
         .decoded
         .as_ref()
@@ -14296,9 +14381,8 @@ fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
         "表示サイズに合わせ高密度化: {before:?} -> {after:?}"
     );
     assert_eq!(
-        e.layout_px,
-        Some(before),
-        "layout_px は初回のまま(予約セル不変)"
+        e.layout_px, layout_before,
+        "layout_px は初回のまま(予約セル不変・raster px でなく intrinsic px)"
     );
     // The cell count doesn't change even after re-decorating (the layout is fixed).
     app.md_cache = None;
@@ -14308,10 +14392,14 @@ fn mermaid_rows_upscales_and_dark_theme_is_transparent() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
-/// Even with a large target like mermaid_rows=100, the placement upscales to that row count (as
-/// far as the width allows).
+
+/// Even with a huge target like `mermaid_rows=100`, a diagram whose natural size is far smaller
+/// stays at its natural size — the placement is identical to the default (24) cap, since neither
+/// is actually binding. Regression test for the reported bug (a small diagram was always blown up
+/// to fill `target_rows`); a mutation that reintroduces "always fill to target_rows" would make
+/// the rows=100 placement grow far past the default one.
 #[test]
-fn mermaid_rows_large_target_reaches_placement() {
+fn mermaid_rows_large_target_does_not_upscale_past_natural_size() {
     let dir = unique_tmp("konoma_probe_rows100");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -14321,6 +14409,7 @@ fn mermaid_rows_large_target_reaches_placement() {
         "```mermaid\ngraph TD\n  A[a] --> B{b}\n  B --> C[c]\n```\n",
     )
     .unwrap();
+
     let mut cfg = Config::default();
     cfg.ui.mermaid_rows = 100;
     let mut app = App::new(dir.clone(), cfg).unwrap();
@@ -14328,8 +14417,21 @@ fn mermaid_rows_large_target_reaches_placement() {
     app.enter_preview(&md);
     app.ensure_md_cache(148);
     app.ensure_md_cache(148);
-    let p = &app.md_images()[0];
-    assert!(p.rows >= 90, "rows=100 target: got {}", p.rows);
+    let p = app.md_images()[0].clone();
+
+    let mut app_default = App::new(dir.clone(), Config::default()).unwrap(); // mermaid_rows=24
+    app_default.picker = Some(test_picker());
+    app_default.enter_preview(&md);
+    app_default.ensure_md_cache(148);
+    app_default.ensure_md_cache(148);
+    let p_default = &app_default.md_images()[0];
+
+    assert_eq!(
+        (p.cols, p.rows),
+        (p_default.cols, p_default.rows),
+        "この図の自然サイズは 24 行未満なので、上限を 100 に上げても表示は変わらないはず: \
+         rows100={p:?} default={p_default:?}"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

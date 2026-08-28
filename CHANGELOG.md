@@ -7,6 +7,22 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Fixed
+- **An inline mermaid diagram was always enlarged, drawing its text noticeably bigger than the
+  surrounding body text — even a trivial diagram filled the screen.** `mermaid_cells` treated
+  `[ui] mermaid_rows` (default 24) as a **fill target**: it scaled every diagram, regardless of its
+  own natural size, to exactly that many rows (its own doc comment even called this out as
+  intentional, contrasting it with `md_image_cells`'s "never upscale" raster images). A simple
+  6-node flowchart whose natural size was ~11.5 rows of text got blown up to 24 — a 2x enlargement,
+  making its glyphs draw at roughly 1.6x the terminal's own body-text size. Fixed by sizing a
+  diagram to its **natural size** instead: the SVG's own intrinsic px dimensions (not the raster,
+  which is scaled by the unrelated `[ui] svg_max_px`) are compared against `text_metrics::FONT_SIZE`
+  to compute the cell box that makes the diagram's own text match the terminal's body text, and
+  `mermaid_rows` is now an **upper limit**, not a target — a diagram is only shrunk (aspect
+  preserved) when its natural size exceeds that cap or the available width; it is never enlarged.
+  This also required storing the mermaid fence's intrinsic SVG size in `layout_px` instead of the
+  raster's pixel dimensions (mirroring what math expressions already did), so the fix follows the
+  same shape as the `[0.28.1]` inline-math-sizing fix below. `[ui] mermaid_rows`'s meaning changes
+  accordingly (target → upper limit) — see `config.example.toml`/`.ja.toml` and the docs site.
 - **Mermaid `classDef`/`class`/`:::`/`style`/`linkStyle` colour declarations were parsed and then
   never drawn — a regression against the crate v0.28.0 replaced.** Every flowchart parser kept
   `class_defs`/`link_styles` and every node/edge kept `classes`/`styles`, but nothing downstream

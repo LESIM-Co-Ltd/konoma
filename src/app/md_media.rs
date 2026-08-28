@@ -132,7 +132,8 @@ impl App {
         // display size on the page stays fixed — a user requirement).
         let url_str = res.path.to_string_lossy().to_string();
         let is_math = crate::preview::markdown::is_math_url(&url_str);
-        if !res.reraster && (crate::preview::markdown::is_mermaid_fence_url(&url_str) || is_math) {
+        let is_mermaid = crate::preview::markdown::is_mermaid_fence_url(&url_str);
+        if !res.reraster && (is_mermaid || is_math) {
             self.md_cache = None;
         }
         let entry = self.md_image_cache.entry(res.path).or_default();
@@ -143,12 +144,16 @@ impl App {
             Ok(img) => {
                 use image::GenericImageView;
                 if entry.layout_px.is_none() {
-                    // For math, load the SVG's **intrinsic size (in units)** into layout_px
-                    // (rather than raster px): rows are derived from the em height and columns
-                    // from the intrinsic aspect, sizing it to balance against the text
-                    // (math_cells). Fall back to the raster dimensions only when the intrinsic
-                    // size can't be obtained. Fences / regular images work as before.
-                    entry.layout_px = if is_math {
+                    // For math and mermaid fences, load the SVG's **intrinsic size (in px user
+                    // units, "1 unit = 1px")** into layout_px, rather than the raster's pixel
+                    // dimensions. The raster is scaled by an unrelated setting (`svg_max_px`), so
+                    // sizing off of it would drag that setting into the text-size math; the
+                    // intrinsic size is the same px domain the renderer laid glyphs out in
+                    // (`text_metrics::FONT_SIZE` for mermaid, RaTeX's 40-units/em for math), which
+                    // `mermaid_cells`/`math_cells` need to size the diagram/equation against the
+                    // terminal's own body text. Fall back to the raster dimensions only when the
+                    // intrinsic size can't be obtained. Regular images work as before (raster px).
+                    entry.layout_px = if is_math || is_mermaid {
                         res.svg
                             .as_deref()
                             .and_then(|d| crate::preview::svg::intrinsic_size_bytes(d))

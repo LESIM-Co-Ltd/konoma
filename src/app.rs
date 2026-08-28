@@ -1891,8 +1891,12 @@ struct MdImgEntry {
     /// SVG source of a rendered mermaid fence — kept so in-place zoom can re-rasterize at a higher
     /// density (sharp zoom, same mechanism as the full-screen vector zoom).
     svg: Option<std::sync::Arc<Vec<u8>>>,
-    /// Layout size = the **first** raster's dimensions. The markdown layout (cells) is computed from
-    /// this, so a sharper re-raster never changes the reserved area (the user-visible size is fixed).
+    /// Layout size, fixed at the **first** result so a later sharpening re-raster never changes the
+    /// reserved area (the user-visible size is fixed). For a mermaid fence or a math expression
+    /// (vector-backed, synthetic key), this is the source SVG's **intrinsic size** (px user units,
+    /// the same domain the renderer laid glyphs out in — see `mermaid_cells`/`math_cells`), not the
+    /// raster's pixel dimensions (those are scaled by `[ui] svg_max_px`, an unrelated setting).
+    /// Regular images use the raster's own dimensions, since there is no separate intrinsic size.
     layout_px: Option<(u32, u32)>,
     /// A sharpening re-raster is in flight (at most one per diagram).
     reraster_inflight: bool,
@@ -5328,21 +5332,48 @@ fn md_image_cells(
     (cols as u16, rows as u16)
 }
 
-/// Cell box for an inline mermaid diagram: **fill to `target_rows`** (up- or downscale, keeping
-/// the aspect from the layout pixels), clamped by the available width. Unlike raster images
-/// (`md_image_cells`, never upscaled), diagrams are vector-backed — the raster follows the
-/// display size via sharpening re-rasters, so growing beyond the natural size stays crisp.
+/// Cell box for an inline mermaid diagram, sized so the diagram's **own text matches the
+/// terminal's body text** rather than always filling `target_rows`. `pw`x`ph` is the diagram's
+/// *intrinsic* SVG size in the same px domain the renderer lays out glyphs in
+/// (`text_metrics::FONT_SIZE` px, "1 SVG user unit = 1px" — see `layout_px`'s doc comment for
+/// mermaid fences in `md_media.rs`), **not** the raster's pixel dimensions (those are scaled by
+/// `[ui] svg_max_px` and would drag an unrelated setting into the text-size math).
+///
+/// A terminal cell is ~1.2em tall (same convention `math_cells` uses for RaTeX's em units), so the
+/// scale that makes a `FONT_SIZE`-px glyph in the diagram equal one line of terminal text is
+/// `(fh / 1.2) / FONT_SIZE`; applying it to the diagram's own px size gives its natural cell box.
+///
+/// `target_rows` (`[ui] mermaid_rows`) is an **upper limit**, not a fill target: a diagram whose
+/// natural size is smaller than the cap is shown at that natural size — never enlarged. Only a
+/// diagram taller than the cap (or wider than `avail`) is shrunk, aspect preserved in both steps.
+/// Unlike raster images (`md_image_cells`), a diagram is vector-backed, so a *downscaled* cell box
+/// still re-rasters sharp on zoom — but "vector-backed" is not license to enlarge past natural size
+/// for a reader who never zoomed, which is the bug this sizing exists to avoid.
 fn mermaid_cells(pw: u32, ph: u32, fw: u16, fh: u16, avail: u16, target_rows: u16) -> (u16, u16) {
     let (fw, fh) = (fw.max(1) as f64, fh.max(1) as f64);
-    let ar = (pw.max(1) as f64) / (ph.max(1) as f64); // the pixel aspect ratio
-    let mut rows = target_rows.max(1) as f64;
-    let mut cols = (rows * fh * ar / fw).round().max(1.0);
+    let (pw, ph) = (pw.max(1) as f64, ph.max(1) as f64);
+    let font_size = crate::preview::mermaid::text_metrics::FONT_SIZE as f64;
+    let scale = (fh / 1.2) / font_size;
+    let mut rows = (ph * scale / fh).max(1.0);
+    let mut cols = (pw * scale / fw).max(1.0);
+
+    // Upper limit, never a fill target (see doc comment above).
+    let cap = target_rows.max(1) as f64;
+    if rows > cap {
+        let s = cap / rows;
+        rows = cap;
+        cols *= s;
+    }
+
+    // Never wider than the available column budget either, aspect preserved.
     let avail = avail.max(1) as f64;
     if cols > avail {
+        let s = avail / cols;
         cols = avail;
-        rows = (cols * fw / ar / fh).round().max(1.0);
+        rows *= s;
     }
-    (cols as u16, rows as u16)
+
+    (cols.round().max(1.0) as u16, rows.round().max(1.0) as u16)
 }
 
 /// Cell box for an inline math image, sized proportionally from the SVG's intrinsic **em** units

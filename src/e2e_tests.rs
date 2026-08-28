@@ -9960,8 +9960,11 @@ fn e2e_ui_mermaid_theme_changes_rendered_pixel_brightness() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `mermaid_rows`: the reserved cell box (`ImagePlacement.rows`) scales directly with the target
-/// row count, independent of any encode/rendering — a picker alone (for `font_size()`) is enough.
+/// `mermaid_rows`: an upper limit on the reserved cell box (`ImagePlacement.rows`), not a fill
+/// target (see `mermaid_cells`'s doc comment) — independent of any encode/rendering, a picker
+/// alone (for `font_size()`) is enough. This fixture's diagram is naturally taller than both 4 and
+/// 24 rows, so both configs are actually cap-bound here (the `_large_value_` sibling test below
+/// covers the case where raising the cap only partly relieves the clamp).
 #[test]
 fn e2e_ui_mermaid_rows_changes_reserved_diagram_height() {
     let dir = sandbox("ui_mermaid_rows_cfg");
@@ -11967,16 +11970,23 @@ fn e2e_ui_theme_bg_paints_the_whole_frame_background() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `mermaid_rows`: the pre-existing `e2e_ui_mermaid_rows_changes_reserved_diagram_height` only ever
-/// compares a SMALLER value (4) against the default (24) — both well under the standard 90x26
-/// terminal's own viewport clamp (measured directly: `mermaid_fit_rows` caps at
-/// `preview_viewport - 2` = 20 rows there, so anything >= 22 clamps to the exact same 20 as the
-/// default and a "larger value" contrast would be unobservable). This uses a taller terminal
-/// (`with_config_sized`) so the cap never engages, and confirms a LARGER explicit value actually
-/// grows the diagram past the default — the other half of "小さい値/大きい値" this config's own doc
-/// comment promises.
+/// `mermaid_rows` is an **upper limit**, not a fill target (see `mermaid_cells`'s doc comment):
+/// raising it only lets a diagram whose *natural* size is being clamped show more of itself, up to
+/// that natural size — it never inflates a diagram past what its own text would need. This
+/// fixture's 8-node vertical chain has a natural height taller than 24 rows but shorter than 48,
+/// which is exactly what makes it a good test: raising the cap from 24 to 48 relieves the clamp
+/// (rows_large > rows_default) but the diagram still stops at
+/// its own natural size well short of 48 (rows_large < 48) — proving the cap is a ceiling, not a
+/// target it forces the diagram to reach. (Before the fix, `mermaid_rows` always filled to the
+/// exact target regardless of natural size, so `rows_large` would have landed at exactly 48.)
+/// The pre-existing `e2e_ui_mermaid_rows_changes_reserved_diagram_height` only ever compares a
+/// SMALLER value (4) against the default (24) — both well under the standard 90x26 terminal's own
+/// viewport clamp (measured directly: `mermaid_fit_rows` caps at `preview_viewport - 2` = 20 rows
+/// there, so anything >= 22 clamps to the exact same 20 as the default and a "larger value"
+/// contrast would be unobservable). This uses a taller terminal (`with_config_sized`) so the
+/// viewport-fit cap never engages, isolating `mermaid_rows` itself.
 #[test]
-fn e2e_ui_mermaid_rows_large_value_grows_diagram_beyond_default() {
+fn e2e_ui_mermaid_rows_large_value_grows_diagram_up_to_its_natural_size() {
     let dir = sandbox("ui_mermaid_rows_large_cfg");
     std::fs::write(
         dir.join("d.md"),
@@ -12006,6 +12016,11 @@ fn e2e_ui_mermaid_rows_large_value_grows_diagram_beyond_default() {
         rows_large > rows_default,
         "mermaid_rows=48 は既定24より大きい高さになるはず(十分な viewport下): \
          large={rows_large} default={rows_default}"
+    );
+    assert!(
+        rows_large < 48,
+        "上限は「必ずそこまで埋める」目標ではない: 自然サイズで頭打ちになり、\
+         設定値そのものには到達しないはず: large={rows_large}"
     );
     std::fs::remove_dir_all(&dir).ok();
 }

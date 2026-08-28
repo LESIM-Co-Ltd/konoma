@@ -48,6 +48,46 @@ flowchart LR
   linkStyle 3 stroke:#d4a017
 ```
 
+### Size — a diagram is drawn at the size it needs
+
+konoma lays a diagram out at the size of the text around it and never blows it up: a small diagram
+stays small. A busy one is genuinely wide, so it uses the whole pane — this is konoma's own preview
+dispatch, every format it knows and the three ways a picture can reach a terminal. Press `Tab` then
+`Enter` to open it full screen, `+`/`-` to zoom, `0` to fit.
+
+```mermaid
+flowchart LR
+  F[File] --> C{config rule}
+  C -->|text| T[window reader]
+  C -->|code| S[syntax highlight]
+  C -->|markdown| MD[block model]
+  C -->|csv / tsv| TB[table]
+  C -->|image| IM[decode]
+  C -->|pdf| PD[page raster]
+  C -->|svg| SV[usvg]
+  C -->|video| VD[keyframe]
+  C -->|archive| AR[entry list]
+  C -->|none| NA[can not preview]
+  MD --> MM[mermaid]
+  MD --> MA[math]
+  MM --> RS[rasterize]
+  MA --> RS
+  SV --> RS
+  PD --> RS
+  IM --> FIT[fit to cells]
+  RS --> FIT
+  VD --> FIT
+  FIT --> K{terminal}
+  K -->|kitty| KT[compressed transfer]
+  K -->|sixel / iTerm2| RI[image protocol]
+  K -->|anything else| HB[halfblocks]
+  classDef pix fill:#132a3a,stroke:#1f6feb,color:#c9d1d9
+  classDef txt fill:#12291c,stroke:#2da44e,color:#c9d1d9
+  class IM,PD,SV,VD,MM,MA,RS,FIT,KT,RI,HB pix
+  class T,S,MD,TB,AR txt
+  style NA fill:#2d2418,stroke:#d4a017,color:#c9d1d9
+```
+
 ### `stateDiagram-v2` — modes and transitions
 
 konoma's whole UI is two modes and the moves between them. `[*]` is the start and end marker, and
