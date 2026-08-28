@@ -189,6 +189,7 @@ pub fn lay_out(gantt: &Gantt) -> Result<Diagram, RenderError> {
                 panel: None,
                 series: Some(series_of(task)),
                 mark: None,
+                style: None,
             });
         } else {
             let x0 = scale.x(task.start);
@@ -205,6 +206,7 @@ pub fn lay_out(gantt: &Gantt) -> Result<Diagram, RenderError> {
                 panel: None,
                 series: Some(series_of(task)),
                 mark: None,
+                style: None,
             });
         }
         spans.push((i, y, y + ROW_HEIGHT));

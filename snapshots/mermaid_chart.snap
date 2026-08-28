@@ -1646,7 +1646,7 @@
 </g>
 <g class="nodes">
 <rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
-<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#ff0000"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Hot one</tspan></text>
 <circle cx="#" cy="#" r="#" fill="#4a8a42"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Cool</tspan></text>
@@ -1664,7 +1664,7 @@
 </g>
 <g class="nodes">
 <rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="none" stroke="#8a8a8a" stroke-width="#"/>
-<circle cx="#" cy="#" r="#" fill="#4e79a7"/>
+<circle cx="#" cy="#" r="#" fill="#ff0000"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Styled</tspan></text>
 <circle cx="#" cy="#" r="#" fill="#4a8a42"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc"><tspan x="#" dy="#">Plain</tspan></text>
@@ -2323,7 +2323,7 @@
 <g class="edges">
 </g>
 <g class="nodes">
-<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4e79a7" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#f9f" stroke="#cccccc" stroke-width="#"/>
 <text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">a</text>
 <text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#f2f2f2">1</text>
 <rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#4a8a42" stroke="#cccccc" stroke-width="#"/>

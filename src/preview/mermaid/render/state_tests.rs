@@ -862,6 +862,7 @@ fn synthetic_state_diagram() -> Diagram {
             panel: None,
             series: None,
             mark: None,
+            style: None,
         });
     }
 
@@ -884,6 +885,7 @@ fn synthetic_state_diagram() -> Diagram {
             series: None,
             straight: false,
             overlay: false,
+            style: None,
         },
         super::PlacedEdge {
             from: "n7".to_string(),
@@ -899,6 +901,7 @@ fn synthetic_state_diagram() -> Diagram {
             series: None,
             straight: false,
             overlay: false,
+            style: None,
         },
     ];
 

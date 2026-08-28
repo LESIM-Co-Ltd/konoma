@@ -96,6 +96,7 @@ pub fn lay_out(board: &Kanban) -> Result<Diagram, RenderError> {
                 panel: Some(panel),
                 series: Some(ci),
                 mark: None,
+                style: None,
             });
             y += size.h + CARD_GAP;
             n += 1;

@@ -1484,7 +1484,10 @@ fn acc_value(s: &str, kw: &str) -> Option<String> {
 }
 
 /// Splits a style list on `,`, honouring mermaid's `\,` escape for a literal comma.
-fn split_styles(s: &str) -> Vec<String> {
+///
+/// `pub(crate)`: the ER, treemap and quadrant parsers reuse this rather than re-implementing the
+/// escape rule, now that they all keep a `classDef`'s declarations for `render::style` to read.
+pub(crate) fn split_styles(s: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut chars = s.chars().peekable();

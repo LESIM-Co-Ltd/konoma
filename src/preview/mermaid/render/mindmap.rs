@@ -73,6 +73,7 @@ pub fn spec_of(map: &Mindmap) -> GraphSpec {
                 label,
                 size,
                 panel: None,
+                style: None,
             }
         })
         .collect();
@@ -94,6 +95,7 @@ pub fn spec_of(map: &Mindmap) -> GraphSpec {
                 minlen: 1,
                 start_label: None,
                 end_label: None,
+                style: None,
             })
         })
         .collect();

@@ -259,6 +259,7 @@ pub fn lay_out(diagram: &SequenceDiagram) -> Result<Diagram, RenderError> {
             panel: c.panel.clone(),
             series: None,
             mark: None,
+            style: None,
         });
         bottom = bottom.max(body_bottom + c.size.h);
     }
@@ -297,6 +298,7 @@ pub fn lay_out(diagram: &SequenceDiagram) -> Result<Diagram, RenderError> {
             panel: c.panel.clone(),
             series: None,
             mark: None,
+            style: None,
         });
     }
     let span_left = columns
@@ -317,6 +319,7 @@ pub fn lay_out(diagram: &SequenceDiagram) -> Result<Diagram, RenderError> {
             panel: None,
             series: None,
             mark: None,
+            style: None,
         });
     }
 
@@ -859,6 +862,7 @@ impl<'a> Walk<'a> {
             series: None,
             straight: false,
             overlay: false,
+            style: None,
         });
 
         self.last_message_y = bottom;
@@ -920,6 +924,7 @@ impl<'a> Walk<'a> {
             panel: None,
             series: None,
             mark: None,
+            style: None,
         });
         self.note_n += 1;
         self.y += size.h + NOTE_GAP;

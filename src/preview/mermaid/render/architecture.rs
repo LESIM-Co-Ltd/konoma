@@ -96,6 +96,7 @@ pub fn lay_out(arch: &Architecture) -> Result<Diagram, RenderError> {
             panel: None,
             series: None,
             mark: None,
+            style: None,
         });
         let _ = s;
     }
@@ -143,6 +144,7 @@ pub fn lay_out(arch: &Architecture) -> Result<Diagram, RenderError> {
             // off and cross the cell beside it.
             straight: true,
             overlay: false,
+            style: None,
         });
         if !e.title.trim().is_empty() {
             let label = Label::measure(&e.title);

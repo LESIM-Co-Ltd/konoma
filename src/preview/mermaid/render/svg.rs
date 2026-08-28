@@ -397,7 +397,7 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
     // Which of the palette's three families of colour this node belongs to. A flowchart only
     // ever reaches the last arm, so its output is byte for byte what it was before state
     // diagrams existed.
-    let (fill, stroke, text) = match node.shape {
+    let (mut fill, mut stroke, mut text) = match node.shape {
         Glyph::Note => (theme.note_fill, theme.note_stroke, theme.note_text),
         Glyph::StateStart | Glyph::StateEnd | Glyph::Bar { .. } => {
             (theme.state_marker, theme.state_marker, theme.node_text)
@@ -439,7 +439,25 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
         ),
         _ => (theme.node_fill, theme.node_stroke, theme.node_text),
     };
-    let sw = num(NODE_STROKE_WIDTH);
+    // `classDef` / `class` / `:::` / `style` win over every rule above, theme and series alike —
+    // they are the most specific instruction the source gave, and konoma's SVG carries no
+    // stylesheet to express that any other way (`style::cascade`'s module docs).
+    let mut sw = NODE_STROKE_WIDTH;
+    if let Some(s) = &node.style {
+        if let Some(v) = s.fill.as_deref() {
+            fill = v;
+        }
+        if let Some(v) = s.stroke.as_deref() {
+            stroke = v;
+        }
+        if let Some(v) = s.text.as_deref() {
+            text = v;
+        }
+        if let Some(v) = s.stroke_width {
+            sw = v;
+        }
+    }
+    let sw = num(sw);
     match shapes::outline(node.shape, node.size, node.mark) {
         Outline::Rect { w, h, r } => {
             out.push_str(&format!(
@@ -917,7 +935,7 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
     let (start_room, end_room) = edges::terminator_lengths(edge.tip_start, edge.tip_end);
     let trimmed = edges::trim_start(&edges::trim_end(&points, end_room), start_room);
 
-    let (width, dash) = match edge.stroke {
+    let (mut width, mut dash) = match edge.stroke {
         Stroke::Thick => (THICK_STROKE_WIDTH, None),
         Stroke::Dotted => (EDGE_STROKE_WIDTH, Some(DOTTED_DASH)),
         // A `x-- text -->` whose two halves disagree is `INVALID` in mermaid; it still has a line.
@@ -926,7 +944,20 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
     };
     // A chart's line plot and a radar chart's curve are drawn in their own series colour; every
     // other edge in every diagram kind is `theme.line`, exactly as before this field existed.
-    let line = edge.series.map_or(theme.line, |i| theme.series(i));
+    let mut line = edge.series.map_or(theme.line, |i| theme.series(i));
+    // `class` / `:::` / `linkStyle` win over both the theme and `~~~`/`===`/`-.-`'s own defaults —
+    // the most specific instruction the source gave (`style::cascade_edge`'s module docs).
+    if let Some(s) = &edge.style {
+        if let Some(v) = s.stroke.as_deref() {
+            line = v;
+        }
+        if let Some(v) = s.stroke_width {
+            width = v;
+        }
+        if let Some(v) = s.dash.as_deref() {
+            dash = Some(v);
+        }
+    }
     // A data path is drawn straight and a route is drawn smooth — see `PlacedEdge::drawn_points`
     // and `edges::polyline_path`. `series` is the thing that tells them apart, because a series is
     // exactly what makes a line a series.

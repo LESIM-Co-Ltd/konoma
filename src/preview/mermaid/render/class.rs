@@ -81,6 +81,7 @@ pub fn spec_of(diagram: &ClassDiagram) -> GraphSpec {
             label: Label::measure(""),
             size: shapes::size(Glyph::ClassBox, panel.size),
             panel: Some(panel),
+            style: None,
         });
     }
     // A note is an ordinary node here, unlike in a state diagram. There it had to be placed by
@@ -95,6 +96,7 @@ pub fn spec_of(diagram: &ClassDiagram) -> GraphSpec {
             label,
             size,
             panel: None,
+            style: None,
         });
     }
 
@@ -138,6 +140,7 @@ pub fn spec_of(diagram: &ClassDiagram) -> GraphSpec {
                 .as_deref()
                 .map(Label::measure)
                 .filter(|l| !l.is_blank()),
+            style: None,
         })
         .collect();
 
@@ -156,6 +159,7 @@ pub fn spec_of(diagram: &ClassDiagram) -> GraphSpec {
             minlen: 1,
             start_label: None,
             end_label: None,
+            style: None,
         });
     }
 

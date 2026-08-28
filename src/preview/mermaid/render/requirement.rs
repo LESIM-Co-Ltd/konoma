@@ -79,6 +79,7 @@ pub fn spec_of(diagram: &RequirementDiagram) -> GraphSpec {
             minlen: 1,
             start_label: None,
             end_label: None,
+            style: None,
         })
         .collect();
 
@@ -118,6 +119,7 @@ fn box_node(name: &str, rows: &[(&'static str, String)]) -> SpecNode {
         label: Label::measure(""),
         size: shapes::size(Glyph::ClassBox, panel.size),
         panel: Some(panel),
+        style: None,
     }
 }
 

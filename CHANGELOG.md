@@ -6,6 +6,35 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **Mermaid `classDef`/`class`/`:::`/`style`/`linkStyle` colour declarations were parsed and then
+  never drawn — a regression against the crate v0.28.0 replaced.** Every flowchart parser kept
+  `class_defs`/`link_styles` and every node/edge kept `classes`/`styles`, but nothing downstream
+  ever read them; they existed only so a `classDef hot fill:#f9f` line could not become a phantom
+  node. A flowchart that colour-coded its edges with `linkStyle` (a common pattern for large
+  architecture diagrams, e.g. `linkStyle 0,1,2 stroke:#1f6feb` to mark one group of edges) drew
+  every line in the theme's ordinary colour, silently dropping the diagram's legend. Fixed by
+  adding a `render::style` cascade (`classDef default` → the classes an element carries, in
+  applied order → its own `style`/`linkStyle` declarations, later overwriting earlier) and a new
+  `PlacedNode::style`/`PlacedEdge::style` field the SVG emitter now honours; colours are validated
+  with the same `svgtypes` check `UiConfig::math_color` uses, so an unparsable colour is dropped
+  rather than silently drawn black. Fixed in the same pass, since the same "parsed but unread"
+  shape existed there too: ER's `classDef` (previously not even *stored* — only `:::`'s class
+  *names* were kept; `classDef`/standalone `class`/`style` statements were recognised and
+  dropped), treemap's `classDef`/`:::`, and quadrant chart's `classDef`/`:::`/inline point styles
+  (which use a different vocabulary — `radius`/`color`/`stroke-color` — from the boxy
+  `fill`/`stroke` every other diagram kind's `classDef` uses). State diagrams, class diagrams,
+  requirement diagrams and mindmaps carry class *names* the same way but never stored their
+  `classDef` declarations at all (recognised-and-dropped, not "parsed but unread") — a materially
+  larger fix (new parsing, not just wiring an existing model up to a consumer) left for a later
+  pass and recorded in `docs/STATUS.md`. A review pass over the corpus golden and the SVG-level
+  edge tests caught one more real bug in this same change before it shipped: an edge's `linkStyle`
+  cascade was reusing the node cascade's automatic `classDef default` step, so an edge with no
+  `class`/`linkStyle` of its own could still pick up a `classDef default` meant for boxes.
+  `render::style::cascade_edge` no longer starts from `classDef default` — an edge only gets a
+  named class through an explicit `class <edgeId> name`, matching mermaid's own rule that
+  `default` applies to nodes, not edges.
+
 ## [0.28.1] - 2026-08-28
 
 ### Fixed

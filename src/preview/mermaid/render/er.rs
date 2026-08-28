@@ -61,6 +61,15 @@ pub fn lay_out(diagram: &ErDiagram) -> Result<Diagram, RenderError> {
 
 /// The whole of what is specific to the ER language.
 pub fn spec_of(diagram: &ErDiagram) -> GraphSpec {
+    // `classDef default` → the classes an entity carries, in applied order → its own `style` —
+    // the same cascade the flowchart's `spec_of` builds; see `render::style::cascade`'s docs.
+    let class_of = |name: &str| {
+        diagram
+            .class_defs
+            .iter()
+            .find(|d| d.name == name)
+            .map(|d| d.styles.as_slice())
+    };
     let nodes = diagram
         .entities
         .iter()
@@ -82,6 +91,7 @@ pub fn spec_of(diagram: &ErDiagram) -> GraphSpec {
                 label: Label::measure(""),
                 size: shapes::size(Glyph::ErBox, panel.size),
                 panel: Some(panel),
+                style: super::style::cascade(class_of, &e.css_classes, &e.own_styles),
             }
         })
         .collect();
@@ -118,6 +128,7 @@ pub fn spec_of(diagram: &ErDiagram) -> GraphSpec {
             minlen: 1,
             start_label: None,
             end_label: None,
+            style: None,
         })
         .collect();
 

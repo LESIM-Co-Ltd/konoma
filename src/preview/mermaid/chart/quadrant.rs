@@ -14,9 +14,11 @@
 //! * **An arrow with nothing after it appends `" ⟶ "` to the left label.** That is a real branch
 //!   in the grammar (`X-AXIS text AXIS-TEXT-DELIMITER { $2.text += " ⟶ "; }`), and it is visible
 //!   in the drawing, so konoma does the same rather than dropping the arrow.
-//! * **`classDef` and `:::` and per-point styles are parsed and not drawn.** §2-3: a statement the
-//!   grammar has a rule for and the parser has none for becomes a phantom element — here, a
-//!   `classDef` line would be read as a *point* label. [`super::tests`] pins the drop.
+//! * **`classDef` and `:::` and per-point styles are parsed here so a statement the grammar has a
+//!   rule for and the parser has none for cannot become a phantom element** — a `classDef` line
+//!   would otherwise be read as a *point* label. [`super::tests`] pins that they do not become
+//!   one. `render::chart::quadrant::apply_quadrant_decl` is what reads their declarations for
+//!   real (`docs/STATUS.md`'s flowchart entry, 2026-08-28).
 
 use super::{
     find_header, first_word, read_quoted, Envelope, ParseError, Preamble, Source, TitleSyntax,
@@ -34,9 +36,10 @@ pub struct QuadrantPoint {
     pub x: f64,
     /// Position up, in `0.0..=1.0`.
     pub y: f64,
-    /// The `:::name` class, read and not drawn.
+    /// The `:::name` class. Resolved, along with [`QuadrantPoint::styles`], by
+    /// `render::chart::quadrant::quadrant_style`.
     pub class: Option<String>,
-    /// The `radius: 5, color: #ff0000` styles, read and not drawn.
+    /// The `radius: 5, color: #ff0000` styles.
     pub styles: Vec<String>,
 }
 
@@ -63,7 +66,7 @@ pub struct QuadrantChart {
     pub quadrant4: String,
     /// The points, in source order.
     pub points: Vec<QuadrantPoint>,
-    /// `classDef name styles` — read and not drawn.
+    /// `classDef name styles`.
     pub class_defs: Vec<(String, Vec<String>)>,
 }
 

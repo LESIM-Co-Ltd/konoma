@@ -584,7 +584,7 @@
 <g class="edges">
 </g>
 <g class="nodes">
-<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#f96" stroke="#cccccc" stroke-width="#"/>
 <line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
 <line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
 <line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
@@ -593,13 +593,13 @@
 <text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">registrationNumber</text>
 <text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
 <text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">make</text>
-<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#f96" stroke="#cccccc" stroke-width="#"/>
 <line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
 <line x1="#" y1="#" x2="#" y2="#" stroke="#cccccc" stroke-width="#"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">PERSON</text>
 <text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">string</text>
 <text x="#" y="#" text-anchor="start" font-family="sans-serif" font-size="#" fill="#cccccc">firstName</text>
-<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#f96" stroke="#cccccc" stroke-width="#"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">HOUSE</text>
 </g>
 <g class="edge-labels">
@@ -685,7 +685,7 @@
 <g class="nodes">
 <rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">Person</text>
-<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
+<rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#f96" stroke="#cccccc" stroke-width="#"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">Customer Account</text>
 <rect x="#" y="#" width="#" height="#" rx="#" ry="#" fill="#1f2020" stroke="#cccccc" stroke-width="#"/>
 <text x="#" y="#" text-anchor="middle" font-family="sans-serif" font-size="#" fill="#cccccc">Bracket ] In Title</text>

@@ -111,6 +111,7 @@ pub fn lay_out(radar: &Radar) -> Result<Diagram, RenderError> {
             spokes: n,
             polygon: radar.options.graticule == Graticule::Polygon,
         }),
+        style: None,
     });
 
     // --- the axis labels, each just outside its own spoke --------------------------------------

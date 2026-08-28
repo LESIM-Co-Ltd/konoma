@@ -70,6 +70,7 @@ pub mod requirement;
 pub mod sequence;
 pub mod shapes;
 pub mod state;
+pub mod style;
 pub mod svg;
 pub mod theme;
 pub mod timeline;
@@ -95,7 +96,9 @@ mod text_placement_tests;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::preview::mermaid::flowchart::{self, Direction, Flowchart, ParseError, Stroke};
+use crate::preview::mermaid::flowchart::{
+    self, Direction, Flowchart, LinkStyleTarget, ParseError, Stroke,
+};
 use crate::preview::mermaid::layout::{
     graph::{Graph, GraphOptions},
     layout, EdgeLabel, LayoutOptions, NodeLabel, Point, RankDir,
@@ -107,6 +110,7 @@ pub use labels::Label;
 pub use panel::Panel;
 #[allow(unused_imports)]
 pub use shapes::{Glyph, Mark, Size};
+pub use style::ShapeStyle;
 pub use theme::Theme;
 
 /// Blank space kept around the drawing, in px. mermaid's `marginx`/`marginy` for dagre.
@@ -247,6 +251,10 @@ pub struct PlacedNode {
     /// Geometry the bounding box cannot express — a wedge's angles, a ribbon's four corners.
     /// `None` for every glyph that does not need one; see [`shapes::Mark`].
     pub mark: Option<shapes::Mark>,
+    /// The resolved `classDef` / `class` / `:::` / `style` paint, if the source declared any.
+    /// `None` — every node before `style::cascade` had anywhere to write to — draws exactly what
+    /// it always drew; see [`style`] for why this is not folded into [`PlacedNode::series`].
+    pub style: Option<ShapeStyle>,
 }
 
 impl PlacedNode {
@@ -339,6 +347,10 @@ pub struct PlacedEdge {
     ///
     /// [`straight`]: PlacedEdge::straight
     pub overlay: bool,
+    /// The resolved `class` / `:::` / `linkStyle` paint, if the source declared any for this
+    /// edge. `None` draws exactly what every edge drew before `style::cascade_edge` existed; see
+    /// [`style`] for why this is not folded into [`PlacedEdge::series`].
+    pub style: Option<ShapeStyle>,
 }
 
 impl PlacedEdge {
@@ -578,6 +590,15 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
 /// [`lay_out_spec`] — is shared with the state diagram, and that sharing is the point
 /// (`docs/FEATURE-MERMAID-RENDERER.md` §7: stage 2 reuses stage 1's layout).
 fn spec_of(chart: &Flowchart) -> GraphSpec {
+    // `classDef default` → the classes a node/edge carries, in applied order → its own `style` —
+    // see `style::cascade`'s docs for the pipeline this closure feeds.
+    let class_of = |name: &str| {
+        chart
+            .class_defs
+            .iter()
+            .find(|d| d.name == name)
+            .map(|d| d.styles.as_slice())
+    };
     let nodes = chart
         .nodes
         .iter()
@@ -591,6 +612,7 @@ fn spec_of(chart: &Flowchart) -> GraphSpec {
                 label,
                 size,
                 panel: None,
+                style: style::cascade(class_of, &node.classes, &node.styles),
             }
         })
         .collect();
@@ -607,21 +629,34 @@ fn spec_of(chart: &Flowchart) -> GraphSpec {
     let edges = chart
         .edges
         .iter()
-        .map(|edge| SpecEdge {
-            id: edge.id.clone(),
-            from: edge.from.clone(),
-            to: edge.to.clone(),
-            label: edge
-                .label
-                .as_deref()
-                .map(Label::measure)
-                .filter(|l| !l.is_blank()),
-            tip_start: edges::Tip::of_arrow(edge.arrow).0,
-            tip_end: edges::Tip::of_arrow(edge.arrow).1,
-            stroke: edge.stroke,
-            minlen: edge.length,
-            start_label: None,
-            end_label: None,
+        .enumerate()
+        .map(|(i, edge)| {
+            // `linkStyle` indices are positions in `Flowchart::edges` (the model's own doc
+            // comment), which is exactly this iterator's index.
+            let link_default = chart.link_styles.iter().filter_map(|ls| {
+                matches!(ls.target, LinkStyleTarget::Default).then_some(ls.styles.as_slice())
+            });
+            let link_indexed = chart.link_styles.iter().filter_map(|ls| match &ls.target {
+                LinkStyleTarget::Indices(idx) if idx.contains(&i) => Some(ls.styles.as_slice()),
+                _ => None,
+            });
+            SpecEdge {
+                id: edge.id.clone(),
+                from: edge.from.clone(),
+                to: edge.to.clone(),
+                label: edge
+                    .label
+                    .as_deref()
+                    .map(Label::measure)
+                    .filter(|l| !l.is_blank()),
+                tip_start: edges::Tip::of_arrow(edge.arrow).0,
+                tip_end: edges::Tip::of_arrow(edge.arrow).1,
+                stroke: edge.stroke,
+                minlen: edge.length,
+                start_label: None,
+                end_label: None,
+                style: style::cascade_edge(class_of, &edge.classes, link_default, link_indexed),
+            }
         })
         .collect();
     GraphSpec {
@@ -646,6 +681,8 @@ pub struct SpecNode {
     /// The compartments drawn inside it, for a glyph whose content is a table rather than one
     /// centred label. Sized already: `size` is the panel's own size for such a node.
     pub panel: Option<Panel>,
+    /// The resolved `classDef`/`style` paint, carried through to [`PlacedNode::style`] unchanged.
+    pub style: Option<ShapeStyle>,
 }
 
 /// One edge to lay out. `from`/`to` are as the author wrote them, so either may name a block.
@@ -671,6 +708,8 @@ pub struct SpecEdge {
     pub start_label: Option<Label>,
     /// Text drawn beside the line at the `to` end.
     pub end_label: Option<Label>,
+    /// The resolved `class`/`linkStyle` paint, carried through to [`PlacedEdge::style`] unchanged.
+    pub style: Option<ShapeStyle>,
 }
 
 /// One frame to lay out: a flowchart's `subgraph`, or a state diagram's composite state.
@@ -867,6 +906,7 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             panel: node.panel.clone(),
             series: None,
             mark: None,
+            style: node.style.clone(),
         });
     }
     if nodes.is_empty() {
@@ -946,6 +986,7 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             series: None,
             straight: false,
             overlay: false,
+            style: edge.style.clone(),
         });
     }
 

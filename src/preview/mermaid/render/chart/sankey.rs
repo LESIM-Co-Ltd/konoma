@@ -258,6 +258,7 @@ pub fn lay_out(sankey: &Sankey) -> Result<Diagram, RenderError> {
                 right_top: r0 - cy,
                 right_bottom: r0 + band - cy,
             }),
+            style: None,
         });
     }
 

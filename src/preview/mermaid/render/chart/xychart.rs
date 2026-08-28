@@ -240,6 +240,7 @@ pub fn lay_out(chart: &XyChart) -> Result<Diagram, RenderError> {
         panel: None,
         series: None,
         mark: None,
+        style: None,
     });
     for ((v, text), label) in tick_values
         .iter()
@@ -441,6 +442,7 @@ fn draw_line(
             panel: None,
             series: Some(series),
             mark: None,
+            style: None,
         });
         if let Some(text) = plot.point_labels.get(i).filter(|t| !t.trim().is_empty()) {
             if let Some(n) = text_node(

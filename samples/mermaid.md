@@ -23,6 +23,31 @@ flowchart LR
   P --> R
 ```
 
+### Colour — `classDef`, `:::`, `style`, `linkStyle`
+
+Colour is how a flowchart says what belongs together. `classDef` names a set of declarations,
+`class` (or the `:::` shorthand) attaches it to nodes, `style` paints one node directly, and
+`linkStyle` paints edges by their declaration index — `linkStyle 1,4` is the second and fifth
+arrow. Here the entry is grey, the image path blue, the Markdown path green, and the dead end amber,
+so the route a file takes is readable without following the arrowheads.
+
+```mermaid
+flowchart LR
+  F[File] --> R{Rule match?}
+  R -->|image| I[Decode]:::media
+  R -->|markdown| M[Block model]:::text
+  R -->|none| X[can not preview]
+  I --> K[kitty transfer]:::media
+  M --> K
+  classDef media fill:#132a3a,stroke:#1f6feb,color:#c9d1d9
+  classDef text fill:#12291c,stroke:#2da44e,color:#c9d1d9
+  style X fill:#2d2418,stroke:#d4a017,color:#c9d1d9
+  linkStyle 0 stroke:#8b949e
+  linkStyle 1,4 stroke:#1f6feb
+  linkStyle 2,5 stroke:#2da44e
+  linkStyle 3 stroke:#d4a017
+```
+
 ### `stateDiagram-v2` — modes and transitions
 
 konoma's whole UI is two modes and the moves between them. `[*]` is the start and end marker, and

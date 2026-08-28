@@ -334,6 +334,7 @@ pub fn lay_out(graph: &GitGraph) -> Result<Diagram, RenderError> {
             panel: None,
             series: Some(lane),
             mark: None,
+            style: None,
         });
 
         // The caption beside a commit — see [`Marks::of`] for which commits get one and why a tag
@@ -377,6 +378,7 @@ pub fn lay_out(graph: &GitGraph) -> Result<Diagram, RenderError> {
                 // belongs to when it is sitting a couple of rows out from the dot.
                 series: Some(lane),
                 mark: None,
+                style: None,
             });
             out += across_of(*size) + TAG_STACK;
         }
@@ -424,6 +426,7 @@ pub fn lay_out(graph: &GitGraph) -> Result<Diagram, RenderError> {
                 // A branch line is a right angle: along the lane, then across into the next one.
                 straight: true,
                 overlay: false,
+                style: None,
             });
         }
     }

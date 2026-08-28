@@ -84,6 +84,25 @@ pub fn lay_out(tm: &Treemap) -> Result<Diagram, RenderError> {
             what: "every value is zero, so no tile has any area",
         });
     }
+    // `classDef name decl,decl` keeps its declarations as one un-split string (the parser's own
+    // doc comment on [`Treemap::class_defs`]); split once here rather than per tile.
+    let class_styles: Vec<(String, Vec<String>)> = tm
+        .class_defs
+        .iter()
+        .map(|(name, raw)| {
+            (
+                name.clone(),
+                crate::preview::mermaid::flowchart::parser::split_styles(raw),
+            )
+        })
+        .collect();
+    let class_of = |name: &str| {
+        class_styles
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, s)| s.as_slice())
+    };
+
     let mut nodes: Vec<PlacedNode> = Vec::new();
     let rect = Rect {
         x: 0.0,
@@ -91,7 +110,7 @@ pub fn lay_out(tm: &Treemap) -> Result<Diagram, RenderError> {
         w: WIDTH,
         h: HEIGHT,
     };
-    place(&tm.roots, rect, None, &mut nodes, &mut 0);
+    place(&tm.roots, rect, None, &mut nodes, &mut 0, &class_of);
 
     let mut diagram = Diagram {
         nodes,
@@ -111,12 +130,13 @@ pub fn lay_out(tm: &Treemap) -> Result<Diagram, RenderError> {
 /// what was drawn, a single zero-valued leaf shifts every later id by one and every check after it
 /// is comparing a node with its neighbour's tile. Nothing is skipped in a treemap whose values are
 /// all positive, so this changes no id in any chart that had one.
-fn place(
+fn place<'a>(
     items: &[Node],
     rect: Rect,
     series: Option<usize>,
     out: &mut Vec<PlacedNode>,
     counter: &mut usize,
+    class_of: &impl Fn(&str) -> Option<&'a [String]>,
 ) {
     let values: Vec<f64> = items.iter().map(Node::total).collect();
     let rects = squarify(&values, rect);
@@ -144,6 +164,10 @@ fn place(
             Size::new(r.w, r.h),
             Some(colour),
         );
+        // `:::name` names a `classDef`; there is no per-tile `style` statement in this grammar
+        // (§2-3 of the module docs), so the cascade's last step is always empty here.
+        let classes: Vec<String> = item.class.iter().cloned().collect();
+        tile.style = super::super::style::cascade(class_of, &classes, &[]);
         if item.children.is_empty() {
             tile.panel = tile_panel(&item.name, item.value, *r, r.h);
             out.push(tile);
@@ -160,7 +184,7 @@ fn place(
             h: (r.h - band - SECTION_PAD).max(0.0),
         };
         if inner.w > 1.0 && inner.h > 1.0 {
-            place(&item.children, inner, Some(colour), out, counter);
+            place(&item.children, inner, Some(colour), out, counter, class_of);
         } else {
             *counter += item.children.iter().map(subtree_len).sum::<usize>();
         }

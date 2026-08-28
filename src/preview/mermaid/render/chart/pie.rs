@@ -74,6 +74,7 @@ pub fn lay_out(pie: &Pie) -> Result<Diagram, RenderError> {
                 panel: None,
                 series: Some(i),
                 mark: Some(Mark::Wedge { start, sweep }),
+                style: None,
             });
         }
         start += sweep;

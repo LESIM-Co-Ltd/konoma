@@ -120,6 +120,7 @@ pub fn label_node(
         panel: None,
         series,
         mark: None,
+        style: None,
     })
 }
 
@@ -157,6 +158,7 @@ pub fn rule(from: Point, to: Point, stroke: Stroke, series: Option<usize>) -> Pl
         // regenerated. The flag exists for routes with a corner in them.
         straight: false,
         overlay: false,
+        style: None,
     }
 }
 
@@ -193,6 +195,7 @@ pub fn bar_node(
         panel: None,
         series,
         mark: None,
+        style: None,
     }
 }
 

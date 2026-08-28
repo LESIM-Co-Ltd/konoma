@@ -143,6 +143,7 @@ pub fn lay_out(diagram: &BlockDiagram) -> Result<Diagram, RenderError> {
             // avoid.
             straight: elbow,
             overlay: false,
+            style: None,
         });
     }
 
@@ -360,6 +361,7 @@ fn block_node(n: &Node, center: Point, size: Size) -> PlacedNode {
         panel: None,
         series: None,
         mark,
+        style: None,
     }
 }
 

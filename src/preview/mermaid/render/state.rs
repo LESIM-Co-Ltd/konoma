@@ -133,6 +133,7 @@ pub fn spec_of(diagram: &StateDiagram) -> GraphSpec {
             label,
             size,
             panel: None,
+            style: None,
         });
     }
 
@@ -159,6 +160,7 @@ pub fn spec_of(diagram: &StateDiagram) -> GraphSpec {
             minlen: 1,
             start_label: None,
             end_label: None,
+            style: None,
         })
         .collect();
 
@@ -251,6 +253,7 @@ fn place_notes(out: &mut Diagram, model: &StateDiagram) {
             panel: None,
             series: None,
             mark: None,
+            style: None,
         });
         out.edges.push(PlacedEdge {
             from: link.from.clone(),
@@ -266,6 +269,7 @@ fn place_notes(out: &mut Diagram, model: &StateDiagram) {
             series: None,
             straight: false,
             overlay: false,
+            style: None,
         });
     }
     // The drawing grew sideways, so the extent has to be recomputed over what is now on it.

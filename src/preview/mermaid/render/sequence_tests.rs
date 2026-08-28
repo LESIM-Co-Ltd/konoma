@@ -1602,6 +1602,7 @@ fn synthetic_sequence() -> Diagram {
         panel: None,
         series: None,
         mark: None,
+        style: None,
     };
     let actor = |id: &str, x: f64, y: f64| PlacedNode {
         id: id.to_string(),
@@ -1624,6 +1625,7 @@ fn synthetic_sequence() -> Diagram {
         }),
         series: None,
         mark: None,
+        style: None,
     };
 
     let mut nodes = vec![
@@ -1640,6 +1642,7 @@ fn synthetic_sequence() -> Diagram {
             panel: None,
             series: None,
             mark: None,
+            style: None,
         },
     ];
     nodes.push(PlacedNode {
@@ -1651,6 +1654,7 @@ fn synthetic_sequence() -> Diagram {
         panel: None,
         series: None,
         mark: None,
+        style: None,
     });
 
     // One message per terminator, solid and dotted, plus a self-loop and a badge.
@@ -1687,6 +1691,7 @@ fn synthetic_sequence() -> Diagram {
             series: None,
             straight: false,
             overlay: false,
+            style: None,
         });
     }
     // A self-message: a loop out to the right and back.
@@ -1713,6 +1718,7 @@ fn synthetic_sequence() -> Diagram {
         series: None,
         straight: false,
         overlay: false,
+        style: None,
     });
 
     let lifelines = vec![

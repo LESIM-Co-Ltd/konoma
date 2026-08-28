@@ -2367,6 +2367,7 @@ fn synthetic_chart_diagram() -> Diagram {
             panel: None,
             series,
             mark: None,
+            style: None,
         }
     };
 
@@ -2421,6 +2422,7 @@ fn synthetic_chart_diagram() -> Diagram {
             panel: None,
             series,
             mark: None,
+            style: None,
         });
     }
     // A legend, through the shared helper, so the golden pins that too.
@@ -2501,4 +2503,67 @@ fn gallery() {
         }
     }
     eprintln!("wrote the chart gallery to {dir}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// `classDef` / `:::` (docs/STATUS.md, 2026-08-28: same "parsed, never read" regression as
+// flowchart's — see `render::tests`' section 9 and `render::er_tests`'.)
+// ---------------------------------------------------------------------------------------------
+
+/// A treemap tile's `:::name` resolves against `classDef` and colours the tile — the same
+/// vocabulary (`fill`/`stroke`/…) `classDef` uses everywhere else, since `treemap-beta` is a
+/// boxy chart.
+#[test]
+fn treemap_classdef_colours_the_tile_it_names() {
+    let d = laid_out("treemap-beta\nclassDef leafy fill:#f9f\n\"a\": 1:::leafy\n\"b\": 2\n");
+    let a = d
+        .node("tile#0")
+        .expect("tile#0 exists")
+        .style
+        .as_ref()
+        .expect("the leafy tile has a style");
+    assert_eq!(a.fill.as_deref(), Some("#f9f"));
+    assert!(
+        d.node("tile#1").expect("tile#1 exists").style.is_none(),
+        "\"b\" carries no class, so it must keep its series colour"
+    );
+
+    let svg = rendered("treemap-beta\nclassDef leafy fill:#f9f\n\"a\": 1:::leafy\n\"b\": 2\n");
+    assert!(
+        svg.contains("fill=\"#f9f\""),
+        "the fill reaches the SVG: {svg}"
+    );
+}
+
+/// A quadrant point's `classDef` uses a different vocabulary (`radius`/`color`/`stroke-color`) —
+/// mermaid's own `quadrantChart` point styling, not the boxy one `classDef` means for every other
+/// diagram kind. `color` is the point's *fill*, since a point carries no text for `color` to mean
+/// the flowchart sense of "text colour".
+#[test]
+fn quadrant_classdef_colours_the_point_it_names_using_its_own_vocabulary() {
+    let d = laid_out(
+        "quadrantChart\n  classDef hot radius: 8, color: #ff0000\n  P:::hot: [0.2, 0.3]\n",
+    );
+    let p = d
+        .node("point#0")
+        .expect("point#0 exists")
+        .style
+        .as_ref()
+        .expect("the hot point has a style");
+    assert_eq!(
+        p.fill.as_deref(),
+        Some("#ff0000"),
+        "quadrant's `color:` means the point's own fill, not text colour"
+    );
+}
+
+/// A quadrant point's own inline styles (no class at all) reach the SVG the same way, `radius`
+/// aside (out of this bug fix's scope — sizing, not colour).
+#[test]
+fn quadrant_point_inline_styles_reach_the_svg() {
+    let svg = rendered("quadrantChart\n  P: [0.2, 0.3] radius: 8, color: #00ff00\n");
+    assert!(
+        svg.contains("fill=\"#00ff00\""),
+        "an inline `color:` with no named class must still reach the SVG: {svg}"
+    );
 }

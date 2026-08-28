@@ -214,6 +214,7 @@ fn glyph_document(glyph: Glyph) -> String {
         // would be asserting something false.
         series: chart_series(glyph),
         mark: chart_mark(glyph),
+        style: None,
     });
     drawn(&d)
 }
@@ -641,6 +642,7 @@ fn tip_document(tip: Tip) -> String {
         series: None,
         straight: false,
         overlay: false,
+        style: None,
     });
     drawn(&d)
 }
@@ -848,6 +850,7 @@ fn decoration_document(decoration: Decoration, on: bool) -> String {
                 series: None,
                 straight: false,
                 overlay: false,
+                style: None,
             });
         }
         Decoration::Lifeline | Decoration::ActivationBar | Decoration::DestroyCross => {
@@ -898,6 +901,7 @@ fn decoration_document(decoration: Decoration, on: bool) -> String {
                 panel: Some(p),
                 series: None,
                 mark: None,
+                style: None,
             });
         }
     }

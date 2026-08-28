@@ -164,6 +164,25 @@ pub(super) const CORPUS: &[(&str, &str)] = &[
         "length",
         "flowchart TD\n  A ---> B\n  A --> C\n  B --> D\n  C --> D",
     ),
+    (
+        // `linkStyle` naming several indices at once, in the exact shape a real diagram uses it
+        // (`~/work/Ergora/doc/spec/05-system-architecture.md`'s six colour-coded groups of edges
+        // — the source of the 2026-08-28 regression `docs/STATUS.md` records). Before that fix,
+        // `mask_numbers` would have shown this case's colour drift — `fill`/`stroke` are two of
+        // the few attributes it does *not* mask — but no corpus case exercised `linkStyle` at
+        // all, which is exactly how the regression reached a release unnoticed.
+        "link-style-multi-index",
+        "flowchart TD\n  A --> B\n  B --> C\n  C --> D\n  D --> E\n  \
+         linkStyle 0,1,2 stroke:#1f6feb\n  linkStyle 3 stroke:#d4a017",
+    ),
+    (
+        // `classDef` + `:::` + a node's own `style` together, so the golden pins the whole
+        // cascade at once: `default` colours every node, `:::hot` overrides the one it names, and
+        // `style` on top of that overrides `:::hot` again.
+        "classdef-and-style-cascade",
+        "flowchart TD\n  classDef default fill:#223,stroke:#556\n  \
+         classDef hot fill:#f9f,stroke:#a00\n  A:::hot --> B\n  style A fill:#0f0",
+    ),
 ];
 
 /// Label strings the measuring instrument runs over. §6 names these classes explicitly: CJK,
@@ -1456,6 +1475,7 @@ fn every_shape_holds_the_label_it_was_sized_for() {
             panel: None,
             series: None,
             mark: None,
+            style: None,
         };
         let outline = boundary(&node);
         for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
@@ -2140,6 +2160,7 @@ fn synthetic_diagram() -> Diagram {
             panel: None,
             series: None,
             mark: None,
+            style: None,
         });
     }
 
@@ -2185,6 +2206,7 @@ fn synthetic_diagram() -> Diagram {
             series: None,
             straight: false,
             overlay: false,
+            style: None,
         });
     }
 
@@ -2336,4 +2358,310 @@ fn awkward_sources_produce_a_diagram_or_an_error_and_never_a_panic() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 9. `classDef` / `class` / `:::` / `style` / `linkStyle` (docs/STATUS.md, 2026-08-28 regression)
+// ---------------------------------------------------------------------------------------------
+//
+// The bug this section pins: `flowchart/parser.rs` always kept `class_defs` and `link_styles` —
+// only so `classDef hot fill:#f9f` could not become a phantom node (§2-3) — and nothing
+// downstream ever read what they said. `mask_numbers` (this file's module docs) hides
+// `stroke-width`/`stroke-dasharray` but **not** `fill`/`stroke`, so a colour regression here would
+// have shown up in `corpus_golden` if the corpus had a case for it; it did not (`CORPUS` has no
+// `classDef` source), which is exactly how this shipped unnoticed. These tests read
+// [`PlacedNode::style`]/[`PlacedEdge::style`] directly rather than relying on a golden, so a future
+// regression fails by name instead of by an unrelated-looking snapshot diff.
+
+/// `classDef default` colours every node automatically, and must **not** leak onto an edge that
+/// carries neither a `class` of its own nor any `linkStyle` — caught while regenerating the
+/// corpus golden for this section: [`super::style::cascade_edge`] used to start from
+/// [`super::style::cascade`], which begins every element at `classDef default`, and an edge is
+/// not a node.
+#[test]
+fn classdef_default_colours_nodes_but_not_an_untouched_edge() {
+    let d = laid_out("flowchart TD\n  classDef default fill:#223,stroke:#556\n  A --> B");
+    assert_eq!(
+        d.node("A")
+            .unwrap()
+            .style
+            .as_ref()
+            .unwrap()
+            .stroke
+            .as_deref(),
+        Some("#556"),
+        "classDef default must still colour every node"
+    );
+    assert!(
+        d.edges[0].style.is_none(),
+        "the edge names neither a class nor a linkStyle, so classDef default must not reach it"
+    );
+
+    let svg = render(
+        "flowchart TD\n  classDef default fill:#223,stroke:#556\n  A --> B",
+        "dark",
+    )
+    .expect("renders");
+    assert_eq!(
+        svg.matches("stroke=\"#556\"").count(),
+        2,
+        "exactly the two node rects (A and B) may carry classDef default's stroke, never the edge's path: {svg}"
+    );
+    assert!(
+        svg.contains(&format!("stroke=\"{}\"", theme::DARK.line)),
+        "the edge's path must still draw in the theme's own line colour: {svg}"
+    );
+}
+
+/// `classDef` + `class` colours the node it names, and leaves every other node at the theme's own
+/// colour.
+#[test]
+fn classdef_and_class_colour_the_node_they_name() {
+    let d =
+        laid_out("flowchart TD\n  classDef hot fill:#f9f,stroke:#a00\n  A --> B\n  class A hot");
+    let a = d
+        .node("A")
+        .expect("A exists")
+        .style
+        .as_ref()
+        .expect("A has a style");
+    assert_eq!(a.fill.as_deref(), Some("#f9f"));
+    assert_eq!(a.stroke.as_deref(), Some("#a00"));
+    assert!(
+        d.node("B").expect("B exists").style.is_none(),
+        "class hot named only A, so B must keep the theme's own colour"
+    );
+
+    let svg = render(
+        "flowchart TD\n  classDef hot fill:#f9f,stroke:#a00\n  A --> B\n  class A hot",
+        "dark",
+    )
+    .expect("renders");
+    assert!(
+        svg.contains("fill=\"#f9f\""),
+        "the fill reaches the SVG: {svg}"
+    );
+}
+
+/// `:::hot` at the declaration does what a separate `class` statement does.
+#[test]
+fn triple_colon_is_the_same_as_a_class_statement() {
+    let d = laid_out("flowchart TD\n  classDef hot fill:#f9f\n  A:::hot --> B");
+    let a = d
+        .node("A")
+        .expect("A exists")
+        .style
+        .as_ref()
+        .expect("A has a style");
+    assert_eq!(a.fill.as_deref(), Some("#f9f"));
+    assert!(d.node("B").expect("B exists").style.is_none());
+}
+
+/// A node's own `style` statement is the last step of the cascade, so it wins over a `classDef`
+/// the node also carries — D2's "後のものが前を上書きする".
+#[test]
+fn a_nodes_own_style_wins_over_its_classdef() {
+    let d =
+        laid_out("flowchart TD\n  classDef hot fill:#f9f\n  A:::hot --> B\n  style A fill:#00ff00");
+    let a = d
+        .node("A")
+        .expect("A exists")
+        .style
+        .as_ref()
+        .expect("A has a style");
+    assert_eq!(
+        a.fill.as_deref(),
+        Some("#00ff00"),
+        "the node's own `style` statement must be the final word, not the classDef"
+    );
+}
+
+/// `linkStyle <idx>` touches only the edge at that index into [`Flowchart::edges`] — proof the
+/// index-to-edge mapping is right, not just that *an* edge got styled.
+#[test]
+fn link_style_by_index_touches_only_that_edge() {
+    let d = laid_out("flowchart TD\n  A --> B\n  B --> C\n  C --> D\n  linkStyle 1 stroke:#1f6feb");
+    assert_eq!(d.edges.len(), 3, "three edges: A->B, B->C, C->D");
+    assert!(d.edges[0].style.is_none(), "A->B (index 0) is untouched");
+    assert_eq!(
+        d.edges[1]
+            .style
+            .as_ref()
+            .expect("B->C (index 1) has a style")
+            .stroke
+            .as_deref(),
+        Some("#1f6feb")
+    );
+    assert!(d.edges[2].style.is_none(), "C->D (index 2) is untouched");
+}
+
+/// `linkStyle 0,1,2 stroke:#1f6feb` — the user's own reported shape
+/// (`~/work/Ergora/doc/spec/05-system-architecture.md`), where several indices share one
+/// declaration. Every named edge gets it and the edge left out does not.
+#[test]
+fn link_style_with_multiple_indices_reaches_every_named_edge() {
+    let d = laid_out(
+        "flowchart TD\n  A --> B\n  B --> C\n  C --> D\n  D --> E\n  \
+         linkStyle 0,1,2 stroke:#1f6feb",
+    );
+    assert_eq!(d.edges.len(), 4);
+    for i in 0..3 {
+        assert_eq!(
+            d.edges[i]
+                .style
+                .as_ref()
+                .unwrap_or_else(|| panic!("edge {i} has a style"))
+                .stroke
+                .as_deref(),
+            Some("#1f6feb"),
+            "edge {i} is named by `linkStyle 0,1,2`"
+        );
+    }
+    assert!(
+        d.edges[3].style.is_none(),
+        "edge 3 (D->E) was not named, and must be untouched"
+    );
+}
+
+/// `linkStyle default` colours every edge, and a specific index still overrides it — the fixed
+/// pipeline order [`super::style::cascade_edge`]'s docs describe, independent of which the source
+/// physically wrote first.
+#[test]
+fn link_style_default_colours_every_edge_and_an_index_still_overrides_it() {
+    let d = laid_out(
+        "flowchart TD\n  A --> B\n  B --> C\n  linkStyle 0 stroke:#e11\n  \
+         linkStyle default stroke:#39d",
+    );
+    assert_eq!(
+        d.edges[0].style.as_ref().unwrap().stroke.as_deref(),
+        Some("#e11"),
+        "edge 0's own index is more specific than `default`, even written first"
+    );
+    assert_eq!(
+        d.edges[1].style.as_ref().unwrap().stroke.as_deref(),
+        Some("#39d"),
+        "edge 1 has no index of its own, so `default` reaches it"
+    );
+}
+
+/// `stroke-width` is one of [`mask_numbers`]' masked attributes, so the golden cannot see whether
+/// it actually reached the SVG — this asserts on the unmasked string directly.
+#[test]
+fn link_style_stroke_width_reaches_the_unmasked_svg() {
+    let svg = render(
+        "flowchart TD\n  A --> B\n  linkStyle 0 stroke-width:4px",
+        "dark",
+    )
+    .expect("renders");
+    assert!(
+        svg.contains("stroke-width=\"4\""),
+        "the declared width must reach the path's own attribute, unmasked: {svg}"
+    );
+}
+
+// --- the four tests above this line all read `Diagram`/`PlacedEdge::style` — the *model* the
+// cascade resolves into. Every one of them is blind to a defect in the last step, `svg.rs`
+// applying that field when it writes the `<path>` element: the regression this whole section
+// exists for was reported *from that exact step* (`linkStyle` colours that reached `PlacedEdge`
+// correctly and never reached the SVG the terminal draws). The tests below read the emitted
+// string instead of the model, so a defect confined to `svg::emit_edge` — the model right, the
+// drawing wrong — fails one of these rather than passing every model-level test in the file.
+
+/// `linkStyle <idx> stroke:#…` reaches the one path element for that edge, in the raw SVG text,
+/// and the other edges' paths keep the theme's own line colour.
+#[test]
+fn link_style_single_index_stroke_reaches_the_svg_and_only_that_edges_path() {
+    let svg = render(
+        "flowchart TD\n  A --> B\n  B --> C\n  C --> D\n  linkStyle 1 stroke:#1f6feb",
+        "dark",
+    )
+    .expect("renders");
+    assert_eq!(
+        svg.matches("stroke=\"#1f6feb\"").count(),
+        1,
+        "exactly one edge (index 1) was named: {svg}"
+    );
+    assert_eq!(
+        svg.matches(&format!("stroke=\"{}\"", theme::DARK.line))
+            .count(),
+        2,
+        "the other two edges must still draw in the theme's own line colour: {svg}"
+    );
+}
+
+/// `linkStyle 0,1,2 stroke:#…` — several indices sharing one declaration, the user's own reported
+/// shape (`~/work/Ergora/doc/spec/05-system-architecture.md`) — reaches every named edge's path in
+/// the raw SVG text, and the edge left out does not get it.
+#[test]
+fn link_style_multiple_indices_stroke_reaches_every_named_edges_path() {
+    let svg = render(
+        "flowchart TD\n  A --> B\n  B --> C\n  C --> D\n  D --> E\n  \
+         linkStyle 0,1,2 stroke:#1f6feb",
+        "dark",
+    )
+    .expect("renders");
+    assert_eq!(
+        svg.matches("stroke=\"#1f6feb\"").count(),
+        3,
+        "three edges (0, 1, 2) were named: {svg}"
+    );
+    assert_eq!(
+        svg.matches(&format!("stroke=\"{}\"", theme::DARK.line))
+            .count(),
+        1,
+        "the fourth edge (D->E) was not named and must keep the theme's line colour: {svg}"
+    );
+}
+
+/// `linkStyle default` colours every edge's path in the raw SVG text, and an indexed `linkStyle`
+/// still overrides it there too — the same fixed pipeline order the model-level
+/// [`link_style_default_colours_every_edge_and_an_index_still_overrides_it`] states, checked at
+/// the one step that test cannot see.
+#[test]
+fn link_style_default_then_an_index_reach_the_svg_as_two_distinct_colours() {
+    let svg = render(
+        "flowchart TD\n  A --> B\n  B --> C\n  linkStyle 0 stroke:#e11\n  \
+         linkStyle default stroke:#39d",
+        "dark",
+    )
+    .expect("renders");
+    assert_eq!(
+        svg.matches("stroke=\"#e11\"").count(),
+        1,
+        "edge 0's own index must win over `default`, even written first: {svg}"
+    );
+    assert_eq!(
+        svg.matches("stroke=\"#39d\"").count(),
+        1,
+        "edge 1 has no index of its own, so `default` must reach its path: {svg}"
+    );
+}
+
+/// An unparsable colour is dropped, not substituted with black — [`super::style::paint`]'s whole
+/// reason for existing (`UiConfig::math_color`'s "blank equation" precedent). The node must still
+/// draw, in the theme's own colour, and the document must still be valid SVG.
+#[test]
+fn an_invalid_color_falls_back_to_the_theme_instead_of_black() {
+    let d = laid_out("flowchart TD\n  classDef bad fill:notacolor\n  A:::bad --> B");
+    assert!(
+        d.node("A").unwrap().style.is_none(),
+        "the only declared field failed to validate, so there is nothing to override with"
+    );
+
+    let svg = render(
+        "flowchart TD\n  classDef bad fill:notacolor\n  A:::bad --> B",
+        "dark",
+    )
+    .expect("renders");
+    assert!(
+        svg.contains(theme::DARK.node_fill),
+        "A must draw in the theme's node colour, not vanish or turn black: {svg}"
+    );
+    assert!(
+        !svg.contains("notacolor"),
+        "the bad literal must never reach the SVG document"
+    );
+    // `tree_of` itself `.expect()`s a successful parse, so simply calling it is the assertion:
+    // the document is still valid SVG usvg can read.
+    tree_of(&svg);
 }

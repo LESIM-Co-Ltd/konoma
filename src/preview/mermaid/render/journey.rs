@@ -123,6 +123,7 @@ pub fn lay_out(journey: &Journey) -> Result<Diagram, RenderError> {
                 // only add a second, false, reading of it.
                 series: None,
                 mark: Some(Mark::Face { score }),
+                style: None,
             });
         }
         nodes.push(PlacedNode {
@@ -134,6 +135,7 @@ pub fn lay_out(journey: &Journey) -> Result<Diagram, RenderError> {
             panel: None,
             series: None,
             mark: None,
+            style: None,
         });
         if let Some(n) = label_node(
             format!("task#{i}#people"),

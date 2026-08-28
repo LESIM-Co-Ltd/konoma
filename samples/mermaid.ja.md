@@ -23,6 +23,30 @@ flowchart LR
   P --> R
 ```
 
+### 色 — `classDef` / `:::` / `style` / `linkStyle`
+
+flowchart は色で「どれが同じ仲間か」を語ります。`classDef` が宣言に名前を付け、`class`（短縮形は
+`:::`）がノードに割り当て、`style` は 1 つのノードを直接塗り、`linkStyle` は**宣言順の添字**で辺を
+塗ります（`linkStyle 1,4` は 2 本目と 5 本目）。ここでは入口が灰、画像経路が青、Markdown 経路が緑、
+行き止まりが橙で、矢印を目で追わなくてもファイルの通り道が読めます。
+
+```mermaid
+flowchart LR
+  F[ファイル] --> R{ルールに一致?}
+  R -->|画像| I[デコード]:::media
+  R -->|Markdown| M[ブロックモデル]:::text
+  R -->|なし| X[プレビュー不可]
+  I --> K[kitty 転送]:::media
+  M --> K
+  classDef media fill:#132a3a,stroke:#1f6feb,color:#c9d1d9
+  classDef text fill:#12291c,stroke:#2da44e,color:#c9d1d9
+  style X fill:#2d2418,stroke:#d4a017,color:#c9d1d9
+  linkStyle 0 stroke:#8b949e
+  linkStyle 1,4 stroke:#1f6feb
+  linkStyle 2,5 stroke:#2da44e
+  linkStyle 3 stroke:#d4a017
+```
+
 ### `stateDiagram-v2` — モードと遷移
 
 konoma の UI は 2 つのモードと、その間の行き来だけでできています。`[*]` は開始と終了の印です。

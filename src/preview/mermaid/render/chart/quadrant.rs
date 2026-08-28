@@ -15,11 +15,13 @@
 //! them, and each is named by the label in its corner — which is the information the tint was
 //! standing in for.
 
-use crate::preview::mermaid::chart::quadrant::QuadrantChart;
+use crate::preview::mermaid::chart::quadrant::{QuadrantChart, QuadrantPoint};
 use crate::preview::mermaid::flowchart::Stroke;
 use crate::preview::mermaid::layout::Point;
 
-use super::super::{normalise, Diagram, Glyph, Label, PlacedNode, RenderError, Size, Theme};
+use super::super::{
+    normalise, Diagram, Glyph, Label, PlacedNode, RenderError, ShapeStyle, Size, Theme,
+};
 use super::{add_title, label_node, rule, text_node, POINT_RADIUS, TICK_GAP};
 
 /// Side of the square the four quadrants fill, before the words round it ask for more.
@@ -95,6 +97,7 @@ pub fn lay_out(chart: &QuadrantChart) -> Result<Diagram, RenderError> {
         panel: None,
         series: None,
         mark: None,
+        style: None,
     });
     // The two dividers. These are what make the four quadrants four quadrants, so they are drawn
     // solid rather than as a grid: a reader has to be able to tell which side of the middle a
@@ -156,6 +159,7 @@ pub fn lay_out(chart: &QuadrantChart) -> Result<Diagram, RenderError> {
             panel: None,
             series: Some(i),
             mark: None,
+            style: quadrant_style(&chart.class_defs, p),
         });
         let label = Label::measure(&p.label);
         if let Some(n) = label_node(
@@ -212,4 +216,57 @@ pub fn lay_out(chart: &QuadrantChart) -> Result<Diagram, RenderError> {
     add_title(&mut diagram, &chart.preamble);
     normalise(&mut diagram);
     Ok(diagram)
+}
+
+/// Resolves one point's paint: `classDef default` → its own `:::class` → its own inline styles.
+///
+/// Not [`super::super::style::cascade`]: this grammar's declarations are not `fill`/`stroke` —
+/// they are `radius`/`color`/`stroke-color`/`stroke-width`, mermaid's own `quadrantChart` point
+/// vocabulary (`QuadrantPoint::styles`' doc comment, and the corpus case at
+/// `chart::tests::CASES`'s `classDef hot radius: 8, color: #ff0000`). [`apply_quadrant_decl`]
+/// translates that vocabulary onto [`ShapeStyle`] instead.
+fn quadrant_style(
+    class_defs: &[(String, Vec<String>)],
+    point: &QuadrantPoint,
+) -> Option<ShapeStyle> {
+    let mut style = ShapeStyle::default();
+    let apply_class = |style: &mut ShapeStyle, name: &str| {
+        if let Some((_, decls)) = class_defs.iter().find(|(n, _)| n == name) {
+            for d in decls {
+                apply_quadrant_decl(style, d);
+            }
+        }
+    };
+    apply_class(&mut style, "default");
+    if let Some(c) = &point.class {
+        apply_class(&mut style, c);
+    }
+    for d in &point.styles {
+        apply_quadrant_decl(&mut style, d);
+    }
+    if style.is_empty() {
+        None
+    } else {
+        Some(style)
+    }
+}
+
+/// One `radius: 8, color: #ff0000, stroke-color: #333, stroke-width: 2px` declaration, mapped onto
+/// the field it actually means: `color` is the point's own fill (there is no text on a point for
+/// it to colour, unlike `classDef`'s `color:` elsewhere), `stroke-color` is `stroke`, and
+/// `stroke-width` needs no translation. `radius` resizes the point rather than colouring it, which
+/// is out of this bug fix's scope (`docs/STATUS.md`'s flowchart entry, D3); it is recognised here
+/// so it is not treated as an unknown declaration, and otherwise dropped. Reuses
+/// [`ShapeStyle::apply`] for the actual parsing so the same colour validation
+/// (`render::style`'s module docs) applies here too.
+fn apply_quadrant_decl(style: &mut ShapeStyle, decl: &str) {
+    let Some((key, value)) = decl.split_once(':') else {
+        return;
+    };
+    match key.trim() {
+        "color" => style.apply(&format!("fill:{}", value.trim())),
+        "stroke-color" => style.apply(&format!("stroke:{}", value.trim())),
+        "stroke-width" => style.apply(decl),
+        _ => {}
+    }
 }

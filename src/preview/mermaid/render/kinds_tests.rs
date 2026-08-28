@@ -3872,6 +3872,7 @@ fn synthetic_glyph_diagram() -> Diagram {
             panel: None,
             series: None,
             mark,
+            style: None,
         });
     };
     push(

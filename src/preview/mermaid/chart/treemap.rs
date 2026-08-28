@@ -17,7 +17,9 @@
 //!   (`buildHierarchy` pops the stack `while (top.level >= item.level)` and only pushes non-leaf
 //!   items). A leaf indented under a leaf therefore becomes the *sibling* of that leaf, not its
 //!   child — which is not what the indentation looks like, and is what upstream does.
-//! * `classDef` and `:::` are parsed and not drawn (§2-3).
+//! * `classDef` and `:::` are parsed here and read by `render::chart::treemap` /
+//!   `render::style::cascade` to paint the tile they name (§2-3 only required that they not
+//!   become phantom tiles; `docs/STATUS.md`'s 2026-08-28 entry is why they are drawn now too).
 
 use super::{find_header, first_word, read_quoted, Envelope, ParseError, Preamble, TitleSyntax};
 
@@ -34,7 +36,7 @@ pub struct Node {
     pub name: String,
     /// A leaf's value. `None` for a section, whose value is the sum of its children.
     pub value: Option<f64>,
-    /// The `:::name` class, read and not drawn.
+    /// The `:::name` class. Resolved against [`Treemap::class_defs`] by `render::style::cascade`.
     pub class: Option<String>,
     /// Children, for a section.
     pub children: Vec<Node>,
@@ -57,7 +59,8 @@ pub struct Treemap {
     pub preamble: Preamble,
     /// The top-level nodes.
     pub roots: Vec<Node>,
-    /// `classDef name styles` — read and not drawn.
+    /// `classDef name styles`, `styles` kept as one un-split string — `render::chart::treemap`
+    /// splits it once, with the flowchart parser's own `\,`-escaping comma splitter.
     pub class_defs: Vec<(String, String)>,
 }
 

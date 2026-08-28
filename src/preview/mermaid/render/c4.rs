@@ -93,6 +93,7 @@ pub fn spec_of(diagram: &C4) -> GraphSpec {
                 minlen: 1,
                 start_label: None,
                 end_label: None,
+                style: None,
             }
         })
         .collect();
@@ -139,6 +140,7 @@ fn element_node(e: &Element) -> SpecNode {
             label: Label::measure(""),
             size: shapes::size(glyph, panel.size),
             panel: Some(panel),
+            style: None,
         };
     }
     let label = Label::measure(&lines.join("\n"));
@@ -148,6 +150,7 @@ fn element_node(e: &Element) -> SpecNode {
         size: shapes::size(glyph, Size::new(label.width, label.height)),
         label,
         panel: None,
+        style: None,
     }
 }
 

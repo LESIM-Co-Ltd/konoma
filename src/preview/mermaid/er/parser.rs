@@ -258,11 +258,22 @@ impl Scanner {
         if t.eq_ignore_ascii_case("accDescr") || starts_with_word(t, "accDescr") {
             return Ok(());
         }
-        // Recognised so they cannot become entities, then dropped (§2-3).
-        for kw in ["classDef", "class", "style"] {
-            if starts_with_word(t, kw) {
-                return Ok(());
-            }
+        // `classDef`/`class`/`style` are recognised so they cannot become entities (§2-3), and —
+        // since `render::style` gained a cascade every diagram language can feed — read for real
+        // rather than dropped. An id these name that is not (yet) a known entity is simply not
+        // found by `entity_mut`, the same "must not conjure a box" rule the flowchart parser
+        // follows for its own `class`/`style` statements.
+        if let Some(rest) = word_rest(t, "classDef") {
+            self.class_def(rest);
+            return Ok(());
+        }
+        if let Some(rest) = word_rest(t, "class") {
+            self.class_statement(rest);
+            return Ok(());
+        }
+        if let Some(rest) = word_rest(t, "style") {
+            self.style_statement(rest);
+            return Ok(());
         }
         if t.eq_ignore_ascii_case("end") {
             self.frames.pop();
@@ -278,6 +289,65 @@ impl Scanner {
         // `ENTITY`, `ENTITY["alias"]`, `ENTITY:::css` — a declaration on its own.
         self.declare_entity(t, line)?;
         Ok(())
+    }
+
+    /// `classDef name decl,decl` — mirrors the flowchart parser's own `class_def`, and reuses its
+    /// comma-splitter so a literal comma still escapes the same way (`\,`) in either language.
+    fn class_def(&mut self, rest: &str) {
+        let rest = rest.trim().trim_end_matches(';');
+        let Some((names, styles)) = rest.split_once(char::is_whitespace) else {
+            return;
+        };
+        let styles = crate::preview::mermaid::flowchart::parser::split_styles(styles);
+        for name in names.split(',') {
+            let name = name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            self.out
+                .class_defs
+                .push(crate::preview::mermaid::flowchart::ClassDef {
+                    name: name.to_string(),
+                    styles: styles.clone(),
+                });
+        }
+    }
+
+    /// `class id,id name` — a class assigned separately from `:::`. Applied only to an entity that
+    /// already exists, the same "must not conjure a box" rule [`Self::declare_entity`]'s `:::`
+    /// handling follows.
+    fn class_statement(&mut self, rest: &str) {
+        let rest = rest.trim().trim_end_matches(';');
+        let Some((ids, class_name)) = rest.split_once(char::is_whitespace) else {
+            return;
+        };
+        let class_name = class_name.trim();
+        if class_name.is_empty() {
+            return;
+        }
+        for id in ids.split(',') {
+            let id = id.trim();
+            if id.is_empty() {
+                continue;
+            }
+            if let Some(e) = self.out.entity_mut(id) {
+                if !e.css_classes.iter().any(|c| c == class_name) {
+                    e.css_classes.push(class_name.to_string());
+                }
+            }
+        }
+    }
+
+    /// `style id decl,decl` — declarations for one entity directly, with no named class.
+    fn style_statement(&mut self, rest: &str) {
+        let rest = rest.trim().trim_end_matches(';');
+        let Some((id, styles)) = rest.split_once(char::is_whitespace) else {
+            return;
+        };
+        let styles = crate::preview::mermaid::flowchart::parser::split_styles(styles);
+        if let Some(e) = self.out.entity_mut(id.trim()) {
+            e.own_styles.extend(styles);
+        }
     }
 
     /// `subgraph id`, `subgraph id[title]`.
@@ -869,6 +939,15 @@ fn split_style_separator(s: &str) -> (String, Vec<String>) {
 /// `kw` at the start of the statement, followed by whitespace. Case-insensitive, like the lexer.
 fn starts_with_word(s: &str, kw: &str) -> bool {
     starts_ci(s, kw) && s[kw.len()..].starts_with(char::is_whitespace)
+}
+
+/// [`starts_with_word`], but returns what follows the keyword (trimmed) instead of just `bool`.
+fn word_rest<'a>(s: &'a str, kw: &str) -> Option<&'a str> {
+    if starts_with_word(s, kw) {
+        Some(s[kw.len()..].trim())
+    } else {
+        None
+    }
 }
 
 /// `accTitle: text` / `accDescr: text`.

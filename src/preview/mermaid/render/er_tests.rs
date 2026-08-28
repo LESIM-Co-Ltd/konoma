@@ -974,6 +974,7 @@ fn synthetic_panel_diagram() -> Diagram {
             panel: Some(class),
             series: None,
             mark: None,
+            style: None,
         },
         PlacedNode {
             id: "PERSON".to_string(),
@@ -984,6 +985,7 @@ fn synthetic_panel_diagram() -> Diagram {
             panel: Some(entity),
             series: None,
             mark: None,
+            style: None,
         },
     ];
     // Two plain boxes for the terminator strip to point at.
@@ -997,6 +999,7 @@ fn synthetic_panel_diagram() -> Diagram {
             panel: None,
             series: None,
             mark: None,
+            style: None,
         });
     }
 
@@ -1040,6 +1043,7 @@ fn synthetic_panel_diagram() -> Diagram {
             series: None,
             straight: false,
             overlay: false,
+            style: None,
         });
     }
 
@@ -1094,4 +1098,65 @@ fn an_entity_box_clips_against_its_rectangle() {
     let center = Point::new(0.0, 0.0);
     let p = shapes::intersect(Glyph::ErBox, center.clone(), size, &Point::new(200.0, 0.0));
     assert!((p.x - 50.0).abs() < 1e-9 && p.y.abs() < 1e-9, "{p:?}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// `classDef` / `:::` / `class` / `style` (docs/STATUS.md, 2026-08-28: same regression as
+// flowchart's — see `render::tests`' section 9 — but ER never even *stored* `classDef`'s
+// declarations, only the class names via `:::`. `er::parser::Scanner::class_def` is what added
+// that storage.)
+// ---------------------------------------------------------------------------------------------
+
+fn er_laid_out(src: &str) -> Diagram {
+    let diagram = er::parse(src).unwrap_or_else(|e| panic!("must parse: {e}"));
+    lay_out(&diagram).unwrap_or_else(|e| panic!("must lay out: {e}"))
+}
+
+/// `classDef` + `:::` colours the entity it names — the exact corpus shape `styled` already
+/// exercised (it drew every entity in the theme's plain colour before this fix).
+#[test]
+fn classdef_and_triple_colon_colour_the_entity() {
+    let d = er_laid_out(
+        "erDiagram\n    CAR:::hot {\n        string plate\n    }\n    classDef hot fill:#f96",
+    );
+    let car = d
+        .node("CAR")
+        .expect("CAR exists")
+        .style
+        .as_ref()
+        .expect("CAR has a style");
+    assert_eq!(car.fill.as_deref(), Some("#f96"));
+}
+
+/// A standalone `class ENTITY name` statement does what `:::` does — the model's own doc comment
+/// on `Entity::css_classes` promised this and the parser used to drop the statement entirely.
+#[test]
+fn a_standalone_class_statement_colours_the_entity() {
+    let d = er_laid_out(
+        "erDiagram\n    CAR {\n        string plate\n    }\n    classDef hot fill:#f96\n    \
+         class CAR hot",
+    );
+    let car = d
+        .node("CAR")
+        .unwrap()
+        .style
+        .as_ref()
+        .expect("CAR has a style");
+    assert_eq!(car.fill.as_deref(), Some("#f96"));
+}
+
+/// `style ENTITY decl` needs no named class at all, and wins over one the entity also carries.
+#[test]
+fn a_standalone_style_statement_wins_over_the_entitys_classdef() {
+    let d = er_laid_out(
+        "erDiagram\n    CAR:::hot {\n        string plate\n    }\n    classDef hot fill:#f96\n    \
+         style CAR fill:#00ff00",
+    );
+    let car = d
+        .node("CAR")
+        .unwrap()
+        .style
+        .as_ref()
+        .expect("CAR has a style");
+    assert_eq!(car.fill.as_deref(), Some("#00ff00"));
 }

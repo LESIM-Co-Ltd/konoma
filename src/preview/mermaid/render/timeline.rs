@@ -231,6 +231,7 @@ fn period_node(i: usize, label: Label, center: Point, size: Size) -> PlacedNode 
         panel: None,
         series: None,
         mark: None,
+        style: None,
     }
 }
 
@@ -245,6 +246,7 @@ fn event_node(i: usize, k: usize, label: Label, center: Point, size: Size) -> Pl
         panel: None,
         series: Some(i),
         mark: None,
+        style: None,
     }
 }
 

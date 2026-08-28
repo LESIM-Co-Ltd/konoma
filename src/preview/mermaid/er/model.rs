@@ -62,9 +62,13 @@ pub struct Entity {
     pub attributes: Vec<Attribute>,
     /// The subgraph that holds it, if any.
     pub parent: Option<String>,
-    /// Names from `:::name` or a `class` statement. konoma does not colour entities; the names
-    /// are carried so that it can.
+    /// Names from `:::name` or a `class` statement, in the order they were applied. Resolved
+    /// against [`ErDiagram::class_defs`] by `render::style::cascade`.
     pub css_classes: Vec<String>,
+    /// Declarations from a `style` statement naming this entity, e.g. `fill:#f9f`. Applied last,
+    /// after every class in [`Entity::css_classes`] — the same cascade a flowchart node's own
+    /// [`crate::preview::mermaid::flowchart::Node::styles`] follows.
+    pub own_styles: Vec<String>,
 }
 
 /// One relationship, `CUSTOMER ||--o{ ORDER : places`.
@@ -110,6 +114,10 @@ pub struct ErDiagram {
     pub relationships: Vec<Relationship>,
     /// Every subgraph, outermost first.
     pub subgraphs: Vec<SubGraph>,
+    /// `classDef` statements, in source order. Reuses the flowchart's own type: the syntax is
+    /// identical (`classDef name decl,decl`), and `render::style::cascade` already knows how to
+    /// read it regardless of which diagram language it came from.
+    pub class_defs: Vec<crate::preview::mermaid::flowchart::ClassDef>,
     /// `title:` from a YAML front matter block.
     pub title: Option<String>,
     /// `accTitle:` — not drawn.
