@@ -7,6 +7,24 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Fixed
+- **Inline LaTeX math drew smaller than the surrounding text, and different expressions drew at
+  different sizes from each other.** `math_cells` always reserves exactly one terminal row for an
+  inline expression and scales the whole SVG box into it — but RaTeX's own layout box carries
+  generous ascent/descent padding (room for accents, deep subscripts, tall delimiters most
+  expressions never use), so the row ended up mostly padding and the glyphs drew small. Worse, the
+  amount of padding varies per expression, so equations in the same document drew at visibly
+  different sizes relative to each other, not just relative to the text (measured on real renders:
+  `x` at 96% of the surrounding text's size, `E = mc^2` at 68%, `\frac{a}{b}` at 58%). Every inline
+  expression's SVG box is now normalized to `max(1.2em, ink height)` with the ink centered inside
+  it, and its horizontal margin tightened to the ink's own width: an expression whose ink fits in
+  one line (`x`, `E = mc^2`, `H_2O`, most single-line expressions) now draws at exactly the
+  surrounding text's size, and every expression is scaled by the same rule instead of by whatever
+  padding RaTeX happened to lay out around it. A taller expression (`\frac`, `\sum`, a matrix)
+  still can't fit a fixed terminal row at full size — that's a real limit, not a bug — but its box
+  is now tied to its own ink rather than to RaTeX's padding, so it draws as large as a one-row
+  terminal cell allows. Display math (`$$…$$`/`\[…\]`) is untouched: unlike inline, its row count
+  scales with its box height, so padding cancels out of its apparent glyph size and there was
+  nothing to fix there.
 - **Inline LaTeX math split the sentence around it onto its own line.** Every `$…$`/`\(…\)`
   expression was lifted onto a placeholder line of its own regardless of its size, so
   `"inline math $E = mc^2$ and $H_2O$ are..."` rendered as three separate lines with the
