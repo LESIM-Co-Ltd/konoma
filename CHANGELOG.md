@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.28.2] - 2026-08-29
+
 ### Added
 - **`[ui] mermaid_curve` — a flowchart's edges can now draw in any of mermaid's own 13 curve
   shapes, not just a straight/right-angle line.** mermaid's most-requested flowchart feature
@@ -2314,7 +2316,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.1...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.2...HEAD
+[0.28.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.1...v0.28.2
 [0.28.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.26.5...v0.27.0
