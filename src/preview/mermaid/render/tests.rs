@@ -4070,6 +4070,176 @@ fn curve_resolves_identically_under_the_legacy_graph_keyword() {
     assert_eq!(graph2.edges[0].curve, Curve::Step);
 }
 
+// ---------------------------------------------------------------------------------------------
+// 10-e. Independent second audit (2026-08-29): every existing degenerate-point/NaN-safety test
+// above (`no_curve_ever_emits_nan_or_infinite_coordinates`,
+// `all_thirteen_curves_match_d3_or_mermaid_on_degenerate_points_through_curve_path`) runs the 13
+// curves over *hand-picked* point sets (`VERTICAL`, `HORIZONTAL`, `UNEVEN`, `DUPLICATE`, ...).
+// That is exactly the shape of gap this feature has bitten konoma with once already: a synthetic
+// point list proved the arithmetic safe while the *route dagre actually produces* for a real
+// diagram — a self-loop, an edge crossing a subgraph frame, a parallel `A & B --> C & D` fan —
+// never went through it, because those routes are built by `route`/`clip`'s own dedupe-and-insert
+// logic (`edges.rs`'s module docs, steps 1-3) before a single coordinate ever reaches
+// `Curve::path`. Nothing in this file had, until now, run the *specification corpus* (`CORPUS`,
+// chosen from real diagram shapes — memory `corpus-from-spec-not-from-bugs`) across *every* curve
+// name; every existing corpus-based curve test picks one corpus entry (`"long-edge"`) and at most
+// three curves (`different_curves_draw_different_svg_path_data`), or one curve name across the
+// whole corpus (`corpus_golden`, always `Curve::Basis`). This closes that cross product.
+// ---------------------------------------------------------------------------------------------
+
+/// Every entry in [`CORPUS`] — self-loop, edges crossing a subgraph frame both from inside and
+/// from outside (`subgraph-bypass`, `subgraph-endpoint`), the `&`-group fan-out (`amp-chain`),
+/// CJK labels, and the `classDef`/`linkStyle` cascade — run through **every** one of the 13 curve
+/// names. Each combination must render, must contain no `NaN`/`Infinity` coordinate, must come
+/// out a finite, positive size, and must actually rasterise — the same bar
+/// `awkward_sources_produce_a_diagram_or_an_error_and_never_a_panic` sets for the default curve
+/// alone, swept here over the full curve set instead.
+///
+/// Also covers the two structural cases no [`CORPUS`] entry has at all: a chart with nodes but
+/// **zero** edges (so `Curve::path` is never even called — `spec_of`'s edge loop must still not
+/// choke on an empty iterator, for every curve name it is handed) and a single node with no edges.
+#[test]
+fn every_corpus_source_survives_every_curve() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let curves = [
+        "basis",
+        "linear",
+        "step",
+        "stepBefore",
+        "stepAfter",
+        "natural",
+        "cardinal",
+        "catmullRom",
+        "monotoneX",
+        "monotoneY",
+        "bumpX",
+        "bumpY",
+        "rounded",
+    ];
+    let extra: &[(&str, &str)] = &[
+        ("zero-edges", "flowchart TD\n  A[one]\n  B[two]\n  C[three]"),
+        ("single-node", "flowchart TD\n  A[Solo]"),
+    ];
+    for (name, src) in CORPUS.iter().chain(extra) {
+        for curve in curves {
+            let svg = render_curve(src, "dark", curve)
+                .unwrap_or_else(|e| panic!("{name} under {curve}: must render: {e}"));
+            assert!(
+                !svg.contains("NaN") && !svg.contains("inf") && !svg.contains("Inf"),
+                "{name} under {curve}: emitted a non-finite coordinate: {svg}"
+            );
+            let d = laid_out_curve(src, curve);
+            assert!(
+                d.width.is_finite() && d.height.is_finite() && d.width > 0.0 && d.height > 0.0,
+                "{name} under {curve}: {}x{} is not a drawable size",
+                num(d.width),
+                num(d.height)
+            );
+            assert!(
+                crate::preview::svg::rasterize_bytes(svg.as_bytes(), FsPath::new("m.svg"), 300)
+                    .is_some(),
+                "{name} under {curve}: the output did not rasterise"
+            );
+        }
+    }
+}
+
+/// A far larger and more cyclic graph than anything in [`CORPUS`] (whose entries are all a
+/// handful of edges) — a long rank chain closed into a cycle, and a chain of nested subgraphs —
+/// run through every curve. The point sets a curve function sees here (many more waypoints per
+/// edge from the extra ranks, more coincident-rank runs) are shaped differently from any
+/// [`CORPUS`] entry's, which matters because the one real curve bug this crate has shipped
+/// (`js_min`'s own doc, the `monotoneX`/vertical-run `NaN`) was found on a real rendered diagram,
+/// not on a synthetic point list — so this is deliberately a *diagram*, built the way
+/// `awkward_sources_produce_a_diagram_or_an_error_and_never_a_panic` builds its `wide`/`deep`
+/// sources, rather than another hand-picked `&[Point]`.
+#[test]
+fn a_large_cyclic_and_deeply_nested_graph_survives_every_curve() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let mut wide = String::from("flowchart LR\n");
+    for i in 0..40 {
+        wide.push_str(&format!("  n{i} --> n{}\n", i + 1));
+    }
+    wide.push_str("  n0 --> n40\n  n40 --> n0\n");
+
+    let mut nested = String::from("flowchart TD\n");
+    for i in 0..8 {
+        nested.push_str(&format!("  subgraph s{i} [Level {i}]\n"));
+    }
+    nested.push_str("  A --> B\n");
+    for _ in 0..8 {
+        nested.push_str("  end\n");
+    }
+    nested.push_str("  s0 --> C\n  C --> s7\n");
+
+    let curves = [
+        "basis",
+        "linear",
+        "step",
+        "stepBefore",
+        "stepAfter",
+        "natural",
+        "cardinal",
+        "catmullRom",
+        "monotoneX",
+        "monotoneY",
+        "bumpX",
+        "bumpY",
+        "rounded",
+    ];
+    for (label, src) in [
+        ("wide-cycle", wide.as_str()),
+        ("deep-nested", nested.as_str()),
+    ] {
+        for curve in curves {
+            let svg = render_curve(src, "dark", curve)
+                .unwrap_or_else(|e| panic!("{label} under {curve}: must render: {e}"));
+            assert!(
+                !svg.contains("NaN") && !svg.contains("inf") && !svg.contains("Inf"),
+                "{label} under {curve}: emitted a non-finite coordinate"
+            );
+        }
+    }
+}
+
+/// A second `linkStyle <n> interpolate` statement naming the **same** index as an earlier one:
+/// mermaid re-applies each statement over its running config in source order (the same rule
+/// `a_second_init_directive_overrides_the_first_ones_curve` already pins for `%%{init}%%`), so the
+/// later one must win. `spec_of`'s `indexed_interpolate` picks this with `.filter_map(...)
+/// .next_back()` over every matching `LinkStyle` — a real, distinct code path (it only does
+/// anything different from `.next()` when more than one `LinkStyle` matches the same index) that
+/// no existing test ever gives more than one matching statement to: every other `linkStyle
+/// interpolate` test in this file names a given index exactly once.
+#[test]
+fn a_second_link_style_interpolate_on_the_same_index_overrides_the_first() {
+    let d = laid_out_curve(
+        "flowchart TD\n  A --> B\n  \
+         linkStyle 0 interpolate step\n  linkStyle 0 interpolate linear",
+        "basis",
+    );
+    assert_eq!(
+        d.edges[0].curve,
+        Curve::Linear,
+        "a later linkStyle 0 interpolate must override an earlier one naming the same index"
+    );
+
+    // The same rule for `linkStyle default interpolate`, repeated.
+    let d2 = laid_out_curve(
+        "flowchart TD\n  A --> B\n  \
+         linkStyle default interpolate step\n  linkStyle default interpolate linear",
+        "basis",
+    );
+    assert_eq!(
+        d2.edges[0].curve,
+        Curve::Linear,
+        "a later linkStyle default interpolate must override an earlier one"
+    );
+}
+
 /// A hand-built two-point-or-more edge in `curve`, for the geometry tests above — the same shape
 /// [`chart::rule`] builds for a chart's rule line, minus the theme/tip decisions this section
 /// does not care about.
