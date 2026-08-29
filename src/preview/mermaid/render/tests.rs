@@ -3761,6 +3761,8 @@ fn malformed_init_directive_falls_back_without_crashing() {
         "%%{init: {\"flowchart\": {\"curve\": 5}}}%%\nflowchart TD\n  A --> B",
         // `curve` is itself an object.
         "%%{init: {\"flowchart\": {\"curve\": {\"x\": 1}}}}%%\nflowchart TD\n  A --> B",
+        // `curve` is an array.
+        "%%{init: {\"flowchart\": {\"curve\": [\"linear\"]}}}%%\nflowchart TD\n  A --> B",
         // `flowchart` is a string, not an object — nothing to look a `curve` up inside.
         "%%{init: {\"flowchart\": \"oops\"}}%%\nflowchart TD\n  A --> B",
         // The directive's own JSON never closes.
@@ -3847,6 +3849,225 @@ fn cjk_labels_render_under_every_curve() {
             "{curve}: CJK labels must still render"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 10-d. Coverage audit (2026-08-29): gaps found while auditing the curve feature's test coverage
+// against a 35-point checklist. Each test below closes exactly one point the checklist named —
+// see the doc comment for which.
+// ---------------------------------------------------------------------------------------------
+
+/// Checklist A4: an empty or whitespace-only curve name is exactly as unrecognised as any other
+/// bad spelling — `Curve::parse` has no special case for either, so both fall through its
+/// catch-all arm to `Curve::Basis`, the same fallback `unknown_curve_falls_back_to_basis_without_
+/// crashing` already pins for `""`. That test never tried a *whitespace* string (as opposed to a
+/// truly empty one), which is the shape checked here, both directly and through the full
+/// `[ui] mermaid_curve` → render pipeline.
+#[test]
+fn whitespace_only_curve_name_falls_back_to_basis() {
+    assert_eq!(Curve::parse("   "), Curve::Basis);
+    assert_eq!(Curve::parse("\t"), Curve::Basis);
+    assert_eq!(Curve::parse("\n"), Curve::Basis);
+
+    let d = laid_out_curve("flowchart TD\n  A --> B", "   ");
+    assert_eq!(d.edges[0].curve, Curve::Basis);
+
+    let svg = render_curve("flowchart TD\n  A --> B", "dark", "  ")
+        .expect("a blank curve name must still render, as Curve::Basis");
+    assert!(svg.contains("<svg"));
+}
+
+/// Checklist B11: mermaid re-applies each `%%{init}%%` directive over its running config in
+/// source order, so a *later* directive's `flowchart.curve` overrides an earlier one's —
+/// `preprocess::strip_directives`'s own doc states this as the intended behaviour, but no
+/// existing test actually put two init directives naming `flowchart.curve` in one source.
+#[test]
+fn a_second_init_directive_overrides_the_first_ones_curve() {
+    let d = laid_out_curve(
+        "%%{init: {\"flowchart\": {\"curve\": \"linear\"}}}%%\n\
+         %%{init: {\"flowchart\": {\"curve\": \"step\"}}}%%\n\
+         flowchart TD\n  A --> B",
+        "basis",
+    );
+    assert_eq!(
+        d.edges[0].curve,
+        Curve::Step,
+        "the second init directive must win over the first"
+    );
+}
+
+/// Checklist B12: an `%%{init}%%` directive is not required to sit before the diagram's header —
+/// `preprocess::strip_directives` scans the whole source rather than assuming a fixed position.
+/// Every other init-directive test in this section puts the directive first; this one puts it
+/// after the header and after an edge, which no existing test does.
+#[test]
+fn an_init_directive_after_the_header_still_sets_the_curve() {
+    let d = laid_out_curve(
+        "flowchart TD\n  A --> B\n  \
+         %%{init: {\"flowchart\": {\"curve\": \"linear\"}}}%%\n  B --> C",
+        "basis",
+    );
+    assert_eq!(
+        d.edges[0].curve,
+        Curve::Linear,
+        "a mid-diagram init directive must still set the chart-wide curve"
+    );
+    assert_eq!(d.edges[1].curve, Curve::Linear);
+}
+
+/// Checklist C14 for `interpolate` specifically: `linkStyle 0,1,2 interpolate <curve>` — several
+/// indices sharing one `interpolate` argument. `link_style_with_multiple_indices_reaches_every_
+/// named_edge` already proves this shape for a plain style declaration; this is the same proof
+/// for `interpolate`, which that test never exercised.
+#[test]
+fn link_style_interpolate_with_multiple_indices_reaches_every_named_edge() {
+    let d = laid_out_curve(
+        "flowchart TD\n  A --> B\n  B --> C\n  C --> D\n  D --> E\n  \
+         linkStyle 0,1,2 interpolate linear",
+        "basis",
+    );
+    assert_eq!(d.edges.len(), 4);
+    for i in 0..3 {
+        assert_eq!(
+            d.edges[i].curve,
+            Curve::Linear,
+            "edge {i} is named by `linkStyle 0,1,2 interpolate linear`"
+        );
+    }
+    assert_eq!(
+        d.edges[3].curve,
+        Curve::Basis,
+        "edge 3 (D->E) was not named, and must keep the chart-wide default"
+    );
+}
+
+/// Checklist C16: `linkStyle` naming an index past the last edge must not crash, and must leave
+/// every real edge untouched. The adversarial sweep in `flowchart/tests.rs` already proves the
+/// *parser* survives `linkStyle 99 stroke:red` on a source with no edges at all; this proves the
+/// *render* pipeline does too, on a chart that has a real edge, with `interpolate` specifically,
+/// and that the phantom index changes nothing real.
+#[test]
+fn link_style_interpolate_naming_an_index_past_the_last_edge_does_not_crash() {
+    let d = laid_out_curve(
+        "flowchart TD\n  A --> B\n  linkStyle 5 interpolate linear",
+        "step",
+    );
+    assert_eq!(d.edges.len(), 1);
+    assert_eq!(
+        d.edges[0].curve,
+        Curve::Step,
+        "an out-of-range linkStyle index must touch no real edge"
+    );
+    let svg = render_curve(
+        "flowchart TD\n  A --> B\n  linkStyle 5 interpolate linear",
+        "dark",
+        "step",
+    )
+    .expect("an out-of-range linkStyle index must not crash the render");
+    assert!(svg.contains("<svg"));
+}
+
+/// Checklist C17: `linkStyle 0 interpolate <curve> <styles>` — an `interpolate` argument followed
+/// by ordinary style declarations on the same statement — must apply *both*: the curve reaches
+/// `PlacedEdge::curve` and the style reaches `PlacedEdge::style`, from one parse of one
+/// statement. `flowchart::tests::link_style_reads_its_index_list_its_default_form_and_its_
+/// interpolation` already proves the *parser* keeps both fields distinct; this is the render-level
+/// proof that neither field's cascade clobbers the other's.
+#[test]
+fn link_style_interpolate_and_stroke_on_the_same_statement_both_apply() {
+    let d = laid_out_curve(
+        "flowchart TD\n  A --> B\n  linkStyle 0 interpolate linear stroke:#1f6feb",
+        "basis",
+    );
+    assert_eq!(d.edges[0].curve, Curve::Linear, "the curve must apply");
+    assert_eq!(
+        d.edges[0]
+            .style
+            .as_ref()
+            .expect("the style must apply too")
+            .stroke
+            .as_deref(),
+        Some("#1f6feb")
+    );
+}
+
+/// Checklist G31: `mermaid_curve` reaches only a flowchart's own edges. `spec_of`'s own doc states
+/// that every other diagram kind's `SpecEdge::curve` is hardcoded to `Curve::Basis`, and the real
+/// dispatcher (`preview::markdown::mermaid_to_svg_reason_curve`) does not even thread a `curve`
+/// argument through to any other renderer's entry point. This is the end-to-end proof, through the
+/// exact function the app calls (`mermaid_to_svg_curve`), for three diagram kinds.
+#[test]
+fn non_flowchart_diagrams_ignore_mermaid_curve() {
+    use crate::preview::markdown::mermaid_to_svg_curve;
+    let cases = [
+        "stateDiagram-v2\n  [*] --> A\n  A --> B\n  B --> [*]",
+        "classDiagram\n  A --|> B",
+        "erDiagram\n  A ||--o{ B : has",
+    ];
+    for src in cases {
+        let basis = mermaid_to_svg_curve(src, "dark", "basis").expect("must render");
+        let step = mermaid_to_svg_curve(src, "dark", "step").expect("must render");
+        assert_eq!(
+            basis, step,
+            "a non-flowchart diagram must draw identically regardless of mermaid_curve: {src}"
+        );
+    }
+}
+
+/// Checklist H34: `curve` still reaches an edge that names a subgraph as one of its own ends —
+/// the `edges::End::Cluster` path through `route`, which no existing curve test exercises (every
+/// other curve test in this section connects two ordinary nodes). `PlacedEdge::curve` is carried
+/// unconditionally regardless of which `End` variant routed the edge (`lay_out_spec`'s own
+/// `curve: edge.curve` push), so this is the proof at the level a reader would actually see: a
+/// diagram with an edge crossing a subgraph's frame must still draw visibly differently under two
+/// different curves, the same way `different_curves_draw_different_svg_path_data` proves it for
+/// an ordinary bent edge.
+#[test]
+fn curve_reaches_an_edge_that_crosses_a_subgraph_frame() {
+    let src = "flowchart LR\n  subgraph one [First]\n    A --> B\n  end\n  \
+               subgraph two [Second]\n    C --> D\n  end\n  one --> two\n  E --> one";
+    let d = laid_out_curve(src, "step");
+    assert!(
+        !d.clusters.is_empty(),
+        "the source must actually produce a subgraph frame"
+    );
+    for e in &d.edges {
+        assert_eq!(
+            e.curve,
+            Curve::Step,
+            "every edge must resolve to the configured curve, cluster-bound or not"
+        );
+    }
+    let basis = render_curve(src, "dark", "basis").expect("renders");
+    let step = render_curve(src, "dark", "step").expect("renders");
+    assert_ne!(
+        basis, step,
+        "a subgraph-bearing diagram must still draw visibly differently under two curves"
+    );
+}
+
+/// Checklist H35: the legacy `graph` keyword is the same grammar as `flowchart`
+/// (`flowchart/parser.rs`'s header parsing accepts both), so `curve` must resolve through it
+/// identically — checked directly rather than assumed, since every other curve test in this file
+/// spells the keyword `flowchart`. Both the config-default path and `linkStyle ... interpolate`
+/// are checked, not just one.
+#[test]
+fn curve_resolves_identically_under_the_legacy_graph_keyword() {
+    let flowchart = laid_out_curve("flowchart LR\n  A --> B", "monotoneX");
+    let graph = laid_out_curve("graph LR\n  A --> B", "monotoneX");
+    assert_eq!(flowchart.edges[0].curve, Curve::MonotoneX);
+    assert_eq!(graph.edges[0].curve, Curve::MonotoneX);
+
+    let flowchart2 = laid_out_curve(
+        "flowchart LR\n  A --> B\n  linkStyle 0 interpolate step",
+        "basis",
+    );
+    let graph2 = laid_out_curve(
+        "graph LR\n  A --> B\n  linkStyle 0 interpolate step",
+        "basis",
+    );
+    assert_eq!(flowchart2.edges[0].curve, Curve::Step);
+    assert_eq!(graph2.edges[0].curve, Curve::Step);
 }
 
 /// A hand-built two-point-or-more edge in `curve`, for the geometry tests above — the same shape

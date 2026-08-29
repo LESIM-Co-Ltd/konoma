@@ -344,6 +344,18 @@ fn shipped_example_configs_parse() {
             crate::preview::markdown::BlockAligns::default(),
             "{name}: 例の既定値が konoma の既定と一致しない"
         );
+        // Checklist A5 (mermaid curve test audit, 2026-08-29): the shipped `mermaid_curve = "basis"`
+        // is not just a string that happens to land on the field — it has to actually resolve, via
+        // `Curve::parse`, to the enum variant every non-flowchart caller and every corpus golden
+        // assumes. A plain string-equality check (as `shipped_example_configs_parse`'s siblings do
+        // for other keys) would not catch a `Curve::parse` match arm drifting away from this exact
+        // spelling; going through the real parser does.
+        assert_eq!(cfg.ui.mermaid_curve, "basis", "{name}: [ui] mermaid_curve");
+        assert_eq!(
+            crate::preview::mermaid::render::edges::Curve::parse(&cfg.ui.mermaid_curve),
+            crate::preview::mermaid::render::edges::Curve::Basis,
+            "{name}: [ui] mermaid_curve's shipped value must actually resolve to Curve::Basis"
+        );
     }
 }
 

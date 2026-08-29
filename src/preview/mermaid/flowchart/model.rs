@@ -224,8 +224,9 @@ pub struct LinkStyle {
     pub target: LinkStyleTarget,
     /// The declarations, split on `,`.
     pub styles: Vec<String>,
-    /// The `interpolate <curve>` argument, if the statement carried one. konoma does not
-    /// implement curves (§2-5), so this exists only so the statement is not mistaken for a node.
+    /// The `interpolate <curve>` argument, if the statement carried one — the strongest link in
+    /// the curve priority chain `render::spec_of`'s own doc states (`linkStyle <n> interpolate` >
+    /// `linkStyle default interpolate` > `%%{init}%%`'s `flowchart.curve` > `[ui] mermaid_curve`).
     pub interpolate: Option<String>,
 }
 

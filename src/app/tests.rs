@@ -13673,6 +13673,106 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Coverage audit (2026-08-29), checklist F28: `[ui] mermaid_curve` must reach a **standalone**
+/// `.mmd` full-screen preview (`media_load.rs`'s `MediaJob::Mermaid` branch) — a different code
+/// path from the markdown-fence one `e2e_ui_mermaid_curve_changes_rendered_pixels` already proves
+/// reads the config, and one no existing test checked against `mermaid_curve` at all. A bent edge
+/// (`A --> D` alongside the direct `A->B->C->D` chain) is required: on a straight two-node edge
+/// every curve in this crate draws the same line.
+#[test]
+fn standalone_mmd_full_screen_honors_mermaid_curve_config() {
+    let dir = unique_tmp("konoma_mermaid_mmd_curve_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mmd = dir.join("d.mmd");
+    std::fs::write(
+        &mmd,
+        "graph TD\n  A --> B\n  B --> C\n  C --> D\n  A --> D\n",
+    )
+    .unwrap();
+
+    fn svg_for(
+        dir: &std::path::Path,
+        mmd: &std::path::Path,
+        curve: &str,
+    ) -> std::sync::Arc<Vec<u8>> {
+        let mut cfg = Config::default();
+        cfg.ui.mermaid_curve = curve.into();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        app.picker = Some(test_picker());
+        app.enter_preview(mmd);
+        app.vector_svg
+            .clone()
+            .unwrap_or_else(|| panic!("{curve}: SVG source must be retained"))
+    }
+
+    let svg_basis = svg_for(&dir, &mmd, "basis");
+    let svg_step = svg_for(&dir, &mmd, "step");
+    assert_ne!(
+        svg_basis, svg_step,
+        "a standalone .mmd full screen must draw differently under two different mermaid_curve configs"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Coverage audit (2026-08-29), checklist F29: `[ui] mermaid_curve` must reach a fenced diagram's
+/// **full-screen** view (Tab -> Enter, `media_load.rs`'s `MediaJob::MermaidSrc` branch) — a
+/// different code path from both the standalone-`.mmd` one above and the inline-markdown one
+/// `e2e_ui_mermaid_curve_changes_rendered_pixels` already proves, and one
+/// `md_fence_becomes_inline_diagram_and_opens_full_screen` exercises without ever varying
+/// `mermaid_curve`.
+#[test]
+fn mermaid_fence_full_screen_honors_mermaid_curve_config() {
+    let dir = unique_tmp("konoma_mermaid_fence_curve_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(
+        &md,
+        "# t\n\n```mermaid\ngraph TD\n  A --> B\n  B --> C\n  C --> D\n  A --> D\n```\n",
+    )
+    .unwrap();
+
+    fn open_fence_svg(
+        dir: &std::path::Path,
+        md: &std::path::Path,
+        curve: &str,
+    ) -> std::sync::Arc<Vec<u8>> {
+        let mut cfg = Config::default();
+        cfg.ui.mermaid_curve = curve.into();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        app.picker = Some(test_picker());
+        app.enter_preview(md);
+        // Build the decoration cache (synchronous fallback = the fence renders immediately too).
+        app.ensure_md_cache(80);
+        app.ensure_md_cache(80);
+        let idx = app
+            .md_items
+            .iter()
+            .position(|it| matches!(it.kind, MdItemKind::MermaidFence { .. }))
+            .expect("the fence must land as a Tab item");
+        app.tab.focused_item = Some(idx);
+        app.md_activate_focused().unwrap();
+        assert!(
+            matches!(app.tab.preview_kind, Some(PreviewKind::MermaidFence(0))),
+            "must open the full-screen fence view for curve {curve}"
+        );
+        app.vector_svg
+            .clone()
+            .unwrap_or_else(|| panic!("{curve}: the full-screen fence must retain its SVG source"))
+    }
+
+    let svg_basis = open_fence_svg(&dir, &md, "basis");
+    let svg_step = open_fence_svg(&dir, &md, "step");
+    assert_ne!(
+        svg_basis, svg_step,
+        "a fenced diagram's full-screen view must draw differently under two different mermaid_curve configs"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn broken_fence_degrades_to_text_diagram() {
     let dir = unique_tmp("konoma_mermaid_broken_test");
