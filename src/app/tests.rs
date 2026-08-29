@@ -13585,6 +13585,232 @@ fn mermaid_text_mode_keeps_legacy_rendering() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Coverage audit follow-up (2026-08-29), item 3: in text mode (`[ui] mermaid = "text"`), the
+/// curve-resolution code path is not merely unaffected by `mermaid_curve` — it is never *reached*
+/// at all. `mermaid_image_mode()` (`media_load.rs`) gates `start_media_load`'s `PreviewKind::
+/// Mermaid`/`MermaidFence` branches, the only two places `mermaid_curve` is ever read
+/// (`media_load.rs`'s two `MediaJob::Mermaid(...)`/`MediaJob::MermaidSrc(...)` constructions); with
+/// the gate closed, neither branch runs, so neither `vector_svg` (only ever set from a `MediaJob`
+/// `Vector` payload) nor `image_src` can be populated — proof, not inference, that the SVG
+/// generation `mermaid_curve` lives inside was never invoked. `render_mermaid_file` (the function
+/// text mode actually draws with, `md_render.rs`'s `PreviewKind::Mermaid` arm) has no `curve`
+/// parameter at all — this is the behavioural version of that structural fact, exercised through
+/// the same `App::enter_preview` entry point `standalone_mmd_full_screen_honors_mermaid_curve_
+/// config` (F28) uses for the image-mode side of the same code.
+#[test]
+fn text_mode_never_reaches_mermaid_curve_resolution() {
+    let dir = unique_tmp("konoma_mermaid_text_curve_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mmd = dir.join("d.mmd");
+    // A bent edge (`A --> D` alongside the direct chain) — the shape every other curve test in
+    // this file uses, so that *if* curve leaked into this path it would visibly draw differently.
+    std::fs::write(
+        &mmd,
+        "graph TD\n  A --> B\n  B --> C\n  C --> D\n  A --> D\n",
+    )
+    .unwrap();
+
+    fn load_text_mode(dir: &Path, mmd: &Path, curve: &str) -> (bool, bool, Vec<Line<'static>>) {
+        let mut cfg = Config::default();
+        cfg.ui.mermaid = "text".into();
+        cfg.ui.mermaid_curve = curve.into();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        app.picker = Some(test_picker());
+        app.enter_preview(mmd);
+        app.ensure_md_cache(80);
+        let lines = app
+            .md_cache
+            .as_ref()
+            .expect("text mode still builds a decorated cache")
+            .lines
+            .clone();
+        (app.image_src.is_some(), app.vector_svg.is_some(), lines)
+    }
+
+    let (img_basis, svg_basis, lines_basis) = load_text_mode(&dir, &mmd, "basis");
+    let (img_step, svg_step, lines_step) = load_text_mode(&dir, &mmd, "step");
+
+    assert!(
+        !img_basis && !img_step,
+        "text mode must never rasterize, regardless of mermaid_curve"
+    );
+    assert!(
+        !svg_basis && !svg_step,
+        "text mode must never generate an SVG at all — curve resolution lives only inside SVG \
+         generation, so a None here is proof the code path was never reached, not just that its \
+         result was unaffected"
+    );
+    assert_eq!(
+        lines_basis, lines_step,
+        "text mode's rendering must be byte-identical regardless of mermaid_curve"
+    );
+
+    // Sanity: the exact same source, in image mode, really does draw differently for these two
+    // curves — otherwise the equality above would hold trivially because the source itself
+    // happens to be curve-blind (e.g. no bend for any curve to show).
+    fn load_image_mode(dir: &Path, mmd: &Path, curve: &str) -> std::sync::Arc<Vec<u8>> {
+        let mut cfg = Config::default();
+        cfg.ui.mermaid_curve = curve.into();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        app.picker = Some(test_picker());
+        app.enter_preview(mmd);
+        app.vector_svg
+            .clone()
+            .expect("image mode retains the SVG source")
+    }
+    assert_ne!(
+        load_image_mode(&dir, &mmd, "basis"),
+        load_image_mode(&dir, &mmd, "step"),
+        "sanity: in image mode these two curves really do draw this source differently"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Coverage audit follow-up (2026-08-29), item 1 (`mermaid_rows` half): `[ui] mermaid_curve` and
+/// `[ui] mermaid_rows` sit on independent axes at the `App` level, the way `mermaid_theme`'s
+/// independence is checked at the `render_curve`/`mermaid_to_svg_curve` level in `render/tests.rs`
+/// — `mermaid_rows` cannot be checked there, because it is never a parameter either of those
+/// functions takes; it only exists as `[ui] mermaid_rows` config, consumed by `mermaid_fit_rows`/
+/// `md_images()` in `media_load.rs`/`md_render.rs`, entirely downstream of the SVG `MediaJob`
+/// already produced. Checked both directions:
+///
+/// 1. holding `mermaid_rows` fixed, changing curve must not move the diagram's *display* size —
+///    the fenced diagram's own `rows`/`cols` are derived from its natural pixel dimensions, which
+///    curve never touches (only the path `d=` data does);
+/// 2. holding curve fixed (non-default), changing `mermaid_rows` must not move a single byte of
+///    the generated SVG — `mermaid_rows` is never threaded into `MediaJob::MermaidSrc` at all
+///    (only `max_px`/theme/curve are, `media_load.rs`'s own construction).
+#[test]
+fn mermaid_curve_and_mermaid_rows_are_independent_axes() {
+    let dir = unique_tmp("konoma_mermaid_curve_rows_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("doc.md");
+    // A bent, multi-rank fence (natural height comfortably above a small `mermaid_rows` cap, so
+    // the cap actually clips it) — the same fixture shape `standalone_mmd_full_screen_honors_
+    // mermaid_curve_config` (F28) uses, fenced instead of standalone.
+    std::fs::write(
+        &md,
+        "```mermaid\ngraph TD\n  A --> B\n  B --> C\n  C --> D\n  A --> D\n```\n",
+    )
+    .unwrap();
+
+    fn load(dir: &Path, md: &Path, curve: &str, rows: u16) -> (std::sync::Arc<Vec<u8>>, u16, u16) {
+        let mut cfg = Config::default();
+        cfg.ui.mermaid_curve = curve.into();
+        cfg.ui.mermaid_rows = rows;
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        app.picker = Some(test_picker());
+        app.enter_preview(md);
+        app.ensure_md_cache(80);
+        app.ensure_md_cache(80);
+        let img = app.md_images()[0].clone();
+        // An inline fence's SVG is retained per-cache-entry (`MdImgEntry::svg`), not in
+        // `App::vector_svg` — that field only ever holds the *full-screen* zoom surface's source
+        // (standalone `.mmd` or an opened `MermaidFence`), neither of which this test opens.
+        let svg = app
+            .md_image_cache
+            .get(&PathBuf::from(&img.url))
+            .and_then(|e| e.svg.clone())
+            .expect("the inline fence's SVG source must be retained");
+        (svg, img.rows, img.cols)
+    }
+
+    // 1. Fixed mermaid_rows, varying curve: display size must not move.
+    let (svg_basis, rows_basis, cols_basis) = load(&dir, &md, "basis", 10);
+    let (svg_linear, rows_linear, cols_linear) = load(&dir, &md, "linear", 10);
+    assert_ne!(
+        svg_basis, svg_linear,
+        "sanity: curve must still change the generated SVG"
+    );
+    assert_eq!(
+        (rows_basis, cols_basis),
+        (rows_linear, cols_linear),
+        "changing curve must not resize the diagram's display rows/cols"
+    );
+
+    // 2. Fixed curve, varying mermaid_rows: the SVG source must be untouched, while the display
+    //    rows do change (sanity: the setting still takes effect through this same call chain).
+    let (svg_10, rows_10, _) = load(&dir, &md, "linear", 10);
+    let (svg_50, rows_50, _) = load(&dir, &md, "linear", 50);
+    assert_eq!(
+        svg_10, svg_50,
+        "mermaid_rows must never touch the generated SVG (curve's own `d=` data included)"
+    );
+    assert_ne!(
+        rows_10, rows_50,
+        "sanity: mermaid_rows must still change the display rows"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Coverage audit follow-up (2026-08-29), item 1 (`svg_max_px` half): `[ui] mermaid_curve` and
+/// `[ui] svg_max_px` are independent the same way `mermaid_rows` is above — `svg_max_px` (`max_px`
+/// in `MediaJob::MermaidSrc`) only ever reaches `preview::svg::rasterize_bytes` *after* the SVG
+/// text is already fully generated (`MediaJob::run`'s own body: `mermaid_to_svg_curve` first,
+/// `rasterize_bytes` second), so it can change raster pixel density but never the `d=` path data
+/// curve controls, and the reverse: curve can change `d=` but never reaches the rasterization
+/// step's `max_px` at all.
+#[test]
+fn mermaid_curve_and_svg_max_px_are_independent_axes() {
+    use image::GenericImageView;
+
+    let dir = unique_tmp("konoma_mermaid_curve_svgmaxpx_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mmd = dir.join("d.mmd");
+    std::fs::write(
+        &mmd,
+        "graph TD\n  A --> B\n  B --> C\n  C --> D\n  A --> D\n",
+    )
+    .unwrap();
+
+    fn load(
+        dir: &Path,
+        mmd: &Path,
+        curve: &str,
+        svg_max_px: u32,
+    ) -> (std::sync::Arc<Vec<u8>>, (u32, u32)) {
+        let mut cfg = Config::default();
+        cfg.ui.mermaid_curve = curve.into();
+        cfg.ui.svg_max_px = svg_max_px;
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        app.picker = Some(test_picker());
+        app.enter_preview(mmd);
+        let svg = app.vector_svg.clone().expect("svg retained");
+        let dims = app.image_src.as_ref().expect("raster present").dimensions();
+        (svg, dims)
+    }
+
+    // 1. Fixed svg_max_px, varying curve: the SVG (its `d=` data included) must differ.
+    let (svg_basis, _) = load(&dir, &mmd, "basis", 400);
+    let (svg_linear, _) = load(&dir, &mmd, "linear", 400);
+    assert_ne!(
+        svg_basis, svg_linear,
+        "sanity: curve must still change the generated SVG at a fixed svg_max_px"
+    );
+
+    // 2. Fixed curve, varying svg_max_px (bracketed well below and well above the diagram's
+    //    natural size, so one side is guaranteed to change the raster scale regardless of what
+    //    that natural size happens to be): the SVG source (`d=` data included) must be
+    //    byte-identical, while the raster pixel size differs (sanity: the setting took effect).
+    let (svg_small, dims_small) = load(&dir, &mmd, "linear", 50);
+    let (svg_large, dims_large) = load(&dir, &mmd, "linear", 3000);
+    assert_eq!(
+        svg_small, svg_large,
+        "svg_max_px must never touch the generated SVG (curve's own `d=` data included)"
+    );
+    assert_ne!(
+        dims_small, dims_large,
+        "sanity: svg_max_px must still change the raster's pixel density"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn vector_zoom_rerasters_sharper_without_moving_geometry() {
     use image::GenericImageView;

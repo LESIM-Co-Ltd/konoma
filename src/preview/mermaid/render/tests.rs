@@ -4240,6 +4240,79 @@ fn a_second_link_style_interpolate_on_the_same_index_overrides_the_first() {
     );
 }
 
+// ---------------------------------------------------------------------------------------------
+// 10-f. Coverage audit follow-up (2026-08-29): two of the three items the audit flagged as
+// unverified. `mermaid_curve`'s interaction with `mermaid_theme`/`mermaid_rows`/`svg_max_px` is
+// finished here for `mermaid_theme` (both knobs are plain function parameters at this level) and
+// in `app/tests.rs` for `mermaid_rows`/`svg_max_px` (which only exist as `App`/`[ui]` config, not
+// as parameters `render_curve`/`mermaid_to_svg_curve` ever take). The third item — text mode never
+// even reaching curve resolution — is also in `app/tests.rs`, next to the existing text-mode test.
+// ---------------------------------------------------------------------------------------------
+
+/// `[ui] mermaid_curve` and `[ui] mermaid_theme` sit on independent axes: changing one must never
+/// move so much as a byte of what the other is responsible for. Checked both directions, so
+/// neither can hide behind the other:
+///
+/// 1. holding theme fixed, every curve must draw the exact same colour-bearing attributes
+///    (`fill="…"`/`stroke="…"`) — only the path/label geometry may move;
+/// 2. holding curve fixed at something other than the default `basis`, every theme must draw the
+///    exact same geometry — only colour may move.
+///
+/// Direction 2 is the gap `mermaid_themes_change_colours_but_never_font_metrics` (`markdown.rs`)
+/// leaves open: that test always renders through `mermaid_to_svg`, which is `render_curve(...,
+/// "basis")` by definition, so it has never actually exercised a non-default curve at all.
+#[test]
+fn mermaid_curve_and_mermaid_theme_are_independent_axes() {
+    let (_, src) = CORPUS
+        .iter()
+        .find(|(name, _)| *name == "long-edge")
+        .expect("corpus must still have `long-edge`");
+
+    fn color_attrs(svg: &str) -> Vec<&str> {
+        svg.split_whitespace()
+            .filter(|w| w.starts_with("fill=\"") || w.starts_with("stroke=\""))
+            .collect()
+    }
+    let geometry_of = |svg: &str| -> String {
+        svg.split_whitespace()
+            .filter(|w| !w.starts_with("fill=") && !w.starts_with("stroke=\""))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    // 1. Fixed theme, varying curve.
+    let basis = render_curve(src, "dark", "basis").expect("renders");
+    for curve in ["linear", "step", "monotoneX"] {
+        let other = render_curve(src, "dark", curve).expect("renders");
+        assert_eq!(
+            color_attrs(&basis),
+            color_attrs(&other),
+            "curve {curve} must not move a single colour attribute away from the basis render"
+        );
+        assert_ne!(
+            basis, other,
+            "curve {curve} must still change something (the path data) — otherwise this \
+             comparison is vacuous"
+        );
+    }
+
+    // 2. Fixed curve (non-default), varying theme.
+    let linear_dark = render_curve(src, "dark", "linear").expect("renders");
+    let base_geometry = geometry_of(&linear_dark);
+    for theme in ["light", "modern", "classic", "mermaid", "forest", "neutral"] {
+        let other = render_curve(src, theme, "linear").expect("renders");
+        assert_eq!(
+            base_geometry,
+            geometry_of(&other),
+            "theme {theme} moved curve=\"linear\" geometry, not just colour"
+        );
+        assert_ne!(
+            linear_dark, other,
+            "theme {theme} must still change colour — otherwise this comparison is vacuous"
+        );
+    }
+}
+
 /// A hand-built two-point-or-more edge in `curve`, for the geometry tests above — the same shape
 /// [`chart::rule`] builds for a chart's rule line, minus the theme/tip decisions this section
 /// does not care about.
@@ -4261,4 +4334,182 @@ fn bent_edge(points: Vec<Point>, curve: Curve) -> PlacedEdge {
         style: None,
         curve,
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 10-g. Coverage audit follow-up (2026-08-29), item 2: `linkStyle <n>`'s index over **parallel**
+// edges — more than one edge between the same node pair, self-loops included. `spec_of` resolves
+// `linkStyle` purely from `chart.edges.iter().enumerate()` (`mod.rs`'s own comment: "`linkStyle`
+// indices are positions in `Flowchart::edges`... exactly this iterator's index"), i.e. declaration
+// order, before any layout ever runs — but nothing in this file had checked that against a source
+// where two edges share both endpoints, the one shape where a bug that resolved the index against
+// *layout* order instead (e.g. edges sorted by rank, or self-loops moved to the end of the list —
+// both real things a routing pass could plausibly do) would be invisible on every existing test,
+// since every existing test's edges are already distinguishable by their `(from, to)` pair alone.
+//
+// Each test below tells two same-pair edges apart by a distinct `linkStyle`-free discriminator
+// (the edge's own label text), so it never has to *assume* `Diagram::edges` preserves declaration
+// order — it looks each edge up by what it says, not by where it landed in the output `Vec`.
+// ---------------------------------------------------------------------------------------------
+
+/// The label text of an edge, or `""` if it carries none — the discriminator every test in this
+/// section uses instead of trusting `d.edges`' own order.
+fn edge_label_text(e: &PlacedEdge) -> String {
+    e.label
+        .as_ref()
+        .map(|l| l.label.lines.join("\n"))
+        .unwrap_or_default()
+}
+
+/// Two ordinary parallel `A --> B` edges, told apart by label: `linkStyle 0` must land on the
+/// first-declared one (labelled `x`) and `linkStyle 1` on the second (labelled `y`) — never the
+/// other way around, and never both on the same edge.
+#[test]
+fn link_style_index_targets_the_declared_edge_among_parallel_edges() {
+    let d = laid_out_curve(
+        "flowchart TD\n  A -->|x| B\n  A -->|y| B\n  \
+         linkStyle 0 interpolate linear\n  linkStyle 1 interpolate step",
+        "basis",
+    );
+    let x = d
+        .edges
+        .iter()
+        .find(|e| edge_label_text(e) == "x")
+        .expect("the \"x\"-labelled edge must exist");
+    let y = d
+        .edges
+        .iter()
+        .find(|e| edge_label_text(e) == "y")
+        .expect("the \"y\"-labelled edge must exist");
+    assert_eq!(
+        x.curve,
+        Curve::Linear,
+        "linkStyle 0 must land on the first-declared A->B edge (labelled x)"
+    );
+    assert_eq!(
+        y.curve,
+        Curve::Step,
+        "linkStyle 1 must land on the second-declared A->B edge (labelled y), not the first"
+    );
+}
+
+/// The same proof over three parallel edges instead of two, so an off-by-one shift (an index
+/// resolved one position early or late) cannot accidentally still land on the intended edge the
+/// way it might by luck with only two.
+#[test]
+fn link_style_index_targets_the_declared_edge_among_three_parallel_edges() {
+    let d = laid_out_curve(
+        "flowchart TD\n  A -->|x| B\n  A -->|y| B\n  A -->|z| B\n  \
+         linkStyle 0 interpolate linear\n  linkStyle 1 interpolate step\n  \
+         linkStyle 2 interpolate monotoneX",
+        "basis",
+    );
+    let find = |name: &str| {
+        d.edges
+            .iter()
+            .find(|e| edge_label_text(e) == name)
+            .unwrap_or_else(|| panic!("edge labelled {name} must exist"))
+    };
+    assert_eq!(
+        find("x").curve,
+        Curve::Linear,
+        "linkStyle 0 -> first-declared (x)"
+    );
+    assert_eq!(
+        find("y").curve,
+        Curve::Step,
+        "linkStyle 1 -> second-declared (y)"
+    );
+    assert_eq!(
+        find("z").curve,
+        Curve::MonotoneX,
+        "linkStyle 2 -> third-declared (z)"
+    );
+}
+
+/// A self-loop (`A --> A`) declared **before** two parallel `A --> B` edges must not shift the
+/// indices those later edges' own `linkStyle` statements name: edge 0 is the loop, so `linkStyle
+/// 1`/`linkStyle 2` must still land on `x`/`y`, not on the loop and not on each other.
+#[test]
+fn self_loop_before_parallel_edges_does_not_shift_link_style_indices() {
+    let d = laid_out_curve(
+        "flowchart TD\n  A --> A\n  A -->|x| B\n  A -->|y| B\n  \
+         linkStyle 1 interpolate linear\n  linkStyle 2 interpolate step",
+        "basis",
+    );
+    let x = d
+        .edges
+        .iter()
+        .find(|e| edge_label_text(e) == "x")
+        .expect("the \"x\"-labelled edge must exist");
+    let y = d
+        .edges
+        .iter()
+        .find(|e| edge_label_text(e) == "y")
+        .expect("the \"y\"-labelled edge must exist");
+    let loop_edge = d
+        .edges
+        .iter()
+        .find(|e| e.from == "A" && e.to == "A")
+        .expect("the self-loop must still be drawn");
+
+    assert_eq!(
+        loop_edge.curve,
+        Curve::Basis,
+        "the self-loop (index 0) names no linkStyle of its own; it must keep the chart-wide default"
+    );
+    assert_eq!(
+        x.curve,
+        Curve::Linear,
+        "linkStyle 1 must land on the edge declared second (x), not on the self-loop"
+    );
+    assert_eq!(
+        y.curve,
+        Curve::Step,
+        "linkStyle 2 must land on the edge declared third (y)"
+    );
+}
+
+/// The same proof with the self-loop declared **between** the two parallel edges instead of
+/// before them — the position most likely to confuse an implementation that (wrongly) keys edges
+/// by `(from, to)` pair rather than by declaration order: `A --> A`'s pair never repeats, but it
+/// sits between two entries that share the same pair as each other.
+#[test]
+fn self_loop_between_parallel_edges_does_not_shift_link_style_indices() {
+    let d = laid_out_curve(
+        "flowchart TD\n  A -->|x| B\n  A --> A\n  A -->|y| B\n  \
+         linkStyle 0 interpolate linear\n  linkStyle 2 interpolate step",
+        "basis",
+    );
+    let x = d
+        .edges
+        .iter()
+        .find(|e| edge_label_text(e) == "x")
+        .expect("the \"x\"-labelled edge must exist");
+    let y = d
+        .edges
+        .iter()
+        .find(|e| edge_label_text(e) == "y")
+        .expect("the \"y\"-labelled edge must exist");
+    let loop_edge = d
+        .edges
+        .iter()
+        .find(|e| e.from == "A" && e.to == "A")
+        .expect("the self-loop must still be drawn");
+
+    assert_eq!(
+        x.curve,
+        Curve::Linear,
+        "linkStyle 0 must land on the first-declared edge (x)"
+    );
+    assert_eq!(
+        loop_edge.curve,
+        Curve::Basis,
+        "the self-loop (index 1) names no linkStyle; it must keep the chart-wide default"
+    );
+    assert_eq!(
+        y.curve,
+        Curve::Step,
+        "linkStyle 2 must land on the third-declared edge (y), not shifted by the self-loop between them"
+    );
 }
