@@ -1561,6 +1561,40 @@ fn curve_basis_matches_d3() {
     // Two points are just a line; one is just a move.
     assert_eq!(edges::curve_basis_path(&pts[..2]), "M0,0L60,0");
     assert_eq!(edges::curve_basis_path(&pts[..1]), "M0,0");
+    // Collinear points (vertical, horizontal) and a duplicated point — this section's own
+    // `VERTICAL`/`HORIZONTAL`/`DUPLICATE` module docs have the reason these three shapes are
+    // swept over every curve, `basis` included even though it was never the one that broke.
+    let vertical = [
+        Point::new(100.0, 50.0),
+        Point::new(100.0, 120.0),
+        Point::new(100.0, 190.0),
+    ];
+    assert_eq!(
+        edges::curve_basis_path(&vertical),
+        "M100,50L100,61.667C100,73.333 100,96.667 100,120\
+         C100,143.333 100,166.667 100,178.333L100,190"
+    );
+    let horizontal = [
+        Point::new(50.0, 100.0),
+        Point::new(120.0, 100.0),
+        Point::new(190.0, 100.0),
+    ];
+    assert_eq!(
+        edges::curve_basis_path(&horizontal),
+        "M50,100L61.667,100C73.333,100 96.667,100 120,100\
+         C143.333,100 166.667,100 178.333,100L190,100"
+    );
+    let duplicate = [
+        Point::new(0.0, 0.0),
+        Point::new(40.0, 40.0),
+        Point::new(40.0, 40.0),
+        Point::new(80.0, 80.0),
+    ];
+    assert_eq!(
+        edges::curve_basis_path(&duplicate),
+        "M0,0L6.667,6.667C13.333,13.333 26.667,26.667 33.333,33.333\
+         C40,40 40,40 46.667,46.667C53.333,53.333 66.667,66.667 73.333,73.333L80,80"
+    );
 }
 
 /// `edges.js`'s `fixCorners` rounds a right angle off with a radius of 5, replacing the corner
@@ -2949,10 +2983,33 @@ fn unknown_curve_falls_back_to_basis_without_crashing() {
 // Cardinal spline (`cardinal`) are mathematically the same curve — so `UNEVEN` (unequal segment
 // lengths) is the set that actually exercises `catmullRom`'s own epsilon-gated weighting and
 // tells the two apart; without it a `cardinal`/`catmullRom` copy-paste bug would pass silently.
+//
+// `VERTICAL`/`HORIZONTAL`/`DUPLICATE` exist because none of the three sets above ever has two
+// consecutive points share a coordinate, and that is exactly the shape that broke `monotoneX` in
+// production: `flowchart TD` is konoma's *default* direction, under which an ordinary vertical
+// edge is three points with the same x — `slope3`'s `dx` is `0` for that pair, which upstream
+// handles (its `Math.min` propagates the resulting `NaN` through to a `0` fallback) and this
+// crate's first port of it did not (`js_min`'s own doc has the full mechanism). `VERTICAL` is
+// exactly that shape; `HORIZONTAL` is its mirror (the case `monotoneY`'s reflected axis turns
+// into the same failure); `DUPLICATE` is the more general version — two *identical* consecutive
+// points, which is what an axis-aligned run degenerates to when dagre's own dedup does not catch
+// it. All three were mechanically swept over every one of the 13 curves (not guessed at from the
+// bug report) — `Curve::path` never emits `NaN`/`Infinity` for any of them, pinned separately by
+// `no_curve_ever_emits_nan_or_infinite_coordinates` below.
 
 const RIGHT_ANGLE: [(f64, f64); 3] = [(0.0, 0.0), (60.0, 0.0), (60.0, 60.0)];
 const FOUR_POINT: [(f64, f64); 4] = [(0.0, 0.0), (40.0, 0.0), (40.0, 40.0), (80.0, 40.0)];
 const UNEVEN: [(f64, f64); 4] = [(0.0, 0.0), (10.0, 0.0), (40.0, 30.0), (90.0, 35.0)];
+/// Three collinear points sharing an x — an ordinary vertical edge under `flowchart TD`,
+/// konoma's default direction. The exact shape that broke `monotoneX` in production.
+const VERTICAL: [(f64, f64); 3] = [(100.0, 50.0), (100.0, 120.0), (100.0, 190.0)];
+/// `VERTICAL`'s mirror — three collinear points sharing a y, the shape that breaks `monotoneY`'s
+/// reflected axis the same way `VERTICAL` breaks `monotoneX`'s own.
+const HORIZONTAL: [(f64, f64); 3] = [(50.0, 100.0), (120.0, 100.0), (190.0, 100.0)];
+/// Two consecutive points at the exact same coordinate — the more general version of
+/// `VERTICAL`/`HORIZONTAL`'s "a segment has zero length" degeneracy, on a diagonal run instead of
+/// an axis-aligned one.
+const DUPLICATE: [(f64, f64); 4] = [(0.0, 0.0), (40.0, 40.0), (40.0, 40.0), (80.0, 80.0)];
 
 fn pts(raw: &[(f64, f64)]) -> Vec<Point> {
     raw.iter().map(|&(x, y)| Point::new(x, y)).collect()
@@ -2972,6 +3029,19 @@ fn curve_natural_matches_d3() {
     assert_eq!(
         edges::curve_natural_path(&pts(&UNEVEN)),
         "M0,0C2,-3.222 4,-6.444 10,0C16,6.444 26,22.556 40,30C54,37.444 72,36.222 90,35"
+    );
+    assert_eq!(
+        edges::curve_natural_path(&pts(&VERTICAL)),
+        "M100,50C100,73.333 100,96.667 100,120C100,143.333 100,166.667 100,190"
+    );
+    assert_eq!(
+        edges::curve_natural_path(&pts(&HORIZONTAL)),
+        "M50,100C73.333,100 96.667,100 120,100C143.333,100 166.667,100 190,100"
+    );
+    assert_eq!(
+        edges::curve_natural_path(&pts(&DUPLICATE)),
+        "M0,0C17.778,17.778 35.556,35.556 40,40C44.444,44.444 35.556,35.556 40,40\
+         C44.444,44.444 62.222,62.222 80,80"
     );
     // Two points are a line; one is a bare move; zero is empty — the shared degenerate cases.
     assert_eq!(
@@ -2996,6 +3066,19 @@ fn curve_cardinal_matches_d3() {
     assert_eq!(
         edges::curve_cardinal_path(&pts(&UNEVEN)),
         "M0,0C0,0 3.333,-5 10,0C16.667,5 26.667,24.167 40,30C53.333,35.833 90,35 90,35"
+    );
+    assert_eq!(
+        edges::curve_cardinal_path(&pts(&VERTICAL)),
+        "M100,50C100,50 100,96.667 100,120C100,143.333 100,190 100,190"
+    );
+    assert_eq!(
+        edges::curve_cardinal_path(&pts(&HORIZONTAL)),
+        "M50,100C50,100 96.667,100 120,100C143.333,100 190,100 190,100"
+    );
+    assert_eq!(
+        edges::curve_cardinal_path(&pts(&DUPLICATE)),
+        "M0,0C0,0 33.333,33.333 40,40C46.667,46.667 33.333,33.333 40,40\
+         C46.667,46.667 80,80 80,80"
     );
     assert_eq!(
         edges::curve_cardinal_path(&pts(&RIGHT_ANGLE[..2])),
@@ -3028,6 +3111,18 @@ fn curve_catmull_rom_matches_d3() {
         "catmullRom and cardinal must differ once waypoints are unevenly spaced"
     );
     assert_eq!(
+        edges::curve_catmull_rom_path(&pts(&VERTICAL)),
+        "M100,50C100,50 100,96.667 100,120C100,143.333 100,190 100,190"
+    );
+    assert_eq!(
+        edges::curve_catmull_rom_path(&pts(&HORIZONTAL)),
+        "M50,100C50,100 96.667,100 120,100C143.333,100 190,100 190,100"
+    );
+    assert_eq!(
+        edges::curve_catmull_rom_path(&pts(&DUPLICATE)),
+        "M0,0C0,0 40,40 40,40C40,40 40,40 40,40C40,40 80,80 80,80"
+    );
+    assert_eq!(
         edges::curve_catmull_rom_path(&pts(&RIGHT_ANGLE[..2])),
         "M0,0L60,0"
     );
@@ -3051,6 +3146,26 @@ fn curve_monotone_x_matches_d3() {
     assert_eq!(
         edges::curve_monotone_x_path(&pts(&UNEVEN)),
         "M0,0C3.333,0 6.667,0 10,0C20,0 30,28 40,30C56.667,33.333 73.333,34.167 90,35"
+    );
+    // The exact bug: three collinear points sharing an x (an ordinary vertical edge under
+    // `flowchart TD`, konoma's default direction) made `slope3`'s `p` become `NaN`
+    // (`Infinity * 0 - Infinity * 0`) — upstream's `Math.min` propagates that `NaN` through to a
+    // `0` fallback (a flat tangent), which is the finite, correct answer below. This crate's
+    // first port used `f64::min`, which *ignores* a `NaN` operand instead of propagating it
+    // (`js_min`'s own doc has the full mechanism), so `slope3` returned `Infinity` and the
+    // resulting bezier control points were `NaN` — an invalid SVG path whose line silently did
+    // not draw at all (found by rendering a real `curve: monotoneX` flowchart and looking at it).
+    assert_eq!(
+        edges::curve_monotone_x_path(&pts(&VERTICAL)),
+        "M100,50C100,50 100,120 100,120C100,120 100,190 100,190"
+    );
+    assert_eq!(
+        edges::curve_monotone_x_path(&pts(&HORIZONTAL)),
+        "M50,100C73.333,100 96.667,100 120,100C143.333,100 166.667,100 190,100"
+    );
+    assert_eq!(
+        edges::curve_monotone_x_path(&pts(&DUPLICATE)),
+        "M0,0C13.333,13.333 26.667,26.667 40,40C53.333,53.333 66.667,66.667 80,80"
     );
     assert_eq!(
         edges::curve_monotone_x_path(&pts(&RIGHT_ANGLE[..2])),
@@ -3081,6 +3196,21 @@ fn curve_monotone_y_matches_d3() {
         edges::curve_monotone_x_path(&pts(&UNEVEN)),
         edges::curve_monotone_y_path(&pts(&UNEVEN)),
         "monotoneX and monotoneY must draw differently — the whole point of the reflected axis"
+    );
+    // `VERTICAL`'s mirror: `monotoneY`'s reflected axis hits the same degeneracy on a
+    // *horizontal* run instead of a vertical one — see `curve_monotone_x_matches_d3`'s own
+    // comment on the exact bug this pins the fix for.
+    assert_eq!(
+        edges::curve_monotone_y_path(&pts(&VERTICAL)),
+        "M100,50C100,73.333 100,96.667 100,120C100,143.333 100,166.667 100,190"
+    );
+    assert_eq!(
+        edges::curve_monotone_y_path(&pts(&HORIZONTAL)),
+        "M50,100C50,100 120,100 120,100C120,100 190,100 190,100"
+    );
+    assert_eq!(
+        edges::curve_monotone_y_path(&pts(&DUPLICATE)),
+        "M0,0C13.333,13.333 26.667,26.667 40,40C53.333,53.333 66.667,66.667 80,80"
     );
     assert_eq!(
         edges::curve_monotone_y_path(&pts(&RIGHT_ANGLE[..2])),
@@ -3114,6 +3244,18 @@ fn curve_bump_x_matches_d3() {
         edges::curve_bump_x_path(&pts(&RIGHT_ANGLE[..2])),
         "M0,0C30,0 30,0 60,0"
     );
+    assert_eq!(
+        edges::curve_bump_x_path(&pts(&VERTICAL)),
+        "M100,50C100,50 100,120 100,120C100,120 100,190 100,190"
+    );
+    assert_eq!(
+        edges::curve_bump_x_path(&pts(&HORIZONTAL)),
+        "M50,100C85,100 85,100 120,100C155,100 155,100 190,100"
+    );
+    assert_eq!(
+        edges::curve_bump_x_path(&pts(&DUPLICATE)),
+        "M0,0C20,0 20,40 40,40C40,40 40,40 40,40C60,40 60,80 80,80"
+    );
     assert_eq!(edges::curve_bump_x_path(&pts(&RIGHT_ANGLE[..1])), "M0,0");
     assert_eq!(edges::curve_bump_x_path(&[]), "");
 }
@@ -3140,6 +3282,18 @@ fn curve_bump_y_matches_d3() {
     assert_eq!(
         edges::curve_bump_y_path(&pts(&RIGHT_ANGLE[..2])),
         "M0,0C0,0 60,0 60,0"
+    );
+    assert_eq!(
+        edges::curve_bump_y_path(&pts(&VERTICAL)),
+        "M100,50C100,85 100,85 100,120C100,155 100,155 100,190"
+    );
+    assert_eq!(
+        edges::curve_bump_y_path(&pts(&HORIZONTAL)),
+        "M50,100C50,100 120,100 120,100C120,100 190,100 190,100"
+    );
+    assert_eq!(
+        edges::curve_bump_y_path(&pts(&DUPLICATE)),
+        "M0,0C0,20 40,20 40,40C40,40 40,40 40,40C40,60 80,60 80,80"
     );
     assert_eq!(edges::curve_bump_y_path(&pts(&RIGHT_ANGLE[..1])), "M0,0");
     assert_eq!(edges::curve_bump_y_path(&[]), "");
@@ -3172,6 +3326,22 @@ fn rounded_curve_matches_mermaid() {
         edges::rounded_path(&pts(&RIGHT_ANGLE[..2]), radius),
         "M0,0L60,0",
         "two points is just a line, corner or not"
+    );
+    // `VERTICAL`/`HORIZONTAL` are themselves collinear runs (no bend), so — like the straight run
+    // above — every corner-detection angle is `π` and nothing is rounded; `DUPLICATE` has a
+    // zero-length segment at its middle point, which `generateRoundedPath`'s own `len1 < epsilon`
+    // guard catches the same way.
+    assert_eq!(
+        edges::rounded_path(&pts(&VERTICAL), radius),
+        "M100,50L100,120L100,190"
+    );
+    assert_eq!(
+        edges::rounded_path(&pts(&HORIZONTAL), radius),
+        "M50,100L120,100L190,100"
+    );
+    assert_eq!(
+        edges::rounded_path(&pts(&DUPLICATE), radius),
+        "M0,0L40,40L40,40L80,80"
     );
     assert_eq!(edges::rounded_path(&pts(&RIGHT_ANGLE[..1]), radius), "M0,0");
     assert_eq!(edges::rounded_path(&[], radius), "");
@@ -3294,6 +3464,142 @@ fn curve_parse_and_path_reach_the_function_that_was_pinned_against_upstream() {
         Curve::parse("stepAfter").path(&p),
         edges::step_path(&p, 1.0)
     );
+}
+
+/// The dispatch-completeness check above (`curve_parse_and_path_reach_the_function_that_was_
+/// pinned_against_upstream`), but for the exact degenerate shape that shipped a real bug: a
+/// vertical run of waypoints — `flowchart TD`'s ordinary look, konoma's default direction —
+/// through `Curve::parse("monotoneX").path(...)`, the real config-to-render path, not the free
+/// function directly. The bug this closes (`js_min`'s own doc has the mechanism) reached
+/// production through exactly this call chain — `[ui] mermaid_curve = "monotoneX"` on a plain
+/// `flowchart TD` — so the regression test for it has to go through the same chain, not just the
+/// free function `curve_monotone_x_matches_d3` already pins directly.
+type CurveDegenerateCase = (&'static str, &'static [(f64, f64)], &'static str);
+
+#[test]
+fn all_thirteen_curves_match_d3_or_mermaid_on_degenerate_points_through_curve_path() {
+    let cases: &[CurveDegenerateCase] = &[
+        (
+            "basis",
+            &VERTICAL,
+            "M100,50L100,61.667C100,73.333 100,96.667 100,120\
+         C100,143.333 100,166.667 100,178.333L100,190",
+        ),
+        ("linear", &VERTICAL, "M100,50 L100,120 L100,190"),
+        // `step`/`stepBefore`/`stepAfter` genuinely diverge from raw d3 here — not a bug in
+        // either implementation, and not related to the NaN fix this test exists for. d3's own
+        // `Step.point` always emits two `lineTo` calls per point unconditionally (never checking
+        // whether either has zero length), so a vertical run's raw d3 output carries redundant
+        // same-coordinate legs (`edges::step_path`'s own module doc did not anticipate this —
+        // it reasoned about the *deferred final leg* `curveStep` (t=0.5) leaves for `lineEnd`,
+        // not about a *zero-dx segment* dropping a leg outright). konoma's own `step_path` skips
+        // a leg whose two endpoints coincide (`EPS`-guarded), so it collapses straight to the
+        // three real points instead. Both draw the *identical picture* — a zero-length line
+        // segment is invisible in any renderer — so this is a cosmetic `d`-string difference,
+        // not a rendering one, and out of scope for the NaN bug; flagged, not silently patched.
+        ("step", &VERTICAL, "M100,50L100,120L100,190"),
+        ("stepBefore", &VERTICAL, "M100,50L100,120L100,190"),
+        ("stepAfter", &VERTICAL, "M100,50L100,120L100,190"),
+        (
+            "natural",
+            &VERTICAL,
+            "M100,50C100,73.333 100,96.667 100,120\
+         C100,143.333 100,166.667 100,190",
+        ),
+        (
+            "cardinal",
+            &VERTICAL,
+            "M100,50C100,50 100,96.667 100,120C100,143.333 100,190 100,190",
+        ),
+        (
+            "catmullRom",
+            &VERTICAL,
+            "M100,50C100,50 100,96.667 100,120C100,143.333 100,190 100,190",
+        ),
+        (
+            "monotoneX",
+            &VERTICAL,
+            "M100,50C100,50 100,120 100,120C100,120 100,190 100,190",
+        ),
+        (
+            "monotoneY",
+            &HORIZONTAL,
+            "M50,100C50,100 120,100 120,100C120,100 190,100 190,100",
+        ),
+        (
+            "bumpX",
+            &VERTICAL,
+            "M100,50C100,50 100,120 100,120C100,120 100,190 100,190",
+        ),
+        (
+            "bumpY",
+            &HORIZONTAL,
+            "M50,100C50,100 120,100 120,100C120,100 190,100 190,100",
+        ),
+        ("rounded", &VERTICAL, "M100,50L100,120L100,190"),
+    ];
+    for (name, raw, expected) in cases {
+        let p = pts(raw);
+        assert_eq!(
+            Curve::parse(name).path(&p),
+            *expected,
+            "Curve::parse(\"{name}\").path(...) on a degenerate point set"
+        );
+        assert!(
+            !Curve::parse(name).path(&p).contains("NaN"),
+            "{name} must not emit NaN through Curve::path"
+        );
+    }
+}
+
+/// **Mechanical**, not example-based: every one of the 13 curve names, over a battery of
+/// degenerate point sets (vertical, horizontal, and every other axis-aligned-or-duplicate shape
+/// below), must never emit `NaN` or `Infinity` into the `d` attribute it draws — regardless of
+/// whether this crate happens to have a hand-written expected value for that exact combination.
+/// The bug this exists to make impossible to reintroduce (`js_min`'s own doc has the mechanism)
+/// was found by looking at a rendered picture, not by a test — this is the test that should have
+/// caught it, and the reason it is swept over every curve rather than just `monotoneX`/`monotoneY`
+/// is that the next curve to grow a `NaN` might not be either of those two.
+#[test]
+fn no_curve_ever_emits_nan_or_infinite_coordinates() {
+    let names = [
+        "basis",
+        "linear",
+        "step",
+        "stepBefore",
+        "stepAfter",
+        "natural",
+        "cardinal",
+        "catmullRom",
+        "monotoneX",
+        "monotoneY",
+        "bumpX",
+        "bumpY",
+        "rounded",
+    ];
+    // Every point set is deliberately degenerate in a different way: two axis-aligned runs (the
+    // exact shape that broke `monotoneX`/`monotoneY`), a run with a duplicated interior point, a
+    // single repeated point three times over, and a two-point vertical/horizontal edge (the
+    // *most* common real shape of all — an ordinary two-node `flowchart TD` edge).
+    let degenerate: &[&[(f64, f64)]] = &[
+        &VERTICAL,
+        &HORIZONTAL,
+        &DUPLICATE,
+        &[(50.0, 50.0), (50.0, 50.0), (50.0, 50.0)],
+        &[(0.0, 0.0), (0.0, 100.0)],
+        &[(0.0, 0.0), (100.0, 0.0)],
+        &[(100.0, 100.0), (100.0, 100.0)],
+    ];
+    for name in names {
+        for raw in degenerate {
+            let p = pts(raw);
+            let d = Curve::parse(name).path(&p);
+            assert!(
+                !d.contains("NaN") && !d.contains("inf") && !d.contains("Inf"),
+                "{name} emitted a non-finite coordinate for {raw:?}: {d}"
+            );
+        }
+    }
 }
 
 /// `Curve::rounds_corners` matches every released mermaid version's actual gate in `edges.js`:

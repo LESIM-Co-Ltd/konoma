@@ -1026,6 +1026,29 @@ fn signed_zero_or(h0: f64, h1: f64) -> f64 {
     }
 }
 
+/// JS's `Math.min(a, b)`, not Rust's `f64::min`: if *either* argument is `NaN`, the result is
+/// `NaN`. Rust's own `f64::min` is IEEE 754 `minNum`, which does the opposite — it *ignores* a
+/// `NaN` operand and returns whichever argument is a real number — so a naive `a.min(b)` silently
+/// loses the one signal [`slope3`] depends on to fall back to a flat tangent.
+///
+/// This is not a hypothetical difference: it is the exact cause of a real bug (found by looking
+/// at a rendered `curve: monotoneX` flowchart — the standard `flowchart TD` direction, so *every*
+/// vertical edge hit it — and seeing its line vanish). On a vertical run (`x1 - x0 == 0` for every
+/// consecutive pair), `slope3`'s `p` becomes `Infinity * 0 - Infinity * 0`, i.e. `NaN`. d3-shape's
+/// own `Math.min(finite, finite, NaN)` is `NaN`, which `slope3`'s trailing `|| 0` catches and
+/// turns into a flat (zero) tangent — the correct, finite answer. `f64::min` chained the same way
+/// instead *ignores* that `NaN` and returns the finite operand, so `slope3` returned `Infinity`
+/// instead of `0`, and `Monotone::emit_hermite`'s `dx * t0` (`0.0 * Infinity`) came out `NaN` —
+/// which is how a `NaN` reached the emitted `d` and silently deleted the line (an SVG path with a
+/// `NaN` coordinate draws nothing, no error).
+fn js_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.min(b)
+    }
+}
+
 /// d3-shape's `slope3` (Steffen 1990) — the two-sided tangent at the middle of three points.
 fn slope3(x0: f64, y0: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
     let h0 = x1 - x0;
@@ -1033,7 +1056,7 @@ fn slope3(x0: f64, y0: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
     let s0 = (y1 - y0) / signed_zero_or(h0, h1);
     let s1 = (y2 - y1) / signed_zero_or(h1, h0);
     let p = (s0 * h1 + s1 * h0) / (h0 + h1);
-    let m = (js_sign(s0) + js_sign(s1)) * s0.abs().min(s1.abs()).min(0.5 * p.abs());
+    let m = (js_sign(s0) + js_sign(s1)) * js_min(js_min(s0.abs(), s1.abs()), 0.5 * p.abs());
     if m.is_nan() || m == 0.0 {
         0.0
     } else {
