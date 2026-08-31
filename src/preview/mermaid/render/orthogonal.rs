@@ -32,6 +32,25 @@
 //! layout, "how many edges are on this face, and how big does the node need to be to fit them" —
 //! see [`Eviction::required_size`].
 //!
+//! # Lane alignment moves nodes; collision avoidance changes a shape's faces
+//!
+//! §10-1 item 2 ("レーン揃え") is [`align_straight_lanes`] — a separate pass `lay_out_spec` runs
+//! *before* `route_flowchart`, because it moves [`PlacedNode::center`] itself (greedily selects a
+//! maximal set of node-disjoint straight-lane edges between adjacent ranks and slides every member
+//! of each resulting chain onto one shared cross coordinate), and every downstream node position —
+//! frames, other edges' ports — has to see the moved position, not the one dagre laid out. Once
+//! nodes are moved, [`classify`]'s existing `aligned` check (unchanged) recognises a lane-aligned
+//! chain's edges on its own: they are now geometrically aligned, the same way a chain that already
+//! happened to line up under stage 1/2 was.
+//!
+//! §10-1 item 1's collision fix ("分岐形の走行がノード箱と交差するなら合流形に切替えて再試行…両形
+//! とも交差するなら…階段経路へフォールバック") lives inside [`classify`] itself: a branch or merge
+//! shape's cross-axis sweep can run through a *sibling* node's box (the same rank as whichever end
+//! is doing the sweeping), so `classify` builds the shape's route at zero eviction offset, tests it
+//! against every other node's box, and — if it crosses one — tries the other shape, and if that
+//! also crosses, marks the edge `staircase` so [`route_with_ports`] draws it the same way a back
+//! edge is drawn (dagre's own waypoints, straightened) instead.
+//!
 //! # Two axes, four directions, one set of formulas
 //!
 //! A flowchart's `direction` picks which physical axis (x or y) is "along the flow" and which is
@@ -277,7 +296,7 @@ const EPS: f64 = 1e-6;
 ///   `a` leaves on fixed at `a`'s own coordinate and the axis `b` arrives on fixed at `b`'s, and
 ///   the corner where those two fixed values meet is reachable from both ends in a single
 ///   right-angle segment each. This is branch/merge's shape and also covers one leg of a back
-///   edge's staircase ([`route_reverse_with_ports`]).
+///   edge's staircase ([`route_staircase_with_ports`]).
 /// * **same axis, other coordinate already equal**: no corner needed at all — `a` to `b` is
 ///   already a straight run on that axis. An aligned edge takes this path whenever eviction gave
 ///   both its ends the same coordinate (the common case: nothing else shares either face).
@@ -337,6 +356,15 @@ struct EdgeShape {
     /// Whether this is the dead-straight, zero-bend shape (§10-1 item 1: "直進辺") — the one rule
     /// 2 gives the centre port to over any sibling on the same face.
     aligned: bool,
+    /// Whether the shape's own route (branch, merge, or even aligned) crossed another node's box
+    /// at both attempts and had to fall back to dagre's own waypoint chain, the same way a back
+    /// edge is drawn — §10-1 item 1's collision fix, item (b). Drawn by [`route_with_ports`]
+    /// exactly like [`EdgeShape::reverse`] (`route_staircase_with_ports`), but keeps its own flag:
+    /// unlike a true back edge, a staircase-fallback edge is still forward (its ports still came
+    /// from the ordinary branch/merge/aligned face choice `evict` grouped it by), so conflating
+    /// the two would make [`route_flowchart`]'s bend-count reasoning about which edges are
+    /// rank-reversed (exempt from the ≤2 cap) wrong for this one.
+    staircase: bool,
     /// Which face of the source the line leaves through, and which axis leaving perpendicular to
     /// it means moving along.
     source_side: Side,
@@ -347,6 +375,75 @@ struct EdgeShape {
     target_axis: Axis,
 }
 
+/// How much a routed segment's box test is padded past the node's real boundary — §10-1 item 1's
+/// "少しのマージン付き": a segment that only grazes a corner should still count as blocked, not
+/// pass the test by a fraction of a pixel.
+pub(crate) const COLLISION_MARGIN: f64 = 4.0;
+
+/// Whether the axis-parallel segment `a`–`b` crosses `node`'s box, padded by [`COLLISION_MARGIN`].
+/// `a`–`b` is assumed axis-parallel (every segment this module ever builds is); a genuinely
+/// diagonal pair is treated as a non-crossing no-op rather than panicking, since a defensive
+/// "never block on a shape that cannot happen" is safer than a crash over this check alone.
+///
+/// `pub(crate)` (not private) so the integration tests in `render::tests` can state the same
+/// "does a routed segment cross a foreign node" question `classify` asks itself, against the
+/// *final*, evicted route a real diagram actually draws — reusing this rather than a second,
+/// hand-rolled copy of the same box-intersection arithmetic in a different module.
+pub(crate) fn segment_crosses_node(a: &Point, b: &Point, node: &PlacedNode) -> bool {
+    let (l, t, r, bo) = node.bounds();
+    let (l, t, r, bo) = (
+        l - COLLISION_MARGIN,
+        t - COLLISION_MARGIN,
+        r + COLLISION_MARGIN,
+        bo + COLLISION_MARGIN,
+    );
+    if (a.y - b.y).abs() < EPS {
+        let y = a.y;
+        let (x0, x1) = (a.x.min(b.x), a.x.max(b.x));
+        y >= t && y <= bo && x1 >= l && x0 <= r
+    } else if (a.x - b.x).abs() < EPS {
+        let x = a.x;
+        let (y0, y1) = (a.y.min(b.y), a.y.max(b.y));
+        x >= l && x <= r && y1 >= t && y0 <= bo
+    } else {
+        false
+    }
+}
+
+/// Whether `shape`'s route between `source` and `target` — built at zero eviction offset, since a
+/// port's few-pixel eviction offset never changes whether a sweep spanning the whole diagram
+/// clears a sibling's box — crosses any node in `nodes` other than `source`/`target` themselves.
+/// §10-1 item 1's collision test: "辺セグメント vs 全ノード境界箱…の交差テストで機械的に".
+fn shape_crosses_a_node(
+    direction: Direction,
+    source: &PlacedNode,
+    target: &PlacedNode,
+    shape: &EdgeShape,
+    nodes: &[PlacedNode],
+) -> bool {
+    let source_port = face_port(source, shape.source_side, PORT_INSET);
+    let target_port = face_port(target, shape.target_side, PORT_INSET);
+    let mut pts = vec![source_port.clone()];
+    pts.extend(bridge(
+        direction,
+        &source_port,
+        &target_port,
+        shape.source_axis,
+        shape.target_axis,
+    ));
+    for w in pts.windows(2) {
+        for node in nodes {
+            if node.id == source.id || node.id == target.id {
+                continue;
+            }
+            if segment_crosses_node(&w[0], &w[1], node) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Decides `source`→`target`'s route shape — the same four-way decision stage 1's `route_edge`
 /// made inline, factored out so [`evict`] can see it for every edge before any of them gets a
 /// port. Four shapes, decided in this order:
@@ -354,7 +451,7 @@ struct EdgeShape {
 /// 1. **reverse** — the target's rank is at or before the source's. dagre still produced a
 ///    waypoint chain for it (walking through whatever dummy nodes the intervening ranks needed),
 ///    so the exit/entry face is picked by [`dominant_face`] against the nearest waypoint dagre
-///    actually routed through, and the interior chain is what [`route_reverse_with_ports`]
+///    actually routed through, and the interior chain is what [`route_staircase_with_ports`]
 ///    straightens onto right angles.
 /// 2. **aligned** — same coordinate on the axis across the flow (within half a pixel). Both faces
 ///    are on the flow axis, facing each other.
@@ -363,6 +460,13 @@ struct EdgeShape {
 ///    target's upstream face.
 /// 4. **merge** — not a branch, and the target has more than one incoming edge: leaves the source
 ///    through its downstream face and turns once into the target's face across the flow.
+///
+/// For the non-reverse shapes (2–4), §10-1 item 1's collision fix runs before returning: if the
+/// shape's own route crosses a node other than its two ends, the *other* of branch/merge is tried
+/// (aligned has no alternate shape to swap to — its faces are fixed by which axis the two nodes
+/// are aligned on); if that also crosses, or there was never an alternate to try, the edge is
+/// marked `staircase` and keeps the last shape's faces (so `evict` still groups it by a real face)
+/// — [`route_with_ports`] then draws it from dagre's own waypoints instead of a bend/bridge.
 #[allow(clippy::too_many_arguments)]
 fn classify(
     direction: Direction,
@@ -373,6 +477,7 @@ fn classify(
     target_rank: Option<i32>,
     source_out_degree: usize,
     target_in_degree: usize,
+    nodes: &[PlacedNode],
 ) -> EdgeShape {
     let is_reverse = matches!((source_rank, target_rank), (Some(sr), Some(tr)) if tr <= sr);
     if is_reverse {
@@ -396,6 +501,7 @@ fn classify(
         return EdgeShape {
             reverse: true,
             aligned: false,
+            staircase: false,
             source_side,
             source_axis: axis_of(direction, source_side),
             target_side,
@@ -408,51 +514,92 @@ fn classify(
         let delta = flow(direction, &target.center) - flow(direction, &source.center);
         let source_side = flow_face(direction, delta);
         let target_side = source_side.opposite();
-        return EdgeShape {
+        let mut shape = EdgeShape {
             reverse: false,
             aligned: true,
+            staircase: false,
             source_side,
             source_axis: Axis::Flow,
             target_side,
             target_axis: Axis::Flow,
         };
+        // An aligned edge has no alternate shape to swap to (its two faces are fixed by which
+        // axis the nodes are aligned on), so the collision fix's only move for it is the
+        // fallback: a multi-rank aligned pair (e.g. a long edge that happens to line up) can
+        // still run straight through a node sitting in one of the ranks it skips over.
+        if shape_crosses_a_node(direction, source, target, &shape, nodes) {
+            shape.staircase = true;
+        }
+        return shape;
     }
 
     // "分岐形（source の out-degree > 1、または下記どちらでもない既定）" / "合流形（分岐形でなく
     // target の in-degree > 1）" — branch is the default; merge is the one exception, taken only
     // when the source is not itself branching and the target actually merges.
     let branching = source_out_degree > 1 || target_in_degree <= 1;
+    let (branch_source_side, branch_target_side) = (
+        cross_face(
+            direction,
+            cross(direction, &target.center) - cross(direction, &source.center),
+        ),
+        flow_face(
+            direction,
+            flow(direction, &source.center) - flow(direction, &target.center),
+        ),
+    );
+    let (merge_source_side, merge_target_side) = (
+        flow_face(
+            direction,
+            flow(direction, &target.center) - flow(direction, &source.center),
+        ),
+        cross_face(
+            direction,
+            cross(direction, &source.center) - cross(direction, &target.center),
+        ),
+    );
     let (source_side, target_side) = if branching {
-        (
-            cross_face(
-                direction,
-                cross(direction, &target.center) - cross(direction, &source.center),
-            ),
-            flow_face(
-                direction,
-                flow(direction, &source.center) - flow(direction, &target.center),
-            ),
-        )
+        (branch_source_side, branch_target_side)
     } else {
-        (
-            flow_face(
-                direction,
-                flow(direction, &target.center) - flow(direction, &source.center),
-            ),
-            cross_face(
-                direction,
-                cross(direction, &source.center) - cross(direction, &target.center),
-            ),
-        )
+        (merge_source_side, merge_target_side)
     };
-    EdgeShape {
+    let mut shape = EdgeShape {
         reverse: false,
         aligned: false,
+        staircase: false,
         source_side,
         source_axis: axis_of(direction, source_side),
         target_side,
         target_axis: axis_of(direction, target_side),
+    };
+    if shape_crosses_a_node(direction, source, target, &shape, nodes) {
+        // "分岐形の走行がノード箱と交差するなら合流形に切替えて再試行" — generalised (§10-1's
+        // own "衝突しない限り" is the instruction to generalise) to run symmetrically from
+        // whichever shape was natural: try the other one next, whichever that is.
+        let (alt_source_side, alt_target_side) = if branching {
+            (merge_source_side, merge_target_side)
+        } else {
+            (branch_source_side, branch_target_side)
+        };
+        let alt = EdgeShape {
+            reverse: false,
+            aligned: false,
+            staircase: false,
+            source_side: alt_source_side,
+            source_axis: axis_of(direction, alt_source_side),
+            target_side: alt_target_side,
+            target_axis: axis_of(direction, alt_target_side),
+        };
+        if shape_crosses_a_node(direction, source, target, &alt, nodes) {
+            // "両形とも交差するなら既存の階段経路（dagre経由点）へフォールバック" — keep the
+            // alternate's faces (the last one actually tried) so `evict` still has a real face
+            // to group this edge's ports by; only how the two ports are *joined* changes.
+            shape = alt;
+            shape.staircase = true;
+        } else {
+            shape = alt;
+        }
     }
+    shape
 }
 
 /// Builds the final polyline for one edge, given the exact port coordinate [`evict`] (or, for a
@@ -471,8 +618,8 @@ fn route_with_ports(
     let source_port = port_at(source, shape.source_side, source_coord, PORT_INSET);
     let target_port = port_at(target, shape.target_side, target_coord, PORT_INSET);
 
-    let mut points = if shape.reverse {
-        route_reverse_with_ports(direction, shape, source_port, target_port, raw)
+    let mut points = if shape.reverse || shape.staircase {
+        route_staircase_with_ports(direction, shape, source_port, target_port, raw)
     } else {
         // The one-bend shape branch and merge share, and aligned falls into too: `bridge` between
         // faces of unlike axes is always exactly one corner regardless of eviction's offsets
@@ -500,11 +647,15 @@ fn route_with_ports(
     points
 }
 
-/// The back-edge shape: keep dagre's own waypoint chain (it already threads any nodes sitting
-/// between the two ranks — §10-2's "暫定" note is exactly that this reuse, not a real perimeter
-/// route, is what makes that safe before stage 5) and straighten every leg onto right angles,
+/// The staircase shape both a back edge ([`EdgeShape::reverse`]) and a collision-fallback forward
+/// edge ([`EdgeShape::staircase`]) draw: keep dagre's own waypoint chain (for a back edge it
+/// already threads any nodes sitting between the two ranks — §10-2's "暫定" note is exactly that
+/// this reuse, not a real perimeter route, is what makes that safe before stage 5; for a
+/// collision-fallback forward edge it is whatever dagre itself routed the edge through, on the
+/// reasoning that dagre's own crossing-minimised path is a better bet than either of the two right
+/// angle bends that were both already ruled out) and straighten every leg onto right angles,
 /// starting and ending at the ports [`route_with_ports`] already placed.
-fn route_reverse_with_ports(
+fn route_staircase_with_ports(
     direction: Direction,
     shape: &EdgeShape,
     source_port: Point,
@@ -554,6 +705,8 @@ pub fn route_edge(
     source_out_degree: usize,
     target_in_degree: usize,
 ) -> Vec<Point> {
+    // No other nodes exist in this isolated helper, so there is nothing to collide with —
+    // `shape_crosses_a_node` degrades harmlessly to "never crosses" over an empty slice.
     let shape = classify(
         direction,
         source,
@@ -563,6 +716,7 @@ pub fn route_edge(
         target_rank,
         source_out_degree,
         target_in_degree,
+        &[],
     );
     let source_coord = face_center_coord(source, shape.source_side);
     let target_coord = face_center_coord(target, shape.target_side);
@@ -784,6 +938,7 @@ pub fn route_flowchart(
                 e.target_rank,
                 e.source_out_degree,
                 e.target_in_degree,
+                nodes,
             ))
         })
         .collect();
@@ -822,6 +977,168 @@ pub fn route_flowchart(
     RoutedFlowchart {
         points,
         required_size: eviction.required_size,
+    }
+}
+
+/// `node`'s own half-extent along the cross axis — `w/2` for `TD`/`BT` (whose cross axis is x),
+/// `h/2` for `LR`/`RL` (whose cross axis is y). What [`align_straight_lanes`]'s overlap-resolution
+/// sweep pads a gap by, on each side, and the same quantity dagre's own `nodesep` already spaces
+/// same-rank nodes apart by.
+fn cross_extent(direction: Direction, node: &PlacedNode) -> f64 {
+    match direction {
+        Direction::TopToBottom | Direction::BottomToTop => node.size.w / 2.0,
+        Direction::LeftToRight | Direction::RightToLeft => node.size.h / 2.0,
+    }
+}
+
+/// §10-1 item 2's "レーン揃え": greedily selects a maximal set of node-disjoint "straight lane"
+/// edges between *adjacent* ranks, then slides every node in each resulting chain onto one shared
+/// cross coordinate — after which [`classify`]'s existing `aligned` check (unchanged) recognises
+/// the chain's edges on its own, the same way an edge that already happened to line up under
+/// stage 1/2 was recognised, and draws them dead straight.
+///
+/// Mutates `nodes` in place and is meant to run once, right after a layout pass places them and
+/// before anything downstream (frames, `route_flowchart`) reads a position from them — see the
+/// module doc's "Lane alignment moves nodes" section for why the order matters.
+///
+/// `node_rank` is dagre's own rank per node id; `candidates` is every edge eligible to be
+/// considered for a lane — the caller's job to have already excluded a cluster-anchored edge (one
+/// whose written endpoint is a block, not the real node dagre routed against), since this module
+/// has no opinion of its own about clusters.
+pub fn align_straight_lanes(
+    direction: Direction,
+    nodes: &mut [PlacedNode],
+    node_rank: &HashMap<String, i32>,
+    candidates: &[(String, String)],
+) {
+    if nodes.len() < 2 {
+        return;
+    }
+    let id_index: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
+
+    // Every rank's member ids, in their ORIGINAL cross-axis order — captured before this function
+    // moves anything, and never resorted afterwards: §10-1 item 1's "ランク内の並び順は変えない"
+    // applies just as much to a lane-aligned rank as it did to a grown one.
+    let mut by_rank: HashMap<i32, Vec<usize>> = HashMap::new();
+    for (id, &rank) in node_rank {
+        if let Some(&i) = id_index.get(id) {
+            by_rank.entry(rank).or_default().push(i);
+        }
+    }
+    for ids in by_rank.values_mut() {
+        ids.sort_by(|&a, &b| {
+            cross(direction, &nodes[a].center)
+                .partial_cmp(&cross(direction, &nodes[b].center))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| nodes[a].id.cmp(&nodes[b].id))
+        });
+    }
+
+    // --- greedy straight-lane selection, rank pair by rank pair, in rank order -------------------
+    //
+    // "各ノード高々1入1出" (at most one selected outgoing / incoming edge per node) makes the
+    // selected edges a set of node-disjoint simple paths by construction — no node ever has two
+    // selected successors or two selected predecessors, so following `next` from any node that
+    // is not itself somebody's selected successor walks exactly one chain to its end.
+    let mut used_out: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut used_in: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut next: HashMap<String, String> = HashMap::new();
+
+    let mut ranks: Vec<i32> = node_rank.values().copied().collect();
+    ranks.sort_unstable();
+    ranks.dedup();
+    for &r in &ranks {
+        let mut pair_candidates: Vec<&(String, String)> = candidates
+            .iter()
+            .filter(|(s, t)| node_rank.get(s) == Some(&r) && node_rank.get(t) == Some(&(r + 1)))
+            .collect();
+        // "タイは上・左優先＝cross座標の小さい方" — sort by the source's own cross coordinate
+        // first (so the topmost/leftmost source is offered its pick first), then the target's,
+        // then by id for a fully deterministic order a `HashMap`-built candidate list would not
+        // otherwise have.
+        pair_candidates.sort_by(|(s1, t1), (s2, t2)| {
+            let sc1 = cross(direction, &nodes[id_index[s1]].center);
+            let sc2 = cross(direction, &nodes[id_index[s2]].center);
+            sc1.partial_cmp(&sc2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    let tc1 = cross(direction, &nodes[id_index[t1]].center);
+                    let tc2 = cross(direction, &nodes[id_index[t2]].center);
+                    tc1.partial_cmp(&tc2).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| s1.cmp(s2))
+                .then_with(|| t1.cmp(t2))
+        });
+        for (s, t) in pair_candidates {
+            if used_out.contains(s) || used_in.contains(t) {
+                continue;
+            }
+            used_out.insert(s.clone());
+            used_in.insert(t.clone());
+            next.insert(s.clone(), t.clone());
+        }
+    }
+
+    // --- build chains: a head is a selected source that is nobody's selected target ------------
+    let mut chains: Vec<Vec<String>> = Vec::new();
+    for s in &used_out {
+        if used_in.contains(s) {
+            continue; // not a head — some other selected edge already leads into it
+        }
+        let mut chain = vec![s.clone()];
+        let mut cur = s.clone();
+        while let Some(nxt) = next.get(&cur) {
+            chain.push(nxt.clone());
+            cur = nxt.clone();
+        }
+        chains.push(chain);
+    }
+
+    // --- align: every chain member's cross coordinate becomes the chain's own average -----------
+    //
+    // Chains are node-disjoint, so this can never read one chain's *already-moved* position while
+    // computing another's average — every member's `center` here is still exactly where dagre (or
+    // this pass's own growth retry) put it.
+    for chain in &chains {
+        if chain.len() < 2 {
+            continue;
+        }
+        let avg: f64 = chain
+            .iter()
+            .map(|id| cross(direction, &nodes[id_index[id]].center))
+            .sum::<f64>()
+            / chain.len() as f64;
+        for id in chain {
+            let i = id_index[id];
+            let flow_v = flow(direction, &nodes[i].center);
+            nodes[i].center = make(direction, flow_v, avg);
+        }
+    }
+
+    // --- resolve overlaps: one forward sweep per rank, in the fixed original order --------------
+    //
+    // §10-1 item 1's "重なった側を押し出して従来の最小間隔を維持する（ランク内の並び順は変えない）"
+    // — `NODE_SEP` is dagre's own `nodesep`, reused so a push respects the same gap the rank was
+    // laid out with in the first place, whether or not either node in a pair moved at all.
+    for ids in by_rank.values() {
+        let mut prev_far_edge: Option<f64> = None;
+        for &i in ids {
+            let half = cross_extent(direction, &nodes[i]);
+            let mut c = cross(direction, &nodes[i].center);
+            if let Some(prev_edge) = prev_far_edge {
+                let min_c = prev_edge + super::NODE_SEP + half;
+                if c < min_c {
+                    c = min_c;
+                    let flow_v = flow(direction, &nodes[i].center);
+                    nodes[i].center = make(direction, flow_v, c);
+                }
+            }
+            prev_far_edge = Some(c + half);
+        }
     }
 }
 
@@ -994,12 +1311,22 @@ mod tests {
 
     #[test]
     fn three_incoming_edges_get_16px_ports_symmetric_about_the_face_and_clear_of_corners() {
-        // X (x=200), Y (x=480) and Z (x=800) all branch into T (x=500) from above — none exactly
-        // matches T's own x, so none is `aligned` by accident.
+        // X, Y and Z each branch into T (x=500) from above, none exactly matching T's own x (so
+        // none is `aligned` by accident) — see `orthogonal_growth_widens_a_node_...`'s sibling
+        // doc for a fuller explanation, but two things about these positions matter for stage 3's
+        // collision fix (§10-1 item 1), not just stage 2's eviction math this test is actually
+        // about: each source sits on its own row (y=50/150/250, comfortably more than a
+        // box-height apart), so a branch's cross-axis sweep — which runs at the *source's own*
+        // row — never grazes a sibling; and every source's x (50/950/1400) sits far from T's own
+        // centre (500), because `classify`'s collision test runs at zero eviction offset, so
+        // *every* candidate edge's vertical leg is tested landing at that same shared x during
+        // classification, even though eviction later spreads their real endpoints 16px apart — a
+        // sibling parked near that shared column (as an earlier draft's Y, at x=480, was) reads
+        // as blocking every edge's vertical leg, not just its own.
         let target = node("T", 500.0, 300.0, 300.0, 60.0);
-        let x = node("X", 200.0, 100.0, 60.0, 40.0);
-        let y = node("Y", 480.0, 100.0, 60.0, 40.0);
-        let z = node("Z", 800.0, 100.0, 60.0, 40.0);
+        let x = node("X", 50.0, 50.0, 60.0, 40.0);
+        let y = node("Y", 950.0, 150.0, 60.0, 40.0);
+        let z = node("Z", 1400.0, 250.0, 60.0, 40.0);
         let nodes = vec![target.clone(), x.clone(), y.clone(), z.clone()];
         let edges = three_branches_into("T");
         let routed = route_all(Direction::TopToBottom, &nodes, &edges);
@@ -1015,7 +1342,7 @@ mod tests {
         assert!((xs[1] - xs[0] - PORT_SPACING).abs() < 1e-9, "{xs:?}");
         assert!((xs[2] - xs[1] - PORT_SPACING).abs() < 1e-9, "{xs:?}");
 
-        // Order matches the sort key: X (cross=200) leftmost, Z (cross=800) rightmost.
+        // Order matches the sort key: X (cross=50) leftmost, Z (cross=1400) rightmost.
         assert!(tip_x < tip_y && tip_y < tip_z, "{tip_x} {tip_y} {tip_z}");
 
         // Every port at least PORT_CLEARANCE from the corner (T is 300px wide, so its half-width,
@@ -1038,10 +1365,13 @@ mod tests {
         // see `three_branches_into`'s own doc). Three claims on B's Top face, an odd count, is
         // what gives the 16px grid an exact centre slot at offset 0 — rule 2 puts the aligned
         // A->B there and pushes both branching siblings to the outer two slots, ±16px, never 0.
+        // A, C and D each sit on their own row (see `three_incoming_edges_...`'s doc for why: at
+        // one shared row, A itself — directly between C and D on the x axis — would sit in the
+        // path of both C's and D's own cross-axis sweep and trip stage 3's collision fix).
         let a = node("A", 300.0, 0.0, 60.0, 40.0);
         let b = node("B", 300.0, 200.0, 60.0, 40.0);
-        let c = node("C", 100.0, 0.0, 60.0, 40.0);
-        let d = node("D", 500.0, 0.0, 60.0, 40.0);
+        let c = node("C", 100.0, 70.0, 60.0, 40.0);
+        let d = node("D", 500.0, 140.0, 60.0, 40.0);
         let nodes = vec![a.clone(), b.clone(), c.clone(), d.clone()];
         let edges = vec![
             EligibleEdge {
@@ -1101,11 +1431,13 @@ mod tests {
         // NARROW is only 20px wide — nowhere near the 3-port minimum flat run of
         // `(3-1)*16 + 2*8 = 48px` — and receives 3 branching edges on its Top face. ROOMY is
         // 300px wide and receives the same 3 edges: its face was never the bottleneck.
+        // Each source on its own row — see `three_incoming_edges_...`'s doc: at a shared row, Z's
+        // sweep toward NARROW (x=0) would run right through Y's box sitting at x=225 in between.
         let narrow = node("NARROW", 0.0, 300.0, 20.0, 40.0);
         let roomy = node("ROOMY", 500.0, 300.0, 300.0, 40.0);
-        let x = node("X", -50.0, 100.0, 40.0, 30.0);
-        let y = node("Y", 225.0, 100.0, 40.0, 30.0);
-        let z = node("Z", 490.0, 100.0, 40.0, 30.0);
+        let x = node("X", -50.0, 50.0, 40.0, 30.0);
+        let y = node("Y", 225.0, 150.0, 40.0, 30.0);
+        let z = node("Z", 490.0, 250.0, 40.0, 30.0);
         let nodes = vec![
             narrow.clone(),
             roomy.clone(),
@@ -1179,10 +1511,11 @@ mod tests {
 
     #[test]
     fn eviction_keeps_every_port_exactly_port_inset_outside_the_node() {
+        // Same spread-rows-and-columns fixture as `three_incoming_edges_...` — see its doc.
         let target = node("T", 500.0, 300.0, 300.0, 60.0);
-        let x = node("X", 200.0, 100.0, 60.0, 40.0);
-        let y = node("Y", 480.0, 100.0, 60.0, 40.0);
-        let z = node("Z", 800.0, 100.0, 60.0, 40.0);
+        let x = node("X", 50.0, 50.0, 60.0, 40.0);
+        let y = node("Y", 950.0, 150.0, 60.0, 40.0);
+        let z = node("Z", 1400.0, 250.0, 60.0, 40.0);
         let nodes = vec![target.clone(), x.clone(), y.clone(), z.clone()];
         let edges = three_branches_into("T");
         let routed = route_all(Direction::TopToBottom, &nodes, &edges);
@@ -1194,5 +1527,105 @@ mod tests {
                 "{id}: evicted port must still sit exactly PORT_INSET outside the face: {tip:?}"
             );
         }
+    }
+
+    // --- stage 3: lane alignment --------------------------------------------------------------
+
+    fn ranks(pairs: &[(&str, i32)]) -> HashMap<String, i32> {
+        pairs.iter().map(|(id, r)| (id.to_string(), *r)).collect()
+    }
+
+    fn edge(source: &str, target: &str) -> (String, String) {
+        (source.to_string(), target.to_string())
+    }
+
+    #[test]
+    fn a_straight_chain_across_three_ranks_aligns_onto_the_average_cross_coordinate() {
+        // A, B, C start at x = 0, 50, 100 (misaligned) across three adjacent ranks, one edge
+        // apiece — a single node-disjoint chain. The average, 50, is where all three must end up;
+        // B (already there) does not move, A and C do.
+        let mut nodes = vec![
+            node("A", 0.0, 0.0, 40.0, 30.0),
+            node("B", 50.0, 100.0, 40.0, 30.0),
+            node("C", 100.0, 200.0, 40.0, 30.0),
+        ];
+        let node_rank = ranks(&[("A", 0), ("B", 1), ("C", 2)]);
+        let candidates = [edge("A", "B"), edge("B", "C")];
+        align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
+
+        for n in &nodes {
+            assert!(
+                (n.center.x - 50.0).abs() < 1e-9,
+                "{}: expected x=50 (the chain's average), got {:?}",
+                n.id,
+                n.center
+            );
+            // The flow coordinate (rank position) must be untouched — only cross moves.
+        }
+        assert_eq!(nodes[0].center.y, 0.0);
+        assert_eq!(nodes[1].center.y, 100.0);
+        assert_eq!(nodes[2].center.y, 200.0);
+    }
+
+    #[test]
+    fn tie_break_prefers_the_smaller_cross_coordinate() {
+        // S1 (x=10) and S2 (x=500 — far enough that S1's own move below cannot possibly bring the
+        // two within the minimum rank gap, which would otherwise entangle this test with the
+        // separate overlap-resolution behaviour `overlap_resolution_pushes_...` already covers)
+        // both offer T (x=50) a straight lane; only one can have it ("各ノード高々1入1出"). §10-1
+        // item 1's "タイは上・左優先＝cross座標の小さい方" means S1 (the smaller cross coordinate)
+        // wins — T ends up at (10+50)/2 = 30, not (500+50)/2 = 275 — and S2, having lost the tie,
+        // is left exactly where it started.
+        let mut nodes = vec![
+            node("S1", 10.0, 0.0, 40.0, 30.0),
+            node("S2", 500.0, 0.0, 40.0, 30.0),
+            node("T", 50.0, 100.0, 40.0, 30.0),
+        ];
+        let node_rank = ranks(&[("S1", 0), ("S2", 0), ("T", 1)]);
+        let candidates = [edge("S1", "T"), edge("S2", "T")];
+        align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
+
+        let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        assert!(
+            (by_id["T"].center.x - 30.0).abs() < 1e-9,
+            "T must align with S1 (30), not S2 (275): {:?}",
+            by_id["T"].center
+        );
+        assert_eq!(
+            by_id["S2"].center.x, 500.0,
+            "S2 lost the tie and must be left exactly where it started"
+        );
+    }
+
+    #[test]
+    fn overlap_resolution_pushes_the_later_node_without_reordering() {
+        // P (chain average 100) and Q (chain average 155) are only 55px apart after their own
+        // independent alignment — short of the `half(20) + NODE_SEP(50) + half(20) = 90px`
+        // minimum. §10-1 item 1's "重なった側を押し出して従来の最小間隔を維持する（ランク内の並び
+        // 順は変えない）": Q, which was already the later of the two in original rank order
+        // (P at x=200, Q at x=210), is the one pushed — to exactly 190, not moved to swap places
+        // with P.
+        let mut nodes = vec![
+            node("A", 0.0, 0.0, 40.0, 30.0),
+            node("C", 100.0, 0.0, 40.0, 30.0),
+            node("P", 200.0, 100.0, 40.0, 30.0),
+            node("Q", 210.0, 100.0, 40.0, 30.0),
+        ];
+        let node_rank = ranks(&[("A", 0), ("C", 0), ("P", 1), ("Q", 1)]);
+        let candidates = [edge("A", "P"), edge("C", "Q")];
+        align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
+
+        let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        assert!(
+            (by_id["P"].center.x - 100.0).abs() < 1e-9,
+            "P is first in rank order and never needs pushing: {:?}",
+            by_id["P"].center
+        );
+        assert!(
+            (by_id["Q"].center.x - 190.0).abs() < 1e-9,
+            "Q must be pushed to exactly P's far edge (120) + NODE_SEP(50) + Q's half-width(20) \
+             = 190, not left at its own aligned 155: {:?}",
+            by_id["Q"].center
+        );
     }
 }

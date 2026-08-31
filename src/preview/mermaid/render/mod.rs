@@ -1104,6 +1104,31 @@ fn lay_out_spec_pass(
     if nodes.is_empty() {
         return Err(RenderError::NothingToDraw);
     }
+
+    // Stage 3's lane alignment (§10-1 item 2, "レーン揃え") runs here — after dagre has placed
+    // every node and before anything downstream reads a position from one, most importantly
+    // `read_clusters` just below: a frame has to enclose wherever its members actually end up, so
+    // moving a member after its frame was already computed would leave the frame stale. Only a
+    // genuine node-to-node edge is a lane candidate — one whose written endpoint dagre did not
+    // have to re-anchor onto a block member (`d.edge.from == d.tail`) — the same "cluster boundary
+    // is out of scope" rule stage 1 already applies to routing applies here to alignment too.
+    if spec.routing == Routing::Orthogonal {
+        let node_rank: HashMap<String, i32> = nodes
+            .iter()
+            .filter_map(|n| {
+                g.node(&n.id)
+                    .and_then(|nl| nl.rank)
+                    .map(|r| (n.id.clone(), r))
+            })
+            .collect();
+        let candidates: Vec<(String, String)> = drawable
+            .iter()
+            .filter(|d| d.edge.from == d.tail && d.edge.to == d.head)
+            .map(|d| (d.tail.clone(), d.head.clone()))
+            .collect();
+        orthogonal::align_straight_lanes(spec.direction, &mut nodes, &node_rank, &candidates);
+    }
+
     let by_id: HashMap<&str, usize> = nodes
         .iter()
         .enumerate()

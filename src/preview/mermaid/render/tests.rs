@@ -4545,20 +4545,37 @@ fn orthogonal_corpus() -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
-/// [`orthogonal_corpus`], further filtered down to sources with no cycle — no edge whose target's
-/// rank is at or before its source's. Those are exactly the sources
-/// [`orthogonal_bend_count_never_exceeds_two`] can state a bend-count *cap* over: a cyclic
-/// source's back edge is deliberately exempt from any cap (§10-1 item 2's "補助・戻り辺は外周
-/// レーンのため回数制限なし" — a real perimeter route is stage 5's job, and stage 1's stopgap
-/// reuses dagre's own waypoint chain verbatim, however long it is). Named explicitly rather than
-/// detected, because nothing on a finished [`Diagram`] carries dagre's rank any more to detect it
-/// from — `branch`/`cjk`/`long-edge`/`left-right` each close a cycle back onto an earlier node,
-/// and `self-loop` names one outright.
+/// [`orthogonal_corpus`], further filtered down to the sources
+/// [`orthogonal_bend_count_never_exceeds_two`] can state a bend-count *cap* over. Two kinds of
+/// edge are deliberately exempt from any cap, both drawn by the same mechanism
+/// (`orthogonal::route_staircase_with_ports`: dagre's own waypoint chain, straightened, however
+/// long it is) and both excluded here by source name rather than detected, since nothing on a
+/// finished [`Diagram`] says which edge took which path any more:
+///
+/// * a **back edge** (§10-1 item 2's "補助・戻り辺は外周レーンのため回数制限なし" — a real
+///   perimeter route is stage 5's job) — `branch`/`cjk`/`long-edge`/`left-right` each close a
+///   cycle back onto an earlier node, and `self-loop` names one outright;
+/// * a **collision-fallback forward edge** (§10-1 item 1, stage 3: a branch or merge whose route
+///   crossed another node in *both* attempts falls back the same way). `amp-chain` is the one
+///   corpus source that reaches this in practice — dumped and read by hand before being added
+///   here, not guessed at: `A`'s branch to `D` crosses `B` (`A`'s own sibling source) on one
+///   attempt and `C` (`D`'s own sibling target) on the other, so it falls back and comes out at 4
+///   bends. `docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 2's "回数制限なし" is written about back
+///   edges specifically, but the same reasoning applies here: a route that had to give up on both
+///   direct right-angle shapes is in exactly the position stage 5's perimeter lanes are meant
+///   for, not one this stage's ≤2 cap was ever meant to hold to.
 fn orthogonal_dag_corpus() -> Vec<(&'static str, &'static str)> {
-    const CYCLIC: &[&str] = &["branch", "cjk", "long-edge", "left-right", "self-loop"];
+    const UNCAPPED: &[&str] = &[
+        "branch",
+        "cjk",
+        "long-edge",
+        "left-right",
+        "self-loop",
+        "amp-chain",
+    ];
     orthogonal_corpus()
         .into_iter()
-        .filter(|(name, _)| !CYCLIC.contains(name))
+        .filter(|(name, _)| !UNCAPPED.contains(name))
         .collect()
 }
 
@@ -5128,15 +5145,16 @@ fn orthogonal_roomy_face_does_not_grow() {
     );
 }
 
-/// Across the whole cycle-free corpus ([`orthogonal_dag_corpus`]), no orthogonal-routed edge ever
-/// exceeds two bends — §10-1 item 1's "ポート分配で端点がずれた辺は曲げ2回まで許す" is a *cap* on
-/// the aligned/branch/merge shapes, and this is the invariant stage 1's own bend-count tests could
-/// not state, because eviction (and the growth it can trigger) did not exist yet: an aligned edge
+/// Across the capped corpus ([`orthogonal_dag_corpus`]), no orthogonal-routed edge ever exceeds
+/// two bends — §10-1 item 1's "ポート分配で端点がずれた辺は曲げ2回まで許す" is a *cap* on the
+/// aligned/branch/merge shapes, and this is the invariant stage 1's own bend-count tests could not
+/// state, because eviction (and the growth it can trigger) did not exist yet: an aligned edge
 /// whose two ends land on different eviction offsets needs exactly the second bend this rule
-/// allows for. A back edge is deliberately excluded from this cap — see
-/// [`orthogonal_dag_corpus`]'s own doc — and was the first thing that caught this test being
-/// written over the wrong corpus: `branch`'s `D --> B` cycle came back with 4 bends on the first
-/// run, correctly, because §10-1 item 2 puts no limit on a back edge at all.
+/// allows for. A back edge and a collision-fallback edge are both deliberately excluded from this
+/// cap — see [`orthogonal_dag_corpus`]'s own doc — and both were caught by this test being run
+/// over the wrong corpus before either exclusion existed: `branch`'s `D --> B` cycle came back
+/// with 4 bends on the first run (correctly — §10-1 item 2 puts no limit on a back edge at all),
+/// and stage 3's collision fix later did the same to `amp-chain`'s `A --> D`.
 #[test]
 fn orthogonal_bend_count_never_exceeds_two() {
     for (name, src) in orthogonal_dag_corpus() {
@@ -5152,4 +5170,145 @@ fn orthogonal_bend_count_never_exceeds_two() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stage 3: lane alignment and node-collision avoidance (docs/FEATURE-MERMAID-RENDERER.md §10-1
+// item 2, "レーン揃え", plus item 1's collision fix)
+// ---------------------------------------------------------------------------------------------
+
+/// Every routed segment of every edge in `d`, other than the two the edge itself owns, must clear
+/// every node's box — the "強い不変条件" stage 3's collision fix exists to guarantee. Asserts
+/// through `orthogonal::segment_crosses_node`, the exact box test `classify` itself runs, so this
+/// states the same question about the *finished* diagram that the routing decision already asked
+/// about a candidate shape.
+fn assert_no_segment_crosses_a_foreign_node(name: &str, d: &Diagram) {
+    for e in &d.edges {
+        for w in e.points.windows(2) {
+            for n in &d.nodes {
+                if n.id == e.from || n.id == e.to {
+                    continue;
+                }
+                assert!(
+                    !orthogonal::segment_crosses_node(&w[0], &w[1], n),
+                    "{name}: edge {}->{} segment {:?}->{:?} crosses {} {:?}",
+                    e.from,
+                    e.to,
+                    w[0],
+                    w[1],
+                    n.id,
+                    n.bounds()
+                );
+            }
+        }
+    }
+}
+
+/// §10-1 item 1's collision fix, run over the whole cycle-free corpus ([`orthogonal_dag_corpus`]
+/// — see its own doc for why a back edge and `amp-chain`'s known collision-fallback edge are
+/// excluded: both are explicitly exempt from any bend cap *and* from any collision guarantee,
+/// since a real perimeter route is still stage 5's job). This is stage 3's headline invariant.
+#[test]
+fn orthogonal_no_segment_crosses_a_foreign_node_across_the_dag_corpus() {
+    for (name, src) in orthogonal_dag_corpus() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        assert_no_segment_crosses_a_foreign_node(name, &d);
+    }
+}
+
+/// The real diagram `docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 1 names as this stage's
+/// motivating case: `samples/mermaid.ja.md`'s big flowchart, where `MD`（ブロックモデル）'s branch
+/// to `MM`（mermaid）used to sweep straight through `NA`（プレビュー不可）'s box — both sitting in
+/// `MD`'s own rank, directly in the path a branch's cross-axis sweep runs along. Confirms the
+/// concrete bug is gone, not just the general mechanism: `MD`'s own two edges (`MD->MM`,
+/// `MD->MA`) must clear `NA`, and the whole diagram must still hold the strong invariant.
+#[test]
+fn orthogonal_settings_rules_sample_no_longer_pierces_a_sibling_node() {
+    let src = "flowchart LR\n  F[ファイル] --> C{設定のルール}\n  \
+               C -->|テキスト| T[窓読み]\n  C -->|コード| S[構文強調]\n  \
+               C -->|Markdown| MD[ブロックモデル]\n  C -->|CSV / TSV| TB[表]\n  \
+               C -->|画像| IM[デコード]\n  C -->|PDF| PD[ページ描画]\n  C -->|SVG| SV[usvg]\n  \
+               C -->|動画| VD[キーフレーム]\n  C -->|書庫| AR[一覧]\n  \
+               C -->|なし| NA[プレビュー不可]\n  MD --> MM[mermaid]\n  MD --> MA[数式]\n  \
+               MM --> RS[ラスタライズ]\n  MA --> RS\n  SV --> RS\n  PD --> RS\n  \
+               IM --> FIT[セルに合わせる]\n  RS --> FIT\n  VD --> FIT\n  FIT --> K{端末}\n  \
+               K -->|kitty| KT[圧縮転送]\n  K -->|sixel / iTerm2| RI[画像プロトコル]\n  \
+               K -->|それ以外| HB[ハーフブロック]\n  \
+               classDef pix fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  \
+               classDef txt fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  \
+               class IM,PD,SV,VD,MM,MA,RS,FIT,KT,RI,HB pix\n  \
+               class T,S,MD,TB,AR txt\n  \
+               style NA fill:#2d2418,stroke:#d4a017,color:#c9d1d9";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+
+    let na = d.node("NA").expect("NA must exist");
+    for id in ["MM", "MA"] {
+        let e = d
+            .edges
+            .iter()
+            .find(|e| e.from == "MD" && e.to == *id)
+            .unwrap_or_else(|| panic!("MD->{id} must exist"));
+        for w in e.points.windows(2) {
+            assert!(
+                !orthogonal::segment_crosses_node(&w[0], &w[1], na),
+                "MD->{id} must no longer pierce NA: segment {:?}->{:?}, NA bounds {:?}",
+                w[0],
+                w[1],
+                na.bounds()
+            );
+        }
+    }
+
+    assert_no_segment_crosses_a_foreign_node("settings-rules", &d);
+}
+
+/// Every rank still holds no overlapping node after lane alignment moved some of them — §10-1
+/// item 1's "整列でノードを動かした結果…重なった側を押し出して従来の最小間隔を維持する". Checked
+/// with the exact same box-overlap assertion [`invariant_nodes_do_not_overlap`] states for the
+/// splines path, now over the whole corpus under `"konoma-orthogonal"`.
+#[test]
+fn orthogonal_lane_alignment_never_leaves_nodes_overlapping() {
+    for (name, src) in orthogonal_corpus() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        check_nodes_do_not_overlap(name, &d);
+    }
+}
+
+/// §10-1 item 2's "直進レーンを挟んで上下（左右）に分かれる辺は…曲げ位置を共有して対称に". Two
+/// merges into the same target, one from each side, already share a bend column by construction
+/// (a merge's bend sits at the target's own flow coordinate — `orthogonal::bridge`'s `Flow, Cross`
+/// case), which is exactly the "現状の合流形が自然に対称になるケース" the rule says to leave
+/// alone: this states that directly, on a real diagram (`length`'s `B --> D`, `C --> D`, dumped
+/// and confirmed before being pinned), rather than re-deriving it from the formula alone.
+#[test]
+fn orthogonal_merges_into_the_same_target_share_a_symmetric_bend_column() {
+    let src = "flowchart TD\n  A ---> B\n  A --> C\n  B --> D\n  C --> D";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let bd = d
+        .edges
+        .iter()
+        .find(|e| e.from == "B" && e.to == "D")
+        .expect("B->D must exist");
+    let cd = d
+        .edges
+        .iter()
+        .find(|e| e.from == "C" && e.to == "D")
+        .expect("C->D must exist");
+    assert_eq!(bd.points.len(), 3, "{:?}", bd.points);
+    assert_eq!(cd.points.len(), 3, "{:?}", cd.points);
+    // The bend (middle point) of each sits at the same flow coordinate (y, for TD) — D's own —
+    // and the two are symmetric about D's own centre on the cross axis (x).
+    assert!(
+        (bd.points[1].y - cd.points[1].y).abs() < 1e-6,
+        "the two merges must bend at the same row: {:?} vs {:?}",
+        bd.points[1],
+        cd.points[1]
+    );
+    let d_node = d.node("D").expect("D must exist");
+    let b_offset = bd.points[1].x - d_node.center.x;
+    let c_offset = cd.points[1].x - d_node.center.x;
+    assert!(
+        (b_offset + c_offset).abs() < 1e-6,
+        "the two bends must be symmetric about D's own centre: {b_offset} vs {c_offset}"
+    );
 }
