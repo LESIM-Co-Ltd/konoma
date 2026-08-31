@@ -422,8 +422,10 @@ impl App {
         let max_px = self.mermaid_px();
         let theme = self.cfg.ui.mermaid_theme.clone();
         let curve = self.cfg.ui.mermaid_curve.clone();
+        let routing = self.cfg.ui.mermaid_routing.clone();
         let render = move || -> (Result<image::DynamicImage, String>, Option<std::sync::Arc<Vec<u8>>>) {
-            let Some(svg) = crate::preview::markdown::mermaid_to_svg_curve(&code, &theme, &curve)
+            let Some(svg) =
+                crate::preview::markdown::mermaid_to_svg_flow(&code, &theme, &curve, &routing)
             else {
                 return (Err("mermaid render failed".to_string()), None);
             };

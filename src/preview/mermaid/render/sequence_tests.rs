@@ -1693,6 +1693,7 @@ fn synthetic_sequence() -> Diagram {
             overlay: false,
             style: None,
             curve: Curve::Basis,
+            tip_matches_line: false,
         });
     }
     // A self-message: a loop out to the right and back.
@@ -1721,6 +1722,7 @@ fn synthetic_sequence() -> Diagram {
         overlay: false,
         style: None,
         curve: Curve::Basis,
+        tip_matches_line: false,
     });
 
     let lifelines = vec![

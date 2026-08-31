@@ -979,20 +979,40 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
     // The head end first, then the tail end. That order is not cosmetic: it is the order the
     // flowchart renderer emitted a `<-->`'s two heads in before terminators became per-end, and
     // the golden pins the sequence of elements.
+    //
+    // `tip_color`: mermaid's own convention (every diagram kind before `[ui] mermaid_routing`
+    // existed) is one fixed `theme.arrowhead` regardless of the line's own colour — that is
+    // `PlacedEdge::tip_matches_line`'s `false` case, and it is what every edge still draws.
+    // `true` — only a flowchart's own edge, only under `"konoma-orthogonal"` — instead paints the
+    // terminal mark in `line`, the exact string just drawn the path in: the theme default, unless
+    // `class`/`:::`/`linkStyle` overrode it above (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item
+    // 5, "辺・矢尻・ラベル文字・ノード枠を同色で揃える").
+    let tip_color = if edge.tip_matches_line {
+        line
+    } else {
+        theme.arrowhead
+    };
     let n = points.len();
     let (tail_dir, tail_tip) = (&points[1], &points[0]);
     let (head_dir, head_tip) = (&points[n - 2], &points[n - 1]);
-    emit_tip(out, head_dir, head_tip, edge.tip_end, theme);
-    emit_tip(out, tail_dir, tail_tip, edge.tip_start, theme);
+    emit_tip(out, head_dir, head_tip, edge.tip_end, tip_color, theme);
+    emit_tip(out, tail_dir, tail_tip, edge.tip_start, tip_color, theme);
 }
 
 /// One end of a line, whatever kind of mark it carries.
-fn emit_tip(out: &mut String, from: &Point, tip: &Point, kind: Tip, theme: &Theme) {
+///
+/// `color` is the ink every terminal-specific "arrowhead" colour below draws in —
+/// `theme.arrowhead` for every edge except a flowchart's own orthogonal-routed one (see
+/// `emit_edge`'s own doc on `tip_color`). `theme` is kept alongside it only for the handful of
+/// marks — `Lollipop`'s ring, a hollow `Tip::HollowTriangle`/`Tip::HollowDiamond`, an ER "zero"
+/// ring — whose *interior* is cut out in the node's own ground colour, which is never the line's
+/// business to override.
+fn emit_tip(out: &mut String, from: &Point, tip: &Point, kind: Tip, color: &str, theme: &Theme) {
     match kind {
         Tip::None => {}
-        Tip::Arrow => emit_arrow_head(out, from, tip, theme),
-        Tip::Cross => emit_cross(out, from, tip, theme),
-        Tip::Circle => emit_circle_end(out, from, tip, theme),
+        Tip::Arrow => emit_arrow_head(out, from, tip, color),
+        Tip::Cross => emit_cross(out, from, tip, color),
+        Tip::Circle => emit_circle_end(out, from, tip, color),
         Tip::Async => {
             let pts = edges::async_head(from, tip);
             out.push_str(&format!(
@@ -1001,12 +1021,16 @@ fn emit_tip(out: &mut String, from: &Point, tip: &Point, kind: Tip, theme: &Them
                     .map(|p| format!("{},{}", num(p.x), num(p.y)))
                     .collect::<Vec<_>>()
                     .join(" "),
-                theme.arrowhead
+                color
             ));
         }
-        Tip::HollowTriangle => emit_polygon_tip(out, &edges::triangle(from, tip), theme, false),
-        Tip::FilledDiamond => emit_polygon_tip(out, &edges::diamond(from, tip), theme, true),
-        Tip::HollowDiamond => emit_polygon_tip(out, &edges::diamond(from, tip), theme, false),
+        Tip::HollowTriangle => {
+            emit_polygon_tip(out, &edges::triangle(from, tip), theme, color, false)
+        }
+        Tip::FilledDiamond => emit_polygon_tip(out, &edges::diamond(from, tip), theme, color, true),
+        Tip::HollowDiamond => {
+            emit_polygon_tip(out, &edges::diamond(from, tip), theme, color, false)
+        }
         // A ring sitting *on* the boundary, which is how UML draws a provided interface.
         Tip::Lollipop => {
             let c = edges::back_along(from, tip, edges::LOLLIPOP_RADIUS);
@@ -1017,25 +1041,25 @@ fn emit_tip(out: &mut String, from: &Point, tip: &Point, kind: Tip, theme: &Them
                 num(c.y),
                 num(edges::LOLLIPOP_RADIUS),
                 theme.node_fill,
-                theme.arrowhead,
+                color,
                 num(NODE_STROKE_WIDTH)
             ));
         }
         Tip::ErOnlyOne => {
-            emit_er_bar(out, from, tip, edges::ER_NEAR, theme);
-            emit_er_bar(out, from, tip, edges::ER_FAR, theme);
+            emit_er_bar(out, from, tip, edges::ER_NEAR, color);
+            emit_er_bar(out, from, tip, edges::ER_FAR, color);
         }
         Tip::ErZeroOrOne => {
-            emit_er_bar(out, from, tip, edges::ER_NEAR, theme);
-            emit_er_ring(out, from, tip, edges::ER_FAR, theme);
+            emit_er_bar(out, from, tip, edges::ER_NEAR, color);
+            emit_er_ring(out, from, tip, edges::ER_FAR, theme, color);
         }
         Tip::ErOneOrMore => {
-            emit_crows_foot(out, from, tip, theme);
-            emit_er_bar(out, from, tip, edges::ER_FAR, theme);
+            emit_crows_foot(out, from, tip, color);
+            emit_er_bar(out, from, tip, edges::ER_FAR, color);
         }
         Tip::ErZeroOrMore => {
-            emit_crows_foot(out, from, tip, theme);
-            emit_er_ring(out, from, tip, edges::ER_FAR, theme);
+            emit_crows_foot(out, from, tip, color);
+            emit_er_ring(out, from, tip, edges::ER_FAR, theme, color);
         }
     }
 }
@@ -1043,26 +1067,22 @@ fn emit_tip(out: &mut String, from: &Point, tip: &Point, kind: Tip, theme: &Them
 /// A triangle or a diamond at the end of a line. `filled` picks between "this end owns the other"
 /// (composition, a solid mark) and "this end is the general case" (inheritance and aggregation,
 /// an outline the terminal's own ground shows through).
-fn emit_polygon_tip(out: &mut String, points: &[Point], theme: &Theme, filled: bool) {
+fn emit_polygon_tip(out: &mut String, points: &[Point], theme: &Theme, color: &str, filled: bool) {
     let pts = points
         .iter()
         .map(|p| format!("{},{}", num(p.x), num(p.y)))
         .collect::<Vec<_>>()
         .join(" ");
-    let fill = if filled {
-        theme.arrowhead
-    } else {
-        theme.node_fill
-    };
+    let fill = if filled { color } else { theme.node_fill };
     out.push_str(&format!(
         "<polygon points=\"{pts}\" fill=\"{fill}\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
-        theme.arrowhead,
+        color,
         num(NODE_STROKE_WIDTH)
     ));
 }
 
 /// The bar that means "one" on an ER relationship, drawn across the line.
-fn emit_er_bar(out: &mut String, from: &Point, tip: &Point, distance: f64, theme: &Theme) {
+fn emit_er_bar(out: &mut String, from: &Point, tip: &Point, distance: f64, color: &str) {
     let (a, b) = edges::cross_bar(from, tip, distance, edges::ER_BAR_HALF);
     out.push_str(&format!(
         "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" \
@@ -1071,14 +1091,21 @@ fn emit_er_bar(out: &mut String, from: &Point, tip: &Point, distance: f64, theme
         num(a.y),
         num(b.x),
         num(b.y),
-        theme.arrowhead,
+        color,
         num(EDGE_STROKE_WIDTH)
     ));
 }
 
 /// The ring that means "zero" on an ER relationship. Filled with the node colour rather than left
 /// open, so the shaft it sits on does not run through the middle of it.
-fn emit_er_ring(out: &mut String, from: &Point, tip: &Point, distance: f64, theme: &Theme) {
+fn emit_er_ring(
+    out: &mut String,
+    from: &Point,
+    tip: &Point,
+    distance: f64,
+    theme: &Theme,
+    color: &str,
+) {
     let c = edges::back_along(from, tip, distance);
     out.push_str(&format!(
         "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{}\" stroke=\"{}\" \
@@ -1087,13 +1114,13 @@ fn emit_er_ring(out: &mut String, from: &Point, tip: &Point, distance: f64, them
         num(c.y),
         num(edges::ER_RING_RADIUS),
         theme.node_fill,
-        theme.arrowhead,
+        color,
         num(EDGE_STROKE_WIDTH)
     ));
 }
 
 /// The crow's foot that means "many": three prongs opening onto the entity.
-fn emit_crows_foot(out: &mut String, from: &Point, tip: &Point, theme: &Theme) {
+fn emit_crows_foot(out: &mut String, from: &Point, tip: &Point, color: &str) {
     let mut d = String::new();
     for (a, b) in edges::crows_foot(from, tip) {
         d.push_str(&format!(
@@ -1107,7 +1134,7 @@ fn emit_crows_foot(out: &mut String, from: &Point, tip: &Point, theme: &Theme) {
     out.push_str(&format!(
         "<path d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
         d.trim_end(),
-        theme.arrowhead,
+        color,
         num(EDGE_STROKE_WIDTH)
     ));
 }
@@ -1156,7 +1183,7 @@ fn emit_panel(out: &mut String, panel: &Panel, node: &PlacedNode, stroke: &str, 
 }
 
 /// A filled triangle whose tip is exactly on the shape's boundary.
-fn emit_arrow_head(out: &mut String, from: &Point, tip: &Point, theme: &Theme) {
+fn emit_arrow_head(out: &mut String, from: &Point, tip: &Point, color: &str) {
     let pts = edges::arrow_head(from, tip);
     out.push_str(&format!(
         "<polygon points=\"{}\" fill=\"{}\"/>\n",
@@ -1164,7 +1191,7 @@ fn emit_arrow_head(out: &mut String, from: &Point, tip: &Point, theme: &Theme) {
             .map(|p| format!("{},{}", num(p.x), num(p.y)))
             .collect::<Vec<_>>()
             .join(" "),
-        theme.arrowhead
+        color
     ));
 }
 
@@ -1174,7 +1201,7 @@ fn emit_arrow_head(out: &mut String, from: &Point, tip: &Point, theme: &Theme) {
 /// the edges (so a line running under a box disappears under it), and a cross centred on the
 /// boundary loses its inner half to the node's fill — which reads as a `>`, not an `x`. Seen on a
 /// real render, not reasoned about.
-fn emit_cross(out: &mut String, from: &Point, tip: &Point, theme: &Theme) {
+fn emit_cross(out: &mut String, from: &Point, tip: &Point, color: &str) {
     let d = edges::CROSS_HALF;
     let (dx, dy) = (tip.x - from.x, tip.y - from.y);
     let len = dx.hypot(dy);
@@ -1195,13 +1222,13 @@ fn emit_cross(out: &mut String, from: &Point, tip: &Point, theme: &Theme) {
         num(cy - d),
         num(cx - d),
         num(cy + d),
-        theme.arrowhead,
+        color,
         num(EDGE_STROKE_WIDTH)
     ));
 }
 
 /// The `--o` terminator: a filled disc sitting just inside the boundary point.
-fn emit_circle_end(out: &mut String, from: &Point, tip: &Point, theme: &Theme) {
+fn emit_circle_end(out: &mut String, from: &Point, tip: &Point, color: &str) {
     let r = edges::CIRCLE_RADIUS;
     let (dx, dy) = (tip.x - from.x, tip.y - from.y);
     let len = dx.hypot(dy);
@@ -1215,7 +1242,7 @@ fn emit_circle_end(out: &mut String, from: &Point, tip: &Point, theme: &Theme) {
         num(tip.x - ux * r),
         num(tip.y - uy * r),
         num(r),
-        theme.arrowhead
+        color
     ));
 }
 

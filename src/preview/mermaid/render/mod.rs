@@ -65,6 +65,7 @@ pub mod journey;
 pub mod kanban;
 pub mod labels;
 pub mod mindmap;
+pub mod orthogonal;
 pub mod panel;
 pub mod requirement;
 pub mod sequence;
@@ -97,7 +98,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::preview::mermaid::flowchart::{
-    self, Direction, Flowchart, LinkStyleTarget, ParseError, Stroke,
+    self, Direction, Flowchart, LinkStyleTarget, ParseError, Shape, Stroke,
 };
 use crate::preview::mermaid::layout::{
     graph::{Graph, GraphOptions},
@@ -107,6 +108,7 @@ use crate::preview::mermaid::text_metrics;
 
 pub use edges::{Curve, Tip};
 pub use labels::Label;
+pub use orthogonal::Routing;
 pub use panel::Panel;
 #[allow(unused_imports)]
 pub use shapes::{Glyph, Mark, Size};
@@ -360,6 +362,16 @@ pub struct PlacedEdge {
     /// architecture, block) sets this to `Basis` unconditionally, which is exactly what it drew
     /// before this field existed.
     pub curve: Curve,
+    /// Whether the terminal mark (`svg::emit_tip`) is painted the line's own resolved stroke
+    /// colour rather than [`Theme::arrowhead`].
+    ///
+    /// `false` — every edge before `[ui] mermaid_routing` existed, and every edge of every kind
+    /// but a flowchart's own orthogonal-routed one today — draws exactly what it always drew:
+    /// mermaid's own convention of one fixed arrowhead colour regardless of the line's `class` /
+    /// `:::` / `linkStyle`. `true` is set only by `lay_out_spec`'s orthogonal branch, for
+    /// `docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 5 — "辺・矢尻・ラベル文字・ノード枠を同色で
+    /// 揃える" — which `[ui] mermaid_routing = "splines"` (mermaid's own look) does not ask for.
+    pub tip_matches_line: bool,
 }
 
 impl PlacedEdge {
@@ -559,9 +571,26 @@ pub fn render(code: &str, theme: &str) -> Result<String, RenderError> {
 /// [`render`], with the curve every edge draws in resolved from `curve` — `ui.mermaid_curve`'s raw
 /// string, `Curve::Basis`("basis") reproducing [`render`] exactly. An individual edge's own
 /// `linkStyle ... interpolate <curve>` wins over this default; see [`spec_of`].
+///
+/// [`render_flow`] with `routing` fixed at `"splines"` — every existing caller (the golden tests
+/// included) keeps this exact three-argument signature; `[ui] mermaid_routing` reaches konoma's
+/// own renderer only through [`render_flow`].
 pub fn render_curve(code: &str, theme: &str, curve: &str) -> Result<String, RenderError> {
+    render_flow(code, theme, curve, "splines")
+}
+
+/// [`render_curve`], with a flowchart's edges routed by `routing` — `[ui] mermaid_routing`'s raw
+/// string. `"splines"` reproduces [`render_curve`] exactly, byte for byte; `"konoma-orthogonal"` is
+/// `docs/FEATURE-MERMAID-RENDERER.md` §10's right-angle wiring mode. Every other diagram kind
+/// ignores `routing` entirely, the same as every kind but the flowchart ignores `curve`.
+pub fn render_flow(
+    code: &str,
+    theme: &str,
+    curve: &str,
+    routing: &str,
+) -> Result<String, RenderError> {
     let chart = flowchart::parse(code)?;
-    let diagram = lay_out_curve(&chart, curve)?;
+    let diagram = lay_out_flow(&chart, curve, routing)?;
     Ok(svg::emit(&diagram, &Theme::named(theme)))
 }
 
@@ -603,7 +632,15 @@ pub fn lay_out(chart: &Flowchart) -> Result<Diagram, RenderError> {
 
 /// [`lay_out`], with every edge's curve resolved from `curve` the way [`render_curve`] resolves
 /// it — see [`spec_of`] for exactly how a per-edge `linkStyle interpolate` overrides it.
+///
+/// [`lay_out_flow`] with `routing` fixed at `"splines"` — kept at this exact two-argument
+/// signature for the same reason [`render_curve`] is.
 pub fn lay_out_curve(chart: &Flowchart, curve: &str) -> Result<Diagram, RenderError> {
+    lay_out_flow(chart, curve, "splines")
+}
+
+/// [`lay_out_curve`], with a flowchart's edges routed by `routing` — see [`render_flow`].
+pub fn lay_out_flow(chart: &Flowchart, curve: &str, routing: &str) -> Result<Diagram, RenderError> {
     // The gate. usvg does not fail on a missing font, it just drops the glyphs, so the only place
     // this can be caught is before anything is built (PRD design principle #3).
     if !text_metrics::fonts_available() {
@@ -612,7 +649,7 @@ pub fn lay_out_curve(chart: &Flowchart, curve: &str) -> Result<Diagram, RenderEr
     if chart.nodes.is_empty() {
         return Err(RenderError::NothingToDraw);
     }
-    lay_out_spec(&spec_of(chart, curve))
+    lay_out_spec(&spec_of(chart, curve, Routing::parse(routing)))
 }
 
 /// A flowchart, measured and sized, as the language-neutral [`GraphSpec`] the layout reads.
@@ -636,7 +673,7 @@ pub fn lay_out_curve(chart: &Flowchart, curve: &str) -> Result<Diagram, RenderEr
 /// Only the flowchart language reads any of `%%{init}%%`'s `flowchart.curve` or `interpolate` at
 /// all — every other diagram kind's own `spec_of` sets [`SpecEdge::curve`] to `Curve::Basis`
 /// unconditionally.
-fn spec_of(chart: &Flowchart, curve: &str) -> GraphSpec {
+fn spec_of(chart: &Flowchart, curve: &str, routing: Routing) -> GraphSpec {
     // Step 2 of the priority order above: `%%{init}%%`'s own `flowchart.curve`, read once, wins
     // over the caller's `ui.mermaid_curve` default for the rest of this function — every
     // `linkStyle interpolate` cascade below now overrides *this*, not the raw parameter.
@@ -655,7 +692,15 @@ fn spec_of(chart: &Flowchart, curve: &str) -> GraphSpec {
         .iter()
         .map(|node| {
             let label = Label::measure(&node.label);
-            let glyph = Glyph::Flow(node.shape);
+            // A decision node under orthogonal routing draws as a chamfered rectangle rather than
+            // a diamond — see `Glyph::ChamferedRect`'s own docs for why. Nothing else changes: the
+            // parsed `Shape` konoma keeps for every other reader of `chart` (`docs`, `%%{init}%%`
+            // round-tripping, …) is untouched, only the glyph this one node is drawn as.
+            let glyph = if routing == Routing::Orthogonal && node.shape == Shape::Diamond {
+                Glyph::ChamferedRect
+            } else {
+                Glyph::Flow(node.shape)
+            };
             let size = shapes::size(glyph, Size::new(label.width, label.height));
             SpecNode {
                 id: node.id.clone(),
@@ -736,6 +781,7 @@ fn spec_of(chart: &Flowchart, curve: &str) -> GraphSpec {
         nodes,
         edges,
         blocks,
+        routing,
     }
 }
 
@@ -811,6 +857,11 @@ pub struct GraphSpec {
     pub edges: Vec<SpecEdge>,
     /// Frames, innermost first (a nested block before the one that contains it).
     pub blocks: Vec<SpecBlock>,
+    /// `[ui] mermaid_routing`, resolved. `Routing::Splines` — every diagram kind's `spec_of` but
+    /// the flowchart's own leaves this at its `#[default]` — reproduces every edge exactly as
+    /// [`lay_out_spec`] always routed it; only a flowchart's own `spec_of` ever sets this to
+    /// `Routing::Orthogonal`, and only when `[ui] mermaid_routing = "konoma-orthogonal"`.
+    pub routing: Routing,
 }
 
 /// Lays out and routes a spec — everything except turning geometry into markup.
@@ -996,6 +1047,19 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
     // --- read the frames back, then grow them until their titles fit ----------------------------
     let placed_clusters = read_clusters(&g, &tree, &nodes);
 
+    // `orthogonal::route_edge`'s branch/merge shapes read a node's out-degree and its edges'
+    // target's in-degree (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 1) — counted over exactly
+    // the edges that are actually going to be drawn (`drawable`, already anchored past any block
+    // endpoint), not `spec.edges`, so a `~~~` layout-only link or an edge naming a block with no
+    // member node does not inflate a degree nothing will draw a port for. Owned `String` keys:
+    // `drawable` is moved into the loop below, so a borrowed key could not outlive it.
+    let mut out_degree: HashMap<String, usize> = HashMap::new();
+    let mut in_degree: HashMap<String, usize> = HashMap::new();
+    for d in &drawable {
+        *out_degree.entry(d.tail.clone()).or_insert(0) += 1;
+        *in_degree.entry(d.head.clone()).or_insert(0) += 1;
+    }
+
     // --- clip each edge to the real outlines, then put its label on the clipped line -------------
     let mut placed_edges: Vec<PlacedEdge> = Vec::with_capacity(drawable.len());
     for Drawable {
@@ -1023,7 +1087,32 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
         };
         let tail = end_of(&edge.from, &nodes[ti]);
         let head = end_of(&edge.to, &nodes[hi]);
-        let points = edges::route(&raw, &tail, &head);
+
+        // Orthogonal routing is `docs/FEATURE-MERMAID-RENDERER.md` §10-1's stage 1: node-to-node
+        // edges only — a cluster boundary is later work (§10-2's later stages), so an edge naming
+        // a subgraph keeps drawing through the ordinary spline path below, `straight` and all.
+        let (points, straight) = if spec.routing == Routing::Orthogonal
+            && matches!(tail, edges::End::Node(..))
+            && matches!(head, edges::End::Node(..))
+        {
+            let source_rank = g.node(tail_id.as_str()).and_then(|n| n.rank);
+            let target_rank = g.node(head_id.as_str()).and_then(|n| n.rank);
+            let source_out_degree = out_degree.get(&tail_id).copied().unwrap_or(0);
+            let target_in_degree = in_degree.get(&head_id).copied().unwrap_or(0);
+            let routed = orthogonal::route_edge(
+                spec.direction,
+                &nodes[ti],
+                &nodes[hi],
+                &raw,
+                source_rank,
+                target_rank,
+                source_out_degree,
+                target_in_degree,
+            );
+            (routed, true)
+        } else {
+            (edges::route(&raw, &tail, &head), false)
+        };
 
         // The second half of "the label stays on the line": put it at the half-way point of the
         // line as clipped, not where dagre parked it.
@@ -1059,10 +1148,14 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             end_label,
             badge: None,
             series: None,
-            straight: false,
+            straight,
             overlay: false,
             style: edge.style.clone(),
             curve: edge.curve,
+            // Set together with `straight`, by the same `if`: both are true exactly when
+            // `orthogonal::route_edge` routed this edge, and false for every other edge this
+            // function ever builds (a flowchart's own splines edge included).
+            tip_matches_line: straight,
         });
     }
 

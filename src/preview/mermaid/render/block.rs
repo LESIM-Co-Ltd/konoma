@@ -145,6 +145,7 @@ pub fn lay_out(diagram: &BlockDiagram) -> Result<Diagram, RenderError> {
             overlay: false,
             style: None,
             curve: Curve::Basis,
+            tip_matches_line: false,
         });
     }
 

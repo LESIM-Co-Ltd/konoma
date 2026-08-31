@@ -1045,6 +1045,7 @@ fn synthetic_panel_diagram() -> Diagram {
             overlay: false,
             style: None,
             curve: Curve::Basis,
+            tip_matches_line: false,
         });
     }
 

@@ -139,6 +139,8 @@ pub fn spec_of(diagram: &ErDiagram) -> GraphSpec {
         nodes,
         edges,
         blocks,
+        // Never `Routing::Orthogonal`: only the flowchart's own `spec_of` ever sets that.
+        ..GraphSpec::default()
     }
 }
 

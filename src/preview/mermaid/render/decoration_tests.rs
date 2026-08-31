@@ -300,6 +300,15 @@ fn glyph_table() -> Vec<(&'static str, Glyph, &'static str, &'static str)> {
             "two rings",
         ),
         ("diamond", Glyph::Flow(Shape::Diamond), "diamond", "diamond"),
+        // `[ui] mermaid_routing = "konoma-orthogonal"`'s decision node: an ordinary rectangle with each
+        // corner cut back — distinct from both `rect` (square corners) and `diamond` (which this
+        // glyph replaces under that mode; see `Glyph::ChamferedRect`'s own docs).
+        (
+            "chamfered-rect",
+            Glyph::ChamferedRect,
+            "chamfered rectangle",
+            "chamfered rectangle",
+        ),
         ("hexagon", Glyph::Flow(Shape::Hexagon), "hexagon", "hexagon"),
         (
             "subroutine",
@@ -515,7 +524,8 @@ fn every_glyph_draws_a_mark_that_tells_it_from_its_siblings() {
             | Glyph::Face
             | Glyph::BlockArrow
             | Glyph::Reverted
-            | Glyph::Tag => true,
+            | Glyph::Tag
+            | Glyph::ChamferedRect => true,
         }
     }
 
@@ -644,6 +654,7 @@ fn tip_document(tip: Tip) -> String {
         overlay: false,
         style: None,
         curve: Curve::Basis,
+        tip_matches_line: false,
     });
     drawn(&d)
 }
@@ -853,6 +864,7 @@ fn decoration_document(decoration: Decoration, on: bool) -> String {
                 overlay: false,
                 style: None,
                 curve: Curve::Basis,
+                tip_matches_line: false,
             });
         }
         Decoration::Lifeline | Decoration::ActivationBar | Decoration::DestroyCross => {

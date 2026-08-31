@@ -47,8 +47,8 @@ use super::shapes::{self, Glyph, Size};
 use super::svg::num;
 use super::theme::{self, Theme};
 use super::{
-    lay_out, lay_out_curve, render, render_curve, Curve, Diagram, PlacedCluster, PlacedEdge,
-    PlacedNode, RenderError, Tip, MARGIN,
+    lay_out, lay_out_curve, lay_out_flow, orthogonal, render, render_curve, render_flow, Curve,
+    Diagram, PlacedCluster, PlacedEdge, PlacedNode, RenderError, Tip, MARGIN,
 };
 use crate::preview::mermaid::flowchart::{parse, Arrow, Shape, Stroke};
 use crate::preview::mermaid::layout::Point;
@@ -228,6 +228,14 @@ fn laid_out(src: &str) -> Diagram {
 fn laid_out_curve(src: &str, curve: &str) -> Diagram {
     let chart = parse(src).unwrap_or_else(|e| panic!("corpus source must parse: {e}"));
     lay_out_curve(&chart, curve).unwrap_or_else(|e| panic!("corpus source must lay out: {e}"))
+}
+
+/// [`laid_out_curve`], with edges additionally routed by `routing` (`ui.mermaid_routing`'s raw
+/// string) the way [`lay_out_flow`] resolves it.
+fn laid_out_flow(src: &str, curve: &str, routing: &str) -> Diagram {
+    let chart = parse(src).unwrap_or_else(|e| panic!("corpus source must parse: {e}"));
+    lay_out_flow(&chart, curve, routing)
+        .unwrap_or_else(|e| panic!("corpus source must lay out: {e}"))
 }
 
 pub(super) fn tree_of(svg: &str) -> usvg::Tree {
@@ -2250,6 +2258,7 @@ fn synthetic_diagram() -> Diagram {
             overlay: false,
             style: None,
             curve: Curve::Basis,
+            tip_matches_line: false,
         });
     }
 
@@ -3993,7 +4002,7 @@ fn link_style_interpolate_and_stroke_on_the_same_statement_both_apply() {
 
 /// Checklist G31: `mermaid_curve` reaches only a flowchart's own edges. `spec_of`'s own doc states
 /// that every other diagram kind's `SpecEdge::curve` is hardcoded to `Curve::Basis`, and the real
-/// dispatcher (`preview::markdown::mermaid_to_svg_reason_curve`) does not even thread a `curve`
+/// dispatcher (`preview::markdown::mermaid_to_svg_reason_flow`) does not even thread a `curve`
 /// argument through to any other renderer's entry point. This is the end-to-end proof, through the
 /// exact function the app calls (`mermaid_to_svg_curve`), for three diagram kinds.
 #[test]
@@ -4333,6 +4342,7 @@ fn bent_edge(points: Vec<Point>, curve: Curve) -> PlacedEdge {
         overlay: false,
         style: None,
         curve,
+        tip_matches_line: false,
     }
 }
 
@@ -4512,4 +4522,451 @@ fn self_loop_between_parallel_edges_does_not_shift_link_style_indices() {
         Curve::Step,
         "linkStyle 2 must land on the third-declared edge (y), not shifted by the self-loop between them"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// `[ui] mermaid_routing = "konoma-orthogonal"` (docs/FEATURE-MERMAID-RENDERER.md §10, stage 1)
+// ---------------------------------------------------------------------------------------------
+
+/// The `CORPUS` entries orthogonal routing's stage-1 invariants can be checked over: every case
+/// that draws no subgraph.
+///
+/// A cluster-boundary edge is explicitly out of scope for stage 1 — §10-2's later stages own it —
+/// so it keeps drawing through the ordinary spline path even under `"konoma-orthogonal"`
+/// (`lay_out_spec`'s own comment on the `matches!(tail, edges::End::Node(..))` guard). Including a
+/// `subgraph-*` entry here would make "every segment is axis-parallel" state something the
+/// renderer does not actually promise yet, so this filters them out by name rather than by
+/// guessing which ones happen to pass.
+fn orthogonal_corpus() -> Vec<(&'static str, &'static str)> {
+    CORPUS
+        .iter()
+        .copied()
+        .filter(|(name, _)| !name.starts_with("subgraph"))
+        .collect()
+}
+
+/// Every segment of every routed edge in `d`, as `(a, b)` pairs.
+fn edge_segments(d: &Diagram) -> Vec<(Point, Point)> {
+    let mut out = Vec::new();
+    for e in &d.edges {
+        for w in e.points.windows(2) {
+            out.push((w[0].clone(), w[1].clone()));
+        }
+    }
+    out
+}
+
+const AXIS_EPS: f64 = 1e-6;
+
+/// The default path (`"splines"`) must not move by even one byte — `[ui] mermaid_routing` is a
+/// brand new opt-in axis, and `docs/FEATURE-MERMAID-RENDERER.md` §10-2 states the same "既定の
+/// 見え方は1バイトも変えない" rule `[ui] mermaid_curve` was held to. `render_flow(..., curve,
+/// "splines")` is required to reproduce `render_curve(..., curve)` exactly, across several curves
+/// and the whole corpus.
+#[test]
+fn orthogonal_splines_routing_reproduces_render_curve_byte_for_byte() {
+    for (name, src) in CORPUS {
+        for curve in ["basis", "linear", "step", "monotoneX"] {
+            let a = render_curve(src, "dark", curve)
+                .unwrap_or_else(|e| panic!("{name}/{curve}: render_curve must render: {e}"));
+            let b = render_flow(src, "dark", curve, "splines")
+                .unwrap_or_else(|e| panic!("{name}/{curve}: render_flow must render: {e}"));
+            assert_eq!(
+                a, b,
+                "{name}/{curve}: render_flow(..., \"splines\") must match render_curve(...) exactly"
+            );
+        }
+    }
+}
+
+/// An unrecognised `routing` value falls back to `"splines"` — the same permissive contract every
+/// unrecognised config value in this crate gets (mirrors `unknown_curve_falls_back_to_basis`
+/// above), and specifically covers the bare word `"orthogonal"` (no `konoma-` prefix), which is
+/// deliberately *not* the trigger — see `orthogonal::Routing::parse`'s own docs.
+#[test]
+fn unknown_routing_falls_back_to_splines_without_crashing() {
+    let src = "flowchart TD\n  A --> B{cond}\n  B --> C\n  B --> D";
+    let splines = render_flow(src, "dark", "basis", "splines").expect("must render");
+    for unknown in ["xyz", "", "  ", "Orthogonal", "orthogonal", "ORTHOGONAL"] {
+        let got = render_flow(src, "dark", "basis", unknown)
+            .unwrap_or_else(|e| panic!("routing={unknown:?} must still render: {e}"));
+        assert_eq!(
+            splines, got,
+            "routing={unknown:?} must resolve exactly like \"splines\""
+        );
+    }
+}
+
+/// Every routed edge's polyline, under `"konoma-orthogonal"`, is made of axis-parallel segments
+/// only — no diagonal line — across the subgraph-free corpus (`orthogonal_corpus`): shapes,
+/// strokes, CJK, all four directions, multiline labels, a self-loop, a long edge that skips ranks,
+/// `A & B --> C & D` fan-out/fan-in, and `linkStyle`/`classDef` cascades.
+#[test]
+fn orthogonal_routing_draws_only_axis_parallel_segments() {
+    for (name, src) in orthogonal_corpus() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for (a, b) in edge_segments(&d) {
+            let dx = (b.x - a.x).abs();
+            let dy = (b.y - a.y).abs();
+            assert!(
+                dx < AXIS_EPS || dy < AXIS_EPS,
+                "{name}: diagonal segment {a:?} -> {b:?}"
+            );
+        }
+    }
+}
+
+/// An aligned pair (same coordinate across the flow, within half a pixel) draws as a bare
+/// two-point straight run: zero bends, flow-centre to flow-centre.
+#[test]
+fn orthogonal_aligned_edge_is_a_straight_two_point_line() {
+    let d = laid_out_flow("flowchart TD\n  A --> B", "basis", "konoma-orthogonal");
+    let e = &d.edges[0];
+    assert_eq!(e.points.len(), 2, "{:?}", e.points);
+    assert!(
+        (e.points[0].x - e.points[1].x).abs() < AXIS_EPS,
+        "a straight-down TD edge must not drift sideways: {:?}",
+        e.points
+    );
+    assert!(
+        e.straight,
+        "an orthogonal edge must draw as a polyline, not a curve"
+    );
+}
+
+/// A decision node's two outgoing edges (branch) and a merge node's two incoming edges (merge)
+/// each bend exactly once — a 3-point polyline, per §10-1 item 1's "分岐/合流は曲げ1回".
+#[test]
+fn orthogonal_branch_and_merge_edges_bend_exactly_once() {
+    let branch = laid_out_flow(
+        "flowchart LR\n  A --> B{cond}\n  B --> C\n  B --> D",
+        "basis",
+        "konoma-orthogonal",
+    );
+    for target in ["C", "D"] {
+        let e = branch
+            .edges
+            .iter()
+            .find(|e| e.from == "B" && e.to == target)
+            .unwrap_or_else(|| panic!("edge B->{target} must exist"));
+        assert_eq!(e.points.len(), 3, "branch edge B->{target}: {:?}", e.points);
+    }
+
+    let merge = laid_out_flow(
+        "flowchart LR\n  A --> C\n  B --> C\n  C --> D",
+        "basis",
+        "konoma-orthogonal",
+    );
+    for source in ["A", "B"] {
+        let e = merge
+            .edges
+            .iter()
+            .find(|e| e.from == source && e.to == "C")
+            .unwrap_or_else(|| panic!("edge {source}->C must exist"));
+        assert_eq!(e.points.len(), 3, "merge edge {source}->C: {:?}", e.points);
+    }
+}
+
+/// A `{}` decision node draws as an eight-vertex chamfered rectangle when `[ui] mermaid_routing =
+/// "konoma-orthogonal"`, sized exactly like an ordinary rectangle — and as the ordinary diamond,
+/// unchanged, under `"splines"`. `Glyph::ChamferedRect`'s own docs explain why a diamond has no
+/// flat run for a port to land on.
+#[test]
+fn decision_node_is_chamfered_under_orthogonal_and_a_diamond_under_splines() {
+    let src = "flowchart TD\n  A --> B{cond}\n  B --> C";
+
+    let splines = laid_out_curve(src, "basis");
+    let b_splines = splines.node("B").expect("B must exist");
+    assert_eq!(b_splines.shape, Glyph::Flow(Shape::Diamond));
+
+    let ortho = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let b_ortho = ortho.node("B").expect("B must exist");
+    assert_eq!(b_ortho.shape, Glyph::ChamferedRect);
+
+    let polygon = shapes::polygon(b_ortho.shape, b_ortho.size);
+    assert_eq!(
+        polygon.len(),
+        8,
+        "a chamfered rectangle has eight vertices: {polygon:?}"
+    );
+
+    // Sized like an ordinary rectangle, not doubled the way a diamond is (§10-1: "菱形の2倍拡大を
+    // しない").
+    let rect_size = shapes::size(
+        Glyph::Flow(Shape::Rect),
+        Size::new(b_ortho.label.width, b_ortho.label.height),
+    );
+    assert_eq!(b_ortho.size.w, rect_size.w);
+    assert_eq!(b_ortho.size.h, rect_size.h);
+
+    // Reaches the actual SVG, not just the geometry model.
+    let svg = render_flow(src, "dark", "basis", "konoma-orthogonal").expect("must render");
+    assert!(
+        svg.contains("<polygon"),
+        "an orthogonal decision node must draw a <polygon>, not a diamond outline"
+    );
+}
+
+/// Only a flowchart's own edges read `[ui] mermaid_routing` — a state/class/ER diagram draws
+/// identically whether `"splines"` or `"konoma-orthogonal"` is asked for, because each of their
+/// own `spec_of` always sets `GraphSpec::routing` to `Routing::Splines` regardless of the caller's
+/// setting (`docs/FEATURE-MERMAID-RENDERER.md` §10-2: "影響は curve と同じく flowchart のみ").
+/// Same shape as `non_flowchart_diagrams_ignore_mermaid_curve` above, through the real dispatcher.
+#[test]
+fn non_flowchart_diagrams_ignore_mermaid_routing() {
+    use crate::preview::markdown::mermaid_to_svg_flow;
+    let cases = [
+        "stateDiagram-v2\n  [*] --> A\n  A --> B\n  B --> [*]",
+        "classDiagram\n  A --|> B",
+        "erDiagram\n  A ||--o{ B : has",
+    ];
+    for src in cases {
+        let splines = mermaid_to_svg_flow(src, "dark", "basis", "splines")
+            .unwrap_or_else(|| panic!("{src}: must render under splines"));
+        let ortho = mermaid_to_svg_flow(src, "dark", "basis", "konoma-orthogonal")
+            .unwrap_or_else(|| panic!("{src}: must render under konoma-orthogonal"));
+        assert_eq!(
+            splines, ortho,
+            "{src}: a non-flowchart diagram must draw identically regardless of mermaid_routing"
+        );
+    }
+}
+
+/// Every routed edge's two endpoints sit exactly [`orthogonal::PORT_INSET`] px **outside** the
+/// node each one meets — never touching, let alone crossing into, the real geometric boundary —
+/// and the segment that reaches each one is perpendicular to whichever face it lands on. §10-1
+/// item 1's last bullet: "矢尻…の先端はノード枠の外縁から1px離す＝端点は枠座標の2px手前", and item
+/// 1's "出入りは常に辺へ垂直".
+///
+/// Pins the *direction* of the offset, not only its magnitude — a real regression once got this
+/// backwards: an endpoint pulled *inward* (into the node) rather than outward drew an arrow tip
+/// that pokes into the node's own interior, which stayed invisible in the finished picture only
+/// because `svg::emit` paints nodes *after* edges, so the poking-in part vanished under the node's
+/// opaque fill and the visible tip looked flush with the boundary instead of clear of it — a bug a
+/// test that only checked the offset's *magnitude* would have missed entirely, since `t + inset`
+/// and `t - inset` are both "some distance from `t`". See
+/// `orthogonal_arrow_tip_has_a_visible_gap_from_the_node_in_real_pixels` for the pixel-level half
+/// of this same proof (confirmed against a rasterised scan before either test was written).
+#[test]
+fn orthogonal_endpoints_sit_outside_the_node_and_arrive_perpendicular() {
+    for (name, src) in orthogonal_corpus() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for e in &d.edges {
+            if e.points.len() < 2 {
+                continue;
+            }
+            let n = e.points.len();
+            let ends = [
+                (&e.from, &e.points[0], &e.points[1]),
+                (&e.to, &e.points[n - 1], &e.points[n - 2]),
+            ];
+            for (node_id, endpoint, neighbour) in ends {
+                let Some(node) = d.node(node_id) else {
+                    continue;
+                };
+                let (l, t, r, b) = node.bounds();
+                let on_top = (endpoint.y - (t - orthogonal::PORT_INSET)).abs() < AXIS_EPS;
+                let on_bottom = (endpoint.y - (b + orthogonal::PORT_INSET)).abs() < AXIS_EPS;
+                let on_left = (endpoint.x - (l - orthogonal::PORT_INSET)).abs() < AXIS_EPS;
+                let on_right = (endpoint.x - (r + orthogonal::PORT_INSET)).abs() < AXIS_EPS;
+                assert!(
+                    on_top || on_bottom || on_left || on_right,
+                    "{name}: edge {}->{} endpoint at {node_id} {endpoint:?} is not {}px \
+                     OUTSIDE its bounds {:?}",
+                    e.from,
+                    e.to,
+                    orthogonal::PORT_INSET,
+                    (l, t, r, b)
+                );
+
+                let dx = (endpoint.x - neighbour.x).abs();
+                let dy = (endpoint.y - neighbour.y).abs();
+                assert!(
+                    dx < AXIS_EPS || dy < AXIS_EPS,
+                    "{name}: edge {}->{} segment into {node_id} is not axis-parallel: \
+                     {neighbour:?} -> {endpoint:?}",
+                    e.from,
+                    e.to
+                );
+                if on_top || on_bottom {
+                    assert!(
+                        dy > AXIS_EPS && dx < AXIS_EPS,
+                        "{name}: edge {}->{} must meet {node_id} vertically at a top/bottom face: \
+                         {neighbour:?} -> {endpoint:?}",
+                        e.from,
+                        e.to
+                    );
+                } else {
+                    assert!(
+                        dx > AXIS_EPS && dy < AXIS_EPS,
+                        "{name}: edge {}->{} must meet {node_id} horizontally at a left/right \
+                         face: {neighbour:?} -> {endpoint:?}",
+                        e.from,
+                        e.to
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The pixel-level half of the proof above: rasterises `A --> B` under `"konoma-orthogonal"` and
+/// scans the column under the arrow, from inside `A` down through the arrow and into `B`, looking
+/// for the transparent gap `docs/FEATURE-MERMAID-RENDERER.md` §10-1 asks for between the arrow
+/// tip's ink and `B`'s own stroke ink.
+///
+/// This is the test that actually would have caught the inward-vs-outward regression the sibling
+/// vector-level test's own doc describes: with the endpoint pulled inward, `B`'s node (painted
+/// after the edge) covers the part of the tip that pokes past the boundary and the scan below
+/// finds ink touching ink with **no** transparent row in between — which is exactly what a
+/// pre-fix run of this test showed before this fix landed (an SVG dump and a 4×-rasterised pixel
+/// scan were both read by hand — `docs/STATUS.md`'s "検証してから言う" — not inferred from the
+/// vector coordinates alone).
+#[test]
+fn orthogonal_arrow_tip_has_a_visible_gap_from_the_node_in_real_pixels() {
+    let src = "flowchart TD\n  A --> B";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let a = d.node("A").expect("A must exist");
+    let b = d.node("B").expect("B must exist");
+    assert!(
+        (a.center.x - b.center.x).abs() < AXIS_EPS,
+        "the fixture must be a straight vertical drop so one column crosses both the arrow and B's top edge"
+    );
+
+    let svg = render_flow(src, "dark", "basis", "konoma-orthogonal").expect("must render");
+    let scale = 4.0;
+    let img = crate::preview::svg::rasterize_bytes(
+        svg.as_bytes(),
+        FsPath::new("orthogonal-tip-gap.svg"),
+        (d.width.max(d.height) * scale).round() as u32,
+    )
+    .expect("must rasterize");
+    let rgba = img.to_rgba8();
+
+    let cx = (a.center.x * scale).round() as u32;
+    let (_, b_top, _, _) = b.bounds();
+    let scan_top = ((a.center.y) * scale).round() as u32;
+    let scan_bottom = ((b_top + 2.0) * scale).round() as u32;
+
+    // Column already inside A, at its own centre, must not be transparent (A's own fill).
+    assert_ne!(
+        rgba.get_pixel(cx, scan_top)[3],
+        0,
+        "the scan must start inside A's own fill, or it is not testing the right column"
+    );
+    // Somewhere between the arrow's ink and B's top edge, the column must go fully transparent —
+    // the gap the spec asks for. A flush (zero-gap) tip, or one hidden under B's own paint,
+    // leaves no such row.
+    let saw_transparent_gap = (scan_top..=scan_bottom).any(|y| rgba.get_pixel(cx, y)[3] == 0);
+    assert!(
+        saw_transparent_gap,
+        "no fully-transparent row between the arrow tip and B's top edge — the tip is touching \
+         or crossing into B rather than clearing it by ~1px"
+    );
+    // And B's own stroke ink (its outline colour, not its fill) really is there, at or after its
+    // geometric top edge — confirming the gap ends at B and is not some unrelated blank band.
+    let stroke_hex = theme::Theme::named("dark").node_stroke;
+    let (sr, sg, sb) = hex_to_rgb(stroke_hex);
+    let saw_node_stroke = (scan_top..=scan_bottom).any(|y| {
+        let p = rgba.get_pixel(cx, y);
+        p[3] == 255 && close(p[0], sr) && close(p[1], sg) && close(p[2], sb)
+    });
+    assert!(
+        saw_node_stroke,
+        "B's own stroke colour ({stroke_hex}) must appear in the scanned column"
+    );
+}
+
+/// `#rrggbb` → `(r, g, b)`, for comparing against a rasterised pixel.
+fn hex_to_rgb(hex: &str) -> (u8, u8, u8) {
+    let hex = hex.trim_start_matches('#');
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap();
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap();
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap();
+    (r, g, b)
+}
+
+/// Whether two 8-bit channel values are close enough to call the same colour — antialiasing at a
+/// shape's own edge blends a pixel or two, so an exact match is the wrong bar here.
+fn close(a: u8, b: u8) -> bool {
+    (a as i16 - b as i16).abs() <= 6
+}
+
+/// §10-1 item 5, "辺・矢尻・ラベル文字・ノード枠を同色で揃える": under `"konoma-orthogonal"`, an
+/// edge's arrow head is painted the line's own resolved stroke colour (`class`/`:::`/`linkStyle`,
+/// falling back to the theme default) rather than mermaid's fixed `theme.arrowhead` — confirmed
+/// both in the emitted markup (`svg::emit_tip`'s `color` parameter) and, for the theme-default
+/// case, that it differs from `"splines"`'s fixed colour.
+#[test]
+fn orthogonal_arrow_head_matches_the_edges_resolved_stroke_colour() {
+    let src = "flowchart LR\n  A --> B\n  linkStyle 0 stroke:#1f6feb";
+
+    let ortho = render_flow(src, "dark", "basis", "konoma-orthogonal").expect("must render");
+    assert!(
+        ortho.contains("stroke=\"#1f6feb\""),
+        "the edge's own path must carry its linkStyle colour: {ortho}"
+    );
+    let arrow_at = ortho
+        .find("<polygon points=")
+        .expect("an arrow head polygon must be emitted");
+    let fill = attr(&ortho[arrow_at..], "fill").expect("the polygon must carry a fill");
+    assert_eq!(
+        fill, "#1f6feb",
+        "an orthogonal arrow head must be painted the edge's resolved linkStyle colour: {ortho}"
+    );
+
+    // Under splines, the very same source keeps mermaid's own fixed arrowhead colour: the
+    // linkStyle blue on the line, the theme's grey on the tip — the two are independent, unlike
+    // under orthogonal routing.
+    let splines = render_flow(src, "dark", "basis", "splines").expect("must render");
+    assert!(splines.contains("stroke=\"#1f6feb\""));
+    let arrow_at = splines
+        .find("<polygon points=")
+        .expect("an arrow head polygon must be emitted");
+    let fill = attr(&splines[arrow_at..], "fill").expect("the polygon must carry a fill");
+    let theme_arrowhead = theme::Theme::named("dark").arrowhead;
+    assert_eq!(
+        fill, theme_arrowhead,
+        "splines must keep mermaid's own fixed arrowhead colour regardless of linkStyle: {splines}"
+    );
+    assert_ne!(
+        fill, "#1f6feb",
+        "this assertion is only meaningful if the theme default actually differs from the \
+         linkStyle colour used above"
+    );
+}
+
+/// A node with several colour-coded outgoing edges (`linkStyle <n> stroke:...`, the real-world
+/// shape `docs/STATUS.md` records the 2026-08-28 `linkStyle` regression coming from) each get
+/// their own arrow head colour under `"konoma-orthogonal"` — not all painted the same, and not
+/// all left at the theme default.
+#[test]
+fn orthogonal_arrow_heads_differ_per_edge_when_their_linkstyles_differ() {
+    let src = "flowchart TD\n  A --> B\n  A --> C\n  \
+               linkStyle 0 stroke:#1f6feb\n  linkStyle 1 stroke:#d4a017";
+    let svg = render_flow(src, "dark", "basis", "konoma-orthogonal").expect("must render");
+    let mut fills = Vec::new();
+    let mut rest = svg.as_str();
+    while let Some(at) = rest.find("<polygon points=") {
+        let slice = &rest[at..];
+        fills.push(
+            attr(slice, "fill")
+                .expect("every polygon here carries a fill")
+                .to_string(),
+        );
+        rest = &slice[1..];
+    }
+    assert!(
+        fills.contains(&"#1f6feb".to_string()) && fills.contains(&"#d4a017".to_string()),
+        "each edge's own linkStyle colour must reach its own arrow head: {fills:?}"
+    );
+}
+
+/// The value of `attr` inside the first tag `haystack` starts with — a small hand-rolled reader
+/// rather than an XML parser, since all this needs is one attribute out of one already-known tag.
+fn attr<'a>(haystack: &'a str, attr: &str) -> Option<&'a str> {
+    let needle = format!("{attr}=\"");
+    let start = haystack.find(&needle)? + needle.len();
+    let end = start + haystack[start..].find('"')?;
+    Some(&haystack[start..end])
 }

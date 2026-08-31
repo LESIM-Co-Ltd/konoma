@@ -864,6 +864,7 @@ impl<'a> Walk<'a> {
             overlay: false,
             style: None,
             curve: Curve::Basis,
+            tip_matches_line: false,
         });
 
         self.last_message_y = bottom;

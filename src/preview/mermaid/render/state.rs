@@ -170,6 +170,8 @@ pub fn spec_of(diagram: &StateDiagram) -> GraphSpec {
         nodes,
         edges,
         blocks,
+        // Never `Routing::Orthogonal`: only the flowchart's own `spec_of` ever sets that.
+        ..GraphSpec::default()
     }
 }
 
@@ -272,6 +274,7 @@ fn place_notes(out: &mut Diagram, model: &StateDiagram) {
             overlay: false,
             style: None,
             curve: Curve::Basis,
+            tip_matches_line: false,
         });
     }
     // The drawing grew sideways, so the extent has to be recomputed over what is now on it.

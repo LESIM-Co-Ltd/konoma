@@ -532,6 +532,21 @@ pub struct UiConfig {
     /// read any of this — every other diagram kind (state, class, ER, sequence, C4, requirement,
     /// mindmap, git graph, architecture, block, and every chart) always draws `"basis"`.
     pub mermaid_curve: String,
+    /// How a flowchart's edges are routed — the mode is named after Graphviz's `splines=ortho` /
+    /// ELK's `edgeRouting: ORTHOGONAL`, but the value carries a `konoma-` prefix because it is
+    /// konoma's own mode, not mermaid vocabulary the way `[ui] mermaid_curve`'s values are — the
+    /// prefix is what keeps it from colliding if upstream mermaid ever gives the bare word
+    /// `"orthogonal"` a different meaning of its own.
+    /// `"splines"` (default) is every curve this crate has always drawn, `[ui] mermaid_curve`
+    /// included, byte for byte. `"konoma-orthogonal"` is konoma's own right-angle wiring mode
+    /// (`docs/FEATURE-MERMAID-RENDERER.md` §10): every edge is drawn as axis-parallel segments
+    /// meeting each node's boundary perpendicularly, and a decision node (`A{text}`) is drawn as a
+    /// chamfered rectangle rather than a diamond so a port has a flat run to land on.
+    /// `[ui] mermaid_curve` only means anything under `"splines"` — an orthogonal line is a
+    /// polyline of right angles, which has no curve to interpolate. An unrecognised value falls
+    /// back to `"splines"`, like every unrecognised value in this file. Only a flowchart's own
+    /// edges read this — every other diagram kind always routes the way it always has.
+    pub mermaid_routing: String,
     /// Max height (terminal rows) of an inline mermaid diagram inside Markdown (default 24).
     /// Bigger = larger diagrams in the document flow (still width-capped and aspect-preserving;
     /// a diagram taller than the viewport scrolls in bands like any inline image). 0/invalid
@@ -812,6 +827,7 @@ impl Default for UiConfig {
             math_color: "#d0d0d0".into(),
             mermaid_theme: "dark".into(),
             mermaid_curve: "basis".into(),
+            mermaid_routing: "splines".into(),
             mermaid_rows: 24,
             restore_tabs: true,
             restore_single_tab: true,

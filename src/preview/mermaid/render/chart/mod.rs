@@ -160,6 +160,7 @@ pub fn rule(from: Point, to: Point, stroke: Stroke, series: Option<usize>) -> Pl
         overlay: false,
         style: None,
         curve: Curve::Basis,
+        tip_matches_line: false,
     }
 }
 

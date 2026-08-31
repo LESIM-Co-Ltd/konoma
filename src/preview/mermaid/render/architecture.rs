@@ -146,6 +146,7 @@ pub fn lay_out(arch: &Architecture) -> Result<Diagram, RenderError> {
             overlay: false,
             style: None,
             curve: Curve::Basis,
+            tip_matches_line: false,
         });
         if !e.title.trim().is_empty() {
             let label = Label::measure(&e.title);

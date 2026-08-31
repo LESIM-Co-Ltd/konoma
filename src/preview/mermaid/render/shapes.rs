@@ -138,6 +138,12 @@ pub const TAG_PAD_X: f64 = 5.0;
 /// Blank space above and below a tag's words.
 pub const TAG_PAD_Y: f64 = 3.0;
 
+/// How far a [`Glyph::ChamferedRect`] cuts each corner back, along both axes. `[ui]
+/// mermaid_routing = "konoma-orthogonal"`'s handoff spec (`docs/FEATURE-MERMAID-RENDERER.md` §10-1) fixes
+/// this at 6px — enough to read as a cut corner rather than a rounded one, small enough that a
+/// port still lands well inside the flat run that survives on every side.
+pub const CHAMFER: f64 = 6.0;
+
 /// Half the height of the short flat edge each of a tag's points is truncated to.
 ///
 /// mermaid truncates its point the same way (its left edge spans `2 * PY`): a needle-sharp point
@@ -239,6 +245,19 @@ pub enum Glyph {
     /// two or three tagged commits out of a history by looking for the shape. Drawn as bare words
     /// it is indistinguishable from the commit's id, which is what this glyph exists to fix.
     Tag,
+
+    // --- `[ui] mermaid_routing = "konoma-orthogonal"` (stage 1) --------------------------------------
+    /// A flowchart decision node (`A{text}`), drawn with its four corners chamfered instead of as
+    /// a diamond, when `[ui] mermaid_routing` is `"konoma-orthogonal"`.
+    ///
+    /// A diamond's flat sides shrink to a single point at top/bottom/left/right, which leaves no
+    /// straight run for a right-angle line to land on perpendicularly. mermaid's own `question.ts`
+    /// answers that by doubling the box (`w + h` on a side) and rotating it 45°; konoma's
+    /// orthogonal mode answers it instead by keeping the *ordinary* rectangle's box — sized and
+    /// padded exactly like [`Shape::Rect`] (`docs/FEATURE-MERMAID-RENDERER.md` §10-1: "サイズも
+    /// 矩形と同じ計り方…菱形の2倍拡大をしない") — and cutting each corner back by [`CHAMFER`] px so a
+    /// flat run survives on every side for a port to sit on.
+    ChamferedRect,
 }
 
 /// Continuous geometry a chart mark needs that its bounding box cannot express.
@@ -814,6 +833,9 @@ pub fn size(glyph: Glyph, label: Size) -> Size {
             label.w + (TAG_PAD_X + TAG_POINT) * 2.0,
             label.h + TAG_PAD_Y * 2.0,
         ),
+        // Sized exactly like an ordinary rectangle — see the glyph's own docs for why this must
+        // NOT double the box the way `Shape::Diamond` does.
+        Glyph::ChamferedRect => flow_size(Shape::Rect, label),
     }
 }
 
@@ -990,6 +1012,7 @@ fn flow_outline_or_glyph(glyph: Glyph, size: Size) -> Outline {
             tip: TAG_TIP.min(size.h / 2.0),
             hole: TAG_HOLE_RADIUS,
         },
+        Glyph::ChamferedRect => Outline::Polygon(chamfered_rect_polygon(size)),
         // Handled by `outline` before it delegates here.
         Glyph::Wedge
         | Glyph::ChartBar
@@ -1001,6 +1024,28 @@ fn flow_outline_or_glyph(glyph: Glyph, size: Size) -> Outline {
         | Glyph::Face
         | Glyph::BlockArrow => Outline::None,
     }
+}
+
+/// The eight vertices of a [`Glyph::ChamferedRect`], relative to the node centre, in boundary
+/// order: an ordinary axis-aligned rectangle with each corner cut on a 45° chamfer of [`CHAMFER`]
+/// px.
+///
+/// A box smaller than two chamfers on a side clamps the chamfer to half that side rather than
+/// crossing itself — the same defensive `min` [`super::edges::fix_corners`]'s corner radius takes,
+/// for a decision node whose label is short enough that padding alone would otherwise be enough.
+fn chamfered_rect_polygon(size: Size) -> Vec<Point> {
+    let (hw, hh) = (size.w / 2.0, size.h / 2.0);
+    let c = CHAMFER.min(hw).min(hh);
+    vec![
+        Point::new(-hw + c, -hh),
+        Point::new(hw - c, -hh),
+        Point::new(hw, -hh + c),
+        Point::new(hw, hh - c),
+        Point::new(hw - c, hh),
+        Point::new(-hw + c, hh),
+        Point::new(-hw, hh - c),
+        Point::new(-hw, -hh + c),
+    ]
 }
 
 /// The spikes of a `))text((`.
@@ -1069,6 +1114,7 @@ pub fn polygon(glyph: Glyph, size: Size) -> Vec<Point> {
             TAG_POINT.min(size.w / 2.0),
             TAG_TIP.min(size.h / 2.0),
         ),
+        Glyph::ChamferedRect => chamfered_rect_polygon(size),
         _ => Vec::new(),
     }
 }
@@ -1114,6 +1160,13 @@ pub fn intersect(glyph: Glyph, center: Point, size: Size, target: &Point) -> Poi
         // A commit dot is a circle, and a line between two commits ends on it.
         Glyph::Face | Glyph::Reverted => {
             intersect_ellipse(center.x, center.y, size.w / 2.0, size.h / 2.0, target)
+        }
+        Glyph::ChamferedRect => {
+            let verts: Vec<Point> = chamfered_rect_polygon(size)
+                .into_iter()
+                .map(|p| Point::new(center.x + p.x, center.y + p.y))
+                .collect();
+            intersect_polygon(&verts, &center, target)
         }
     }
 }

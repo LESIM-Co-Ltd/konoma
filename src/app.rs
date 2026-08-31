@@ -774,12 +774,12 @@ enum MediaJob {
     /// allows it. Loaded one page at a time.
     Pdf(PathBuf, u32, bool),
     /// Render a standalone mermaid file to SVG (pure Rust) and rasterize it (max-edge px, theme,
-    /// curve). None (unsupported diagram / parse failure) → the caller's text-diagram fallback
-    /// shows.
-    Mermaid(PathBuf, u32, String, String),
+    /// curve, routing). None (unsupported diagram / parse failure) → the caller's text-diagram
+    /// fallback shows.
+    Mermaid(PathBuf, u32, String, String, String),
     /// Render mermaid source text (a ```mermaid fence opened full-screen) and rasterize it
-    /// (source, max-edge px, theme, curve).
-    MermaidSrc(String, u32, String, String),
+    /// (source, max-edge px, theme, curve, routing).
+    MermaidSrc(String, u32, String, String, String),
     /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom). The path is only
     /// the base for relative resources inside the SVG (mermaid output has none).
     SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32),
@@ -819,12 +819,13 @@ impl MediaJob {
             MediaJob::Pdf(p, page, allow_external) => {
                 crate::preview::pdf::render_page(&p, page, allow_external).map(MediaPayload::Static)
             }
-            MediaJob::Mermaid(p, max_px, theme, curve) => {
+            MediaJob::Mermaid(p, max_px, theme, curve, routing) => {
                 let code = std::fs::read_to_string(&p).ok()?;
-                MediaJob::MermaidSrc(code, max_px, theme, curve).run()
+                MediaJob::MermaidSrc(code, max_px, theme, curve, routing).run()
             }
-            MediaJob::MermaidSrc(code, max_px, theme, curve) => {
-                let svg = crate::preview::markdown::mermaid_to_svg_curve(&code, &theme, &curve)?;
+            MediaJob::MermaidSrc(code, max_px, theme, curve, routing) => {
+                let svg =
+                    crate::preview::markdown::mermaid_to_svg_flow(&code, &theme, &curve, &routing)?;
                 let data = svg.into_bytes();
                 let img =
                     crate::preview::svg::rasterize_bytes(&data, Path::new("mermaid.svg"), max_px)?;

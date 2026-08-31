@@ -8935,6 +8935,10 @@ const UI_CONFIG_COVERAGE: &[(&str, Coverage)] = &[
         Coverage::Covered("e2e_ui_mermaid_curve_changes_rendered_pixels"),
     ),
     (
+        "mermaid_routing",
+        Coverage::Covered("e2e_ui_mermaid_routing_changes_rendered_pixels"),
+    ),
+    (
         "mermaid_rows",
         Coverage::Covered("e2e_ui_mermaid_rows_changes_reserved_diagram_height"),
     ),
@@ -10024,6 +10028,72 @@ fn e2e_ui_mermaid_curve_changes_rendered_pixels() {
     assert_ne!(
         fg_basis, fg_step,
         "basis と step では辺の描画ピクセル列が異なるはず(スプライン vs 直角)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `mermaid_routing`: a flowchart with a decision node (`C{cond}`) draws a diamond under
+/// `"splines"` and a chamfered rectangle under `"konoma-orthogonal"`
+/// (`preview::mermaid::render::shapes::Glyph::ChamferedRect`) — confirmed directly at the SVG
+/// level by `preview::mermaid::render::tests::orthogonal_diamond_becomes_a_chamfered_rectangle`;
+/// this is the pixel-level half of that proof, same driven-encode-worker technique as
+/// `mermaid_curve` above.
+#[test]
+fn e2e_ui_mermaid_routing_changes_rendered_pixels() {
+    let dir = sandbox("ui_mermaid_routing_cfg");
+    std::fs::write(
+        dir.join("d.md"),
+        "```mermaid\nflowchart TD\nA-->B\nB-->C{cond}\nC-->D\nC-->E\n```\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    fn render_and_get_fgs(cfg: Config, dir: &std::path::Path) -> Vec<(u8, u8, u8)> {
+        let mut s = Sim::with_config(dir, cfg).with_picker();
+        let (enc_tx, enc_worker_rx) = std::sync::mpsc::channel();
+        let (enc_res_tx, enc_res_rx) = std::sync::mpsc::channel();
+        s.app.attach_md_encoder(enc_tx);
+        let picker = ratatui_image::picker::Picker::halfblocks();
+        std::thread::spawn(move || crate::app::md_encode_worker(picker, enc_worker_rx, enc_res_tx));
+        s.select("d.md");
+        s.enter();
+        let res = enc_res_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("encode worker returns a result");
+        assert!(s.app.apply_md_encode(res));
+        s.draw();
+        let buf = s.term.backend().buffer();
+        let mut out = Vec::new();
+        for cell in buf.content().iter() {
+            if let Some(ratatui::style::Color::Rgb(r, g, b)) = cell.style().fg {
+                out.push((r, g, b));
+            }
+        }
+        out
+    }
+
+    let mut cfg_splines = Config::default();
+    cfg_splines.ui.mermaid_routing = "splines".into();
+    cfg_splines.ui.mermaid_rows = 10;
+    let fg_splines = render_and_get_fgs(cfg_splines, &root);
+
+    let mut cfg_ortho = Config::default();
+    cfg_ortho.ui.mermaid_routing = "konoma-orthogonal".into();
+    cfg_ortho.ui.mermaid_rows = 10;
+    let fg_ortho = render_and_get_fgs(cfg_ortho, &root);
+
+    assert!(
+        !fg_splines.is_empty(),
+        "splines でも実ピクセルが描かれるはず"
+    );
+    assert!(
+        !fg_ortho.is_empty(),
+        "konoma-orthogonal でも実ピクセルが描かれるはず"
+    );
+    assert_ne!(
+        fg_splines, fg_ortho,
+        "splines と konoma-orthogonal では描画ピクセル列が異なるはず(菱形 vs 面取り矩形+直角配線)"
     );
 
     std::fs::remove_dir_all(&dir).ok();

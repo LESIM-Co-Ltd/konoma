@@ -428,6 +428,7 @@ pub fn lay_out(graph: &GitGraph) -> Result<Diagram, RenderError> {
                 overlay: false,
                 style: None,
                 curve: Curve::Basis,
+                tip_matches_line: false,
             });
         }
     }

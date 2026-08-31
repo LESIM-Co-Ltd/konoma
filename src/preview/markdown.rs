@@ -2735,8 +2735,25 @@ pub fn mermaid_to_svg(code: &str, theme: &str) -> Option<String> {
 /// string — `"basis"` reproduces [`mermaid_to_svg`] exactly, byte for byte). Every other diagram
 /// kind ignores `curve` entirely, the same as [`crate::preview::mermaid::render::render_curve`]
 /// it is threaded into.
+///
+/// Superseded in production by [`mermaid_to_svg_flow`] — a media loader always knows
+/// `[ui] mermaid_routing` too, so `App::media_load`/`md_media` call that directly rather than
+/// this. Kept (curve-only, no `routing` argument) for the tests that predate `[ui]
+/// mermaid_routing` and still want to say exactly that: unlike
+/// [`crate::preview::mermaid::render::render_curve`] — which stays reachable through
+/// [`crate::preview::mermaid::render::render`] — this one has no production caller of its own.
+#[allow(dead_code)]
 pub fn mermaid_to_svg_curve(code: &str, theme: &str, curve: &str) -> Option<String> {
     mermaid_to_svg_reason_curve(code, theme, curve).ok()
+}
+
+/// [`mermaid_to_svg_curve`], with a flowchart's edges routed by `routing` (`ui.mermaid_routing`'s
+/// raw string — `"splines"` reproduces [`mermaid_to_svg_curve`] exactly, byte for byte). Every
+/// other diagram kind ignores `routing` entirely, the same as
+/// [`crate::preview::mermaid::render::render_flow`] it is threaded into. This is what
+/// `App::media_load`/`md_media` actually call, since a media loader knows both settings.
+pub fn mermaid_to_svg_flow(code: &str, theme: &str, curve: &str, routing: &str) -> Option<String> {
+    mermaid_to_svg_reason_flow(code, theme, curve, routing).ok()
 }
 
 /// [`mermaid_to_svg`], keeping why a diagram was not drawn.
@@ -2750,14 +2767,24 @@ pub fn mermaid_to_svg_reason(code: &str, theme: &str) -> Result<String, String> 
     mermaid_to_svg_reason_curve(code, theme, "basis")
 }
 
-/// [`mermaid_to_svg_reason`] / [`mermaid_to_svg_curve`] combined — the one function both delegate
-/// to.
+/// [`mermaid_to_svg_reason`] / [`mermaid_to_svg_curve`] combined.
 pub fn mermaid_to_svg_reason_curve(code: &str, theme: &str, curve: &str) -> Result<String, String> {
+    mermaid_to_svg_reason_flow(code, theme, curve, "splines")
+}
+
+/// [`mermaid_to_svg_reason_curve`] / [`mermaid_to_svg_flow`] combined — the one function both
+/// delegate to.
+pub fn mermaid_to_svg_reason_flow(
+    code: &str,
+    theme: &str,
+    curve: &str,
+    routing: &str,
+) -> Result<String, String> {
     // The same byte string `mermaid_fence_url` hashes (§1), trimmed once here so both renderers
     // see identical input.
     let code = code.trim_end_matches('\n');
     if flowchart_is_ours(code) {
-        render_konoma_curve(code, theme, curve)
+        render_konoma_flow(code, theme, curve, routing)
     } else if state_is_ours(code) {
         render_konoma(code, theme, crate::preview::mermaid::render::state::render)
     } else if class_is_ours(code) {
@@ -2928,12 +2955,17 @@ fn render_konoma(code: &str, theme: &str, draw: Draw) -> Result<String, String> 
 }
 
 /// [`render_konoma`], for the flowchart branch alone: the one diagram kind whose own `render`
-/// takes a `curve` (`render_curve`), so it cannot be a [`Draw`] and routed through the table the
-/// other ten diagram kinds share.
-fn render_konoma_curve(code: &str, theme: &str, curve: &str) -> Result<String, String> {
+/// takes a `curve` and a `routing` (`render_flow`), so it cannot be a [`Draw`] and routed through
+/// the table the other ten diagram kinds share.
+fn render_konoma_flow(
+    code: &str,
+    theme: &str,
+    curve: &str,
+    routing: &str,
+) -> Result<String, String> {
     let caught = silence_panics(|| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::preview::mermaid::render::render_curve(code, theme, curve)
+            crate::preview::mermaid::render::render_flow(code, theme, curve, routing)
         }))
     });
     match caught {

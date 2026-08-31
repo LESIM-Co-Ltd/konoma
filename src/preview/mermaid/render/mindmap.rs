@@ -106,6 +106,8 @@ pub fn spec_of(map: &Mindmap) -> GraphSpec {
         nodes,
         edges,
         blocks: Vec::new(),
+        // Never `Routing::Orthogonal`: only the flowchart's own `spec_of` ever sets that.
+        ..GraphSpec::default()
     }
 }
 
