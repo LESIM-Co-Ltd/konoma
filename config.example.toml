@@ -259,6 +259,34 @@ mermaid_theme = "dark"
 # other diagram kind always draws "basis".
 mermaid_curve = "basis"
 
+# How a flowchart's edges are routed — a konoma-only extension, independent of mermaid_curve
+# above (which only picks the curve shape, not the route).
+#   "splines" (default) … the classic mermaid layout: edges follow the diagram's own curve
+#                         (mermaid_curve above) — the look never changes unless you set this.
+#   "konoma-orthogonal"  … konoma's own orthogonal router (flowchart only; every other diagram
+#                         kind is unaffected). Every edge bends only at 90°, sharp corners (zero
+#                         radius), and always meets a node or subgraph border head-on — never at
+#                         an angle. Decision nodes ({}) draw as a chamfered rectangle (6px cut
+#                         corners) instead of a diamond, so every edge lands on a flat face.
+#                         Multiple edges on the same side of a node spread across 16px-spaced
+#                         ports, widening the node on that axis if there isn't room. A
+#                         straight-through edge between adjacent ranks aligns to a shared
+#                         centerline — a true zero-bend straight lane. Where edges cross, the one
+#                         passing over (a back-edge or detour) opens a 12px gap so the stacking
+#                         order reads at a glance. Back-edges and detours route around the
+#                         diagram's outer lane (16px outside every element; multiple such edges
+#                         offset 8px apart). A label sits on a plate on the line itself, and its
+#                         segment is padded to at least the label's width plus margin — widening
+#                         the rank gap automatically when it doesn't fit. Arrowheads are painted
+#                         the edge's own color (after linkStyle/classDef) and stop 1px short of
+#                         the node border. Named after ELK's `edgeRouting: ORTHOGONAL` and
+#                         Graphviz's `splines=ortho`; the "konoma-" prefix marks it as konoma's
+#                         own value so it can never collide with a future mermaid-defined
+#                         "orthogonal". mermaid_curve has no effect in this mode — there is no
+#                         curve, only right-angle segments.
+# An unrecognized value falls back to "splines".
+mermaid_routing = "splines"
+
 # Upper limit on the height (rows) of an inline mermaid diagram inside Markdown (default 24). A
 # diagram is shown at its natural size — matching the surrounding body text — and is never
 # enlarged (a small diagram stays small). Only when that natural size exceeds this cap, or the

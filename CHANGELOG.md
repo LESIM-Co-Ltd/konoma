@@ -6,6 +6,24 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **`[ui] mermaid_routing` — a flowchart's edges can now be routed orthogonally instead of with
+  mermaid's own spline layout.** Default `"splines"` is the existing mermaid layout, unchanged.
+  `"konoma-orthogonal"` is a new konoma-only router (flowchart only; every other diagram kind is
+  unaffected): every edge bends only at 90°, with sharp corners and no radius, and always meets a
+  node or subgraph border head-on instead of at an angle. Decision nodes (`{}`) draw as a
+  chamfered rectangle (6px cut corners) rather than a diamond, so every edge lands on a flat face.
+  Multiple edges on the same side of a node spread across 16px-spaced ports, widening the node on
+  that axis if there isn't room. A straight-through edge between adjacent ranks aligns to a shared
+  centerline for a true zero-bend lane. Where edges cross, the one passing over (a back-edge or
+  detour) opens a 12px gap so the stacking order reads at a glance, and back-edges/detours route
+  around the diagram's outer lane instead of cutting through it. Labels sit on a plate on the line
+  itself, with the rank gap widening automatically when a label needs more room. Arrowheads are
+  painted the edge's own post-`linkStyle`/`classDef` color. Named after ELK's
+  `edgeRouting: ORTHOGONAL` and Graphviz's `splines=ortho`; the `konoma-` prefix marks it as a
+  konoma-only value. `mermaid_curve` has no effect in this mode (there is no curve to pick). An
+  unrecognized value falls back to `"splines"`.
+
 ## [0.28.2] - 2026-08-29
 
 ### Added
