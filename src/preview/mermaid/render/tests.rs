@@ -531,6 +531,46 @@ pub(super) fn mask_numbers(svg: &str) -> String {
     out
 }
 
+/// The columns of an emitted SVG that a routing regression would actually move: every `d` (a
+/// path's shape, with its numbers masked the same way [`mask_numbers`] masks them — font-dependent
+/// label widths must not make this signature drift between Helvetica here and DejaVu Sans on
+/// Linux CI, the same reason `corpus_golden` masks numbers at all) and every literal `fill`/
+/// `stroke` (colour, which `mask_numbers` never touches — see the `link-style-multi-index` corpus
+/// comment for why that's deliberate). One attribute per line, document order preserved, so a
+/// change in bend count, sign pattern, command letter, or colour still moves this string even
+/// though the exact coordinates are masked away.
+pub(super) fn routing_signature(svg: &str) -> String {
+    let masked = mask_numbers(svg);
+    let mut out = String::new();
+    let chars: Vec<char> = masked.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '=' && i + 1 < chars.len() && chars[i + 1] == '"' {
+            let mut start = i;
+            while start > 0 && (chars[start - 1].is_ascii_alphanumeric() || chars[start - 1] == '-')
+            {
+                start -= 1;
+            }
+            let name: String = chars[start..i].iter().collect();
+            if matches!(name.as_str(), "d" | "fill" | "stroke") {
+                let mut j = i + 2;
+                while j < chars.len() && chars[j] != '"' {
+                    j += 1;
+                }
+                let value: String = chars[i + 2..j].iter().collect();
+                out.push_str(&name);
+                out.push('=');
+                out.push_str(&value);
+                out.push('\n');
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
 pub(super) fn snapshot_path(name: &str) -> PathBuf {
     FsPath::new(env!("CARGO_MANIFEST_DIR"))
         .join("snapshots")
@@ -4575,7 +4615,14 @@ fn orthogonal_corpus() -> Vec<(&'static str, &'static str)> {
 ///   bends. `docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 2's "回数制限なし" is written about back
 ///   edges specifically, but the same reasoning applies here: a route that had to give up on both
 ///   direct right-angle shapes is in exactly the position stage 5's perimeter lanes are meant
-///   for, not one this stage's ≤2 cap was ever meant to hold to.
+///   for, not one this stage's ≤2 cap was ever meant to hold to. `strokes`' `A<-->F`/`C~~~E` and
+///   `subgraph-bypass`'s `X->Y` join this list for the same reason (added 2026-09-01, once
+///   `align_straight_lanes`'s `r + 1` adjacency bug was fixed and it started actually
+///   straightening the chains these two edges skip across): `strokes`' `A-B-C-D-E-F` becomes one
+///   straight column, and `A<-->F`/`C~~~E` skip clean across it, colliding on both attempts and
+///   coming out at 6 bends each; `subgraph-bypass`'s `A->B` (inside the `one` frame `X->Y` has to
+///   go around) straightens the same way, widening the detour `X->Y` needs above the frame to 4
+///   bends. Both dumped and read by hand, not guessed at, the same as `amp-chain`.
 fn orthogonal_dag_corpus() -> Vec<(&'static str, &'static str)> {
     const UNCAPPED: &[&str] = &[
         "branch",
@@ -4584,6 +4631,8 @@ fn orthogonal_dag_corpus() -> Vec<(&'static str, &'static str)> {
         "left-right",
         "self-loop",
         "amp-chain",
+        "strokes",
+        "subgraph-bypass",
         // `C --> A` closes a cycle back onto the block's own member `A` — a back edge exactly
         // like the others in this list, just with one end inside a subgraph frame.
         "subgraph",
@@ -4607,13 +4656,18 @@ fn edge_segments(d: &Diagram) -> Vec<(Point, Point)> {
 
 const AXIS_EPS: f64 = 1e-6;
 
-/// The default path (`"splines"`) must not move by even one byte — `[ui] mermaid_routing` is a
-/// brand new opt-in axis, and `docs/FEATURE-MERMAID-RENDERER.md` §10-2 states the same "既定の
-/// 見え方は1バイトも変えない" rule `[ui] mermaid_curve` was held to. `render_flow(..., curve,
-/// "splines")` is required to reproduce `render_curve(..., curve)` exactly, across several curves
-/// and the whole corpus.
+/// `render_flow(..., curve, "splines")` is defined *as* `render_curve(..., curve)`'s own body
+/// (`render_curve` in `mod.rs` is literally `render_flow(code, theme, curve, "splines")`), so this
+/// is a decidability/non-panic check, not a regression guard: it states that routing a curve
+/// through the `"splines"` string takes the same code path calling `render_curve` directly does,
+/// and that path does not panic, across several curves and the whole corpus. **It cannot catch a
+/// regression in what `"splines"` draws** — the moment the delegation above shipped, `a` and `b`
+/// below became the same call with different names, i.e. `f(x) == f(x)`, the exact shape of
+/// failure memory `markdown-block-walk-migration` records ("a live comparison goes silently
+/// meaningless the instant B is B's own implementation"). See
+/// [`splines_routing_signature_is_pinned`] for the actual regression guard.
 #[test]
-fn orthogonal_splines_routing_reproduces_render_curve_byte_for_byte() {
+fn orthogonal_splines_routing_is_deterministic_and_does_not_panic() {
     for (name, src) in CORPUS {
         for curve in ["basis", "linear", "step", "monotoneX"] {
             let a = render_curve(src, "dark", curve)
@@ -4622,9 +4676,249 @@ fn orthogonal_splines_routing_reproduces_render_curve_byte_for_byte() {
                 .unwrap_or_else(|e| panic!("{name}/{curve}: render_flow must render: {e}"));
             assert_eq!(
                 a, b,
-                "{name}/{curve}: render_flow(..., \"splines\") must match render_curve(...) exactly"
+                "{name}/{curve}: render_flow(..., \"splines\") must match render_curve(...) exactly \
+                 (both calls take the same code path, so this can only fail on nondeterminism)"
             );
         }
+    }
+}
+
+/// Re-dumps [`routing_signature`] for the five sources [`splines_routing_signature_is_pinned`]
+/// pins, so a deliberate change to that test's expectations starts from real output rather than a
+/// hand-edited guess. Run with `cargo test -- --ignored --nocapture` and copy the printed constants
+/// in by hand — this does not write anywhere on disk, unlike `KONOMA_UPDATE_SNAPSHOTS=1`, which is
+/// the point (see that test's doc comment).
+#[test]
+#[ignore]
+fn dump_routing_signatures_for_pinning() {
+    for name in [
+        "branch",
+        "left-right",
+        "subgraph",
+        "long-edge",
+        "link-style-multi-index",
+    ] {
+        let (_, src) = CORPUS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .expect("known corpus name");
+        let svg = render_flow(src, "dark", "basis", "splines").expect("must render");
+        println!("=== {name} ===\n{}", routing_signature(&svg));
+    }
+}
+
+const BRANCH_SIGNATURE: &str = "fill=none
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#333333
+fill=#cccccc
+fill=#333333
+fill=#cccccc
+";
+
+const LEFT_RIGHT_SIGNATURE: &str = "fill=none
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#333333
+fill=#cccccc
+fill=#333333
+fill=#cccccc
+";
+
+const SUBGRAPH_SIGNATURE: &str = "fill=none
+fill=#2b2b38
+stroke=#8a8a8a
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#cccccc
+";
+
+const LONG_EDGE_SIGNATURE: &str = "fill=none
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d3d3d3
+fill=#d3d3d3
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+";
+
+const LINK_STYLE_SIGNATURE: &str = "fill=none
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#1f6feb
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#1f6feb
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#1f6feb
+fill=#d3d3d3
+d=M#,#L#,#C#,# #,# #,#C#,# #,# #,#L#,#
+fill=none
+stroke=#d4a017
+fill=#d3d3d3
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+fill=#1f2020
+stroke=#cccccc
+fill=#cccccc
+";
+
+/// The sentinel `orthogonal_splines_routing_is_deterministic_and_does_not_panic` cannot be, now
+/// that `render_curve` is defined as `render_flow(..., "splines")`: a comparison between the two
+/// is `f(x) == f(x)` (see that test's doc comment). This one does not call `render_curve` at all —
+/// it pins `render_flow(..., "splines")` on its own, against a literal expected string baked into
+/// *this source file*, not a `snapshots/` golden, so `KONOMA_UPDATE_SNAPSHOTS=1` cannot silently
+/// carry a regression through. If `"splines"` ever stopped meaning splines routing — reached
+/// `orthogonal::route_flowchart` by accident, or a future refactor broke the string match in
+/// [`Routing::parse`](orthogonal) — this is the test that would actually notice, where the sentinel
+/// above would not (both sides of its comparison would still be equally broken).
+///
+/// Five corpus sources stand in for the shapes a routing regression would plausibly move: a plain
+/// forward chain with a back edge (`branch`), labelled edges (`left-right`), a subgraph frame
+/// (`subgraph`), several back edges over a longer chain (`long-edge`), and `linkStyle`-coloured
+/// edges (`link-style-multi-index`, the exact case `docs/STATUS.md`'s 2026-08-28 colour-cascade
+/// regression came from). Expected values were obtained by dumping real output
+/// ([`dump_routing_signatures_for_pinning`], `--ignored --nocapture`) and are
+/// [`routing_signature`]'s masked `d`/`fill`/`stroke` columns rather than the whole SVG, for the
+/// same reason `corpus_golden` masks numbers at all: an unmasked byte-exact pin would drift between
+/// this machine's Helvetica and Linux CI's DejaVu Sans on nothing more than label width, for
+/// reasons that have nothing to do with routing.
+#[test]
+fn splines_routing_signature_is_pinned() {
+    const CASES: &[(&str, &str)] = &[
+        ("branch", BRANCH_SIGNATURE),
+        ("left-right", LEFT_RIGHT_SIGNATURE),
+        ("subgraph", SUBGRAPH_SIGNATURE),
+        ("long-edge", LONG_EDGE_SIGNATURE),
+        ("link-style-multi-index", LINK_STYLE_SIGNATURE),
+    ];
+    for (name, expected) in CASES {
+        let (_, src) = CORPUS
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("{name}: not in CORPUS"));
+        let svg = render_flow(src, "dark", "basis", "splines")
+            .unwrap_or_else(|e| panic!("{name}: must render: {e}"));
+        assert_eq!(
+            &routing_signature(&svg),
+            expected,
+            "{name}: splines routing signature drifted — re-dump with \
+             dump_routing_signatures_for_pinning and inspect the diff before updating"
+        );
     }
 }
 
@@ -4684,36 +4978,75 @@ fn orthogonal_aligned_edge_is_a_straight_two_point_line() {
 }
 
 /// A decision node's two outgoing edges (branch) and a merge node's two incoming edges (merge)
-/// each bend exactly once — a 3-point polyline, per §10-1 item 1's "分岐/合流は曲げ1回".
+/// each bend at most once — a 2- or 3-point polyline, per §10-1 item 1's "分岐/合流は曲げ1回".
+///
+/// Before `align_straight_lanes`'s `r + 1` adjacency bug was fixed (2026-09-01), lane alignment
+/// never actually selected a chain, so *both* legs of a branch/merge always bent once here. Now
+/// that it fires for real, `B`'s own out-edges (`B->C`/`B->D`) and `C`'s own in-edges
+/// (`A->C`/`B->C`) are exactly the kind of candidate `align_straight_lanes` competes for a single
+/// chain slot over, and the module doc's own promise holds: "`classify`'s existing `aligned`
+/// check... recognises the chain's edges on its own... and draws them dead straight." One leg (the
+/// tie-break winner — dumped and confirmed: `B->C` and `A->C`, both smaller-cross-coordinate) now
+/// goes fully straight (0 bends); the other (the leg the lane's own "at most one out/in per node"
+/// rule left unclaimed) still bends exactly once, which is what this test actually pins now — the
+/// bend-once invariant survives for whichever edge alignment did *not* absorb.
 #[test]
-fn orthogonal_branch_and_merge_edges_bend_exactly_once() {
+fn orthogonal_branch_and_merge_edges_bend_at_most_once() {
     let branch = laid_out_flow(
         "flowchart LR\n  A --> B{cond}\n  B --> C\n  B --> D",
         "basis",
         "konoma-orthogonal",
     );
-    for target in ["C", "D"] {
-        let e = branch
-            .edges
-            .iter()
-            .find(|e| e.from == "B" && e.to == target)
-            .unwrap_or_else(|| panic!("edge B->{target} must exist"));
-        assert_eq!(e.points.len(), 3, "branch edge B->{target}: {:?}", e.points);
-    }
+    let bc = branch
+        .edges
+        .iter()
+        .find(|e| e.from == "B" && e.to == "C")
+        .expect("edge B->C must exist");
+    assert_eq!(
+        bc.points.len(),
+        2,
+        "B->C wins the lane slot (smaller target cross-coordinate) and goes straight: {:?}",
+        bc.points
+    );
+    let bd = branch
+        .edges
+        .iter()
+        .find(|e| e.from == "B" && e.to == "D")
+        .expect("edge B->D must exist");
+    assert_eq!(
+        bd.points.len(),
+        3,
+        "B->D loses the lane slot to B->C and still bends exactly once: {:?}",
+        bd.points
+    );
 
     let merge = laid_out_flow(
         "flowchart LR\n  A --> C\n  B --> C\n  C --> D",
         "basis",
         "konoma-orthogonal",
     );
-    for source in ["A", "B"] {
-        let e = merge
-            .edges
-            .iter()
-            .find(|e| e.from == source && e.to == "C")
-            .unwrap_or_else(|| panic!("edge {source}->C must exist"));
-        assert_eq!(e.points.len(), 3, "merge edge {source}->C: {:?}", e.points);
-    }
+    let ac = merge
+        .edges
+        .iter()
+        .find(|e| e.from == "A" && e.to == "C")
+        .expect("edge A->C must exist");
+    assert_eq!(
+        ac.points.len(),
+        2,
+        "A->C wins the lane slot (smaller source cross-coordinate) and goes straight: {:?}",
+        ac.points
+    );
+    let bc2 = merge
+        .edges
+        .iter()
+        .find(|e| e.from == "B" && e.to == "C")
+        .expect("edge B->C must exist");
+    assert_eq!(
+        bc2.points.len(),
+        3,
+        "B->C loses the lane slot to A->C and still bends exactly once: {:?}",
+        bc2.points
+    );
 }
 
 /// A `{}` decision node draws as an eight-vertex chamfered rectangle when `[ui] mermaid_routing =
@@ -5045,12 +5378,18 @@ fn attr<'a>(haystack: &'a str, attr: &str) -> Option<&'a str> {
 // naive guess (3 sources, one per face) split unevenly across dagre's own barycenter placement
 // instead and grew nothing.
 
-/// A real 9-way fan-in (`A`..`I` all merge into `Z`) is not evenly spread by dagre: `E`, whose x
-/// dagre happened to place exactly under `Z`, is the one **aligned** edge (0 bends, `Z`'s Top
-/// face); the other eight split 4-and-4 across `Z`'s Left and Right faces by which side of `Z`
-/// their own x falls on. Both four-edge faces need `(4-1)*16 + 2*8 = 64px` of flat run — more
-/// than `Z`'s natural single-line height of 45.4px — so `Z` grows to fit them, on the axis
-/// (height, since Left/Right faces run along it) that demand actually asks for.
+/// A real 9-way fan-in (`A`..`I` all merge into `Z`) is not evenly spread by dagre. Before
+/// `align_straight_lanes`'s `r + 1` adjacency bug was fixed (2026-09-01), the function never
+/// selected a lane at all, so this fixture's expected values were dagre's own unaligned placement
+/// — `E`'s x happened to land under `Z`'s by dagre's own barycenter heuristic, giving a 4-and-4
+/// split across `Z`'s Left/Right faces. Now that lane alignment actually runs, `A` (the smallest
+/// cross-coordinate candidate — every one of `A`..`I` has exactly one out-edge to `Z`, so `Z`'s
+/// single incoming chain slot goes to whichever wins "タイは上・左優先", `align_straight_lanes`'s
+/// own tie-break) wins the slot and `Z` moves to sit under `A` instead — the leftmost node in the
+/// whole fan, not the centre. That leaves *every one* of the other eight sources (`B`..`I`) to
+/// `Z`'s **right**, none to its left: dumped and confirmed (`B->Z`..`I->Z` all land on the exact
+/// same x, `Z`'s Right face), not assumed. The busiest (only occupied, besides the Top-face
+/// aligned edge) face now needs `(8-1)*16 + 2*8 = 128px` of flat run.
 #[test]
 fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
     let src = "flowchart TD\n  A --> Z\n  B --> Z\n  C --> Z\n  D --> Z\n  E --> Z\n  \
@@ -5066,8 +5405,8 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
     let ortho = laid_out_flow(src, "basis", "konoma-orthogonal");
     let z_ortho = ortho.node("Z").expect("Z must exist");
     assert_eq!(
-        z_ortho.size.h, 64.0,
-        "Z's height must grow to exactly (4-1)*16 + 2*8 = 64px — the busiest face's requirement"
+        z_ortho.size.h, 128.0,
+        "Z's height must grow to exactly (8-1)*16 + 2*8 = 128px — the busiest face's requirement"
     );
     // Growth is per-axis: nothing asked Z's width to grow (only its Left/Right faces were
     // crowded, which is a height requirement), so it must be unchanged from the splines pass.
@@ -5090,11 +5429,12 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
         let bends = e.points.len().saturating_sub(2);
         let last = e.points.last().unwrap();
         if (last.y - (z_top - orthogonal::PORT_INSET)).abs() < 1e-6 {
-            // Landed on Z's Top face: must be the one aligned (E), zero bends.
+            // Landed on Z's Top face: must be the one aligned (A now, not E — see this test's own
+            // doc), zero bends.
             assert_eq!(bends, 0, "the Top-face edge must be the aligned one: {e:?}");
             assert_eq!(
-                e.from, "E",
-                "E is the source dagre happened to align under Z: {e:?}"
+                e.from, "A",
+                "A is the smallest-cross-coordinate source, so it wins Z's one lane slot: {e:?}"
             );
             aligned_count += 1;
         } else if (last.x - left_face_x).abs() < 1e-6 {
@@ -5118,37 +5458,43 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
     }
     assert_eq!(
         aligned_count, 1,
-        "exactly one edge must be the aligned E->Z"
+        "exactly one edge must be the aligned A->Z"
     );
-    assert_eq!(left_ys.len(), 4, "four merges must share Z's Left face");
-    assert_eq!(right_ys.len(), 4, "four merges must share Z's Right face");
+    assert_eq!(
+        left_ys.len(),
+        0,
+        "Z moved to A's own (leftmost) x, so nothing is left of it any more"
+    );
+    assert_eq!(
+        right_ys.len(),
+        8,
+        "every one of B..I now shares Z's Right face"
+    );
 
-    for ys in [&mut left_ys, &mut right_ys] {
-        ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        // 16px apart, symmetric about Z's own centre.
-        for w in ys.windows(2) {
-            assert!(
-                (w[1] - w[0] - orthogonal::PORT_SPACING).abs() < 1e-6,
-                "ports on one face must be exactly 16px apart: {ys:?}"
-            );
-        }
-        let mid = (ys[0] + ys[3]) / 2.0;
+    right_ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // 16px apart, symmetric about Z's own centre.
+    for w in right_ys.windows(2) {
         assert!(
-            (mid - z_ortho.center.y).abs() < 1e-6,
-            "four ports must be symmetric about the face's own centre: {ys:?} vs {}",
-            z_ortho.center.y
+            (w[1] - w[0] - orthogonal::PORT_SPACING).abs() < 1e-6,
+            "ports on one face must be exactly 16px apart: {right_ys:?}"
         );
-        // Every port at least PORT_CLEARANCE from a corner.
-        let half_h = z_ortho.size.h / 2.0;
-        for &y in ys.iter() {
-            let from_center = (y - z_ortho.center.y).abs();
-            assert!(
-                half_h - from_center >= orthogonal::PORT_CLEARANCE - 1e-6,
-                "port {from_center}px from centre must clear the corner by \
-                 {}px (half-height {half_h}): {ys:?}",
-                orthogonal::PORT_CLEARANCE
-            );
-        }
+    }
+    let mid = (right_ys[0] + right_ys[7]) / 2.0;
+    assert!(
+        (mid - z_ortho.center.y).abs() < 1e-6,
+        "eight ports must be symmetric about the face's own centre: {right_ys:?} vs {}",
+        z_ortho.center.y
+    );
+    // Every port at least PORT_CLEARANCE from a corner.
+    let half_h = z_ortho.size.h / 2.0;
+    for &y in right_ys.iter() {
+        let from_center = (y - z_ortho.center.y).abs();
+        assert!(
+            half_h - from_center >= orthogonal::PORT_CLEARANCE - 1e-6,
+            "port {from_center}px from centre must clear the corner by \
+             {}px (half-height {half_h}): {right_ys:?}",
+            orthogonal::PORT_CLEARANCE
+        );
     }
 }
 
@@ -5292,6 +5638,57 @@ fn orthogonal_settings_rules_sample_no_longer_pierces_a_sibling_node() {
     assert_no_segment_crosses_a_foreign_node("settings-rules", &d);
 }
 
+/// The coordinator's own second real-pixel finding on this exact diagram (2026-09-01, after
+/// `align_straight_lanes`'s adjacency fix started actually moving nodes): once branch/merge
+/// collisions against those relocated nodes became more common, every collision-fallback forward
+/// edge here rode `route_perimeter` (stage 5's over-broad `shape.reverse || shape.staircase`
+/// condition, reverted the same day — `route_with_ports`'s own doc) out to the diagram's outer
+/// edge — `設定のルール->デコード`（`C->IM`, the "画像" label) along the very top, `ブロックモデル
+/// ->mermaid`/`->数式`（`MD->MM`/`MD->MA`) out past the left edge and back, three parallel outer
+/// runs stacked in the bottom-left corner. This diagram is a pure DAG (no cycle anywhere in its
+/// source), so **every** edge in it is a forward edge — none of them has any business excursing by
+/// a perimeter-lane amount at all, `PERIMETER_MARGIN` or more past the content box. Real output,
+/// dumped and confirmed before this was written: `C->IM`'s own worst excursion is ~8.5px (clears
+/// the row above it, nothing like a full perimeter loop), and `MD->MM`/`MD->MA` never leave `MD`'s
+/// own local column at all — see `docs/STATUS.md` and this file's own git history for the numbers
+/// from the regression itself.
+#[test]
+fn orthogonal_settings_rules_sample_has_no_perimeter_routed_forward_edges() {
+    let src = "flowchart LR\n  F[ファイル] --> C{設定のルール}\n  \
+               C -->|テキスト| T[窓読み]\n  C -->|コード| S[構文強調]\n  \
+               C -->|Markdown| MD[ブロックモデル]\n  C -->|CSV / TSV| TB[表]\n  \
+               C -->|画像| IM[デコード]\n  C -->|PDF| PD[ページ描画]\n  C -->|SVG| SV[usvg]\n  \
+               C -->|動画| VD[キーフレーム]\n  C -->|書庫| AR[一覧]\n  \
+               C -->|なし| NA[プレビュー不可]\n  MD --> MM[mermaid]\n  MD --> MA[数式]\n  \
+               MM --> RS[ラスタライズ]\n  MA --> RS\n  SV --> RS\n  PD --> RS\n  \
+               IM --> FIT[セルに合わせる]\n  RS --> FIT\n  VD --> FIT\n  FIT --> K{端末}\n  \
+               K -->|kitty| KT[圧縮転送]\n  K -->|sixel / iTerm2| RI[画像プロトコル]\n  \
+               K -->|それ以外| HB[ハーフブロック]\n  \
+               classDef pix fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  \
+               classDef txt fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  \
+               class IM,PD,SV,VD,MM,MA,RS,FIT,KT,RI,HB pix\n  \
+               class T,S,MD,TB,AR txt\n  \
+               style NA fill:#2d2418,stroke:#d4a017,color:#c9d1d9";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let bounds = diagram_content_bounds(&d);
+    for e in &d.edges {
+        let max_excursion = e
+            .points
+            .iter()
+            .map(|p| excursion(bounds, p))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_excursion < orthogonal::PERIMETER_MARGIN,
+            "{}->{}: excursion {max_excursion}px reaches perimeter-lane territory \
+             (PERIMETER_MARGIN={}) in a diagram with no back edge at all: {:?}",
+            e.from,
+            e.to,
+            orthogonal::PERIMETER_MARGIN,
+            e.points
+        );
+    }
+}
+
 /// The coordinator's own repro for the real bug `safe_ring_exit`'s L-shaped fallback used to have
 /// (`orthogonal::tests::safe_ring_exit_l_shape_stops_at_the_ring_not_the_far_corner`'s own doc has
 /// the full story): a decision node's retry loop (`C -->|再試行| B`) needed the L-shaped fallback
@@ -5345,14 +5742,32 @@ fn orthogonal_lane_alignment_never_leaves_nodes_overlapping() {
     }
 }
 
-/// §10-1 item 2's "直進レーンを挟んで上下（左右）に分かれる辺は…曲げ位置を共有して対称に". Two
-/// merges into the same target, one from each side, already share a bend column by construction
-/// (a merge's bend sits at the target's own flow coordinate — `orthogonal::bridge`'s `Flow, Cross`
-/// case), which is exactly the "現状の合流形が自然に対称になるケース" the rule says to leave
-/// alone: this states that directly, on a real diagram (`length`'s `B --> D`, `C --> D`, dumped
-/// and confirmed before being pinned), rather than re-deriving it from the formula alone.
+/// §10-1 item 2's "直進レーンを挟んで上下（左右）に分かれる辺は…曲げ位置を共有して対称に" — "現状の
+/// 合流形が自然に対称になるケースは変えない" (a merge that already lands dead centre on its own
+/// face is left exactly where `bridge`'s `Flow, Cross` case already puts it).
+///
+/// Before `align_straight_lanes`'s `r + 1` adjacency bug was fixed (2026-09-01), *neither* of
+/// `length`'s two merges into `D` (`B --> D`, `C --> D`) was ever absorbed into a lane, so both
+/// bent and happened to land on opposite faces symmetrically. Now that alignment fires for real,
+/// `B` — `A --->` gives it the smaller flow-adjacent chain, `A`-`B`-`D`'s own tie-break winner —
+/// is absorbed into that straight lane (0 bends, `D`'s Top face) the same way `orthogonal_branch_
+/// and_merge_edges_bend_at_most_once` above documents for a branch/merge pair. That leaves `C->D`
+/// the *only* edge still merge-shaped, and — dumped and confirmed before being pinned — it is
+/// still the "already symmetric" case this rule is about: alone on its own face, its bend lands
+/// exactly on `D`'s own flow coordinate, not offset by any eviction the way two co-occupants of
+/// one face would be. A structural reason this is the strongest fixture available, not merely the
+/// simplest: whichever parent wins a target's one lane slot is, by the tie-break's own
+/// "タイは上・左優先" rule, always the parent with the *smallest* cross coordinate — so the target
+/// always moves to sit at that extreme, never at a mid-point some other parent could still flank
+/// from the opposite side. A real "two still-bent merges, symmetric on opposite faces" pair would
+/// need every one of a target's candidate parents to lose the lane selection (e.g. by each having
+/// a competing sibling edge that wins its own out-slot first) — engineered fixtures tried for that
+/// either collapsed the two survivors onto the *same* face (both losing to a third, lane-winning
+/// parent whose own position happened to sit outside the pair, the same reasoning as above) or
+/// reduced to this simpler one-survivor shape, so this is what real alignment actually leaves to
+/// check.
 #[test]
-fn orthogonal_merges_into_the_same_target_share_a_symmetric_bend_column() {
+fn orthogonal_lone_merge_still_bends_at_its_targets_own_row() {
     let src = "flowchart TD\n  A ---> B\n  A --> C\n  B --> D\n  C --> D";
     let d = laid_out_flow(src, "basis", "konoma-orthogonal");
     let bd = d
@@ -5365,22 +5780,24 @@ fn orthogonal_merges_into_the_same_target_share_a_symmetric_bend_column() {
         .iter()
         .find(|e| e.from == "C" && e.to == "D")
         .expect("C->D must exist");
-    assert_eq!(bd.points.len(), 3, "{:?}", bd.points);
-    assert_eq!(cd.points.len(), 3, "{:?}", cd.points);
-    // The bend (middle point) of each sits at the same flow coordinate (y, for TD) — D's own —
-    // and the two are symmetric about D's own centre on the cross axis (x).
-    assert!(
-        (bd.points[1].y - cd.points[1].y).abs() < 1e-6,
-        "the two merges must bend at the same row: {:?} vs {:?}",
-        bd.points[1],
-        cd.points[1]
+    assert_eq!(
+        bd.points.len(),
+        2,
+        "B->D is absorbed into the A-B-D lane and goes straight: {:?}",
+        bd.points
+    );
+    assert_eq!(
+        cd.points.len(),
+        3,
+        "C->D is the only remaining merge and still bends exactly once: {:?}",
+        cd.points
     );
     let d_node = d.node("D").expect("D must exist");
-    let b_offset = bd.points[1].x - d_node.center.x;
-    let c_offset = cd.points[1].x - d_node.center.x;
     assert!(
-        (b_offset + c_offset).abs() < 1e-6,
-        "the two bends must be symmetric about D's own centre: {b_offset} vs {c_offset}"
+        (cd.points[1].y - d_node.center.y).abs() < 1e-6,
+        "alone on its own face, C->D's bend must land exactly on D's own row: {:?} vs {}",
+        cd.points[1],
+        d_node.center.y
     );
 }
 
@@ -5781,6 +6198,35 @@ fn diagram_content_bounds(d: &Diagram) -> (f64, f64, f64, f64) {
     (l, t, r, b)
 }
 
+/// Every `(name, from, to)` corpus edge that excurses past the content box **without** being a
+/// genuine back edge — a collision-fallback forward edge (`EdgeShape::staircase`) whose own local
+/// route (`route_with_ports`'s own doc — reverted off the perimeter lane 2026-09-01) can stray
+/// outside the content box by whatever amount dagre's own waypoint chain and
+/// `orthogonal::clear_local_route` produce, with no `PERIMETER_MARGIN + k*PERIMETER_LANE_SPACING`
+/// guarantee at all — that guarantee is item 4's own, and it is written about the perimeter lane
+/// specifically, which only a true `reverse` (non-self-loop) edge draws from now.
+///
+/// `classify` (the function that actually decides `reverse` vs `staircase`) is private to
+/// `orthogonal.rs`, and a finished [`Diagram`] carries no shape tag a test could read back — so
+/// this list is reasoned from each source's own topology instead (verified against `classify`'s
+/// own rule, "target rank ≤ source rank" for a genuine back edge, applied to each source's own
+/// declared chain — the whole corpus was dumped for its own excursion amounts first, over
+/// `scratch_dump_perimeter_excursions`, to confirm no entry outside this list needs it):
+/// `strokes`' `A<-->F`/`C~~~E` (both forward, `A`/`C` before `F`/`E` in the declared `A---B-.->C
+/// ==>D--o E--x F` chain), `long-edge`'s `A->E` (forward — the *other* two excursions on this same
+/// source, `E->B` and `C->A`, both close a cycle backward and stay genuine back edges), and
+/// `subgraph-bypass`'s `X->Y` (forward — spans the same ranks the `one` frame does without closing
+/// any cycle, `orthogonal_dag_corpus`'s own doc on this exact source).
+fn known_staircase_forward_edge(name: &str, from: &str, to: &str) -> bool {
+    matches!(
+        (name, from, to),
+        ("strokes", "A", "F")
+            | ("strokes", "C", "E")
+            | ("long-edge", "A", "E")
+            | ("subgraph-bypass", "X", "Y")
+    )
+}
+
 /// How far outside `bounds` a point sits — 0 for a point inside or on the edge, otherwise its
 /// distance past whichever side it cleared. What [`orthogonal_perimeter_edges_clear_the_margin`]
 /// measures a perimeter edge's route by.
@@ -5803,6 +6249,9 @@ fn orthogonal_perimeter_edges_clear_the_margin() {
         for e in &d.edges {
             if e.from == e.to {
                 continue; // a self-loop's small local bump is not a perimeter lane at all.
+            }
+            if known_staircase_forward_edge(name, &e.from, &e.to) {
+                continue; // a local route, not a perimeter one — see that function's own doc.
             }
             let max_excursion = e
                 .points
@@ -5839,6 +6288,9 @@ fn orthogonal_perimeter_edges_stagger_8px_apart() {
         for e in &d.edges {
             if e.from == e.to {
                 continue; // a self-loop's small local bump is not a perimeter lane at all.
+            }
+            if known_staircase_forward_edge(name, &e.from, &e.to) {
+                continue; // a local route, not a perimeter one — see that function's own doc.
             }
             let max_excursion = e
                 .points
@@ -6019,11 +6471,26 @@ fn split_at_gaps_ignores_a_gap_that_does_not_land_on_the_polyline() {
     assert_eq!(pieces, vec![pts]);
 }
 
-/// §10-1 item 4's real motivating case, dumped and confirmed before this was written:
-/// `amp-chain`'s `A->D` and `B->C` are both collision-fallback (`staircase`) edges whose own
-/// segments cross each other and each also crosses an ordinary sibling branch (`A->C`/`B->D`
-/// respectively) sharing their own source node. This is the corpus source stage 3's own tests
-/// already name for exactly this shape (`orthogonal_dag_corpus`'s own doc).
+/// §10-1 item 4's real motivating case, dumped and confirmed before this was written (a second
+/// time, 2026-09-01, after `route_with_ports` stopped routing a collision-fallback forward edge
+/// (`EdgeShape::staircase`) onto the perimeter lane — see that function's own doc for why. Real
+/// pixels of `samples/mermaid.ja.md`'s large flowchart, checked by the coordinator, had caught
+/// ordinary forward edges looping around the whole diagram's outer edge under the previous,
+/// perimeter-routed geometry this test used to pin — see this test's own former doc in git history
+/// for what that geometry looked like):
+///
+/// `amp-chain`'s `A->D` and `B->C` are both collision-fallback edges and both route locally now,
+/// which uncoupled them from the perimeter lane's own 8px stagger — without
+/// `orthogonal::separate_coincident_detours`'s own fix (this same day) they would land on the exact
+/// same vertical run; with it, `B->C`'s run is nudged 8px sideways, so the two now merely *cross*
+/// once (at one point) rather than coincide. `A->D` also crosses the *ordinary* `A->C` edge (their
+/// shared source `A` still lets their two different-shaped routes cross once). `insert_crossing_
+/// gaps`'s own rule cuts only the "spanning" (detour) side of a crossing: `A->D` is the detour in
+/// its crossing with the ordinary `A->C`, so `A->D` gets a gap there; `A->D`/`B->C` are *both*
+/// detours in their own crossing, so the tie goes to the higher edge id — `B->C` (declared after
+/// `A->D` in `A & B --> C & D`'s own expansion order) — which gets a gap there instead of `A->D`.
+/// Net: one gap each on `A->D` and `B->C`, none on the two ordinary edges (`A->C`, `B->D`) or the
+/// now-straight-laned `C->E`.
 #[test]
 fn orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whole() {
     let src = "flowchart LR\n  A & B --> C & D\n  C --> E";
@@ -6043,15 +6510,30 @@ fn orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whol
         edge("C", "E"),
     );
 
-    // The two ordinary branches never span anything, so nothing ever cuts them, and neither does
-    // the edge with nothing crossing it at all.
+    // Nothing ever cuts an ordinary edge, or a detour that lost its own tie-break: `A->C`/`B->D`
+    // are both ordinary and never the spanning side of anything; `C->E` (absorbed into a straight
+    // lane once alignment fires for real) crosses nothing at all.
     assert!(ac.gaps.is_empty(), "A->C must stay whole: {:?}", ac.gaps);
     assert!(bd.gaps.is_empty(), "B->D must stay whole: {:?}", bd.gaps);
     assert!(ce.gaps.is_empty(), "C->E crosses nothing: {:?}", ce.gaps);
 
-    // The two collision-fallback edges each cross something and must carry at least one gap.
-    assert!(!ad.gaps.is_empty(), "A->D must have been cut at least once");
-    assert!(!bc.gaps.is_empty(), "B->C must have been cut at least once");
+    // A->D is the spanning side of its crossing with the ordinary A->C, and carries one gap for it
+    // — the crossing with B->C goes the other way (see this test's own doc on the tie-break), so
+    // A->D never gets a second one.
+    assert_eq!(
+        ad.gaps.len(),
+        1,
+        "A->D must carry exactly one gap, from crossing the ordinary A->C: {:?}",
+        ad.gaps
+    );
+    // B->C is the spanning side of its own crossing with A->D (the both-detour tie-break, higher
+    // id) and carries one gap for it.
+    assert_eq!(
+        bc.gaps.len(),
+        1,
+        "B->C must carry exactly one gap, from crossing A->D (the both-detour tie-break): {:?}",
+        bc.gaps
+    );
 
     // Every gap actually sits on its own edge's line — on the same segment, both endpoints — and
     // is exactly `CROSSING_GAP` px wide (or clamped shorter only if the segment itself is that
@@ -6102,13 +6584,14 @@ fn orthogonal_crossing_gap_splits_the_svg_path_of_the_spanning_edge_only() {
     // as a proxy for "this edge's own path element count", since the golden-masking convention
     // this crate otherwise uses (`mask_numbers`) is not available outside the snapshot harness.
     let path_count = svg.matches("<path").count();
-    // 3 uncrossed edges (A->C, B->D, C->E) draw 1 path each; the two crossed edges draw one path
-    // per piece — dumped and confirmed by hand before this was written: `A->D` has one gap (2
-    // pieces), `B->C` has two (3 pieces), for 3 + 2 + 3 = 8 total.
+    // 3 uncut edges (A->C, B->D, C->E) draw 1 path each; `A->D` and `B->C` — see
+    // `orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whole`'s own doc
+    // for exactly which crossing cuts each — carry one gap apiece and so draw one path per of
+    // their 2 pieces each — dumped and confirmed by hand before this was written: 3 + 2 + 2 = 7.
     assert_eq!(
-        path_count, 8,
-        "expected 3 uncut edges (1 path each) + A->D (2 pieces) + B->C (3 pieces) = 8: got \
-         {path_count}\n{svg}"
+        path_count, 7,
+        "expected 3 uncut edges (1 path each) + A->D (2 pieces) + B->C (2 pieces) = 7: \
+         got {path_count}\n{svg}"
     );
 }
 
@@ -6380,4 +6863,133 @@ fn cluster_to_cluster_edge_resolves_both_ends_against_the_frames_not_their_ancho
          of its member nodes' bounds",
         one.bounds()
     );
+}
+
+/// Review finding 3's suspicion, confirmed and fixed 2026-09-01 (a second pass, after the
+/// coordinator independently confirmed the `r + 1` adjacency bug this test's own history records
+/// and asked for it to be fixed constructively rather than left as read): [`align_straight_lanes`]
+/// moves [`PlacedNode::center`], but the raw dagre waypoints a self-loop still draws from
+/// (`EligibleEdge::raw`, `mod.rs`'s own comment on why it is read *before* alignment runs) were
+/// never re-derived after that move — `route_staircase_with_ports` is the one shape
+/// (`route_with_ports`'s own doc) that still bridges through `raw`'s interior points rather than
+/// only the two evicted ports.
+///
+/// This did not reproduce over the first round of adversarial constructions below, for a reason
+/// this test's own git history records in detail: `align_straight_lanes`'s chain candidate filter
+/// used to check `node_rank.get(t) == Some(&(r + 1))`, an exact-integer "next rank" test that
+/// dagre's own `makeSpaceForEdgeLabels` (`mod.rs`'s own `minlen *= 2` comment) made impossible to
+/// satisfy — real node ranks always land two apart, so the filter never matched any real edge, in
+/// any diagram, and lane alignment never fired at all. Once that was fixed (`align_straight_lanes`'s
+/// own doc, "next rank some *real* node actually occupies"), it started moving self-loop owners for
+/// real — and the coupling above turned out genuine: `one-sided-huge-push` below, a self-loop owner
+/// pushed ~137px by a one-sided run of wide siblings, drew with its ports correctly on the node's
+/// current boundary but its interior bump landing ~176px away in open space, dumped and confirmed
+/// before any fix. The fix is [`align_straight_lanes`]'s own return value — every node's cross-axis
+/// delta — applied back onto a self-loop's `raw` before `route_with_ports` ever reads it
+/// (`mod.rs`'s own `raw` construction, [`shift_cross`]).
+///
+/// What this test pins now that the fix is in: every self-loop across the whole adversarial set —
+/// including the one that actually reproduced the bug — must draw axis-parallel and stay within
+/// [`SELF_LOOP_BUMP_MARGIN`] of its owner's *current* box. That margin is deliberately not scaled
+/// by node size (a stale-`raw` bug does not get harder to see on a wider node — `position_self_edges`
+/// sizes a self-loop's own bump off `NODE_SEP`-scale spacing, not the owner's box, confirmed by the
+/// same dumps: `wide-head`'s 387px-wide node still draws a ~40px bump, same as every other source
+/// here), so it stays tight enough to actually catch a real rank-scale drift rather than merely not
+/// flake — verified directly: reverting the fix (skip applying the delta to `raw`) makes
+/// `one-sided-huge-push` fail this exact assertion with the point ~176px outside the margin, and
+/// restoring it passes again.
+#[test]
+fn self_loop_routes_correctly_across_lane_alignment_stress_cases() {
+    let mut dense = String::from("flowchart TD\n");
+    for i in 0..12 {
+        dense.push_str(&format!("  d{i} --> d{}\n", i + 1));
+        dense.push_str(&format!("  d{i} --> e{i}\n  e{i} --> d{}\n", i + 2));
+    }
+    dense.push_str("  d6 --> d6\n"); // a self-loop on a middle node of a dense diamond lattice
+    let dense_diamond_lattice_source = dense;
+    let sources: Vec<(&str, &str)> =
+        vec![
+        (
+            "wide-head",
+            "flowchart TD\n  A[this label is deliberately very long to force a wide box] --> B\n  \
+             B --> C\n  A --> A",
+        ),
+        (
+            "wide-tail",
+            "flowchart TD\n  A --> B\n  \
+             B --> C[this label is deliberately very long to force a wide box]\n  C --> C",
+        ),
+        (
+            "asymmetric-siblings",
+            "flowchart TD\n  P --> A\n  Q --> A\n  R --> A\n  A --> B\n  B --> C\n  A --> A",
+        ),
+        (
+            "wide-sibling-pushes-loop-owner",
+            "flowchart TD\n  A0 --> A1\n  A1 --> A2\n  A1 --> A1\n  \
+             W[a very very very long wide sibling label to force a nodesep push] --> A2\n  \
+             A0 --> W",
+        ),
+        (
+            "z-competes-for-b",
+            "flowchart TD\n  A --> B\n  B --> C\n  A --> A\n  \
+             Z[a very very very long sibling label to push things around] --> B",
+        ),
+        (
+            "deep-fanout-both-sides",
+            "flowchart TD\n  W1 --> A\n  W2 --> A\n  W3 --> A\n  A --> A\n  A --> B\n  \
+             B --> X1\n  B --> X2\n  B --> X3\n  B --> C\n  C --> D",
+        ),
+        ("dense-diamond-lattice", dense_diamond_lattice_source.as_str()),
+        (
+            // The fixture that actually reproduced the bug: every wide sibling pushes `A` the
+            // *same* direction (no opposing push to cancel it out the way the symmetric
+            // constructions above coincidentally did), so the align delta (~137px, dumped) is far
+            // larger than a self-loop's own ~40px bump and cannot be masked by it.
+            "one-sided-huge-push",
+            "flowchart TD\n  \
+             W1[extremely long sibling label number one to push things far to the right] --> A\n  \
+             W2[extremely long sibling label number two to push things even further right] --> A\n  \
+             W3[extremely long sibling label number three to push things still further right] --> A\n  \
+             A --> A\n  A --> B\n  B --> C",
+        ),
+    ];
+    // Deliberately not scaled by node size — see this test's own doc for why a fixed bound is the
+    // stronger check here.
+    const SELF_LOOP_BUMP_MARGIN: f64 = 100.0;
+    for (name, src) in &sources {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for e in &d.edges {
+            if e.from != e.to {
+                continue;
+            }
+            let owner = d
+                .nodes
+                .iter()
+                .find(|n| n.id == e.from)
+                .unwrap_or_else(|| panic!("{name}: self-loop owner {} must be a node", e.from));
+            for w in e.points.windows(2) {
+                let dx = (w[1].x - w[0].x).abs();
+                let dy = (w[1].y - w[0].y).abs();
+                assert!(
+                    dx < AXIS_EPS || dy < AXIS_EPS,
+                    "{name}: self-loop {} must stay axis-parallel: {w:?}",
+                    e.from
+                );
+            }
+            let (l, t, r, b) = owner.bounds();
+            for p in &e.points {
+                assert!(
+                    p.x >= l - SELF_LOOP_BUMP_MARGIN
+                        && p.x <= r + SELF_LOOP_BUMP_MARGIN
+                        && p.y >= t - SELF_LOOP_BUMP_MARGIN
+                        && p.y <= b + SELF_LOOP_BUMP_MARGIN,
+                    "{name}: self-loop {} point {p:?} sits far outside {}'s own current box \
+                     ({l},{t})-({r},{b}) (margin {SELF_LOOP_BUMP_MARGIN}) — exactly the drift \
+                     review finding 3 asked about",
+                    e.from,
+                    e.from
+                );
+            }
+        }
+    }
 }

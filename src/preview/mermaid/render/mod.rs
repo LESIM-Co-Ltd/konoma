@@ -1190,6 +1190,13 @@ fn lay_out_spec_pass(
     // genuine node-to-node edge is a lane candidate — one whose written endpoint dagre did not
     // have to re-anchor onto a block member (`d.edge.from == d.tail`) — the same "cluster boundary
     // is out of scope" rule stage 1 already applies to routing applies here to alignment too.
+    //
+    // `alignment_deltas` is this pass's return: every node it actually moved, as its own
+    // cross-axis delta. A self-loop's raw dagre waypoints (read from `g` below, `raw`'s own
+    // comment) are the one thing alignment cannot correct itself — they live in `g`, which this
+    // pass never touches — so whichever self-loop's owner appears in this map gets the same shift
+    // applied to `raw` before `route_staircase_with_ports` ever sees it.
+    let mut alignment_deltas: HashMap<String, f64> = HashMap::new();
     if spec.routing == Routing::Orthogonal {
         let node_rank: HashMap<String, i32> = nodes
             .iter()
@@ -1204,7 +1211,8 @@ fn lay_out_spec_pass(
             .filter(|d| d.edge.from == d.tail && d.edge.to == d.head)
             .map(|d| (d.tail.clone(), d.head.clone()))
             .collect();
-        orthogonal::align_straight_lanes(spec.direction, &mut nodes, &node_rank, &candidates);
+        alignment_deltas =
+            orthogonal::align_straight_lanes(spec.direction, &mut nodes, &node_rank, &candidates);
     }
 
     let by_id: HashMap<&str, usize> = nodes
@@ -1258,10 +1266,24 @@ fn lay_out_spec_pass(
         head: head_id,
     } in drawable
     {
-        let raw = g
+        let mut raw = g
             .edge(&tail_id, &head_id, Some(edge.id.as_str()))
             .map(|l| l.points.clone())
             .unwrap_or_default();
+        // A self-loop is the one shape `route_with_ports` still draws from `raw`
+        // (`route_staircase_with_ports`'s own doc) — `raw` was captured from `g`, which
+        // `align_straight_lanes` above never touches, so if the loop's own owner just moved,
+        // `raw` is still sitting at its pre-alignment position. `alignment_deltas` names exactly
+        // the nodes that actually moved; shifting every point here keeps the loop attached to
+        // where its owner ended up, the same way `route_with_ports` already reads the owner's
+        // *current* `PlacedNode` for the two ports.
+        if tail_id == head_id {
+            if let Some(&delta) = alignment_deltas.get(&tail_id) {
+                for p in &mut raw {
+                    *p = orthogonal::shift_cross(spec.direction, p, delta);
+                }
+            }
+        }
         let (Some(&ti), Some(&hi)) = (by_id.get(tail_id.as_str()), by_id.get(head_id.as_str()))
         else {
             continue;
@@ -1336,9 +1358,20 @@ fn lay_out_spec_pass(
         HashMap<String, Size>,
     ) = if spec.routing == Routing::Orthogonal {
         let orthogonal::RoutedFlowchart {
-            points,
+            mut points,
             required_size,
         } = orthogonal::route_flowchart(spec.direction, &nodes, &placed_clusters, &eligible);
+        // A `staircase` edge's own local route can coincide with another unrelated detour edge's
+        // (`orthogonal::separate_coincident_detours`'s own doc — lost the perimeter lane's shared
+        // stagger bookkeeping once it stopped using it, 2026-09-01). Runs before label plates and
+        // crossing gaps so both later passes see the final, separated geometry.
+        orthogonal::separate_coincident_detours(
+            spec.direction,
+            &nodes,
+            &placed_clusters,
+            &eligible,
+            &mut points,
+        );
         (points, required_size)
     } else {
         (HashMap::new(), HashMap::new())

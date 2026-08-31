@@ -20,17 +20,26 @@
 //! port with, so nothing in it disagrees with what `route_flowchart` does for an edge with no
 //! competition on either face.
 //!
-//! # A back edge draws from a perimeter lane, not dagre's own waypoints
+//! # A back edge draws from a perimeter lane; a collision-fallback forward edge stays local
 //!
-//! §10-1 item 4's "外周レーン" — stage 5 — is [`route_perimeter`]: a reverse edge
-//! ([`EdgeShape::reverse`]) or a collision-fallback forward edge ([`EdgeShape::staircase`]) leaves
-//! and enters through the same ports every other shape uses, then travels straight out to a
-//! rectangle [`PERIMETER_MARGIN`] px outside every node and frame in the diagram and around
-//! whichever way is shorter to the same straight-out point at the other end. This *replaces*
-//! stages 1-4's "暫定" (stopgap) — dagre's own waypoint chain, bent onto right angles — which the
-//! module doc used to describe as this module's honest limitation; [`route_staircase_with_ports`]
-//! is that stopgap, kept only for a **self-loop** (`route_with_ports`'s own doc explains why: a
-//! loop that starts and ends at the same box has no business circling the whole diagram).
+//! §10-1 item 4's "外周レーン" — stage 5 — is [`route_perimeter`]: a genuine reverse edge
+//! ([`EdgeShape::reverse`], never a self-loop) leaves and enters through the same ports every
+//! other shape uses, then travels straight out to a rectangle [`PERIMETER_MARGIN`] px outside
+//! every node and frame in the diagram and around whichever way is shorter to the same
+//! straight-out point at the other end. Item 4's own spec text is "戻り辺・補助辺は…外周レーン" —
+//! about *back* edges, and stage 3's own note on the collision fix ("『どの辺も他ノード箱と交差
+//! しない』を全コーパス不変条件に") already relies on dagre's own waypoint chain routing clear of
+//! every node by construction, no perimeter lane required. So a **collision-fallback forward
+//! edge** ([`EdgeShape::staircase`] — a branch or merge whose direct shape crossed a node on both
+//! attempts) and a **self-loop** (`EdgeShape::reverse` with the same source and target — never
+//! `staircase`, `classify`'s own `is_reverse` check catches it first) both stay on
+//! [`route_staircase_with_ports`], stages 1-4's own "暫定" (stopgap): dagre's own waypoint chain,
+//! bent onto right angles, exactly as it always was. Stage 5 originally routed `staircase` through
+//! the perimeter lane alongside a real back edge too — reverted 2026-09-01 once lane alignment
+//! (§10-1 item 2) started actually moving nodes, which made a branch/merge collide against its
+//! neighbours far more often and sent every one of those ordinary forward edges looping around the
+//! whole diagram's outer edge, caught in a real diagram's own rendered pixels
+//! (`samples/mermaid.ja.md`'s large flowchart).
 //!
 //! # Growing a node changes the layout, so eviction can take more than one pass
 //!
@@ -634,7 +643,7 @@ fn classify(
 /// are positions along each face's own tangent axis, the same thing [`face_center_coord`] returns
 /// for the unevicted (`n = 1`) case. `ring` and `nodes` are [`route_perimeter`]'s own inputs (a
 /// lane rectangle and the whole diagram's nodes, for its collision check) — unused by every shape
-/// but a non-self-loop `reverse`/`staircase` edge, but threaded through uniformly rather than
+/// but a genuine (non-self-loop) `reverse` back edge, but threaded through uniformly rather than
 /// rebuilt per call (`route_flowchart` already has both on hand).
 #[allow(clippy::too_many_arguments)]
 fn route_with_ports(
@@ -651,13 +660,37 @@ fn route_with_ports(
     let source_port = port_at(source, shape.source_side, source_coord, PORT_INSET);
     let target_port = port_at(target, shape.target_side, target_coord, PORT_INSET);
 
-    let mut points = if (shape.reverse || shape.staircase) && source.id == target.id {
-        // A self-loop starts and ends at the same box — §10-1 item 4's perimeter lane is for a
-        // real return path across the diagram, and would be absurd here (a small loop ballooning
-        // out to circle the whole drawing). Dagre's own tiny waypoint chain, already sitting right
-        // beside the node, stays exactly as stages 1-4 drew it.
-        route_staircase_with_ports(direction, shape, source_port, target_port, raw)
-    } else if shape.reverse || shape.staircase {
+    let mut points = if shape.staircase || (shape.reverse && source.id == target.id) {
+        // §10-1 item 4's perimeter lane is spec'd for "戻り辺・補助辺" (back edges) — 10-2's own
+        // stage 3 note is "分岐⇄合流の衝突時切替＋階段フォールバック（『どの辺も他ノード箱と
+        // 交差しない』を全コーパス不変条件に）", stated with no perimeter lane in sight, because
+        // dagre's own waypoint chain already routes clear of every node by construction (dummy
+        // nodes reserve the space a real edge threads through). `shape.staircase` — a *forward*
+        // edge whose branch/merge attempts both crossed a node — is exactly that stage 3
+        // mechanism, not a back edge, and belongs on this same local path regardless of whether
+        // it also happens to start and end at the same box (a self-loop, `route_with_ports`'s own
+        // doc explains, is never `staircase` — `classify`'s `is_reverse` check catches it first —
+        // but is included here defensively rather than assumed).
+        //
+        // Reverted 2026-09-01: stage 5 had widened this branch's condition to `shape.reverse ||
+        // shape.staircase`, routing a collision-fallback *forward* edge onto the perimeter lane
+        // right alongside a genuine back edge — plausible-looking (both use dagre's raw waypoint
+        // chain as their starting point) but wrong: item 4's own "外周レーンは…戻り辺" is written
+        // about back edges specifically. Once lane alignment (§10-1 item 2) started actually
+        // pulling nodes to the diagram's own edges (its `align_straight_lanes` bug fix, same day),
+        // branch/merge collisions against those relocated nodes became far more common, and every
+        // one of them rode this over-broad perimeter path — the coordinator's own real-pixel check
+        // of `samples/mermaid.ja.md`'s large flowchart caught it (ordinary forward edges detouring
+        // around the whole diagram's outer edge). Dagre's own waypoint chain, straightened, stays
+        // exactly as stage 3 drew it before stage 5 existed.
+        let staircase = route_staircase_with_ports(direction, shape, source_port, target_port, raw);
+        // `raw`'s dummy-node waypoints predate `align_straight_lanes` (`mod.rs`'s own comment on
+        // why `EligibleEdge::raw` is read before alignment runs) exactly the way a self-loop's did
+        // before that coupling was fixed — but here the drift is against *any* node the route
+        // threads near, not one this function already knows the delta for, so the fix is local
+        // geometry rather than a lookup: `clear_local_route`.
+        clear_local_route(staircase, nodes, (source.id.as_str(), target.id.as_str()))
+    } else if shape.reverse {
         let ids = (source.id.as_str(), target.id.as_str());
         let blocked = |a: &Point, b: &Point| segment_crosses_any_node(a, b, nodes, ids);
         route_perimeter(shape, source_port, target_port, ring, &blocked)
@@ -688,10 +721,10 @@ fn route_with_ports(
     points
 }
 
-/// The self-loop shape: dagre's own waypoint chain, straightened onto right angles. Stages 1-4's
-/// only staircase shape, now used for nothing else — see [`route_with_ports`]'s own doc for why a
-/// self-loop stays off the perimeter lane [`route_perimeter`] draws every other reverse/staircase
-/// edge from.
+/// Dagre's own waypoint chain, straightened onto right angles — stages 1-4's original mechanism
+/// for both a self-loop and a collision-fallback forward edge (`EdgeShape::staircase`), and, since
+/// 2026-09-01, both again: see [`route_with_ports`]'s own doc for why only a genuine back edge
+/// (`reverse`, never a self-loop) draws from [`route_perimeter`] instead.
 fn route_staircase_with_ports(
     direction: Direction,
     shape: &EdgeShape,
@@ -723,6 +756,81 @@ fn route_staircase_with_ports(
         shape.target_axis,
     ));
     out
+}
+
+/// [`route_staircase_with_ports`]'s own output, checked against every node the edge does not
+/// itself touch, and nudged clear of any it grazes — the local remediation §10-1 item 2's stage 3
+/// note ("『どの辺も他ノード箱と交差しない』を全コーパス不変条件に") promises, kept even though
+/// `raw`'s dagre-computed waypoints can predate a node `align_straight_lanes` later moved (found on
+/// `strokes`' `C~~~E`, which grazed `D`'s padded box by ~1.3px once `D` had shifted).
+///
+/// For each axis-parallel segment that crosses a foreign node ([`segment_crosses_node`], the same
+/// [`COLLISION_MARGIN`]-padded test `classify`'s own collision fix uses), every point on that
+/// segment's own straight run — not just the two points of the one flagged segment — moves to
+/// clear the node, on whichever side the run already sat nearer to (so a route already passing
+/// below a node stays below it, just with more clearance, rather than jumping to the other side
+/// and reading as a different shape). Moving the whole run keeps the polyline axis-parallel; moving
+/// only the flagged segment's two points would not.
+///
+/// Bounded to a handful of passes — the same "monotonic retry, defensive cap" shape
+/// `lay_out_spec`'s own growth loop uses — rather than an unbounded fixpoint search: clearing one
+/// node can in principle open a fresh crossing against a different one, but needs a second node
+/// sitting within one more push of the first, the same documented approximation
+/// `avoid_label_plates`'s own single-pass doc already accepts for its own local fixes.
+fn clear_local_route(
+    mut points: Vec<Point>,
+    nodes: &[PlacedNode],
+    ids: (&str, &str),
+) -> Vec<Point> {
+    const MAX_PASSES: usize = 4;
+    for _ in 0..MAX_PASSES {
+        let mut fix: Option<(f64, f64, bool)> = None; // (old constant coord, new one, horizontal?)
+        'search: for w in points.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            let horizontal = (a.y - b.y).abs() < EPS;
+            let vertical = (a.x - b.x).abs() < EPS;
+            if !horizontal && !vertical {
+                continue; // never happens for this module's own output, but not this fn's to assume
+            }
+            for n in nodes {
+                if n.id == ids.0 || n.id == ids.1 {
+                    continue;
+                }
+                if segment_crosses_node(a, b, n) {
+                    let (l, t, r, bo) = n.bounds();
+                    fix = Some(if horizontal {
+                        let y = a.y;
+                        let new_y = if y <= (t + bo) / 2.0 {
+                            t - COLLISION_MARGIN - 1.0
+                        } else {
+                            bo + COLLISION_MARGIN + 1.0
+                        };
+                        (y, new_y, true)
+                    } else {
+                        let x = a.x;
+                        let new_x = if x <= (l + r) / 2.0 {
+                            l - COLLISION_MARGIN - 1.0
+                        } else {
+                            r + COLLISION_MARGIN + 1.0
+                        };
+                        (x, new_x, false)
+                    });
+                    break 'search;
+                }
+            }
+        }
+        let Some((old_c, new_c, horizontal)) = fix else {
+            break;
+        };
+        for p in &mut points {
+            if horizontal && (p.y - old_c).abs() < EPS {
+                p.y = new_c;
+            } else if !horizontal && (p.x - old_c).abs() < EPS {
+                p.x = new_c;
+            }
+        }
+    }
+    points
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1278,10 +1386,11 @@ fn evict(
     }
 }
 
-/// §10-1 item 4's 8px lane stagger: every perimeter-routed edge (`reverse`/`staircase`, minus a
-/// self-loop — [`route_with_ports`]'s own doc) gets its own lane index, assigned in a stable order
-/// (edge id, not declaration or `HashMap` iteration order) so the same source always draws the same
-/// picture. [`route_flowchart`] turns a lane index into an actual ring (`PERIMETER_MARGIN +
+/// §10-1 item 4's 8px lane stagger: every perimeter-routed edge — a genuine back edge (`reverse`,
+/// minus a self-loop; a collision-fallback forward edge, `staircase`, stays local —
+/// [`route_with_ports`]'s own doc) — gets its own lane index, assigned in a stable order (edge id,
+/// not declaration or `HashMap` iteration order) so the same source always draws the same picture.
+/// [`route_flowchart`] turns a lane index into an actual ring (`PERIMETER_MARGIN +
 /// lane * PERIMETER_LANE_SPACING` px out from [`content_bounds`]); `avoid_label_plates` calls this
 /// a second time, after labels exist, so it can retry a leg that turned out to cross a plate
 /// against the *exact* ring `route_flowchart` gave that edge — the two must never disagree about
@@ -1299,7 +1408,7 @@ fn perimeter_lanes<'a>(
             let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target)) else {
                 return None;
             };
-            ((s.reverse || s.staircase) && source.id != target.id).then_some(e.id)
+            (s.reverse && source.id != target.id).then_some(e.id)
         })
         .collect();
     ids.sort_unstable();
@@ -1602,6 +1711,18 @@ fn cross_extent(direction: Direction, node: &PlacedNode) -> f64 {
 /// the chain's edges on its own, the same way an edge that already happened to line up under
 /// stage 1/2 was recognised, and draws them dead straight.
 ///
+/// "Adjacent" means the next rank some *real* node actually occupies, not `r + 1` — dagre's own
+/// `makeSpaceForEdgeLabels` (`crate::preview::mermaid::layout`'s `mod.rs`, the `minlen *= 2`
+/// comment there) unconditionally doubles every edge's `minlen` to reserve a rank for its label
+/// proxy, so a real node-to-node edge's two ends are *always* two ranks apart in `node_rank` — a
+/// literal `r + 1` check can never match one. `node_rank` only ever holds a rank for a real
+/// [`PlacedNode`] (never a label-proxy dummy, `mod.rs`'s own `node_rank` construction filters to
+/// `nodes`), so the sorted, deduplicated set of its values is already exactly "every rank a real
+/// node sits on" — the next entry in that sorted set, whatever the gap to it, is the adjacency
+/// this function means. Found and fixed 2026-09-01: confirmed by checking a real diagram's own
+/// `node_rank` (`branch`, no labels or subgraphs at all: `A:0 B:2`), not assumed from the
+/// `minlen *= 2` comment alone.
+///
 /// Mutates `nodes` in place and is meant to run once, right after a layout pass places them and
 /// before anything downstream (frames, `route_flowchart`) reads a position from them — see the
 /// module doc's "Lane alignment moves nodes" section for why the order matters.
@@ -1610,20 +1731,35 @@ fn cross_extent(direction: Direction, node: &PlacedNode) -> f64 {
 /// considered for a lane — the caller's job to have already excluded a cluster-anchored edge (one
 /// whose written endpoint is a block, not the real node dagre routed against), since this module
 /// has no opinion of its own about clusters.
+///
+/// Returns every node's own cross-axis delta (`final - dagre's original`, cross axis only — this
+/// function never touches the flow axis), for every node this pass actually moved (by more than
+/// [`EPS`]; a node it left alone is simply absent, not present at `0.0`). `mod.rs` needs this for
+/// exactly one thing once the fix above made this function fire for real: a self-loop's raw dagre
+/// waypoints (`EligibleEdge::raw`) are read from `g`, which this function never touches, straight
+/// from `layout()`'s own `position_self_edges` — so once a self-loop's owner actually moves here,
+/// `raw` is stale relative to it unless the caller applies the same delta back
+/// ([`shift_cross`] is the one place that knows how, direction-aware). Reproduced directly before
+/// this was added: a self-loop whose owner moved ~137px under a one-sided wide-sibling push drew
+/// with its ports correctly on the node's current boundary but its interior bump landing ~176px
+/// away in open space — see
+/// `render::tests::self_loop_routes_correctly_across_lane_alignment_stress_cases`'s own doc.
+#[must_use = "a moved node's self-loop raw waypoints go stale unless this delta is applied back — see this function's own doc"]
 pub fn align_straight_lanes(
     direction: Direction,
     nodes: &mut [PlacedNode],
     node_rank: &HashMap<String, i32>,
     candidates: &[(String, String)],
-) {
+) -> HashMap<String, f64> {
     if nodes.len() < 2 {
-        return;
+        return HashMap::new();
     }
     let id_index: HashMap<String, usize> = nodes
         .iter()
         .enumerate()
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
+    let initial_cross: Vec<f64> = nodes.iter().map(|n| cross(direction, &n.center)).collect();
 
     // Every rank's member ids, in their ORIGINAL cross-axis order — captured before this function
     // moves anything, and never resorted afterwards: §10-1 item 1's "ランク内の並び順は変えない"
@@ -1656,10 +1792,11 @@ pub fn align_straight_lanes(
     let mut ranks: Vec<i32> = node_rank.values().copied().collect();
     ranks.sort_unstable();
     ranks.dedup();
-    for &r in &ranks {
+    for window in ranks.windows(2) {
+        let (r, next_r) = (window[0], window[1]);
         let mut pair_candidates: Vec<&(String, String)> = candidates
             .iter()
-            .filter(|(s, t)| node_rank.get(s) == Some(&r) && node_rank.get(t) == Some(&(r + 1)))
+            .filter(|(s, t)| node_rank.get(s) == Some(&r) && node_rank.get(t) == Some(&next_r))
             .collect();
         // "タイは上・左優先＝cross座標の小さい方" — sort by the source's own cross coordinate
         // first (so the topmost/leftmost source is offered its pick first), then the target's,
@@ -1745,6 +1882,25 @@ pub fn align_straight_lanes(
             prev_far_edge = Some(c + half);
         }
     }
+
+    // Every node this pass actually moved, as its own cross-axis delta — see this function's own
+    // doc for why `mod.rs` needs it (a self-loop's stale raw waypoints).
+    nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| {
+            let delta = cross(direction, &n.center) - initial_cross[i];
+            (delta.abs() > EPS).then(|| (n.id.clone(), delta))
+        })
+        .collect()
+}
+
+/// `p`, shifted by `delta` along `direction`'s cross axis — [`align_straight_lanes`]'s own return
+/// value, applied to a point that function does not own directly. `mod.rs` is the one caller: a
+/// self-loop's raw dagre waypoints (`EligibleEdge::raw`) live outside `PlacedNode`, so alignment
+/// cannot correct them itself, but they need exactly this same shift once their owner moves.
+pub fn shift_cross(direction: Direction, p: &Point, delta: f64) -> Point {
+    make(direction, flow(direction, p), cross(direction, p) + delta)
 }
 
 /// `side`'s tangent coordinate of a point already known to be a port on that face — `p.x` for
@@ -1758,15 +1914,86 @@ fn tangent_coord(side: Side, p: &Point) -> f64 {
     }
 }
 
+/// Half of `node`'s flat run along `side`'s tangent axis — the same bound `evict`'s own sizing
+/// (`required_flat + chamfer_allowance`, above) reserved when it grew the node's box to fit its
+/// ports. [`push_outward`]'s give-up threshold: a coordinate past this sits in the node's curved
+/// (or, for [`Glyph::ChamferedRect`], chamfered) corner, not on the flat run a pushed port needs.
+fn face_flat_half_extent(node: &PlacedNode, side: Side) -> f64 {
+    let full = match side {
+        Side::Top | Side::Bottom => node.size.w,
+        Side::Left | Side::Right => node.size.h,
+    };
+    let chamfer_allowance = if node.shape == Glyph::ChamferedRect {
+        2.0 * shapes::CHAMFER
+    } else {
+        0.0
+    };
+    (full - chamfer_allowance).max(0.0) / 2.0
+}
+
+/// Every *other* edge's port on `node_id`'s `side` face, as tangent coordinates —
+/// [`push_outward`]'s collision list. Read from `points`'s current state, which may already carry
+/// earlier edges' pushes from this same forward pass through `avoid_label_plates` — the same "not
+/// the value from before the fix" rule that function's own doc states for its plate bookkeeping.
+fn ports_on_face(
+    node_id: &str,
+    side: Side,
+    exclude_edge_id: &str,
+    edges: &[EligibleEdge],
+    shapes: &[Option<EdgeShape>],
+    points: &HashMap<String, Vec<Point>>,
+) -> Vec<f64> {
+    let mut out = Vec::new();
+    for (edge, shape) in edges.iter().zip(shapes) {
+        if edge.id == exclude_edge_id {
+            continue;
+        }
+        let Some(shape) = shape else { continue };
+        let Some(pts) = points.get(edge.id) else {
+            continue;
+        };
+        if pts.is_empty() {
+            continue;
+        }
+        if edge.source == node_id && shape.source_side == side {
+            out.push(tangent_coord(side, &pts[0]));
+        }
+        if edge.target == node_id && shape.target_side == side {
+            out.push(tangent_coord(side, &pts[pts.len() - 1]));
+        }
+    }
+    out
+}
+
 /// `cur`, pushed [`PORT_SPACING`] further from `node`'s own `side` face centre — §10-1 item 3:
 /// "ポートをさらに16px外へ". "Further" means away from the centre in whichever direction the port
 /// already sat on (or, for a port that started exactly centred, outward in the positive tangent
 /// direction — the spec does not disambiguate a port with no existing side to keep, and this stays
 /// deterministic rather than arbitrary-per-call).
-fn push_outward(node: &PlacedNode, side: Side, cur: f64) -> f64 {
+///
+/// A single `PORT_SPACING` step can land exactly on a port another edge already occupies on the
+/// same face: three ports evicted to `-PORT_SPACING`/`0`/`+PORT_SPACING` push the centre one onto
+/// the outer one's own coordinate. So this keeps stepping `PORT_SPACING` further, past every
+/// coordinate in `occupied` (compared within [`EPS`]), until it lands somewhere free. If that walks
+/// past the face's own flat run ([`face_flat_half_extent`] — the same bound `evict` sized the
+/// node's box to hold), it gives up and returns `cur` unchanged rather than push the port into the
+/// node's curved or chamfered corner: leaving the plate crossing this pass was trying to fix is
+/// better than creating a new one ([`avoid_label_plates`]'s own doc already accepts a documented
+/// approximation over a proven fixpoint, for the same reason).
+fn push_outward(node: &PlacedNode, side: Side, cur: f64, occupied: &[f64]) -> f64 {
     let center = face_center_coord(node, side);
     let dir = if cur >= center { 1.0 } else { -1.0 };
-    cur + dir * PORT_SPACING
+    let half_extent = face_flat_half_extent(node, side);
+    let mut candidate = cur;
+    loop {
+        candidate += dir * PORT_SPACING;
+        if (candidate - center).abs() > half_extent {
+            return cur;
+        }
+        if occupied.iter().all(|&o| (o - candidate).abs() > EPS) {
+            return candidate;
+        }
+    }
 }
 
 /// Whether the axis-parallel segment `a`–`b` crosses `plate`'s box — [`segment_crosses_node`]'s own
@@ -1793,25 +2020,144 @@ fn segment_crosses_plate(a: &Point, b: &Point, plate: &PlacedEdgeLabel) -> bool 
     }
 }
 
+/// §10-1 item 4's own "並走…は8pxずつずらしてレーン分離" — [`PERIMETER_LANE_SPACING`], the same
+/// distance the perimeter lane already staggers by — applied to two *unrelated* (sharing no node —
+/// a shared node is stage 1-4's own territory, eviction already spaces those 16px apart on the
+/// shared face) detour-shaped edges ([`EdgeShape::reverse`]/[`EdgeShape::staircase`], minus a
+/// self-loop) whose local routes happen to coincide.
+///
+/// Before 2026-09-01 this case could not arise: every detour shared the same perimeter-lane
+/// mechanism, so [`perimeter_lanes`]'s own stagger already kept every one of them apart (recorded,
+/// with an audit across the whole corpus finding zero instances, as
+/// `render::tests::no_two_unrelated_edges_coincidentally_overlap_on_the_same_axis`'s own history).
+/// Once a `staircase` edge went back to a local, `raw`-based route
+/// ([`route_with_ports`]'s own doc) it lost that shared bookkeeping, and two unrelated ones can
+/// genuinely land on the same segment — reproduced directly: `amp-chain`'s `A->D` and `B->C`, both
+/// collision-fallback, both local, both routed onto the identical vertical run.
+///
+/// A single forward pass over every unordered pair of detour edges, in a stable (sorted edge id)
+/// order: for the first coinciding segment found, the higher-id edge's whole overlapping straight
+/// run (not just the flagged segment's own two points, the same "move the run, not the segment"
+/// reasoning [`clear_local_route`] uses) is nudged [`PERIMETER_LANE_SPACING`] px along the
+/// perpendicular axis. Bounded to a handful of passes rather than a fixpoint search, the same
+/// "monotonic retry, defensive cap" shape this module's other local-collision fixes already use.
+pub fn separate_coincident_detours(
+    direction: Direction,
+    nodes: &[PlacedNode],
+    clusters: &[PlacedCluster],
+    edges: &[EligibleEdge],
+    points: &mut HashMap<String, Vec<Point>>,
+) {
+    let cluster_boxes = cluster_node_boxes(clusters);
+    let by_id = build_by_id(nodes, &cluster_boxes);
+    let mut detour_ids: Vec<&str> = edges
+        .iter()
+        .filter_map(|e| {
+            let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target)) else {
+                return None;
+            };
+            let shape = classify(
+                direction,
+                source,
+                target,
+                e.raw,
+                e.source_rank,
+                e.target_rank,
+                e.source_out_degree,
+                e.target_in_degree,
+                nodes,
+            );
+            ((shape.reverse || shape.staircase) && source.id != target.id).then_some(e.id)
+        })
+        .collect();
+    detour_ids.sort_unstable();
+
+    const MAX_PASSES: usize = 4;
+    for _ in 0..MAX_PASSES {
+        let mut fix: Option<(&str, f64, f64, bool)> = None; // (edge to nudge, old c, new c, horizontal?)
+        'search: for (i, &id_a) in detour_ids.iter().enumerate() {
+            for &id_b in &detour_ids[i + 1..] {
+                let (Some(ea), Some(eb)) = (
+                    edges.iter().find(|e| e.id == id_a),
+                    edges.iter().find(|e| e.id == id_b),
+                ) else {
+                    continue;
+                };
+                if ea.source == eb.source
+                    || ea.source == eb.target
+                    || ea.target == eb.source
+                    || ea.target == eb.target
+                {
+                    continue; // shares a node — stage 1-4's own territory, not "unrelated"
+                }
+                let (Some(pa), Some(pb)) = (points.get(id_a), points.get(id_b)) else {
+                    continue;
+                };
+                for wa in pa.windows(2) {
+                    for wb in pb.windows(2) {
+                        let vert_a = (wa[0].x - wa[1].x).abs() < EPS;
+                        let vert_b = (wb[0].x - wb[1].x).abs() < EPS;
+                        if vert_a && vert_b && (wa[0].x - wb[0].x).abs() < EPS {
+                            let (y0a, y1a) = (wa[0].y.min(wa[1].y), wa[0].y.max(wa[1].y));
+                            let (y0b, y1b) = (wb[0].y.min(wb[1].y), wb[0].y.max(wb[1].y));
+                            if y0a < y1b - EPS && y0b < y1a - EPS {
+                                fix =
+                                    Some((id_b, wb[0].x, wb[0].x + PERIMETER_LANE_SPACING, false));
+                                break 'search;
+                            }
+                        }
+                        let horiz_a = (wa[0].y - wa[1].y).abs() < EPS;
+                        let horiz_b = (wb[0].y - wb[1].y).abs() < EPS;
+                        if horiz_a && horiz_b && (wa[0].y - wb[0].y).abs() < EPS {
+                            let (x0a, x1a) = (wa[0].x.min(wa[1].x), wa[0].x.max(wa[1].x));
+                            let (x0b, x1b) = (wb[0].x.min(wb[1].x), wb[0].x.max(wb[1].x));
+                            if x0a < x1b - EPS && x0b < x1a - EPS {
+                                fix = Some((id_b, wb[0].y, wb[0].y + PERIMETER_LANE_SPACING, true));
+                                break 'search;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let Some((id, old_c, new_c, horizontal)) = fix else {
+            break;
+        };
+        if let Some(pts) = points.get_mut(id) {
+            for p in pts.iter_mut() {
+                if horizontal && (p.y - old_c).abs() < EPS {
+                    p.y = new_c;
+                } else if !horizontal && (p.x - old_c).abs() < EPS {
+                    p.x = new_c;
+                }
+            }
+        }
+    }
+}
+
 /// §10-1 item 3: "ポートの垂直レーンがラベルプレートと重なる場合はポートをさらに16px外へ". Two
 /// different fixes, by shape:
 ///
-/// * A branch/merge/aligned edge: checks its two port-adjacent stub segments (`points[0]-points[1]`
-///   at the source end, the last pair at the target end — exactly where stage 2's evicted, 16px
-///   apart lanes run close together right next to a busy face) against every *other* edge's label
-///   plate; a crossing pushes that one port [`PORT_SPACING`] further out and rebuilds just that
-///   edge's polyline from it ([`route_with_ports`]).
-/// * A perimeter-routed edge ([`EdgeShape::reverse`]/[`EdgeShape::staircase`], minus a self-loop):
-///   has no single port to push — its whole route can run near a plate anywhere along its length,
-///   not only right next to a node (`cjk`'s `D->A` swept straight through `B->D`'s own `テキスト`
-///   plate, found by dumping a real routed diagram). So instead: check every segment of its already
-///   -built route; if any crosses a foreign plate, rebuild it with [`route_perimeter`] again, this
-///   time against a `blocked` test that includes every foreign plate as well as every node — the
-///   same `safe_ring_exit` candidate search [`route_flowchart`] already ran, just given one more
-///   kind of obstacle to avoid, using the identical ring [`perimeter_lanes`] already assigned it (so
-///   this second pass can never disagree with the first about which lane the edge sits on). A
-///   self-loop is left untouched, the same as [`route_with_ports`]'s own doc explains for why it
-///   never reaches [`route_perimeter`] in the first place.
+/// * A branch/merge/aligned edge, **or** a collision-fallback forward edge
+///   ([`EdgeShape::staircase`] — [`route_with_ports`]'s own doc explains why this one stays local,
+///   not on the perimeter lane, since 2026-09-01): checks its two port-adjacent stub segments
+///   (`points[0]-points[1]` at the source end, the last pair at the target end — exactly where
+///   stage 2's evicted, 16px apart lanes run close together right next to a busy face) against
+///   every *other* edge's label plate; a crossing pushes that one port [`PORT_SPACING`] further
+///   out and rebuilds just that edge's polyline from it ([`route_with_ports`], which reads
+///   `staircase` back out of `raw` exactly the way it always did — pushing a port only moves where
+///   the interior chain is bridged *from*, never `raw` itself).
+/// * A genuine back edge ([`EdgeShape::reverse`], minus a self-loop): has no single port to
+///   push — its whole route can run near a plate anywhere along its length, not only right next to
+///   a node (`cjk`'s `D->A` swept straight through `B->D`'s own `テキスト` plate, found by dumping
+///   a real routed diagram). So instead: check every segment of its already-built route; if any
+///   crosses a foreign plate, rebuild it with [`route_perimeter`] again, this time against a
+///   `blocked` test that includes every foreign plate as well as every node — the same
+///   `safe_ring_exit` candidate search [`route_flowchart`] already ran, just given one more kind of
+///   obstacle to avoid, using the identical ring [`perimeter_lanes`] already assigned it (so this
+///   second pass can never disagree with the first about which lane the edge sits on). A self-loop
+///   is left untouched, the same as [`route_with_ports`]'s own doc explains for why it never
+///   reaches [`route_perimeter`] in the first place.
 ///
 /// A single forward pass over `edges`, in caller order — not a fixpoint search. Fixing one edge can
 /// in principle open a fresh crossing against a plate it did not use to reach, but that needs a
@@ -1861,7 +2207,7 @@ pub fn avoid_label_plates(
             continue;
         };
 
-        if (shape.reverse || shape.staircase) && source.id != target.id {
+        if shape.reverse && source.id != target.id {
             let Some(pts) = points.get(edge.id) else {
                 continue;
             };
@@ -1901,7 +2247,7 @@ pub fn avoid_label_plates(
             points.insert(edge.id.to_string(), rebuilt);
             continue;
         }
-        if shape.reverse || shape.staircase {
+        if shape.reverse {
             continue; // a self-loop — `route_with_ports`'s own doc.
         }
 
@@ -1922,12 +2268,28 @@ pub fn avoid_label_plates(
         let mut new_source_coord = None;
         if crosses_foreign(&pts[0], &pts[1]) {
             let cur = tangent_coord(shape.source_side, &pts[0]);
-            new_source_coord = Some(push_outward(source, shape.source_side, cur));
+            let occupied = ports_on_face(
+                source.id.as_str(),
+                shape.source_side,
+                edge.id,
+                edges,
+                &shapes,
+                points,
+            );
+            new_source_coord = Some(push_outward(source, shape.source_side, cur, &occupied));
         }
         let mut new_target_coord = None;
         if crosses_foreign(&pts[n - 2], &pts[n - 1]) {
             let cur = tangent_coord(shape.target_side, &pts[n - 1]);
-            new_target_coord = Some(push_outward(target, shape.target_side, cur));
+            let occupied = ports_on_face(
+                target.id.as_str(),
+                shape.target_side,
+                edge.id,
+                edges,
+                &shapes,
+                points,
+            );
+            new_target_coord = Some(push_outward(target, shape.target_side, cur, &occupied));
         }
         if new_source_coord.is_none() && new_target_coord.is_none() {
             continue;
@@ -1946,8 +2308,10 @@ pub fn avoid_label_plates(
             target_coord,
             edge.raw,
             // Neither `ring` nor `nodes` is ever read here: the shape checks above already ruled
-            // out every shape that touches them (`route_with_ports`'s own doc — only a
-            // non-self-loop `reverse`/`staircase` edge ever does).
+            // out the only shape that touches them (`route_with_ports`'s own doc — a genuine,
+            // non-self-loop `reverse` back edge). `edge.raw` still matters, though: a `staircase`
+            // edge reaches this call too now, and `route_with_ports` bridges its interior chain
+            // from `raw` exactly as before — only the port ends move.
             (0.0, 0.0, 0.0, 0.0),
             nodes,
         );
@@ -2022,14 +2386,20 @@ fn gap_around(seg: &[Point], cross: Point) -> (Point, Point) {
 
 /// §10-1 item 4: "辺どうしの交差では跨ぐ側（外周レーンの辺＝戻り辺・補助辺）の線に12pxの隙間を開け
 /// る（下をくぐる線は連続のまま）". Finds every point where two *different* edges' segments
-/// genuinely cross ([`segment_crossing`]), and — when exactly one of the two is a perimeter-routed
-/// edge (`reverse`/`staircase`, minus a self-loop — [`route_with_ports`]'s own doc explains why a
-/// self-loop is exempt from the whole perimeter mechanism) — cuts a [`CROSSING_GAP`]-px gap into
-/// that edge's own line, leaving the edge it crosses completely untouched: §10-1's "下をくぐる線は
-/// 連続のまま" read as depth, not as a rule about which edge is which — the interrupted line is
-/// the one that visually dips under, the untouched one reads as passing over it.
+/// genuinely cross ([`segment_crossing`]), and — when exactly one of the two is a **detour shape**
+/// (`reverse`/`staircase`, minus a self-loop — [`route_with_ports`]'s own doc explains why a
+/// self-loop is exempt from this whole mechanism) — cuts a [`CROSSING_GAP`]-px gap into that
+/// edge's own line, leaving the edge it crosses completely untouched: §10-1's "下をくぐる線は連続
+/// のまま" read as depth, not as a rule about which edge is which — the interrupted line is the
+/// one that visually dips under, the untouched one reads as passing over it.
 ///
-/// When *both* sides of a crossing are perimeter edges (reachable — `amp-chain`'s own
+/// "Detour shape" is deliberately not "perimeter-routed edge" any more: since 2026-09-01 only a
+/// genuine back edge (`reverse`, non-self-loop) actually draws from the perimeter lane
+/// ([`route_with_ports`]'s own doc) — `staircase` stays local — but the crossing-priority question
+/// this function answers is about visual depth, not routing mechanism, so both kinds still count
+/// as the "spanning" side of a crossing they're part of.
+///
+/// When *both* sides of a crossing are detour shapes (reachable — `amp-chain`'s own
 /// collision-fallback `A->D` and `B->C` cross each other, neither a back edge nor sharing a node
 /// with the other, dumped and confirmed before this was written), the spec does not say which one
 /// gets the gap; the tie is broken by edge id, lower id kept whole, deterministically rather than
@@ -2056,7 +2426,7 @@ pub fn insert_crossing_gaps(
 ) -> HashMap<String, Vec<(Point, Point)>> {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
-    let is_perimeter: HashMap<&str, bool> = edges
+    let is_detour: HashMap<&str, bool> = edges
         .iter()
         .filter_map(|e| {
             let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target)) else {
@@ -2087,19 +2457,19 @@ pub fn insert_crossing_gaps(
             let (Some(pi), Some(pj)) = (points.get(ei), points.get(ej)) else {
                 continue;
             };
-            let (pi_perim, pj_perim) = (
-                is_perimeter.get(ei).copied().unwrap_or(false),
-                is_perimeter.get(ej).copied().unwrap_or(false),
+            let (pi_detour, pj_detour) = (
+                is_detour.get(ei).copied().unwrap_or(false),
+                is_detour.get(ej).copied().unwrap_or(false),
             );
-            if !pi_perim && !pj_perim {
+            if !pi_detour && !pj_detour {
                 continue; // neither side spans — out of this rule's scope.
             }
             // Both spanning: the higher edge id is the one that gets cut, so the lower one stays
             // whole — this function's own doc explains why either choice is equally arbitrary.
-            let cut_on_i = if pi_perim && pj_perim {
+            let cut_on_i = if pi_detour && pj_detour {
                 ei > ej
             } else {
-                pi_perim
+                pi_detour
             };
             let (cut_id, cut_pts, other_pts) = if cut_on_i { (ei, pi, pj) } else { (ej, pj, pi) };
             for wc in cut_pts.windows(2) {
@@ -2469,6 +2839,132 @@ mod tests {
                 "rerouted line must stay axis-parallel: {w:?}"
             );
         }
+    }
+
+    #[test]
+    fn push_outward_skips_a_coordinate_another_port_already_occupies() {
+        // Three ports evicted onto the same face at `-PORT_SPACING`/`0`/`+PORT_SPACING` — `evict`'s
+        // own rule for `n == 3` (the `for (i, claim) in claims.iter().enumerate()` loop above,
+        // §10-1 item 3) — is exactly the shape that makes a single `PORT_SPACING` step collide: the
+        // review's own report. Pushing the centre port "further out" by one step would put it right
+        // on top of the sibling already sitting at `+PORT_SPACING`.
+        let a = node("A", 0.0, 0.0, 200.0, 40.0);
+        let occupied = [-PORT_SPACING, PORT_SPACING];
+        let pushed = push_outward(&a, Side::Bottom, 0.0, &occupied);
+        assert!(
+            occupied.iter().all(|&o| (o - pushed).abs() > EPS),
+            "pushed port {pushed} must not land on a sibling port {occupied:?}"
+        );
+        // Still moved outward, past the sibling it had to step over rather than landing short.
+        assert!(pushed > PORT_SPACING, "{pushed}");
+    }
+
+    #[test]
+    fn push_outward_never_collides_across_a_dense_face() {
+        // The same shape as above, generalised: every offset `evict` would ever hand out for
+        // `n` up to 9 ports on one face, with every slot but the one under test already occupied —
+        // the tightest case `push_outward` can be asked to solve on a face this wide.
+        let a = node("A", 0.0, 0.0, 400.0, 40.0);
+        for n in 1..=9usize {
+            let offsets: Vec<f64> = (0..n)
+                .map(|i| (i as f64 - (n as f64 - 1.0) / 2.0) * PORT_SPACING)
+                .collect();
+            for &cur in &offsets {
+                let occupied: Vec<f64> = offsets.iter().copied().filter(|&o| o != cur).collect();
+                let pushed = push_outward(&a, Side::Bottom, cur, &occupied);
+                assert!(
+                    occupied.iter().all(|&o| (o - pushed).abs() > EPS),
+                    "n={n} cur={cur}: pushed {pushed} collided with {occupied:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn push_outward_gives_up_rather_than_leave_the_nodes_flat_run() {
+        // A node too narrow to hold even one `PORT_SPACING` step: pushing further would land the
+        // port in the corner, past `face_flat_half_extent`, not on the flat run —
+        // `push_outward`'s own doc says give up and return `cur` unchanged rather than worsen the
+        // crossing this pass was trying to fix.
+        let a = node("A", 0.0, 0.0, 20.0, 40.0); // half_extent = 10px < one PORT_SPACING step
+        let pushed = push_outward(&a, Side::Bottom, 0.0, &[]);
+        assert_eq!(pushed, 0.0, "must give up and keep the original coordinate");
+    }
+
+    #[test]
+    fn ports_on_face_reads_only_the_named_face_excluding_the_edge_itself() {
+        // Three edges sharing `A`: two land on its Bottom face (source ends), one on its Right
+        // face — `ports_on_face` must return only the two Bottom ones, as tangent (x) coordinates,
+        // and never the edge passed as `exclude_edge_id` even though it also touches Bottom.
+        let a = node("A", 100.0, 100.0, 200.0, 40.0);
+        let b = node("B", 100.0, 200.0, 60.0, 40.0);
+        let c = node("C", 100.0, 200.0, 60.0, 40.0);
+        let d = node("D", 250.0, 100.0, 60.0, 40.0);
+        let nodes = [a, b, c, d];
+        let make_edge = |id, target| EligibleEdge {
+            id,
+            source: "A",
+            target,
+            raw: &[] as &[Point],
+            source_rank: Some(0),
+            target_rank: Some(1),
+            source_out_degree: 3,
+            target_in_degree: 1,
+        };
+        let edges = vec![
+            make_edge("ab", "B"),
+            make_edge("ac", "C"),
+            make_edge("ad", "D"),
+        ];
+        let shapes: Vec<Option<EdgeShape>> = vec![
+            Some(EdgeShape {
+                reverse: false,
+                aligned: false,
+                staircase: false,
+                source_side: Side::Bottom,
+                source_axis: Axis::Cross,
+                target_side: Side::Top,
+                target_axis: Axis::Cross,
+            }),
+            Some(EdgeShape {
+                reverse: false,
+                aligned: false,
+                staircase: false,
+                source_side: Side::Bottom,
+                source_axis: Axis::Cross,
+                target_side: Side::Top,
+                target_axis: Axis::Cross,
+            }),
+            Some(EdgeShape {
+                reverse: false,
+                aligned: false,
+                staircase: false,
+                source_side: Side::Right,
+                source_axis: Axis::Flow,
+                target_side: Side::Left,
+                target_axis: Axis::Flow,
+            }),
+        ];
+        let mut points: HashMap<String, Vec<Point>> = HashMap::new();
+        points.insert(
+            "ab".to_string(),
+            vec![Point::new(84.0, 120.0), Point::new(84.0, 180.0)],
+        );
+        points.insert(
+            "ac".to_string(),
+            vec![Point::new(116.0, 120.0), Point::new(116.0, 180.0)],
+        );
+        points.insert(
+            "ad".to_string(),
+            vec![Point::new(200.0, 100.0), Point::new(220.0, 100.0)],
+        );
+
+        let occupied = ports_on_face(&nodes[0].id, Side::Bottom, "ac", &edges, &shapes, &points);
+        assert_eq!(
+            occupied,
+            vec![84.0],
+            "must see `ab`'s Bottom port, not `ac` (excluded) or `ad` (a different face)"
+        );
     }
 
     #[test]
@@ -2861,7 +3357,7 @@ mod tests {
         ];
         let node_rank = ranks(&[("A", 0), ("B", 1), ("C", 2)]);
         let candidates = [edge("A", "B"), edge("B", "C")];
-        align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
+        let _ = align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
 
         for n in &nodes {
             assert!(
@@ -2893,7 +3389,7 @@ mod tests {
         ];
         let node_rank = ranks(&[("S1", 0), ("S2", 0), ("T", 1)]);
         let candidates = [edge("S1", "T"), edge("S2", "T")];
-        align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
+        let _ = align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
 
         let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         assert!(
@@ -2923,7 +3419,7 @@ mod tests {
         ];
         let node_rank = ranks(&[("A", 0), ("C", 0), ("P", 1), ("Q", 1)]);
         let candidates = [edge("A", "P"), edge("C", "Q")];
-        align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
+        let _ = align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
 
         let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         assert!(
