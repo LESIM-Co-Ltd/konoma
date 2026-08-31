@@ -24,6 +24,18 @@
 //! port with, so nothing in it disagrees with what `route_flowchart` does for an edge with no
 //! competition on either face.
 //!
+//! # A back edge draws from a perimeter lane, not dagre's own waypoints
+//!
+//! §10-1 item 4's "外周レーン" — stage 5 — is [`route_perimeter`]: a reverse edge
+//! ([`EdgeShape::reverse`]) or a collision-fallback forward edge ([`EdgeShape::staircase`]) leaves
+//! and enters through the same ports every other shape uses, then travels straight out to a
+//! rectangle [`PERIMETER_MARGIN`] px outside every node and frame in the diagram and around
+//! whichever way is shorter to the same straight-out point at the other end. This *replaces*
+//! stages 1-4's "暫定" (stopgap) — dagre's own waypoint chain, bent onto right angles — which the
+//! module doc used to describe as this module's honest limitation; [`route_staircase_with_ports`]
+//! is that stopgap, kept only for a **self-loop** (`route_with_ports`'s own doc explains why: a
+//! loop that starts and ends at the same box has no business circling the whole diagram).
+//!
 //! # Growing a node changes the layout, so eviction can take more than one pass
 //!
 //! A face too narrow for its ports has to grow the node — and a node's size is exactly what dagre
@@ -62,7 +74,7 @@
 
 use std::collections::HashMap;
 
-use super::{shapes, Glyph, PlacedEdgeLabel, PlacedNode, Size};
+use super::{shapes, Glyph, PlacedCluster, PlacedEdgeLabel, PlacedNode, Size};
 use crate::preview::mermaid::flowchart::Direction;
 use crate::preview::mermaid::layout::Point;
 
@@ -605,7 +617,11 @@ fn classify(
 /// Builds the final polyline for one edge, given the exact port coordinate [`evict`] (or, for a
 /// single edge in isolation, [`route_edge`]) decided for each end — `source_coord`/`target_coord`
 /// are positions along each face's own tangent axis, the same thing [`face_center_coord`] returns
-/// for the unevicted (`n = 1`) case.
+/// for the unevicted (`n = 1`) case. `ring` and `nodes` are [`route_perimeter`]'s own inputs (a
+/// lane rectangle and the whole diagram's nodes, for its collision check) — unused by every shape
+/// but a non-self-loop `reverse`/`staircase` edge, but threaded through uniformly rather than
+/// rebuilt per call (`route_flowchart` already has both on hand).
+#[allow(clippy::too_many_arguments)]
 fn route_with_ports(
     direction: Direction,
     shape: &EdgeShape,
@@ -614,12 +630,22 @@ fn route_with_ports(
     source_coord: f64,
     target_coord: f64,
     raw: &[Point],
+    ring: (f64, f64, f64, f64),
+    nodes: &[PlacedNode],
 ) -> Vec<Point> {
     let source_port = port_at(source, shape.source_side, source_coord, PORT_INSET);
     let target_port = port_at(target, shape.target_side, target_coord, PORT_INSET);
 
-    let mut points = if shape.reverse || shape.staircase {
+    let mut points = if (shape.reverse || shape.staircase) && source.id == target.id {
+        // A self-loop starts and ends at the same box — §10-1 item 4's perimeter lane is for a
+        // real return path across the diagram, and would be absurd here (a small loop ballooning
+        // out to circle the whole drawing). Dagre's own tiny waypoint chain, already sitting right
+        // beside the node, stays exactly as stages 1-4 drew it.
         route_staircase_with_ports(direction, shape, source_port, target_port, raw)
+    } else if shape.reverse || shape.staircase {
+        let ids = (source.id.as_str(), target.id.as_str());
+        let blocked = |a: &Point, b: &Point| segment_crosses_any_node(a, b, nodes, ids);
+        route_perimeter(shape, source_port, target_port, ring, &blocked)
     } else {
         // The one-bend shape branch and merge share, and aligned falls into too: `bridge` between
         // faces of unlike axes is always exactly one corner regardless of eviction's offsets
@@ -647,14 +673,10 @@ fn route_with_ports(
     points
 }
 
-/// The staircase shape both a back edge ([`EdgeShape::reverse`]) and a collision-fallback forward
-/// edge ([`EdgeShape::staircase`]) draw: keep dagre's own waypoint chain (for a back edge it
-/// already threads any nodes sitting between the two ranks — §10-2's "暫定" note is exactly that
-/// this reuse, not a real perimeter route, is what makes that safe before stage 5; for a
-/// collision-fallback forward edge it is whatever dagre itself routed the edge through, on the
-/// reasoning that dagre's own crossing-minimised path is a better bet than either of the two right
-/// angle bends that were both already ruled out) and straighten every leg onto right angles,
-/// starting and ending at the ports [`route_with_ports`] already placed.
+/// The self-loop shape: dagre's own waypoint chain, straightened onto right angles. Stages 1-4's
+/// only staircase shape, now used for nothing else — see [`route_with_ports`]'s own doc for why a
+/// self-loop stays off the perimeter lane [`route_perimeter`] draws every other reverse/staircase
+/// edge from.
 fn route_staircase_with_ports(
     direction: Direction,
     shape: &EdgeShape,
@@ -685,6 +707,333 @@ fn route_staircase_with_ports(
         prev_axis,
         shape.target_axis,
     ));
+    out
+}
+
+// -------------------------------------------------------------------------------------------
+// §10-1 item 4: the perimeter lane
+// -------------------------------------------------------------------------------------------
+
+/// How far outside every node and frame in the diagram the *nearest* perimeter lane sits — §10-1
+/// item 4: "外周レーンは最も外側の枠から16px以上外に置く".
+pub const PERIMETER_MARGIN: f64 = 16.0;
+
+/// How far apart two perimeter edges' own lanes sit when more than one needs one — §10-1 item 4:
+/// "複数の外周辺は8px ずつずらして並走させる". A separate constant from [`PORT_SPACING`]/
+/// [`LABEL_CLEARANCE`]'s own 16px-ish numbers for the same reason those two are separate from each
+/// other: same value, different rule, and a future change to one must not silently move the rest.
+pub const PERIMETER_LANE_SPACING: f64 = 8.0;
+
+/// The smallest axis-aligned box holding every node and every subgraph frame in the diagram — what
+/// [`route_perimeter`]'s lane rectangle is built by expanding outward from. `clusters` alone is not
+/// enough on its own (a top-level node outside every frame still has to stay clear of a lane) and
+/// neither is `nodes` alone (a frame can extend past its own members' padding); the box has to hold
+/// both.
+///
+/// `(0.0, 0.0, 0.0, 0.0)` for an empty `nodes` — defensive only, `lay_out_spec` already rejects an
+/// empty diagram before any routing code runs (`RenderError::NothingToDraw`).
+fn content_bounds(nodes: &[PlacedNode], clusters: &[PlacedCluster]) -> (f64, f64, f64, f64) {
+    let mut l = f64::INFINITY;
+    let mut t = f64::INFINITY;
+    let mut r = f64::NEG_INFINITY;
+    let mut b = f64::NEG_INFINITY;
+    for n in nodes {
+        let (nl, nt, nr, nb) = n.bounds();
+        l = l.min(nl);
+        t = t.min(nt);
+        r = r.max(nr);
+        b = b.max(nb);
+    }
+    for c in clusters {
+        let (cl, ct, cr, cb) = c.bounds();
+        l = l.min(cl);
+        t = t.min(ct);
+        r = r.max(cr);
+        b = b.max(cb);
+    }
+    if !l.is_finite() {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    (l, t, r, b)
+}
+
+/// `bounds`, pushed `by` px further out on every side — [`content_bounds`] turned into one edge's
+/// own perimeter lane rectangle.
+fn expand_bounds(bounds: (f64, f64, f64, f64), by: f64) -> (f64, f64, f64, f64) {
+    (bounds.0 - by, bounds.1 - by, bounds.2 + by, bounds.3 + by)
+}
+
+/// Where a straight stub leaving `port` perpendicular to `side` first reaches `ring` — a
+/// perimeter edge's port-to-lane leg when nothing sits in the way. Always a single axis-parallel
+/// segment from `port` (§10-1 item 1's "垂直入射" — the port itself is unchanged by this stage)
+/// because `ring` is built by expanding [`content_bounds`], which always contains the node `port`
+/// sits on, so the interior point (`port`) and `ring`'s corresponding side are already aligned on
+/// `port`'s own tangent coordinate — no bend is needed to reach it *geometrically*. Whether that
+/// straight run is actually clear of every other node is [`safe_ring_exit`]'s question, not this
+/// function's — this is the one candidate every route always considers first.
+fn ring_touch(side: Side, port: &Point, ring: (f64, f64, f64, f64)) -> Point {
+    let (l, t, r, b) = ring;
+    match side {
+        Side::Top => Point::new(port.x, t),
+        Side::Bottom => Point::new(port.x, b),
+        Side::Left => Point::new(l, port.y),
+        Side::Right => Point::new(r, port.y),
+    }
+}
+
+/// Whether the axis-parallel segment `a`-`b` crosses any node in `nodes` other than the two whose
+/// ids are `exclude` (an edge's own two ends) — [`safe_ring_exit`]'s collision test, reusing
+/// [`segment_crosses_node`] (the same check `classify`'s branch/merge collision fix already runs)
+/// rather than a second copy of the same box arithmetic.
+fn segment_crosses_any_node(
+    a: &Point,
+    b: &Point,
+    nodes: &[PlacedNode],
+    exclude: (&str, &str),
+) -> bool {
+    nodes
+        .iter()
+        .any(|n| n.id != exclude.0 && n.id != exclude.1 && segment_crosses_node(a, b, n))
+}
+
+/// A perpendicular exit from `port` through `side`, out to `ring` — §10-1 item 1's own collision
+/// fix ("辺セグメント...の交差テストで機械的に"), applied here because a straight run from an
+/// interior port out to the ring can pass through whatever sits between the two: a back edge's own
+/// node is not always already at the diagram's own edge on the axis its exit face happens to point
+/// along. Found by dumping a real routed diagram, not assumed — `cjk`'s `D->A` exited straight up
+/// through `B`'s own row (and `B`'s edge label) on the way to the ring, since `D->A`'s exit face
+/// was chosen (`classify`'s `dominant_face`, unchanged) from the interior dagre waypoint it used to
+/// thread through, not from where `D` itself sits in the finished layout.
+///
+/// Three candidates, in order: the direct run ([`ring_touch`]); an L that turns onto whichever of
+/// the ring's *other* two sides (left/right for a `Top`/`Bottom` exit, top/bottom for `Left`/
+/// `Right`) is nearer, **stopping the instant it actually reaches that side**; the same L via the
+/// *farther* side, for the case something still blocks the nearer one. The first candidate whose
+/// every leg clears every other node wins; if all three still cross something, the direct run is
+/// kept anyway — the same "nothing left to try" honesty `classify`'s own branch/merge fallback
+/// keeps rather than pretending a clean answer exists.
+///
+/// The L's second leg is safe regardless of what the diagram holds, because nothing sits beyond
+/// `ring`'s own boundary by construction ([`content_bounds`]) — **and stopping there is load-
+/// bearing, not a style choice**: an earlier version continued a third leg back along the original
+/// axis to `direct`'s own coordinate (matching the straight run's own touch point), reasoning that
+/// [`ring_path`] needed a "properly aligned" point to hand off to. It does not — any point on the
+/// boundary is equally valid, `ring_perimeter_dist` measures every one of them the same way — and
+/// the extra leg was actively wrong: when both ends of an edge fall back to the L on the *same*
+/// ring side, their two touch points both land exactly on that side's far corners (top-left and
+/// bottom-left, say), so `ring_path` — correctly — draws the short way between them, which is now
+/// the *whole length of that side*, not the short local jog either end actually needed. Caught by
+/// dumping a real `TD` diagram (`flowchart TB` with a decision node looping back into itself,
+/// `C -->|再試行| B`): the old third leg drew the return edge's own vertical run the full 394px
+/// height of the ring, when the two ports it actually connects sit only 45.9px apart. Stopping at
+/// `(corner, hop.y)` keeps the touch point near where the edge actually is.
+///
+/// Returns the points from (not including) `port` to (including) the point that actually lands on
+/// `ring`'s own boundary.
+///
+/// `blocked` is the obstacle test, taken as a closure rather than a fixed `nodes` slice so this one
+/// function serves two different moments: [`route_perimeter`] calls it against every other node,
+/// before any label exists to test against; `avoid_label_plates` calls it a second time, later,
+/// against every *other edge's label plate* too — the same "found by dumping a real diagram, not
+/// assumed" case (`cjk`'s `D->A` also swept straight through `B->D`'s own `テキスト` plate) that
+/// motivated this function at all, but one no `nodes`-only test can see, since a plate does not
+/// exist until stage 4's own label placement has already run once.
+fn safe_ring_exit(
+    side: Side,
+    port: &Point,
+    ring: (f64, f64, f64, f64),
+    blocked: &dyn Fn(&Point, &Point) -> bool,
+) -> Vec<Point> {
+    let (l, t, r, b) = ring;
+    let direct = ring_touch(side, port, ring);
+    // §10-1 item 1's "垂直入射" binds the segment touching the port itself, not the whole route —
+    // `orthogonal_endpoints_sit_outside_the_node_and_arrive_perpendicular`'s own invariant checks
+    // only `points[0]`/`points[1]` (and the symmetric pair at the other end). So an L-shaped
+    // candidate still leaves perpendicular for a short `PORT_CLEARANCE`-px hop — long enough to
+    // clear the node itself, the same clearance stage 2's own eviction already guarantees a port
+    // keeps from its face's corner — before the first turn onto the cross axis.
+    let hop = match side {
+        Side::Top => Point::new(port.x, port.y - PORT_CLEARANCE),
+        Side::Bottom => Point::new(port.x, port.y + PORT_CLEARANCE),
+        Side::Left => Point::new(port.x - PORT_CLEARANCE, port.y),
+        Side::Right => Point::new(port.x + PORT_CLEARANCE, port.y),
+    };
+    let l_shape = |corner: f64| -> Vec<Point> {
+        match side {
+            // Stop at `(corner, hop.y)` — that point already sits exactly on `ring`'s own `corner`
+            // side, so nothing is gained (and, per this function's own doc, real harm is done) by
+            // continuing on to `direct`'s coordinate on the far side.
+            Side::Top | Side::Bottom => vec![hop.clone(), Point::new(corner, hop.y)],
+            Side::Left | Side::Right => vec![hop.clone(), Point::new(hop.x, corner)],
+        }
+    };
+    let (near, far) = match side {
+        Side::Top | Side::Bottom => {
+            if (port.x - l) <= (r - port.x) {
+                (l, r)
+            } else {
+                (r, l)
+            }
+        }
+        Side::Left | Side::Right => {
+            if (port.y - t) <= (b - port.y) {
+                (t, b)
+            } else {
+                (b, t)
+            }
+        }
+    };
+    let candidates: [Vec<Point>; 3] = [vec![direct.clone()], l_shape(near), l_shape(far)];
+    for cand in &candidates {
+        let mut prev = port.clone();
+        let mut clear = true;
+        for p in cand {
+            if blocked(&prev, p) {
+                clear = false;
+                break;
+            }
+            prev = p.clone();
+        }
+        if clear {
+            return cand.clone();
+        }
+    }
+    vec![direct]
+}
+
+/// `p`'s clockwise distance around `ring`'s own perimeter from its top-left corner — top edge
+/// left-to-right, then right edge top-to-bottom, then bottom edge right-to-left, then left edge
+/// bottom-to-top. [`ring_path`]'s own unit of measure for "how far around", so two points on the
+/// same ring can be compared regardless of which of the four sides each sits on.
+///
+/// Every caller builds `p` sitting exactly on one side ([`ring_touch`]'s own contract), so which
+/// side is unambiguous in practice; a point that is not (never produced by this module, but this
+/// function makes no assumption it cannot happen) is assigned to whichever side it is nearest,
+/// rather than panicking — the corner tie (equidistant from two sides) resolves to top/bottom over
+/// left/right, an arbitrary but deterministic choice for a case no real caller reaches.
+fn ring_perimeter_dist(ring: (f64, f64, f64, f64), p: &Point) -> f64 {
+    let (l, t, r, b) = ring;
+    let w = r - l;
+    let h = b - t;
+    let d_top = (p.y - t).abs();
+    let d_bottom = (p.y - b).abs();
+    let d_left = (p.x - l).abs();
+    let d_right = (p.x - r).abs();
+    let m = d_top.min(d_bottom).min(d_left).min(d_right);
+    if m == d_top {
+        (p.x - l).clamp(0.0, w)
+    } else if m == d_right {
+        w + (p.y - t).clamp(0.0, h)
+    } else if m == d_bottom {
+        w + h + (r - p.x).clamp(0.0, w)
+    } else {
+        w + h + w + (b - p.y).clamp(0.0, h)
+    }
+}
+
+/// The ring's own four corners, each paired with its clockwise distance from the top-left one —
+/// [`ring_perimeter_dist`]'s own scale, so [`corners_between_clockwise`] can place a corner
+/// relative to any two points on the ring the same way it places those points themselves.
+fn ring_corners(ring: (f64, f64, f64, f64)) -> [(f64, Point); 4] {
+    let (l, t, r, b) = ring;
+    let w = r - l;
+    let h = b - t;
+    [
+        (0.0, Point::new(l, t)),
+        (w, Point::new(r, t)),
+        (w + h, Point::new(r, b)),
+        (2.0 * w + h, Point::new(l, b)),
+    ]
+}
+
+/// Every corner of `ring` that lies strictly between the points at perimeter-distance `from` and
+/// `to`, travelling **clockwise** from `from` — in the order the path passes them (nearest first).
+/// [`ring_path`]'s only real work: it calls this once each way and keeps whichever direction visits
+/// fewer corners' worth of distance, so a perimeter edge takes the shorter arc round the rectangle
+/// rather than always going one fixed way.
+fn corners_between_clockwise(ring: (f64, f64, f64, f64), from: f64, to: f64) -> Vec<Point> {
+    let w = ring.2 - ring.0;
+    let h = ring.3 - ring.1;
+    let perim = 2.0 * (w + h);
+    if perim <= 0.0 {
+        return Vec::new();
+    }
+    let span = (to - from).rem_euclid(perim);
+    let mut out: Vec<(f64, Point)> = ring_corners(ring)
+        .into_iter()
+        .filter_map(|(dist, p)| {
+            let rel = (dist - from).rem_euclid(perim);
+            (rel > EPS && rel < span - EPS).then_some((rel, p))
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    out.into_iter().map(|(_, p)| p).collect()
+}
+
+/// The corners a route has to pass through to get from `a` to `b` along `ring`'s own boundary,
+/// taking whichever of the two directions round the rectangle is shorter (ties broken clockwise) —
+/// **not including `a` or `b` themselves**. Empty when `a` and `b` sit on the same side (the direct
+/// segment between them is already along the boundary, `bridge`-free).
+fn ring_path(ring: (f64, f64, f64, f64), a: &Point, b: &Point) -> Vec<Point> {
+    let w = ring.2 - ring.0;
+    let h = ring.3 - ring.1;
+    let perim = 2.0 * (w + h);
+    if perim <= 0.0 {
+        return Vec::new();
+    }
+    let da = ring_perimeter_dist(ring, a);
+    let db = ring_perimeter_dist(ring, b);
+    let cw_span = (db - da).rem_euclid(perim);
+    let ccw_span = perim - cw_span;
+    if cw_span <= ccw_span {
+        corners_between_clockwise(ring, da, db)
+    } else {
+        // The counter-clockwise path from `a` to `b` visits the same corners, in the same
+        // physical order, as the clockwise path from `b` to `a` — just walked backwards, so the
+        // list this builds has to be reversed to read in the `a`-to-`b` direction the caller
+        // wants.
+        let mut v = corners_between_clockwise(ring, db, da);
+        v.reverse();
+        v
+    }
+}
+
+/// §10-1 item 4's perimeter lane: the route a back edge ([`EdgeShape::reverse`]) or a
+/// collision-fallback forward edge ([`EdgeShape::staircase`]) draws (a self-loop excepted — see
+/// [`route_with_ports`]'s own doc). Leaves/enters through the exact same ports every other shape
+/// uses — `port_at` was already called by [`route_with_ports`], `source_port`/`target_port` are
+/// its result — then walks out to `ring` ([`safe_ring_exit`], not a bare [`ring_touch`]: see that
+/// function's own doc for why a straight run alone is not always safe) and around whichever way
+/// ([`ring_path`]) is shorter to the same kind of exit at the other end. `blocked` is
+/// `safe_ring_exit`'s own obstacle test, passed through unchanged.
+///
+/// No `direction` parameter, unlike every other `route_*` helper in this module: `ring_touch`/
+/// `ring_path` reason in absolute `x`/`y`, not `flow`/`cross` — a rectangle's own boundary has no
+/// "along the flow" to abstract away.
+fn route_perimeter(
+    shape: &EdgeShape,
+    source_port: Point,
+    target_port: Point,
+    ring: (f64, f64, f64, f64),
+    blocked: &dyn Fn(&Point, &Point) -> bool,
+) -> Vec<Point> {
+    let source_exit = safe_ring_exit(shape.source_side, &source_port, ring, blocked);
+    let target_exit = safe_ring_exit(shape.target_side, &target_port, ring, blocked);
+    let source_ring = source_exit
+        .last()
+        .cloned()
+        .unwrap_or_else(|| source_port.clone());
+    let target_ring = target_exit
+        .last()
+        .cloned()
+        .unwrap_or_else(|| target_port.clone());
+
+    let mut out = vec![source_port];
+    out.extend(source_exit);
+    out.extend(ring_path(ring, &source_ring, &target_ring));
+    out.push(target_ring);
+    out.extend(target_exit.into_iter().rev().skip(1));
+    out.push(target_port);
     out
 }
 
@@ -720,6 +1069,10 @@ pub fn route_edge(
     );
     let source_coord = face_center_coord(source, shape.source_side);
     let target_coord = face_center_coord(target, shape.target_side);
+    // The only two nodes that exist in this isolated helper are the ring's own content — the same
+    // "no siblings" simplification `classify`'s call above already leans on.
+    let both = [source.clone(), target.clone()];
+    let ring = expand_bounds(content_bounds(&both, &[]), PERIMETER_MARGIN);
     route_with_ports(
         direction,
         &shape,
@@ -728,6 +1081,8 @@ pub fn route_edge(
         source_coord,
         target_coord,
         raw,
+        ring,
+        &both,
     )
 }
 
@@ -908,17 +1263,49 @@ fn evict(
     }
 }
 
+/// §10-1 item 4's 8px lane stagger: every perimeter-routed edge (`reverse`/`staircase`, minus a
+/// self-loop — [`route_with_ports`]'s own doc) gets its own lane index, assigned in a stable order
+/// (edge id, not declaration or `HashMap` iteration order) so the same source always draws the same
+/// picture. [`route_flowchart`] turns a lane index into an actual ring (`PERIMETER_MARGIN +
+/// lane * PERIMETER_LANE_SPACING` px out from [`content_bounds`]); `avoid_label_plates` calls this
+/// a second time, after labels exist, so it can retry a leg that turned out to cross a plate
+/// against the *exact* ring `route_flowchart` gave that edge — the two must never disagree about
+/// which lane an edge sits on, so both read it from here rather than each keeping their own count.
+fn perimeter_lanes<'a>(
+    by_id: &HashMap<&str, &PlacedNode>,
+    edges: &[EligibleEdge<'a>],
+    shapes: &[Option<EdgeShape>],
+) -> HashMap<&'a str, usize> {
+    let mut ids: Vec<&str> = edges
+        .iter()
+        .zip(shapes)
+        .filter_map(|(e, s)| {
+            let s = s.as_ref()?;
+            let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target)) else {
+                return None;
+            };
+            ((s.reverse || s.staircase) && source.id != target.id).then_some(e.id)
+        })
+        .collect();
+    ids.sort_unstable();
+    ids.into_iter().enumerate().map(|(i, id)| (id, i)).collect()
+}
+
 /// Routes every node-to-node edge in one flowchart under `[ui] mermaid_routing =
 /// "konoma-orthogonal"`, running [`classify`] and [`evict`] once each over the whole diagram
 /// before building any polyline — the two-pass shape the module doc describes.
 ///
-/// `nodes` is the diagram's placed nodes from *this* layout pass; `edges` is every drawable edge
-/// whose two ends are both real nodes (a cluster boundary never reaches this function — it is out
-/// of scope until §10-2's later stages, and keeps drawing through the ordinary spline path,
-/// `lay_out_spec`'s own filter on `edges::End::Node`).
+/// `nodes` is the diagram's placed nodes from *this* layout pass; `clusters` is every subgraph
+/// frame from the same pass, needed only for [`content_bounds`] (§10-1 item 4's perimeter lane has
+/// to clear a frame the way it clears a node, even though a frame is never itself a routable
+/// endpoint here — see `edges` below); `edges` is every drawable edge whose two ends are both real
+/// nodes (a cluster boundary never reaches this function — it is out of scope until §10-2's later
+/// stages, and keeps drawing through the ordinary spline path, `lay_out_spec`'s own filter on
+/// `edges::End::Node`).
 pub fn route_flowchart(
     direction: Direction,
     nodes: &[PlacedNode],
+    clusters: &[PlacedCluster],
     edges: &[EligibleEdge],
 ) -> RoutedFlowchart {
     let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
@@ -945,6 +1332,9 @@ pub fn route_flowchart(
 
     let eviction = evict(direction, &by_id, edges, &shapes);
 
+    let base_bounds = content_bounds(nodes, clusters);
+    let lane_of = perimeter_lanes(&by_id, edges, &shapes);
+
     let mut points = HashMap::with_capacity(edges.len());
     for (edge, shape) in edges.iter().zip(&shapes) {
         let Some(shape) = shape else { continue };
@@ -962,6 +1352,16 @@ pub fn route_flowchart(
             .get(edge.id)
             .copied()
             .unwrap_or_else(|| face_center_coord(target, shape.target_side));
+        let ring = match lane_of.get(edge.id) {
+            Some(&lane) => expand_bounds(
+                base_bounds,
+                PERIMETER_MARGIN + lane as f64 * PERIMETER_LANE_SPACING,
+            ),
+            // Not a perimeter edge (or a self-loop) — `route_with_ports` never reads `ring` for
+            // any other shape, so this value is never actually used; built anyway so the call
+            // below has one signature for every edge.
+            None => base_bounds,
+        };
         let routed = route_with_ports(
             direction,
             shape,
@@ -970,6 +1370,8 @@ pub fn route_flowchart(
             source_coord,
             target_coord,
             edge.raw,
+            ring,
+            nodes,
         );
         points.insert(edge.id.to_string(), routed);
     }
@@ -1300,52 +1702,117 @@ fn segment_crosses_plate(a: &Point, b: &Point, plate: &PlacedEdgeLabel) -> bool 
     }
 }
 
-/// §10-1 item 3: "ポートの垂直レーンがラベルプレートと重なる場合はポートをさらに16px外へ". Checks
-/// every eligible edge's two port-adjacent stub segments (`points[0]-points[1]` at the source end,
-/// the last pair at the target end — exactly where stage 2's evicted, 16px-apart lanes run close
-/// together right next to a busy face) against every *other* edge's label plate; a crossing pushes
-/// that one port [`PORT_SPACING`] further out and rebuilds just that edge's polyline from it.
+/// §10-1 item 3: "ポートの垂直レーンがラベルプレートと重なる場合はポートをさらに16px外へ". Two
+/// different fixes, by shape:
 ///
-/// A single forward pass over `edges`, in caller order — not a fixpoint search. Pushing one port
-/// can in principle open a fresh crossing against a plate it did not use to reach, but that needs a
-/// second plate to already sit within one more lane-width of the first, which stage 2's own 16px
-/// spacing rarely stacks two deep; a documented approximation rather than a proven fixpoint, the
-/// same honesty [`route_staircase_with_ports`]'s own doc gives the back-edge route it stands in
-/// for. `reverse`/`staircase` edges are skipped outright: they draw from dagre's own waypoint
-/// chain, not a face+axis pair this function can rebuild from a single new coordinate the way
-/// [`route_with_ports`] does for every other shape.
+/// * A branch/merge/aligned edge: checks its two port-adjacent stub segments (`points[0]-points[1]`
+///   at the source end, the last pair at the target end — exactly where stage 2's evicted, 16px
+///   apart lanes run close together right next to a busy face) against every *other* edge's label
+///   plate; a crossing pushes that one port [`PORT_SPACING`] further out and rebuilds just that
+///   edge's polyline from it ([`route_with_ports`]).
+/// * A perimeter-routed edge ([`EdgeShape::reverse`]/[`EdgeShape::staircase`], minus a self-loop):
+///   has no single port to push — its whole route can run near a plate anywhere along its length,
+///   not only right next to a node (`cjk`'s `D->A` swept straight through `B->D`'s own `テキスト`
+///   plate, found by dumping a real routed diagram). So instead: check every segment of its already
+///   -built route; if any crosses a foreign plate, rebuild it with [`route_perimeter`] again, this
+///   time against a `blocked` test that includes every foreign plate as well as every node — the
+///   same `safe_ring_exit` candidate search [`route_flowchart`] already ran, just given one more
+///   kind of obstacle to avoid, using the identical ring [`perimeter_lanes`] already assigned it (so
+///   this second pass can never disagree with the first about which lane the edge sits on). A
+///   self-loop is left untouched, the same as [`route_with_ports`]'s own doc explains for why it
+///   never reaches [`route_perimeter`] in the first place.
 ///
-/// Mutates `points` for any edge whose port moved, and `plates` for that same edge's own label (if
-/// it carries one) so the plate the *next* edge in this same pass checks against is the one that
-/// will actually be drawn, not the one from before the push.
+/// A single forward pass over `edges`, in caller order — not a fixpoint search. Fixing one edge can
+/// in principle open a fresh crossing against a plate it did not use to reach, but that needs a
+/// second plate to already sit within one more lane-width (or ring-candidate) of the first — a
+/// documented approximation rather than a proven fixpoint, the same honesty
+/// [`route_staircase_with_ports`]'s own doc gives the back-edge route it stands in for.
+///
+/// Mutates `points` for any edge whose route changed, and `plates` for that same edge's own label
+/// (if it carries one) so the plate the *next* edge in this same pass checks against is the one
+/// that will actually be drawn, not the one from before the fix.
 pub fn avoid_label_plates(
     direction: Direction,
     nodes: &[PlacedNode],
+    clusters: &[PlacedCluster],
     edges: &[EligibleEdge],
     points: &mut HashMap<String, Vec<Point>>,
     plates: &mut HashMap<String, PlacedEdgeLabel>,
 ) {
     let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let shapes: Vec<Option<EdgeShape>> = edges
+        .iter()
+        .map(|e| {
+            let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target)) else {
+                return None;
+            };
+            Some(classify(
+                direction,
+                source,
+                target,
+                e.raw,
+                e.source_rank,
+                e.target_rank,
+                e.source_out_degree,
+                e.target_in_degree,
+                nodes,
+            ))
+        })
+        .collect();
+    let base_bounds = content_bounds(nodes, clusters);
+    let lane_of = perimeter_lanes(&by_id, edges, &shapes);
 
-    for edge in edges {
+    for (edge, shape) in edges.iter().zip(&shapes) {
+        let Some(shape) = shape else { continue };
         let (Some(&source), Some(&target)) = (by_id.get(edge.source), by_id.get(edge.target))
         else {
             continue;
         };
-        let shape = classify(
-            direction,
-            source,
-            target,
-            edge.raw,
-            edge.source_rank,
-            edge.target_rank,
-            edge.source_out_degree,
-            edge.target_in_degree,
-            nodes,
-        );
-        if shape.reverse || shape.staircase {
+
+        if (shape.reverse || shape.staircase) && source.id != target.id {
+            let Some(pts) = points.get(edge.id) else {
+                continue;
+            };
+            if pts.len() < 2 {
+                continue;
+            }
+            let crosses_a_plate = pts.windows(2).any(|w| {
+                plates
+                    .iter()
+                    .any(|(id, plate)| id != edge.id && segment_crosses_plate(&w[0], &w[1], plate))
+            });
+            if !crosses_a_plate {
+                continue;
+            }
+            let Some(&lane) = lane_of.get(edge.id) else {
+                continue; // defensive: every edge that reached this branch is in `lane_of`
+            };
+            let ring = expand_bounds(
+                base_bounds,
+                PERIMETER_MARGIN + lane as f64 * PERIMETER_LANE_SPACING,
+            );
+            let source_port = pts[0].clone();
+            let target_port = pts[pts.len() - 1].clone();
+            let ids = (edge.source, edge.target);
+            let blocked = |a: &Point, b: &Point| {
+                segment_crosses_any_node(a, b, nodes, ids)
+                    || plates
+                        .iter()
+                        .any(|(id, plate)| id != edge.id && segment_crosses_plate(a, b, plate))
+            };
+            let rebuilt = route_perimeter(shape, source_port, target_port, ring, &blocked);
+            if let Some(plate) = plates.get_mut(edge.id) {
+                if let Some(slot) = label_slot(direction, &rebuilt) {
+                    plate.center = slot.center;
+                }
+            }
+            points.insert(edge.id.to_string(), rebuilt);
             continue;
         }
+        if shape.reverse || shape.staircase {
+            continue; // a self-loop — `route_with_ports`'s own doc.
+        }
+
         let Some(pts) = points.get(edge.id).cloned() else {
             continue;
         };
@@ -1380,12 +1847,17 @@ pub fn avoid_label_plates(
             new_target_coord.unwrap_or_else(|| tangent_coord(shape.target_side, &pts[n - 1]));
         let rebuilt = route_with_ports(
             direction,
-            &shape,
+            shape,
             source,
             target,
             source_coord,
             target_coord,
             edge.raw,
+            // Neither `ring` nor `nodes` is ever read here: the shape checks above already ruled
+            // out every shape that touches them (`route_with_ports`'s own doc — only a
+            // non-self-loop `reverse`/`staircase` edge ever does).
+            (0.0, 0.0, 0.0, 0.0),
+            nodes,
         );
         if let Some(plate) = plates.get_mut(edge.id) {
             if let Some(slot) = label_slot(direction, &rebuilt) {
@@ -1394,6 +1866,155 @@ pub fn avoid_label_plates(
         }
         points.insert(edge.id.to_string(), rebuilt);
     }
+}
+
+// -------------------------------------------------------------------------------------------
+// §10-1 item 4's 12px crossing gap
+// -------------------------------------------------------------------------------------------
+
+/// How wide the omitted stretch is on the spanning side of an edge-to-edge crossing — §10-1 item
+/// 4: "辺どうしの交差では跨ぐ側…の線に12pxの隙間を開ける". [`PlacedEdge::gaps`]'s own doc has the
+/// full picture of what a gap is and who reads it.
+///
+/// [`PlacedEdge::gaps`]: super::PlacedEdge::gaps
+pub const CROSSING_GAP: f64 = 12.0;
+
+/// The point where axis-parallel segments `a` and `b` genuinely cross — one vertical, the other
+/// horizontal, meeting strictly inside both (not merely touching at a shared endpoint, and not
+/// running parallel or collinear with each other). `None` for every other case, defensively
+/// including a segment that is not axis-parallel (never built by this module).
+fn segment_crossing(a: &[Point], b: &[Point]) -> Option<Point> {
+    let (a0, a1) = (&a[0], &a[1]);
+    let (b0, b1) = (&b[0], &b[1]);
+    let a_vert = (a0.x - a1.x).abs() < EPS;
+    let b_horiz = (b0.y - b1.y).abs() < EPS;
+    if a_vert && b_horiz {
+        let x = a0.x;
+        let (ay0, ay1) = (a0.y.min(a1.y), a0.y.max(a1.y));
+        let y = b0.y;
+        let (bx0, bx1) = (b0.x.min(b1.x), b0.x.max(b1.x));
+        if x > bx0 + EPS && x < bx1 - EPS && y > ay0 + EPS && y < ay1 - EPS {
+            return Some(Point::new(x, y));
+        }
+        return None;
+    }
+    let a_horiz = (a0.y - a1.y).abs() < EPS;
+    let b_vert = (b0.x - b1.x).abs() < EPS;
+    if a_horiz && b_vert {
+        return segment_crossing(b, a);
+    }
+    None
+}
+
+/// The `CROSSING_GAP`-px interval on `seg` centred on `cross` — [`segment_crossing`]'s own result,
+/// turned into the two points [`edges::split_at_gaps`] cuts out. Clamped to `seg`'s own two
+/// endpoints, so a segment shorter than the gap itself (never produced by a real diagram — a
+/// crossing this close to a port would already have tripped `safe_ring_exit`'s own collision
+/// check, since a segment that short has almost no room to begin with) still returns *something*
+/// rather than a point outside the line it is meant to interrupt.
+fn gap_around(seg: &[Point], cross: Point) -> (Point, Point) {
+    let (a, b) = (&seg[0], &seg[1]);
+    let half = CROSSING_GAP / 2.0;
+    if (a.x - b.x).abs() < EPS {
+        let (lo, hi) = (a.y.min(b.y), a.y.max(b.y));
+        let y0 = (cross.y - half).clamp(lo, hi);
+        let y1 = (cross.y + half).clamp(lo, hi);
+        (Point::new(cross.x, y0), Point::new(cross.x, y1))
+    } else {
+        let (lo, hi) = (a.x.min(b.x), a.x.max(b.x));
+        let x0 = (cross.x - half).clamp(lo, hi);
+        let x1 = (cross.x + half).clamp(lo, hi);
+        (Point::new(x0, cross.y), Point::new(x1, cross.y))
+    }
+}
+
+/// §10-1 item 4: "辺どうしの交差では跨ぐ側（外周レーンの辺＝戻り辺・補助辺）の線に12pxの隙間を開け
+/// る（下をくぐる線は連続のまま）". Finds every point where two *different* edges' segments
+/// genuinely cross ([`segment_crossing`]), and — when exactly one of the two is a perimeter-routed
+/// edge (`reverse`/`staircase`, minus a self-loop — [`route_with_ports`]'s own doc explains why a
+/// self-loop is exempt from the whole perimeter mechanism) — cuts a [`CROSSING_GAP`]-px gap into
+/// that edge's own line, leaving the edge it crosses completely untouched: §10-1's "下をくぐる線は
+/// 連続のまま" read as depth, not as a rule about which edge is which — the interrupted line is
+/// the one that visually dips under, the untouched one reads as passing over it.
+///
+/// When *both* sides of a crossing are perimeter edges (reachable — `amp-chain`'s own
+/// collision-fallback `A->D` and `B->C` cross each other, neither a back edge nor sharing a node
+/// with the other, dumped and confirmed before this was written), the spec does not say which one
+/// gets the gap; the tie is broken by edge id, lower id kept whole, deterministically rather than
+/// arbitrarily.
+///
+/// Node crossings and frame crossings are both out of scope here by construction: this only ever
+/// compares two edges' own segments against each other, never against a node's or a cluster's
+/// box — §10-1's own "辺と枠の交差は隙間なし（直交して跨ぐだけ）" is exactly what leaving a frame
+/// out of this function achieves.
+///
+/// `points` is the *final* routed polyline per edge id — `route_flowchart`'s own result after
+/// `avoid_label_plates` has already run, so a gap is never computed against a route stage 5 was
+/// about to move out from under it.
+pub fn insert_crossing_gaps(
+    direction: Direction,
+    nodes: &[PlacedNode],
+    edges: &[EligibleEdge],
+    points: &HashMap<String, Vec<Point>>,
+) -> HashMap<String, Vec<(Point, Point)>> {
+    let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let is_perimeter: HashMap<&str, bool> = edges
+        .iter()
+        .filter_map(|e| {
+            let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target)) else {
+                return None;
+            };
+            let shape = classify(
+                direction,
+                source,
+                target,
+                e.raw,
+                e.source_rank,
+                e.target_rank,
+                e.source_out_degree,
+                e.target_in_degree,
+                nodes,
+            );
+            Some((
+                e.id,
+                (shape.reverse || shape.staircase) && source.id != target.id,
+            ))
+        })
+        .collect();
+
+    let mut gaps: HashMap<String, Vec<(Point, Point)>> = HashMap::new();
+    for i in 0..edges.len() {
+        for j in (i + 1)..edges.len() {
+            let (ei, ej) = (edges[i].id, edges[j].id);
+            let (Some(pi), Some(pj)) = (points.get(ei), points.get(ej)) else {
+                continue;
+            };
+            let (pi_perim, pj_perim) = (
+                is_perimeter.get(ei).copied().unwrap_or(false),
+                is_perimeter.get(ej).copied().unwrap_or(false),
+            );
+            if !pi_perim && !pj_perim {
+                continue; // neither side spans — out of this rule's scope.
+            }
+            // Both spanning: the higher edge id is the one that gets cut, so the lower one stays
+            // whole — this function's own doc explains why either choice is equally arbitrary.
+            let cut_on_i = if pi_perim && pj_perim {
+                ei > ej
+            } else {
+                pi_perim
+            };
+            let (cut_id, cut_pts, other_pts) = if cut_on_i { (ei, pi, pj) } else { (ej, pj, pi) };
+            for wc in cut_pts.windows(2) {
+                for wo in other_pts.windows(2) {
+                    if let Some(cross) = segment_crossing(wc, wo) {
+                        let (g0, g1) = gap_around(wc, cross);
+                        gaps.entry(cut_id.to_string()).or_default().push((g0, g1));
+                    }
+                }
+            }
+        }
+    }
+    gaps
 }
 
 #[cfg(test)]
@@ -1490,36 +2111,173 @@ mod tests {
         assert!((label_min_length(plate, false) - (20.0 + 2.0 * LABEL_CLEARANCE)).abs() < 1e-9);
     }
 
+    /// The real bug the coordinator's own verification of stage 5 item 1 found: `safe_ring_exit`'s
+    /// L-shaped fallback used to add a third leg back out to `direct`'s own coordinate on the far
+    /// side of the ring — landing exactly on a ring *corner* — instead of stopping the moment it
+    /// touched the ring at all. Two edges (or, as here, one edge's two ends) that both fall back to
+    /// the L on the *same* ring side then both land on that side's two far corners, and the "short
+    /// way round" between two corners of one side is the *whole length of that side* — a `TD`
+    /// diagram's real return edge drew the ring's full height (`docs/FEATURE-MERMAID-RENDERER.md`
+    /// §10-1 item 4's own repro: `flowchart TB` with `C -->|再試行| B` looping a decision node back
+    /// into itself) for a stub that only needed to span the ~46px between the two ports it actually
+    /// connects.
+    ///
+    /// Pinned directly against [`safe_ring_exit`] rather than a full diagram, once for each `Side`
+    /// (`Top`/`Bottom` covers `TD`/`BT`'s own exit faces, `Left`/`Right` covers `LR`/`RL`'s) — a
+    /// diagram-level repro only happens to exist for `TD`; this is what the coordinator's own
+    /// request ("既存テストが素通りした理由…も確認して同型の穴を塞ぐ") asks for: the *stage 1-4
+    /// invariant suite never once called `safe_ring_exit` with a `blocked` closure that actually
+    /// blocks anything* (every corpus source's `orthogonal_endpoints_sit_outside_the_node_...`
+    /// check runs on the *finished* route, which only ever exercises whichever candidate won — the
+    /// direct one, for nearly every corpus source), so a bug in the L-shaped candidate specifically
+    /// had no route to being observed by anything already written.
     #[test]
-    fn avoid_label_plates_ignores_a_reverse_edge() {
-        // A back edge has no single face+axis pair `avoid_label_plates` can rebuild a route from
-        // — it must be skipped outright rather than mis-rebuilt, even when its stub genuinely
-        // crosses a plate.
-        let a = node("A", 100.0, 200.0, 60.0, 40.0);
-        let b = node("B", 100.0, 0.0, 60.0, 40.0);
-        let nodes = vec![a, b];
+    fn safe_ring_exit_l_shape_stops_at_the_ring_not_the_far_corner() {
+        let ring = (0.0, 0.0, 600.0, 400.0);
+        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+            let port = match side {
+                Side::Top => Point::new(300.0, 50.0),
+                Side::Bottom => Point::new(300.0, 350.0),
+                Side::Left => Point::new(50.0, 200.0),
+                Side::Right => Point::new(550.0, 200.0),
+            };
+            let direct = ring_touch(side, &port, ring);
+            // Blocks exactly the direct candidate's single segment (`port` -> `direct`) and
+            // nothing else, forcing the near-corner L to win.
+            let blocked = |a: &Point, b: &Point| *a == port && *b == direct;
+            let exit = safe_ring_exit(side, &port, ring, &blocked);
+            assert_eq!(
+                exit.len(),
+                2,
+                "{side:?}: the L-shaped fallback must be exactly [hop, ring-touch], not a third \
+                 leg out to the far corner: {exit:?}"
+            );
+            let touch = &exit[1];
+            match side {
+                Side::Top | Side::Bottom => {
+                    assert!(
+                        (touch.y - exit[0].y).abs() < 1e-9,
+                        "{side:?}: the ring touch point must stay at the hop's own y, not travel \
+                         on to direct's ({}): {touch:?}",
+                        direct.y
+                    );
+                }
+                Side::Left | Side::Right => {
+                    assert!(
+                        (touch.x - exit[0].x).abs() < 1e-9,
+                        "{side:?}: the ring touch point must stay at the hop's own x, not travel \
+                         on to direct's ({}): {touch:?}",
+                        direct.x
+                    );
+                }
+            }
+        }
+    }
+
+    /// The end-to-end version of the same fix, over all four `Direction`s: a decision node whose
+    /// loop-back edge needs the L-shaped fallback at both ends (`raw` seeded with an interior
+    /// waypoint that sits *inside* the sibling node on the direct path, so `classify`'s own
+    /// collision test — unrelated to this bug, exercised here only to force the same fallback a
+    /// real diagram's `shape_crosses_a_node` would) — the long run along the ring must be within a
+    /// few px of the two ports' own separation, never the ring's full extent on that axis.
+    #[test]
+    fn perimeter_l_shape_fallback_spans_only_the_ports_own_separation_in_every_direction() {
+        for direction in [
+            Direction::TopToBottom,
+            Direction::BottomToTop,
+            Direction::LeftToRight,
+            Direction::RightToLeft,
+        ] {
+            // A 3-node vertical (TD/BT) or horizontal (LR/RL) chain: `hi` -> `lo` normal, `lo` ->
+            // `hi` reversed (the loop-back). `mid` sits directly between them on the same axis, so
+            // the direct ring exit for both ends of `lo -> hi` would cut straight through it.
+            let (hi, lo, mid) = match direction {
+                Direction::TopToBottom | Direction::BottomToTop => (
+                    node("hi", 100.0, 0.0, 60.0, 40.0),
+                    node("lo", 100.0, 300.0, 60.0, 40.0),
+                    node("mid", 100.0, 150.0, 60.0, 40.0),
+                ),
+                Direction::LeftToRight | Direction::RightToLeft => (
+                    node("hi", 0.0, 100.0, 40.0, 60.0),
+                    node("lo", 300.0, 100.0, 40.0, 60.0),
+                    node("mid", 150.0, 100.0, 40.0, 60.0),
+                ),
+            };
+            let nodes = vec![hi.clone(), lo.clone(), mid.clone()];
+            let raw = vec![lo.center.clone(), mid.center.clone(), hi.center.clone()];
+            let edges = vec![EligibleEdge {
+                id: "back",
+                source: "lo",
+                target: "hi",
+                raw: &raw,
+                source_rank: Some(1),
+                target_rank: Some(0),
+                source_out_degree: 1,
+                target_in_degree: 1,
+            }];
+            let routed = route_flowchart(direction, &nodes, &[], &edges);
+            let pts = &routed.points["back"];
+            for w in pts.windows(2) {
+                let dx = (w[1].x - w[0].x).abs();
+                let dy = (w[1].y - w[0].y).abs();
+                assert!(
+                    dx < 1e-9 || dy < 1e-9,
+                    "{direction:?}: perimeter route must stay axis-parallel: {w:?}"
+                );
+            }
+            // The long run along the ring is whichever segment is not adjacent to either port —
+            // the two "hop" legs are short (`PORT_CLEARANCE`), so the longest segment is it.
+            let longest = pts
+                .windows(2)
+                .map(|w| (w[1].x - w[0].x).hypot(w[1].y - w[0].y))
+                .fold(0.0_f64, f64::max);
+            // The two nodes' own separation on the flow axis, minus their half-extents — an upper
+            // bound on how far apart the two ports genuinely are, generous enough to not depend on
+            // exactly which face eviction picked.
+            let needed = match direction {
+                Direction::TopToBottom | Direction::BottomToTop => {
+                    (lo.center.y - hi.center.y).abs()
+                }
+                Direction::LeftToRight | Direction::RightToLeft => {
+                    (lo.center.x - hi.center.x).abs()
+                }
+            };
+            assert!(
+                longest <= needed + 1.0,
+                "{direction:?}: the ring run is {longest}px, more than the ~{needed}px the two \
+                 ports actually need — the far-corner bug is back: {pts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn avoid_label_plates_ignores_a_self_loop() {
+        // A self-loop starts and ends at the same box — `route_with_ports`'s own doc explains why
+        // it never reaches `route_perimeter` at all, so `avoid_label_plates`'s perimeter branch
+        // must leave it exactly as `route_flowchart` drew it, even when a plate genuinely covers
+        // its whole loop.
+        let a = node("A", 100.0, 100.0, 60.0, 40.0);
+        let nodes = vec![a];
         let raw = vec![
-            Point::new(100.0, 180.0),
-            Point::new(60.0, 100.0),
-            Point::new(100.0, 20.0),
+            Point::new(130.0, 90.0),
+            Point::new(160.0, 90.0),
+            Point::new(160.0, 110.0),
+            Point::new(130.0, 110.0),
         ];
         let edges = vec![EligibleEdge {
-            id: "back",
+            id: "loop",
             source: "A",
-            target: "B",
+            target: "A",
             raw: &raw,
-            // target rank <= source rank: a back edge.
-            source_rank: Some(1),
+            source_rank: Some(0),
             target_rank: Some(0),
-            source_out_degree: 1,
-            target_in_degree: 1,
+            source_out_degree: 2,
+            target_in_degree: 2,
         }];
-        let routed = route_flowchart(Direction::TopToBottom, &nodes, &edges);
+        let routed = route_flowchart(Direction::TopToBottom, &nodes, &[], &edges);
         let mut points = routed.points;
-        let before = points["back"].clone();
+        let before = points["loop"].clone();
         let mut plates: HashMap<String, PlacedEdgeLabel> = HashMap::new();
-        // A huge plate parked right over the whole route — would cross every stub if this edge
-        // were not skipped.
         plates.insert(
             "someone-elses-label".to_string(),
             PlacedEdgeLabel {
@@ -1531,14 +2289,88 @@ mod tests {
         avoid_label_plates(
             Direction::TopToBottom,
             &nodes,
+            &[],
             &edges,
             &mut points,
             &mut plates,
         );
-        assert_eq!(
-            points["back"], before,
-            "a reverse edge must never be rebuilt"
+        assert_eq!(points["loop"], before, "a self-loop must never be rebuilt");
+    }
+
+    #[test]
+    fn avoid_label_plates_reroutes_a_perimeter_edge_off_a_plate_it_can_actually_clear() {
+        // `cjk`'s real `D->A` bug, reproduced directly rather than through the whole mermaid
+        // pipeline: `D`'s straight-up exit runs through open space between the ranks where some
+        // *other* edge's label plate sits (`cjk`'s own case: `B->D`'s own "テキスト" plate) — no
+        // node of its own to trip `route_flowchart`'s own node-avoidance, so `route_flowchart`
+        // picks the direct run, and only `avoid_label_plates` — running after every label exists —
+        // can see the plate at all. The plate does not cover the *ring* (unlike
+        // `avoid_label_plates_ignores_a_self_loop`'s deliberately inescapable one), so the
+        // L-shaped fallback candidate `safe_ring_exit` tries next actually clears it.
+        let a = node("A", 100.0, 0.0, 60.0, 40.0);
+        let d = node("D", 100.0, 200.0, 60.0, 40.0);
+        let nodes = vec![a, d];
+        let raw = vec![
+            Point::new(100.0, 180.0),
+            Point::new(100.0, 100.0),
+            Point::new(100.0, 20.0),
+        ];
+        let edges = vec![EligibleEdge {
+            id: "da",
+            source: "D",
+            target: "A",
+            raw: &raw,
+            // target rank <= source rank: a back edge.
+            source_rank: Some(2),
+            target_rank: Some(0),
+            source_out_degree: 1,
+            target_in_degree: 1,
+        }];
+        let routed = route_flowchart(Direction::TopToBottom, &nodes, &[], &edges);
+        let mut points = routed.points;
+        let mut plates: HashMap<String, PlacedEdgeLabel> = HashMap::new();
+        // Sits in the open space between A and D, spanning D->A's straight-up column — narrow
+        // enough that the ring itself (far outside both nodes) is still clear.
+        plates.insert(
+            "b-labels-edge".to_string(),
+            PlacedEdgeLabel {
+                center: Point::new(100.0, 100.0),
+                size: Size::new(80.0, 20.0),
+                label: Label::measure("x"),
+            },
         );
+        let crosses_plate = |pts: &[Point], plate: &PlacedEdgeLabel| {
+            pts.windows(2)
+                .any(|w| segment_crosses_plate(&w[0], &w[1], plate))
+        };
+        assert!(
+            crosses_plate(&points["da"], &plates["b-labels-edge"]),
+            "fixture must reproduce the bug before the fix runs: {:?}",
+            points["da"]
+        );
+
+        avoid_label_plates(
+            Direction::TopToBottom,
+            &nodes,
+            &[],
+            &edges,
+            &mut points,
+            &mut plates,
+        );
+
+        assert!(
+            !crosses_plate(&points["da"], &plates["b-labels-edge"]),
+            "the rerouted line must actually clear the plate: {:?}",
+            points["da"]
+        );
+        for w in points["da"].windows(2) {
+            let dx = (w[1].x - w[0].x).abs();
+            let dy = (w[1].y - w[0].y).abs();
+            assert!(
+                dx < 1e-9 || dy < 1e-9,
+                "rerouted line must stay axis-parallel: {w:?}"
+            );
+        }
     }
 
     #[test]
@@ -1642,7 +2474,7 @@ mod tests {
         nodes: &[PlacedNode],
         edges: &[EligibleEdge<'a>],
     ) -> RoutedFlowchart {
-        route_flowchart(direction, nodes, edges)
+        route_flowchart(direction, nodes, &[], edges)
     }
 
     /// Three edges into `target`, none of them exactly above it (so none is `aligned` by

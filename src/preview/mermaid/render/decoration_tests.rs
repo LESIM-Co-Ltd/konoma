@@ -642,6 +642,7 @@ fn tip_document(tip: Tip) -> String {
         from: "a".to_string(),
         to: "b".to_string(),
         points: vec![Point::new(40.0, 150.0), Point::new(360.0, 150.0)],
+        gaps: Vec::new(),
         tip_start: Tip::None,
         tip_end: tip,
         stroke: Stroke::Normal,
@@ -834,6 +835,7 @@ fn decoration_document(decoration: Decoration, on: bool) -> String {
                 from: "a".to_string(),
                 to: "b".to_string(),
                 points: vec![Point::new(40.0, 150.0), Point::new(360.0, 150.0)],
+                gaps: Vec::new(),
                 tip_start: Tip::None,
                 tip_end: Tip::Arrow,
                 stroke: if decoration == Decoration::StrokeStyle && on {

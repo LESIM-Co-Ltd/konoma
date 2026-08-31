@@ -2266,6 +2266,7 @@ fn synthetic_diagram() -> Diagram {
                 label: l,
             }),
             points,
+            gaps: Vec::new(),
             tip_start: super::Tip::of_arrow(arrow).0,
             tip_end: super::Tip::of_arrow(arrow).1,
             stroke,
@@ -4349,6 +4350,7 @@ fn bent_edge(points: Vec<Point>, curve: Curve) -> PlacedEdge {
         from: "a".to_string(),
         to: "b".to_string(),
         points,
+        gaps: Vec::new(),
         tip_start: Tip::None,
         tip_end: Tip::None,
         stroke: Stroke::Normal,
@@ -5223,13 +5225,19 @@ fn assert_no_segment_crosses_a_foreign_node(name: &str, d: &Diagram) {
     }
 }
 
-/// §10-1 item 1's collision fix, run over the whole cycle-free corpus ([`orthogonal_dag_corpus`]
-/// — see its own doc for why a back edge and `amp-chain`'s known collision-fallback edge are
-/// excluded: both are explicitly exempt from any bend cap *and* from any collision guarantee,
-/// since a real perimeter route is still stage 5's job). This is stage 3's headline invariant.
+/// §10-1 item 1's collision fix, run over the **whole** corpus ([`orthogonal_corpus`]) — stage 3's
+/// headline invariant, and stage 5's too: a back edge and `amp-chain`'s collision-fallback edge
+/// used to be exempt here (see [`orthogonal_dag_corpus`]'s own doc for why), because stages 1-4's
+/// back-edge route was still dagre's own waypoint chain, straightened, with no collision check of
+/// its own. Stage 5's [`orthogonal::route_perimeter`] replaces that stopgap with a real
+/// collision-avoiding route (`orthogonal::safe_ring_exit`), so the exemption no longer applies —
+/// this now runs the invariant over every corpus source, self-loop included.
+/// `orthogonal_dag_corpus` stays in use for [`orthogonal_bend_count_never_exceeds_two`], a
+/// genuinely different invariant a perimeter or self-loop route is still exempt from by design
+/// (many bends is the point of going around the outside).
 #[test]
-fn orthogonal_no_segment_crosses_a_foreign_node_across_the_dag_corpus() {
-    for (name, src) in orthogonal_dag_corpus() {
+fn orthogonal_no_segment_crosses_a_foreign_node_across_the_whole_corpus() {
+    for (name, src) in orthogonal_corpus() {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
         assert_no_segment_crosses_a_foreign_node(name, &d);
     }
@@ -5279,6 +5287,47 @@ fn orthogonal_settings_rules_sample_no_longer_pierces_a_sibling_node() {
     }
 
     assert_no_segment_crosses_a_foreign_node("settings-rules", &d);
+}
+
+/// The coordinator's own repro for the real bug `safe_ring_exit`'s L-shaped fallback used to have
+/// (`orthogonal::tests::safe_ring_exit_l_shape_stops_at_the_ring_not_the_far_corner`'s own doc has
+/// the full story): a decision node's retry loop (`C -->|再試行| B`) needed the L-shaped fallback
+/// at both ends, on the same ring side, and the old third leg drew the return edge the *whole
+/// height of the ring* instead of the short local jog its own two ports need. Not part of `CORPUS`
+/// (adding it there would move the golden — `docs/FEATURE-MERMAID-RENDERER.md`'s own "ゴールデン
+/// 13 本不変" rule), so this is a standalone regression test in the same shape
+/// `orthogonal_settings_rules_sample_no_longer_pierces_a_sibling_node` already is.
+#[test]
+fn orthogonal_decision_retry_loop_does_not_span_the_whole_ring() {
+    let src = "flowchart TB\n  A[入力] --> B[整形]\n  B --> C{検査}\n  C -->|合格| D[出力]\n  \
+               C -->|再試行| B\n  D -.-> A";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+
+    for (from, to) in [("C", "B"), ("D", "A")] {
+        let e = d
+            .edges
+            .iter()
+            .find(|e| e.from == from && e.to == to)
+            .unwrap_or_else(|| panic!("{from}->{to} must exist"));
+        let longest = e
+            .points
+            .windows(2)
+            .map(|w| (w[1].x - w[0].x).hypot(w[1].y - w[0].y))
+            .fold(0.0_f64, f64::max);
+        // An upper bound on what the two ports genuinely need: the two nodes' own vertical
+        // separation, generous enough not to depend on exactly which face eviction picked, but
+        // nowhere near the ring's own height (the bug's own symptom: `C->B`'s return edge drew
+        // ~394px of ring — most of the diagram — for a ~46px stub before this was fixed).
+        let a = d.node(from).expect("source node must exist");
+        let b = d.node(to).expect("target node must exist");
+        let needed = (a.center.y - b.center.y).abs();
+        assert!(
+            longest <= needed + 1.0,
+            "{from}->{to}: longest segment is {longest}px, more than the ~{needed}px the two \
+             ports actually need — the ring-spanning bug is back: {:?}",
+            e.points
+        );
+    }
 }
 
 /// Every rank still holds no overlapping node after lane alignment moved some of them — §10-1
@@ -5659,7 +5708,7 @@ fn avoid_label_plates_pushes_only_the_port_that_actually_crosses_a_plate() {
             target_in_degree: 1,
         },
     ];
-    let routed = orthogonal::route_flowchart(Direction::TopToBottom, &nodes, &edges);
+    let routed = orthogonal::route_flowchart(Direction::TopToBottom, &nodes, &[], &edges);
     let mut points = routed.points;
     let ab_before = points["ab"].clone();
     let cd_before = points["cd"].clone();
@@ -5680,6 +5729,7 @@ fn avoid_label_plates_pushes_only_the_port_that_actually_crosses_a_plate() {
     avoid_label_plates(
         Direction::TopToBottom,
         &nodes,
+        &[],
         &edges,
         &mut points,
         &mut plates,
@@ -5697,4 +5747,446 @@ fn avoid_label_plates_pushes_only_the_port_that_actually_crosses_a_plate() {
         points["cd"], cd_before,
         "cd shares no plate with anything and must be left exactly as routed"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stage 5: the perimeter lane (§10-1 item 4)
+// ---------------------------------------------------------------------------------------------
+
+/// The smallest box holding every node and every subgraph frame in `d` — the same thing
+/// `orthogonal::content_bounds` computes (private to that module, so this is its own independent
+/// arithmetic over the public `Diagram` fields, not a call into the implementation it is checking).
+fn diagram_content_bounds(d: &Diagram) -> (f64, f64, f64, f64) {
+    let mut l = f64::INFINITY;
+    let mut t = f64::INFINITY;
+    let mut r = f64::NEG_INFINITY;
+    let mut b = f64::NEG_INFINITY;
+    for n in &d.nodes {
+        let (nl, nt, nr, nb) = n.bounds();
+        l = l.min(nl);
+        t = t.min(nt);
+        r = r.max(nr);
+        b = b.max(nb);
+    }
+    for c in &d.clusters {
+        let (cl, ct, cr, cb) = c.bounds();
+        l = l.min(cl);
+        t = t.min(ct);
+        r = r.max(cr);
+        b = b.max(cb);
+    }
+    (l, t, r, b)
+}
+
+/// How far outside `bounds` a point sits — 0 for a point inside or on the edge, otherwise its
+/// distance past whichever side it cleared. What [`orthogonal_perimeter_edges_clear_the_margin`]
+/// measures a perimeter edge's route by.
+fn excursion(bounds: (f64, f64, f64, f64), p: &Point) -> f64 {
+    let (l, t, r, b) = bounds;
+    let dx = (l - p.x).max(p.x - r).max(0.0);
+    let dy = (t - p.y).max(p.y - b).max(0.0);
+    dx.max(dy)
+}
+
+/// §10-1 item 4's own headline invariant: any edge whose route strays outside the content box at
+/// all — a `branch`/`merge`/`aligned` shape never does, since its whole route stays within
+/// coordinates existing nodes already occupy, so straying at all is itself the signal this is a
+/// perimeter-routed edge — clears it by at least [`orthogonal::PERIMETER_MARGIN`].
+#[test]
+fn orthogonal_perimeter_edges_clear_the_margin() {
+    for (name, src) in orthogonal_corpus() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let bounds = diagram_content_bounds(&d);
+        for e in &d.edges {
+            if e.from == e.to {
+                continue; // a self-loop's small local bump is not a perimeter lane at all.
+            }
+            let max_excursion = e
+                .points
+                .iter()
+                .map(|p| excursion(bounds, p))
+                .fold(0.0_f64, f64::max);
+            if max_excursion < AXIS_EPS {
+                continue; // not a perimeter edge — never left the content box at all.
+            }
+            assert!(
+                max_excursion + AXIS_EPS >= orthogonal::PERIMETER_MARGIN,
+                "{name}: edge {}->{} strays only {max_excursion}px outside the content box, \
+                 short of the {}px margin: {:?}",
+                e.from,
+                e.to,
+                orthogonal::PERIMETER_MARGIN,
+                e.points
+            );
+        }
+    }
+}
+
+/// §10-1 item 4's 8px stagger: every perimeter edge's own maximum excursion past the content box
+/// is exactly `PERIMETER_MARGIN + k * PERIMETER_LANE_SPACING` for some non-negative integer `k`
+/// (its own lane index) — and, over a diagram with more than one perimeter edge, two *different*
+/// edges never land on the same `k` (dumped and checked on `long-edge`'s two back edges before
+/// this was written: 16px and 24px, `k = 0` and `k = 1`, never both 16px).
+#[test]
+fn orthogonal_perimeter_edges_stagger_8px_apart() {
+    for (name, src) in orthogonal_corpus() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let bounds = diagram_content_bounds(&d);
+        let mut lanes: Vec<i64> = Vec::new();
+        for e in &d.edges {
+            if e.from == e.to {
+                continue; // a self-loop's small local bump is not a perimeter lane at all.
+            }
+            let max_excursion = e
+                .points
+                .iter()
+                .map(|p| excursion(bounds, p))
+                .fold(0.0_f64, f64::max);
+            if max_excursion < AXIS_EPS {
+                continue;
+            }
+            let steps =
+                (max_excursion - orthogonal::PERIMETER_MARGIN) / orthogonal::PERIMETER_LANE_SPACING;
+            assert!(
+                (steps - steps.round()).abs() < 1e-6,
+                "{name}: edge {}->{} excursion {max_excursion}px is not \
+                 PERIMETER_MARGIN + k*PERIMETER_LANE_SPACING for an integer k (k={steps}): {:?}",
+                e.from,
+                e.to,
+                e.points
+            );
+            let lane = steps.round() as i64;
+            assert!(
+                !lanes.contains(&lane),
+                "{name}: edge {}->{} shares lane {lane} with another perimeter edge already seen",
+                e.from,
+                e.to
+            );
+            lanes.push(lane);
+        }
+    }
+}
+
+/// §10-1 item 4's third rule (段 5 item 3, the coordinator's own numbering): "別々の辺のcross走行
+/// が偶然同じ座標に重なる場合の一般検出と8pxずらし" — two edges that share **no** node (a shared
+/// node is stage 1-4's own territory: eviction already spaces those 16px apart on the shared face)
+/// whose segments happen to land exactly on top of each other by coincidence.
+///
+/// Audited across the whole corpus before writing any fix: **zero** such overlaps exist, on any
+/// axis, in any of the 27 sources here — checked by hand with `eprintln!` dumps of every pair
+/// before this was turned into a real assertion, not assumed. A speculative detector-and-nudge
+/// pass for a case with no reproducible instance would be exactly the kind of code this project's
+/// own conventions warn against (untestable in any way but a synthetic fixture nobody's real
+/// diagram reaches) — see `docs/STATUS.md` for the honest "not implemented, no known case" record
+/// this leaves stage 5 item 3 with. This test is the regression guard in its place: it holds today
+/// because [`align_straight_lanes`](super::align_straight_lanes)' overlap resolution (stage 3) and
+/// the perimeter lane's 8px stagger (stage 5 item 1) already separate every case the corpus
+/// exercises; if a future change ever lets two unrelated edges collide, this is what catches it.
+#[test]
+fn no_two_unrelated_edges_coincidentally_overlap_on_the_same_axis() {
+    for (name, src) in orthogonal_corpus() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for i in 0..d.edges.len() {
+            for j in (i + 1)..d.edges.len() {
+                let (e1, e2) = (&d.edges[i], &d.edges[j]);
+                if e1.from == e2.from || e1.from == e2.to || e1.to == e2.from || e1.to == e2.to {
+                    continue; // shares a node — stage 1-4 territory, not "unrelated"
+                }
+                for w1 in e1.points.windows(2) {
+                    for w2 in e2.points.windows(2) {
+                        let vert1 = (w1[0].x - w1[1].x).abs() < AXIS_EPS;
+                        let vert2 = (w2[0].x - w2[1].x).abs() < AXIS_EPS;
+                        if vert1 && vert2 && (w1[0].x - w2[0].x).abs() < AXIS_EPS {
+                            let (y0a, y1a) = (w1[0].y.min(w1[1].y), w1[0].y.max(w1[1].y));
+                            let (y0b, y1b) = (w2[0].y.min(w2[1].y), w2[0].y.max(w2[1].y));
+                            assert!(
+                                y0a >= y1b - AXIS_EPS || y0b >= y1a - AXIS_EPS,
+                                "{name}: {}->{} and {}->{} overlap at x={} \
+                                 (y=[{y0a},{y1a}] vs [{y0b},{y1b}])",
+                                e1.from,
+                                e1.to,
+                                e2.from,
+                                e2.to,
+                                w1[0].x
+                            );
+                        }
+                        let horiz1 = (w1[0].y - w1[1].y).abs() < AXIS_EPS;
+                        let horiz2 = (w2[0].y - w2[1].y).abs() < AXIS_EPS;
+                        if horiz1 && horiz2 && (w1[0].y - w2[0].y).abs() < AXIS_EPS {
+                            let (x0a, x1a) = (w1[0].x.min(w1[1].x), w1[0].x.max(w1[1].x));
+                            let (x0b, x1b) = (w2[0].x.min(w2[1].x), w2[0].x.max(w2[1].x));
+                            assert!(
+                                x0a >= x1b - AXIS_EPS || x0b >= x1a - AXIS_EPS,
+                                "{name}: {}->{} and {}->{} overlap at y={} \
+                                 (x=[{x0a},{x1a}] vs [{x0b},{x1b}])",
+                                e1.from,
+                                e1.to,
+                                e2.from,
+                                e2.to,
+                                w1[0].y
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stage 5 item 2: the 12px crossing gap (§10-1 item 4)
+// ---------------------------------------------------------------------------------------------
+
+/// [`edges::split_at_gaps`] with no gaps at all must hand back the original polyline as the one
+/// and only piece — the fast path `svg::emit_edge` relies on for byte-identical output whenever an
+/// edge never crosses another one.
+#[test]
+fn split_at_gaps_with_no_gaps_returns_the_whole_polyline_unchanged() {
+    let pts = vec![
+        Point::new(0.0, 0.0),
+        Point::new(0.0, 100.0),
+        Point::new(50.0, 100.0),
+    ];
+    let pieces = edges::split_at_gaps(&pts, &[]);
+    assert_eq!(pieces, vec![pts]);
+}
+
+/// One gap in the middle of a segment splits the polyline into exactly two pieces, each ending
+/// (or starting) precisely at the gap's own two points — the geometry
+/// [`orthogonal::insert_crossing_gaps`] hands `split_at_gaps` in practice.
+#[test]
+fn split_at_gaps_cuts_one_gap_into_two_pieces() {
+    let pts = vec![
+        Point::new(0.0, 0.0),
+        Point::new(0.0, 100.0),
+        Point::new(50.0, 100.0),
+    ];
+    let gap = (Point::new(0.0, 44.0), Point::new(0.0, 56.0));
+    let pieces = edges::split_at_gaps(&pts, &[gap]);
+    assert_eq!(
+        pieces,
+        vec![
+            vec![Point::new(0.0, 0.0), Point::new(0.0, 44.0)],
+            vec![
+                Point::new(0.0, 56.0),
+                Point::new(0.0, 100.0),
+                Point::new(50.0, 100.0)
+            ],
+        ]
+    );
+}
+
+/// Two gaps on two different segments of the same polyline produce three pieces, each gap cut
+/// independently of the other.
+#[test]
+fn split_at_gaps_cuts_more_than_one_gap() {
+    let pts = vec![
+        Point::new(0.0, 0.0),
+        Point::new(0.0, 100.0),
+        Point::new(80.0, 100.0),
+    ];
+    let gaps = [
+        (Point::new(0.0, 44.0), Point::new(0.0, 56.0)),
+        (Point::new(30.0, 100.0), Point::new(42.0, 100.0)),
+    ];
+    let pieces = edges::split_at_gaps(&pts, &gaps);
+    assert_eq!(
+        pieces,
+        vec![
+            vec![Point::new(0.0, 0.0), Point::new(0.0, 44.0)],
+            vec![
+                Point::new(0.0, 56.0),
+                Point::new(0.0, 100.0),
+                Point::new(30.0, 100.0)
+            ],
+            vec![Point::new(42.0, 100.0), Point::new(80.0, 100.0)],
+        ]
+    );
+}
+
+/// A gap whose own two points do not land on any segment of the polyline it is handed (should
+/// never happen in practice — `insert_crossing_gaps` always builds a gap from the very polyline
+/// it will be applied to — but defensively checked rather than assumed) leaves the polyline
+/// untouched instead of panicking or silently corrupting it.
+#[test]
+fn split_at_gaps_ignores_a_gap_that_does_not_land_on_the_polyline() {
+    let pts = vec![Point::new(0.0, 0.0), Point::new(0.0, 100.0)];
+    let gap = (Point::new(500.0, 500.0), Point::new(500.0, 512.0));
+    let pieces = edges::split_at_gaps(&pts, &[gap]);
+    assert_eq!(pieces, vec![pts]);
+}
+
+/// §10-1 item 4's real motivating case, dumped and confirmed before this was written:
+/// `amp-chain`'s `A->D` and `B->C` are both collision-fallback (`staircase`) edges whose own
+/// segments cross each other and each also crosses an ordinary sibling branch (`A->C`/`B->D`
+/// respectively) sharing their own source node. This is the corpus source stage 3's own tests
+/// already name for exactly this shape (`orthogonal_dag_corpus`'s own doc).
+#[test]
+fn orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whole() {
+    let src = "flowchart LR\n  A & B --> C & D\n  C --> E";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+
+    let edge = |from: &str, to: &str| {
+        d.edges
+            .iter()
+            .find(|e| e.from == from && e.to == to)
+            .unwrap_or_else(|| panic!("{from}->{to} must exist"))
+    };
+    let (ac, ad, bc, bd, ce) = (
+        edge("A", "C"),
+        edge("A", "D"),
+        edge("B", "C"),
+        edge("B", "D"),
+        edge("C", "E"),
+    );
+
+    // The two ordinary branches never span anything, so nothing ever cuts them, and neither does
+    // the edge with nothing crossing it at all.
+    assert!(ac.gaps.is_empty(), "A->C must stay whole: {:?}", ac.gaps);
+    assert!(bd.gaps.is_empty(), "B->D must stay whole: {:?}", bd.gaps);
+    assert!(ce.gaps.is_empty(), "C->E crosses nothing: {:?}", ce.gaps);
+
+    // The two collision-fallback edges each cross something and must carry at least one gap.
+    assert!(!ad.gaps.is_empty(), "A->D must have been cut at least once");
+    assert!(!bc.gaps.is_empty(), "B->C must have been cut at least once");
+
+    // Every gap actually sits on its own edge's line — on the same segment, both endpoints — and
+    // is exactly `CROSSING_GAP` px wide (or clamped shorter only if the segment itself is that
+    // short, which none here is).
+    for e in [ad, bc] {
+        for (g0, g1) in &e.gaps {
+            let on_own_segment = e.points.windows(2).any(|w| {
+                let vert = (w[0].x - w[1].x).abs() < AXIS_EPS;
+                if vert {
+                    (g0.x - w[0].x).abs() < AXIS_EPS
+                        && (g1.x - w[0].x).abs() < AXIS_EPS
+                        && g0.y.min(g1.y) >= w[0].y.min(w[1].y) - AXIS_EPS
+                        && g0.y.max(g1.y) <= w[0].y.max(w[1].y) + AXIS_EPS
+                } else {
+                    (g0.y - w[0].y).abs() < AXIS_EPS
+                        && (g1.y - w[0].y).abs() < AXIS_EPS
+                        && g0.x.min(g1.x) >= w[0].x.min(w[1].x) - AXIS_EPS
+                        && g0.x.max(g1.x) <= w[0].x.max(w[1].x) + AXIS_EPS
+                }
+            });
+            assert!(
+                on_own_segment,
+                "{}->{}: gap {g0:?}-{g1:?} is not on any of its own segments {:?}",
+                e.from, e.to, e.points
+            );
+            let width = (g1.x - g0.x).hypot(g1.y - g0.y);
+            assert!(
+                (width - orthogonal::CROSSING_GAP).abs() < 1e-6,
+                "{}->{}: gap {g0:?}-{g1:?} is {width}px, not CROSSING_GAP: {:?}",
+                e.from,
+                e.to,
+                orthogonal::CROSSING_GAP
+            );
+        }
+    }
+}
+
+/// The SVG itself draws the spanning edge as more than one `<path>` element (one per piece
+/// [`edges::split_at_gaps`] returns) and the crossed edge as exactly one — `svg::emit_edge`'s own
+/// fast path for an edge with no gaps.
+#[test]
+fn orthogonal_crossing_gap_splits_the_svg_path_of_the_spanning_edge_only() {
+    let src = "flowchart LR\n  A & B --> C & D\n  C --> E";
+    let svg =
+        crate::preview::markdown::mermaid_to_svg_flow(src, "dark", "basis", "konoma-orthogonal")
+            .expect("must render");
+    // `A->C` (never cut) draws a single path whose `d` starts at its own source port — used here
+    // as a proxy for "this edge's own path element count", since the golden-masking convention
+    // this crate otherwise uses (`mask_numbers`) is not available outside the snapshot harness.
+    let path_count = svg.matches("<path").count();
+    // 3 uncrossed edges (A->C, B->D, C->E) draw 1 path each; the two crossed edges draw one path
+    // per piece — dumped and confirmed by hand before this was written: `A->D` has one gap (2
+    // pieces), `B->C` has two (3 pieces), for 3 + 2 + 3 = 8 total.
+    assert_eq!(
+        path_count, 8,
+        "expected 3 uncut edges (1 path each) + A->D (2 pieces) + B->C (3 pieces) = 8: got \
+         {path_count}\n{svg}"
+    );
+}
+
+/// The bug the coordinator's own verification pass found right after item 1's own fix: `normalise`
+/// translates every `PlacedEdge::points` by `(dx, dy)` to keep the whole diagram non-negative, but
+/// did not translate `PlacedEdge::gaps` — so a gap computed in the pre-normalise coordinate space
+/// (`orthogonal::insert_crossing_gaps` reads straight from `route_flowchart`'s own output, before
+/// `normalise` ever runs) silently pointed at the wrong location once `points` moved out from
+/// under it. Reproduced directly at the `laid_out_flow` level (not just visually): every gap's
+/// `x`/`y` must land inside the *normalised* diagram's own bounds, and — the stronger
+/// check — still sit exactly on its own edge's line (already checked above, from a fresh call;
+/// this test exists so a regression here fails immediately by name rather than as a puzzling
+/// "gap not on segment" failure in the more general test).
+#[test]
+fn normalise_moves_edge_gaps_along_with_points() {
+    let src = "flowchart LR\n  A & B --> C & D\n  C --> E";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let mut checked_at_least_one = false;
+    for e in &d.edges {
+        for (g0, g1) in &e.gaps {
+            checked_at_least_one = true;
+            // The precise check, not just "somewhere inside the diagram" (too weak to catch the
+            // real bug — `dx`/`dy` can be small enough that an un-translated gap still happens to
+            // fall inside the normalised bounds by coincidence, which is exactly how this test's
+            // own first draft passed even with the translation missing): every gap must still
+            // land exactly on one of its *own* edge's segments, in the *normalised* `points` this
+            // loop is reading right now.
+            let on_own_segment = e.points.windows(2).any(|w| {
+                let vert = (w[0].x - w[1].x).abs() < AXIS_EPS;
+                if vert {
+                    (g0.x - w[0].x).abs() < AXIS_EPS && (g1.x - w[0].x).abs() < AXIS_EPS
+                } else {
+                    (g0.y - w[0].y).abs() < AXIS_EPS && (g1.y - w[0].y).abs() < AXIS_EPS
+                }
+            });
+            assert!(
+                on_own_segment,
+                "{}->{}: gap {g0:?}-{g1:?} does not land on any of its own (normalised) \
+                 segments {:?} — normalise() must have moved `points` without moving `gaps`",
+                e.from, e.to, e.points
+            );
+        }
+    }
+    assert!(
+        checked_at_least_one,
+        "fixture must actually produce at least one gap for this test to mean anything"
+    );
+}
+
+/// §10-1 item 4's other half: "辺と枠の交差は隙間なし（直交して跨ぐだけ）" — a subgraph frame is
+/// never consulted by `insert_crossing_gaps` at all (it only ever compares two edges' own
+/// segments), so an edge that crosses a frame boundary — `subgraph-bypass`'s own `X->A`, which the
+/// corpus already names for crossing a frame from outside it — must never carry a gap because of
+/// that frame, whatever its edge-vs-edge gaps (if any) are.
+#[test]
+fn orthogonal_frame_crossings_never_produce_a_gap() {
+    for (name, src) in orthogonal_corpus() {
+        if !name.contains("subgraph") {
+            continue;
+        }
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        // Every gap that does exist must still sit on its own edge's own segment (never on a
+        // frame's own boundary) — reusing the same on-segment shape the crossing test above
+        // states, generalised to the whole subgraph corpus rather than one hand-picked source.
+        for e in &d.edges {
+            for (g0, g1) in &e.gaps {
+                let on_own_segment = e.points.windows(2).any(|w| {
+                    let vert = (w[0].x - w[1].x).abs() < AXIS_EPS;
+                    if vert {
+                        (g0.x - w[0].x).abs() < AXIS_EPS && (g1.x - w[0].x).abs() < AXIS_EPS
+                    } else {
+                        (g0.y - w[0].y).abs() < AXIS_EPS && (g1.y - w[0].y).abs() < AXIS_EPS
+                    }
+                });
+                assert!(
+                    on_own_segment,
+                    "{name}: {}->{}'s gap {g0:?}-{g1:?} is not on its own line — a frame must \
+                     never be the reason a gap exists: {:?}",
+                    e.from, e.to, e.points
+                );
+            }
+        }
+    }
 }

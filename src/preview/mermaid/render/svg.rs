@@ -963,18 +963,33 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
     // exactly what makes a line a series. Everything else draws in `edge.curve` (mermaid's
     // `flowchart.curve` / `linkStyle interpolate`; `Curve::Basis` — the only value any diagram
     // kind but a flowchart's own edges ever carries — reproduces `curve_basis_path` exactly).
-    let d = if edge.series.is_some() || edge.straight {
-        edges::polyline_path(&trimmed)
-    } else {
-        edge.curve.path(&trimmed)
+    let path_of = |pts: &[Point]| -> String {
+        if edge.series.is_some() || edge.straight {
+            edges::polyline_path(pts)
+        } else {
+            edge.curve.path(pts)
+        }
     };
-    out.push_str(&format!(
-        "<path d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"{}/>\n",
-        d,
-        line,
-        num(width),
-        dash.map_or(String::new(), |d| format!(" stroke-dasharray=\"{d}\""))
-    ));
+    // §10-1 item 4's 12px crossing gap (`PlacedEdge::gaps`'s own doc) — empty for every edge
+    // before stage 5 existed and empty still for anything that never crosses another edge, which
+    // is what keeps this the same single `<path>` it always was in that case.
+    let pieces: Vec<Vec<Point>> = if edge.gaps.is_empty() {
+        vec![trimmed]
+    } else {
+        edges::split_at_gaps(&trimmed, &edge.gaps)
+    };
+    for piece in &pieces {
+        if piece.len() < 2 {
+            continue;
+        }
+        out.push_str(&format!(
+            "<path d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"{}/>\n",
+            path_of(piece),
+            line,
+            num(width),
+            dash.map_or(String::new(), |d| format!(" stroke-dasharray=\"{d}\""))
+        ));
+    }
 
     // The head end first, then the tail end. That order is not cosmetic: it is the order the
     // flowchart renderer emitted a `<-->`'s two heads in before terminators became per-end, and

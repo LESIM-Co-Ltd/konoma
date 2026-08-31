@@ -849,6 +849,7 @@ impl<'a> Walk<'a> {
             from: m.from.clone(),
             to: m.to.clone(),
             points,
+            gaps: Vec::new(),
             tip_start: tip_of(m.signal.start),
             tip_end: tip_of(m.signal.end),
             stroke: match m.signal.line {

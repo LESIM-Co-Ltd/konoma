@@ -1021,6 +1021,7 @@ fn synthetic_panel_diagram() -> Diagram {
             from: "left".to_string(),
             to: "right".to_string(),
             points,
+            gaps: Vec::new(),
             tip_start: tip,
             tip_end: tip,
             stroke: if i % 2 == 0 {

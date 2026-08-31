@@ -262,6 +262,7 @@ fn place_notes(out: &mut Diagram, model: &StateDiagram) {
             from: link.from.clone(),
             to: link.to.clone(),
             points,
+            gaps: Vec::new(),
             tip_start: Tip::None,
             tip_end: Tip::None,
             stroke: Stroke::Dotted,

@@ -415,6 +415,7 @@ pub fn lay_out(graph: &GitGraph) -> Result<Diagram, RenderError> {
                 from: parent.id.clone(),
                 to: commit.id.clone(),
                 points,
+                gaps: Vec::new(),
                 tip_start: Tip::None,
                 tip_end: Tip::None,
                 stroke: Stroke::Normal,

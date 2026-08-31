@@ -170,6 +170,79 @@ pub fn dedupe(points: &mut Vec<Point>) {
     points.dedup_by(|a, b| (a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS);
 }
 
+/// Whether `p` lies on the axis-parallel segment `a`-`b` (within it, endpoints included) — the
+/// test [`split_at_gaps`] uses to find which segment of a polyline a gap's own two endpoints
+/// belong to. A segment that is not axis-parallel (never built by `orthogonal`, the only source of
+/// a non-empty [`super::PlacedEdge::gaps`]) is treated as containing nothing, the same defensive
+/// "cannot happen, so no crash" stance [`super::orthogonal::segment_crosses_node`] takes.
+fn point_on_segment(a: &Point, b: &Point, p: &Point) -> bool {
+    if (a.x - b.x).abs() < EPS {
+        (p.x - a.x).abs() < EPS && p.y >= a.y.min(b.y) - EPS && p.y <= a.y.max(b.y) + EPS
+    } else if (a.y - b.y).abs() < EPS {
+        (p.y - a.y).abs() < EPS && p.x >= a.x.min(b.x) - EPS && p.x <= a.x.max(b.x) + EPS
+    } else {
+        false
+    }
+}
+
+/// [`split_at_gaps`]'s own per-piece step: if `(g0, g1)` — one gap's two endpoints — both lie on
+/// the same segment of `piece`, returns the two pieces that remain once that sub-interval is cut
+/// out; `None` if this piece's segments hold neither point (the gap belongs to some other piece,
+/// or — defensively — to none, in which case [`split_at_gaps`] simply leaves the whole piece be).
+fn split_piece_at_gap(piece: &[Point], g0: &Point, g1: &Point) -> Option<(Vec<Point>, Vec<Point>)> {
+    for i in 0..piece.len().saturating_sub(1) {
+        let (a, b) = (&piece[i], &piece[i + 1]);
+        if point_on_segment(a, b, g0) && point_on_segment(a, b, g1) {
+            // Order the two gap endpoints by their distance from `a`, so `near` is the one the
+            // "before" piece keeps up to and `far` is where the "after" piece resumes from.
+            let d0 = (g0.x - a.x).hypot(g0.y - a.y);
+            let d1 = (g1.x - a.x).hypot(g1.y - a.y);
+            let (near, far) = if d0 <= d1 { (g0, g1) } else { (g1, g0) };
+            let mut before: Vec<Point> = piece[..=i].to_vec();
+            before.push(near.clone());
+            let mut after: Vec<Point> = vec![far.clone()];
+            after.extend(piece[i + 1..].iter().cloned());
+            return Some((before, after));
+        }
+    }
+    None
+}
+
+/// Splits `points` into the contiguous pieces that remain once every `(a, b)` gap interval in
+/// `gaps` is removed — [`super::PlacedEdge::gaps`]'s own doc explains what a gap is and who puts
+/// one there. Each gap is assumed to lie on a single original segment of `points` (never spanning
+/// a corner — [`super::orthogonal::insert_crossing_gaps`]'s own construction keeps every gap well
+/// inside the segment its crossing point was found on, `CROSSING_GAP` at most, far short of the
+/// [`super::orthogonal::PORT_CLEARANCE`]-px hop every segment near a port already has to clear).
+///
+/// A piece shorter than 2 points (a gap sitting exactly at a polyline's own end — never actually
+/// produced, since a crossing gap is found well inside a route, but not excluded by construction
+/// either) is silently dropped rather than drawn as a zero-length stub; a gap whose own two points
+/// do not land together on any current piece (should not happen, since every gap is built from a
+/// segment of the very same `points` this is called with) leaves that piece untouched instead of
+/// panicking, the same "cannot happen, so no crash" stance the rest of this module takes.
+pub fn split_at_gaps(points: &[Point], gaps: &[(Point, Point)]) -> Vec<Vec<Point>> {
+    let mut pieces: Vec<Vec<Point>> = vec![points.to_vec()];
+    for (g0, g1) in gaps {
+        let mut next: Vec<Vec<Point>> = Vec::with_capacity(pieces.len() + 1);
+        for piece in pieces {
+            match split_piece_at_gap(&piece, g0, g1) {
+                Some((before, after)) => {
+                    if before.len() >= 2 {
+                        next.push(before);
+                    }
+                    if after.len() >= 2 {
+                        next.push(after);
+                    }
+                }
+                None => next.push(piece),
+            }
+        }
+        pieces = next;
+    }
+    pieces
+}
+
 /// Positions of the right-angle corners in a polyline (`edges.js`'s `extractCornerPoints`).
 ///
 /// The exact `==` on coordinates is upstream's and is the right test here: dagre emits runs that

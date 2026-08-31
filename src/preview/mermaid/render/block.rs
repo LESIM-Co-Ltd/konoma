@@ -130,6 +130,7 @@ pub fn lay_out(diagram: &BlockDiagram) -> Result<Diagram, RenderError> {
             from: edge.from.clone(),
             to: edge.to.clone(),
             points,
+            gaps: Vec::new(),
             tip_start,
             tip_end,
             stroke: edge.stroke,

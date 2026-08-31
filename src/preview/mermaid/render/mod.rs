@@ -292,6 +292,22 @@ pub struct PlacedEdge {
     /// The polyline **after clipping to the two shapes** and before the corners are rounded.
     /// This is what the geometric invariants are stated about, and what the label is centred on.
     pub points: Vec<Point>,
+    /// §10-1 item 4's 12px crossing gaps — each `(a, b)` is one closed sub-interval of `points` to
+    /// leave undrawn, so the line this edge draws reads as passing *under* whatever it crosses
+    /// rather than as a plain "+" intersection with no depth of its own. `a` and `b` always lie on
+    /// the same original segment of `points` (never spanning a corner) and are always exactly
+    /// [`orthogonal::CROSSING_GAP`] px apart, centred on the crossing point that asked for them.
+    ///
+    /// Empty for every edge before `[ui] mermaid_routing` existed, and empty still for `"splines"`
+    /// and for every diagram kind but a flowchart's own orthogonal-routed edges — `svg::emit_edge`
+    /// draws the single `<path>` it always drew whenever this is empty, so nothing about the
+    /// existing rendering byte stream can move just because this field now exists. Only
+    /// `orthogonal::insert_crossing_gaps` (§10-1 item 4, "跨ぐ側の線に12pxの隙間を開ける") ever puts
+    /// anything in it, and only for the **spanning** side of a crossing (a perimeter-routed edge —
+    /// a back edge or a collision-fallback forward one, never a self-loop): the edge it crosses is
+    /// left completely untouched. §10-1's own "下をくぐる線は連続のまま" reads the gap as depth —
+    /// the interrupted line is the one that visually dips *under*, the untouched one stays on top.
+    pub gaps: Vec<(Point, Point)>,
     /// What is drawn where the line meets `from`.
     pub tip_start: Tip,
     /// What is drawn where the line meets `to`.
@@ -1299,7 +1315,7 @@ fn lay_out_spec_pass(
         let orthogonal::RoutedFlowchart {
             points,
             required_size,
-        } = orthogonal::route_flowchart(spec.direction, &nodes, &eligible);
+        } = orthogonal::route_flowchart(spec.direction, &nodes, &placed_clusters, &eligible);
         (points, required_size)
     } else {
         (HashMap::new(), HashMap::new())
@@ -1404,6 +1420,7 @@ fn lay_out_spec_pass(
             from: edge.from.clone(),
             to: edge.to.clone(),
             points,
+            gaps: Vec::new(),
             tip_start: edge.tip_start,
             tip_end: edge.tip_end,
             stroke: edge.stroke,
@@ -1441,6 +1458,7 @@ fn lay_out_spec_pass(
         orthogonal::avoid_label_plates(
             spec.direction,
             &nodes,
+            &placed_clusters,
             &eligible,
             &mut orthogonal_points,
             &mut plates,
@@ -1453,6 +1471,22 @@ fn lay_out_spec_pass(
                         placed_edges[idx].label = Some(new_plate.clone());
                     }
                 }
+            }
+        }
+
+        // --- stage 5's last piece: the 12px crossing gap on the spanning side ------------------
+        //
+        // §10-1 item 4's other rule ("辺どうしの交差では跨ぐ側…に12pxの隙間を開ける"), run last —
+        // after every earlier stage 1-5 pass, `avoid_label_plates` included, has already settled
+        // every edge's final route, so a gap is never computed against a polyline about to change
+        // out from under it. `PlacedEdge::gaps` itself has the rest of the story (empty for every
+        // edge this loop does not touch, which keeps `svg::emit_edge` drawing the single `<path>`
+        // it always drew for anything that never crosses another edge).
+        let gap_map =
+            orthogonal::insert_crossing_gaps(spec.direction, &nodes, &eligible, &orthogonal_points);
+        for (id, &idx) in &orthogonal_index {
+            if let Some(g) = gap_map.get(id) {
+                placed_edges[idx].gaps = g.clone();
             }
         }
     }
@@ -1671,6 +1705,15 @@ fn normalise(diagram: &mut Diagram) {
     for e in &mut diagram.edges {
         for p in &mut e.points {
             *p = Point::new(p.x + dx, p.y + dy);
+        }
+        // `gaps` is computed in the same pre-normalise coordinate space `points` starts this loop
+        // in (`orthogonal::insert_crossing_gaps` reads straight from `route_flowchart`'s own
+        // output) — missing this shift left every gap pointing at the old, un-translated location
+        // once `points` moved out from under it, found by dumping a real crossing and comparing
+        // the gap's own coordinates against the segment it was supposed to sit on.
+        for (a, b) in &mut e.gaps {
+            *a = Point::new(a.x + dx, a.y + dy);
+            *b = Point::new(b.x + dx, b.y + dy);
         }
         for l in [
             &mut e.label,

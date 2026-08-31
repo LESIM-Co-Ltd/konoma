@@ -132,6 +132,7 @@ pub fn lay_out(arch: &Architecture) -> Result<Diagram, RenderError> {
             from: e.from.clone(),
             to: e.to.clone(),
             points,
+            gaps: Vec::new(),
             tip_start: if e.from_arrow { Tip::Arrow } else { Tip::None },
             tip_end: if e.to_arrow { Tip::Arrow } else { Tip::None },
             stroke: Stroke::Normal,

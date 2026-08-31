@@ -143,6 +143,7 @@ pub fn rule(from: Point, to: Point, stroke: Stroke, series: Option<usize>) -> Pl
         from: String::new(),
         to: String::new(),
         points: vec![from, to],
+        gaps: Vec::new(),
         tip_start: Tip::None,
         tip_end: Tip::None,
         stroke,
