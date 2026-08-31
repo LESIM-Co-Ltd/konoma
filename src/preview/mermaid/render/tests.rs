@@ -4545,6 +4545,23 @@ fn orthogonal_corpus() -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
+/// [`orthogonal_corpus`], further filtered down to sources with no cycle — no edge whose target's
+/// rank is at or before its source's. Those are exactly the sources
+/// [`orthogonal_bend_count_never_exceeds_two`] can state a bend-count *cap* over: a cyclic
+/// source's back edge is deliberately exempt from any cap (§10-1 item 2's "補助・戻り辺は外周
+/// レーンのため回数制限なし" — a real perimeter route is stage 5's job, and stage 1's stopgap
+/// reuses dagre's own waypoint chain verbatim, however long it is). Named explicitly rather than
+/// detected, because nothing on a finished [`Diagram`] carries dagre's rank any more to detect it
+/// from — `branch`/`cjk`/`long-edge`/`left-right` each close a cycle back onto an earlier node,
+/// and `self-loop` names one outright.
+fn orthogonal_dag_corpus() -> Vec<(&'static str, &'static str)> {
+    const CYCLIC: &[&str] = &["branch", "cjk", "long-edge", "left-right", "self-loop"];
+    orthogonal_corpus()
+        .into_iter()
+        .filter(|(name, _)| !CYCLIC.contains(name))
+        .collect()
+}
+
 /// Every segment of every routed edge in `d`, as `(a, b)` pairs.
 fn edge_segments(d: &Diagram) -> Vec<(Point, Point)> {
     let mut out = Vec::new();
@@ -4969,4 +4986,170 @@ fn attr<'a>(haystack: &'a str, attr: &str) -> Option<&'a str> {
     let start = haystack.find(&needle)? + needle.len();
     let end = start + haystack[start..].find('"')?;
     Some(&haystack[start..end])
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stage 2: port eviction (docs/FEATURE-MERMAID-RENDERER.md §10-1 item 1, "退避則")
+// ---------------------------------------------------------------------------------------------
+//
+// `orthogonal::tests` (in `orthogonal.rs`) states the eviction rules directly, against
+// hand-built `PlacedNode`s that put an exact number of claims on an exact face without depending
+// on dagre's own placement to happen to produce that shape. The tests below are the other half:
+// real flowchart sources through the actual `render_flow`/`lay_out_flow` production entry
+// points, so the *wiring* between `lay_out_spec`'s growth-retry loop and `orthogonal::evict` is
+// what is being checked, not just the eviction formula in isolation. Every fixture and every
+// pinned number below was found by dumping real output first (`laid_out_flow`/`laid_out_curve`
+// printed by hand) and reading it, not by predicting what dagre would do — a 9-way fan-in was
+// the first source that actually produced 4 merges on one face and forced real node growth; a
+// naive guess (3 sources, one per face) split unevenly across dagre's own barycenter placement
+// instead and grew nothing.
+
+/// A real 9-way fan-in (`A`..`I` all merge into `Z`) is not evenly spread by dagre: `E`, whose x
+/// dagre happened to place exactly under `Z`, is the one **aligned** edge (0 bends, `Z`'s Top
+/// face); the other eight split 4-and-4 across `Z`'s Left and Right faces by which side of `Z`
+/// their own x falls on. Both four-edge faces need `(4-1)*16 + 2*8 = 64px` of flat run — more
+/// than `Z`'s natural single-line height of 45.4px — so `Z` grows to fit them, on the axis
+/// (height, since Left/Right faces run along it) that demand actually asks for.
+#[test]
+fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
+    let src = "flowchart TD\n  A --> Z\n  B --> Z\n  C --> Z\n  D --> Z\n  E --> Z\n  \
+               F --> Z\n  G --> Z\n  H --> Z\n  I --> Z";
+
+    let splines = laid_out_curve(src, "basis");
+    let z_splines = splines.node("Z").expect("Z must exist");
+    assert_eq!(
+        z_splines.size.h, 45.400000000000006,
+        "splines must not grow Z at all — dumped once and pinned"
+    );
+
+    let ortho = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let z_ortho = ortho.node("Z").expect("Z must exist");
+    assert_eq!(
+        z_ortho.size.h, 64.0,
+        "Z's height must grow to exactly (4-1)*16 + 2*8 = 64px — the busiest face's requirement"
+    );
+    // Growth is per-axis: nothing asked Z's width to grow (only its Left/Right faces were
+    // crowded, which is a height requirement), so it must be unchanged from the splines pass.
+    assert_eq!(
+        z_ortho.size.w, z_splines.size.w,
+        "no face asked Z's width to grow, so it must not have"
+    );
+
+    let (_, z_top, _, _) = z_ortho.bounds();
+    let left_face_x = z_ortho.bounds().0 - orthogonal::PORT_INSET;
+    let right_face_x = z_ortho.bounds().2 + orthogonal::PORT_INSET;
+
+    let mut left_ys = Vec::new();
+    let mut right_ys = Vec::new();
+    let mut aligned_count = 0;
+    for e in &ortho.edges {
+        if e.to != "Z" {
+            continue;
+        }
+        let bends = e.points.len().saturating_sub(2);
+        let last = e.points.last().unwrap();
+        if (last.y - (z_top - orthogonal::PORT_INSET)).abs() < 1e-6 {
+            // Landed on Z's Top face: must be the one aligned (E), zero bends.
+            assert_eq!(bends, 0, "the Top-face edge must be the aligned one: {e:?}");
+            assert_eq!(
+                e.from, "E",
+                "E is the source dagre happened to align under Z: {e:?}"
+            );
+            aligned_count += 1;
+        } else if (last.x - left_face_x).abs() < 1e-6 {
+            assert_eq!(
+                bends, 1,
+                "a merge onto Z's Left face bends exactly once: {e:?}"
+            );
+            left_ys.push(last.y);
+        } else if (last.x - right_face_x).abs() < 1e-6 {
+            assert_eq!(
+                bends, 1,
+                "a merge onto Z's Right face bends exactly once: {e:?}"
+            );
+            right_ys.push(last.y);
+        } else {
+            panic!(
+                "edge {}->Z landed on none of Z's three occupied faces: {e:?}",
+                e.from
+            );
+        }
+    }
+    assert_eq!(
+        aligned_count, 1,
+        "exactly one edge must be the aligned E->Z"
+    );
+    assert_eq!(left_ys.len(), 4, "four merges must share Z's Left face");
+    assert_eq!(right_ys.len(), 4, "four merges must share Z's Right face");
+
+    for ys in [&mut left_ys, &mut right_ys] {
+        ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        // 16px apart, symmetric about Z's own centre.
+        for w in ys.windows(2) {
+            assert!(
+                (w[1] - w[0] - orthogonal::PORT_SPACING).abs() < 1e-6,
+                "ports on one face must be exactly 16px apart: {ys:?}"
+            );
+        }
+        let mid = (ys[0] + ys[3]) / 2.0;
+        assert!(
+            (mid - z_ortho.center.y).abs() < 1e-6,
+            "four ports must be symmetric about the face's own centre: {ys:?} vs {}",
+            z_ortho.center.y
+        );
+        // Every port at least PORT_CLEARANCE from a corner.
+        let half_h = z_ortho.size.h / 2.0;
+        for &y in ys.iter() {
+            let from_center = (y - z_ortho.center.y).abs();
+            assert!(
+                half_h - from_center >= orthogonal::PORT_CLEARANCE - 1e-6,
+                "port {from_center}px from centre must clear the corner by \
+                 {}px (half-height {half_h}): {ys:?}",
+                orthogonal::PORT_CLEARANCE
+            );
+        }
+    }
+}
+
+/// A face with room to spare must not grow — the other half of the growth test above. `Z` here
+/// receives only two edges, both merges landing on its Left face (`B` and `C`, both left of `Z`);
+/// two ports need `(2-1)*16 + 2*8 = 32px`, well inside `Z`'s natural 45.4px height, so nothing
+/// about `Z`'s size may differ between `"splines"` and `"konoma-orthogonal"`.
+#[test]
+fn orthogonal_roomy_face_does_not_grow() {
+    let src = "flowchart TD\n  A --> Z\n  B --> Z\n  C --> Z";
+    let splines = laid_out_curve(src, "basis");
+    let ortho = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let z_splines = splines.node("Z").expect("Z must exist");
+    let z_ortho = ortho.node("Z").expect("Z must exist");
+    assert_eq!(
+        z_ortho.size, z_splines.size,
+        "a face that already fits its ports must leave the node exactly as it was"
+    );
+}
+
+/// Across the whole cycle-free corpus ([`orthogonal_dag_corpus`]), no orthogonal-routed edge ever
+/// exceeds two bends — §10-1 item 1's "ポート分配で端点がずれた辺は曲げ2回まで許す" is a *cap* on
+/// the aligned/branch/merge shapes, and this is the invariant stage 1's own bend-count tests could
+/// not state, because eviction (and the growth it can trigger) did not exist yet: an aligned edge
+/// whose two ends land on different eviction offsets needs exactly the second bend this rule
+/// allows for. A back edge is deliberately excluded from this cap — see
+/// [`orthogonal_dag_corpus`]'s own doc — and was the first thing that caught this test being
+/// written over the wrong corpus: `branch`'s `D --> B` cycle came back with 4 bends on the first
+/// run, correctly, because §10-1 item 2 puts no limit on a back edge at all.
+#[test]
+fn orthogonal_bend_count_never_exceeds_two() {
+    for (name, src) in orthogonal_dag_corpus() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for e in &d.edges {
+            let bends = e.points.len().saturating_sub(2);
+            assert!(
+                bends <= 2,
+                "{name}: edge {}->{} has {bends} bends, more than the rule 4 cap: {:?}",
+                e.from,
+                e.to,
+                e.points
+            );
+        }
+    }
 }

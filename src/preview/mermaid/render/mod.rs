@@ -906,6 +906,69 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
         return Err(RenderError::NothingToDraw);
     }
 
+    // Stage 2's port eviction (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 1, "退避則") can only
+    // see how many edges land on each node's face once dagre has actually run a layout, and the
+    // fix for a face too narrow to fit them — growing the node — changes what dagre lays out from.
+    // So a flowchart under `[ui] mermaid_routing = "konoma-orthogonal"` may run the whole "lay out,
+    // then route" pass more than once. Every other spec (`Routing::Splines`, which is every kind
+    // but a flowchart's own) always takes exactly one pass: `sizes` starts — and stays — empty, so
+    // `lay_out_spec_pass`'s `sizes.get(id).unwrap_or(node.size)` reads the exact value it always
+    // read, and `required` comes back empty too, so `apply_growth` never has anything to add.
+    //
+    // Growth only ever grows (`apply_growth` takes the max of the current and required size), so
+    // this is monotonic and would converge on its own; `MAX_GROWTH_PASSES` is a defensive cap, not
+    // the expected path — reached only if some future change made growth requirements disagree
+    // between passes, and even then the last pass's diagram (not a panic) is what a reader gets.
+    const MAX_GROWTH_PASSES: usize = 3;
+    let mut sizes: HashMap<String, Size> = HashMap::new();
+    let mut diagram: Option<Diagram> = None;
+    for _ in 0..MAX_GROWTH_PASSES {
+        let (this_diagram, required) = lay_out_spec_pass(spec, &sizes)?;
+        let grew = apply_growth(spec, &mut sizes, &required);
+        diagram = Some(this_diagram);
+        if !grew {
+            break;
+        }
+    }
+    Ok(diagram.expect("the loop body runs at least once: MAX_GROWTH_PASSES > 0"))
+}
+
+/// Grows `sizes[id]` to `max(current, required)` for every node `required` names — `current`
+/// falling back to the node's original `spec` size when this is the first pass to touch it.
+/// Returns whether anything actually grew, which is `lay_out_spec`'s retry-loop stopping
+/// condition. Never shrinks: `required` states a minimum, and a size already at or past it from
+/// an earlier pass is left alone (the epsilon guards against a pass looping forever over
+/// floating-point noise that never actually changes the number dagre lays out from).
+fn apply_growth(
+    spec: &GraphSpec,
+    sizes: &mut HashMap<String, Size>,
+    required: &HashMap<String, Size>,
+) -> bool {
+    let mut grew = false;
+    for node in &spec.nodes {
+        let Some(need) = required.get(&node.id) else {
+            continue;
+        };
+        let cur = sizes.get(&node.id).copied().unwrap_or(node.size);
+        let grown = Size::new(cur.w.max(need.w), cur.h.max(need.h));
+        if grown.w > cur.w + 1e-6 || grown.h > cur.h + 1e-6 {
+            sizes.insert(node.id.clone(), grown);
+            grew = true;
+        }
+    }
+    grew
+}
+
+/// One layout-and-route pass: builds the dagre graph at `sizes` (falling back to each
+/// [`SpecNode`]'s own `size` for any node `sizes` does not name — every node, on the first pass),
+/// lays it out, and routes every edge. Returns the diagram and, for a flowchart under
+/// `Routing::Orthogonal`, the minimum size stage 2's port eviction says each node needs — empty
+/// for `Routing::Splines`, which is what keeps that path byte-identical to before this function
+/// existed (see [`lay_out_spec`]'s own doc).
+fn lay_out_spec_pass(
+    spec: &GraphSpec,
+    sizes: &HashMap<String, Size>,
+) -> Result<(Diagram, HashMap<String, Size>), RenderError> {
     // The block tree, resolved before anything reaches dagre: it decides which nodes get a
     // parent, and a block that holds no node at all never reaches it (`clusters::Tree::build`).
     let node_ids: HashSet<&str> = spec.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -921,13 +984,15 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
     });
 
     // --- nodes: the caller already measured the label and sized the shape around it -------------
+    // (or, on a growth retry, `sizes` overrides it for a node stage 2's eviction found too small).
     let mut measured: HashMap<&str, &SpecNode> = HashMap::new();
     for node in &spec.nodes {
+        let size = sizes.get(&node.id).copied().unwrap_or(node.size);
         g.set_node(
             node.id.clone(),
             Some(NodeLabel {
-                width: node.size.w,
-                height: node.size.h,
+                width: size.w,
+                height: size.h,
                 ..NodeLabel::default()
             }),
         );
@@ -1023,11 +1088,12 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             placed.and_then(|n| n.x).unwrap_or(0.0),
             placed.and_then(|n| n.y).unwrap_or(0.0),
         );
+        let size = sizes.get(&node.id).copied().unwrap_or(node.size);
         nodes.push(PlacedNode {
             id: node.id.clone(),
             shape: node.glyph,
             center,
-            size: node.size,
+            size,
             label: node.label.clone(),
             panel: node.panel.clone(),
             series: None,
@@ -1060,8 +1126,21 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
         *in_degree.entry(d.head.clone()).or_insert(0) += 1;
     }
 
-    // --- clip each edge to the real outlines, then put its label on the clipped line -------------
-    let mut placed_edges: Vec<PlacedEdge> = Vec::with_capacity(drawable.len());
+    // --- work out what each edge has to meet at each end, and fetch dagre's own waypoints -------
+    //
+    // Split from "build the final `PlacedEdge`" (below) because stage 2's port eviction
+    // (`orthogonal::route_flowchart`) needs to see *every* node-to-node edge's shape before it can
+    // give *any* of them an exact port — a face's occupancy is not known until every claim on it
+    // has been gathered.
+    struct PreparedEdge<'a> {
+        edge: &'a SpecEdge,
+        tail_id: String,
+        head_id: String,
+        raw: Vec<Point>,
+        tail_end: edges::End,
+        head_end: edges::End,
+    }
+    let mut prepared: Vec<PreparedEdge> = Vec::with_capacity(drawable.len());
     for Drawable {
         edge,
         tail: tail_id,
@@ -1085,33 +1164,75 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             Some(c) => edges::End::Cluster(clusters::Rect::new(&c.center, c.size)),
             None => edges::End::Node(anchor.shape, anchor.center.clone(), anchor.size),
         };
-        let tail = end_of(&edge.from, &nodes[ti]);
-        let head = end_of(&edge.to, &nodes[hi]);
+        let tail_end = end_of(&edge.from, &nodes[ti]);
+        let head_end = end_of(&edge.to, &nodes[hi]);
+        prepared.push(PreparedEdge {
+            edge,
+            tail_id,
+            head_id,
+            raw,
+            tail_end,
+            head_end,
+        });
+    }
 
-        // Orthogonal routing is `docs/FEATURE-MERMAID-RENDERER.md` §10-1's stage 1: node-to-node
-        // edges only — a cluster boundary is later work (§10-2's later stages), so an edge naming
-        // a subgraph keeps drawing through the ordinary spline path below, `straight` and all.
-        let (points, straight) = if spec.routing == Routing::Orthogonal
-            && matches!(tail, edges::End::Node(..))
-            && matches!(head, edges::End::Node(..))
-        {
-            let source_rank = g.node(tail_id.as_str()).and_then(|n| n.rank);
-            let target_rank = g.node(head_id.as_str()).and_then(|n| n.rank);
-            let source_out_degree = out_degree.get(&tail_id).copied().unwrap_or(0);
-            let target_in_degree = in_degree.get(&head_id).copied().unwrap_or(0);
-            let routed = orthogonal::route_edge(
-                spec.direction,
-                &nodes[ti],
-                &nodes[hi],
-                &raw,
-                source_rank,
-                target_rank,
-                source_out_degree,
-                target_in_degree,
-            );
-            (routed, true)
+    // --- stage 2: one global port-eviction pass over every node-to-node edge ---------------------
+    //
+    // Orthogonal routing is `docs/FEATURE-MERMAID-RENDERER.md` §10-1's stage 1 + 2: node-to-node
+    // edges only — a cluster boundary is later work (§10-2's later stages), so an edge naming a
+    // subgraph keeps drawing through the ordinary spline path below regardless of `routing`.
+    let (orthogonal_points, required_size): (HashMap<String, Vec<Point>>, HashMap<String, Size>) =
+        if spec.routing == Routing::Orthogonal {
+            let eligible: Vec<orthogonal::EligibleEdge> = prepared
+                .iter()
+                .filter(|p| {
+                    matches!(p.tail_end, edges::End::Node(..))
+                        && matches!(p.head_end, edges::End::Node(..))
+                })
+                .map(|p| orthogonal::EligibleEdge {
+                    id: p.edge.id.as_str(),
+                    source: p.tail_id.as_str(),
+                    target: p.head_id.as_str(),
+                    raw: &p.raw,
+                    source_rank: g.node(p.tail_id.as_str()).and_then(|n| n.rank),
+                    target_rank: g.node(p.head_id.as_str()).and_then(|n| n.rank),
+                    source_out_degree: out_degree.get(&p.tail_id).copied().unwrap_or(0),
+                    target_in_degree: in_degree.get(&p.head_id).copied().unwrap_or(0),
+                })
+                .collect();
+            let orthogonal::RoutedFlowchart {
+                points,
+                required_size,
+            } = orthogonal::route_flowchart(spec.direction, &nodes, &eligible);
+            (points, required_size)
         } else {
-            (edges::route(&raw, &tail, &head), false)
+            (HashMap::new(), HashMap::new())
+        };
+
+    // --- clip each edge to the real outlines, then put its label on the clipped line -------------
+    let mut placed_edges: Vec<PlacedEdge> = Vec::with_capacity(prepared.len());
+    for PreparedEdge {
+        edge,
+        tail_id: _,
+        head_id: _,
+        raw,
+        tail_end,
+        head_end,
+    } in prepared
+    {
+        let is_orthogonal = spec.routing == Routing::Orthogonal
+            && matches!(tail_end, edges::End::Node(..))
+            && matches!(head_end, edges::End::Node(..));
+        let (points, straight) = if is_orthogonal {
+            // Present for every eligible edge — `route_flowchart` was called with exactly this
+            // `eligible` set above. The spline fallback is defensive only, never expected to run.
+            let pts = orthogonal_points
+                .get(edge.id.as_str())
+                .cloned()
+                .unwrap_or_else(|| edges::route(&raw, &tail_end, &head_end));
+            (pts, true)
+        } else {
+            (edges::route(&raw, &tail_end, &head_end), false)
         };
 
         // The second half of "the label stays on the line": put it at the half-way point of the
@@ -1153,7 +1274,7 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
             style: edge.style.clone(),
             curve: edge.curve,
             // Set together with `straight`, by the same `if`: both are true exactly when
-            // `orthogonal::route_edge` routed this edge, and false for every other edge this
+            // `orthogonal::route_flowchart` routed this edge, and false for every other edge this
             // function ever builds (a flowchart's own splines edge included).
             tip_matches_line: straight,
         });
@@ -1168,7 +1289,7 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
         lifelines: Vec::new(),
     };
     normalise(&mut diagram);
-    Ok(diagram)
+    Ok((diagram, required_size))
 }
 
 /// One edge on its way to being drawn.
