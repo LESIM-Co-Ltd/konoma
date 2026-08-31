@@ -3,13 +3,9 @@
 //!
 //! `docs/FEATURE-MERMAID-RENDERER.md` §10-1 is the confirmed spec (a Claude Design handoff). This
 //! module implements the part of it that is **route, not layout**: dagre's ranking, ordering and
-//! coordinates are untouched, and everything here only decides, for a node-to-node edge, which
-//! face of each box a line leaves and enters through, at which exact point on that face, and how
-//! many right-angle bends connect the two. §10-1's "レーン揃え" (straight-through lanes shared
-//! across ranks), "ラベル区間長" (minimum span for a labelled segment) and "外周レーン" (a
-//! perimeter lane for back-edges) are later work; the back-edge route here is still the "暫定"
-//! (stopgap) §10-2 describes: dagre's own waypoints, bent onto right angles, rather than a real
-//! perimeter route.
+//! coordinates are untouched, and everything here only decides, for an edge whose ends are ordinary
+//! nodes, subgraph frames, or one of each, which face of each box a line leaves and enters through,
+//! at which exact point on that face, and how many right-angle bends connect the two.
 //!
 //! # Two passes: classify, then place
 //!
@@ -71,10 +67,29 @@
 //! in this module reasons in "flow" and "cross" and calls those three functions to convert, which
 //! is what lets a single set of formulas below draw a correct picture in all four directions
 //! (`TD`/`BT`/`LR`/`RL`) rather than needing one branch per direction at every call site.
+//!
+//! # A cluster-anchored edge is routed against a box, not a node
+//!
+//! §10-1 item 1's ports and item 4's perimeter lane are both written in terms of "a face of a
+//! box"; a subgraph frame is exactly that (a centre and a size, [`PlacedCluster::bounds`] shaped
+//! identically to [`PlacedNode::bounds`]), so an edge naming a subgraph as one of its own ends
+//! (`one --> two`, where `one`/`two` are block ids, not node ids) is routed by the *same*
+//! `classify`/`evict`/`route_with_ports` pipeline a node-to-node edge already goes through —
+//! [`cluster_as_node`] is the one place that turns a [`PlacedCluster`] into the [`PlacedNode`]
+//! shape everything else here already knows how to route against, and [`build_by_id`] is the one
+//! lookup [`route_flowchart`]/[`avoid_label_plates`]/[`insert_crossing_gaps`] each resolve an
+//! [`EligibleEdge`]'s `source`/`target` id through, node or cluster alike.
+//!
+//! This is deliberately **not** the same as adding a cluster to the *obstacle* list a node-to-node
+//! edge's branch/merge sweep is tested against ([`shape_crosses_a_node`]'s `nodes` argument stays
+//! real nodes only): §10-1 item 4's own "辺と枠の交差は隙間なし（直交して跨ぐだけ）" means a frame
+//! that is not itself an edge's endpoint is never something a route has to avoid, only something it
+//! may cross — exactly the behaviour a node-to-node edge already had before this module knew
+//! clusters existed, and [`build_by_id`]'s own doc says why the two lookups are kept apart.
 
 use std::collections::HashMap;
 
-use super::{shapes, Glyph, PlacedCluster, PlacedEdgeLabel, PlacedNode, Size};
+use super::{shapes, Glyph, Label, PlacedCluster, PlacedEdgeLabel, PlacedNode, Size};
 use crate::preview::mermaid::flowchart::Direction;
 use crate::preview::mermaid::layout::Point;
 
@@ -1291,24 +1306,100 @@ fn perimeter_lanes<'a>(
     ids.into_iter().enumerate().map(|(i, id)| (id, i)).collect()
 }
 
-/// Routes every node-to-node edge in one flowchart under `[ui] mermaid_routing =
-/// "konoma-orthogonal"`, running [`classify`] and [`evict`] once each over the whole diagram
-/// before building any polyline — the two-pass shape the module doc describes.
+/// A subgraph frame, reduced to the four facts [`classify`]/[`evict`]/[`route_with_ports`] ever
+/// actually read off a [`PlacedNode`] — `id`, `center`, `size`, and a `shape` `evict`'s chamfer
+/// check can compare against [`Glyph::ChamferedRect`] — so a **cluster-anchored edge** (`one -->
+/// two`, where `one`/`two` name subgraphs rather than nodes) can be routed by exactly the same
+/// `classify`/`evict`/`route_with_ports` pipeline a node-to-node edge already goes through, instead
+/// of this module growing a second, parallel box type. `shape` is always [`Glyph::default`] (a
+/// plain rectangle, no chamfer): a frame is drawn as a plain rect under every routing mode, unlike
+/// a decision node, which only chamfers under orthogonal routing — so a cluster face never gets the
+/// chamfer allowance [`evict`]'s `required_size` computation adds for a real chamfered node.
+///
+/// `label`/`panel`/`series`/`mark`/`style` are never read by anything this box reaches (every
+/// caller only ever asks a `PlacedNode` for its outline), so they are filled with the same
+/// "nothing here" values [`PlacedNode`]'s own node-glyph construction uses when a field does not
+/// apply.
+fn cluster_as_node(c: &PlacedCluster) -> PlacedNode {
+    PlacedNode {
+        id: c.id.clone(),
+        shape: Glyph::default(),
+        center: c.center.clone(),
+        size: c.size,
+        label: Label::measure(""),
+        panel: None,
+        series: None,
+        mark: None,
+        style: None,
+    }
+}
+
+/// Every cluster in `clusters`, boxed by [`cluster_as_node`] — [`build_by_id`]'s other half of the
+/// id → box lookup a cluster-anchored edge's ends resolve through.
+fn cluster_node_boxes(clusters: &[PlacedCluster]) -> Vec<PlacedNode> {
+    clusters.iter().map(cluster_as_node).collect()
+}
+
+/// The id → box lookup every routing entry point ([`route_flowchart`], [`avoid_label_plates`],
+/// [`insert_crossing_gaps`]) resolves an [`EligibleEdge::source`]/[`EligibleEdge::target`] through:
+/// every real node from `nodes`, plus every cluster box from `cluster_boxes` under its own id.
+/// `mod.rs`'s own `end_of` is what decides whether an edge's written endpoint names a node or a
+/// subgraph — this is the only place downstream that has to know both kinds of box exist at all;
+/// everything past this lookup (`classify`, `evict`, `route_with_ports`, ...) just sees a
+/// `&PlacedNode` and does not care which kind it came from.
+///
+/// A real node wins any id collision (`.entry().or_insert`, not overwrite) — defensive only, since
+/// a real flowchart cannot declare a node and a subgraph under the same id, but a lookup that must
+/// never panic should not depend on that being true.
+///
+/// **Deliberately not** what a route's own *collision* test (`shape_crosses_a_node`'s `nodes`
+/// argument, and [`content_bounds`]'s `clusters` argument) is built from: a cluster frame is not an
+/// obstacle a node-to-node edge has to avoid (§10-1 item 4's own "辺と枠の交差は隙間なし（直交して跨
+/// ぐだけ）" — a frame a route merely crosses, not naming as an endpoint, stays out of every
+/// obstacle test unchanged from before this function existed), so this lookup — used only to answer
+/// "what box does this edge's *own* end meet" — is kept a separate map from the ones that answer
+/// "what else is in the way".
+fn build_by_id<'a>(
+    nodes: &'a [PlacedNode],
+    cluster_boxes: &'a [PlacedNode],
+) -> HashMap<&'a str, &'a PlacedNode> {
+    let mut by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    for cb in cluster_boxes {
+        by_id.entry(cb.id.as_str()).or_insert(cb);
+    }
+    by_id
+}
+
+/// Routes every node-to-node **and cluster-anchored** edge in one flowchart under `[ui]
+/// mermaid_routing = "konoma-orthogonal"`, running [`classify`] and [`evict`] once each over the
+/// whole diagram before building any polyline — the two-pass shape the module doc describes.
 ///
 /// `nodes` is the diagram's placed nodes from *this* layout pass; `clusters` is every subgraph
-/// frame from the same pass, needed only for [`content_bounds`] (§10-1 item 4's perimeter lane has
-/// to clear a frame the way it clears a node, even though a frame is never itself a routable
-/// endpoint here — see `edges` below); `edges` is every drawable edge whose two ends are both real
-/// nodes (a cluster boundary never reaches this function — it is out of scope until §10-2's later
-/// stages, and keeps drawing through the ordinary spline path, `lay_out_spec`'s own filter on
-/// `edges::End::Node`).
+/// frame from the same pass — read twice over: [`content_bounds`] still needs it whole (§10-1 item
+/// 4's perimeter lane has to clear a frame the way it clears a node), and [`cluster_node_boxes`]
+/// turns it into the routable boxes a cluster-anchored [`EligibleEdge`] resolves its `source`/
+/// `target` against (`mod.rs`'s own `end_of` decides, per edge end, whether that end's `source`/
+/// `target` string names a node id or a cluster id).
+///
+/// A cluster face is never grown to fit its ports the way [`RoutedFlowchart::required_size`] grows
+/// a real node's: `lay_out_spec`'s growth retry (`apply_growth`) only ever looks a size up by a real
+/// `spec.nodes` id, so an entry this pass's `evict` writes under a cluster's id is silently never
+/// read — a deliberate simplification (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 1's own
+/// "枠は元々広いので分配のみで足りるはず"), not an oversight: a subgraph frame's own size is *derived*
+/// from dagre's layout of its members, not a quantity `lay_out_spec_pass` hands dagre directly the
+/// way a node's `width`/`height` is, so "grow this box" has no single obvious lever to pull the way
+/// it does for a node. Should a real corpus source ever need more than a frame's own width already
+/// offers, `evict`'s 16px-spacing ports simply run past [`PORT_CLEARANCE`] of the frame's corner —
+/// no different from what a face too narrow for its claims already risked before this function knew
+/// about clusters at all.
 pub fn route_flowchart(
     direction: Direction,
     nodes: &[PlacedNode],
     clusters: &[PlacedCluster],
     edges: &[EligibleEdge],
 ) -> RoutedFlowchart {
-    let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let cluster_boxes = cluster_node_boxes(clusters);
+    let by_id = build_by_id(nodes, &cluster_boxes);
 
     let shapes: Vec<Option<EdgeShape>> = edges
         .iter()
@@ -1739,7 +1830,8 @@ pub fn avoid_label_plates(
     points: &mut HashMap<String, Vec<Point>>,
     plates: &mut HashMap<String, PlacedEdgeLabel>,
 ) {
-    let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let cluster_boxes = cluster_node_boxes(clusters);
+    let by_id = build_by_id(nodes, &cluster_boxes);
     let shapes: Vec<Option<EdgeShape>> = edges
         .iter()
         .map(|e| {
@@ -1951,13 +2043,19 @@ fn gap_around(seg: &[Point], cross: Point) -> (Point, Point) {
 /// `points` is the *final* routed polyline per edge id — `route_flowchart`'s own result after
 /// `avoid_label_plates` has already run, so a gap is never computed against a route stage 5 was
 /// about to move out from under it.
+///
+/// `clusters` exists only so [`build_by_id`] can resolve a cluster-anchored edge's own `source`/
+/// `target` back to a box (needed to `classify` it, to know whether it is a perimeter edge at all)
+/// — the same reason [`route_flowchart`]/[`avoid_label_plates`] both take it.
 pub fn insert_crossing_gaps(
     direction: Direction,
     nodes: &[PlacedNode],
+    clusters: &[PlacedCluster],
     edges: &[EligibleEdge],
     points: &HashMap<String, Vec<Point>>,
 ) -> HashMap<String, Vec<(Point, Point)>> {
-    let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let cluster_boxes = cluster_node_boxes(clusters);
+    let by_id = build_by_id(nodes, &cluster_boxes);
     let is_perimeter: HashMap<&str, bool> = edges
         .iter()
         .filter_map(|e| {

@@ -4549,21 +4549,12 @@ fn self_loop_between_parallel_edges_does_not_shift_link_style_indices() {
 // `[ui] mermaid_routing = "konoma-orthogonal"` (docs/FEATURE-MERMAID-RENDERER.md §10, stage 1)
 // ---------------------------------------------------------------------------------------------
 
-/// The `CORPUS` entries orthogonal routing's stage-1 invariants can be checked over: every case
-/// that draws no subgraph.
-///
-/// A cluster-boundary edge is explicitly out of scope for stage 1 — §10-2's later stages own it —
-/// so it keeps drawing through the ordinary spline path even under `"konoma-orthogonal"`
-/// (`lay_out_spec`'s own comment on the `matches!(tail, edges::End::Node(..))` guard). Including a
-/// `subgraph-*` entry here would make "every segment is axis-parallel" state something the
-/// renderer does not actually promise yet, so this filters them out by name rather than by
-/// guessing which ones happen to pass.
+/// Every `CORPUS` entry — a cluster-anchored edge (`one --> two`, `E --> one`, ...) is routed by
+/// `orthogonal::route_flowchart` exactly like a node-to-node one now (§10-2's cluster-edge stage:
+/// `orthogonal::cluster_as_node`/`build_by_id`), so `subgraph-*` sources no longer need excluding
+/// from "every segment is axis-parallel" the way stage 1 through 5 had to exclude them.
 fn orthogonal_corpus() -> Vec<(&'static str, &'static str)> {
-    CORPUS
-        .iter()
-        .copied()
-        .filter(|(name, _)| !name.starts_with("subgraph"))
-        .collect()
+    CORPUS.to_vec()
 }
 
 /// [`orthogonal_corpus`], further filtered down to the sources
@@ -4593,6 +4584,9 @@ fn orthogonal_dag_corpus() -> Vec<(&'static str, &'static str)> {
         "left-right",
         "self-loop",
         "amp-chain",
+        // `C --> A` closes a cycle back onto the block's own member `A` — a back edge exactly
+        // like the others in this list, just with one end inside a subgraph frame.
+        "subgraph",
     ];
     orthogonal_corpus()
         .into_iter()
@@ -4788,10 +4782,13 @@ fn non_flowchart_diagrams_ignore_mermaid_routing() {
 }
 
 /// Every routed edge's two endpoints sit exactly [`orthogonal::PORT_INSET`] px **outside** the
-/// node each one meets — never touching, let alone crossing into, the real geometric boundary —
-/// and the segment that reaches each one is perpendicular to whichever face it lands on. §10-1
-/// item 1's last bullet: "矢尻…の先端はノード枠の外縁から1px離す＝端点は枠座標の2px手前", and item
-/// 1's "出入りは常に辺へ垂直".
+/// node — or, for a cluster-anchored end (§10-2), the subgraph frame — each one meets, never
+/// touching, let alone crossing into, the real geometric boundary — and the segment that reaches
+/// each one is perpendicular to whichever face it lands on. §10-1 item 1's last bullet: "矢尻…の
+/// 先端はノード枠の外縁から1px離す＝端点は枠座標の2px手前", and item 1's "出入りは常に辺へ垂直".
+/// `orthogonal_corpus()` now includes every `subgraph-*` source, so this same loop is what checks
+/// a cluster-anchored edge's own endpoint (`subgraph-endpoint`'s `one --> two` / `E --> one`)
+/// against exactly the rule a node-anchored one is held to — no separate cluster-only test needed.
 ///
 /// Pins the *direction* of the offset, not only its magnitude — a real regression once got this
 /// backwards: an endpoint pulled *inward* (into the node) rather than outward drew an arrow tip
@@ -4816,10 +4813,16 @@ fn orthogonal_endpoints_sit_outside_the_node_and_arrive_perpendicular() {
                 (&e.to, &e.points[n - 1], &e.points[n - 2]),
             ];
             for (node_id, endpoint, neighbour) in ends {
-                let Some(node) = d.node(node_id) else {
+                // A cluster-anchored end (§10-2) meets a subgraph frame instead of a node — same
+                // box shape (`PlacedCluster::bounds` reads exactly like `PlacedNode::bounds`), so
+                // this checks whichever one `node_id` actually names rather than skipping it.
+                let bounds = d
+                    .node(node_id)
+                    .map(|n| n.bounds())
+                    .or_else(|| d.cluster(node_id).map(|c| c.bounds()));
+                let Some((l, t, r, b)) = bounds else {
                     continue;
                 };
-                let (l, t, r, b) = node.bounds();
                 let on_top = (endpoint.y - (t - orthogonal::PORT_INSET)).abs() < AXIS_EPS;
                 let on_bottom = (endpoint.y - (b + orthogonal::PORT_INSET)).abs() < AXIS_EPS;
                 let on_left = (endpoint.x - (l - orthogonal::PORT_INSET)).abs() < AXIS_EPS;
@@ -6189,4 +6192,192 @@ fn orthogonal_frame_crossings_never_produce_a_gap() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// `[ui] mermaid_routing = "konoma-orthogonal"` — §10-2's cluster-anchored edge stage
+// ---------------------------------------------------------------------------------------------
+
+/// A cluster-anchored edge (`one --> two`, `E --> one`) is actually routed by
+/// `orthogonal::route_flowchart` — `PlacedEdge::straight`/`tip_matches_line` are both true, the
+/// same pair every node-to-node orthogonal edge sets — not silently left on the spline fallback
+/// `route_with_ports`'s `unwrap_or_else` exists for. Checked directly against `subgraph-endpoint`'s
+/// two cluster-anchored edges (a node→cluster end and a cluster→cluster end) rather than inferred
+/// from the axis-parallel corpus sweep above, which cannot tell "genuinely orthogonal" apart from
+/// "happened to fall back to a spline that came out axis-parallel by coincidence".
+#[test]
+fn cluster_anchored_edges_are_actually_routed_orthogonally_not_by_the_spline_fallback() {
+    let src = "flowchart LR\n  subgraph one [First]\n    A --> B\n  end\n  \
+               subgraph two [Second]\n    C --> D\n  end\n  one --> two\n  E --> one";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let one_to_two = d
+        .edges
+        .iter()
+        .find(|e| e.from == "one" && e.to == "two")
+        .expect("one->two must exist");
+    let e_to_one = d
+        .edges
+        .iter()
+        .find(|e| e.from == "E" && e.to == "one")
+        .expect("E->one must exist");
+    for (name, e) in [("one->two", one_to_two), ("E->one", e_to_one)] {
+        assert!(
+            e.straight,
+            "{name}: must be drawn as a polyline, not a curve"
+        );
+        assert!(
+            e.tip_matches_line,
+            "{name}: the arrow tip must match the routed line, the same as every other \
+             orthogonal edge"
+        );
+    }
+}
+
+/// §10-1 item 1's "退避則" (16px port spacing) applies to a subgraph frame's own faces exactly
+/// like a node's — and, since [`orthogonal::build_by_id`] resolves a cluster-anchored edge's end
+/// through the very same `evict` face-grouping a node-anchored one uses, a face can hold a *mix* of
+/// node-endpoint and cluster-endpoint claims and still space them 16px apart in one shared order.
+///
+/// `X --> one`, `one --> D` and `one --> E` all land on the `one` cluster's own LEFT face (dumped
+/// and read by hand before this was written: `one`'s bottom-flow branch/merge shape puts `X`'s
+/// target end and both of "one"'s own source ends on the cross face across the flow, which for a
+/// `TD` diagram is Left/Right). Ordered by "もう一方の端点のcross座標順" (rule 1): `D`'s own centre
+/// x is smallest, then `E`'s, then `X`'s — so the three ports must land at
+/// `center - 16, center, center + 16`, in that edge order, not in source-order or declaration
+/// order.
+#[test]
+fn cluster_face_shares_16px_ports_with_node_endpoint_claims_on_the_same_face() {
+    let src = "flowchart TD\n  subgraph one [Group]\n    A --> B\n    A --> C\n  end\n  \
+               X --> one\n  Y --> one\n  Z --> one\n  one --> D\n  one --> E";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let one = d.cluster("one").expect("cluster one must exist");
+    let (l, _, _, _) = one.bounds();
+
+    let left_port = |from: &str, to: &str| -> f64 {
+        let e = d
+            .edges
+            .iter()
+            .find(|e| e.from == from && e.to == to)
+            .unwrap_or_else(|| panic!("{from}->{to} must exist"));
+        // Whichever end names "one" is the port on the cluster's own LEFT face — a source end for
+        // one->D/one->E, a target end for X->one.
+        let p = if e.from == "one" {
+            &e.points[0]
+        } else {
+            e.points.last().expect("must have at least one point")
+        };
+        assert!(
+            (p.x - (l - orthogonal::PORT_INSET)).abs() < AXIS_EPS,
+            "{from}->{to}: expected this edge's own end at \"one\" to land on the LEFT face \
+             (x={}), got {p:?} — the fixture assumption behind this test's own port-order math \
+             no longer holds",
+            l - orthogonal::PORT_INSET
+        );
+        p.y
+    };
+
+    let d_y = left_port("one", "D");
+    let e_y = left_port("one", "E");
+    let x_y = left_port("X", "one");
+
+    assert!(
+        d_y < e_y && e_y < x_y,
+        "expected D < E < X by \"other cross coordinate\" order (rule 1), got D={d_y} E={e_y} \
+         X={x_y}"
+    );
+    assert!(
+        (e_y - d_y - orthogonal::PORT_SPACING).abs() < AXIS_EPS,
+        "D->E gap must be exactly PORT_SPACING: D={d_y} E={e_y}"
+    );
+    assert!(
+        (x_y - e_y - orthogonal::PORT_SPACING).abs() < AXIS_EPS,
+        "E->X gap must be exactly PORT_SPACING: E={e_y} X={x_y}"
+    );
+}
+
+/// A reverse edge whose target is a subgraph (`D --> one`, looping back into a block the flow
+/// already passed) draws from the perimeter lane exactly like a reverse node-to-node edge does —
+/// `route_perimeter`, not the 1-2 bend shapes forward edges take — and its route still clears both
+/// of the block's own member nodes (`A`, `B`), not only the frame itself. §10-1 item 2's "回数制限
+/// なし" for a back edge applies here too: this is *not* added to `orthogonal_dag_corpus`'s
+/// bend-count cap.
+#[test]
+fn cluster_anchored_reverse_edge_routes_through_the_perimeter_lane_and_clears_its_own_members() {
+    let src = "flowchart TD\n  subgraph one [Group]\n    A --> B\n  end\n  one --> D\n  D --> one";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let back = d
+        .edges
+        .iter()
+        .find(|e| e.from == "D" && e.to == "one")
+        .expect("D->one must exist");
+    assert!(
+        back.points.len() > 3,
+        "a perimeter route has more than one bend: {:?}",
+        back.points
+    );
+    for w in back.points.windows(2) {
+        let dx = (w[1].x - w[0].x).abs();
+        let dy = (w[1].y - w[0].y).abs();
+        assert!(
+            dx < AXIS_EPS || dy < AXIS_EPS,
+            "perimeter route must stay axis-parallel: {w:?}"
+        );
+    }
+    for member_id in ["A", "B"] {
+        let member = d.node(member_id).expect("member must exist");
+        for w in back.points.windows(2) {
+            assert!(
+                !orthogonal::segment_crosses_node(&w[0], &w[1], member),
+                "D->one's perimeter route crosses its own block's member {member_id}: {w:?}"
+            );
+        }
+    }
+}
+
+/// A cluster-to-cluster edge (`two --> one`, both ends naming a subgraph) resolves *both* its ends
+/// against the two frames themselves, not against whichever member node dagre anchored the
+/// underlying layout edge to — `orthogonal::build_by_id` has to prefer the cluster box over the
+/// anchor's own node box for both `source` and `target` at once, the one shape of cluster-anchored
+/// edge no other test here exercises (every other cluster-edge test in this file has at least one
+/// ordinary node end).
+#[test]
+fn cluster_to_cluster_edge_resolves_both_ends_against_the_frames_not_their_anchors() {
+    let src = "flowchart LR\n  subgraph one [First]\n    A --> B\n  end\n  \
+               subgraph two [Second]\n    C --> D\n  end\n  two --> one";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let e = d
+        .edges
+        .iter()
+        .find(|e| e.from == "two" && e.to == "one")
+        .expect("two->one must exist");
+    assert!(
+        e.straight && e.tip_matches_line,
+        "must be orthogonal-routed"
+    );
+
+    let one = d.cluster("one").expect("cluster one must exist");
+    let two = d.cluster("two").expect("cluster two must exist");
+    let (start, end) = (
+        e.points.first().expect("must have a start point"),
+        e.points.last().expect("must have an end point"),
+    );
+    let on_bounds = |p: &Point, (l, t, r, b): (f64, f64, f64, f64)| {
+        let on_v = (p.y - (t - orthogonal::PORT_INSET)).abs() < AXIS_EPS
+            || (p.y - (b + orthogonal::PORT_INSET)).abs() < AXIS_EPS;
+        let on_h = (p.x - (l - orthogonal::PORT_INSET)).abs() < AXIS_EPS
+            || (p.x - (r + orthogonal::PORT_INSET)).abs() < AXIS_EPS;
+        on_v || on_h
+    };
+    assert!(
+        on_bounds(start, two.bounds()),
+        "two->one's own start {start:?} must sit on cluster \"two\"'s own bounds {:?}, not on \
+         one of its member nodes' bounds",
+        two.bounds()
+    );
+    assert!(
+        on_bounds(end, one.bounds()),
+        "two->one's own end {end:?} must sit on cluster \"one\"'s own bounds {:?}, not on one \
+         of its member nodes' bounds",
+        one.bounds()
+    );
 }

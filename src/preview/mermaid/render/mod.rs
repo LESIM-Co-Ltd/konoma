@@ -1220,13 +1220,21 @@ fn lay_out_spec_pass(
     // target's in-degree (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 1) — counted over exactly
     // the edges that are actually going to be drawn (`drawable`, already anchored past any block
     // endpoint), not `spec.edges`, so a `~~~` layout-only link or an edge naming a block with no
-    // member node does not inflate a degree nothing will draw a port for. Owned `String` keys:
-    // `drawable` is moved into the loop below, so a borrowed key could not outlive it.
+    // member node does not inflate a degree nothing will draw a port for.
+    //
+    // Keyed by `d.edge.from`/`d.edge.to` — the *written* endpoint — rather than `d.tail`/`d.head`
+    // (the anchor `tree.anchor` resolved a block endpoint onto): for an ordinary node-to-node edge
+    // the two are identical (a node's own anchor is itself), so this is byte-for-byte the same
+    // count it always was; only a cluster-anchored edge differs, and there it is the *cluster's*
+    // own degree — how many drawn edges name that subgraph — that `classify`'s branch/merge choice
+    // needs, not the representative member's, which several unrelated cluster-endpoint edges could
+    // all have been anchored onto and so would wrongly inflate. Owned `String` keys: `drawable` is
+    // moved into the loop below, so a borrowed key could not outlive it.
     let mut out_degree: HashMap<String, usize> = HashMap::new();
     let mut in_degree: HashMap<String, usize> = HashMap::new();
     for d in &drawable {
-        *out_degree.entry(d.tail.clone()).or_insert(0) += 1;
-        *in_degree.entry(d.head.clone()).or_insert(0) += 1;
+        *out_degree.entry(d.edge.from.clone()).or_insert(0) += 1;
+        *in_degree.entry(d.edge.to.clone()).or_insert(0) += 1;
     }
 
     // --- work out what each edge has to meet at each end, and fetch dagre's own waypoints -------
@@ -1279,30 +1287,45 @@ fn lay_out_spec_pass(
         });
     }
 
-    // --- stage 2: one global port-eviction pass over every node-to-node edge ---------------------
+    // --- stage 2: one global port-eviction pass over every node-to-node AND cluster-anchored edge -
     //
-    // Orthogonal routing is `docs/FEATURE-MERMAID-RENDERER.md` §10-1's stage 1 + 2: node-to-node
-    // edges only — a cluster boundary is later work (§10-2's later stages), so an edge naming a
-    // subgraph keeps drawing through the ordinary spline path below regardless of `routing`.
+    // Orthogonal routing is `docs/FEATURE-MERMAID-RENDERER.md` §10-1's stage 1 + 2, plus §10-2's
+    // cluster-edge stage: every drawable edge is eligible now, whichever kind of box each of its
+    // two ends resolved to (`End::Node` or `End::Cluster`) — `EligibleEdge::source`/`target` name
+    // whichever id that end's own box lives under (the anchor node's id for a node end, the
+    // subgraph's own id for a cluster end), which is exactly what `orthogonal::build_by_id` (fed by
+    // this same `placed_clusters`) resolves a box out of. There is no longer a case where an edge
+    // falls back to the spline path just because one of its ends names a block.
     //
     // `eligible` is kept (not scoped to this block) because stage 4's `orthogonal::avoid_label_plates`
-    // needs the same node-to-node edge list again, once labels exist to check ports against.
+    // needs the same edge list again, once labels exist to check ports against.
     let eligible: Vec<orthogonal::EligibleEdge> = if spec.routing == Routing::Orthogonal {
         prepared
             .iter()
-            .filter(|p| {
-                matches!(p.tail_end, edges::End::Node(..))
-                    && matches!(p.head_end, edges::End::Node(..))
-            })
-            .map(|p| orthogonal::EligibleEdge {
-                id: p.edge.id.as_str(),
-                source: p.tail_id.as_str(),
-                target: p.head_id.as_str(),
-                raw: &p.raw,
-                source_rank: g.node(p.tail_id.as_str()).and_then(|n| n.rank),
-                target_rank: g.node(p.head_id.as_str()).and_then(|n| n.rank),
-                source_out_degree: out_degree.get(&p.tail_id).copied().unwrap_or(0),
-                target_in_degree: in_degree.get(&p.head_id).copied().unwrap_or(0),
+            .map(|p| {
+                let source = match p.tail_end {
+                    edges::End::Cluster(_) => p.edge.from.as_str(),
+                    edges::End::Node(..) => p.tail_id.as_str(),
+                };
+                let target = match p.head_end {
+                    edges::End::Cluster(_) => p.edge.to.as_str(),
+                    edges::End::Node(..) => p.head_id.as_str(),
+                };
+                orthogonal::EligibleEdge {
+                    id: p.edge.id.as_str(),
+                    source,
+                    target,
+                    raw: &p.raw,
+                    // Rank is always read off the *anchor* node, whichever end is a cluster: a
+                    // subgraph itself carries no rank of its own in dagre's compound layout (only
+                    // its member leaves are ranked), and the anchor's rank is the same proxy
+                    // `align_straight_lanes` above and `classify`'s reverse-edge detection below
+                    // already treat "how far into the flow this end's block sits" as.
+                    source_rank: g.node(p.tail_id.as_str()).and_then(|n| n.rank),
+                    target_rank: g.node(p.head_id.as_str()).and_then(|n| n.rank),
+                    source_out_degree: out_degree.get(&p.edge.from).copied().unwrap_or(0),
+                    target_in_degree: in_degree.get(&p.edge.to).copied().unwrap_or(0),
+                }
             })
             .collect()
     } else {
@@ -1348,9 +1371,9 @@ fn lay_out_spec_pass(
         head_end,
     } in &prepared
     {
-        let is_orthogonal = spec.routing == Routing::Orthogonal
-            && matches!(tail_end, edges::End::Node(..))
-            && matches!(head_end, edges::End::Node(..));
+        // Every drawable edge is orthogonal-eligible under `Routing::Orthogonal` now, whichever
+        // kind of box each end resolved to — `eligible`'s own doc above.
+        let is_orthogonal = spec.routing == Routing::Orthogonal;
         let (points, straight) = if is_orthogonal {
             // Present for every eligible edge — `route_flowchart` was called with exactly this
             // `eligible` set above. The spline fallback is defensive only, never expected to run.
@@ -1482,8 +1505,13 @@ fn lay_out_spec_pass(
         // out from under it. `PlacedEdge::gaps` itself has the rest of the story (empty for every
         // edge this loop does not touch, which keeps `svg::emit_edge` drawing the single `<path>`
         // it always drew for anything that never crosses another edge).
-        let gap_map =
-            orthogonal::insert_crossing_gaps(spec.direction, &nodes, &eligible, &orthogonal_points);
+        let gap_map = orthogonal::insert_crossing_gaps(
+            spec.direction,
+            &nodes,
+            &placed_clusters,
+            &eligible,
+            &orthogonal_points,
+        );
         for (id, &idx) in &orthogonal_index {
             if let Some(g) = gap_map.get(id) {
                 placed_edges[idx].gaps = g.clone();
