@@ -35,7 +35,7 @@
 //! come from the graph's shape, not from its labels' widths, so the emitted element sequence does
 //! not move with the font.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 
 use resvg::usvg;
@@ -236,6 +236,25 @@ fn laid_out_flow(src: &str, curve: &str, routing: &str) -> Diagram {
     let chart = parse(src).unwrap_or_else(|e| panic!("corpus source must parse: {e}"));
     lay_out_flow(&chart, curve, routing)
         .unwrap_or_else(|e| panic!("corpus source must lay out: {e}"))
+}
+
+/// A [`PlacedNode`] with a plain rectangle glyph and a blank label — a hand-built layout input for
+/// the stage 2-4 unit tests below, the same role `orthogonal.rs`'s own private `node` helper plays
+/// for that module's tests (kept separate rather than shared: the two test modules build different
+/// things from a node — this file also needs a full [`GraphSpec`] elsewhere, which
+/// `orthogonal.rs`'s helper has no reason to know about).
+fn placed_node(id: &str, cx: f64, cy: f64, w: f64, h: f64) -> PlacedNode {
+    PlacedNode {
+        id: id.to_string(),
+        shape: Glyph::default(),
+        center: Point::new(cx, cy),
+        size: Size::new(w, h),
+        label: Label::measure(""),
+        panel: None,
+        series: None,
+        mark: None,
+        style: None,
+    }
 }
 
 pub(super) fn tree_of(svg: &str) -> usvg::Tree {
@@ -5310,5 +5329,372 @@ fn orthogonal_merges_into_the_same_target_share_a_symmetric_bend_column() {
     assert!(
         (b_offset + c_offset).abs() < 1e-6,
         "the two bends must be symmetric about D's own centre: {b_offset} vs {c_offset}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stage 4: label placement, minimum segment length, port-vs-plate avoidance
+// ---------------------------------------------------------------------------------------------
+//
+// `docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 3. Every labelled corpus source's plate is checked
+// against every axis-parallel invariant stage 1-3 already state over the same corpus
+// (`orthogonal_corpus`), plus the three new ones this stage adds.
+//
+// Two of the three sub-rules turned out hard to coax out of a *real* `dagre` layout on purpose,
+// dumped and read by hand while this was written (the same way
+// `orthogonal_settings_rules_sample_no_longer_pierces_a_sibling_node` was), so each is instead
+// covered by a direct, hand-built fixture rather than a diagram source:
+//
+// * A genuine two-flow-leg split (uneven eviction giving an aligned edge's two ends different
+//   coordinates, `bridge`'s own doc) — every scratch diagram tried either kept one leg the full
+//   rank-gap length or the two nodes drifted out of `classify`'s 0.5px aligned window first. Its
+//   own selection behaviour is covered directly in `orthogonal.rs`'s test module instead
+//   (`label_slot_picks_the_longer_of_two_flow_axis_segments`), by constructing the split polyline
+//   by hand.
+// * A port stub actually crossing a *foreign* plate (item 3's second rule). `dagre`'s own
+//   edge-label reservation (the same mechanism `label_boosts_actually_widen_...` below proves)
+//   turns out to keep every other same-rank node clear of a label's own footprint by construction
+//   — pushing the label wider pushes its rank-mates out by roughly the same amount, several
+//   diagrams and node-size combinations tried, so no corpus source or hand-built `GraphSpec` here
+//   reaches a genuine crossing to have avoided. `orthogonal::avoid_label_plates` is instead proven
+//   directly (`avoid_label_plates_pushes_only_the_port_that_actually_crosses_a_plate` below,
+//   `avoid_label_plates_ignores_a_reverse_edge` in `orthogonal.rs`), and
+//   `no_label_plate_is_crossed_by_a_foreign_edges_segment` stands as the regression guard for the
+//   day some future routing change does reach one.
+
+/// Every labelled edge's plate, across [`orthogonal_corpus`].
+fn labelled_plates(d: &Diagram) -> Vec<(&PlacedEdge, &super::PlacedEdgeLabel)> {
+    d.edges
+        .iter()
+        .filter_map(|e| e.label.as_ref().map(|l| (e, l)))
+        .collect()
+}
+
+/// Every axis-parallel segment of `e`'s own polyline, as `(a, b)` pairs — what a plate is allowed
+/// to sit on top of without that counting as "off the line".
+fn own_segments(e: &PlacedEdge) -> impl Iterator<Item = (&Point, &Point)> {
+    e.points.windows(2).map(|w| (&w[0], &w[1]))
+}
+
+/// Item 3's first rule, restated as a corpus invariant: every labelled edge's plate is centred
+/// **on** one of its own edge's segments (within a fraction of a px — the two are built from the
+/// same arithmetic, so this is really asking "did the wiring stay connected", not "is the geometry
+/// approximately right").
+#[test]
+fn every_label_plate_centre_sits_on_its_own_edges_line() {
+    for (name, src) in orthogonal_corpus() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for (e, l) in labelled_plates(&d) {
+            let on_a_segment = own_segments(e).any(|(a, b)| {
+                let on_seg = |p: &Point| {
+                    let within_x = p.x >= a.x.min(b.x) - AXIS_EPS && p.x <= a.x.max(b.x) + AXIS_EPS;
+                    let within_y = p.y >= a.y.min(b.y) - AXIS_EPS && p.y <= a.y.max(b.y) + AXIS_EPS;
+                    let collinear =
+                        ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)).abs() < 1e-3;
+                    within_x && within_y && collinear
+                };
+                on_seg(&l.center)
+            });
+            assert!(
+                on_a_segment,
+                "{name}: label {:?} centre {:?} is not on any segment of {:?}",
+                l.label.lines, l.center, e.points
+            );
+        }
+    }
+}
+
+/// Item 3's minimum-length rule, over every labelled edge whose chosen segment is the flow-axis
+/// one — the only kind [`super::apply_label_growth`]'s retry loop can actually widen (a
+/// cross-axis-only label, reachable only through a `reverse`/`staircase` edge, is a documented gap
+/// — [`orthogonal::LabelSlot::is_flow_axis`]'s own doc). `orthogonal_dag_corpus`, not the full
+/// corpus, for the same reason [`orthogonal_bend_count_never_exceeds_two`] uses it: a back edge's
+/// label is drawn from dagre's own waypoint chain, which this stage does not reach.
+#[test]
+fn labelled_flow_axis_segments_meet_their_minimum_length() {
+    for (name, src) in orthogonal_dag_corpus() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for (e, l) in labelled_plates(&d) {
+            let Some(slot) = orthogonal::label_slot(direction_of(src), &e.points) else {
+                continue;
+            };
+            if !slot.is_flow_axis {
+                continue;
+            }
+            let need = orthogonal::label_min_length(l.size, slot.horizontal);
+            assert!(
+                slot.length + 1e-6 >= need,
+                "{name}: labelled segment {:?} is {}px, short of the {}px minimum for plate {:?}",
+                e.points,
+                slot.length,
+                need,
+                l.size
+            );
+        }
+    }
+}
+
+/// Parses `src`'s own `direction` line without going through the whole `lay_out_flow` pipeline —
+/// [`labelled_flow_axis_segments_meet_their_minimum_length`]'s own use of
+/// [`orthogonal::label_slot`] needs it directly, the same value [`Flowchart::direction`] carries.
+fn direction_of(src: &str) -> crate::preview::mermaid::flowchart::Direction {
+    parse(src)
+        .unwrap_or_else(|e| panic!("corpus source must parse: {e}"))
+        .direction
+}
+
+/// Item 3's growth rule stated the way the task itself asks for it: a long label widens the rank
+/// gap it sits in; a short one does not push the diagram wider than an unlabelled version would
+/// be. CJK, because that is what the real report (`docs/STATUS.md`'s mermaid work) was about.
+/// `LR`, not `TD`: this diagram's flow axis is horizontal there, so a *wide* single-line label —
+/// the ordinary shape a long label takes — is what stretches the gap, matching how the rank gap
+/// actually grows (`lay_out_spec_pass`'s own doc: `TD`/`BT` tracks a label's raw *height*,
+/// `LR`/`RL` its raw *width*) rather than needing an author-written `<br>` to make the label tall.
+#[test]
+fn a_long_cjk_label_widens_the_rank_gap_and_a_short_one_does_not() {
+    let bare = laid_out_flow(
+        "flowchart LR\n  A[Start] --> B[End]",
+        "basis",
+        "konoma-orthogonal",
+    );
+    let short = laid_out_flow(
+        "flowchart LR\n  A[Start] -->|x| B[End]",
+        "basis",
+        "konoma-orthogonal",
+    );
+    let long = laid_out_flow(
+        "flowchart LR\n  A[Start] -->|とても長いラベルのテキストです、これはとても長い| B[End]",
+        "basis",
+        "konoma-orthogonal",
+    );
+    let gap = |d: &Diagram| {
+        let e = &d.edges[0];
+        (e.points.last().unwrap().x - e.points[0].x).abs()
+    };
+    let (bare_gap, short_gap, long_gap) = (gap(&bare), gap(&short), gap(&long));
+    assert!(
+        short_gap > bare_gap,
+        "even a 1-char label must reserve some rank space: {short_gap} vs bare {bare_gap}"
+    );
+    assert!(
+        long_gap > short_gap + 50.0,
+        "a long multi-em CJK label must widen the gap far more than a 1-char label: \
+         long={long_gap} short={short_gap}"
+    );
+}
+
+/// A hand-built [`GraphSpec`] with 2 nodes almost touching (`ranksep`-scale gap dwarfed by the
+/// label) proves `label_boosts` — [`lay_out_spec_pass`]'s own new parameter — actually reaches
+/// dagre: the *same* pass, called once with an empty boost map and once with a large one for the
+/// one labelled edge, must come back with a measurably longer flow-axis segment when boosted. This
+/// is the wiring stage 4's growth loop depends on ([`apply_label_growth`]'s own doc proves the
+/// *loop's* bookkeeping separately); real diagrams rarely ask the loop to do anything at all — see
+/// this module's own note on why — so this is what actually exercises the boosted code path rather
+/// than leaving it provably-correct-but-never-run.
+#[test]
+fn label_boosts_actually_widen_the_flow_axis_segment_dagre_lays_out() {
+    let node = |id: &str| super::SpecNode {
+        id: id.to_string(),
+        glyph: Glyph::Flow(Shape::Rect),
+        label: Label::measure(id),
+        size: Size::new(30.0, 20.0),
+        panel: None,
+        style: None,
+    };
+    let edge = super::SpecEdge {
+        id: "e1".to_string(),
+        from: "A".to_string(),
+        to: "B".to_string(),
+        label: Some(Label::measure("a fairly long edge label")),
+        tip_start: Tip::None,
+        tip_end: Tip::Arrow,
+        stroke: Stroke::Normal,
+        minlen: 1,
+        start_label: None,
+        end_label: None,
+        style: None,
+        curve: Curve::Basis,
+    };
+    let spec = super::GraphSpec {
+        direction: crate::preview::mermaid::flowchart::Direction::TopToBottom,
+        nodes: vec![node("A"), node("B")],
+        edges: vec![edge],
+        blocks: Vec::new(),
+        routing: orthogonal::Routing::Orthogonal,
+    };
+
+    let flow_gap = |boosts: &HashMap<String, f64>| {
+        let (diagram, _required, _shortfall) =
+            super::lay_out_spec_pass(&spec, &HashMap::new(), boosts)
+                .unwrap_or_else(|e| panic!("hand-built spec must lay out: {e}"));
+        let e = &diagram.edges[0];
+        (e.points.last().unwrap().y - e.points[0].y).abs()
+    };
+
+    let unboosted = flow_gap(&HashMap::new());
+    let mut boosts = HashMap::new();
+    boosts.insert("e1".to_string(), 300.0);
+    let boosted = flow_gap(&boosts);
+
+    assert!(
+        boosted > unboosted + 250.0,
+        "a 300px label_boosts entry must reach dagre and widen the rank gap by roughly that much: \
+         unboosted={unboosted} boosted={boosted}"
+    );
+}
+
+/// [`apply_label_growth`]'s own contract, stated directly: it **adds** each pass's shortfall onto
+/// the running total (not `max`, unlike [`apply_growth`]'s node sizes — that function's own doc
+/// explains why the two need different combinators), only for a positive shortfall, and reports
+/// whether anything grew.
+#[test]
+fn apply_label_growth_accumulates_positive_shortfalls_and_ignores_the_rest() {
+    let mut boosts: HashMap<String, f64> = HashMap::new();
+    boosts.insert("already".to_string(), 10.0);
+
+    let mut shortfall: HashMap<String, f64> = HashMap::new();
+    shortfall.insert("already".to_string(), 5.0); // must ADD to 15, not replace with 5
+    shortfall.insert("fresh".to_string(), 20.0); // a brand new entry
+    shortfall.insert("met".to_string(), 0.0); // not actually short — must not be recorded at all
+    shortfall.insert("negative".to_string(), -1.0); // defensive: never subtracts
+
+    let grew = super::apply_label_growth(&mut boosts, &shortfall);
+    assert!(grew, "a positive shortfall must report growth");
+    assert!((boosts["already"] - 15.0).abs() < 1e-9, "{:?}", boosts);
+    assert!((boosts["fresh"] - 20.0).abs() < 1e-9, "{:?}", boosts);
+    assert!(
+        !boosts.contains_key("met"),
+        "a zero shortfall adds no entry"
+    );
+    assert!(
+        !boosts.contains_key("negative"),
+        "a negative shortfall must never be applied"
+    );
+
+    // A second call with an all-zero shortfall must report no further growth and leave the totals
+    // exactly where they were — the loop-stopping condition `lay_out_spec` relies on.
+    let mut zero: HashMap<String, f64> = HashMap::new();
+    zero.insert("already".to_string(), 0.0);
+    let grew_again = super::apply_label_growth(&mut boosts, &zero);
+    assert!(!grew_again);
+    assert!((boosts["already"] - 15.0).abs() < 1e-9);
+}
+
+/// §10-1 item 3's second rule ("ポートの垂直レーンがラベルプレートと重なる場合はポートをさらに
+/// 16px外へ"), over the whole corpus: no plate ever ends up crossed by a *foreign* edge's segment
+/// — either it never would have (the common case) or `avoid_label_plates` pushed the port that
+/// would have crossed it clear. An edge's own line is exempt (it is what the plate sits on, by
+/// item 3's first rule) and so is its own arrow tip.
+#[test]
+fn no_label_plate_is_crossed_by_a_foreign_edges_segment() {
+    for (name, src) in orthogonal_corpus() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for (owner, l) in labelled_plates(&d) {
+            let (pl, pt, pr, pb) = (
+                l.center.x - l.size.w / 2.0,
+                l.center.y - l.size.h / 2.0,
+                l.center.x + l.size.w / 2.0,
+                l.center.y + l.size.h / 2.0,
+            );
+            for other in &d.edges {
+                if std::ptr::eq(other, owner) {
+                    continue;
+                }
+                for (a, b) in own_segments(other) {
+                    let crosses = if (a.y - b.y).abs() < AXIS_EPS {
+                        let y = a.y;
+                        let (x0, x1) = (a.x.min(b.x), a.x.max(b.x));
+                        y >= pt && y <= pb && x1 >= pl && x0 <= pr
+                    } else if (a.x - b.x).abs() < AXIS_EPS {
+                        let x = a.x;
+                        let (y0, y1) = (a.y.min(b.y), a.y.max(b.y));
+                        x >= pl && x <= pr && y1 >= pt && y0 <= pb
+                    } else {
+                        false
+                    };
+                    assert!(
+                        !crosses,
+                        "{name}: {:?}->{:?}'s segment {a:?}->{b:?} runs through {:?}->{:?}'s \
+                         label plate {:?}",
+                        other.from, other.to, owner.from, owner.to, l.label.lines
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// [`orthogonal::avoid_label_plates`] itself, directly: a port whose stub runs through a foreign
+/// plate must move exactly [`orthogonal::PORT_SPACING`] further from its own node, and an edge that
+/// never crosses anything must come back byte-identical.
+#[test]
+fn avoid_label_plates_pushes_only_the_port_that_actually_crosses_a_plate() {
+    use crate::preview::mermaid::flowchart::Direction;
+    use orthogonal::{avoid_label_plates, EligibleEdge};
+
+    let a = placed_node("A", 100.0, 0.0, 60.0, 40.0);
+    let b = placed_node("B", 100.0, 200.0, 60.0, 40.0);
+    let c = placed_node("C", 300.0, 0.0, 60.0, 40.0);
+    let d = placed_node("D", 300.0, 200.0, 60.0, 40.0);
+    let nodes = vec![a, b, c, d];
+    let edges = vec![
+        EligibleEdge {
+            id: "ab",
+            source: "A",
+            target: "B",
+            raw: &[],
+            source_rank: Some(0),
+            target_rank: Some(1),
+            source_out_degree: 1,
+            target_in_degree: 1,
+        },
+        EligibleEdge {
+            id: "cd",
+            source: "C",
+            target: "D",
+            raw: &[],
+            source_rank: Some(0),
+            target_rank: Some(1),
+            source_out_degree: 1,
+            target_in_degree: 1,
+        },
+    ];
+    let routed = orthogonal::route_flowchart(Direction::TopToBottom, &nodes, &edges);
+    let mut points = routed.points;
+    let ab_before = points["ab"].clone();
+    let cd_before = points["cd"].clone();
+
+    // A plate sitting squarely on top of `ab`'s own stub near A's face — not `ab`'s own label
+    // (different edge id), so it counts as foreign for `ab` and must push it; `cd`'s stub is far
+    // away (x=300) and must be left untouched.
+    let mut plates: HashMap<String, super::PlacedEdgeLabel> = HashMap::new();
+    plates.insert(
+        "someone-elses-label".to_string(),
+        super::PlacedEdgeLabel {
+            center: Point::new(ab_before[0].x, (ab_before[0].y + ab_before[1].y) / 2.0),
+            size: Size::new(40.0, 14.0),
+            label: Label::measure("x"),
+        },
+    );
+
+    avoid_label_plates(
+        Direction::TopToBottom,
+        &nodes,
+        &edges,
+        &mut points,
+        &mut plates,
+    );
+
+    assert_ne!(points["ab"], ab_before, "ab's port must have been pushed");
+    assert_eq!(
+        (points["ab"][0].x - ab_before[0].x).abs(),
+        orthogonal::PORT_SPACING,
+        "the push must be exactly PORT_SPACING: {:?} vs {:?}",
+        points["ab"][0],
+        ab_before[0]
+    );
+    assert_eq!(
+        points["cd"], cd_before,
+        "cd shares no plate with anything and must be left exactly as routed"
     );
 }

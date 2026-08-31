@@ -62,7 +62,7 @@
 
 use std::collections::HashMap;
 
-use super::{shapes, Glyph, PlacedNode, Size};
+use super::{shapes, Glyph, PlacedEdgeLabel, PlacedNode, Size};
 use crate::preview::mermaid::flowchart::Direction;
 use crate::preview::mermaid::layout::Point;
 
@@ -980,6 +980,118 @@ pub fn route_flowchart(
     }
 }
 
+// -------------------------------------------------------------------------------------------
+// §10-1 item 3: labels always sit on a straight run
+// -------------------------------------------------------------------------------------------
+
+/// The clearance §10-1 item 3 asks for on each side of a labelled segment: "両側各16px（線9px＋
+/// 矢尻7px）". Reused, not a coincidence with [`PORT_SPACING`]'s own 16px — the two rules just
+/// happen to pick the same number — kept as its own constant because the two mean different
+/// things ("how far apart two ports sit" vs "how much clearance a label plate needs") and a future
+/// change to one must not silently move the other.
+pub const LABEL_CLEARANCE: f64 = 16.0;
+
+/// One edge's label, resting on its own routed line — [`label_slot`]'s result.
+pub struct LabelSlot {
+    /// Where the label's plate should be centred — the midpoint of the segment it was snapped to.
+    pub center: Point,
+    /// That segment's own length, in px — what a minimum-length check compares against.
+    pub length: f64,
+    /// Whether the chosen segment runs along the flow axis (the one [`lay_out_spec_pass`]'s
+    /// `EdgeLabel` width/height can actually grow — see [`super::lay_out_spec_pass`]'s own doc on
+    /// how a label's flow-axis dimension already asks dagre for extra rank space). `false` means
+    /// the label had to fall back to a cross-axis segment (only possible for a `reverse`/
+    /// `staircase` edge with no flow-axis leg of its own), where no minimum-length mechanism
+    /// exists yet — a documented gap, not silently "handled".
+    pub is_flow_axis: bool,
+    /// Whether the chosen segment runs left-right (`x` varies) rather than top-bottom. This is
+    /// what decides which of the plate's own two dimensions has to fit inside `length`: width for
+    /// a horizontal segment (text reads along it), height for a vertical one (text runs crosswise,
+    /// so only the plate's short dimension needs headroom along the line).
+    pub horizontal: bool,
+}
+
+/// Whether `a`–`b` runs top-to-bottom rather than left-to-right. Every segment this module builds
+/// is axis-parallel (the invariant `orthogonal_routing_draws_only_axis_parallel_segments` checks),
+/// so exactly one of the two coordinates changes; a genuinely diagonal pair (never produced) reads
+/// as vertical, matching [`segment_crosses_node`]'s own "diagonal is a non-crossing no-op" spirit.
+fn segment_is_vertical(a: &Point, b: &Point) -> bool {
+    (a.x - b.x).abs() < EPS
+}
+
+/// §10-1 item 3's "ラベルは常に線上プレート": picks which segment of a routed edge's polyline a
+/// label's plate should sit on, and where on it.
+///
+/// The rule (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 3, konoma's own restatement in the
+/// module handoff): "LR は水平区間があればそこ、なければ垂直区間。TB は逆" — generalised past the
+/// two directions actually named the way [`flow`]/[`cross`] generalise every other formula here:
+/// prefer whichever segment runs along the **flow** axis (horizontal for `LR`/`RL`, vertical for
+/// `TD`/`BT`), and within a class of segments prefer the longest one, so a label gets the most
+/// headroom the route actually offers. A flow-axis segment exists for every `aligned`/`branch`/
+/// `merge` shape (see this function's own tests) — [`classify`]'s own doc walks through why each
+/// one always has exactly one — so the fallback to a cross-axis segment is reached only by a
+/// `reverse`/`staircase` edge whose dagre-waypoint chain happens to have no flow-axis leg at all.
+///
+/// `None` only for a degenerate zero/one-point polyline, which [`route_with_ports`] never actually
+/// returns (its own doc: two distinct nodes cannot collapse onto the same point).
+pub fn label_slot(direction: Direction, points: &[Point]) -> Option<LabelSlot> {
+    if points.len() < 2 {
+        return points.first().map(|p| LabelSlot {
+            center: p.clone(),
+            length: 0.0,
+            is_flow_axis: false,
+            horizontal: true,
+        });
+    }
+    let flow_is_vertical = matches!(direction, Direction::TopToBottom | Direction::BottomToTop);
+    // (window index, length, is_flow_axis) of the best candidate seen so far.
+    let mut best: Option<(usize, f64, bool)> = None;
+    for (i, w) in points.windows(2).enumerate() {
+        let (a, b) = (&w[0], &w[1]);
+        let vertical = segment_is_vertical(a, b);
+        let len = (b.x - a.x).hypot(b.y - a.y);
+        let is_flow = vertical == flow_is_vertical;
+        let better = match best {
+            None => true,
+            // A flow-axis segment always outranks a cross-axis one, regardless of length — that
+            // is the whole point of preferring it (only a flow-axis segment's length is ever
+            // grown by a label's own size, so a longer cross-axis segment is not actually a
+            // safer bet). Within the same class, the longer one wins.
+            Some((_, best_len, best_is_flow)) => {
+                if is_flow != best_is_flow {
+                    is_flow
+                } else {
+                    len > best_len
+                }
+            }
+        };
+        if better {
+            best = Some((i, len, is_flow));
+        }
+    }
+    let (i, len, is_flow) = best?;
+    let (a, b) = (&points[i], &points[i + 1]);
+    Some(LabelSlot {
+        center: Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0),
+        length: len,
+        is_flow_axis: is_flow,
+        horizontal: !segment_is_vertical(a, b),
+    })
+}
+
+/// The minimum length a labelled segment needs — §10-1 item 3: "ラベル付き区間の最低長 = ラベル幅
+/// （縦区間はプレート高14px）＋両側各16px". `plate_size` is the drawn plate's own box (text plus
+/// padding, [`super::LABEL_PAD_X`]/[`super::LABEL_PAD_Y`] already folded in by the caller); which
+/// of its two dimensions has to fit is [`LabelSlot::horizontal`]'s call, not `direction`'s — a
+/// label can, in principle, still land on a cross-axis segment (see [`label_slot`]'s own doc).
+pub fn label_min_length(plate_size: Size, horizontal: bool) -> f64 {
+    (if horizontal {
+        plate_size.w
+    } else {
+        plate_size.h
+    }) + 2.0 * LABEL_CLEARANCE
+}
+
 /// `node`'s own half-extent along the cross axis — `w/2` for `TD`/`BT` (whose cross axis is x),
 /// `h/2` for `LR`/`RL` (whose cross axis is y). What [`align_straight_lanes`]'s overlap-resolution
 /// sweep pads a gap by, on each side, and the same quantity dagre's own `nodesep` already spaces
@@ -1142,6 +1254,148 @@ pub fn align_straight_lanes(
     }
 }
 
+/// `side`'s tangent coordinate of a point already known to be a port on that face — `p.x` for
+/// `Top`/`Bottom`, `p.y` for `Left`/`Right`. [`face_center_coord`]'s counterpart for a point
+/// instead of a node, which is what [`avoid_label_plates`] has (a routed polyline's endpoint) where
+/// it does not have eviction's own offset bookkeeping any more.
+fn tangent_coord(side: Side, p: &Point) -> f64 {
+    match side {
+        Side::Top | Side::Bottom => p.x,
+        Side::Left | Side::Right => p.y,
+    }
+}
+
+/// `cur`, pushed [`PORT_SPACING`] further from `node`'s own `side` face centre — §10-1 item 3:
+/// "ポートをさらに16px外へ". "Further" means away from the centre in whichever direction the port
+/// already sat on (or, for a port that started exactly centred, outward in the positive tangent
+/// direction — the spec does not disambiguate a port with no existing side to keep, and this stays
+/// deterministic rather than arbitrary-per-call).
+fn push_outward(node: &PlacedNode, side: Side, cur: f64) -> f64 {
+    let center = face_center_coord(node, side);
+    let dir = if cur >= center { 1.0 } else { -1.0 };
+    cur + dir * PORT_SPACING
+}
+
+/// Whether the axis-parallel segment `a`–`b` crosses `plate`'s box — [`segment_crosses_node`]'s own
+/// arithmetic, restated against a label's plate rectangle instead of a node's. No collision margin
+/// here: item 3 is about a lane running *through* the plate, not grazing its edge, and a label
+/// plate (unlike a node) has no stroke of its own for a margin to account for.
+fn segment_crosses_plate(a: &Point, b: &Point, plate: &PlacedEdgeLabel) -> bool {
+    let (l, t, r, bo) = (
+        plate.center.x - plate.size.w / 2.0,
+        plate.center.y - plate.size.h / 2.0,
+        plate.center.x + plate.size.w / 2.0,
+        plate.center.y + plate.size.h / 2.0,
+    );
+    if (a.y - b.y).abs() < EPS {
+        let y = a.y;
+        let (x0, x1) = (a.x.min(b.x), a.x.max(b.x));
+        y >= t && y <= bo && x1 >= l && x0 <= r
+    } else if (a.x - b.x).abs() < EPS {
+        let x = a.x;
+        let (y0, y1) = (a.y.min(b.y), a.y.max(b.y));
+        x >= l && x <= r && y1 >= t && y0 <= bo
+    } else {
+        false
+    }
+}
+
+/// §10-1 item 3: "ポートの垂直レーンがラベルプレートと重なる場合はポートをさらに16px外へ". Checks
+/// every eligible edge's two port-adjacent stub segments (`points[0]-points[1]` at the source end,
+/// the last pair at the target end — exactly where stage 2's evicted, 16px-apart lanes run close
+/// together right next to a busy face) against every *other* edge's label plate; a crossing pushes
+/// that one port [`PORT_SPACING`] further out and rebuilds just that edge's polyline from it.
+///
+/// A single forward pass over `edges`, in caller order — not a fixpoint search. Pushing one port
+/// can in principle open a fresh crossing against a plate it did not use to reach, but that needs a
+/// second plate to already sit within one more lane-width of the first, which stage 2's own 16px
+/// spacing rarely stacks two deep; a documented approximation rather than a proven fixpoint, the
+/// same honesty [`route_staircase_with_ports`]'s own doc gives the back-edge route it stands in
+/// for. `reverse`/`staircase` edges are skipped outright: they draw from dagre's own waypoint
+/// chain, not a face+axis pair this function can rebuild from a single new coordinate the way
+/// [`route_with_ports`] does for every other shape.
+///
+/// Mutates `points` for any edge whose port moved, and `plates` for that same edge's own label (if
+/// it carries one) so the plate the *next* edge in this same pass checks against is the one that
+/// will actually be drawn, not the one from before the push.
+pub fn avoid_label_plates(
+    direction: Direction,
+    nodes: &[PlacedNode],
+    edges: &[EligibleEdge],
+    points: &mut HashMap<String, Vec<Point>>,
+    plates: &mut HashMap<String, PlacedEdgeLabel>,
+) {
+    let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+
+    for edge in edges {
+        let (Some(&source), Some(&target)) = (by_id.get(edge.source), by_id.get(edge.target))
+        else {
+            continue;
+        };
+        let shape = classify(
+            direction,
+            source,
+            target,
+            edge.raw,
+            edge.source_rank,
+            edge.target_rank,
+            edge.source_out_degree,
+            edge.target_in_degree,
+            nodes,
+        );
+        if shape.reverse || shape.staircase {
+            continue;
+        }
+        let Some(pts) = points.get(edge.id).cloned() else {
+            continue;
+        };
+        if pts.len() < 2 {
+            continue;
+        }
+        let n = pts.len();
+
+        let crosses_foreign = |a: &Point, b: &Point| {
+            plates
+                .iter()
+                .any(|(id, plate)| id != edge.id && segment_crosses_plate(a, b, plate))
+        };
+
+        let mut new_source_coord = None;
+        if crosses_foreign(&pts[0], &pts[1]) {
+            let cur = tangent_coord(shape.source_side, &pts[0]);
+            new_source_coord = Some(push_outward(source, shape.source_side, cur));
+        }
+        let mut new_target_coord = None;
+        if crosses_foreign(&pts[n - 2], &pts[n - 1]) {
+            let cur = tangent_coord(shape.target_side, &pts[n - 1]);
+            new_target_coord = Some(push_outward(target, shape.target_side, cur));
+        }
+        if new_source_coord.is_none() && new_target_coord.is_none() {
+            continue;
+        }
+
+        let source_coord =
+            new_source_coord.unwrap_or_else(|| tangent_coord(shape.source_side, &pts[0]));
+        let target_coord =
+            new_target_coord.unwrap_or_else(|| tangent_coord(shape.target_side, &pts[n - 1]));
+        let rebuilt = route_with_ports(
+            direction,
+            &shape,
+            source,
+            target,
+            source_coord,
+            target_coord,
+            edge.raw,
+        );
+        if let Some(plate) = plates.get_mut(edge.id) {
+            if let Some(slot) = label_slot(direction, &rebuilt) {
+                plate.center = slot.center;
+            }
+        }
+        points.insert(edge.id.to_string(), rebuilt);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1159,6 +1413,132 @@ mod tests {
             mark: None,
             style: None,
         }
+    }
+
+    // --- stage 4: label placement --------------------------------------------------------------
+
+    #[test]
+    fn label_slot_prefers_the_flow_axis_segment_even_when_a_cross_axis_one_is_longer() {
+        // A hand-built polyline rather than a routed one: a short flow-axis (vertical, TD) leg
+        // of only 10px, followed by a much longer cross-axis (horizontal) leg of 200px. §10-1
+        // item 3's own rule ("LR は水平区間があればそこ、なければ垂直区間。TB は逆") asks for the
+        // flow-axis segment whenever one exists, regardless of which one is longer — the whole
+        // reason being that only a flow-axis segment's length is ever grown by
+        // `lay_out_spec_pass`'s `label_boosts` (a longer cross-axis segment is not a safer bet,
+        // because nothing can make it any longer if a label does not fit).
+        let pts = vec![
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 10.0),
+            Point::new(200.0, 10.0),
+        ];
+        let slot = label_slot(Direction::TopToBottom, &pts).expect("2+ points must return a slot");
+        assert!(
+            slot.is_flow_axis,
+            "{slot:?}",
+            slot = (slot.center, slot.length)
+        );
+        assert!(
+            (slot.length - 10.0).abs() < 1e-9,
+            "must pick the 10px flow-axis leg, not the 200px cross-axis one: {}",
+            slot.length
+        );
+        assert!((slot.center.x - 0.0).abs() < 1e-9 && (slot.center.y - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn label_slot_picks_the_longer_of_two_flow_axis_segments() {
+        // Both legs run along the flow axis (vertical, TD) — the shape an aligned edge whose two
+        // ends landed on different eviction coordinates draws (`bridge`'s own doc, "same axis,
+        // other coordinate differs"). The second, longer leg must win.
+        let pts = vec![
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 30.0),
+            Point::new(20.0, 30.0),
+            Point::new(20.0, 130.0),
+        ];
+        let slot = label_slot(Direction::TopToBottom, &pts).expect("must return a slot");
+        assert!(slot.is_flow_axis);
+        assert!((slot.length - 100.0).abs() < 1e-9, "{}", slot.length);
+        assert!((slot.center.x - 20.0).abs() < 1e-9 && (slot.center.y - 80.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn label_slot_falls_back_to_a_cross_axis_segment_when_no_flow_axis_leg_exists() {
+        // A pathological (never actually drawn by `route_with_ports`) all-cross-axis polyline —
+        // stated anyway so the fallback branch is exercised directly rather than left unreached.
+        let pts = vec![Point::new(0.0, 0.0), Point::new(50.0, 0.0)];
+        let slot = label_slot(Direction::TopToBottom, &pts).expect("must return a slot");
+        assert!(!slot.is_flow_axis);
+        assert!(
+            slot.horizontal,
+            "a horizontal-only polyline must report horizontal=true"
+        );
+    }
+
+    #[test]
+    fn label_slot_handles_a_single_point_defensively() {
+        let pts = vec![Point::new(5.0, 5.0)];
+        let slot = label_slot(Direction::TopToBottom, &pts).expect("a single point is Some");
+        assert_eq!(slot.length, 0.0);
+        assert_eq!(slot.center, Point::new(5.0, 5.0));
+    }
+
+    #[test]
+    fn label_min_length_uses_width_for_a_horizontal_segment_and_height_for_a_vertical_one() {
+        let plate = Size::new(100.0, 20.0);
+        assert!((label_min_length(plate, true) - (100.0 + 2.0 * LABEL_CLEARANCE)).abs() < 1e-9);
+        assert!((label_min_length(plate, false) - (20.0 + 2.0 * LABEL_CLEARANCE)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn avoid_label_plates_ignores_a_reverse_edge() {
+        // A back edge has no single face+axis pair `avoid_label_plates` can rebuild a route from
+        // — it must be skipped outright rather than mis-rebuilt, even when its stub genuinely
+        // crosses a plate.
+        let a = node("A", 100.0, 200.0, 60.0, 40.0);
+        let b = node("B", 100.0, 0.0, 60.0, 40.0);
+        let nodes = vec![a, b];
+        let raw = vec![
+            Point::new(100.0, 180.0),
+            Point::new(60.0, 100.0),
+            Point::new(100.0, 20.0),
+        ];
+        let edges = vec![EligibleEdge {
+            id: "back",
+            source: "A",
+            target: "B",
+            raw: &raw,
+            // target rank <= source rank: a back edge.
+            source_rank: Some(1),
+            target_rank: Some(0),
+            source_out_degree: 1,
+            target_in_degree: 1,
+        }];
+        let routed = route_flowchart(Direction::TopToBottom, &nodes, &edges);
+        let mut points = routed.points;
+        let before = points["back"].clone();
+        let mut plates: HashMap<String, PlacedEdgeLabel> = HashMap::new();
+        // A huge plate parked right over the whole route — would cross every stub if this edge
+        // were not skipped.
+        plates.insert(
+            "someone-elses-label".to_string(),
+            PlacedEdgeLabel {
+                center: Point::new(100.0, 100.0),
+                size: Size::new(400.0, 400.0),
+                label: Label::measure("x"),
+            },
+        );
+        avoid_label_plates(
+            Direction::TopToBottom,
+            &nodes,
+            &edges,
+            &mut points,
+            &mut plates,
+        );
+        assert_eq!(
+            points["back"], before,
+            "a reverse edge must never be rebuilt"
+        );
     }
 
     #[test]

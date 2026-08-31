@@ -919,14 +919,26 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
     // this is monotonic and would converge on its own; `MAX_GROWTH_PASSES` is a defensive cap, not
     // the expected path — reached only if some future change made growth requirements disagree
     // between passes, and even then the last pass's diagram (not a panic) is what a reader gets.
+    //
+    // The same loop also carries §10-1 item 3's "ラベル付き区間の最低長" fix: `label_boosts` is the
+    // extra px `lay_out_spec_pass` asks be added to a labelled edge's flow-axis `EdgeLabel`
+    // dimension (§10-1's own recommendation — "dagre に渡す辺ラベル寸法…の引き上げ" — chosen because
+    // dagre already reserves rank space sized to exactly that field, verified against a real
+    // layout dump before this was written rather than assumed: a `TD` edge's rank gap grows by
+    // precisely its label's raw height, an `LR` edge's by precisely its raw width, in every case
+    // checked). It is a second, independent growth signal over the same retry shape as node sizes
+    // — a pass can ask for both at once — so it rides the identical loop rather than a second one.
     const MAX_GROWTH_PASSES: usize = 3;
     let mut sizes: HashMap<String, Size> = HashMap::new();
+    let mut label_boosts: HashMap<String, f64> = HashMap::new();
     let mut diagram: Option<Diagram> = None;
     for _ in 0..MAX_GROWTH_PASSES {
-        let (this_diagram, required) = lay_out_spec_pass(spec, &sizes)?;
-        let grew = apply_growth(spec, &mut sizes, &required);
+        let (this_diagram, required, label_shortfall) =
+            lay_out_spec_pass(spec, &sizes, &label_boosts)?;
+        let grew_nodes = apply_growth(spec, &mut sizes, &required);
+        let grew_labels = apply_label_growth(&mut label_boosts, &label_shortfall);
         diagram = Some(this_diagram);
-        if !grew {
+        if !grew_nodes && !grew_labels {
             break;
         }
     }
@@ -959,16 +971,49 @@ fn apply_growth(
     grew
 }
 
+/// Adds each edge's `shortfall` — this pass's own measured gap between what its labelled segment
+/// needed and what it actually got, `orthogonal::label_min_length(...) - slot.length` — onto its
+/// running `boosts` total. Unlike [`apply_growth`]'s `max` (a size is a standing requirement that
+/// does not change shape from one pass to the next), this **adds**: `shortfall` is a *delta* for
+/// this pass alone, because the previous pass's boost is already baked into the segment length
+/// `lay_out_spec_pass` just measured, so what remains unmet has to be added on top of what was
+/// already asked for, not compared against it. `shortfall` only ever holds positive entries
+/// (`lay_out_spec_pass` never records a segment that already met its minimum), so this is
+/// monotonic the same way `apply_growth` is, and converges for the same reason: growing a labelled
+/// edge's flow-axis `EdgeLabel` dimension can only ever grow the rank gap it sits in, never shrink
+/// it, so each pass's shortfall can only shrink toward zero.
+fn apply_label_growth(boosts: &mut HashMap<String, f64>, shortfall: &HashMap<String, f64>) -> bool {
+    let mut grew = false;
+    for (id, extra) in shortfall {
+        if *extra > 1e-6 {
+            *boosts.entry(id.clone()).or_insert(0.0) += *extra;
+            grew = true;
+        }
+    }
+    grew
+}
+
+/// [`lay_out_spec_pass`]'s own result — named only to keep clippy's `type_complexity` lint quiet;
+/// see that function's own doc for what each element means.
+type LayoutPassResult = (Diagram, HashMap<String, Size>, HashMap<String, f64>);
+
 /// One layout-and-route pass: builds the dagre graph at `sizes` (falling back to each
 /// [`SpecNode`]'s own `size` for any node `sizes` does not name — every node, on the first pass),
-/// lays it out, and routes every edge. Returns the diagram and, for a flowchart under
-/// `Routing::Orthogonal`, the minimum size stage 2's port eviction says each node needs — empty
-/// for `Routing::Splines`, which is what keeps that path byte-identical to before this function
-/// existed (see [`lay_out_spec`]'s own doc).
+/// lays it out, and routes every edge. Returns the diagram, the minimum size stage 2's port
+/// eviction says each node needs, and — §10-1 item 3 — how much further each labelled edge's
+/// segment still falls short of its own minimum length; all three maps are empty for
+/// `Routing::Splines`, which is what keeps that path byte-identical to before this function existed
+/// (see [`lay_out_spec`]'s own doc).
+///
+/// `label_boosts` is what the *previous* pass asked for (via the second map this function
+/// returns) — added to a labelled edge's flow-axis `EdgeLabel` dimension below, before dagre ever
+/// sees the graph, so a retried pass starts from a wider rank gap rather than measuring the same
+/// shortfall twice.
 fn lay_out_spec_pass(
     spec: &GraphSpec,
     sizes: &HashMap<String, Size>,
-) -> Result<(Diagram, HashMap<String, Size>), RenderError> {
+    label_boosts: &HashMap<String, f64>,
+) -> Result<LayoutPassResult, RenderError> {
     // The block tree, resolved before anything reaches dagre: it decides which nodes get a
     // parent, and a block that holds no node at all never reaches it (`clusters::Tree::build`).
     let node_ids: HashSet<&str> = spec.nodes.iter().map(|n| n.id.as_str()).collect();
@@ -1045,10 +1090,27 @@ fn lay_out_spec_pass(
             continue;
         };
         let (tail, head) = (tail.to_string(), head.to_string());
-        let (w, h) = edge
+        let (mut w, mut h) = edge
             .label
             .as_ref()
             .map_or((0.0, 0.0), |l| (l.width, l.height));
+        // §10-1 item 3's minimum-length fix: `label_boosts` is the previous pass's own measured
+        // shortfall (see this function's own doc), added to whichever of `w`/`h` is this diagram's
+        // flow-axis dimension — the one dagre's rank assignment actually grows the gap from (a
+        // `TD`/`BT` edge's rank gap tracks its label's raw *height*; `LR`/`RL` tracks *width* —
+        // verified against a real layout dump, not assumed, before this was written). Adding to
+        // the other dimension would ask dagre for room in an axis it does not use to size a rank
+        // gap at all, so it would inflate nothing this edge's segment actually needs.
+        if let Some(&boost) = label_boosts.get(&edge.id) {
+            if matches!(
+                spec.direction,
+                Direction::TopToBottom | Direction::BottomToTop
+            ) {
+                h += boost;
+            } else {
+                w += boost;
+            }
+        }
         g.set_edge(
             tail.clone(),
             head.clone(),
@@ -1206,36 +1268,61 @@ fn lay_out_spec_pass(
     // Orthogonal routing is `docs/FEATURE-MERMAID-RENDERER.md` §10-1's stage 1 + 2: node-to-node
     // edges only — a cluster boundary is later work (§10-2's later stages), so an edge naming a
     // subgraph keeps drawing through the ordinary spline path below regardless of `routing`.
-    let (orthogonal_points, required_size): (HashMap<String, Vec<Point>>, HashMap<String, Size>) =
-        if spec.routing == Routing::Orthogonal {
-            let eligible: Vec<orthogonal::EligibleEdge> = prepared
-                .iter()
-                .filter(|p| {
-                    matches!(p.tail_end, edges::End::Node(..))
-                        && matches!(p.head_end, edges::End::Node(..))
-                })
-                .map(|p| orthogonal::EligibleEdge {
-                    id: p.edge.id.as_str(),
-                    source: p.tail_id.as_str(),
-                    target: p.head_id.as_str(),
-                    raw: &p.raw,
-                    source_rank: g.node(p.tail_id.as_str()).and_then(|n| n.rank),
-                    target_rank: g.node(p.head_id.as_str()).and_then(|n| n.rank),
-                    source_out_degree: out_degree.get(&p.tail_id).copied().unwrap_or(0),
-                    target_in_degree: in_degree.get(&p.head_id).copied().unwrap_or(0),
-                })
-                .collect();
-            let orthogonal::RoutedFlowchart {
-                points,
-                required_size,
-            } = orthogonal::route_flowchart(spec.direction, &nodes, &eligible);
-            (points, required_size)
-        } else {
-            (HashMap::new(), HashMap::new())
-        };
+    //
+    // `eligible` is kept (not scoped to this block) because stage 4's `orthogonal::avoid_label_plates`
+    // needs the same node-to-node edge list again, once labels exist to check ports against.
+    let eligible: Vec<orthogonal::EligibleEdge> = if spec.routing == Routing::Orthogonal {
+        prepared
+            .iter()
+            .filter(|p| {
+                matches!(p.tail_end, edges::End::Node(..))
+                    && matches!(p.head_end, edges::End::Node(..))
+            })
+            .map(|p| orthogonal::EligibleEdge {
+                id: p.edge.id.as_str(),
+                source: p.tail_id.as_str(),
+                target: p.head_id.as_str(),
+                raw: &p.raw,
+                source_rank: g.node(p.tail_id.as_str()).and_then(|n| n.rank),
+                target_rank: g.node(p.head_id.as_str()).and_then(|n| n.rank),
+                source_out_degree: out_degree.get(&p.tail_id).copied().unwrap_or(0),
+                target_in_degree: in_degree.get(&p.head_id).copied().unwrap_or(0),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let (mut orthogonal_points, required_size): (
+        HashMap<String, Vec<Point>>,
+        HashMap<String, Size>,
+    ) = if spec.routing == Routing::Orthogonal {
+        let orthogonal::RoutedFlowchart {
+            points,
+            required_size,
+        } = orthogonal::route_flowchart(spec.direction, &nodes, &eligible);
+        (points, required_size)
+    } else {
+        (HashMap::new(), HashMap::new())
+    };
 
     // --- clip each edge to the real outlines, then put its label on the clipped line -------------
+    //
+    // `orthogonal_index` remembers, for every orthogonal-routed edge, where it landed in
+    // `placed_edges` — stage 4's `avoid_label_plates` pass below needs to write a pushed port's new
+    // polyline (and, if the edge carries one, its label's new position) back into the exact
+    // `PlacedEdge` it came from, and a `PlacedEdge` does not otherwise carry the `SpecEdge::id` a
+    // `HashMap<String, _>` result is keyed by.
+    let mut orthogonal_index: HashMap<String, usize> = HashMap::new();
+    // §10-1 item 3's minimum-length fix: how far short of its own minimum each labelled edge's
+    // chosen segment falls, this pass — `lay_out_spec`'s growth loop adds this onto `label_boosts`
+    // for the next retry. Only ever holds an entry for an edge whose segment actually came up
+    // short; `apply_label_growth`'s own doc explains why an unmet edge is the only kind recorded.
+    let mut label_shortfall: HashMap<String, f64> = HashMap::new();
     let mut placed_edges: Vec<PlacedEdge> = Vec::with_capacity(prepared.len());
+    // Borrowed, not moved: `eligible`'s `EligibleEdge::raw` fields borrow directly into
+    // `prepared`'s own `raw` vectors, and that borrow has to stay alive past this loop for the
+    // `avoid_label_plates` call below to reuse `eligible` — so `prepared` cannot be consumed here
+    // the way it could before this pass existed.
     for PreparedEdge {
         edge,
         tail_id: _,
@@ -1243,7 +1330,7 @@ fn lay_out_spec_pass(
         raw,
         tail_end,
         head_end,
-    } in prepared
+    } in &prepared
     {
         let is_orthogonal = spec.routing == Routing::Orthogonal
             && matches!(tail_end, edges::End::Node(..))
@@ -1254,20 +1341,48 @@ fn lay_out_spec_pass(
             let pts = orthogonal_points
                 .get(edge.id.as_str())
                 .cloned()
-                .unwrap_or_else(|| edges::route(&raw, &tail_end, &head_end));
+                .unwrap_or_else(|| edges::route(raw, tail_end, head_end));
             (pts, true)
         } else {
-            (edges::route(&raw, &tail_end, &head_end), false)
+            (edges::route(raw, tail_end, head_end), false)
         };
 
         // The second half of "the label stays on the line": put it at the half-way point of the
-        // line as clipped, not where dagre parked it.
+        // line as clipped, not where dagre parked it — except under orthogonal routing, where
+        // §10-1 item 3 asks for more than "somewhere on the line": the *segment* the label sits on,
+        // snapped by `orthogonal::label_slot` rather than measured by arc length (that function's
+        // own doc walks through a real case — a `TD` edge's label landing 1.5px from a bend, most
+        // of a wide plate hanging off the actual line — that plain arc-length midpoint drew before
+        // this existed, found by dumping a real routed diagram rather than guessed at).
         let placed_label = edge.label.clone().and_then(|l| {
-            edges::arc_midpoint(&points).map(|center| PlacedEdgeLabel {
-                center,
-                size: Size::new(l.width + LABEL_PAD_X * 2.0, l.height + LABEL_PAD_Y * 2.0),
-                label: l,
-            })
+            if is_orthogonal {
+                let slot = orthogonal::label_slot(spec.direction, &points)?;
+                let size = Size::new(l.width + LABEL_PAD_X * 2.0, l.height + LABEL_PAD_Y * 2.0);
+                // Only a flow-axis segment's length is ever grown by `label_boosts` (see
+                // `lay_out_spec_pass`'s own doc on why boosting the other dimension would ask
+                // dagre for room in an axis it never uses to size this gap) — recording a
+                // shortfall for a cross-axis segment would ask `lay_out_spec`'s growth loop for
+                // something it has no way to deliver, and it would never stop asking (the
+                // shortfall can never shrink), which is exactly `MAX_GROWTH_PASSES`'s "defensive
+                // cap, not the expected path" scenario, not a real fix.
+                if slot.is_flow_axis {
+                    let need = orthogonal::label_min_length(size, slot.horizontal);
+                    if slot.length + 1e-6 < need {
+                        label_shortfall.insert(edge.id.clone(), need - slot.length);
+                    }
+                }
+                Some(PlacedEdgeLabel {
+                    center: slot.center,
+                    size,
+                    label: l,
+                })
+            } else {
+                edges::arc_midpoint(&points).map(|center| PlacedEdgeLabel {
+                    center,
+                    size: Size::new(l.width + LABEL_PAD_X * 2.0, l.height + LABEL_PAD_Y * 2.0),
+                    label: l,
+                })
+            }
         });
 
         let side_label = |label: &Option<Label>, at_start: bool| -> Option<PlacedEdgeLabel> {
@@ -1282,6 +1397,9 @@ fn lay_out_spec_pass(
         let start_label = side_label(&edge.start_label, true);
         let end_label = side_label(&edge.end_label, false);
 
+        if is_orthogonal {
+            orthogonal_index.insert(edge.id.clone(), placed_edges.len());
+        }
         placed_edges.push(PlacedEdge {
             from: edge.from.clone(),
             to: edge.to.clone(),
@@ -1305,6 +1423,40 @@ fn lay_out_spec_pass(
         });
     }
 
+    // --- stage 4's other half: push a port clear of a foreign label plate -------------------------
+    //
+    // §10-1 item 3's other rule ("ポートの垂直レーンがラベルプレートと重なる場合はポートをさらに
+    // 16px外へ") runs once, now that every edge's label is placed: `orthogonal::avoid_label_plates`
+    // reads every plate this pass built, pushes any port whose stub runs through a plate that is
+    // not its own, and hands back the (possibly changed) polyline and, for the pushed edge's own
+    // label if it carries one, the label's new position — both written back into `placed_edges`
+    // through `orthogonal_index`.
+    if spec.routing == Routing::Orthogonal && !eligible.is_empty() {
+        let mut plates: HashMap<String, PlacedEdgeLabel> = HashMap::new();
+        for (id, &idx) in &orthogonal_index {
+            if let Some(l) = &placed_edges[idx].label {
+                plates.insert(id.clone(), l.clone());
+            }
+        }
+        orthogonal::avoid_label_plates(
+            spec.direction,
+            &nodes,
+            &eligible,
+            &mut orthogonal_points,
+            &mut plates,
+        );
+        for (id, &idx) in &orthogonal_index {
+            if let Some(new_points) = orthogonal_points.get(id) {
+                if *new_points != placed_edges[idx].points {
+                    placed_edges[idx].points = new_points.clone();
+                    if let Some(new_plate) = plates.get(id) {
+                        placed_edges[idx].label = Some(new_plate.clone());
+                    }
+                }
+            }
+        }
+    }
+
     let mut diagram = Diagram {
         width: 0.0,
         height: 0.0,
@@ -1314,7 +1466,7 @@ fn lay_out_spec_pass(
         lifelines: Vec::new(),
     };
     normalise(&mut diagram);
-    Ok((diagram, required_size))
+    Ok((diagram, required_size, label_shortfall))
 }
 
 /// One edge on its way to being drawn.
