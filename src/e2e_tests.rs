@@ -10099,6 +10099,156 @@ fn e2e_ui_mermaid_routing_changes_rendered_pixels() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Test-sufficiency audit finding 3 (high, 2026-09-01): `mermaid_routing` reaches the screen
+/// through three different code paths (`docs/FEATURE-MERMAID-RENDERER.md` §10-2's own
+/// `preview::mod::PreviewKind` split) — an inline markdown fence
+/// (`e2e_ui_mermaid_routing_changes_rendered_pixels`, above, `md_encode_worker`'s pipeline), a
+/// standalone `.mmd`/`.mermaid` file's own full-screen preview (`PreviewKind::Mermaid`,
+/// `media_load.rs`'s `MediaJob::Mermaid` branch), and a fence opened full-screen with Tab+Enter
+/// (`PreviewKind::MermaidFence`, `MediaJob::MermaidSrc`) — and before this audit only the first of
+/// the three had a pixel-level regression test. Both remaining paths use the real background-thread
+/// pipeline (`Sim::with_media`), the same technique
+/// `e2e_ui_mermaid_fence_tab_enter_opens_correct_ordinal_fullscreen_q_returns` already drives to
+/// reach a fence's own full-screen render.
+#[test]
+fn e2e_ui_mermaid_routing_changes_rendered_pixels_standalone_mmd_fullscreen() {
+    let dir = sandbox("ui_mermaid_routing_mmd_cfg");
+    std::fs::write(
+        dir.join("d.mmd"),
+        "flowchart TD\nA-->B\nB-->C{cond}\nC-->D\nC-->E\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    fn render_and_get_fgs(cfg: Config, dir: &std::path::Path) -> Vec<(u8, u8, u8)> {
+        let mut s = Sim::with_config(dir, cfg).with_media();
+        // `with_media()`'s own `attach_image_backend` forgets the resize receiver ("the kitty
+        // zoom/pan resize path isn't exercised here") — fine for the inline-fence pipeline (which
+        // never touches `img_tx` at all, `md_encode_worker` does a synchronous full encode), but a
+        // full-screen still image/SVG/mermaid raster goes through `App::prepare_image`'s
+        // `ratatui_image::thread::ThreadProtocol`, which renders a blank placeholder until a real
+        // resize worker answers over that exact channel (`main.rs`'s own `resize_worker`) and
+        // `apply_image_resize` applies the response — so this needs a *real* one wired up too.
+        let (req_tx, req_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel();
+        std::thread::spawn(move || crate::resize_worker(req_rx, resp_tx));
+        s.app
+            .attach_image_backend(ratatui_image::picker::Picker::halfblocks(), req_tx);
+        s.select("d.mmd");
+        s.enter(); // kicks off a real decode thread (MediaJob::Mermaid)
+        s.drain_media();
+        s.draw(); // first pass: builds the ThreadProtocol and requests a resize
+        let mut resp_rx = resp_rx;
+        let resp = resp_rx
+            .blocking_recv()
+            .expect("the resize worker must answer");
+        assert!(s.app.apply_image_resize(resp));
+        s.draw(); // second pass: the resized raster actually paints
+        drawn_rgb_fgs(&s.term)
+    }
+
+    let mut cfg_splines = Config::default();
+    cfg_splines.ui.mermaid_routing = "splines".into();
+    let fg_splines = render_and_get_fgs(cfg_splines, &root);
+
+    let mut cfg_ortho = Config::default();
+    cfg_ortho.ui.mermaid_routing = "konoma-orthogonal".into();
+    let fg_ortho = render_and_get_fgs(cfg_ortho, &root);
+
+    assert!(
+        !fg_splines.is_empty(),
+        "splines でも実ピクセルが描かれるはず(単体 .mmd 全画面)"
+    );
+    assert!(
+        !fg_ortho.is_empty(),
+        "konoma-orthogonal でも実ピクセルが描かれるはず(単体 .mmd 全画面)"
+    );
+    assert_ne!(
+        fg_splines, fg_ortho,
+        "単体 .mmd の全画面プレビューでも splines と konoma-orthogonal では描画ピクセル列が異なるはず"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Finding 3's remaining path: a fence opened full-screen (Tab focuses the decoded fence item,
+/// Enter opens `PreviewKind::MermaidFence`) — distinct from both the inline-fence path above (which
+/// never leaves `PreviewKind::Markdown`) and the standalone-file path
+/// (`..._standalone_mmd_fullscreen`, above, which never touches a markdown fence at all).
+#[test]
+fn e2e_ui_mermaid_routing_changes_rendered_pixels_fence_fullscreen() {
+    let dir = sandbox("ui_mermaid_routing_fence_fullscreen_cfg");
+    std::fs::write(
+        dir.join("d.md"),
+        "# Doc\n\n```mermaid\nflowchart TD\nA-->B\nB-->C{cond}\nC-->D\nC-->E\n```\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    fn render_and_get_fgs(cfg: Config, dir: &std::path::Path) -> Vec<(u8, u8, u8)> {
+        let mut s = Sim::with_config(dir, cfg).with_media();
+        // See the standalone-`.mmd` sibling test's own comment: the full-screen re-render goes
+        // through `App::prepare_image`'s `ThreadProtocol`, which needs a *real* resize worker
+        // (`with_media()`'s own resize channel is deliberately forgotten) to actually paint pixels
+        // rather than a blank placeholder.
+        let (req_tx, req_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel();
+        std::thread::spawn(move || crate::resize_worker(req_rx, resp_tx));
+        s.app
+            .attach_image_backend(ratatui_image::picker::Picker::halfblocks(), req_tx);
+        s.select("d.md");
+        s.enter(); // the fence kicks off a real decode thread (Loading, no Tab item yet)
+        s.drain_md_images(); // decodes to an Image slot -> becomes a Tab item
+        s.tab(); // focus the fence
+        assert_eq!(
+            s.app.focused_item(),
+            Some(0),
+            "the fence must be Tab-reachable once decoded"
+        );
+        s.enter(); // open it full-screen (PreviewKind::MermaidFence)
+        assert!(
+            matches!(
+                s.app.tab.preview_kind,
+                Some(crate::preview::PreviewKind::MermaidFence(0))
+            ),
+            "must open the fence full-screen: {:?}",
+            s.app.tab.preview_kind
+        );
+        s.drain_media(); // the full-screen re-render (MediaJob::MermaidSrc) is a real thread too
+        s.draw(); // first pass: builds the ThreadProtocol and requests a resize
+        let mut resp_rx = resp_rx;
+        let resp = resp_rx
+            .blocking_recv()
+            .expect("the resize worker must answer");
+        assert!(s.app.apply_image_resize(resp));
+        s.draw(); // second pass: the resized raster actually paints
+        drawn_rgb_fgs(&s.term)
+    }
+
+    let mut cfg_splines = Config::default();
+    cfg_splines.ui.mermaid_routing = "splines".into();
+    let fg_splines = render_and_get_fgs(cfg_splines, &root);
+
+    let mut cfg_ortho = Config::default();
+    cfg_ortho.ui.mermaid_routing = "konoma-orthogonal".into();
+    let fg_ortho = render_and_get_fgs(cfg_ortho, &root);
+
+    assert!(
+        !fg_splines.is_empty(),
+        "splines でも実ピクセルが描かれるはず(フェンス全画面)"
+    );
+    assert!(
+        !fg_ortho.is_empty(),
+        "konoma-orthogonal でも実ピクセルが描かれるはず(フェンス全画面)"
+    );
+    assert_ne!(
+        fg_splines, fg_ortho,
+        "フェンスの全画面表示でも splines と konoma-orthogonal では描画ピクセル列が異なるはず"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// `mermaid_rows`: an upper limit on the reserved cell box (`ImagePlacement.rows`), not a fill
 /// target (see `mermaid_cells`'s doc comment) — independent of any encode/rendering, a picker
 /// alone (for `font_size()`) is enough. This fixture's diagram is naturally taller than both 4 and

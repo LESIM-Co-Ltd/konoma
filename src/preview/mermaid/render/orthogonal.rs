@@ -2842,6 +2842,270 @@ mod tests {
     }
 
     #[test]
+    fn avoid_label_plates_pushes_a_staircase_forward_edges_port_off_a_plate() {
+        // The generic `push_outward` branch (`avoid_label_plates`'s final `else`) is reached by
+        // *every* non-reverse shape, but `docs/FEATURE-MERMAID-RENDERER.md` §10's own test audit
+        // (finding 7) found the whole corpus never once exercised it for a `staircase` edge (a
+        // collision-fallback branch/merge, §10-1 item 1's "両形とも交差するなら…階段経路へ
+        // フォールバック") specifically — every corpus source whose plate-crossing fix fires does
+        // so for an ordinary branch/merge/aligned edge instead. This reproduces the same
+        // `amp-chain` geometry that already proves `A->D` (`docs/FEATURE-MERMAID-RENDERER.md`
+        // §10-2's own `orthogonal_dag_corpus` doc) collides on both the branch and the merge
+        // attempt and falls back to `staircase`, built directly with `route_flowchart` rather than
+        // through the full mermaid pipeline so a plate can be dropped exactly on its source stub —
+        // `A & B --> C & D`'s real dagre-driven layout never happens to put a label there.
+        let a = node("A", 42.6689453125, 30.7, 69.337890625, 45.4);
+        let b = node("B", 42.6689453125, 137.76666666666668, 69.337890625, 45.4);
+        let c = node("C", 162.39306640625, 30.7, 70.1103515625, 45.4);
+        let d = node(
+            "D",
+            162.39306640625,
+            137.76666666666668,
+            70.1103515625,
+            45.4,
+        );
+        let nodes = vec![a, b, c, d];
+        let edges = vec![EligibleEdge {
+            id: "ad",
+            source: "A",
+            target: "D",
+            raw: &[],
+            source_rank: Some(0),
+            target_rank: Some(1),
+            source_out_degree: 2,
+            target_in_degree: 2,
+        }];
+        let shape = classify(
+            Direction::LeftToRight,
+            &nodes[0],
+            &nodes[3],
+            &[],
+            Some(0),
+            Some(1),
+            2,
+            2,
+            &nodes,
+        );
+        assert!(
+            shape.staircase,
+            "the fixture must actually reach `staircase` (both the branch and the merge attempt \
+             must cross `C`'s box): {shape:?}"
+        );
+        // `classify` (called fresh, from `nodes` alone, both by `route_flowchart` above and by
+        // `avoid_label_plates` below) marks this edge `staircase` regardless of what `points["ad"]`
+        // holds — `route_flowchart`'s own real output already runs the resulting bridge through
+        // `clear_local_route`, which detours it hard around `C` (found by dumping: the plain
+        // one-corner bridge between the two evicted ports runs straight through `C`'s own box,
+        // since `C` sits on the same rank, between `A` and `D`) — far enough that the port lands
+        // outside its own node's flat run and `push_outward` has nothing left to give (this file's
+        // own doc on that function: "if that walks past the face's own flat run…it gives up").
+        // So this fixture is built directly from the *pre-detour* one-corner bridge instead — the
+        // shape `route_staircase_with_ports` builds before `clear_local_route` ever runs — which
+        // is a real, reachable value of `points["ad"]` (`avoid_label_plates` is handed whatever
+        // `points` map the caller has, and nothing about its own logic assumes `clear_local_route`
+        // already ran against the *particular* plate being tested against): the port itself still
+        // sits at its ordinary, undetoured coordinate, so `push_outward` has room to move it.
+        let source_port = port_at(
+            &nodes[0],
+            shape.source_side,
+            face_center_coord(&nodes[0], shape.source_side),
+            PORT_INSET,
+        );
+        let target_port = port_at(
+            &nodes[3],
+            shape.target_side,
+            face_center_coord(&nodes[3], shape.target_side),
+            PORT_INSET,
+        );
+        let before = bridge(
+            Direction::LeftToRight,
+            &source_port,
+            &target_port,
+            shape.source_axis,
+            shape.target_axis,
+        );
+        let before: Vec<Point> = std::iter::once(source_port.clone()).chain(before).collect();
+        let mut points: HashMap<String, Vec<Point>> = HashMap::new();
+        points.insert("ad".to_string(), before.clone());
+
+        // Dropped exactly on `ad`'s own source stub (`before[0]`-`before[1]`) — a completely
+        // unrelated edge's label, the same "found by dumping, not assumed" shape every other case
+        // in this file uses.
+        let stub_mid = Point::new(
+            (before[0].x + before[1].x) / 2.0,
+            (before[0].y + before[1].y) / 2.0,
+        );
+        let mut plates: HashMap<String, PlacedEdgeLabel> = HashMap::new();
+        plates.insert(
+            "someone-elses-label".to_string(),
+            PlacedEdgeLabel {
+                center: stub_mid,
+                size: Size::new(40.0, 20.0),
+                label: Label::measure("x"),
+            },
+        );
+        let crosses_plate = |pts: &[Point], plate: &PlacedEdgeLabel| {
+            pts.windows(2)
+                .any(|w| segment_crosses_plate(&w[0], &w[1], plate))
+        };
+        assert!(
+            crosses_plate(&before, &plates["someone-elses-label"]),
+            "fixture must reproduce the crossing before the fix runs: {before:?}"
+        );
+
+        avoid_label_plates(
+            Direction::LeftToRight,
+            &nodes,
+            &[],
+            &edges,
+            &mut points,
+            &mut plates,
+        );
+
+        assert_ne!(
+            points["ad"], before,
+            "the staircase edge's port must actually move: {:?}",
+            points["ad"]
+        );
+        assert!(
+            !crosses_plate(&points["ad"], &plates["someone-elses-label"]),
+            "the rerouted staircase line must clear the plate: {:?}",
+            points["ad"]
+        );
+        for w in points["ad"].windows(2) {
+            let dx = (w[1].x - w[0].x).abs();
+            let dy = (w[1].y - w[0].y).abs();
+            assert!(
+                dx < 1e-9 || dy < 1e-9,
+                "rerouted line must stay axis-parallel: {w:?}"
+            );
+        }
+    }
+
+    // --- test-sufficiency audit finding 9: tie-break pins (medium) --------------------------------
+    //
+    // Four deterministic tie-breaks the mutation-testing pass found no test pinned directly: each
+    // one below states the tie case by construction (an exact 45°, an exactly-centred port, two
+    // exactly-equal-length segments) rather than hoping a corpus source happens to land on one.
+
+    #[test]
+    fn dominant_face_at_exactly_45_degrees_prefers_the_flow_face() {
+        // `dominant_face`'s own tie-break is `dflow.abs() >= dcross.abs()`, so an exact tie (a
+        // reference point sitting on the true diagonal from `center`) must resolve to the flow
+        // face, never the cross one. TD: flow is y, cross is x.
+        let center = Point::new(0.0, 0.0);
+        let reference = Point::new(50.0, 50.0); // dflow == dcross == 50.0, an exact tie.
+        assert_eq!(
+            dominant_face(Direction::TopToBottom, &center, &reference),
+            Side::Bottom,
+            "an exact 45° tie must resolve to the flow face (Bottom, since dflow >= 0), not the \
+             cross face (Right)"
+        );
+        // And the mirror case for a direction whose flow axis is x (LR): the same tie must resolve
+        // to Right (flow), not Top/Bottom (cross).
+        assert_eq!(
+            dominant_face(Direction::LeftToRight, &center, &reference),
+            Side::Right,
+            "the same 45° tie under LR must resolve to the flow face (Right), not the cross face \
+             (Bottom)"
+        );
+    }
+
+    #[test]
+    fn safe_ring_exit_l_shape_tie_prefers_the_first_side_named_in_the_near_far_pair() {
+        // A port sitting exactly on the ring's own horizontal centre, `(port.x - l) == (r -
+        // port.x)`: `safe_ring_exit`'s own `near`/`far` choice (`if (port.x - l) <= (r - port.x)`)
+        // is a `<=`, so an exact tie must resolve to `l` (the left side), never `r`. Forced onto
+        // the L-shaped fallback by blocking the direct candidate outright, with *both* possible L
+        // shapes left clear so the only thing deciding which one is returned is try-order — and the
+        // try-order is exactly what the near/far tie-break picks.
+        let ring = (0.0, 0.0, 600.0, 400.0);
+        let port = Point::new(300.0, 50.0); // horizontally centred: 300-0 == 600-300.
+        let direct = ring_touch(Side::Top, &port, ring);
+        let blocked = |a: &Point, b: &Point| *a == port && *b == direct;
+        let exit = safe_ring_exit(Side::Top, &port, ring, &blocked);
+        assert_eq!(exit.len(), 2, "must take the L-shaped fallback: {exit:?}");
+        assert!(
+            (exit[1].x - ring.0).abs() < 1e-9,
+            "an exact near/far tie must resolve to the ring's LEFT side (tried first), not the \
+             right: {exit:?}"
+        );
+    }
+
+    #[test]
+    fn label_slot_keeps_the_first_segment_on_an_exact_length_tie() {
+        // Two flow-axis (TD: vertical) segments of exactly the same length — `label_slot`'s own
+        // `better` predicate is a strict `len > best_len`, so the *first* one encountered must win,
+        // not the second.
+        let pts = vec![
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 50.0),   // first vertical leg: 50px
+            Point::new(20.0, 50.0),  // a short cross-axis hop, irrelevant to the tie
+            Point::new(20.0, 100.0), // second vertical leg: also exactly 50px
+        ];
+        let slot = label_slot(Direction::TopToBottom, &pts).expect("must return a slot");
+        assert!(slot.is_flow_axis);
+        assert!((slot.length - 50.0).abs() < 1e-9, "{}", slot.length);
+        assert!(
+            (slot.center.x - 0.0).abs() < 1e-9 && (slot.center.y - 25.0).abs() < 1e-9,
+            "an exact-length tie must keep the FIRST segment (centre (0,25)), not the second \
+             (centre (20,75)): {:?}",
+            slot.center
+        );
+    }
+
+    #[test]
+    fn perimeter_lanes_are_assigned_by_edge_id_not_declaration_order() {
+        // Two genuine back edges (source and target are different node ids, both `reverse`),
+        // declared with `b_edge` first and `a_edge` second — `perimeter_lanes`'s own doc says the
+        // order is "edge id, not declaration or `HashMap` iteration order", so `a_edge` (the
+        // alphabetically smaller id, declared SECOND) must still land on lane 0.
+        let a = node("A", 0.0, 0.0, 40.0, 30.0);
+        let b = node("B", 0.0, 200.0, 40.0, 30.0);
+        let by_id: HashMap<&str, &PlacedNode> = [("A", &a), ("B", &b)].into_iter().collect();
+        let edges = vec![
+            EligibleEdge {
+                id: "b_edge",
+                source: "B",
+                target: "A",
+                raw: &[],
+                source_rank: Some(2),
+                target_rank: Some(0),
+                source_out_degree: 1,
+                target_in_degree: 1,
+            },
+            EligibleEdge {
+                id: "a_edge",
+                source: "B",
+                target: "A",
+                raw: &[],
+                source_rank: Some(2),
+                target_rank: Some(0),
+                source_out_degree: 1,
+                target_in_degree: 1,
+            },
+        ];
+        let back_shape = EdgeShape {
+            reverse: true,
+            aligned: false,
+            staircase: false,
+            source_side: Side::Top,
+            source_axis: Axis::Cross,
+            target_side: Side::Bottom,
+            target_axis: Axis::Cross,
+        };
+        let shapes = vec![Some(back_shape), Some(back_shape)];
+        let lanes = perimeter_lanes(&by_id, &edges, &shapes);
+        assert_eq!(
+            lanes.get("a_edge").copied(),
+            Some(0),
+            "the alphabetically-smaller edge id must get lane 0 regardless of declaration order: \
+             {lanes:?}"
+        );
+        assert_eq!(lanes.get("b_edge").copied(), Some(1), "{lanes:?}");
+    }
+
+    #[test]
     fn push_outward_skips_a_coordinate_another_port_already_occupies() {
         // Three ports evicted onto the same face at `-PORT_SPACING`/`0`/`+PORT_SPACING` — `evict`'s
         // own rule for `n == 3` (the `for (i, claim) in claims.iter().enumerate()` loop above,
@@ -3400,6 +3664,50 @@ mod tests {
         assert_eq!(
             by_id["S2"].center.x, 500.0,
             "S2 lost the tie and must be left exactly where it started"
+        );
+    }
+
+    /// Test-sufficiency audit finding 9 (medium): `align_straight_lanes`'s own candidate sort has
+    /// two keys ("タイは上・左優先" — source cross coordinate, then target cross coordinate,
+    /// `pair_candidates.sort_by`'s own `.then_with`), but every existing test (this file's own
+    /// `tie_break_prefers_the_smaller_cross_coordinate` included) only ever varies the *first* key
+    /// — two different sources competing for one target. Here one single source `S` offers a lane
+    /// to two different targets, so the first key ties by construction (both candidates share the
+    /// same source, hence the same source cross coordinate) and only the second key can decide —
+    /// §10-1 item 1's own "上・左優先" must still mean "the smaller of the two", read off the
+    /// *target* this time: `S` must pair with `T1` (the smaller-cross target), not `T2`.
+    #[test]
+    fn tie_break_second_key_prefers_the_smaller_target_cross_coordinate_when_sources_tie() {
+        // Ids deliberately spelled so alphabetical order is the *opposite* of cross-coordinate
+        // order (`Alef` < `Zed`, but `Alef`'s own cross coordinate, 500, is the *larger* one) — a
+        // sort that silently fell back past the (missing) numeric second key straight to the
+        // third (`s1.cmp(s2)`, a no-op here since both share source `S`) or fourth (`t1.cmp(t2)`,
+        // alphabetical by id) key would then pick the wrong target for a reason that has nothing
+        // to do with cross coordinates, and this is built to make that visible rather than
+        // coincide with the right answer the way two arbitrarily-named ids might.
+        let mut nodes = vec![
+            node("S", 100.0, 0.0, 40.0, 30.0),
+            node("Zed", 20.0, 100.0, 40.0, 30.0),
+            node("Alef", 500.0, 100.0, 40.0, 30.0),
+        ];
+        let node_rank = ranks(&[("S", 0), ("Zed", 1), ("Alef", 1)]);
+        // Declared in an order that would win the *wrong* candidate if the sort fell back to
+        // declaration order instead of the second key: `S -> Alef` listed first.
+        let candidates = [edge("S", "Alef"), edge("S", "Zed")];
+        let _ = align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
+
+        let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        // S can pair with at most one target ("各ノード高々1出"). If it paired with Zed (smaller
+        // target cross, 20), the chain average is (100+20)/2 = 60 and Alef is left untouched.
+        assert!(
+            (by_id["S"].center.x - 60.0).abs() < 1e-9,
+            "S must align with Zed (the smaller-cross target), landing at (100+20)/2=60, not \
+             (100+500)/2=300: {:?}",
+            by_id["S"].center
+        );
+        assert_eq!(
+            by_id["Alef"].center.x, 500.0,
+            "Alef lost the second-key tie-break and must be left exactly where it started"
         );
     }
 

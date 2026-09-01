@@ -6241,9 +6241,23 @@ fn excursion(bounds: (f64, f64, f64, f64), p: &Point) -> f64 {
 /// all — a `branch`/`merge`/`aligned` shape never does, since its whole route stays within
 /// coordinates existing nodes already occupy, so straying at all is itself the signal this is a
 /// perimeter-routed edge — clears it by at least [`orthogonal::PERIMETER_MARGIN`].
+///
+/// **Test-sufficiency audit finding 4 (2026-09-01)**: run only over `orthogonal_corpus()` (every
+/// `CORPUS` source), this invariant never actually exercises `content_bounds`'s own "a cluster's
+/// bounds are folded in, not just its members' node boxes" contract — every `CORPUS` subgraph is
+/// small enough that its frame never juts out past its members' own node boxes by more than the
+/// ordinary member padding, so the check would pass identically even if `content_bounds` read
+/// `nodes` alone. `orthogonal_only_corpus()`'s `orthogonal-frame-hugs-backedge` (a long title
+/// forcing the frame wider than its one small member) is what actually makes the two readings
+/// disagree — see [`orthogonal_frame_hugs_backedge_perimeter_lane_reads_the_frame_not_just_the_nodes`]
+/// for the same fact pinned to real numbers, and this crate's own mutation check (temporarily
+/// dropping `content_bounds`'s `clusters` loop) confirms this loop is what actually catches it.
 #[test]
 fn orthogonal_perimeter_edges_clear_the_margin() {
-    for (name, src) in orthogonal_corpus() {
+    for (name, src) in orthogonal_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+    {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
         let bounds = diagram_content_bounds(&d);
         for e in &d.edges {
@@ -6272,6 +6286,60 @@ fn orthogonal_perimeter_edges_clear_the_margin() {
             );
         }
     }
+}
+
+/// Finding 4's own specific pin, dumped by hand: `orthogonal-frame-hugs-backedge`'s `one` frame
+/// (widened by its own long title, `subgraph-long-title`'s same trick) sits *above* `D`, `X` and
+/// `Y`'s own node boxes — `one`'s top edge (y=24) is the true minimum of the whole diagram, well
+/// above every node's own top (y=49) — so `Y->X`'s ring lane can only land at `content.top -
+/// PERIMETER_MARGIN` if `content_bounds` actually read `one`'s own bounds; a node-only reading
+/// would put the ring 25px further down (`49 - 16 = 33`, inside `one`'s own frame by 9px — a
+/// direct violation of "at least 16px outside the outermost frame").
+#[test]
+fn orthogonal_frame_hugs_backedge_perimeter_lane_reads_the_frame_not_just_the_nodes() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = orthogonal_only_corpus()
+        .into_iter()
+        .find(|(name, _)| *name == "orthogonal-frame-hugs-backedge")
+        .unwrap()
+        .1;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let frame = d.cluster("one").expect("cluster one must exist").bounds();
+    let bounds = diagram_content_bounds(&d);
+    // `one`'s frame really is the widest thing here — the fixture's whole point.
+    assert!(
+        (bounds.1 - frame.1).abs() < 0.01,
+        "the fixture must make the frame's own top the diagram's minimum y: content.top={} \
+         frame.top={}",
+        bounds.1,
+        frame.1
+    );
+    let yx = d
+        .edges
+        .iter()
+        .find(|e| e.from == "Y" && e.to == "X")
+        .expect("Y->X must exist");
+    let topmost = yx.points.iter().map(|p| p.y).fold(f64::INFINITY, f64::min);
+    assert!(
+        (bounds.1 - topmost - orthogonal::PERIMETER_MARGIN).abs() < 1.0,
+        "Y->X's ring lane must sit exactly PERIMETER_MARGIN above content's own top (which \
+         already folds the frame in): topmost={topmost} content.top={} margin={}",
+        bounds.1,
+        orthogonal::PERIMETER_MARGIN
+    );
+    // And, directly against the frame itself rather than the whole content box: the ring's own
+    // topmost excursion (the point this test just pinned) clears `one`'s own top edge by the
+    // margin too — not just checked indirectly through the diagram's own bounding box, which
+    // happens to be dominated by the very frame under test here.
+    let out = frame.1 - topmost;
+    assert!(
+        out + AXIS_EPS >= orthogonal::PERIMETER_MARGIN,
+        "Y->X's topmost point clears frame `one`'s own top edge by only {out}px, short of the \
+         {}px margin",
+        orthogonal::PERIMETER_MARGIN
+    );
 }
 
 /// §10-1 item 4's 8px stagger: every perimeter edge's own maximum excursion past the content box
@@ -6991,5 +7059,521 @@ fn self_loop_routes_correctly_across_lane_alignment_stress_cases() {
                 );
             }
         }
+    }
+}
+
+// =============================================================================================
+// 2026-09-01 test-sufficiency audit (orthogonal wiring mode, `docs/FEATURE-MERMAID-RENDERER.md`
+// §10) — two independent audits (a spec-axis review and a mutation-testing run) of the tests
+// above. Findings are implemented below, grouped and commented by finding number so each one's own
+// reasoning stays next to its test. Every new source here is deliberately kept OUT of `CORPUS`
+// itself: `CORPUS` is `mermaid_render.snap`'s own golden input, and this audit's own ground rule
+// (`docs/FEATURE-MERMAID-RENDERER.md` §10's own governing instruction) is that the golden must not
+// move. New sources live in `orthogonal_only_corpus` instead — this module's own equivalent of
+// `orthogonal_corpus`/`orthogonal_dag_corpus`'s existing "filtered/extended view of `CORPUS`"
+// pattern, just built from scratch rather than filtered.
+// =============================================================================================
+
+/// Sources built specifically to exercise a `konoma-orthogonal` corner none of `CORPUS`'s
+/// shape-driven entries reaches — never folded into `CORPUS` (see this section's own doc).
+fn orthogonal_only_corpus() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            // Finding 1: `T` receives four merge-shaped edges onto the same face (`W1->T` lands
+            // on `T`'s own flow face instead, aligned) — `docs/FEATURE-MERMAID-RENDERER.md` §10-1
+            // item 1's own "ノードをその軸方向に拡大" (eviction growth), dumped and confirmed to
+            // actually fire here (`T`'s box grows from its label-only size to fit four 16px-spaced
+            // ports), with every node a member of the same subgraph frame — the growth retry
+            // (`lay_out_spec`'s own loop) re-lays the whole diagram out afterward, so the cluster
+            // invariants have to hold against the *grown*, not the original, geometry.
+            "orthogonal-subgraph-growth",
+            "flowchart TD\n  subgraph one [Group]\n    W1 --> T\n    W2 --> T\n    W3 --> T\n    \
+             W4 --> T\n    W5 --> T\n  end\n  T --> X",
+        ),
+        (
+            // Finding 4: a long title forces the frame `one` wider/taller than its one small
+            // member `D` — dumped and confirmed the frame is in fact the widest/tallest thing in
+            // the diagram (`D`, `X`, `Y` are all small default-sized nodes). `X`/`Y` sit entirely
+            // outside `one` and close a two-node cycle, so `Y->X` is a genuine back edge routed
+            // through the perimeter lane (§10-1 item 4) — one that has no other reason to come
+            // anywhere near `one` except that `one`'s own frame juts into the ring's own margin
+            // unless `orthogonal::content_bounds` actually folds a cluster's bounds in (not just
+            // its members' node boxes, `content_bounds`'s own doc).
+            "orthogonal-frame-hugs-backedge",
+            "flowchart TD\n  subgraph one [resolve the preview kind and delegate it]\n    D[d]\n  \
+             end\n  X --> Y\n  Y --> X",
+        ),
+        (
+            // Finding 8a: `C->B` is a collision-fallback `staircase` detour around `A` (dumped:
+            // its route dips right through the self-loop `A->A`'s own bump). Both cross in real
+            // pixels, so this is the one source that actually reaches `insert_crossing_gaps`'s
+            // self-loop/detour interaction rather than assuming it from reading the code.
+            "orthogonal-self-loop-crosses",
+            "flowchart TD\n  A --> A\n  A --> B\n  C --> A\n  C --> B",
+        ),
+    ]
+}
+
+/// Finding 1 (high): the cluster invariants stage 1b already states over `CORPUS` under
+/// `"splines"` (`check_clusters_hold_their_members` and its three siblings, `pub(super)` above so
+/// this section can reuse them rather than re-deriving the same geometry questions), run again
+/// under `"konoma-orthogonal"` — routing an edge does not move a node or a frame, but §10-1 item 1's
+/// own eviction growth *does* (a face too narrow for its ports grows the node, and `lay_out_spec`
+/// re-lays the whole diagram out from the grown size), so nothing before this audit had actually
+/// checked a frame still holds its members once that growth has happened.
+#[test]
+fn invariant_orthogonal_clusters_hold_their_members() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let tree = tree_of_src(src);
+        check_clusters_hold_their_members(name, &d, &tree);
+    }
+}
+
+#[test]
+fn invariant_orthogonal_nested_clusters_sit_inside_their_parent() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+    {
+        check_nested_clusters_sit_inside_their_parent(
+            name,
+            &laid_out_flow(src, "basis", "konoma-orthogonal"),
+        );
+    }
+}
+
+#[test]
+fn invariant_orthogonal_unrelated_clusters_do_not_overlap() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+    {
+        check_unrelated_clusters_do_not_overlap(
+            name,
+            &laid_out_flow(src, "basis", "konoma-orthogonal"),
+        );
+    }
+}
+
+#[test]
+fn invariant_orthogonal_cluster_titles_stay_inside_their_frame_and_off_every_node() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let tree = tree_of_src(src);
+        check_cluster_titles(name, &d, &tree);
+    }
+}
+
+/// Finding 1's own eviction-growth half, stated directly rather than only through the invariants
+/// above: `orthogonal-subgraph-growth`'s `T` must actually grow past its label-only size (the
+/// scenario those invariants are being run *for*), and its grown box must still fit inside its own
+/// frame with the ordinary 16px cluster padding — not merely "the invariant above happened to pass
+/// for unrelated reasons".
+#[test]
+fn orthogonal_eviction_growth_inside_a_subgraph_still_fits_the_frame() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = orthogonal_only_corpus()
+        .into_iter()
+        .find(|(name, _)| *name == "orthogonal-subgraph-growth")
+        .unwrap()
+        .1;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let t = d.node("T").expect("T must exist");
+    let label_only = shapes::size(
+        Glyph::Flow(Shape::Rect),
+        Size::new(t.label.width, t.label.height),
+    );
+    assert!(
+        t.size.h > label_only.h + 1.0,
+        "T must actually grow past its label-only height to fit four merge ports on one face: \
+         grown={} label_only={}",
+        t.size.h,
+        label_only.h
+    );
+    let cluster = d.cluster("one").expect("cluster one must exist");
+    let out = escapes(t.bounds(), cluster.bounds());
+    assert!(
+        out <= 0.01,
+        "T's grown box must still sit fully inside its own frame: pokes {out:.2}px out"
+    );
+}
+
+/// Finding 2 (high): a `classDef`/`style`-painted decision node under `"konoma-orthogonal"` draws
+/// as a chamfered rectangle (`decision_node_is_chamfered_under_orthogonal_and_a_diamond_under_splines`
+/// already pins the shape), but nothing before this audit ever rendered one *with* a resolved paint
+/// — every existing orthogonal SVG test uses an unstyled node, and `CORPUS`'s own
+/// `classdef-and-style-cascade` source (which does exercise the cascade) has no decision node.
+/// `svg::emit_node`'s own `fill`/`stroke`/`sw` locals feed every `Outline` arm identically
+/// (`Outline::Polygon` included, `svg.rs` line ~543), so this is really checking that a chamfered
+/// node was not accidentally left on some *other* code path — the v0.28.0 regression's own shape
+/// ("parses but nobody reads it").
+#[test]
+fn orthogonal_classdef_paints_a_chamfered_decision_node() {
+    let src =
+        "flowchart TD\n  classDef hot fill:#f9f,stroke:#a00\n  A --> B{cond}:::hot\n  B --> C";
+
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let b = d.node("B").expect("B must exist");
+    assert_eq!(
+        b.shape,
+        Glyph::ChamferedRect,
+        "B must chamfer under orthogonal routing"
+    );
+    let style = b
+        .style
+        .as_ref()
+        .expect("B must carry the resolved `:::hot` paint");
+    assert_eq!(style.fill.as_deref(), Some("#f9f"));
+    assert_eq!(style.stroke.as_deref(), Some("#a00"));
+
+    let svg = render_flow(src, "dark", "basis", "konoma-orthogonal").expect("must render");
+    // `<polygon` also draws every arrowhead (a small 3-point triangle in the theme's own
+    // arrowhead colour) — pick the *node's* polygon by its 8 vertices, `shapes::polygon`'s own
+    // `Glyph::ChamferedRect` shape (already pinned by
+    // `decision_node_is_chamfered_under_orthogonal_and_a_diamond_under_splines`), not the first
+    // `<polygon` line in source order.
+    let vertex_count = |l: &str| -> usize {
+        l.split("points=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .map(|pts| pts.split_whitespace().count())
+            .unwrap_or(0)
+    };
+    let polygon = svg
+        .lines()
+        .filter(|l| l.starts_with("<polygon"))
+        .find(|l| vertex_count(l) == 8)
+        .unwrap_or_else(|| panic!("no 8-vertex chamfered-rect <polygon> element in:\n{svg}"));
+    assert!(
+        polygon.contains("fill=\"#f9f\""),
+        "the chamfered node's own polygon must carry the classDef fill: {polygon}"
+    );
+    assert!(
+        polygon.contains("stroke=\"#a00\""),
+        "the chamfered node's own polygon must carry the classDef stroke: {polygon}"
+    );
+}
+
+// Finding 3's app-wiring pin lives in `e2e_tests.rs`
+// (`e2e_ui_mermaid_routing_changes_rendered_pixels_standalone_mmd_fullscreen` and
+// `..._mermaid_fence_fullscreen`) — the other two ways a flowchart's pixels reach the screen
+// besides an inline fence, which is all `e2e_ui_mermaid_routing_changes_rendered_pixels` covers.
+
+/// Finding 5 (medium): §10-1 item 4's 2026-09-01 clarification — a back edge's line style is
+/// whatever the author wrote (`-->`/`-.->`/`==>`), never something `konoma-orthogonal` itself
+/// decides — pinned directly against the emitted SVG's `stroke-dasharray`, the one place a reader
+/// actually sees it. `strokes` (`CORPUS`) exercises every stroke spelling but not a *back* edge in
+/// particular; these two sources are minimal 2-node cycles so the back edge is the only edge in the
+/// diagram whose stroke matters.
+#[test]
+fn orthogonal_back_edge_keeps_the_authors_own_line_style() {
+    // A solid back edge (the ordinary `-->`) must draw with no dash array at all.
+    let solid = render_flow(
+        "flowchart TD\n  A --> B\n  B --> A",
+        "dark",
+        "basis",
+        "konoma-orthogonal",
+    )
+    .expect("must render");
+    assert!(
+        !solid.contains("stroke-dasharray"),
+        "a solid back edge must not be drawn dashed just because it is routed on the perimeter \
+         lane: {solid}"
+    );
+
+    // A dotted back edge (`-.->`) must keep its own dashes.
+    let dotted = render_flow(
+        "flowchart TD\n  A --> B\n  B -.-> A",
+        "dark",
+        "basis",
+        "konoma-orthogonal",
+    )
+    .expect("must render");
+    assert!(
+        dotted.contains(&format!("stroke-dasharray=\"{}\"", super::svg::DOTTED_DASH)),
+        "an author-dashed back edge must keep drawing dashed: {dotted}"
+    );
+}
+
+/// Finding 6 (medium): `[ui] mermaid_curve` / `%%{init}%%`'s `flowchart.curve` only mean anything
+/// under `"splines"` (`docs/FEATURE-MERMAID-RENDERER.md` §10-2's own "orthogonal は折れ線なので
+/// curve の概念が無い"); under `"konoma-orthogonal"` a curve name must be a complete no-op on the
+/// emitted bytes. `orthogonal_splines_routing_is_deterministic_and_does_not_panic` states the
+/// analogous fact for `"splines"` itself (curve resolution is decidable and non-panicking); this is
+/// the missing byte-identity half for `"konoma-orthogonal"`.
+#[test]
+fn orthogonal_routing_ignores_mermaid_curve_and_the_init_directive() {
+    for (name, src) in CORPUS {
+        let basis = render_flow(src, "dark", "basis", "konoma-orthogonal")
+            .unwrap_or_else(|e| panic!("{name}: basis must render: {e}"));
+        for curve in ["linear", "step", "monotoneX", "bumpX"] {
+            let other = render_flow(src, "dark", curve, "konoma-orthogonal")
+                .unwrap_or_else(|e| panic!("{name}/{curve}: must render: {e}"));
+            assert_eq!(
+                basis, other,
+                "{name}: konoma-orthogonal must ignore mermaid_curve={curve} entirely"
+            );
+        }
+    }
+    // The `%%{init}%%` directive's own `flowchart.curve` must be equally inert.
+    let plain = render_flow(
+        "flowchart TD\n  A --> B --> C",
+        "dark",
+        "basis",
+        "konoma-orthogonal",
+    )
+    .expect("must render");
+    let with_init = render_flow(
+        "%%{init: {\"flowchart\": {\"curve\": \"stepBefore\"}}}%%\nflowchart TD\n  A --> B --> C",
+        "dark",
+        "basis",
+        "konoma-orthogonal",
+    )
+    .expect("must render");
+    assert_eq!(
+        plain, with_init,
+        "konoma-orthogonal must ignore an `%%{{init}}%%` flowchart.curve directive too"
+    );
+}
+
+/// Finding 8a (medium): a self-loop is never a "detour" edge for §10-1 item 4's 12px crossing gap
+/// (`orthogonal::insert_crossing_gaps`'s own `is_detour` excludes it via `source.id != target.id`)
+/// — so when a self-loop and a genuine detour edge cross in real pixels (`orthogonal-self-loop-
+/// crosses`, dumped and confirmed to cross), the self-loop must never be the side that gets cut, and
+/// the crossing detour edge must be.
+#[test]
+fn orthogonal_self_loop_never_gets_cut_by_a_crossing_gap() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = orthogonal_only_corpus()
+        .into_iter()
+        .find(|(name, _)| *name == "orthogonal-self-loop-crosses")
+        .unwrap()
+        .1;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let loop_edge = d
+        .edges
+        .iter()
+        .find(|e| e.from == "A" && e.to == "A")
+        .expect("the self-loop must exist");
+    assert!(
+        loop_edge.gaps.is_empty(),
+        "a self-loop must never be the spanning side of a crossing gap: {:?}",
+        loop_edge.gaps
+    );
+    let detour = d
+        .edges
+        .iter()
+        .find(|e| e.from == "C" && e.to == "B")
+        .expect("C->B must exist");
+    assert!(
+        !detour.gaps.is_empty(),
+        "the fixture must actually reproduce a real crossing against the self-loop, so C->B must \
+         be the one carrying the gap: {:?}",
+        detour.gaps
+    );
+    // And, directly: the fixture's own premise — the self-loop's bump and C->B's detour actually
+    // occupy overlapping space in real pixels — confirmed by their bounding boxes overlapping on
+    // both axes (the two polylines' own extents, not just "a gap happened to appear somewhere").
+    let bbox = |pts: &[Point]| -> (f64, f64, f64, f64) {
+        let (mut l, mut t, mut r, mut b) = (
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        );
+        for p in pts {
+            l = l.min(p.x);
+            t = t.min(p.y);
+            r = r.max(p.x);
+            b = b.max(p.y);
+        }
+        (l, t, r, b)
+    };
+    let (dx, dy) = rect_overlap(bbox(&loop_edge.points), bbox(&detour.points));
+    assert!(
+        dx > 0.0 && dy > 0.0,
+        "fixture must reproduce a real overlap in space between the self-loop and C->B, not just \
+         a coincidental gap: loop_bbox={:?} detour_bbox={:?}",
+        bbox(&loop_edge.points),
+        bbox(&detour.points)
+    );
+}
+
+/// Finding 8b (medium): a self-loop never occupies a perimeter lane index
+/// (`orthogonal::perimeter_lanes`'s own filter: `s.reverse && source.id != target.id`) — so adding
+/// or removing a self-loop on a node that is *also* part of a genuine back-edge cycle must not shift
+/// the back edge's own lane (and therefore its ring distance) at all. Pinned by comparing two
+/// otherwise-identical sources, one with the self-loop and one without.
+#[test]
+fn orthogonal_self_loop_does_not_consume_a_perimeter_lane() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let with_loop = laid_out_flow(
+        "flowchart TD\n  A --> A\n  A --> B\n  B --> C\n  C --> A",
+        "basis",
+        "konoma-orthogonal",
+    );
+    let without_loop = laid_out_flow(
+        "flowchart TD\n  A --> B\n  B --> C\n  C --> A",
+        "basis",
+        "konoma-orthogonal",
+    );
+    let ca_with = with_loop
+        .edges
+        .iter()
+        .find(|e| e.from == "C" && e.to == "A")
+        .expect("C->A must exist");
+    let ca_without = without_loop
+        .edges
+        .iter()
+        .find(|e| e.from == "C" && e.to == "A")
+        .expect("C->A must exist");
+    assert_eq!(
+        ca_with.points, ca_without.points,
+        "C->A's own route must be byte-identical whether or not A also carries a self-loop \
+         (the self-loop must never consume a perimeter lane slot): with={:?} without={:?}",
+        ca_with.points, ca_without.points
+    );
+}
+
+/// Finding 10 (low, investigated): `MAX_GROWTH_PASSES = 3` (`mod.rs`'s own `lay_out_spec`) is a
+/// defensive cap over a process the code's own doc states is monotonic and therefore always
+/// converges on its own — `apply_growth` only ever grows toward an exact, one-shot-computable
+/// minimum (`Eviction::required_size`), not an iterative approximation, so there is no obvious
+/// adversarial input that forces three full passes rather than converging in one or two. A stress
+/// source combining heavy fan-in (12 merge edges onto one face, forcing node growth) with long
+/// labels (forcing `label_boosts` growth at the same time, `mod.rs`'s own doc: "a pass can ask for
+/// both at once") was tried; `lay_out_spec` has no public hook that reports how many passes a given
+/// input actually took, so whether this specific source reaches the cap could not be confirmed
+/// directly. What is confirmed: the combined stress case renders without panicking and comes out
+/// axis-parallel and collision-free, i.e. self-consistent regardless of how many passes it took —
+/// the property finding 10 asked to be pinned "if reachable", stated unconditionally instead since
+/// reachability itself could not be established.
+#[test]
+fn orthogonal_heavy_growth_stress_renders_self_consistently() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let mut src = String::from("flowchart TD\n");
+    for i in 1..=12 {
+        src.push_str(&format!(
+            "  W{i}[extremely long sibling label number {i} to force both node and label growth at once] --> T\n"
+        ));
+    }
+    src.push_str("  T -- also a long label on the way out --> X\n");
+    let d = laid_out_flow(&src, "basis", "konoma-orthogonal");
+    // Self-consistency: every segment axis-parallel, no edge crosses a foreign node's box.
+    for e in &d.edges {
+        for w in e.points.windows(2) {
+            let dx = (w[1].x - w[0].x).abs();
+            let dy = (w[1].y - w[0].y).abs();
+            assert!(
+                dx < AXIS_EPS || dy < AXIS_EPS,
+                "heavy-growth stress: {}->{} must stay axis-parallel: {w:?}",
+                e.from,
+                e.to
+            );
+        }
+        for n in &d.nodes {
+            if n.id == e.from || n.id == e.to {
+                continue;
+            }
+            for w in e.points.windows(2) {
+                assert!(
+                    !orthogonal::segment_crosses_node(&w[0], &w[1], n),
+                    "heavy-growth stress: {}->{} crosses foreign node {}",
+                    e.from,
+                    e.to,
+                    n.id
+                );
+            }
+        }
+    }
+    // And render_flow (the SVG-emitting entry point) must not panic on the same source either.
+    render_flow(&src, "dark", "basis", "konoma-orthogonal").expect("must render");
+}
+
+/// Finding 11 (low): degenerate flowcharts under `"konoma-orthogonal"` must not panic. A single
+/// node with no edges at all exercises `lay_out_spec`'s growth loop with an empty `eligible` list
+/// (`spec.routing == Routing::Orthogonal` but nothing to route); a self-loop on a lone node
+/// exercises the one-node/one-edge case of every pass (`evict`, `align_straight_lanes`,
+/// `insert_crossing_gaps`) at once.
+#[test]
+fn orthogonal_degenerate_diagrams_do_not_panic() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for src in ["flowchart TD\n  A[only]", "flowchart TD\n  A --> A"] {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for e in &d.edges {
+            for w in e.points.windows(2) {
+                let dx = (w[1].x - w[0].x).abs();
+                let dy = (w[1].y - w[0].y).abs();
+                assert!(
+                    dx < AXIS_EPS || dy < AXIS_EPS,
+                    "{src:?}: {}->{} must stay axis-parallel: {w:?}",
+                    e.from,
+                    e.to
+                );
+            }
+        }
+        render_flow(src, "dark", "basis", "konoma-orthogonal")
+            .unwrap_or_else(|e| panic!("{src:?} must render under konoma-orthogonal: {e}"));
+    }
+}
+
+/// [`orthogonal_degenerate_diagrams_do_not_panic`]'s remaining case — two nodes placed at the exact
+/// same centre — cannot be produced through a real mermaid source at all (dagre always separates
+/// same-rank nodes by `nodesep`), so it is stated directly against [`orthogonal::route_edge`]
+/// instead, the same private-access shortcut `orthogonal.rs`'s own unit tests use.
+#[test]
+fn orthogonal_route_edge_does_not_panic_on_coincident_centres() {
+    let a = placed_node("A", 100.0, 100.0, 60.0, 40.0);
+    let b = placed_node("B", 100.0, 100.0, 60.0, 40.0);
+    // `route_edge` is `pub`; the coincident-centre case is exercised through it rather than the
+    // private `route_flowchart`/`evict` pair this file has no direct access to.
+    let pts = orthogonal::route_edge(
+        crate::preview::mermaid::flowchart::Direction::TopToBottom,
+        &a,
+        &b,
+        &[],
+        Some(0),
+        Some(1),
+        1,
+        1,
+    );
+    assert!(
+        !pts.is_empty(),
+        "must return a non-empty polyline, not panic"
+    );
+    for p in &pts {
+        assert!(
+            p.x.is_finite() && p.y.is_finite(),
+            "must never emit a NaN/infinite point: {p:?}"
+        );
     }
 }
