@@ -128,6 +128,28 @@ pub const RANK_SEP: f64 = 50.0;
 /// Gap between two edges sharing a rank. dagre's own default; mermaid does not override it.
 pub const EDGE_SEP: f64 = 20.0;
 
+/// `nodesep` (the gap between two nodes on the same rank) for `Routing::Orthogonal` only —
+/// `NODE_SEP`'s own 50px is mermaid's `flowchart.nodeSpacing` default, tuned for splines curving
+/// past each other; §10-1's token set is built entirely out of 8px multiples instead (port
+/// pitch 16px, lane offset 8px, frame margin 16px), and the round-3 handoff's own reference
+/// (`docs/mermaid-theme/handoff/round3-Konoma-Flowchart-Routing.dc.html`'s `3a`) draws its
+/// densest column — `設定のルール`'s 10-way fan-out — at a measured ~56px row pitch against a
+/// ~45px node height, i.e. roughly a 8-16px gap, not 50px (`docs/FEATURE-MERMAID-RENDERER.md`
+/// §10-3 item 9, "行ピッチの均等・密"). Keeping the default `NODE_SEP` for this mode reproduces
+/// dagre's ordinary rank-gap-sized breathing room between orthogonal boxes that are supposed to
+/// sit right-angle-close to each other, which is exactly the "間延び" (elongation) the item's own
+/// wording flags.
+///
+/// `24` rather than 3a's own ~16 is not the design token itself — it is the tightest value that
+/// still clears the whole corpus's own invariants (bisected empirically: 16 and 20 both reproduce
+/// a real self-crossing edge on the `branch` fixture, `orthogonal_no_edge_crosses_its_own_
+/// endpoint_across_the_whole_corpus`'s own failure — two boxes packed that close leave no room
+/// for a lane-offset detour between them once `evict`'s port spacing and `align_straight_lanes`'s
+/// own overlap sweep both want their share of the same gap; 24 is the first value bisection found
+/// where every corpus case stays clear). `docs/STATUS.md`'s "行ピッチの均等・密" note has the
+/// before/after row-pitch measurement this constant produces on the round-3 reference diagram.
+const ORTHO_NODE_SEP: f64 = 24.0;
+
 /// Why a diagram could not be drawn.
 ///
 /// The contract (`docs/FEATURE-MERMAID-RENDERER.md` §1) is that failing means *do not draw*: the
@@ -1100,6 +1122,7 @@ fn lay_out_spec_pass(
     // against a representative descendant and cuts the line back to the frame when it draws it.
     // The anchor is remembered here because it is also what the layout has to be read back from.
     let mut drawable: Vec<Drawable> = Vec::new();
+    let mut edge_label_dims: HashMap<String, (f64, f64)> = HashMap::new();
     for edge in &spec.edges {
         let is_node = |id: &str| measured.contains_key(id);
         let (Some(tail), Some(head)) = (
@@ -1142,6 +1165,14 @@ fn lay_out_spec_pass(
             }),
             Some(edge.id.as_str()),
         );
+        // §10-3 item 8's own `pull_back_fan_ranks` reads this back to size a rank gap for a
+        // labelled edge — captured *here*, the exact `(w, h)` just handed to dagre (raw label
+        // size plus any `label_boosts`), rather than read back off `g` after `layout()` runs:
+        // `normalize::run`'s own denormalize step overwrites `EdgeLabel.width`/`.height` with the
+        // dummy label-proxy *node*'s own box size once the dummy chain collapses back into one
+        // edge, which is not the same number (confirmed by dumping a plain, label-less edge and
+        // finding a non-zero width there — dagre's own internal bookkeeping, not a label at all).
+        edge_label_dims.insert(edge.id.clone(), (w, h));
         drawable.push(Drawable { edge, tail, head });
     }
 
@@ -1149,7 +1180,11 @@ fn lay_out_spec_pass(
         &mut g,
         Some(LayoutOptions {
             rankdir: rank_dir(spec.direction),
-            nodesep: NODE_SEP,
+            nodesep: if spec.routing == Routing::Orthogonal {
+                ORTHO_NODE_SEP
+            } else {
+                NODE_SEP
+            },
             edgesep: EDGE_SEP,
             ranksep: RANK_SEP,
             marginx: MARGIN,
@@ -1161,6 +1196,24 @@ fn lay_out_spec_pass(
             ..LayoutOptions::default()
         }),
     );
+
+    // §10-3 item 8 ("ファン先は同一ランクに整列する", `docs/FEATURE-MERMAID-RENDERER.md`) —
+    // `Routing::Orthogonal` only, and only when there is no subgraph frame in play (`tree.is_empty()`
+    // — `pull_back_fan_ranks`'s own doc explains the scope limit). See that function's doc for the
+    // full reasoning; in short, it throws dagre's own rank numbers away and recomputes every node's
+    // rank and flow-axis position from scratch by the classic "as-soon-as-possible" layering, which
+    // is immune to the "slack node lands wherever network simplex's pivoting happened to leave it"
+    // problem network simplex has no way around.
+    if spec.routing == Routing::Orthogonal && tree.is_empty() {
+        pull_back_fan_ranks(
+            &mut g,
+            spec.direction,
+            &drawable,
+            sizes,
+            &measured,
+            &edge_label_dims,
+        );
+    }
 
     // --- read the layout back -------------------------------------------------------------------
     let mut nodes: Vec<PlacedNode> = Vec::with_capacity(spec.nodes.len());
@@ -1631,6 +1684,237 @@ struct Drawable<'a> {
     edge: &'a SpecEdge,
     tail: String,
     head: String,
+}
+
+/// §10-3 item 8's own fix, in full: overwrites every real node's `rank`, and its flow-axis `x`/`y`,
+/// directly on `g` — every later read of either (this function's own caller, `align_straight_lanes`'s
+/// `node_rank`, and the `source_rank`/`target_rank` `EligibleEdge` is built from) sees the corrected
+/// value with no further plumbing, because all three read straight off `g.node(id)`.
+///
+/// # Why network simplex cannot be trusted for this
+///
+/// dagre's `network_simplex` ranker (`layout::rank::network_simplex`) finds a rank assignment that
+/// minimises `Σ weight(e) * length(e)` subject to every edge's `minlen`. That objective is silent
+/// about *where* a node with slack sits: a node whose one in-edge and one out-edge both carry the
+/// default weight of 1 can be placed anywhere in its feasible range without changing the total cost
+/// at all (moving it one rank further from its source costs exactly what moving it one rank closer
+/// to its own successor saves) — which rank the pivoting settles on is an implementation artefact,
+/// not a preference. A branching source's fan-out edge is exactly this shape whenever the target
+/// has its own downstream chain (`docs/FEATURE-MERMAID-RENDERER.md` §10-3 item 8's own example:
+/// `設定のルール -->|画像| デコード --> セルに合わせる`, `デコード` free to land anywhere between the
+/// two), which is why some of a ten-way fan-out hugged its source and others drifted downstream
+/// toward whatever their own chain eventually needed, in no way tied to which branch a reader would
+/// expect to look "closer". An earlier version of this fix tried breaking the tie by giving a
+/// branching source's fan-out edges a heavier network-simplex `weight` instead of replacing the
+/// ranker outright — abandoned once it was shown, on the `length` corpus case
+/// (`flowchart TD  A ---> B  A --> C  B --> D  C --> D`), to change *which* rank network simplex
+/// puts `B` on at all (not just position within a rank), producing a strictly higher-cost tree by
+/// this same objective — evidence the ported network simplex's pivoting does not always reach the
+/// optimum once edge weights are far from uniform, not a lever this fix can lean on safely.
+///
+/// # As-soon-as-possible layering
+///
+/// Every node's rank is instead recomputed from scratch as `max` over its forward in-edges of
+/// `(that predecessor's own new rank + minlen)`, `0` for a node with none — the classic Sugiyama
+/// "as-soon-as-possible" layering (in contrast to the *vendored* `layout::rank::longest_path`
+/// ranker, which despite the similar name computes the mirror-image "as-late-as-possible" scheduling
+/// pull-to-the-sinks dagre.js itself calls `longestPath`; using it here would pull every leaf flush
+/// with the diagram's deepest sink instead, the opposite of what §10-3 item 8 asks for). This is
+/// *the* minimum feasible rank — no rank assignment satisfying every `minlen` can place any node
+/// earlier — so it can never violate a constraint, and it always gives a fan target `source_rank +
+/// minlen`, regardless of how many further ranks its own downstream chain goes on to need.
+///
+/// Sorting real nodes by dagre's own (about-to-be-discarded) rank is a valid topological order over
+/// the forward-only edge subgraph: a forward edge, by `is_reverse`'s own convention (reproduced
+/// here), always goes from a strictly lower old rank to a strictly higher one, because dagre's own
+/// ranking is already consistent with the DAG `acyclic::run` produced (a back edge, and a self-loop,
+/// are both excluded from the constraint graph below the same way dagre's own `remove_self_edges`
+/// and cycle-reversal keep them out of its ranking).
+///
+/// # Scope: no subgraph frames
+///
+/// A cluster frame's own rectangle is *read back* after this point (`read_clusters`, `lay_out_spec_pass`'s
+/// own next step) from dagre's compound-layout border nodes — this function never touches border,
+/// edge-label-proxy, or any other non-real node, so widening its scope to a diagram with subgraph
+/// frames would leave a frame's rectangle stale against members this pass just moved out from under
+/// it. `lay_out_spec_pass`'s own call site gates this on `tree.is_empty()` for exactly that reason;
+/// a clustered diagram keeps dagre's own rank and position, unchanged, same as `Routing::Splines`
+/// always has.
+///
+/// # What this does not do
+///
+/// Cross-axis (row) position is untouched — only `align_straight_lanes`, which runs after this and
+/// reads the corrected rank back off `g`, ever moves a node across the flow. A self-loop's raw
+/// dagre waypoints (`mod.rs`'s own `raw`, read from `g`'s edge label after this point) are not
+/// shifted for a flow-axis move this function made, the same way they were not shifted for a
+/// cross-axis move before `align_straight_lanes`'s own `alignment_deltas` return existed to fix
+/// it — a self-loop on a node this pass actually relocates is a known gap, not silently assumed
+/// impossible; see `docs/STATUS.md`'s own ★未修正 entry.
+fn pull_back_fan_ranks(
+    g: &mut Graph<NodeLabel, EdgeLabel>,
+    direction: Direction,
+    drawable: &[Drawable],
+    sizes: &HashMap<String, Size>,
+    measured: &HashMap<&str, &SpecNode>,
+    edge_label_dims: &HashMap<String, (f64, f64)>,
+) {
+    let old_rank = |g: &Graph<NodeLabel, EdgeLabel>, id: &str| -> i32 {
+        g.node(id).and_then(|n| n.rank).unwrap_or(0)
+    };
+
+    let mut ids: Vec<String> = measured.keys().map(|id| id.to_string()).collect();
+    ids.sort_by_key(|id| old_rank(g, id));
+
+    // Forward-only adjacency, `(predecessor, minlen)` per node — a back edge or a self-loop is
+    // never a rank constraint, matching `classify`'s own `is_reverse` and dagre's own
+    // `remove_self_edges`/cycle-reversal respectively (this function's own doc explains why
+    // sorting by `old_rank` first makes this a safe, one-pass, no-recursion computation).
+    let mut incoming: HashMap<&str, Vec<(&str, i32)>> = HashMap::new();
+    for d in drawable {
+        if d.tail == d.head {
+            continue;
+        }
+        let (sr, tr) = (old_rank(g, &d.tail), old_rank(g, &d.head));
+        if tr <= sr {
+            continue;
+        }
+        let minlen = d.edge.minlen.max(1) as i32;
+        incoming
+            .entry(d.head.as_str())
+            .or_default()
+            .push((d.tail.as_str(), minlen));
+    }
+
+    let mut new_rank: HashMap<String, i32> = HashMap::new();
+    for id in &ids {
+        let r = incoming
+            .get(id.as_str())
+            .map(|preds| {
+                preds
+                    .iter()
+                    .map(|(p, minlen)| new_rank.get(*p).copied().unwrap_or(0) + minlen)
+                    .max()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        new_rank.insert(id.clone(), r);
+    }
+
+    // --- recompute the flow-axis coordinate per rank column, tightly packed ---------------------
+    //
+    // One column per distinct new rank, in ascending order, each positioned immediately after the
+    // previous one's far edge plus `RANK_SEP` — the same gap dagre's own rank columns use, just
+    // computed fresh because the set of nodes sharing a rank has changed. `flow`/`cross`'s own doc
+    // in `orthogonal.rs` is the authority this reuses without importing it: "delta >= 0.0 always
+    // means further along the axis dagre laid the rank out on" already holds for whatever
+    // coordinate `layout`'s own `coordinate_system::undo` leaves behind for `BT`/`RL`, so assigning
+    // a strictly increasing coordinate to a strictly increasing rank, unconditionally on
+    // `direction`, reproduces that same convention rather than fighting it.
+    let flow_extent = |id: &str| -> f64 {
+        let size = sizes
+            .get(id)
+            .copied()
+            .or_else(|| measured.get(id).map(|n| n.size))
+            .unwrap_or(Size::new(0.0, 0.0));
+        match direction {
+            Direction::TopToBottom | Direction::BottomToTop => size.h / 2.0,
+            Direction::LeftToRight | Direction::RightToLeft => size.w / 2.0,
+        }
+    };
+
+    let mut distinct_ranks: Vec<i32> = new_rank.values().copied().collect();
+    distinct_ranks.sort_unstable();
+    distinct_ranks.dedup();
+    let rank_index: HashMap<i32, usize> = distinct_ranks
+        .iter()
+        .enumerate()
+        .map(|(i, &r)| (r, i))
+        .collect();
+
+    // §10-1 item 3's own "ラベル付き区間の最低長" still has to hold once this function is the one
+    // deciding column gaps, not dagre: `edge_label_dims` is the exact `(w, h)` `lay_out_spec_pass`'s
+    // edge-building loop already handed dagre for this edge (raw label size plus any prior pass's
+    // `label_boosts`) — captured there rather than read back off `g` after `layout()` runs, because
+    // `normalize::run`'s own denormalize step overwrites `EdgeLabel.width`/`.height` with the dummy
+    // label-proxy *node*'s own box size once its chain collapses back into one edge, which is a
+    // different number entirely (confirmed by dumping a plain, label-less edge and finding a
+    // non-zero width there — dagre's own internal bookkeeping, not a label). Reusing the captured
+    // value gives every labelled edge the same "gap = `RANK_SEP` + the flow-axis label dimension"
+    // dagre's own halved-`ranksep`-either-side-of-the-label-proxy convention already gives every
+    // other routing mode. Charged to the gap immediately after the edge's *tail* column
+    // (`rank_index[tail]`) — where dagre's own doubled `minlen` always inserts the first proxy rank
+    // — even for an edge spanning more than one column in the new ranking; an edge that skips
+    // columns entirely (no node landed on an intermediate rank) still charges its one immediate
+    // gap, same as a direct edge would.
+    let mut extra_gap: HashMap<usize, f64> = HashMap::new();
+    for d in drawable {
+        if d.tail == d.head {
+            continue;
+        }
+        let (Some(&tr), Some(&hr)) = (new_rank.get(d.tail.as_str()), new_rank.get(d.head.as_str()))
+        else {
+            continue;
+        };
+        if hr <= tr {
+            continue;
+        }
+        let Some(&i) = rank_index.get(&tr) else {
+            continue;
+        };
+        let label_dim = edge_label_dims
+            .get(&d.edge.id)
+            .map(|&(w, h)| match direction {
+                Direction::TopToBottom | Direction::BottomToTop => h,
+                Direction::LeftToRight | Direction::RightToLeft => w,
+            })
+            .unwrap_or(0.0);
+        if label_dim > 0.0 {
+            let entry = extra_gap.entry(i).or_insert(0.0);
+            if label_dim > *entry {
+                *entry = label_dim;
+            }
+        }
+    }
+
+    let mut column_flow: HashMap<i32, f64> = HashMap::new();
+    let mut cursor = MARGIN;
+    let mut prev_half = 0.0_f64;
+    for (i, &r) in distinct_ranks.iter().enumerate() {
+        let half = ids
+            .iter()
+            .filter(|id| new_rank.get(id.as_str()) == Some(&r))
+            .map(|id| flow_extent(id))
+            .fold(0.0_f64, f64::max);
+        let pos = if i == 0 {
+            MARGIN + half
+        } else {
+            let extra = i
+                .checked_sub(1)
+                .and_then(|p| extra_gap.get(&p))
+                .copied()
+                .unwrap_or(0.0);
+            cursor + prev_half + RANK_SEP + extra + half
+        };
+        column_flow.insert(r, pos);
+        cursor = pos;
+        prev_half = half;
+    }
+
+    for id in &ids {
+        let Some(&r) = new_rank.get(id.as_str()) else {
+            continue;
+        };
+        let Some(&flow_pos) = column_flow.get(&r) else {
+            continue;
+        };
+        if let Some(node) = g.node_mut(id) {
+            node.rank = Some(r);
+            match direction {
+                Direction::TopToBottom | Direction::BottomToTop => node.y = Some(flow_pos),
+                Direction::LeftToRight | Direction::RightToLeft => node.x = Some(flow_pos),
+            }
+        }
+    }
 }
 
 /// Reads the frames dagre computed and grows each one until its title fits inside it.

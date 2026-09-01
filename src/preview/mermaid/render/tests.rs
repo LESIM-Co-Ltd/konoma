@@ -5926,17 +5926,30 @@ fn orthogonal_shared_merge_target_face_bends_both_competing_edges() {
         d_node.center.x
     );
 
-    // Both bends land on the same row: the midpoint between D's own flow coordinate and its
-    // parents' (B and C share one rank, so both bridges' own midpoint agrees).
-    let expected_row = (d_node.center.y + d.node("B").expect("B").center.y) / 2.0;
+    // Each bend lands on its own row now, not a shared one: `A ---> B` is authored with an extra
+    // dash (`SpecEdge::minlen` 2) while `A --> C` is the ordinary `minlen` 1, so under §10-3 item
+    // 8's own rank fix (`pull_back_fan_ranks`, `mod.rs`) — which recomputes every rank from
+    // scratch by each edge's own `minlen`, rather than trusting wherever network simplex's
+    // pivoting happened to leave a slack node — `B` genuinely sits one rank further from `A` than
+    // `C` does. `B->D` is a plain single-rank bridge, so its bend still sits at the flow-axis
+    // midpoint between `B` and `D`; `C->D` spans the extra rank `B` occupies (`rank_lane_gap_bend`,
+    // §10-3 item 4's own column-gap routing for an edge that skips a populated rank), so its own
+    // bend sits elsewhere along the line, closer to `D`. (Before this fix, dagre's own network
+    // simplex — free to place `B`, a slack node with one in-edge and one out-edge both at the
+    // default weight, anywhere in its feasible range — happened to land it on the very same rank
+    // as `C`, which is what let a since-removed version of this test assert one shared row; that
+    // coincidence was an artefact of the ranker's own pivoting, not a property `A ---> B`'s length
+    // ever actually asked for.) Both values dumped and confirmed by hand, not assumed.
+    let bd_expected_row = (d_node.center.y + d.node("B").expect("B").center.y) / 2.0;
     assert!(
-        (bd.points[1].y - expected_row).abs() < 1e-6,
-        "B->D's bend row: {:?} vs {expected_row}",
+        (bd.points[1].y - bd_expected_row).abs() < 1e-6,
+        "B->D's bend row: {:?} vs {bd_expected_row}",
         bd.points
     );
+    let cd_expected_row = 274.2;
     assert!(
-        (cd.points[1].y - expected_row).abs() < 1e-6,
-        "C->D's bend row: {:?} vs {expected_row}",
+        (cd.points[1].y - cd_expected_row).abs() < 1e-6,
+        "C->D's bend row: {:?} vs {cd_expected_row}",
         cd.points
     );
 }

@@ -2523,15 +2523,18 @@ pub fn align_straight_lanes(
     // --- resolve overlaps: one forward sweep per rank, in the fixed original order --------------
     //
     // §10-1 item 1's "重なった側を押し出して従来の最小間隔を維持する（ランク内の並び順は変えない）"
-    // — `NODE_SEP` is dagre's own `nodesep`, reused so a push respects the same gap the rank was
-    // laid out with in the first place, whether or not either node in a pair moved at all.
+    // — `ORTHO_NODE_SEP` is `align_straight_lanes`'s own caller-side `nodesep` (`mod.rs`'s
+    // `lay_out_spec_pass` only ever calls this function under `Routing::Orthogonal`, which is the
+    // one mode `ORTHO_NODE_SEP` is dagre's actual `nodesep` for — §10-3 item 9's own density fix),
+    // reused so a push respects the same gap the rank was laid out with in the first place,
+    // whether or not either node in a pair moved at all.
     for ids in by_rank.values() {
         let mut prev_far_edge: Option<f64> = None;
         for &i in ids {
             let half = cross_extent(direction, &nodes[i]);
             let mut c = cross(direction, &nodes[i].center);
             if let Some(prev_edge) = prev_far_edge {
-                let min_c = prev_edge + super::NODE_SEP + half;
+                let min_c = prev_edge + super::ORTHO_NODE_SEP + half;
                 if c < min_c {
                     c = min_c;
                     let flow_v = flow(direction, &nodes[i].center);
@@ -2563,8 +2566,8 @@ pub fn align_straight_lanes(
     // *current* node positions, so it is not `raw`-waypoint staleness in the sense that doc means,
     // but the ring itself shifts when a node this pass moves sits inside it) re-entered `D`'s own
     // box once `D` — a chain member — was pushed back by cascading through its own rank-mate `C`.
-    // Reclaiming only when the immediate predecessor already has slack (`NODE_SEP` was not tight
-    // to begin with) keeps every node this pass touches to *one* — the member being reclaimed
+    // Reclaiming only when the immediate predecessor already has slack (`ORTHO_NODE_SEP` was not
+    // tight to begin with) keeps every node this pass touches to *one* — the member being reclaimed
     // itself, never a neighbour — which is enough to fix `3a`'s own `mermaid` (dumped and confirmed
     // visually: `設定のルール`'s ten-way fanout leaves just enough slack next to it) without ever
     // moving a second node whose own routing might depend on where it already was.
@@ -2577,7 +2580,7 @@ pub fn align_straight_lanes(
             if current <= desired + EPS {
                 continue; // already at (or before) its own desired spot — nothing to reclaim.
             }
-            let max_far = desired - cross_extent(direction, &nodes[i]) - super::NODE_SEP;
+            let max_far = desired - cross_extent(direction, &nodes[i]) - super::ORTHO_NODE_SEP;
             let predecessor_allows = match pos.checked_sub(1).map(|p| ids[p]) {
                 None => true, // first in the rank — nothing behind it to leave room against.
                 Some(j) => {
@@ -4715,11 +4718,13 @@ mod tests {
     #[test]
     fn overlap_resolution_pushes_the_later_node_without_reordering() {
         // P (chain average 100) and Q (chain average 155) are only 55px apart after their own
-        // independent alignment — short of the `half(20) + NODE_SEP(50) + half(20) = 90px`
-        // minimum. §10-1 item 1's "重なった側を押し出して従来の最小間隔を維持する（ランク内の並び
-        // 順は変えない）": Q, which was already the later of the two in original rank order
-        // (P at x=200, Q at x=210), is the one pushed — to exactly 190, not moved to swap places
-        // with P.
+        // independent alignment — short of the `half(20) + ORTHO_NODE_SEP(24) + half(20) = 64px`
+        // minimum (this pass only ever runs under `Routing::Orthogonal`, so `ORTHO_NODE_SEP` —
+        // §10-3 item 9's own density fix — is the gap it actually reuses, not the shared
+        // `NODE_SEP` splines still lays out with). §10-1 item 1's "重なった側を押し出して従来の
+        // 最小間隔を維持する（ランク内の並び順は変えない）": Q, which was already the later of the
+        // two in original rank order (P at x=200, Q at x=210), is the one pushed — to exactly
+        // 164, not moved to swap places with P.
         let mut nodes = vec![
             node("A", 0.0, 0.0, 40.0, 30.0),
             node("C", 100.0, 0.0, 40.0, 30.0),
@@ -4737,9 +4742,9 @@ mod tests {
             by_id["P"].center
         );
         assert!(
-            (by_id["Q"].center.x - 190.0).abs() < 1e-9,
-            "Q must be pushed to exactly P's far edge (120) + NODE_SEP(50) + Q's half-width(20) \
-             = 190, not left at its own aligned 155: {:?}",
+            (by_id["Q"].center.x - 164.0).abs() < 1e-9,
+            "Q must be pushed to exactly P's far edge (120) + ORTHO_NODE_SEP(24) + Q's \
+             half-width(20) = 164, not left at its own aligned 155: {:?}",
             by_id["Q"].center
         );
     }
