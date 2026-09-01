@@ -426,13 +426,21 @@ pub(crate) const COLLISION_MARGIN: f64 = 4.0;
 /// *final*, evicted route a real diagram actually draws — reusing this rather than a second,
 /// hand-rolled copy of the same box-intersection arithmetic in a different module.
 pub(crate) fn segment_crosses_node(a: &Point, b: &Point, node: &PlacedNode) -> bool {
+    segment_crosses_node_padded(a, b, node, COLLISION_MARGIN)
+}
+
+/// [`segment_crosses_node`], generalised over the padding amount — `segment_crosses_node` itself is
+/// just this called with [`COLLISION_MARGIN`], kept as a separate name (rather than a default
+/// argument, which Rust has none of) because every call site but one wants exactly that padding.
+/// The one exception is [`staircase_punctures_its_own_endpoint`], which calls this directly with
+/// `0.0`: `COLLISION_MARGIN` exists to give a route some *aesthetic* clearance from a foreign node
+/// (§10-1 item 1's "少しのマージン付き"), and a port sitting [`PORT_INSET`] (~1.75px) outside its
+/// own node's face is always closer than that margin — so the padded test can never tell a route
+/// that merely leaves/enters its own node correctly apart from one that actually re-enters it, and
+/// zero padding (the node's real, unpadded boundary) is the only test that can.
+fn segment_crosses_node_padded(a: &Point, b: &Point, node: &PlacedNode, margin: f64) -> bool {
     let (l, t, r, bo) = node.bounds();
-    let (l, t, r, bo) = (
-        l - COLLISION_MARGIN,
-        t - COLLISION_MARGIN,
-        r + COLLISION_MARGIN,
-        bo + COLLISION_MARGIN,
-    );
+    let (l, t, r, bo) = (l - margin, t - margin, r + margin, bo + margin);
     if (a.y - b.y).abs() < EPS {
         let y = a.y;
         let (x0, x1) = (a.x.min(b.x), a.x.max(b.x));
@@ -446,9 +454,79 @@ pub(crate) fn segment_crosses_node(a: &Point, b: &Point, node: &PlacedNode) -> b
     }
 }
 
+/// Whether `points` — a finished route, one edge's own two ends included — genuinely enters
+/// `source`'s or `target`'s real, unpadded interior anywhere along its length: [`route_with_ports`]'s
+/// own trigger for discarding a stale raw-derived staircase route (see its doc for the full story),
+/// and reused as-is by `render::tests`' corpus-wide invariant for the same question, so the router's
+/// own decision and the regression test that guards it never drift apart into two hand-rolled copies
+/// of the same test.
+///
+/// Every segment is checked — not only the one immediately touching a port — because the staleness
+/// this guards against is dagre's own interior waypoints, which can drift arbitrarily far from a
+/// node's *current* position once `align_straight_lanes` has moved it; nothing pins the puncture to
+/// either end of the polyline.
+///
+/// `source`/`target` are each `Option` so a caller whose end is a subgraph frame rather than a real
+/// node ([`shape_crosses_a_node`]'s own doc explains why a frame is exempt from this strict test —
+/// §10-2's "no gap" leniency) can pass `None` for that side without duplicating the windows-and-`||`
+/// plumbing at every call site; `render::tests`' corpus invariant always has two real nodes
+/// (`Diagram::node` never returns a cluster), so it always passes `Some`/`Some`.
+pub(crate) fn staircase_punctures_its_own_endpoint(
+    points: &[Point],
+    source: Option<&PlacedNode>,
+    target: Option<&PlacedNode>,
+) -> bool {
+    points.windows(2).any(|w| {
+        source.is_some_and(|n| segment_crosses_node_padded(&w[0], &w[1], n, 0.0))
+            || target.is_some_and(|n| segment_crosses_node_padded(&w[0], &w[1], n, 0.0))
+    })
+}
+
 /// Whether `shape`'s route between `source` and `target` — built at zero eviction offset, since a
 /// port's few-pixel eviction offset never changes whether a sweep spanning the whole diagram
-/// clears a sibling's box — crosses any node in `nodes` other than `source`/`target` themselves.
+/// clears a sibling's box — crosses any node in `nodes` other than `source`/`target` themselves, OR
+/// genuinely re-enters `source`'s or `target`'s own real interior.
+///
+/// The second half is not the same test as the first: a *foreign* node uses the padded
+/// [`segment_crosses_node`] (§10-1 item 1's own "少しのマージン付き"), but a shape's own two ends
+/// use the strict, unpadded [`segment_crosses_node_padded`] with `0.0` — the same distinction
+/// [`staircase_punctures_its_own_endpoint`]'s own doc explains, for the same reason: a port sits
+/// only [`PORT_INSET`] outside its own face, always inside the padded margin, so the padded test
+/// could never tell a route that correctly leaves/enters its own node apart from one that actually
+/// crosses back through it.
+///
+/// This corrects an assumption [`bridge`]'s own doc states as fact ("branch/merge...always exactly
+/// one corner...this never grows past its stage-1 bend count", silently relying on that one corner
+/// never landing inside either box) that is not always true: the "unlike axes" bridge holds the
+/// *leaving* port's own tangent coordinate fixed for its first leg, and when the two nodes sit close
+/// together on that axis — the target's own span can straddle the source's port height — that held
+/// coordinate can sit *inside* the target's box before the final bend ever turns to leave it. Found
+/// on `samples/mermaid.ja.md`'s "大きさ" flowchart: `MA[数式] --> RS[ラスタライズ]`'s plain merge
+/// shape (2 bends, never routed through `route_staircase_with_ports` at all) held `MA`'s own port
+/// height across its horizontal leg, which sat inside `RS`'s taller box, so the line entered `RS`
+/// from the side before turning down to its (correctly placed) bottom port — the same "arrow looks
+/// disconnected" symptom the staircase-specific fix elsewhere in this module addresses for a
+/// *raw*-derived route, here from `bridge`'s own ordinary construction instead.
+///
+/// Folding this into the existing collision test rather than adding a separate check is
+/// deliberate: `classify`'s callers already know exactly what to do with "this shape collides" —
+/// swap to the alternate shape, and if that also collides, fall back to `staircase` — the identical
+/// response a foreign-node collision gets, and the right one here too (§10-1 item 1's collision
+/// fix's own reasoning "衝突しない限り" applies just as much to a shape colliding with its own
+/// endpoint as with a stranger's).
+///
+/// The own-endpoint half only ever runs against a **real node**, never a subgraph frame standing in
+/// for one (`cluster_as_node`'s doc: a cluster-anchored edge's `source`/`target` can be a frame-
+/// shaped `PlacedNode` with no entry of its own in `nodes`, which this module's own doc already
+/// establishes stays real-nodes-only). §10-2's own item 4 rule — "辺と枠の交差は隙間なし（直交して
+/// 跨ぐだけ）" — is written about a frame a route merely passes through, but the same "no gap" leniency
+/// has to extend to a frame that *is* the edge's own endpoint too: unlike a node's tight bounding box,
+/// a frame encloses every member plus padding, so the same corner that would be a genuine puncture of
+/// a small node's box is routinely just "still over some unrelated member of my own subgraph" for a
+/// frame — `subgraph-direction`'s own `one->D` (`one`'s frame is the source) was flagged as
+/// colliding with itself here before this exemption, wrongly forcing it onto the very same
+/// `staircase` fallback this whole fix exists to keep from firing spuriously.
+///
 /// §10-1 item 1's collision test: "辺セグメント vs 全ノード境界箱…の交差テストで機械的に".
 fn shape_crosses_a_node(
     direction: Direction,
@@ -467,6 +545,8 @@ fn shape_crosses_a_node(
         shape.source_axis,
         shape.target_axis,
     ));
+    let source_is_real = nodes.iter().any(|n| n.id == source.id);
+    let target_is_real = nodes.iter().any(|n| n.id == target.id);
     for w in pts.windows(2) {
         for node in nodes {
             if node.id == source.id || node.id == target.id {
@@ -475,6 +555,11 @@ fn shape_crosses_a_node(
             if segment_crosses_node(&w[0], &w[1], node) {
                 return true;
             }
+        }
+        if (source_is_real && segment_crosses_node_padded(&w[0], &w[1], source, 0.0))
+            || (target_is_real && segment_crosses_node_padded(&w[0], &w[1], target, 0.0))
+        {
+            return true;
         }
     }
     false
@@ -683,12 +768,82 @@ fn route_with_ports(
         // of `samples/mermaid.ja.md`'s large flowchart caught it (ordinary forward edges detouring
         // around the whole diagram's outer edge). Dagre's own waypoint chain, straightened, stays
         // exactly as stage 3 drew it before stage 5 existed.
-        let staircase = route_staircase_with_ports(direction, shape, source_port, target_port, raw);
+        let staircase = route_staircase_with_ports(
+            direction,
+            shape,
+            source_port.clone(),
+            target_port.clone(),
+            raw,
+        );
         // `raw`'s dummy-node waypoints predate `align_straight_lanes` (`mod.rs`'s own comment on
         // why `EligibleEdge::raw` is read before alignment runs) exactly the way a self-loop's did
         // before that coupling was fixed — but here the drift is against *any* node the route
         // threads near, not one this function already knows the delta for, so the fix is local
         // geometry rather than a lookup: `clear_local_route`.
+        //
+        // `clear_local_route` only ever nudges a route *away* from a *foreign* node — it
+        // deliberately excludes the edge's own two ends (its own doc: the port itself always sits
+        // within `COLLISION_MARGIN` of its own node by construction, `PORT_INSET` is only ~1.75px,
+        // so the padded test would flag that harmless graze on every single edge). But
+        // `align_straight_lanes` only ever moves a node's *cross*-axis coordinate (its own doc:
+        // "this function never touches the flow axis") — `raw`'s dummy waypoints are never
+        // reprojected onto that new cross position at all (unlike a self-loop's, `mod.rs`'s
+        // `shift_cross` above), so a *forward* staircase edge's raw-derived interior chain can
+        // still be sitting at stale cross coordinates relative to its own two nodes' *current*
+        // positions — not just grazing near a port, but running straight back through the node's
+        // own real interior on its way to (or away from) that port. `clear_local_route`'s own
+        // exclusion can never catch that (it is never even asked the question for these two nodes),
+        // and patching it to ask would be the wrong fix anyway: its remedy is to slide the whole
+        // flagged run sideways past the *foreign* node it hit, which for a run that also carries a
+        // port coordinate would drag the port itself off to the side of its own node — trading the
+        // interior-puncture bug for a "the arrow lands beside the node instead of on it" one.
+        //
+        // So the real fix is upstream: once the route is caught actually entering (not just
+        // grazing) either of its own two nodes, `raw`'s shape for this edge is no longer trustworthy
+        // at all, and the same current-geometry synthesis every non-staircase shape already uses —
+        // `bridge` directly between the two (unmovable, `port_at`-computed, definitionally correct)
+        // ports — replaces it outright. `bridge` can still cross a *foreign* node (that is exactly
+        // why this edge fell back to a staircase in the first place — its direct branch/merge shape
+        // already failed `classify`'s own collision test), which is exactly what `clear_local_route`
+        // below is for; unlike the raw-derived path, `bridge`'s own two legs are built from the same
+        // ports it starts and ends at, so it structurally cannot re-enter either one (§10-1 item 1's
+        // one/two-bend shapes never have to avoid their own endpoints — only `classify`'s foreign-
+        // node test ever runs against them). Found on `samples/mermaid.ja.md`'s "大きさ" flowchart's
+        // `MD->MM`/`MM->RS` (`ブロックモデル`→`mermaid`→`ラスタライズ`): once `align_straight_lanes`
+        // moved `MM` off dagre's original position, `MD->MM`'s raw-derived route ran ~38px down
+        // into `MM`'s own interior before reaching its (correctly placed) bottom port, and
+        // `MM->RS`'s left MM's bottom port only to double straight back up through MM's own box —
+        // both real, not merely close reads: the arrow tip disappeared under `MM`'s own fill and the
+        // line into/out of it looked disconnected, exactly the two symptoms reported.
+        // Self-loops are excluded: a self-loop's raw waypoints are already kept in sync with its
+        // one owner's move by `shift_cross` (`mod.rs`), and a loop is *expected* to run close
+        // beside its own node by design — this resynthesis (a straight `bridge` between the two
+        // ports) is specifically the forward-edge fallback shape, meaningless for `source.id ==
+        // target.id` besides.
+        //
+        // A cluster-anchored end passes `None` here, the same real-node-only exemption
+        // `shape_crosses_a_node`'s own doc explains (`nodes` is the diagram's real nodes only —
+        // `route_flowchart`'s own doc — so a frame standing in for a subgraph never appears in it).
+        let source_is_real = nodes.iter().any(|n| n.id == source.id);
+        let target_is_real = nodes.iter().any(|n| n.id == target.id);
+        let staircase = if shape.staircase
+            && staircase_punctures_its_own_endpoint(
+                &staircase,
+                source_is_real.then_some(source),
+                target_is_real.then_some(target),
+            ) {
+            let mut resynthesised = vec![source_port.clone()];
+            resynthesised.extend(bridge(
+                direction,
+                &source_port,
+                &target_port,
+                shape.source_axis,
+                shape.target_axis,
+            ));
+            resynthesised
+        } else {
+            staircase
+        };
         clear_local_route(staircase, nodes, (source.id.as_str(), target.id.as_str()))
     } else if shape.reverse {
         let ids = (source.id.as_str(), target.id.as_str());
@@ -3773,8 +3928,20 @@ mod tests {
         let nodes = vec![
             node("P", 0.0, -500.0, 4.0, 4.0),
             node("Q", 0.0, 500.0, 4.0, 4.0),
+            // `M`/`N` used to share the same flow coordinate (`y = -1000.0` for both, under this
+            // helper's `Direction::TopToBottom`), a coincidence nothing about "two far-away nodes"
+            // required. `shape_crosses_a_node`'s own-endpoint check (added when `route_with_ports`'s
+            // staircase fix was generalised, this file's own doc) is strict about a shape's own
+            // corner never landing inside its own box, and `M`'s `Bottom`-face port `x` always
+            // equals `M`'s own centre `x`, while a `Left`-face target's held tangent equals
+            // `N`'s own centre `y` — so with `N.y == M.y`, the merge shape's one bend landed
+            // exactly on `M`'s own centre, turning "other" into a self-colliding `staircase` edge
+            // and defeating this function's own doc ("`other_points`: an ordinary edge, never cut").
+            // Different `y` values break the coincidence without changing anything this helper's
+            // actual callers read (`M`/`N`'s only job is to make `classify` see a real, non-
+            // colliding forward edge for `is_detour`'s sake).
             node("M", -1000.0, -1000.0, 4.0, 4.0),
-            node("N", 1000.0, -1000.0, 4.0, 4.0),
+            node("N", 1000.0, -700.0, 4.0, 4.0),
         ];
         let edges = [
             EligibleEdge {

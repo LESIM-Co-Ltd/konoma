@@ -4597,6 +4597,29 @@ fn orthogonal_corpus() -> Vec<(&'static str, &'static str)> {
     CORPUS.to_vec()
 }
 
+/// `samples/mermaid.ja.md`'s "大きさ" flowchart, byte-for-byte — deliberately **not** added to
+/// `CORPUS` itself (`CORPUS` also drives the golden snapshot test, and this source is real-world
+/// sized rather than hand-minimised for one property, so adding it there would both bloat the
+/// golden and make failures on it harder to localise to one invariant). Kept as its own constant
+/// because several standalone regression tests below (`orthogonal_settings_rules_sample_*`) each
+/// need this exact source, and three hand-copies of the same ~30-line fixture already drifted from
+/// "obviously the same string" into "trust me, diff it" before this was factored out.
+const SETTINGS_RULES_SAMPLE: &str = "flowchart LR\n  F[ファイル] --> C{設定のルール}\n  \
+               C -->|テキスト| T[窓読み]\n  C -->|コード| S[構文強調]\n  \
+               C -->|Markdown| MD[ブロックモデル]\n  C -->|CSV / TSV| TB[表]\n  \
+               C -->|画像| IM[デコード]\n  C -->|PDF| PD[ページ描画]\n  C -->|SVG| SV[usvg]\n  \
+               C -->|動画| VD[キーフレーム]\n  C -->|書庫| AR[一覧]\n  \
+               C -->|なし| NA[プレビュー不可]\n  MD --> MM[mermaid]\n  MD --> MA[数式]\n  \
+               MM --> RS[ラスタライズ]\n  MA --> RS\n  SV --> RS\n  PD --> RS\n  \
+               IM --> FIT[セルに合わせる]\n  RS --> FIT\n  VD --> FIT\n  FIT --> K{端末}\n  \
+               K -->|kitty| KT[圧縮転送]\n  K -->|sixel / iTerm2| RI[画像プロトコル]\n  \
+               K -->|それ以外| HB[ハーフブロック]\n  \
+               classDef pix fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  \
+               classDef txt fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  \
+               class IM,PD,SV,VD,MM,MA,RS,FIT,KT,RI,HB pix\n  \
+               class T,S,MD,TB,AR txt\n  \
+               style NA fill:#2d2418,stroke:#d4a017,color:#c9d1d9";
+
 /// [`orthogonal_corpus`], further filtered down to the sources
 /// [`orthogonal_bend_count_never_exceeds_two`] can state a bend-count *cap* over. Two kinds of
 /// edge are deliberately exempt from any cap, both drawn by the same mechanism
@@ -4623,6 +4646,17 @@ fn orthogonal_corpus() -> Vec<(&'static str, &'static str)> {
 ///   coming out at 6 bends each; `subgraph-bypass`'s `A->B` (inside the `one` frame `X->Y` has to
 ///   go around) straightens the same way, widening the detour `X->Y` needs above the frame to 4
 ///   bends. Both dumped and read by hand, not guessed at, the same as `amp-chain`.
+/// * `subgraph-endpoint` and `subgraph-direction` joined this list for the same reason as
+///   `amp-chain`, once `shape_crosses_a_node`'s own-endpoint check existed to find them — both
+///   dumped and read by hand, not guessed at, and both the same two-step cascade:
+///   `subgraph-endpoint`'s `E->one`: the original shape (`E` leaves `Top`, `one` receives `Left`)
+///   held `E`'s own port coordinate across its first leg, which stayed inside `E`'s own real box
+///   the whole way (the exact bug this check exists to catch), so `classify` swapped to the
+///   alternate (`E` leaves `Right`, `one` receives `Bottom`) — which does not touch `E` at all, but
+///   crosses `one`'s own member `A` instead (an ordinary *foreign*-node collision, real all along,
+///   just never reached before the first swap started firing). Both fail, so it falls back to the
+///   raw-derived staircase (3 bends). `subgraph-direction`'s `one->D` is the mirror image of the
+///   same shape (`known_staircase_forward_edge`'s own doc has the numbers).
 fn orthogonal_dag_corpus() -> Vec<(&'static str, &'static str)> {
     const UNCAPPED: &[&str] = &[
         "branch",
@@ -4633,6 +4667,8 @@ fn orthogonal_dag_corpus() -> Vec<(&'static str, &'static str)> {
         "amp-chain",
         "strokes",
         "subgraph-bypass",
+        "subgraph-endpoint",
+        "subgraph-direction",
         // `C --> A` closes a cycle back onto the block's own member `A` — a back edge exactly
         // like the others in this list, just with one end inside a subgraph frame.
         "subgraph",
@@ -5136,68 +5172,127 @@ fn non_flowchart_diagrams_ignore_mermaid_routing() {
 fn orthogonal_endpoints_sit_outside_the_node_and_arrive_perpendicular() {
     for (name, src) in orthogonal_corpus() {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
-        for e in &d.edges {
-            if e.points.len() < 2 {
-                continue;
-            }
-            let n = e.points.len();
-            let ends = [
-                (&e.from, &e.points[0], &e.points[1]),
-                (&e.to, &e.points[n - 1], &e.points[n - 2]),
-            ];
-            for (node_id, endpoint, neighbour) in ends {
-                // A cluster-anchored end (§10-2) meets a subgraph frame instead of a node — same
-                // box shape (`PlacedCluster::bounds` reads exactly like `PlacedNode::bounds`), so
-                // this checks whichever one `node_id` actually names rather than skipping it.
-                let bounds = d
-                    .node(node_id)
-                    .map(|n| n.bounds())
-                    .or_else(|| d.cluster(node_id).map(|c| c.bounds()));
-                let Some((l, t, r, b)) = bounds else {
-                    continue;
-                };
-                let on_top = (endpoint.y - (t - orthogonal::PORT_INSET)).abs() < AXIS_EPS;
-                let on_bottom = (endpoint.y - (b + orthogonal::PORT_INSET)).abs() < AXIS_EPS;
-                let on_left = (endpoint.x - (l - orthogonal::PORT_INSET)).abs() < AXIS_EPS;
-                let on_right = (endpoint.x - (r + orthogonal::PORT_INSET)).abs() < AXIS_EPS;
-                assert!(
-                    on_top || on_bottom || on_left || on_right,
-                    "{name}: edge {}->{} endpoint at {node_id} {endpoint:?} is not {}px \
-                     OUTSIDE its bounds {:?}",
-                    e.from,
-                    e.to,
-                    orthogonal::PORT_INSET,
-                    (l, t, r, b)
-                );
+        assert_endpoints_sit_outside_and_perpendicular(name, &d);
+    }
+}
 
-                let dx = (endpoint.x - neighbour.x).abs();
-                let dy = (endpoint.y - neighbour.y).abs();
+/// The per-diagram body of [`orthogonal_endpoints_sit_outside_the_node_and_arrive_perpendicular`],
+/// factored out (matching [`assert_no_segment_crosses_a_foreign_node`]'s own shape below) so the
+/// real-diagram regression tests — `samples/mermaid.ja.md`'s "大きさ" flowchart among them — can
+/// state the exact same question a hand-built `CORPUS` fixture is held to, rather than only ever
+/// running over `orthogonal_corpus()`. That gap is exactly how a real endpoint-dragged-into-its-
+/// own-node regression (`route_with_ports`'s own doc: `MD->MM`'s bottom port on this very sample)
+/// went unnoticed by this invariant before: it existed, but its only caller was `CORPUS`, which has
+/// never included a diagram large enough for `align_straight_lanes` to move a node far enough to
+/// stress this the way a real ~20-node flowchart does.
+fn assert_endpoints_sit_outside_and_perpendicular(name: &str, d: &Diagram) {
+    for e in &d.edges {
+        if e.points.len() < 2 {
+            continue;
+        }
+        let n = e.points.len();
+        let ends = [
+            (&e.from, &e.points[0], &e.points[1]),
+            (&e.to, &e.points[n - 1], &e.points[n - 2]),
+        ];
+        for (node_id, endpoint, neighbour) in ends {
+            // A cluster-anchored end (§10-2) meets a subgraph frame instead of a node — same
+            // box shape (`PlacedCluster::bounds` reads exactly like `PlacedNode::bounds`), so
+            // this checks whichever one `node_id` actually names rather than skipping it.
+            let bounds = d
+                .node(node_id)
+                .map(|n| n.bounds())
+                .or_else(|| d.cluster(node_id).map(|c| c.bounds()));
+            let Some((l, t, r, b)) = bounds else {
+                continue;
+            };
+            let on_top = (endpoint.y - (t - orthogonal::PORT_INSET)).abs() < AXIS_EPS;
+            let on_bottom = (endpoint.y - (b + orthogonal::PORT_INSET)).abs() < AXIS_EPS;
+            let on_left = (endpoint.x - (l - orthogonal::PORT_INSET)).abs() < AXIS_EPS;
+            let on_right = (endpoint.x - (r + orthogonal::PORT_INSET)).abs() < AXIS_EPS;
+            assert!(
+                on_top || on_bottom || on_left || on_right,
+                "{name}: edge {}->{} endpoint at {node_id} {endpoint:?} is not {}px \
+                 OUTSIDE its bounds {:?}",
+                e.from,
+                e.to,
+                orthogonal::PORT_INSET,
+                (l, t, r, b)
+            );
+
+            let dx = (endpoint.x - neighbour.x).abs();
+            let dy = (endpoint.y - neighbour.y).abs();
+            assert!(
+                dx < AXIS_EPS || dy < AXIS_EPS,
+                "{name}: edge {}->{} segment into {node_id} is not axis-parallel: \
+                 {neighbour:?} -> {endpoint:?}",
+                e.from,
+                e.to
+            );
+            if on_top || on_bottom {
                 assert!(
-                    dx < AXIS_EPS || dy < AXIS_EPS,
-                    "{name}: edge {}->{} segment into {node_id} is not axis-parallel: \
+                    dy > AXIS_EPS && dx < AXIS_EPS,
+                    "{name}: edge {}->{} must meet {node_id} vertically at a top/bottom face: \
                      {neighbour:?} -> {endpoint:?}",
                     e.from,
                     e.to
                 );
-                if on_top || on_bottom {
-                    assert!(
-                        dy > AXIS_EPS && dx < AXIS_EPS,
-                        "{name}: edge {}->{} must meet {node_id} vertically at a top/bottom face: \
-                         {neighbour:?} -> {endpoint:?}",
-                        e.from,
-                        e.to
-                    );
-                } else {
-                    assert!(
-                        dx > AXIS_EPS && dy < AXIS_EPS,
-                        "{name}: edge {}->{} must meet {node_id} horizontally at a left/right \
-                         face: {neighbour:?} -> {endpoint:?}",
-                        e.from,
-                        e.to
-                    );
-                }
+            } else {
+                assert!(
+                    dx > AXIS_EPS && dy < AXIS_EPS,
+                    "{name}: edge {}->{} must meet {node_id} horizontally at a left/right \
+                     face: {neighbour:?} -> {endpoint:?}",
+                    e.from,
+                    e.to
+                );
             }
         }
+    }
+}
+
+/// Every routed edge, checked over its **whole** length, must never re-enter its own two endpoint
+/// nodes' real (unpadded) interior — the invariant [`assert_no_segment_crosses_a_foreign_node`]
+/// structurally cannot state, because it excludes an edge's own two ends from the node list it
+/// checks against (correctly so: a port sits only [`orthogonal::PORT_INSET`] outside its own face,
+/// well inside [`orthogonal::COLLISION_MARGIN`]'s padding, so the *padded* test would flag every
+/// edge's own harmless graze near its own port). [`orthogonal::staircase_punctures_its_own_endpoint`]
+/// is the *unpadded* test that tells the two apart — the same one [`route_with_ports`] itself now
+/// runs before ever handing a raw-derived staircase route to `clear_local_route`, so this test and
+/// the router's own decision are stated in terms of the same function rather than two hand-rolled
+/// copies that could quietly drift apart.
+///
+/// Reused by the corpus-wide loop below and by the real-diagram regression tests, the same split
+/// [`assert_no_segment_crosses_a_foreign_node`] already has.
+fn assert_no_edge_crosses_its_own_endpoint(name: &str, d: &Diagram) {
+    for e in &d.edges {
+        let (Some(source), Some(target)) = (d.node(&e.from), d.node(&e.to)) else {
+            continue; // a cluster-anchored end has no real node box to puncture
+        };
+        assert!(
+            !orthogonal::staircase_punctures_its_own_endpoint(
+                &e.points,
+                Some(source),
+                Some(target)
+            ),
+            "{name}: edge {}->{} re-enters its own endpoint node's interior: {:?}, \
+             source {:?}, target {:?}",
+            e.from,
+            e.to,
+            e.points,
+            source.bounds(),
+            target.bounds()
+        );
+    }
+}
+
+/// [`assert_no_edge_crosses_its_own_endpoint`], run over the whole corpus — the counterpart to
+/// [`orthogonal_no_segment_crosses_a_foreign_node_across_the_whole_corpus`] for an edge's own two
+/// ends rather than every other node.
+#[test]
+fn orthogonal_no_edge_crosses_its_own_endpoint_across_the_whole_corpus() {
+    for (name, src) in orthogonal_corpus() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        assert_no_edge_crosses_its_own_endpoint(name, &d);
     }
 }
 
@@ -5600,21 +5695,7 @@ fn orthogonal_no_segment_crosses_a_foreign_node_across_the_whole_corpus() {
 /// `MD->MA`) must clear `NA`, and the whole diagram must still hold the strong invariant.
 #[test]
 fn orthogonal_settings_rules_sample_no_longer_pierces_a_sibling_node() {
-    let src = "flowchart LR\n  F[ファイル] --> C{設定のルール}\n  \
-               C -->|テキスト| T[窓読み]\n  C -->|コード| S[構文強調]\n  \
-               C -->|Markdown| MD[ブロックモデル]\n  C -->|CSV / TSV| TB[表]\n  \
-               C -->|画像| IM[デコード]\n  C -->|PDF| PD[ページ描画]\n  C -->|SVG| SV[usvg]\n  \
-               C -->|動画| VD[キーフレーム]\n  C -->|書庫| AR[一覧]\n  \
-               C -->|なし| NA[プレビュー不可]\n  MD --> MM[mermaid]\n  MD --> MA[数式]\n  \
-               MM --> RS[ラスタライズ]\n  MA --> RS\n  SV --> RS\n  PD --> RS\n  \
-               IM --> FIT[セルに合わせる]\n  RS --> FIT\n  VD --> FIT\n  FIT --> K{端末}\n  \
-               K -->|kitty| KT[圧縮転送]\n  K -->|sixel / iTerm2| RI[画像プロトコル]\n  \
-               K -->|それ以外| HB[ハーフブロック]\n  \
-               classDef pix fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  \
-               classDef txt fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  \
-               class IM,PD,SV,VD,MM,MA,RS,FIT,KT,RI,HB pix\n  \
-               class T,S,MD,TB,AR txt\n  \
-               style NA fill:#2d2418,stroke:#d4a017,color:#c9d1d9";
+    let src = SETTINGS_RULES_SAMPLE;
     let d = laid_out_flow(src, "basis", "konoma-orthogonal");
 
     let na = d.node("NA").expect("NA must exist");
@@ -5636,6 +5717,52 @@ fn orthogonal_settings_rules_sample_no_longer_pierces_a_sibling_node() {
     }
 
     assert_no_segment_crosses_a_foreign_node("settings-rules", &d);
+    // Neither of the two invariants below was ever run against this real diagram before — only
+    // against `CORPUS`'s hand-built fixtures (`assert_endpoints_sit_outside_and_perpendicular`'s
+    // own doc explains why that gap let a real regression through) — so both are pinned here too,
+    // alongside the foreign-node check this test already ran.
+    assert_endpoints_sit_outside_and_perpendicular("settings-rules", &d);
+    assert_no_edge_crosses_its_own_endpoint("settings-rules", &d);
+}
+
+/// The coordinator's own third real-pixel finding on this exact diagram (2026-09-01, user report:
+/// the mermaid node's own arrow tip was invisible, and two lines near it were impossible to trace to
+/// where they connected): `MD->MM`'s raw-derived staircase route ran ~38px down into `MM`'s own
+/// interior before reaching its (correctly placed) bottom port — invisible in the finished picture
+/// only because `svg::emit` paints nodes after edges, the same masking `orthogonal_arrow_tip_has_a_
+/// visible_gap_from_the_node_in_real_pixels`'s own doc describes for the inward-port bug — and
+/// `MM->RS` left `MM`'s bottom port only to double straight back up through `MM`'s own box before
+/// turning toward `RS`. Both are the *same* underlying staleness (`route_with_ports`'s own doc):
+/// `align_straight_lanes` moved `MM` after dagre's raw waypoint chain was captured, and — unlike a
+/// self-loop's `raw`, which `shift_cross` keeps in sync — nothing reprojected a forward staircase
+/// edge's interior chain onto `MM`'s new position.
+///
+/// Pinned two ways: first, `MD->MM`'s own two-edge check the module doc's original NA-piercing case
+/// used, generalised from `segment_crosses_node` (a foreign-node question) to
+/// `staircase_punctures_its_own_endpoint` (an own-node one); second, calling both whole-diagram
+/// invariants — this is what would have failed before the fix.
+#[test]
+fn orthogonal_settings_rules_sample_mermaid_node_edges_do_not_pierce_it() {
+    let src = SETTINGS_RULES_SAMPLE;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+
+    let mm = d.node("MM").expect("MM must exist");
+    for (from, to) in [("MD", "MM"), ("MM", "RS")] {
+        let e = d
+            .edges
+            .iter()
+            .find(|e| e.from == from && e.to == to)
+            .unwrap_or_else(|| panic!("{from}->{to} must exist"));
+        assert!(
+            !orthogonal::staircase_punctures_its_own_endpoint(&e.points, Some(mm), Some(mm)),
+            "{from}->{to} must not re-enter MM's own interior: {:?}, MM bounds {:?}",
+            e.points,
+            mm.bounds()
+        );
+    }
+
+    assert_endpoints_sit_outside_and_perpendicular("settings-rules", &d);
+    assert_no_edge_crosses_its_own_endpoint("settings-rules", &d);
 }
 
 /// The coordinator's own second real-pixel finding on this exact diagram (2026-09-01, after
@@ -5654,21 +5781,7 @@ fn orthogonal_settings_rules_sample_no_longer_pierces_a_sibling_node() {
 /// from the regression itself.
 #[test]
 fn orthogonal_settings_rules_sample_has_no_perimeter_routed_forward_edges() {
-    let src = "flowchart LR\n  F[ファイル] --> C{設定のルール}\n  \
-               C -->|テキスト| T[窓読み]\n  C -->|コード| S[構文強調]\n  \
-               C -->|Markdown| MD[ブロックモデル]\n  C -->|CSV / TSV| TB[表]\n  \
-               C -->|画像| IM[デコード]\n  C -->|PDF| PD[ページ描画]\n  C -->|SVG| SV[usvg]\n  \
-               C -->|動画| VD[キーフレーム]\n  C -->|書庫| AR[一覧]\n  \
-               C -->|なし| NA[プレビュー不可]\n  MD --> MM[mermaid]\n  MD --> MA[数式]\n  \
-               MM --> RS[ラスタライズ]\n  MA --> RS\n  SV --> RS\n  PD --> RS\n  \
-               IM --> FIT[セルに合わせる]\n  RS --> FIT\n  VD --> FIT\n  FIT --> K{端末}\n  \
-               K -->|kitty| KT[圧縮転送]\n  K -->|sixel / iTerm2| RI[画像プロトコル]\n  \
-               K -->|それ以外| HB[ハーフブロック]\n  \
-               classDef pix fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  \
-               classDef txt fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  \
-               class IM,PD,SV,VD,MM,MA,RS,FIT,KT,RI,HB pix\n  \
-               class T,S,MD,TB,AR txt\n  \
-               style NA fill:#2d2418,stroke:#d4a017,color:#c9d1d9";
+    let src = SETTINGS_RULES_SAMPLE;
     let d = laid_out_flow(src, "basis", "konoma-orthogonal");
     let bounds = diagram_content_bounds(&d);
     for e in &d.edges {
@@ -6217,6 +6330,20 @@ fn diagram_content_bounds(d: &Diagram) -> (f64, f64, f64, f64) {
 /// source, `E->B` and `C->A`, both close a cycle backward and stay genuine back edges), and
 /// `subgraph-bypass`'s `X->Y` (forward — spans the same ranks the `one` frame does without closing
 /// any cycle, `orthogonal_dag_corpus`'s own doc on this exact source).
+///
+/// `subgraph-direction`'s `one->D` joined this list once `shape_crosses_a_node`'s own-endpoint
+/// check was added (`route_with_ports`'s own doc on the settings-rules regression). Its own
+/// two-step cascade, dumped and read by hand rather than guessed at: the *original* shape (`one`
+/// leaves `Top`, `D` receives `Right`) genuinely re-entered `D`'s own real box on its final leg —
+/// the same bug class that check exists to catch — so `classify` swapped to the alternate
+/// (`one` leaves `Left`, `D` receives `Bottom`); that alternate does *not* touch `D` at all, but
+/// its own straight run at `one`'s port height happens to run directly through the row `one`'s own
+/// members (`A`/`B`, real, foreign nodes to this edge) sit on — a perfectly ordinary *foreign*-node
+/// collision, the ordinary padded test already caught before this fix existed, just never reached
+/// for this edge until the first swap started happening for real. Both attempts failing sends it to
+/// the raw-derived staircase, whose own port then leaves through `one`'s own outermost (`Left`)
+/// face — a small, genuine `PORT_INSET`-scale excursion past the content box, not a perimeter-lane
+/// one, the same "still a local route, no margin guarantee" category every other entry here is in.
 fn known_staircase_forward_edge(name: &str, from: &str, to: &str) -> bool {
     matches!(
         (name, from, to),
@@ -6224,6 +6351,7 @@ fn known_staircase_forward_edge(name: &str, from: &str, to: &str) -> bool {
             | ("strokes", "C", "E")
             | ("long-edge", "A", "E")
             | ("subgraph-bypass", "X", "Y")
+            | ("subgraph-direction", "one", "D")
     )
 }
 
