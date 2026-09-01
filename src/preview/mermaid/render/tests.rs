@@ -5014,20 +5014,25 @@ fn orthogonal_aligned_edge_is_a_straight_two_point_line() {
 }
 
 /// A decision node's two outgoing edges (branch) and a merge node's two incoming edges (merge)
-/// each bend at most once — a 2- or 3-point polyline, per §10-1 item 1's "分岐/合流は曲げ1回".
+/// each bend at most twice, per §10-1 item 2's "退避則適用時は2回まで" — this fixture's own two
+/// competitors on one face are exactly that eviction case, `n = 2`.
 ///
 /// Before `align_straight_lanes`'s `r + 1` adjacency bug was fixed (2026-09-01), lane alignment
-/// never actually selected a chain, so *both* legs of a branch/merge always bent once here. Now
-/// that it fires for real, `B`'s own out-edges (`B->C`/`B->D`) and `C`'s own in-edges
-/// (`A->C`/`B->C`) are exactly the kind of candidate `align_straight_lanes` competes for a single
-/// chain slot over, and the module doc's own promise holds: "`classify`'s existing `aligned`
-/// check... recognises the chain's edges on its own... and draws them dead straight." One leg (the
-/// tie-break winner — dumped and confirmed: `B->C` and `A->C`, both smaller-cross-coordinate) now
-/// goes fully straight (0 bends); the other (the leg the lane's own "at most one out/in per node"
-/// rule left unclaimed) still bends exactly once, which is what this test actually pins now — the
-/// bend-once invariant survives for whichever edge alignment did *not* absorb.
+/// never actually selected a chain, so *both* legs of a branch/merge always bent once here (2
+/// distinct faces, no competition). Once it fires for real, `B`'s own out-edges (`B->C`/`B->D`)
+/// and `C`'s own in-edges (`A->C`/`B->C`) each become one node-disjoint chain's own edge (`B->C`,
+/// `A->C`) — `classify`'s `aligned` shape — plus one ordinary branch/merge sibling (`B->D`,
+/// `B->C` respectively) that §10-3 item 1's correction (`classify`'s own `fan_eligible` doc) now
+/// routes onto the *same* physical face as its aligned sibling, not a separate perpendicular one:
+/// a *branching* source with a flow-aligned sibling opens its other out-edges on that same face
+/// too, and a merge target (§10-3 item 3's correction, `merge_target_side`'s own doc) always did
+/// already. That puts two claims — one aligned, one not — on one face, which is exactly
+/// [`orthogonal::evict`]'s own documented "no exact centre slot" case for an even claim count: the
+/// aligned claim itself gets bumped `PORT_SPACING/2 = 8px` off centre rather than landing dead on
+/// it, so *neither* edge is a straight 2-point line any more — both bend twice, symmetric about
+/// the shared face's own centre. Dumped and confirmed by hand, not assumed.
 #[test]
-fn orthogonal_branch_and_merge_edges_bend_at_most_once() {
+fn orthogonal_branch_and_merge_edges_share_a_face_and_both_bend_twice() {
     let branch = laid_out_flow(
         "flowchart LR\n  A --> B{cond}\n  B --> C\n  B --> D",
         "basis",
@@ -5038,22 +5043,26 @@ fn orthogonal_branch_and_merge_edges_bend_at_most_once() {
         .iter()
         .find(|e| e.from == "B" && e.to == "C")
         .expect("edge B->C must exist");
-    assert_eq!(
-        bc.points.len(),
-        2,
-        "B->C wins the lane slot (smaller target cross-coordinate) and goes straight: {:?}",
-        bc.points
-    );
     let bd = branch
         .edges
         .iter()
         .find(|e| e.from == "B" && e.to == "D")
         .expect("edge B->D must exist");
-    assert_eq!(
-        bd.points.len(),
-        3,
-        "B->D loses the lane slot to B->C and still bends exactly once: {:?}",
-        bd.points
+    let b_node = branch.node("B").expect("B must exist");
+    assert_eq!(bc.points.len(), 4, "B->C must bend twice: {:?}", bc.points);
+    assert_eq!(bd.points.len(), 4, "B->D must bend twice: {:?}", bd.points);
+    // Both leave B's own Right face, split PORT_SPACING/2 = 8px either side of B's own centre.
+    let bc_exit_y = bc.points[0].y;
+    let bd_exit_y = bd.points[0].y;
+    assert!(
+        (bc_exit_y - (b_node.center.y + orthogonal::PORT_SPACING / 2.0)).abs() < 1e-6,
+        "B->C (aligned, bumped off centre) exits 8px below B's centre: {bc_exit_y} vs {}",
+        b_node.center.y
+    );
+    assert!(
+        (bd_exit_y - (b_node.center.y - orthogonal::PORT_SPACING / 2.0)).abs() < 1e-6,
+        "B->D exits 8px above B's centre: {bd_exit_y} vs {}",
+        b_node.center.y
     );
 
     let merge = laid_out_flow(
@@ -5066,22 +5075,31 @@ fn orthogonal_branch_and_merge_edges_bend_at_most_once() {
         .iter()
         .find(|e| e.from == "A" && e.to == "C")
         .expect("edge A->C must exist");
-    assert_eq!(
-        ac.points.len(),
-        2,
-        "A->C wins the lane slot (smaller source cross-coordinate) and goes straight: {:?}",
-        ac.points
-    );
     let bc2 = merge
         .edges
         .iter()
         .find(|e| e.from == "B" && e.to == "C")
         .expect("edge B->C must exist");
+    let c_node = merge.node("C").expect("C must exist");
+    assert_eq!(ac.points.len(), 4, "A->C must bend twice: {:?}", ac.points);
     assert_eq!(
         bc2.points.len(),
-        3,
-        "B->C loses the lane slot to A->C and still bends exactly once: {:?}",
+        4,
+        "B->C must bend twice: {:?}",
         bc2.points
+    );
+    // Both enter C's own Left face, split the same way.
+    let ac_entry_y = ac.points.last().unwrap().y;
+    let bc2_entry_y = bc2.points.last().unwrap().y;
+    assert!(
+        (ac_entry_y - (c_node.center.y + orthogonal::PORT_SPACING / 2.0)).abs() < 1e-6,
+        "A->C (aligned, bumped off centre) enters 8px below C's centre: {ac_entry_y} vs {}",
+        c_node.center.y
+    );
+    assert!(
+        (bc2_entry_y - (c_node.center.y - orthogonal::PORT_SPACING / 2.0)).abs() < 1e-6,
+        "B->C enters 8px above C's centre: {bc2_entry_y} vs {}",
+        c_node.center.y
     );
 }
 
@@ -5475,16 +5493,19 @@ fn attr<'a>(haystack: &'a str, attr: &str) -> Option<&'a str> {
 
 /// A real 9-way fan-in (`A`..`I` all merge into `Z`) is not evenly spread by dagre. Before
 /// `align_straight_lanes`'s `r + 1` adjacency bug was fixed (2026-09-01), the function never
-/// selected a lane at all, so this fixture's expected values were dagre's own unaligned placement
-/// — `E`'s x happened to land under `Z`'s by dagre's own barycenter heuristic, giving a 4-and-4
-/// split across `Z`'s Left/Right faces. Now that lane alignment actually runs, `A` (the smallest
-/// cross-coordinate candidate — every one of `A`..`I` has exactly one out-edge to `Z`, so `Z`'s
-/// single incoming chain slot goes to whichever wins "タイは上・左優先", `align_straight_lanes`'s
-/// own tie-break) wins the slot and `Z` moves to sit under `A` instead — the leftmost node in the
-/// whole fan, not the centre. That leaves *every one* of the other eight sources (`B`..`I`) to
-/// `Z`'s **right**, none to its left: dumped and confirmed (`B->Z`..`I->Z` all land on the exact
-/// same x, `Z`'s Right face), not assumed. The busiest (only occupied, besides the Top-face
-/// aligned edge) face now needs `(8-1)*16 + 2*8 = 128px` of flat run.
+/// selected a lane at all, so this fixture's expected values were dagre's own unaligned placement.
+/// Now that lane alignment actually runs, `A` (the smallest cross-coordinate candidate — every one
+/// of `A`..`I` has exactly one out-edge to `Z`, so `Z`'s single incoming chain slot goes to
+/// whichever wins "タイは上・左優先", `align_straight_lanes`'s own tie-break) wins the slot and
+/// `Z` moves to sit under `A` instead — the leftmost node in the whole fan, not the centre.
+///
+/// §10-3 item 3's own correction (`classify`'s `merge_target_side` doc): a merge target now always
+/// rides the *flow*-axis face, not the cross-axis one this fixture originally exercised — for `TD`
+/// that is Top/Bottom, so `A->Z` (aligned) and every one of `B->Z`..`I->Z` (ordinary merges) all
+/// land on `Z`'s single Top face together, dumped and confirmed (all nine share the exact same
+/// `y`), not assumed — `Z`'s Left/Right faces go entirely unused. That makes the busiest face's
+/// requirement a WIDTH one now, `(9-1)*16 + 2*8 = 144px` (nine ports, the aligned edge included —
+/// eviction's own `required_flat` counts every claim on the face, not only the non-aligned ones).
 #[test]
 fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
     let src = "flowchart TD\n  A --> Z\n  B --> Z\n  C --> Z\n  D --> Z\n  E --> Z\n  \
@@ -5499,23 +5520,28 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
 
     let ortho = laid_out_flow(src, "basis", "konoma-orthogonal");
     let z_ortho = ortho.node("Z").expect("Z must exist");
+    // §10-3 item 3's own correction (this test's doc, and `classify`'s own comment on
+    // `merge_target_side`): a merge target now always uses the *flow*-axis face (`3a`'s own
+    // reference confirmed it against `2b`/`2c`'s illustrated merges too), not the cross-axis one
+    // this test originally pinned. For `TD`, the flow axis is vertical, so all nine edges
+    // (`A->Z` aligned plus the eight ordinary merges `B->Z`..`I->Z`) land on the same face — `Z`'s
+    // Top — and the busiest face's requirement is now a WIDTH one: `(9-1)*16 + 2*8 = 144px`
+    // (nine ports total, not eight — the aligned edge takes a claim on the same face too).
     assert_eq!(
-        z_ortho.size.h, 128.0,
-        "Z's height must grow to exactly (8-1)*16 + 2*8 = 128px — the busiest face's requirement"
+        z_ortho.size.w, 144.0,
+        "Z's width must grow to exactly (9-1)*16 + 2*8 = 144px — the busiest (Top) face's own \
+         requirement, now that a merge target rides the flow axis"
     );
-    // Growth is per-axis: nothing asked Z's width to grow (only its Left/Right faces were
-    // crowded, which is a height requirement), so it must be unchanged from the splines pass.
+    // Height is untouched: nothing asked Z's Left/Right faces to grow at all any more.
     assert_eq!(
-        z_ortho.size.w, z_splines.size.w,
-        "no face asked Z's width to grow, so it must not have"
+        z_ortho.size.h, z_splines.size.h,
+        "no face asked Z's height to grow, so it must not have"
     );
 
-    let (_, z_top, _, _) = z_ortho.bounds();
-    let left_face_x = z_ortho.bounds().0 - orthogonal::PORT_INSET;
-    let right_face_x = z_ortho.bounds().2 + orthogonal::PORT_INSET;
+    let (z_left, z_top, _, _) = z_ortho.bounds();
+    let top_face_y = z_top - orthogonal::PORT_INSET;
 
-    let mut left_ys = Vec::new();
-    let mut right_ys = Vec::new();
+    let mut top_xs = Vec::new();
     let mut aligned_count = 0;
     for e in &ortho.edges {
         if e.to != "Z" {
@@ -5523,74 +5549,64 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
         }
         let bends = e.points.len().saturating_sub(2);
         let last = e.points.last().unwrap();
-        if (last.y - (z_top - orthogonal::PORT_INSET)).abs() < 1e-6 {
-            // Landed on Z's Top face: must be the one aligned (A now, not E — see this test's own
-            // doc), zero bends.
-            assert_eq!(bends, 0, "the Top-face edge must be the aligned one: {e:?}");
+        assert!(
+            (last.y - top_face_y).abs() < 1e-6,
+            "every edge into Z must land on its Top face now: {e:?}"
+        );
+        if bends == 0 {
             assert_eq!(
                 e.from, "A",
-                "A is the smallest-cross-coordinate source, so it wins Z's one lane slot: {e:?}"
+                "A is the smallest-cross-coordinate source, so it wins Z's one aligned slot: {e:?}"
             );
             aligned_count += 1;
-        } else if (last.x - left_face_x).abs() < 1e-6 {
-            assert_eq!(
-                bends, 1,
-                "a merge onto Z's Left face bends exactly once: {e:?}"
-            );
-            left_ys.push(last.y);
-        } else if (last.x - right_face_x).abs() < 1e-6 {
-            assert_eq!(
-                bends, 1,
-                "a merge onto Z's Right face bends exactly once: {e:?}"
-            );
-            right_ys.push(last.y);
         } else {
-            panic!(
-                "edge {}->Z landed on none of Z's three occupied faces: {e:?}",
-                e.from
+            assert_eq!(
+                bends, 2,
+                "an ordinary merge onto Z's Top face is a fan-lane (flow-axis both ends), \
+                 two-bend shape now, not the old one-bend cross-face shape: {e:?}"
             );
         }
+        top_xs.push(last.x);
     }
     assert_eq!(
         aligned_count, 1,
         "exactly one edge must be the aligned A->Z"
     );
-    assert_eq!(
-        left_ys.len(),
-        0,
-        "Z moved to A's own (leftmost) x, so nothing is left of it any more"
-    );
-    assert_eq!(
-        right_ys.len(),
-        8,
-        "every one of B..I now shares Z's Right face"
-    );
+    assert_eq!(top_xs.len(), 9, "all nine edges must share Z's Top face");
 
-    right_ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    // 16px apart, symmetric about Z's own centre.
-    for w in right_ys.windows(2) {
+    top_xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // 16px apart, symmetric about Z's own centre (the aligned A->Z takes the exact centre slot).
+    for w in top_xs.windows(2) {
         assert!(
             (w[1] - w[0] - orthogonal::PORT_SPACING).abs() < 1e-6,
-            "ports on one face must be exactly 16px apart: {right_ys:?}"
+            "ports on one face must be exactly 16px apart: {top_xs:?}"
         );
     }
-    let mid = (right_ys[0] + right_ys[7]) / 2.0;
+    let mid = (top_xs[0] + top_xs[8]) / 2.0;
     assert!(
-        (mid - z_ortho.center.y).abs() < 1e-6,
-        "eight ports must be symmetric about the face's own centre: {right_ys:?} vs {}",
-        z_ortho.center.y
+        (mid - z_ortho.center.x).abs() < 1e-6,
+        "nine ports must be symmetric about the face's own centre: {top_xs:?} vs {}",
+        z_ortho.center.x
     );
     // Every port at least PORT_CLEARANCE from a corner.
-    let half_h = z_ortho.size.h / 2.0;
-    for &y in right_ys.iter() {
-        let from_center = (y - z_ortho.center.y).abs();
+    let half_w = z_ortho.size.w / 2.0;
+    for &x in top_xs.iter() {
+        let from_center = (x - z_ortho.center.x).abs();
         assert!(
-            half_h - from_center >= orthogonal::PORT_CLEARANCE - 1e-6,
+            half_w - from_center >= orthogonal::PORT_CLEARANCE - 1e-6,
             "port {from_center}px from centre must clear the corner by \
-             {}px (half-height {half_h}): {right_ys:?}",
+             {}px (half-width {half_w}): {top_xs:?}",
             orthogonal::PORT_CLEARANCE
         );
     }
+    // And every port stays within Z's own (grown) flat run, never off past its left edge.
+    assert!(
+        top_xs
+            .iter()
+            .all(|&x| x >= z_left && x <= z_left + z_ortho.size.w),
+        "every port must sit within Z's own grown width: {top_xs:?} vs [{z_left}, {}]",
+        z_left + z_ortho.size.w
+    );
 }
 
 /// A face with room to spare must not grow — the other half of the growth test above. `Z` here
@@ -5855,32 +5871,26 @@ fn orthogonal_lane_alignment_never_leaves_nodes_overlapping() {
     }
 }
 
-/// §10-1 item 2's "直進レーンを挟んで上下（左右）に分かれる辺は…曲げ位置を共有して対称に" — "現状の
-/// 合流形が自然に対称になるケースは変えない" (a merge that already lands dead centre on its own
-/// face is left exactly where `bridge`'s `Flow, Cross` case already puts it).
+/// §10-1 item 2's "直進辺を挟んで上下（左右）に分かれる辺は…曲げ位置を共有して対称に", read
+/// through §10-3 item 3's own correction (`classify`'s `merge_target_side` doc): a merge target
+/// now always rides the same flow-axis face a branch target already did, so `B->D`'s aligned
+/// (0-bend) shape and `C->D`'s ordinary merge now compete for the exact same face on `D` — `D`'s
+/// Top, not two different faces the way they did before the correction (aligned always used the
+/// flow axis; the round-2 merge shape used the cross axis, so the two never used to overlap at
+/// all).
 ///
-/// Before `align_straight_lanes`'s `r + 1` adjacency bug was fixed (2026-09-01), *neither* of
-/// `length`'s two merges into `D` (`B --> D`, `C --> D`) was ever absorbed into a lane, so both
-/// bent and happened to land on opposite faces symmetrically. Now that alignment fires for real,
-/// `B` — `A --->` gives it the smaller flow-adjacent chain, `A`-`B`-`D`'s own tie-break winner —
-/// is absorbed into that straight lane (0 bends, `D`'s Top face) the same way `orthogonal_branch_
-/// and_merge_edges_bend_at_most_once` above documents for a branch/merge pair. That leaves `C->D`
-/// the *only* edge still merge-shaped, and — dumped and confirmed before being pinned — it is
-/// still the "already symmetric" case this rule is about: alone on its own face, its bend lands
-/// exactly on `D`'s own flow coordinate, not offset by any eviction the way two co-occupants of
-/// one face would be. A structural reason this is the strongest fixture available, not merely the
-/// simplest: whichever parent wins a target's one lane slot is, by the tie-break's own
-/// "タイは上・左優先" rule, always the parent with the *smallest* cross coordinate — so the target
-/// always moves to sit at that extreme, never at a mid-point some other parent could still flank
-/// from the opposite side. A real "two still-bent merges, symmetric on opposite faces" pair would
-/// need every one of a target's candidate parents to lose the lane selection (e.g. by each having
-/// a competing sibling edge that wins its own out-slot first) — engineered fixtures tried for that
-/// either collapsed the two survivors onto the *same* face (both losing to a third, lane-winning
-/// parent whose own position happened to sit outside the pair, the same reasoning as above) or
-/// reduced to this simpler one-survivor shape, so this is what real alignment actually leaves to
-/// check.
+/// [`orthogonal::evict`]'s own doc on an even claim count ("no exact centre slot… `f64::round`'s
+/// `half away from zero` rule picks the higher index") is exactly what fires here: two claims on
+/// `D`'s Top face (`B->D`, aligned, and `C->D`, not) is `n = 2`, so `round((2-1)/2.0) = round(0.5)
+/// = 1` — the *aligned* claim (sorted first, `B`'s own cross coordinate is the smaller of the two)
+/// gets moved off index 0 onto index 1, landing `PORT_SPACING/2 = 8px` off `D`'s own centre rather
+/// than exactly on it. `B->D` is therefore *not* a straight, absorbed lane any more — it bends
+/// twice, the same `bridge`'s own `(Axis::Flow, Axis::Flow)` shape every fan-lane/merge edge with
+/// differing flow-axis coordinates on each end takes — and `C->D`, its face-mate, does too, offset
+/// the opposite way. Dumped and confirmed by hand (`B`'s and `C`'s own x, and both edges' full
+/// point lists), not assumed.
 #[test]
-fn orthogonal_lone_merge_still_bends_at_its_targets_own_row() {
+fn orthogonal_shared_merge_target_face_bends_both_competing_edges() {
     let src = "flowchart TD\n  A ---> B\n  A --> C\n  B --> D\n  C --> D";
     let d = laid_out_flow(src, "basis", "konoma-orthogonal");
     let bd = d
@@ -5893,24 +5903,41 @@ fn orthogonal_lone_merge_still_bends_at_its_targets_own_row() {
         .iter()
         .find(|e| e.from == "C" && e.to == "D")
         .expect("C->D must exist");
-    assert_eq!(
-        bd.points.len(),
-        2,
-        "B->D is absorbed into the A-B-D lane and goes straight: {:?}",
+    let d_node = d.node("D").expect("D must exist");
+
+    // Both bend twice now — neither is absorbed into a straight lane, since both compete for the
+    // same face.
+    assert_eq!(bd.points.len(), 4, "B->D must bend twice: {:?}", bd.points);
+    assert_eq!(cd.points.len(), 4, "C->D must bend twice: {:?}", cd.points);
+
+    // Both enter D's Top face, PORT_SPACING/2 = 8px either side of D's own centre — never exactly
+    // on it, since an even claim count on one face has no exact centre slot.
+    let bd_entry_x = bd.points.last().unwrap().x;
+    let cd_entry_x = cd.points.last().unwrap().x;
+    assert!(
+        (bd_entry_x - (d_node.center.x + orthogonal::PORT_SPACING / 2.0)).abs() < 1e-6,
+        "B->D (the aligned claim, moved off centre) must enter 8px right of D's centre: \
+         {bd_entry_x} vs {}",
+        d_node.center.x
+    );
+    assert!(
+        (cd_entry_x - (d_node.center.x - orthogonal::PORT_SPACING / 2.0)).abs() < 1e-6,
+        "C->D must enter 8px left of D's centre: {cd_entry_x} vs {}",
+        d_node.center.x
+    );
+
+    // Both bends land on the same row: the midpoint between D's own flow coordinate and its
+    // parents' (B and C share one rank, so both bridges' own midpoint agrees).
+    let expected_row = (d_node.center.y + d.node("B").expect("B").center.y) / 2.0;
+    assert!(
+        (bd.points[1].y - expected_row).abs() < 1e-6,
+        "B->D's bend row: {:?} vs {expected_row}",
         bd.points
     );
-    assert_eq!(
-        cd.points.len(),
-        3,
-        "C->D is the only remaining merge and still bends exactly once: {:?}",
-        cd.points
-    );
-    let d_node = d.node("D").expect("D must exist");
     assert!(
-        (cd.points[1].y - d_node.center.y).abs() < 1e-6,
-        "alone on its own face, C->D's bend must land exactly on D's own row: {:?} vs {}",
-        cd.points[1],
-        d_node.center.y
+        (cd.points[1].y - expected_row).abs() < 1e-6,
+        "C->D's bend row: {:?} vs {expected_row}",
+        cd.points
     );
 }
 
@@ -6241,7 +6268,13 @@ fn avoid_label_plates_pushes_only_the_port_that_actually_crosses_a_plate() {
             target_in_degree: 1,
         },
     ];
-    let routed = orthogonal::route_flowchart(Direction::TopToBottom, &nodes, &[], &edges);
+    let routed = orthogonal::route_flowchart(
+        Direction::TopToBottom,
+        &nodes,
+        &[],
+        &edges,
+        &std::collections::HashSet::new(),
+    );
     let mut points = routed.points;
     let ab_before = points["ab"].clone();
     let cd_before = points["cd"].clone();
@@ -6266,6 +6299,7 @@ fn avoid_label_plates_pushes_only_the_port_that_actually_crosses_a_plate() {
         &edges,
         &mut points,
         &mut plates,
+        &std::collections::HashSet::new(),
     );
 
     assert_ne!(points["ab"], ab_before, "ab's port must have been pushed");
@@ -6706,28 +6740,35 @@ fn orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whol
         edge("C", "E"),
     );
 
-    // Nothing ever cuts an ordinary edge, or a detour that lost its own tie-break: `A->C`/`B->D`
-    // are both ordinary and never the spanning side of anything; `C->E` (absorbed into a straight
-    // lane once alignment fires for real) crosses nothing at all.
+    // §10-3 item 3's own correction (`classify`'s `merge_target_side` doc) changed this fixture's
+    // whole geometry: `A->C`/`B->D` are the two aligned (0-bend) lanes now, and `A->D`/`B->C` are
+    // both `fan_lane`/collision-fallback ("is_flow_flow_bend", `insert_crossing_gaps`'s own doc on
+    // widening `is_detour` to it) shapes riding the same flow-axis faces as their aligned siblings
+    // — which puts `A->D`'s own vertical run, and `B->C`'s own vertical run, both squarely across
+    // `A->C`'s horizontal line (dumped and confirmed by hand, not assumed: `A->C` spans the full
+    // x-range both verticals sit inside). `A->C` is never a detour, so it is never the spanning
+    // side of either crossing — nothing ever cuts an ordinary edge that loses every tie it is in.
     assert!(ac.gaps.is_empty(), "A->C must stay whole: {:?}", ac.gaps);
     assert!(bd.gaps.is_empty(), "B->D must stay whole: {:?}", bd.gaps);
     assert!(ce.gaps.is_empty(), "C->E crosses nothing: {:?}", ce.gaps);
 
-    // A->D is the spanning side of its crossing with the ordinary A->C, and carries one gap for it
-    // — the crossing with B->C goes the other way (see this test's own doc on the tie-break), so
-    // A->D never gets a second one.
+    // A->D is the spanning side of its one crossing with the ordinary A->C, and carries one gap
+    // for it.
     assert_eq!(
         ad.gaps.len(),
         1,
         "A->D must carry exactly one gap, from crossing the ordinary A->C: {:?}",
         ad.gaps
     );
-    // B->C is the spanning side of its own crossing with A->D (the both-detour tie-break, higher
-    // id) and carries one gap for it.
+    // B->C carries *two* gaps now: it crosses the ordinary A->C (its own vertical run sits inside
+    // A->C's horizontal span too, the same as A->D's does) AND it crosses A->D itself — a genuine
+    // second crossing, `A->D`'s own horizontal run into `D` passes directly under `B->C`'s vertical
+    // run — and B->C is the spanning side of that one too (the both-detour tie-break, higher id).
     assert_eq!(
         bc.gaps.len(),
-        1,
-        "B->C must carry exactly one gap, from crossing A->D (the both-detour tie-break): {:?}",
+        2,
+        "B->C must carry two gaps: one from crossing the ordinary A->C, one from crossing A->D \
+         (the both-detour tie-break): {:?}",
         bc.gaps
     );
 
@@ -6776,13 +6817,13 @@ fn orthogonal_crossing_gap_splits_the_svg_path_of_the_spanning_edge_only() {
     // as a proxy for "this edge's own path element count", since the golden-masking convention
     // this crate otherwise uses (`mask_numbers`) is not available outside the snapshot harness.
     let path_count = svg.matches("<path").count();
-    // 3 uncut edges (A->C, B->D, C->E) draw 1 path each; `A->D` and `B->C` — see
+    // 3 uncut edges (A->C, B->D, C->E) draw 1 path each; `A->D` — see
     // `orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whole`'s own doc
-    // for exactly which crossing cuts each — carry one gap apiece and so draw one path per of
-    // their 2 pieces each — dumped and confirmed by hand before this was written: 3 + 2 + 2 = 7.
+    // for exactly which crossing cuts each — carries one gap (2 pieces) and `B->C` carries two
+    // (3 pieces) — dumped and confirmed by hand: 3 + 2 + 3 = 8.
     assert_eq!(
-        path_count, 7,
-        "expected 3 uncut edges (1 path each) + A->D (2 pieces) + B->C (2 pieces) = 7: \
+        path_count, 8,
+        "expected 3 uncut edges (1 path each) + A->D (2 pieces) + B->C (3 pieces) = 8: \
          got {path_count}\n{svg}"
     );
 }
@@ -6991,63 +7032,63 @@ fn cluster_anchored_edges_are_actually_routed_orthogonally_not_by_the_spline_fal
 
 /// §10-1 item 1's "退避則" (16px port spacing) applies to a subgraph frame's own faces exactly
 /// like a node's — and, since [`orthogonal::build_by_id`] resolves a cluster-anchored edge's end
-/// through the very same `evict` face-grouping a node-anchored one uses, a face can hold a *mix* of
-/// node-endpoint and cluster-endpoint claims and still space them 16px apart in one shared order.
+/// through the very same `evict` face-grouping a node-anchored one uses, a genuine merge of three
+/// cluster-anchored edges spaces them 16px apart in one shared order, exactly as it would for
+/// three ordinary node-to-node edges.
 ///
-/// `X --> one`, `one --> D` and `one --> E` all land on the `one` cluster's own LEFT face (dumped
-/// and read by hand before this was written: `one`'s bottom-flow branch/merge shape puts `X`'s
-/// target end and both of "one"'s own source ends on the cross face across the flow, which for a
-/// `TD` diagram is Left/Right). Ordered by "もう一方の端点のcross座標順" (rule 1): `D`'s own centre
-/// x is smallest, then `E`'s, then `X`'s — so the three ports must land at
-/// `center - 16, center, center + 16`, in that edge order, not in source-order or declaration
-/// order.
+/// §10-3 item 3's own correction (`classify`'s `merge_target_side` doc) moved `X`/`Y`/`Z --> one`
+/// off the cluster's cross-axis (Left/Right, for this `TD` diagram) face this test originally
+/// exercised, onto its flow-axis Top face instead — the same face `one --> D`/`one --> E` used to
+/// share with them until this correction separated the two groups onto Top (the 3-way merge) and
+/// Left (the 2-way branch) respectively; dumped and confirmed by hand, not assumed. `one`'s own
+/// two out-edges no longer share a face with the merge at all under this fixture, so the "mixed
+/// node-endpoint and cluster-endpoint claims on one shared face" scenario the original test built
+/// is not exercised by this specific source any more — `docs/STATUS.md`'s own ★未修正 records that
+/// as a real, if narrow, coverage gap left by this correction rather than silently dropping it.
+/// What this test still genuinely proves: `evict`'s 16px spacing groups `X`/`Y`/`Z`'s three
+/// cluster-anchored claims on `one`'s own Top face by "もう一方の端点のcross座標順" (rule 1) —
+/// `X`'s own centre x is smallest, then `Y`'s, then `Z`'s — landing at `center - 16, center,
+/// center + 16` in that order.
 #[test]
-fn cluster_face_shares_16px_ports_with_node_endpoint_claims_on_the_same_face() {
+fn cluster_face_shares_16px_ports_across_a_three_way_merge() {
     let src = "flowchart TD\n  subgraph one [Group]\n    A --> B\n    A --> C\n  end\n  \
                X --> one\n  Y --> one\n  Z --> one\n  one --> D\n  one --> E";
     let d = laid_out_flow(src, "basis", "konoma-orthogonal");
     let one = d.cluster("one").expect("cluster one must exist");
-    let (l, _, _, _) = one.bounds();
+    let (_, t, _, _) = one.bounds();
 
-    let left_port = |from: &str, to: &str| -> f64 {
+    let top_port = |from: &str| -> f64 {
         let e = d
             .edges
             .iter()
-            .find(|e| e.from == from && e.to == to)
-            .unwrap_or_else(|| panic!("{from}->{to} must exist"));
-        // Whichever end names "one" is the port on the cluster's own LEFT face — a source end for
-        // one->D/one->E, a target end for X->one.
-        let p = if e.from == "one" {
-            &e.points[0]
-        } else {
-            e.points.last().expect("must have at least one point")
-        };
+            .find(|e| e.from == from && e.to == "one")
+            .unwrap_or_else(|| panic!("{from}->one must exist"));
+        let p = e.points.last().expect("must have at least one point");
         assert!(
-            (p.x - (l - orthogonal::PORT_INSET)).abs() < AXIS_EPS,
-            "{from}->{to}: expected this edge's own end at \"one\" to land on the LEFT face \
-             (x={}), got {p:?} — the fixture assumption behind this test's own port-order math \
-             no longer holds",
-            l - orthogonal::PORT_INSET
+            (p.y - (t - orthogonal::PORT_INSET)).abs() < AXIS_EPS,
+            "{from}->one: expected this edge's own end at \"one\" to land on the Top face \
+             (y={}), got {p:?}",
+            t - orthogonal::PORT_INSET
         );
-        p.y
+        p.x
     };
 
-    let d_y = left_port("one", "D");
-    let e_y = left_port("one", "E");
-    let x_y = left_port("X", "one");
+    let x_x = top_port("X");
+    let y_x = top_port("Y");
+    let z_x = top_port("Z");
 
     assert!(
-        d_y < e_y && e_y < x_y,
-        "expected D < E < X by \"other cross coordinate\" order (rule 1), got D={d_y} E={e_y} \
-         X={x_y}"
+        x_x < y_x && y_x < z_x,
+        "expected X < Y < Z by \"other cross coordinate\" order (rule 1), got X={x_x} Y={y_x} \
+         Z={z_x}"
     );
     assert!(
-        (e_y - d_y - orthogonal::PORT_SPACING).abs() < AXIS_EPS,
-        "D->E gap must be exactly PORT_SPACING: D={d_y} E={e_y}"
+        (y_x - x_x - orthogonal::PORT_SPACING).abs() < AXIS_EPS,
+        "X->Y gap must be exactly PORT_SPACING: X={x_x} Y={y_x}"
     );
     assert!(
-        (x_y - e_y - orthogonal::PORT_SPACING).abs() < AXIS_EPS,
-        "E->X gap must be exactly PORT_SPACING: E={e_y} X={x_y}"
+        (z_x - y_x - orthogonal::PORT_SPACING).abs() < AXIS_EPS,
+        "Y->Z gap must be exactly PORT_SPACING: Y={y_x} Z={z_x}"
     );
 }
 
@@ -7393,6 +7434,12 @@ fn invariant_orthogonal_cluster_titles_stay_inside_their_frame_and_off_every_nod
 /// scenario those invariants are being run *for*), and its grown box must still fit inside its own
 /// frame with the ordinary 16px cluster padding — not merely "the invariant above happened to pass
 /// for unrelated reasons".
+///
+/// §10-3 item 3's own correction (`classify`'s `merge_target_side` doc) moved this fixture's five
+/// merges (`W1`..`W5 --> T`) off `T`'s cross-axis face (Left/Right, for this `TD` diagram — a
+/// height requirement) onto its flow-axis Top face instead (a WIDTH requirement) — the same axis
+/// flip `orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports`'s own doc explains for
+/// its very similar `Z` fixture. Dumped and confirmed by hand, not assumed.
 #[test]
 fn orthogonal_eviction_growth_inside_a_subgraph_still_fits_the_frame() {
     if !text_metrics::fonts_available() {
@@ -7410,8 +7457,15 @@ fn orthogonal_eviction_growth_inside_a_subgraph_still_fits_the_frame() {
         Size::new(t.label.width, t.label.height),
     );
     assert!(
-        t.size.h > label_only.h + 1.0,
-        "T must actually grow past its label-only height to fit four merge ports on one face: \
+        t.size.w > label_only.w + 1.0,
+        "T must actually grow past its label-only width to fit its five merge ports on its Top \
+         face: grown={} label_only={}",
+        t.size.w,
+        label_only.w
+    );
+    assert!(
+        (t.size.h - label_only.h).abs() < 1e-6,
+        "T's height must be untouched — nothing asked its Left/Right faces to grow any more: \
          grown={} label_only={}",
         t.size.h,
         label_only.h
@@ -7780,5 +7834,65 @@ fn orthogonal_route_edge_does_not_panic_on_coincident_centres() {
             p.x.is_finite() && p.y.is_finite(),
             "must never emit a NaN/infinite point: {p:?}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// TEMP probe for docs/FEATURE-MERMAID-RENDERER.md §10-3 work — dumps the "大きさ" flowchart
+// (samples/mermaid.ja.md fence 3) to docs/render-check for structural comparison against the
+// round3 handoff's 3a SVG, and every other `samples/mermaid.ja.md` fence for the same visual
+// spot-check. `#[ignore]`d so it never runs in the normal battery; run explicitly with
+// `cargo test --features git dump_mermaid_ja_corpus_under_orthogonal -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn dump_mermaid_ja_corpus_under_orthogonal() {
+    let md = std::fs::read_to_string("samples/mermaid.ja.md").expect("read samples/mermaid.ja.md");
+    let mut fences: Vec<String> = Vec::new();
+    let mut cur: Option<String> = None;
+    for line in md.lines() {
+        if let Some(buf) = &mut cur {
+            if line.trim() == "```" {
+                fences.push(std::mem::take(buf));
+                cur = None;
+            } else {
+                buf.push_str(line);
+                buf.push('\n');
+            }
+        } else if line.trim() == "```mermaid" {
+            cur = Some(String::new());
+        }
+    }
+    assert!(!fences.is_empty(), "must find at least one mermaid fence");
+
+    for (i, code) in fences.iter().enumerate() {
+        let n = i + 1;
+        let path = format!("docs/render-check/mermaid.ja-{n:02}-konoma-orthogonal.svg");
+        // `[ui] mermaid_routing` only ever means anything for a flowchart (`mod.rs`'s own doc) —
+        // every other diagram kind renders through the ordinary `render`, unaffected by it.
+        // `[ui] mermaid_routing` only ever means anything for a flowchart — this is the real
+        // dispatcher every other diagram kind goes through in production
+        // (`preview::markdown::mermaid_to_svg_reason_flow`), not `render_flow` alone (which only
+        // ever knows how to parse a flowchart).
+        let svg = crate::preview::markdown::mermaid_to_svg_flow(
+            code,
+            "dark",
+            "basis",
+            "konoma-orthogonal",
+        );
+        match svg {
+            Some(svg) => {
+                std::fs::write(&path, &svg).unwrap_or_else(|e| panic!("write {path}: {e}"));
+                let png_path = format!("docs/render-check/mermaid.ja-{n:02}-konoma-orthogonal.png");
+                if let Some(img) = crate::preview::svg::rasterize_bytes(
+                    svg.as_bytes(),
+                    std::path::Path::new(&path),
+                    2400,
+                ) {
+                    img.save(&png_path)
+                        .unwrap_or_else(|e| panic!("save {png_path}: {e}"));
+                }
+            }
+            None => eprintln!("fence {n}: render failed"),
+        }
     }
 }

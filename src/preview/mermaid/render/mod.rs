@@ -1201,6 +1201,12 @@ fn lay_out_spec_pass(
     // pass never touches — so whichever self-loop's owner appears in this map gets the same shift
     // applied to `raw` before `route_staircase_with_ports` ever sees it.
     let mut alignment_deltas: HashMap<String, f64> = HashMap::new();
+    // §10-3 item 1's own robustness note (`orthogonal::align_straight_lanes`'s own doc on its
+    // `used_out` return): every source id that pass selected a trunk/chain edge for, even one the
+    // later overlap-resolution sweep pushed off that chain's own average — `orthogonal::classify`'s
+    // fan-lane trigger needs this alongside the purely geometric check, or a trunk edge crowded out
+    // of exact alignment reads as having no trunk at all.
+    let mut chain_sources: std::collections::HashSet<String> = std::collections::HashSet::new();
     if spec.routing == Routing::Orthogonal {
         let node_rank: HashMap<String, i32> = nodes
             .iter()
@@ -1215,7 +1221,7 @@ fn lay_out_spec_pass(
             .filter(|d| d.edge.from == d.tail && d.edge.to == d.head)
             .map(|d| (d.tail.clone(), d.head.clone()))
             .collect();
-        alignment_deltas =
+        (alignment_deltas, chain_sources) =
             orthogonal::align_straight_lanes(spec.direction, &mut nodes, &node_rank, &candidates);
     }
 
@@ -1364,7 +1370,13 @@ fn lay_out_spec_pass(
         let orthogonal::RoutedFlowchart {
             mut points,
             required_size,
-        } = orthogonal::route_flowchart(spec.direction, &nodes, &placed_clusters, &eligible);
+        } = orthogonal::route_flowchart(
+            spec.direction,
+            &nodes,
+            &placed_clusters,
+            &eligible,
+            &chain_sources,
+        );
         // A `staircase` edge's own local route can coincide with another unrelated detour edge's
         // (`orthogonal::separate_coincident_detours`'s own doc — lost the perimeter lane's shared
         // stagger bookkeeping once it stopped using it, 2026-09-01). Runs before label plates and
@@ -1375,6 +1387,7 @@ fn lay_out_spec_pass(
             &placed_clusters,
             &eligible,
             &mut points,
+            &chain_sources,
         );
         (points, required_size)
     } else {
@@ -1522,6 +1535,7 @@ fn lay_out_spec_pass(
             &eligible,
             &mut orthogonal_points,
             &mut plates,
+            &chain_sources,
         );
         for (id, &idx) in &orthogonal_index {
             if let Some(new_points) = orthogonal_points.get(id) {
@@ -1548,6 +1562,7 @@ fn lay_out_spec_pass(
             &placed_clusters,
             &eligible,
             &orthogonal_points,
+            &chain_sources,
         );
         for (id, &idx) in &orthogonal_index {
             if let Some(g) = gap_map.get(id) {
