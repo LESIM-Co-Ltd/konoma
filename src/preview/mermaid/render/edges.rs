@@ -185,41 +185,61 @@ fn point_on_segment(a: &Point, b: &Point, p: &Point) -> bool {
     }
 }
 
-/// [`split_at_gaps`]'s own per-piece step: if `(g0, g1)` — one gap's two endpoints — both lie on
-/// the same segment of `piece`, returns the two pieces that remain once that sub-interval is cut
-/// out; `None` if this piece's segments hold neither point (the gap belongs to some other piece,
-/// or — defensively — to none, in which case [`split_at_gaps`] simply leaves the whole piece be).
-fn split_piece_at_gap(piece: &[Point], g0: &Point, g1: &Point) -> Option<(Vec<Point>, Vec<Point>)> {
-    for i in 0..piece.len().saturating_sub(1) {
+/// The index of the segment of `piece` (searched from `from` onward) that `p` lies on, together
+/// with `p`'s own distance from that segment's start — the pair [`split_piece_at_gap`] needs both
+/// to order two gap endpoints found on different segments and to know where to cut. `None` if no
+/// segment from `from` onward contains `p`.
+fn locate_on_piece(piece: &[Point], p: &Point, from: usize) -> Option<(usize, f64)> {
+    for i in from..piece.len().saturating_sub(1) {
         let (a, b) = (&piece[i], &piece[i + 1]);
-        if point_on_segment(a, b, g0) && point_on_segment(a, b, g1) {
-            // Order the two gap endpoints by their distance from `a`, so `near` is the one the
-            // "before" piece keeps up to and `far` is where the "after" piece resumes from.
-            let d0 = (g0.x - a.x).hypot(g0.y - a.y);
-            let d1 = (g1.x - a.x).hypot(g1.y - a.y);
-            let (near, far) = if d0 <= d1 { (g0, g1) } else { (g1, g0) };
-            let mut before: Vec<Point> = piece[..=i].to_vec();
-            before.push(near.clone());
-            let mut after: Vec<Point> = vec![far.clone()];
-            after.extend(piece[i + 1..].iter().cloned());
-            return Some((before, after));
+        if point_on_segment(a, b, p) {
+            return Some((i, (p.x - a.x).hypot(p.y - a.y)));
         }
     }
     None
 }
 
+/// [`split_at_gaps`]'s own per-piece step: if `(g0, g1)` — one gap's two endpoints — both lie on
+/// `piece` (on the same segment, or on two different ones when the gap spans a corner — see
+/// [`super::orthogonal::insert_crossing_gaps`]'s own `gap_around`), returns the two pieces that
+/// remain once that sub-interval, and any corner vertices strictly inside it, are cut out; `None`
+/// if this piece's segments hold neither point (the gap belongs to some other piece, or —
+/// defensively — to none, in which case [`split_at_gaps`] simply leaves the whole piece be).
+fn split_piece_at_gap(piece: &[Point], g0: &Point, g1: &Point) -> Option<(Vec<Point>, Vec<Point>)> {
+    let loc0 = locate_on_piece(piece, g0, 0)?;
+    let loc1 = locate_on_piece(piece, g1, 0)?;
+    // Order the two gap endpoints by where they actually fall along the polyline (segment index
+    // first, then distance within that segment), so `near` is the one the "before" piece keeps up
+    // to and `far` is where the "after" piece resumes from — needed because a gap that spans a
+    // corner has its two endpoints on different segments, where a plain coordinate comparison
+    // would not tell which one comes first in traversal order.
+    let ((i_near, _), near, (i_far, _), far) = if loc0 <= loc1 {
+        (loc0, g0, loc1, g1)
+    } else {
+        (loc1, g1, loc0, g0)
+    };
+    let mut before: Vec<Point> = piece[..=i_near].to_vec();
+    before.push(near.clone());
+    let mut after: Vec<Point> = vec![far.clone()];
+    after.extend(piece[i_far + 1..].iter().cloned());
+    Some((before, after))
+}
+
 /// Splits `points` into the contiguous pieces that remain once every `(a, b)` gap interval in
 /// `gaps` is removed — [`super::PlacedEdge::gaps`]'s own doc explains what a gap is and who puts
-/// one there. Each gap is assumed to lie on a single original segment of `points` (never spanning
-/// a corner — [`super::orthogonal::insert_crossing_gaps`]'s own construction keeps every gap well
-/// inside the segment its crossing point was found on, `CROSSING_GAP` at most, far short of the
-/// [`super::orthogonal::PORT_CLEARANCE`]-px hop every segment near a port already has to clear).
+/// one there. A gap's own two points usually land on the same original segment of `points`, but
+/// may land on two different (not necessarily adjacent) segments when the crossing point that
+/// produced it sat close enough to a corner that half of `CROSSING_GAP` overruns the segment —
+/// [`super::orthogonal::insert_crossing_gaps`]'s own `gap_around` measures by arc length along the
+/// whole polyline for exactly this reason, and [`split_piece_at_gap`] follows suit by locating
+/// each endpoint on its own segment rather than assuming they share one; any corner vertices
+/// strictly between the two segments are simply dropped along with the gap they sit inside.
 ///
-/// A piece shorter than 2 points (a gap sitting exactly at a polyline's own end — never actually
-/// produced, since a crossing gap is found well inside a route, but not excluded by construction
-/// either) is silently dropped rather than drawn as a zero-length stub; a gap whose own two points
-/// do not land together on any current piece (should not happen, since every gap is built from a
-/// segment of the very same `points` this is called with) leaves that piece untouched instead of
+/// A piece shorter than 2 points (a gap sitting exactly at a polyline's own end — reachable now
+/// that a gap can be clamped all the way to a port when the crossing point is close enough to one)
+/// is silently dropped rather than drawn as a zero-length stub; a gap whose own two points do not
+/// land together on any current piece (should not happen, since every gap is built from a segment
+/// of the very same `points` this is called with) leaves that piece untouched instead of
 /// panicking, the same "cannot happen, so no crash" stance the rest of this module takes.
 pub fn split_at_gaps(points: &[Point], gaps: &[(Point, Point)]) -> Vec<Vec<Point>> {
     let mut pieces: Vec<Vec<Point>> = vec![points.to_vec()];
@@ -241,6 +261,30 @@ pub fn split_at_gaps(points: &[Point], gaps: &[(Point, Point)]) -> Vec<Vec<Point
         pieces = next;
     }
     pieces
+}
+
+/// The arc length between two points that each lie somewhere on `points`' own segments — general
+/// enough not to care whether `a` and `b` land on the same segment or two different ones, which is
+/// exactly what [`super::orthogonal::insert_crossing_gaps`]'s own `gap_around` can now produce for
+/// a crossing close enough to a corner. `None` if either point does not land on any segment of
+/// `points` at all.
+///
+/// This is a test/measurement helper — nothing in the render path needs the *distance* between two
+/// already-known points, only [`point_at_arc_distance`]'s opposite direction (a distance in, a
+/// point out) — kept here rather than under `#[cfg(test)]` because `render`'s own top-level test
+/// module needs it too and this module is the natural home for polyline arc-length arithmetic.
+pub fn arc_length_between(points: &[Point], a: &Point, b: &Point) -> Option<f64> {
+    let position_of = |p: &Point| -> Option<f64> {
+        let mut acc = 0.0;
+        for w in points.windows(2) {
+            if point_on_segment(&w[0], &w[1], p) {
+                return Some(acc + (p.x - w[0].x).hypot(p.y - w[0].y));
+            }
+            acc += (w[1].x - w[0].x).hypot(w[1].y - w[0].y);
+        }
+        None
+    };
+    Some((position_of(a)? - position_of(b)?).abs())
 }
 
 /// Positions of the right-angle corners in a polyline (`edges.js`'s `extractCornerPoints`).
@@ -354,17 +398,23 @@ pub fn length(points: &[Point]) -> f64 {
         .sum()
 }
 
-/// The point half-way along a polyline **by arc length**.
+/// The point `distance` along a polyline, measured from its start **by arc length** — the general
+/// form [`arc_midpoint`] is a special case of, and what [`super::orthogonal::insert_crossing_gaps`]
+/// uses to place a crossing gap's own two endpoints without regard for how many corners lie
+/// between them and the crossing point.
 ///
-/// mermaid's `traverseEdge`/`calcLabelPosition`. Measuring by arc length rather than by waypoint
-/// count is what keeps a label centred on an edge whose waypoints are unevenly spaced — which
-/// they always are, because dagre's dummy nodes sit one per rank.
-pub fn arc_midpoint(points: &[Point]) -> Option<Point> {
+/// `distance` is clamped to `[0, length(points)]`: a distance past either end simply returns that
+/// end's own point rather than running off the line, the same "ran out of room, stop at what's
+/// there" stance [`trim_end`]/[`trim_start`] take.
+pub fn point_at_arc_distance(points: &[Point], distance: f64) -> Option<Point> {
     match points.len() {
         0 => None,
         1 => Some(points[0].clone()),
         _ => {
-            let mut remaining = length(points) / 2.0;
+            if distance <= 0.0 {
+                return Some(points[0].clone());
+            }
+            let mut remaining = distance;
             for w in points.windows(2) {
                 let d = (w[1].x - w[0].x).hypot(w[1].y - w[0].y);
                 if d == 0.0 {
@@ -383,6 +433,15 @@ pub fn arc_midpoint(points: &[Point]) -> Option<Point> {
             points.last().cloned()
         }
     }
+}
+
+/// The point half-way along a polyline **by arc length**.
+///
+/// mermaid's `traverseEdge`/`calcLabelPosition`. Measuring by arc length rather than by waypoint
+/// count is what keeps a label centred on an edge whose waypoints are unevenly spaced — which
+/// they always are, because dagre's dummy nodes sit one per rank.
+pub fn arc_midpoint(points: &[Point]) -> Option<Point> {
+    point_at_arc_distance(points, length(points) / 2.0)
 }
 
 /// Shortens a polyline by `by` px at its end, leaving the tip for the arrow head to occupy.

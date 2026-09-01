@@ -6603,34 +6603,30 @@ fn orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whol
         bc.gaps
     );
 
-    // Every gap actually sits on its own edge's line — on the same segment, both endpoints — and
-    // is exactly `CROSSING_GAP` px wide (or clamped shorter only if the segment itself is that
-    // short, which none here is).
+    // Every gap actually sits on its own edge's line, and removes exactly `CROSSING_GAP` px of
+    // *arc length* along it (or clamped shorter only if the line itself is that short, which none
+    // here is) — not necessarily `CROSSING_GAP` px of straight-line (Euclidean) distance between
+    // its own two endpoints. Measuring by Euclidean distance is what this test used to do, and is
+    // exactly what let a real regression through: `orthogonal::insert_crossing_gaps`'s own
+    // `gap_around` clamped the omitted stretch to the single segment its crossing point was found
+    // on, so a crossing landing close enough to a corner (never on macOS's own font metrics for
+    // this diagram, reliably on Linux's, whose metrics size `B`/`C` a few px differently — CI
+    // caught it, 2026-09-01) got a gap only 6px wide instead of 12. The fix measures by arc length
+    // along the whole polyline instead, letting the omitted stretch continue past a corner onto
+    // the next segment when it has to — which is exactly the case a same-segment / Euclidean check
+    // cannot tell apart from an under-sized gap, since a corner-straddling gap's own two endpoints
+    // are, correctly, less than `CROSSING_GAP` px of *straight-line* distance apart.
     for e in [ad, bc] {
         for (g0, g1) in &e.gaps {
-            let on_own_segment = e.points.windows(2).any(|w| {
-                let vert = (w[0].x - w[1].x).abs() < AXIS_EPS;
-                if vert {
-                    (g0.x - w[0].x).abs() < AXIS_EPS
-                        && (g1.x - w[0].x).abs() < AXIS_EPS
-                        && g0.y.min(g1.y) >= w[0].y.min(w[1].y) - AXIS_EPS
-                        && g0.y.max(g1.y) <= w[0].y.max(w[1].y) + AXIS_EPS
-                } else {
-                    (g0.y - w[0].y).abs() < AXIS_EPS
-                        && (g1.y - w[0].y).abs() < AXIS_EPS
-                        && g0.x.min(g1.x) >= w[0].x.min(w[1].x) - AXIS_EPS
-                        && g0.x.max(g1.x) <= w[0].x.max(w[1].x) + AXIS_EPS
-                }
+            let arc = edges::arc_length_between(&e.points, g0, g1).unwrap_or_else(|| {
+                panic!(
+                    "{}->{}: gap {g0:?}-{g1:?} is not on any of its own segments {:?}",
+                    e.from, e.to, e.points
+                )
             });
             assert!(
-                on_own_segment,
-                "{}->{}: gap {g0:?}-{g1:?} is not on any of its own segments {:?}",
-                e.from, e.to, e.points
-            );
-            let width = (g1.x - g0.x).hypot(g1.y - g0.y);
-            assert!(
-                (width - orthogonal::CROSSING_GAP).abs() < 1e-6,
-                "{}->{}: gap {g0:?}-{g1:?} is {width}px, not CROSSING_GAP: {:?}",
+                (arc - orthogonal::CROSSING_GAP).abs() < 1e-6,
+                "{}->{}: gap {g0:?}-{g1:?} removes {arc}px of arc length, not CROSSING_GAP: {:?}",
                 e.from,
                 e.to,
                 orthogonal::CROSSING_GAP

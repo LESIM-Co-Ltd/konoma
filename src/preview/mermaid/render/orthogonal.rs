@@ -2362,26 +2362,36 @@ fn segment_crossing(a: &[Point], b: &[Point]) -> Option<Point> {
     None
 }
 
-/// The `CROSSING_GAP`-px interval on `seg` centred on `cross` — [`segment_crossing`]'s own result,
-/// turned into the two points [`edges::split_at_gaps`] cuts out. Clamped to `seg`'s own two
-/// endpoints, so a segment shorter than the gap itself (never produced by a real diagram — a
-/// crossing this close to a port would already have tripped `safe_ring_exit`'s own collision
-/// check, since a segment that short has almost no room to begin with) still returns *something*
-/// rather than a point outside the line it is meant to interrupt.
-fn gap_around(seg: &[Point], cross: Point) -> (Point, Point) {
-    let (a, b) = (&seg[0], &seg[1]);
+/// The `CROSSING_GAP`-px interval centred on `cross` — [`segment_crossing`]'s own result, which
+/// was found on `points`' segment `seg_idx` (`points[seg_idx]`-`points[seg_idx + 1]`) — turned
+/// into the two points [`edges::split_at_gaps`] cuts out.
+///
+/// Measured by arc length along the *whole* polyline `points`, not clamped to the single segment
+/// `cross` sits on: a crossing within `CROSSING_GAP / 2` of a corner needs the omitted stretch to
+/// keep going past that corner onto the next segment, or the gap comes out narrower than
+/// `CROSSING_GAP` — exactly what CI caught on Linux (`orthogonal_crossing_gaps_cut_the_spanning_
+/// edge_and_leave_the_crossed_one_whole`, 2026-09-01): Linux's font metrics size a node a few px
+/// differently than macOS's, which is enough to shift `amp-chain`'s `B->C`/`A->D` crossing right up
+/// against a bend that macOS's own metrics leave mid-segment, and the old segment-only clamp cut
+/// the gap down to whatever room was left on that one segment (6px instead of 12).
+///
+/// The result is clamped to `[0, length(points)]` — the polyline's own two ends, i.e. its ports —
+/// so a crossing too close to either port gets only as much gap as the line has room for rather
+/// than spilling past the end `edges::trim_end`/`edges::trim_start` later carve out for an
+/// arrowhead; a crossing that close to a port is not produced by a real diagram (`safe_ring_exit`'s
+/// own collision check would already have tripped), but the clamp keeps this function total rather
+/// than relying on that being true.
+fn gap_around(points: &[Point], seg_idx: usize, cross: &Point) -> (Point, Point) {
     let half = CROSSING_GAP / 2.0;
-    if (a.x - b.x).abs() < EPS {
-        let (lo, hi) = (a.y.min(b.y), a.y.max(b.y));
-        let y0 = (cross.y - half).clamp(lo, hi);
-        let y1 = (cross.y + half).clamp(lo, hi);
-        (Point::new(cross.x, y0), Point::new(cross.x, y1))
-    } else {
-        let (lo, hi) = (a.x.min(b.x), a.x.max(b.x));
-        let x0 = (cross.x - half).clamp(lo, hi);
-        let x1 = (cross.x + half).clamp(lo, hi);
-        (Point::new(x0, cross.y), Point::new(x1, cross.y))
-    }
+    let seg_start = &points[seg_idx];
+    let to_cross = (cross.x - seg_start.x).hypot(cross.y - seg_start.y);
+    let s = super::edges::length(&points[..=seg_idx]) + to_cross;
+    let total = super::edges::length(points);
+    let lo = (s - half).max(0.0);
+    let hi = (s + half).min(total);
+    let g0 = super::edges::point_at_arc_distance(points, lo).unwrap_or_else(|| cross.clone());
+    let g1 = super::edges::point_at_arc_distance(points, hi).unwrap_or_else(|| cross.clone());
+    (g0, g1)
 }
 
 /// §10-1 item 4: "辺どうしの交差では跨ぐ側（外周レーンの辺＝戻り辺・補助辺）の線に12pxの隙間を開け
@@ -2472,10 +2482,10 @@ pub fn insert_crossing_gaps(
                 pi_detour
             };
             let (cut_id, cut_pts, other_pts) = if cut_on_i { (ei, pi, pj) } else { (ej, pj, pi) };
-            for wc in cut_pts.windows(2) {
+            for (seg_idx, wc) in cut_pts.windows(2).enumerate() {
                 for wo in other_pts.windows(2) {
                     if let Some(cross) = segment_crossing(wc, wo) {
-                        let (g0, g1) = gap_around(wc, cross);
+                        let (g0, g1) = gap_around(cut_pts, seg_idx, &cross);
                         gaps.entry(cut_id.to_string()).or_default().push((g0, g1));
                     }
                 }
@@ -3740,6 +3750,156 @@ mod tests {
             "Q must be pushed to exactly P's far edge (120) + NODE_SEP(50) + Q's half-width(20) \
              = 190, not left at its own aligned 155: {:?}",
             by_id["Q"].center
+        );
+    }
+
+    // --- stage 5: crossing gap, measured by arc length (Linux CI regression, 2026-09-01) ---------
+    //
+    // `orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whole` (this
+    // module's own consumer, `render::tests`) failed on Linux only: its font metrics size a node a
+    // few px differently than macOS's, which was enough to move `amp-chain`'s real `B->C`/`A->D`
+    // crossing from mid-segment (macOS) to within `CROSSING_GAP / 2` of a corner (Linux) — and the
+    // old `gap_around`, which clamped to the single segment the crossing point was found on, cut a
+    // gap only 6px wide there instead of 12. These three tests pin `gap_around`'s arc-length fix
+    // directly, with hand-built node centres and polylines rather than anything `route_with_ports`
+    // measured a label through — the same font-independent reproduction CI's own failure needed.
+
+    /// Builds the two [`EligibleEdge`]s [`insert_crossing_gaps`] needs to find a crossing between
+    /// `cut_points` (forced to be the "spanning"/detour side by its rank pair, so it is always the
+    /// one a gap gets cut into) and `other_points` (an ordinary edge, never cut) — both hand
+    /// coordinates, standing in for whatever `route_with_ports` would have measured. Returns
+    /// exactly the gaps `insert_crossing_gaps` computed for the "cut" edge.
+    fn crossing_gaps(cut_points: Vec<Point>, other_points: Vec<Point>) -> Vec<(Point, Point)> {
+        let nodes = vec![
+            node("P", 0.0, -500.0, 4.0, 4.0),
+            node("Q", 0.0, 500.0, 4.0, 4.0),
+            node("M", -1000.0, -1000.0, 4.0, 4.0),
+            node("N", 1000.0, -1000.0, 4.0, 4.0),
+        ];
+        let edges = [
+            EligibleEdge {
+                id: "cut",
+                source: "P",
+                target: "Q",
+                raw: &[],
+                // `tr <= sr` trips `classify`'s `is_reverse` branch, which is what makes this edge
+                // the spanning (detour) side of any crossing it takes part in.
+                source_rank: Some(1),
+                target_rank: Some(0),
+                source_out_degree: 1,
+                target_in_degree: 1,
+            },
+            EligibleEdge {
+                id: "other",
+                source: "M",
+                target: "N",
+                raw: &[],
+                // `tr > sr` keeps this edge ordinary — it is never the spanning side and never cut.
+                source_rank: Some(0),
+                target_rank: Some(1),
+                source_out_degree: 1,
+                target_in_degree: 1,
+            },
+        ];
+        let mut points = HashMap::new();
+        points.insert("cut".to_string(), cut_points);
+        points.insert("other".to_string(), other_points);
+        let gaps = insert_crossing_gaps(Direction::TopToBottom, &nodes, &[], &edges, &points);
+        gaps.get("cut").cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn crossing_gap_mid_segment_is_the_full_12px() {
+        // The cut edge's own polyline: a vertical leg (0,0)-(0,20), then a horizontal one
+        // (0,20)-(30,20) — an ordinary orthogonal L, total length 50. The other edge crosses the
+        // vertical leg at (0, 10), 10px from either end of that leg: comfortably mid-segment, no
+        // corner within reach of `CROSSING_GAP / 2` (6px) either way.
+        let cut = vec![
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 20.0),
+            Point::new(30.0, 20.0),
+        ];
+        let other = vec![Point::new(-10.0, 10.0), Point::new(10.0, 10.0)];
+        let gaps = crossing_gaps(cut, other);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        let (g0, g1) = &gaps[0];
+        assert!(
+            (g0.x - 0.0).abs() < 1e-9 && (g0.y - 4.0).abs() < 1e-9,
+            "{g0:?}"
+        );
+        assert!(
+            (g1.x - 0.0).abs() < 1e-9 && (g1.y - 16.0).abs() < 1e-9,
+            "{g1:?}"
+        );
+        let width = (g1.x - g0.x).hypot(g1.y - g0.y);
+        assert!((width - CROSSING_GAP).abs() < 1e-9, "{width}");
+    }
+
+    #[test]
+    fn crossing_gap_straddling_a_corner_still_totals_12px_by_arc_length() {
+        // Same cut polyline as above, but the crossing now lands at (0, 17) — only 3px from the
+        // corner at (0, 20), well inside the 6px half-gap. The straight-line (Euclidean) distance
+        // between the two gap endpoints this produces is *less* than 12px (the corner bends the
+        // path), which is exactly why the old segment-clamped `gap_around` under-cut it: the fix
+        // must keep going past the corner onto the next segment so the *arc length* removed is
+        // still the full 12px.
+        let cut = vec![
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 20.0),
+            Point::new(30.0, 20.0),
+        ];
+        let other = vec![Point::new(-10.0, 17.0), Point::new(10.0, 17.0)];
+        let gaps = crossing_gaps(cut, other);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        let (g0, g1) = &gaps[0];
+        // Arc length 17 - 6 = 11, still on the vertical leg: (0, 11).
+        assert!(
+            (g0.x - 0.0).abs() < 1e-9 && (g0.y - 11.0).abs() < 1e-9,
+            "g0 must stay on the vertical leg at arc length 11: {g0:?}"
+        );
+        // Arc length 17 + 6 = 23 overruns the vertical leg's own 20px by 3px, continuing 3px onto
+        // the horizontal leg from the corner: (3, 20).
+        assert!(
+            (g1.x - 3.0).abs() < 1e-9 && (g1.y - 20.0).abs() < 1e-9,
+            "g1 must continue 3px past the corner onto the horizontal leg: {g1:?}"
+        );
+        // The Euclidean chord is shorter than 12px — the corner bends it — but the *arc length*
+        // removed (g0 -> corner -> g1) is the full 12px `CROSSING_GAP`.
+        let chord = (g1.x - g0.x).hypot(g1.y - g0.y);
+        assert!(
+            chord < CROSSING_GAP - 1.0,
+            "the chord must actually be shorter than CROSSING_GAP for this test to mean anything: \
+             {chord}"
+        );
+        let corner = Point::new(0.0, 20.0);
+        let arc = crate::preview::mermaid::render::edges::length(&[g0.clone(), corner, g1.clone()]);
+        assert!((arc - CROSSING_GAP).abs() < 1e-9, "{arc}");
+    }
+
+    #[test]
+    fn crossing_gap_near_a_port_is_clamped_to_the_room_available() {
+        // A cut edge only 8px long in total — shorter than `CROSSING_GAP` itself — crossed at
+        // (0, 3). Neither side of the gap has 6px of room: the low side runs out at 3px (the
+        // polyline's own start, i.e. its port) and the high side at 5px (the polyline's own end).
+        // The gap must be clamped to exactly what the line has, `(0,0)`-`(0,8)`, 8px wide — not
+        // spill past either port.
+        let cut = vec![Point::new(0.0, 0.0), Point::new(0.0, 8.0)];
+        let other = vec![Point::new(-10.0, 3.0), Point::new(10.0, 3.0)];
+        let gaps = crossing_gaps(cut, other);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        let (g0, g1) = &gaps[0];
+        assert!(
+            (g0.x - 0.0).abs() < 1e-9 && (g0.y - 0.0).abs() < 1e-9,
+            "g0 must clamp to the polyline's own start: {g0:?}"
+        );
+        assert!(
+            (g1.x - 0.0).abs() < 1e-9 && (g1.y - 8.0).abs() < 1e-9,
+            "g1 must clamp to the polyline's own end: {g1:?}"
+        );
+        let width = (g1.x - g0.x).hypot(g1.y - g0.y);
+        assert!(
+            width < CROSSING_GAP,
+            "a polyline shorter than CROSSING_GAP can only ever give back less than it: {width}"
         );
     }
 }
