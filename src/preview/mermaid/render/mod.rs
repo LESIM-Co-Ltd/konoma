@@ -294,9 +294,13 @@ pub struct PlacedEdge {
     pub points: Vec<Point>,
     /// §10-1 item 4's 12px crossing gaps — each `(a, b)` is one closed sub-interval of `points` to
     /// leave undrawn, so the line this edge draws reads as passing *under* whatever it crosses
-    /// rather than as a plain "+" intersection with no depth of its own. `a` and `b` always lie on
-    /// the same original segment of `points` (never spanning a corner) and are always exactly
-    /// [`orthogonal::CROSSING_GAP`] px apart, centred on the crossing point that asked for them.
+    /// rather than as a plain "+" intersection with no depth of its own. `a` and `b` are always
+    /// exactly [`orthogonal::CROSSING_GAP`] px apart **by arc length along `points`**, centred on
+    /// the crossing point that asked for them — usually both on the same original segment, but not
+    /// always: a crossing point close enough to a corner (`orthogonal::gap_around`'s own doc)
+    /// makes the gap continue past that corner onto the next segment, so `a` and `b` can land on
+    /// two different segments, in which case the straight-line distance between them is *shorter*
+    /// than `CROSSING_GAP` even though the arc length removed is not.
     ///
     /// Empty for every edge before `[ui] mermaid_routing` existed, and empty still for `"splines"`
     /// and for every diagram kind but a flowchart's own orthogonal-routed edges — `svg::emit_edge`

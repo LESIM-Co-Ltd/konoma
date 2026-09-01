@@ -6680,19 +6680,18 @@ fn normalise_moves_edge_gaps_along_with_points() {
             // The precise check, not just "somewhere inside the diagram" (too weak to catch the
             // real bug — `dx`/`dy` can be small enough that an un-translated gap still happens to
             // fall inside the normalised bounds by coincidence, which is exactly how this test's
-            // own first draft passed even with the translation missing): every gap must still
-            // land exactly on one of its *own* edge's segments, in the *normalised* `points` this
-            // loop is reading right now.
-            let on_own_segment = e.points.windows(2).any(|w| {
-                let vert = (w[0].x - w[1].x).abs() < AXIS_EPS;
-                if vert {
-                    (g0.x - w[0].x).abs() < AXIS_EPS && (g1.x - w[0].x).abs() < AXIS_EPS
-                } else {
-                    (g0.y - w[0].y).abs() < AXIS_EPS && (g1.y - w[0].y).abs() < AXIS_EPS
-                }
-            });
+            // own first draft passed even with the translation missing): every gap endpoint must
+            // still land, *independently*, on some segment of its own edge's (normalised) polyline
+            // — independently, not "both on the same segment", because a gap that straddles a
+            // corner (reachable on a platform whose font metrics move a crossing close enough to a
+            // bend — this is what Linux CI's own `insert_crossing_gaps` regression looked like,
+            // 2026-09-01) legitimately has its two endpoints on two different segments. A missing
+            // translation is still caught exactly as before: if `normalise()` moved `points` but
+            // not `gaps`, the untranslated `g0`/`g1` land nowhere on the translated `points` at
+            // all, on any segment.
+            let on_own_segments = edges::arc_length_between(&e.points, g0, g1).is_some();
             assert!(
-                on_own_segment,
+                on_own_segments,
                 "{}->{}: gap {g0:?}-{g1:?} does not land on any of its own (normalised) \
                  segments {:?} — normalise() must have moved `points` without moving `gaps`",
                 e.from, e.to, e.points
@@ -6702,6 +6701,93 @@ fn normalise_moves_edge_gaps_along_with_points() {
     assert!(
         checked_at_least_one,
         "fixture must actually produce at least one gap for this test to mean anything"
+    );
+}
+
+/// The Linux-only reproduction of the same `normalise`/`gaps` translation this module's own
+/// `normalise_moves_edge_gaps_along_with_points` pins, but with a gap that **straddles a corner** —
+/// its two endpoints on two different segments of the edge's own polyline, the shape a real crossing
+/// only takes when it lands within `CROSSING_GAP / 2` of a bend (`orthogonal::gap_around`'s own
+/// arc-length fix, 2026-09-01 — reachable on macOS's own font metrics only by hand-building the
+/// input, which is exactly what this test does instead of depending on a platform's measured text).
+/// `normalise_moves_edge_gaps_along_with_points`'s own corpus run never happens to produce this
+/// shape on this machine, which is exactly how the coordinator's own CI re-run found a second,
+/// narrower hole in the exact same test family: both of that test's own on-segment checks (this one
+/// and `orthogonal_frame_crossings_never_produce_a_gap`) required `g0` *and* `g1` on the *same*
+/// segment, which a corner-straddling gap fails even when `normalise` translated it perfectly.
+#[test]
+fn normalise_translates_a_corner_straddling_gap_onto_its_own_two_segments() {
+    let mut d = Diagram {
+        width: 0.0,
+        height: 0.0,
+        ..Diagram::default()
+    };
+    // An L-shaped polyline — vertical (0,0)-(0,20), then horizontal (0,20)-(30,20), the same shape
+    // `orthogonal::tests::crossing_gap_straddling_a_corner_still_totals_12px_by_arc_length` uses —
+    // carrying a gap whose two endpoints already straddle the corner *before* `normalise` runs:
+    // (0, 11) on the vertical leg, (3, 20) 3px past the corner onto the horizontal leg.
+    d.edges.push(PlacedEdge {
+        from: "a".to_string(),
+        to: "b".to_string(),
+        points: vec![
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 20.0),
+            Point::new(30.0, 20.0),
+        ],
+        gaps: vec![(Point::new(0.0, 11.0), Point::new(3.0, 20.0))],
+        tip_start: Tip::None,
+        tip_end: Tip::None,
+        stroke: Stroke::Normal,
+        label: None,
+        start_label: None,
+        end_label: None,
+        badge: None,
+        series: None,
+        straight: false,
+        overlay: false,
+        style: None,
+        curve: Curve::Basis,
+        tip_matches_line: false,
+    });
+
+    super::normalise(&mut d);
+
+    let e = &d.edges[0];
+    // The whole diagram sat at the origin (min_x = min_y = 0), so `normalise` must have shifted
+    // everything by exactly `(MARGIN, MARGIN)` — points and gap alike.
+    assert_eq!(
+        e.points,
+        vec![
+            Point::new(MARGIN, MARGIN),
+            Point::new(MARGIN, 20.0 + MARGIN),
+            Point::new(30.0 + MARGIN, 20.0 + MARGIN),
+        ],
+        "normalise must shift every point of the polyline by (MARGIN, MARGIN): {:?}",
+        e.points
+    );
+    assert_eq!(e.gaps.len(), 1, "{:?}", e.gaps);
+    let (g0, g1) = &e.gaps[0];
+    assert_eq!(
+        (g0.clone(), g1.clone()),
+        (
+            Point::new(MARGIN, 11.0 + MARGIN),
+            Point::new(3.0 + MARGIN, 20.0 + MARGIN)
+        ),
+        "the gap must be shifted by the exact same (MARGIN, MARGIN) as the points — a gap left in \
+         the pre-normalise coordinate space would still read (0,11)-(3,20) here"
+    );
+    // Each endpoint independently lands on *some* segment of the *translated* polyline — g0 on the
+    // (now shifted) vertical leg, g1 on the (now shifted) horizontal leg, two different segments —
+    // and the arc length between them is still the full `CROSSING_GAP`, unchanged by translation.
+    let arc = edges::arc_length_between(&e.points, g0, g1).unwrap_or_else(|| {
+        panic!(
+            "gap {g0:?}-{g1:?} does not land on the translated polyline {:?}",
+            e.points
+        )
+    });
+    assert!(
+        (arc - orthogonal::CROSSING_GAP).abs() < 1e-9,
+        "arc length between the translated gap's own two endpoints must still be CROSSING_GAP: {arc}"
     );
 }
 
@@ -6717,21 +6803,16 @@ fn orthogonal_frame_crossings_never_produce_a_gap() {
             continue;
         }
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
-        // Every gap that does exist must still sit on its own edge's own segment (never on a
-        // frame's own boundary) — reusing the same on-segment shape the crossing test above
-        // states, generalised to the whole subgraph corpus rather than one hand-picked source.
+        // Every gap that does exist must still sit on its own edge's own line (never on a frame's
+        // own boundary) — reusing the same "each endpoint independently on some segment of its own
+        // edge" shape the normalise test above states (not "both endpoints on the *same* segment",
+        // which a gap straddling a corner legitimately fails), generalised to the whole subgraph
+        // corpus rather than one hand-picked source.
         for e in &d.edges {
             for (g0, g1) in &e.gaps {
-                let on_own_segment = e.points.windows(2).any(|w| {
-                    let vert = (w[0].x - w[1].x).abs() < AXIS_EPS;
-                    if vert {
-                        (g0.x - w[0].x).abs() < AXIS_EPS && (g1.x - w[0].x).abs() < AXIS_EPS
-                    } else {
-                        (g0.y - w[0].y).abs() < AXIS_EPS && (g1.y - w[0].y).abs() < AXIS_EPS
-                    }
-                });
+                let on_own_segments = edges::arc_length_between(&e.points, g0, g1).is_some();
                 assert!(
-                    on_own_segment,
+                    on_own_segments,
                     "{name}: {}->{}'s gap {g0:?}-{g1:?} is not on its own line — a frame must \
                      never be the reason a gap exists: {:?}",
                     e.from, e.to, e.points
