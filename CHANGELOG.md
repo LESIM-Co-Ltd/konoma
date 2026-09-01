@@ -6,6 +6,16 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Fixed
+- **`konoma-orthogonal`: an edge could pierce its own endpoint node, hiding its arrowhead under
+  the node fill.** A collision-fallback edge still routed from layout waypoints captured before
+  lane alignment moved the nodes (so its line ran into the moved node and the arrowhead drew
+  underneath it), and a fresh branch/merge bridge could hold its leaving coordinate inside a
+  nearby endpoint's box. Routes caught entering their own endpoint are now resynthesized from the
+  current geometry, the collision cascade also rejects self-piercing shapes, and a strict
+  zero-margin invariant ("no edge crosses its own endpoint node") now guards the whole corpus and
+  the real sample diagram.
+
 ## [0.28.3] - 2026-09-01
 
 ### Added
