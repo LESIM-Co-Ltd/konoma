@@ -5588,6 +5588,22 @@ fn rel_to_open(open_dir: &Path, path: &Path) -> String {
 }
 
 /// Write to the clipboard. Returns Err on environments where arboard is unavailable (the caller shows a flash).
+///
+/// Test builds never touch arboard: see `test_support::set_test_clipboard` and the module doc there
+/// for why (`cargo test` was overwriting the developer's real system clipboard on every copy key).
+/// The arboard-calling body below is entirely absent from a `#[cfg(test)]` build.
+///
+/// Why the old (pre-seam) tests happened to pass on headless Linux CI without ever visibly
+/// clobbering anything: `arboard`'s Linux backend opens an X11 connection in `Clipboard::new()`
+/// (`RustConnection::connect(None)`), which fails fast to `Err` with no `DISPLAY` — GitHub Actions'
+/// `ubuntu-latest` runner has none, so every copy in that job hit this function's `Err` branch and
+/// touched no real clipboard at all (there wasn't one to touch). macOS is different: `NSPasteboard`
+/// is a system service reachable from any logged-in session, headless CI included, so `cargo test`
+/// on macOS (the developer's own machine, and the macOS CI job) really did write through to a real
+/// pasteboard every time — CI's is just a throwaway VM nobody minds, whereas the developer's is the
+/// one this bug report was about. The seam above makes both platforms behave identically under
+/// `cargo test`: neither ever calls arboard, so this asymmetry can no longer matter.
+#[cfg(not(test))]
 fn set_clipboard(text: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -5615,6 +5631,12 @@ fn set_clipboard(text: &str) -> Result<()> {
         cb.set_text(text.to_string())?;
         Ok(())
     }
+}
+
+#[cfg(test)]
+fn set_clipboard(text: &str) -> Result<()> {
+    crate::test_support::set_test_clipboard(text);
+    Ok(())
 }
 
 /// `~/...` if under HOME, otherwise the full path.

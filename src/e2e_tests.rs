@@ -5664,15 +5664,21 @@ fn e2e_paste_jump_from_visual_exits_visual_and_lands_in_preview() {
     assert_eq!(s.app.surface(), crate::keymap::Surface::Visual);
 
     // Dispatch P (PasteJump). Why call `crate::dispatch_action` directly instead of a real key:
-    // this test doesn't want to touch the real machine's system clipboard (its content is
-    // environment-dependent = the test becomes flaky. paste_jump()'s own resolution/crash resilience
-    // is separately verified elsewhere, e.g. e2e_paste_jump_local_path_with_line, via the
-    // clipboard-independent `paste_jump_from`). dispatch_action IS main.rs's central dispatch, and
-    // passes exactly the same Action/Surface arguments that the real key `P` resolves to, so as a
-    // path it's identical to going through a real key. As long as main.rs's dispatch routes through
-    // `commit_visual_if_needed` (as with the other Space→ actions), Visual is guaranteed to end
-    // regardless of the clipboard's content/whether reading it succeeds (commit_visual_if_needed
-    // runs **before** calling app.paste_jump()).
+    // it exercises the exact same `app.paste_jump()` (real read_clipboard, not the
+    // clipboard-independent `paste_jump_from`) that a real `P` keystroke would, without going
+    // through crossterm's key-event plumbing. In test builds `read_clipboard` reads the
+    // test-only sink (`test_support`), never the real system clipboard, so clear it first —
+    // whether the jump then succeeds or flashes "no clipboard" is irrelevant to what this test
+    // checks (paste_jump()'s own resolution/crash resilience is separately verified elsewhere,
+    // e.g. e2e_paste_jump_local_path_with_line, via `paste_jump_from`, and the sink round-trip
+    // itself is verified in e2e_paste_jump_reads_from_the_test_clipboard_sink below).
+    // dispatch_action IS main.rs's central dispatch, and passes exactly the same Action/Surface
+    // arguments that the real key `P` resolves to, so as a path it's identical to going through a
+    // real key. As long as main.rs's dispatch routes through `commit_visual_if_needed` (as with
+    // the other Space→ actions), Visual is guaranteed to end regardless of the clipboard's
+    // content/whether reading it succeeds (commit_visual_if_needed runs **before** calling
+    // app.paste_jump()).
+    crate::test_support::clear_test_clipboard();
     let sfc = s.app.surface();
     assert_eq!(sfc, crate::keymap::Surface::Visual);
     crate::dispatch_action(&mut s.app, crate::keymap::Action::PasteJump, sfc)
@@ -5712,6 +5718,68 @@ fn e2e_paste_jump_from_visual_exits_visual_and_lands_in_preview() {
         s.app.tab.selected, cursor_before,
         "j はもうツリーの Visual カーソルを動かさない(プレビュー中)"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The read side of the clipboard seam, end to end through `app.paste_jump()` itself (not the
+/// clipboard-independent `paste_jump_from`): a test writes into the test-only sink
+/// (`test_support::set_test_clipboard`), then `P`'s real entry point reads it back and navigates —
+/// proving `read_clipboard()`'s `Ok` branch (only reachable via the real system clipboard before
+/// this fix existed) without touching that real clipboard.
+#[test]
+fn e2e_paste_jump_reads_from_the_test_clipboard_sink() {
+    let dir = sandbox("paste_jump_sink_ok");
+    std::fs::write(dir.join("target.txt"), "PASTE_JUMP_SINK_BODY\n").unwrap();
+    let dir = canon(&dir);
+    let mut s = Sim::new(&dir);
+
+    crate::test_support::set_test_clipboard("target.txt");
+    s.app.paste_jump();
+    s.draw();
+
+    assert_eq!(
+        s.app.tab.mode,
+        Mode::Preview,
+        "シンクの内容どおりプレビューに入る"
+    );
+    assert!(
+        s.app
+            .tab
+            .preview_path
+            .as_deref()
+            .map(|p| p.ends_with("target.txt"))
+            .unwrap_or(false),
+        "target.txt がプレビュー対象: {:?}",
+        s.app.tab.preview_path
+    );
+    s.see("PASTE_JUMP_SINK_BODY");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The other branch of the same seam: an empty sink (no test wrote to it) must behave exactly like
+/// a real environment with no usable clipboard — `Err` from `read_clipboard()`, flashed as
+/// `PasteJumpNoClipboard`, never a crash or a silent no-op.
+#[test]
+fn e2e_paste_jump_flashes_when_the_test_clipboard_sink_is_empty() {
+    let dir = sandbox("paste_jump_sink_empty");
+    seed_files(&dir);
+    let dir = canon(&dir);
+    let mut s = Sim::new(&dir);
+
+    crate::test_support::clear_test_clipboard();
+    s.app.paste_jump();
+    s.draw();
+
+    assert_eq!(
+        s.app.flash.as_deref(),
+        Some(crate::i18n::tr(
+            s.app.lang,
+            crate::i18n::Msg::PasteJumpNoClipboard
+        )),
+        "空のクリップボード(シンク)は専用の flash を出す: {:?}",
+        s.app.flash
+    );
+    assert_eq!(s.app.tab.mode, Mode::Tree, "ジャンプ失敗でツリーのまま");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -11841,6 +11909,16 @@ fn e2e_yc_copies_code_in_a_document_with_a_multiline_footnote() {
             .contains("couldn't"),
         "コピーが拒否されていない(flash={:?})",
         s.app.flash
+    );
+    // Stronger than the flash check above: `y c` actually placed the payload — and only the
+    // payload, not e.g. the whole fenced block including the ```sh markers — on the clipboard.
+    // Routed through the test-only sink (test_support::CLIPBOARD), never the real system
+    // clipboard, so running this test cannot clobber whatever the developer has copied outside
+    // the terminal.
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some(payload),
+        "クリップボード(テスト用シンク)にペイロードそのものが入っている"
     );
     std::fs::remove_dir_all(&dir).ok();
 }
