@@ -11851,6 +11851,14 @@ fn e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder() {
     .unwrap();
     let root = canon(&dir);
 
+    // `s.enter()` below really does spawn `ensure_remote_md_fetch`'s background download thread
+    // for the unresolved `http://127.0.0.1:1/nope.png` (see that function's `#[cfg(test)]` guard)
+    // — point `cache_root()` at a sandboxed directory first so the download's `create_dir_all`
+    // (which runs before the connection-refused failure) lands there, never under the developer's
+    // real `~/.cache/konoma/remote-images`.
+    let cache_root = unique_tmp("konoma_e2e_remote_cache_root_test");
+    crate::test_support::set_test_cache_root(cache_root.clone());
+
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");
     s.enter();
@@ -11866,6 +11874,7 @@ fn e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder() {
         "失敗した画像はプレースメントを持たないはず"
     );
     std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&cache_root).ok();
 }
 
 /// The reported bug, end to end through real key input: a document shaped like `rand_chacha`'s

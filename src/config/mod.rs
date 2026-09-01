@@ -1562,8 +1562,27 @@ d = "refresh"
         }
     }
 
+    /// Serializes this module's env-mutating test (below) against itself running concurrently with
+    /// a copy of itself on another thread — `cargo test`'s default runner is multi-threaded, and
+    /// `VISUAL`/`EDITOR` are process-global — and, via the `Drop`-based guard the test builds
+    /// around it, guarantees they are restored even if one of the assertions in between panics.
+    ///
+    /// Same shape as `preview::video::PATH_MUTATING_TESTS` (that module's identical fix for `PATH`/
+    /// this process's fd 0): without the `Drop` guard, a failing assertion partway through step 3
+    /// below used to leave `VISUAL`/`EDITOR` mutated to `"myvisual"`/`"myeditor"` for the rest of
+    /// this test binary's process — this project's actual editor-open flow
+    /// (`main.rs::run_editor` → this same `EditorConfig::resolve`) reads those exact two vars for
+    /// its own no-config-override fallback, so a later e2e test exercising `e` with the default
+    /// config could then silently try to spawn `myvisual`/`myeditor` as a real command instead of
+    /// the environment's actual editor — a confusing, hard-to-reproduce failure in an unrelated
+    /// test, not in this one.
+    static EDITOR_ENV_MUTATING_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn editor_config_resolve_priority_ext_command_env_default() {
+        let _guard = EDITOR_ENV_MUTATING_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         use std::path::Path;
         // 1) Per-extension takes highest priority.
         let mut ec = EditorConfig {
@@ -1589,14 +1608,38 @@ d = "refresh"
         );
 
         // 3) When both command and ext are empty: $VISUAL → $EDITOR → vim, in that order.
-        //    Only this resolve reads VISUAL/EDITOR. Keep it self-contained within one test and
-        //    always restore them.
+        //    Only this resolve reads VISUAL/EDITOR. Restoration is guaranteed by `RestoreEnv`'s
+        //    `Drop` below (fires on normal return *and* on an assertion panic — this project
+        //    disallows `panic = "abort"`, so unwinding + `Drop` cleanup is reliable here), not by
+        //    reaching the end of the function.
         let empty = EditorConfig {
             command: String::new(),
             ext: HashMap::new(),
         };
         let save_v = std::env::var_os("VISUAL");
         let save_e = std::env::var_os("EDITOR");
+
+        struct RestoreEnv {
+            visual: Option<std::ffi::OsString>,
+            editor: Option<std::ffi::OsString>,
+        }
+        impl Drop for RestoreEnv {
+            fn drop(&mut self) {
+                match &self.visual {
+                    Some(v) => std::env::set_var("VISUAL", v),
+                    None => std::env::remove_var("VISUAL"),
+                }
+                match &self.editor {
+                    Some(v) => std::env::set_var("EDITOR", v),
+                    None => std::env::remove_var("EDITOR"),
+                }
+            }
+        }
+        let _restore = RestoreEnv {
+            visual: save_v,
+            editor: save_e,
+        };
+
         std::env::set_var("VISUAL", "myvisual");
         std::env::set_var("EDITOR", "myeditor");
         assert_eq!(
@@ -1616,15 +1659,8 @@ d = "refresh"
             vec!["vim".to_string(), "/x/f".to_string()],
             "最後は vim"
         );
-        // Restore.
-        match save_v {
-            Some(v) => std::env::set_var("VISUAL", v),
-            None => std::env::remove_var("VISUAL"),
-        }
-        match save_e {
-            Some(v) => std::env::set_var("EDITOR", v),
-            None => std::env::remove_var("EDITOR"),
-        }
+        // `_restore` drops here (function exit), restoring VISUAL/EDITOR regardless of whether any
+        // assertion above panicked.
     }
 
     #[test]

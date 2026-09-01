@@ -5116,12 +5116,35 @@ fn cache_root_from(xdg_or_home: Option<PathBuf>) -> PathBuf {
 
 /// Root of konoma's on-disk cache (`$XDG_CACHE_HOME`, or `$HOME/.cache`, or a system-temp fallback
 /// when neither is available — see `cache_root_from`'s doc for why).
+#[cfg(not(test))]
 fn cache_root() -> PathBuf {
     cache_root_from(crate::bookmarks::xdg_base_dir(
         std::env::var_os("XDG_CACHE_HOME").as_deref(),
         std::env::var_os("HOME").as_deref(),
         ".cache",
     ))
+}
+
+/// Test-build twin of the function above. Prefers `test_support::get_test_cache_root()` when a test
+/// has set one, otherwise falls back to the exact same environment-reading formula production uses.
+///
+/// This is deliberately *not* a hard redirect (unlike `set_clipboard`'s test body, which always
+/// routes to the sink): `cache_root()` and `md_remote_cache_path` are pure path arithmetic and never
+/// touch the filesystem by themselves, so the many tests that call them read-only (a stable cache
+/// key, or `cache_root_tests` below exercising the real-environment fallback formula on purpose)
+/// should keep seeing the real formula. The actual disk write lives in
+/// `ensure_remote_md_fetch`'s spawned download thread, and that function refuses to spawn one
+/// without an override in place — see its `#[cfg(test)]` guard — so this soft fallback can't let a
+/// test silently write under the developer's real `~/.cache/konoma/remote-images`.
+#[cfg(test)]
+fn cache_root() -> PathBuf {
+    crate::test_support::get_test_cache_root().unwrap_or_else(|| {
+        cache_root_from(crate::bookmarks::xdg_base_dir(
+            std::env::var_os("XDG_CACHE_HOME").as_deref(),
+            std::env::var_os("HOME").as_deref(),
+            ".cache",
+        ))
+    })
 }
 
 /// Deterministic cache path for a remote image URL: `<cache>/konoma/remote-images/<hash>`. The file is

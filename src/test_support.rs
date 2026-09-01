@@ -90,6 +90,85 @@ pub(crate) fn clear_test_clipboard() {
     CLIPBOARD.with(|c| *c.borrow_mut() = None);
 }
 
+thread_local! {
+    /// Test-only override for `app::cache_root()` (see that function's `#[cfg(test)]` body).
+    ///
+    /// Without this, `cargo test` computed the remote-image download cache root exactly the way
+    /// the shipped binary does — `$XDG_CACHE_HOME`/`$HOME/.cache`, no test-only branch at all — so
+    /// any test that reached `app::ensure_remote_md_fetch`'s background-download path (a Markdown
+    /// document with an unresolved `http(s)://` image, previewed with the remote loader attached)
+    /// created real directories under the developer's actual `~/.cache/konoma/remote-images/` on
+    /// every run — confirmed by inspecting that directory's mtime around such a test. Same shape of
+    /// bug as the clipboard one above, same fix: give production code a seam it reads from instead
+    /// of the environment, and make test builds not compile the environment-reading path in at the
+    /// one place that actually writes to disk.
+    ///
+    /// `cache_root()` itself keeps reading the real environment when no override is set (unlike
+    /// `CLIPBOARD`, which always redirects in test builds) — `cache_root()` and
+    /// `md_remote_cache_path()` are pure path arithmetic and never touch the filesystem on their
+    /// own, so the many tests that call them read-only (to get a stable cache key, or to check the
+    /// real-environment fallback formula itself) stay exercising the real formula. The actual
+    /// filesystem write only happens inside `ensure_remote_md_fetch`'s spawned download thread, and
+    /// that function asserts an override is set before ever spawning one — see its `#[cfg(test)]`
+    /// guard — so a future test that reaches that spawn without opting in fails loudly instead of
+    /// silently writing to the real cache.
+    ///
+    /// Thread-local, not a process-wide static, for the same reason as `CLIPBOARD`: `cargo test`'s
+    /// default runner never runs two tests concurrently on the same thread, but does reuse threads
+    /// across tests, so a test that sets this must not assume a clean slate — only the guard in
+    /// `ensure_remote_md_fetch` cares whether *some* override is set, not which test set it, so a
+    /// stale value from an earlier test on the same thread is harmless (it still points at a
+    /// sandboxed directory, never the real cache root).
+    static CACHE_ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Test-only override for `app::cache_root()`. Call with a sandboxed directory (e.g.
+/// `unique_tmp(...)`) before triggering any code path that downloads a remote Markdown image.
+pub(crate) fn set_test_cache_root(path: PathBuf) {
+    CACHE_ROOT.with(|c| *c.borrow_mut() = Some(path));
+}
+
+/// Read side of the `cache_root()` override; `None` means no test on this thread has set one yet.
+pub(crate) fn get_test_cache_root() -> Option<PathBuf> {
+    CACHE_ROOT.with(|c| c.borrow().clone())
+}
+
+thread_local! {
+    /// Test-only record of every path `fileops::move_to_trash`'s test-build body has "trashed" (see
+    /// that function's `#[cfg(test)]` twin, which never calls the real `trash` crate).
+    ///
+    /// Before that seam existed, `cargo test` on macOS sent real files to the developer's actual
+    /// `~/.Trash` on every run — the same class of bug the `CLIPBOARD` seam above fixed for the
+    /// system clipboard, caught by inspecting `~/.Trash`'s entry count before/after a test run. The
+    /// test double removes each target from disk directly (so the "gone from the original location"
+    /// invariant the existing tests already assert still holds) and records what it removed here,
+    /// so a test can additionally assert *that the seam engaged* rather than only that files
+    /// happened to disappear (which a bug in the double itself, or an accidental real-trash call,
+    /// could equally produce).
+    ///
+    /// Thread-local, not process-wide, for the same reason as `CLIPBOARD`/`CACHE_ROOT`: never
+    /// cleared automatically between tests reusing the same worker thread, so a test that cares
+    /// about a clean slate should call `clear_test_trashed()` first, or simply check its own paths
+    /// are present in the record rather than asserting its exact contents.
+    static TRASHED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Record one path as "trashed" by the test double. Called only from `fileops::move_to_trash`'s
+/// `#[cfg(test)]` body.
+pub(crate) fn record_trashed(path: PathBuf) {
+    TRASHED.with(|t| t.borrow_mut().push(path));
+}
+
+/// Every path recorded via `record_trashed` on this thread so far (oldest first).
+pub(crate) fn get_trashed() -> Vec<PathBuf> {
+    TRASHED.with(|t| t.borrow().clone())
+}
+
+/// Reset the trashed-paths record to empty. See the thread-reuse caveat on `TRASHED` above.
+pub(crate) fn clear_test_trashed() {
+    TRASHED.with(|t| t.borrow_mut().clear());
+}
+
 // ---------------------------------------------------------------------------------------------
 // Regression guard: nothing outside this module should call `std::env::temp_dir()` to build a
 // *fixed*-name path ever again (that's exactly the bug this module was written to fix — see the

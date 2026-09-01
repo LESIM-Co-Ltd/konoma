@@ -337,9 +337,50 @@ impl Progress {
 }
 
 /// Move multiple paths to Trash (recoverable). On macOS this is the proper Trash (supports Finder's "Put Back").
+#[cfg(not(test))]
 pub fn move_to_trash(paths: &[PathBuf]) -> Result<()> {
     trash::delete_all(paths).context(FileOpError::TrashFailed)?;
     Ok(())
+}
+
+/// Test-build twin of the function above. `cargo test` used to call the real `trash` crate here too
+/// — on macOS that sent real files to the developer's actual `~/.Trash` on every run of any test
+/// that reaches this function (confirmed by inspecting `~/.Trash`'s entry count and mtime around a
+/// test run). The `trash::` call above is entirely absent from a `#[cfg(test)]` build, the same
+/// seam shape `app::set_clipboard` already uses for the same class of bug.
+///
+/// Removes each target directly with `std::fs` instead — per path, `symlink_metadata` decides file
+/// vs. directory vs. "doesn't exist" (mirroring the real `NsFileManager`/freedesktop backends'
+/// per-path loop closely enough for this codebase's purposes; the batch AppleScript backend's
+/// "one bad path fails the whole call before anything is removed" behavior is *not* reproduced,
+/// since nothing here depends on that specific quirk) — and records every path it actually removes
+/// via `test_support::record_trashed`, so a test can assert the seam engaged instead of only that a
+/// file happens to be gone. Returns `Err` if any target could not be removed (missing, or a real io
+/// error), matching the real function's "partial batches can fail" contract: callers already handle
+/// that by re-checking the filesystem afterward (`trash_partial_outcome`), never by trusting which
+/// paths the `Err` names.
+#[cfg(test)]
+pub fn move_to_trash(paths: &[PathBuf]) -> Result<()> {
+    let mut any_failed = false;
+    for p in paths {
+        let removed = match std::fs::symlink_metadata(p) {
+            Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(p),
+            Ok(_) => std::fs::remove_file(p),
+            Err(e) => Err(e),
+        };
+        match removed {
+            Ok(()) => crate::test_support::record_trashed(p.clone()),
+            Err(_) => any_failed = true,
+        }
+    }
+    if any_failed {
+        Err(std::io::Error::other(
+            "one or more targets could not be trashed (test double — see move_to_trash's cfg(test) body)",
+        ))
+        .context(FileOpError::TrashFailed)
+    } else {
+        Ok(())
+    }
 }
 
 /// After a **failed** `move_to_trash`, work out what actually happened rather than assuming
@@ -1292,26 +1333,37 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// `move_to_trash` is routed through the `#[cfg(test)]` seam in a `cargo test` binary (see its
+    /// doc comment) — this and the test below used to be the two live tests that dirtied the real
+    /// OS Trash on every run (one gated `#[cfg(target_os = "macos")]`, the other `#[ignore]`d
+    /// outright because it wasn't even platform-gated). Now that the function no longer calls the
+    /// real `trash` crate in a test build at all, both run unconditionally and cheaply, and both
+    /// gained a real assertion they didn't have before: not just "the file is gone" (which a
+    /// completely unrelated bug could also produce) but "the seam recorded exactly this path as
+    /// trashed" (`test_support::get_trashed`).
     #[test]
-    #[ignore] // not run normally since it dirties the real trash (run with cargo test -- --ignored)
     fn trash_moves_file_out_of_place() {
+        crate::test_support::clear_test_trashed();
         let dir = unique_tmp("konoma_trash_test");
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("trashme.txt");
         std::fs::write(&f, b"x").unwrap();
         move_to_trash(std::slice::from_ref(&f)).unwrap();
         assert!(!f.exists(), "ゴミ箱へ送られて元の場所から消える");
+        assert_eq!(
+            crate::test_support::get_trashed(),
+            vec![f.clone()],
+            "テスト用シームが対象を記録するはず(実ゴミ箱を呼んでいない証拠)"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The sibling live-Trash test, restored to normal (non-`#[ignore]`d, no longer macOS-only —
+    /// see the doc comment above). No environment-dependent OS Trash behavior is exercised any
+    /// more, so there is nothing left for the old `#[cfg(target_os = "macos")]` gate to protect.
     #[test]
-    // The real OS trash is environment-dependent on Linux (XDG dirs, cross-filesystem rules), so a
-    // headless CI runner can't reliably exercise it. macOS (the primary target) always can. On Linux
-    // the freedesktop path is used at runtime; only this live test is gated.
-    #[cfg(target_os = "macos")]
     fn move_to_trash_removes_from_original_then_cleanup() {
-        // Confirm it disappears from the original location, and best-effort clean up its trace
-        // on the trash side.
+        crate::test_support::clear_test_trashed();
         let dir = unique_tmp("konoma_trash_live_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1320,11 +1372,7 @@ mod tests {
         std::fs::write(&f, b"trash me").unwrap();
         move_to_trash(std::slice::from_ref(&f)).unwrap();
         assert!(!f.exists(), "ゴミ箱送りで元の場所から消える");
-        // Clean up macOS's trash (~/.Trash/<name>) so the real trash isn't left dirty. Any
-        // rename-on-collision variant is cleaned up best-effort.
-        if let Some(home) = std::env::var_os("HOME") {
-            let _ = std::fs::remove_file(PathBuf::from(home).join(".Trash").join(name));
-        }
+        assert_eq!(crate::test_support::get_trashed(), vec![f.clone()]);
         std::fs::remove_dir_all(&dir).ok();
     }
 

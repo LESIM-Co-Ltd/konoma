@@ -629,6 +629,22 @@ impl App {
         let (Some(tx), Some(dest)) = (self.md_remote_tx.clone(), md_remote_cache_path(url)) else {
             return false;
         };
+        // About to spawn a background thread that writes `dest` to disk. In a test build that must
+        // never be the real `~/.cache/konoma/remote-images/` — a test that reaches this point (a
+        // Markdown doc with an unresolved remote image, previewed with the remote loader attached)
+        // used to create real directories there on every `cargo test` run (confirmed by mtime).
+        // Require the caller to have opted a sandboxed root in first (`test_support::
+        // set_test_cache_root`, read by `cache_root()`'s `#[cfg(test)]` body) rather than silently
+        // falling through to the real path — see `refresh_retries_a_previously_failed_remote_image`
+        // / `e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder` for the two
+        // tests that actually reach here.
+        #[cfg(test)]
+        assert!(
+            crate::test_support::get_test_cache_root().is_some(),
+            "about to spawn a real background download for {url:?} that would write under the \
+             real ~/.cache/konoma/remote-images — call test_support::set_test_cache_root() before \
+             triggering a remote fetch in a test"
+        );
         self.md_remote_inflight.insert(url.to_string());
         let u = url.to_string();
         std::thread::spawn(move || {

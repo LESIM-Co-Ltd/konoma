@@ -10686,12 +10686,17 @@ fn delete_permanent_partial_failure_reports_the_real_success_count() {
 /// that no longer exists (e.g. removed by another process/agent between selecting it and
 /// confirming) used to just say "Failed", with no way to tell whether the *other*, still-valid
 /// target actually got trashed or not. `trash::delete_all` doesn't report partial success, so the
-/// fix (`trash_partial_outcome`) observes the filesystem afterward instead of assuming zero. This
-/// hits the real OS Trash (macOS's default `Finder`-AppleScript backend, gated accordingly, same
-/// as the existing `move_to_trash_removes_from_original_then_cleanup` live test) and asserts
-/// against whatever it actually did, not a guess: `ok` must equal the number of targets that are
-/// actually gone (never a number that overstates it — this fix's whole point), and the error must
-/// name a target that is still actually present whenever one exists.
+/// fix (`trash_partial_outcome`) observes the filesystem afterward instead of assuming zero.
+///
+/// Runs through `App::run_file_op`'s real `FileOpKind::Trash` arm, but — since `cargo test` routes
+/// `fileops::move_to_trash` through its `#[cfg(test)]` seam (see that function's doc) — no longer
+/// touches the real OS Trash the way it used to when this was written; `a`'s removal is now the
+/// seam's `std::fs::remove_file`, not a real `Finder`/AppleScript call. The `#[cfg(target_os =
+/// "macos")]` gate is a leftover from when it did and is harmless to keep, but no longer load-
+/// bearing. Still asserts against whatever `trash_partial_outcome` actually observed on disk, not a
+/// guess: `ok` must equal the number of targets that are actually gone (never a number that
+/// overstates it — this fix's whole point), and the error must name a target that is still actually
+/// present whenever one exists.
 #[test]
 #[cfg(target_os = "macos")]
 fn trash_partial_failure_reports_the_real_outcome_and_names_a_remaining_target() {
@@ -10699,8 +10704,7 @@ fn trash_partial_failure_reports_the_real_outcome_and_names_a_remaining_target()
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
-    // Unique names (not just "a.txt"/"b.txt") so a leftover in the real ~/.Trash from a previous
-    // run — or from another test — can never look like this run's own artifact.
+    // Unique names (not just "a.txt"/"b.txt") in case this ever runs against the real backend again.
     let name_a = format!("konoma_trash_probe_a_{}.txt", std::process::id());
     let name_b = format!("konoma_trash_probe_b_{}.txt", std::process::id());
     let a = dir.join(&name_a);
@@ -10757,17 +10761,18 @@ fn trash_partial_failure_reports_the_real_outcome_and_names_a_remaining_target()
             "まだ残っている対象(a)の名前がエラーに出る: {flash:?}"
         );
     } else {
-        // Both targets ended up gone (the real Trash backend actually managed `a` too, despite
-        // reporting an error) — nothing is left standing, so there is nothing to name; the error
-        // must fall back to the plain reason with no dangling ": <path>" suffix.
+        // Both targets ended up gone (the test seam removes `a` from disk per-path regardless of
+        // `b`'s failure, rather than failing the whole batch the way the real AppleScript backend
+        // could) — nothing is left standing, so there is nothing to name; the error must fall back
+        // to the plain reason with no dangling ": <path>" suffix.
         assert!(
             !flash.trim_end().ends_with(".txt"),
             "残っている対象が無ければパスを付け足さない: {flash:?}"
         );
     }
 
-    // Best-effort cleanup of the real trash, in case `a` did get moved there (same courtesy as
-    // the existing `move_to_trash_removes_from_original_then_cleanup` live test).
+    // Best-effort: `a` is normally already gone (via the test seam), but clean up either way in
+    // case this ever runs against the real backend.
     if let Some(home) = std::env::var_os("HOME") {
         let _ = std::fs::remove_file(std::path::PathBuf::from(home).join(".Trash").join(&name_a));
     }
@@ -11698,6 +11703,11 @@ fn apply_remote_fetch_marks_failed_and_invalidates_cache() {
 fn refresh_retries_a_previously_failed_remote_image() {
     let dir = unique_tmp("konoma_remote_retry_refresh_test");
     std::fs::create_dir_all(&dir).unwrap();
+    // This test's second half really does spawn `ensure_remote_md_fetch`'s background download
+    // thread (see its `#[cfg(test)]` guard) — point `cache_root()` at a sandboxed directory first
+    // so it writes there, never under the developer's real `~/.cache/konoma/remote-images`.
+    let cache_root = unique_tmp("konoma_remote_retry_cache_root_test");
+    crate::test_support::set_test_cache_root(cache_root.clone());
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
 
     let url = "http://".to_string(); // malformed (no host) — see the doc comment above
@@ -11738,6 +11748,7 @@ fn refresh_retries_a_previously_failed_remote_image() {
     assert!(!res.ok, "ホストのない URL は失敗するはず");
 
     std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&cache_root).ok();
 }
 
 /// The sibling non-regression: the **FS-watch** entry point (`refresh_fs_watched` — what `main`'s run
