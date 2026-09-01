@@ -408,6 +408,20 @@ struct EdgeShape {
     /// `reverse` shape — those already had (or, for `merge` since the round-3 correction, now
     /// always get) a flow-axis face on both ends without needing this flag at all.
     fan_lane: bool,
+    /// §10-3 item 4's own "列間の空きレーン" — set only when `classify`'s ordinary two attempts
+    /// (the natural branch/merge shape and its alt-swap) both crossed a node, one more attempt was
+    /// tried before giving up to `staircase`, and that attempt cleared: a rank-skipping edge (its
+    /// source and target are not on adjacent ranks — `align_straight_lanes`'s own doc on why a
+    /// literal `r + 1` check cannot tell that) whose plain flow-axis-to-flow-axis bridge (a straight
+    /// mid-point bend, `bridge`'s own `(Axis::Flow, Axis::Flow)` case) runs through an intervening
+    /// rank's own node — `docs/mermaid-theme/handoff/round3-Konoma-Flowchart-Routing.dc.html`'s `3a`
+    /// draws exactly this shape for `デコード → セルに合わせる` etc, bent through the empty column
+    /// gap immediately before the target's own rank rather than the raw midpoint. Holds the exact
+    /// flow-axis coordinate [`rank_lane_gap_bend`] found and [`shape_crosses_a_node`] already
+    /// verified clear — [`route_with_ports`] reads it back rather than re-deriving it, so the route
+    /// drawn is provably the one collision-tested, never a second, potentially different computation
+    /// over the same (unchanged, same layout pass) node positions.
+    rank_lane_bend: Option<f64>,
     /// Which face of the source the line leaves through, and which axis leaving perpendicular to
     /// it means moving along.
     source_side: Side,
@@ -565,13 +579,21 @@ fn shape_crosses_a_node(
     let source_port = face_port(source, shape.source_side, PORT_INSET);
     let target_port = face_port(target, shape.target_side, PORT_INSET);
     let mut pts = vec![source_port.clone()];
-    pts.extend(bridge(
-        direction,
-        &source_port,
-        &target_port,
-        shape.source_axis,
-        shape.target_axis,
-    ));
+    // §10-3 item 4's own "列間の空きレーン": a `rank_lane_bend` candidate's whole point is a bend
+    // the plain midpoint `bridge` would not have picked, so this collision test has to build the
+    // *same* route [`route_with_ports`] will actually draw — reusing `bend_at` is what keeps the
+    // two from ever silently disagreeing.
+    if let Some(bend) = shape.rank_lane_bend {
+        pts.extend(bend_at(direction, bend, &source_port, &target_port));
+    } else {
+        pts.extend(bridge(
+            direction,
+            &source_port,
+            &target_port,
+            shape.source_axis,
+            shape.target_axis,
+        ));
+    }
     let source_is_real = nodes.iter().any(|n| n.id == source.id);
     let target_is_real = nodes.iter().any(|n| n.id == target.id);
     for w in pts.windows(2) {
@@ -652,6 +674,7 @@ fn classify(
             aligned: false,
             staircase: false,
             fan_lane: false,
+            rank_lane_bend: None,
             source_side,
             source_axis: axis_of(direction, source_side),
             target_side,
@@ -669,6 +692,7 @@ fn classify(
             aligned: true,
             staircase: false,
             fan_lane: false,
+            rank_lane_bend: None,
             source_side,
             source_axis: Axis::Flow,
             target_side,
@@ -737,6 +761,7 @@ fn classify(
         aligned: false,
         staircase: false,
         fan_lane: true,
+        rank_lane_bend: None,
         source_side: merge_source_side,
         source_axis: Axis::Flow,
         target_side: branch_target_side,
@@ -753,6 +778,7 @@ fn classify(
         aligned: false,
         staircase: false,
         fan_lane: false,
+        rank_lane_bend: None,
         source_side,
         source_axis: axis_of(direction, source_side),
         target_side,
@@ -763,8 +789,21 @@ fn classify(
         if !shape_crosses_a_node(direction, source, target, &fan_shape, nodes) {
             return fan_shape;
         }
-        // The fan-lane shape collided — fall through to the ordinary branch/merge collision
-        // ladder below exactly as if this source had no flow-aligned sibling at all.
+        // §10-3 item 4's own scope boundary (`rank_lane_gap_bends`'s own doc, and `docs/STATUS.md`'s
+        // ★未修正 entry): deliberately *not* retried with a rank-lane bend here, unlike the ordinary
+        // branch/merge ladder below. A `fan_lane` sibling sits on the *same* face as every other
+        // member of its source's own fanout (`3a`'s own "分岐レーンは中心から外向きに8px刻み" — the
+        // whole point of the shape), so any gap search anchored on this edge's own source/target
+        // pair alone has no way to know it must also dodge every *sibling* fanout edge's own bend
+        // corridor and label plate — `shape_crosses_a_node` only ever tests real node boxes,
+        // confirmed by dumping `samples/mermaid.ja.md`'s own `設定のルール -> デコード`/`usvg`/
+        // `ページ描画`/`キーフレーム`: every gap a bounded, source-half-restricted search found was
+        // "clear" of node boxes yet visually landed inside the fanout's own dense bend region,
+        // overlapping labels and other members' lines. The ordinary branch/merge ladder below does
+        // not have this problem (its two shapes' faces are not shared with any sibling by
+        // construction), so it keeps the retry. Falls through to it now exactly as if this source
+        // had no flow-aligned sibling at all — its `branch_source_side` (cross-face) shape almost
+        // always clears cleanly on the first try, which is what these four edges actually draw.
     }
 
     if shape_crosses_a_node(direction, source, target, &shape, nodes) {
@@ -781,12 +820,36 @@ fn classify(
             aligned: false,
             staircase: false,
             fan_lane: false,
+            rank_lane_bend: None,
             source_side: alt_source_side,
             source_axis: axis_of(direction, alt_source_side),
             target_side: alt_target_side,
             target_axis: axis_of(direction, alt_target_side),
         };
         if shape_crosses_a_node(direction, source, target, &alt, nodes) {
+            // §10-3 item 4 ("列間の空きレーン"): one more attempt before giving up to
+            // `staircase` — the same face pair as whichever of `shape`/`alt` already has a
+            // flow-axis source (target is flow-axis on both, §10-3 item 3's correction, so
+            // exactly one of the two has a flow-axis *source* too — `branch`'s own `alt` when
+            // `branching`, or `shape` itself for an ordinary `merge`), with the bend moved from
+            // the raw midpoint into the column gap immediately upstream of the target
+            // (`rank_lane_gap_bend`). A rank-skipping edge whose *midpoint* bend runs straight
+            // through an intervening rank's own node — exactly what just made both attempts
+            // above collide — often still clears once routed through the gap instead.
+            let flow_flow_base = if shape.source_axis == Axis::Flow {
+                shape
+            } else {
+                alt
+            };
+            for bend in
+                rank_lane_gap_bends(direction, source, target, flow_flow_base.target_side, nodes)
+            {
+                let mut candidate = flow_flow_base;
+                candidate.rank_lane_bend = Some(bend);
+                if !shape_crosses_a_node(direction, source, target, &candidate, nodes) {
+                    return candidate;
+                }
+            }
             // "両形とも交差するなら既存の階段経路（dagre経由点）へフォールバック" — keep the
             // alternate's faces (the last one actually tried) so `evict` still has a real face
             // to group this edge's ports by; only how the two ports are *joined* changes.
@@ -927,6 +990,13 @@ fn route_with_ports(
         route_perimeter(shape, source_port, target_port, ring, &blocked)
     } else if shape.fan_lane {
         route_fan_lane(direction, shape, source, &source_port, &target_port)
+    } else if let Some(bend) = shape.rank_lane_bend {
+        // §10-3 item 4: `classify` already found and collision-tested this exact bend
+        // (`rank_lane_gap_bend`) — `bend_at` reproduces the identical route here, never a second,
+        // independently-derived one.
+        let mut out = vec![source_port.clone()];
+        out.extend(bend_at(direction, bend, &source_port, &target_port));
+        out
     } else {
         // The one-bend shape branch and merge share, and aligned falls into too: `bridge` between
         // faces of unlike axes is always exactly one corner regardless of eviction's offsets
@@ -964,6 +1034,137 @@ fn outward_sign(side: Side) -> f64 {
         Side::Right | Side::Bottom => 1.0,
         Side::Left | Side::Top => -1.0,
     }
+}
+
+/// `node`'s own half-extent along the *flow* axis — `h/2` for `TD`/`BT`, `w/2` for `LR`/`RL`. The
+/// flow-axis counterpart [`cross_extent`] does not provide: [`rank_lane_gap_bend`]'s own column-gap
+/// search needs a node's downstream/upstream *boundary*, which is its centre offset by this, not by
+/// `cross_extent`'s cross-axis half-extent.
+fn flow_extent(direction: Direction, node: &PlacedNode) -> f64 {
+    match direction {
+        Direction::TopToBottom | Direction::BottomToTop => node.size.h / 2.0,
+        Direction::LeftToRight | Direction::RightToLeft => node.size.w / 2.0,
+    }
+}
+
+/// [`bridge`]'s own `(Axis::Flow, Axis::Flow)` shape, but through a caller-chosen bend coordinate
+/// instead of the plain midpoint — the two interior points plus `b`, matching `bridge`'s own return
+/// shape exactly so a caller that already has `a` in its own point list (every caller here does)
+/// can `.extend()` this the same way. [`route_fan_lane`]'s own hand-built four-point vector and
+/// [`shape_crosses_a_node`]'s `rank_lane_bend` branch both use this, so the route a collision test
+/// checks and the route actually drawn can never silently differ.
+fn bend_at(direction: Direction, bend_flow: f64, a: &Point, b: &Point) -> Vec<Point> {
+    vec![
+        make(direction, bend_flow, cross(direction, a)),
+        make(direction, bend_flow, cross(direction, b)),
+        b.clone(),
+    ]
+}
+
+/// §10-3 item 4's own "目標側の列間の空きレーン" — every flow-axis coordinate a rank-skipping
+/// edge's bend could sit at, one per column gap upstream of `target`'s own entry face, ordered
+/// nearest-to-`target` first, rather than [`bridge`]'s own plain midpoint (which runs straight
+/// through whichever rank the edge skips over — exactly the collision that lands an edge here at
+/// all: `classify`'s own caller only tries this once its ordinary two attempts both crossed a
+/// node). `docs/mermaid-theme/handoff/round3-Konoma-Flowchart-Routing.dc.html`'s `3a` draws every
+/// rank-skipping merge landing in the gap immediately before the target — `デコード → セルに合わ
+/// せる`'s own bend sits inside the gap between `ラスタライズ`'s column and `セルに合わせる`'s own
+/// (`M620,434 H1000 V338 H1038`, bend at `x=1000`) — but a real `dagre` layout's own cross-axis
+/// spread (`classify`'s own `fan_shape` doc: a target pushed to a much later rank by its own
+/// further connectivity, like `デコード`, can sit a long way from its source on *both* axes) means
+/// the nearest gap's own vertical run can still cross something the nearest-gap-only version of
+/// this search never considered — so this returns every gap in order, nearest first, and
+/// `classify`'s own caller tries each in turn until one actually clears
+/// ([`shape_crosses_a_node`]), the same "keep trying until one works, not just the first" shape its
+/// existing branch/merge/alt ladder already has.
+///
+/// `source` is excluded from the search — a rank-skipping edge's own source sits even further
+/// upstream than any gap being searched for (`3a`'s own `デコード` sits two whole ranks before
+/// `セルに合わせる`), so it can never legitimately supply a gap's near wall, and *would* if left in
+/// for a diagram where source and target happen to sit close together. Capped at
+/// [`RANK_LANE_MAX_CANDIDATES`] gaps so a diagram with many columns cannot make this unbounded.
+const RANK_LANE_MAX_CANDIDATES: usize = 6;
+
+fn rank_lane_gap_bends(
+    direction: Direction,
+    source: &PlacedNode,
+    target: &PlacedNode,
+    target_side: Side,
+    nodes: &[PlacedNode],
+) -> Vec<f64> {
+    let sign = outward_sign(target_side);
+    let entry_boundary = flow(direction, &target.center) + sign * flow_extent(direction, target);
+    // How far outward (upstream, away from `target` through `target_side`) a flow coordinate `p`
+    // sits from `entry_boundary` — positive when `p` is genuinely upstream, growing the further out
+    // it is. Every wall/gap/bend computation below is stated purely in this metric so the sign
+    // arithmetic only has to be gotten right once, in one place.
+    let dist = |p: f64| sign * (p - entry_boundary);
+    // The inverse: a point sitting `d` outward of `entry_boundary`.
+    let at_dist = |d: f64| entry_boundary + sign * d;
+
+    // §10-3 item 4's own scope guard, found by dumping `samples/mermaid.ja.md`'s "大きさ" flowchart
+    // (`docs/STATUS.md`'s own ★未修正 entry has the fuller story): `shape_crosses_a_node` only ever
+    // asks "does this segment cross a NODE's own box" — it has no idea a face-full of *sibling*
+    // fanout edges (`fan_shape`'s own bend corridor, right next to `source`) or a label plate sits
+    // in the way too, so an unconstrained search can walk all the way back past a busy fanout's own
+    // bend region and report a route "clear" that visually collides with everything living there.
+    // Capping the search to the *nearer half* of the source-target span keeps every candidate closer
+    // to `target` than to `source` — never wandering back into `source`'s own crowded neighbourhood
+    // — at the cost of occasionally finding no candidate at all for an edge whose only clear gap
+    // really does sit that close to `source` (this function then returns fewer candidates, or none,
+    // and `classify`'s own caller falls back to the ordinary cross-face shape or `staircase`, exactly
+    // the "避けられない場合のみ" this rule was always allowed to do).
+    let source_facing = flow(direction, &source.center) - sign * flow_extent(direction, source);
+    let max_dist = dist(source_facing) / 2.0;
+
+    // Every other node's own *pair* of boundaries along this axis: `near` faces `target` (where a
+    // gap ending at this node has to stop), `far` faces away from it (where the *next* gap, on the
+    // other side of this node's own body, has to start) — a node has real width, so a single
+    // boundary cannot stand in for it the way an early version of this function assumed (found by
+    // a failing test: two obstacles' own `near` walls alone described a "gap" that actually ran
+    // straight through the nearer obstacle's own box). Kept only if `near` sits upstream of
+    // `target` within `max_dist` — a node entirely past the search radius cannot narrow any gap
+    // this function will actually offer a candidate in.
+    let mut walls: Vec<(f64, f64)> = nodes
+        .iter()
+        .filter(|n| n.id != target.id && n.id != source.id)
+        .filter_map(|n| {
+            let near = flow(direction, &n.center) - sign * flow_extent(direction, n);
+            let far = flow(direction, &n.center) + sign * flow_extent(direction, n);
+            let d = dist(near);
+            (d > EPS && d <= max_dist).then_some((near, far))
+        })
+        .collect();
+    walls.sort_by(|a, b| {
+        dist(a.0)
+            .partial_cmp(&dist(b.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut cursor_dist = 0.0; // `entry_boundary` itself, the first gap's near wall.
+    let mut out = Vec::new();
+    for &(near, far) in walls.iter().take(RANK_LANE_MAX_CANDIDATES) {
+        let near_dist = dist(near);
+        let gap_width = near_dist - cursor_dist;
+        if gap_width > EPS {
+            let offset = if gap_width <= 2.0 * PORT_CLEARANCE {
+                // Too narrow a gap to bend inside cleanly — half-way is the best this can do, and
+                // the caller's own collision test (§10-1 item 1's own "少しのマージン付き") is what
+                // actually decides whether that is usable at all.
+                gap_width / 2.0
+            } else {
+                // A third to a half into the gap from its near wall — inside the gap regardless of
+                // its width, and checked against `3a`'s own numbers (its rank-skipping bends sit
+                // roughly a third to a half into a several-tens-of-px gap) rather than picked blind.
+                (gap_width * 0.4).clamp(PORT_CLEARANCE, gap_width - PORT_CLEARANCE)
+            };
+            out.push(at_dist(cursor_dist + offset));
+        }
+        // The next gap (if any) starts on the far side of *this* node's own body — never inside it,
+        // regardless of how close its own `near` wall was to the previous node's.
+        cursor_dist = cursor_dist.max(dist(far));
+    }
+    out
 }
 
 /// §10-3 item 2's own "8px 刻み" bend lane for an [`EdgeShape::fan_lane`] edge — [`bridge`]'s plain
@@ -2226,6 +2427,14 @@ pub fn align_straight_lanes(
     // Chains are node-disjoint, so this can never read one chain's *already-moved* position while
     // computing another's average — every member's `center` here is still exactly where dagre (or
     // this pass's own growth retry) put it.
+    // Every chain member's own index and its chain's average — captured here, right after each
+    // member's `center` was set to it, so the overlap-resolution pass below has each chain
+    // member's *intended* position on hand even after that pass has moved it away from it.
+    // `docs/STATUS.md`'s own ★未修正 entry (2026-09-01, before this fix) is the bug this exists to
+    // close: the forward sweep below can push a chain member — `3a`'s own `mermaid`, crowded by
+    // `設定のルール`'s nine other same-rank fanout targets — off this exact position, and nothing
+    // downstream ever tried to reclaim it.
+    let mut chain_desired: HashMap<usize, f64> = HashMap::new();
     for chain in &chains {
         if chain.len() < 2 {
             continue;
@@ -2239,6 +2448,7 @@ pub fn align_straight_lanes(
             let i = id_index[id];
             let flow_v = flow(direction, &nodes[i].center);
             nodes[i].center = make(direction, flow_v, avg);
+            chain_desired.insert(i, avg);
         }
     }
 
@@ -2261,6 +2471,57 @@ pub fn align_straight_lanes(
                 }
             }
             prev_far_edge = Some(c + half);
+        }
+    }
+
+    // --- reclaim a chain member's own position when its immediate predecessor already allows it -
+    //
+    // The forward sweep above only ever pushes a node *later* (§10-1 item 1's own "ランク内の並び
+    // 順は変えない" — it cannot reorder, so a node with something in the way ahead of it can only
+    // move further along, never behind). That is correct for an ordinary node (it has no position
+    // of its own to defend), but a chain member's whole point is a *specific* shared coordinate —
+    // §10-3 item 7's own spine, `3a`'s seven-segment centreline — so this pass gives it one more
+    // chance: for each rank, in the same fixed original order, if a chain member was pushed past
+    // its own `chain_desired` coordinate but its immediate predecessor's own (already final) far
+    // edge leaves enough room for it to sit exactly on `chain_desired` without moving that
+    // predecessor at all, it is moved back there.
+    //
+    // Deliberately does **not** cascade the pull back through a predecessor that does not already
+    // have the room (an earlier version of this pass did, moving as many ordinary predecessors as
+    // it took) — found, by the corpus's own `orthogonal_no_edge_crosses_its_own_endpoint_across_
+    // the_whole_corpus` test, to reopen exactly the raw-waypoint staleness problem
+    // `align_straight_lanes`'s own doc already describes for a self-loop: `branch`'s own `D -> B`
+    // (a genuine, non-self-loop `reverse` edge — `route_perimeter`'s own ring is built from
+    // *current* node positions, so it is not `raw`-waypoint staleness in the sense that doc means,
+    // but the ring itself shifts when a node this pass moves sits inside it) re-entered `D`'s own
+    // box once `D` — a chain member — was pushed back by cascading through its own rank-mate `C`.
+    // Reclaiming only when the immediate predecessor already has slack (`NODE_SEP` was not tight
+    // to begin with) keeps every node this pass touches to *one* — the member being reclaimed
+    // itself, never a neighbour — which is enough to fix `3a`'s own `mermaid` (dumped and confirmed
+    // visually: `設定のルール`'s ten-way fanout leaves just enough slack next to it) without ever
+    // moving a second node whose own routing might depend on where it already was.
+    for ids in by_rank.values() {
+        for (pos, &i) in ids.iter().enumerate() {
+            let Some(&desired) = chain_desired.get(&i) else {
+                continue;
+            };
+            let current = cross(direction, &nodes[i].center);
+            if current <= desired + EPS {
+                continue; // already at (or before) its own desired spot — nothing to reclaim.
+            }
+            let max_far = desired - cross_extent(direction, &nodes[i]) - super::NODE_SEP;
+            let predecessor_allows = match pos.checked_sub(1).map(|p| ids[p]) {
+                None => true, // first in the rank — nothing behind it to leave room against.
+                Some(j) => {
+                    let far_j =
+                        cross(direction, &nodes[j].center) + cross_extent(direction, &nodes[j]);
+                    far_j <= max_far + EPS
+                }
+            };
+            if predecessor_allows {
+                let flow_v = flow(direction, &nodes[i].center);
+                nodes[i].center = make(direction, flow_v, desired);
+            }
         }
     }
 
@@ -3545,6 +3806,7 @@ mod tests {
             aligned: false,
             staircase: false,
             fan_lane: false,
+            rank_lane_bend: None,
             source_side: Side::Top,
             source_axis: Axis::Cross,
             target_side: Side::Bottom,
@@ -3642,6 +3904,7 @@ mod tests {
                 aligned: false,
                 staircase: false,
                 fan_lane: false,
+                rank_lane_bend: None,
                 source_side: Side::Bottom,
                 source_axis: Axis::Cross,
                 target_side: Side::Top,
@@ -3652,6 +3915,7 @@ mod tests {
                 aligned: false,
                 staircase: false,
                 fan_lane: false,
+                rank_lane_bend: None,
                 source_side: Side::Bottom,
                 source_axis: Axis::Cross,
                 target_side: Side::Top,
@@ -3662,6 +3926,7 @@ mod tests {
                 aligned: false,
                 staircase: false,
                 fan_lane: false,
+                rank_lane_bend: None,
                 source_side: Side::Right,
                 source_axis: Axis::Flow,
                 target_side: Side::Left,
@@ -4466,5 +4731,166 @@ mod tests {
             width < CROSSING_GAP,
             "a polyline shorter than CROSSING_GAP can only ever give back less than it: {width}"
         );
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // §10-3 item 4: rank-skipping edges use the column gap upstream of the target
+    // -------------------------------------------------------------------------------------------
+
+    #[test]
+    fn rank_lane_gap_bends_finds_the_single_gap_upstream_of_the_target() {
+        // A (source, far upstream), C (target), and one obstacle B sitting between them — mirrors
+        // `docs/mermaid-theme/handoff/round3-Konoma-Flowchart-Routing.dc.html`'s `3a`: `デコード →
+        // セルに合わせる`'s own bend sits in the gap between `ラスタライズ`'s column (an
+        // intervening rank's own node) and `セルに合わせる`'s own left edge, not at the raw
+        // midpoint between the two nodes' own flow coordinates.
+        let a = node("A", 0.0, 0.0, 80.0, 40.0); // right edge at 40
+        let b = node("B", 300.0, 150.0, 200.0, 40.0); // spans x 200..400
+        let c = node("C", 600.0, 300.0, 80.0, 40.0); // left edge at 560
+        let nodes = vec![a.clone(), b, c.clone()];
+        let bends = rank_lane_gap_bends(Direction::LeftToRight, &a, &c, Side::Left, &nodes);
+        assert_eq!(
+            bends.len(),
+            1,
+            "only B's own right edge (400) sits upstream of C's own left edge (560): {bends:?}"
+        );
+        assert!(
+            bends[0] > 400.0 && bends[0] < 560.0,
+            "the bend must sit inside the gap (400, 560): {}",
+            bends[0]
+        );
+    }
+
+    #[test]
+    fn rank_lane_gap_bends_orders_multiple_gaps_nearest_target_first() {
+        // Two obstacles between A and C: B (closer to C) and D (further upstream, closer to A —
+        // but still within the nearer-half scope the sibling test below states explicitly).
+        // The nearest-target gap (between B and C) must come first.
+        let a = node("A", 0.0, 0.0, 80.0, 40.0);
+        let d = node("D", 380.0, 150.0, 80.0, 40.0); // spans x 340..420
+        let b = node("B", 500.0, 150.0, 100.0, 40.0); // spans x 450..550
+        let c = node("C", 800.0, 300.0, 80.0, 40.0); // left edge at 760
+        let nodes = vec![a.clone(), d, b, c.clone()];
+        let bends = rank_lane_gap_bends(Direction::LeftToRight, &a, &c, Side::Left, &nodes);
+        assert_eq!(bends.len(), 2, "{bends:?}");
+        // First candidate: inside the gap between B's right edge (550) and C's left edge (760).
+        assert!(
+            bends[0] > 550.0 && bends[0] < 760.0,
+            "nearest gap first: {bends:?}"
+        );
+        // Second candidate: inside the (narrow) gap between D's right edge (420) and B's left
+        // edge (450) — the *next* gap starts on the far side of B's own body, never inside it.
+        assert!(
+            bends[1] > 420.0 && bends[1] < 450.0,
+            "second candidate is the next gap out, past B's own body: {bends:?}"
+        );
+    }
+
+    #[test]
+    fn rank_lane_gap_bends_is_empty_when_target_is_the_first_column() {
+        // Nothing sits upstream of C at all (A itself is excluded from the search — its own
+        // rightward boundary can never legitimately supply a gap wall, `rank_lane_gap_bends`'s own
+        // doc) — no gap exists, so no candidate is offered.
+        let a = node("A", 0.0, 0.0, 80.0, 40.0);
+        let c = node("C", 600.0, 0.0, 80.0, 40.0);
+        let nodes = vec![a.clone(), c.clone()];
+        let bends = rank_lane_gap_bends(Direction::LeftToRight, &a, &c, Side::Left, &nodes);
+        assert!(bends.is_empty(), "{bends:?}");
+    }
+
+    #[test]
+    fn rank_lane_gap_bends_stays_within_the_nearer_half_of_the_source_target_span() {
+        // §10-3 item 4's own scope guard (`rank_lane_gap_bends`'s own doc): a wall sitting closer
+        // to A than to C is never offered, even though it does sit "upstream" of C — searching that
+        // far back risks landing inside a busy fanout's own bend corridor right next to the source
+        // (`classify`'s own doc on why the `fan_lane` retry point does not use this search at all).
+        // Here E sits at x=100..140, well within A's own half of the 0..600 span (A's own boundary
+        // is 40, C's is 560 — the span midpoint in this search's own outward-distance metric lands
+        // around x=300) — must not appear as a wall.
+        let a = node("A", 0.0, 0.0, 80.0, 40.0);
+        let e = node("E", 120.0, 150.0, 40.0, 40.0); // spans x 100..140, near A
+        let c = node("C", 600.0, 300.0, 80.0, 40.0);
+        let nodes = vec![a.clone(), e, c.clone()];
+        let bends = rank_lane_gap_bends(Direction::LeftToRight, &a, &c, Side::Left, &nodes);
+        assert!(
+            bends.is_empty(),
+            "a wall this close to A must be out of the nearer-half scope: {bends:?}"
+        );
+    }
+
+    #[test]
+    fn classify_uses_a_rank_lane_bend_when_both_ordinary_attempts_collide() {
+        // Two obstacles, each blocking exactly one of `classify`'s first two attempts, neither
+        // touching `A`'s own row (`y=0`) so the rank-lane candidate's own first leg — a long sweep
+        // at `A`'s row, `3a`'s own `デコード → セルに合わせる` (`M620,434 H1000…`) does exactly
+        // this, clearing `ラスタライズ`'s column because `ラスタライズ`'s own row does not reach
+        // `y=434` — stays clear regardless of how far it has to run:
+        // - `B1` sits across the merge shape's own straight vertical run (the flow/flow bridge's
+        //   plain midpoint, roughly `x=500`), forcing that attempt to collide.
+        // - `B2` sits across the branch-style alt's horizontal run (its own bend lands at `C`'s row,
+        //   `y=300`, `bridge`'s `(Axis::Cross, Axis::Flow)` shape), forcing that attempt to collide
+        //   too — but not across `B1`'s own column, so it does not also block the rank-lane
+        //   candidate `classify` should fall back to.
+        let a = node("A", 0.0, 0.0, 80.0, 40.0);
+        let b1 = node("B1", 500.0, 150.0, 100.0, 280.0); // spans x 450..550, y 10..290
+        let b2 = node("B2", 300.0, 300.0, 200.0, 40.0); // spans x 200..400, y 280..320
+        let c = node("C", 1000.0, 300.0, 80.0, 40.0); // left edge at 960
+        let nodes = vec![a.clone(), b1.clone(), b2.clone(), c.clone()];
+        let flow_aligned = std::collections::HashSet::new();
+        let shape = classify(
+            Direction::LeftToRight,
+            &a,
+            &c,
+            &[],
+            Some(0),
+            Some(1),
+            1, // source_out_degree — not branching
+            2, // target_in_degree — a genuine merge
+            &nodes,
+            &flow_aligned,
+        );
+        assert!(
+            shape.rank_lane_bend.is_some(),
+            "both ordinary attempts must have collided, landing on a rank-lane bend: {shape:?}"
+        );
+        assert!(
+            !shape.staircase,
+            "a working rank-lane bend must pre-empt staircase: {shape:?}"
+        );
+        assert_eq!(shape.source_axis, Axis::Flow, "{shape:?}");
+        assert_eq!(shape.target_axis, Axis::Flow, "{shape:?}");
+        // The route this shape actually draws must genuinely clear both obstacles — not merely
+        // "classify says so", built and checked here the same way `route_flowchart` builds it for
+        // real.
+        let source_port = port_at(
+            &a,
+            shape.source_side,
+            face_center_coord(&a, shape.source_side),
+            PORT_INSET,
+        );
+        let target_port = port_at(
+            &c,
+            shape.target_side,
+            face_center_coord(&c, shape.target_side),
+            PORT_INSET,
+        );
+        let bend = shape.rank_lane_bend.unwrap();
+        let mut pts = vec![source_port.clone()];
+        pts.extend(bend_at(
+            Direction::LeftToRight,
+            bend,
+            &source_port,
+            &target_port,
+        ));
+        for w in pts.windows(2) {
+            assert!(
+                !segment_crosses_node(&w[0], &w[1], &b1),
+                "segment {w:?} must not cross B1: {pts:?}"
+            );
+            assert!(
+                !segment_crosses_node(&w[0], &w[1], &b2),
+                "segment {w:?} must not cross B2: {pts:?}"
+            );
+        }
     }
 }
