@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.28.3] - 2026-09-01
+
 ### Added
 - **`[ui] mermaid_routing` — a flowchart's edges can now be routed orthogonally instead of with
   mermaid's own spline layout.** Default `"splines"` is the existing mermaid layout, unchanged.
@@ -2334,7 +2336,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.2...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.3...HEAD
+[0.28.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.2...v0.28.3
 [0.28.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.1...v0.28.2
 [0.28.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.27.0...v0.28.0
