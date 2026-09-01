@@ -6,7 +6,20 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Changed
+- **`konoma-orthogonal` draws the user-confirmed round-3 reference layout.** A fan-out's edges
+  leave the flow-direction face on 16px ports with the trunk edge holding the node's centre and
+  bend lanes stepping 8px outward; merge targets grow to receive their ports; rank-spanning edges
+  use a clear inter-column lane (two bends) instead of a staircase; the straight trunk is selected
+  end to end; where two ordinary edges cross, the horizontal one yields a 12px gap; and an edge
+  with no explicit `linkStyle` takes its downstream node's class colour, lightened, so a diagram's
+  paths can be followed by colour. Defaults (`"splines"`) are byte-identical as always.
+
 ### Fixed
+- **Running `cargo test` no longer touches the developer's real clipboard, Trash, or
+  `~/.cache/konoma`.** Copy/paste-jump tests wrote the real clipboard on every run (and on macOS
+  one trash test really filed items into the Finder Trash); the clipboard, trash, and cache paths
+  are now test-seamed so the real backends do not even compile into the test build.
 - **`konoma-orthogonal`: an edge could pierce its own endpoint node, hiding its arrowhead under
   the node fill.** A collision-fallback edge still routed from layout waypoints captured before
   lane alignment moved the nodes (so its line ran into the moved node and the arrowhead drew
