@@ -5013,9 +5013,9 @@ fn orthogonal_aligned_edge_is_a_straight_two_point_line() {
     );
 }
 
-/// A decision node's two outgoing edges (branch) and a merge node's two incoming edges (merge)
-/// each bend at most twice, per §10-1 item 2's "退避則適用時は2回まで" — this fixture's own two
-/// competitors on one face are exactly that eviction case, `n = 2`.
+/// A decision node's two outgoing edges (branch) and a merge node's two incoming edges (merge):
+/// one leg is `classify`'s `aligned` (0-bend) shape, the other bends at most twice, per §10-1
+/// item 2's "退避則適用時は2回まで".
 ///
 /// Before `align_straight_lanes`'s `r + 1` adjacency bug was fixed (2026-09-01), lane alignment
 /// never actually selected a chain, so *both* legs of a branch/merge always bent once here (2
@@ -5026,13 +5026,22 @@ fn orthogonal_aligned_edge_is_a_straight_two_point_line() {
 /// routes onto the *same* physical face as its aligned sibling, not a separate perpendicular one:
 /// a *branching* source with a flow-aligned sibling opens its other out-edges on that same face
 /// too, and a merge target (§10-3 item 3's correction, `merge_target_side`'s own doc) always did
-/// already. That puts two claims — one aligned, one not — on one face, which is exactly
-/// [`orthogonal::evict`]'s own documented "no exact centre slot" case for an even claim count: the
-/// aligned claim itself gets bumped `PORT_SPACING/2 = 8px` off centre rather than landing dead on
-/// it, so *neither* edge is a straight 2-point line any more — both bend twice, symmetric about
-/// the shared face's own centre. Dumped and confirmed by hand, not assumed.
+/// already. That puts two claims — one aligned, one not — on one face.
+///
+/// `evict`'s own port grid used to be centred on the claim *list's* own geometric mid-index
+/// (`(n-1)/2`), which for an even claim count (`n = 2` here) has no slot at exactly `offset ==
+/// 0.0` — so even the aligned claim landed `PORT_SPACING/2 = 8px` off the face's true centre, and
+/// *neither* edge drew as a straight line. §10-3's own "ファン列内の並び順"/"幹7区間の曲げ0" work
+/// (`docs/FEATURE-MERMAID-RENDERER.md`) fixed the grid to anchor on *whichever slot the aligned/
+/// trunk claim itself ends up in* instead (`evict`'s own doc on `anchor`) — required for `3a`'s
+/// own even-count ten-way fan to draw its trunk edge with zero bends at all, and it applies to
+/// *every* even-`n` face with an aligned/trunk claim, this two-claim one included. The aligned
+/// claim now lands dead on the face's centre (a real 2-point line, not a 4-point one bent `±8px`
+/// around it); its one competitor is pushed out to a full `PORT_SPACING = 16px` instead of half
+/// of it, since the whole grid is now anchored one slot further out than the old symmetric one
+/// was. Dumped and confirmed by hand, not assumed.
 #[test]
-fn orthogonal_branch_and_merge_edges_share_a_face_and_both_bend_twice() {
+fn orthogonal_branch_and_merge_edges_share_a_face_one_aligned_one_bends_twice() {
     let branch = laid_out_flow(
         "flowchart LR\n  A --> B{cond}\n  B --> C\n  B --> D",
         "basis",
@@ -5049,19 +5058,24 @@ fn orthogonal_branch_and_merge_edges_share_a_face_and_both_bend_twice() {
         .find(|e| e.from == "B" && e.to == "D")
         .expect("edge B->D must exist");
     let b_node = branch.node("B").expect("B must exist");
-    assert_eq!(bc.points.len(), 4, "B->C must bend twice: {:?}", bc.points);
+    assert_eq!(
+        bc.points.len(),
+        2,
+        "B->C is the aligned leg — a straight 2-point line: {:?}",
+        bc.points
+    );
     assert_eq!(bd.points.len(), 4, "B->D must bend twice: {:?}", bd.points);
-    // Both leave B's own Right face, split PORT_SPACING/2 = 8px either side of B's own centre.
+    // B->C exits dead on B's own centre; B->D is pushed a full PORT_SPACING off it.
     let bc_exit_y = bc.points[0].y;
     let bd_exit_y = bd.points[0].y;
     assert!(
-        (bc_exit_y - (b_node.center.y + orthogonal::PORT_SPACING / 2.0)).abs() < 1e-6,
-        "B->C (aligned, bumped off centre) exits 8px below B's centre: {bc_exit_y} vs {}",
+        (bc_exit_y - b_node.center.y).abs() < 1e-6,
+        "B->C (aligned) exits exactly on B's centre: {bc_exit_y} vs {}",
         b_node.center.y
     );
     assert!(
-        (bd_exit_y - (b_node.center.y - orthogonal::PORT_SPACING / 2.0)).abs() < 1e-6,
-        "B->D exits 8px above B's centre: {bd_exit_y} vs {}",
+        (bd_exit_y - (b_node.center.y - orthogonal::PORT_SPACING)).abs() < 1e-6,
+        "B->D exits PORT_SPACING above B's centre: {bd_exit_y} vs {}",
         b_node.center.y
     );
 
@@ -5081,24 +5095,29 @@ fn orthogonal_branch_and_merge_edges_share_a_face_and_both_bend_twice() {
         .find(|e| e.from == "B" && e.to == "C")
         .expect("edge B->C must exist");
     let c_node = merge.node("C").expect("C must exist");
-    assert_eq!(ac.points.len(), 4, "A->C must bend twice: {:?}", ac.points);
+    assert_eq!(
+        ac.points.len(),
+        2,
+        "A->C is the aligned leg — a straight 2-point line: {:?}",
+        ac.points
+    );
     assert_eq!(
         bc2.points.len(),
         4,
         "B->C must bend twice: {:?}",
         bc2.points
     );
-    // Both enter C's own Left face, split the same way.
+    // A->C enters dead on C's own centre; B->C is pushed a full PORT_SPACING off it.
     let ac_entry_y = ac.points.last().unwrap().y;
     let bc2_entry_y = bc2.points.last().unwrap().y;
     assert!(
-        (ac_entry_y - (c_node.center.y + orthogonal::PORT_SPACING / 2.0)).abs() < 1e-6,
-        "A->C (aligned, bumped off centre) enters 8px below C's centre: {ac_entry_y} vs {}",
+        (ac_entry_y - c_node.center.y).abs() < 1e-6,
+        "A->C (aligned) enters exactly on C's centre: {ac_entry_y} vs {}",
         c_node.center.y
     );
     assert!(
-        (bc2_entry_y - (c_node.center.y - orthogonal::PORT_SPACING / 2.0)).abs() < 1e-6,
-        "B->C enters 8px above C's centre: {bc2_entry_y} vs {}",
+        (bc2_entry_y - (c_node.center.y - orthogonal::PORT_SPACING)).abs() < 1e-6,
+        "B->C enters PORT_SPACING above C's centre: {bc2_entry_y} vs {}",
         c_node.center.y
     );
 }
@@ -5818,6 +5837,83 @@ fn orthogonal_settings_rules_sample_has_no_perimeter_routed_forward_edges() {
     }
 }
 
+/// §10-3's "ファン列内の並び順" and "幹7区間の曲げ0" (`docs/FEATURE-MERMAID-RENDERER.md`,
+/// `mod.rs`'s own `regroup_fan_lanes` doc), pinned against the real source the rule was reverse-
+/// engineered from — `samples/mermaid.ja.md`'s 20-node "大きさ" fence (`SETTINGS_RULES_SAMPLE`),
+/// laid out exactly as `docs/mermaid-theme/handoff/round3-Konoma-Flowchart-Routing.dc.html`'s `3a`
+/// section hand-authored it.
+///
+/// **Column order** — `設定のルール`'s ten-way fanout (`C`'s own children) matches `3a`'s own
+/// top-to-bottom order *exactly*, all ten positions: the two `txt`-class members with no forward
+/// edge of their own (`窓読み`/`T`, `構文強調`/`S`) lead, then `表`/`TB` and `一覧`/`AR` (same
+/// class, "同色内は安定" keeping them in their declared order); `pix`-class `ページ描画`/`PD` and
+/// `usvg`/`SV` sit closest to the trunk on either side (both converge one rank sooner, into
+/// `ラスタライズ`, than `デコード`/`IM` and `キーフレーム`/`VD`, which converge into `セルに合わせ
+/// る` a rank later — the "nearest downstream rank sits closer to the spine" tie-break this
+/// module's own `regroup_fan_lanes` doc explains, needed here because `IM` is declared *before*
+/// `PD` yet sits *farther* from the trunk); `MD`(`ブロックモデル`) — the trunk, the one `txt`
+/// member that itself continues on to `mermaid`/`数式` — sits at the group's own centre index
+/// (`10 / 2 = 5`); and `プレビュー不可`/`NA`, the one child with no `classDef`-backed class at all,
+/// is last regardless of its own declared position.
+///
+/// **Seven-segment spine** — every rank-to-rank hop of `ファイル → 設定のルール → ブロックモデル →
+/// mermaid → ラスタライズ → セルに合わせる → 端末 → 画像プロトコル` draws as `classify`'s `aligned`
+/// shape, a straight 2-point line with no bend at all: `F->C` and `RS->FIT`/`FIT->K` were already
+/// achievable before this session's work (single- or already-uncrowded faces), but `C->MD`,
+/// `MD->MM`, `MM->RS`, and `K->RI` were not — each sits on an even-count face (`C`'s ten-way,
+/// `MD`'s two-way, `MM`'s one-way-but-competing, `K`'s three-way) that `evict`'s pre-fix symmetric
+/// port grid could never place exactly on the face's own centre (this module's own `orthogonal_
+/// branch_and_merge_edges_share_a_face_one_aligned_one_bends_twice` is the general-purpose
+/// regression for the same `evict` fix, on a minimal two-claim fixture).
+#[test]
+fn orthogonal_settings_rules_sample_fan_column_matches_3a_and_spine_is_all_zero_bend() {
+    let src = SETTINGS_RULES_SAMPLE;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    assert_no_edge_crosses_its_own_endpoint("settings-rules-sample", &d);
+    check_nodes_do_not_overlap("settings-rules-sample", &d);
+
+    let mut fan: Vec<(&str, f64)> = d
+        .edges
+        .iter()
+        .filter(|e| e.from == "C")
+        .map(|e| (e.to.as_str(), d.node(&e.to).unwrap().center.y))
+        .collect();
+    fan.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    let order: Vec<&str> = fan.iter().map(|(id, _)| *id).collect();
+    assert_eq!(
+        order,
+        vec!["T", "S", "TB", "AR", "PD", "MD", "SV", "IM", "VD", "NA"],
+        "C's own ten-way fanout, top to bottom, matching 3a exactly: {order:?}"
+    );
+
+    for (from, to) in [
+        ("F", "C"),
+        ("C", "MD"),
+        ("MD", "MM"),
+        ("MM", "RS"),
+        ("RS", "FIT"),
+        ("FIT", "K"),
+        ("K", "RI"),
+    ] {
+        let e = d
+            .edges
+            .iter()
+            .find(|e| e.from == from && e.to == to)
+            .unwrap_or_else(|| panic!("{from}->{to} must exist"));
+        assert_eq!(
+            e.points.len(),
+            2,
+            "{from}->{to} is a spine segment — a straight 2-point line: {:?}",
+            e.points
+        );
+        assert!(
+            (e.points[0].y - e.points[1].y).abs() < 1e-6,
+            "{from}->{to} is horizontal (LR flow axis), no cross-axis drift: {:?}",
+            e.points
+        );
+    }
+}
+
 /// The coordinator's own repro for the real bug `safe_ring_exit`'s L-shaped fallback used to have
 /// (`orthogonal::tests::safe_ring_exit_l_shape_stops_at_the_ring_not_the_far_corner`'s own doc has
 /// the full story): a decision node's retry loop (`C -->|再試行| B`) needed the L-shaped fallback
@@ -5879,18 +5975,18 @@ fn orthogonal_lane_alignment_never_leaves_nodes_overlapping() {
 /// flow axis; the round-2 merge shape used the cross axis, so the two never used to overlap at
 /// all).
 ///
-/// [`orthogonal::evict`]'s own doc on an even claim count ("no exact centre slot… `f64::round`'s
-/// `half away from zero` rule picks the higher index") is exactly what fires here: two claims on
-/// `D`'s Top face (`B->D`, aligned, and `C->D`, not) is `n = 2`, so `round((2-1)/2.0) = round(0.5)
-/// = 1` — the *aligned* claim (sorted first, `B`'s own cross coordinate is the smaller of the two)
-/// gets moved off index 0 onto index 1, landing `PORT_SPACING/2 = 8px` off `D`'s own centre rather
-/// than exactly on it. `B->D` is therefore *not* a straight, absorbed lane any more — it bends
-/// twice, the same `bridge`'s own `(Axis::Flow, Axis::Flow)` shape every fan-lane/merge edge with
-/// differing flow-axis coordinates on each end takes — and `C->D`, its face-mate, does too, offset
-/// the opposite way. Dumped and confirmed by hand (`B`'s and `C`'s own x, and both edges' full
-/// point lists), not assumed.
+/// [`orthogonal::evict`]'s own doc on `anchor` (§10-3's "ファン列内の並び順"/"幹7区間の曲げ0" work)
+/// is what decides the split here: two claims on `D`'s Top face (`B->D`, aligned, and `C->D`, not)
+/// is `n = 2`, `round((2-1)/2.0) = round(0.5) = 1` picks index 1 as the anchor slot the aligned
+/// claim moves into, and the whole port grid is anchored so *that* slot sits at exactly `offset ==
+/// 0.0` — the face's true centre — rather than the old symmetric grid's own midpoint (which had no
+/// slot at 0 for an even claim count at all). `B->D` is therefore a genuine straight, absorbed
+/// lane: a 2-point line entering dead on `D`'s own centre. `C->D`, its face-mate, is pushed a full
+/// `PORT_SPACING = 16px` off it (not half, as the old symmetric grid gave it) and still bends
+/// twice. Dumped and confirmed by hand (`B`'s and `C`'s own x, and both edges' full point lists),
+/// not assumed.
 #[test]
-fn orthogonal_shared_merge_target_face_bends_both_competing_edges() {
+fn orthogonal_shared_merge_target_face_one_aligned_one_bends_twice() {
     let src = "flowchart TD\n  A ---> B\n  A --> C\n  B --> D\n  C --> D";
     let d = laid_out_flow(src, "basis", "konoma-orthogonal");
     let bd = d
@@ -5905,47 +6001,37 @@ fn orthogonal_shared_merge_target_face_bends_both_competing_edges() {
         .expect("C->D must exist");
     let d_node = d.node("D").expect("D must exist");
 
-    // Both bend twice now — neither is absorbed into a straight lane, since both compete for the
-    // same face.
-    assert_eq!(bd.points.len(), 4, "B->D must bend twice: {:?}", bd.points);
+    // B->D is the aligned leg — a straight 2-point line; C->D still bends twice, since it loses
+    // the face's one straight lane to B->D.
+    assert_eq!(
+        bd.points.len(),
+        2,
+        "B->D is the aligned leg — a straight 2-point line: {:?}",
+        bd.points
+    );
     assert_eq!(cd.points.len(), 4, "C->D must bend twice: {:?}", cd.points);
 
-    // Both enter D's Top face, PORT_SPACING/2 = 8px either side of D's own centre — never exactly
-    // on it, since an even claim count on one face has no exact centre slot.
+    // B->D enters dead on D's own centre; C->D is pushed a full PORT_SPACING off it.
     let bd_entry_x = bd.points.last().unwrap().x;
     let cd_entry_x = cd.points.last().unwrap().x;
     assert!(
-        (bd_entry_x - (d_node.center.x + orthogonal::PORT_SPACING / 2.0)).abs() < 1e-6,
-        "B->D (the aligned claim, moved off centre) must enter 8px right of D's centre: \
-         {bd_entry_x} vs {}",
+        (bd_entry_x - d_node.center.x).abs() < 1e-6,
+        "B->D (aligned) enters exactly on D's centre: {bd_entry_x} vs {}",
         d_node.center.x
     );
     assert!(
-        (cd_entry_x - (d_node.center.x - orthogonal::PORT_SPACING / 2.0)).abs() < 1e-6,
-        "C->D must enter 8px left of D's centre: {cd_entry_x} vs {}",
+        (cd_entry_x - (d_node.center.x - orthogonal::PORT_SPACING)).abs() < 1e-6,
+        "C->D enters PORT_SPACING left of D's centre: {cd_entry_x} vs {}",
         d_node.center.x
     );
 
-    // Each bend lands on its own row now, not a shared one: `A ---> B` is authored with an extra
-    // dash (`SpecEdge::minlen` 2) while `A --> C` is the ordinary `minlen` 1, so under §10-3 item
-    // 8's own rank fix (`pull_back_fan_ranks`, `mod.rs`) — which recomputes every rank from
-    // scratch by each edge's own `minlen`, rather than trusting wherever network simplex's
-    // pivoting happened to leave a slack node — `B` genuinely sits one rank further from `A` than
-    // `C` does. `B->D` is a plain single-rank bridge, so its bend still sits at the flow-axis
-    // midpoint between `B` and `D`; `C->D` spans the extra rank `B` occupies (`rank_lane_gap_bend`,
-    // §10-3 item 4's own column-gap routing for an edge that skips a populated rank), so its own
-    // bend sits elsewhere along the line, closer to `D`. (Before this fix, dagre's own network
-    // simplex — free to place `B`, a slack node with one in-edge and one out-edge both at the
-    // default weight, anywhere in its feasible range — happened to land it on the very same rank
-    // as `C`, which is what let a since-removed version of this test assert one shared row; that
-    // coincidence was an artefact of the ranker's own pivoting, not a property `A ---> B`'s length
-    // ever actually asked for.) Both values dumped and confirmed by hand, not assumed.
-    let bd_expected_row = (d_node.center.y + d.node("B").expect("B").center.y) / 2.0;
-    assert!(
-        (bd.points[1].y - bd_expected_row).abs() < 1e-6,
-        "B->D's bend row: {:?} vs {bd_expected_row}",
-        bd.points
-    );
+    // C->D's own bend still lands where it did before this fix — `A ---> B` is authored with an
+    // extra dash (`SpecEdge::minlen` 2) while `A --> C` is the ordinary `minlen` 1, so under §10-3
+    // item 8's own rank fix (`pull_back_fan_ranks`, `mod.rs`) `B` genuinely sits one rank further
+    // from `A` than `C` does, and `C->D` spans the extra rank `B` occupies (`rank_lane_gap_bend`,
+    // §10-3 item 4's own column-gap routing for an edge that skips a populated rank). `B->D` no
+    // longer has a "bend row" to check at all — it is a straight line now (the assertion above
+    // already pins its only two points). Dumped and confirmed by hand, not assumed.
     let cd_expected_row = 274.2;
     assert!(
         (cd.points[1].y - cd_expected_row).abs() < 1e-6,
@@ -6122,6 +6208,7 @@ fn label_boosts_actually_widen_the_flow_axis_segment_dagre_lays_out() {
         size: Size::new(30.0, 20.0),
         panel: None,
         style: None,
+        has_class: true,
     };
     let edge = super::SpecEdge {
         id: "e1".to_string(),
@@ -8033,4 +8120,75 @@ fn zzdebug_fence3_structural_table() {
             e.style.as_ref().and_then(|s| s.stroke.clone())
         );
     }
+}
+
+/// §10-3's "ファン列内の並び順" (`docs/FEATURE-MERMAID-RENDERER.md`, `mod.rs`'s own `regroup_fan_
+/// lanes` doc) — the mechanical rule reverse-engineered from `3a`'s reference geometry, pinned on
+/// a small, hand-built fan deliberately shaped to make every clause of the rule independently
+/// checkable, rather than only on `samples/mermaid.ja.md`'s 20-node fence (the real-world source
+/// the rule was derived from, covered separately by `orthogonal_settings_rules_sample_*`):
+///
+/// `S` fans out to six children, in declaration order `A`(red), `P`(blue), `B`(red), `T`(red,
+/// *and* the sole one with its own further out-edge — `T -> D` — so it is the unambiguous trunk
+/// regardless of any geometric tie-break), `Q`(blue), `Z`(no `class` at all, only `classDef`
+/// members get one). The rule (trunk → group index `len/2`; group by resolved colour, group order
+/// by first declared member; classless always last) predicts, and this test pins, the exact order
+/// `A, B, P, T, Q, Z`: the two same-coloured groups (`red` first, since `A` is declared before
+/// `P`) supply `regroup_fan_lanes`'s own `rest` list `[A, B, P, Q, Z]` (classless `Z` pushed to
+/// the tail regardless of its own declaration position, third of six), and inserting `T` at
+/// `6 / 2 = 3` splits it `[A, B, P]` / `[T]` / `[Q,Z]`.
+///
+/// Each assertion below is aimed at one clause a mutation of the rule would silently break:
+/// swapping the group-order key (first-declared member) would put `P` ahead of `A`; dropping the
+/// "同色内は安定" clause (or resorting a group by id instead of declaration order) would put `B`
+/// ahead of `A` or `Q` ahead of `P`; treating the classless rule as "first" instead of "last"
+/// would move `Z` to the front; using `len/2` rounded the other way, or not special-casing the
+/// trunk's own slot at all, would misplace `T`; and dropping [`orthogonal::evict`]'s own anchor
+/// fix (this module's own `orthogonal_branch_and_merge_edges_share_a_face_one_aligned_one_bends_
+/// twice`, the general-purpose regression for the same fix) would leave `S -> T` bent instead of
+/// the straight, exactly-centred line the last two assertions pin.
+#[test]
+fn regroup_fan_lanes_groups_by_colour_centres_the_trunk_and_pushes_classless_outermost() {
+    let src = "flowchart LR\n  S --> A\n  S --> P\n  S --> B\n  S --> T\n  S --> Q\n  S --> Z\n  \
+               T --> D\n  classDef red stroke:#ff0000\n  classDef blu stroke:#0000ff\n  \
+               class A,B red\n  class P,Q blu\n";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    assert_no_edge_crosses_its_own_endpoint("regroup-minimal", &d);
+    check_nodes_do_not_overlap("regroup-minimal", &d);
+
+    let mut kids: Vec<(&str, f64)> = d
+        .edges
+        .iter()
+        .filter(|e| e.from == "S")
+        .map(|e| (e.to.as_str(), d.node(&e.to).unwrap().center.y))
+        .collect();
+    kids.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    let order: Vec<&str> = kids.iter().map(|(id, _)| *id).collect();
+    assert_eq!(
+        order,
+        vec!["A", "B", "P", "T", "Q", "Z"],
+        "colour-grouped, trunk-centred, classless-outermost order: {order:?}"
+    );
+
+    // The trunk edge is `classify`'s `aligned` shape (a straight 2-point line), landing exactly
+    // on S's own centre — `evict`'s anchor fix (§10-3's "幹7区間の曲げ0") is what makes this land
+    // on 0 rather than `PORT_SPACING/2` off it despite six claims (an even count) on S's face.
+    let st = d
+        .edges
+        .iter()
+        .find(|e| e.from == "S" && e.to == "T")
+        .expect("S->T must exist");
+    let s_node = d.node("S").expect("S must exist");
+    assert_eq!(
+        st.points.len(),
+        2,
+        "S->T is the trunk — a straight 2-point line: {:?}",
+        st.points
+    );
+    assert!(
+        (st.points[0].y - s_node.center.y).abs() < 1e-6,
+        "S->T exits exactly on S's own centre: {:?} vs {}",
+        st.points[0],
+        s_node.center.y
+    );
 }

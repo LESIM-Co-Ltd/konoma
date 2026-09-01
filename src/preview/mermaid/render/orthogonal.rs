@@ -1869,16 +1869,35 @@ fn evict(
         // edges either, since `align_straight_lanes` selects at most one outgoing/incoming chain
         // edge per node), only the first is moved; the rest keep their sorted position like any
         // other claim.
-        if let Some(aligned_pos) = claims.iter().position(|c| c.aligned || c.trunk) {
-            let center_idx = (((n - 1) as f64) / 2.0).round() as usize;
-            if aligned_pos != center_idx {
-                let claim = claims.remove(aligned_pos);
-                claims.insert(center_idx, claim);
-            }
-        }
+        // `anchor`, when set, is the slot index that must sit at exactly `offset == 0.0` — the
+        // face's own centre coordinate, un-nudged — because an aligned/trunk claim lives there.
+        // For odd `n` this is the same index the symmetric "(i - (n-1)/2)" grid already put at
+        // offset 0, so nothing below changes for the odd case. For *even* `n` the two differ: the
+        // symmetric grid has no slot at offset 0 at all (its two middle slots sit at
+        // ±`PORT_SPACING`/2, this comment's own predecessor above), so an aligned/trunk claim
+        // placed at `center_idx` by the block below would still draw a bend even though `classify`
+        // called it zero-bend — `3a`'s own ten-way fan (`docs/mermaid-theme/handoff/round3-Konoma-
+        // Flowchart-Routing.dc.html`) is exactly this even-`n` case, and its own reference ports
+        // (`-80,-64,…,0,…,64`) are spaced from the trunk's own slot outward, not from the array's
+        // midpoint — confirming the grid has to anchor on *whichever slot the trunk claim ends up
+        // in*, not on the claim list's own geometric centre index.
+        let anchor = claims
+            .iter()
+            .position(|c| c.aligned || c.trunk)
+            .map(|aligned_pos| {
+                let center_idx = (((n - 1) as f64) / 2.0).round() as usize;
+                if aligned_pos != center_idx {
+                    let claim = claims.remove(aligned_pos);
+                    claims.insert(center_idx, claim);
+                }
+                center_idx
+            });
 
         for (i, claim) in claims.iter().enumerate() {
-            let offset = (i as f64 - (n as f64 - 1.0) / 2.0) * PORT_SPACING;
+            let offset = match anchor {
+                Some(anchor) => (i as f64 - anchor as f64) * PORT_SPACING,
+                None => (i as f64 - (n as f64 - 1.0) / 2.0) * PORT_SPACING,
+            };
             let coord = face_center_coord(node, side) + offset;
             match claim.end {
                 FaceEnd::Source => {
@@ -2329,6 +2348,34 @@ pub fn align_straight_lanes(
     node_rank: &HashMap<String, i32>,
     candidates: &[(String, String)],
 ) -> (HashMap<String, f64>, HashMap<String, String>) {
+    align_straight_lanes_with(direction, nodes, node_rank, candidates, None)
+}
+
+/// [`align_straight_lanes`], with its own "greedy straight-lane selection" pass (this function's
+/// own doc on the block below) optionally skipped in favour of a selection the caller already
+/// trusts. `mod.rs`'s own `regroup_fan_lanes` (`docs/FEATURE-MERMAID-RENDERER.md` §10-3, "ファン列
+/// 内の並び順") is the one caller that ever passes `Some`: it runs this function once to *learn*
+/// `chain_next` on the layout dagre/`pull_back_fan_ranks` handed it, regroups the rank order by
+/// colour, and needs the alignment/overlap-resolution machinery below to run *again* on the new
+/// order without re-deriving the selection — because it cannot. Once a fan's trunk sits exactly at
+/// its own group's centre index (`regroup_fan_lanes`'s own rule), it and its immediate,
+/// same-coloured neighbour are, by construction, equidistant from the fan's numeric cross-axis
+/// median (the midpoint of two points is always equidistant from both, regardless of how far apart
+/// they are) — the selection loop's own "distance from each source's own sibling median" tie-break
+/// (this function's own comment on it, a few lines down) can never discriminate between them, and
+/// the tie-breaks *after* it (ascending target cross, then id) both happen to favour the neighbour
+/// over almost any trunk id in this corpus, re-selecting a *different* trunk than the one `mod.rs`
+/// just spent a whole pass giving room to. Passing the first call's own `next` back in sidesteps
+/// the ambiguity at its root instead of trying to out-guess it with more tie-break keys: the
+/// selection was already correct (rank membership and "does it keep going" do not change under a
+/// pure cross-axis permutation), only its *geometry* needed a second pass.
+pub(super) fn align_straight_lanes_with(
+    direction: Direction,
+    nodes: &mut [PlacedNode],
+    node_rank: &HashMap<String, i32>,
+    candidates: &[(String, String)],
+    preselected: Option<&HashMap<String, String>>,
+) -> (HashMap<String, f64>, HashMap<String, String>) {
     if nodes.len() < 2 {
         return (HashMap::new(), HashMap::new());
     }
@@ -2363,119 +2410,134 @@ pub fn align_straight_lanes(
     // selected edges a set of node-disjoint simple paths by construction — no node ever has two
     // selected successors or two selected predecessors, so following `next` from any node that
     // is not itself somebody's selected successor walks exactly one chain to its end.
-    let mut used_out: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut used_in: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut next: HashMap<String, String> = HashMap::new();
+    let next: HashMap<String, String> = if let Some(pre) = preselected {
+        // The caller already trusts this selection (`align_straight_lanes_with`'s own doc on
+        // why re-deriving it here can pick a different trunk) — skip straight to "build chains".
+        pre.clone()
+    } else {
+        let mut used_out: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut used_in: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut next: HashMap<String, String> = HashMap::new();
 
-    // §10-3 item 7 ("直進レーンは図を貫く幹"): every id that is *some* candidate's own source —
-    // i.e. has at least one further out-edge of its own, at any rank. Read purely off `candidates`
-    // (never off a chain already built — nothing here has been selected yet), this is the "does
-    // picking this target let the trunk keep going, or does it dead-end the lane right here"
-    // question a plain per-window greedy pass has no way to ask; `3a`'s own reference geometry
-    // (`docs/mermaid-theme/handoff/round3-Konoma-Flowchart-Routing.dc.html`) is exactly what this
-    // fixes: `設定のルール`'s ten same-rank targets are otherwise tied on every existing key (one
-    // shared source, so the first key never discriminates at all, and the *original* cross
-    // coordinates a hand-authored mockup and dagre's own barycenter layout assign the ten hardly
-    // ever agree on which one sorts smallest), and only `ブロックモデル` — the one target that
-    // itself goes on to `mermaid`/`数式` — keeps the seven-segment spine (`ファイル → 設定のルール
-    // → ブロックモデル → mermaid → ラスタライズ → セルに合わせる → 端末 → 画像プロトコル`) whole
-    // rather than terminating it at whichever leaf a coordinate happened to sort first.
-    let continues: std::collections::HashSet<&str> =
-        candidates.iter().map(|(s, _)| s.as_str()).collect();
+        // §10-3 item 7 ("直進レーンは図を貫く幹"): every id that is *some* candidate's own source —
+        // i.e. has at least one further out-edge of its own, at any rank. Read purely off `candidates`
+        // (never off a chain already built — nothing here has been selected yet), this is the "does
+        // picking this target let the trunk keep going, or does it dead-end the lane right here"
+        // question a plain per-window greedy pass has no way to ask; `3a`'s own reference geometry
+        // (`docs/mermaid-theme/handoff/round3-Konoma-Flowchart-Routing.dc.html`) is exactly what this
+        // fixes: `設定のルール`'s ten same-rank targets are otherwise tied on every existing key (one
+        // shared source, so the first key never discriminates at all, and the *original* cross
+        // coordinates a hand-authored mockup and dagre's own barycenter layout assign the ten hardly
+        // ever agree on which one sorts smallest), and only `ブロックモデル` — the one target that
+        // itself goes on to `mermaid`/`数式` — keeps the seven-segment spine (`ファイル → 設定のルール
+        // → ブロックモデル → mermaid → ラスタライズ → セルに合わせる → 端末 → 画像プロトコル`) whole
+        // rather than terminating it at whichever leaf a coordinate happened to sort first.
+        let continues: std::collections::HashSet<&str> =
+            candidates.iter().map(|(s, _)| s.as_str()).collect();
 
-    let mut ranks: Vec<i32> = node_rank.values().copied().collect();
-    ranks.sort_unstable();
-    ranks.dedup();
-    for window in ranks.windows(2) {
-        let (r, next_r) = (window[0], window[1]);
-        let mut pair_candidates: Vec<&(String, String)> = candidates
-            .iter()
-            .filter(|(s, t)| node_rank.get(s) == Some(&r) && node_rank.get(t) == Some(&next_r))
-            .collect();
-        // §10-3 item 2 ("幹末端のタイブレーク"): for a source whose whole fan-out is leaves (every
-        // candidate ties on "continues" below — none of them goes on to extend the chain further),
-        // `3a`'s own reference geometry picks neither extreme but the *middle* of the fan: `端末`'s
-        // three same-rank targets (`圧縮転送`/`画像プロトコル`/`ハーフブロック`, `docs/mermaid-theme/
-        // handoff/round3-Konoma-Flowchart-Routing.dc.html`'s `3a` section) keep the spine running
-        // through `画像プロトコル` — the cross-order *middle* one — not `圧縮転送`, the smallest-
-        // cross target the plain ascending tie-break below would otherwise pick outright. Distance
-        // from each source's own sibling median, smaller wins; a fan of exactly two candidates is
-        // always tied here by construction (both sit equally far from their shared midpoint), so
-        // this key is a genuine no-op for every existing two-candidate fixture and only ever
-        // discriminates a fan of three or more.
-        let mut targets_by_source: HashMap<&str, Vec<f64>> = HashMap::new();
-        for (s, t) in &pair_candidates {
-            targets_by_source
-                .entry(s.as_str())
-                .or_default()
-                .push(cross(direction, &nodes[id_index[t]].center));
-        }
-        for v in targets_by_source.values_mut() {
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        }
-        let median_of = |s: &str| -> f64 {
-            let v = &targets_by_source[s];
-            let n = v.len();
-            if n % 2 == 1 {
-                v[n / 2]
-            } else {
-                (v[n / 2 - 1] + v[n / 2]) / 2.0
+        let mut ranks: Vec<i32> = node_rank.values().copied().collect();
+        ranks.sort_unstable();
+        ranks.dedup();
+        for window in ranks.windows(2) {
+            let (r, next_r) = (window[0], window[1]);
+            let mut pair_candidates: Vec<&(String, String)> = candidates
+                .iter()
+                .filter(|(s, t)| node_rank.get(s) == Some(&r) && node_rank.get(t) == Some(&next_r))
+                .collect();
+            // §10-3 item 2 ("幹末端のタイブレーク"): for a source whose whole fan-out is leaves (every
+            // candidate ties on "continues" below — none of them goes on to extend the chain further),
+            // `3a`'s own reference geometry picks neither extreme but the *middle* of the fan: `端末`'s
+            // three same-rank targets (`圧縮転送`/`画像プロトコル`/`ハーフブロック`, `docs/mermaid-theme/
+            // handoff/round3-Konoma-Flowchart-Routing.dc.html`'s `3a` section) keep the spine running
+            // through `画像プロトコル` — the cross-order *middle* one — not `圧縮転送`, the smallest-
+            // cross target the plain ascending tie-break below would otherwise pick outright. Distance
+            // from each source's own sibling median, smaller wins; a fan of exactly two candidates is
+            // always tied here by construction (both sit equally far from their shared midpoint), so
+            // this key is a genuine no-op for every existing two-candidate fixture and only ever
+            // discriminates a fan of three or more.
+            let mut targets_by_source: HashMap<&str, Vec<f64>> = HashMap::new();
+            for (s, t) in &pair_candidates {
+                targets_by_source
+                    .entry(s.as_str())
+                    .or_default()
+                    .push(cross(direction, &nodes[id_index[t]].center));
             }
-        };
-        // §10-3 item 7's own trunk-preserving order, ahead of every pre-existing key: a candidate
-        // whose *source* is already mid-chain (`used_in` — some earlier window already selected an
-        // edge landing on it) wins first, so the windowed pass keeps extending the chain it is
-        // already building instead of a fresh window's plain coordinate tie-break cutting it off —
-        // found on `3a`'s own reference: without this, `MM → RS` (already selected) loses `RS`'s
-        // own onward pick to `IM → FIT` purely because `IM`'s cross coordinate sorts first, even
-        // though `RS` (this window's true continuation of the chain already built) targets the
-        // very same `FIT`. Only *then* does "タイは上・左優先＝cross座標の小さい方" (the source's
-        // own cross coordinate) apply — so the topmost/leftmost source is offered its pick first
-        // among candidates that are equally fresh (neither already mid-chain); then, before falling
-        // to the target's own cross coordinate, whether *this* target continues on again (a target
-        // that itself has a further out-edge wins over one that does not, so a source with several
-        // equally-tied candidates always extends the longest chain it can); then id, for a fully
-        // deterministic order a `HashMap`-built candidate list would not otherwise have.
-        pair_candidates.sort_by(|(s1, t1), (s2, t2)| {
-            used_in
-                .contains(s2.as_str())
-                .cmp(&used_in.contains(s1.as_str()))
-                .then_with(|| {
-                    let sc1 = cross(direction, &nodes[id_index[s1]].center);
-                    let sc2 = cross(direction, &nodes[id_index[s2]].center);
-                    sc1.partial_cmp(&sc2).unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| {
-                    continues
-                        .contains(t2.as_str())
-                        .cmp(&continues.contains(t1.as_str()))
-                })
-                .then_with(|| {
-                    let tc1 = cross(direction, &nodes[id_index[t1]].center);
-                    let tc2 = cross(direction, &nodes[id_index[t2]].center);
-                    let d1 = (tc1 - median_of(s1)).abs();
-                    let d2 = (tc2 - median_of(s2)).abs();
-                    d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| {
-                    let tc1 = cross(direction, &nodes[id_index[t1]].center);
-                    let tc2 = cross(direction, &nodes[id_index[t2]].center);
-                    tc1.partial_cmp(&tc2).unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| s1.cmp(s2))
-                .then_with(|| t1.cmp(t2))
-        });
-        for (s, t) in pair_candidates {
-            if used_out.contains(s) || used_in.contains(t) {
-                continue;
+            for v in targets_by_source.values_mut() {
+                v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             }
-            used_out.insert(s.clone());
-            used_in.insert(t.clone());
-            next.insert(s.clone(), t.clone());
+            let median_of = |s: &str| -> f64 {
+                let v = &targets_by_source[s];
+                let n = v.len();
+                if n % 2 == 1 {
+                    v[n / 2]
+                } else {
+                    (v[n / 2 - 1] + v[n / 2]) / 2.0
+                }
+            };
+            // §10-3 item 7's own trunk-preserving order, ahead of every pre-existing key: a candidate
+            // whose *source* is already mid-chain (`used_in` — some earlier window already selected an
+            // edge landing on it) wins first, so the windowed pass keeps extending the chain it is
+            // already building instead of a fresh window's plain coordinate tie-break cutting it off —
+            // found on `3a`'s own reference: without this, `MM → RS` (already selected) loses `RS`'s
+            // own onward pick to `IM → FIT` purely because `IM`'s cross coordinate sorts first, even
+            // though `RS` (this window's true continuation of the chain already built) targets the
+            // very same `FIT`. Only *then* does "タイは上・左優先＝cross座標の小さい方" (the source's
+            // own cross coordinate) apply — so the topmost/leftmost source is offered its pick first
+            // among candidates that are equally fresh (neither already mid-chain); then, before falling
+            // to the target's own cross coordinate, whether *this* target continues on again (a target
+            // that itself has a further out-edge wins over one that does not, so a source with several
+            // equally-tied candidates always extends the longest chain it can); then id, for a fully
+            // deterministic order a `HashMap`-built candidate list would not otherwise have.
+            pair_candidates.sort_by(|(s1, t1), (s2, t2)| {
+                used_in
+                    .contains(s2.as_str())
+                    .cmp(&used_in.contains(s1.as_str()))
+                    .then_with(|| {
+                        let sc1 = cross(direction, &nodes[id_index[s1]].center);
+                        let sc2 = cross(direction, &nodes[id_index[s2]].center);
+                        sc1.partial_cmp(&sc2).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .then_with(|| {
+                        continues
+                            .contains(t2.as_str())
+                            .cmp(&continues.contains(t1.as_str()))
+                    })
+                    .then_with(|| {
+                        let tc1 = cross(direction, &nodes[id_index[t1]].center);
+                        let tc2 = cross(direction, &nodes[id_index[t2]].center);
+                        let d1 = (tc1 - median_of(s1)).abs();
+                        let d2 = (tc2 - median_of(s2)).abs();
+                        d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .then_with(|| {
+                        let tc1 = cross(direction, &nodes[id_index[t1]].center);
+                        let tc2 = cross(direction, &nodes[id_index[t2]].center);
+                        tc1.partial_cmp(&tc2).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .then_with(|| s1.cmp(s2))
+                    .then_with(|| t1.cmp(t2))
+            });
+            for (s, t) in pair_candidates {
+                if used_out.contains(s) || used_in.contains(t) {
+                    continue;
+                }
+                used_out.insert(s.clone());
+                used_in.insert(t.clone());
+                next.insert(s.clone(), t.clone());
+            }
         }
-    }
+        next
+    };
 
     // --- build chains: a head is a selected source that is nobody's selected target ------------
+    //
+    // Derived straight from `next` rather than kept as the selection loop's own `used_out`/
+    // `used_in` sets, which only exist inside the `preselected.is_none()` branch above: a
+    // preselected `next` is exactly as valid a selection as one this function built itself (this
+    // function's own doc on `align_straight_lanes_with`), so "head" and "selected target" mean the
+    // same thing regardless of which branch produced `next`.
+    let used_out: std::collections::HashSet<String> = next.keys().cloned().collect();
+    let used_in: std::collections::HashSet<String> = next.values().cloned().collect();
     let mut chains: Vec<Vec<String>> = Vec::new();
     for s in &used_out {
         if used_in.contains(s) {

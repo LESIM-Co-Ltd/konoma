@@ -83,6 +83,7 @@ pub fn spec_of(diagram: &ClassDiagram) -> GraphSpec {
             size: shapes::size(Glyph::ClassBox, panel.size),
             panel: Some(panel),
             style: None,
+            has_class: true,
         });
     }
     // A note is an ordinary node here, unlike in a state diagram. There it had to be placed by
@@ -98,6 +99,7 @@ pub fn spec_of(diagram: &ClassDiagram) -> GraphSpec {
             size,
             panel: None,
             style: None,
+            has_class: true,
         });
     }
 

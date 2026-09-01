@@ -93,6 +93,7 @@ pub fn spec_of(diagram: &ErDiagram) -> GraphSpec {
                 size: shapes::size(Glyph::ErBox, panel.size),
                 panel: Some(panel),
                 style: super::style::cascade(class_of, &e.css_classes, &e.own_styles),
+                has_class: !e.css_classes.is_empty(),
             }
         })
         .collect();

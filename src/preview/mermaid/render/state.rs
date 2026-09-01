@@ -134,6 +134,7 @@ pub fn spec_of(diagram: &StateDiagram) -> GraphSpec {
             size,
             panel: None,
             style: None,
+            has_class: true,
         });
     }
 

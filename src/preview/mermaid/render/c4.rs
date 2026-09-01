@@ -144,6 +144,7 @@ fn element_node(e: &Element) -> SpecNode {
             size: shapes::size(glyph, panel.size),
             panel: Some(panel),
             style: None,
+            has_class: true,
         };
     }
     let label = Label::measure(&lines.join("\n"));
@@ -154,6 +155,7 @@ fn element_node(e: &Element) -> SpecNode {
         label,
         panel: None,
         style: None,
+        has_class: true,
     }
 }
 

@@ -751,6 +751,7 @@ fn spec_of(chart: &Flowchart, curve: &str, routing: Routing) -> GraphSpec {
                 size,
                 panel: None,
                 style: style::cascade(class_of, &node.classes, &node.styles),
+                has_class: !node.classes.is_empty(),
             }
         })
         .collect();
@@ -843,6 +844,20 @@ pub struct SpecNode {
     pub panel: Option<Panel>,
     /// The resolved `classDef`/`style` paint, carried through to [`PlacedNode::style`] unchanged.
     pub style: Option<ShapeStyle>,
+    /// Whether the author attached at least one `classDef`-backed class (`class`/`:::`) to this
+    /// node — *not* whether it carries any resolved paint at all, which an inline `style`
+    /// statement alone (with no `class`) also produces. Only a flowchart's own `spec_of` ever
+    /// sets this meaningfully (`chart.nodes[i].classes.is_empty()`); every other diagram kind
+    /// leaves it `true`, a harmless default since only `regroup_fan_lanes` — itself gated on
+    /// `Routing::Orthogonal`, which only a flowchart ever requests — ever reads it. It exists
+    /// because [`GraphSpec`] is deliberately language-neutral (this struct's own doc) so it
+    /// cannot carry a raw class *name*, but the fan-lane regroup still needs to tell "this node
+    /// belongs to one of the diagram's semantic colour groups" apart from "this node was only
+    /// ever given an ad-hoc `style` override" (`docs/FEATURE-MERMAID-RENDERER.md` §10-3's own
+    /// "無クラス・行き止まりを外側" rule) — a distinction [`crate::preview::mermaid::render::style::
+    /// ShapeStyle`]'s resolved colours cannot make on their own, since an inline `style` resolves
+    /// to paint just as real as a `classDef`'s.
+    pub has_class: bool,
 }
 
 /// One edge to lay out. `from`/`to` are as the author wrote them, so either may name a block.
@@ -1275,8 +1290,66 @@ fn lay_out_spec_pass(
             .filter(|d| d.edge.from == d.tail && d.edge.to == d.head)
             .map(|d| (d.tail.clone(), d.head.clone()))
             .collect();
-        (alignment_deltas, chain_next) =
+        // §10-3's "ファン列内の並び順" (`docs/FEATURE-MERMAID-RENDERER.md`, `regroup_fan_lanes`'s own
+        // doc): a first `align_straight_lanes` call, on whatever cross-axis order dagre/`pull_back_
+        // fan_ranks` left behind, exists here only to *learn* `chain_next` — which target each
+        // branching source's trunk edge selected. That selection depends on rank membership and
+        // each candidate's own "does it keep going" / sibling-median tie-break, not on which
+        // physical slot a sibling currently sits in, so computing it before `regroup_fan_lanes`
+        // touches the rank order is safe. This first call's own alignment/overlap-resolution work
+        // on `nodes` is intentionally thrown away — the second call below redoes it — because that
+        // very mechanism is what `regroup_fan_lanes` has to run *ahead of*: its "ランク内の並び順は
+        // 変えない" overlap sweep can only ever push a crowded chain member later, never reorder
+        // around it, so the trunk keeps landing off its own shared centreline for as long as nine
+        // other same-rank siblings keep sorting ahead of it. Moving the trunk to its new, colour-
+        // grouped slot is what finally gives that sweep room to grant it the centreline. Its own
+        // return is *not* always thrown away — see `touched` below: when `regroup_fan_lanes` finds
+        // nothing to reorder, this first call's own results are the final ones.
+        let (probe_deltas, chain_next_probe) =
             orthogonal::align_straight_lanes(spec.direction, &mut nodes, &node_rank, &candidates);
+        let has_class: HashMap<String, bool> = spec
+            .nodes
+            .iter()
+            .map(|n| (n.id.clone(), n.has_class))
+            .collect();
+        let touched = regroup_fan_lanes(
+            spec.direction,
+            &mut nodes,
+            &node_rank,
+            &candidates,
+            &chain_next_probe,
+            &has_class,
+        );
+        if touched {
+            // Only pay for a second `align_straight_lanes` pass when `regroup_fan_lanes` actually
+            // moved something: running the alignment/overlap-resolution machinery twice in a row is
+            // *not* a no-op even on an unchanged rank order (found on the `branch` corpus fixture —
+            // `orthogonal_no_edge_crosses_its_own_endpoint_across_the_whole_corpus` caught a second
+            // pass re-opening the exact `D -> B` perimeter-ring collision `docs/STATUS.md`'s own
+            // ★未修正 history already spent a careful, narrowly-scoped fix closing). Every diagram
+            // whose fan-outs are all too small to need colour-grouping (the overwhelming majority of
+            // this module's own corpus) takes this branch and reproduces the pre-existing single-
+            // call behaviour byte for byte — `chain_next`/`alignment_deltas` are exactly the first
+            // call's own return, untouched by a second pass that never had anything to redo.
+            //
+            // The second call reuses the *first* call's own selection (`Some(&chain_next_probe)`)
+            // rather than re-deriving it: `align_straight_lanes_with`'s own doc explains why a fresh
+            // selection over the just-regrouped order is not safe to trust (a trunk placed exactly
+            // at its fan's centre index is, by construction, tied with its nearest same-coloured
+            // neighbour on every tie-break the selection loop has, so it can reselect a different
+            // trunk than `regroup_fan_lanes` just built room for). Only the alignment/overlap-
+            // resolution geometry needs to rerun on the new order; the selection itself does not
+            // change under a pure cross-axis permutation.
+            (alignment_deltas, chain_next) = orthogonal::align_straight_lanes_with(
+                spec.direction,
+                &mut nodes,
+                &node_rank,
+                &candidates,
+                Some(&chain_next_probe),
+            );
+        } else {
+            (alignment_deltas, chain_next) = (probe_deltas, chain_next_probe);
+        }
     }
 
     let by_id: HashMap<&str, usize> = nodes
@@ -1915,6 +1988,349 @@ fn pull_back_fan_ranks(
             }
         }
     }
+}
+
+/// Cross-axis position of a node's own centre — `x` for `TB`/`BT` (the flow axis runs vertically,
+/// so the cross axis is horizontal), `y` for `LR`/`RL`. A free-standing helper rather than
+/// `orthogonal::cross` (the same idea, already used throughout that module): that function is
+/// private, and `regroup_fan_lanes` below is the one caller of this idea outside `orthogonal.rs`.
+fn cross_of(direction: Direction, n: &PlacedNode) -> f64 {
+    match direction {
+        Direction::TopToBottom | Direction::BottomToTop => n.center.x,
+        Direction::LeftToRight | Direction::RightToLeft => n.center.y,
+    }
+}
+
+/// Flow-axis position of a node's own centre — the complement of [`cross_of`].
+fn flow_of(direction: Direction, n: &PlacedNode) -> f64 {
+    match direction {
+        Direction::TopToBottom | Direction::BottomToTop => n.center.y,
+        Direction::LeftToRight | Direction::RightToLeft => n.center.x,
+    }
+}
+
+/// Half the node's own size along the cross axis — the complement of [`cross_of`], read from
+/// [`PlacedNode::size`] rather than from dagre's own `g` the way [`pull_back_fan_ranks`]'s `flow_
+/// extent` does, because every caller here already has the node's placed size on hand.
+fn cross_extent_of(direction: Direction, n: &PlacedNode) -> f64 {
+    match direction {
+        Direction::TopToBottom | Direction::BottomToTop => n.size.w / 2.0,
+        Direction::LeftToRight | Direction::RightToLeft => n.size.h / 2.0,
+    }
+}
+
+/// §10-3's "ファン列内の並び順" (`docs/FEATURE-MERMAID-RENDERER.md`) — reorders the members of a
+/// *pure* single-source fan-out (every node at one rank tracing back to exactly one common
+/// predecessor, at least three of them) into the mechanical rule `3a`'s reference geometry
+/// (`docs/mermaid-theme/handoff/round3-Konoma-Flowchart-Routing.dc.html`) reverse-engineers to:
+///
+/// * the trunk/chain edge's own target (`chain_next`) always sits at the group's own centre index
+///   (`len / 2`, integer division — an odd leftover member always lands *above* it: `3a`'s own
+///   ten-member fan splits 5 above / 4 below, not 4/5, because `設定のルール`'s trunk pick
+///   `ブロックモデル` is this group's 6th of 10 members, at index 5);
+/// * every other member is grouped by its own resolved colour (`PlacedNode::style`'s `stroke`,
+///   which is exactly "下流クラス（＝辺色）" once §10-3 item 6's `style::lighten` runs an edge's own
+///   colour off its downstream node's — this function's own doc quotes `docs/FEATURE-MERMAID-
+///   RENDERER.md`'s exact words for the rule), the groups themselves ordered by whichever one's
+///   first member this fan's own `candidates` list (declaration order — the order the source
+///   itself wrote the branches in, not dagre's) reaches soonest, and members *within* one colour
+///   group kept in that same declaration order ("同色内は安定" — stable, not re-sorted by anything
+///   this function invents);
+/// * a member with no `classDef`-backed class at all (`has_class`) is *always* the last group,
+///   regardless of where its own edge was declared — "無クラス・行き止まりを外側".
+///
+/// Reverse-engineered, not derived from a written mermaid rule (§10-3's own implementation note
+/// says as much): `3a` is one hand-placed reference drawing, so this is the simplest rule that
+/// explains it, not a guarantee every future corpus fan reproduces `3a`-style hand layout
+/// coordinate-for-coordinate. What it does guarantee, by construction (this function's own "no-op
+/// guard" and "re-stack" steps below), is every pre-existing invariant this module's own corpus
+/// tests already check — no new collision, no lane invented that was not there before, and a
+/// two-way branch (never eligible: see the size cut below) is never perturbed at all.
+///
+/// Deliberately conservative in scope, matching [`pull_back_fan_ranks`]'s own reasoning for why a
+/// narrow trigger beats a numeric threshold applied everywhere: only a rank whose *every* member
+/// traces back to the same one predecessor is touched at all (a merge rank, or a rank mixing two
+/// unrelated branches' targets, is left exactly as `align_straight_lanes` laid it out — reordering
+/// *part* of a mixed rank while leaving the rest could open a gap or a collision this function has
+/// no way to check for); and even a pure fan is left alone unless the rule above actually asks for
+/// a different member order than the one already there (`current == new_order` is a silent no-op),
+/// so an already-correct two- or three-way branch this module's own pinned exact-geometry tests
+/// cover never has its coordinates so much as touched by a call this function did not need to make.
+///
+/// Unlike [`pull_back_fan_ranks`], this function is *not* skipped when the diagram has a subgraph
+/// frame (`tree.is_empty()`): it runs in the same, already-unguarded window `align_straight_lanes`
+/// itself always ran in, only ever permutes a rank's own cross-axis order, and never touches a
+/// frame's own border-node coordinates — `read_clusters` (`mod.rs`'s own caller, right after this
+/// point) still reads every member's *final* position, so a frame it computes afterwards already
+/// encloses wherever this pass leaves its members. The full corpus's own subgraph fixtures (`orthogonal_corpus`) are exercised by this scope and pass every invariant test unchanged.
+///
+/// Callers must re-run [`orthogonal::align_straight_lanes`] afterwards (`lay_out_spec_pass` does):
+/// this function only ever permutes *which* node sits in which cross-axis slot and re-stacks the
+/// group around its own original midpoint — it does not attempt the trunk's exact centreline
+/// alignment itself, because that alignment is a whole-chain computation (`3a`'s own seven-segment
+/// spine runs through five separate ranks) `align_straight_lanes` already owns end to end. What
+/// this pass changes is *whether that pass can succeed*: its own "ランク内の並び順は変えない"
+/// overlap sweep can only ever push a crowded member later, never reorder around it, so a trunk
+/// member buried among nine differently-coloured same-rank siblings keeps landing off the shared
+/// centreline no matter how many times alignment reruns on the same order — moving it to its new,
+/// colour-grouped slot (with a full [`ORTHO_NODE_SEP`] of slack on both sides, by construction) is
+/// what finally gives the sweep room to grant it that centreline.
+///
+/// Returns whether it actually moved anything — `mod.rs`'s own caller needs this to decide
+/// whether the (not free, and not fully idempotent — that caller's own doc explains why a second
+/// `align_straight_lanes` pass is not safe to run unconditionally) second alignment pass is worth
+/// running at all.
+fn regroup_fan_lanes(
+    direction: Direction,
+    nodes: &mut [PlacedNode],
+    node_rank: &HashMap<String, i32>,
+    candidates: &[(String, String)],
+    chain_next: &HashMap<String, String>,
+    has_class: &HashMap<String, bool>,
+) -> bool {
+    let mut touched = false;
+    let id_index: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
+
+    let mut by_rank: HashMap<i32, Vec<usize>> = HashMap::new();
+    for (id, &r) in node_rank {
+        if let Some(&i) = id_index.get(id) {
+            by_rank.entry(r).or_default().push(i);
+        }
+    }
+
+    // Declaration-order position of each candidate edge, keyed by its *target* — what "安定"
+    // (stable) and "group order" are both measured against (this function's own doc).
+    let decl_index: HashMap<String, usize> = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, (_, t))| (t.clone(), i))
+        .collect();
+    let decl_of = |id: &str| decl_index.get(id).copied().unwrap_or(usize::MAX);
+
+    let mut ranks: Vec<i32> = by_rank.keys().copied().collect();
+    ranks.sort_unstable();
+
+    for r in ranks {
+        let idxs = &by_rank[&r];
+        if idxs.len() < 3 {
+            continue; // too small a branch for colour-grouping to matter — leave it alone.
+        }
+
+        // A predecessor per member, succeeding only when every member of this rank has exactly
+        // one incoming candidate edge and they all share the *same* one source — this function's
+        // own doc, "conservative in scope".
+        let member_ids: Vec<String> = idxs.iter().map(|&i| nodes[i].id.clone()).collect();
+        let mut sole_pred: Option<String> = None;
+        let mut pure_fan = true;
+        for id in &member_ids {
+            let preds: Vec<&String> = candidates
+                .iter()
+                .filter(|(_, t)| t == id)
+                .map(|(s, _)| s)
+                .collect();
+            let [pred] = preds.as_slice() else {
+                pure_fan = false;
+                break;
+            };
+            match &sole_pred {
+                None => sole_pred = Some((*pred).clone()),
+                Some(p) if p == *pred => {}
+                Some(_) => {
+                    pure_fan = false;
+                    break;
+                }
+            }
+        }
+        let (true, Some(source)) = (pure_fan, sole_pred) else {
+            continue;
+        };
+
+        let trunk_id: Option<String> = chain_next
+            .get(&source)
+            .filter(|t| member_ids.contains(t))
+            .cloned();
+
+        // --- bucket every non-trunk member by its resolved colour, "無クラス" last -------------
+        let mut buckets: Vec<(String, Vec<String>)> = Vec::new();
+        let mut none_bucket: Vec<String> = Vec::new();
+        for id in &member_ids {
+            if trunk_id.as_ref() == Some(id) {
+                continue;
+            }
+            let classed = has_class.get(id).copied().unwrap_or(true);
+            if !classed {
+                none_bucket.push(id.clone());
+                continue;
+            }
+            let key = nodes[id_index[id]]
+                .style
+                .as_ref()
+                .and_then(|s| s.stroke.clone())
+                // No resolved colour at all: its own singleton group rather than lumping it in
+                // with every other uncoloured node, which would wrongly treat two unrelated plain
+                // nodes as "the same colour".
+                .unwrap_or_else(|| format!("\0{id}"));
+            match buckets.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, members)) => members.push(id.clone()),
+                None => buckets.push((key, vec![id.clone()])),
+            }
+        }
+        buckets.sort_by_key(|(_, members)| {
+            members
+                .iter()
+                .map(|m| decl_of(m))
+                .min()
+                .unwrap_or(usize::MAX)
+        });
+        // Within one colour, "同色内は安定" (this function's own doc) is not simply the fan edge's
+        // own declaration order: `3a`'s own reference (`docs/mermaid-theme/handoff/round3-Konoma-
+        // Flowchart-Routing.dc.html`) puts `ページ描画`/`usvg` (both converge one rank later, into
+        // `ラスタライズ`) closer to the trunk than `デコード`/`キーフレーム` (converge two ranks
+        // later, into `セルに合わせる`), even though `デコード` is declared *before* `ページ描画`.
+        // The member whose own forward edge reaches a nearer rank sorts first — the same "shorter
+        // reach sits closer to the spine" reasoning §10-3 item 2 already established for the
+        // trunk's own end-of-chain tie-break (`align_straight_lanes`'s own doc on that fix) —
+        // falling back to plain declaration order for a leaf (no forward edge of its own at all,
+        // so nothing to measure) or a genuine tie.
+        let nearest_forward_rank = |m: &str| -> i32 {
+            candidates
+                .iter()
+                .filter(|(s, _)| s == m)
+                .filter_map(|(_, t)| node_rank.get(t))
+                .min()
+                .copied()
+                .unwrap_or(i32::MAX)
+        };
+        for (_, members) in &mut buckets {
+            members.sort_by_key(|m| (nearest_forward_rank(m), decl_of(m)));
+        }
+        none_bucket.sort_by_key(|m| decl_of(m));
+
+        let mut rest: Vec<String> = buckets.into_iter().flat_map(|(_, m)| m).collect();
+        rest.extend(none_bucket);
+
+        let new_order: Vec<String> = match &trunk_id {
+            Some(t) => {
+                let before = member_ids.len() / 2;
+                let split = before.min(rest.len());
+                let mut order: Vec<String> = rest[..split].to_vec();
+                order.push(t.clone());
+                order.extend_from_slice(&rest[split..]);
+                order
+            }
+            None => rest,
+        };
+
+        // Centred on the *source* node's own cross coordinate (`C`'s own centre, in `3a`'s own
+        // terms — regel1's "箱を中心線対称に保ったまま拡大") rather than on the group's own current
+        // top/bottom: by the time this runs, `nodes` already reflects the *first* `align_straight_
+        // lanes` probe call's own overlap-resolution sweep, which can (and, on `3a`'s own fence-3
+        // source, does) push a crowded chain member well past the fan's natural block — reading
+        // the block's extent back off that already-distorted state would inflate the very gap this
+        // pass exists to close. The source's own centreline is stable regardless: no rank-order
+        // pass this module runs above ever moves a node relative to its *own* rank's siblings by
+        // growing or shrinking `C` itself, and `C`'s ports are already centred on it (regel1).
+        let mid = id_index
+            .get(&source)
+            .map(|&i| cross_of(direction, &nodes[i]))
+            .unwrap_or_else(|| {
+                let (mut top, mut bottom) = (f64::INFINITY, f64::NEG_INFINITY);
+                for &i in idxs {
+                    let half = cross_extent_of(direction, &nodes[i]);
+                    let c = cross_of(direction, &nodes[i]);
+                    top = top.min(c - half);
+                    bottom = bottom.max(c + half);
+                }
+                (top + bottom) / 2.0
+            });
+
+        // No-op guard: only touch geometry when the rule above actually asks for a different
+        // member order than the one already there, *or* the trunk (if any) is not already sitting
+        // exactly on `mid` — a rank whose members happen to already be in the right order can
+        // still have its trunk crowded off the source's own centreline (found on `3a`'s own `端末`
+        // fan: `K -> RI` is already the chosen, already-correctly-ordered trunk edge, and yet the
+        // overlap sweep that ran before this function saw it still leaves `RI` off `K`'s own
+        // centre — this function's own doc, "gives that sweep room to grant it the centreline",
+        // does not help a member the sweep never had to move in the first place). A tolerance
+        // rather than exact equality: this reads coordinates dagre's own floating-point layout
+        // already carried through several passes of arithmetic.
+        let mut current: Vec<String> = member_ids.clone();
+        current.sort_by(|a, b| {
+            cross_of(direction, &nodes[id_index[a]])
+                .partial_cmp(&cross_of(direction, &nodes[id_index[b]]))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let trunk_aligned = trunk_id
+            .as_ref()
+            .map(|t| (cross_of(direction, &nodes[id_index[t]]) - mid).abs() < 0.01)
+            .unwrap_or(true); // no trunk in this fan: order is the only thing that matters.
+        if current == new_order && trunk_aligned {
+            continue;
+        }
+
+        let set_cross = |nodes: &mut [PlacedNode], idx: usize, new_c: f64| {
+            let flow_v = flow_of(direction, &nodes[idx]);
+            nodes[idx].center = match direction {
+                Direction::TopToBottom | Direction::BottomToTop => Point::new(new_c, flow_v),
+                Direction::LeftToRight | Direction::RightToLeft => Point::new(flow_v, new_c),
+            };
+        };
+
+        touched = true;
+        match trunk_id
+            .as_ref()
+            .and_then(|t| new_order.iter().position(|id| id == t))
+        {
+            // Pinned to `mid` (the source's own centreline) exactly, then every other member
+            // stacked *outward* from it — never from a computed block top — so the trunk's own
+            // cross coordinate lands precisely where `align_straight_lanes`'s next call needs it
+            // to draw the source's own 0-bend edge, no matter how asymmetric the before/after
+            // split is (`3a`'s own 5-before/4-after: this function's own doc explains why it is
+            // uneven).
+            Some(tp) => {
+                let idx = id_index[&new_order[tp]];
+                set_cross(nodes, idx, mid);
+                let mut edge = mid - cross_extent_of(direction, &nodes[idx]);
+                for id in new_order[..tp].iter().rev() {
+                    let idx = id_index[id];
+                    let half = cross_extent_of(direction, &nodes[idx]);
+                    let new_c = edge - ORTHO_NODE_SEP - half;
+                    set_cross(nodes, idx, new_c);
+                    edge = new_c - half;
+                }
+                let mut edge = mid + cross_extent_of(direction, &nodes[idx]);
+                for id in &new_order[tp + 1..] {
+                    let idx = id_index[id];
+                    let half = cross_extent_of(direction, &nodes[idx]);
+                    let new_c = edge + ORTHO_NODE_SEP + half;
+                    set_cross(nodes, idx, new_c);
+                    edge = new_c + half;
+                }
+            }
+            // No trunk in this fan (e.g. every branch is a leaf): stack the whole group from its
+            // own top, centred on `mid` as a block — there is no single member's position to pin.
+            None => {
+                let total: f64 = new_order
+                    .iter()
+                    .map(|id| 2.0 * cross_extent_of(direction, &nodes[id_index[id]]))
+                    .sum::<f64>()
+                    + ORTHO_NODE_SEP * (new_order.len().saturating_sub(1)) as f64;
+                let mut cursor = mid - total / 2.0;
+                for id in &new_order {
+                    let idx = id_index[id];
+                    let half = cross_extent_of(direction, &nodes[idx]);
+                    let new_c = cursor + half;
+                    set_cross(nodes, idx, new_c);
+                    cursor = new_c + half + ORTHO_NODE_SEP;
+                }
+            }
+        }
+    }
+    touched
 }
 
 /// Reads the frames dagre computed and grows each one until its title fits inside it.

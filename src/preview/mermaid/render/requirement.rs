@@ -123,6 +123,7 @@ fn box_node(name: &str, rows: &[(&'static str, String)]) -> SpecNode {
         size: shapes::size(Glyph::ClassBox, panel.size),
         panel: Some(panel),
         style: None,
+        has_class: true,
     }
 }
 

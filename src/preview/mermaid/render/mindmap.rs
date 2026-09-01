@@ -74,6 +74,7 @@ pub fn spec_of(map: &Mindmap) -> GraphSpec {
                 size,
                 panel: None,
                 style: None,
+                has_class: true,
             }
         })
         .collect();
