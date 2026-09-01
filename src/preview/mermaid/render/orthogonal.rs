@@ -1734,6 +1734,13 @@ struct FaceClaim {
     end: FaceEnd,
     other_cross: f64,
     aligned: bool,
+    /// §10-3 item 1 ("ファン面の中央ポート＝幹の直進辺"): whether this claim is the trunk/chain
+    /// edge [`align_straight_lanes`] selected for this claim's own *source* — set only on the
+    /// `FaceEnd::Source` claim, never the target (`evict`'s own doc explains why the target side
+    /// stays `false`). Gives the fan face's centre port to the trunk even when `align_straight_
+    /// lanes`'s geometric collapse never fully landed the two nodes on the same cross coordinate,
+    /// so `shape.aligned` alone (the 0-bend case) would miss it.
+    trunk: bool,
 }
 
 /// The caller's own view of one node-to-node edge — everything [`route_flowchart`] needs about it
@@ -1777,11 +1784,19 @@ struct Eviction {
 /// 軸方向に拡大") only ever widens (for `Top`/`Bottom`) or heightens (for `Left`/`Right`) the node
 /// — the two axes never fight over the same requirement, and [`Eviction::required_size`] reports
 /// each independently.
+///
+/// `chain_next` is [`align_straight_lanes`]'s own selection (source id → target id, `mod.rs`'s
+/// threaded-through result) — §10-3 item 1's own centre-port rule for the trunk edge of a fan face
+/// needs this alongside `shape.aligned`: a chain edge that lost its geometric alignment to a
+/// crowded rank (`align_straight_lanes`'s own doc on why `chain_next` can disagree with the final
+/// coordinates) still draws as the fan's `fan_lane` shape, not the flat `aligned` one, so
+/// `shape.aligned` alone cannot find it.
 fn evict(
     direction: Direction,
     by_id: &HashMap<&str, &PlacedNode>,
     edges: &[EligibleEdge],
     shapes: &[Option<EdgeShape>],
+    chain_next: &HashMap<String, String>,
 ) -> Eviction {
     let mut groups: HashMap<(String, Side), Vec<FaceClaim>> = HashMap::new();
     for (edge, shape) in edges.iter().zip(shapes) {
@@ -1790,6 +1805,7 @@ fn evict(
         else {
             continue;
         };
+        let is_trunk = chain_next.get(edge.source).map(String::as_str) == Some(edge.target);
         groups
             .entry((edge.source.to_string(), shape.source_side))
             .or_default()
@@ -1798,6 +1814,7 @@ fn evict(
                 end: FaceEnd::Source,
                 other_cross: cross(direction, &target.center),
                 aligned: shape.aligned,
+                trunk: is_trunk,
             });
         groups
             .entry((edge.target.to_string(), shape.target_side))
@@ -1807,6 +1824,16 @@ fn evict(
                 end: FaceEnd::Target,
                 other_cross: cross(direction, &source.center),
                 aligned: shape.aligned,
+                // Deliberately NOT `is_trunk`: §10-3 item 1 is about the *fan* face — a source's
+                // own outgoing face, crowded with several siblings — not the target's incoming
+                // face. Marking both ends trunk (tried first) silently swaps which of two unrelated
+                // claims on a plain 1-or-2-claim target face sits on which side of the centre —
+                // found on the `branch` corpus fixture (`D`'s own Top face carries `B->D`'s target
+                // claim and `D->B`'s source claim; centring the former moved the latter by 16px),
+                // which then re-pointed `D->B`'s own perimeter ring low enough to cut straight
+                // through `D`'s own box on the way back up to `B`
+                // (`orthogonal_no_edge_crosses_its_own_endpoint_across_the_whole_corpus`).
+                trunk: false,
             });
     }
 
@@ -1829,16 +1856,20 @@ fn evict(
         });
 
         let n = claims.len();
-        // Rule 2: an aligned (zero-bend) edge takes the slot closest to the face's own centre —
-        // exactly the centre when `n` is odd. When `n` is even the 16px grid has no exact centre
-        // slot at all (its two middle slots sit at ±(PORT_SPACING/2)); `f64::round`'s "half away
-        // from zero" rule picks the *higher* index of the two (`(n-1)/2` is exactly `x.5`, which
-        // rounds up), deterministically — a corner case the spec does not disambiguate further.
-        // If more than one claim on the same face is somehow aligned (two dead-straight edges
+        // Rule 2 / §10-3 item 1: the aligned (zero-bend) edge, OR — when geometry never fully
+        // collapsed onto it — the trunk/chain edge `align_straight_lanes` selected for this source,
+        // takes the slot closest to the face's own centre; exactly the centre when `n` is odd. When
+        // `n` is even the 16px grid has no exact centre slot at all (its two middle slots sit at
+        // ±(PORT_SPACING/2)); `f64::round`'s "half away from zero" rule picks the *higher* index of
+        // the two (`(n-1)/2` is exactly `x.5`, which rounds up), deterministically — a corner case
+        // the spec does not disambiguate further.
+        // If more than one claim on the same face somehow qualifies (two dead-straight edges
         // sharing a face — not reachable from any real flowchart, since it needs two different
-        // nodes at the same cross coordinate as this one), only the first is moved; the rest keep
-        // their sorted position like any other claim.
-        if let Some(aligned_pos) = claims.iter().position(|c| c.aligned) {
+        // nodes at the same cross coordinate as this one; a face can never carry two distinct chain
+        // edges either, since `align_straight_lanes` selects at most one outgoing/incoming chain
+        // edge per node), only the first is moved; the rest keep their sorted position like any
+        // other claim.
+        if let Some(aligned_pos) = claims.iter().position(|c| c.aligned || c.trunk) {
             let center_idx = (((n - 1) as f64) / 2.0).round() as usize;
             if aligned_pos != center_idx {
                 let claim = claims.remove(aligned_pos);
@@ -2043,18 +2074,18 @@ pub fn route_flowchart(
     nodes: &[PlacedNode],
     clusters: &[PlacedCluster],
     edges: &[EligibleEdge],
-    chain_sources: &std::collections::HashSet<String>,
+    chain_next: &HashMap<String, String>,
 ) -> RoutedFlowchart {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
     let mut flow_aligned = flow_aligned_sources(direction, &by_id, edges);
-    // §10-3 item 1's own robustness note (`align_straight_lanes`'s own doc on its `used_out`
+    // §10-3 item 1's own robustness note (`align_straight_lanes`'s own doc on its `next`
     // return): a chain member `align_straight_lanes` selected can be pushed off its chain's own
     // computed average by that same pass's later overlap-resolution sweep, so the purely
-    // geometric check above can miss a real trunk source. `chain_sources` — `mod.rs`'s own
+    // geometric check above can miss a real trunk source. `chain_next` — `mod.rs`'s own
     // `align_straight_lanes` call, threaded straight through — is the selection itself, so a
     // trunk source is recognised even when its coordinates no longer agree.
-    flow_aligned.extend(chain_sources.iter().cloned());
+    flow_aligned.extend(chain_next.keys().cloned());
 
     let shapes: Vec<Option<EdgeShape>> = edges
         .iter()
@@ -2077,7 +2108,7 @@ pub fn route_flowchart(
         })
         .collect();
 
-    let eviction = evict(direction, &by_id, edges, &shapes);
+    let eviction = evict(direction, &by_id, edges, &shapes, chain_next);
 
     let base_bounds = content_bounds(nodes, clusters);
     let lane_of = perimeter_lanes(&by_id, edges, &shapes);
@@ -2297,9 +2328,9 @@ pub fn align_straight_lanes(
     nodes: &mut [PlacedNode],
     node_rank: &HashMap<String, i32>,
     candidates: &[(String, String)],
-) -> (HashMap<String, f64>, std::collections::HashSet<String>) {
+) -> (HashMap<String, f64>, HashMap<String, String>) {
     if nodes.len() < 2 {
-        return (HashMap::new(), std::collections::HashSet::new());
+        return (HashMap::new(), HashMap::new());
     }
     let id_index: HashMap<String, usize> = nodes
         .iter()
@@ -2361,6 +2392,36 @@ pub fn align_straight_lanes(
             .iter()
             .filter(|(s, t)| node_rank.get(s) == Some(&r) && node_rank.get(t) == Some(&next_r))
             .collect();
+        // §10-3 item 2 ("幹末端のタイブレーク"): for a source whose whole fan-out is leaves (every
+        // candidate ties on "continues" below — none of them goes on to extend the chain further),
+        // `3a`'s own reference geometry picks neither extreme but the *middle* of the fan: `端末`'s
+        // three same-rank targets (`圧縮転送`/`画像プロトコル`/`ハーフブロック`, `docs/mermaid-theme/
+        // handoff/round3-Konoma-Flowchart-Routing.dc.html`'s `3a` section) keep the spine running
+        // through `画像プロトコル` — the cross-order *middle* one — not `圧縮転送`, the smallest-
+        // cross target the plain ascending tie-break below would otherwise pick outright. Distance
+        // from each source's own sibling median, smaller wins; a fan of exactly two candidates is
+        // always tied here by construction (both sit equally far from their shared midpoint), so
+        // this key is a genuine no-op for every existing two-candidate fixture and only ever
+        // discriminates a fan of three or more.
+        let mut targets_by_source: HashMap<&str, Vec<f64>> = HashMap::new();
+        for (s, t) in &pair_candidates {
+            targets_by_source
+                .entry(s.as_str())
+                .or_default()
+                .push(cross(direction, &nodes[id_index[t]].center));
+        }
+        for v in targets_by_source.values_mut() {
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        }
+        let median_of = |s: &str| -> f64 {
+            let v = &targets_by_source[s];
+            let n = v.len();
+            if n % 2 == 1 {
+                v[n / 2]
+            } else {
+                (v[n / 2 - 1] + v[n / 2]) / 2.0
+            }
+        };
         // §10-3 item 7's own trunk-preserving order, ahead of every pre-existing key: a candidate
         // whose *source* is already mid-chain (`used_in` — some earlier window already selected an
         // edge landing on it) wins first, so the windowed pass keeps extending the chain it is
@@ -2388,6 +2449,13 @@ pub fn align_straight_lanes(
                     continues
                         .contains(t2.as_str())
                         .cmp(&continues.contains(t1.as_str()))
+                })
+                .then_with(|| {
+                    let tc1 = cross(direction, &nodes[id_index[t1]].center);
+                    let tc2 = cross(direction, &nodes[id_index[t2]].center);
+                    let d1 = (tc1 - median_of(s1)).abs();
+                    let d2 = (tc2 - median_of(s2)).abs();
+                    d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .then_with(|| {
                     let tc1 = cross(direction, &nodes[id_index[t1]].center);
@@ -2536,22 +2604,29 @@ pub fn align_straight_lanes(
         })
         .collect();
 
-    // §10-3 item 1's own robustness note: `used_out` — every source id this pass actually gave a
-    // selected chain edge, *before* the overlap-resolution sweep above ran — is handed back
-    // separately from the geometric alignment `flow_aligned_sources` (below, in [`classify`]'s own
-    // trigger) checks for, because the two can disagree. The overlap sweep's own "ランク内の並び順
-    // は変えない" constraint (this function's own doc) means it can only ever push a later member
-    // of a crowded rank *forward*, never make room by moving an earlier one back — so a chain
-    // member deep in a dense rank (found on `3a`'s own `ブロックモデル`, sitting among `設定の
-    // ルール`'s other nine same-rank targets) can be selected here and then pushed clear off the
-    // chain's own computed average by that later pass, without this function ever un-selecting it.
-    // A purely geometric re-check downstream (`cross` coordinates equal within `EPS`) would then
-    // wrongly conclude the edge was never a trunk edge at all. Returning the *selection* alongside
-    // the *geometry* lets `route_flowchart` trust "this pass picked it" even when the final
-    // coordinates no longer agree — `route_flowchart`'s own doc on `chain_sources` explains the
-    // consequence (the trunk edge draws as a 2-bend `fan_lane` shape instead of a 0-bend `aligned`
-    // one) rather than falling all the way back to the old, pre-round-3 cross-face branch shape.
-    (deltas, used_out)
+    // §10-3 item 1's own robustness note: `next` — every selected chain edge, source id to target
+    // id, *before* the overlap-resolution sweep above ran — is handed back separately from the
+    // geometric alignment `flow_aligned_sources` (below, in [`classify`]'s own trigger) checks for,
+    // because the two can disagree. The overlap sweep's own "ランク内の並び順は変えない" constraint
+    // (this function's own doc) means it can only ever push a later member of a crowded rank
+    // *forward*, never make room by moving an earlier one back — so a chain member deep in a
+    // crowded rank (found on `3a`'s own `ブロックモデル`, sitting among `設定のルール`'s other nine
+    // same-rank targets) can be selected here and then pushed clear off the chain's own computed
+    // average by that later pass, without this function ever un-selecting it. A purely geometric
+    // re-check downstream (`cross` coordinates equal within `EPS`) would then wrongly conclude the
+    // edge was never a trunk edge at all. Returning the *selection* alongside the *geometry* lets
+    // `route_flowchart` trust "this pass picked it" even when the final coordinates no longer agree
+    // — `route_flowchart`'s own doc on `chain_next` explains the consequence (the trunk edge draws
+    // as a 2-bend `fan_lane` shape instead of a 0-bend `aligned` one) rather than falling all the
+    // way back to the old, pre-round-3 cross-face branch shape.
+    //
+    // The map (source → target), not just the source-id set `used_out` used to be, is what
+    // §10-3 item 1's port-centring fix (`evict`'s own doc on its `chain_next` parameter) needs: a
+    // face can carry several of the chain source's siblings, and only the *one* claim whose own
+    // (source, target) pair matches an entry here is the trunk edge rule 1 reserves the centre port
+    // for — a source-id-only set could not tell that claim apart from any other sibling leaving the
+    // same node.
+    (deltas, next)
 }
 
 /// `p`, shifted by `delta` along `direction`'s cross axis — [`align_straight_lanes`]'s own return
@@ -2706,12 +2781,12 @@ pub fn separate_coincident_detours(
     clusters: &[PlacedCluster],
     edges: &[EligibleEdge],
     points: &mut HashMap<String, Vec<Point>>,
-    chain_sources: &std::collections::HashSet<String>,
+    chain_next: &HashMap<String, String>,
 ) {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
     let mut flow_aligned = flow_aligned_sources(direction, &by_id, edges);
-    flow_aligned.extend(chain_sources.iter().cloned());
+    flow_aligned.extend(chain_next.keys().cloned());
     let mut detour_ids: Vec<&str> = edges
         .iter()
         .filter_map(|e| {
@@ -2840,12 +2915,12 @@ pub fn avoid_label_plates(
     edges: &[EligibleEdge],
     points: &mut HashMap<String, Vec<Point>>,
     plates: &mut HashMap<String, PlacedEdgeLabel>,
-    chain_sources: &std::collections::HashSet<String>,
+    chain_next: &HashMap<String, String>,
 ) {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
     let mut flow_aligned = flow_aligned_sources(direction, &by_id, edges);
-    flow_aligned.extend(chain_sources.iter().cloned());
+    flow_aligned.extend(chain_next.keys().cloned());
     let shapes: Vec<Option<EdgeShape>> = edges
         .iter()
         .map(|e| {
@@ -3063,26 +3138,25 @@ fn gap_around(points: &[Point], seg_idx: usize, cross: &Point) -> (Point, Point)
     (g0, g1)
 }
 
-/// §10-1 item 4: "辺どうしの交差では跨ぐ側（外周レーンの辺＝戻り辺・補助辺）の線に12pxの隙間を開け
-/// る（下をくぐる線は連続のまま）". Finds every point where two *different* edges' segments
-/// genuinely cross ([`segment_crossing`]), and — when exactly one of the two is a **detour shape**
-/// (`reverse`/`staircase`, minus a self-loop — [`route_with_ports`]'s own doc explains why a
-/// self-loop is exempt from this whole mechanism) — cuts a [`CROSSING_GAP`]-px gap into that
-/// edge's own line, leaving the edge it crosses completely untouched: §10-1's "下をくぐる線は連続
-/// のまま" read as depth, not as a rule about which edge is which — the interrupted line is the
-/// one that visually dips under, the untouched one reads as passing over it.
+/// §10-1 item 4 / §10-3 item 5: two crossing-gap rules, told apart by whether either edge is a
+/// genuine **perimeter edge** (`reverse`/`staircase`, minus a self-loop — [`route_with_ports`]'s
+/// own doc explains why a self-loop is exempt from this whole mechanism):
 ///
-/// "Detour shape" is deliberately not "perimeter-routed edge" any more: since 2026-09-01 only a
-/// genuine back edge (`reverse`, non-self-loop) actually draws from the perimeter lane
-/// ([`route_with_ports`]'s own doc) — `staircase` stays local — but the crossing-priority question
-/// this function answers is about visual depth, not routing mechanism, so both kinds still count
-/// as the "spanning" side of a crossing they're part of.
-///
-/// When *both* sides of a crossing are detour shapes (reachable — `amp-chain`'s own
-/// collision-fallback `A->D` and `B->C` cross each other, neither a back edge nor sharing a node
-/// with the other, dumped and confirmed before this was written), the spec does not say which one
-/// gets the gap; the tie is broken by edge id, lower id kept whole, deterministically rather than
-/// arbitrarily.
+/// * §10-1 item 4 ("外周辺 vs 主辺は従来規則（外周側が跨ぐ）"): when at least one side is a
+///   perimeter edge, that side always gets the [`CROSSING_GAP`]-px gap — "下をくぐる線は連続のまま"
+///   read as depth, not as a rule about orientation: a back/detour edge visually dips under
+///   whatever it crosses, an ordinary edge always reads as passing over it, regardless of which
+///   way either one runs. When *both* sides are perimeter edges (reachable — `amp-chain`'s own
+///   collision-fallback `A->D` and `B->C` cross each other, neither a back edge nor sharing a node
+///   with the other), the spec does not say which one gets the gap; the tie is broken by edge id,
+///   lower id kept whole, deterministically rather than arbitrarily.
+/// * §10-3 item 5 ("主辺どうしの交差は水平側が譲る"): when *neither* side is a perimeter edge —
+///   two ordinary forward edges (`aligned`/`branch`/`merge`/`fan_lane`, any shape
+///   [`is_flow_flow_bend`] does or does not cover included) simply happen to cross — the gap goes
+///   on whichever of the two segments is **horizontal** at that crossing, never on the vertical
+///   one. [`segment_crossing`]'s own contract (exactly one of the pair is vertical, the other
+///   horizontal, or it would not have found a crossing at all) means this is never ambiguous the
+///   way the perimeter-vs-perimeter tie above can be.
 ///
 /// Node crossings and frame crossings are both out of scope here by construction: this only ever
 /// compares two edges' own segments against each other, never against a node's or a cluster's
@@ -3102,13 +3176,13 @@ pub fn insert_crossing_gaps(
     clusters: &[PlacedCluster],
     edges: &[EligibleEdge],
     points: &HashMap<String, Vec<Point>>,
-    chain_sources: &std::collections::HashSet<String>,
+    chain_next: &HashMap<String, String>,
 ) -> HashMap<String, Vec<(Point, Point)>> {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
     let mut flow_aligned = flow_aligned_sources(direction, &by_id, edges);
-    flow_aligned.extend(chain_sources.iter().cloned());
-    let is_detour: HashMap<&str, bool> = edges
+    flow_aligned.extend(chain_next.keys().cloned());
+    let is_perimeter: HashMap<&str, bool> = edges
         .iter()
         .filter_map(|e| {
             let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target)) else {
@@ -3128,8 +3202,7 @@ pub fn insert_crossing_gaps(
             );
             Some((
                 e.id,
-                (shape.reverse || shape.staircase || is_flow_flow_bend(&shape))
-                    && source.id != target.id,
+                (shape.reverse || shape.staircase) && source.id != target.id,
             ))
         })
         .collect();
@@ -3141,19 +3214,38 @@ pub fn insert_crossing_gaps(
             let (Some(pi), Some(pj)) = (points.get(ei), points.get(ej)) else {
                 continue;
             };
-            let (pi_detour, pj_detour) = (
-                is_detour.get(ei).copied().unwrap_or(false),
-                is_detour.get(ej).copied().unwrap_or(false),
+            let (pi_perimeter, pj_perimeter) = (
+                is_perimeter.get(ei).copied().unwrap_or(false),
+                is_perimeter.get(ej).copied().unwrap_or(false),
             );
-            if !pi_detour && !pj_detour {
-                continue; // neither side spans — out of this rule's scope.
+            if !pi_perimeter && !pj_perimeter {
+                // §10-3 item 5: both sides are ordinary main edges — cut whichever segment is
+                // horizontal at each crossing point, found independently per crossing (never
+                // "pick a side for this whole pair" the way the perimeter rule below does).
+                for (seg_idx, wi) in pi.windows(2).enumerate() {
+                    for (seg_jdx, wj) in pj.windows(2).enumerate() {
+                        let Some(cross) = segment_crossing(wi, wj) else {
+                            continue;
+                        };
+                        if segment_is_vertical(&wi[0], &wi[1]) {
+                            let (g0, g1) = gap_around(pj, seg_jdx, &cross);
+                            gaps.entry(ej.to_string()).or_default().push((g0, g1));
+                        } else {
+                            let (g0, g1) = gap_around(pi, seg_idx, &cross);
+                            gaps.entry(ei.to_string()).or_default().push((g0, g1));
+                        }
+                    }
+                }
+                continue;
             }
-            // Both spanning: the higher edge id is the one that gets cut, so the lower one stays
-            // whole — this function's own doc explains why either choice is equally arbitrary.
-            let cut_on_i = if pi_detour && pj_detour {
+            // §10-1 item 4: at least one side is a perimeter edge — that side always spans,
+            // regardless of orientation. Both spanning: the higher edge id is the one that gets
+            // cut, so the lower one stays whole — this function's own doc explains why either
+            // choice is equally arbitrary.
+            let cut_on_i = if pi_perimeter && pj_perimeter {
                 ei > ej
             } else {
-                pi_detour
+                pi_perimeter
             };
             let (cut_id, cut_pts, other_pts) = if cut_on_i { (ei, pi, pj) } else { (ej, pj, pi) };
             for (seg_idx, wc) in cut_pts.windows(2).enumerate() {
@@ -3372,7 +3464,7 @@ mod tests {
                 &nodes,
                 &[],
                 &edges,
-                &std::collections::HashSet::new(),
+                &std::collections::HashMap::new(),
             );
             let pts = &routed.points["back"];
             for w in pts.windows(2) {
@@ -3437,7 +3529,7 @@ mod tests {
             &nodes,
             &[],
             &edges,
-            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
         );
         let mut points = routed.points;
         let before = points["loop"].clone();
@@ -3457,7 +3549,7 @@ mod tests {
             &edges,
             &mut points,
             &mut plates,
-            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
         );
         assert_eq!(points["loop"], before, "a self-loop must never be rebuilt");
     }
@@ -3496,7 +3588,7 @@ mod tests {
             &nodes,
             &[],
             &edges,
-            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
         );
         let mut points = routed.points;
         let mut plates: HashMap<String, PlacedEdgeLabel> = HashMap::new();
@@ -3527,7 +3619,7 @@ mod tests {
             &edges,
             &mut points,
             &mut plates,
-            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
         );
 
         assert!(
@@ -3675,7 +3767,7 @@ mod tests {
             &edges,
             &mut points,
             &mut plates,
-            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
         );
 
         assert_ne!(
@@ -4075,7 +4167,7 @@ mod tests {
             nodes,
             &[],
             edges,
-            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
         )
     }
 
@@ -4236,6 +4328,55 @@ mod tests {
             assert!(
                 ((tip.x - b.center.x).abs() - PORT_SPACING).abs() < 1e-9,
                 "{name}: the sibling must sit exactly one port-spacing away: {tip:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_chain_selected_trunk_keeps_the_centre_port_even_when_geometry_never_aligned_it() {
+        // §10-3 item 1 ("ファン面の中央ポート＝幹の直進辺", `docs/render-check`'s own `mermaid.ja-03`
+        // fence-3 investigation): a fan face's centre port belongs to the source's own trunk/chain
+        // edge (`align_straight_lanes`'s own `next` selection, threaded through as `chain_next`)
+        // even when the two nodes never landed on the same cross coordinate — exactly `3a`'s own
+        // `設定のルール -> ブロックモデル`, whose target sits among nine other same-rank siblings and
+        // never gets pulled onto the source's own row. None of S's three targets (T/U/V) is
+        // `aligned` (`dcross` is never `< 0.5` for any of them) — only `chain_next` can tell the
+        // router which one is the trunk.
+        // Rule 1's own "もう一方の端点のcross座標順" sort would otherwise put V (other_cross 180,
+        // the middle of {120, 180, 600}) in the centre slot on its own — T is deliberately the
+        // *extreme* one (600) so this test can tell "rule 1's plain sort happened to centre the
+        // trunk" apart from "the trunk-centring fix actually moved it there".
+        let s = node("S", 100.0, 200.0, 60.0, 40.0);
+        let t = node("T", 400.0, 600.0, 60.0, 40.0); // the designated trunk — sorts last on its own.
+        let u = node("U", 400.0, 120.0, 60.0, 40.0);
+        let v = node("V", 400.0, 180.0, 60.0, 40.0);
+        let nodes = vec![s.clone(), t.clone(), u.clone(), v.clone()];
+        let edge = |id: &'static str, target: &'static str| EligibleEdge {
+            id,
+            source: "S",
+            target,
+            raw: &[],
+            source_rank: Some(0),
+            target_rank: Some(1),
+            source_out_degree: 3,
+            target_in_degree: 1,
+        };
+        let edges = vec![edge("st", "T"), edge("su", "U"), edge("sv", "V")];
+        let mut chain_next = HashMap::new();
+        chain_next.insert("S".to_string(), "T".to_string());
+        let routed = route_flowchart(Direction::LeftToRight, &nodes, &[], &edges, &chain_next);
+
+        let st_port = routed.points["st"].first().unwrap();
+        assert!(
+            (st_port.y - s.center.y).abs() < 1e-9,
+            "the chain-selected trunk (S->T) must keep S's own face centre even though T is not \
+             geometrically aligned: {st_port:?}"
+        );
+        for (name, id) in [("su", "su"), ("sv", "sv")] {
+            let port = routed.points[id].first().unwrap();
+            assert!(
+                (port.y - s.center.y).abs() > 1e-9,
+                "{name}: a non-trunk sibling must not also claim the centre port: {port:?}"
             );
         }
     }
@@ -4422,8 +4563,14 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(
-            chain_sources.contains("C") && chain_sources.contains("TRUNK"),
+            chain_sources.contains_key("C") && chain_sources.contains_key("TRUNK"),
             "both chain links' own sources must be reported back: {chain_sources:?}"
+        );
+        assert_eq!(
+            chain_sources.get("C").map(String::as_str),
+            Some("TRUNK"),
+            "the returned map must name TRUNK as C's own selected target, not merely list C: \
+             {chain_sources:?}"
         );
     }
 
@@ -4448,11 +4595,11 @@ mod tests {
         let (_, chain_sources) =
             align_straight_lanes(Direction::LeftToRight, &mut nodes, &node_rank, &candidates);
         assert!(
-            chain_sources.contains("RS"),
+            chain_sources.contains_key("RS"),
             "RS must have been selected to extend the MM -> RS -> FIT chain: {chain_sources:?}"
         );
         assert!(
-            !chain_sources.contains("IM"),
+            !chain_sources.contains_key("IM"),
             "IM (a fresh, unrelated pick) must lose the tie to RS (already mid-chain): \
              {chain_sources:?}"
         );
@@ -4533,6 +4680,39 @@ mod tests {
     }
 
     #[test]
+    fn a_three_way_leaf_fan_picks_the_cross_order_middle_target_not_the_smallest() {
+        // §10-3 item 2 ("幹末端のタイブレーク"): `3a`'s own `端末` (`docs/mermaid-theme/handoff/
+        // round3-Konoma-Flowchart-Routing.dc.html`) has three same-rank leaf targets — none
+        // continues the chain further, so the pre-existing "target cross ascending" key would pick
+        // TOP (the smallest cross coordinate) outright. `3a` instead keeps the spine through MID,
+        // the cross-order middle of the three — this is the shape that fixture stands in for.
+        let mut nodes = vec![
+            node("S", 0.0, 0.0, 40.0, 30.0),
+            node("TOP", 100.0, 0.0, 40.0, 30.0),
+            node("MID", 100.0, 50.0, 40.0, 30.0),
+            node("BOTTOM", 100.0, 150.0, 40.0, 30.0),
+        ];
+        let node_rank = ranks(&[("S", 0), ("TOP", 1), ("MID", 1), ("BOTTOM", 1)]);
+        // Declared with TOP first, so a sort that fell back past the median key straight to plain
+        // ascending target-cross order would still (wrongly) land on TOP — this is not a
+        // declaration-order artefact.
+        let candidates = [edge("S", "TOP"), edge("S", "MID"), edge("S", "BOTTOM")];
+        let (_, chain_next) =
+            align_straight_lanes(Direction::LeftToRight, &mut nodes, &node_rank, &candidates);
+        assert_eq!(
+            chain_next.get("S").map(String::as_str),
+            Some("MID"),
+            "S must pick MID (the cross-order middle target), not TOP (the smallest): \
+             {chain_next:?}"
+        );
+        // The chain *selection* is the thing this test pins — whether the geometry fully collapses
+        // onto it afterwards is `align_straight_lanes`'s separate overlap-resolution sweep (its own
+        // "ランク内の並び順は変えない" constraint can leave a selected chain member short of its own
+        // desired coordinate when a neighbour is in the way, exactly as `docs/STATUS.md`'s own
+        // ★未修正 entry on the cascading-push gap describes) and not this rule's own concern.
+    }
+
+    #[test]
     fn overlap_resolution_pushes_the_later_node_without_reordering() {
         // P (chain average 100) and Q (chain average 155) are only 55px apart after their own
         // independent alignment — short of the `half(20) + NODE_SEP(50) + half(20) = 90px`
@@ -4566,8 +4746,9 @@ mod tests {
 
     // --- stage 5: crossing gap, measured by arc length (Linux CI regression, 2026-09-01) ---------
     //
-    // `orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whole` (this
-    // module's own consumer, `render::tests`) failed on Linux only: its font metrics size a node a
+    // `orthogonal_crossing_gaps_cut_the_horizontal_side_of_each_crossing` (this module's own
+    // consumer, `render::tests`, under its pre-round-3-item-5 name at the time) failed on Linux
+    // only: its font metrics size a node a
     // few px differently than macOS's, which was enough to move `amp-chain`'s real `B->C`/`A->D`
     // crossing from mid-segment (macOS) to within `CROSSING_GAP / 2` of a corner (Linux) — and the
     // old `gap_around`, which clamped to the single segment the crossing point was found on, cut a
@@ -4633,7 +4814,7 @@ mod tests {
             &[],
             &edges,
             &points,
-            &std::collections::HashSet::new(),
+            &std::collections::HashMap::new(),
         );
         gaps.get("cut").cloned().unwrap_or_default()
     }
@@ -4730,6 +4911,112 @@ mod tests {
         assert!(
             width < CROSSING_GAP,
             "a polyline shorter than CROSSING_GAP can only ever give back less than it: {width}"
+        );
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // §10-3 item 5: two ordinary (non-perimeter) edges crossing — the horizontal side yields
+    // -------------------------------------------------------------------------------------------
+
+    /// Two genuinely forward edges (`tr > sr` on both, so neither is `reverse`, and both stay
+    /// short enough that neither collides into a `staircase` fallback either — `crossing_gaps`'s
+    // own `M`/`N` comment on why the non-cut helper edge already has to dodge that): a horizontal
+    /// line crossed by a vertical one. §10-3 item 5 ("主辺どうしの交差は水平側が譲る") says the
+    /// **horizontal** side gets the gap, regardless of which one this helper happens to call "cut"
+    /// (its own `edge_id`) — the rule 4 tie-break `crossing_gaps` exercises elsewhere (higher edge
+    /// id when *both* sides are perimeter edges) has no bearing here, since neither side is.
+    #[allow(clippy::type_complexity)]
+    fn main_vs_main_crossing_gaps(
+        horiz_points: Vec<Point>,
+        vert_points: Vec<Point>,
+    ) -> (Vec<(Point, Point)>, Vec<(Point, Point)>) {
+        let nodes = vec![
+            node("H0", -1000.0, 0.0, 4.0, 4.0),
+            node("H1", 1000.0, 0.0, 4.0, 4.0),
+            node("V0", 0.0, -1000.0, 4.0, 4.0),
+            node("V1", 0.0, 1000.0, 4.0, 4.0),
+        ];
+        let edges = [
+            EligibleEdge {
+                id: "horiz",
+                source: "H0",
+                target: "H1",
+                raw: &[],
+                source_rank: Some(0),
+                target_rank: Some(1),
+                source_out_degree: 1,
+                target_in_degree: 1,
+            },
+            EligibleEdge {
+                id: "vert",
+                source: "V0",
+                target: "V1",
+                raw: &[],
+                source_rank: Some(0),
+                target_rank: Some(1),
+                source_out_degree: 1,
+                target_in_degree: 1,
+            },
+        ];
+        let mut points = HashMap::new();
+        points.insert("horiz".to_string(), horiz_points);
+        points.insert("vert".to_string(), vert_points);
+        let gaps = insert_crossing_gaps(
+            Direction::TopToBottom,
+            &nodes,
+            &[],
+            &edges,
+            &points,
+            &std::collections::HashMap::new(),
+        );
+        (
+            gaps.get("horiz").cloned().unwrap_or_default(),
+            gaps.get("vert").cloned().unwrap_or_default(),
+        )
+    }
+
+    #[test]
+    fn two_main_edges_crossing_cut_the_horizontal_one_not_the_vertical_one() {
+        let horiz = vec![Point::new(-50.0, 0.0), Point::new(50.0, 0.0)];
+        let vert = vec![Point::new(0.0, -50.0), Point::new(0.0, 50.0)];
+        let (horiz_gaps, vert_gaps) = main_vs_main_crossing_gaps(horiz, vert);
+        assert_eq!(
+            horiz_gaps.len(),
+            1,
+            "the horizontal edge must carry the gap: {horiz_gaps:?}"
+        );
+        assert!(
+            vert_gaps.is_empty(),
+            "the vertical edge must stay whole: {vert_gaps:?}"
+        );
+        let (g0, g1) = &horiz_gaps[0];
+        assert!(
+            (g0.y - 0.0).abs() < 1e-9 && (g1.y - 0.0).abs() < 1e-9,
+            "the gap must sit on the horizontal edge's own (y=0) line: {horiz_gaps:?}"
+        );
+    }
+
+    #[test]
+    fn two_main_edges_crossing_ignore_which_one_is_named_first() {
+        // The same crossing, but with the *vertical* line handed to the `"horiz"`-named edge (this
+        // helper's own `edges[0]`, `insert_crossing_gaps`'s own `for i in 0..edges.len()` sweep's
+        // `i`) and the horizontal line to `"vert"` (`edges[1]`, `j`) — the exact reverse pairing of
+        // `two_main_edges_crossing_cut_the_horizontal_one_not_the_vertical_one`. If the outcome
+        // there depended on `i`/`j` order rather than each segment's own orientation, swapping which
+        // *name* gets which *shape* here would flip which edge carries the gap; it must not.
+        let vert = vec![Point::new(0.0, -50.0), Point::new(0.0, 50.0)];
+        let horiz = vec![Point::new(-50.0, 0.0), Point::new(50.0, 0.0)];
+        let (horiz_named_gaps, vert_named_gaps) = main_vs_main_crossing_gaps(vert, horiz);
+        assert!(
+            horiz_named_gaps.is_empty(),
+            "the edge named \"horiz\" is drawing the *vertical* line here and must stay whole: \
+             {horiz_named_gaps:?}"
+        );
+        assert_eq!(
+            vert_named_gaps.len(),
+            1,
+            "the edge named \"vert\" is drawing the *horizontal* line here and must carry the \
+             gap: {vert_named_gaps:?}"
         );
     }
 

@@ -1202,11 +1202,12 @@ fn lay_out_spec_pass(
     // applied to `raw` before `route_staircase_with_ports` ever sees it.
     let mut alignment_deltas: HashMap<String, f64> = HashMap::new();
     // §10-3 item 1's own robustness note (`orthogonal::align_straight_lanes`'s own doc on its
-    // `used_out` return): every source id that pass selected a trunk/chain edge for, even one the
-    // later overlap-resolution sweep pushed off that chain's own average — `orthogonal::classify`'s
-    // fan-lane trigger needs this alongside the purely geometric check, or a trunk edge crowded out
-    // of exact alignment reads as having no trunk at all.
-    let mut chain_sources: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // `next` return): every selected trunk/chain edge (source id → target id), even one the later
+    // overlap-resolution sweep pushed off that chain's own average — `orthogonal::classify`'s
+    // fan-lane trigger and `orthogonal::evict`'s centre-port rule both need this alongside the
+    // purely geometric check, or a trunk edge crowded out of exact alignment reads as having no
+    // trunk at all.
+    let mut chain_next: HashMap<String, String> = HashMap::new();
     if spec.routing == Routing::Orthogonal {
         let node_rank: HashMap<String, i32> = nodes
             .iter()
@@ -1221,7 +1222,7 @@ fn lay_out_spec_pass(
             .filter(|d| d.edge.from == d.tail && d.edge.to == d.head)
             .map(|d| (d.tail.clone(), d.head.clone()))
             .collect();
-        (alignment_deltas, chain_sources) =
+        (alignment_deltas, chain_next) =
             orthogonal::align_straight_lanes(spec.direction, &mut nodes, &node_rank, &candidates);
     }
 
@@ -1375,7 +1376,7 @@ fn lay_out_spec_pass(
             &nodes,
             &placed_clusters,
             &eligible,
-            &chain_sources,
+            &chain_next,
         );
         // A `staircase` edge's own local route can coincide with another unrelated detour edge's
         // (`orthogonal::separate_coincident_detours`'s own doc — lost the perimeter lane's shared
@@ -1387,7 +1388,7 @@ fn lay_out_spec_pass(
             &placed_clusters,
             &eligible,
             &mut points,
-            &chain_sources,
+            &chain_next,
         );
         (points, required_size)
     } else {
@@ -1489,6 +1490,45 @@ fn lay_out_spec_pass(
         if is_orthogonal {
             orthogonal_index.insert(edge.id.clone(), placed_edges.len());
         }
+        // §10-3 item 6 ("辺色＝下流クラス色を1段明るく", konoma-orthogonal only): fills the gap the
+        // ordinary cascade above leaves when the source named neither `linkStyle`/`class`/`:::` for
+        // *this edge itself* — priority is "linkStyle 明示 > 自動導出 > テーマ既定", so this only
+        // ever runs when `edge.style` (the edge's own explicit resolution) has no `stroke` of its
+        // own to begin with, and only ever *adds* a stroke/text, never touches `fill`/`stroke_width`
+        // /`dash` (an edge does not have a fill, and a lightened line keeps the same width and dash
+        // pattern its own theme/explicit style already chose). "下流ノード" is `edge.to`'s own
+        // resolved `class`/`style` stroke (`PlacedNode::style`, `SpecNode`'s own cascade in
+        // `spec_of` above) — `by_id`/`nodes` are the very same map and slice `route_flowchart`
+        // routed this edge against, so "downstream" always means the edge's own real target, cluster
+        // -anchored edges included via `by_id` simply having no entry for a cluster id (the `?`
+        // chain answers `None`, leaving the edge exactly as it drew before this rule existed).
+        let style = if is_orthogonal
+            && edge
+                .style
+                .as_ref()
+                .and_then(|s| s.stroke.as_deref())
+                .is_none()
+        {
+            by_id
+                .get(edge.to.as_str())
+                .and_then(|&i| nodes[i].style.as_ref())
+                .and_then(|s| s.stroke.as_deref())
+                .and_then(style::lighten)
+                .map(|lightened| {
+                    let mut s = edge.style.clone().unwrap_or_default();
+                    s.stroke = Some(lightened.clone());
+                    // The label's own colour follows the line's, same as the arrowhead already does
+                    // via `tip_matches_line` — but only when the edge did not already ask for its
+                    // own label colour (`color:` in a `linkStyle`/`class`/`style` declaration).
+                    if s.text.is_none() {
+                        s.text = Some(lightened);
+                    }
+                    s
+                })
+                .or_else(|| edge.style.clone())
+        } else {
+            edge.style.clone()
+        };
         placed_edges.push(PlacedEdge {
             from: edge.from.clone(),
             to: edge.to.clone(),
@@ -1504,7 +1544,7 @@ fn lay_out_spec_pass(
             series: None,
             straight,
             overlay: false,
-            style: edge.style.clone(),
+            style,
             curve: edge.curve,
             // Set together with `straight`, by the same `if`: both are true exactly when
             // `orthogonal::route_flowchart` routed this edge, and false for every other edge this
@@ -1535,7 +1575,7 @@ fn lay_out_spec_pass(
             &eligible,
             &mut orthogonal_points,
             &mut plates,
-            &chain_sources,
+            &chain_next,
         );
         for (id, &idx) in &orthogonal_index {
             if let Some(new_points) = orthogonal_points.get(id) {
@@ -1562,7 +1602,7 @@ fn lay_out_spec_pass(
             &placed_clusters,
             &eligible,
             &orthogonal_points,
-            &chain_sources,
+            &chain_next,
         );
         for (id, &idx) in &orthogonal_index {
             if let Some(g) = gap_map.get(id) {

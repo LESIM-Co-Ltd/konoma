@@ -6273,7 +6273,7 @@ fn avoid_label_plates_pushes_only_the_port_that_actually_crosses_a_plate() {
         &nodes,
         &[],
         &edges,
-        &std::collections::HashSet::new(),
+        &std::collections::HashMap::new(),
     );
     let mut points = routed.points;
     let ab_before = points["ab"].clone();
@@ -6299,7 +6299,7 @@ fn avoid_label_plates_pushes_only_the_port_that_actually_crosses_a_plate() {
         &edges,
         &mut points,
         &mut plates,
-        &std::collections::HashSet::new(),
+        &std::collections::HashMap::new(),
     );
 
     assert_ne!(points["ab"], ab_before, "ab's port must have been pushed");
@@ -6701,28 +6701,32 @@ fn split_at_gaps_ignores_a_gap_that_does_not_land_on_the_polyline() {
     assert_eq!(pieces, vec![pts]);
 }
 
-/// §10-1 item 4's real motivating case, dumped and confirmed before this was written (a second
-/// time, 2026-09-01, after `route_with_ports` stopped routing a collision-fallback forward edge
-/// (`EdgeShape::staircase`) onto the perimeter lane — see that function's own doc for why. Real
-/// pixels of `samples/mermaid.ja.md`'s large flowchart, checked by the coordinator, had caught
-/// ordinary forward edges looping around the whole diagram's outer edge under the previous,
-/// perimeter-routed geometry this test used to pin — see this test's own former doc in git history
-/// for what that geometry looked like):
+/// §10-1 item 4's real motivating case (dumped and confirmed 2026-09-01, after `route_with_ports`
+/// stopped routing a collision-fallback forward edge (`EdgeShape::staircase`) onto the perimeter
+/// lane — see that function's own doc for why), **re-dumped again** once §10-3 item 5 ("主辺どうし
+/// の交差は水平辺側に12pxの隙間") replaced this fixture's old "detour side always spans" tie-break
+/// for a pair of ordinary (non-perimeter) edges with an orientation-based one: neither `A->C`/
+/// `B->D` (the two aligned, 0-bend lanes, §10-3 item 3's own correction) nor `A->D`/`B->C` (both
+/// `fan_lane` shapes riding the same flow-axis faces as their aligned siblings) is a genuine
+/// perimeter edge (`reverse`/`staircase`) here, so every crossing among these four now goes to
+/// whichever *segment* is horizontal, never to "whichever edge is the fancier shape".
 ///
-/// `amp-chain`'s `A->D` and `B->C` are both collision-fallback edges and both route locally now,
-/// which uncoupled them from the perimeter lane's own 8px stagger — without
-/// `orthogonal::separate_coincident_detours`'s own fix (this same day) they would land on the exact
-/// same vertical run; with it, `B->C`'s run is nudged 8px sideways, so the two now merely *cross*
-/// once (at one point) rather than coincide. `A->D` also crosses the *ordinary* `A->C` edge (their
-/// shared source `A` still lets their two different-shaped routes cross once). `insert_crossing_
-/// gaps`'s own rule cuts only the "spanning" (detour) side of a crossing: `A->D` is the detour in
-/// its crossing with the ordinary `A->C`, so `A->D` gets a gap there; `A->D`/`B->C` are *both*
-/// detours in their own crossing, so the tie goes to the higher edge id — `B->C` (declared after
-/// `A->D` in `A & B --> C & D`'s own expansion order) — which gets a gap there instead of `A->D`.
-/// Net: one gap each on `A->D` and `B->C`, none on the two ordinary edges (`A->C`, `B->D`) or the
-/// now-straight-laned `C->E`.
+/// `amp-chain`'s `A->D` and `B->C` are both collision-fallback edges and both route locally, which
+/// uncoupled them from the perimeter lane's own 8px stagger — without
+/// `orthogonal::separate_coincident_detours`'s own fix they would land on the exact same vertical
+/// run; with it, `B->C`'s run is nudged 8px sideways, so the two now merely *cross* once (at one
+/// point) rather than coincide. Three crossings exist in this fixture, each with exactly one
+/// horizontal side (`segment_crossing`'s own contract): `A->C`'s horizontal line crosses `A->D`'s
+/// vertical run and, separately, `B->C`'s vertical run — `A->C` is the horizontal side of *both*,
+/// so it (not `A->D`/`B->C`) is the one cut twice; `A->D`'s own horizontal leg into `D` crosses
+/// `B->C`'s vertical run — `A->D` is the horizontal side there, so it carries the crossing's gap
+/// instead of `B->C`. Net: `A->C` carries two gap requests (close enough together, only 8px apart
+/// on this fixture's geometry, that the second's own start point falls inside the first's already-
+/// omitted stretch — `edges::split_at_gaps`'s own doc on a gap that does not land on a piece —
+/// so it still draws as only 2 pieces, not 3), `A->D` carries one, and `B->C`/`B->D`/`C->E` stay
+/// whole.
 #[test]
-fn orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whole() {
+fn orthogonal_crossing_gaps_cut_the_horizontal_side_of_each_crossing() {
     let src = "flowchart LR\n  A & B --> C & D\n  C --> E";
     let d = laid_out_flow(src, "basis", "konoma-orthogonal");
 
@@ -6740,52 +6744,39 @@ fn orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whol
         edge("C", "E"),
     );
 
-    // §10-3 item 3's own correction (`classify`'s `merge_target_side` doc) changed this fixture's
-    // whole geometry: `A->C`/`B->D` are the two aligned (0-bend) lanes now, and `A->D`/`B->C` are
-    // both `fan_lane`/collision-fallback ("is_flow_flow_bend", `insert_crossing_gaps`'s own doc on
-    // widening `is_detour` to it) shapes riding the same flow-axis faces as their aligned siblings
-    // — which puts `A->D`'s own vertical run, and `B->C`'s own vertical run, both squarely across
-    // `A->C`'s horizontal line (dumped and confirmed by hand, not assumed: `A->C` spans the full
-    // x-range both verticals sit inside). `A->C` is never a detour, so it is never the spanning
-    // side of either crossing — nothing ever cuts an ordinary edge that loses every tie it is in.
-    assert!(ac.gaps.is_empty(), "A->C must stay whole: {:?}", ac.gaps);
+    assert!(bc.gaps.is_empty(), "B->C must stay whole: {:?}", bc.gaps);
     assert!(bd.gaps.is_empty(), "B->D must stay whole: {:?}", bd.gaps);
     assert!(ce.gaps.is_empty(), "C->E crosses nothing: {:?}", ce.gaps);
 
-    // A->D is the spanning side of its one crossing with the ordinary A->C, and carries one gap
-    // for it.
     assert_eq!(
         ad.gaps.len(),
         1,
-        "A->D must carry exactly one gap, from crossing the ordinary A->C: {:?}",
+        "A->D must carry exactly one gap, from being the horizontal side of its crossing with \
+         B->C's vertical run: {:?}",
         ad.gaps
     );
-    // B->C carries *two* gaps now: it crosses the ordinary A->C (its own vertical run sits inside
-    // A->C's horizontal span too, the same as A->D's does) AND it crosses A->D itself — a genuine
-    // second crossing, `A->D`'s own horizontal run into `D` passes directly under `B->C`'s vertical
-    // run — and B->C is the spanning side of that one too (the both-detour tie-break, higher id).
     assert_eq!(
-        bc.gaps.len(),
+        ac.gaps.len(),
         2,
-        "B->C must carry two gaps: one from crossing the ordinary A->C, one from crossing A->D \
-         (the both-detour tie-break): {:?}",
-        bc.gaps
+        "A->C must carry two gap requests: it is the horizontal side of both its crossing with \
+         A->D and its crossing with B->C: {:?}",
+        ac.gaps
     );
 
     // Every gap actually sits on its own edge's line, and removes exactly `CROSSING_GAP` px of
     // *arc length* along it (or clamped shorter only if the line itself is that short, which none
     // here is) — not necessarily `CROSSING_GAP` px of straight-line (Euclidean) distance between
-    // its own two endpoints. Measuring by Euclidean distance is what this test used to do, and is
-    // exactly what let a real regression through: `orthogonal::insert_crossing_gaps`'s own
-    // `gap_around` clamped the omitted stretch to the single segment its crossing point was found
-    // on, so a crossing landing close enough to a corner (never on macOS's own font metrics for
-    // this diagram, reliably on Linux's, whose metrics size `B`/`C` a few px differently — CI
+    // its own two endpoints. Measuring by Euclidean distance is what this test used to do at one
+    // point, and is exactly what let a real regression through: `orthogonal::insert_crossing_gaps`'s
+    // own `gap_around` clamped the omitted stretch to the single segment its crossing point was
+    // found on, so a crossing landing close enough to a corner (never on macOS's own font metrics
+    // for this diagram, reliably on Linux's, whose metrics size `B`/`C` a few px differently — CI
     // caught it, 2026-09-01) got a gap only 6px wide instead of 12. The fix measures by arc length
     // along the whole polyline instead, letting the omitted stretch continue past a corner onto
     // the next segment when it has to — which is exactly the case a same-segment / Euclidean check
     // cannot tell apart from an under-sized gap, since a corner-straddling gap's own two endpoints
     // are, correctly, less than `CROSSING_GAP` px of *straight-line* distance apart.
-    for e in [ad, bc] {
+    for e in [ad, ac] {
         for (g0, g1) in &e.gaps {
             let arc = edges::arc_length_between(&e.points, g0, g1).unwrap_or_else(|| {
                 panic!(
@@ -6804,26 +6795,24 @@ fn orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whol
     }
 }
 
-/// The SVG itself draws the spanning edge as more than one `<path>` element (one per piece
-/// [`edges::split_at_gaps`] returns) and the crossed edge as exactly one — `svg::emit_edge`'s own
-/// fast path for an edge with no gaps.
+/// The SVG itself draws the horizontal side of each crossing as more than one `<path>` element
+/// (one per piece [`edges::split_at_gaps`] returns) and the vertical side as exactly one —
+/// `svg::emit_edge`'s own fast path for an edge with no gaps.
 #[test]
-fn orthogonal_crossing_gap_splits_the_svg_path_of_the_spanning_edge_only() {
+fn orthogonal_crossing_gap_splits_the_svg_path_of_the_horizontal_side_only() {
     let src = "flowchart LR\n  A & B --> C & D\n  C --> E";
     let svg =
         crate::preview::markdown::mermaid_to_svg_flow(src, "dark", "basis", "konoma-orthogonal")
             .expect("must render");
-    // `A->C` (never cut) draws a single path whose `d` starts at its own source port — used here
-    // as a proxy for "this edge's own path element count", since the golden-masking convention
-    // this crate otherwise uses (`mask_numbers`) is not available outside the snapshot harness.
     let path_count = svg.matches("<path").count();
-    // 3 uncut edges (A->C, B->D, C->E) draw 1 path each; `A->D` — see
-    // `orthogonal_crossing_gaps_cut_the_spanning_edge_and_leave_the_crossed_one_whole`'s own doc
-    // for exactly which crossing cuts each — carries one gap (2 pieces) and `B->C` carries two
-    // (3 pieces) — dumped and confirmed by hand: 3 + 2 + 3 = 8.
+    // `B->C`, `B->D`, `C->E` draw 1 path each (never cut); `A->D` — see
+    // `orthogonal_crossing_gaps_cut_the_horizontal_side_of_each_crossing`'s own doc — carries one
+    // gap (2 pieces); `A->C` carries two gap *requests* but the second's own start point falls
+    // inside the first's already-omitted stretch, so it still draws as only 2 pieces, not 3 —
+    // dumped and confirmed by hand: 3 + 2 + 2 = 7.
     assert_eq!(
-        path_count, 8,
-        "expected 3 uncut edges (1 path each) + A->D (2 pieces) + B->C (3 pieces) = 8: \
+        path_count, 7,
+        "expected 3 uncut edges (1 path each) + A->D (2 pieces) + A->C (2 pieces) = 7: \
          got {path_count}\n{svg}"
     );
 }
@@ -7534,6 +7523,124 @@ fn orthogonal_classdef_paints_a_chamfered_decision_node() {
     );
 }
 
+// -------------------------------------------------------------------------------------------
+// §10-3 item 6: an edge with no colour of its own takes a lightened version of the downstream
+// (target) node's own resolved class colour, under `konoma-orthogonal` only
+// -------------------------------------------------------------------------------------------
+
+/// The plain, no-conflict case: `B` carries `:::hot` (`stroke:#1f6feb`, one of the three colours
+/// `style::lighten`'s own reference set pins), `A->B` names neither `class` nor `linkStyle` of its
+/// own, so it takes `style::lighten("#1f6feb")` — the exact value `style::tests::
+/// lighten_approximates_the_three_reference_conversions_within_its_documented_error` already pins
+/// for that input, reused here rather than re-derived so the two tests can never silently drift
+/// apart about what `lighten` actually returns.
+#[test]
+fn orthogonal_edge_color_lightens_the_downstream_class_color() {
+    let src = "flowchart LR\n  classDef hot stroke:#1f6feb\n  A --> B:::hot";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let ab = d
+        .edges
+        .iter()
+        .find(|e| e.from == "A" && e.to == "B")
+        .expect("A->B must exist");
+    let style = ab
+        .style
+        .as_ref()
+        .expect("A->B must carry a derived style once B resolves a class stroke");
+    assert_eq!(
+        style.stroke.as_deref(),
+        Some("#508eef"),
+        "must match style::lighten(\"#1f6feb\") exactly"
+    );
+    // The label colour follows the line's own, same as the arrowhead already does via
+    // `tip_matches_line` — `emit_edge`'s own doc on that field, extended to the label by this
+    // rule.
+    assert_eq!(style.text.as_deref(), Some("#508eef"));
+
+    let svg = render_flow(src, "dark", "basis", "konoma-orthogonal").expect("must render");
+    assert!(
+        svg.contains("stroke=\"#508eef\""),
+        "the edge's own <path> must draw in the lightened colour:\n{svg}"
+    );
+    assert!(
+        svg.contains("fill=\"#508eef\""),
+        "the arrowhead (tip_matches_line) must draw in the same lightened colour:\n{svg}"
+    );
+}
+
+/// Same rule, with a labelled edge: the label's own `<text>` must also carry the lightened colour
+/// (`svg::emit_edge`'s `label_color`, wired from `edge.style.text` — previously never read for an
+/// edge label at all, `theme.edge_label_text` hardcoded regardless of any `class`/`:::`/
+/// `linkStyle` `color:` the source declared).
+#[test]
+fn orthogonal_edge_color_reaches_the_label_text_too() {
+    let src = "flowchart LR\n  classDef hot stroke:#1f6feb\n  A -->|hi| B:::hot";
+    let svg = render_flow(src, "dark", "basis", "konoma-orthogonal").expect("must render");
+    assert!(
+        svg.contains("fill=\"#508eef\">") && svg.contains("hi"),
+        "the edge label's own <text> must draw in the lightened colour:\n{svg}"
+    );
+}
+
+/// An edge's own explicit paint — `linkStyle`, `class`, `:::`, or `style` naming *the edge itself*
+/// — is the most specific instruction the source gave, and must win over the automatically
+/// derived colour, exactly the priority order `docs/FEATURE-MERMAID-RENDERER.md` §10-3 item 6
+/// states ("linkStyle 明示 > 自動導出 > テーマ既定"): a lightened downstream colour is a fallback
+/// for an edge that asked for nothing, not an override for one that did.
+#[test]
+fn orthogonal_edge_color_prefers_an_explicit_link_style_over_the_derived_one() {
+    let src = "flowchart LR\n  classDef hot stroke:#1f6feb\n  A --> B:::hot\n  linkStyle 0 stroke:#00ff00";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let ab = d
+        .edges
+        .iter()
+        .find(|e| e.from == "A" && e.to == "B")
+        .expect("A->B must exist");
+    assert_eq!(
+        ab.style.as_ref().and_then(|s| s.stroke.as_deref()),
+        Some("#00ff00"),
+        "the edge's own linkStyle must win over B's lightened class colour"
+    );
+}
+
+/// A downstream node with no resolved class colour at all leaves the edge exactly as it drew
+/// before this rule existed: `[ui] mermaid_routing = "konoma-orthogonal"`'s own theme default
+/// (`docs/FEATURE-MERMAID-RENDERER.md` §10-3 item 6's own "クラス無しの下流は従来のテーマ辺色").
+#[test]
+fn orthogonal_edge_color_leaves_an_unclassed_downstream_node_alone() {
+    let src = "flowchart LR\n  A --> B";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let ab = d
+        .edges
+        .iter()
+        .find(|e| e.from == "A" && e.to == "B")
+        .expect("A->B must exist");
+    assert!(
+        ab.style.is_none(),
+        "an edge whose downstream node has no class must draw with no override at all: {:?}",
+        ab.style
+    );
+}
+
+/// §10-3 item 6 is `konoma-orthogonal` only ("konoma-orthogonal のみ", the rule's own opening
+/// words) — the default `"splines"` routing must draw byte-for-byte what it always drew, the same
+/// "既定は1バイトも変えない" invariant every other round-3 rule keeps.
+#[test]
+fn splines_routing_never_derives_an_edge_color_from_the_downstream_node() {
+    let src = "flowchart LR\n  classDef hot stroke:#1f6feb\n  A --> B:::hot";
+    let d = laid_out_flow(src, "basis", "splines");
+    let ab = d
+        .edges
+        .iter()
+        .find(|e| e.from == "A" && e.to == "B")
+        .expect("A->B must exist");
+    assert!(
+        ab.style.is_none(),
+        "splines routing must never derive an edge colour from the target node: {:?}",
+        ab.style
+    );
+}
+
 // Finding 3's app-wiring pin lives in `e2e_tests.rs`
 // (`e2e_ui_mermaid_routing_changes_rendered_pixels_standalone_mmd_fullscreen` and
 // `..._mermaid_fence_fullscreen`) — the other two ways a flowchart's pixels reach the screen
@@ -7894,5 +8001,23 @@ fn dump_mermaid_ja_corpus_under_orthogonal() {
             }
             None => eprintln!("fence {n}: render failed"),
         }
+    }
+}
+
+#[test]
+fn zzdebug_fence3_structural_table() {
+    let src = "flowchart LR\n  F[ファイル] --> C{設定のルール}\n  C -->|テキスト| T[窓読み]\n  C -->|コード| S[構文強調]\n  C -->|Markdown| MD[ブロックモデル]\n  C -->|CSV / TSV| TB[表]\n  C -->|画像| IM[デコード]\n  C -->|PDF| PD[ページ描画]\n  C -->|SVG| SV[usvg]\n  C -->|動画| VD[キーフレーム]\n  C -->|書庫| AR[一覧]\n  C -->|なし| NA[プレビュー不可]\n  MD --> MM[mermaid]\n  MD --> MA[数式]\n  MM --> RS[ラスタライズ]\n  MA --> RS\n  SV --> RS\n  PD --> RS\n  IM --> FIT[セルに合わせる]\n  RS --> FIT\n  VD --> FIT\n  FIT --> K{端末}\n  K -->|kitty| KT[圧縮転送]\n  K -->|sixel / iTerm2| RI[画像プロトコル]\n  K -->|それ以外| HB[ハーフブロック]\n  classDef pix fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  classDef txt fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  class IM,PD,SV,VD,MM,MA,RS,FIT,KT,RI,HB pix\n  class T,S,MD,TB,AR txt\n  style NA fill:#2d2418,stroke:#d4a017,color:#c9d1d9\n";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    for e in &d.edges {
+        let bends = e.points.len().saturating_sub(2);
+        eprintln!(
+            "{:>3} -> {:<3} bends={} start={:?} end={:?} color={:?}",
+            e.from,
+            e.to,
+            bends,
+            e.points.first(),
+            e.points.last(),
+            e.style.as_ref().and_then(|s| s.stroke.clone())
+        );
     }
 }

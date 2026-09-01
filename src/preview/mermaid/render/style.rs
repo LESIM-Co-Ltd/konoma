@@ -141,6 +141,114 @@ fn paint(value: &str) -> Option<String> {
     Some(value.to_string())
 }
 
+/// §10-3 item 6 ("辺色＝下流クラス色を1段明るく", `konoma-orthogonal` only — `route_flowchart`'s own
+/// caller in `mod.rs` is the only place this is ever called): scales a colour's HSL lightness by
+/// [`LIGHTEN_FACTOR`], leaving hue and saturation untouched, clamped so it never reaches pure
+/// white.
+///
+/// # Why HSL lightness, and why this factor
+///
+/// The round-3 reference (`docs/mermaid-theme/handoff/round3-Konoma-Flowchart-Routing.dc.html`'s
+/// `3a`) hand-picked three conversions — a class colour's `stroke:` to the edge colour flowing out
+/// of it — that read as "the same colour, one step brighter": `#1f6feb`→`#58a6ff`,
+/// `#2da44e`→`#3fb950`, `#d4a017`→`#d29922`. These are not a single closed-form transform (they
+/// read like curated design-system tokens — GitHub Primer's own `fg`/`emphasis` pair for each hue
+/// — not an algorithm anyone applied uniformly: their hue shifts by −4.5°/−8.3°/−2.9°, saturation
+/// by +16.4/−7.7/−8.3 points, nothing near constant), so no formula reproduces all three exactly.
+/// A single-parameter fit — multiply HSL lightness alone by a constant factor, least-squares fit
+/// against the three references' own L values (52.2→67.3, 41.0→48.6, 46.1→47.8) — is the simplest
+/// transform that stays inside "empirically chosen, error documented" rather than hand-coding a
+/// 3-entry lookup table that would silently do nothing for a fourth colour. `LIGHTEN_FACTOR = 1.2`
+/// (least-squares optimum ≈1.17, rounded to a plain number) gives L 62.6/49.2/55.3 against the
+/// targets above — **errors of +4.7/+0.6/−7.5 percentage points of lightness** (blue undershoots,
+/// green nearly exact, amber overshoots the least-lightened reference the most). Hue and
+/// saturation are left untouched rather than also fit, since their reference deltas do not even
+/// agree in sign across the three samples.
+///
+/// `None` for a colour [`svgtypes::Color`] cannot parse (the same permissive "leave the theme in
+/// place" stance [`paint`] takes) or for the literal keyword `"none"` (has no hue to lighten).
+pub fn lighten(color: &str) -> Option<String> {
+    if color.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    let c = svgtypes::Color::from_str(color).ok()?;
+    let (h, s, l) = rgb_to_hsl(c.red, c.green, c.blue);
+    let l = (l * LIGHTEN_FACTOR).min(LIGHTEN_MAX_LIGHTNESS);
+    let (r, g, b) = hsl_to_rgb(h, s, l);
+    Some(format!("#{r:02x}{g:02x}{b:02x}"))
+}
+
+/// See [`lighten`]'s own doc for how this was fit.
+const LIGHTEN_FACTOR: f64 = 1.2;
+/// Never lighten all the way to white, however low the source lightness — a stroke has to stay a
+/// stroke.
+const LIGHTEN_MAX_LIGHTNESS: f64 = 92.0;
+
+/// `(hue in [0, 360), saturation in [0, 100], lightness in [0, 100])` — the standard CSS/SVG HSL
+/// convention, converted from 8-bit sRGB. A grey (`max == min`) has no hue or saturation at all;
+/// this returns `(0.0, 0.0, lightness)` for one rather than an undefined hue, the conventional
+/// choice `hsl_to_rgb`'s own "zero saturation ignores hue" branch already relies on.
+fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f64, f64, f64) {
+    let (r, g, b) = (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d < 1e-9 {
+        return (0.0, 0.0, l * 100.0);
+    }
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = if (max - r).abs() < 1e-9 {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if (max - g).abs() < 1e-9 {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    ((h * 60.0).rem_euclid(360.0), s * 100.0, l * 100.0)
+}
+
+/// The inverse of [`rgb_to_hsl`], rounding each 8-bit channel to the nearest integer.
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    let (h, s, l) = (
+        h / 360.0,
+        (s / 100.0).clamp(0.0, 1.0),
+        (l / 100.0).clamp(0.0, 1.0),
+    );
+    if s < 1e-9 {
+        let v = (l * 255.0).round() as u8;
+        return (v, v, v);
+    }
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+    let hue_to_rgb = |t: f64| -> f64 {
+        let t = t.rem_euclid(1.0);
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 1.0 / 2.0 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
+    };
+    let to_u8 = |v: f64| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    (
+        to_u8(hue_to_rgb(h + 1.0 / 3.0)),
+        to_u8(hue_to_rgb(h)),
+        to_u8(hue_to_rgb(h - 1.0 / 3.0)),
+    )
+}
+
 /// `stroke-width: 4px` or `stroke-width: 4` — mermaid accepts either, and every stroke width this
 /// crate emits elsewhere is already a bare number, so the unit is stripped here rather than
 /// carried through to `svg.rs`.
@@ -266,6 +374,99 @@ pub fn cascade_edge<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`rgb_to_hsl`] round-trips through [`hsl_to_rgb`] back to the same 8-bit channels for every
+    /// hue octant and every corner of the RGB cube (including the achromatic ones, where hue is
+    /// undefined and `rgb_to_hsl` picks `0.0`) — the conversion pair [`lighten`] depends on, pinned
+    /// on its own before that function's own approximate-by-construction reference test below.
+    #[test]
+    fn hsl_round_trips_every_corner_and_octant() {
+        let cases: &[(u8, u8, u8)] = &[
+            (0, 0, 0),
+            (255, 255, 255),
+            (128, 128, 128),
+            (255, 0, 0),
+            (0, 255, 0),
+            (0, 0, 255),
+            (255, 255, 0),
+            (0, 255, 255),
+            (255, 0, 255),
+            (31, 111, 235), // #1f6feb, one of `lighten`'s own reference colours
+            (212, 160, 23), // #d4a017, another
+        ];
+        for &(r, g, b) in cases {
+            let (h, s, l) = rgb_to_hsl(r, g, b);
+            let (r2, g2, b2) = hsl_to_rgb(h, s, l);
+            assert_eq!(
+                (r, g, b),
+                (r2, g2, b2),
+                "hsl({h},{s},{l}) must round-trip back to rgb({r},{g},{b})"
+            );
+        }
+    }
+
+    #[test]
+    fn lighten_leaves_none_and_an_unparsable_colour_alone() {
+        assert_eq!(lighten("none"), None, "\"none\" has no hue to lighten");
+        assert_eq!(
+            lighten("NONE"),
+            None,
+            "the keyword check is case-insensitive"
+        );
+        assert_eq!(lighten("notacolor"), None);
+    }
+
+    #[test]
+    fn lighten_never_reaches_pure_white() {
+        // Already very light, so a naive `L * 1.2` would overshoot past 100.
+        let lightened = lighten("#f5f5f5").expect("a light grey still has a hue-adjacent value");
+        let (_, _, l) = rgb_to_hsl_hex(&lightened);
+        // 8-bit RGB quantisation (`hsl_to_rgb`'s own `.round()`) can round the clamped L back up by
+        // a fraction of a percentage point once re-measured through `rgb_to_hsl` — 0.5 is generous
+        // slack for that, not a loosened clamp.
+        assert!(
+            l <= LIGHTEN_MAX_LIGHTNESS + 0.5,
+            "L={l} must stay close to the {LIGHTEN_MAX_LIGHTNESS} clamp"
+        );
+    }
+
+    /// [`lighten`]'s own doc: an empirically fit single-parameter transform, not an exact
+    /// reproduction of Design's 3 hand-picked reference conversions. Pins the actual output (not
+    /// the reference target) so a future change to `LIGHTEN_FACTOR`/`LIGHTEN_MAX_LIGHTNESS` has to
+    /// touch this test deliberately, and separately asserts the *documented* error against each
+    /// reference stays within the bound that doc states (a regression that silently changed the
+    /// fit — not just a deliberate retune — would show up as a widening gap here).
+    #[test]
+    fn lighten_approximates_the_three_reference_conversions_within_its_documented_error() {
+        let reference = [
+            ("#1f6feb", "#58a6ff"),
+            ("#2da44e", "#3fb950"),
+            ("#d4a017", "#d29922"),
+        ];
+        for (source, target) in reference {
+            let got = lighten(source).unwrap_or_else(|| panic!("{source} must parse"));
+            let (_, _, l_got) = rgb_to_hsl_hex(&got);
+            let (_, _, l_target) = rgb_to_hsl_hex(target);
+            let error = (l_got - l_target).abs();
+            assert!(
+                error <= 8.0,
+                "{source}->{got} (target {target}): lightness error {error} exceeds the \
+                 documented ~7.5pt worst case"
+            );
+        }
+        // Pin the exact output too, so a silent change in the fit is caught even when it happens
+        // to stay within the 8pt tolerance above.
+        assert_eq!(lighten("#1f6feb").as_deref(), Some("#508eef"));
+        assert_eq!(lighten("#2da44e").as_deref(), Some("#36c55e"));
+        assert_eq!(lighten("#d4a017").as_deref(), Some("#e9b631"));
+    }
+
+    /// Test-only helper: hex string straight to HSL, for asserting against `lighten`'s own output
+    /// without re-deriving the RGB parse this module already does.
+    fn rgb_to_hsl_hex(hex: &str) -> (f64, f64, f64) {
+        let c = svgtypes::Color::from_str(hex).unwrap_or_else(|_| panic!("{hex} must parse"));
+        rgb_to_hsl(c.red, c.green, c.blue)
+    }
 
     #[test]
     fn an_unknown_color_is_dropped_not_substituted_with_black() {

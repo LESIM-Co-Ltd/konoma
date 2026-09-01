@@ -235,13 +235,17 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
                     theme.background_ref
                 ));
             }
-            emit_text(
-                &mut out,
-                &l.label,
-                l.center.x,
-                l.center.y,
-                theme.edge_label_text,
-            );
+            // `class`/`:::`/`linkStyle`'s own `color:` (or, under `konoma-orthogonal`, §10-3 item
+            // 6's derived colour — `mod.rs`'s own doc on filling `style.text` from the downstream
+            // node's lightened stroke) wins over the theme default, the same "most specific
+            // instruction wins" rule `emit_node`/`emit_edge`'s own line colour already follow — this
+            // was the one place in the cascade `edge.style` reached every field but this one.
+            let label_color = e
+                .style
+                .as_ref()
+                .and_then(|s| s.text.as_deref())
+                .unwrap_or(theme.edge_label_text);
+            emit_text(&mut out, &l.label, l.center.x, l.center.y, label_color);
         }
         // A cardinality gets **no patch behind it**: it is placed clear of its own line rather
         // than on it, so the only thing a patch could hide is another part of the drawing.
