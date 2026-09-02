@@ -155,6 +155,11 @@ pub const PORT_SPACING: f64 = 16.0;
 /// included — see [`Eviction::required_size`]) — §10-1 item 1: "ポートは角から8px以上".
 pub const PORT_CLEARANCE: f64 = 8.0;
 
+/// [`classify`]'s own "多本数ファンアウト" threshold: the most branches 1b's basic shape (one
+/// straight trunk plus one on each of the two cross-axis faces) can seat one-per-face before the
+/// retreat rule has to take over — `classify`'s own `fan_eligible` doc has the full derivation.
+const FAN_ELIGIBLE_MIN_BRANCHES: usize = 3;
+
 /// Which flat face of a node's bounding box a line leaves or enters through.
 ///
 /// Always a *physical* direction (`Top` is always the lesser-y side), independent of
@@ -648,7 +653,6 @@ fn classify(
     source_out_degree: usize,
     target_in_degree: usize,
     nodes: &[PlacedNode],
-    flow_aligned_sources: &std::collections::HashSet<String>,
 ) -> EdgeShape {
     let is_reverse = matches!((source_rank, target_rank), (Some(sr), Some(tr)) if tr <= sr);
     if is_reverse {
@@ -744,18 +748,16 @@ fn classify(
             flow(direction, &source.center) - flow(direction, &target.center),
         ),
     );
-    // §10-3 item 1 ("多本数ファンアウトの流れ方向ポート"): a branching source that already has a
-    // flow-axis-aligned sibling (`aligned`, riding this same physical face — `flow_aligned_sources`
-    // is built once, before any edge is classified, from exactly that check) opens its *other*
-    // out-edges on the same face too, instead of the perpendicular cross-face branch shape —
-    // "直進辺を挟んで…同じレーンを共有" (§10-1 item 2, already-shipped prose) generalised: once a
-    // face is already carrying the node's own straight lane, a sibling branch piggybacks it rather
-    // than opening a second, perpendicular face. `docs/mermaid-theme/handoff/round3-…dc.html`'s
-    // `3a` (`設定のルール`'s 10-way fanout, `ブロックモデル`'s 2-way fanout) and `2b` (`ジョブ実行
-    // 系`'s 2-way fanout, whose aligned sibling rides a *cross*-axis lane instead — §10-1 item 2's
-    // "その直交方向にも" — correctly keeps the old cross-face branch) together pin this exact
-    // trigger: it is "does the source already have a flow-face lane", never a raw fan-out count.
-    let fan_eligible = branching && flow_aligned_sources.contains(source.id.as_str());
+    // §10-3 item 1 ("多本数ファンアウトの流れ方向ポート"), reimplemented on a principled numeric
+    // threshold rather than the earlier "does the source already have a flow-axis-aligned sibling"
+    // heuristic (`docs/STATUS.md`'s own ★未修正 entry has the full post-mortem — that heuristic was
+    // reverse-engineered from too small a reference set and gets `docs/mermaid-theme/handoff/
+    // zz-design-sources.md`'s own `2a`, a plain 3-way branch with no aligned member at all, wrong).
+    // 1b's own basic shape — one straight trunk plus one branch on *each* of the two cross-axis
+    // faces — seats at most [`FAN_ELIGIBLE_MIN_BRANCHES`] branches before the retreat rule (§10-1
+    // item 1's own "退避則") has to pack every one of them onto the flow-axis face instead,
+    // `PORT_SPACING` apart.
+    let fan_eligible = branching && source_out_degree > FAN_ELIGIBLE_MIN_BRANCHES;
     let fan_shape = fan_eligible.then_some(EdgeShape {
         reverse: false,
         aligned: false,
@@ -1259,6 +1261,267 @@ fn rank_lane_gap_bends(
     out
 }
 
+/// §10-3 item 10's own trailing sentence ("ホップ x の入れ子", `docs/FEATURE-MERMAID-RENDERER.md`) —
+/// every sibling edge that merges into the same target through a [`rank_lane_gap_bends`] hop
+/// (`EdgeShape::rank_lane_bend`), or an ordinary adjacent-rank merge whose bend is [`bridge`]'s own
+/// plain midpoint, is classified independently, against the diagram's real node boxes alone
+/// ([`classify`]'s own doc). Nothing in that per-edge search knows a *sibling* is converging on the
+/// same target at all, so two siblings' independently-computed hops can land close enough — or
+/// identical — to draw one sibling's vertical leg through another's horizontal one, or two verticals
+/// directly on top of each other (`docs/STATUS.md`'s own ★未修正 entry has the two real diagrams this
+/// was found on).
+///
+/// This pass states the fix as three requirements, held once for the whole group, never tuned
+/// against one diagram's specific numbers:
+///
+/// 1. no two siblings' routes may cross or coincide;
+/// 2. where a nested `x` is needed at all, siblings sit at least [`PORT_CLEARANCE`] (8px) apart;
+/// 3. a sibling is never pushed further from the target than avoiding a crossing requires.
+///
+/// The assignment: order the group **least-slack-first** — the sibling with the smallest
+/// [`Candidate::max_reach`] (the least room it has to be pushed at all, since pushing it past its
+/// own source's facing wall would draw its bend growing out of the wrong side of the node) is placed
+/// first, keeping its own independently-computed hop unchanged; each next-least-slack sibling then
+/// takes its own hop unless that would cross an already-placed sibling, in which case it steps
+/// outward by [`PORT_CLEARANCE`] (repeated until clear, capped at both [`RANK_LANE_MAX_CANDIDATES`]
+/// steps and its own `max_reach` — a defensive bound, not a promise every pathological diagram
+/// resolves cleanly, the same "bounded, not a fixpoint search" trade-off [`clear_local_route`]'s doc
+/// already accepts). Least-slack-first is a plain scheduling heuristic (the tightest-constrained
+/// candidate gets first claim on the scarce nearby positions) — not tuned to, and not validated
+/// against, any one reference diagram's specific pixel values; whether it happens to reproduce a
+/// given hand-drawn reference is reported separately, never encoded here as a target.
+///
+/// Grouped purely by target id, restricted to genuine merge siblings (`is_merge_hop_candidate`'s own
+/// `!branching`-mirroring guard) — a branching source's own edge into a shared target is a different
+/// shape family this pass does not touch (`orthogonal_merge_sibling_hops_never_cross_or_coincide_
+/// across_corpus`'s own doc explains why `subgraph-bypass`'s own `X -> Y` is out of scope here).
+fn nest_merge_target_hops(
+    direction: Direction,
+    edges: &[EligibleEdge],
+    by_id: &HashMap<&str, &PlacedNode>,
+    shapes: &mut [Option<EdgeShape>],
+    eviction: &Eviction,
+) {
+    // A genuine merge's own two faces are always Flow-axis on both ends (§10-3 item 3's own
+    // correction, `classify`'s doc) — the one shape family this pass's "hop" concept applies to at
+    // all. Two kinds reach here: [`EdgeShape::rank_lane_bend`] (a rank-skipping merge, already
+    // routed through a column-gap hop `classify` found) *and* an ordinary adjacent-rank merge with
+    // no `rank_lane_bend` at all, whose bend is instead [`bridge`]'s own plain midpoint, computed
+    // fresh at route time from nothing but the two ports — the `MA -> RS` shape this pass's own doc
+    // explains (`samples/mermaid.ja.md`'s "大きさ" flowchart): its bend can still land inside a
+    // rank-skipping sibling's own H1 corridor, a crossing `classify`'s per-edge collision test can
+    // never see (it only ever checks a route against *node* boxes, never a sibling edge's own
+    // route). Both kinds are included here — `!branching` mirrors `classify`'s own guard for which
+    // shapes this whole mechanism is for — and both end up holding their nested `x` in the same
+    // `rank_lane_bend` field: [`route_with_ports`]'s own `Some(bend)` branch already draws exactly
+    // this shape regardless of which path put a value there, so giving an ordinary merge a `Some`
+    // for the first time (only ever done here, after eviction, `aligned` shapes excluded on
+    // purpose) does not need a second drawing path.
+    let is_merge_hop_candidate = |i: usize| -> bool {
+        edges[i].source_out_degree <= 1
+            && edges[i].target_in_degree > 1
+            && shapes[i].as_ref().is_some_and(|s| {
+                !s.aligned
+                    && !s.reverse
+                    && !s.staircase
+                    && !s.fan_lane
+                    && s.source_axis == Axis::Flow
+                    && s.target_axis == Axis::Flow
+            })
+    };
+    let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, edge) in edges.iter().enumerate() {
+        if is_merge_hop_candidate(i) {
+            groups.entry(edge.target).or_default().push(i);
+        }
+    }
+
+    struct Candidate {
+        idx: usize,
+        orig_dist: f64,
+        /// How far outward this candidate's own source is allowed to reach at all — the distance
+        /// from the target's entry boundary to the source's own facing wall (`rank_lane_gap_bends`'s
+        /// own "extended" `max_dist`, reused unmodified: every candidate here is already `!branching`
+        /// by [`is_merge_hop_candidate`]'s own guard, so the "busy fanout" concern that halves it for
+        /// a branching source never applies). Doubles as both the placement order (nearer-reach
+        /// siblings claim their own small gap first, the same "nearest first" `rank_lane_gap_bends`
+        /// itself already tries candidates in) and a hard clamp on how far the crossing-avoidance
+        /// loop below may push this candidate's own hop — pushing an adjacent-rank sibling's hop
+        /// past its own source's facing wall reads as the bend growing out of the *wrong* side of
+        /// the node (found on `MA -> RS`, this function's own doc: an earlier, unclamped version of
+        /// this loop pushed `数式`'s own hop back into the gap `ページ描画`'s own H1 leg already
+        /// filled, past `数式`'s own source wall, because sorting purely by `orig_dist` processed the
+        /// much-longer-reaching `ページ描画`/`usvg` candidates first and left `数式` — whose own
+        /// reach is short — to find there was nowhere left inside its own small gap).
+        max_reach: f64,
+        source_port: Point,
+        target_port: Point,
+        src_y: f64,
+        tgt_y: f64,
+    }
+
+    for idxs in groups.into_values() {
+        if idxs.len() < 2 {
+            continue;
+        }
+        let Some(target_side) = shapes[idxs[0]].as_ref().map(|s| s.target_side) else {
+            continue;
+        };
+        let Some(&target) = by_id.get(edges[idxs[0]].target) else {
+            continue;
+        };
+        let sign = outward_sign(target_side);
+        let entry_boundary =
+            flow(direction, &target.center) + sign * flow_extent(direction, target);
+        let dist = |p: f64| sign * (p - entry_boundary);
+
+        let mut candidates: Vec<Candidate> = idxs
+            .iter()
+            .filter_map(|&i| {
+                let shape = shapes[i].as_ref()?;
+                let &source = by_id.get(edges[i].source)?;
+                let src_y = eviction
+                    .source_coord
+                    .get(edges[i].id)
+                    .copied()
+                    .unwrap_or_else(|| face_center_coord(source, shape.source_side));
+                let tgt_y = eviction
+                    .target_coord
+                    .get(edges[i].id)
+                    .copied()
+                    .unwrap_or_else(|| face_center_coord(target, target_side));
+                let source_port = port_at(source, shape.source_side, src_y, PORT_INSET);
+                let target_port = port_at(target, target_side, tgt_y, PORT_INSET);
+                // The bend this edge would draw *without* this pass — its own `rank_lane_bend` when
+                // `classify` already found one, otherwise exactly [`bridge`]'s own plain midpoint
+                // (built from the very same ports [`route_with_ports`] itself constructs, so a group
+                // with no crossing at all reproduces the pre-existing route byte for byte).
+                let bend = shape.rank_lane_bend.unwrap_or_else(|| {
+                    (flow(direction, &source_port) + flow(direction, &target_port)) / 2.0
+                });
+                let source_facing =
+                    flow(direction, &source.center) - sign * flow_extent(direction, source);
+                Some(Candidate {
+                    idx: i,
+                    orig_dist: dist(bend),
+                    max_reach: dist(source_facing),
+                    source_port,
+                    target_port,
+                    src_y,
+                    tgt_y,
+                })
+            })
+            .collect();
+        if candidates.len() < 2 {
+            continue;
+        }
+        candidates.sort_by(|a, b| {
+            a.max_reach
+                .partial_cmp(&b.max_reach)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Every already-placed sibling's own *full* polyline (source port → hop → hop → target
+        // port, [`bend_at`]'s own four points) — a candidate's own horizontal source-leg can cross
+        // a sibling's vertical hop leg just as easily as the reverse (`MA -> RS`, this function's
+        // own doc: `MA`'s vertical crosses `PD`'s horizontal source-leg, not the other way round),
+        // so every one of a sibling's three segments has to be checked, not only the one nearest the
+        // target this module's own earlier, reverted attempt at this checked alone.
+        let mut placed: Vec<[Point; 4]> = Vec::with_capacity(candidates.len());
+        let mut new_hops: Vec<(usize, f64)> = Vec::with_capacity(candidates.len());
+
+        for c in &candidates {
+            let mut d = c.orig_dist.max(0.0);
+            let build = |d: f64| -> [Point; 4] {
+                let hop = entry_boundary + sign * d;
+                [
+                    c.source_port.clone(),
+                    make(direction, hop, c.src_y),
+                    make(direction, hop, c.tgt_y),
+                    c.target_port.clone(),
+                ]
+            };
+            let mut route = build(d);
+            let mut guard = 0;
+            // Bounded on two independent fronts: `RANK_LANE_MAX_CANDIDATES` steps (this module's
+            // own "bounded, not a fixpoint search" shape, `clear_local_route`'s doc), *and* never
+            // past this candidate's own `max_reach` (`Candidate::max_reach`'s own doc on why —
+            // pushing past it would grow the bend out of the source's own far side). Hitting the
+            // reach ceiling with a crossing unresolved leaves the last, closest-to-clear position in
+            // place rather than force one past the source's own wall; genuinely reachable in a
+            // pathological diagram (more siblings than a small gap has room for), never seen on this
+            // module's own corpus.
+            while guard < RANK_LANE_MAX_CANDIDATES
+                && d + PORT_CLEARANCE <= c.max_reach
+                && placed.iter().any(|p| polylines_cross(&route, p))
+            {
+                d += PORT_CLEARANCE;
+                route = build(d);
+                guard += 1;
+            }
+            new_hops.push((c.idx, entry_boundary + sign * d));
+            placed.push(route);
+        }
+
+        for (idx, hop) in new_hops {
+            if let Some(shape) = shapes[idx].as_mut() {
+                shape.rank_lane_bend = Some(hop);
+            }
+        }
+    }
+}
+
+/// Whether any segment of polyline `a` crosses, or coincides (overlapping and collinear) with, any
+/// segment of polyline `b`. The perpendicular case is exactly what [`segment_crossing`] already
+/// decides — reused rather than re-derived, for the same reason that function is `pub(crate)` in the
+/// first place (its own doc: a second, hand-rolled copy of the same axis-parallel intersection
+/// arithmetic could silently drift from what [`insert_crossing_gaps`] itself checks). The one case
+/// `segment_crossing` does not cover — two *parallel* segments overlapping collinearly, both
+/// verticals landing at the identical hop `x` (`docs/STATUS.md`'s own ★未修正 entry: `デコード`/
+/// `キーフレーム` both landing on the identical independent gap-search answer is exactly this, not a
+/// perpendicular cross `segment_crossing` was ever built to see) — is checked separately here.
+/// `pub(crate)` for the same reason [`segment_crossing`] is: `render::tests`' own merge-sibling
+/// invariants state the question against a real diagram's *finished* polylines using this exact
+/// predicate, not a third, hand-rolled copy.
+pub(crate) fn polylines_cross(a: &[Point], b: &[Point]) -> bool {
+    a.windows(2).any(|wa| {
+        b.windows(2).any(|wb| {
+            segment_crossing(wa, wb).is_some()
+                || segments_overlap_collinearly(&wa[0], &wa[1], &wb[0], &wb[1])
+        })
+    })
+}
+
+/// Whether axis-parallel segments `a1`–`a2` and `b1`–`b2` run parallel, share the same fixed
+/// coordinate, and overlap along the other axis — the "two verticals at the same hop `x`" case
+/// [`polylines_cross`]'s own doc explains `segment_crossing` cannot see (it only ever answers a
+/// perpendicular vertical-vs-horizontal question). A touch at a shared endpoint alone (the ordinary
+/// case of two edges leaving the same port) is not flagged — every comparison is strict
+/// (`EPS`-padded), matching the "own endpoint" exclusion every other collision test in this module
+/// already applies ([`route_perimeter`]'s own `blocked` closure, [`clear_local_route`]'s doc).
+fn segments_overlap_collinearly(a1: &Point, a2: &Point, b1: &Point, b2: &Point) -> bool {
+    let a_vertical = (a1.x - a2.x).abs() < EPS;
+    let b_vertical = (b1.x - b2.x).abs() < EPS;
+    if a_vertical != b_vertical {
+        return false; // perpendicular — segment_crossing's own territory, not this function's.
+    }
+    if a_vertical {
+        if (a1.x - b1.x).abs() >= EPS {
+            return false;
+        }
+        let (a_lo, a_hi) = (a1.y.min(a2.y), a1.y.max(a2.y));
+        let (b_lo, b_hi) = (b1.y.min(b2.y), b1.y.max(b2.y));
+        a_lo < b_hi - EPS && b_lo < a_hi - EPS
+    } else {
+        if (a1.y - b1.y).abs() >= EPS {
+            return false;
+        }
+        let (a_lo, a_hi) = (a1.x.min(a2.x), a1.x.max(a2.x));
+        let (b_lo, b_hi) = (b1.x.min(b2.x), b1.x.max(b2.x));
+        a_lo < b_hi - EPS && b_lo < a_hi - EPS
+    }
+}
+
 /// §10-3 item 2's own "8px 刻み" bend lane for an [`EdgeShape::fan_lane`] edge — [`bridge`]'s plain
 /// midpoint-of-the-two-flow-coordinates bend replaced with a fixed step out from the *source*'s own
 /// face, sized by this port's own rank among its siblings on that face.
@@ -1266,7 +1529,7 @@ fn rank_lane_gap_bends(
 /// `source_coord`/`target_coord` already placed both ports on an exact [`PORT_SPACING`] (16px)
 /// grid centred on the aligned sibling's own port ([`evict`]'s "an aligned edge takes the slot
 /// closest to the face's own centre" — the fan-lane group's shared face always has exactly one
-/// aligned claim, the sibling [`flow_aligned_sources`] found), so `offset / PORT_SPACING` is always
+/// aligned claim, its own trunk sibling), so `offset / PORT_SPACING` is always
 /// (within [`EPS`] of) a whole number — `k`, this port's 1-based rank by distance from the centre.
 /// Two ports at the same `k` on opposite sides of the centre — §10-3 item 2's own "上下対称な組"
 /// (a symmetric pair) — get the identical bend distance by construction, since the formula below
@@ -1403,7 +1666,7 @@ fn clear_local_route(
     const MAX_PASSES: usize = 4;
     for _ in 0..MAX_PASSES {
         let mut fix: Option<LocalFix> = None;
-        'search: for (i, w) in points.windows(2).enumerate() {
+        'search: for w in points.windows(2) {
             let (a, b) = (&w[0], &w[1]);
             let horizontal = (a.y - b.y).abs() < EPS;
             let vertical = (a.x - b.x).abs() < EPS;
@@ -1415,7 +1678,7 @@ fn clear_local_route(
                     continue;
                 }
                 if segment_crosses_node(a, b, n) {
-                    fix = Some(local_fix(&points, i, a, b, horizontal, n));
+                    fix = Some(local_fix(&points, a, horizontal, n));
                     break 'search;
                 }
             }
@@ -1430,45 +1693,51 @@ fn clear_local_route(
 
 /// One already-found local nudge: `old_c`/`new_c`/`horizontal` are [`apply_local_nudge`]'s plain
 /// "slide every point on `old_c` to `new_c`" instruction, same as before §10-3 item 13's own fix;
-/// `port_stub`, when set, is that fix's own §10-3 item 13 correction — see [`local_fix`]'s doc.
+/// `port_stubs`, when non-empty, is that fix's own §10-3 item 13 correction — see [`local_fix`]'s
+/// doc. Zero, one, or two entries: a route whose *both* ports happen to sit on the very coordinate
+/// being slid (a straight, unbent run end to end) needs a stub at each end, not just one.
 struct LocalFix {
     old_c: f64,
     new_c: f64,
     horizontal: bool,
-    port_stub: Option<PortStub>,
+    port_stubs: Vec<PortStub>,
 }
 
-/// §10-3 item 13's own "曲げを足す" correction for a flagged crossing that starts or ends *at* a
-/// port: which port (`points[0]` when `at_start`, `points[last]` otherwise) and the coordinate,
-/// along the leg's own *original* axis, of the safe jog point — where the leg can still leave the
-/// port in its own correctly-assigned perpendicular direction for a short distance before turning
-/// onto the avoided line, rather than either moving the port ([`apply_local_nudge`]'s own exclusion
-/// of `points[0]`/`points[last]`) or turning immediately at it (breaking §10-1 item 1's "出入りは常
-/// に辺へ垂直" — the very defect an earlier draft of this fix had, caught by `assert_endpoints_sit_
-/// outside_and_perpendicular` failing on real corpus fixtures once this module's own tests ran).
+/// §10-3 item 13's own "曲げを足す" correction for a port that sits *on* the coordinate a local fix
+/// is about to slide out from under it: which port (`points[0]` when `at_start`, `points[last]`
+/// otherwise) and the coordinate, along the leg's own *original* axis, of the safe jog point — where
+/// the leg can still leave the port in its own correctly-assigned perpendicular direction for a
+/// short distance before turning onto the avoided line, rather than either moving the port
+/// ([`apply_local_nudge`]'s own exclusion of `points[0]`/`points[last]`) or turning immediately at it
+/// (breaking §10-1 item 1's "出入りは常に辺へ垂直" — the very defect an earlier draft of this fix
+/// had, caught by `assert_endpoints_sit_outside_and_perpendicular` failing on real corpus fixtures
+/// once this module's own tests ran).
 struct PortStub {
     at_start: bool,
     stub_other: f64,
 }
 
-/// Builds the [`LocalFix`] for one already-found crossing (`clear_local_route`'s own search loop,
-/// window `i`, already known to cross `n`): the same "which side of `n` to slide the shared
-/// coordinate to" §10-1 item 1's local remediation always used, plus — new for §10-3 item 13 — a
-/// [`PortStub`] when this window is the route's own first or last leg (a genuine port), computed
-/// the identical way: which side of `n`, along the leg's *own* travel axis this time, the port can
-/// still safely reach before the node gets in the way. `dir` (which way the leg was already
-/// travelling) picks the correct side — a leg travelling in the increasing direction needs its stub
-/// *before* `n`'s own near edge; one travelling the other way needs it before `n`'s own far edge —
-/// the same `<=`/`>` split [`clear_local_route`]'s longstanding `old_c`/`new_c` choice already makes
-/// for the perpendicular axis, mirrored onto this one.
-fn local_fix(
-    points: &[Point],
-    i: usize,
-    a: &Point,
-    b: &Point,
-    horizontal: bool,
-    n: &PlacedNode,
-) -> LocalFix {
+/// Builds the [`LocalFix`] for one already-found crossing (`clear_local_route`'s own search loop, a
+/// window `a`–`b` already known to cross `n` — only `a` is needed here, `old_c`'s own value): the
+/// same "which side of `n` to slide the shared coordinate to" §10-1 item 1's local remediation
+/// always used, plus — new for §10-3 item 13 — a [`PortStub`] for *every* port that actually sits on
+/// the coordinate being slid.
+///
+/// Judged by coordinate, not by whether `i` happens to be the literal first/last window
+/// (`docs/STATUS.md`'s own ★未修正 entry — the real bug this reimplementation closes): a `staircase`
+/// edge's raw dagre waypoints routinely carry several collinear points in a row before reaching a
+/// port whose own coordinate already matches them (`2b`'s own `API -> ID`, a plain, unbent
+/// left-to-right run the *entire* way to `ID`'s own port — the crossing `clear_local_route`'s search
+/// found sat on an *early* window of that run, not literally `i + 2 == points.len()`, so the old
+/// window-identity test never built a stub for the port at all: `apply_local_nudge`'s "ports never
+/// move" then left `ID`'s own port stranded on the old coordinate while every other point on the
+/// same straight run slid to the new one — a diagonal final segment, this module's own axis-parallel
+/// invariant broken in exactly the corpus shape (a long cross-subgraph edge) no existing fixture
+/// happened to exercise). Testing coordinate equality against `points[0]`/`points[last]` directly
+/// catches this regardless of which window the search actually flagged, and is exactly equivalent to
+/// the old `i == 0` / `i + 2 == points.len()` test whenever those *were* the flagged window (the
+/// terminal window's own endpoint is that port by construction), so no existing behaviour changes.
+fn local_fix(points: &[Point], a: &Point, horizontal: bool, n: &PlacedNode) -> LocalFix {
     let (l, t, r, bo) = n.bounds();
     let (old_c, new_c) = if horizontal {
         let y = a.y;
@@ -1487,30 +1756,18 @@ fn local_fix(
         };
         (x, new_x)
     };
-
-    let at_start = i == 0;
-    let at_end = i + 2 == points.len();
-    // A route with exactly two points (both ends ports, one straight leg between them) makes
-    // `at_start` and `at_end` the very same window — this module's own `route_with_ports` never
-    // calls `clear_local_route` on a route that short (every caller here builds at least four
-    // points, `local_fix`'s own doc), so this is defensive only: a single stub cannot correctly
-    // clear an obstacle sitting between *two* pinned ports (that needs a stub on both sides of
-    // it, not one), so this leaves the fix's own "slide everything except the two ports" behaviour
-    // (`apply_local_nudge`'s own doc) to do what it can rather than build a one-sided stub that
-    // would not actually clear the obstacle.
-    let port_stub = (at_start ^ at_end).then(|| {
-        // The leg's own travel direction along its *other* (unshifted) axis, in the window's own
-        // declared `a -> b` sense. `dir >= 0.0` means the polyline was already moving in the
-        // increasing direction through this exact segment. Which side of `n` the stub belongs on
-        // then depends on *which* end this is: `at_start`'s own stub is the port's own outward
-        // leg, so it has to stop on the *near* side of `n` (the side the port itself faces) before
-        // ever reaching it; `at_end`'s own stub is the inward leg arriving *at* the port, so it has
-        // to already be past `n`, on the *far* side (`n`'s own far edge is the near side reached
-        // travelling the opposite way) — the two are mirror images of the same "which edge of `n`
-        // do I reach first from here" question, not the same answer.
-        let dir = if horizontal { b.x - a.x } else { b.y - a.y };
+    let coord_of = |p: &Point| if horizontal { p.y } else { p.x };
+    let last = points.len() - 1;
+    // Which side of `n` a stub belongs on, from the *direction of travel* along the port's own
+    // adjacent segment (never the flagged window's `a`/`b`, which need not be that segment at all
+    // once the test above is coordinate-based rather than window-identity-based) — `at_start`'s own
+    // stub is the port's outward leg, so it has to stop on the *near* side of `n` (the side the port
+    // faces) before ever reaching it; an end stub's own leg arrives *at* the port, so it has to
+    // already be past `n`, on the *far* side — mirror images of the same "which edge of `n` do I
+    // reach first from here" question.
+    let stub_other_for = |dir: f64, at_start: bool| {
         let near_side = if at_start { dir >= 0.0 } else { dir < 0.0 };
-        let stub_other = if horizontal {
+        if horizontal {
             if near_side {
                 l - COLLISION_MARGIN - 1.0
             } else {
@@ -1520,17 +1777,36 @@ fn local_fix(
             t - COLLISION_MARGIN - 1.0
         } else {
             bo + COLLISION_MARGIN + 1.0
-        };
-        PortStub {
-            at_start,
-            stub_other,
         }
-    });
+    };
+    let mut port_stubs = Vec::new();
+    if points.len() > 1 && (coord_of(&points[0]) - old_c).abs() < EPS {
+        let dir = if horizontal {
+            points[1].x - points[0].x
+        } else {
+            points[1].y - points[0].y
+        };
+        port_stubs.push(PortStub {
+            at_start: true,
+            stub_other: stub_other_for(dir, true),
+        });
+    }
+    if points.len() > 1 && (coord_of(&points[last]) - old_c).abs() < EPS {
+        let dir = if horizontal {
+            points[last].x - points[last - 1].x
+        } else {
+            points[last].y - points[last - 1].y
+        };
+        port_stubs.push(PortStub {
+            at_start: false,
+            stub_other: stub_other_for(dir, false),
+        });
+    }
     LocalFix {
         old_c,
         new_c,
         horizontal,
-        port_stub,
+        port_stubs,
     }
 }
 
@@ -1539,12 +1815,13 @@ fn local_fix(
 /// fix, except `points[0]`/`points[last]` — the route's own two ports, pinned to the exact slot
 /// [`evict`] assigned them — which never move.
 ///
-/// When the flagged run touches a port (`f.port_stub`), a plain slide of everything else would
-/// leave that port's own immediate neighbour on the *new* coordinate while the port itself stayed
-/// on the *old* one — a diagonal leg, or (an earlier draft's own bug, `PortStub`'s own doc) a leg
-/// bent at the port instead of past it. The constructive fix splices two extra points in beside the
-/// port instead: it keeps leaving/entering in its own correctly-assigned perpendicular direction
-/// for a short stub (`f.port_stub`'s own `stub_other`, chosen clear of the very node this fix is
+/// When the coordinate being slid touches a port (`f.port_stubs`, [`local_fix`]'s own doc on why
+/// this is judged by coordinate, not by which window was flagged), a plain slide of everything else
+/// would leave that port's own immediate neighbour on the *new* coordinate while the port itself
+/// stayed on the *old* one — a diagonal leg, or (an earlier draft's own bug, `PortStub`'s own doc) a
+/// leg bent at the port instead of past it. The constructive fix splices two extra points in beside
+/// each such port instead: it keeps leaving/entering in its own correctly-assigned perpendicular
+/// direction for a short stub (`PortStub::stub_other`, chosen clear of the very node this fix is
 /// avoiding), *then* turns onto the shifted line — "曲げを足す", never a slide through the port
 /// itself (`docs/FEATURE-MERMAID-RENDERER.md` §10-3 item 13's own motivating report: `ページ描画→
 /// ラスタライズ`'s exit stub, displaced by `数式`'s own box sitting in the same pass-through row,
@@ -1562,21 +1839,11 @@ fn apply_local_nudge(points: &mut Vec<Point>, f: &LocalFix) {
         }
     }
 
-    let Some(stub) = &f.port_stub else { return };
-    if stub.at_start {
-        let (on_old, on_new) = if f.horizontal {
-            (
-                Point::new(stub.stub_other, f.old_c),
-                Point::new(stub.stub_other, f.new_c),
-            )
-        } else {
-            (
-                Point::new(f.old_c, stub.stub_other),
-                Point::new(f.new_c, stub.stub_other),
-            )
-        };
-        points.splice(1..1, [on_old, on_new]);
-    } else {
+    // End before start: splicing near `points.len() - 1` never disturbs index `1`, but splicing at
+    // index `1` first would shift every later index the end stub still needs to compute — a route
+    // whose *both* ports sit on the coordinate being slid (`LocalFix::port_stubs`'s own doc) needs
+    // both, in this order, to land correctly.
+    for stub in f.port_stubs.iter().filter(|s| !s.at_start) {
         let last = points.len() - 1;
         let (on_new, on_old) = if f.horizontal {
             (
@@ -1590,6 +1857,20 @@ fn apply_local_nudge(points: &mut Vec<Point>, f: &LocalFix) {
             )
         };
         points.splice(last..last, [on_new, on_old]);
+    }
+    for stub in f.port_stubs.iter().filter(|s| s.at_start) {
+        let (on_old, on_new) = if f.horizontal {
+            (
+                Point::new(stub.stub_other, f.old_c),
+                Point::new(stub.stub_other, f.new_c),
+            )
+        } else {
+            (
+                Point::new(f.old_c, stub.stub_other),
+                Point::new(f.new_c, stub.stub_other),
+            )
+        };
+        points.splice(1..1, [on_old, on_new]);
     }
 }
 
@@ -2027,7 +2308,6 @@ pub fn route_edge(
         source_out_degree,
         target_in_degree,
         &[],
-        &std::collections::HashSet::new(),
     );
     let source_coord = face_center_coord(source, shape.source_side);
     let target_coord = face_center_coord(target, shape.target_side);
@@ -2110,6 +2390,32 @@ pub struct RoutedFlowchart {
     /// *minimum*, never shrinks anything, and a node no face names at all is simply absent from
     /// it.
     pub required_size: HashMap<String, Size>,
+    /// Edge ids whose own [`classify`]-decided shape is the "flow-axis exit, hop toward target"
+    /// family §10-1 item 1 / §10-3 item 13 describe (`is_pass_through_shape`'s own doc) — the only
+    /// shape family a rank-skipping pass-through corridor (`mod.rs`'s own `reserve_pass_through_
+    /// rows`) can exist for at all. `mod.rs`'s own caller reads this to decide *which* rank-
+    /// skipping edges actually have a row worth reserving, rather than every one topology alone
+    /// would suggest (`docs/STATUS.md`'s own ★未修正 entry: `long-edge`'s own `A -> E`, a branching
+    /// source whose natural shape never touches a flow-axis row at all, used to get one reserved
+    /// anyway purely because its rank happened to skip two).
+    pub pass_through_eligible: std::collections::HashSet<String>,
+}
+
+/// Whether `shape`'s own two faces are the "flow-axis exit, hop toward target" family rule 10 (the
+/// merge side) and rule 13 (pass-through rows) both describe: a straight leg leaves the source
+/// along the **flow** axis (`source_axis == Axis::Flow`) and is never one of the shapes that
+/// abandons that leg entirely — [`EdgeShape::fan_lane`] (a busy branching face's own outside-in
+/// nesting, a different corridor concept, §10-3 item 2), a genuine back edge
+/// ([`EdgeShape::reverse`]), or a `staircase` fallback (dagre's own raw waypoint chain, straightened
+/// — never a clean flow-axis leg by construction). [`route_flowchart`]'s own `pass_through_
+/// eligible` field is exactly this predicate, applied once per edge, over every edge's own real
+/// `classify` result — never re-derived from the *actual*, possibly collision-avoided polyline
+/// (`RoutedFlowchart::pass_through_eligible`'s own doc: a `!branching` merge already forced into a
+/// local nudge by an obstacle — `samples/mermaid.ja.md`'s own `ページ描画 -> ラスタライズ` — still
+/// qualifies; only the shape family matters, not whether this particular pass happened to draw it
+/// cleanly).
+fn is_pass_through_shape(shape: &EdgeShape) -> bool {
+    shape.source_axis == Axis::Flow && !shape.fan_lane && !shape.reverse && !shape.staircase
 }
 
 /// [`evict`]'s result — see its own doc for how each field is built.
@@ -2476,36 +2782,6 @@ fn build_by_id<'a>(
     by_id
 }
 
-/// §10-3 item 1's own trigger, computed once for the whole diagram before any edge is classified:
-/// every source id that has at least one **forward** edge landing on its own flow-axis face by
-/// simple geometric alignment (`classify`'s own `dcross.abs() < 0.5` test, reproduced here rather
-/// than read back off a shape, since a shape does not exist yet for anything — every edge in the
-/// diagram has to be checked before any one of them can be classified, the same "gather first"
-/// constraint [`evict`]'s own doc explains for ports). A back edge is excluded: `is_reverse`'s own
-/// rank comparison mirrors `classify`'s, so a rank-reversed pair that merely happens to share a
-/// cross coordinate is never mistaken for the forward "trunk" lane §10-3 item 1 means.
-fn flow_aligned_sources<'a>(
-    direction: Direction,
-    by_id: &HashMap<&'a str, &PlacedNode>,
-    edges: &[EligibleEdge<'a>],
-) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
-    for e in edges {
-        let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target)) else {
-            continue;
-        };
-        let is_reverse = matches!((e.source_rank, e.target_rank), (Some(sr), Some(tr)) if tr <= sr);
-        if is_reverse {
-            continue;
-        }
-        let dcross = cross(direction, &target.center) - cross(direction, &source.center);
-        if dcross.abs() < 0.5 {
-            out.insert(e.source.to_string());
-        }
-    }
-    out
-}
-
 /// Routes every node-to-node **and cluster-anchored** edge in one flowchart under `[ui]
 /// mermaid_routing = "konoma-orthogonal"`, running [`classify`] and [`evict`] once each over the
 /// whole diagram before building any polyline — the two-pass shape the module doc describes.
@@ -2537,16 +2813,8 @@ pub fn route_flowchart(
 ) -> RoutedFlowchart {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
-    let mut flow_aligned = flow_aligned_sources(direction, &by_id, edges);
-    // §10-3 item 1's own robustness note (`align_straight_lanes`'s own doc on its `next`
-    // return): a chain member `align_straight_lanes` selected can be pushed off its chain's own
-    // computed average by that same pass's later overlap-resolution sweep, so the purely
-    // geometric check above can miss a real trunk source. `chain_next` — `mod.rs`'s own
-    // `align_straight_lanes` call, threaded straight through — is the selection itself, so a
-    // trunk source is recognised even when its coordinates no longer agree.
-    flow_aligned.extend(chain_next.keys().cloned());
 
-    let shapes: Vec<Option<EdgeShape>> = edges
+    let mut shapes: Vec<Option<EdgeShape>> = edges
         .iter()
         .map(|e| {
             let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target)) else {
@@ -2562,12 +2830,17 @@ pub fn route_flowchart(
                 e.source_out_degree,
                 e.target_in_degree,
                 nodes,
-                &flow_aligned,
             ))
         })
         .collect();
 
     let eviction = evict(direction, &by_id, edges, &shapes, chain_next);
+    // §10-3 item 10's own "ホップ x の入れ子": run only once every sibling's exact port coordinate
+    // is known (`eviction`, just above) — `nest_merge_target_hops`'s own doc explains why an earlier
+    // attempt at this exact spacing, judged from node boxes alone, cannot see a sibling at all.
+    // Never re-runs `evict` itself: only `EdgeShape::rank_lane_bend` changes here, a field `evict`
+    // never reads (only `source_side`/`target_side`/`aligned`/`fan_lane` decide port placement).
+    nest_merge_target_hops(direction, edges, &by_id, &mut shapes, &eviction);
 
     let base_bounds = content_bounds(nodes, clusters);
     let lane_of = perimeter_lanes(&by_id, edges, &shapes);
@@ -2614,9 +2887,20 @@ pub fn route_flowchart(
         points.insert(edge.id.to_string(), routed);
     }
 
+    let pass_through_eligible: std::collections::HashSet<String> = edges
+        .iter()
+        .zip(&shapes)
+        .filter_map(|(e, s)| {
+            s.as_ref()
+                .filter(|s| is_pass_through_shape(s))
+                .map(|_| e.id.to_string())
+        })
+        .collect();
+
     RoutedFlowchart {
         points,
         required_size: eviction.required_size,
+        pass_through_eligible,
     }
 }
 
@@ -3111,9 +3395,9 @@ pub(super) fn align_straight_lanes_with(
         .collect();
 
     // §10-3 item 1's own robustness note: `next` — every selected chain edge, source id to target
-    // id, *before* the overlap-resolution sweep above ran — is handed back separately from the
-    // geometric alignment `flow_aligned_sources` (below, in [`classify`]'s own trigger) checks for,
-    // because the two can disagree. The overlap sweep's own "ランク内の並び順は変えない" constraint
+    // id, *before* the overlap-resolution sweep above ran — is handed back separately from a purely
+    // geometric alignment check (`cross` coordinates equal within `EPS`, downstream), because the
+    // two can disagree. The overlap sweep's own "ランク内の並び順は変えない" constraint
     // (this function's own doc) means it can only ever push a later member of a crowded rank
     // *forward*, never make room by moving an earlier one back — so a chain member deep in a
     // crowded rank (found on `3a`'s own `ブロックモデル`, sitting among `設定のルール`'s other nine
@@ -3287,12 +3571,9 @@ pub fn separate_coincident_detours(
     clusters: &[PlacedCluster],
     edges: &[EligibleEdge],
     points: &mut HashMap<String, Vec<Point>>,
-    chain_next: &HashMap<String, String>,
 ) {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
-    let mut flow_aligned = flow_aligned_sources(direction, &by_id, edges);
-    flow_aligned.extend(chain_next.keys().cloned());
     let mut detour_ids: Vec<&str> = edges
         .iter()
         .filter_map(|e| {
@@ -3309,7 +3590,6 @@ pub fn separate_coincident_detours(
                 e.source_out_degree,
                 e.target_in_degree,
                 nodes,
-                &flow_aligned,
             );
             ((shape.reverse || shape.staircase || is_flow_flow_bend(&shape))
                 && source.id != target.id)
@@ -3425,8 +3705,6 @@ pub fn avoid_label_plates(
 ) {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
-    let mut flow_aligned = flow_aligned_sources(direction, &by_id, edges);
-    flow_aligned.extend(chain_next.keys().cloned());
     let shapes: Vec<Option<EdgeShape>> = edges
         .iter()
         .map(|e| {
@@ -3443,7 +3721,6 @@ pub fn avoid_label_plates(
                 e.source_out_degree,
                 e.target_in_degree,
                 nodes,
-                &flow_aligned,
             ))
         })
         .collect();
@@ -3695,12 +3972,9 @@ pub fn insert_crossing_gaps(
     clusters: &[PlacedCluster],
     edges: &[EligibleEdge],
     points: &HashMap<String, Vec<Point>>,
-    chain_next: &HashMap<String, String>,
 ) -> HashMap<String, Vec<(Point, Point)>> {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
-    let mut flow_aligned = flow_aligned_sources(direction, &by_id, edges);
-    flow_aligned.extend(chain_next.keys().cloned());
     let is_perimeter: HashMap<&str, bool> = edges
         .iter()
         .filter_map(|e| {
@@ -3717,7 +3991,6 @@ pub fn insert_crossing_gaps(
                 e.source_out_degree,
                 e.target_in_degree,
                 nodes,
-                &flow_aligned,
             );
             Some((
                 e.id,
@@ -4210,7 +4483,6 @@ mod tests {
             2,
             2,
             &nodes,
-            &std::collections::HashSet::new(),
         );
         assert!(
             shape.staircase,
@@ -4858,18 +5130,28 @@ mod tests {
         // edge (`align_straight_lanes`'s own `next` selection, threaded through as `chain_next`)
         // even when the two nodes never landed on the same cross coordinate — exactly `3a`'s own
         // `設定のルール -> ブロックモデル`, whose target sits among nine other same-rank siblings and
-        // never gets pulled onto the source's own row. None of S's three targets (T/U/V) is
+        // never gets pulled onto the source's own row. None of S's four targets (T/U/V/W) is
         // `aligned` (`dcross` is never `< 0.5` for any of them) — only `chain_next` can tell the
         // router which one is the trunk.
+        //
+        // Four targets, not three: `classify`'s own `fan_eligible` doc (§10-3 item 1, reimplemented
+        // 2026-09-02 on `FAN_ELIGIBLE_MIN_BRANCHES` rather than "has an aligned sibling") — a
+        // branching source needs *more* branches than 1b's own basic shape seats one-per-face before
+        // this fan-lane mechanism (the one this test is about) applies at all; a plain 3-way branch
+        // (`docs/mermaid-theme/handoff/zz-design-sources.md`'s own `2a`) uses 1b's ordinary
+        // cross-axis faces instead, where there is no shared face — and so no centre-port contest —
+        // for `chain_next` to arbitrate.
+        //
         // Rule 1's own "もう一方の端点のcross座標順" sort would otherwise put V (other_cross 180,
-        // the middle of {120, 180, 600}) in the centre slot on its own — T is deliberately the
+        // the middle of {120, 180, 240, 600}) in the centre slot on its own — T is deliberately the
         // *extreme* one (600) so this test can tell "rule 1's plain sort happened to centre the
         // trunk" apart from "the trunk-centring fix actually moved it there".
         let s = node("S", 100.0, 200.0, 60.0, 40.0);
         let t = node("T", 400.0, 600.0, 60.0, 40.0); // the designated trunk — sorts last on its own.
         let u = node("U", 400.0, 120.0, 60.0, 40.0);
         let v = node("V", 400.0, 180.0, 60.0, 40.0);
-        let nodes = vec![s.clone(), t.clone(), u.clone(), v.clone()];
+        let w = node("W", 400.0, 240.0, 60.0, 40.0);
+        let nodes = vec![s.clone(), t.clone(), u.clone(), v.clone(), w.clone()];
         let edge = |id: &'static str, target: &'static str| EligibleEdge {
             id,
             source: "S",
@@ -4877,10 +5159,15 @@ mod tests {
             raw: &[],
             source_rank: Some(0),
             target_rank: Some(1),
-            source_out_degree: 3,
+            source_out_degree: 4,
             target_in_degree: 1,
         };
-        let edges = vec![edge("st", "T"), edge("su", "U"), edge("sv", "V")];
+        let edges = vec![
+            edge("st", "T"),
+            edge("su", "U"),
+            edge("sv", "V"),
+            edge("sw", "W"),
+        ];
         let mut chain_next = HashMap::new();
         chain_next.insert("S".to_string(), "T".to_string());
         let routed = route_flowchart(Direction::LeftToRight, &nodes, &[], &edges, &chain_next);
@@ -4891,7 +5178,7 @@ mod tests {
             "the chain-selected trunk (S->T) must keep S's own face centre even though T is not \
              geometrically aligned: {st_port:?}"
         );
-        for (name, id) in [("su", "su"), ("sv", "sv")] {
+        for (name, id) in [("su", "su"), ("sv", "sv"), ("sw", "sw")] {
             let port = routed.points[id].first().unwrap();
             assert!(
                 (port.y - s.center.y).abs() > 1e-9,
@@ -5329,14 +5616,7 @@ mod tests {
         let mut points = HashMap::new();
         points.insert("cut".to_string(), cut_points);
         points.insert("other".to_string(), other_points);
-        let gaps = insert_crossing_gaps(
-            Direction::TopToBottom,
-            &nodes,
-            &[],
-            &edges,
-            &points,
-            &std::collections::HashMap::new(),
-        );
+        let gaps = insert_crossing_gaps(Direction::TopToBottom, &nodes, &[], &edges, &points);
         gaps.get("cut").cloned().unwrap_or_default()
     }
 
@@ -5482,14 +5762,7 @@ mod tests {
         let mut points = HashMap::new();
         points.insert("horiz".to_string(), horiz_points);
         points.insert("vert".to_string(), vert_points);
-        let gaps = insert_crossing_gaps(
-            Direction::TopToBottom,
-            &nodes,
-            &[],
-            &edges,
-            &points,
-            &std::collections::HashMap::new(),
-        );
+        let gaps = insert_crossing_gaps(Direction::TopToBottom, &nodes, &[], &edges, &points);
         (
             gaps.get("horiz").cloned().unwrap_or_default(),
             gaps.get("vert").cloned().unwrap_or_default(),
@@ -5644,7 +5917,6 @@ mod tests {
         let b2 = node("B2", 300.0, 300.0, 200.0, 40.0); // spans x 200..400, y 280..320
         let c = node("C", 1000.0, 300.0, 80.0, 40.0); // left edge at 960
         let nodes = vec![a.clone(), b1.clone(), b2.clone(), c.clone()];
-        let flow_aligned = std::collections::HashSet::new();
         let shape = classify(
             Direction::LeftToRight,
             &a,
@@ -5655,7 +5927,6 @@ mod tests {
             1, // source_out_degree — not branching
             2, // target_in_degree — a genuine merge
             &nodes,
-            &flow_aligned,
         );
         assert!(
             shape.rank_lane_bend.is_some(),

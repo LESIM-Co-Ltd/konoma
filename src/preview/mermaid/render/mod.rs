@@ -1276,8 +1276,14 @@ fn lay_out_spec_pass(
     // purely geometric check, or a trunk edge crowded out of exact alignment reads as having no
     // trunk at all.
     let mut chain_next: HashMap<String, String> = HashMap::new();
+    // Hoisted out of the `if` below (unlike every other local that block computes) because the
+    // pass-through-reservation retry loop, much further down at `route_flowchart`'s own call site,
+    // needs it again — `reserve_pass_through_rows`'s own doc on why this has to be the *real*,
+    // per-edge-`minlen` numbering (`pull_back_fan_ranks`'s own recomputation), never dagre's raw
+    // one, which is exactly what this map already is whenever `tree.is_empty()`.
+    let mut node_rank: HashMap<String, i32> = HashMap::new();
     if spec.routing == Routing::Orthogonal {
-        let node_rank: HashMap<String, i32> = nodes
+        node_rank = nodes
             .iter()
             .filter_map(|n| {
                 g.node(&n.id)
@@ -1350,12 +1356,22 @@ fn lay_out_spec_pass(
         } else {
             (alignment_deltas, chain_next) = (probe_deltas, chain_next_probe);
         }
+        // §10-3 item 13's own "pass-through 行の予約" no longer runs here: deciding it from rank
+        // topology alone, before any route exists, is exactly the `long-edge` regression
+        // (`docs/STATUS.md`'s own ★未修正 entry — `A -> E`, a branching source whose own shape never
+        // draws a flow-axis row at all, still got one reserved purely because its rank skipped two).
+        // Moved to `route_flowchart`'s own call site below, where a trial route's own `EdgeShape`
+        // decides which rank-skipping edges actually have a row worth reserving.
     }
 
-    let by_id: HashMap<&str, usize> = nodes
+    // Owned `String` keys, not borrowed `&str`: the pass-through-reservation retry loop below
+    // (`route_flowchart`'s own call site) needs `&mut nodes` again, after this map's own last use —
+    // a borrow of `nodes[i].id.as_str()` would keep that borrow alive across the whole function and
+    // conflict with it.
+    let by_id: HashMap<String, usize> = nodes
         .iter()
         .enumerate()
-        .map(|(i, n)| (n.id.as_str(), i))
+        .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
     // --- read the frames back, then grow them until their titles fit ----------------------------
@@ -1397,12 +1413,20 @@ fn lay_out_spec_pass(
         head_end: edges::End,
     }
     let mut prepared: Vec<PreparedEdge> = Vec::with_capacity(drawable.len());
+    // By reference, not by value: the pass-through-reservation retry loop below (`route_flowchart`'s
+    // own call site) needs `drawable` again, to decide which rank-skipping edge actually earned a
+    // reserved row from the *first* trial route (`RoutedFlowchart::pass_through_eligible`'s own
+    // doc) — this loop used to consume `drawable` outright, back when `reserve_pass_through_rows`
+    // ran once, blindly, before any route existed at all.
     for Drawable {
         edge,
         tail: tail_id,
         head: head_id,
-    } in drawable
+    } in &drawable
     {
+        let edge = *edge;
+        let tail_id = tail_id.clone();
+        let head_id = head_id.clone();
         let mut raw = g
             .edge(&tail_id, &head_id, Some(edge.id.as_str()))
             .map(|l| l.points.clone())
@@ -1494,16 +1518,44 @@ fn lay_out_spec_pass(
         HashMap<String, Vec<Point>>,
         HashMap<String, Size>,
     ) = if spec.routing == Routing::Orthogonal {
-        let orthogonal::RoutedFlowchart {
-            mut points,
-            required_size,
-        } = orthogonal::route_flowchart(
+        // §10-3 item 13's own "pass-through 行の予約", now two `route_flowchart` calls at most —
+        // `reserve_pass_through_rows`'s own doc explains why deciding it before any route exists
+        // (rank topology alone) is the `long-edge` regression. The first call here is the trial: its
+        // own `pass_through_eligible` (which rank-skipping edges' `classify`-decided shape actually
+        // draws a flow-axis row at all) is what `reserve_pass_through_rows` needs, so nothing before
+        // this point can compute it. Capped at two total calls — the same finite-retry shape `lay_
+        // out_spec`'s own growth loop uses (`MAX_GROWTH_PASSES`'s doc) — because a second reservation
+        // pass would need a *third* route to judge itself against, which this cap declines to chase.
+        let mut routed = orthogonal::route_flowchart(
             spec.direction,
             &nodes,
             &placed_clusters,
             &eligible,
             &chain_next,
         );
+        if tree.is_empty() {
+            let moved = reserve_pass_through_rows(
+                spec.direction,
+                &mut nodes,
+                &node_rank,
+                &drawable,
+                &routed.pass_through_eligible,
+            );
+            if moved {
+                routed = orthogonal::route_flowchart(
+                    spec.direction,
+                    &nodes,
+                    &placed_clusters,
+                    &eligible,
+                    &chain_next,
+                );
+            }
+        }
+        let orthogonal::RoutedFlowchart {
+            mut points,
+            required_size,
+            pass_through_eligible: _,
+        } = routed;
         // A `staircase` edge's own local route can coincide with another unrelated detour edge's
         // (`orthogonal::separate_coincident_detours`'s own doc — lost the perimeter lane's shared
         // stagger bookkeeping once it stopped using it, 2026-09-01). Runs before label plates and
@@ -1514,7 +1566,6 @@ fn lay_out_spec_pass(
             &placed_clusters,
             &eligible,
             &mut points,
-            &chain_next,
         );
         (points, required_size)
     } else {
@@ -1728,7 +1779,6 @@ fn lay_out_spec_pass(
             &placed_clusters,
             &eligible,
             &orthogonal_points,
-            &chain_next,
         );
         for (id, &idx) in &orthogonal_index {
             if let Some(g) = gap_map.get(id) {
@@ -2338,6 +2388,178 @@ fn regroup_fan_lanes(
         }
     }
     touched
+}
+
+/// Extra clearance either side of a reserved pass-through row, beyond the occupying node's own
+/// cross-extent — reuses §10-1 item 4's own "12px の隙間" figure for the same reason it exists
+/// there: enough room that the straightened edge reads as visibly separate from the node it used
+/// to detour around, not merely clear of its box by a hair.
+const PASS_THROUGH_CLEARANCE: f64 = 12.0;
+
+/// §10-3 item 13's own "pass-through 行の予約" (`docs/FEATURE-MERMAID-RENDERER.md`) — a rank-
+/// skipping edge's own horizontal leg exits its source at the source's own cross coordinate (§10-1
+/// item 1's "ソースの右辺中央から水平に出て" — `orthogonal::rank_lane_gap_bends`'s own doc quotes
+/// the identical rule for the merge side) and runs straight through every intermediate rank column
+/// at that exact row before bending toward its target. A node that happens to occupy that row in an
+/// intermediate column sits directly in the edge's own straight run, so `orthogonal::classify`'s
+/// collision ladder has no choice but to detour the edge around it — `docs/STATUS.md`'s own ★未修正
+/// entry: `samples/mermaid.ja.md`'s "大きさ" flowchart draws `ページ描画 -> ラスタライズ` with four
+/// bends, detouring around `数式`, purely because `数式` happens to land almost exactly on
+/// `ページ描画`'s own row one column upstream of `ラスタライズ`. This pass moves the *occupying
+/// node* instead — `3a`'s own reference geometry puts `数式` one row above `ページ描画`'s pass-
+/// through row, never asking the edge to bend around it at all.
+///
+/// Reimplemented after a first attempt (2026-09-02, never committed — `docs/FEATURE-MERMAID-
+/// RENDERER.md` §10-3's own implementation note has the post-mortem) judged the reserved row from
+/// dagre's own internal, `minlen`-doubled rank numbering (`makeSpaceForEdgeLabels` — [`align_
+/// straight_lanes`]'s own doc explains the doubling) instead of the real, per-edge-`minlen` rank
+/// every node actually ends up on once [`pull_back_fan_ranks`] has run. The doubled numbering
+/// invents a fictitious "every edge spans exactly two internal ranks" grid that has nothing to do
+/// with which *real* nodes a rank-skipping edge's own row actually threads past, and so flagged the
+/// `A ---> B` (`minlen` 2) corpus fixture's own `C` (`A --> C`, minlen 1) as sitting in `A ---> B`'s
+/// pass-through row purely because the doubled grid placed both at the same internal rank — evicting
+/// a node the edge's own source is directly, legitimately connected to, not a coincidental occupant.
+///
+/// This version works from `node_rank` (real ranks: [`pull_back_fan_ranks`]'s own recomputation from
+/// each edge's own semantic `minlen`, never dagre's internal doubling — this is why the caller only
+/// ever runs this pass in the same `tree.is_empty()` scope [`pull_back_fan_ranks`] itself is limited
+/// to, so `node_rank` is guaranteed to be that real numbering here, not dagre's raw one) and adds the
+/// one guard the failed attempt was missing: a candidate occupant connected to the pass-through
+/// edge's own **source** by any real drawn edge (`drawable`'s own `(tail, head)` pairs, checked both
+/// directions — `A --> C`, `A ---> B`'s own fixture) is never a coincidental blocker — it is exactly
+/// the shape a genuine fan/chain member sitting on its own source's row is supposed to have, and is
+/// left exactly where alignment/[`regroup_fan_lanes`] already put it. Deliberately *not* the same
+/// guard against the edge's own **target**: `samples/mermaid.ja.md`'s own `数式` is connected to
+/// `ラスタライズ` too (`数式 -> ラスタライズ` is itself a separate merge edge into the very node
+/// `ページ描画 -> ラスタライズ` is heading for) — that is precisely the coincidental-occupant case
+/// this pass exists to fix, not a reason to exempt it; only a real edge to the pass-through edge's
+/// own *source* explains why a node legitimately shares its row.
+///
+/// A single pass per pass-through edge, not a fixpoint search — the same bounded-effort shape this
+/// module's other local nudges use ([`orthogonal::clear_local_route`]'s own doc): moving one node
+/// clear of a reserved row can in principle crowd a different sibling on the same rank, which this
+/// pass's own inner sibling-clearance loop absorbs for the common case (one blocker, one or two
+/// siblings) but does not chase through a second cascade.
+///
+/// `eligible` restricts which rank-skipping edges this runs for at all — [`orthogonal::
+/// RoutedFlowchart::pass_through_eligible`]'s own doc explains why rank topology alone (`tr - sr >=
+/// 2`, still checked below) is not enough: `long-edge`'s own `A -> E`, a branching source whose
+/// `classify`-decided shape never draws a flow-axis row in the first place, used to get one
+/// reserved anyway, evicting `D` off `C -> D`'s own legitimate straight lane for zero benefit (the
+/// edge's real route was a perimeter detour that never threaded through that row at all). `eligible`
+/// comes from a *trial* route (`mod.rs`'s own call site) — this is why the pass moved here from
+/// running blind, before any route existed.
+///
+/// Returns whether anything actually moved, so the caller knows whether the trial route is now
+/// stale and a second `route_flowchart` call is worth the cost.
+#[must_use]
+fn reserve_pass_through_rows(
+    direction: Direction,
+    nodes: &mut [PlacedNode],
+    node_rank: &HashMap<String, i32>,
+    drawable: &[Drawable],
+    eligible: &std::collections::HashSet<String>,
+) -> bool {
+    let mut moved = false;
+    let id_index: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
+
+    // Every real, non-self-loop edge as an unordered id pair — the one thing that tells a
+    // coincidental row occupant (evict it) apart from a real neighbour of either endpoint (leave it
+    // exactly where alignment put it), per this function's own doc on the failed first attempt.
+    let mut connected: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    for d in drawable {
+        if d.tail == d.head {
+            continue;
+        }
+        connected.insert((d.tail.clone(), d.head.clone()));
+        connected.insert((d.head.clone(), d.tail.clone()));
+    }
+    let is_connected = |a: &str, b: &str| connected.contains(&(a.to_string(), b.to_string()));
+
+    let mut by_rank: HashMap<i32, Vec<usize>> = HashMap::new();
+    for (id, &r) in node_rank {
+        if let Some(&i) = id_index.get(id) {
+            by_rank.entry(r).or_default().push(i);
+        }
+    }
+
+    for d in drawable {
+        if d.tail == d.head {
+            continue;
+        }
+        if !eligible.contains(&d.edge.id) {
+            continue; // this edge's own shape never draws a flow-axis row at all — nothing to protect.
+        }
+        let (Some(&sr), Some(&tr)) = (node_rank.get(&d.tail), node_rank.get(&d.head)) else {
+            continue;
+        };
+        // "列 T（T > A+1）": at least one whole real rank column sits between source and target —
+        // an ordinary adjacent-rank edge (the overwhelming majority) has nothing to reserve at all.
+        if tr - sr < 2 {
+            continue;
+        }
+        let Some(&source_idx) = id_index.get(&d.tail) else {
+            continue;
+        };
+        let row = cross_of(direction, &nodes[source_idx]);
+
+        for ri in (sr + 1)..tr {
+            let Some(members) = by_rank.get(&ri) else {
+                continue;
+            };
+            for &idx in members {
+                let id = nodes[idx].id.clone();
+                if id == d.tail || id == d.head {
+                    continue;
+                }
+                if is_connected(&d.tail, &id) {
+                    continue;
+                }
+                let half = cross_extent_of(direction, &nodes[idx]);
+                let delta = cross_of(direction, &nodes[idx]) - row;
+                if delta.abs() >= half + PASS_THROUGH_CLEARANCE {
+                    continue; // already clear of the reserved row.
+                }
+                // Toward −∞ on the cross axis ("上へ", `3a`'s own 数式-above-ページ描画 placement)
+                // when the occupant sits close enough to the row that which side it "already leans
+                // toward" is not a meaningful signal (within half its own cross-extent — `3a`'s own
+                // `数式` sits only ~1px south of `ページ描画`'s row, nowhere near a full node-width
+                // away); otherwise moved further away from the row on whichever side it already
+                // sat, so a node already clearly above/below the row is never flipped past it.
+                let sign = if delta.abs() < half {
+                    -1.0
+                } else {
+                    delta.signum()
+                };
+                let mut new_c = row + sign * (half + PASS_THROUGH_CLEARANCE);
+                // Clear of every other member still on this rank, at its current position — see
+                // this function's own doc on why this is one pass, not a fixpoint search.
+                for &other in members {
+                    if other == idx {
+                        continue;
+                    }
+                    let other_half = cross_extent_of(direction, &nodes[other]);
+                    let other_c = cross_of(direction, &nodes[other]);
+                    let min_gap = half + other_half + ORTHO_NODE_SEP;
+                    if (new_c - other_c).abs() < min_gap {
+                        new_c = other_c + sign * min_gap;
+                    }
+                }
+                let flow_v = flow_of(direction, &nodes[idx]);
+                nodes[idx].center = match direction {
+                    Direction::TopToBottom | Direction::BottomToTop => Point::new(new_c, flow_v),
+                    Direction::LeftToRight | Direction::RightToLeft => Point::new(flow_v, new_c),
+                };
+                moved = true;
+            }
+        }
+    }
+    moved
 }
 
 /// Reads the frames dagre computed and grows each one until its title fits inside it.

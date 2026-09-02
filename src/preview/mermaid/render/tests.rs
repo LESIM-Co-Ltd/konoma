@@ -5013,25 +5013,27 @@ fn orthogonal_aligned_edge_is_a_straight_two_point_line() {
     );
 }
 
-/// A decision node's two outgoing edges (branch) and a merge node's two incoming edges (merge):
-/// one leg is `classify`'s `aligned` (0-bend) shape, the other bends at most twice, per §10-1
-/// item 2's "退避則適用時は2回まで".
+/// A decision node's two outgoing edges (branch) and a merge node's two incoming edges (merge).
 ///
-/// Before `align_straight_lanes`'s `r + 1` adjacency bug was fixed (2026-09-01), lane alignment
-/// never actually selected a chain, so *both* legs of a branch/merge always bent once here (2
-/// distinct faces, no competition). Once it fires for real, `B`'s own out-edges (`B->C`/`B->D`)
-/// and `C`'s own in-edges (`A->C`/`B->C`) each become one node-disjoint chain's own edge (`B->C`,
-/// `A->C`) — `classify`'s `aligned` shape — plus one ordinary branch/merge sibling (`B->D`,
-/// `B->C` respectively) that §10-3 item 1's correction (`classify`'s own `fan_eligible` doc) now
-/// routes onto the *same* physical face as its aligned sibling, not a separate perpendicular one:
-/// a *branching* source with a flow-aligned sibling opens its other out-edges on that same face
-/// too, and a merge target (§10-3 item 3's correction, `merge_target_side`'s own doc) always did
-/// already. That puts two claims — one aligned, one not — on one face.
+/// The branch leg (`B->C`/`B->D`): `B` has only two out-edges, at or below
+/// [`orthogonal::FAN_ELIGIBLE_MIN_BRANCHES`] (reimplemented 2026-09-02 — `classify`'s own
+/// `fan_eligible` doc has the derivation, `docs/mermaid-theme/handoff/zz-design-sources.md`'s own
+/// `2a` the reference), so 1b's own basic shape applies rather than the flow-axis retreat rule:
+/// `B->C` is `classify`'s `aligned` (0-bend) shape (`C` sits directly downstream of `B`), and
+/// `B->D` — not geometrically aligned — takes the *ordinary* cross-axis branch shape, one bend,
+/// on `B`'s own Top face (`D` sits above `B`'s own row here), never sharing `B->C`'s own flow-axis
+/// face at all. The two legs use two distinct physical faces, so there is no port-grid contest to
+/// pin here (unlike the merge leg below, whose two edges *do* share one face — a real merge target
+/// always accepts every incoming edge on its own flow-axis face, `merge_target_side`'s own doc,
+/// regardless of how many there are).
 ///
-/// `evict`'s own port grid used to be centred on the claim *list's* own geometric mid-index
-/// (`(n-1)/2`), which for an even claim count (`n = 2` here) has no slot at exactly `offset ==
-/// 0.0` — so even the aligned claim landed `PORT_SPACING/2 = 8px` off the face's true centre, and
-/// *neither* edge drew as a straight line. §10-3's own "ファン列内の並び順"/"幹7区間の曲げ0" work
+/// The merge leg (`A->C`/`B->C`) is unaffected by that reimplementation — merge shapes were never
+/// gated by `fan_eligible` (`classify`'s own `branching` ladder only ever consults it for a
+/// *branching* source) — and keeps the original history this doc used to tell in full: `evict`'s
+/// own port grid used to be centred on the claim *list's* own geometric mid-index (`(n-1)/2`),
+/// which for an even claim count (`n = 2` here) has no slot at exactly `offset == 0.0` — so even
+/// the aligned claim landed `PORT_SPACING/2 = 8px` off the face's true centre, and *neither* edge
+/// drew as a straight line. §10-3's own "ファン列内の並び順"/"幹7区間の曲げ0" work
 /// (`docs/FEATURE-MERMAID-RENDERER.md`) fixed the grid to anchor on *whichever slot the aligned/
 /// trunk claim itself ends up in* instead (`evict`'s own doc on `anchor`) — required for `3a`'s
 /// own even-count ten-way fan to draw its trunk edge with zero bends at all, and it applies to
@@ -5068,19 +5070,33 @@ fn orthogonal_branch_and_merge_edges_share_a_face_one_aligned_one_bends_twice() 
         "B->C is the aligned leg — a straight 2-point line: {:?}",
         bc.points
     );
-    assert_eq!(bd.points.len(), 4, "B->D must bend twice: {:?}", bd.points);
-    // B->C exits dead on B's own centre; B->D is pushed a full PORT_SPACING off it.
+    assert_eq!(
+        bd.points.len(),
+        3,
+        "B->D is a plain 3-way-or-fewer branch (1b's own basic shape, not the flow-axis retreat \
+         rule) — one bend, on B's own cross-axis face: {:?}",
+        bd.points
+    );
+    // B->C exits dead on B's own centre (its own flow-axis face, shared with nothing since B->D
+    // now uses a different, cross-axis face entirely).
     let bc_exit_y = bc.points[0].y;
-    let bd_exit_y = bd.points[0].y;
     assert!(
         (bc_exit_y - b_node.center.y).abs() < 1e-6,
         "B->C (aligned) exits exactly on B's centre: {bc_exit_y} vs {}",
         b_node.center.y
     );
+    // B->D exits B's own Top face (D sits above B's own row), centred on it — B's only claim on
+    // that face — [`orthogonal::PORT_INSET`] outside the node's own top edge.
+    let (_, b_top, _, _) = b_node.bounds();
+    let bd_exit = &bd.points[0];
     assert!(
-        (bd_exit_y - (b_node.center.y - orthogonal::PORT_SPACING)).abs() < 1e-6,
-        "B->D exits PORT_SPACING above B's centre: {bd_exit_y} vs {}",
-        b_node.center.y
+        (bd_exit.x - b_node.center.x).abs() < 1e-6,
+        "B->D exits centred on B's own Top face: {bd_exit:?} vs centre x {}",
+        b_node.center.x
+    );
+    assert!(
+        (bd_exit.y - (b_top - orthogonal::PORT_INSET)).abs() < 1e-6,
+        "B->D exits PORT_INSET outside B's own top edge: {bd_exit:?} vs top {b_top}",
     );
 
     let merge = laid_out_flow(
@@ -6323,6 +6339,411 @@ fn orthogonal_synthetic_blocked_merge_still_enters_the_flow_axis_face() {
              entry={entry:?}, T bounds=({l},{tt},{r},{bb})",
             e.from
         );
+    }
+}
+
+/// §10-3 item 13's own two user-reported regressions (`docs/FEATURE-MERMAID-RENDERER.md`, this
+/// module's own `reserve_pass_through_rows`/`nest_merge_target_hops` fix): `MA`(`数式`) used to sit
+/// almost exactly on `PD`(`ページ描画`)'s own row, one column upstream of `RS`(`ラスタライズ`) —
+/// directly inside `PD -> RS`'s own pass-through row — forcing `PD -> RS` into a four-bend detour
+/// around it. `reserve_pass_through_rows` moves `MA` clear of that row instead of leaving the edge
+/// to detour; pinned two ways, the *why* (the row itself is now clear) and the *what* (the route is
+/// a plain two-bend hop again, not a detour).
+#[test]
+fn orthogonal_settings_rules_sample_math_node_is_not_on_page_renders_row() {
+    let src = SETTINGS_RULES_SAMPLE;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let pd = d.node("PD").expect("PD (ページ描画) must exist");
+    let ma = d.node("MA").expect("MA (数式) must exist");
+    let (_, ma_top, _, ma_bottom) = ma.bounds();
+    let pd_row = pd.center.y;
+    assert!(
+        pd_row < ma_top - 1e-6 || pd_row > ma_bottom + 1e-6,
+        "MA (数式) must not occupy ページ描画's own pass-through row (its horizontal exit leg runs \
+         straight through this row on its way to RS): pd_row={pd_row}, MA bounds=({ma_top}, \
+         {ma_bottom})"
+    );
+}
+
+#[test]
+fn orthogonal_settings_rules_sample_page_render_to_rasterise_is_two_bends_not_a_detour() {
+    let src = SETTINGS_RULES_SAMPLE;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let pd_rs = d
+        .edges
+        .iter()
+        .find(|e| e.from == "PD" && e.to == "RS")
+        .expect("PD->RS must exist");
+    assert_eq!(
+        pd_rs.points.len(),
+        4,
+        "PD->RS must be a plain two-bend hop route once 数式 is out of ページ描画's own \
+         pass-through row — a longer point list means it is still detouring around something: {:?}",
+        pd_rs.points
+    );
+}
+
+/// A minimal `SpecEdge`, following `label_boosts_actually_widen_the_flow_axis_segment_dagre_lays_
+/// out`'s own hand-built-`SpecEdge` convention — every field this module's own routing code never
+/// reads (label, tips, stroke, start/end labels, style) set to its plainest value, since only `from`/
+/// `to`/`minlen` matter to `reserve_pass_through_rows`.
+fn plain_edge(id: &str, from: &str, to: &str, minlen: usize) -> super::SpecEdge {
+    super::SpecEdge {
+        id: id.to_string(),
+        from: from.to_string(),
+        to: to.to_string(),
+        label: None,
+        tip_start: Tip::None,
+        tip_end: Tip::Arrow,
+        stroke: Stroke::Normal,
+        minlen,
+        start_label: None,
+        end_label: None,
+        style: None,
+        curve: Curve::Basis,
+    }
+}
+
+/// §10-3 item 13's own rule (`docs/FEATURE-MERMAID-RENDERER.md`), pinned directly against
+/// `super::reserve_pass_through_rows` rather than through a full flowchart source: a hand-built
+/// four-node layout, `A`(rank 0) skipping straight to `B`(rank 2) — a rank-skipping `A -> B`
+/// (`minlen` 2) — with two nodes hand-placed on `A`'s own exact row at the intermediate rank 1:
+/// `C` (`A`'s own real child, `A -> C`, must be left exactly where it is) and `W` (no edge to or
+/// from `A` at all, only its own unrelated `W -> D`, standing in for the coincidental-occupant case
+/// this rule exists to fix). Going through the full flowchart pipeline (`laid_out_flow`) cannot
+/// reliably reproduce this exact collision — dagre's own cross-axis packing spreads unrelated
+/// same-rank nodes apart by construction, so no small hand-written source was found that actually
+/// forces two unrelated nodes onto the identical row — hence the direct call, with full control over
+/// the "before" geometry this function's own contract is stated against.
+#[test]
+fn reserve_pass_through_rows_evicts_an_unrelated_node_but_not_a_real_neighbour() {
+    let direction = crate::preview::mermaid::flowchart::Direction::LeftToRight;
+    let mut nodes = vec![
+        placed_node("A", 0.0, 100.0, 40.0, 20.0),
+        placed_node("C", 100.0, 100.0, 40.0, 20.0), // A's real child — on A's row on purpose.
+        placed_node("W", 100.0, 100.0, 40.0, 20.0), // unrelated — also on A's row on purpose.
+        placed_node("B", 200.0, 100.0, 40.0, 20.0),
+    ];
+    let node_rank: HashMap<String, i32> = [
+        ("A".to_string(), 0),
+        ("C".to_string(), 1),
+        ("W".to_string(), 1),
+        ("B".to_string(), 2),
+    ]
+    .into_iter()
+    .collect();
+
+    let edge_ac = plain_edge("e_ac", "A", "C", 1);
+    let edge_ab = plain_edge("e_ab", "A", "B", 2);
+    let edge_wd = plain_edge("e_wd", "W", "D", 1);
+    let drawable = vec![
+        super::Drawable {
+            edge: &edge_ac,
+            tail: "A".to_string(),
+            head: "C".to_string(),
+        },
+        super::Drawable {
+            edge: &edge_ab,
+            tail: "A".to_string(),
+            head: "B".to_string(),
+        },
+        super::Drawable {
+            edge: &edge_wd,
+            tail: "W".to_string(),
+            head: "D".to_string(),
+        },
+    ];
+
+    // `A -> B`'s own shape is the only thing this test needs eligible: a plain, non-branching,
+    // adjacent-source-facing merge into a lone target — exactly what `route_flowchart`'s own trial
+    // route would classify as `is_pass_through_shape` for this hand-built fixture.
+    let eligible: HashSet<String> = ["e_ab".to_string()].into_iter().collect();
+    let moved =
+        super::reserve_pass_through_rows(direction, &mut nodes, &node_rank, &drawable, &eligible);
+    assert!(
+        moved,
+        "must actually evict W for this test to mean anything"
+    );
+
+    let row = |id: &str| nodes.iter().find(|n| n.id == id).unwrap().center.y;
+    let a_row = row("A");
+    assert!(
+        (row("C") - a_row).abs() < 1e-6,
+        "C (A's own direct child, A -> C) must stay exactly on A's own row — the guard must not \
+         evict a real neighbour: a_row={a_row}, c_row={}",
+        row("C")
+    );
+    assert!(
+        (row("W") - a_row).abs() >= 22.0 - 1e-6,
+        "W (unrelated to A) must be evicted clear of A's own pass-through row (half its own height \
+         + PASS_THROUGH_CLEARANCE = 10+12 = 22px): a_row={a_row}, w_row={}",
+        row("W")
+    );
+}
+
+/// §10-3 item 10's own trailing "ホップ x の入れ子" (`docs/FEATURE-MERMAID-RENDERER.md`) — the
+/// perpendicular-crossing invariant `orthogonal_settings_rules_sample_merge_target_entries_are_
+/// flow_axis_and_never_cross` already pins (`orthogonal::segment_crossing`) cannot see two siblings'
+/// vertical hop legs simply *coinciding* (`セルに合わせる`'s own `デコード`/`キーフレーム`, this
+/// fix's own motivating bug — both landed on the exact same independently-computed hop `x` before
+/// `nest_merge_target_hops`), nor a sibling whose route never went through `EdgeShape::rank_lane_
+/// bend` at all (`ラスタライズ`'s own `mermaid -> RS` and `数式 -> RS`, both ordinary adjacent-rank
+/// merges — `数式 -> RS`'s hop crossed `ページ描画 -> RS`'s own horizontal source-leg once `数式`
+/// moved out of `ページ描画`'s row, the second real bug this fix closes).
+/// `orthogonal::polylines_cross` (the exact predicate `nest_merge_target_hops` itself uses to decide
+/// whether a candidate slot is clear) is the general question; this test asks it of every pair of
+/// siblings converging on each of the sample's two multi-way merges.
+#[test]
+fn orthogonal_settings_rules_sample_merge_siblings_never_cross_or_coincide() {
+    let src = SETTINGS_RULES_SAMPLE;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    for target in ["RS", "FIT"] {
+        let merge: Vec<&PlacedEdge> = d.edges.iter().filter(|e| e.to == target).collect();
+        assert!(
+            merge.len() >= 2,
+            "{target} must have at least two incoming edges to be a meaningful test: {:?}",
+            merge.iter().map(|e| e.from.as_str()).collect::<Vec<_>>()
+        );
+        for i in 0..merge.len() {
+            for j in (i + 1)..merge.len() {
+                assert!(
+                    !orthogonal::polylines_cross(&merge[i].points, &merge[j].points),
+                    "{}->{target} crosses or coincides with {}->{target} — sibling merge routes \
+                     must never cross or overlap: {} points={:?}, {} points={:?}",
+                    merge[i].from,
+                    merge[j].from,
+                    merge[i].from,
+                    merge[i].points,
+                    merge[j].from,
+                    merge[j].points
+                );
+            }
+        }
+    }
+}
+
+/// §10-3 item 10's own "8px 刻み" (`docs/FEATURE-MERMAID-RENDERER.md`), restated precisely rather
+/// than as a blanket "every pair of siblings differs by 8px regardless of geometry": two sibling
+/// merge edges whose vertical hop legs would otherwise sit at overlapping rows (`IM`(`デコード`)
+/// and `VD`(`キーフレーム`), both genuinely below `FIT`(`セルに合わせる`)'s own centre, `orthogonal_
+/// settings_rules_sample_fit_merge_keeps_same_side_siblings_on_the_same_side`'s own doc has the
+/// full row picture) must land at least [`orthogonal::PORT_CLEARANCE`] apart — never on the
+/// identical `x` [`nest_merge_target_hops`]'s own doc reports as this fix's original motivating bug.
+#[test]
+fn orthogonal_settings_rules_sample_fit_merge_hops_are_spaced_at_least_port_clearance_apart() {
+    let src = SETTINGS_RULES_SAMPLE;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let im = d
+        .edges
+        .iter()
+        .find(|e| e.from == "IM" && e.to == "FIT")
+        .expect("IM->FIT must exist");
+    let vd = d
+        .edges
+        .iter()
+        .find(|e| e.from == "VD" && e.to == "FIT")
+        .expect("VD->FIT must exist");
+    assert_eq!(
+        im.points.len(),
+        4,
+        "IM->FIT must be a two-bend hop route: {:?}",
+        im.points
+    );
+    assert_eq!(
+        vd.points.len(),
+        4,
+        "VD->FIT must be a two-bend hop route: {:?}",
+        vd.points
+    );
+    let im_hop = im.points[1].x;
+    let vd_hop = vd.points[1].x;
+    assert!(
+        (im_hop - vd_hop).abs() >= orthogonal::PORT_CLEARANCE - 1e-6,
+        "IM->FIT and VD->FIT's own rows overlap (both genuinely sit below FIT's centre) — their \
+         hops must be nested at least PORT_CLEARANCE apart, never land on the same x: \
+         im_hop={im_hop} vd_hop={vd_hop}"
+    );
+}
+
+/// [`orthogonal::nest_merge_target_hops`]'s own two invariants, generalised past the one 20-node
+/// sample above to the whole [`CORPUS`] (every direction, subgraphs included) plus
+/// [`SETTINGS_RULES_SAMPLE`] — `nest_merge_target_hops` itself carries no `tree.is_empty()`/
+/// direction guard (unlike `reserve_pass_through_rows`, checked separately below), so nothing
+/// about this invariant is scoped to a subset of diagrams: no two *genuine merge siblings*
+/// converging on the same target may ever cross or coincide, full stop.
+///
+/// Scoped to `orthogonal::classify`'s own definition of a merge sibling — `source_out_degree <= 1`
+/// (`is_merge_hop_candidate`'s own guard, `orthogonal.rs`) — not to every edge that happens to share
+/// a target: `subgraph-bypass`'s own `X -> Y` shares a target with `B -> Y`, but `X` itself branches
+/// (`X --> Y`, `X --> A`), so `classify` draws `X -> Y` as a *branch* shape, an unrelated shape
+/// family this fix never touches — its own route can cross a foreign sibling for reasons that
+/// predate and are out of scope for this fix (a pre-existing, structurally different bug class:
+/// a branching source's own `staircase` fallback detour, not a merge target's own port nesting).
+#[test]
+fn orthogonal_merge_sibling_hops_never_cross_or_coincide_across_corpus() {
+    for (name, src) in orthogonal_corpus()
+        .into_iter()
+        .chain([("settings-rules-sample", SETTINGS_RULES_SAMPLE)])
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let mut out_degree: HashMap<&str, usize> = HashMap::new();
+        for e in &d.edges {
+            *out_degree.entry(e.from.as_str()).or_insert(0) += 1;
+        }
+        let mut by_target: HashMap<&str, Vec<&PlacedEdge>> = HashMap::new();
+        for e in &d.edges {
+            // `Stroke::Invisible` (`~~~`) is a layout-only link mermaid itself never draws a line
+            // for (`svg.rs`'s own `Stroke::Invisible => return`) — a "crossing" against one is not
+            // a visible defect, so it is out of scope for this invariant the same way it is out of
+            // scope for the renderer itself.
+            if e.stroke == Stroke::Invisible {
+                continue;
+            }
+            // A genuine merge sibling only, matching `is_merge_hop_candidate`'s own scope — a
+            // branching source's own edge into this same target is a different shape family
+            // (this test's own doc explains why `subgraph-bypass` needs this filter).
+            if out_degree.get(e.from.as_str()).copied().unwrap_or(0) > 1 {
+                continue;
+            }
+            by_target.entry(e.to.as_str()).or_default().push(e);
+        }
+        for (target, merge) in by_target {
+            if merge.len() < 2 {
+                continue;
+            }
+            for i in 0..merge.len() {
+                for j in (i + 1)..merge.len() {
+                    assert!(
+                        !orthogonal::polylines_cross(&merge[i].points, &merge[j].points),
+                        "{name}: {}->{target} crosses or coincides with {}->{target}: {} \
+                         points={:?}, {} points={:?}",
+                        merge[i].from,
+                        merge[j].from,
+                        merge[i].from,
+                        merge[i].points,
+                        merge[j].from,
+                        merge[j].points
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// §10-3 item 13's own rule ("列 A の行 R から出て列 T（T > A+1）へ入る辺は、間の各列で行 R を占め
+/// る"), stated purely from the finished layout's own geometry (never `reserve_pass_through_rows`'s
+/// own internal rank machinery, so this cannot silently drift the way a second copy of the same
+/// rank arithmetic could): for every forward edge whose source and target sit at least a whole
+/// node-width apart on the flow axis with a real gap between them, no *unrelated* third node (no
+/// edge to the source, in either direction) may sit strictly between them on the flow axis *and*
+/// within [`super::PASS_THROUGH_CLEARANCE`] of the source's own cross-axis row.
+///
+/// Scoped to the same window [`reserve_pass_through_rows`] itself is (`tree.is_empty()`,
+/// `mod.rs`'s own call site) — a subgraph diagram is out of scope for that pass, the same known
+/// limit `pull_back_fan_ranks` already has (`docs/STATUS.md`'s own ★未修正 entry), so a `CORPUS`
+/// name containing "subgraph" is excluded here rather than asserting a rule the production code
+/// does not even attempt to keep for it. Also scoped to a non-branching source
+/// (`source_out_degree <= 1`, `orthogonal::is_pass_through_shape`'s own doc): a branching source's
+/// edge never draws rule 10/13's flow-axis "exit then hop" leg at all — it is a branch (cross-axis
+/// exit) or a `fan_lane` member (a *different* corridor concept, §10-3 item 2's own nested lanes —
+/// `strokes`'s own `A -> F`, `A` also branching via `A --- B`, is exactly this: real topology skips
+/// a column `C` sits in, but the edge's own shape never threads a row through it, so reserving one
+/// would repeat the `long-edge` regression this fix exists to close).
+#[test]
+fn orthogonal_pass_through_row_never_holds_an_unrelated_node_across_corpus() {
+    use crate::preview::mermaid::flowchart::Direction;
+
+    for (name, src) in orthogonal_corpus()
+        .into_iter()
+        .filter(|(name, _)| !name.contains("subgraph"))
+        .chain([("settings-rules-sample", SETTINGS_RULES_SAMPLE)])
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let direction = direction_of(src);
+        let flow = |p: &Point| match direction {
+            Direction::LeftToRight | Direction::RightToLeft => p.x,
+            Direction::TopToBottom | Direction::BottomToTop => p.y,
+        };
+        let cross = |p: &Point| match direction {
+            Direction::LeftToRight | Direction::RightToLeft => p.y,
+            Direction::TopToBottom | Direction::BottomToTop => p.x,
+        };
+        let flow_extent = |n: &PlacedNode| match direction {
+            Direction::LeftToRight | Direction::RightToLeft => n.size.w / 2.0,
+            Direction::TopToBottom | Direction::BottomToTop => n.size.h / 2.0,
+        };
+        let cross_extent = |n: &PlacedNode| match direction {
+            Direction::LeftToRight | Direction::RightToLeft => n.size.h / 2.0,
+            Direction::TopToBottom | Direction::BottomToTop => n.size.w / 2.0,
+        };
+
+        let connected: HashSet<(String, String)> = d
+            .edges
+            .iter()
+            .flat_map(|e| {
+                [
+                    (e.from.clone(), e.to.clone()),
+                    (e.to.clone(), e.from.clone()),
+                ]
+            })
+            .collect();
+        let mut out_degree: HashMap<&str, usize> = HashMap::new();
+        for e in &d.edges {
+            *out_degree.entry(e.from.as_str()).or_insert(0) += 1;
+        }
+
+        for e in &d.edges {
+            if e.from == e.to {
+                continue; // self-loop
+            }
+            if out_degree.get(e.from.as_str()).copied().unwrap_or(0) > 1 {
+                continue; // a branching source never draws this shape family — see this test's doc.
+            }
+            let (Some(source), Some(target)) = (d.node(&e.from), d.node(&e.to)) else {
+                continue;
+            };
+            let (sf, tf) = (flow(&source.center), flow(&target.center));
+            // Only a genuine forward, rank-skipping span has a pass-through row to reserve at
+            // all — a same-column (`aligned`) or immediately-adjacent-rank edge has no
+            // intermediate column to check.
+            if tf <= sf + 2.0 * flow_extent(source) {
+                continue;
+            }
+            let row = cross(&source.center);
+            for n in &d.nodes {
+                if n.id == e.from || n.id == e.to {
+                    continue;
+                }
+                if connected.contains(&(e.from.clone(), n.id.clone())) {
+                    continue; // a real neighbour of the edge's own source — left alone on purpose.
+                }
+                let nf = flow(&n.center);
+                let n_flow_half = flow_extent(n);
+                // Strictly inside the source-target span, with a whole node-width of margin on
+                // each side, so a node sharing the source's or target's own rank column (an
+                // ordinary sibling, not an intermediate-column occupant) is never flagged.
+                if nf - n_flow_half <= sf + flow_extent(source)
+                    || nf + n_flow_half >= tf - flow_extent(target)
+                {
+                    continue;
+                }
+                let n_cross_half = cross_extent(n);
+                assert!(
+                    (cross(&n.center) - row).abs()
+                        >= n_cross_half + super::PASS_THROUGH_CLEARANCE - 1e-6,
+                    "{name}: {}->{} skips an intermediate column that {} (unrelated to {}) still \
+                     occupies on {}'s own pass-through row: source_row={row}, {}'s own \
+                     center={:?}",
+                    e.from,
+                    e.to,
+                    n.id,
+                    e.from,
+                    e.from,
+                    n.id,
+                    n.center
+                );
+            }
+        }
     }
 }
 
@@ -8336,15 +8757,16 @@ fn orthogonal_route_edge_does_not_panic_on_coincident_centres() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// TEMP probe for docs/FEATURE-MERMAID-RENDERER.md §10-3 work — dumps the "大きさ" flowchart
-// (samples/mermaid.ja.md fence 3) to docs/render-check for structural comparison against the
-// round3 handoff's 3a SVG, and every other `samples/mermaid.ja.md` fence for the same visual
-// spot-check. `#[ignore]`d so it never runs in the normal battery; run explicitly with
-// `cargo test --features git dump_mermaid_ja_corpus_under_orthogonal -- --ignored --nocapture`.
-#[test]
-#[ignore]
-fn dump_mermaid_ja_corpus_under_orthogonal() {
-    let md = std::fs::read_to_string("samples/mermaid.ja.md").expect("read samples/mermaid.ja.md");
+// TEMP probe for docs/FEATURE-MERMAID-RENDERER.md §10-3 work — dumps a markdown file's own mermaid
+// fences under `konoma-orthogonal` to `docs/render-check` for structural/visual comparison against
+// hand-drawn reference SVGs. `#[ignore]`d so it never runs in the normal battery.
+
+/// Dumps every mermaid fence in `md_path` to `docs/render-check/<stem>-NN-konoma-orthogonal.{svg,png}`
+/// — `dump_mermaid_ja_corpus_under_orthogonal` and `dump_render_check_probes_under_orthogonal`'s
+/// own shared body, factored out once a second source (`docs/render-check/zz-design-sources.md`,
+/// `docs/render-check/zz-design-longedge-probe.md`) needed the identical treatment.
+fn dump_fences_under_orthogonal(md_path: &str, stem: &str) {
+    let md = std::fs::read_to_string(md_path).unwrap_or_else(|e| panic!("read {md_path}: {e}"));
     let mut fences: Vec<String> = Vec::new();
     let mut cur: Option<String> = None;
     for line in md.lines() {
@@ -8360,11 +8782,14 @@ fn dump_mermaid_ja_corpus_under_orthogonal() {
             cur = Some(String::new());
         }
     }
-    assert!(!fences.is_empty(), "must find at least one mermaid fence");
+    assert!(
+        !fences.is_empty(),
+        "{md_path}: must find at least one mermaid fence"
+    );
 
     for (i, code) in fences.iter().enumerate() {
         let n = i + 1;
-        let path = format!("docs/render-check/mermaid.ja-{n:02}-konoma-orthogonal.svg");
+        let path = format!("docs/render-check/{stem}-{n:02}-konoma-orthogonal.svg");
         // `[ui] mermaid_routing` only ever means anything for a flowchart (`mod.rs`'s own doc) —
         // every other diagram kind renders through the ordinary `render`, unaffected by it.
         // `[ui] mermaid_routing` only ever means anything for a flowchart — this is the real
@@ -8380,7 +8805,7 @@ fn dump_mermaid_ja_corpus_under_orthogonal() {
         match svg {
             Some(svg) => {
                 std::fs::write(&path, &svg).unwrap_or_else(|e| panic!("write {path}: {e}"));
-                let png_path = format!("docs/render-check/mermaid.ja-{n:02}-konoma-orthogonal.png");
+                let png_path = format!("docs/render-check/{stem}-{n:02}-konoma-orthogonal.png");
                 if let Some(img) = crate::preview::svg::rasterize_bytes(
                     svg.as_bytes(),
                     std::path::Path::new(&path),
@@ -8390,8 +8815,70 @@ fn dump_mermaid_ja_corpus_under_orthogonal() {
                         .unwrap_or_else(|e| panic!("save {png_path}: {e}"));
                 }
             }
-            None => eprintln!("fence {n}: render failed"),
+            None => eprintln!("{md_path} fence {n}: render failed"),
         }
+    }
+}
+
+/// Dumps the "大きさ" flowchart (`samples/mermaid.ja.md` fence 3) to `docs/render-check` for
+/// structural comparison against the round3 handoff's 3a SVG, and every other
+/// `samples/mermaid.ja.md` fence for the same visual spot-check. Run explicitly with
+/// `cargo test --features git dump_mermaid_ja_corpus_under_orthogonal -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn dump_mermaid_ja_corpus_under_orthogonal() {
+    dump_fences_under_orthogonal("samples/mermaid.ja.md", "mermaid.ja");
+}
+
+/// Dumps `docs/render-check/zz-design-sources.md` (2a/2b/2c-equivalent sources — a worker subgraph,
+/// LR/TB nested-subgraph client/cloud/external graphs) and `docs/render-check/zz-design-longedge-
+/// probe.md` (`CORPUS`'s own `long-edge` source, standalone, for the exact regression this session's
+/// pass-through-reservation fix closes) to `docs/render-check`, for the general-corpus checks
+/// `docs/FEATURE-MERMAID-RENDERER.md` §10-3's own implementation notes on this session's three
+/// findings describe. Run explicitly with `cargo test --features git
+/// dump_render_check_probes_under_orthogonal -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn dump_render_check_probes_under_orthogonal() {
+    dump_fences_under_orthogonal(
+        "docs/render-check/zz-design-sources.md",
+        "zz-design-sources",
+    );
+    dump_fences_under_orthogonal(
+        "docs/render-check/zz-design-longedge-probe.md",
+        "zz-design-longedge-probe",
+    );
+}
+
+/// §10-3 item 13's own regression, found by generalising past `CORPUS` to real, larger sources
+/// (`docs/render-check/zz-design-sources.md`'s `2b`): `API -> ID`, a cross-subgraph node-to-node
+/// edge whose `classify`-decided shape is `staircase` (`raw` carries 13 dagre waypoints, several
+/// collinear before ever reaching `ID`'s own port). `clear_local_route`'s own crossing search can
+/// flag an *early* window of that collinear run, not the literal last one — `local_fix`'s own
+/// (pre-fix) `at_end = i + 2 == points.len()` test then never noticed `ID`'s own port shared the
+/// exact coordinate being slid out from under it, leaving the port stranded on the old coordinate
+/// while its neighbour moved: a diagonal final segment, `orthogonal_routing_draws_only_axis_
+/// parallel_segments`'s own invariant broken in a shape `CORPUS` had no fixture for. Pinned here
+/// directly, not only through the corpus-wide invariant, because this is the exact real-world
+/// diagram the bug was found on.
+#[test]
+fn orthogonal_cross_subgraph_edge_never_draws_a_diagonal_segment() {
+    let src = "flowchart LR\n  subgraph C[クライアント]\n    CLI[CLI]\n    UI[ブラウザ UI]\n    EX[エディタ拡張]\n  end\n  subgraph G[クラウド]\n    API[API ゲート]\n    Q[ジョブキュー]\n    W[ジョブ実行系]\n    SB[解析サンドボックス]:::exec\n    subgraph S[保存層]\n      DB[メタデータ DB]:::data\n      AR[成果物保管]:::data\n    end\n  end\n  subgraph E[外部]\n    ID[認証基盤]\n    LLM[モデル API]:::model\n    GIT[コード置き場]:::exec\n    PAY[決済ページ]\n  end\n  CLI --> API\n  UI -->|HTTPS| API\n  EX --> API\n  API --> ID\n  API -->|投入| Q\n  Q -->|取り出し| W\n  API --> DB\n  W --> DB\n  W --> AR\n  W --> LLM\n  W -->|ツール実行| SB\n  SB --> GIT\n  CLI -.->|リンク| PAY\n  classDef data fill:#161b22,stroke:#3fb950,color:#e6edf3\n  classDef model fill:#161b22,stroke:#a371f7,color:#e6edf3\n  classDef exec fill:#161b22,stroke:#f85149,color:#e6edf3\n  linkStyle 0,1,2 stroke:#58a6ff\n  linkStyle 4,5 stroke:#d29922\n";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let api_id = d
+        .edges
+        .iter()
+        .find(|e| e.from == "API" && e.to == "ID")
+        .expect("API->ID must exist");
+    for w in api_id.points.windows(2) {
+        let (a, b) = (&w[0], &w[1]);
+        assert!(
+            (a.x - b.x).abs() < AXIS_EPS || (a.y - b.y).abs() < AXIS_EPS,
+            "API->ID must never draw a diagonal segment: {:?}-{:?} in {:?}",
+            a,
+            b,
+            api_id.points
+        );
     }
 }
 
