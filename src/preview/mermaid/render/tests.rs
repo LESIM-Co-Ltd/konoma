@@ -6040,6 +6040,117 @@ fn orthogonal_shared_merge_target_face_one_aligned_one_bends_twice() {
     );
 }
 
+/// §10-3 item 10's own two invariants (`docs/FEATURE-MERMAID-RENDERER.md` — "合流側はファン根元の
+/// 鏡像"), pinned over `SETTINGS_RULES_SAMPLE`'s own `ラスタライズ`(`RS`): a real four-way merge
+/// (`mermaid`/`数式`/`usvg`/`ページ描画` → `ラスタライズ`) from four simple, single-out-edge
+/// sources — the exact real-world case the rule was fixed against (`usvg`'s own row is blocked by
+/// `数式`'s sibling node, `MA`, forcing the `rank_lane_bend` best-effort path this fix added).
+///
+/// 1. **No top/bottom entry**: every edge into a multi-way merge target enters through the flow
+///    axis face (`Left`, under `LR`) — never `Top`/`Bottom`, which is what the pre-fix `alt`
+///    (cross-axis) fallback used to draw and what made the source ambiguous
+///    ("面が曖昧" — `docs/STATUS.md`'s own ★未修正 entry this test closes).
+/// 2. **No sibling crossing**: no two of those four edges' own segments cross each other —
+///    the merge-side counterpart of [`orthogonal_settings_rules_sample_fan_lane_siblings_never_
+///    cross`]'s fan-root claim, now for edges converging on a shared target rather than diverging
+///    from a shared source.
+#[test]
+fn orthogonal_settings_rules_sample_merge_target_entries_are_flow_axis_and_never_cross() {
+    let src = SETTINGS_RULES_SAMPLE;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let rs = d.node("RS").expect("RS (ラスタライズ) must exist");
+    let (l, t, r, bo) = rs.bounds();
+
+    let merge: Vec<&PlacedEdge> = d.edges.iter().filter(|e| e.to == "RS").collect();
+    assert_eq!(
+        merge.len(),
+        4,
+        "RS's own four-way merge (mermaid/数式/usvg/ページ描画): {:?}",
+        merge.iter().map(|e| e.from.as_str()).collect::<Vec<_>>()
+    );
+
+    for e in &merge {
+        let entry = e.points.last().expect("every edge has at least one point");
+        let on_left_or_right_face = (entry.x - (l - orthogonal::PORT_INSET)).abs() < 1e-6
+            || (entry.x - (r + orthogonal::PORT_INSET)).abs() < 1e-6;
+        let on_top_or_bottom_face = (entry.y - (t - orthogonal::PORT_INSET)).abs() < 1e-6
+            || (entry.y - (bo + orthogonal::PORT_INSET)).abs() < 1e-6;
+        assert!(
+            on_left_or_right_face && !on_top_or_bottom_face,
+            "{}->RS must enter RS's own flow-axis (Left) face, never Top/Bottom: entry={entry:?}, \
+             RS bounds=({l},{t},{r},{bo})",
+            e.from
+        );
+        assert!(
+            entry.y > t + 1e-6 && entry.y < bo - 1e-6,
+            "{}->RS's own entry point must sit strictly inside RS's own vertical span, not flush \
+             on a corner (§10-1 item 1's own 'ポートは角から8px以上'): entry={entry:?}, RS \
+             bounds=({l},{t},{r},{bo})",
+            e.from
+        );
+    }
+
+    for i in 0..merge.len() {
+        for j in (i + 1)..merge.len() {
+            let (a, b) = (merge[i], merge[j]);
+            for wa in a.points.windows(2) {
+                for wb in b.points.windows(2) {
+                    assert!(
+                        orthogonal::segment_crossing(wa, wb).is_none(),
+                        "{}->RS crosses {}->RS's own segment ({:?}-{:?} vs {:?}-{:?}) — sibling \
+                         merge stubs into the same target must never cross: {} points={:?}, \
+                         {} points={:?}",
+                        a.from,
+                        b.from,
+                        wa[0],
+                        wa[1],
+                        wb[0],
+                        wb[1],
+                        a.from,
+                        a.points,
+                        b.from,
+                        b.points
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A minimal, hand-built counterpart to [`orthogonal_settings_rules_sample_merge_target_entries_
+/// are_flow_axis_and_never_cross`] — three plain, single-out-edge sources at three different flow
+/// coordinates merging into one target, deliberately shaped (an obstacle, `X`, sitting on `A`'s own
+/// row directly ahead of it, `B`'s the "settings rules" sample's own `usvg`-vs-`数式` collision)
+/// so the best-effort `rank_lane_bend` retry (`classify`'s own §10-3 item 10 doc: "全ての候補が
+/// 交差してもcross-axisのaltへは決して落ちない") fires on a fixture small enough to read by hand
+/// rather than only on the 20-node real-world source above.
+#[test]
+fn orthogonal_synthetic_blocked_merge_still_enters_the_flow_axis_face() {
+    let src = "flowchart LR\n  A --> T[Target]\n  B --> T\n  C --> T\n  A --> X[Blocker]\n  \
+               Z --> X";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let t = d.node("T").expect("T must exist");
+    let (l, tt, r, bb) = t.bounds();
+    let merge: Vec<&PlacedEdge> = d.edges.iter().filter(|e| e.to == "T").collect();
+    assert_eq!(
+        merge.len(),
+        3,
+        "{:?}",
+        merge.iter().map(|e| e.from.as_str()).collect::<Vec<_>>()
+    );
+    for e in &merge {
+        let entry = e.points.last().unwrap();
+        let on_flow_axis_face = (entry.x - (l - orthogonal::PORT_INSET)).abs() < 1e-6
+            || (entry.x - (r + orthogonal::PORT_INSET)).abs() < 1e-6;
+        assert!(
+            on_flow_axis_face,
+            "{}->T must enter T's own flow-axis face even when its own row is blocked: \
+             entry={entry:?}, T bounds=({l},{tt},{r},{bb})",
+            e.from
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Stage 4: label placement, minimum segment length, port-vs-plate avoidance
 // ---------------------------------------------------------------------------------------------
@@ -8108,16 +8219,31 @@ fn dump_mermaid_ja_corpus_under_orthogonal() {
 fn zzdebug_fence3_structural_table() {
     let src = "flowchart LR\n  F[ファイル] --> C{設定のルール}\n  C -->|テキスト| T[窓読み]\n  C -->|コード| S[構文強調]\n  C -->|Markdown| MD[ブロックモデル]\n  C -->|CSV / TSV| TB[表]\n  C -->|画像| IM[デコード]\n  C -->|PDF| PD[ページ描画]\n  C -->|SVG| SV[usvg]\n  C -->|動画| VD[キーフレーム]\n  C -->|書庫| AR[一覧]\n  C -->|なし| NA[プレビュー不可]\n  MD --> MM[mermaid]\n  MD --> MA[数式]\n  MM --> RS[ラスタライズ]\n  MA --> RS\n  SV --> RS\n  PD --> RS\n  IM --> FIT[セルに合わせる]\n  RS --> FIT\n  VD --> FIT\n  FIT --> K{端末}\n  K -->|kitty| KT[圧縮転送]\n  K -->|sixel / iTerm2| RI[画像プロトコル]\n  K -->|それ以外| HB[ハーフブロック]\n  classDef pix fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  classDef txt fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  class IM,PD,SV,VD,MM,MA,RS,FIT,KT,RI,HB pix\n  class T,S,MD,TB,AR txt\n  style NA fill:#2d2418,stroke:#d4a017,color:#c9d1d9\n";
     let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    for n in &d.nodes {
+        eprintln!(
+            "NODE {:>4}: center=({:.1},{:.1}) size=({:.1}x{:.1}) box=[{:.1}..{:.1}]x[{:.1}..{:.1}]",
+            n.id,
+            n.center.x,
+            n.center.y,
+            n.size.w,
+            n.size.h,
+            n.center.x - n.size.w / 2.0,
+            n.center.x + n.size.w / 2.0,
+            n.center.y - n.size.h / 2.0,
+            n.center.y + n.size.h / 2.0,
+        );
+    }
     for e in &d.edges {
         let bends = e.points.len().saturating_sub(2);
         eprintln!(
-            "{:>3} -> {:<3} bends={} start={:?} end={:?} color={:?}",
+            "{:>3} -> {:<3} bends={} start={:?} end={:?} color={:?} points={:?}",
             e.from,
             e.to,
             bends,
             e.points.first(),
             e.points.last(),
-            e.style.as_ref().and_then(|s| s.stroke.clone())
+            e.style.as_ref().and_then(|s| s.stroke.clone()),
+            e.points,
         );
     }
 }
@@ -8190,6 +8316,74 @@ fn regroup_fan_lanes_groups_by_colour_centres_the_trunk_and_pushes_classless_out
         "S->T exits exactly on S's own centre: {:?} vs {}",
         st.points[0],
         s_node.center.y
+    );
+}
+
+/// §10-3 item 11 (`docs/FEATURE-MERMAID-RENDERER.md`) — `regroup_fan_lanes` widened from "at least
+/// three members" to "at least two": `samples/mermaid.ja.md`'s own `ブロックモデル` (`MD`) fans out
+/// to exactly two children, `mermaid`(`MM`, the trunk `MD->MM` selects — its own further edge
+/// `MM->RS` is what makes it the unambiguous chain continuation) and `数式`(`MA`, the sole non-
+/// trunk member), and `3a`'s own reference geometry puts `数式` *above* `mermaid`, not below —
+/// pinned directly on the real corpus source rather than only inferred from the `SETTINGS_RULES_
+/// SAMPLE` dump this fix was found against. Before this fix, a plain two-way fan was never
+/// eligible for `regroup_fan_lanes` at all (`docs/STATUS.md`'s own ★未修正 entry — "`regroup_fan_
+/// lanes` は要素3以上のファンのみ対象" — before this fix, `MA` fell wherever `align_straight_
+/// lanes`'s own overlap sweep happened to leave it, landing *below* `MM` instead).
+#[test]
+fn orthogonal_settings_rules_sample_block_model_fan_puts_math_above_the_mermaid_trunk() {
+    let src = SETTINGS_RULES_SAMPLE;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let mm = d.node("MM").expect("MM (mermaid) must exist");
+    let ma = d.node("MA").expect("MA (数式) must exist");
+    let mm_mm = d
+        .edges
+        .iter()
+        .find(|e| e.from == "MD" && e.to == "MM")
+        .expect("MD->MM must exist");
+    assert_eq!(
+        mm_mm.points.len(),
+        2,
+        "MD->MM is the trunk — a straight 2-point line: {:?}",
+        mm_mm.points
+    );
+    assert!(
+        ma.center.y < mm.center.y,
+        "数式(MA) must sit above the mermaid(MM) trunk under LR (smaller y): MA.y={}, MM.y={}",
+        ma.center.y,
+        mm.center.y
+    );
+}
+
+/// A minimal, hand-built counterpart to the corpus pin above: a two-way fan with no colour classes
+/// at all (`3a`'s own `1b` case — a plain "image / none" split, `docs/FEATURE-MERMAID-RENDERER.md`
+/// §10-3 item 11's own "1b: 画像=上・なし=下"), confirming the rule holds independent of the
+/// colour-grouping machinery `regroup_fan_lanes_groups_by_colour_centres_the_trunk_and_pushes_
+/// classless_outermost` already pins for larger fans: with exactly one non-trunk member and no
+/// class on either child, `rest` still has exactly one entry, and `before = len / 2 = 1` still
+/// puts it ahead of the trunk.
+#[test]
+fn orthogonal_synthetic_two_way_fan_puts_the_non_trunk_member_before_the_trunk() {
+    let src = "flowchart LR\n  S --> A\n  S --> T\n  T --> D\n";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let a = d.node("A").expect("A must exist");
+    let t = d.node("T").expect("T must exist");
+    let st = d
+        .edges
+        .iter()
+        .find(|e| e.from == "S" && e.to == "T")
+        .expect("S->T must exist");
+    assert_eq!(
+        st.points.len(),
+        2,
+        "S->T is the trunk (T continues the chain via T->D) — a straight 2-point line: {:?}",
+        st.points
+    );
+    assert!(
+        a.center.y < t.center.y,
+        "the sole non-trunk member (A) must sit before the trunk (T), same as the fan's own \
+         `before = len / 2 = 1` split: A.y={}, T.y={}",
+        a.center.y,
+        t.center.y
     );
 }
 

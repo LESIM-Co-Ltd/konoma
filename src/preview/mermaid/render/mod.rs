@@ -2021,7 +2021,9 @@ fn cross_extent_of(direction: Direction, n: &PlacedNode) -> f64 {
 
 /// §10-3's "ファン列内の並び順" (`docs/FEATURE-MERMAID-RENDERER.md`) — reorders the members of a
 /// *pure* single-source fan-out (every node at one rank tracing back to exactly one common
-/// predecessor, at least three of them) into the mechanical rule `3a`'s reference geometry
+/// predecessor, at least two of them — §10-3 item 11 widened this from "at least three" once `1b`
+/// and `3a` both turned out to need the same rule for a plain two-way fan too, `regroup_fan_lanes`'s
+/// own size-cut doc below has the detail) into the mechanical rule `3a`'s reference geometry
 /// (`docs/mermaid-theme/handoff/round3-Konoma-Flowchart-Routing.dc.html`) reverse-engineers to:
 ///
 /// * the trunk/chain edge's own target (`chain_next`) always sits at the group's own centre index
@@ -2044,18 +2046,23 @@ fn cross_extent_of(direction: Direction, n: &PlacedNode) -> f64 {
 /// explains it, not a guarantee every future corpus fan reproduces `3a`-style hand layout
 /// coordinate-for-coordinate. What it does guarantee, by construction (this function's own "no-op
 /// guard" and "re-stack" steps below), is every pre-existing invariant this module's own corpus
-/// tests already check — no new collision, no lane invented that was not there before, and a
-/// two-way branch (never eligible: see the size cut below) is never perturbed at all.
+/// tests already check — no new collision, no lane invented that was not there before.
 ///
 /// Deliberately conservative in scope, matching [`pull_back_fan_ranks`]'s own reasoning for why a
 /// narrow trigger beats a numeric threshold applied everywhere: only a rank whose *every* member
 /// traces back to the same one predecessor is touched at all (a merge rank, or a rank mixing two
 /// unrelated branches' targets, is left exactly as `align_straight_lanes` laid it out — reordering
 /// *part* of a mixed rank while leaving the rest could open a gap or a collision this function has
-/// no way to check for); and even a pure fan is left alone unless the rule above actually asks for
-/// a different member order than the one already there (`current == new_order` is a silent no-op),
-/// so an already-correct two- or three-way branch this module's own pinned exact-geometry tests
-/// cover never has its coordinates so much as touched by a call this function did not need to make.
+/// no way to check for); a single-member "fan" (`idxs.len() < 2`, below) is skipped since there is
+/// nothing to reorder; and even a pure fan is left alone unless the rule above actually asks for a
+/// different member order than the one already there (`current == new_order` is a silent no-op),
+/// so an already-correct branch this module's own pinned exact-geometry tests cover never has its
+/// coordinates so much as touched by a call this function did not need to make. §10-3 item 11
+/// (`docs/FEATURE-MERMAID-RENDERER.md`) is what widened the trigger to a plain two-way fan: with
+/// exactly one non-trunk member, `rest` (below) has one entry and the same "before = len/2" split
+/// that already gives `3a`'s ten-way fan its 5-above/4-below shape puts that single member *before*
+/// the trunk (`before = 2/2 = 1`) — the same rule, unmodified, reproduces both `1b`'s "画像=上・な
+/// し=下" and `3a`'s "ブロックモデル 直下の 数式=上" without a second, size-specific formula.
 ///
 /// Unlike [`pull_back_fan_ranks`], this function is *not* skipped when the diagram has a subgraph
 /// frame (`tree.is_empty()`): it runs in the same, already-unguarded window `align_straight_lanes`
@@ -2116,8 +2123,8 @@ fn regroup_fan_lanes(
 
     for r in ranks {
         let idxs = &by_rank[&r];
-        if idxs.len() < 3 {
-            continue; // too small a branch for colour-grouping to matter — leave it alone.
+        if idxs.len() < 2 {
+            continue; // a single member has nothing to reorder against.
         }
 
         // A predecessor per member, succeeding only when every member of this rank has exactly

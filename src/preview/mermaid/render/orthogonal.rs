@@ -836,17 +836,49 @@ fn classify(
             // (`rank_lane_gap_bend`). A rank-skipping edge whose *midpoint* bend runs straight
             // through an intervening rank's own node — exactly what just made both attempts
             // above collide — often still clears once routed through the gap instead.
+            //
+            // §10-3 item 10: for a genuine merge (`!branching` — a plain, single-out-edge source
+            // feeding a multi-way target, `classify`'s own `branching` formula) the search is
+            // `extended` (`rank_lane_gap_bends`'s own doc): a merge source is never a busy fanout,
+            // so nothing stops the search from reaching the *whole* span, not just its nearer
+            // half. A branching source keeps the old, narrower search unchanged.
             let flow_flow_base = if shape.source_axis == Axis::Flow {
                 shape
             } else {
                 alt
             };
-            for bend in
-                rank_lane_gap_bends(direction, source, target, flow_flow_base.target_side, nodes)
-            {
+            let candidates = rank_lane_gap_bends(
+                direction,
+                source,
+                target,
+                flow_flow_base.target_side,
+                nodes,
+                !branching,
+            );
+            for &bend in &candidates {
                 let mut candidate = flow_flow_base;
                 candidate.rank_lane_bend = Some(bend);
                 if !shape_crosses_a_node(direction, source, target, &candidate, nodes) {
+                    return candidate;
+                }
+            }
+            // §10-3 item 10's own "面が曖昧" fix: a genuine merge never falls back to the
+            // cross-axis `alt` shape at all — rule 10 requires every edge into a multi-way merge
+            // to leave its source's own flow-axis face (`docs/FEATURE-MERMAID-RENDERER.md`'s own
+            // "ソースの右辺中央から水平に出て"), never its top/bottom. When every candidate above
+            // still collided, the nearest one (tried first, so also the shallowest into the
+            // target) is used anyway — `route_with_ports`'s own `rank_lane_bend` branch now runs
+            // the result through `clear_local_route`, the same local-nudge remediation a
+            // `staircase` edge already gets, so a route that still needs a small foreign-node
+            // detour after this still keeps its correct, unambiguous faces rather than the
+            // top/bottom exit `alt` would draw. Only when the search finds no candidate at all
+            // (no column gap exists anywhere in range — the merge's own target sits in the very
+            // first column, `rank_lane_gap_bends_is_empty_when_target_is_the_first_column`'s own
+            // shape) does this fall through to the old cross-axis `alt` + `staircase` safety net.
+            if !branching {
+                if let Some(&bend) = candidates.first() {
+                    let mut candidate = flow_flow_base;
+                    candidate.rank_lane_bend = Some(bend);
                     return candidate;
                 }
             }
@@ -990,7 +1022,21 @@ fn route_with_ports(
     } else if shape.reverse {
         let ids = (source.id.as_str(), target.id.as_str());
         let blocked = |a: &Point, b: &Point| segment_crosses_any_node(a, b, nodes, ids);
-        route_perimeter(shape, source_port, target_port, ring, &blocked)
+        let routed = route_perimeter(shape, source_port, target_port, ring, &blocked);
+        // The same "own-endpoint pierce" class the staircase fix above already closed
+        // (`clear_local_route`'s own doc, and the module's own `fd616c5` history) can reach a
+        // genuine back edge too, for a structurally different reason `route_perimeter`'s own
+        // collision search cannot see: its `blocked` closure always excludes both `source` and
+        // `target` (a legitimate exit/entry leg touches its own node by construction, `route_
+        // with_ports`'s own doc on `ids`), so nothing in that search ever notices a *return* leg
+        // of the ring swinging back through the source's own box on its way to the target — found
+        // on the `branch` corpus fixture's own `D -> B` cycle once §10-3 item 11 widened `regroup_
+        // fan_lanes` to a plain two-way fan: regrouping moved `D` close enough under `B` that the
+        // ring's own safe-exit geometry, correct in isolation, re-crosses `D`'s own new box before
+        // reaching `B`. `clear_self_puncture` is `clear_local_route`'s own mechanism run against
+        // the opposite pair — the edge's *own* two ends, never a foreign node — a no-op for every
+        // ordinary back edge (the overwhelming majority, whose ring never revisits either node).
+        clear_self_puncture(routed, source, target)
     } else if shape.fan_lane {
         route_fan_lane(
             direction,
@@ -1003,10 +1049,16 @@ fn route_with_ports(
     } else if let Some(bend) = shape.rank_lane_bend {
         // §10-3 item 4: `classify` already found and collision-tested this exact bend
         // (`rank_lane_gap_bend`) — `bend_at` reproduces the identical route here, never a second,
-        // independently-derived one.
+        // independently-derived one. `clear_local_route` is a no-op for every edge `classify`
+        // already confirmed clear (the overwhelming majority — its own collision test already
+        // passed before returning this shape); its only real work is §10-3 item 10's own
+        // best-effort merge fallback (`classify`'s own doc on why a merge can reach here with a
+        // bend that *still* grazes a foreign node rather than falling back to the ambiguous
+        // cross-axis `alt` shape) — the same local nudge a `staircase` edge already gets, kept
+        // this route on its correct flow-axis faces instead of resynthesising from raw waypoints.
         let mut out = vec![source_port.clone()];
         out.extend(bend_at(direction, bend, &source_port, &target_port));
-        out
+        clear_local_route(out, nodes, (source.id.as_str(), target.id.as_str()))
     } else {
         // The one-bend shape branch and merge share, and aligned falls into too: `bridge` between
         // faces of unlike axes is always exactly one corner regardless of eviction's offsets
@@ -1101,6 +1153,7 @@ fn rank_lane_gap_bends(
     target: &PlacedNode,
     target_side: Side,
     nodes: &[PlacedNode],
+    extended: bool,
 ) -> Vec<f64> {
     let sign = outward_sign(target_side);
     let entry_boundary = flow(direction, &target.center) + sign * flow_extent(direction, target);
@@ -1124,8 +1177,20 @@ fn rank_lane_gap_bends(
     // really does sit that close to `source` (this function then returns fewer candidates, or none,
     // and `classify`'s own caller falls back to the ordinary cross-face shape or `staircase`, exactly
     // the "避けられない場合のみ" this rule was always allowed to do).
+    //
+    // §10-3 item 10 (`docs/FEATURE-MERMAID-RENDERER.md`): that "busy fanout" concern is a fact
+    // about a *branching* source with several siblings crowding its own exit face — it does not
+    // apply to a genuine merge's own source (`classify`'s `!branching` ladder, `source_out_degree
+    // <= 1` by construction), which has no sibling fanout to wander back into. `extended` is
+    // `classify`'s own signal for that case: the full span is searched (`source_facing` itself,
+    // never past it), not just its nearer half — every caller that can be a busy fanout source
+    // (the `branching` ladder) always passes `false`, unchanged from before this parameter existed.
     let source_facing = flow(direction, &source.center) - sign * flow_extent(direction, source);
-    let max_dist = dist(source_facing) / 2.0;
+    let max_dist = if extended {
+        dist(source_facing)
+    } else {
+        dist(source_facing) / 2.0
+    };
 
     // Every other node's own *pair* of boundaries along this axis: `near` faces `target` (where a
     // gap ending at this node has to stop), `far` faces away from it (where the *next* gap, on the
@@ -1173,6 +1238,23 @@ fn rank_lane_gap_bends(
         // The next gap (if any) starts on the far side of *this* node's own body — never inside it,
         // regardless of how close its own `near` wall was to the previous node's.
         cursor_dist = cursor_dist.max(dist(far));
+    }
+    // §10-3 item 10's own trailing gap: once every in-range wall's own body has been stepped past,
+    // whatever room is left between there and `max_dist` is itself a candidate — the region nearest
+    // `source`'s own facing wall, offered *last* (nearest-target candidates, above, are still tried
+    // first by `classify`'s own caller). The un-`extended` (branching) search never reaches this: its
+    // own `max_dist` is already only half the span, so a trailing gap out here would sit deep in a
+    // busy fanout source's own crowded region — precisely what capping the search was for.
+    if extended && out.len() < RANK_LANE_MAX_CANDIDATES {
+        let gap_width = max_dist - cursor_dist;
+        if gap_width > EPS {
+            let offset = if gap_width <= 2.0 * PORT_CLEARANCE {
+                gap_width / 2.0
+            } else {
+                (gap_width * 0.4).clamp(PORT_CLEARANCE, gap_width - PORT_CLEARANCE)
+            };
+            out.push(at_dist(cursor_dist + offset));
+        }
     }
     out
 }
@@ -1333,6 +1415,72 @@ fn clear_local_route(
                     continue;
                 }
                 if segment_crosses_node(a, b, n) {
+                    let (l, t, r, bo) = n.bounds();
+                    fix = Some(if horizontal {
+                        let y = a.y;
+                        let new_y = if y <= (t + bo) / 2.0 {
+                            t - COLLISION_MARGIN - 1.0
+                        } else {
+                            bo + COLLISION_MARGIN + 1.0
+                        };
+                        (y, new_y, true)
+                    } else {
+                        let x = a.x;
+                        let new_x = if x <= (l + r) / 2.0 {
+                            l - COLLISION_MARGIN - 1.0
+                        } else {
+                            r + COLLISION_MARGIN + 1.0
+                        };
+                        (x, new_x, false)
+                    });
+                    break 'search;
+                }
+            }
+        }
+        let Some((old_c, new_c, horizontal)) = fix else {
+            break;
+        };
+        for p in &mut points {
+            if horizontal && (p.y - old_c).abs() < EPS {
+                p.y = new_c;
+            } else if !horizontal && (p.x - old_c).abs() < EPS {
+                p.x = new_c;
+            }
+        }
+    }
+    points
+}
+
+/// [`clear_local_route`]'s own mechanism, run against the opposite pair: `source`'s and `target`'s
+/// own boxes, the two nodes every route's own collision search (`route_with_ports`'s `blocked`
+/// closures, built from [`segment_crosses_any_node`]) always excludes, on the reasoning that a
+/// route's own two ends touch its own two nodes by construction. That reasoning covers an exit or
+/// entry leg — a segment ending *at* the port — but not a `route_perimeter` ring's own *return*
+/// leg re-crossing the source's box on its way to a target sitting close by (`route_with_ports`'s
+/// own doc on why only `shape.reverse` needs this: every other shape's own two-or-fewer-bend
+/// geometry is built directly from its own two ports, so it structurally cannot re-enter either —
+/// [`staircase_punctures_its_own_endpoint`]'s own doc on `bridge`'s "unlike axes" shape is the one
+/// documented exception, already handled where it is built). Uses the same strict, unpadded
+/// [`segment_crosses_node_padded`] (margin `0.0`) that predicate does, for the same reason: a port
+/// sits only [`PORT_INSET`] outside its own face, and a padded test could not tell a route that
+/// correctly leaves/enters its own node apart from one that actually crosses back through it.
+fn clear_self_puncture(
+    mut points: Vec<Point>,
+    source: &PlacedNode,
+    target: &PlacedNode,
+) -> Vec<Point> {
+    const MAX_PASSES: usize = 4;
+    for _ in 0..MAX_PASSES {
+        let mut fix: Option<(f64, f64, bool)> = None; // (old constant coord, new one, horizontal?)
+        'search: for w in points.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            let horizontal = (a.y - b.y).abs() < EPS;
+            let vertical = (a.x - b.x).abs() < EPS;
+            if !horizontal && !vertical {
+                continue;
+            }
+            for n in [source, target] {
+                if segment_crosses_node_padded(a, b, n, 0.0) {
                     let (l, t, r, bo) = n.bounds();
                     fix = Some(if horizontal {
                         let y = a.y;
@@ -1948,11 +2096,22 @@ fn evict(
                 center_idx
             });
 
+        // §10-3 item 10's own retreat-rule fix: the widest offset actually handed out below, on
+        // *either* side of the face's own centre — plain `|offset|`, tracked as the loop goes so
+        // the retreat computation just past it never has to re-derive the anchor-relative grid a
+        // second time. An anchored (odd `trunk`/`aligned` position) face is not symmetric about
+        // its own centre index the way the un-anchored `(n-1)/2` grid always is (`anchor`'s own
+        // doc: RS's own four-way merge in `samples/mermaid.ja.md`'s "大きさ" flowchart anchors on
+        // its trunk claim at index 2 of 4, giving offsets `-32, -16, 0, +16` — `32`, not `16`, is
+        // the true widest reach), so `required_flat` below reads this rather than assuming the
+        // un-anchored, always-symmetric `(n-1)*PORT_SPACING` span.
+        let mut max_abs_offset = 0.0_f64;
         for (i, claim) in claims.iter().enumerate() {
             let offset = match anchor {
                 Some(anchor) => (i as f64 - anchor as f64) * PORT_SPACING,
                 None => (i as f64 - (n as f64 - 1.0) / 2.0) * PORT_SPACING,
             };
+            max_abs_offset = max_abs_offset.max(offset.abs());
             let coord = face_center_coord(node, side) + offset;
             match claim.end {
                 FaceEnd::Source => {
@@ -2011,12 +2170,21 @@ fn evict(
             }
         }
 
-        // The flat run this face needs: `(n-1)` gaps of `PORT_SPACING` between `n` ports, plus
-        // `PORT_CLEARANCE` clear on each side of the outermost one.
+        // The flat run this face needs: twice the widest offset any port actually sits at
+        // (`max_abs_offset`, above), plus `PORT_CLEARANCE` clear beyond that port's own corner —
+        // §10-1 item 1: "ポートは角から8px以上". For the un-anchored, always-symmetric grid this
+        // is exactly the old `(n-1)*PORT_SPACING + 2*PORT_CLEARANCE` (the widest offset is always
+        // `(n-1)/2 * PORT_SPACING` from centre on both sides there), so nothing changes for it;
+        // an anchored, asymmetric grid (`max_abs_offset`'s own doc — a trunk claim off the array's
+        // geometric centre) needs however much *that* side alone reaches, not the old formula's
+        // count-based guess, which undercounted it and left the outermost port sitting flush on
+        // the node's own corner instead of `PORT_CLEARANCE` px inside it (`docs/STATUS.md`'s own
+        // ★未修正 entry: RS's own four-way merge in `samples/mermaid.ja.md`'s "大きさ" flowchart,
+        // `ページ描画→ラスタライズ`'s target port landing exactly on the box's own top edge).
         let required_flat = if n == 0 {
             0.0
         } else {
-            (n as f64 - 1.0) * PORT_SPACING + 2.0 * PORT_CLEARANCE
+            2.0 * (max_abs_offset + PORT_CLEARANCE)
         };
         // A chamfered rectangle's flat run is shorter than its box by the chamfer on each end —
         // §10-1 item 1: "面取り矩形は面取り6px分も平坦部から除くこと" — so the box itself has to
@@ -5219,7 +5387,7 @@ mod tests {
         let b = node("B", 300.0, 150.0, 200.0, 40.0); // spans x 200..400
         let c = node("C", 600.0, 300.0, 80.0, 40.0); // left edge at 560
         let nodes = vec![a.clone(), b, c.clone()];
-        let bends = rank_lane_gap_bends(Direction::LeftToRight, &a, &c, Side::Left, &nodes);
+        let bends = rank_lane_gap_bends(Direction::LeftToRight, &a, &c, Side::Left, &nodes, false);
         assert_eq!(
             bends.len(),
             1,
@@ -5242,7 +5410,7 @@ mod tests {
         let b = node("B", 500.0, 150.0, 100.0, 40.0); // spans x 450..550
         let c = node("C", 800.0, 300.0, 80.0, 40.0); // left edge at 760
         let nodes = vec![a.clone(), d, b, c.clone()];
-        let bends = rank_lane_gap_bends(Direction::LeftToRight, &a, &c, Side::Left, &nodes);
+        let bends = rank_lane_gap_bends(Direction::LeftToRight, &a, &c, Side::Left, &nodes, false);
         assert_eq!(bends.len(), 2, "{bends:?}");
         // First candidate: inside the gap between B's right edge (550) and C's left edge (760).
         assert!(
@@ -5265,7 +5433,7 @@ mod tests {
         let a = node("A", 0.0, 0.0, 80.0, 40.0);
         let c = node("C", 600.0, 0.0, 80.0, 40.0);
         let nodes = vec![a.clone(), c.clone()];
-        let bends = rank_lane_gap_bends(Direction::LeftToRight, &a, &c, Side::Left, &nodes);
+        let bends = rank_lane_gap_bends(Direction::LeftToRight, &a, &c, Side::Left, &nodes, false);
         assert!(bends.is_empty(), "{bends:?}");
     }
 
@@ -5282,7 +5450,7 @@ mod tests {
         let e = node("E", 120.0, 150.0, 40.0, 40.0); // spans x 100..140, near A
         let c = node("C", 600.0, 300.0, 80.0, 40.0);
         let nodes = vec![a.clone(), e, c.clone()];
-        let bends = rank_lane_gap_bends(Direction::LeftToRight, &a, &c, Side::Left, &nodes);
+        let bends = rank_lane_gap_bends(Direction::LeftToRight, &a, &c, Side::Left, &nodes, false);
         assert!(
             bends.is_empty(),
             "a wall this close to A must be out of the nearer-half scope: {bends:?}"
