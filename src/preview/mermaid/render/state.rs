@@ -54,6 +54,7 @@ use crate::preview::mermaid::state::{self, Direction, Kind, NotePosition, StateD
 use crate::preview::mermaid::text_metrics;
 
 use super::edges::Tip;
+use super::orthogonal;
 use super::shapes::{self, Glyph, Size};
 use super::svg;
 use super::{
@@ -71,6 +72,12 @@ pub const NOTE_GAP: f64 = 24.0;
 /// own `spec_of` swaps a decision `Shape::Diamond` for one: a diamond has no flat run for
 /// [`super::orthogonal::evict`] to spread more than one port along, only a point at each vertex.
 const STATE_CHOICE_ORTHO_SIZE: f64 = 28.0;
+
+/// §10-5 S4: a fork/join bar's thickness under orthogonal routing — thinner than splines' own
+/// [`shapes::BAR_THICKNESS`] (10px), which stays exactly as `forkJoin.ts` draws it. The bar's
+/// *length* (the dimension along the cross axis) is not a fixed constant at all — see
+/// `spec_of`'s own use of this alongside [`orthogonal::BAR_PORT_PAD`].
+const BAR_THICKNESS_ORTHO: f64 = 6.0;
 
 /// How many times a note may be pushed further out before konoma gives up and leaves it where it
 /// is. Every push clears at least one box, so a diagram would have to hold this many boxes in one
@@ -170,6 +177,27 @@ pub fn spec_of(diagram: &StateDiagram, routing: Routing) -> GraphSpec {
                 Glyph::ChamferedRect,
                 Size::new(STATE_CHOICE_ORTHO_SIZE, STATE_CHOICE_ORTHO_SIZE),
             )
+        } else if routing == Routing::Orthogonal && matches!(s.kind, Kind::Fork | Kind::Join) {
+            // §10-5 S4 ("長さ＝接続先トランクspan＋両端各16px…厚み6px"): the bar's own true length
+            // is not knowable here — it depends on where dagre eventually places the trunks this
+            // bar connects to, which has not run yet — so this starts at the *smallest* length the
+            // rule can ever produce (a zero-wide span still keeps its two 16px end pads) and lets
+            // `lay_out_spec`'s own growth retry (`mod.rs`'s `bar_required_sizes`, the same
+            // "lay out, measure, grow, lay out again" loop §10-1 item 1's port eviction already
+            // uses) widen it to the real span once the first pass has real trunk positions to
+            // measure. Starting small, rather than at splines' own `shapes::BAR_LENGTH` (70px), is
+            // what lets that monotonic "only grows" loop converge on the *true* minimum instead of
+            // being stuck wherever an oversized guess happened to start.
+            let min_length = 2.0 * orthogonal::BAR_PORT_PAD;
+            let horizontal = matches!(glyph, Glyph::Bar { horizontal: true });
+            (
+                glyph,
+                if horizontal {
+                    Size::new(min_length, BAR_THICKNESS_ORTHO)
+                } else {
+                    Size::new(BAR_THICKNESS_ORTHO, min_length)
+                },
+            )
         } else {
             (
                 glyph,
@@ -191,6 +219,45 @@ pub fn spec_of(diagram: &StateDiagram, routing: Routing) -> GraphSpec {
     // from the border nodes hung off them. A block listed before its members would still work —
     // `Tree::from_blocks` resolves the nesting by id — but keeping the parser's order means the
     // frames come out innermost-first, which is the order `read_clusters` sorts by depth anyway.
+    // §10-5 S4's own clearance fix: a block's members are laid out *inside* it, at ranks that can
+    // sit close to the block's own exit rank — `state::spec_of`'s own anchor for a block-named
+    // edge (dagre's compound layout picks a real member, not the block itself) means a
+    // block-to-bar transition's ordinary `minlen: 1` can leave as little rank gap between that
+    // member and the bar as any ordinary adjacent-rank pair, with none of the extra room a bar's
+    // own thickness needs to clear a member box entirely — found on `zz-design-4c`'s own
+    // `処理 -> join_state` (`処理` a multi-member composite state): the join bar's exact-trunk-
+    // matched port (`orthogonal::bar_ports`'s own "no distribution" rule) landed at the same rank
+    // depth as `処理`'s own member `整形`, so the only physically valid (perpendicular) approach
+    // into that port ran straight through `整形`'s box — not fixable by routing around it, since
+    // the obstacle and the port sit at the same flow-axis level. Doubling `minlen` for exactly
+    // this transition shape (a block on one end, a fork/join bar on the other) asks dagre for one
+    // full extra rank of clearance, the same lever §10-1 item 3 already pulls for a label that
+    // needs more room — cheap, and scoped to the one edge shape that can actually need it (an
+    // ordinary node-to-bar or node-to-node transition already clears by construction, since a
+    // point-sized node's own rank has no interior member to overlap with anything downstream of it).
+    let block_ids: std::collections::HashSet<&str> = diagram
+        .states
+        .iter()
+        .filter(|s| s.kind.is_block())
+        .map(|s| s.id.as_str())
+        .collect();
+    let fork_join_ids: std::collections::HashSet<&str> = diagram
+        .states
+        .iter()
+        .filter(|s| matches!(s.kind, Kind::Fork | Kind::Join))
+        .map(|s| s.id.as_str())
+        .collect();
+    let block_to_bar_minlen = |from: &str, to: &str| -> usize {
+        if routing == Routing::Orthogonal
+            && ((block_ids.contains(from) && fork_join_ids.contains(to))
+                || (fork_join_ids.contains(from) && block_ids.contains(to)))
+        {
+            2
+        } else {
+            1
+        }
+    };
+
     let mut edges: Vec<SpecEdge> = diagram
         .transitions
         .iter()
@@ -207,7 +274,7 @@ pub fn spec_of(diagram: &StateDiagram, routing: Routing) -> GraphSpec {
             tip_start: Tip::None,
             tip_end: Tip::Arrow,
             stroke: Stroke::Normal,
-            minlen: 1,
+            minlen: block_to_bar_minlen(&t.from, &t.to),
             start_label: None,
             end_label: None,
             style: None,
@@ -227,6 +294,9 @@ pub fn spec_of(diagram: &StateDiagram, routing: Routing) -> GraphSpec {
         edges,
         blocks,
         routing,
+        // §10-5 S3: only under orthogonal routing — splines keeps the pre-existing dagre-derived
+        // self-loop shape unchanged, the same gate S1's marker duplication just above uses.
+        fixed_self_loops: routing == Routing::Orthogonal,
     }
 }
 

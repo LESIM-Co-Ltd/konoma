@@ -7053,6 +7053,7 @@ fn label_boosts_actually_widen_the_flow_axis_segment_dagre_lays_out() {
         edges: vec![edge],
         blocks: Vec::new(),
         routing: orthogonal::Routing::Orthogonal,
+        fixed_self_loops: false,
     };
 
     let flow_gap = |boosts: &HashMap<String, f64>| {
@@ -7197,6 +7198,7 @@ fn avoid_label_plates_pushes_only_the_port_that_actually_crosses_a_plate() {
         &[],
         &edges,
         &std::collections::HashMap::new(),
+        false,
     );
     let mut points = routed.points;
     let ab_before = points["ab"].clone();

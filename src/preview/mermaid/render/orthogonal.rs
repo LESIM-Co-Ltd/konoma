@@ -160,6 +160,24 @@ pub const PORT_CLEARANCE: f64 = 8.0;
 /// retreat rule has to take over — `classify`'s own `fan_eligible` doc has the full derivation.
 const FAN_ELIGIBLE_MIN_BRANCHES: usize = 3;
 
+/// §10-5 S3 ("流れと直交する辺…の中心±8pxの2ポート"): how far each of a self-transition's two
+/// dedicated ports sits from its face's own centre — never the generic [`PORT_SPACING`]/[`evict`]
+/// grid, because a self-loop's two ports are a fixed pair, not siblings competing for a shared
+/// face with however many other edges land on it.
+const SELF_LOOP_PORT_OFFSET: f64 = 8.0;
+
+/// §10-5 S3 ("20px外を回る固定ループ"): how far past the node's own face (not the port, which
+/// already sits [`PORT_INSET`] outside it) the loop's outward leg runs.
+const SELF_LOOP_OUTSET: f64 = 20.0;
+
+/// §10-5 S3 ("ラベルはループ外側4pxに浮かせる…線上プレート則の唯一の例外"): the clear gap between
+/// the loop's own outward leg and the label plate floating beside it.
+pub(crate) const SELF_LOOP_LABEL_GAP: f64 = 4.0;
+
+/// §10-5 S4 ("長さ＝接続先トランクspan＋両端各16px"): the padding a fork/join bar's own length
+/// keeps past the outermost trunk it connects to, on each end.
+pub(crate) const BAR_PORT_PAD: f64 = 16.0;
+
 /// Which flat face of a node's bounding box a line leaves or enters through.
 ///
 /// Always a *physical* direction (`Top` is always the lesser-y side), independent of
@@ -243,6 +261,40 @@ fn flow_face(direction: Direction, delta: f64) -> Side {
     }
 }
 
+/// The flow-axis delta a branch/merge face formula should read its *sign* from — dagre's own rank
+/// order (`rank_a - rank_b`) when both ranks are known and differ, `geo_delta` (the raw geometric
+/// flow-position difference `flow(direction, &a.center) - flow(direction, &b.center)`, in the same
+/// `a`-minus-`b` order as the rank pair) otherwise. `flow_face`'s own doc already establishes that
+/// a *positive* delta always means "further along the axis dagre laid the rank out on" — which
+/// `geo_delta` only actually measures correctly when both ends are ordinary, point-sized nodes.
+///
+/// A subgraph/composite-state frame is not point-sized: [`cluster_as_node`] gives it a `center`
+/// at its own bounding box's *midpoint*, which can sit on either side of a node the frame is
+/// genuinely upstream (or downstream) of once the frame is tall enough relative to how close that
+/// node's own rank is — found on `zz-design-4c`'s own `処理 -> join_state` (`処理`'s frame is 447px
+/// tall; its own geometric centre sits *below* `join_state`'s `y`, even though `処理`'s exit is
+/// unambiguously upstream of it by rank), which flipped `merge_source_side`/`merge_target_side`
+/// onto the wrong pair of faces and sent the edge back up through the frame's own member `整形` to
+/// reach a port it had no business approaching from that side.
+///
+/// Rank does not have this problem: `classify`'s own `is_reverse` check (its first) already trusts
+/// it exactly this way, and `EligibleEdge::source_rank`/`target_rank` are always read off the
+/// dagre-assigned rank of whichever real node anchors a cluster-anchored edge (`mod.rs`'s own doc
+/// on `EligibleEdge` construction: "Rank is always read off the anchor node, whichever end is a
+/// cluster") — a quantity a frame's own disproportionate visual size can never distort, because it
+/// is never derived from that size to begin with. For two ordinary nodes the two answers always
+/// agree in every corpus/regression fixture this module pins (a layered layout's own flow-axis
+/// coordinate is monotonic in rank by construction), so this only ever changes the frame case.
+/// Equal ranks (`sr == tr`, an `aligned`-shaped pair sharing one rank — this function is never
+/// reached for `is_reverse`, which is decided before it) fall back to `geo_delta`, the same
+/// "geometry decides when rank cannot" `dominant_face` already relies on for a back edge.
+fn flow_rank_delta(rank_a: Option<i32>, rank_b: Option<i32>, geo_delta: f64) -> f64 {
+    match (rank_a, rank_b) {
+        (Some(ra), Some(rb)) if ra != rb => (ra - rb) as f64,
+        _ => geo_delta,
+    }
+}
+
 /// The face whose outward normal runs along the axis across the flow, on the side `delta` points
 /// to. The pair [`flow_face`] does not use: `Left`/`Right` for `TD`/`BT`, `Top`/`Bottom` for
 /// `LR`/`RL`.
@@ -287,6 +339,18 @@ fn dominant_face(direction: Direction, center: &Point, reference: &Point) -> Sid
         flow_face(direction, dflow)
     } else {
         cross_face(direction, dcross)
+    }
+}
+
+/// §10-5 S3's own fixed self-transition face: "流れと直交する辺（LR: 上辺／TB: 右辺）" — always
+/// `Top` for a left-right flow, always `Right` for a top-bottom one, regardless of which physical
+/// side a reader might call "closer" to anything else in the diagram. [`retreat_fixed_self_loops`]
+/// is the one place this ever changes, to the [`Side::opposite`] face, and only when the canonical
+/// one is already spoken for.
+fn self_loop_canonical_face(direction: Direction) -> Side {
+    match direction {
+        Direction::LeftToRight | Direction::RightToLeft => Side::Top,
+        Direction::TopToBottom | Direction::BottomToTop => Side::Right,
     }
 }
 
@@ -394,6 +458,17 @@ struct EdgeShape {
     /// The back-edge shape: keep dagre's own waypoint chain rather than the single/double-bend
     /// shapes below — see [`classify`]'s own doc.
     reverse: bool,
+    /// §10-5 S3: a state diagram's own self-transition (`source.id == target.id`), drawn as the
+    /// fixed 20px loop [`route_state_self_loop`] builds from two dedicated ±8px ports, rather than
+    /// flowchart's dagre-waypoint-derived `reverse` self-loop. Set only when [`classify`]'s own
+    /// `fixed_self_loops` argument is `true` — a flowchart's self-loop keeps the pre-existing
+    /// `reverse` shape unchanged (`docs/FEATURE-MERMAID-RENDERER.md` §10-5's own S3 is a
+    /// stateDiagram-v2 extension, not a flowchart rule). Whenever this is set, `reverse` is also
+    /// set (a self-loop is still, topologically, a rank-non-advancing edge — `evict`'s own doc on
+    /// why this shape skips its generic per-face distribution needs both flags to tell an ordinary
+    /// forward edge from a self-loop's dedicated ports, `reverse` alone being ambiguous with a
+    /// genuine back edge between two different nodes).
+    self_loop_fixed: bool,
     /// Whether this is the dead-straight, zero-bend shape (§10-1 item 1: "直進辺") — the one rule
     /// 2 gives the centre port to over any sibling on the same face.
     aligned: bool,
@@ -658,7 +733,36 @@ fn classify(
     // this is the one extra condition kept alongside the geometric "nothing real between the two
     // ends" test.
     source_is_cluster: bool,
+    // §10-5 S3: whether a self-transition draws as the fixed 20px loop rather than flowchart's
+    // dagre-derived staircase — `true` only for a state diagram under `Routing::Orthogonal`
+    // (`state::spec_of`'s own caller), so a flowchart's self-loop (`A --> A` is valid mermaid
+    // flowchart syntax too) keeps its existing, separately-tested shape unchanged.
+    fixed_self_loops: bool,
 ) -> EdgeShape {
+    // §10-5 S3's own early return: a self-transition is `source.id == target.id`, which the
+    // `is_reverse`/`nothing_between` machinery below would otherwise read as an ordinary back
+    // edge with `raw`'s dagre waypoints synthesising some 3-leg staircase (`docs/STATUS.md`'s own
+    // ★未修正 entry: `zz-design-4b` measured that shape landing on the *wrong* face — LR's bottom
+    // and right, not the spec's own fixed top). The canonical face is decided here (§10-5's own
+    // "流れと直交する辺（LR: 上辺／TB: 右辺）"); whether it has to retreat to the opposite face
+    // because something else already uses it is a whole-diagram question `route_flowchart` answers
+    // once every edge's shape is known, not something a single edge's own `classify` call can see
+    // — see `retreat_fixed_self_loops`.
+    if fixed_self_loops && source.id == target.id {
+        let side = self_loop_canonical_face(direction);
+        return EdgeShape {
+            reverse: true,
+            self_loop_fixed: true,
+            aligned: false,
+            staircase: false,
+            fan_lane: false,
+            rank_lane_bend: None,
+            source_side: side,
+            source_axis: axis_of(direction, side),
+            target_side: side,
+            target_axis: axis_of(direction, side),
+        };
+    }
     let is_reverse = matches!((source_rank, target_rank), (Some(sr), Some(tr)) if tr <= sr);
     // §10-5 part-3 item 2 ("q が外周を大回り"): a back edge **leaving a subgraph/composite-state
     // frame**, with no other node between that frame and where it is going, falls through to the
@@ -744,6 +848,7 @@ fn classify(
         let target_side = dominant_face(direction, &target.center, &ref_end);
         return EdgeShape {
             reverse: true,
+            self_loop_fixed: false,
             aligned: false,
             staircase: false,
             fan_lane: false,
@@ -762,6 +867,7 @@ fn classify(
         let target_side = source_side.opposite();
         let mut shape = EdgeShape {
             reverse: false,
+            self_loop_fixed: false,
             aligned: true,
             staircase: false,
             fan_lane: false,
@@ -800,7 +906,19 @@ fn classify(
     // the pole already.
     let marker_anchored =
         matches!(source.shape, Glyph::StateStart) || matches!(target.shape, Glyph::StateEnd);
-    let branching = branching && !matches!(source.shape, Glyph::StateStart);
+    // §10-5 S4 ("バーのポート位置は接続先トランクの座標に一致…入=上流側長辺/出=下流側長辺"): a
+    // fork/join bar's two flat sides are always its **flow-axis** faces (the bar's own long
+    // edges — `Glyph::Bar { horizontal }`'s own doc: its short side is the thickness laid across
+    // the flow axis, so the long, flat sides run *along* the cross axis and face *along* the flow
+    // one, the same orientation `merge_source_side`/`merge_target_side` already compute). Forcing
+    // `branching` off routes every edge touching a bar through those two formulas regardless of
+    // in/out degree, the same correction `marker_anchored` makes for a start marker just above —
+    // without it, a fork's own multi-way `source_out_degree > 1` would read as an ordinary decision
+    // node and send its outputs out the *cross*-axis face (`branch_source_side`), the flat side a
+    // real diamond/chamfered-rect judgement node uses, never a bar's own short (thickness) edge.
+    let bar_anchored =
+        matches!(source.shape, Glyph::Bar { .. }) || matches!(target.shape, Glyph::Bar { .. });
+    let branching = branching && !matches!(source.shape, Glyph::StateStart) && !bar_anchored;
     let (branch_source_side, branch_target_side) = (
         cross_face(
             direction,
@@ -808,7 +926,11 @@ fn classify(
         ),
         flow_face(
             direction,
-            flow(direction, &source.center) - flow(direction, &target.center),
+            flow_rank_delta(
+                source_rank,
+                target_rank,
+                flow(direction, &source.center) - flow(direction, &target.center),
+            ),
         ),
     );
     // §10-3 item 3 ("合流の直交方向拡大…目標の流れ方向辺"): the round-3 reference
@@ -826,11 +948,19 @@ fn classify(
     let (merge_source_side, merge_target_side) = (
         flow_face(
             direction,
-            flow(direction, &target.center) - flow(direction, &source.center),
+            flow_rank_delta(
+                target_rank,
+                source_rank,
+                flow(direction, &target.center) - flow(direction, &source.center),
+            ),
         ),
         flow_face(
             direction,
-            flow(direction, &source.center) - flow(direction, &target.center),
+            flow_rank_delta(
+                source_rank,
+                target_rank,
+                flow(direction, &source.center) - flow(direction, &target.center),
+            ),
         ),
     );
     // §10-3 item 1 ("多本数ファンアウトの流れ方向ポート"), reimplemented on a principled numeric
@@ -845,6 +975,7 @@ fn classify(
     let fan_eligible = branching && source_out_degree > FAN_ELIGIBLE_MIN_BRANCHES;
     let fan_shape = fan_eligible.then_some(EdgeShape {
         reverse: false,
+        self_loop_fixed: false,
         aligned: false,
         staircase: false,
         fan_lane: true,
@@ -862,6 +993,7 @@ fn classify(
     };
     let mut shape = EdgeShape {
         reverse: false,
+        self_loop_fixed: false,
         aligned: false,
         staircase: false,
         fan_lane: false,
@@ -893,6 +1025,26 @@ fn classify(
         // always clears cleanly on the first try, which is what these four edges actually draw.
     }
 
+    if bar_anchored {
+        // §10-5 S4: a fork/join bar's only valid ports are its two flow-axis long edges
+        // (`bar_anchored`'s own doc, just above) — the *alt* shape below is built from
+        // `branch_source_side`/`branch_target_side`, the cross-axis pair a bar's own short,
+        // thickness-only edge can offer no flat run along at all, so there is no alternate shape
+        // to fall back to and no point asking `shape_crosses_a_node` the question at all.
+        //
+        // More fundamentally, that pre-check tests the shape at [`face_center_coord`] — the bar's
+        // own overall centre — which is a poor stand-in for where this edge's port will actually
+        // end up: [`bar_ports`] never reads that centre at all, it places the port at whichever
+        // cross coordinate the *connected trunk* sits at (its own doc, "no distribution…exactly
+        // wherever the sibling on the other end sits"), which for a wide/tall bar or a cluster-
+        // anchored trunk can be far from centre. Testing the wrong point can say "clear" when the
+        // real port collides, or — the case that actually motivated this early return — say
+        // "collides" and force `staircase` (dagre's own raw waypoint chain) when the real,
+        // correctly-faced route would have been fine. `route_with_ports`'s own bar-anchored
+        // `clear_local_route` call is what actually guards the real, final port instead.
+        return shape;
+    }
+
     if marker_anchored && shape_crosses_a_node(direction, source, target, &shape, nodes) {
         // §10-5 S1: a marker-anchored shape has no cross-axis alternate to swap to — unlike an
         // ordinary node, whose flat sides are all legitimate ports, a start/end marker's only
@@ -915,6 +1067,7 @@ fn classify(
         };
         let alt = EdgeShape {
             reverse: false,
+            self_loop_fixed: false,
             aligned: false,
             staircase: false,
             fan_lane: false,
@@ -992,6 +1145,47 @@ fn classify(
     shape
 }
 
+/// §10-5 S3's own retreat rule ("その辺が他の辺に使われている場合は反対側へ退避"): flips a
+/// self-transition's face to [`Side::opposite`] when [`self_loop_canonical_face`]'s own guess is
+/// already carrying another edge on that node.
+///
+/// Runs once, over every edge's already-decided [`EdgeShape`] — [`classify`] itself cannot answer
+/// "is anything else on this face" from a single edge's own two nodes, the same reason [`evict`]
+/// only ever groups faces after every shape in the diagram is known. "Used" means any *other*
+/// edge's `source_side`/`target_side` names the same `(node id, canonical face)` pair; a node's own
+/// two other self-loops (if it somehow had more than one, which no state-diagram source in the
+/// corpus does) do not count against each other here, since two self-loops sharing one face is a
+/// case this function has no second retreat face to offer anyway — left on the canonical face
+/// rather than silently doing nothing, which is what an unmatched retreat would otherwise do.
+fn retreat_fixed_self_loops(
+    direction: Direction,
+    edges: &[EligibleEdge],
+    shapes: &mut [Option<EdgeShape>],
+) {
+    let mut occupied: std::collections::HashSet<(String, Side)> = std::collections::HashSet::new();
+    for (edge, shape) in edges.iter().zip(shapes.iter()) {
+        let Some(shape) = shape else { continue };
+        if shape.self_loop_fixed {
+            continue;
+        }
+        occupied.insert((edge.source.to_string(), shape.source_side));
+        occupied.insert((edge.target.to_string(), shape.target_side));
+    }
+    for (edge, shape) in edges.iter().zip(shapes.iter_mut()) {
+        let Some(shape) = shape else { continue };
+        if !shape.self_loop_fixed {
+            continue;
+        }
+        if occupied.contains(&(edge.source.to_string(), shape.source_side)) {
+            let flipped = shape.source_side.opposite();
+            shape.source_side = flipped;
+            shape.target_side = flipped;
+            shape.source_axis = axis_of(direction, flipped);
+            shape.target_axis = axis_of(direction, flipped);
+        }
+    }
+}
+
 /// Builds the final polyline for one edge, given the exact port coordinate [`evict`] (or, for a
 /// single edge in isolation, [`route_edge`]) decided for each end — `source_coord`/`target_coord`
 /// are positions along each face's own tangent axis, the same thing [`face_center_coord`] returns
@@ -1014,6 +1208,16 @@ fn route_with_ports(
     nodes: &[PlacedNode],
     fan_step: Option<f64>,
 ) -> Vec<Point> {
+    // §10-5 S3: a self-transition's two ports are the fixed ±8px pair `route_state_self_loop`
+    // itself derives straight from `shape.source_side` and `source`'s own geometry — never
+    // `source_coord`/`target_coord`, which `evict` never wrote an entry for (`evict`'s own doc on
+    // why this shape skips its generic claim group entirely). Checked before either port is built
+    // below, since building one from the unset fallback coordinate (`face_center_coord`, the same
+    // value for both ends) would be meaningless work this branch throws away anyway.
+    if shape.self_loop_fixed {
+        return route_state_self_loop(source, shape.source_side);
+    }
+
     let source_port = port_at(source, shape.source_side, source_coord, PORT_INSET);
     let target_port = port_at(target, shape.target_side, target_coord, PORT_INSET);
 
@@ -1172,6 +1376,21 @@ fn route_with_ports(
             shape.source_axis,
             shape.target_axis,
         ));
+        // §10-5 S4: every other shape reaching this branch keeps `classify`'s own zero-eviction-
+        // offset collision pre-check as its sole guarantee of a clear route — correct, because
+        // `evict`'s generic 16px retreat grid never moves a port far from the face centre that
+        // pre-check already tested. A bar-anchored edge's port is not on that grid at all
+        // (`bar_ports`'s own doc: "no distribution…exactly wherever the sibling on the other end
+        // sits"), which can legitimately place it anywhere along the bar's own long, grown face —
+        // far enough from centre that the pre-check's assumption no longer holds. Found on
+        // `zz-design-4c`'s own `処理 -> join_state`: the bridge ran straight through `整形`'s own
+        // box once the join bar grew wide enough to put that edge's port directly under it. So a
+        // bar-anchored edge gets the same post-hoc local remediation the `staircase`/`rank_lane_
+        // bend` branches above already rely on for the identical class of problem — a no-op for
+        // every bar-anchored route that stays clear, which is the overwhelming majority.
+        if matches!(source.shape, Glyph::Bar { .. }) || matches!(target.shape, Glyph::Bar { .. }) {
+            out = clear_local_route(out, nodes, (source.id.as_str(), target.id.as_str()));
+        }
         out
     };
 
@@ -1182,6 +1401,28 @@ fn route_with_ports(
         points = vec![source.center.clone(), target.center.clone()];
     }
     points
+}
+
+/// §10-5 S3's own fixed loop: "20px外を回る固定ループ（曲げ3・半径0）" — draws a self-transition
+/// as a symmetric U leaving `node`'s `side` face at [`SELF_LOOP_PORT_OFFSET`]px before its own
+/// centre (the "out" port), running [`SELF_LOOP_OUTSET`]px past the face, across, and back in to
+/// [`SELF_LOOP_PORT_OFFSET`]px past centre (the "in" port, where the arrowhead lands) —
+/// `docs/mermaid-theme/handoff/round4-Konoma-Flowchart-Routing.dc.html`'s own `4b` draws exactly
+/// this shape for `監視 -> 監視` (`M252,120 V96 H268 V118`, this face's own left port out, right
+/// port in). The four points are `[out port, out corner, in corner, in port]` — three straight
+/// legs, the middle one the sole flow-axis segment [`label_slot`] then picks for S3's own floated
+/// label (`mod.rs`'s own self-loop label placement, not the ordinary on-line plate).
+fn route_state_self_loop(node: &PlacedNode, side: Side) -> Vec<Point> {
+    let centre = face_center_coord(node, side);
+    let (out_coord, in_coord) = (
+        centre - SELF_LOOP_PORT_OFFSET,
+        centre + SELF_LOOP_PORT_OFFSET,
+    );
+    let out_port = port_at(node, side, out_coord, PORT_INSET);
+    let in_port = port_at(node, side, in_coord, PORT_INSET);
+    let out_corner = port_at(node, side, out_coord, SELF_LOOP_OUTSET);
+    let in_corner = port_at(node, side, in_coord, SELF_LOOP_OUTSET);
+    vec![out_port, out_corner, in_corner, in_port]
 }
 
 /// `side`'s own outward direction along the flow axis, as a sign — `Right`/`Bottom` (the faces
@@ -2440,6 +2681,7 @@ pub fn route_edge(
         target_in_degree,
         &[],
         false,
+        false,
     );
     let source_coord = face_center_coord(source, shape.source_side);
     let target_coord = face_center_coord(target, shape.target_side);
@@ -2593,18 +2835,37 @@ fn evict(
         else {
             continue;
         };
+        // §10-5 S3: a self-transition's two ports are a fixed, dedicated pair
+        // (`self_loop_canonical_face`/`retreat_fixed_self_loops`) — never a claim on the generic
+        // 16px retreat grid this loop builds for everything else, the same "no distribution" the
+        // S4 skip just below spells out for a fork/join bar.
+        if shape.self_loop_fixed {
+            continue;
+        }
         let is_trunk = chain_next.get(edge.source).map(String::as_str) == Some(edge.target);
-        groups
-            .entry((edge.source.to_string(), shape.source_side))
-            .or_default()
-            .push(FaceClaim {
-                edge_id: edge.id.to_string(),
-                end: FaceEnd::Source,
-                other_cross: cross(direction, &target.center),
-                aligned: shape.aligned,
-                trunk: is_trunk,
-                fan_lane: shape.fan_lane,
-            });
+        // §10-5 S4 ("バーのポート位置は接続先トランクの座標に一致…分配計算が不要"): a fork/join
+        // bar's own face is never claimed here at all — `bar_ports` (`route_flowchart`'s own doc)
+        // assigns each of its edges a coordinate straight from the trunk it connects to, which is
+        // a different rule from *every* other node's, not a variation of this one (it is not
+        // "16px apart", it is "exactly wherever the sibling on the other end sits"). Only the
+        // node whose *own* shape is `Glyph::Bar` skips — the ordinary node at the other end of the
+        // same edge still gets its usual claim, just below.
+        if !matches!(source.shape, Glyph::Bar { .. }) {
+            groups
+                .entry((edge.source.to_string(), shape.source_side))
+                .or_default()
+                .push(FaceClaim {
+                    edge_id: edge.id.to_string(),
+                    end: FaceEnd::Source,
+                    other_cross: cross(direction, &target.center),
+                    aligned: shape.aligned,
+                    trunk: is_trunk,
+                    fan_lane: shape.fan_lane,
+                });
+        }
+        if matches!(target.shape, Glyph::Bar { .. }) {
+            continue;
+        }
         groups
             .entry((edge.target.to_string(), shape.target_side))
             .or_default()
@@ -2837,6 +3098,104 @@ fn evict(
     }
 }
 
+/// §10-5 S4's own port rule for a fork/join bar ("バーのポート位置は接続先トランクの座標に一致…
+/// 分配計算なし。入=上流側長辺/出=下流側長辺。join の下流出力はバー入力群の重心") — `evict`
+/// itself never claims a bar's face at all (its own doc, just above), so this is where every edge
+/// touching one actually gets a coordinate.
+///
+/// The default, for every claim on either face, is simply the *other* end's own cross coordinate —
+/// no distribution, exactly what "分配計算なし" asks for, and (since the bar's own length is grown
+/// to fit that exact span, `mod.rs`'s own `bar_required_sizes`) always lands within the bar's flat
+/// run with room to spare on each side. The one exception is a **join**'s single downstream output:
+/// when the upstream (source-of-this-edge... no, *target*-of-the-bar) face carries more than one
+/// claim and the downstream face carries exactly one, that one output's coordinate is the mean of
+/// the upstream claims' — the bar's own "重心" (centroid) rule — rather than its own single
+/// target's cross coordinate, which for an uneven input spread is not the same number.
+///
+/// A **fork**'s single upstream input keeps the plain default (its own one target's cross
+/// coordinate — `zz-design-4c`'s own `初期化 -> fork_state` port sits at `初期化`'s own centre `x`,
+/// not at the fork bar's midpoint between its two outputs, confirming the design reference draws
+/// this asymmetrically: only a join's *output* gets the centroid treatment, never a fork's input).
+fn bar_ports(
+    direction: Direction,
+    by_id: &HashMap<&str, &PlacedNode>,
+    edges: &[EligibleEdge],
+    shapes: &[Option<EdgeShape>],
+) -> (HashMap<String, f64>, HashMap<String, f64>) {
+    #[derive(Default)]
+    struct BarFaces {
+        /// Edges entering the bar (this bar is the edge's `target`): `(edge id, source's own
+        /// cross coordinate)`.
+        upstream: Vec<(String, f64)>,
+        /// Edges leaving the bar (this bar is the edge's `source`): `(edge id, target's own cross
+        /// coordinate)`.
+        downstream: Vec<(String, f64)>,
+    }
+    let mut bars: HashMap<String, BarFaces> = HashMap::new();
+    for (edge, shape) in edges.iter().zip(shapes) {
+        if shape.is_none() {
+            continue;
+        }
+        let (Some(&source), Some(&target)) = (by_id.get(edge.source), by_id.get(edge.target))
+        else {
+            continue;
+        };
+        // §10-5 S4's own "trunk" is a real, point-sized node in every design-reference example —
+        // but a fork/join edge can just as well name a subgraph/composite-state **frame**
+        // (`zz-design-4c`'s own `処理 -> join_state`, `処理` a multi-member composite state).
+        // `target.center`/`source.center` for a cluster end is [`cluster_as_node`]'s own frame
+        // *bounding-box* midpoint, not a meaningful "trunk position" once the frame is tall enough
+        // to make that midpoint land anywhere at all relative to a downstream node close to one of
+        // the frame's own *members* — found on `zz-design-4c` itself: the frame's own centre
+        // coincided with `整形`'s own x range (a member `処理` contains), so the exact-match port
+        // this function built landed squarely behind that member with no way to approach it
+        // without crossing it. `edge.raw`'s own first/last point is dagre's *own* waypoint for
+        // this exact edge, anchored at whichever real member `tree.anchor` actually picked
+        // (`mod.rs`'s own doc on `EligibleEdge` construction) — a real point in the layout, not a
+        // synthetic frame-wide average, and for an ordinary node-to-node edge it sits close enough
+        // to that node's own centre that using it instead never visibly changes anything (`raw`'s
+        // own first/last leg is always short — dagre draws straight into a real node's rank
+        // column).
+        let raw_cross = |near_first: bool, fallback: &Point| {
+            let p = if near_first {
+                edge.raw.first()
+            } else {
+                edge.raw.last()
+            };
+            cross(direction, p.unwrap_or(fallback))
+        };
+        if matches!(source.shape, Glyph::Bar { .. }) {
+            bars.entry(edge.source.to_string())
+                .or_default()
+                .downstream
+                .push((edge.id.to_string(), raw_cross(false, &target.center)));
+        }
+        if matches!(target.shape, Glyph::Bar { .. }) {
+            bars.entry(edge.target.to_string())
+                .or_default()
+                .upstream
+                .push((edge.id.to_string(), raw_cross(true, &source.center)));
+        }
+    }
+
+    let mut source_coord = HashMap::new();
+    let mut target_coord = HashMap::new();
+    for faces in bars.into_values() {
+        let centroid = if faces.downstream.len() == 1 && faces.upstream.len() > 1 {
+            Some(faces.upstream.iter().map(|(_, c)| c).sum::<f64>() / faces.upstream.len() as f64)
+        } else {
+            None
+        };
+        for (id, c) in faces.downstream {
+            source_coord.insert(id, centroid.unwrap_or(c));
+        }
+        for (id, c) in faces.upstream {
+            target_coord.insert(id, c);
+        }
+    }
+    (source_coord, target_coord)
+}
+
 /// §10-1 item 4's 8px lane stagger: every perimeter-routed edge — a genuine back edge (`reverse`,
 /// minus a self-loop; a collision-fallback forward edge, `staircase`, stays local —
 /// [`route_with_ports`]'s own doc) — gets its own lane index, assigned in a stable order (edge id,
@@ -2958,6 +3317,10 @@ pub fn route_flowchart(
     clusters: &[PlacedCluster],
     edges: &[EligibleEdge],
     chain_next: &HashMap<String, String>,
+    // §10-5 S3: whether a self-transition (`source.id == target.id`) draws as the fixed loop —
+    // `true` only for a state diagram (`state::lay_out`'s own caller), `false` for a flowchart,
+    // whose self-loop keeps its pre-existing, separately-tested `reverse` shape.
+    fixed_self_loops: bool,
 ) -> RoutedFlowchart {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
@@ -2983,11 +3346,26 @@ pub fn route_flowchart(
                 e.target_in_degree,
                 nodes,
                 cluster_ids.contains(e.source),
+                fixed_self_loops,
             ))
         })
         .collect();
 
-    let eviction = evict(direction, &by_id, edges, &shapes, chain_next);
+    // §10-5 S3 ("その辺が他の辺に使われている場合は反対側へ退避"): every self-loop shape above
+    // guessed the canonical face (`self_loop_canonical_face`) with no view of the rest of the
+    // diagram — only once every edge's shape is known can this ask "does anything else already
+    // sit on that face", so it runs here, over the whole set, before `evict` groups any of them.
+    retreat_fixed_self_loops(direction, edges, &mut shapes);
+
+    let mut eviction = evict(direction, &by_id, edges, &shapes, chain_next);
+    // §10-5 S4 ("バーのポート位置は接続先トランクの座標に一致…join の下流出力はバー入力群の重心"):
+    // `evict` itself never claims a fork/join bar's face at all (its own doc, just below the marker
+    // exclusion) — a bar's ports are a direct function of which trunk each connected edge reaches,
+    // never the generic 16px retreat grid, so they are worked out here instead and folded into the
+    // same two coordinate maps every other edge already reads its port from.
+    let (bar_source_coord, bar_target_coord) = bar_ports(direction, &by_id, edges, &shapes);
+    eviction.source_coord.extend(bar_source_coord);
+    eviction.target_coord.extend(bar_target_coord);
     // §10-3 item 10's own "ホップ x の入れ子": run only once every sibling's exact port coordinate
     // is known (`eviction`, just above) — `nest_merge_target_hops`'s own doc explains why an earlier
     // attempt at this exact spacing, judged from node boxes alone, cannot see a sibling at all.
@@ -3824,6 +4202,12 @@ pub fn separate_coincident_detours(
                 e.target_in_degree,
                 nodes,
                 cluster_ids.contains(e.source),
+                // A self-loop's own shape is irrelevant here — this pass either skips a self-loop
+                // outright (`avoid_label_plates`'s own `shape.reverse { continue }`) or excludes it
+                // via `source.id != target.id` (`separate_coincident_detours`/`insert_crossing_
+                // gaps`), so which of the two self-loop shapes `classify` would have picked never
+                // reaches anything this function does.
+                false,
             );
             ((shape.reverse || shape.staircase || is_flow_flow_bend(&shape))
                 && source.id != target.id)
@@ -3958,6 +4342,9 @@ pub fn avoid_label_plates(
                 e.target_in_degree,
                 nodes,
                 cluster_ids.contains(e.source),
+                // A self-loop always hits `shape.reverse { continue }` below, before anything else
+                // this function does reads `shape` — see that branch's own comment.
+                false,
             ))
         })
         .collect();
@@ -4231,6 +4618,12 @@ pub fn insert_crossing_gaps(
                 e.target_in_degree,
                 nodes,
                 cluster_ids.contains(e.source),
+                // A self-loop's own shape is irrelevant here — this pass either skips a self-loop
+                // outright (`avoid_label_plates`'s own `shape.reverse { continue }`) or excludes it
+                // via `source.id != target.id` (`separate_coincident_detours`/`insert_crossing_
+                // gaps`), so which of the two self-loop shapes `classify` would have picked never
+                // reaches anything this function does.
+                false,
             );
             Some((
                 e.id,
@@ -4497,6 +4890,7 @@ mod tests {
                 &[],
                 &edges,
                 &std::collections::HashMap::new(),
+                false,
             );
             let pts = &routed.points["back"];
             for w in pts.windows(2) {
@@ -4562,6 +4956,7 @@ mod tests {
             &[],
             &edges,
             &std::collections::HashMap::new(),
+            false,
         );
         let mut points = routed.points;
         let before = points["loop"].clone();
@@ -4621,6 +5016,7 @@ mod tests {
             &[],
             &edges,
             &std::collections::HashMap::new(),
+            false,
         );
         let mut points = routed.points;
         let mut plates: HashMap<String, PlacedEdgeLabel> = HashMap::new();
@@ -4723,6 +5119,7 @@ mod tests {
             2,
             2,
             &nodes,
+            false,
             false,
         );
         assert!(
@@ -4927,6 +5324,7 @@ mod tests {
         ];
         let back_shape = EdgeShape {
             reverse: true,
+            self_loop_fixed: false,
             aligned: false,
             staircase: false,
             fan_lane: false,
@@ -5025,6 +5423,7 @@ mod tests {
         let shapes: Vec<Option<EdgeShape>> = vec![
             Some(EdgeShape {
                 reverse: false,
+                self_loop_fixed: false,
                 aligned: false,
                 staircase: false,
                 fan_lane: false,
@@ -5036,6 +5435,7 @@ mod tests {
             }),
             Some(EdgeShape {
                 reverse: false,
+                self_loop_fixed: false,
                 aligned: false,
                 staircase: false,
                 fan_lane: false,
@@ -5047,6 +5447,7 @@ mod tests {
             }),
             Some(EdgeShape {
                 reverse: false,
+                self_loop_fixed: false,
                 aligned: false,
                 staircase: false,
                 fan_lane: false,
@@ -5200,6 +5601,7 @@ mod tests {
             &[],
             edges,
             &std::collections::HashMap::new(),
+            false,
         )
     }
 
@@ -5411,7 +5813,14 @@ mod tests {
         ];
         let mut chain_next = HashMap::new();
         chain_next.insert("S".to_string(), "T".to_string());
-        let routed = route_flowchart(Direction::LeftToRight, &nodes, &[], &edges, &chain_next);
+        let routed = route_flowchart(
+            Direction::LeftToRight,
+            &nodes,
+            &[],
+            &edges,
+            &chain_next,
+            false,
+        );
 
         let st_port = routed.points["st"].first().unwrap();
         assert!(
@@ -5984,8 +6393,18 @@ mod tests {
                 source: "H0",
                 target: "H1",
                 raw: &[],
-                source_rank: Some(0),
-                target_rank: Some(1),
+                // `None`, not `Some(0)`/`Some(1)`: `H0`/`H1` sit at the *same* flow-axis (`y`)
+                // coordinate by design (this helper's whole point is a purely cross-axis pair,
+                // §10-1 item 5's "auxiliary vs main" gap logic reads the literal injected
+                // `points` below, not `classify`'s own shape) — a real dagre layout never places
+                // two different-rank nodes at an identical flow position (`flow_rank_delta`'s own
+                // doc), so asserting a rank here would be asserting geometry this fixture does not
+                // actually have. `flow_rank_delta` falls back to the geometric (tied, `0.0`) delta
+                // whichever way this reads, keeping `classify`'s own tie-break — not a genuine
+                // upstream/downstream claim about `H0`/`H1` — the only signal deciding this pair's
+                // shape, exactly as it was before `flow_rank_delta` existed.
+                source_rank: None,
+                target_rank: None,
                 source_out_degree: 1,
                 target_in_degree: 1,
             },
@@ -6168,6 +6587,7 @@ mod tests {
             1, // source_out_degree — not branching
             2, // target_in_degree — a genuine merge
             &nodes,
+            false,
             false,
         );
         assert!(

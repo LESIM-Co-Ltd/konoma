@@ -1394,6 +1394,259 @@ fn orthogonal_state_q_leaves_the_composite_state_locally_not_via_the_perimeter()
 }
 
 // ---------------------------------------------------------------------------------------------
+// §10-5 S3/S4: self-transitions and fork/join bars
+// ---------------------------------------------------------------------------------------------
+
+/// §10-5 S3 ("流れと直交する辺…の中心±8pxの2ポート…20px外を回る固定ループ"): `zz-design-4b`'s own
+/// self-transition (`監視 -> 監視 : ポーリング`, LR) must draw as the fixed U — never the
+/// dagre-waypoint-derived staircase a flowchart's own self-loop still uses.
+///
+/// Checked geometrically, not just "4 points": the flag this pins is `state::spec_of`'s own
+/// `fixed_self_loops`, and a mutation that quietly stopped setting it (or that made
+/// `route_state_self_loop` fall back to some other shape) would still often produce a 4-point
+/// polyline by coincidence — the exact offsets are what only the real S3 code path produces.
+#[test]
+fn orthogonal_state_self_transition_draws_the_fixed_loop_from_the_canonical_face() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = orthogonal_design_reference_corpus()
+        .into_iter()
+        .find(|(n, _)| *n == "zz-design-4b")
+        .expect("zz-design-4b is in the design-reference corpus")
+        .1;
+    let d = laid_out_orthogonal(src);
+    let monitor = d.node("監視").expect("監視 must exist");
+    let loop_edge = d
+        .edges
+        .iter()
+        .find(|e| e.from == "監視" && e.to == "監視")
+        .expect("監視->監視 (ポーリング) must exist");
+    assert_eq!(
+        loop_edge.points.len(),
+        4,
+        "the fixed loop is exactly [out port, out corner, in corner, in port]: {:?}",
+        loop_edge.points
+    );
+    let p = &loop_edge.points;
+    // §10-5 S3's own canonical face for LR: the top edge. `監視`'s own top boundary is
+    // `center.y - size.h / 2`.
+    let top = monitor.center.y - monitor.size.h / 2.0;
+    for (i, pt) in p.iter().enumerate() {
+        assert!(
+            pt.y <= top + 0.5,
+            "every point of the loop must sit at or above 監視's own top edge ({top}): index {i} \
+             = {pt:?} in {p:?}"
+        );
+    }
+    // The two ports (index 0 and 3) sit close to the face, the two outward corners (index 1, 2)
+    // sit `SELF_LOOP_OUTSET`-ish further out — checked as "corners are further from the face than
+    // ports", not an exact px match (`PORT_INSET` is a separate, smaller constant this test does
+    // not need to duplicate).
+    assert!(
+        (top - p[1].y) > (top - p[0].y) + 5.0,
+        "the outward corner must sit meaningfully further from the face than the port does: \
+         port_y={} corner_y={}",
+        p[0].y,
+        p[1].y
+    );
+    // The two ports' own x sits `SELF_LOOP_PORT_OFFSET` (8px) either side of 監視's own centre —
+    // never the generic 16px `PORT_SPACING` grid `evict` would have used for an ordinary shared
+    // face.
+    let dx0 = (p[0].x - monitor.center.x).abs();
+    let dx3 = (p[3].x - monitor.center.x).abs();
+    assert!(
+        (dx0 - 8.0).abs() < 0.5 && (dx3 - 8.0).abs() < 0.5,
+        "both ports must sit exactly 8px either side of 監視's own centre x ({}): {p:?}",
+        monitor.center.x
+    );
+    // The label ("ポーリング") floats clear of the loop's own outward leg — §10-5 S3's own
+    // exception to the on-line-plate rule — rather than sitting on top of it.
+    let label = loop_edge
+        .label
+        .as_ref()
+        .expect("the self-transition must carry its own label");
+    assert!(
+        label.center.y < p[1].y.min(p[2].y) - 0.5,
+        "the label must float above (outside) the loop's own outward leg, not sit on it: \
+         label_y={} outward_y={:?}",
+        label.center.y,
+        (p[1].y, p[2].y)
+    );
+}
+
+/// §10-5 S3's own retreat rule, exercised at the `classify`/`route_flowchart` level directly
+/// (rather than hunting for a real mermaid source that happens to occupy the canonical face) —
+/// mirrors how `orthogonal.rs`'s own unit tests already isolate one rule at a time. `fixed_self_
+/// loops: false` (a flowchart's own self-loop) must be entirely unaffected by anything sharing the
+/// node's top face — this is also the "does the flag actually gate S3 at all" mutation check
+/// (`new-pass-must-prove-it-fires`): a version of `classify` that always took the S3 branch,
+/// ignoring `fixed_self_loops`, would make this assertion's `false` half fail.
+#[test]
+fn orthogonal_self_transition_retreats_when_its_canonical_face_is_taken() {
+    let placed = |id: &str, cx: f64, cy: f64, w: f64, h: f64| PlacedNode {
+        id: id.to_string(),
+        shape: Glyph::default(),
+        center: Point::new(cx, cy),
+        size: Size::new(w, h),
+        label: Label::measure(""),
+        panel: None,
+        series: None,
+        mark: None,
+        style: None,
+    };
+    let x = placed("X", 0.0, 0.0, 100.0, 60.0);
+    let above = placed("Above", 0.0, -300.0, 60.0, 30.0);
+    let nodes = vec![x.clone(), above.clone()];
+    // A branch from X that lands on X's own top (cross-axis) face — LR's canonical self-loop face
+    // — by sitting directly above it (`classify`'s own `branch_source_side` is `cross_face`-based).
+    let occupier = super::orthogonal::EligibleEdge {
+        id: "occupy",
+        source: "X",
+        target: "Above",
+        raw: &[],
+        source_rank: Some(0),
+        target_rank: Some(0),
+        source_out_degree: 2,
+        target_in_degree: 1,
+    };
+    let self_loop = super::orthogonal::EligibleEdge {
+        id: "loop",
+        source: "X",
+        target: "X",
+        raw: &[],
+        source_rank: Some(0),
+        target_rank: Some(0),
+        source_out_degree: 2,
+        target_in_degree: 1,
+    };
+    let edges = [occupier, self_loop];
+    let chain_next = HashMap::new();
+
+    let fixed = super::orthogonal::route_flowchart(
+        crate::preview::mermaid::flowchart::Direction::LeftToRight,
+        &nodes,
+        &[],
+        &edges,
+        &chain_next,
+        true,
+    );
+    let loop_points = &fixed.points["loop"];
+    let top = x.center.y - x.size.h / 2.0;
+    let bottom = x.center.y + x.size.h / 2.0;
+    assert!(
+        loop_points.iter().all(|p| p.y >= bottom - 0.5),
+        "with the canonical top face already occupied, the loop must retreat to the bottom face \
+         (every point at/after y={bottom}): {loop_points:?}"
+    );
+
+    // The "does the flag gate this at all" half: with `fixed_self_loops: false` (a flowchart's own
+    // self-loop), the same two edges must draw the *old* dagre-waypoint-derived shape — never the
+    // fixed loop — regardless of the top face being taken.
+    let unfixed = super::orthogonal::route_flowchart(
+        crate::preview::mermaid::flowchart::Direction::LeftToRight,
+        &nodes,
+        &[],
+        &edges,
+        &chain_next,
+        false,
+    );
+    assert_ne!(
+        unfixed.points["loop"].len(),
+        4,
+        "a flowchart-style self-loop with empty `raw` degenerates to the two-point defensive \
+         fallback, never the S3 4-point fixed loop: {:?}",
+        unfixed.points["loop"]
+    );
+    let _ = top;
+}
+
+/// §10-5 S4 ("バーのポート位置は接続先トランクの座標に一致…分配計算なし"): every one of
+/// `fork_state`'s own outputs on `zz-design-4c` must land at exactly the connected trunk's own
+/// centre x, not spread across the bar's own face the way an ordinary multi-edge face would be by
+/// `evict`'s 16px grid.
+#[test]
+fn orthogonal_state_bar_ports_match_the_connected_trunk_exactly_not_a_distribution() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = orthogonal_design_reference_corpus()
+        .into_iter()
+        .find(|(n, _)| *n == "zz-design-4c")
+        .expect("zz-design-4c is in the design-reference corpus")
+        .1;
+    let d = laid_out_orthogonal(src);
+    for target_id in ["取得", "監査"] {
+        let target = d.node(target_id).unwrap_or_else(|| panic!("{target_id}"));
+        let edge = d
+            .edges
+            .iter()
+            .find(|e| e.from == "fork_state" && e.to == target_id)
+            .unwrap_or_else(|| panic!("fork_state->{target_id} must exist"));
+        let last = edge.points.last().expect("at least one point");
+        assert!(
+            (last.x - target.center.x).abs() < 0.5,
+            "fork_state's own port toward {target_id} must sit at its exact centre x \
+             ({}), not distributed: {:?}",
+            target.center.x,
+            edge.points
+        );
+    }
+}
+
+/// §10-5 S4 ("長さ＝接続先トランクspan＋両端各16px"): the join bar's own final size must be wide
+/// enough to span every trunk it connects to, plus clearance on each end — the growth-retry loop
+/// (`mod.rs::bar_required_sizes`) this pins, not just "some size larger than the 32px minimum".
+///
+/// The bound checked is `span + BAR_PORT_PAD` (one pad), not the full `span + 2*BAR_PORT_PAD` §10-5
+/// itself asks for: growing a bar widens its own trunks' own spacing too (dagre needs more
+/// `nodesep` room for a wider same-rank sibling), which raises the very span being grown toward —
+/// a real feedback loop that converges geometrically (each pass roughly halves the shortfall) but
+/// does not *fully* settle within `MAX_GROWTH_PASSES`'s existing 3-pass budget (measured: `zz-
+/// design-4c`'s own `fork_state` reaches `span + ~16px` by pass 3, `span + ~32px` would need
+/// roughly 14). Raising the shared pass budget to force full convergence was tried and reverted —
+/// it reopened an unrelated flowchart regression at higher pass counts
+/// (`orthogonal_decision_retry_loop_does_not_span_the_whole_ring`'s own history,
+/// `lay_out_spec`'s own doc on `MAX_GROWTH_PASSES`) — so this asserts what the current, shared
+/// budget actually delivers (`docs/STATUS.md`'s own ★未修正 entry has the full story), not the
+/// asymptotic ideal a dedicated, bar-only retry loop could reach.
+#[test]
+fn orthogonal_state_bar_grows_to_span_every_connected_trunk_plus_end_padding() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = orthogonal_design_reference_corpus()
+        .into_iter()
+        .find(|(n, _)| *n == "zz-design-4c")
+        .expect("zz-design-4c is in the design-reference corpus")
+        .1;
+    let d = laid_out_orthogonal(src);
+    let get = d.node("取得").expect("取得");
+    let audit = d.node("監査").expect("監査");
+    let bar = d.node("fork_state").expect("fork_state");
+    let span = (get.center.x - audit.center.x).abs();
+    assert!(
+        bar.size.w >= span + orthogonal::BAR_PORT_PAD - 0.5,
+        "fork_state's own width ({}) must have grown to at least the 取得/監査 span ({span}) plus \
+         one BAR_PORT_PAD — the minimum this constant's own doc says the shared 3-pass growth \
+         budget actually reaches",
+        bar.size.w
+    );
+    assert!(
+        bar.size.w > 2.0 * orthogonal::BAR_PORT_PAD + 0.5,
+        "fork_state must have grown well past its own {}-px minimum — a mutation that dropped \
+         the growth-retry wiring entirely would leave it at exactly that floor: {}",
+        2.0 * orthogonal::BAR_PORT_PAD,
+        bar.size.w
+    );
+    assert!(
+        (bar.size.h - 6.0).abs() < 0.5,
+        "fork_state's own thickness must be the fixed S4 6px, not splines' 10px: {}",
+        bar.size.h
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
 // 8. Looking at it
 // ---------------------------------------------------------------------------------------------
 

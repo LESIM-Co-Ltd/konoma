@@ -834,6 +834,9 @@ fn spec_of(chart: &Flowchart, curve: &str, routing: Routing) -> GraphSpec {
         edges,
         blocks,
         routing,
+        // A flowchart's own self-loop keeps its pre-existing, dagre-derived shape — §10-5 S3 is a
+        // state-diagram-only extension (this struct's own field doc).
+        fixed_self_loops: false,
     }
 }
 
@@ -932,6 +935,12 @@ pub struct GraphSpec {
     /// diagram's own `spec_of` ever set this to `Routing::Orthogonal`, and only when
     /// `[ui] mermaid_routing = "konoma-orthogonal"`.
     pub routing: Routing,
+    /// §10-5 S3: whether a self-transition (`source.id == target.id`) draws as the state
+    /// diagram's own fixed 20px loop rather than a flowchart's dagre-derived staircase. `false`
+    /// for every diagram kind but a state diagram (`state::spec_of`'s own caller), and `false`
+    /// there too unless `routing == Routing::Orthogonal` — a flowchart's self-loop (`A --> A` is
+    /// valid mermaid flowchart syntax) keeps its pre-existing, separately-tested shape either way.
+    pub fixed_self_loops: bool,
 }
 
 /// Lays out and routes a spec — everything except turning geometry into markup.
@@ -987,8 +996,27 @@ pub fn lay_out_spec(spec: &GraphSpec) -> Result<Diagram, RenderError> {
     //
     // Growth only ever grows (`apply_growth` takes the max of the current and required size), so
     // this is monotonic and would converge on its own; `MAX_GROWTH_PASSES` is a defensive cap, not
-    // the expected path — reached only if some future change made growth requirements disagree
-    // between passes, and even then the last pass's diagram (not a panic) is what a reader gets.
+    // the expected path for *ordinary* port-eviction growth, which never changes what it is
+    // measuring as a side effect of the growth itself.
+    //
+    // §10-5 S4's own bar-length growth (`bar_required_sizes`) is not quite that shape: widening a
+    // fork/join bar to fit its connected trunks' span can itself push those very trunks further
+    // apart (dagre's own `nodesep` needs more room for a wider same-rank sibling), which *raises*
+    // the next pass's own required span — a real, geometrically-narrowing feedback loop (found on
+    // `zz-design-4c`: `fork_state` needed 32 → 113 → 145 → 161 → 169…px, each shortfall roughly
+    // half the last), not a disagreement between passes, but one ordinary 16px-grid port growth
+    // never exhibits (growing one node's face to fit its own ports does not move a *different*
+    // node's centre). Raising `MAX_GROWTH_PASSES` high enough to fully settle this (measured:
+    // ~14 passes) was tried and reverted — it changed *unrelated* flowcharts' own convergence path
+    // enough to reopen an old bug this same loop already fixed once
+    // (`orthogonal_decision_retry_loop_does_not_span_the_whole_ring`'s own back-edge ring-spanning
+    // regression, at pass counts this constant had never run before), which is worse than leaving
+    // a bar's own length one `BAR_PORT_PAD` (16px) short of its true asymptotic span. So `zz-
+    // design-4c`'s own join bar stays visibly slightly under its final trunk span — a known,
+    // accepted gap (`docs/STATUS.md`'s own ★未修正), not a silently wrong number: every port on
+    // it is still evicted correctly (`bar_ports`), and the shortfall shrinks fast enough (halving
+    // each pass) that it is a few px, not the kind of miss that puts a port outside the bar
+    // altogether.
     //
     // The same loop also carries §10-1 item 3's "ラベル付き区間の最低長" fix: `label_boosts` is the
     // extra px `lay_out_spec_pass` asks be added to a labelled edge's flow-axis `EdgeLabel`
@@ -1039,6 +1067,81 @@ fn apply_growth(
         }
     }
     grew
+}
+
+/// §10-5 S4 ("長さ＝接続先トランクspan＋両端各16px"): every fork/join bar's own minimum size, read
+/// straight from `nodes`' current positions — a bar's length is the cross-axis span of every trunk
+/// node an edge connects it to (its own union of upstream *and* downstream neighbours: a fork's
+/// single input plus its many outputs, or a join's many inputs plus its single output, both read
+/// the same way, since which one is "the many side" never matters to a span), plus
+/// [`orthogonal::BAR_PORT_PAD`] on each end; thickness is always whatever `state::spec_of` already
+/// set it to (this function does not read that constant directly — the node's own already-placed
+/// `size` carries it, and this only ever asks for more length along the bar's own long axis, never
+/// a different thickness).
+///
+/// A node with no edge touching it at all (unreachable from any real diagram — a fork/join always
+/// has at least one transition, or the parser would not have made it a `Kind::Fork`/`Kind::Join`
+/// in the first place) is simply absent from the result, the same "no entry means no requirement"
+/// convention [`orthogonal::RoutedFlowchart::required_size`] already uses.
+fn bar_required_sizes(
+    direction: Direction,
+    nodes: &[PlacedNode],
+    by_id: &HashMap<String, usize>,
+    drawable: &[Drawable],
+) -> HashMap<String, Size> {
+    let cross_coord = |p: &Point| match direction {
+        Direction::TopToBottom | Direction::BottomToTop => p.x,
+        Direction::LeftToRight | Direction::RightToLeft => p.y,
+    };
+    let is_bar = |id: &str| {
+        by_id
+            .get(id)
+            .is_some_and(|&i| matches!(nodes[i].shape, Glyph::Bar { .. }))
+    };
+    let mut spans: HashMap<String, (f64, f64)> = HashMap::new();
+    for d in drawable {
+        if d.tail == d.head {
+            continue;
+        }
+        if is_bar(&d.tail) {
+            if let Some(&hi) = by_id.get(&d.head) {
+                let c = cross_coord(&nodes[hi].center);
+                let e = spans
+                    .entry(d.tail.clone())
+                    .or_insert((f64::INFINITY, f64::NEG_INFINITY));
+                e.0 = e.0.min(c);
+                e.1 = e.1.max(c);
+            }
+        }
+        if is_bar(&d.head) {
+            if let Some(&ti) = by_id.get(&d.tail) {
+                let c = cross_coord(&nodes[ti].center);
+                let e = spans
+                    .entry(d.head.clone())
+                    .or_insert((f64::INFINITY, f64::NEG_INFINITY));
+                e.0 = e.0.min(c);
+                e.1 = e.1.max(c);
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    for (id, (min_c, max_c)) in spans {
+        let Some(&i) = by_id.get(&id) else { continue };
+        let length = (max_c - min_c).max(0.0) + 2.0 * orthogonal::BAR_PORT_PAD;
+        let horizontal = matches!(nodes[i].shape, Glyph::Bar { horizontal: true });
+        let thickness = if horizontal {
+            nodes[i].size.h
+        } else {
+            nodes[i].size.w
+        };
+        let size = if horizontal {
+            Size::new(length, thickness)
+        } else {
+            Size::new(thickness, length)
+        };
+        out.insert(id, size);
+    }
+    out
 }
 
 /// Adds each edge's `shortfall` — this pass's own measured gap between what its labelled segment
@@ -1387,6 +1490,21 @@ fn lay_out_spec_pass(
         .map(|(i, n)| (n.id.clone(), i))
         .collect();
 
+    // §10-5 S4 ("長さ＝接続先トランクspan＋両端各16px"): every fork/join bar's minimum size, from
+    // the *current* pass's own node positions — `nodes` here already carries whatever
+    // `pull_back_fan_ranks`/`align_straight_lanes`/`regroup_fan_lanes` above settled on, the same
+    // "current geometry" every other §10-1 item 1 growth signal (`route_flowchart`'s own
+    // `RoutedFlowchart::required_size`) reads from. Folded into `required_size` alongside that one,
+    // just below, so `apply_growth`'s existing monotonic "lay out, measure, grow, lay out again"
+    // loop (`lay_out_spec`'s own doc) is the *only* growth mechanism this module has — a bar's
+    // length is not a special case that needs its own retry loop, just another entry in the same
+    // map.
+    let bar_min_sizes: HashMap<String, Size> = if spec.routing == Routing::Orthogonal {
+        bar_required_sizes(spec.direction, &nodes, &by_id, &drawable)
+    } else {
+        HashMap::new()
+    };
+
     // --- read the frames back, then grow them until their titles fit ----------------------------
     let placed_clusters = read_clusters(&g, &tree, &nodes);
 
@@ -1561,6 +1679,7 @@ fn lay_out_spec_pass(
             &placed_clusters,
             &eligible,
             &chain_next,
+            spec.fixed_self_loops,
         );
         if tree.is_empty() {
             let moved = reserve_pass_through_rows(
@@ -1577,14 +1696,26 @@ fn lay_out_spec_pass(
                     &placed_clusters,
                     &eligible,
                     &chain_next,
+                    spec.fixed_self_loops,
                 );
             }
         }
         let orthogonal::RoutedFlowchart {
             mut points,
-            required_size,
+            mut required_size,
             pass_through_eligible: _,
         } = routed;
+        // §10-5 S4: `route_flowchart` itself never sizes a bar (`evict`'s own doc — a bar's face
+        // is never claimed the way an ordinary node's is), so this pass's own `bar_min_sizes`
+        // (computed above, from the *same* node positions this route was just drawn against) is
+        // the only source of a bar's growth requirement — folded in here rather than kept apart,
+        // so a bar competing for `apply_growth`'s `max(current, required)` behaves exactly like
+        // every other node's growth signal already does.
+        for (id, need) in bar_min_sizes {
+            let entry = required_size.entry(id).or_insert(Size::new(0.0, 0.0));
+            entry.w = entry.w.max(need.w);
+            entry.h = entry.h.max(need.h);
+        }
         // A `staircase` edge's own local route can coincide with another unrelated detour edge's
         // (`orthogonal::separate_coincident_detours`'s own doc — lost the perimeter lane's shared
         // stagger bookkeeping once it stopped using it, 2026-09-01). Runs before label plates and
@@ -1621,7 +1752,7 @@ fn lay_out_spec_pass(
     // the way it could before this pass existed.
     for PreparedEdge {
         edge,
-        tail_id: _,
+        tail_id,
         head_id: _,
         raw,
         tail_end,
@@ -1654,6 +1785,50 @@ fn lay_out_spec_pass(
             if is_orthogonal {
                 let slot = orthogonal::label_slot(spec.direction, &points)?;
                 let size = Size::new(l.width + LABEL_PAD_X * 2.0, l.height + LABEL_PAD_Y * 2.0);
+                // §10-5 S3 ("ラベルはループ外側4pxに浮かせて中央揃え…線上プレート則の唯一の例外"):
+                // a self-transition's label never sits *on* its own line the way every other
+                // orthogonal edge's does — `label_slot` already finds the loop's one flow-axis
+                // segment (the outward leg `route_state_self_loop` built), but centring the plate
+                // on it would paint the plate over the line itself, which the S3 exception exists
+                // specifically to avoid (the loop's own legs are always too short to meet the
+                // ordinary minimum-length rule, §10-1 item 3's own reasoning for why this needs a
+                // dedicated exception rather than a bigger plate). Pushed further along the
+                // *cross* axis, past the segment, by `SELF_LOOP_LABEL_GAP` plus half the plate's
+                // own cross-axis extent — away from the node, the same direction the loop itself
+                // already bulges.
+                if spec.fixed_self_loops && edge.from == edge.to {
+                    if let Some(&ni) = by_id.get(tail_id.as_str()) {
+                        let node = &nodes[ni];
+                        let cross_gap = orthogonal::SELF_LOOP_LABEL_GAP
+                            + match spec.direction {
+                                Direction::TopToBottom | Direction::BottomToTop => size.w / 2.0,
+                                Direction::LeftToRight | Direction::RightToLeft => size.h / 2.0,
+                            };
+                        let center = match spec.direction {
+                            Direction::TopToBottom | Direction::BottomToTop => {
+                                let sign = if slot.center.x >= node.center.x {
+                                    1.0
+                                } else {
+                                    -1.0
+                                };
+                                Point::new(slot.center.x + sign * cross_gap, slot.center.y)
+                            }
+                            Direction::LeftToRight | Direction::RightToLeft => {
+                                let sign = if slot.center.y >= node.center.y {
+                                    1.0
+                                } else {
+                                    -1.0
+                                };
+                                Point::new(slot.center.x, slot.center.y + sign * cross_gap)
+                            }
+                        };
+                        return Some(PlacedEdgeLabel {
+                            center,
+                            size,
+                            label: l,
+                        });
+                    }
+                }
                 // Only a flow-axis segment's length is ever grown by `label_boosts` (see
                 // `lay_out_spec_pass`'s own doc on why boosting the other dimension would ask
                 // dagre for room in an axis it never uses to size this gap) — recording a
