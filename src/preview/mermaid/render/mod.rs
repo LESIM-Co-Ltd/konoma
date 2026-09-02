@@ -1252,13 +1252,38 @@ fn lay_out_spec_pass(
     // compound parent — the ranking phase only ever sees leaves — so mermaid lays such an edge out
     // against a representative descendant and cuts the line back to the frame when it draws it.
     // The anchor is remembered here because it is also what the layout has to be read back from.
+    //
+    // `internal_edges` is every transition's own written `(from, to)` pair, over the whole
+    // diagram — `clusters::Tree::anchor`'s own doc: it restricts this to whichever pairs turn out
+    // to be *both* descendants of the one block being anchored, so handing it the full,
+    // unfiltered list here (built once, not per edge) is exactly what "an edge to/from outside
+    // the block says nothing about its own internal flow" needs — an edge whose ends are not both
+    // inside a given block is simply never counted for that block's own sink/source search.
+    let internal_edges: Vec<(String, String)> = spec
+        .edges
+        .iter()
+        .map(|e| (e.from.clone(), e.to.clone()))
+        .collect();
+    // §10-5's own acceptance criterion ("既定 splines の状態図は1バイト不変") and the same
+    // requirement for every other diagram kind's own default rendering: the directional sink/
+    // source anchor only ever applies under `konoma-orthogonal`. `Routing::Splines` keeps
+    // `AnchorRole::Declared` — the pre-§10-5 "first descendant, direction-blind" rule — so no
+    // splines-routed cluster-anchored edge changes which member it lays out against.
+    let (exit_role, entry_role) = if spec.routing == Routing::Orthogonal {
+        (clusters::AnchorRole::Exit, clusters::AnchorRole::Entry)
+    } else {
+        (
+            clusters::AnchorRole::Declared,
+            clusters::AnchorRole::Declared,
+        )
+    };
     let mut drawable: Vec<Drawable> = Vec::new();
     let mut edge_label_dims: HashMap<String, (f64, f64)> = HashMap::new();
     for edge in &spec.edges {
         let is_node = |id: &str| measured.contains_key(id);
         let (Some(tail), Some(head)) = (
-            tree.anchor(&edge.from, &is_node),
-            tree.anchor(&edge.to, &is_node),
+            tree.anchor(&edge.from, &is_node, exit_role, &internal_edges),
+            tree.anchor(&edge.to, &is_node, entry_role, &internal_edges),
         ) else {
             // Neither a node nor a block that holds one: there is nothing to draw a line between.
             continue;
@@ -1704,7 +1729,21 @@ fn lay_out_spec_pass(
             mut points,
             mut required_size,
             pass_through_eligible: _,
+            bar_geometry,
         } = routed;
+        // §10-5 S4's own bar geometry fix: `route_flowchart` computes every bar's corrected,
+        // port-straddling rectangle against its own *local* copy of `nodes` (its own doc on
+        // `bar_geometry` — the routing maths inside it never touches this function's own `nodes`
+        // at all), so the correction has to be written back here, onto the exact vector the final
+        // `Diagram::nodes` is built from below, or the drawn bar shape would stay at dagre's own
+        // (possibly port-mismatched) rectangle even though every edge's own polyline in `points`
+        // already reflects the corrected one.
+        for node in &mut nodes {
+            if let Some((center, size)) = bar_geometry.get(&node.id) {
+                node.center = center.clone();
+                node.size = *size;
+            }
+        }
         // §10-5 S4: `route_flowchart` itself never sizes a bar (`evict`'s own doc — a bar's face
         // is never claimed the way an ordinary node's is), so this pass's own `bar_min_sizes`
         // (computed above, from the *same* node positions this route was just drawn against) is

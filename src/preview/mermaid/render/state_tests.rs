@@ -1595,21 +1595,17 @@ fn orthogonal_state_bar_ports_match_the_connected_trunk_exactly_not_a_distributi
 }
 
 /// §10-5 S4 ("長さ＝接続先トランクspan＋両端各16px"): the join bar's own final size must be wide
-/// enough to span every trunk it connects to, plus clearance on each end — the growth-retry loop
-/// (`mod.rs::bar_required_sizes`) this pins, not just "some size larger than the 32px minimum".
+/// enough to span every trunk it connects to, plus clearance on **both** ends.
 ///
-/// The bound checked is `span + BAR_PORT_PAD` (one pad), not the full `span + 2*BAR_PORT_PAD` §10-5
-/// itself asks for: growing a bar widens its own trunks' own spacing too (dagre needs more
-/// `nodesep` room for a wider same-rank sibling), which raises the very span being grown toward —
-/// a real feedback loop that converges geometrically (each pass roughly halves the shortfall) but
-/// does not *fully* settle within `MAX_GROWTH_PASSES`'s existing 3-pass budget (measured: `zz-
-/// design-4c`'s own `fork_state` reaches `span + ~16px` by pass 3, `span + ~32px` would need
-/// roughly 14). Raising the shared pass budget to force full convergence was tried and reverted —
-/// it reopened an unrelated flowchart regression at higher pass counts
-/// (`orthogonal_decision_retry_loop_does_not_span_the_whole_ring`'s own history,
-/// `lay_out_spec`'s own doc on `MAX_GROWTH_PASSES`) — so this asserts what the current, shared
-/// budget actually delivers (`docs/STATUS.md`'s own ★未修正 entry has the full story), not the
-/// asymptotic ideal a dedicated, bar-only retry loop could reach.
+/// **Updated 2026-09-03** (defect 1's own fix, `orthogonal::straddle_bar_ports`): the bound
+/// checked used to be `span + BAR_PORT_PAD` (one pad, not two) because the bar's own drawn
+/// rectangle was only ever *grown* via the ordinary lay-out/measure/grow retry loop
+/// (`mod.rs::bar_required_sizes`), which asks dagre for more room but never repositions the box
+/// dagre itself centred — and that retry loop's own feedback (growing the bar widens its trunks'
+/// own spacing too, which raises the very span being grown toward) never fully converged within
+/// the shared 3-pass budget. `straddle_bar_ports` now sets the bar's rectangle directly from
+/// `bar_ports`'s own final per-edge coordinates, every pass — an exact `[min_port - PAD, max_port
+/// + PAD]`, not an asymptotic approximation — so the width is pinned tight here, both pads.
 #[test]
 fn orthogonal_state_bar_grows_to_span_every_connected_trunk_plus_end_padding() {
     if !text_metrics::fonts_available() {
@@ -1625,11 +1621,12 @@ fn orthogonal_state_bar_grows_to_span_every_connected_trunk_plus_end_padding() {
     let audit = d.node("監査").expect("監査");
     let bar = d.node("fork_state").expect("fork_state");
     let span = (get.center.x - audit.center.x).abs();
+    let expected = span + 2.0 * orthogonal::BAR_PORT_PAD;
     assert!(
-        bar.size.w >= span + orthogonal::BAR_PORT_PAD - 0.5,
-        "fork_state's own width ({}) must have grown to at least the 取得/監査 span ({span}) plus \
-         one BAR_PORT_PAD — the minimum this constant's own doc says the shared 3-pass growth \
-         budget actually reaches",
+        (bar.size.w - expected).abs() < 0.5,
+        "fork_state's own width ({}) must be exactly the 取得/監査 span ({span}) plus both \
+         BAR_PORT_PAD ends ({expected}) now that straddle_bar_ports sets the rectangle directly \
+         from the final ports, not merely grown toward it by the layout retry loop",
         bar.size.w
     );
     assert!(
@@ -1643,6 +1640,315 @@ fn orthogonal_state_bar_grows_to_span_every_connected_trunk_plus_end_padding() {
         (bar.size.h - 6.0).abs() < 0.5,
         "fork_state's own thickness must be the fixed S4 6px, not splines' 10px: {}",
         bar.size.h
+    );
+}
+
+/// §10-5 S4 (defect 1, 2026-09-03 fix): a bar's own **drawn rectangle** must actually reach every
+/// port [`orthogonal::bar_ports`] gave it, not merely be *sized* right — before this fix, `evict`/
+/// `bar_ports` placed a port's cross coordinate correctly ([`port_at`]'s own doc: the cross
+/// coordinate is written unconditionally from the value it is handed, regardless of whether the
+/// box's own bounds happen to reach it), but the bar's box itself stayed wherever dagre's own
+/// rank/order layout centred it — for `zz-design-4c`'s own fork bar, under `初期化`/`取得` while
+/// `監査`'s own port sat well past its right edge, so the line for `fork_state -> 監査` read as
+/// leaving from empty space beside the box. Runs over **every** orthogonal fixture that has a bar
+/// at all (`CASES`' own `fork`/`fork-lr`/`4c` included, not just `zz-design-4c`), so the fix is a
+/// corpus-wide invariant rather than a fixture-specific patch — [`check_nodes_do_not_overlap`]/
+/// [`check_unrelated_clusters_do_not_overlap`] (already run over this same corpus, elsewhere in
+/// this file) are what keep "the bar still overlaps no other node/cluster" true; this test only
+/// adds the "reaches its own ports" half neither of them states.
+#[test]
+fn orthogonal_state_bar_rect_straddles_every_port_it_carries() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_full_corpus() {
+        let d = laid_out_orthogonal(src);
+        for bar in d
+            .nodes
+            .iter()
+            .filter(|n| matches!(n.shape, Glyph::Bar { .. }))
+        {
+            let horizontal = matches!(bar.shape, Glyph::Bar { horizontal: true });
+            let (lo, hi) = if horizontal {
+                (
+                    bar.center.x - bar.size.w / 2.0,
+                    bar.center.x + bar.size.w / 2.0,
+                )
+            } else {
+                (
+                    bar.center.y - bar.size.h / 2.0,
+                    bar.center.y + bar.size.h / 2.0,
+                )
+            };
+            for e in &d.edges {
+                let p = if e.from == bar.id {
+                    e.points.first()
+                } else if e.to == bar.id {
+                    e.points.last()
+                } else {
+                    continue;
+                };
+                let Some(p) = p else { continue };
+                let coord = if horizontal { p.x } else { p.y };
+                assert!(
+                    coord >= lo - 0.5 && coord <= hi + 0.5,
+                    "{name}: {}->{}'s port on bar {} sits at {coord:.2}, outside the bar's own \
+                     rectangle [{lo:.2}, {hi:.2}]",
+                    e.from,
+                    e.to,
+                    bar.id
+                );
+                assert!(
+                    coord - lo >= orthogonal::BAR_PORT_PAD - 0.5
+                        && hi - coord >= orthogonal::BAR_PORT_PAD - 0.5,
+                    "{name}: {}->{}'s port on bar {} sits {:.2}px from the near end of \
+                     [{lo:.2}, {hi:.2}] — every port must clear BAR_PORT_PAD ({}) from *both* \
+                     ends, the direct consequence of the bar's own rectangle being built from \
+                     [min_port - PAD, max_port + PAD]",
+                    e.from,
+                    e.to,
+                    bar.id,
+                    (coord - lo).min(hi - coord),
+                    orthogonal::BAR_PORT_PAD
+                );
+            }
+        }
+    }
+}
+
+/// §10-5 S4 ("fork→join を曲げ 0 優先", defect 2, 2026-09-03 fix): every edge with exactly one
+/// bar end must route with **zero bends** — a constant cross-axis coordinate across its whole
+/// polyline — and that coordinate must equal the *other* end's own final, evicted port coordinate
+/// (`bar_ports`'s own doc: "no distribution... exactly wherever the sibling on the other end
+/// sits"), not `edge.raw`'s stale, pre-`align_straight_lanes` waypoint.
+///
+/// Runs over the full corpus (every `CASES`/design-reference fixture with a bar) plus a small
+/// synthetic fixture built specifically so the non-bar end's own port is **not** at that node's
+/// exact centre — `B` below carries two incoming claims (`f -> B` and `X -> B`), so `evict`
+/// spaces them `PORT_SPACING` apart on `B`'s own face and only one of the two can sit dead centre.
+/// Reading `edge.raw` instead of `evict`'s own claim would still often produce a *straight* line —
+/// both raw and evicted coordinates are usually close — so a fixture where they visibly diverge is
+/// what actually exercises the read-the-wrong-value bug, which `zz-design-4c` alone does not
+/// reliably catch (its own trunks mostly have exactly one claim each).
+#[test]
+fn orthogonal_state_bar_touching_edges_are_zero_bend_and_match_the_trunks_own_port() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    fn check(name: &str, d: &Diagram) {
+        let horizontal_by_id: HashMap<&str, bool> = d
+            .nodes
+            .iter()
+            .filter_map(|n| match n.shape {
+                Glyph::Bar { horizontal } => Some((n.id.as_str(), horizontal)),
+                _ => None,
+            })
+            .collect();
+        // §10-5 S4's own one exception ("join の下流出力はバー入力群の重心"): a bar with more
+        // than one upstream (input) claim and exactly one downstream (output) claim routes that
+        // single output from the *mean* of the inputs, not from the target's own coordinate — so
+        // it is not "no distribution" the way every other bar face is, and can legitimately bend
+        // if the target does not happen to sit exactly at that mean (`join_state -> State4` in the
+        // `fork` fixture: two inputs at different x average to a point neither of them, nor
+        // `State4`, sits at). Identified the same way `bar_ports` itself does: downstream count
+        // (edges with `from == bar.id`) and upstream count (`to == bar.id`), read straight off
+        // the diagram rather than re-deriving `Eviction`.
+        let mut downstream_count: HashMap<&str, usize> = HashMap::new();
+        let mut upstream_count: HashMap<&str, usize> = HashMap::new();
+        for e in &d.edges {
+            if horizontal_by_id.contains_key(e.from.as_str()) {
+                *downstream_count.entry(e.from.as_str()).or_insert(0) += 1;
+            }
+            if horizontal_by_id.contains_key(e.to.as_str()) {
+                *upstream_count.entry(e.to.as_str()).or_insert(0) += 1;
+            }
+        }
+        for e in &d.edges {
+            let horizontal = horizontal_by_id
+                .get(e.from.as_str())
+                .or_else(|| horizontal_by_id.get(e.to.as_str()));
+            let Some(&horizontal) = horizontal else {
+                continue;
+            };
+            if horizontal_by_id.contains_key(e.from.as_str())
+                && downstream_count.get(e.from.as_str()).copied().unwrap_or(0) == 1
+                && upstream_count.get(e.from.as_str()).copied().unwrap_or(0) > 1
+            {
+                continue; // the join centroid exception, this function's own doc.
+            }
+            let coords: Vec<f64> = e
+                .points
+                .iter()
+                .map(|p| if horizontal { p.x } else { p.y })
+                .collect();
+            let first = coords[0];
+            for (i, &c) in coords.iter().enumerate() {
+                assert!(
+                    (c - first).abs() < 0.5,
+                    "{name}: {}->{} (bar-anchored) must be zero-bend — point {i} reads {c:.2}, \
+                     not {first:.2}: {:?}",
+                    e.from,
+                    e.to,
+                    e.points
+                );
+            }
+        }
+    }
+    for (name, src) in orthogonal_full_corpus() {
+        check(name, &laid_out_orthogonal(src));
+    }
+    // The synthetic multi-claim fixture: `B` receives two incoming edges (`f -> B`, `X -> B`), so
+    // `evict`'s 16px grid spaces the two claims `PORT_SPACING` apart on `B`'s own face — neither
+    // sits exactly at `B`'s own centre (an even claim count has no exact-centre slot at all,
+    // `evict`'s own doc). The generic `check` above already pins `f -> B` at zero bends; this
+    // pins the *value* it is zero-bend to: proof that the number came from `evict`'s own claim
+    // rather than `edge.raw`'s stale waypoint, which (before the fix) read close to `B`'s plain
+    // centre instead.
+    let synthetic = "stateDiagram-v2\n  state f <<fork>>\n  state j <<join>>\n  [*] --> f\n  \
+                      f --> A\n  f --> B\n  X --> B\n  A --> j\n  B --> j\n  j --> [*]";
+    let d = laid_out_orthogonal(synthetic);
+    check("bar-multi-claim-synthetic", &d);
+    let b = d.node("B").expect("B");
+    let f_to_b = d
+        .edges
+        .iter()
+        .find(|e| e.from == "f" && e.to == "B")
+        .expect("f->B must exist");
+    let arrival_x = f_to_b.points.last().expect("at least one point").x;
+    assert!(
+        (arrival_x - b.center.x).abs() > 4.0,
+        "bar-multi-claim-synthetic: f->B lands at x={arrival_x:.2}, indistinguishable from B's \
+         own plain centre x={:.2} — this fixture only proves the fix when the evicted claim \
+         differs from the raw centre; a mutation that fell back to `edge.raw`'s stale waypoint \
+         (which happened to be near-centre here too) would pass the zero-bend check above but \
+         land on the wrong number, which this assertion is the one to catch",
+        b.center.x
+    );
+}
+
+/// §10-5 S2/S4 (defect 3, 2026-09-03 fix): a composite state's own **exit** edge (the state names
+/// the edge's own source) is anchored at a member with no outgoing edge to another descendant of
+/// the same composite — never simply the first-declared member — so the flow reads as leaving
+/// from the composite's own actual end. On `zz-design-4c`, `処理 -> join_state` used to anchor at
+/// `整形` (declared first, but not a sink: it flows on to `解析`), landing the join bar's own
+/// exact-trunk-matched port at the same rank depth as `整形`'s own box, with no clear perpendicular
+/// approach. The fix anchors at `集計` (`処理`'s own true last member, two levels of nesting down),
+/// which sits at its own natural rank with nothing of `処理`'s left to overlap.
+///
+/// This pins the frame-cut boundary itself (`clusters::cut_start`'s own doc — a cluster-anchored
+/// edge is always clipped to the *frame's* outline at drawing time, whichever member `anchor`
+/// picked for dagre's own ranking), which stays true even under a wrong anchor and so does not by
+/// itself distinguish a correct anchor from an incorrect one — confirmed by mutating `anchor` to
+/// always return the first-declared member: this assertion still held, but
+/// [`super::tests::orthogonal_state_no_edge_crosses_a_foreign_node`] (checked here via
+/// `orthogonal_full_corpus`, `zz-design-4c` included) and the box-overlap invariant both failed
+/// immediately (`処理->join_state` crossing `整形`, then `join_state`/`整形` overlapping outright)
+/// — those two, already run over this same corpus, are what actually prove the anchor fix, this
+/// test is a supporting pin on the frame-cut geometry it does not change.
+#[test]
+fn orthogonal_state_composite_exit_anchor_lands_beyond_its_own_frame_on_4c() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = orthogonal_design_reference_corpus()
+        .into_iter()
+        .find(|(n, _)| *n == "zz-design-4c")
+        .expect("zz-design-4c is in the design-reference corpus")
+        .1;
+    let d = laid_out_orthogonal(src);
+    let frame = d.cluster("処理").expect("処理's own frame");
+    let (_, _, _, frame_bottom) = frame.bounds();
+    let edge = d
+        .edges
+        .iter()
+        .find(|e| e.from == "処理" && e.to == "join_state")
+        .expect("処理->join_state must exist");
+    let start_y = edge.points.first().expect("at least one point").y;
+    assert!(
+        start_y >= frame_bottom - 0.5,
+        "処理 -> join_state must start at or below 処理's own frame bottom ({frame_bottom:.2}), \
+         not partway inside it: starts at y={start_y:.2} — a regression to the pre-fix \
+         declared-first anchor (整形) would land this well above the frame bottom, inside the \
+         box",
+    );
+}
+
+/// §10-5 S2 (defect 3, 2026-09-03 fix): the same directional anchor, exercised on a synthetic
+/// `LR` composite whose own **last** member is itself a block nested two levels deep — `C`'s own
+/// direct members are `M1` and the block `N`; `N`'s own members are `P` and `Q`. `C`'s own exit
+/// anchor must resolve *through* `N` to `Q` (`N`'s own sink) — `Tree::anchor`'s own recursive
+/// resolution of a nested-block-named internal edge (`clusters.rs`'s own doc) — not stop at `N`'s
+/// own first member `P`, and never fall back to `C`'s own first member `M1`.
+///
+/// The frame-boundary assertion below is the same *supporting* pin the 4c test above uses (see
+/// its own doc for why the frame-cut boundary itself does not distinguish a correct anchor from
+/// an incorrect one) — this fixture has nothing else in it for a wrong anchor to collide with, so
+/// there is no crossing/overlap invariant to lean on here the way 4c's own does. What this test
+/// actually regression-pins is that the recursive resolution *terminates and lays out at all* —
+/// before `anchor_bounded`'s own depth guard existed, resolving a nested-block-named internal
+/// edge could recurse without bound (found while writing this very test: a self-referencing
+/// top-level entry edge sent `composites_and_regions_are_frames`, an unrelated existing test,
+/// into a stack overflow the moment the recursive resolution was added) — so a mutation that
+/// dropped that guard would show up here as a crash, not a silently-wrong number.
+#[test]
+fn orthogonal_state_composite_exit_anchor_resolves_through_a_nested_block_lr() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = "stateDiagram-v2\n  direction LR\n  state C {\n    [*] --> M1\n    M1 --> N\n    \
+               state N {\n      P --> Q\n    }\n  }\n  C --> D";
+    let d = laid_out_orthogonal(src);
+    let frame = d.cluster("C").expect("C's own frame");
+    let (_, _, frame_right, _) = frame.bounds();
+    let edge = d
+        .edges
+        .iter()
+        .find(|e| e.from == "C" && e.to == "D")
+        .expect("C->D must exist");
+    let start_x = edge.points.first().expect("at least one point").x;
+    assert!(
+        start_x >= frame_right - 0.5,
+        "C -> D must start at or beyond C's own frame right edge ({frame_right:.2}) in this LR \
+         diagram, not partway inside it: starts at x={start_x:.2} — anchoring at C's own first \
+         member (M1) or at N's own first member (P) instead of N's own sink (Q) would both land \
+         this inside the frame",
+    );
+}
+
+/// §10-5 (defect 3's own documented fallback): a composite whose members form an **internal
+/// cycle** (`M1 --> M2 --> M1`, no member has zero out-degree at all) has no qualifying sink, so
+/// [`clusters::Tree::anchor`] falls back to the first descendant in declaration order — the
+/// pre-§10-5 behaviour, `clusters.rs`'s own doc on `AnchorRole` — rather than looping or picking
+/// nothing. This does not assert *which* member the fallback lands on (that is an implementation
+/// detail the module doc leaves unspecified beyond "first declared"); it asserts what the fallback
+/// has to keep true regardless: the diagram still lays out without panicking, and the resulting
+/// route is still a **valid, non-piercing** one — reusing the same corpus-wide invariants
+/// ([`check_nodes_do_not_overlap`], [`check_unrelated_clusters_do_not_overlap`],
+/// [`check_edges_stay_out_of_shapes`]) every other fixture in this file is held to, so a fallback
+/// that produced a technically-non-panicking but geometrically broken picture would still be
+/// caught.
+#[test]
+fn orthogonal_state_composite_with_an_internal_cycle_falls_back_to_a_valid_route() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = "stateDiagram-v2\n  [*] --> X\n  X --> C\n  state C {\n    M1 --> M2\n    \
+               M2 --> M1\n  }\n  C --> D\n  D --> [*]";
+    let d = laid_out_orthogonal(src);
+    check_nodes_do_not_overlap("cycle-fallback", &d);
+    check_unrelated_clusters_do_not_overlap("cycle-fallback", &d);
+    check_edges_stay_out_of_shapes("cycle-fallback", &d);
+    // The re-anchored edge must still exist and still be a real, drawn polyline (never a
+    // degenerate zero/one-point line — `route_with_ports`'s own defensive fallback doc).
+    let edge = d
+        .edges
+        .iter()
+        .find(|e| e.from == "C" && e.to == "D")
+        .expect("C->D must still exist after the cycle fallback");
+    assert!(
+        edge.points.len() >= 2,
+        "cycle-fallback: C->D must still be a real polyline: {:?}",
+        edge.points
     );
 }
 
@@ -1663,4 +1969,27 @@ fn gallery() {
         let svg = render(src, "dark").unwrap_or_else(|e| panic!("{name}: {e}"));
         std::fs::write(format!("{dir}/{name}.svg"), svg).expect("write the SVG");
     }
+}
+
+/// `clusters::Tree::anchor`'s own recursion bound (`anchor_bounded`'s own doc, `depth >
+/// self.clusters.len()`): a transition naming a nested block is resolved recursively (defect 3's
+/// own fix, 2026-09-03) — `XM --> Y`, a member of `X`, naming the *sibling* block `Y` directly —
+/// and if `Y`'s own member in turn names `X` back (`YM --> X`), the two blocks' own resolutions
+/// call each other forever without a bound. konoma's own grammar cannot write this (a block's
+/// members are always syntactically *inside* it, `clusters.rs`'s own module doc), but nothing
+/// stops a `stateDiagram-v2` source from naming a sibling block directly in an internal transition
+/// the way this fixture does, so the guard is real, reachable input, not a defensive-only
+/// unreachable path. Confirmed by disabling the bound (temporarily, by hand): this exact fixture
+/// stack-overflows within a few hundred frames — no assertion needed to prove the bound *matters*,
+/// only that it does not regress; this test is that regression pin.
+#[test]
+fn orthogonal_state_cross_cluster_internal_edge_cycle_does_not_overflow_the_stack() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = "stateDiagram-v2\n  [*] --> X\n  state X {\n    XM --> Y\n  }\n  \
+               state Y {\n    YM --> X\n  }\n  X --> Z\n  Z --> [*]";
+    let d = laid_out_orthogonal(src);
+    check_nodes_do_not_overlap("cross-cluster-cycle", &d);
+    check_unrelated_clusters_do_not_overlap("cross-cluster-cycle", &d);
 }

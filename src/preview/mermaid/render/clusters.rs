@@ -27,8 +27,22 @@
 //! the ranking phase only ever sees leaves. mermaid solves this by *re-anchoring* — the edge is
 //! laid out against a representative descendant (`findNonClusterChild`) and then cut back to the
 //! frame's boundary at drawing time (`cutPathAtIntersect`), so the reader sees a line that starts
-//! on the box. konoma does the same, with a simpler choice of anchor: the first descendant node in
-//! declaration order. Upstream's extra rule (prefer a descendant that does not already share an
+//! on the box. Under `[ui] mermaid_routing = "konoma-orthogonal"`, konoma's choice of
+//! representative is directional (`docs/FEATURE-MERMAID-RENDERER.md` §10-5 S2/S4) — `mod.rs`'s
+//! own caller passes [`AnchorRole::Declared`] instead for `Routing::Splines` (the pre-§10-5,
+//! direction-blind "first descendant" rule, every diagram's default rendering), so this section
+//! describes `Exit`/`Entry` only: a block that is an edge's own **source** is
+//! anchored at a **sink** among its own descendants (no outgoing edge to another descendant,
+//! `AnchorRole::Exit`) so the line reads as leaving from the block's actual exit, not from
+//! whichever member happened to be declared first; a block that is an edge's own **target** is
+//! anchored at a **source** (`AnchorRole::Entry`) for the mirror reason — which is exactly an
+//! internal `[*]` start marker whenever the source language wrote one, since a state's own entry
+//! has no in-block predecessor by construction (§2's own "開始マーカーの無い複合状態は流れ方向の
+//! 先頭ノードを初期状態とみなす" falls out of the same rule with no marker at all: the flow's own
+//! first member is the one with no in-block predecessor either way). A block with no qualifying
+//! descendant at all — every one of them has an in-block successor or predecessor, which only an
+//! internal cycle can produce — falls back to the first descendant in declaration order, the
+//! pre-§10-5 behaviour. Upstream's extra rule (prefer a descendant that does not already share an
 //! edge with the block) exists to keep its *own* recursive extraction from losing the anchor;
 //! konoma never extracts, so the anchor cannot disappear.
 
@@ -60,6 +74,27 @@ pub const STROKE_WIDTH: f64 = 1.0;
 /// Corner radius of a frame. mermaid leaves `rx` unset (square corners); konoma rounds it by the
 /// same radius `A(text)` uses, so the two kinds of box look like they come from one drawing.
 pub const CORNER_RADIUS: f64 = super::shapes::CORNER_RADIUS;
+
+/// Which end of an edge [`Tree::anchor`] is resolving, for an `id` that names a block — the
+/// module's own doc on "Edges that name a block" has the rule each variant picks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorRole {
+    /// `id` is an edge's own **source** (`id --> other`): anchor at a descendant with no
+    /// outgoing edge to another descendant of the same block.
+    Exit,
+    /// `id` is an edge's own **target** (`other --> id`): anchor at a descendant with no
+    /// incoming edge from another descendant of the same block.
+    Entry,
+    /// The pre-§10-5 rule, direction-blind: the first descendant in declaration order, full stop
+    /// — `role`/`internal_edges` never disqualify anything. `mod.rs`'s own caller passes this for
+    /// `Routing::Splines` (every diagram kind's default rendering, and every non-flowchart/
+    /// non-state kind under any routing) so that path's own drawn geometry — the exact member a
+    /// cluster-anchored edge lays out against — is untouched by `Exit`/`Entry`'s own directional
+    /// search: `docs/FEATURE-MERMAID-RENDERER.md` §10-5's own acceptance criterion ("既定 splines
+    /// の状態図は1バイト不変") and `snapshots/`'s own golden files hold the anchor fixed here to
+    /// keep it.
+    Declared,
+}
 
 /// One block of the subgraph tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,27 +257,141 @@ impl Tree {
         self.index.contains_key(id)
     }
 
+    /// Every node id under `id`, flattened depth-first through nested blocks —
+    /// [`Cluster::member_nodes`] first, then each [`Cluster::child_clusters`] entry's own
+    /// descendants in turn (mermaid's own `findNonClusterChild` traversal order, tie-break
+    /// dropped — see the module docs). Borrowed straight out of `self`'s own [`Cluster`]s, not
+    /// rebuilt, so [`Tree::anchor`] can hand one straight back to its caller.
+    fn flatten_descendants<'a>(&'a self, id: &str) -> Vec<&'a str> {
+        let mut out = Vec::new();
+        if let Some(c) = self.get(id) {
+            out.extend(c.member_nodes.iter().map(String::as_str));
+            for child in &c.child_clusters {
+                out.extend(self.flatten_descendants(child));
+            }
+        }
+        out
+    }
+
     /// The node an edge that names `id` should be laid out against.
     ///
-    /// `None` when `id` is neither a node nor a block that holds one. mermaid's
-    /// `findNonClusterChild` with its tie-break dropped — see the module docs.
-    /// `is_node` is taken as a trait object rather than by `impl Fn` on purpose: this recurses,
-    /// and a generic parameter would make each level of nesting a fresh instantiation wrapping the
-    /// last, which rustc refuses at depth ("reached the recursion limit while instantiating").
-    pub fn anchor<'a>(&'a self, id: &'a str, is_node: &dyn Fn(&str) -> bool) -> Option<&'a str> {
+    /// `None` when `id` is neither a node nor a block that holds one.
+    ///
+    /// For a plain node, `id` itself — `role`/`internal_edges` are never consulted. For a block,
+    /// the module's own doc on "Edges that name a block": `role` picks which directional
+    /// property (`Exit`'s sink, `Entry`'s source) the anchor must have, checked over
+    /// `internal_edges` restricted to the pairs that are *both* [`flatten_descendants`] of this
+    /// same block — an edge to or from outside the block says nothing about its own internal
+    /// flow, so it is never allowed to disqualify a candidate. Falls back to the first descendant
+    /// in declaration order when nothing qualifies (an internal cycle, where every descendant has
+    /// both an in-block successor and predecessor).
+    ///
+    /// An `internal_edges` pair that itself names a *nested* block (`zz-design-4c`'s own
+    /// `整形 --> 解析`, `解析` a block two levels under `処理`) is resolved through this same
+    /// function, recursively, before it is tested against `members` — `解析 --> join_state` would
+    /// otherwise disqualify nobody at all (`解析` is not itself a member-level node id, so it never
+    /// matches anything in `members`), silently hiding the whole nested chain from the sink/source
+    /// search and leaving `整形` a false, undisqualified "sink" one level up. Resolving `整形 -->
+    /// 解析` to `整形 --> 解析`'s own `Entry` anchor first (`解析`'s own internal source, one level
+    /// down) is what lets the disqualification propagate correctly through arbitrarily many levels
+    /// of nesting — a written edge `u --> v` is never itself the thing that has to be a member,
+    /// only wherever it actually resolves to. Bounded the same way [`flatten_descendants`] already
+    /// is: a block can never nest inside itself (`Tree::build`'s own construction), so this cannot
+    /// recurse forever.
+    ///
+    /// `is_node` is taken as a trait object rather than by `impl Fn` on purpose: [`flatten_
+    /// descendants`] recurses, and a generic parameter would make each level of nesting a fresh
+    /// instantiation wrapping the last, which rustc refuses at depth ("reached the recursion
+    /// limit while instantiating").
+    ///
+    /// [`flatten_descendants`]: Tree::flatten_descendants
+    pub fn anchor<'a>(
+        &'a self,
+        id: &'a str,
+        is_node: &dyn Fn(&str) -> bool,
+        role: AnchorRole,
+        internal_edges: &[(String, String)],
+    ) -> Option<&'a str> {
+        self.anchor_bounded(id, is_node, role, internal_edges, 0)
+    }
+
+    /// [`Tree::anchor`]'s own body, with a recursion budget: every level [`anchor`]'s own nested
+    /// resolution takes moves *toward* a leaf (a real node has no further recursion at all), so an
+    /// ordinary, non-cyclic diagram never comes close to this bound. It exists only for an edge
+    /// that (directly, or through several hops) names the very block currently being resolved —
+    /// `[*] --> Active`, resolving `Active`'s own anchor, tries to resolve `Active` again as that
+    /// edge's own target — or a genuine cross-reference cycle between two sibling blocks, neither
+    /// of which any real `state`/`subgraph` nesting can produce (a block's members are always
+    /// syntactically *inside* it — the module's own doc), but which a hand-built [`GraphSpec`]
+    /// (this function has no way to tell those apart from a parsed one) is not prevented from
+    /// constructing. Past the bound, an edge naming a block is simply left unresolved (`None`,
+    /// filtered out below the same way an edge to/from outside `id` already is) rather than
+    /// recursing forever — the same "give up cleanly rather than hang" contract
+    /// [`holds_a_node`]'s own `depth > by_id.len()` bound keeps.
+    ///
+    /// [`GraphSpec`]: super::GraphSpec
+    fn anchor_bounded<'a>(
+        &'a self,
+        id: &'a str,
+        is_node: &dyn Fn(&str) -> bool,
+        role: AnchorRole,
+        internal_edges: &[(String, String)],
+        depth: usize,
+    ) -> Option<&'a str> {
         if is_node(id) {
             return Some(id);
         }
-        let c = self.get(id)?;
-        if let Some(n) = c.member_nodes.first() {
-            return Some(n.as_str());
+        if depth > self.clusters.len() {
+            return None;
         }
-        for child in &c.child_clusters {
-            if let Some(n) = self.anchor(child, is_node) {
-                return Some(n);
+        let descendants = self.flatten_descendants(id);
+        let first = *descendants.first()?;
+        if role == AnchorRole::Declared {
+            return Some(first);
+        }
+        let members: HashSet<&str> = descendants.iter().copied().collect();
+        let mut disqualified: HashSet<&str> = HashSet::new();
+        for (u, v) in internal_edges {
+            // An edge naming `id` itself is never internal to `id` (an external entry/exit edge,
+            // resolved instead by whichever *other* block's own `anchor` call is looking at it) —
+            // skipped without recursing, both as the common-case fast path and to keep the only
+            // way `anchor_bounded` ever calls itself with the same `id` again from being this one,
+            // most frequent shape of self-reference.
+            if u == id || v == id {
+                continue;
+            }
+            let u = if self.contains(u) {
+                self.anchor_bounded(u, is_node, AnchorRole::Exit, internal_edges, depth + 1)
+            } else {
+                Some(u.as_str())
+            };
+            let v = if self.contains(v) {
+                self.anchor_bounded(v, is_node, AnchorRole::Entry, internal_edges, depth + 1)
+            } else {
+                Some(v.as_str())
+            };
+            let (Some(u), Some(v)) = (u, v) else {
+                continue;
+            };
+            if u == v || !members.contains(u) || !members.contains(v) {
+                continue;
+            }
+            // A sink has no outgoing edge: `u` (this internal edge's own source, resolved) is
+            // disqualified from being one. A source has no incoming edge: `v` (this internal
+            // edge's own target, resolved) is disqualified. `Declared` already returned above —
+            // matched defensively (never a crash, principle #3) rather than with `unreachable!`.
+            if role == AnchorRole::Exit {
+                disqualified.insert(u);
+            } else {
+                disqualified.insert(v);
             }
         }
-        None
+        Some(
+            descendants
+                .into_iter()
+                .find(|d| !disqualified.contains(d))
+                .unwrap_or(first),
+        )
     }
 
     /// Whether an edge endpoint written as `id` has anything to do with the block `cluster_id`:

@@ -2773,6 +2773,16 @@ pub struct RoutedFlowchart {
     /// source whose natural shape never touches a flow-axis row at all, used to get one reserved
     /// anyway purely because its rank happened to skip two).
     pub pass_through_eligible: std::collections::HashSet<String>,
+    /// Node id -> the corrected `(center, size)` [`straddle_bar_ports`] gave every fork/join bar
+    /// this pass touched — only ever holds bar ids, and only the ones some edge actually claimed a
+    /// port on (`mod.rs`'s own `bar_required_sizes` is what a *disconnected* bar, unreachable from
+    /// a real diagram, would need instead). `mod.rs`'s own caller applies this
+    /// straight onto its own `nodes` vector — the one the final [`super::Diagram::nodes`] is built
+    /// from — because this function's own internal `nodes` is a local copy
+    /// ([`route_flowchart`]'s own doc): fixing a bar's rectangle only inside this function's own
+    /// routing maths would leave every drawn line correctly clipped against a box the reader never
+    /// actually sees, which is not a fix at all.
+    pub bar_geometry: HashMap<String, (Point, Size)>,
 }
 
 /// Whether `shape`'s own two faces are the "flow-axis exit, hop toward target" family rule 10 (the
@@ -3098,19 +3108,39 @@ fn evict(
     }
 }
 
+/// [`bar_ports`]'s own result — named only to keep clippy's `type_complexity` lint quiet: the
+/// source-face and target-face per-edge coordinate maps [`evict`]'s own two already return the
+/// same shape as, plus [`straddle_bar_ports`]'s own per-bar `(min, max)` cross-axis span.
+type BarPortsResult = (
+    HashMap<String, f64>,
+    HashMap<String, f64>,
+    HashMap<String, (f64, f64)>,
+);
+
 /// §10-5 S4's own port rule for a fork/join bar ("バーのポート位置は接続先トランクの座標に一致…
 /// 分配計算なし。入=上流側長辺/出=下流側長辺。join の下流出力はバー入力群の重心") — `evict`
 /// itself never claims a bar's face at all (its own doc, just above), so this is where every edge
 /// touching one actually gets a coordinate.
 ///
-/// The default, for every claim on either face, is simply the *other* end's own cross coordinate —
-/// no distribution, exactly what "分配計算なし" asks for, and (since the bar's own length is grown
-/// to fit that exact span, `mod.rs`'s own `bar_required_sizes`) always lands within the bar's flat
-/// run with room to spare on each side. The one exception is a **join**'s single downstream output:
-/// when the upstream (source-of-this-edge... no, *target*-of-the-bar) face carries more than one
-/// claim and the downstream face carries exactly one, that one output's coordinate is the mean of
-/// the upstream claims' — the bar's own "重心" (centroid) rule — rather than its own single
-/// target's cross coordinate, which for an uneven input spread is not the same number.
+/// The default, for every claim on either face, is simply the *other* end's own **final, evicted**
+/// cross coordinate — `eviction`'s own `source_coord`/`target_coord`, the exact number `evict`
+/// already worked out for that end's own face claim — not dagre's raw waypoint. A cluster/node end
+/// touching a bar is never itself `Glyph::Bar`, so `evict` always writes a real entry for it
+/// (`evict`'s own doc, just above the marker exclusion: only the *bar*'s own face is skipped, the
+/// ordinary node or frame at the other end still gets its usual claim) — reading that instead of
+/// `edge.raw`'s first/last waypoint is what makes the segment between the two ends straight (§10-5
+/// S4's own "fork→join を曲げ 0 優先"): `edge.raw` is dagre's pre-`align_straight_lanes` waypoint,
+/// which can disagree with where that end's own port actually ended up (`docs/FEATURE-MERMAID-
+/// RENDERER.md` §10-5's own implementation notes — `zz-design-4c`'s `初期化 -> fork_state` used to
+/// leave `初期化` at its true centre but enter the bar at a stale, jogged x). No distribution,
+/// exactly what "分配計算なし" asks for, and (since the bar's own rectangle is grown *and moved* to
+/// straddle that exact span, [`route_flowchart`]'s own bar-repositioning step) always lands within
+/// the bar's flat run with room to spare on each side. The one exception is a **join**'s single
+/// downstream output: when the upstream (source-of-this-edge... no, *target*-of-the-bar) face
+/// carries more than one claim and the downstream face carries exactly one, that one output's
+/// coordinate is the mean of the upstream claims' — the bar's own "重心" (centroid) rule — rather
+/// than its own single target's cross coordinate, which for an uneven input spread is not the same
+/// number.
 ///
 /// A **fork**'s single upstream input keeps the plain default (its own one target's cross
 /// coordinate — `zz-design-4c`'s own `初期化 -> fork_state` port sits at `初期化`'s own centre `x`,
@@ -3121,14 +3151,15 @@ fn bar_ports(
     by_id: &HashMap<&str, &PlacedNode>,
     edges: &[EligibleEdge],
     shapes: &[Option<EdgeShape>],
-) -> (HashMap<String, f64>, HashMap<String, f64>) {
+    eviction: &Eviction,
+) -> BarPortsResult {
     #[derive(Default)]
     struct BarFaces {
         /// Edges entering the bar (this bar is the edge's `target`): `(edge id, source's own
-        /// cross coordinate)`.
+        /// final evicted cross coordinate)`.
         upstream: Vec<(String, f64)>,
-        /// Edges leaving the bar (this bar is the edge's `source`): `(edge id, target's own cross
-        /// coordinate)`.
+        /// Edges leaving the bar (this bar is the edge's `source`): `(edge id, target's own final
+        /// evicted cross coordinate)`.
         downstream: Vec<(String, f64)>,
     }
     let mut bars: HashMap<String, BarFaces> = HashMap::new();
@@ -3140,60 +3171,171 @@ fn bar_ports(
         else {
             continue;
         };
-        // §10-5 S4's own "trunk" is a real, point-sized node in every design-reference example —
-        // but a fork/join edge can just as well name a subgraph/composite-state **frame**
-        // (`zz-design-4c`'s own `処理 -> join_state`, `処理` a multi-member composite state).
-        // `target.center`/`source.center` for a cluster end is [`cluster_as_node`]'s own frame
-        // *bounding-box* midpoint, not a meaningful "trunk position" once the frame is tall enough
-        // to make that midpoint land anywhere at all relative to a downstream node close to one of
-        // the frame's own *members* — found on `zz-design-4c` itself: the frame's own centre
-        // coincided with `整形`'s own x range (a member `処理` contains), so the exact-match port
-        // this function built landed squarely behind that member with no way to approach it
-        // without crossing it. `edge.raw`'s own first/last point is dagre's *own* waypoint for
-        // this exact edge, anchored at whichever real member `tree.anchor` actually picked
-        // (`mod.rs`'s own doc on `EligibleEdge` construction) — a real point in the layout, not a
-        // synthetic frame-wide average, and for an ordinary node-to-node edge it sits close enough
-        // to that node's own centre that using it instead never visibly changes anything (`raw`'s
-        // own first/last leg is always short — dagre draws straight into a real node's rank
-        // column).
-        let raw_cross = |near_first: bool, fallback: &Point| {
-            let p = if near_first {
-                edge.raw.first()
-            } else {
-                edge.raw.last()
-            };
-            cross(direction, p.unwrap_or(fallback))
-        };
         if matches!(source.shape, Glyph::Bar { .. }) {
+            // `target` is not itself a bar (`state::spec_of` never emits a bar-to-bar transition),
+            // so `evict` always wrote this edge's own target claim — the fallback only guards a
+            // theoretical gap, never taken by any corpus fixture.
+            let c = eviction
+                .target_coord
+                .get(edge.id)
+                .copied()
+                .unwrap_or_else(|| cross(direction, &target.center));
             bars.entry(edge.source.to_string())
                 .or_default()
                 .downstream
-                .push((edge.id.to_string(), raw_cross(false, &target.center)));
+                .push((edge.id.to_string(), c));
         }
         if matches!(target.shape, Glyph::Bar { .. }) {
+            let c = eviction
+                .source_coord
+                .get(edge.id)
+                .copied()
+                .unwrap_or_else(|| cross(direction, &source.center));
             bars.entry(edge.target.to_string())
                 .or_default()
                 .upstream
-                .push((edge.id.to_string(), raw_cross(true, &source.center)));
+                .push((edge.id.to_string(), c));
         }
     }
 
     let mut source_coord = HashMap::new();
     let mut target_coord = HashMap::new();
-    for faces in bars.into_values() {
+    // §10-5 S4's own bar-length rule ("長さ＝接続先トランクspan＋両端各16px"), read straight off
+    // the exact per-edge coordinates just built — `node id -> (min, max)` over every port this bar
+    // carries on either face, post-centroid substitution (a join's single output uses the centroid
+    // coordinate, not its own raw target claim, so the span has to be measured from the *same*
+    // number the port is actually drawn at). [`straddle_bar_ports`] is the one reader.
+    let mut spans: HashMap<String, (f64, f64)> = HashMap::new();
+    for (bar_id, faces) in bars {
         let centroid = if faces.downstream.len() == 1 && faces.upstream.len() > 1 {
             Some(faces.upstream.iter().map(|(_, c)| c).sum::<f64>() / faces.upstream.len() as f64)
         } else {
             None
         };
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
         for (id, c) in faces.downstream {
-            source_coord.insert(id, centroid.unwrap_or(c));
+            let c = centroid.unwrap_or(c);
+            lo = lo.min(c);
+            hi = hi.max(c);
+            source_coord.insert(id, c);
         }
         for (id, c) in faces.upstream {
+            lo = lo.min(c);
+            hi = hi.max(c);
             target_coord.insert(id, c);
         }
+        if lo.is_finite() {
+            spans.insert(bar_id, (lo, hi));
+        }
     }
-    (source_coord, target_coord)
+    (source_coord, target_coord, spans)
+}
+
+/// §10-5 S4's own bar geometry rule ("長さ＝接続先トランクspan＋両端各16px…バーのポート x は
+/// 接続先トランクに一致"), applied as the final, constructive step over the bar's own drawn
+/// rectangle rather than as a clamp on the ports themselves — [`bar_ports`]'s own `spans` is the
+/// exact cross-axis extent every edge touching a bar needs the bar's own box to *reach*.
+///
+/// [`port_at`]'s own cross coordinate is written unconditionally from whatever `coord` a caller
+/// hands it, regardless of whether the box's current bounds happen to cover that coordinate at
+/// all (its own doc — the flow-axis component comes from `node.bounds()`, but the cross-axis one
+/// is `coord`, verbatim). So a bar whose rectangle does not reach a port's own coordinate still
+/// draws that port at the right cross position — just floating in empty space beside the box,
+/// because the box itself never grew or moved to meet it. Growing the bar's *required size*
+/// (`mod.rs`'s own `bar_required_sizes`, fed back into the next dagre layout pass) is not the same
+/// fix: dagre still centres the grown box wherever its own rank/order layout puts it, which for a
+/// bar connected to trunks on both a wide fan-out and a narrow single input (`zz-design-4c`'s own
+/// fork bar, whose dagre-decided centre sat under `初期化`/`取得` while `監査`'s own port sat well
+/// past its right edge) can be nowhere near the span itself. So this runs once more, after
+/// [`bar_ports`] has the real answer, and simply *sets* the bar's own rectangle to enclose it.
+///
+/// Clones every node (cheap — a diagram's node count is small) and moves only a bar's own
+/// cross-axis centre/size; a bar's flow-axis position and its thickness (`horizontal`'s own
+/// short axis) are dagre's own rank placement, untouched here — the same split
+/// `bar_required_sizes` already keeps.
+fn straddle_bar_ports(
+    nodes: &[PlacedNode],
+    spans: &HashMap<String, (f64, f64)>,
+) -> Vec<PlacedNode> {
+    nodes
+        .iter()
+        .cloned()
+        .map(|mut n| {
+            let Some(&(lo, hi)) = spans.get(&n.id) else {
+                return n;
+            };
+            let Glyph::Bar { horizontal } = n.shape else {
+                return n;
+            };
+            let lo = lo - BAR_PORT_PAD;
+            let hi = hi + BAR_PORT_PAD;
+            let length = (hi - lo).max(2.0 * BAR_PORT_PAD);
+            let mid = (lo + hi) / 2.0;
+            if horizontal {
+                n.center.x = mid;
+                n.size.w = length;
+            } else {
+                n.center.y = mid;
+                n.size.h = length;
+            }
+            n
+        })
+        .collect()
+}
+
+/// [`build_shapes_and_eviction`]'s own result — named only to keep clippy's `type_complexity`
+/// lint quiet: every edge's shape, the eviction pass's own result (bar coordinates already folded
+/// in), and [`bar_ports`]'s own per-bar cross-axis span.
+type BuildShapesResult = (
+    Vec<Option<EdgeShape>>,
+    Eviction,
+    HashMap<String, (f64, f64)>,
+);
+
+/// One [`classify`] + [`evict`] + [`bar_ports`] pass, over whichever node geometry the caller
+/// hands it — [`route_flowchart`]'s own doc on why it runs this twice: once on dagre's raw
+/// positions (to learn each bar's true port span at all) and once more on the geometry
+/// [`straddle_bar_ports`] corrects from it (so an *ordinary* edge's own collision pre-check, run
+/// inside `classify`, sees the bar's final rectangle rather than its pre-correction one).
+#[allow(clippy::too_many_arguments)]
+fn build_shapes_and_eviction<'a>(
+    direction: Direction,
+    nodes: &'a [PlacedNode],
+    by_id: &HashMap<&'a str, &'a PlacedNode>,
+    edges: &[EligibleEdge],
+    cluster_ids: &std::collections::HashSet<&str>,
+    fixed_self_loops: bool,
+    chain_next: &HashMap<String, String>,
+) -> BuildShapesResult {
+    let mut shapes: Vec<Option<EdgeShape>> = edges
+        .iter()
+        .map(|e| {
+            let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target)) else {
+                return None;
+            };
+            Some(classify(
+                direction,
+                source,
+                target,
+                e.raw,
+                e.source_rank,
+                e.target_rank,
+                e.source_out_degree,
+                e.target_in_degree,
+                nodes,
+                cluster_ids.contains(e.source),
+                fixed_self_loops,
+            ))
+        })
+        .collect();
+    retreat_fixed_self_loops(direction, edges, &mut shapes);
+    let mut eviction = evict(direction, by_id, edges, &shapes, chain_next);
+    let (bar_source_coord, bar_target_coord, bar_spans) =
+        bar_ports(direction, by_id, edges, &shapes, &eviction);
+    eviction.source_coord.extend(bar_source_coord);
+    eviction.target_coord.extend(bar_target_coord);
+    (shapes, eviction, bar_spans)
 }
 
 /// §10-1 item 4's 8px lane stagger: every perimeter-routed edge — a genuine back edge (`reverse`,
@@ -3329,45 +3471,52 @@ pub fn route_flowchart(
     let cluster_ids: std::collections::HashSet<&str> =
         clusters.iter().map(|c| c.id.as_str()).collect();
 
-    let mut shapes: Vec<Option<EdgeShape>> = edges
+    // Trial pass, on dagre's own (possibly bar-mis-centred) node positions: only its own bar
+    // `spans` are read out of it -- straddle_bar_ports's own doc on why the bar's rectangle has
+    // to be corrected before anything downstream, an ordinary edge's own collision pre-check
+    // included, can be trusted to test against it.
+    let (_, _, bar_spans) = build_shapes_and_eviction(
+        direction,
+        nodes,
+        &by_id,
+        edges,
+        &cluster_ids,
+        fixed_self_loops,
+        chain_next,
+    );
+
+    // S4: move/grow every bar so its own drawn rectangle actually reaches every port bar_ports
+    // found for it -- straddle_bar_ports's own doc has the "the line leaves from empty space
+    // beside the box" bug this fixes (zz-design-4c's own fork/join bars).
+    let nodes_owned = straddle_bar_ports(nodes, &bar_spans);
+    let bar_geometry: HashMap<String, (Point, Size)> = nodes_owned
         .iter()
-        .map(|e| {
-            let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target)) else {
-                return None;
-            };
-            Some(classify(
-                direction,
-                source,
-                target,
-                e.raw,
-                e.source_rank,
-                e.target_rank,
-                e.source_out_degree,
-                e.target_in_degree,
-                nodes,
-                cluster_ids.contains(e.source),
-                fixed_self_loops,
-            ))
-        })
+        .filter(|n| bar_spans.contains_key(&n.id))
+        .map(|n| (n.id.clone(), (n.center.clone(), n.size)))
         .collect();
+    let nodes: &[PlacedNode] = &nodes_owned;
+    let cluster_boxes = cluster_node_boxes(clusters);
+    let by_id = build_by_id(nodes, &cluster_boxes);
 
-    // §10-5 S3 ("その辺が他の辺に使われている場合は反対側へ退避"): every self-loop shape above
-    // guessed the canonical face (`self_loop_canonical_face`) with no view of the rest of the
-    // diagram — only once every edge's shape is known can this ask "does anything else already
-    // sit on that face", so it runs here, over the whole set, before `evict` groups any of them.
-    retreat_fixed_self_loops(direction, edges, &mut shapes);
+    // The real pass, over the corrected geometry -- re-run rather than reused, because an
+    // *ordinary* (non-bar) edge's own classify collision pre-check reads `nodes` too, and has to
+    // see the bar's final rectangle, not its pre-correction one, or it can green-light a shape
+    // that now runs straight through the widened/moved bar (or flag a collision against the old
+    // box that no longer exists there). A bar-anchored edge's own shape is unaffected either way
+    // (classify's bar_anchored branch returns before ever calling the collision pre-check), so
+    // bar_ports's own output is identical between the two passes -- no third pass needed.
+    let (mut shapes, eviction, _) = build_shapes_and_eviction(
+        direction,
+        nodes,
+        &by_id,
+        edges,
+        &cluster_ids,
+        fixed_self_loops,
+        chain_next,
+    );
 
-    let mut eviction = evict(direction, &by_id, edges, &shapes, chain_next);
-    // §10-5 S4 ("バーのポート位置は接続先トランクの座標に一致…join の下流出力はバー入力群の重心"):
-    // `evict` itself never claims a fork/join bar's face at all (its own doc, just below the marker
-    // exclusion) — a bar's ports are a direct function of which trunk each connected edge reaches,
-    // never the generic 16px retreat grid, so they are worked out here instead and folded into the
-    // same two coordinate maps every other edge already reads its port from.
-    let (bar_source_coord, bar_target_coord) = bar_ports(direction, &by_id, edges, &shapes);
-    eviction.source_coord.extend(bar_source_coord);
-    eviction.target_coord.extend(bar_target_coord);
-    // §10-3 item 10's own "ホップ x の入れ子": run only once every sibling's exact port coordinate
-    // is known (`eviction`, just above) — `nest_merge_target_hops`'s own doc explains why an earlier
+    // 10-3 item 10's own hop nesting: run only once every sibling's exact port coordinate
+    // is known (`eviction`, just above) -- `nest_merge_target_hops`'s own doc explains why an earlier
     // attempt at this exact spacing, judged from node boxes alone, cannot see a sibling at all.
     // Never re-runs `evict` itself: only `EdgeShape::rank_lane_bend` changes here, a field `evict`
     // never reads (only `source_side`/`target_side`/`aligned`/`fan_lane` decide port placement).
@@ -3439,6 +3588,7 @@ pub fn route_flowchart(
         points,
         required_size: eviction.required_size,
         pass_through_eligible,
+        bar_geometry,
     }
 }
 

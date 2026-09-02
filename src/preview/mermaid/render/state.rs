@@ -219,45 +219,24 @@ pub fn spec_of(diagram: &StateDiagram, routing: Routing) -> GraphSpec {
     // from the border nodes hung off them. A block listed before its members would still work —
     // `Tree::from_blocks` resolves the nesting by id — but keeping the parser's order means the
     // frames come out innermost-first, which is the order `read_clusters` sorts by depth anyway.
-    // §10-5 S4's own clearance fix: a block's members are laid out *inside* it, at ranks that can
-    // sit close to the block's own exit rank — `state::spec_of`'s own anchor for a block-named
-    // edge (dagre's compound layout picks a real member, not the block itself) means a
-    // block-to-bar transition's ordinary `minlen: 1` can leave as little rank gap between that
-    // member and the bar as any ordinary adjacent-rank pair, with none of the extra room a bar's
-    // own thickness needs to clear a member box entirely — found on `zz-design-4c`'s own
-    // `処理 -> join_state` (`処理` a multi-member composite state): the join bar's exact-trunk-
-    // matched port (`orthogonal::bar_ports`'s own "no distribution" rule) landed at the same rank
-    // depth as `処理`'s own member `整形`, so the only physically valid (perpendicular) approach
-    // into that port ran straight through `整形`'s box — not fixable by routing around it, since
-    // the obstacle and the port sit at the same flow-axis level. Doubling `minlen` for exactly
-    // this transition shape (a block on one end, a fork/join bar on the other) asks dagre for one
-    // full extra rank of clearance, the same lever §10-1 item 3 already pulls for a label that
-    // needs more room — cheap, and scoped to the one edge shape that can actually need it (an
-    // ordinary node-to-bar or node-to-node transition already clears by construction, since a
-    // point-sized node's own rank has no interior member to overlap with anything downstream of it).
-    let block_ids: std::collections::HashSet<&str> = diagram
-        .states
-        .iter()
-        .filter(|s| s.kind.is_block())
-        .map(|s| s.id.as_str())
-        .collect();
-    let fork_join_ids: std::collections::HashSet<&str> = diagram
-        .states
-        .iter()
-        .filter(|s| matches!(s.kind, Kind::Fork | Kind::Join))
-        .map(|s| s.id.as_str())
-        .collect();
-    let block_to_bar_minlen = |from: &str, to: &str| -> usize {
-        if routing == Routing::Orthogonal
-            && ((block_ids.contains(from) && fork_join_ids.contains(to))
-                || (fork_join_ids.contains(from) && block_ids.contains(to)))
-        {
-            2
-        } else {
-            1
-        }
-    };
-
+    //
+    // §10-5 S4's own clearance fix (2026-09-02, doubled `minlen` for every block-to-bar
+    // transition) is **removed** (2026-09-03): it was papering over `clusters::Tree::anchor`
+    // picking the wrong member, not a real rank-clearance shortfall. The bug it worked around —
+    // `処理 -> join_state`'s join-bar port landing at the same rank depth as `処理`'s own member
+    // `整形`, so the only perpendicular approach ran straight through `整形`'s box — happened
+    // because the anchor `anchor` chose for a block-named edge's *source* end was whichever member
+    // was declared first (`整形`, a shallow, non-terminal one), not whichever member the diagram's
+    // own flow actually exits from. §10-5's own directional anchor fix (`AnchorRole::Exit` picks a
+    // sink — no outgoing edge to another descendant, checked transitively through nested blocks)
+    // now anchors `処理 -> join_state` at `集計`, the diagram's own true last member, which sits at
+    // its own natural rank depth with nothing of `処理`'s to overlap — the doubled `minlen` is no
+    // longer needed to buy clearance the anchor fix already gives for free, and removing it lets
+    // dagre's own ranking place `監査`'s free-standing branch beside `処理` again instead of
+    // stretched an extra rank down to fill the gap the doubling asked for (found by diffing
+    // `zz-design-4c-ours.png` against the design reference with and without this block — every
+    // orthogonal invariant test stays green either way, confirming this was never a structural
+    // rank requirement, only a stand-in for the anchor bug).
     let mut edges: Vec<SpecEdge> = diagram
         .transitions
         .iter()
@@ -274,7 +253,7 @@ pub fn spec_of(diagram: &StateDiagram, routing: Routing) -> GraphSpec {
             tip_start: Tip::None,
             tip_end: Tip::Arrow,
             stroke: Stroke::Normal,
-            minlen: block_to_bar_minlen(&t.from, &t.to),
+            minlen: 1,
             start_label: None,
             end_label: None,
             style: None,
