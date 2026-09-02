@@ -1060,6 +1060,7 @@ fn synthetic_panel_diagram() -> Diagram {
         dashed: false,
         filled: true,
         sections: Vec::new(),
+        title_strip: false,
     }];
 
     Diagram {

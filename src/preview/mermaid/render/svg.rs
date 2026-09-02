@@ -330,6 +330,13 @@ fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
     } else {
         String::new()
     };
+    // §10-5 S2: a composite state's frame under `konoma-orthogonal` is never filled — the title
+    // strip below carries the only fill this frame gets, and `read_clusters`'s own generic
+    // construction leaves `filled: true` unconditionally (it serves a flowchart subgraph too, and
+    // has no way to tell the two apart), so this is a drawing-time override rather than a change
+    // to what `read_clusters` builds — the same "layout untouched, only the picture changes" split
+    // the rest of `konoma-orthogonal` keeps.
+    let filled = cluster.filled && !cluster.title_strip;
     out.push_str(&format!(
         "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{r}\" ry=\"{r}\" \
          fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\"{dash}/>\n",
@@ -337,15 +344,42 @@ fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
         num(t),
         num(cluster.size.w),
         num(cluster.size.h),
-        if cluster.filled {
-            theme.cluster_fill
-        } else {
-            "none"
-        },
+        if filled { theme.cluster_fill } else { "none" },
         theme.cluster_stroke,
         num(clusters::STROKE_WIDTH),
         r = num(clusters::CORNER_RADIUS)
     ));
+    // §10-5 S2's own title strip: a filled band across the frame's own top edge, down to exactly
+    // where `PlacedCluster::title_center`'s own formula already reserved room for the title
+    // (`top + TITLE_PAD_Y*2 + title.height` — read off the same two quantities `title_center`
+    // uses, not a fixed 24px, so the strip always matches whatever room the shared frame-growth
+    // machinery actually reserved rather than risking a mismatch against it), with a 1px rule
+    // dividing it from the body below. Skipped for a blank title (an untitled concurrent region,
+    // `dashed` already says what that is) — there is no room reserved for one to draw a strip in.
+    if cluster.title_strip && !cluster.title.is_blank() {
+        let (_, _, right, _) = cluster.bounds();
+        let strip_bottom = t + clusters::TITLE_PAD_Y * 2.0 + cluster.title.height;
+        out.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"/>\n",
+            num(l),
+            num(t),
+            num(right - l),
+            num(strip_bottom - t),
+            // `theme.node_fill`, not `cluster_fill`: the design reference's own token list
+            // (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 5) gives the strip the identical
+            // "ノード塗り" value, not the frame's own (different) fill — the strip is meant to
+            // read as a small header bar, the same weight as a node, not as a tinted patch of the
+            // frame's own interior.
+            theme.node_fill
+        ));
+        out.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{y}\" x2=\"{}\" y2=\"{y}\" stroke=\"{}\" stroke-width=\"1\"/>\n",
+            num(l),
+            num(right),
+            theme.cluster_stroke,
+            y = num(strip_bottom)
+        ));
+    }
     // A section rule spans the frame and is drawn with it, so a message inside the section below
     // is drawn over it rather than under it.
     let (_, _, right, _) = cluster.bounds();
@@ -391,8 +425,49 @@ fn emit_cluster_title(out: &mut String, cluster: &PlacedCluster, theme: &Theme) 
     if cluster.title.is_blank() {
         return;
     }
+    if cluster.title_strip {
+        // §10-5 S2: left-aligned inside the strip `emit_cluster` already filled, at the same
+        // 16px inset `clusters::TITLE_PAD_X` gives a subgraph's own left margin (reused rather
+        // than a new constant — it is exactly "how far a frame's contents sit from its own left
+        // edge" already, which is what a strip title's left inset means too).
+        let (l, t, _, _) = cluster.bounds();
+        let strip_bottom = t + clusters::TITLE_PAD_Y * 2.0 + cluster.title.height;
+        emit_strip_title(
+            out,
+            &cluster.title,
+            l + clusters::TITLE_PAD_X,
+            (t + strip_bottom) / 2.0,
+            theme.cluster_text,
+        );
+        return;
+    }
     let c = cluster.title_center();
     emit_text(out, &cluster.title, c.x, c.y, theme.cluster_text);
+}
+
+/// §10-5 S2's own smaller, left-anchored title: `docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 5
+/// gives an ordinary subgraph title the body font size and this strip's own text "11px相当" — a
+/// full point size smaller, the same relationship a node's label and an edge's label already
+/// have. Drawn at that smaller size purely as a rendering choice: the `Label` this reads
+/// (`cluster.title`) was measured at the ordinary body size (`read_clusters`'s own
+/// `Label::measure`, shared with an ordinary subgraph — §10-5's own "枠のポート/退避則/拡大則は
+/// 通常ノードと完全に同一" keeps the frame's own width/height growth untouched), so the strip
+/// this sits inside is always at least as roomy as this smaller rendering needs, never tighter.
+fn emit_strip_title(out: &mut String, label: &Label, x: f64, cy: f64, fill: &str) {
+    if label.is_blank() {
+        return;
+    }
+    const STRIP_FONT_SIZE: f64 = 11.0;
+    out.push_str(&format!(
+        "<text x=\"{}\" y=\"{}\" text-anchor=\"start\" font-family=\"{}\" font-size=\"{}\" \
+         fill=\"{}\">{}</text>\n",
+        num(x),
+        num(cy + STRIP_FONT_SIZE * super::labels::BASELINE_RATIO),
+        FONT_FAMILY,
+        num(STRIP_FONT_SIZE),
+        fill,
+        escape(&label.lines.join(" "))
+    ));
 }
 
 /// One node: its outline, then its label.

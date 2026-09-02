@@ -30,10 +30,10 @@ use super::tests::{
     assert_snapshot, boundary, check_cluster_titles, check_clusters_hold_their_members,
     check_edge_that_names_a_block_stops_on_its_frame, check_edges_keep_out_of_foreign_frames,
     check_edges_stay_out_of_shapes, check_endpoints_land_on_the_outline,
-    check_labels_ride_their_edge, check_nested_clusters_sit_inside_their_parent,
-    check_nodes_do_not_overlap, check_unrelated_clusters_do_not_overlap,
-    check_view_box_contains_everything, dist_to_boundary, mask_numbers, path_boxes, text_widths,
-    tree_of,
+    check_foreign_nodes_stay_out_of_clusters, check_labels_ride_their_edge,
+    check_nested_clusters_sit_inside_their_parent, check_nodes_do_not_overlap,
+    check_unrelated_clusters_do_not_overlap, check_view_box_contains_everything, dist_to_boundary,
+    mask_numbers, path_boxes, text_widths, tree_of,
 };
 use super::Routing;
 use super::{
@@ -925,6 +925,7 @@ fn synthetic_state_diagram() -> Diagram {
             dashed: false,
             filled: true,
             sections: Vec::new(),
+            title_strip: false,
         },
         super::PlacedCluster {
             id: "region".to_string(),
@@ -936,6 +937,7 @@ fn synthetic_state_diagram() -> Diagram {
             dashed: true,
             filled: true,
             sections: Vec::new(),
+            title_strip: false,
         },
     ];
 
@@ -973,10 +975,12 @@ fn orthogonal_design_reference_corpus() -> Vec<(&'static str, &'static str)> {
         ),
         (
             // `zz-design-4b-browser.png`'s own source (LR, a self-transition plus a choice with
-            // two outgoing labelled edges).
+            // two outgoing labelled edges). Declaration order matches `docs/render-check/zz-
+            // design-sources.md`'s own 4b exactly (§10-5 part-3 item 6): `state 分岐 <<choice>>`
+            // sits after the first two transitions, not before them.
             "zz-design-4b",
-            "stateDiagram-v2\n  direction LR\n  state 分岐 <<choice>>\n  待機 --> 監視 : 開始\n  \
-             監視 --> 監視 : ポーリング\n  監視 --> 分岐 : 変化\n  分岐 --> 更新 : 差分あり\n  \
+            "stateDiagram-v2\n  direction LR\n  待機 --> 監視 : 開始\n  監視 --> 監視 : ポーリング\n  \
+             state 分岐 <<choice>>\n  監視 --> 分岐 : 変化\n  分岐 --> 更新 : 差分あり\n  \
              分岐 --> 休止 : 差分なし\n  更新 --> 通知 : 適用\n  通知 --> 待機 : 完了",
         ),
         (
@@ -1212,6 +1216,11 @@ fn orthogonal_state_nodes_and_clusters_stay_correct_after_growth() {
         check_nodes_do_not_overlap(name, &d);
         check_view_box_contains_everything(name, &d);
         check_clusters_hold_their_members(name, &d, &tree);
+        // §10-5 part-3 item 1's own converse — `zz-design-4a`'s end marker (`orthogonal_full_
+        // corpus` includes the design-reference corpus, so this runs against it every time) is
+        // exactly the case this pins: a marker with no membership in `プレビュー` must never sit
+        // inside its frame.
+        check_foreign_nodes_stay_out_of_clusters(name, &d, &tree);
         check_nested_clusters_sit_inside_their_parent(name, &d);
         check_unrelated_clusters_do_not_overlap(name, &d);
     }
@@ -1336,6 +1345,51 @@ fn orthogonal_state_choice_is_a_28px_chamfered_square() {
         c.size,
         Size::new(28.0, 28.0),
         "orthogonal's choice must be the fixed 28x28 S4 size"
+    );
+}
+
+/// §10-5 part-3 item 2: `zz-design-4a`'s `q` transition (`プレビュー --> ツリー`) leaves the
+/// composite state `プレビュー` and draws straight back up beside `Enter`, not around the whole
+/// diagram's perimeter — `orthogonal::classify`'s own doc on `source_is_cluster` has the reasoning
+/// (leaving a frame's own border, with nothing real in the way, shares the ordinary branch/merge
+/// ladder's local routing).
+///
+/// A local route (`aligned`/branch/merge, at most one `rank_lane_bend` retry) never exceeds 4
+/// points; the perimeter lane `q` used to take always left the diagram's own content box by
+/// [`orthogonal::PERIMETER_MARGIN`] on its way around, which for this source put a point well past
+/// `プレビュー`'s own right edge — checked directly, not just by point count, so a future change
+/// that kept the old detour's shape but trimmed a point could not silently pass this.
+#[test]
+fn orthogonal_state_q_leaves_the_composite_state_locally_not_via_the_perimeter() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = orthogonal_design_reference_corpus()
+        .into_iter()
+        .find(|(n, _)| *n == "zz-design-4a")
+        .expect("zz-design-4a is in the design-reference corpus")
+        .1;
+    let d = laid_out_orthogonal(src);
+    let q = d
+        .edges
+        .iter()
+        .find(|e| e.from == "プレビュー" && e.to == "ツリー")
+        .expect("プレビュー->ツリー (q) must exist");
+    assert!(
+        q.points.len() <= 4,
+        "q must take a local route (at most 2 bends), not the perimeter lane: {:?}",
+        q.points
+    );
+    let cluster = d
+        .cluster("プレビュー")
+        .expect("プレビュー cluster must exist");
+    let (_, _, cluster_right, _) = cluster.bounds();
+    let max_x = q.points.iter().map(|p| p.x).fold(f64::MIN, f64::max);
+    assert!(
+        max_x <= cluster_right + 1.0,
+        "q must not swing out past プレビュー's own right edge ({cluster_right}) the way the old \
+         perimeter detour did: max_x={max_x} points={:?}",
+        q.points
     );
 }
 

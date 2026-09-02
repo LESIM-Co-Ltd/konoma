@@ -807,6 +807,7 @@ fn decoration_document(decoration: Decoration, on: bool) -> String {
                 } else {
                     Vec::new()
                 },
+                title_strip: false,
             });
         }
         Decoration::ClusterTitle | Decoration::ClusterDash | Decoration::ClusterFill => {
@@ -824,6 +825,7 @@ fn decoration_document(decoration: Decoration, on: bool) -> String {
                 dashed: decoration == Decoration::ClusterDash && on,
                 filled: decoration == Decoration::ClusterFill && on,
                 sections: Vec::new(),
+                title_strip: false,
             });
         }
         Decoration::Badge

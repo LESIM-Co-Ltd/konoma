@@ -362,6 +362,7 @@ pub fn lay_out(diagram: &SequenceDiagram) -> Result<Diagram, RenderError> {
             dashed: false,
             filled: true,
             sections: Vec::new(),
+            title_strip: false,
         });
     }
     // A group frame is drawn over a `box` frame, so the boxes go in first and the stable sort by
@@ -1035,6 +1036,7 @@ impl<'a> Walk<'a> {
             dashed: true,
             filled: false,
             sections: f.sections,
+            title_strip: false,
         });
     }
 }

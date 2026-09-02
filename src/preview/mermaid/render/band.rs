@@ -47,6 +47,7 @@ pub fn frame(id: String, title: &str, l: f64, t: f64, r: f64, b: f64) -> PlacedC
         dashed: false,
         filled: true,
         sections: Vec::new(),
+        title_strip: false,
     }
 }
 

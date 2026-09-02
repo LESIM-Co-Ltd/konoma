@@ -653,9 +653,78 @@ fn classify(
     source_out_degree: usize,
     target_in_degree: usize,
     nodes: &[PlacedNode],
+    // §10-5 part-3 item 2's own scope guard: whether `source` is a subgraph/composite-state
+    // frame's own box, not an ordinary node — see the `nothing_between` block, just below, for why
+    // this is the one extra condition kept alongside the geometric "nothing real between the two
+    // ends" test.
+    source_is_cluster: bool,
 ) -> EdgeShape {
     let is_reverse = matches!((source_rank, target_rank), (Some(sr), Some(tr)) if tr <= sr);
-    if is_reverse {
+    // §10-5 part-3 item 2 ("q が外周を大回り"): a back edge **leaving a subgraph/composite-state
+    // frame**, with no other node between that frame and where it is going, falls through to the
+    // ordinary branch/merge ladder below instead of the perimeter lane — a forward edge already
+    // crosses that very same gap, so the lane right next to it (`evict`'s own 16px "退避則"
+    // spacing, §10-1 item 1) is free to route this edge locally too.
+    // `docs/render-check/zz-design-4a-browser.png`'s own `q` (`プレビュー --> ツリー`, leaving the
+    // composite state `プレビュー` back into the node its `Enter` edge came from) is the case this
+    // is for: it draws straight up beside `Enter`, not around the whole diagram.
+    //
+    // **`source_is_cluster` is not an incidental extra condition — it is what keeps this narrow
+    // enough to leave every *other* back edge on the perimeter, exactly as item 2 itself specifies
+    // ("それ以外の戻り辺は従来どおり外周")**: an adjacent-rank back edge between two *ordinary*
+    // nodes reads geometrically identical to `q`'s (`orthogonal_frame_hugs_backedge_perimeter_
+    // lane_reads_the_frame_not_just_the_nodes`'s own plain `Y -> X` two-node cycle has nothing
+    // between them either), so "nothing real between the two ends" alone cannot tell `q` apart from
+    // an ordinary loop — the existing tests pinning "a plain back edge always uses the perimeter"
+    // caught exactly this the first time this was tried without the guard. What is different about
+    // `q` is which *end* is the frame: `プレビュー` (a subgraph/composite state) is q's own
+    // *source*, and it is *leaving* that frame — the frame's own border can absorb a port cleanly
+    // (§10-1 item 1's port/retreat rule already applies uniformly to a cluster's face, not just a
+    // node's) without threading past anything inside it. A back edge whose *target* is the frame
+    // (`cluster_anchored_reverse_edge_routes_through_the_perimeter_lane_and_clears_its_own_members`'s
+    // own `D -> one`, returning *into* a subgraph already passed) is the mirror case and keeps the
+    // perimeter unchanged — entering a frame's interior is exactly the "already-visited, could be
+    // anywhere in a busy diagram" shape the perimeter lane exists for.
+    //
+    // Not read off dagre's own rank *numbers*: konoma doubles every rank to leave room for a
+    // labelled edge's dummy row, and a cluster's border consumes another rank of its own on top of
+    // that (confirmed by dumping `zz-design-4a`: `ツリー`'s rank is 2, but its two one-hop
+    // neighbours are rank 5 for `プレビュー`'s own anchor and rank 2 for its unlabelled sibling —
+    // "one real hop" is not one fixed number of ranks apart once labels and cluster borders are in
+    // the mix). "Nothing real between the two boxes" is checked geometrically instead — the same
+    // ground truth `shape_crosses_a_node`, just below, already tests routes against — which reads
+    // the same regardless of how many internal dagre ranks the gap happens to have cost.
+    //
+    // Deliberately **not** "is there a real forward edge between this exact pair" either — `evict`'s
+    // retreat rule already answers "is the lane free" for every edge on a face, forward or back, by
+    // spacing ports 16px apart and growing the node if it has to (the same mechanism every other
+    // multi-edge face already relies on), so a bespoke occupancy probe here would just duplicate
+    // what eviction does downstream.
+    //
+    // Falling through reruns this function's own branch/merge collision ladder (`shape_crosses_a_
+    // node` → alternate shape → `rank_lane_gap_bends` → `staircase`) exactly as it already runs for
+    // any forward edge, so a direct route that would cross a foreign node's box still degrades the
+    // same way a forward edge's would, rather than skipping straight to the perimeter lane the way
+    // this branch used to for every reverse edge regardless of how far apart the two ends are.
+    let nothing_between = is_reverse && source_is_cluster && {
+        // `is_reverse`'s own guard means `target` is upstream of (or level with) `source` — the
+        // empty corridor to check is between the target's downstream edge and the source's
+        // upstream edge along the flow axis.
+        let target_far = flow(direction, &target.center) + flow_extent(direction, target);
+        let source_near = flow(direction, &source.center) - flow_extent(direction, source);
+        target_far <= source_near + EPS
+            && !nodes.iter().any(|n| {
+                if n.id == source.id || n.id == target.id {
+                    return false;
+                }
+                let near = flow(direction, &n.center) - flow_extent(direction, n);
+                let far = flow(direction, &n.center) + flow_extent(direction, n);
+                far > target_far + EPS && near < source_near - EPS
+            })
+    };
+    if nothing_between {
+        // fall through to the branch/merge ladder below
+    } else if is_reverse {
         let mut deduped = raw.to_vec();
         super::edges::dedupe(&mut deduped);
         let interior: Vec<Point> = if deduped.len() > 2 {
@@ -2370,6 +2439,7 @@ pub fn route_edge(
         source_out_degree,
         target_in_degree,
         &[],
+        false,
     );
     let source_coord = face_center_coord(source, shape.source_side);
     let target_coord = face_center_coord(target, shape.target_side);
@@ -2891,6 +2961,10 @@ pub fn route_flowchart(
 ) -> RoutedFlowchart {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
+    // §10-5 part-3 item 2's own scope guard (`classify`'s own doc on `source_is_cluster`): built
+    // once here, the same way `cluster_boxes` is, rather than a per-edge string search.
+    let cluster_ids: std::collections::HashSet<&str> =
+        clusters.iter().map(|c| c.id.as_str()).collect();
 
     let mut shapes: Vec<Option<EdgeShape>> = edges
         .iter()
@@ -2908,6 +2982,7 @@ pub fn route_flowchart(
                 e.source_out_degree,
                 e.target_in_degree,
                 nodes,
+                cluster_ids.contains(e.source),
             ))
         })
         .collect();
@@ -3512,6 +3587,77 @@ pub fn shift_cross(direction: Direction, p: &Point, delta: f64) -> Point {
     make(direction, flow(direction, p), cross(direction, p) + delta)
 }
 
+/// §10-5 part-3 item 1's own invariant: **a node that does not belong to a cluster never sits
+/// inside that cluster's frame.** [`super::tests::check_clusters_hold_their_members`] already
+/// states the other half ("a member never pokes out of its own frame"); nothing before this
+/// checked — or enforced — the converse, and a state diagram's `[*]`/end marker is the case that
+/// exposed the gap: `zz-design-4a`'s end marker (`root_end`, minlen 1 off `ツリー`, no cluster
+/// membership at all) lands at the exact same dagre rank as `プレビュー`'s own topmost member,
+/// because konoma's compound layout — like dagre's — reserves no rank of its own for a cluster's
+/// border, only for its members, so a same-rank sibling one hop from the cluster's parent shares
+/// that rank number with them. Under splines' wider `NODE_SEP` the crossing-minimisation ordering
+/// happens to leave enough of a gap that the marker's box clears the frame anyway; orthogonal's
+/// own tighter `ORTHO_NODE_SEP` (`docs/FEATURE-MERMAID-RENDERER.md` §10-2) closes that gap and the
+/// marker's box lands inside the frame's rectangle — a dagre/nodesep interaction, not anything
+/// about markers specifically, so this is written generally over every node/cluster pair rather
+/// than as a marker-shaped special case.
+///
+/// Runs once, after every pass that can still move a node's cross coordinate
+/// ([`align_straight_lanes`]/[`super::regroup_fan_lanes`]) and after [`super::read_clusters`] has
+/// read every frame's own rectangle back from the finished layout, so both sides of the check are
+/// final. Pushes an offending node clear along the *cross* axis only — the same axis
+/// [`align_straight_lanes`] already moves nodes along — by whichever direction (toward the
+/// cluster's near cross edge minus [`PERIMETER_MARGIN`], or its far one plus the same) needs the
+/// smaller shove; a node's flow-axis (rank) coordinate is left alone; `Routing::Orthogonal`
+/// callers only reach this pass at all, since splines does not run it. Skips a node this diagram's
+/// own [`super::clusters::Tree`] says the frame *does* hold ([`super::clusters::Tree::touches`]),
+/// so a genuine member is never treated as foreign to its own frame or one of its ancestors.
+///
+/// A node can end up needing this against more than one cluster in an unrelated-siblings diagram
+/// (`check_unrelated_clusters_do_not_overlap`'s own two frames can each, independently, have grown
+/// to where a stray node sits inside one); the loop below simply revisits every cluster in turn and
+/// nudges further whenever the node's *current* box still overlaps the one being checked, so a node
+/// pushed clear of the first frame is re-tested against the next rather than only ever checked
+/// against its position before any push happened.
+pub fn clear_foreign_cluster_overlaps(
+    direction: Direction,
+    nodes: &mut [PlacedNode],
+    placed_clusters: &[PlacedCluster],
+    tree: &super::clusters::Tree,
+) {
+    for cluster in placed_clusters {
+        let (cl, ct, cr, cb) = cluster.bounds();
+        for node in nodes.iter_mut() {
+            if tree.touches(&node.id, &cluster.id) {
+                continue;
+            }
+            let (nl, nt, nr, nb) = node.bounds();
+            let dx = nr.min(cr) - nl.max(cl);
+            let dy = nb.min(cb) - nt.max(ct);
+            if dx <= 0.0 || dy <= 0.0 {
+                continue; // already clear of this frame
+            }
+            // The node's own cross-axis half-extent, so the pushed box's near edge (not its
+            // centre) is what actually clears the frame's own cross edge by `PERIMETER_MARGIN`.
+            let half = cross_extent(direction, node);
+            let node_cross = cross(direction, &node.center);
+            let (near_cross, far_cross) = match direction {
+                Direction::TopToBottom | Direction::BottomToTop => (cl, cr),
+                Direction::LeftToRight | Direction::RightToLeft => (ct, cb),
+            };
+            let push_near = near_cross - PERIMETER_MARGIN - half;
+            let push_far = far_cross + PERIMETER_MARGIN + half;
+            let target = if (node_cross - push_near).abs() <= (push_far - node_cross).abs() {
+                push_near
+            } else {
+                push_far
+            };
+            let flow_v = flow(direction, &node.center);
+            node.center = make(direction, flow_v, target);
+        }
+    }
+}
+
 /// `side`'s tangent coordinate of a point already known to be a port on that face — `p.x` for
 /// `Top`/`Bottom`, `p.y` for `Left`/`Right`. [`face_center_coord`]'s counterpart for a point
 /// instead of a node, which is what [`avoid_label_plates`] has (a routed polyline's endpoint) where
@@ -3659,6 +3805,8 @@ pub fn separate_coincident_detours(
 ) {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
+    let cluster_ids: std::collections::HashSet<&str> =
+        clusters.iter().map(|c| c.id.as_str()).collect();
     let mut detour_ids: Vec<&str> = edges
         .iter()
         .filter_map(|e| {
@@ -3675,6 +3823,7 @@ pub fn separate_coincident_detours(
                 e.source_out_degree,
                 e.target_in_degree,
                 nodes,
+                cluster_ids.contains(e.source),
             );
             ((shape.reverse || shape.staircase || is_flow_flow_bend(&shape))
                 && source.id != target.id)
@@ -3790,6 +3939,8 @@ pub fn avoid_label_plates(
 ) {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
+    let cluster_ids: std::collections::HashSet<&str> =
+        clusters.iter().map(|c| c.id.as_str()).collect();
     let shapes: Vec<Option<EdgeShape>> = edges
         .iter()
         .map(|e| {
@@ -3806,6 +3957,7 @@ pub fn avoid_label_plates(
                 e.source_out_degree,
                 e.target_in_degree,
                 nodes,
+                cluster_ids.contains(e.source),
             ))
         })
         .collect();
@@ -4060,6 +4212,8 @@ pub fn insert_crossing_gaps(
 ) -> HashMap<String, Vec<(Point, Point)>> {
     let cluster_boxes = cluster_node_boxes(clusters);
     let by_id = build_by_id(nodes, &cluster_boxes);
+    let cluster_ids: std::collections::HashSet<&str> =
+        clusters.iter().map(|c| c.id.as_str()).collect();
     let is_perimeter: HashMap<&str, bool> = edges
         .iter()
         .filter_map(|e| {
@@ -4076,6 +4230,7 @@ pub fn insert_crossing_gaps(
                 e.source_out_degree,
                 e.target_in_degree,
                 nodes,
+                cluster_ids.contains(e.source),
             );
             Some((
                 e.id,
@@ -4568,6 +4723,7 @@ mod tests {
             2,
             2,
             &nodes,
+            false,
         );
         assert!(
             shape.staircase,
@@ -6012,6 +6168,7 @@ mod tests {
             1, // source_out_degree — not branching
             2, // target_in_degree — a genuine merge
             &nodes,
+            false,
         );
         assert!(
             shape.rank_lane_bend.is_some(),

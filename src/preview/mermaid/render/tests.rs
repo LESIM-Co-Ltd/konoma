@@ -994,6 +994,37 @@ pub(super) fn check_clusters_hold_their_members(name: &str, d: &Diagram, tree: &
     }
 }
 
+/// (6b) A frame holds none of what is *not* its member — the converse of (6), above.
+///
+/// §10-5 part-3 item 1's own invariant ("ノードは所属クラスターの枠内・非所属ノードは枠外"): a
+/// node with no membership in a cluster (`clusters::Tree::touches` false) must not overlap that
+/// cluster's own frame at all. Nothing before this checked the converse of (6) — every existing
+/// cluster check only ever asked "does a member ever escape its own frame", never "does a
+/// *stranger* ever land inside one" — which is exactly the gap `zz-design-4a`'s end marker fell
+/// through under `konoma-orthogonal`'s own tighter node spacing
+/// (`orthogonal::clear_foreign_cluster_overlaps`'s own doc has the dagre/nodesep reasoning).
+pub(super) fn check_foreign_nodes_stay_out_of_clusters(
+    name: &str,
+    d: &Diagram,
+    tree: &clusters::Tree,
+) {
+    for c in &d.clusters {
+        let frame = c.bounds();
+        for n in &d.nodes {
+            if tree.touches(&n.id, &c.id) {
+                continue;
+            }
+            let (dx, dy) = rect_overlap(n.bounds(), frame);
+            assert!(
+                dx <= 0.01 || dy <= 0.01,
+                "{name}: node {} (not a member) overlaps frame {} by {dx:.2}x{dy:.2}px",
+                n.id,
+                c.id
+            );
+        }
+    }
+}
+
 #[test]
 fn invariant_clusters_hold_their_members() {
     if !text_metrics::fonts_available() {
@@ -2336,6 +2367,7 @@ fn synthetic_diagram() -> Diagram {
             dashed: false,
             filled: true,
             sections: Vec::new(),
+            title_strip: false,
         },
         PlacedCluster {
             id: "inner".to_string(),
@@ -2347,6 +2379,7 @@ fn synthetic_diagram() -> Diagram {
             dashed: false,
             filled: true,
             sections: Vec::new(),
+            title_strip: false,
         },
     ];
 
@@ -8440,6 +8473,26 @@ fn invariant_orthogonal_clusters_hold_their_members() {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
         let tree = tree_of_src(src);
         check_clusters_hold_their_members(name, &d, &tree);
+    }
+}
+
+/// §10-5 part-3 item 1's own converse of the check just above — run over the same corpus, plus the
+/// permanent design-reference sources (§10-5's own "恒久テスト対象" instruction), since `zz-
+/// design-4a`'s state-diagram sibling was the case that actually exposed the gap this pins for the
+/// flowchart side of the shared `orthogonal.rs` machinery too.
+#[test]
+fn invariant_orthogonal_foreign_nodes_stay_out_of_clusters() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+        .chain(orthogonal_design_reference_corpus())
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let tree = tree_of_src(src);
+        check_foreign_nodes_stay_out_of_clusters(name, &d, &tree);
     }
 }
 

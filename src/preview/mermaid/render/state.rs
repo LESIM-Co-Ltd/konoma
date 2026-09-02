@@ -115,6 +115,17 @@ pub fn lay_out(diagram: &StateDiagram, routing: Routing) -> Result<Diagram, Rend
     }
     let mut out = lay_out_spec(&spec_of(diagram, routing))?;
     place_notes(&mut out, diagram);
+    // §10-5 S2: every composite-state frame draws its title as a left-aligned strip under
+    // `konoma-orthogonal`, never the plain centred word `read_clusters`'s own generic construction
+    // (shared with a flowchart subgraph) leaves it with — set here, once, over every cluster this
+    // diagram produced, rather than threading a "which language is this" flag down into `mod.rs`'s
+    // shared cluster machinery. Splines is untouched: `PlacedCluster::title_strip` starts `false`
+    // and nothing before this line ever sets it.
+    if routing == Routing::Orthogonal {
+        for c in &mut out.clusters {
+            c.title_strip = true;
+        }
+    }
     Ok(out)
 }
 

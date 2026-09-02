@@ -1768,6 +1768,7 @@ fn synthetic_sequence() -> Diagram {
             dashed: false,
             filled: true,
             sections: Vec::new(),
+            title_strip: false,
         },
         PlacedCluster {
             id: "g#0".to_string(),
@@ -1782,6 +1783,7 @@ fn synthetic_sequence() -> Diagram {
                 y: 210.0,
                 title: label("else is well", 92.0),
             }],
+            title_strip: false,
         },
         PlacedCluster {
             id: "g#1".to_string(),
@@ -1793,6 +1795,7 @@ fn synthetic_sequence() -> Diagram {
             dashed: true,
             filled: false,
             sections: Vec::new(),
+            title_strip: false,
         },
     ];
 

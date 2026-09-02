@@ -472,6 +472,13 @@ pub struct PlacedCluster {
     ///
     /// Only a sequence diagram's `else` / `and` / `option` fills this. Empty everywhere else.
     pub sections: Vec<ClusterSection>,
+    /// §10-5 S2: draw the title as a filled strip along the frame's own top edge, rather than the
+    /// ordinary centred word — the composite-state look `konoma-orthogonal` gives a state
+    /// diagram's `state X { ... }` frame. Set only by `state::lay_out` when its own `routing` is
+    /// `Routing::Orthogonal`; `false` everywhere else (every flowchart subgraph, and a state
+    /// diagram's own splines rendering, unconditionally), so `svg::emit_cluster_title`'s existing
+    /// centred style is the only one any other caller can ever reach.
+    pub title_strip: bool,
 }
 
 /// One `else` / `and` / `option` inside a frame.
@@ -1382,6 +1389,22 @@ fn lay_out_spec_pass(
 
     // --- read the frames back, then grow them until their titles fit ----------------------------
     let placed_clusters = read_clusters(&g, &tree, &nodes);
+
+    // §10-5 part-3 item 1: a node that is not a member of a cluster must never end up sitting
+    // inside that cluster's frame — `orthogonal::clear_foreign_cluster_overlaps`'s own doc has the
+    // real-diagram case (`zz-design-4a`'s end marker) and the dagre/nodesep reasoning. Orthogonal
+    // only: splines never reaches this call, so its byte-stable output is untouched. Runs here,
+    // after every pass above that can still move a node's cross coordinate and after `placed_
+    // clusters` has read every frame's final rectangle back, and before `route_flowchart` (below)
+    // reads either `nodes` or `placed_clusters` to place a single port.
+    if spec.routing == Routing::Orthogonal {
+        orthogonal::clear_foreign_cluster_overlaps(
+            spec.direction,
+            &mut nodes,
+            &placed_clusters,
+            &tree,
+        );
+    }
 
     // `orthogonal::route_edge`'s branch/merge shapes read a node's out-degree and its edges'
     // target's in-degree (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 1) — counted over exactly
@@ -2608,6 +2631,11 @@ fn read_clusters(
             dashed: c.dashed,
             filled: true,
             sections: Vec::new(),
+            // `state::lay_out` flips this on afterward, over every cluster at once, when its own
+            // `routing` is `Routing::Orthogonal` (§10-5 S2) — `read_clusters` itself serves both a
+            // flowchart's subgraphs and a state diagram's composite states, and has no way to tell
+            // which language it is drawing for.
+            title_strip: false,
         });
     }
     let placed: HashSet<String> = out.iter().map(|c| c.id.clone()).collect();
