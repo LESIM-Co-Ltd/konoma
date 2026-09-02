@@ -263,11 +263,12 @@ mermaid_curve = "basis"
 # above (which only picks the curve shape, not the route).
 #   "splines" (default) … the classic mermaid layout: edges follow the diagram's own curve
 #                         (mermaid_curve above) — the look never changes unless you set this.
-#   "konoma-orthogonal"  … konoma's own orthogonal router (flowchart only; every other diagram
-#                         kind is unaffected). Every edge bends only at 90°, sharp corners (zero
-#                         radius), and always meets a node or subgraph border head-on — never at
-#                         an angle. Decision nodes ({}) draw as a chamfered rectangle (6px cut
-#                         corners) instead of a diamond, so every edge lands on a flat face.
+#   "konoma-orthogonal"  … konoma's own orthogonal router (flowchart and stateDiagram-v2; every
+#                         other diagram kind is unaffected). Every edge bends only at 90°, sharp
+#                         corners (zero radius), and always meets a node or subgraph border
+#                         head-on — never at an angle. Decision nodes ({}) draw as a chamfered
+#                         rectangle (6px cut corners) instead of a diamond, so every edge lands on
+#                         a flat face.
 #                         Multiple edges on the same side of a node spread across 16px-spaced
 #                         ports, widening the node on that axis if there isn't room. A
 #                         straight-through edge between adjacent ranks aligns to a shared

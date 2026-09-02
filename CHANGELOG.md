@@ -6,6 +6,16 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **`konoma-orthogonal` now also routes `stateDiagram-v2` (state diagrams), not just flowcharts.**
+  Composite states get the same frame/port rules as subgraphs; the start (`●`) and end (`◎`)
+  markers take ports only on their pole face, duplicated when more than one transition ends at the
+  same marker; the choice pseudostate draws as a 28×28 chamfered square; a self-transition is a
+  fixed 20px loop on the face orthogonal to the flow, its label floating outside; fork/join bars
+  size themselves to the span of the trunks they connect and take ports exactly at those trunks;
+  and TB transition labels stay on-line plates. `"splines"` and every other diagram kind (class,
+  ER, sequence, …) are unchanged.
+
 ### Changed
 - **`konoma-orthogonal` draws the user-confirmed round-3 reference layout.** A fan-out's edges
   leave the flow-direction face on 16px ports with the trunk edge holding the node's centre and

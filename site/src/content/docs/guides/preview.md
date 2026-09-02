@@ -38,12 +38,13 @@ as real pixels).
   keeps the legacy Unicode rendering; unsupported diagrams fall back to it
   automatically.
 - **Edge routing**: `ui.mermaid_routing` (default `"splines"`) picks how a
-  flowchart's edges are laid out; the default reproduces mermaid's own layout
-  exactly, so nothing changes unless you set this. `"konoma-orthogonal"` is
-  konoma's own router: every edge bends only at right angles with sharp
-  corners, decision diamonds become chamfered rectangles so edges land on a
-  flat face, and a straight-through edge across ranks aligns into a single
-  unbent lane — a clean schematic look, flowchart only. Set it with
+  flowchart's or state diagram's (`stateDiagram-v2`) edges are laid out; the
+  default reproduces mermaid's own layout exactly, so nothing changes unless
+  you set this. `"konoma-orthogonal"` is konoma's own router: every edge
+  bends only at right angles with sharp corners, decision diamonds become
+  chamfered rectangles so edges land on a flat face, and a straight-through
+  edge across ranks aligns into a single unbent lane — a clean schematic
+  look, for those two diagram kinds only. Set it with
   `ui.mermaid_routing = "konoma-orthogonal"`.
 - **LaTeX math**: `$…$` and `$$…$$` (or `\(…\)` / `\[…\]`) are typeset in pure
   Rust and drawn as images — no browser, no Node, no TeX installation. An

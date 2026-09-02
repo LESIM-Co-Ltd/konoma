@@ -248,7 +248,7 @@ mermaid_curve = "basis"
 # とは独立。
 #   "splines" (既定) … 従来の mermaid のレイアウト。辺は図自身の曲線(上の mermaid_curve)に従う。
 #                       この設定を変えない限り見え方は変わらない。
-#   "konoma-orthogonal" … konoma 独自の直交配線ルータ(flowchart のみ・他の図種には影響しない)。
+#   "konoma-orthogonal" … konoma 独自の直交配線ルータ(flowchart と stateDiagram-v2・他の図種には影響しない)。
 #                       すべての辺は 90° でのみ曲がり、角は鋭角(半径0)。ノード・サブグラフ枠へは
 #                       常に垂直に入射する(斜めに刺さらない)。判定ノード({})は菱形でなく面取り
 #                       矩形(角を6px面取り)で描かれ、すべての辺が平坦な面に着地する。同じ辺に
