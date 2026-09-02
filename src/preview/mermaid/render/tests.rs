@@ -8192,3 +8192,135 @@ fn regroup_fan_lanes_groups_by_colour_centres_the_trunk_and_pushes_classless_out
         s_node.center.y
     );
 }
+
+/// §10-3 item 2's own outside-in nesting (`3a`'s reference geometry, `orthogonal::route_fan_lane`'s
+/// own doc), stated as the invariant it exists to buy: **no two fan-lane siblings on the same
+/// source face ever cross each other's own segments** — not just "no node gets pierced" (the
+/// pre-existing corpus invariants), a stronger, edge-vs-edge geometric claim only this fan region
+/// can violate (an ordinary branch/merge pair never shares a face with more than one sibling).
+///
+/// Before the outside-in correction, the plain "step scales with distance from centre" formula drew
+/// the *opposite* nesting: a sibling closer to the face's own centre got the *shallower* bend, so
+/// its short stub sat inside a farther-out sibling's own bend lane and vice versa — on this exact
+/// fixture (`設定のルール`'s ten-way fanout), `ページ描画`(`PD`, one step in from the centre on the
+/// five-member half) and `一覧`(`AR`, two steps out) crossed: `AR`'s stub (`y=345.7`,
+/// `x∈[319.75,359.75]`) sat inside the y-range of `PD`'s own vertical run (`y∈[308.3,361.7]`) at an
+/// x (`327.75` under the old formula) still short of `PD`'s own bend depth — a real crossing, not a
+/// hypothetical one, confirmed by hand against a dump of the pre-fix route before this test was
+/// written. §10-3 item 5's "主辺どうしの交差は水平側が譲る" then fired on it, cutting a
+/// [`orthogonal::CROSSING_GAP`]-px notch out of the horizontal stub — the "ファン根元のスタブが細切
+/// れになる" symptom the user reported (`設定のルール` reads far busier than `3a`'s own reference).
+/// The second half of this test (`gaps.is_empty()`) pins that the fix removes the crossing itself,
+/// not just its visual symptom: once no two siblings cross, rule 5 never has anything to cut here.
+#[test]
+fn orthogonal_settings_rules_sample_fan_lane_siblings_never_cross() {
+    let src = SETTINGS_RULES_SAMPLE;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let fan: Vec<&PlacedEdge> = d.edges.iter().filter(|e| e.from == "C").collect();
+    assert_eq!(
+        fan.len(),
+        10,
+        "設定のルール's own ten-way fanout must still have all ten children: {:?}",
+        fan.iter().map(|e| e.to.as_str()).collect::<Vec<_>>()
+    );
+
+    for e in &fan {
+        assert!(
+            e.gaps.is_empty(),
+            "C->{}: a fan-lane sibling's own stub must never be cut by rule 5's crossing gap \
+             (that only fires when two siblings actually cross) — gaps: {:?}, points: {:?}",
+            e.to,
+            e.gaps,
+            e.points
+        );
+    }
+
+    for i in 0..fan.len() {
+        for j in (i + 1)..fan.len() {
+            let (a, b) = (fan[i], fan[j]);
+            for wa in a.points.windows(2) {
+                for wb in b.points.windows(2) {
+                    assert!(
+                        orthogonal::segment_crossing(wa, wb).is_none(),
+                        "C->{} crosses C->{}'s own segment ({:?}-{:?} vs {:?}-{:?}) — the two fan \
+                         siblings' own routes must never cross: {} points={:?}, {} points={:?}",
+                        a.to,
+                        b.to,
+                        wa[0],
+                        wa[1],
+                        wb[0],
+                        wb[1],
+                        a.to,
+                        a.points,
+                        b.to,
+                        b.points
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A minimal synthetic fixture with the same shape as [`orthogonal_settings_rules_sample_fan_lane_
+/// siblings_never_cross`]'s own real-diagram pin, deliberately unbalanced (5 above the trunk, 4
+/// below — `3a`'s own five-vs-four split, `MD` landing dead on `C`'s own centre line as the tenth,
+/// aligned member) rather than a tidy symmetric fan, so this still exercises the "nest against the
+/// *larger* half's own outer rank" rule (the per-face loop in `evict` builds this, `Eviction::
+/// fan_step`'s own doc) a perfectly even fixture never would — the two closest-to-centre siblings on
+/// *either* side of an unbalanced face (`MD` above, `B1` below) must bend to the identical depth,
+/// the same "306 と 338 が同じ 348 を使う" behaviour `3a`'s own reference shows.
+///
+/// Every out-edge carries a label (`|ラベルA1|` etc): §10-1 item 3's own minimum-segment-length rule
+/// is what gives real diagrams the flow-axis room a deep nested bend needs (`3a`'s own `設定のルー
+/// ル`'s ten-way fanout has labels on every edge too) — without one, `C`'s ten unlabelled leaf
+/// children all land at the bare `RANK_SEP` (50px) away, too close for the busiest half's deepest
+/// bend (`PORT_CLEARANCE * (5 + 1)` = 48px) to clear before reaching the target, which trips
+/// `route_fan_lane`'s own defensive "past the target" guard into its plain-midpoint fallback —
+/// a real, if narrow, gap in that fallback's own no-crossing guarantee (`route_fan_lane`'s own doc:
+/// the fallback is not built with §10-3's nesting in mind at all), but a different, already-
+/// documented limitation from the one this test exists to pin, so the fixture is built to stay clear
+/// of it rather than conflate the two.
+#[test]
+fn orthogonal_synthetic_ten_way_fan_lane_siblings_never_cross() {
+    let src = "flowchart LR\n  Z --> C{cond}\n  \
+               C -->|ラベルA1| A1\n  C -->|ラベルA2| A2\n  C -->|ラベルA3| A3\n  \
+               C -->|ラベルA4| A4\n  C -->|ラベルA5| A5\n  \
+               C -->|ラベルMD| MD\n  \
+               C -->|ラベルB1| B1\n  C -->|ラベルB2| B2\n  C -->|ラベルB3| B3\n  C -->|ラベルB4| B4";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let fan: Vec<&PlacedEdge> = d.edges.iter().filter(|e| e.from == "C").collect();
+    assert_eq!(
+        fan.len(),
+        10,
+        "C's own ten-way fanout: {:?}",
+        fan.iter().map(|e| e.to.as_str()).collect::<Vec<_>>()
+    );
+
+    for e in &fan {
+        assert!(
+            e.gaps.is_empty(),
+            "C->{}: no fan-lane sibling may carry a crossing gap: {:?}",
+            e.to,
+            e.gaps
+        );
+    }
+    for i in 0..fan.len() {
+        for j in (i + 1)..fan.len() {
+            let (a, b) = (fan[i], fan[j]);
+            for wa in a.points.windows(2) {
+                for wb in b.points.windows(2) {
+                    assert!(
+                        orthogonal::segment_crossing(wa, wb).is_none(),
+                        "C->{} crosses C->{}: {} points={:?}, {} points={:?}",
+                        a.to,
+                        b.to,
+                        a.to,
+                        a.points,
+                        b.to,
+                        b.points
+                    );
+                }
+            }
+        }
+    }
+}

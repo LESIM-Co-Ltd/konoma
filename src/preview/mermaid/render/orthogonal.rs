@@ -868,7 +868,9 @@ fn classify(
 /// for the unevicted (`n = 1`) case. `ring` and `nodes` are [`route_perimeter`]'s own inputs (a
 /// lane rectangle and the whole diagram's nodes, for its collision check) — unused by every shape
 /// but a genuine (non-self-loop) `reverse` back edge, but threaded through uniformly rather than
-/// rebuilt per call (`route_flowchart` already has both on hand).
+/// rebuilt per call (`route_flowchart` already has both on hand). `fan_step` is only ever read for
+/// `shape.fan_lane` — [`route_fan_lane`]'s own doc on why it is a hint from a whole-face pass
+/// rather than something this single-edge function could work out alone.
 #[allow(clippy::too_many_arguments)]
 fn route_with_ports(
     direction: Direction,
@@ -880,6 +882,7 @@ fn route_with_ports(
     raw: &[Point],
     ring: (f64, f64, f64, f64),
     nodes: &[PlacedNode],
+    fan_step: Option<f64>,
 ) -> Vec<Point> {
     let source_port = port_at(source, shape.source_side, source_coord, PORT_INSET);
     let target_port = port_at(target, shape.target_side, target_coord, PORT_INSET);
@@ -989,7 +992,14 @@ fn route_with_ports(
         let blocked = |a: &Point, b: &Point| segment_crosses_any_node(a, b, nodes, ids);
         route_perimeter(shape, source_port, target_port, ring, &blocked)
     } else if shape.fan_lane {
-        route_fan_lane(direction, shape, source, &source_port, &target_port)
+        route_fan_lane(
+            direction,
+            shape,
+            source,
+            &source_port,
+            &target_port,
+            fan_step,
+        )
     } else if let Some(bend) = shape.rank_lane_bend {
         // §10-3 item 4: `classify` already found and collision-tested this exact bend
         // (`rank_lane_gap_bend`) — `bend_at` reproduces the identical route here, never a second,
@@ -1180,10 +1190,27 @@ fn rank_lane_gap_bends(
 /// (a symmetric pair) — get the identical bend distance by construction, since the formula below
 /// depends on `k` alone, never on which side of the centre the port sits.
 ///
-/// The bend sits `PORT_CLEARANCE * k` px out from the source's own face along the flow axis —
-/// never closer than one `PORT_CLEARANCE` (the port nearest the centre, `k = 1`), and growing by
-/// `PORT_CLEARANCE` for every rank further out, so a sibling that is not on the fan-lane group's
-/// dense inner ranks does not accidentally collide with one that is.
+/// `step_hint`, when given, is [`Eviction::fan_step`]'s own precomputed value for this edge —
+/// `evict` sees every sibling on the shared face at once and nests them **outside-in**: the port
+/// *farthest* from the face's centre gets the *shallowest* bend, and each port nearer the centre
+/// bends `PORT_CLEARANCE` further out (`docs/mermaid-theme/handoff/round3-Konoma-Flowchart-
+/// Routing.dc.html`'s `3a` section — `設定のルール`'s ten-way fanout — is the reference this was
+/// reverse-engineered from). A single edge routed in isolation cannot tell, from its own port
+/// alone, how many siblings sit further out on *either* half of the face — the whole reason this is
+/// a hint from a whole-face pass rather than computed here — so a caller with no such pass on hand
+/// (a fan-lane edge routed through [`route_edge`], never reachable from a real diagram since
+/// [`classify`]'s own `fan_eligible` doc explains a fan face always needs siblings; or
+/// [`avoid_label_plates`]'s port-push retry, which *does* still run its own `evict` pass for
+/// exactly this) passes `None`, and this falls back to the plain "step scales with `k` alone"
+/// formula — nested the *opposite* way from `3a` (`docs/STATUS.md`'s ★未修正 entry on this exact
+/// bug: the un-hinted formula bends the face's *busiest* siblings' stubs across each other's own
+/// lanes), kept only so every caller still gets *some* two-bend route rather than a panic or a
+/// silently wrong axis.
+///
+/// The bend sits at least `PORT_CLEARANCE * 2` px out from the source's own face along the flow
+/// axis, growing by `PORT_CLEARANCE` for every rank further toward the centre, so the sibling
+/// nearest the face's own centre — the one whose horizontal stub every other sibling's bend lane
+/// must clear — reaches the deepest bend, past every other sibling's own shorter stub.
 ///
 /// If the computed bend would not sit strictly between the source and target's own flow
 /// coordinates — never seen on a real diagram (fan-lane siblings sit on a small face, ranks apart
@@ -1196,11 +1223,14 @@ fn route_fan_lane(
     source: &PlacedNode,
     source_port: &Point,
     target_port: &Point,
+    step_hint: Option<f64>,
 ) -> Vec<Point> {
-    let center = face_center_coord(source, shape.source_side);
-    let offset = cross(direction, source_port) - center;
-    let k = (offset.abs() / PORT_SPACING).round().max(1.0);
-    let step = PORT_CLEARANCE * k;
+    let step = step_hint.unwrap_or_else(|| {
+        let center = face_center_coord(source, shape.source_side);
+        let offset = cross(direction, source_port) - center;
+        let k = (offset.abs() / PORT_SPACING).round().max(1.0);
+        PORT_CLEARANCE * k
+    });
     let bend_flow = flow(direction, source_port) + outward_sign(shape.source_side) * step;
 
     let (lo, hi) = (
@@ -1713,6 +1743,10 @@ pub fn route_edge(
         raw,
         ring,
         &both,
+        // No sibling face to nest against in this isolated single-edge helper — never actually
+        // reachable for a `fan_lane` shape anyway (`route_fan_lane`'s own doc: `classify`'s
+        // `fan_eligible` trigger needs a real sibling), so the fallback formula is never exercised.
+        None,
     )
 }
 
@@ -1741,6 +1775,13 @@ struct FaceClaim {
     /// lanes`'s geometric collapse never fully landed the two nodes on the same cross coordinate,
     /// so `shape.aligned` alone (the 0-bend case) would miss it.
     trunk: bool,
+    /// Whether this claim's own edge draws as [`EdgeShape::fan_lane`] — set only on the
+    /// `FaceEnd::Source` claim, the same `Source`-only rule `trunk` uses just above (the bend
+    /// depth §10-3 item 2 assigns is a *source*-face concept, so a fan-lane edge's target-side
+    /// claim never needs it). [`evict`]'s own per-face `fan_step` pass is the one reader: it needs
+    /// to tell a face's fan-lane siblings apart from the one aligned/trunk claim sharing the same
+    /// face, which never bends at all.
+    fan_lane: bool,
 }
 
 /// The caller's own view of one node-to-node edge — everything [`route_flowchart`] needs about it
@@ -1774,6 +1815,13 @@ struct Eviction {
     source_coord: HashMap<String, f64>,
     target_coord: HashMap<String, f64>,
     required_size: HashMap<String, Size>,
+    /// Edge id → [`route_fan_lane`]'s own bend-depth step (already `PORT_CLEARANCE`-scaled px,
+    /// ready to use as-is), for every `fan_lane` edge on a face `evict` just placed ports on —
+    /// `route_fan_lane` cannot work this out alone from a single edge's own port (§10-3's own
+    /// "outside-in nesting" needs to know how many siblings sit on *each* half of the shared face,
+    /// which only this whole-face pass sees). An edge absent from this map (every non-`fan_lane`
+    /// edge) draws unaffected — `route_fan_lane` is the only reader, and only when `shape.fan_lane`.
+    fan_step: HashMap<String, f64>,
 }
 
 /// One global eviction pass: given every edge's already-decided [`EdgeShape`], works out the exact
@@ -1815,6 +1863,7 @@ fn evict(
                 other_cross: cross(direction, &target.center),
                 aligned: shape.aligned,
                 trunk: is_trunk,
+                fan_lane: shape.fan_lane,
             });
         groups
             .entry((edge.target.to_string(), shape.target_side))
@@ -1834,12 +1883,18 @@ fn evict(
                 // through `D`'s own box on the way back up to `B`
                 // (`orthogonal_no_edge_crosses_its_own_endpoint_across_the_whole_corpus`).
                 trunk: false,
+                // A fan-lane edge's *target* claim is an ordinary single/plain claim on the
+                // target's own incoming face — the bend §10-3 item 2 describes belongs to the
+                // source face's crowded fan, never the target side (`trunk`'s own doc, just
+                // above, for the identical reasoning).
+                fan_lane: false,
             });
     }
 
     let mut source_coord: HashMap<String, f64> = HashMap::new();
     let mut target_coord: HashMap<String, f64> = HashMap::new();
     let mut required_size: HashMap<String, Size> = HashMap::new();
+    let mut fan_step: HashMap<String, f64> = HashMap::new();
 
     for ((node_id, side), mut claims) in groups {
         let Some(&node) = by_id.get(node_id.as_str()) else {
@@ -1909,6 +1964,53 @@ fn evict(
             }
         }
 
+        // §10-3 item 2's own "分岐レーンは中心から外向きに8px刻み", `3a`'s outside-in nesting
+        // corrected ([`route_fan_lane`]'s own doc has the geometry — a plain "step scales with
+        // distance from centre" formula draws the *opposite* nesting and the sibling bend lanes
+        // cross each other's stubs). Anchoring on `anchor` alone (rather than requiring it to
+        // exist) mirrors the coordinate loop just above: a face with a `fan_lane` claim always has
+        // an aligned/trunk companion too (`classify`'s own `fan_eligible` doc — the trigger is
+        // "does this source already have a flow-aligned sibling"), so `anchor` is always `Some`
+        // whenever this loop finds anything to do, but the `let-else` here stays defensive rather
+        // than assuming that invariant.
+        if let Some(anchor) = anchor {
+            // (edge id, this port's own rank from the centre — `route_fan_lane`'s old, still-used-
+            // as-a-fallback `k`) for every fan-lane sibling on this face, split by which side of
+            // the centre they sit on — `3a`'s own reference (`設定のルール`'s ten-way fanout) nests
+            // both halves against the *larger* half's own outer rank, not each half's own count
+            // (its `y=306`, one step in on the five-member half, and `y=338`, one step in on the
+            // four-member half, bend to the identical depth), so the two halves cannot be nested
+            // independently.
+            let mut ranks: Vec<(String, f64)> = Vec::new();
+            let mut outer_neg = 0.0_f64;
+            let mut outer_pos = 0.0_f64;
+            for (i, claim) in claims.iter().enumerate() {
+                if !claim.fan_lane {
+                    continue;
+                }
+                let offset = (i as f64 - anchor as f64) * PORT_SPACING;
+                let k = (offset.abs() / PORT_SPACING).round().max(1.0);
+                if offset < 0.0 {
+                    outer_neg = outer_neg.max(k);
+                } else {
+                    outer_pos = outer_pos.max(k);
+                }
+                ranks.push((claim.edge_id.clone(), k));
+            }
+            let outer_rank = outer_neg.max(outer_pos);
+            if outer_rank > 0.0 {
+                for (edge_id, k) in ranks {
+                    // Reflects `k` (1 = closest to the centre) around the face's own outer rank —
+                    // the port that used to get the *smallest* step (closest to centre, `k = 1`)
+                    // now gets the deepest bend (`PORT_CLEARANCE * (outer_rank + 1)`), and the
+                    // outermost port (`k = outer_rank`) gets the shallowest one `PORT_CLEARANCE`
+                    // can offer above the plain port-clearance minimum (`PORT_CLEARANCE * 2`).
+                    let nested_k = outer_rank + 2.0 - k;
+                    fan_step.insert(edge_id, PORT_CLEARANCE * nested_k);
+                }
+            }
+        }
+
         // The flat run this face needs: `(n-1)` gaps of `PORT_SPACING` between `n` ports, plus
         // `PORT_CLEARANCE` clear on each side of the outermost one.
         let required_flat = if n == 0 {
@@ -1940,6 +2042,7 @@ fn evict(
         source_coord,
         target_coord,
         required_size,
+        fan_step,
     }
 }
 
@@ -2169,6 +2272,7 @@ pub fn route_flowchart(
             edge.raw,
             ring,
             nodes,
+            eviction.fan_step.get(edge.id).copied(),
         );
         points.insert(edge.id.to_string(), routed);
     }
@@ -3008,6 +3112,12 @@ pub fn avoid_label_plates(
         .collect();
     let base_bounds = content_bounds(nodes, clusters);
     let lane_of = perimeter_lanes(&by_id, edges, &shapes);
+    // `route_fan_lane`'s own doc on why a fan-lane edge's bend depth needs a whole-face pass: this
+    // retry rebuilds a fan-lane edge's route (below, when a label plate pushes its port) from a
+    // freshly recomputed `source_coord`, not `evict`'s own port map, so it has to run its own
+    // `evict` pass here too rather than threading one through from `route_flowchart` — the ports
+    // it pushes have already drifted from whatever `evict` originally decided.
+    let fan_step = evict(direction, &by_id, edges, &shapes, chain_next).fan_step;
 
     for (edge, shape) in edges.iter().zip(&shapes) {
         let Some(shape) = shape else { continue };
@@ -3123,6 +3233,7 @@ pub fn avoid_label_plates(
             // from `raw` exactly as before — only the port ends move.
             (0.0, 0.0, 0.0, 0.0),
             nodes,
+            fan_step.get(edge.id).copied(),
         );
         if let Some(plate) = plates.get_mut(edge.id) {
             if let Some(slot) = label_slot(direction, &rebuilt) {
@@ -3148,7 +3259,13 @@ pub const CROSSING_GAP: f64 = 12.0;
 /// horizontal, meeting strictly inside both (not merely touching at a shared endpoint, and not
 /// running parallel or collinear with each other). `None` for every other case, defensively
 /// including a segment that is not axis-parallel (never built by this module).
-fn segment_crossing(a: &[Point], b: &[Point]) -> Option<Point> {
+///
+/// `pub(crate)` (not private) for the same reason [`segment_crosses_node`] is: `render::tests`'
+/// fan-lane invariant ("同一ファンの兄弟レーン・スタブ同士は交差しない", §10-3 item 2) states the
+/// question against a real diagram's *finished* polylines using this exact predicate, rather than a
+/// second, hand-rolled copy of the same axis-parallel intersection arithmetic that could silently
+/// drift from what [`insert_crossing_gaps`] itself actually checks.
+pub(crate) fn segment_crossing(a: &[Point], b: &[Point]) -> Option<Point> {
     let (a0, a1) = (&a[0], &a[1]);
     let (b0, b1) = (&b[0], &b[1]);
     let a_vert = (a0.x - a1.x).abs() < EPS;
