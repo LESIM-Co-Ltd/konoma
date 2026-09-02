@@ -1672,233 +1672,268 @@ fn route_staircase_with_ports(
 /// `raw`'s dagre-computed waypoints can predate a node `align_straight_lanes` later moved (found on
 /// `strokes`' `C~~~E`, which grazed `D`'s padded box by ~1.3px once `D` had shifted).
 ///
-/// For each axis-parallel segment that crosses a foreign node ([`segment_crosses_node`], the same
-/// [`COLLISION_MARGIN`]-padded test `classify`'s own collision fix uses), every point on that
-/// segment's own straight run — not just the two points of the one flagged segment — moves to
-/// clear the node, on whichever side the run already sat nearer to (so a route already passing
-/// below a node stays below it, just with more clearance, rather than jumping to the other side
-/// and reading as a different shape). Moving the whole run keeps the polyline axis-parallel; moving
-/// only the flagged segment's two points would not.
+/// For each axis-parallel run that crosses a foreign node ([`segment_crosses_node`], the same
+/// [`COLLISION_MARGIN`]-padded test `classify`'s own collision fix uses), [`local_detour`] routes
+/// *around only that one node's own padded span* and rejoins the run's original coordinate right
+/// past it — never a whole-run slide to a single shared coordinate, which is what this function did
+/// through 2026-09-02 (`docs/STATUS.md`'s own ★未修正: `zz-design-2c`'s `API -> ID`, dumped through
+/// `orthogonal_design_reference_dump`). A whole-run slide has exactly one degree of freedom — one new
+/// coordinate for the *entire* straight run — so it silently fails whenever two obstacles sitting at
+/// different points along the run each demand a *different* clearance: `API -> ID` runs straight
+/// down through `Q`'s row (only clear to the *left* of `Q`) and then again through the `メタデータ
+/// DB`/`成果物保管`/`解析サンドボックス` row (the only gap wide enough sits just to the *right* of
+/// where `Q` pushed it) — no single x clears both, so the whole-run slide oscillated between the two
+/// colliding coordinates every pass and, once its pass budget ran out, silently returned a route that
+/// still crossed `Q` (confirmed by instrumenting the old fix: passes 0/2 landed left of `Q` and inside
+/// `成果物保管`'s box, passes 1/3 landed right of `成果物保管` and back inside `Q`'s). Detouring
+/// locally around each obstacle's own span, independent of every other obstacle on the same run,
+/// has no such single-coordinate constraint to fail.
 ///
-/// Bounded to a handful of passes — the same "monotonic retry, defensive cap" shape
-/// `lay_out_spec`'s own growth loop uses — rather than an unbounded fixpoint search: clearing one
-/// node can in principle open a fresh crossing against a different one, but needs a second node
-/// sitting within one more push of the first, the same documented approximation
-/// `avoid_label_plates`'s own single-pass doc already accepts for its own local fixes.
+/// Bounded to a handful of passes — the same "monotonic retry, defensive cap" shape `lay_out_spec`'s
+/// own growth loop uses — rather than an unbounded fixpoint search: each pass clears one obstacle's
+/// own span for good ([`local_detour`]'s own two turns sit outside that node's padded box by
+/// construction, so a later pass never re-flags the same span), so the cap only bounds how many
+/// *distinct* obstacles one run may thread past, not how many attempts clearing one takes — raised
+/// from the whole-run slide's `4` to `8` accordingly (a run threading a dense cross-subgraph corridor
+/// can pass more than four different nodes' rows).
 fn clear_local_route(
     mut points: Vec<Point>,
     nodes: &[PlacedNode],
     ids: (&str, &str),
 ) -> Vec<Point> {
-    const MAX_PASSES: usize = 4;
+    const MAX_PASSES: usize = 8;
     for _ in 0..MAX_PASSES {
-        let mut fix: Option<LocalFix> = None;
-        'search: for w in points.windows(2) {
+        let mut hit: Option<(usize, usize)> = None; // (window index, index into `nodes`)
+        'search: for (i, w) in points.windows(2).enumerate() {
             let (a, b) = (&w[0], &w[1]);
             let horizontal = (a.y - b.y).abs() < EPS;
             let vertical = (a.x - b.x).abs() < EPS;
             if !horizontal && !vertical {
                 continue; // never happens for this module's own output, but not this fn's to assume
             }
-            for n in nodes {
+            for (ni, n) in nodes.iter().enumerate() {
                 if n.id == ids.0 || n.id == ids.1 {
                     continue;
                 }
                 if segment_crosses_node(a, b, n) {
-                    fix = Some(local_fix(&points, a, horizontal, n));
+                    hit = Some((i, ni));
                     break 'search;
                 }
             }
         }
-        let Some(f) = fix else {
+        let Some((i, ni)) = hit else {
             break;
         };
-        apply_local_nudge(&mut points, &f);
+        points = local_detour(points, i, &nodes[ni], nodes, ids);
+        // A later pass's own detour can end up doubling back on an earlier one — not a wrong
+        // route (every leg still clears whatever it was built to clear), but a pointless one: two
+        // consecutive jogs that leave and immediately re-enter the same point account for nothing.
+        // Collapsing them keeps the *next* pass's own search from being confused by geometry that
+        // no longer reflects a real obstacle, and keeps the final route from carrying bends no
+        // obstacle ever required.
+        points = remove_spikes(points);
     }
     points
 }
 
-/// One already-found local nudge: `old_c`/`new_c`/`horizontal` are [`apply_local_nudge`]'s plain
-/// "slide every point on `old_c` to `new_c`" instruction, same as before §10-3 item 13's own fix;
-/// `port_stubs`, when non-empty, is that fix's own §10-3 item 13 correction — see [`local_fix`]'s
-/// doc. Zero, one, or two entries: a route whose *both* ports happen to sit on the very coordinate
-/// being slid (a straight, unbent run end to end) needs a stub at each end, not just one.
-struct LocalFix {
-    old_c: f64,
-    new_c: f64,
-    horizontal: bool,
-    port_stubs: Vec<PortStub>,
-}
-
-/// §10-3 item 13's own "曲げを足す" correction for a port that sits *on* the coordinate a local fix
-/// is about to slide out from under it: which port (`points[0]` when `at_start`, `points[last]`
-/// otherwise) and the coordinate, along the leg's own *original* axis, of the safe jog point — where
-/// the leg can still leave the port in its own correctly-assigned perpendicular direction for a
-/// short distance before turning onto the avoided line, rather than either moving the port
-/// ([`apply_local_nudge`]'s own exclusion of `points[0]`/`points[last]`) or turning immediately at it
-/// (breaking §10-1 item 1's "出入りは常に辺へ垂直" — the very defect an earlier draft of this fix
-/// had, caught by `assert_endpoints_sit_outside_and_perpendicular` failing on real corpus fixtures
-/// once this module's own tests ran).
-struct PortStub {
-    at_start: bool,
-    stub_other: f64,
-}
-
-/// Builds the [`LocalFix`] for one already-found crossing (`clear_local_route`'s own search loop, a
-/// window `a`–`b` already known to cross `n` — only `a` is needed here, `old_c`'s own value): the
-/// same "which side of `n` to slide the shared coordinate to" §10-1 item 1's local remediation
-/// always used, plus — new for §10-3 item 13 — a [`PortStub`] for *every* port that actually sits on
-/// the coordinate being slid.
-///
-/// Judged by coordinate, not by whether `i` happens to be the literal first/last window
-/// (`docs/STATUS.md`'s own ★未修正 entry — the real bug this reimplementation closes): a `staircase`
-/// edge's raw dagre waypoints routinely carry several collinear points in a row before reaching a
-/// port whose own coordinate already matches them (`2b`'s own `API -> ID`, a plain, unbent
-/// left-to-right run the *entire* way to `ID`'s own port — the crossing `clear_local_route`'s search
-/// found sat on an *early* window of that run, not literally `i + 2 == points.len()`, so the old
-/// window-identity test never built a stub for the port at all: `apply_local_nudge`'s "ports never
-/// move" then left `ID`'s own port stranded on the old coordinate while every other point on the
-/// same straight run slid to the new one — a diagonal final segment, this module's own axis-parallel
-/// invariant broken in exactly the corpus shape (a long cross-subgraph edge) no existing fixture
-/// happened to exercise). Testing coordinate equality against `points[0]`/`points[last]` directly
-/// catches this regardless of which window the search actually flagged, and is exactly equivalent to
-/// the old `i == 0` / `i + 2 == points.len()` test whenever those *were* the flagged window (the
-/// terminal window's own endpoint is that port by construction), so no existing behaviour changes.
-fn local_fix(points: &[Point], a: &Point, horizontal: bool, n: &PlacedNode) -> LocalFix {
-    let (l, t, r, bo) = n.bounds();
-    let (old_c, new_c) = if horizontal {
-        let y = a.y;
-        let new_y = if y <= (t + bo) / 2.0 {
-            t - COLLISION_MARGIN - 1.0
-        } else {
-            bo + COLLISION_MARGIN + 1.0
-        };
-        (y, new_y)
-    } else {
-        let x = a.x;
-        let new_x = if x <= (l + r) / 2.0 {
-            l - COLLISION_MARGIN - 1.0
-        } else {
-            r + COLLISION_MARGIN + 1.0
-        };
-        (x, new_x)
-    };
-    let coord_of = |p: &Point| if horizontal { p.y } else { p.x };
-    let last = points.len() - 1;
-    // Which side of `n` a stub belongs on, from the *direction of travel* along the port's own
-    // adjacent segment (never the flagged window's `a`/`b`, which need not be that segment at all
-    // once the test above is coordinate-based rather than window-identity-based) — `at_start`'s own
-    // stub is the port's outward leg, so it has to stop on the *near* side of `n` (the side the port
-    // faces) before ever reaching it; an end stub's own leg arrives *at* the port, so it has to
-    // already be past `n`, on the *far* side — mirror images of the same "which edge of `n` do I
-    // reach first from here" question.
-    let stub_other_for = |dir: f64, at_start: bool| {
-        let near_side = if at_start { dir >= 0.0 } else { dir < 0.0 };
-        if horizontal {
-            if near_side {
-                l - COLLISION_MARGIN - 1.0
+/// [`clear_local_route`]'s own cleanup: repeatedly collapses any `points[k]`–`points[k + 1]`–
+/// `points[k + 2]` run where the first and third points coincide — a detour that turns aside and
+/// immediately turns back, contributing nothing to the route it is part of. Never touches the
+/// route's own two ends (`points[0]`/`points[last]`, [`evict`]'s own port slots): the scan only
+/// removes `points[k + 1]`/`points[k + 2]`, and only when `k + 2` is not the final index, so a
+/// spike that happens to end exactly on a port is left alone rather than deleting it.
+fn remove_spikes(mut points: Vec<Point>) -> Vec<Point> {
+    loop {
+        let mut removed = false;
+        let mut k = 0;
+        while k + 2 < points.len() {
+            let last = points.len() - 1;
+            if k + 2 != last
+                && (points[k].x - points[k + 2].x).abs() < EPS
+                && (points[k].y - points[k + 2].y).abs() < EPS
+            {
+                points.remove(k + 2);
+                points.remove(k + 1);
+                removed = true;
             } else {
-                r + COLLISION_MARGIN + 1.0
+                k += 1;
             }
-        } else if near_side {
-            t - COLLISION_MARGIN - 1.0
-        } else {
-            bo + COLLISION_MARGIN + 1.0
         }
-    };
-    let mut port_stubs = Vec::new();
-    if points.len() > 1 && (coord_of(&points[0]) - old_c).abs() < EPS {
-        let dir = if horizontal {
-            points[1].x - points[0].x
-        } else {
-            points[1].y - points[0].y
-        };
-        port_stubs.push(PortStub {
-            at_start: true,
-            stub_other: stub_other_for(dir, true),
-        });
+        if !removed {
+            break;
+        }
     }
-    if points.len() > 1 && (coord_of(&points[last]) - old_c).abs() < EPS {
-        let dir = if horizontal {
-            points[last].x - points[last - 1].x
-        } else {
-            points[last].y - points[last - 1].y
-        };
-        port_stubs.push(PortStub {
-            at_start: false,
-            stub_other: stub_other_for(dir, false),
-        });
-    }
-    LocalFix {
-        old_c,
-        new_c,
-        horizontal,
-        port_stubs,
-    }
+    points
 }
 
-/// [`clear_local_route`]'s own "apply the fix" step: every point sharing the flagged run's own
-/// constant coordinate (`f.old_c`) slides to `f.new_c` together, same as before §10-3 item 13's own
-/// fix, except `points[0]`/`points[last]` — the route's own two ports, pinned to the exact slot
-/// [`evict`] assigned them — which never move.
+/// One [`clear_local_route`] pass's own fix: the axis-parallel run through window `i`
+/// (`points[i]`–`points[i + 1]`, already known to cross `node`) detours around `node`'s own padded
+/// span and rejoins its original coordinate on both sides of it.
 ///
-/// When the coordinate being slid touches a port (`f.port_stubs`, [`local_fix`]'s own doc on why
-/// this is judged by coordinate, not by which window was flagged), a plain slide of everything else
-/// would leave that port's own immediate neighbour on the *new* coordinate while the port itself
-/// stayed on the *old* one — a diagonal leg, or (an earlier draft's own bug, `PortStub`'s own doc) a
-/// leg bent at the port instead of past it. The constructive fix splices two extra points in beside
-/// each such port instead: it keeps leaving/entering in its own correctly-assigned perpendicular
-/// direction for a short stub (`PortStub::stub_other`, chosen clear of the very node this fix is
-/// avoiding), *then* turns onto the shifted line — "曲げを足す", never a slide through the port
-/// itself (`docs/FEATURE-MERMAID-RENDERER.md` §10-3 item 13's own motivating report: `ページ描画→
-/// ラスタライズ`'s exit stub, displaced by `数式`'s own box sitting in the same pass-through row,
-/// used to read as growing from `ページ描画`'s own corner instead of its assigned port).
-fn apply_local_nudge(points: &mut Vec<Point>, f: &LocalFix) {
-    let last = points.len() - 1;
-    for (idx, p) in points.iter_mut().enumerate() {
-        if idx == 0 || idx == last {
-            continue; // ports never move.
+/// First widens `i`'s own window out to the *whole* straight run sharing its coordinate — a
+/// `staircase` edge's raw dagre waypoints routinely carry several collinear points in a row before
+/// reaching a port (`zz-design-2c`'s own `API -> ID`, this function's own motivating case: the
+/// crossing sits on an *early* window of a run that continues, unbent, all the way to `ID`'s own
+/// port). Splits that run at the two points where it crosses into and back out of `node`'s own
+/// padded span (`§10-1 item 1`'s [`COLLISION_MARGIN`] plus 1px), and replaces only the interior
+/// portion between them with a four-point jog: turn out to the clear side, travel along it for the
+/// span, turn back in. Everything outside the span is untouched — including the run's own two ends,
+/// whether or not either is a real port ([`evict`]'s own slot, which this never moves) — so a second
+/// obstacle further along the same run gets its own independent jog on a later
+/// [`clear_local_route`] pass instead of fighting this one over a single shared coordinate.
+///
+/// The jog's own two turns land exactly at the span boundary regardless of whether that boundary
+/// coincides with the run's own end (i.e. a port sits right at the obstacle's edge): the boundary
+/// point is inserted either way, even when it duplicates the run's own endpoint value, so the two
+/// segments the turn is built from — one along the run's original (perpendicular-to-the-port) axis,
+/// one across to the new coordinate — are never collapsed into a single diagonal one. A duplicate
+/// point is a zero-length segment, trivially axis-parallel on both counts
+/// (`assert_endpoints_sit_outside_and_perpendicular`'s own dx/dy-below-epsilon test), so this needs
+/// no separate degenerate case.
+fn local_detour(
+    points: Vec<Point>,
+    i: usize,
+    node: &PlacedNode,
+    nodes: &[PlacedNode],
+    ids: (&str, &str),
+) -> Vec<Point> {
+    let (a, b) = (&points[i], &points[i + 1]);
+    let horizontal = (a.y - b.y).abs() < EPS;
+    let old_c = if horizontal { a.y } else { a.x };
+    // The run's own fixed coordinate (the one a whole-run slide used to move) vs. the coordinate
+    // that varies along it (the one a node's own crossing span is measured in).
+    let coord_of = |p: &Point| if horizontal { p.y } else { p.x };
+    let moving_of = |p: &Point| if horizontal { p.x } else { p.y };
+    let at = |constant: f64, moving: f64| {
+        if horizontal {
+            Point::new(moving, constant)
+        } else {
+            Point::new(constant, moving)
         }
-        if f.horizontal && (p.y - f.old_c).abs() < EPS {
-            p.y = f.new_c;
-        } else if !f.horizontal && (p.x - f.old_c).abs() < EPS {
-            p.x = f.new_c;
+    };
+    // `node`'s own padded constant-axis range (the one a fix moves along) and moving-axis range
+    // (the one a fix has to detour across) — used both for `node` alone and, below, for every
+    // other foreign node this pass considers folding into the same detour.
+    let constant_range = |n: &PlacedNode| -> (f64, f64) {
+        let (l, t, r, bo) = n.bounds();
+        if horizontal {
+            (t - COLLISION_MARGIN - 1.0, bo + COLLISION_MARGIN + 1.0)
+        } else {
+            (l - COLLISION_MARGIN - 1.0, r + COLLISION_MARGIN + 1.0)
         }
-    }
+    };
+    let moving_range = |n: &PlacedNode| -> (f64, f64) {
+        let (l, t, r, bo) = n.bounds();
+        if horizontal {
+            (l - COLLISION_MARGIN - 1.0, r + COLLISION_MARGIN + 1.0)
+        } else {
+            (t - COLLISION_MARGIN - 1.0, bo + COLLISION_MARGIN + 1.0)
+        }
+    };
 
-    // End before start: splicing near `points.len() - 1` never disturbs index `1`, but splicing at
-    // index `1` first would shift every later index the end stub still needs to compute — a route
-    // whose *both* ports sit on the coordinate being slid (`LocalFix::port_stubs`'s own doc) needs
-    // both, in this order, to land correctly.
-    for stub in f.port_stubs.iter().filter(|s| !s.at_start) {
-        let last = points.len() - 1;
-        let (on_new, on_old) = if f.horizontal {
-            (
-                Point::new(stub.stub_other, f.new_c),
-                Point::new(stub.stub_other, f.old_c),
-            )
-        } else {
-            (
-                Point::new(f.new_c, stub.stub_other),
-                Point::new(f.old_c, stub.stub_other),
-            )
-        };
-        points.splice(last..last, [on_new, on_old]);
+    let mut run_start = i;
+    while run_start > 0 && (coord_of(&points[run_start - 1]) - old_c).abs() < EPS {
+        run_start -= 1;
     }
-    for stub in f.port_stubs.iter().filter(|s| s.at_start) {
-        let (on_old, on_new) = if f.horizontal {
-            (
-                Point::new(stub.stub_other, f.old_c),
-                Point::new(stub.stub_other, f.new_c),
-            )
-        } else {
-            (
-                Point::new(f.old_c, stub.stub_other),
-                Point::new(f.new_c, stub.stub_other),
-            )
-        };
-        points.splice(1..1, [on_old, on_new]);
+    let mut run_end = i + 1;
+    while run_end + 1 < points.len() && (coord_of(&points[run_end + 1]) - old_c).abs() < EPS {
+        run_end += 1;
     }
+    let (m_start, m_end) = (moving_of(&points[run_start]), moving_of(&points[run_end]));
+    let inc = m_end >= m_start;
+    let (run_lo, run_hi) = (m_start.min(m_end), m_start.max(m_end));
+
+    // §10-3/§10-5's own real bug (`zz-design-2c`'s `API -> ID`, this function's own doc): sliding
+    // clear of `node` alone can land the run inside a *different* foreign node `node` never
+    // touched (`AR`/`成果物保管`, which `Q`'s own clearance runs straight into). A single node's own
+    // near/far choice is not enough — the side has to clear *every* foreign node whose own
+    // constant-axis span transitively overlaps `node`'s (a chain: `Q`'s span reaches into `AR`'s,
+    // `AR`'s into `SB`'s, forming one connected blocked region even though `AR` alone never touched
+    // `old_c`), so this grows `node`'s own span into that connected region first, over every
+    // foreign node whose moving-axis span reaches into the run at all (`relevant`), then picks
+    // whichever side of the grown region is nearer.
+    let relevant: Vec<&PlacedNode> = nodes
+        .iter()
+        .filter(|n| n.id != ids.0 && n.id != ids.1)
+        .filter(|n| {
+            let (mlo, mhi) = moving_range(n);
+            mlo <= run_hi && mhi >= run_lo
+        })
+        .collect();
+    let (mut c_lo, mut c_hi) = constant_range(node);
+    loop {
+        let mut grew = false;
+        for n in &relevant {
+            let (nc_lo, nc_hi) = constant_range(n);
+            if nc_lo <= c_hi && nc_hi >= c_lo && (nc_lo < c_lo || nc_hi > c_hi) {
+                c_lo = c_lo.min(nc_lo);
+                c_hi = c_hi.max(nc_hi);
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    let new_c = if old_c <= (c_lo + c_hi) / 2.0 {
+        c_lo
+    } else {
+        c_hi
+    };
+
+    // How far along the run this pass's own detour needs to reach: every node whose padded
+    // constant-axis span actually contains `old_c` (so the *unmodified* run genuinely crosses it
+    // somewhere) contributes its own moving-axis span, clipped to the run — not `relevant`'s wider
+    // set, which also holds nodes the grown region only needed to pick a safe `new_c`, not ones the
+    // run at `old_c` itself ever touches.
+    let (mut m_lo, mut m_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for n in &relevant {
+        let (clo, chi) = constant_range(n);
+        if clo <= old_c && chi >= old_c {
+            let (mlo, mhi) = moving_range(n);
+            m_lo = m_lo.min(mlo.max(run_lo));
+            m_hi = m_hi.max(mhi.min(run_hi));
+        }
+    }
+    if m_lo > m_hi {
+        // Defensive only: the window that triggered this already crosses `node`, so `node` itself
+        // always contributes a span here — should be unreachable, but a no-op is safer than a panic
+        // if a future change misses an edge case.
+        return points;
+    }
+    let (entry, exit) = if inc { (m_lo, m_hi) } else { (m_hi, m_lo) };
+
+    // When the detour needs to cover the *entire* identified run — `entry`/`exit` exactly matching
+    // `run_start`/`run_end`'s own moving coordinate, the common case for a plain two-bend merge
+    // whose whole interior leg needs to move — `run_start`/`run_end` themselves can simply be
+    // slid to `new_c` in place, exactly like a whole-run slide, rather than bracketed with two
+    // extra boundary points that only restate the same coordinate: pinning a port that is not
+    // there stops nothing (`docs/STATUS.md`'s own ★未修正 history: the Z-fixture regression this
+    // avoids). Only actual ports (`points[0]`/`points[last]`, [`evict`]'s own slots) are still never
+    // moved — for either end still touching one, the boundary is inserted instead so the port's own
+    // coordinate is preserved exactly as before.
+    let can_move_start = run_start != 0 && (moving_of(&points[run_start]) - entry).abs() < EPS;
+    let can_move_end =
+        run_end != points.len() - 1 && (moving_of(&points[run_end]) - exit).abs() < EPS;
+
+    let mut out = Vec::with_capacity(points.len() + 4);
+    out.extend_from_slice(&points[..run_start]);
+    if can_move_start {
+        out.push(at(new_c, entry));
+    } else {
+        out.push(points[run_start].clone());
+        out.push(at(old_c, entry));
+        out.push(at(new_c, entry));
+    }
+    out.push(at(new_c, exit));
+    if can_move_end {
+        // `points[run_end]` is dropped: the point just pushed above already stands in for it.
+    } else {
+        out.push(at(old_c, exit));
+        out.push(points[run_end].clone());
+    }
+    out.extend_from_slice(&points[run_end + 1..]);
+    out
 }
 
 /// [`clear_local_route`]'s own mechanism, run against the opposite pair: `source`'s and `target`'s
@@ -1921,7 +1956,7 @@ fn clear_self_puncture(
 ) -> Vec<Point> {
     // §10-3 item 13's own "ポートは動かさない" is scoped to `clear_local_route`'s own forward-edge
     // callers (`route_with_ports`'s `staircase`/`rank_lane_bend` branches — the reported bug's own
-    // route shapes, `local_fix`'s own doc). A back edge's own return leg genuinely can need to
+    // route shapes, `local_detour`'s own doc). A back edge's own return leg genuinely can need to
     // slide *through* a coordinate one of its own two ports also sits at (found on the `branch`
     // corpus fixture's `D -> B`: `regroup_fan_lanes` moved `D` close enough under `B` that both
     // ends' independently-evicted ports land on the exact same x, and the return ring's own local
@@ -2927,6 +2962,13 @@ pub fn route_flowchart(
             nodes,
             eviction.fan_step.get(edge.id).copied(),
         );
+        // A route whose approach and departure each needed their own independent local detour
+        // (`local_detour`'s own doc: a target port that lands directly under a foreign node, so
+        // both the leg arriving at it and the leg leaving the node before it collide) can still
+        // reconnect at a shared point even though each individual detour was minimal on its own —
+        // `remove_spikes` runs once more here, after the whole route (not just one
+        // `clear_local_route` pass) is assembled, to catch a spike straddling that boundary.
+        let routed = remove_spikes(routed);
         points.insert(edge.id.to_string(), routed);
     }
 
@@ -6085,10 +6127,9 @@ mod tests {
 
     /// The mirror image of the test above: the *entry* leg (the last segment, arriving at `B`'s
     /// own port) is the one that crosses `OBSTACLE` this time, not the exit leg. Pins that
-    /// [`local_fix`]'s own near/far side selection for [`PortStub`] is not just a copy of the exit
-    /// case's formula (an earlier draft used the same near-side choice for both ends, which built
-    /// an entry stub that still ran straight through the obstacle on its way into the port — see
-    /// `PortStub`'s own doc for why the two ends are mirror images, not the same answer).
+    /// [`local_detour`]'s own near/far side selection is symmetric on both ends — it re-derives the
+    /// same choice fresh from `OBSTACLE`'s own midpoint each time, rather than assuming whichever
+    /// side the exit case picked.
     #[test]
     fn clear_local_route_keeps_the_entry_port_pinned_and_still_clears_the_obstacle() {
         let a = node("A", 0.0, 100.0, 80.0, 40.0);

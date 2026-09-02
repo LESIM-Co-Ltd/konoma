@@ -16,6 +16,20 @@ All notable changes to konoma are documented in this file. The format is based o
   paths can be followed by colour. Defaults (`"splines"`) are byte-identical as always.
 
 ### Fixed
+- **`konoma-orthogonal`: a long cross-subgraph edge could still cut straight through an unrelated
+  sibling node's box.** Local obstacle avoidance cleared a route away from whichever node it first
+  found crossing it by sliding the route's entire shared coordinate to one new value — a single
+  degree of freedom that cannot satisfy two obstacles sitting at different points along the same
+  run when each demands a different clearance (one node only clears to its left, another further
+  down only clears to the right of that), so the fix oscillated between the two colliding
+  coordinates every retry and silently gave up still crossing the first node once its retry budget
+  ran out. Local obstacle avoidance now detours only around each obstacle's own span and rejoins
+  the original coordinate immediately past it, so unrelated obstacles along the same run get
+  independent detours instead of fighting over one shared coordinate; obstacles whose spans connect
+  into one region are still cleared together. A long-standing gap in a many-nodes-merge-onto-one-
+  face fixture's own test (checking port placement but never whether any of the nine merges
+  actually crossed a sibling) is also closed — most of those routes turn out to need more than the
+  previously assumed two bends to stay clear, now verified rather than assumed.
 - **Running `cargo test` no longer touches the developer's real clipboard, Trash, or
   `~/.cache/konoma`.** Copy/paste-jump tests wrote the real clipboard on every run (and on macOS
   one trash test really filed items into the Finder Trash); the clipboard, trash, and cache paths

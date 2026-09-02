@@ -5651,11 +5651,42 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
             );
             aligned_count += 1;
         } else {
+            // Not pinned to exactly 2 any more (this assertion's own prior wording, "an ordinary
+            // merge onto Z's Top face is... a two-bend shape"): nine single-width nodes sit in one
+            // dense row above Z, each claiming its own 16px port along that row, and every port
+            // *except* the two whose ordinary bend already lands below the row entirely (`B`, `G`)
+            // sits directly under a *different* sibling than its own source — `C`'s own port sits
+            // under `A`, `D`'s straight sweep passes clean through `B`'s box on the way to a gap
+            // between `A` and `B`, and so on. A plain two-bend route from many of these sources
+            // would run straight through that sibling's box; nothing before this test's own local
+            // clearance fix (`clear_local_route`/`local_detour`, `docs/FEATURE-MERMAID-RENDERER.md`
+            // §10-5) ever checked this fixture for crossings, so the exact "always 2" count this
+            // assertion used to pin was never actually verified safe — dumping the real geometry
+            // (`docs/STATUS.md`'s own ★未修正 history on `zz-design-2c`, the bug this fix targets)
+            // shows most of `C`..`I` need a genuine extra jog around whichever sibling their own
+            // straight run would otherwise cross. What still has to hold, regardless of how many
+            // extra bends a crossing needs: an even number (every detour is a there-and-back pair)
+            // and, the property that actually matters, no crossing at all.
             assert_eq!(
-                bends, 2,
-                "an ordinary merge onto Z's Top face is a fan-lane (flow-axis both ends), \
-                 two-bend shape now, not the old one-bend cross-face shape: {e:?}"
+                bends % 2,
+                0,
+                "every bend count must be even (paired turns): {e:?}"
             );
+            for w in e.points.windows(2) {
+                for n in &ortho.nodes {
+                    if n.id == e.from || n.id == e.to {
+                        continue;
+                    }
+                    assert!(
+                        !orthogonal::segment_crosses_node(&w[0], &w[1], n),
+                        "{}->Z segment {:?}-{:?} must not cross {}: {e:?}",
+                        e.from,
+                        w[0],
+                        w[1],
+                        n.id
+                    );
+                }
+            }
         }
         top_xs.push(last.x);
     }
@@ -5810,21 +5841,19 @@ fn assert_no_segment_crosses_a_foreign_node(name: &str, d: &Diagram) {
 #[test]
 fn orthogonal_no_segment_crosses_a_foreign_node_across_the_whole_corpus() {
     for (name, src) in orthogonal_full_corpus() {
-        // §10-4's own audit already named this bug class for `2b`/`2c` and left it open
-        // ("枠つき図は ASAP ランク引き戻しの対象外のため疎に広がる（既知 #4）" —
-        // `docs/FEATURE-MERMAID-RENDERER.md` §10-4's "一般化チェックの結果"): `API->ID` runs
-        // straight through the sibling node `Q` (dumped: `zz-design-2c`'s own three-subgraph
-        // layout leaves too little clearance once the collision-retry ladder exhausts branch,
-        // merge and every `rank_lane_gap_bends` candidate and falls back to a raw `staircase`
-        // that itself was never re-checked against a sibling in a *different* subgraph). A real,
-        // pre-existing bug in the general flowchart engine — out of scope for
-        // `docs/FEATURE-MERMAID-RENDERER.md` §10-5's own state-diagram work, which is what
-        // widened this test's corpus to include `2c` and is how this was found. Recorded in
-        // `docs/STATUS.md`'s own ★未修正 rather than silently skipped: every *other* invariant in
-        // this whole suite still runs over `zz-design-2c`, only this one property is known false.
-        if name == "zz-design-2c" {
-            continue;
-        }
+        // `zz-design-2c`'s own `API -> ID` used to be exempted here (§10-4's audit had named this
+        // bug class and left it open — `docs/FEATURE-MERMAID-RENDERER.md` §10-4's own "一般化
+        // チェックの結果"): a `staircase` edge whose raw dagre waypoints ran straight through the
+        // sibling node `Q`, then `メタデータ DB`/`成果物保管`/`解析サンドボックス`, because
+        // `clear_local_route`'s own remediation slid the *entire* straight run to one shared
+        // coordinate — a single degree of freedom that cannot satisfy two obstacles at different
+        // points along the run each demanding a different clearance (`Q`'s row only clears to its
+        // left; the row below only clears to the right of where that pushed it), so the fix
+        // oscillated between the two colliding coordinates every pass and silently gave up once
+        // its budget ran out, still crossing `Q`. `local_detour` (`orthogonal.rs`) replaces the
+        // whole-run slide with a local jog around each obstacle's own span, independent of every
+        // other obstacle sharing the run — the exemption is gone; this now runs the invariant over
+        // `zz-design-2c` too.
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
         assert_no_segment_crosses_a_foreign_node(name, &d);
     }
@@ -9085,13 +9114,17 @@ fn dump_render_check_probes_under_orthogonal() {
 /// (`docs/render-check/zz-design-sources.md`'s `2b`): `API -> ID`, a cross-subgraph node-to-node
 /// edge whose `classify`-decided shape is `staircase` (`raw` carries 13 dagre waypoints, several
 /// collinear before ever reaching `ID`'s own port). `clear_local_route`'s own crossing search can
-/// flag an *early* window of that collinear run, not the literal last one — `local_fix`'s own
-/// (pre-fix) `at_end = i + 2 == points.len()` test then never noticed `ID`'s own port shared the
-/// exact coordinate being slid out from under it, leaving the port stranded on the old coordinate
-/// while its neighbour moved: a diagonal final segment, `orthogonal_routing_draws_only_axis_
-/// parallel_segments`'s own invariant broken in a shape `CORPUS` had no fixture for. Pinned here
-/// directly, not only through the corpus-wide invariant, because this is the exact real-world
-/// diagram the bug was found on.
+/// flag an *early* window of that collinear run, not the literal last one — an earlier draft of the
+/// local-detour fix (§10-3 item 13) judged whether a port sat on the coordinate being moved by the
+/// *literal window index* (`i + 2 == points.len()`) rather than by coordinate, so it never noticed
+/// `ID`'s own port shared the exact coordinate an early window's fix slid out from under it: a
+/// diagonal final segment, `orthogonal_routing_draws_only_axis_parallel_segments`'s own invariant
+/// broken in a shape `CORPUS` had no fixture for. Pinned here directly, not only through the
+/// corpus-wide invariant, because this is the exact real-world diagram the bug was found on
+/// (`local_detour`'s own current implementation never slides a shared coordinate at all — it
+/// detours only the interior span between two freshly-inserted boundary points either side of the
+/// obstacle, so this specific failure mode cannot recur, but the fixture stays as a named regression
+/// test for the general "port coordinate coincides with an obstacle boundary" shape).
 #[test]
 fn orthogonal_cross_subgraph_edge_never_draws_a_diagonal_segment() {
     let src = "flowchart LR\n  subgraph C[クライアント]\n    CLI[CLI]\n    UI[ブラウザ UI]\n    EX[エディタ拡張]\n  end\n  subgraph G[クラウド]\n    API[API ゲート]\n    Q[ジョブキュー]\n    W[ジョブ実行系]\n    SB[解析サンドボックス]:::exec\n    subgraph S[保存層]\n      DB[メタデータ DB]:::data\n      AR[成果物保管]:::data\n    end\n  end\n  subgraph E[外部]\n    ID[認証基盤]\n    LLM[モデル API]:::model\n    GIT[コード置き場]:::exec\n    PAY[決済ページ]\n  end\n  CLI --> API\n  UI -->|HTTPS| API\n  EX --> API\n  API --> ID\n  API -->|投入| Q\n  Q -->|取り出し| W\n  API --> DB\n  W --> DB\n  W --> AR\n  W --> LLM\n  W -->|ツール実行| SB\n  SB --> GIT\n  CLI -.->|リンク| PAY\n  classDef data fill:#161b22,stroke:#3fb950,color:#e6edf3\n  classDef model fill:#161b22,stroke:#a371f7,color:#e6edf3\n  classDef exec fill:#161b22,stroke:#f85149,color:#e6edf3\n  linkStyle 0,1,2 stroke:#58a6ff\n  linkStyle 4,5 stroke:#d29922\n";
