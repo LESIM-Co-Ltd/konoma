@@ -1075,7 +1075,7 @@ fn a_state_diagrams_boxes_arrows_and_notes_each_carry_their_own_source_text() {
     }
     for (name, src) in STATE_CASES {
         let model = crate::preview::mermaid::state::parse(src).expect("parses");
-        let d = state::lay_out(&model).expect("lays out");
+        let d = state::lay_out(&model, super::Routing::Splines).expect("lays out");
 
         for s in &model.states {
             if s.kind.is_block() {

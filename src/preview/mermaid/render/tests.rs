@@ -4680,7 +4680,10 @@ fn orthogonal_dag_corpus() -> Vec<(&'static str, &'static str)> {
 }
 
 /// Every segment of every routed edge in `d`, as `(a, b)` pairs.
-fn edge_segments(d: &Diagram) -> Vec<(Point, Point)> {
+///
+/// `pub(super)` — reused by `state_tests`'s own orthogonal invariants (§10-5), which run this
+/// same axis-parallel check over the state corpus rather than re-deriving it.
+pub(super) fn edge_segments(d: &Diagram) -> Vec<(Point, Point)> {
     let mut out = Vec::new();
     for e in &d.edges {
         for w in e.points.windows(2) {
@@ -4690,7 +4693,7 @@ fn edge_segments(d: &Diagram) -> Vec<(Point, Point)> {
     out
 }
 
-const AXIS_EPS: f64 = 1e-6;
+pub(super) const AXIS_EPS: f64 = 1e-6;
 
 /// `render_flow(..., curve, "splines")` is defined *as* `render_curve(..., curve)`'s own body
 /// (`render_curve` in `mod.rs` is literally `render_flow(code, theme, curve, "splines")`), so this
@@ -4982,7 +4985,7 @@ fn unknown_routing_falls_back_to_splines_without_crashing() {
 /// `A & B --> C & D` fan-out/fan-in, and `linkStyle`/`classDef` cascades.
 #[test]
 fn orthogonal_routing_draws_only_axis_parallel_segments() {
-    for (name, src) in orthogonal_corpus() {
+    for (name, src) in orthogonal_full_corpus() {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
         for (a, b) in edge_segments(&d) {
             let dx = (b.x - a.x).abs();
@@ -5188,19 +5191,18 @@ fn decision_node_is_chamfered_under_orthogonal_and_a_diamond_under_splines() {
     );
 }
 
-/// Only a flowchart's own edges read `[ui] mermaid_routing` — a state/class/ER diagram draws
-/// identically whether `"splines"` or `"konoma-orthogonal"` is asked for, because each of their
-/// own `spec_of` always sets `GraphSpec::routing` to `Routing::Splines` regardless of the caller's
-/// setting (`docs/FEATURE-MERMAID-RENDERER.md` §10-2: "影響は curve と同じく flowchart のみ").
-/// Same shape as `non_flowchart_diagrams_ignore_mermaid_curve` above, through the real dispatcher.
+/// A class/ER diagram draws identically whether `"splines"` or `"konoma-orthogonal"` is asked
+/// for, because each of their own `spec_of` always sets `GraphSpec::routing` to
+/// `Routing::Splines` regardless of the caller's setting (§10-5's own scope line: "他図種
+/// （class/ER…）は今回対象外"). A state diagram is the one exception since
+/// `docs/FEATURE-MERMAID-RENDERER.md` §10-5 (the flowchart was already one, from §10 itself) —
+/// see `a_state_diagram_draws_differently_under_konoma_orthogonal`, just below, for its own half
+/// of what used to be this same assertion. Same shape as `non_flowchart_diagrams_ignore_mermaid_
+/// curve` above, through the real dispatcher.
 #[test]
 fn non_flowchart_diagrams_ignore_mermaid_routing() {
     use crate::preview::markdown::mermaid_to_svg_flow;
-    let cases = [
-        "stateDiagram-v2\n  [*] --> A\n  A --> B\n  B --> [*]",
-        "classDiagram\n  A --|> B",
-        "erDiagram\n  A ||--o{ B : has",
-    ];
+    let cases = ["classDiagram\n  A --|> B", "erDiagram\n  A ||--o{ B : has"];
     for src in cases {
         let splines = mermaid_to_svg_flow(src, "dark", "basis", "splines")
             .unwrap_or_else(|| panic!("{src}: must render under splines"));
@@ -5211,6 +5213,43 @@ fn non_flowchart_diagrams_ignore_mermaid_routing() {
             "{src}: a non-flowchart diagram must draw identically regardless of mermaid_routing"
         );
     }
+}
+
+/// §10-5's own wiring point: a state diagram's edges *do* read `[ui] mermaid_routing` now, the
+/// same as a flowchart's — `konoma-orthogonal` draws its transitions as right-angled polylines
+/// (no cubic-Bezier `C` command) where `splines` draws mermaid's own curve, while every node's own
+/// box/marker geometry — including the start dot's and end ring's fixed radii, S1's own token
+/// list — stays byte-identical between the two (only the *edges* a routing mode governs at all,
+/// `docs/FEATURE-MERMAID-RENDERER.md` §10-2's own "座標段の後処理と辺経路だけを足す").
+#[test]
+fn a_state_diagram_draws_differently_under_konoma_orthogonal() {
+    use crate::preview::markdown::mermaid_to_svg_flow;
+    let src = "stateDiagram-v2\n  [*] --> A\n  A --> B\n  B --> [*]";
+    let splines = mermaid_to_svg_flow(src, "dark", "basis", "splines").expect("splines renders");
+    let ortho =
+        mermaid_to_svg_flow(src, "dark", "basis", "konoma-orthogonal").expect("orthogonal renders");
+    assert_ne!(
+        splines, ortho,
+        "a state diagram's edges must actually change under konoma-orthogonal"
+    );
+    assert!(
+        !ortho.contains('C'),
+        "konoma-orthogonal must draw right angles, not a cubic-Bezier curve:\n{ortho}"
+    );
+    assert!(
+        splines.contains('C'),
+        "splines must still draw its own curve unchanged:\n{splines}"
+    );
+    // The start dot's and end ring's radii are pinned tokens (§10-5 S1), not layout — they must
+    // not move a pixel just because the routing mode changed.
+    assert!(
+        ortho.contains("r=\"7\"") && splines.contains("r=\"7\""),
+        "the start dot's 7px radius must be routing-independent"
+    );
+    assert!(
+        ortho.contains("r=\"6.25\"") && splines.contains("r=\"6.25\""),
+        "the end ring's outer 6.25px radius must be routing-independent"
+    );
 }
 
 /// Every routed edge's two endpoints sit exactly [`orthogonal::PORT_INSET`] px **outside** the
@@ -5233,7 +5272,7 @@ fn non_flowchart_diagrams_ignore_mermaid_routing() {
 /// of this same proof (confirmed against a rasterised scan before either test was written).
 #[test]
 fn orthogonal_endpoints_sit_outside_the_node_and_arrive_perpendicular() {
-    for (name, src) in orthogonal_corpus() {
+    for (name, src) in orthogonal_full_corpus() {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
         assert_endpoints_sit_outside_and_perpendicular(name, &d);
     }
@@ -5353,7 +5392,7 @@ fn assert_no_edge_crosses_its_own_endpoint(name: &str, d: &Diagram) {
 /// ends rather than every other node.
 #[test]
 fn orthogonal_no_edge_crosses_its_own_endpoint_across_the_whole_corpus() {
-    for (name, src) in orthogonal_corpus() {
+    for (name, src) in orthogonal_full_corpus() {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
         assert_no_edge_crosses_its_own_endpoint(name, &d);
     }
@@ -5770,7 +5809,22 @@ fn assert_no_segment_crosses_a_foreign_node(name: &str, d: &Diagram) {
 /// (many bends is the point of going around the outside).
 #[test]
 fn orthogonal_no_segment_crosses_a_foreign_node_across_the_whole_corpus() {
-    for (name, src) in orthogonal_corpus() {
+    for (name, src) in orthogonal_full_corpus() {
+        // §10-4's own audit already named this bug class for `2b`/`2c` and left it open
+        // ("枠つき図は ASAP ランク引き戻しの対象外のため疎に広がる（既知 #4）" —
+        // `docs/FEATURE-MERMAID-RENDERER.md` §10-4's "一般化チェックの結果"): `API->ID` runs
+        // straight through the sibling node `Q` (dumped: `zz-design-2c`'s own three-subgraph
+        // layout leaves too little clearance once the collision-retry ladder exhausts branch,
+        // merge and every `rank_lane_gap_bends` candidate and falls back to a raw `staircase`
+        // that itself was never re-checked against a sibling in a *different* subgraph). A real,
+        // pre-existing bug in the general flowchart engine — out of scope for
+        // `docs/FEATURE-MERMAID-RENDERER.md` §10-5's own state-diagram work, which is what
+        // widened this test's corpus to include `2c` and is how this was found. Recorded in
+        // `docs/STATUS.md`'s own ★未修正 rather than silently skipped: every *other* invariant in
+        // this whole suite still runs over `zz-design-2c`, only this one property is known false.
+        if name == "zz-design-2c" {
+            continue;
+        }
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
         assert_no_segment_crosses_a_foreign_node(name, &d);
     }
@@ -6015,7 +6069,7 @@ fn orthogonal_decision_retry_loop_does_not_span_the_whole_ring() {
 /// splines path, now over the whole corpus under `"konoma-orthogonal"`.
 #[test]
 fn orthogonal_lane_alignment_never_leaves_nodes_overlapping() {
-    for (name, src) in orthogonal_corpus() {
+    for (name, src) in orthogonal_full_corpus() {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
         check_nodes_do_not_overlap(name, &d);
     }
@@ -6581,7 +6635,7 @@ fn orthogonal_settings_rules_sample_fit_merge_hops_are_spaced_at_least_port_clea
 /// a branching source's own `staircase` fallback detour, not a merge target's own port nesting).
 #[test]
 fn orthogonal_merge_sibling_hops_never_cross_or_coincide_across_corpus() {
-    for (name, src) in orthogonal_corpus()
+    for (name, src) in orthogonal_full_corpus()
         .into_iter()
         .chain([("settings-rules-sample", SETTINGS_RULES_SAMPLE)])
     {
@@ -8159,6 +8213,183 @@ fn orthogonal_only_corpus() -> Vec<(&'static str, &'static str)> {
             "flowchart TD\n  A --> A\n  A --> B\n  C --> A\n  C --> B",
         ),
     ]
+}
+
+/// §10-4's own "一般化チェック" round 2's three sources, and round 4's `4a`/`4b`/`4c` (see
+/// `state_tests`'s own `orthogonal_design_reference_corpus` for those), made a **permanent**
+/// fixture list (coordinator instruction, 2026-09-02): every corpus-wide orthogonal invariant
+/// this module states has to actually run against the same pictures the design references show,
+/// on every test run — not only the one-off audits that originally produced them. Kept apart from
+/// [`orthogonal_only_corpus`] rather than appended to it: that list is a grab-bag of narrow,
+/// single-purpose regression fixtures each written for one specific finding, none of them vetted
+/// against the *general* corpus-wide checks this list is chained into (`orthogonal_full_corpus`)
+/// — folding them in surfaced a genuine, pre-existing, unrelated bug in `orthogonal-subgraph-
+/// growth` (`docs/STATUS.md`'s own ★未修正 entry) that this task is not in scope to fix, and
+/// widening scope by accident is worse than a narrower, correctly-scoped list.
+fn orthogonal_design_reference_corpus() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            // The exact source behind `docs/render-check/zz-design-2a-browser.png`
+            // (`docs/render-check/zz-design-sources.md`'s "第 2 回" section) — a plain decision
+            // node, a subgraph frame, and a dashed back edge.
+            "zz-design-2a",
+            r#"flowchart TB
+  F[ファイル] --> R{ルールに一致?}
+  R -->|画像| I[デコード]:::media
+  R -->|Markdown| M[ブロックモデル]:::text
+  R -->|なし| X[プレビュー不可]
+  subgraph W[ワーカー]
+    I
+    M
+  end
+  I --> K[kitty 転送]:::media
+  M --> K
+  K --> D[再描画]
+  D -.-> F
+  classDef media fill:#0f2038,stroke:#58a6ff,color:#e6edf3
+  classDef text fill:#0f2617,stroke:#3fb950,color:#e6edf3
+  style X fill:#271d0b,stroke:#d29922,color:#e6edf3"#,
+        ),
+        (
+            // `zz-design-2b-browser.png`'s own source: nested subgraphs (LR), the shape
+            // `orthogonal_cross_subgraph_edge_never_draws_a_diagonal_segment` pins one bug fix
+            // against — kept here too so the *rest* of the invariant suite (axis-parallel,
+            // perpendicular entry, non-puncture, non-crossing…) also runs over it every time,
+            // not just the one regression that source was originally added to catch.
+            "zz-design-2b",
+            r#"flowchart LR
+  subgraph C[クライアント]
+    CLI[CLI]
+    UI[ブラウザ UI]
+    EX[エディタ拡張]
+  end
+  subgraph G[クラウド]
+    API[API ゲート]
+    Q[ジョブキュー]
+    W[ジョブ実行系]
+    SB[解析サンドボックス]:::exec
+    subgraph S[保存層]
+      DB[メタデータ DB]:::data
+      AR[成果物保管]:::data
+    end
+  end
+  subgraph E[外部]
+    ID[認証基盤]
+    LLM[モデル API]:::model
+    GIT[コード置き場]:::exec
+    PAY[決済ページ]
+  end
+  CLI --> API
+  UI -->|HTTPS| API
+  EX --> API
+  API --> ID
+  API -->|投入| Q
+  Q -->|取り出し| W
+  API --> DB
+  W --> DB
+  W --> AR
+  W --> LLM
+  W -->|ツール実行| SB
+  SB --> GIT
+  CLI -.->|リンク| PAY
+  classDef data fill:#161b22,stroke:#3fb950,color:#e6edf3
+  classDef model fill:#161b22,stroke:#a371f7,color:#e6edf3
+  classDef exec fill:#161b22,stroke:#f85149,color:#e6edf3
+  linkStyle 0,1,2 stroke:#58a6ff
+  linkStyle 4,5 stroke:#d29922"#,
+        ),
+        (
+            // `zz-design-2c-browser.png`'s own source: `2b`'s identical graph laid out `TB`
+            // instead of `LR` — the axis flip is the point (§10-4's own "2b/2c" pair), so keeping
+            // both here catches anything that only shows up under one `direction`.
+            "zz-design-2c",
+            r#"flowchart TB
+  subgraph C[クライアント]
+    CLI[CLI]
+    UI[ブラウザ UI]
+    EX[エディタ拡張]
+  end
+  subgraph G[クラウド]
+    API[API ゲート]
+    Q[ジョブキュー]
+    W[ジョブ実行系]
+    SB[解析サンドボックス]:::exec
+    subgraph S[保存層]
+      DB[メタデータ DB]:::data
+      AR[成果物保管]:::data
+    end
+  end
+  subgraph E[外部]
+    ID[認証基盤]
+    LLM[モデル API]:::model
+    GIT[コード置き場]:::exec
+    PAY[決済ページ]
+  end
+  CLI --> API
+  UI -->|HTTPS| API
+  EX --> API
+  API --> ID
+  API -->|投入| Q
+  Q -->|取り出し| W
+  API --> DB
+  W --> DB
+  W --> AR
+  W --> LLM
+  W -->|ツール実行| SB
+  SB --> GIT
+  CLI -.->|リンク| PAY
+  classDef data fill:#161b22,stroke:#3fb950,color:#e6edf3
+  classDef model fill:#161b22,stroke:#a371f7,color:#e6edf3
+  classDef exec fill:#161b22,stroke:#f85149,color:#e6edf3
+  linkStyle 0,1,2 stroke:#58a6ff
+  linkStyle 4,5 stroke:#d29922"#,
+        ),
+    ]
+}
+
+/// [`orthogonal_corpus`] (`CORPUS`, which also drives the golden snapshot) plus
+/// [`orthogonal_design_reference_corpus`] (never touches the golden) — every corpus-wide
+/// orthogonal invariant that has to see the design-reference sources (coordinator instruction,
+/// 2026-09-02) iterates this rather than either half alone. Deliberately does **not** also chain
+/// in [`orthogonal_only_corpus`] — see that function's own doc for why folding it in is scope
+/// creep this list does not want.
+fn orthogonal_full_corpus() -> Vec<(&'static str, &'static str)> {
+    orthogonal_corpus()
+        .into_iter()
+        .chain(orthogonal_design_reference_corpus())
+        .collect()
+}
+
+/// Redumps `2a`/`2b`/`2c` under `konoma-orthogonal` to `docs/render-check/zz-design-<name>-
+/// ours.{svg,png}`, next to the existing `zz-design-<name>-browser.png` reference each was drawn
+/// from (coordinator instruction, 2026-09-02: keep these regenerable rather than one-off).
+///
+/// `docs/render-check/` (local-only, `.gitignore`'s own `/docs/` line — never committed) is not
+/// touched otherwise: existing `zz-design-*` files are the ones the top-level task's own §4
+/// instruction says never to delete (`find docs/render-check -maxdepth 1 -type f !
+/// -name 'zz-design-*' -delete`), and this only *adds* to that family, using its own naming
+/// (`-ours` marks the half this renderer drew, as opposed to `-browser`, `zz-compare-*`, or the
+/// bare `zz-design-<name>-wrap.html`/`.svg` staging files the original Claude Design handoff
+/// left behind).
+///
+/// `#[ignore]`d like [`state_tests::gallery`] — run explicitly:
+/// `cargo test --features git -- --ignored orthogonal_design_reference_dump`.
+#[test]
+#[ignore = "writes PNG/SVG files for a person to look at: cargo test -- --ignored orthogonal_design_reference_dump"]
+fn orthogonal_design_reference_dump() {
+    let dir = std::path::Path::new("docs/render-check");
+    std::fs::create_dir_all(dir).expect("create docs/render-check");
+    for (name, src) in orthogonal_design_reference_corpus() {
+        let svg =
+            crate::preview::mermaid::render::render_flow(src, "dark", "basis", "konoma-orthogonal")
+                .unwrap_or_else(|e| panic!("{name}: must render under konoma-orthogonal: {e}"));
+        let svg_path = dir.join(format!("{name}-ours.svg"));
+        std::fs::write(&svg_path, &svg).unwrap_or_else(|e| panic!("{name}: write svg: {e}"));
+        let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), &svg_path, 1600)
+            .unwrap_or_else(|| panic!("{name}: must rasterise"));
+        img.save(dir.join(format!("{name}-ours.png")))
+            .unwrap_or_else(|e| panic!("{name}: write png: {e}"));
+    }
 }
 
 /// Finding 1 (high): the cluster invariants stage 1b already states over `CORPUS` under

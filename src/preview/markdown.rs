@@ -2786,7 +2786,7 @@ pub fn mermaid_to_svg_reason_flow(
     if flowchart_is_ours(code) {
         render_konoma_flow(code, theme, curve, routing)
     } else if state_is_ours(code) {
-        render_konoma(code, theme, crate::preview::mermaid::render::state::render)
+        render_konoma_state(code, theme, routing)
     } else if class_is_ours(code) {
         render_konoma(code, theme, crate::preview::mermaid::render::class::render)
     } else if er_is_ours(code) {
@@ -2966,6 +2966,23 @@ fn render_konoma_flow(
     let caught = silence_panics(|| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             crate::preview::mermaid::render::render_flow(code, theme, curve, routing)
+        }))
+    });
+    match caught {
+        Ok(Ok(svg)) => Ok(svg),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("konoma's mermaid renderer panicked".to_string()),
+    }
+}
+
+/// [`render_konoma`], for the state-diagram branch: `state::render`'s own `routing`-aware sibling
+/// (`state::render_flow`, `docs/FEATURE-MERMAID-RENDERER.md` §10-5) takes a `routing` argument
+/// `render`/the shared [`Draw`] table's ten other diagram kinds do not, the same reason
+/// [`render_konoma_flow`] exists apart from the table for the flowchart.
+fn render_konoma_state(code: &str, theme: &str, routing: &str) -> Result<String, String> {
+    let caught = silence_panics(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::preview::mermaid::render::state::render_flow(code, theme, routing)
         }))
     });
     match caught {

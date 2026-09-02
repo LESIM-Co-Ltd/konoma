@@ -716,6 +716,22 @@ fn classify(
     // target の in-degree > 1）" — branch is the default; merge is the one exception, taken only
     // when the source is not itself branching and the target actually merges.
     let branching = source_out_degree > 1 || target_in_degree <= 1;
+    // §10-5 S1 ("ポートは極のみ…流れ軸と円周の交点"): an edge leaving a start marker is never a
+    // decision point — `state::spec_of`'s own per-transition marker duplication
+    // (`docs/FEATURE-MERMAID-RENDERER.md` §10-5) guarantees `source_out_degree == 1` here, so the
+    // plain formula above would otherwise read the common "one child, no other in-edges to that
+    // child" shape as `branching` and send it out the *cross*-axis face — the face a real
+    // decision node's flat side sits on, not a marker's pole. Forcing `branching` off routes it
+    // through `merge_source_side` below instead, which is already the flow-axis pole formula
+    // (identical to the `target_side` every branch/merge shape already uses, §10-3 item 3's own
+    // unification) — so a start-anchored edge's source is the pole in both the 0-bend `aligned`
+    // case above and this 1-bend case. There is no such correction needed on the *target* side for
+    // an end marker: `branch_target_side`/`merge_target_side` are already the same flow-axis
+    // formula regardless of `branching` (§10-3 item 3), so an end marker's incoming face is always
+    // the pole already.
+    let marker_anchored =
+        matches!(source.shape, Glyph::StateStart) || matches!(target.shape, Glyph::StateEnd);
+    let branching = branching && !matches!(source.shape, Glyph::StateStart);
     let (branch_source_side, branch_target_side) = (
         cross_face(
             direction,
@@ -806,6 +822,17 @@ fn classify(
         // construction), so it keeps the retry. Falls through to it now exactly as if this source
         // had no flow-aligned sibling at all — its `branch_source_side` (cross-face) shape almost
         // always clears cleanly on the first try, which is what these four edges actually draw.
+    }
+
+    if marker_anchored && shape_crosses_a_node(direction, source, target, &shape, nodes) {
+        // §10-5 S1: a marker-anchored shape has no cross-axis alternate to swap to — unlike an
+        // ordinary node, whose flat sides are all legitimate ports, a start/end marker's only
+        // valid port is its pole (this function's own doc, just above). So a collision here skips
+        // straight to `staircase` (dagre's own waypoint chain, straightened) rather than trying
+        // the `alt` shape below, the same "no alternate" treatment the `aligned` case already gets
+        // for the identical reason (its own comment, above).
+        shape.staircase = true;
+        return shape;
     }
 
     if shape_crosses_a_node(direction, source, target, &shape, nodes) {
@@ -2656,6 +2683,22 @@ fn evict(
         // the node's own corner instead of `PORT_CLEARANCE` px inside it (`docs/STATUS.md`'s own
         // ★未修正 entry: RS's own four-way merge in `samples/mermaid.ja.md`'s "大きさ" flowchart,
         // `ページ描画→ラスタライズ`'s target port landing exactly on the box's own top edge).
+        // §10-5 S1: a start/end marker never grows to clear a port. `state::spec_of`'s own
+        // per-transition duplication (this module's own doc on `marker_anchored`, `classify`)
+        // guarantees `n == 1` and `max_abs_offset == 0.0` for every marker face that reaches
+        // here, so `required_flat` below would still only ever ask for `2 * PORT_CLEARANCE`
+        // (16px) — but a circle has no corner to clear in the first place, and growing one to
+        // satisfy a rectangular face's clearance rule turns the dot into an oval, which is a
+        // real regression `non_flowchart_diagrams_ignore_mermaid_routing`'s own sibling test
+        // caught (`orthogonal_state_markers_do_not_grow`): the marker's box grew from its
+        // fixed 14px/16px diameter (`shapes::size`'s own `Glyph::StateStart`/`StateEnd` rule)
+        // to 16px/18.5px. So a marker face is skipped here entirely — its coordinate is
+        // already written above (`source_coord`/`target_coord`, always the face centre for
+        // `n == 1`), and `required_size` simply never gets an entry for it, the same as any
+        // node whose face carries no claim at all.
+        if matches!(node.shape, Glyph::StateStart | Glyph::StateEnd) {
+            continue;
+        }
         let required_flat = if n == 0 {
             0.0
         } else {

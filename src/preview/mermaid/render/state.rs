@@ -57,13 +57,20 @@ use super::edges::Tip;
 use super::shapes::{self, Glyph, Size};
 use super::svg;
 use super::{
-    lay_out_spec, Curve, Diagram, GraphSpec, Label, PlacedEdge, PlacedNode, RenderError, SpecBlock,
-    SpecEdge, SpecNode, Theme,
+    lay_out_spec, Curve, Diagram, GraphSpec, Label, PlacedEdge, PlacedNode, RenderError, Routing,
+    SpecBlock, SpecEdge, SpecNode, Theme,
 };
 
 /// Blank space between a note and the state it belongs to, in px. Also the step a note is pushed
 /// by when the place it wanted is taken.
 pub const NOTE_GAP: f64 = 24.0;
+
+/// §10-5 S4: a choice draws as a chamfered square this wide/tall under orthogonal routing —
+/// smaller than [`shapes::CHOICE_SIZE`] (splines' own diamond, 40px), and drawn as
+/// [`Glyph::ChamferedRect`] rather than [`Glyph::Choice`], for the same reason the flowchart's
+/// own `spec_of` swaps a decision `Shape::Diamond` for one: a diamond has no flat run for
+/// [`super::orthogonal::evict`] to spread more than one port along, only a point at each vertex.
+const STATE_CHOICE_ORTHO_SIZE: f64 = 28.0;
 
 /// How many times a note may be pushed further out before konoma gives up and leaves it where it
 /// is. Every push clears at least one box, so a diagram would have to hold this many boxes in one
@@ -76,15 +83,28 @@ const NOTE_PUSH_LIMIT: usize = 200;
 /// caller gets — `docs/FEATURE-MERMAID-RENDERER.md` §6, after konoma was once caught pinning a
 /// function that was not the one in production.
 ///
-/// `theme` is `ui.mermaid_theme`'s raw string; an unknown value silently means `dark`.
+/// `theme` is `ui.mermaid_theme`'s raw string; an unknown value silently means `dark`. Routes
+/// every edge under [`Routing::Splines`] — the same, byte-stable path every caller of this
+/// function has always gone through. [`render_flow`] is the `[ui] mermaid_routing`-aware sibling
+/// (`docs/FEATURE-MERMAID-RENDERER.md` §10-5), kept apart the same way
+/// [`super::render`]/[`super::render_flow`] are for a flowchart.
 pub fn render(code: &str, theme: &str) -> Result<String, RenderError> {
+    render_flow(code, theme, "splines")
+}
+
+/// [`render`], with a state diagram's edges routed by `routing` — `[ui] mermaid_routing`'s raw
+/// string. `"splines"` reproduces [`render`] exactly, byte for byte; `"konoma-orthogonal"` is
+/// §10-5's extension of the flowchart's own right-angle wiring mode to `stateDiagram-v2`. This is
+/// what `App::media_load`/`md_media` actually call, since a media loader knows `[ui]
+/// mermaid_routing` for every diagram kind, not just the flowchart.
+pub fn render_flow(code: &str, theme: &str, routing: &str) -> Result<String, RenderError> {
     let diagram = state::parse(code)?;
-    let laid = lay_out(&diagram)?;
+    let laid = lay_out(&diagram, Routing::parse(routing))?;
     Ok(svg::emit(&laid, &Theme::named(theme)))
 }
 
 /// Measures, sizes, lays out and routes a parsed state diagram.
-pub fn lay_out(diagram: &StateDiagram) -> Result<Diagram, RenderError> {
+pub fn lay_out(diagram: &StateDiagram, routing: Routing) -> Result<Diagram, RenderError> {
     // The gate. usvg does not fail on a missing font, it just drops the glyphs, so the only place
     // this can be caught is before anything is built (PRD design principle #3).
     if !text_metrics::fonts_available() {
@@ -93,13 +113,18 @@ pub fn lay_out(diagram: &StateDiagram) -> Result<Diagram, RenderError> {
     if diagram.states.is_empty() {
         return Err(RenderError::NothingToDraw);
     }
-    let mut out = lay_out_spec(&spec_of(diagram))?;
+    let mut out = lay_out_spec(&spec_of(diagram, routing))?;
     place_notes(&mut out, diagram);
     Ok(out)
 }
 
 /// The whole of what is specific to the state-diagram language.
-pub fn spec_of(diagram: &StateDiagram) -> GraphSpec {
+///
+/// `routing` is `[ui] mermaid_routing`, resolved — `Routing::Splines` (every caller before
+/// `docs/FEATURE-MERMAID-RENDERER.md` §10-5, and every caller of [`render`]/[`lay_out`] with
+/// `"splines"` today) reproduces the drawing exactly as before this parameter existed;
+/// `Routing::Orthogonal` is §10-5's own extension.
+pub fn spec_of(diagram: &StateDiagram, routing: Routing) -> GraphSpec {
     let horizontal_bars = matches!(
         diagram.direction,
         Direction::TopToBottom | Direction::BottomToTop
@@ -126,7 +151,20 @@ pub fn spec_of(diagram: &StateDiagram) -> GraphSpec {
         }
         let glyph = glyph_of(s.kind, s.titled, horizontal_bars);
         let label = Label::measure(&s.label);
-        let size = shapes::size(glyph, shapes::Size::new(label.width, label.height));
+        // §10-5 S4: under orthogonal routing a choice is a fixed 28x28 chamfered square, not the
+        // 40px diamond splines draws — see `STATE_CHOICE_ORTHO_SIZE`'s own doc. A choice draws no
+        // label either way (`glyph_of`'s own doc), so the override does not need the label size.
+        let (glyph, size) = if routing == Routing::Orthogonal && s.kind == Kind::Choice {
+            (
+                Glyph::ChamferedRect,
+                Size::new(STATE_CHOICE_ORTHO_SIZE, STATE_CHOICE_ORTHO_SIZE),
+            )
+        } else {
+            (
+                glyph,
+                shapes::size(glyph, shapes::Size::new(label.width, label.height)),
+            )
+        };
         nodes.push(SpecNode {
             id: s.id.clone(),
             glyph,
@@ -142,7 +180,7 @@ pub fn spec_of(diagram: &StateDiagram) -> GraphSpec {
     // from the border nodes hung off them. A block listed before its members would still work —
     // `Tree::from_blocks` resolves the nesting by id — but keeping the parser's order means the
     // frames come out innermost-first, which is the order `read_clusters` sorts by depth anyway.
-    let edges = diagram
+    let mut edges: Vec<SpecEdge> = diagram
         .transitions
         .iter()
         .filter(|t| !t.is_note_link)
@@ -166,13 +204,86 @@ pub fn spec_of(diagram: &StateDiagram) -> GraphSpec {
         })
         .collect();
 
+    // §10-5 S1 ("複数辺は認めない…終了に n 本入るならマーカーを n 個複製"): only under
+    // orthogonal routing — splines keeps mermaid's own shared single dot/ring unchanged.
+    if routing == Routing::Orthogonal {
+        duplicate_multi_edge_markers(diagram, &mut nodes, &mut edges);
+    }
+
     GraphSpec {
         direction: diagram.direction,
         nodes,
         edges,
         blocks,
-        // Never `Routing::Orthogonal`: only the flowchart's own `spec_of` ever sets that.
-        ..GraphSpec::default()
+        routing,
+    }
+}
+
+/// §10-5 S1: a start/end marker more than one transition shares is drawn as one marker **per**
+/// transition under orthogonal routing, each with its own single pole port.
+///
+/// mermaid's own `docTranslator` (`crate::preview::mermaid::state::parser`'s module doc) merges
+/// every `[*] -->` written in one scope into a single start dot and every `--> [*]` into a single
+/// end dot — correct for splines, where dagre is free to fan several waypoints out of (or into)
+/// one node. Under `Routing::Orthogonal` that would mean [`super::orthogonal::evict`] spreading
+/// more than one port along the marker's flow-axis face, which S1 forbids outright ("複数辺は
+/// 認めない") — a marker's only valid port is the pole itself. So instead, a marker with more than
+/// one attached transition here is replaced by that many separate marker nodes, one per
+/// transition, each keeping the original's glyph/size/style and taking exactly the one edge — the
+/// ordinary single-claim path through `evict` then lands every one of them dead on its own pole
+/// (`evict`'s own "n == 1" case never has anything to offset from face-centre).
+///
+/// A marker with at most one transition (the overwhelmingly common case — most `[*]`s in a
+/// diagram open or close exactly one path) is left exactly as `spec_of` already built it: this
+/// only ever changes node/edge *counts*, so `every_state_and_transition_survives`'s box-count
+/// assertion has to run against `model.boxes()` re-counted the same way this function counts,
+/// which is why that test (and every other structural one) always renders `Routing::Splines`.
+fn duplicate_multi_edge_markers(
+    diagram: &StateDiagram,
+    nodes: &mut Vec<SpecNode>,
+    edges: &mut [SpecEdge],
+) {
+    for s in &diagram.states {
+        let is_start = s.kind == Kind::Start;
+        let is_end = s.kind == Kind::End;
+        if !is_start && !is_end {
+            continue;
+        }
+        // A start marker's `[*]` is only ever the *source* of a transition, an end marker's only
+        // ever the *target* — `state::parser`'s own `rename_edge_state` translates the two
+        // directions to two different ids, so there is no case where the same marker id needs
+        // both counted at once.
+        let matching: Vec<usize> = edges
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                if is_start {
+                    e.from == s.id
+                } else {
+                    e.to == s.id
+                }
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if matching.len() <= 1 {
+            continue;
+        }
+        let Some(base_pos) = nodes.iter().position(|n| n.id == s.id) else {
+            continue;
+        };
+        let base = nodes.remove(base_pos);
+        for (i, &edge_idx) in matching.iter().enumerate() {
+            let dup_id = format!("{}__ortho{i}", s.id);
+            nodes.push(SpecNode {
+                id: dup_id.clone(),
+                ..base.clone()
+            });
+            if is_start {
+                edges[edge_idx].from = dup_id;
+            } else {
+                edges[edge_idx].to = dup_id;
+            }
+        }
     }
 }
 

@@ -23,9 +23,9 @@
 //! version of stage 2 followed mermaid and let dagre place notes, which drew a note reading "this
 //! is the note to the left" on the right — and a presence test would have passed on that picture.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use super::state::{lay_out, render, spec_of, NOTE_GAP};
+use super::state::{lay_out, render, render_flow, spec_of, NOTE_GAP};
 use super::tests::{
     assert_snapshot, boundary, check_cluster_titles, check_clusters_hold_their_members,
     check_edge_that_names_a_block_stops_on_its_frame, check_edges_keep_out_of_foreign_frames,
@@ -35,7 +35,10 @@ use super::tests::{
     check_view_box_contains_everything, dist_to_boundary, mask_numbers, path_boxes, text_widths,
     tree_of,
 };
-use super::{clusters, labels, shapes, svg, Diagram, Glyph, Label, PlacedNode, RenderError, Size};
+use super::Routing;
+use super::{
+    clusters, labels, orthogonal, shapes, svg, Diagram, Glyph, Label, PlacedNode, RenderError, Size,
+};
 use crate::preview::mermaid::flowchart::{Shape, Stroke};
 use crate::preview::mermaid::layout::Point;
 use crate::preview::mermaid::state::{self, Kind};
@@ -194,7 +197,7 @@ pub const CASES: &[(&str, &str)] = &[
 
 fn laid_out(src: &str) -> Diagram {
     let model = state::parse(src).unwrap_or_else(|e| panic!("corpus source must parse: {e}"));
-    lay_out(&model).unwrap_or_else(|e| panic!("corpus source must lay out: {e}"))
+    lay_out(&model, Routing::Splines).unwrap_or_else(|e| panic!("corpus source must lay out: {e}"))
 }
 
 /// The block tree of a source, rebuilt from the parser's own output — the same trick stage 1's
@@ -202,7 +205,7 @@ fn laid_out(src: &str) -> Diagram {
 /// than by the code under test.
 fn tree_of_src(src: &str) -> clusters::Tree {
     let model = state::parse(src).expect("parses");
-    let spec = spec_of(&model);
+    let spec = spec_of(&model, Routing::Splines);
     let ids: HashSet<String> = spec.nodes.iter().map(|n| n.id.clone()).collect();
     clusters::Tree::from_blocks(&spec.blocks, |id| ids.contains(id))
 }
@@ -947,7 +950,397 @@ fn synthetic_state_diagram() -> Diagram {
 }
 
 // ---------------------------------------------------------------------------------------------
-// 7. Looking at it
+// 7. `konoma-orthogonal` routing (§10-5) — flowchart's own invariants, extended to state diagrams
+// ---------------------------------------------------------------------------------------------
+
+/// The three "design reference" sources round 4 confirms against
+/// (`docs/render-check/zz-design-sources.md`'s own "第 4 回" section, pictures
+/// `docs/render-check/zz-design-4a/4b/4c-browser.png`), made a **permanent** fixture list
+/// (coordinator instruction, 2026-09-02): every orthogonal invariant below runs against all
+/// three on every test run, not only the one-off audit that originally produced them. Kept apart
+/// from [`CASES`] — `CASES` also drives [`state_corpus_golden`], and this task's own governing
+/// rule (`docs/FEATURE-MERMAID-RENDERER.md` §10-2) is that the splines golden must never move.
+fn orthogonal_design_reference_corpus() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            // `zz-design-4a-browser.png`'s own source (TB, a real sample-shaped diagram: a
+            // composite state with an internal start marker and transition, plus a labelled
+            // self-closing `Q`-triggered exit).
+            "zz-design-4a",
+            "stateDiagram-v2\n  [*] --> ツリー\n  ツリー --> プレビュー : Enter\n  \
+             プレビュー --> ツリー : q\n  state プレビュー {\n    [*] --> デコード中\n    \
+             デコード中 --> 表示 : 画像が届く\n  }\n  ツリー --> [*] : Q",
+        ),
+        (
+            // `zz-design-4b-browser.png`'s own source (LR, a self-transition plus a choice with
+            // two outgoing labelled edges).
+            "zz-design-4b",
+            "stateDiagram-v2\n  direction LR\n  state 分岐 <<choice>>\n  待機 --> 監視 : 開始\n  \
+             監視 --> 監視 : ポーリング\n  監視 --> 分岐 : 変化\n  分岐 --> 更新 : 差分あり\n  \
+             分岐 --> 休止 : 差分なし\n  更新 --> 通知 : 適用\n  通知 --> 待機 : 完了",
+        ),
+        (
+            // `zz-design-4c-browser.png`'s own source (TB, fork/join plus a two-level nested
+            // composite state).
+            "zz-design-4c",
+            "stateDiagram-v2\n  state fork_state <<fork>>\n  state join_state <<join>>\n  \
+             [*] --> 初期化\n  初期化 --> fork_state\n  fork_state --> 取得\n  \
+             fork_state --> 監査\n  取得 --> 処理\n  state 処理 {\n    [*] --> 整形\n    \
+             整形 --> 解析\n    state 解析 {\n      走査 --> 集計\n    }\n  }\n  \
+             処理 --> join_state\n  監査 --> join_state : 監査済\n  join_state --> 完了\n  \
+             完了 --> [*]",
+        ),
+    ]
+}
+
+/// [`CASES`] plus [`orthogonal_design_reference_corpus`] — every orthogonal invariant that has to
+/// see the design-reference sources iterates this rather than either half alone.
+fn orthogonal_full_corpus() -> Vec<(&'static str, &'static str)> {
+    CASES
+        .iter()
+        .copied()
+        .chain(orthogonal_design_reference_corpus())
+        .collect()
+}
+
+/// Redumps `4a`/`4b`/`4c` under `konoma-orthogonal` to `docs/render-check/zz-design-<name>-
+/// ours.{svg,png}`, next to the existing `zz-design-<name>-browser.png` reference each was drawn
+/// from — the state-diagram sibling of `tests::orthogonal_design_reference_dump`, see that
+/// function's own doc for the naming rationale and why `docs/render-check/` is safe to write to.
+///
+/// `#[ignore]`d like [`gallery`] — run explicitly:
+/// `cargo test --features git -- --ignored orthogonal_design_reference_dump`.
+#[test]
+#[ignore = "writes PNG/SVG files for a person to look at: cargo test -- --ignored orthogonal_design_reference_dump"]
+fn orthogonal_design_reference_dump() {
+    let dir = std::path::Path::new("docs/render-check");
+    std::fs::create_dir_all(dir).expect("create docs/render-check");
+    for (name, src) in orthogonal_design_reference_corpus() {
+        let svg = render_flow(src, "dark", "konoma-orthogonal")
+            .unwrap_or_else(|e| panic!("{name}: must render under konoma-orthogonal: {e}"));
+        let svg_path = dir.join(format!("{name}-ours.svg"));
+        std::fs::write(&svg_path, &svg).unwrap_or_else(|e| panic!("{name}: write svg: {e}"));
+        let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), &svg_path, 1600)
+            .unwrap_or_else(|| panic!("{name}: must rasterise"));
+        img.save(dir.join(format!("{name}-ours.png")))
+            .unwrap_or_else(|e| panic!("{name}: write png: {e}"));
+    }
+}
+
+fn laid_out_orthogonal(src: &str) -> Diagram {
+    let model = state::parse(src).unwrap_or_else(|e| panic!("corpus source must parse: {e}"));
+    lay_out(&model, Routing::Orthogonal)
+        .unwrap_or_else(|e| panic!("corpus source must lay out under orthogonal: {e}"))
+}
+
+/// Every segment of every routed edge is axis-parallel — no diagonal line — the same property
+/// `orthogonal_routing_draws_only_axis_parallel_segments` (`tests.rs`) states for a flowchart,
+/// run here over the state corpus (§10-5's own routing-mode extension).
+#[test]
+fn orthogonal_state_edges_draw_only_axis_parallel_segments() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_full_corpus() {
+        let d = laid_out_orthogonal(src);
+        for e in &d.edges {
+            // A note's connector (`place_notes`'s own module doc) is placed after `lay_out_spec`
+            // runs and is deliberately a straight line, never routed by `orthogonal` at all — the
+            // same reason `check_edges_stay_out_of_shapes` exempts it in splines mode. Identified
+            // the same way the rest of this file already does (`a_notes_connector_is_dotted_
+            // headless_and_lands_on_both_boxes`'s own filter).
+            if e.from.contains("note") || e.to.contains("note") {
+                continue;
+            }
+            for w in e.points.windows(2) {
+                let dx = (w[1].x - w[0].x).abs();
+                let dy = (w[1].y - w[0].y).abs();
+                assert!(
+                    dx < 1e-6 || dy < 1e-6,
+                    "{name}: edge {}->{} draws a diagonal segment {:?} -> {:?}",
+                    e.from,
+                    e.to,
+                    w[0],
+                    w[1]
+                );
+            }
+        }
+    }
+}
+
+/// Every routed edge's two endpoints sit exactly [`orthogonal::PORT_INSET`] outside the
+/// node/cluster/marker they meet, and arrive perpendicular to whichever face — the same property
+/// `orthogonal_endpoints_sit_outside_the_node_and_arrive_perpendicular` (`tests.rs`) states for a
+/// flowchart. A start/end marker's own pole is just another face under this same test — S1's
+/// "極に垂直入射" is nothing but "perpendicular to the flow-axis face" restated, which this
+/// already checks without a marker-specific branch.
+#[test]
+fn orthogonal_state_endpoints_sit_outside_and_perpendicular() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_full_corpus() {
+        let d = laid_out_orthogonal(src);
+        for e in &d.edges {
+            // A note's connector is placed after `lay_out_spec` and is never routed by
+            // `orthogonal` — see the axis-parallel test above for the full reasoning.
+            if e.from.contains("note") || e.to.contains("note") {
+                continue;
+            }
+            if e.points.len() < 2 {
+                continue;
+            }
+            let n = e.points.len();
+            let ends = [
+                (&e.from, &e.points[0], &e.points[1]),
+                (&e.to, &e.points[n - 1], &e.points[n - 2]),
+            ];
+            for (node_id, endpoint, neighbour) in ends {
+                let bounds = d
+                    .node(node_id)
+                    .map(|nd| nd.bounds())
+                    .or_else(|| d.cluster(node_id).map(|c| c.bounds()));
+                let Some((l, t, r, b)) = bounds else {
+                    continue;
+                };
+                let inset = orthogonal::PORT_INSET;
+                let on_top = (endpoint.y - (t - inset)).abs() < 1e-6;
+                let on_bottom = (endpoint.y - (b + inset)).abs() < 1e-6;
+                let on_left = (endpoint.x - (l - inset)).abs() < 1e-6;
+                let on_right = (endpoint.x - (r + inset)).abs() < 1e-6;
+                assert!(
+                    on_top || on_bottom || on_left || on_right,
+                    "{name}: edge {}->{} endpoint at {node_id} {endpoint:?} is not {inset}px \
+                     outside its bounds {:?}",
+                    e.from,
+                    e.to,
+                    (l, t, r, b)
+                );
+                let dx = (endpoint.x - neighbour.x).abs();
+                let dy = (endpoint.y - neighbour.y).abs();
+                assert!(
+                    dx < 1e-6 || dy < 1e-6,
+                    "{name}: edge {}->{} segment into {node_id} is not axis-parallel",
+                    e.from,
+                    e.to
+                );
+            }
+        }
+    }
+}
+
+/// No routed edge crosses a foreign node's box (its own two ends excepted) — the same property
+/// `orthogonal_no_segment_crosses_a_foreign_node_across_the_whole_corpus` (`tests.rs`) states for
+/// a flowchart.
+#[test]
+fn orthogonal_state_no_edge_crosses_a_foreign_node() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_full_corpus() {
+        let d = laid_out_orthogonal(src);
+        for e in &d.edges {
+            for w in e.points.windows(2) {
+                for n in &d.nodes {
+                    if n.id == e.from || n.id == e.to {
+                        continue;
+                    }
+                    assert!(
+                        !orthogonal::segment_crosses_node(&w[0], &w[1], n),
+                        "{name}: edge {}->{} segment {:?}->{:?} crosses {} {:?}",
+                        e.from,
+                        e.to,
+                        w[0],
+                        w[1],
+                        n.id,
+                        n.bounds()
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// No routed edge re-enters its own endpoint node's interior — the same unpadded property
+/// `orthogonal_no_edge_crosses_its_own_endpoint_across_the_whole_corpus` (`tests.rs`) states for
+/// a flowchart.
+#[test]
+fn orthogonal_state_no_edge_crosses_its_own_endpoint() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_full_corpus() {
+        let d = laid_out_orthogonal(src);
+        for e in &d.edges {
+            // A note's connector is placed after `lay_out_spec` and is never routed by
+            // `orthogonal` — see the axis-parallel test above for the full reasoning. Unlike a
+            // cluster-anchored end, a note *is* a real `PlacedNode` (`place_notes` pushes it to
+            // `out.nodes`), so the `let-else` just below would not skip it on its own.
+            if e.from.contains("note") || e.to.contains("note") {
+                continue;
+            }
+            let (Some(source), Some(target)) = (d.node(&e.from), d.node(&e.to)) else {
+                continue; // a cluster-anchored end has no real node box to puncture
+            };
+            assert!(
+                !orthogonal::staircase_punctures_its_own_endpoint(
+                    &e.points,
+                    Some(source),
+                    Some(target)
+                ),
+                "{name}: edge {}->{} re-enters its own endpoint node's interior: {:?}",
+                e.from,
+                e.to,
+                e.points
+            );
+        }
+    }
+}
+
+/// The shared cluster/node invariants stage 1 states (§2 above), run again under orthogonal
+/// routing — the same reason `invariant_orthogonal_clusters_hold_their_members` and its three
+/// siblings (`tests.rs`) exist for flowcharts: eviction growth moves boxes, and nothing before
+/// this had checked a composite state's frame still holds its members once that growth happens.
+#[test]
+fn orthogonal_state_nodes_and_clusters_stay_correct_after_growth() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_full_corpus() {
+        let d = laid_out_orthogonal(src);
+        let tree = tree_of_src(src);
+        check_nodes_do_not_overlap(name, &d);
+        check_view_box_contains_everything(name, &d);
+        check_clusters_hold_their_members(name, &d, &tree);
+        check_nested_clusters_sit_inside_their_parent(name, &d);
+        check_unrelated_clusters_do_not_overlap(name, &d);
+    }
+}
+
+/// S1: a start/end marker's only port is its pole, and its box never grows to make room for a
+/// port — across the whole corpus, not just a hand-built case. A marker's pole is the face-centre
+/// point on whichever axis its one edge actually uses (§10-1's own "曲げ0優先"/"1"), so this
+/// checks the endpoint lands exactly on the node's own centre line along one axis, and that the
+/// box never exceeds the fixed size splines draws (`shapes::size`'s own `Glyph::StateStart`/
+/// `StateEnd` rule, unconditional on routing).
+#[test]
+fn orthogonal_state_markers_are_pole_ports_and_never_grow() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_full_corpus() {
+        let d = laid_out_orthogonal(src);
+        for n in &d.nodes {
+            if !matches!(n.shape, Glyph::StateStart | Glyph::StateEnd) {
+                continue;
+            }
+            let fixed = shapes::size(n.shape, Size::new(0.0, 0.0));
+            assert_eq!(
+                n.size, fixed,
+                "{name}: marker {} grew from its fixed size under orthogonal routing",
+                n.id
+            );
+        }
+        for e in &d.edges {
+            for (node_id, endpoint) in [(&e.from, e.points.first()), (&e.to, e.points.last())] {
+                let Some(endpoint) = endpoint else { continue };
+                let Some(node) = d.node(node_id) else {
+                    continue;
+                };
+                if !matches!(node.shape, Glyph::StateStart | Glyph::StateEnd) {
+                    continue;
+                }
+                let on_pole = (endpoint.x - node.center.x).abs() < 1e-6
+                    || (endpoint.y - node.center.y).abs() < 1e-6;
+                assert!(
+                    on_pole,
+                    "{name}: marker {node_id}'s port at {endpoint:?} is not on its pole \
+                     (centre {:?})",
+                    node.center
+                );
+            }
+        }
+    }
+}
+
+/// S1: a marker more than one transition shares is drawn as one marker **per** transition under
+/// orthogonal routing — never a single dot/ring carrying more than one port. `basic`'s own two
+/// transitions into `[*]` (`Still --> [*]`, `Crash --> [*]`) share `root_end` under splines; under
+/// orthogonal there must be two separate end markers, each with exactly one edge.
+#[test]
+fn orthogonal_state_shared_end_marker_is_duplicated_per_transition() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = CASES
+        .iter()
+        .find(|(n, _)| *n == "basic")
+        .expect("`basic` is in the corpus")
+        .1;
+    let splines = laid_out(src);
+    let ortho = laid_out_orthogonal(src);
+    let end_count = |d: &Diagram| {
+        d.nodes
+            .iter()
+            .filter(|n| n.shape == Glyph::StateEnd)
+            .count()
+    };
+    assert_eq!(
+        end_count(&splines),
+        1,
+        "splines must keep mermaid's own single shared end dot"
+    );
+    assert_eq!(
+        end_count(&ortho),
+        2,
+        "orthogonal must draw one end marker per transition (`basic` has 2 into `[*]`)"
+    );
+    let mut in_degree: HashMap<String, usize> = HashMap::new();
+    for e in &ortho.edges {
+        *in_degree.entry(e.to.clone()).or_insert(0) += 1;
+    }
+    for n in ortho.nodes.iter().filter(|n| n.shape == Glyph::StateEnd) {
+        assert_eq!(
+            in_degree.get(&n.id).copied().unwrap_or(0),
+            1,
+            "{}: a duplicated end marker must carry exactly one edge",
+            n.id
+        );
+    }
+}
+
+/// S4: a choice draws as a 28x28 chamfered square under orthogonal routing, never the 40px
+/// diamond splines draws — the same swap the flowchart's own `spec_of` makes for a decision
+/// `Shape::Diamond` (`ChamferedRect`'s own doc: a diamond has no flat run for `evict` to spread
+/// more than one port along).
+#[test]
+fn orthogonal_state_choice_is_a_28px_chamfered_square() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = "stateDiagram-v2\n  state c <<choice>>\n  A --> c\n  c --> B\n  c --> C";
+    let splines = laid_out(src);
+    let ortho = laid_out_orthogonal(src);
+    assert_eq!(
+        splines.node("c").expect("the choice").shape,
+        Glyph::Choice,
+        "splines must keep drawing a choice as the plain diamond glyph"
+    );
+    let c = ortho.node("c").expect("the choice");
+    assert_eq!(
+        c.shape,
+        Glyph::ChamferedRect,
+        "orthogonal must draw a choice as a chamfered rectangle, not a diamond"
+    );
+    assert_eq!(
+        c.size,
+        Size::new(28.0, 28.0),
+        "orthogonal's choice must be the fixed 28x28 S4 size"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// 8. Looking at it
 // ---------------------------------------------------------------------------------------------
 
 /// Writes the corpus out as SVG files so a person can look at them. Not a check — §6 is explicit

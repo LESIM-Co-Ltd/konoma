@@ -623,8 +623,10 @@ pub fn render_curve(code: &str, theme: &str, curve: &str) -> Result<String, Rend
 
 /// [`render_curve`], with a flowchart's edges routed by `routing` — `[ui] mermaid_routing`'s raw
 /// string. `"splines"` reproduces [`render_curve`] exactly, byte for byte; `"konoma-orthogonal"` is
-/// `docs/FEATURE-MERMAID-RENDERER.md` §10's right-angle wiring mode. Every other diagram kind
-/// ignores `routing` entirely, the same as every kind but the flowchart ignores `curve`.
+/// `docs/FEATURE-MERMAID-RENDERER.md` §10's right-angle wiring mode. `curve` stays flowchart-only
+/// (every other diagram kind ignores it, always `Curve::Basis`); `routing` does not — a state
+/// diagram reads it too, through its own entry point ([`state::render_flow`], §10-5), while the
+/// rest still ignore it and stay `Routing::Splines` (`GraphSpec::routing`'s own doc).
 pub fn render_flow(
     code: &str,
     theme: &str,
@@ -848,8 +850,11 @@ pub struct SpecNode {
     /// node — *not* whether it carries any resolved paint at all, which an inline `style`
     /// statement alone (with no `class`) also produces. Only a flowchart's own `spec_of` ever
     /// sets this meaningfully (`chart.nodes[i].classes.is_empty()`); every other diagram kind
-    /// leaves it `true`, a harmless default since only `regroup_fan_lanes` — itself gated on
-    /// `Routing::Orthogonal`, which only a flowchart ever requests — ever reads it. It exists
+    /// leaves it `true`, a harmless default — `regroup_fan_lanes` is the only reader, and while
+    /// `Routing::Orthogonal` is no longer flowchart-exclusive (a state diagram may request it too,
+    /// §10-5), a state node left at `true` is simply never treated as the classless/dead-end group
+    /// rule that field distinguishes; nothing in §10-5's own rule set (S1–S5) depends on it. It
+    /// exists
     /// because [`GraphSpec`] is deliberately language-neutral (this struct's own doc) so it
     /// cannot carry a raw class *name*, but the fan-lane regroup still needs to tell "this node
     /// belongs to one of the diagram's semantic colour groups" apart from "this node was only
@@ -914,10 +919,11 @@ pub struct GraphSpec {
     pub edges: Vec<SpecEdge>,
     /// Frames, innermost first (a nested block before the one that contains it).
     pub blocks: Vec<SpecBlock>,
-    /// `[ui] mermaid_routing`, resolved. `Routing::Splines` — every diagram kind's `spec_of` but
-    /// the flowchart's own leaves this at its `#[default]` — reproduces every edge exactly as
-    /// [`lay_out_spec`] always routed it; only a flowchart's own `spec_of` ever sets this to
-    /// `Routing::Orthogonal`, and only when `[ui] mermaid_routing = "konoma-orthogonal"`.
+    /// `[ui] mermaid_routing`, resolved. `Routing::Splines` — most diagram kinds' `spec_of` leaves
+    /// this at its `#[default]` unconditionally — reproduces every edge exactly as
+    /// [`lay_out_spec`] always routed it; only the flowchart's and (since §10-5) the state
+    /// diagram's own `spec_of` ever set this to `Routing::Orthogonal`, and only when
+    /// `[ui] mermaid_routing = "konoma-orthogonal"`.
     pub routing: Routing,
 }
 
