@@ -28,6 +28,34 @@ All notable changes to konoma are documented in this file. The format is based o
   current geometry, the collision cascade also rejects self-piercing shapes, and a strict
   zero-margin invariant ("no edge crosses its own endpoint node") now guards the whole corpus and
   the real sample diagram.
+- **`konoma-orthogonal`: a multi-way merge's edges could enter from ambiguous or wrong faces, and
+  the outermost port could sit flush on the node's own corner.** A merge whose source shared a row
+  with an unrelated sibling node could never find a clear two-bend route into its target's flow
+  axis face (the search was scoped to protect a busy branch source from a search that never
+  applies to a merge), so it fell back to an inconsistent cross-axis exit built from stale,
+  pre-layout waypoints — entering from an ambiguous direction and crossing unrelated lines on the
+  way. Separately, a node's growth-to-fit-its-ports math assumed a symmetric port spread, so an
+  asymmetric one (the common case once a straight-through edge claims the centre slot) undercounted
+  the room needed and left the outermost port with no clearance from the corner. Every edge into a
+  multi-way merge target now reaches that target's flow axis face through an extended column-gap
+  search, with a local-nudge fallback for a merge whose row is genuinely blocked, and node growth
+  now accounts for the widest port offset actually used rather than assuming symmetry. A related fan
+  reordering rule (previously three-way fans and up only) now also applies to a plain two-way fan, so
+  a two-child branch orders the same way a larger one does. New invariants ("a multi-way merge is
+  never entered from its top/bottom face"; "sibling edges into the same merge target never cross")
+  guard the whole corpus.
+- **`konoma-orthogonal`: an edge could leave its own node from the wrong spot (a corner, not its
+  assigned port), and a multi-way merge could split two same-side siblings across the centre
+  line.** Local obstacle avoidance (dodging a foreign node in the way) slid a route's shared
+  coordinate to clear it, including the pinned port itself at either end — visually, the line
+  appeared detached from its own node. Separately, port eviction re-centred the one straight
+  (bend-free) claim on a face by physically moving it to the claims list's own geometric middle
+  index, which could drag a same-side sibling across the centre line along the way, folding a
+  genuinely below-centre port above it. A pinned port and its immediate perpendicular-exit
+  neighbour never move now — avoidance adds a short stub-then-bend detour past the obstacle
+  instead; and the straight claim anchors at its own natural sorted position rather than being
+  spliced into the array's centre, so a same-side sibling can never be dragged across the line. New
+  invariants pin both fixes against the real sample diagram; a mutation of either check is caught.
 
 ## [0.28.3] - 2026-09-01
 

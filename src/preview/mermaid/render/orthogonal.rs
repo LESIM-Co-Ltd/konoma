@@ -1402,8 +1402,8 @@ fn clear_local_route(
 ) -> Vec<Point> {
     const MAX_PASSES: usize = 4;
     for _ in 0..MAX_PASSES {
-        let mut fix: Option<(f64, f64, bool)> = None; // (old constant coord, new one, horizontal?)
-        'search: for w in points.windows(2) {
+        let mut fix: Option<LocalFix> = None;
+        'search: for (i, w) in points.windows(2).enumerate() {
             let (a, b) = (&w[0], &w[1]);
             let horizontal = (a.y - b.y).abs() < EPS;
             let vertical = (a.x - b.x).abs() < EPS;
@@ -1415,40 +1415,182 @@ fn clear_local_route(
                     continue;
                 }
                 if segment_crosses_node(a, b, n) {
-                    let (l, t, r, bo) = n.bounds();
-                    fix = Some(if horizontal {
-                        let y = a.y;
-                        let new_y = if y <= (t + bo) / 2.0 {
-                            t - COLLISION_MARGIN - 1.0
-                        } else {
-                            bo + COLLISION_MARGIN + 1.0
-                        };
-                        (y, new_y, true)
-                    } else {
-                        let x = a.x;
-                        let new_x = if x <= (l + r) / 2.0 {
-                            l - COLLISION_MARGIN - 1.0
-                        } else {
-                            r + COLLISION_MARGIN + 1.0
-                        };
-                        (x, new_x, false)
-                    });
+                    fix = Some(local_fix(&points, i, a, b, horizontal, n));
                     break 'search;
                 }
             }
         }
-        let Some((old_c, new_c, horizontal)) = fix else {
+        let Some(f) = fix else {
             break;
         };
-        for p in &mut points {
-            if horizontal && (p.y - old_c).abs() < EPS {
-                p.y = new_c;
-            } else if !horizontal && (p.x - old_c).abs() < EPS {
-                p.x = new_c;
-            }
-        }
+        apply_local_nudge(&mut points, &f);
     }
     points
+}
+
+/// One already-found local nudge: `old_c`/`new_c`/`horizontal` are [`apply_local_nudge`]'s plain
+/// "slide every point on `old_c` to `new_c`" instruction, same as before §10-3 item 13's own fix;
+/// `port_stub`, when set, is that fix's own §10-3 item 13 correction — see [`local_fix`]'s doc.
+struct LocalFix {
+    old_c: f64,
+    new_c: f64,
+    horizontal: bool,
+    port_stub: Option<PortStub>,
+}
+
+/// §10-3 item 13's own "曲げを足す" correction for a flagged crossing that starts or ends *at* a
+/// port: which port (`points[0]` when `at_start`, `points[last]` otherwise) and the coordinate,
+/// along the leg's own *original* axis, of the safe jog point — where the leg can still leave the
+/// port in its own correctly-assigned perpendicular direction for a short distance before turning
+/// onto the avoided line, rather than either moving the port ([`apply_local_nudge`]'s own exclusion
+/// of `points[0]`/`points[last]`) or turning immediately at it (breaking §10-1 item 1's "出入りは常
+/// に辺へ垂直" — the very defect an earlier draft of this fix had, caught by `assert_endpoints_sit_
+/// outside_and_perpendicular` failing on real corpus fixtures once this module's own tests ran).
+struct PortStub {
+    at_start: bool,
+    stub_other: f64,
+}
+
+/// Builds the [`LocalFix`] for one already-found crossing (`clear_local_route`'s own search loop,
+/// window `i`, already known to cross `n`): the same "which side of `n` to slide the shared
+/// coordinate to" §10-1 item 1's local remediation always used, plus — new for §10-3 item 13 — a
+/// [`PortStub`] when this window is the route's own first or last leg (a genuine port), computed
+/// the identical way: which side of `n`, along the leg's *own* travel axis this time, the port can
+/// still safely reach before the node gets in the way. `dir` (which way the leg was already
+/// travelling) picks the correct side — a leg travelling in the increasing direction needs its stub
+/// *before* `n`'s own near edge; one travelling the other way needs it before `n`'s own far edge —
+/// the same `<=`/`>` split [`clear_local_route`]'s longstanding `old_c`/`new_c` choice already makes
+/// for the perpendicular axis, mirrored onto this one.
+fn local_fix(
+    points: &[Point],
+    i: usize,
+    a: &Point,
+    b: &Point,
+    horizontal: bool,
+    n: &PlacedNode,
+) -> LocalFix {
+    let (l, t, r, bo) = n.bounds();
+    let (old_c, new_c) = if horizontal {
+        let y = a.y;
+        let new_y = if y <= (t + bo) / 2.0 {
+            t - COLLISION_MARGIN - 1.0
+        } else {
+            bo + COLLISION_MARGIN + 1.0
+        };
+        (y, new_y)
+    } else {
+        let x = a.x;
+        let new_x = if x <= (l + r) / 2.0 {
+            l - COLLISION_MARGIN - 1.0
+        } else {
+            r + COLLISION_MARGIN + 1.0
+        };
+        (x, new_x)
+    };
+
+    let at_start = i == 0;
+    let at_end = i + 2 == points.len();
+    // A route with exactly two points (both ends ports, one straight leg between them) makes
+    // `at_start` and `at_end` the very same window — this module's own `route_with_ports` never
+    // calls `clear_local_route` on a route that short (every caller here builds at least four
+    // points, `local_fix`'s own doc), so this is defensive only: a single stub cannot correctly
+    // clear an obstacle sitting between *two* pinned ports (that needs a stub on both sides of
+    // it, not one), so this leaves the fix's own "slide everything except the two ports" behaviour
+    // (`apply_local_nudge`'s own doc) to do what it can rather than build a one-sided stub that
+    // would not actually clear the obstacle.
+    let port_stub = (at_start ^ at_end).then(|| {
+        // The leg's own travel direction along its *other* (unshifted) axis, in the window's own
+        // declared `a -> b` sense. `dir >= 0.0` means the polyline was already moving in the
+        // increasing direction through this exact segment. Which side of `n` the stub belongs on
+        // then depends on *which* end this is: `at_start`'s own stub is the port's own outward
+        // leg, so it has to stop on the *near* side of `n` (the side the port itself faces) before
+        // ever reaching it; `at_end`'s own stub is the inward leg arriving *at* the port, so it has
+        // to already be past `n`, on the *far* side (`n`'s own far edge is the near side reached
+        // travelling the opposite way) — the two are mirror images of the same "which edge of `n`
+        // do I reach first from here" question, not the same answer.
+        let dir = if horizontal { b.x - a.x } else { b.y - a.y };
+        let near_side = if at_start { dir >= 0.0 } else { dir < 0.0 };
+        let stub_other = if horizontal {
+            if near_side {
+                l - COLLISION_MARGIN - 1.0
+            } else {
+                r + COLLISION_MARGIN + 1.0
+            }
+        } else if near_side {
+            t - COLLISION_MARGIN - 1.0
+        } else {
+            bo + COLLISION_MARGIN + 1.0
+        };
+        PortStub {
+            at_start,
+            stub_other,
+        }
+    });
+    LocalFix {
+        old_c,
+        new_c,
+        horizontal,
+        port_stub,
+    }
+}
+
+/// [`clear_local_route`]'s own "apply the fix" step: every point sharing the flagged run's own
+/// constant coordinate (`f.old_c`) slides to `f.new_c` together, same as before §10-3 item 13's own
+/// fix, except `points[0]`/`points[last]` — the route's own two ports, pinned to the exact slot
+/// [`evict`] assigned them — which never move.
+///
+/// When the flagged run touches a port (`f.port_stub`), a plain slide of everything else would
+/// leave that port's own immediate neighbour on the *new* coordinate while the port itself stayed
+/// on the *old* one — a diagonal leg, or (an earlier draft's own bug, `PortStub`'s own doc) a leg
+/// bent at the port instead of past it. The constructive fix splices two extra points in beside the
+/// port instead: it keeps leaving/entering in its own correctly-assigned perpendicular direction
+/// for a short stub (`f.port_stub`'s own `stub_other`, chosen clear of the very node this fix is
+/// avoiding), *then* turns onto the shifted line — "曲げを足す", never a slide through the port
+/// itself (`docs/FEATURE-MERMAID-RENDERER.md` §10-3 item 13's own motivating report: `ページ描画→
+/// ラスタライズ`'s exit stub, displaced by `数式`'s own box sitting in the same pass-through row,
+/// used to read as growing from `ページ描画`'s own corner instead of its assigned port).
+fn apply_local_nudge(points: &mut Vec<Point>, f: &LocalFix) {
+    let last = points.len() - 1;
+    for (idx, p) in points.iter_mut().enumerate() {
+        if idx == 0 || idx == last {
+            continue; // ports never move.
+        }
+        if f.horizontal && (p.y - f.old_c).abs() < EPS {
+            p.y = f.new_c;
+        } else if !f.horizontal && (p.x - f.old_c).abs() < EPS {
+            p.x = f.new_c;
+        }
+    }
+
+    let Some(stub) = &f.port_stub else { return };
+    if stub.at_start {
+        let (on_old, on_new) = if f.horizontal {
+            (
+                Point::new(stub.stub_other, f.old_c),
+                Point::new(stub.stub_other, f.new_c),
+            )
+        } else {
+            (
+                Point::new(f.old_c, stub.stub_other),
+                Point::new(f.new_c, stub.stub_other),
+            )
+        };
+        points.splice(1..1, [on_old, on_new]);
+    } else {
+        let last = points.len() - 1;
+        let (on_new, on_old) = if f.horizontal {
+            (
+                Point::new(stub.stub_other, f.new_c),
+                Point::new(stub.stub_other, f.old_c),
+            )
+        } else {
+            (
+                Point::new(f.new_c, stub.stub_other),
+                Point::new(f.old_c, stub.stub_other),
+            )
+        };
+        points.splice(last..last, [on_new, on_old]);
+    }
 }
 
 /// [`clear_local_route`]'s own mechanism, run against the opposite pair: `source`'s and `target`'s
@@ -1469,6 +1611,18 @@ fn clear_self_puncture(
     source: &PlacedNode,
     target: &PlacedNode,
 ) -> Vec<Point> {
+    // §10-3 item 13's own "ポートは動かさない" is scoped to `clear_local_route`'s own forward-edge
+    // callers (`route_with_ports`'s `staircase`/`rank_lane_bend` branches — the reported bug's own
+    // route shapes, `local_fix`'s own doc). A back edge's own return leg genuinely can need to
+    // slide *through* a coordinate one of its own two ports also sits at (found on the `branch`
+    // corpus fixture's `D -> B`: `regroup_fan_lanes` moved `D` close enough under `B` that both
+    // ends' independently-evicted ports land on the exact same x, and the return ring's own local
+    // fix has no way to clear `D`'s box without touching that shared coordinate) — a case §10-3
+    // item 13 was not written against and this task does not extend to (`docs/STATUS.md`'s own
+    // ★未修正 carries this residual: the fixed geometry still clears every node, `assert_no_edge_
+    // crosses_its_own_endpoint` stays green, but neither port's exact eviction slot is pinned here
+    // the way `clear_local_route`'s now is). Left as the same plain "every point sharing this
+    // coordinate slides together" sweep it always was.
     const MAX_PASSES: usize = 4;
     for _ in 0..MAX_PASSES {
         let mut fix: Option<(f64, f64, bool)> = None; // (old constant coord, new one, horizontal?)
@@ -2070,31 +2224,46 @@ fn evict(
         // sharing a face — not reachable from any real flowchart, since it needs two different
         // nodes at the same cross coordinate as this one; a face can never carry two distinct chain
         // edges either, since `align_straight_lanes` selects at most one outgoing/incoming chain
-        // edge per node), only the first is moved; the rest keep their sorted position like any
-        // other claim.
+        // edge per node), only the first (in sort order) is treated as the anchor; the rest keep
+        // their sorted position like any other claim.
         // `anchor`, when set, is the slot index that must sit at exactly `offset == 0.0` — the
         // face's own centre coordinate, un-nudged — because an aligned/trunk claim lives there.
-        // For odd `n` this is the same index the symmetric "(i - (n-1)/2)" grid already put at
-        // offset 0, so nothing below changes for the odd case. For *even* `n` the two differ: the
-        // symmetric grid has no slot at offset 0 at all (its two middle slots sit at
-        // ±`PORT_SPACING`/2, this comment's own predecessor above), so an aligned/trunk claim
-        // placed at `center_idx` by the block below would still draw a bend even though `classify`
-        // called it zero-bend — `3a`'s own ten-way fan (`docs/mermaid-theme/handoff/round3-Konoma-
-        // Flowchart-Routing.dc.html`) is exactly this even-`n` case, and its own reference ports
-        // (`-80,-64,…,0,…,64`) are spaced from the trunk's own slot outward, not from the array's
-        // midpoint — confirming the grid has to anchor on *whichever slot the trunk claim ends up
-        // in*, not on the claim list's own geometric centre index.
-        let anchor = claims
-            .iter()
-            .position(|c| c.aligned || c.trunk)
-            .map(|aligned_pos| {
-                let center_idx = (((n - 1) as f64) / 2.0).round() as usize;
-                if aligned_pos != center_idx {
-                    let claim = claims.remove(aligned_pos);
-                    claims.insert(center_idx, claim);
-                }
-                center_idx
-            });
+        //
+        // §10-3 item 12's own fix (`docs/FEATURE-MERMAID-RENDERER.md`, "面のポートは相手の側で配る"):
+        // this used to *move* the aligned/trunk claim from wherever it naturally sorted to an
+        // array-symmetric `center_idx` (`claims.remove(aligned_pos); claims.insert(center_idx, ..)`)
+        // — but `claims` is already sorted by `other_cross` (rule 1's own "もう一方の端点のcross座標
+        // 順"), so every claim *before* the anchor in that order is genuinely on one side of the
+        // face's own centre and every claim *after* it is genuinely on the other (the sort key and
+        // the centre-side test are the same axis). Splicing the anchor into a *different* index
+        // physically swaps other claims across that boundary — `セルに合わせる`'s real 3-way merge
+        // (`docs/STATUS.md`'s own ★未修正 entry) is exactly this: naturally sorted
+        // `[幹, デコード, キーフレーム]` (幹's own other-end sits almost exactly on the face centre,
+        // both siblings genuinely below it), `center_idx = round((3-1)/2) = 1` forces 幹 from index 0
+        // to index 1, which drags デコード down into index 0 along the way — its offset flips from
+        // the `+16` its true side calls for to `-16`, folding it back above centre right next to the
+        // face's own left edge (the reported "line grows from the wrong corner" bug's own sibling
+        // symptom: a below-centre port drawn above centre). Anchoring on the claim's own *natural*
+        // sorted position instead — no splice — keeps every other claim exactly where the sort
+        // already put it relative to the anchor, so a same-side sibling can never cross to the other
+        // side: デコード and キーフレーム both land after 幹, at `+16`/`+32`, matching `3a`'s own
+        // `338`/`354` (centre `322`) exactly.
+        //
+        // This does not regress the even-`n` fan-centring case the removed splice was originally
+        // written for (`3a`'s own ten-way fanout, referenced below): that geometry is engineered
+        // upstream, at layout time, by `mod.rs::regroup_fan_lanes`, which places the trunk's own
+        // *node* at the fan's array-centre index before dagre ever runs — so by the time this
+        // function's own sort runs, the trunk's `other_cross` is already the fan's own natural
+        // sorted middle, and anchoring on its natural position lands it at offset 0 regardless (the
+        // two ends coincide for every corpus/regression fixture this module pins — `an_aligned_
+        // edge_keeps_the_centre_port_and_siblings_move_outward`,
+        // `regroup_fan_lanes_groups_by_colour_centres_the_trunk_and_pushes_classless_outermost`,
+        // `orthogonal_settings_rules_sample_fan_column_matches_3a_and_spine_is_all_zero_bend` all
+        // still pass unchanged). A `trunk` claim whose own geometry never collapsed onto the centre
+        // at all (`a_chain_selected_trunk_keeps_the_centre_port_even_when_geometry_never_aligned_it`)
+        // still gets forced to offset 0 — anchoring is still unconditional — it just no longer drags
+        // its natural neighbours across the centre line to make room.
+        let anchor = claims.iter().position(|c| c.aligned || c.trunk);
 
         // §10-3 item 10's own retreat-rule fix: the widest offset actually handed out below, on
         // *either* side of the face's own centre — plain `|offset|`, tracked as the loop goes so
@@ -5529,6 +5698,145 @@ mod tests {
             assert!(
                 !segment_crosses_node(&w[0], &w[1], &b2),
                 "segment {w:?} must not cross B2: {pts:?}"
+            );
+        }
+    }
+
+    // --- §10-3 item 13: ports never move under local obstacle avoidance ------------------------
+
+    /// §10-3 item 13's own motivating report (`docs/FEATURE-MERMAID-RENDERER.md`,
+    /// `ページ描画→ラスタライズ`): a hand-built four-point route (the same shape
+    /// `route_with_ports`'s `rank_lane_bend` branch always builds — a port, `bend_at`'s own two
+    /// interior points, and the other port) whose *exit* stub (the very first segment) runs
+    /// straight through `OBSTACLE`, sitting directly in `A`'s own row. Before this fix,
+    /// `clear_local_route`'s blind "every point sharing this coordinate slides together" dragged
+    /// `A`'s own port along with the rest of the run, off the exact face slot `evict` assigned it.
+    #[test]
+    fn clear_local_route_keeps_the_exit_port_pinned_and_still_clears_the_obstacle() {
+        let a = node("A", 0.0, 100.0, 80.0, 40.0);
+        let b = node("B", 400.0, 300.0, 80.0, 40.0);
+        let obstacle = node("OBSTACLE", 120.0, 100.0, 80.0, 40.0);
+        let nodes = vec![a.clone(), b.clone(), obstacle.clone()];
+
+        let port_a = port_at(
+            &a,
+            Side::Right,
+            face_center_coord(&a, Side::Right),
+            PORT_INSET,
+        );
+        let port_b = port_at(
+            &b,
+            Side::Left,
+            face_center_coord(&b, Side::Left),
+            PORT_INSET,
+        );
+        let bend_flow = 200.0;
+        let mut points = vec![port_a.clone()];
+        points.extend(bend_at(Direction::LeftToRight, bend_flow, &port_a, &port_b));
+        // The exit leg (port_a -> the first bend point) genuinely crosses OBSTACLE — confirms the
+        // fixture actually exercises the fix rather than passing vacuously.
+        assert!(
+            segment_crosses_node(&points[0], &points[1], &obstacle),
+            "fixture must genuinely cross OBSTACLE before the fix runs: {points:?}"
+        );
+
+        let fixed = clear_local_route(points, &nodes, (a.id.as_str(), b.id.as_str()));
+
+        assert_eq!(
+            fixed[0], port_a,
+            "A's own port must stay exactly on its assigned face slot: {fixed:?}"
+        );
+        assert_eq!(
+            *fixed.last().unwrap(),
+            port_b,
+            "B's own port must stay exactly on its assigned face slot: {fixed:?}"
+        );
+        assert!(
+            (fixed[0].y - fixed[1].y).abs() < EPS && (fixed[0].x - fixed[1].x).abs() > EPS,
+            "A must still leave its own Right face horizontally (perpendicular exit, §10-1 item \
+             1): {fixed:?}"
+        );
+        for w in fixed.windows(2) {
+            let (dx, dy) = ((w[1].x - w[0].x).abs(), (w[1].y - w[0].y).abs());
+            assert!(
+                dx < EPS || dy < EPS,
+                "every segment must stay axis-parallel: {w:?} in {fixed:?}"
+            );
+            assert!(
+                !segment_crosses_node(&w[0], &w[1], &obstacle),
+                "the fixed route must still clear OBSTACLE: {w:?} in {fixed:?}"
+            );
+        }
+    }
+
+    /// The mirror image of the test above: the *entry* leg (the last segment, arriving at `B`'s
+    /// own port) is the one that crosses `OBSTACLE` this time, not the exit leg. Pins that
+    /// [`local_fix`]'s own near/far side selection for [`PortStub`] is not just a copy of the exit
+    /// case's formula (an earlier draft used the same near-side choice for both ends, which built
+    /// an entry stub that still ran straight through the obstacle on its way into the port — see
+    /// `PortStub`'s own doc for why the two ends are mirror images, not the same answer).
+    #[test]
+    fn clear_local_route_keeps_the_entry_port_pinned_and_still_clears_the_obstacle() {
+        let a = node("A", 0.0, 100.0, 80.0, 40.0);
+        let b = node("B", 400.0, 300.0, 80.0, 40.0);
+        let obstacle = node("OBSTACLE", 280.0, 300.0, 80.0, 40.0);
+        let nodes = vec![a.clone(), b.clone(), obstacle.clone()];
+
+        let port_a = port_at(
+            &a,
+            Side::Right,
+            face_center_coord(&a, Side::Right),
+            PORT_INSET,
+        );
+        let port_b = port_at(
+            &b,
+            Side::Left,
+            face_center_coord(&b, Side::Left),
+            PORT_INSET,
+        );
+        let bend_flow = 200.0;
+        let mut points = vec![port_a.clone()];
+        points.extend(bend_at(Direction::LeftToRight, bend_flow, &port_a, &port_b));
+        let last = points.len() - 1;
+        // The entry leg (the last bend point -> port_b) genuinely crosses OBSTACLE; the exit leg
+        // does not (OBSTACLE sits on B's own row, not A's).
+        assert!(
+            segment_crosses_node(&points[last - 1], &points[last], &obstacle),
+            "fixture must genuinely cross OBSTACLE before the fix runs: {points:?}"
+        );
+        assert!(
+            !segment_crosses_node(&points[0], &points[1], &obstacle),
+            "fixture's own exit leg must NOT cross OBSTACLE (isolates the entry-leg case): \
+             {points:?}"
+        );
+
+        let fixed = clear_local_route(points, &nodes, (a.id.as_str(), b.id.as_str()));
+
+        assert_eq!(
+            fixed[0], port_a,
+            "A's own port must stay exactly on its assigned face slot: {fixed:?}"
+        );
+        assert_eq!(
+            *fixed.last().unwrap(),
+            port_b,
+            "B's own port must stay exactly on its assigned face slot: {fixed:?}"
+        );
+        let n = fixed.len();
+        assert!(
+            (fixed[n - 1].y - fixed[n - 2].y).abs() < EPS
+                && (fixed[n - 1].x - fixed[n - 2].x).abs() > EPS,
+            "B must still be entered horizontally on its own Left face (perpendicular entry, \
+             §10-1 item 1): {fixed:?}"
+        );
+        for w in fixed.windows(2) {
+            let (dx, dy) = ((w[1].x - w[0].x).abs(), (w[1].y - w[0].y).abs());
+            assert!(
+                dx < EPS || dy < EPS,
+                "every segment must stay axis-parallel: {w:?} in {fixed:?}"
+            );
+            assert!(
+                !segment_crosses_node(&w[0], &w[1], &obstacle),
+                "the fixed route must still clear OBSTACLE: {w:?} in {fixed:?}"
             );
         }
     }

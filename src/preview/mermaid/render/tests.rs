@@ -5040,6 +5040,10 @@ fn orthogonal_aligned_edge_is_a_straight_two_point_line() {
 /// around it); its one competitor is pushed out to a full `PORT_SPACING = 16px` instead of half
 /// of it, since the whole grid is now anchored one slot further out than the old symmetric one
 /// was. Dumped and confirmed by hand, not assumed.
+///
+/// The merge case's own competitor (`B->C`) now lands on whichever side of `C`'s centre `B`
+/// genuinely sits on (§10-3 item 12) rather than wherever an array-symmetric re-splice happened to
+/// put it — see the assertion below for the concrete side.
 #[test]
 fn orthogonal_branch_and_merge_edges_share_a_face_one_aligned_one_bends_twice() {
     let branch = laid_out_flow(
@@ -5107,7 +5111,13 @@ fn orthogonal_branch_and_merge_edges_share_a_face_one_aligned_one_bends_twice() 
         "B->C must bend twice: {:?}",
         bc2.points
     );
-    // A->C enters dead on C's own centre; B->C is pushed a full PORT_SPACING off it.
+    // A->C enters dead on C's own centre; B->C is pushed a full PORT_SPACING off it, on
+    // *whichever side B genuinely sits on* (§10-3 item 12, `orthogonal::evict`'s own doc on
+    // `anchor`): B sits below A/C here (dumped: B.center.y = 101.4 > C.center.y = 32.0), so B->C's
+    // port belongs *below* C's centre, not above it. The pre-item-12 `evict` forced the aligned
+    // claim into the claims array's own geometric middle index regardless of where it naturally
+    // sorted, which could drag a genuinely-below sibling like this one above centre instead — this
+    // assertion used to pin that wrong side; item 12's fix is what corrected it.
     let ac_entry_y = ac.points.last().unwrap().y;
     let bc2_entry_y = bc2.points.last().unwrap().y;
     assert!(
@@ -5116,8 +5126,8 @@ fn orthogonal_branch_and_merge_edges_share_a_face_one_aligned_one_bends_twice() 
         c_node.center.y
     );
     assert!(
-        (bc2_entry_y - (c_node.center.y - orthogonal::PORT_SPACING)).abs() < 1e-6,
-        "B->C enters PORT_SPACING above C's centre: {bc2_entry_y} vs {}",
+        (bc2_entry_y - (c_node.center.y + orthogonal::PORT_SPACING)).abs() < 1e-6,
+        "B->C enters PORT_SPACING below C's centre (B genuinely sits below C): {bc2_entry_y} vs {}",
         c_node.center.y
     );
 }
@@ -5522,9 +5532,20 @@ fn attr<'a>(haystack: &'a str, attr: &str) -> Option<&'a str> {
 /// rides the *flow*-axis face, not the cross-axis one this fixture originally exercised — for `TD`
 /// that is Top/Bottom, so `A->Z` (aligned) and every one of `B->Z`..`I->Z` (ordinary merges) all
 /// land on `Z`'s single Top face together, dumped and confirmed (all nine share the exact same
-/// `y`), not assumed — `Z`'s Left/Right faces go entirely unused. That makes the busiest face's
-/// requirement a WIDTH one now, `(9-1)*16 + 2*8 = 144px` (nine ports, the aligned edge included —
-/// eviction's own `required_flat` counts every claim on the face, not only the non-aligned ones).
+/// `y`), not assumed — `Z`'s Left/Right faces go entirely unused.
+///
+/// §10-3 item 12's own "面のポートは相手の側で配る" (`docs/FEATURE-MERMAID-RENDERER.md`) decides how
+/// wide: `A` is not the fan's own geometric centre here, it is dagre's own *leftmost* candidate
+/// (this test's own doc, above — `align_straight_lanes`'s "タイは上・左優先" tie-break, not
+/// `mod.rs::regroup_fan_lanes`, which only rearranges a *source's* own fan-out, never a merge
+/// target's incoming claims). Dumped and confirmed: every one of `B`..`I` sits to `A`'s own right,
+/// so all eight non-aligned claims land on the *same* side of `Z`'s centre — item 12's own "ノード
+/// は大きい側に合わせて中心対称に拡大" still grows the box symmetrically around that centre even
+/// though the near side carries nothing, `(8)*16 + 2*8 = 144px` of *reach* on the busy side alone
+/// (the widest single offset any port sits at, `8 * PORT_SPACING = 128px`), doubled for the
+/// symmetric grow: `2 * (128 + 8) = 272px`. Wider than a naïve "eight ports, `(9-1)*16 + 2*8`"
+/// count would suggest, because that count implicitly assumes an even split across both sides —
+/// item 12 does not force one when the geometry genuinely is not.
 #[test]
 fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
     let src = "flowchart TD\n  A --> Z\n  B --> Z\n  C --> Z\n  D --> Z\n  E --> Z\n  \
@@ -5539,17 +5560,13 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
 
     let ortho = laid_out_flow(src, "basis", "konoma-orthogonal");
     let z_ortho = ortho.node("Z").expect("Z must exist");
-    // §10-3 item 3's own correction (this test's doc, and `classify`'s own comment on
-    // `merge_target_side`): a merge target now always uses the *flow*-axis face (`3a`'s own
-    // reference confirmed it against `2b`/`2c`'s illustrated merges too), not the cross-axis one
-    // this test originally pinned. For `TD`, the flow axis is vertical, so all nine edges
-    // (`A->Z` aligned plus the eight ordinary merges `B->Z`..`I->Z`) land on the same face — `Z`'s
-    // Top — and the busiest face's requirement is now a WIDTH one: `(9-1)*16 + 2*8 = 144px`
-    // (nine ports total, not eight — the aligned edge takes a claim on the same face too).
+    // §10-3 items 3 and 12 (this test's own doc): all nine edges land on Z's Top face, and `A`
+    // (dagre's own leftmost pick, not the fan's centre) anchors at offset 0 with all eight
+    // remaining claims genuinely on its right — `2 * (8 * PORT_SPACING + PORT_CLEARANCE) = 272px`.
     assert_eq!(
-        z_ortho.size.w, 144.0,
-        "Z's width must grow to exactly (9-1)*16 + 2*8 = 144px — the busiest (Top) face's own \
-         requirement, now that a merge target rides the flow axis"
+        z_ortho.size.w, 272.0,
+        "Z's width must grow to exactly 2 * (8*PORT_SPACING + PORT_CLEARANCE) = 272px — item 12's \
+         own symmetric grow around a genuinely one-sided fan"
     );
     // Height is untouched: nothing asked Z's Left/Right faces to grow at all any more.
     assert_eq!(
@@ -5594,20 +5611,27 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
     assert_eq!(top_xs.len(), 9, "all nine edges must share Z's Top face");
 
     top_xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    // 16px apart, symmetric about Z's own centre (the aligned A->Z takes the exact centre slot).
+    // 16px apart, but — §10-3 item 12 — one-sided, not symmetric about Z's own centre: `A`'s own
+    // aligned claim (offset 0) sits *at* the centre, and every one of `B`..`I` genuinely sits to
+    // its right, so the whole nine-port run occupies only the right half of the grown face.
     for w in top_xs.windows(2) {
         assert!(
             (w[1] - w[0] - orthogonal::PORT_SPACING).abs() < 1e-6,
             "ports on one face must be exactly 16px apart: {top_xs:?}"
         );
     }
-    let mid = (top_xs[0] + top_xs[8]) / 2.0;
     assert!(
-        (mid - z_ortho.center.x).abs() < 1e-6,
-        "nine ports must be symmetric about the face's own centre: {top_xs:?} vs {}",
+        (top_xs[0] - z_ortho.center.x).abs() < 1e-6,
+        "the aligned A->Z takes the exact centre slot, the run's own leftmost port: {top_xs:?} vs {}",
         z_ortho.center.x
     );
-    // Every port at least PORT_CLEARANCE from a corner.
+    assert!(
+        (top_xs[8] - (z_ortho.center.x + 8.0 * orthogonal::PORT_SPACING)).abs() < 1e-6,
+        "the run's own rightmost port sits 8*PORT_SPACING right of centre: {top_xs:?} vs {}",
+        z_ortho.center.x
+    );
+    // The box itself still grows symmetrically about the centre (item 12's own "中心対称に拡大") —
+    // clearance on the *unused* left side of the face matches the busy right side's own reach.
     let half_w = z_ortho.size.w / 2.0;
     for &x in top_xs.iter() {
         let from_center = (x - z_ortho.center.x).abs();
@@ -5628,20 +5652,34 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
     );
 }
 
-/// A face with room to spare must not grow — the other half of the growth test above. `Z` here
-/// receives only two edges, both merges landing on its Left face (`B` and `C`, both left of `Z`);
-/// two ports need `(2-1)*16 + 2*8 = 32px`, well inside `Z`'s natural 45.4px height, so nothing
-/// about `Z`'s size may differ between `"splines"` and `"konoma-orthogonal"`.
+/// A three-way merge whose own claims genuinely need more room than `Z`'s natural width — §10-3
+/// items 3 and 12 (`docs/FEATURE-MERMAID-RENDERER.md`): `A --> Z` is aligned (`A.center.x ==
+/// Z.center.x`, dumped) and lands on `Z`'s Top face at offset 0; `B` and `C` both genuinely sit to
+/// `Z`'s right (`B.center.x = 141.3`, `C.center.x = 235.1`, both past `Z.center.x = 48.0`), so
+/// item 12 puts both non-aligned claims on the same (right) side rather than splitting them across
+/// the centre — `+16`/`+32`. `required_flat = 2 * (2*PORT_SPACING + PORT_CLEARANCE) = 80px`, wider
+/// than `Z`'s own natural (splines) width of ~68.55px, so `Z` must grow. Before item 12's fix this
+/// fixture's own name ("a face with room to spare must not grow") held — the old array-symmetric
+/// grid split the two non-aligned claims onto opposite sides of `Z`'s centre (`-16`/`+16`), whose
+/// narrower `max_abs_offset = 16` fit inside 68.55px without growing at all; that was the
+/// side-crossing bug (§10-3 item 12's own "同じ辺にn本つく…下から来る辺が中心より上のポートへ回り込
+/// む形は禁止"), not a genuinely roomy face.
 #[test]
-fn orthogonal_roomy_face_does_not_grow() {
+fn orthogonal_one_sided_merge_grows_to_fit_both_siblings_on_the_same_side() {
     let src = "flowchart TD\n  A --> Z\n  B --> Z\n  C --> Z";
     let splines = laid_out_curve(src, "basis");
     let ortho = laid_out_flow(src, "basis", "konoma-orthogonal");
     let z_splines = splines.node("Z").expect("Z must exist");
     let z_ortho = ortho.node("Z").expect("Z must exist");
     assert_eq!(
-        z_ortho.size, z_splines.size,
-        "a face that already fits its ports must leave the node exactly as it was"
+        z_ortho.size.w, 80.0,
+        "B and C both genuinely sit right of Z, so Z must grow to 2*(2*PORT_SPACING+PORT_CLEARANCE) \
+         = 80px to fit both on the same side: {:?} vs splines' natural {:?}",
+        z_ortho.size, z_splines.size
+    );
+    assert_eq!(
+        z_ortho.size.h, z_splines.size.h,
+        "no face asked Z's height to grow, so it must not have"
     );
 }
 
@@ -5976,15 +6014,19 @@ fn orthogonal_lane_alignment_never_leaves_nodes_overlapping() {
 /// all).
 ///
 /// [`orthogonal::evict`]'s own doc on `anchor` (§10-3's "ファン列内の並び順"/"幹7区間の曲げ0" work)
-/// is what decides the split here: two claims on `D`'s Top face (`B->D`, aligned, and `C->D`, not)
-/// is `n = 2`, `round((2-1)/2.0) = round(0.5) = 1` picks index 1 as the anchor slot the aligned
-/// claim moves into, and the whole port grid is anchored so *that* slot sits at exactly `offset ==
-/// 0.0` — the face's true centre — rather than the old symmetric grid's own midpoint (which had no
-/// slot at 0 for an even claim count at all). `B->D` is therefore a genuine straight, absorbed
-/// lane: a 2-point line entering dead on `D`'s own centre. `C->D`, its face-mate, is pushed a full
-/// `PORT_SPACING = 16px` off it (not half, as the old symmetric grid gave it) and still bends
-/// twice. Dumped and confirmed by hand (`B`'s and `C`'s own x, and both edges' full point lists),
-/// not assumed.
+/// is what decides the split here: two claims on `D`'s Top face (`B->D`, aligned, and `C->D`, not).
+/// `B->D`'s own natural sorted position already coincides with the face's own centre slot (its
+/// other end, `B`, sits almost exactly on `D`'s own x — dumped: `B.center.x = 43.055`,
+/// `D.center.x = 43.055`), so `B->D` is a genuine straight, absorbed lane: a 2-point line entering
+/// dead on `D`'s own centre. `C->D`, its face-mate, is pushed a full `PORT_SPACING = 16px` off
+/// it — §10-3 item 12's own "面のポートは相手の側で配る" decides *which* side: `C` sits well to `D`'s
+/// own right (dumped: `C.center.x = 89.917`, past `D.center.x`), so `C->D`'s port belongs to the
+/// right of `D`'s centre, not the left (a pre-item-12 `evict` used to force the aligned claim into
+/// the claims array's own geometric middle index regardless of its own natural sort position, which
+/// could drag `C->D` to the wrong side of centre purely as a side effect of that re-splice — the
+/// exact same mechanism item 12 fixed on the real `セルに合わせる` merge, `docs/STATUS.md`'s own
+/// ★未修正 entry). Still bends twice either way. Dumped and confirmed by hand (`B`'s and `C`'s own
+/// x, and both edges' full point lists), not assumed.
 #[test]
 fn orthogonal_shared_merge_target_face_one_aligned_one_bends_twice() {
     let src = "flowchart TD\n  A ---> B\n  A --> C\n  B --> D\n  C --> D";
@@ -6011,7 +6053,8 @@ fn orthogonal_shared_merge_target_face_one_aligned_one_bends_twice() {
     );
     assert_eq!(cd.points.len(), 4, "C->D must bend twice: {:?}", cd.points);
 
-    // B->D enters dead on D's own centre; C->D is pushed a full PORT_SPACING off it.
+    // B->D enters dead on D's own centre; C->D is pushed a full PORT_SPACING off it, to the
+    // *right* (C genuinely sits to D's right — see this test's own doc).
     let bd_entry_x = bd.points.last().unwrap().x;
     let cd_entry_x = cd.points.last().unwrap().x;
     assert!(
@@ -6020,8 +6063,9 @@ fn orthogonal_shared_merge_target_face_one_aligned_one_bends_twice() {
         d_node.center.x
     );
     assert!(
-        (cd_entry_x - (d_node.center.x - orthogonal::PORT_SPACING)).abs() < 1e-6,
-        "C->D enters PORT_SPACING left of D's centre: {cd_entry_x} vs {}",
+        (cd_entry_x - (d_node.center.x + orthogonal::PORT_SPACING)).abs() < 1e-6,
+        "C->D enters PORT_SPACING right of D's centre (C genuinely sits right of D): {cd_entry_x} \
+         vs {}",
         d_node.center.x
     );
 
@@ -6114,6 +6158,137 @@ fn orthogonal_settings_rules_sample_merge_target_entries_are_flow_axis_and_never
                 }
             }
         }
+    }
+}
+
+/// §10-3 item 12's own real motivating bug (`docs/FEATURE-MERMAID-RENDERER.md`, user report
+/// "セルに合わせるの3合流でポートが中心より上へ回り込む"): `FIT`(`セルに合わせる`)'s own three-way
+/// merge (`RS`(`ラスタライズ`, aligned — the trunk, offset 0), `IM`(`デコード`) and
+/// `VD`(`キーフレーム`), both genuinely below `FIT`'s own centre in this `LR` layout). Before item
+/// 12's fix, `evict`'s own array-symmetric re-splice moved the aligned claim from wherever it
+/// naturally sorted to the claims array's own geometric middle index, which could drag a
+/// same-side sibling across the centre line along the way — on this exact face, `RS` naturally
+/// sorts *first* (its own other end, `MM`/`mermaid`, sits almost exactly on `FIT`'s own centre) and
+/// `round((3-1)/2) = 1` used to force it to index 1, dragging `IM` down to index 0 and flipping its
+/// offset from the `+16` its true side calls for to `-16` — landing it *above* `FIT`'s centre even
+/// though `IM` genuinely sits below it, exactly the reported symptom. `3a`'s own reference geometry
+/// (`docs/mermaid-theme/handoff/round3-Konoma-Flowchart-Routing.dc.html`) confirms both non-trunk
+/// members land below centre (`338`/`354` against a centre of `322`), matching this test's own
+/// `+16`/`+32`.
+#[test]
+fn orthogonal_settings_rules_sample_fit_merge_keeps_same_side_siblings_on_the_same_side() {
+    let src = SETTINGS_RULES_SAMPLE;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let fit = d.node("FIT").expect("FIT (セルに合わせる) must exist");
+
+    let rs = d
+        .edges
+        .iter()
+        .find(|e| e.from == "RS" && e.to == "FIT")
+        .expect("RS->FIT (幹) must exist");
+    let im = d
+        .edges
+        .iter()
+        .find(|e| e.from == "IM" && e.to == "FIT")
+        .expect("IM->FIT (デコード) must exist");
+    let vd = d
+        .edges
+        .iter()
+        .find(|e| e.from == "VD" && e.to == "FIT")
+        .expect("VD->FIT (キーフレーム) must exist");
+
+    assert_eq!(
+        rs.points.len(),
+        2,
+        "RS->FIT is the trunk — a straight 2-point line entering exactly on FIT's own centre: {:?}",
+        rs.points
+    );
+    let rs_entry = rs.points.last().unwrap().y;
+    assert!(
+        (rs_entry - fit.center.y).abs() < 1e-6,
+        "RS->FIT (aligned) enters exactly on FIT's centre: {rs_entry} vs {}",
+        fit.center.y
+    );
+
+    let im_entry = im.points.last().unwrap().y;
+    let vd_entry = vd.points.last().unwrap().y;
+    assert!(
+        (im_entry - (fit.center.y + orthogonal::PORT_SPACING)).abs() < 1e-6,
+        "IM->FIT (デコード) enters PORT_SPACING BELOW FIT's centre — never above it, the reported \
+         side-crossing bug: {im_entry} vs {}",
+        fit.center.y
+    );
+    assert!(
+        (vd_entry - (fit.center.y + 2.0 * orthogonal::PORT_SPACING)).abs() < 1e-6,
+        "VD->FIT (キーフレーム) enters 2*PORT_SPACING below FIT's centre, on the SAME side as \
+         IM->FIT (both genuinely below centre): {vd_entry} vs {}",
+        fit.center.y
+    );
+
+    // FIT's own height grows symmetric to the *larger* side (item 12's own "ノードは大きい側に
+    // 合わせて中心対称に拡大") — 2 steps (IM, VD) reserved on both sides even though the near side
+    // carries no claim at all: 2*(2*PORT_SPACING + PORT_CLEARANCE) = 80px, matching `3a`'s own
+    // 高さ80 reference.
+    let expected_h = 2.0 * (2.0 * orthogonal::PORT_SPACING + orthogonal::PORT_CLEARANCE);
+    assert!(
+        (fit.size.h - expected_h).abs() < 1e-6,
+        "FIT's own height must be exactly 2*(2*PORT_SPACING+PORT_CLEARANCE) = {expected_h}px: got \
+         {}",
+        fit.size.h
+    );
+}
+
+/// §10-3 item 13's own real motivating bug (`docs/FEATURE-MERMAID-RENDERER.md`, user report "線が
+/// ページ描画のノードから出ていない・右上の角から生えて見える"): `PD`(`ページ描画`)'s own single
+/// out-edge to `RS`(`ラスタライズ`) used to have its exit stub dragged off `PD`'s own assigned Right
+/// face slot by `MA`(`数式`)'s box sitting in the same pass-through row — `clear_local_route`'s own
+/// blind "every point sharing the flagged coordinate slides together" moved the port along with the
+/// rest of the run. Pinned two ways: the port sits exactly on `PD`'s own vertical centre (its one
+/// and only claim on that face, so `evict` gives it offset 0), and the route genuinely still clears
+/// `MA`'s box (the bug this fix must not silently regress into "port stays put, line now crosses
+/// 数式 instead").
+#[test]
+fn orthogonal_settings_rules_sample_page_render_exit_stays_on_its_own_port() {
+    let src = SETTINGS_RULES_SAMPLE;
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let pd = d.node("PD").expect("PD (ページ描画) must exist");
+    let ma = d.node("MA").expect("MA (数式) must exist");
+    let pd_rs = d
+        .edges
+        .iter()
+        .find(|e| e.from == "PD" && e.to == "RS")
+        .expect("PD->RS must exist");
+
+    let exit = pd_rs.points.first().expect("PD->RS must have points");
+    let (_, t, r, bo) = pd.bounds();
+    assert!(
+        (exit.x - (r + orthogonal::PORT_INSET)).abs() < 1e-6,
+        "PD->RS must leave PD's own Right face, PORT_INSET outside it, not some other x: \
+         {exit:?} vs PD bounds {:?}",
+        pd.bounds()
+    );
+    assert!(
+        (exit.y - (t + bo) / 2.0).abs() < 1e-6,
+        "PD->RS's own exit port must sit exactly on PD's own vertical centre (PD's only claim on \
+         this face): {exit:?} vs PD bounds {:?}",
+        pd.bounds()
+    );
+    let second = &pd_rs.points[1];
+    assert!(
+        (exit.y - second.y).abs() < 1e-6 && (exit.x - second.x).abs() > 1e-6,
+        "PD must still leave its own Right face horizontally (perpendicular exit, §10-1 item 1), \
+         not turn immediately at the port: {:?}",
+        pd_rs.points
+    );
+
+    for w in pd_rs.points.windows(2) {
+        assert!(
+            !orthogonal::segment_crosses_node(&w[0], &w[1], ma),
+            "PD->RS must still clear MA (数式) even with its own port pinned: segment {w:?} in \
+             {:?}, MA bounds {:?}",
+            pd_rs.points,
+            ma.bounds()
+        );
     }
 }
 
@@ -6926,16 +7101,18 @@ fn split_at_gaps_ignores_a_gap_that_does_not_land_on_the_polyline() {
 /// uncoupled them from the perimeter lane's own 8px stagger — without
 /// `orthogonal::separate_coincident_detours`'s own fix they would land on the exact same vertical
 /// run; with it, `B->C`'s run is nudged 8px sideways, so the two now merely *cross* once (at one
-/// point) rather than coincide. Three crossings exist in this fixture, each with exactly one
-/// horizontal side (`segment_crossing`'s own contract): `A->C`'s horizontal line crosses `A->D`'s
-/// vertical run and, separately, `B->C`'s vertical run — `A->C` is the horizontal side of *both*,
-/// so it (not `A->D`/`B->C`) is the one cut twice; `A->D`'s own horizontal leg into `D` crosses
-/// `B->C`'s vertical run — `A->D` is the horizontal side there, so it carries the crossing's gap
-/// instead of `B->C`. Net: `A->C` carries two gap requests (close enough together, only 8px apart
-/// on this fixture's geometry, that the second's own start point falls inside the first's already-
-/// omitted stretch — `edges::split_at_gaps`'s own doc on a gap that does not land on a piece —
-/// so it still draws as only 2 pieces, not 3), `A->D` carries one, and `B->C`/`B->D`/`C->E` stay
-/// whole.
+/// point) rather than coincide.
+///
+/// **Re-dumped a second time (§10-3 item 12, "面のポートは相手の側で配る")**: `A->C` is `classify`'s
+/// own `aligned` shape — a straight 2-point line, structurally incapable of crossing anything — so
+/// it never carried the two gap requests this doc used to describe; the pre-item-12 `evict` was
+/// putting `A->D`'s and `B->C`'s own ports on the *wrong* side of their shared faces (an
+/// array-symmetric re-splice, not each edge's genuine side), which routed both of them back up
+/// through `A`'s own row and manufactured two spurious crossings against `A->C`'s line that
+/// shouldn't have existed at all. With ports on their true sides, only the one real crossing
+/// remains: `A->D`'s own horizontal leg into `D` crosses `B->C`'s vertical run — `A->D` is the
+/// horizontal side there (`segment_crossing`'s own contract), so it alone carries the gap; `A->C`,
+/// `B->C`, `B->D`, and `C->E` all stay whole.
 #[test]
 fn orthogonal_crossing_gaps_cut_the_horizontal_side_of_each_crossing() {
     let src = "flowchart LR\n  A & B --> C & D\n  C --> E";
@@ -6958,6 +7135,19 @@ fn orthogonal_crossing_gaps_cut_the_horizontal_side_of_each_crossing() {
     assert!(bc.gaps.is_empty(), "B->C must stay whole: {:?}", bc.gaps);
     assert!(bd.gaps.is_empty(), "B->D must stay whole: {:?}", bd.gaps);
     assert!(ce.gaps.is_empty(), "C->E crosses nothing: {:?}", ce.gaps);
+    assert_eq!(
+        ac.points.len(),
+        2,
+        "A->C is the aligned leg — a straight 2-point line, structurally unable to cross anything: \
+         {:?}",
+        ac.points
+    );
+    assert!(
+        ac.gaps.is_empty(),
+        "A->C must stay whole — item 12's own side fix removed the two spurious crossings this \
+         used to have against A->D/B->C's own (previously wrong-sided) ports: {:?}",
+        ac.gaps
+    );
 
     assert_eq!(
         ad.gaps.len(),
@@ -6965,13 +7155,6 @@ fn orthogonal_crossing_gaps_cut_the_horizontal_side_of_each_crossing() {
         "A->D must carry exactly one gap, from being the horizontal side of its crossing with \
          B->C's vertical run: {:?}",
         ad.gaps
-    );
-    assert_eq!(
-        ac.gaps.len(),
-        2,
-        "A->C must carry two gap requests: it is the horizontal side of both its crossing with \
-         A->D and its crossing with B->C: {:?}",
-        ac.gaps
     );
 
     // Every gap actually sits on its own edge's line, and removes exactly `CROSSING_GAP` px of
@@ -6987,7 +7170,7 @@ fn orthogonal_crossing_gaps_cut_the_horizontal_side_of_each_crossing() {
     // the next segment when it has to — which is exactly the case a same-segment / Euclidean check
     // cannot tell apart from an under-sized gap, since a corner-straddling gap's own two endpoints
     // are, correctly, less than `CROSSING_GAP` px of *straight-line* distance apart.
-    for e in [ad, ac] {
+    for e in [ad] {
         for (g0, g1) in &e.gaps {
             let arc = edges::arc_length_between(&e.points, g0, g1).unwrap_or_else(|| {
                 panic!(
@@ -7016,15 +7199,12 @@ fn orthogonal_crossing_gap_splits_the_svg_path_of_the_horizontal_side_only() {
         crate::preview::markdown::mermaid_to_svg_flow(src, "dark", "basis", "konoma-orthogonal")
             .expect("must render");
     let path_count = svg.matches("<path").count();
-    // `B->C`, `B->D`, `C->E` draw 1 path each (never cut); `A->D` — see
-    // `orthogonal_crossing_gaps_cut_the_horizontal_side_of_each_crossing`'s own doc — carries one
-    // gap (2 pieces); `A->C` carries two gap *requests* but the second's own start point falls
-    // inside the first's already-omitted stretch, so it still draws as only 2 pieces, not 3 —
-    // dumped and confirmed by hand: 3 + 2 + 2 = 7.
+    // `A->C`, `B->C`, `B->D`, `C->E` draw 1 path each (never cut, §10-3 item 12's own fix —
+    // `orthogonal_crossing_gaps_cut_the_horizontal_side_of_each_crossing`'s own doc); `A->D` alone
+    // carries one real gap (2 pieces): 4 + 2 = 6.
     assert_eq!(
-        path_count, 7,
-        "expected 3 uncut edges (1 path each) + A->D (2 pieces) + A->C (2 pieces) = 7: \
-         got {path_count}\n{svg}"
+        path_count, 6,
+        "expected 4 uncut edges (1 path each) + A->D (2 pieces) = 6: got {path_count}\n{svg}"
     );
 }
 
