@@ -532,6 +532,13 @@ fn is_flow_flow_bend(shape: &EdgeShape) -> bool {
     !shape.aligned && shape.source_axis == Axis::Flow && shape.target_axis == Axis::Flow
 }
 
+/// Whether `node` draws as a fork/join bar — §10-5 S4's own "バーのポート位置は接続先トランクの座標に
+/// 一致…分配計算なし" applies to it and to nothing else, which both [`evict`] and
+/// [`align_straight_lanes_with`] have to ask about.
+fn is_bar(node: &PlacedNode) -> bool {
+    matches!(node.shape, Glyph::Bar { .. })
+}
+
 /// How much a routed segment's box test is padded past the node's real boundary — §10-1 item 1's
 /// "少しのマージン付き": a segment that only grazes a corner should still count as blocked, not
 /// pass the test by a fraction of a pixel.
@@ -3715,6 +3722,151 @@ fn cross_extent(direction: Direction, node: &PlacedNode) -> f64 {
     }
 }
 
+/// §10-5 round 4's own "a cluster is one atomic unit" model, read by [`align_straight_lanes_with`]
+/// — the post-dagre pass that moves a node across the flow. (`mod.rs`'s own `regroup_fan_lanes`
+/// deliberately does *not* use it: that function's own doc explains why the two passes running after
+/// it re-establish everything a unit-aware version would have protected.)
+///
+/// A subgraph/composite-state frame is *derived* from wherever its members sit (`mod.rs`'s own
+/// `rebuild_frames`), so moving one member on its own does two wrong things at once: it bends the
+/// block's internal straight lane, and it drags the frame's own rectangle away from every other
+/// member. Round 4's rule (`docs/FEATURE-MERMAID-RENDERER.md` §10-5's own round-4 note) is that a
+/// block moves as a body — every descendant by the same cross-axis delta — so a lane that crosses a
+/// frame's border is a lane between a *node* and a *block*, not between a node and whichever member
+/// dagre happened to anchor the edge onto.
+///
+/// A diagram with no frames at all builds this empty ([`LaneUnits::default`]), and then every method
+/// below answers exactly what the pre-round-4 code did inline: [`LaneUnits::unit_of`] hands back the
+/// node's own id, [`LaneUnits::band`] its own box, and [`LaneUnits::shift`] moves it and nothing
+/// else. That is what keeps every clusterless fixture's geometry byte-identical across this change.
+#[derive(Debug, Clone, Default)]
+pub struct LaneUnits {
+    /// Node id → the id of the outermost block holding it. A node with no block is simply absent.
+    of_node: HashMap<String, String>,
+    /// Block id → every node id under it, nested blocks flattened in.
+    members: HashMap<String, Vec<String>>,
+    /// Block id → how much blank space its own frame leaves around its members' bounding box on one
+    /// cross-axis side: [`super::clusters::PAD`] for a leaf block, plus one more for every level of
+    /// nesting under it, which is exactly what `mod.rs`'s own `rebuild_frames` adds up. A block's
+    /// title can still widen the frame past this (`rebuild_frames`'s own last step), which this
+    /// deliberately does not model: the widening is symmetric, so it never changes *which side* of
+    /// a neighbour the frame is on, only by how much — and `clear_foreign_cluster_overlaps` is the
+    /// pass that answers the exact-overlap question against the finished rectangle anyway.
+    pad: HashMap<String, f64>,
+}
+
+impl LaneUnits {
+    /// Builds the model for one diagram's own block tree. `nodes` is only read for its ids.
+    pub fn build(tree: &super::clusters::Tree, nodes: &[PlacedNode]) -> LaneUnits {
+        let mut of_node: HashMap<String, String> = HashMap::new();
+        let mut members: HashMap<String, Vec<String>> = HashMap::new();
+        for n in nodes {
+            let Some(unit) = tree.outermost(&n.id) else {
+                continue;
+            };
+            of_node.insert(n.id.clone(), unit.to_string());
+            members
+                .entry(unit.to_string())
+                .or_default()
+                .push(n.id.clone());
+        }
+        // Deepest-first, so a nested block's own pad is already final when its parent adds to it.
+        let mut blocks: Vec<&super::clusters::Cluster> = tree.iter().collect();
+        blocks.sort_by_key(|b| std::cmp::Reverse(b.depth));
+        let mut pad: HashMap<String, f64> = HashMap::new();
+        for b in blocks {
+            let inner = b
+                .child_clusters
+                .iter()
+                .filter_map(|c| pad.get(c).copied())
+                .fold(0.0_f64, f64::max);
+            pad.insert(b.id.clone(), super::clusters::PAD + inner);
+        }
+        pad.retain(|id, _| members.contains_key(id));
+        LaneUnits {
+            of_node,
+            members,
+            pad,
+        }
+    }
+
+    /// The unit `id` moves with: the outermost block holding it, or `id` itself.
+    pub fn unit_of<'a>(&'a self, id: &'a str) -> &'a str {
+        self.of_node.get(id).map(String::as_str).unwrap_or(id)
+    }
+
+    /// Whether `unit` names a block (rather than a node standing for itself).
+    pub fn is_block(&self, unit: &str) -> bool {
+        self.members.contains_key(unit)
+    }
+
+    /// `unit`'s own cross-axis extent, as the pair `(near edge, far edge)`: a node's own box, or —
+    /// for a block — its members' bounding box grown by [`LaneUnits::pad`], which is the frame
+    /// `rebuild_frames` will draw around them. Read fresh from `nodes` every time rather than
+    /// cached, because a shift moves it.
+    pub fn band(
+        &self,
+        direction: Direction,
+        nodes: &[PlacedNode],
+        index: &HashMap<String, usize>,
+        unit: &str,
+    ) -> (f64, f64) {
+        let Some(ids) = self.members.get(unit) else {
+            let Some(&i) = index.get(unit) else {
+                return (0.0, 0.0);
+            };
+            let (c, half) = (
+                cross(direction, &nodes[i].center),
+                cross_extent(direction, &nodes[i]),
+            );
+            return (c - half, c + half);
+        };
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for id in ids {
+            let Some(&i) = index.get(id) else { continue };
+            let (c, half) = (
+                cross(direction, &nodes[i].center),
+                cross_extent(direction, &nodes[i]),
+            );
+            lo = lo.min(c - half);
+            hi = hi.max(c + half);
+        }
+        if !lo.is_finite() {
+            return (0.0, 0.0);
+        }
+        let pad = self.pad.get(unit).copied().unwrap_or(0.0);
+        (lo - pad, hi + pad)
+    }
+
+    /// Moves `unit` by `delta` along the cross axis — one node, or every descendant of a block.
+    pub fn shift(
+        &self,
+        direction: Direction,
+        nodes: &mut [PlacedNode],
+        index: &HashMap<String, usize>,
+        unit: &str,
+        delta: f64,
+    ) {
+        if delta.abs() <= EPS {
+            return;
+        }
+        match self.members.get(unit) {
+            Some(ids) => {
+                for id in ids {
+                    if let Some(&i) = index.get(id) {
+                        nodes[i].center = shift_cross(direction, &nodes[i].center, delta);
+                    }
+                }
+            }
+            None => {
+                if let Some(&i) = index.get(unit) {
+                    nodes[i].center = shift_cross(direction, &nodes[i].center, delta);
+                }
+            }
+        }
+    }
+}
+
 /// §10-1 item 2's "レーン揃え": greedily selects a maximal set of node-disjoint "straight lane"
 /// edges between *adjacent* ranks, then slides every node in each resulting chain onto one shared
 /// cross coordinate — after which [`classify`]'s existing `aligned` check (unchanged) recognises
@@ -3738,9 +3890,11 @@ fn cross_extent(direction: Direction, node: &PlacedNode) -> f64 {
 /// module doc's "Lane alignment moves nodes" section for why the order matters.
 ///
 /// `node_rank` is dagre's own rank per node id; `candidates` is every edge eligible to be
-/// considered for a lane — the caller's job to have already excluded a cluster-anchored edge (one
-/// whose written endpoint is a block, not the real node dagre routed against), since this module
-/// has no opinion of its own about clusters.
+/// considered for a lane, each given as the pair of **real nodes** dagre routed between — for an
+/// edge whose written endpoint names a block that is the block's own anchor member
+/// (`clusters::Tree::anchor`). Such an edge used to be filtered out by the caller; round 4
+/// (`docs/FEATURE-MERMAID-RENDERER.md` §10-5) lets it through, and `units` is what makes that
+/// sound: the anchor stands for its whole block, which moves as one body ([`LaneUnits`]).
 ///
 /// Returns every node's own cross-axis delta (`final - dagre's original`, cross axis only — this
 /// function never touches the flow axis), for every node this pass actually moved (by more than
@@ -3760,8 +3914,9 @@ pub fn align_straight_lanes(
     nodes: &mut [PlacedNode],
     node_rank: &HashMap<String, i32>,
     candidates: &[(String, String)],
+    units: &LaneUnits,
 ) -> (HashMap<String, f64>, HashMap<String, String>) {
-    align_straight_lanes_with(direction, nodes, node_rank, candidates, None)
+    align_straight_lanes_with(direction, nodes, node_rank, candidates, None, units)
 }
 
 /// [`align_straight_lanes`], with its own "greedy straight-lane selection" pass (this function's
@@ -3788,6 +3943,7 @@ pub(super) fn align_straight_lanes_with(
     node_rank: &HashMap<String, i32>,
     candidates: &[(String, String)],
     preselected: Option<&HashMap<String, String>>,
+    units: &LaneUnits,
 ) -> (HashMap<String, f64>, HashMap<String, String>) {
     if nodes.len() < 2 {
         return (HashMap::new(), HashMap::new());
@@ -3934,6 +4090,18 @@ pub(super) fn align_straight_lanes_with(
                 if used_out.contains(s) || used_in.contains(t) {
                     continue;
                 }
+                // §10-5 S4: a fork/join bar is never a lane participant. `bar_ports` places every
+                // port on a bar at whichever cross coordinate the node on the *other* end already
+                // sits at ("分配計算なし"), so a bar edge is 0-bend by construction and there is
+                // nothing for an alignment to achieve — while selecting one would tie the bar's own
+                // rectangle (which `straddle_bar_ports` then recomputes from those very ports)
+                // into a chain average, and, worse, run one lane straight *through* the bar,
+                // merging two parallel trunks §10-5 S4 says each keep their own. The one bar port
+                // that is not simply its neighbour's coordinate — a join's downstream output, at
+                // the centroid of its inputs — is handled below, after the lanes are settled.
+                if is_bar(&nodes[id_index[s]]) || is_bar(&nodes[id_index[t]]) {
+                    continue;
+                }
                 used_out.insert(s.clone());
                 used_in.insert(t.clone());
                 next.insert(s.clone(), t.clone());
@@ -3964,6 +4132,11 @@ pub(super) fn align_straight_lanes_with(
         }
         chains.push(chain);
     }
+    // Deterministic order. Chains are node-disjoint, so which one is processed first never mattered
+    // before; round 4's block units are not disjoint in the same sense (two chains can each touch
+    // the same block through different members), and `moved_units` below resolves that by first
+    // come, first served — which is only reproducible if "first" is.
+    chains.sort();
 
     // --- align: every chain member's cross coordinate becomes the chain's own average -----------
     //
@@ -3977,21 +4150,120 @@ pub(super) fn align_straight_lanes_with(
     // close: the forward sweep below can push a chain member — `3a`'s own `mermaid`, crowded by
     // `設定のルール`'s nine other same-rank fanout targets — off this exact position, and nothing
     // downstream ever tried to reclaim it.
+    //
+    // §10-5 round 4: the average is taken over **units**, not over nodes — a block contributes one
+    // term (its own anchor's cross, the first member the chain reaches, which is exactly the member
+    // the border-crossing edge is drawn against), never one term per member, so a five-member block
+    // cannot outvote the four ordinary nodes a lane also runs through. Once the average is known
+    // every unit is moved onto it as a body, and only then is each chain *member* set to the
+    // average outright: a member the lane actually runs through belongs on the lane, and one it
+    // does not simply rides its block's own delta.
     let mut chain_desired: HashMap<usize, f64> = HashMap::new();
+    let mut moved_units: std::collections::HashSet<String> = std::collections::HashSet::new();
     for chain in &chains {
         if chain.len() < 2 {
             continue;
         }
-        let avg: f64 = chain
-            .iter()
-            .map(|id| cross(direction, &nodes[id_index[id]].center))
-            .sum::<f64>()
-            / chain.len() as f64;
+        let mut items: Vec<(&str, f64)> = Vec::new();
         for id in chain {
+            let unit = units.unit_of(id);
+            if items.iter().any(|(u, _)| *u == unit) {
+                continue;
+            }
+            items.push((unit, cross(direction, &nodes[id_index[id]].center)));
+        }
+        let avg: f64 = items.iter().map(|(_, c)| *c).sum::<f64>() / items.len() as f64;
+        // Blocks this chain is the one to move. A block two chains both run through belongs to
+        // whichever reached it first (`chains` is sorted, so "first" is reproducible): a body
+        // cannot sit at two cross coordinates, and §10-1 item 2's "各ノード高々1入1出" reads as
+        // "one lane per unit" once a unit can be a whole block. The later chain then leaves that
+        // block's own members alone below, rather than dragging one of them off the interior lane
+        // the earlier chain settled — which is the thing that would actually be visible.
+        let mut mine: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for (unit, anchor_cross) in &items {
+            if !units.is_block(unit) {
+                continue;
+            }
+            if !moved_units.insert((*unit).to_string()) {
+                continue;
+            }
+            mine.insert(unit);
+            units.shift(direction, nodes, &id_index, unit, avg - anchor_cross);
+        }
+        for id in chain {
+            let unit = units.unit_of(id);
+            if units.is_block(unit) && !mine.contains(unit) {
+                continue;
+            }
             let i = id_index[id];
             let flow_v = flow(direction, &nodes[i].center);
             nodes[i].center = make(direction, flow_v, avg);
             chain_desired.insert(i, avg);
+        }
+    }
+
+    // --- a join bar's downstream lane starts at the centroid of its inputs ----------------------
+    //
+    // §10-5 S4's own "join の下流出力はバー入力群の重心". Every other bar port simply repeats its
+    // neighbour's coordinate (the selection loop above skips bar edges for exactly that reason), but
+    // a join's single output does not: the parallel trunks it merges rarely straddle it evenly, so
+    // the node downstream of the bar has to be *moved* onto the mean, or the diagram's one merged
+    // trunk leaves the bar with a jog no later pass can take out (`docs/render-check/zz-design-4c`'s
+    // own `join_state -> 完了`). Moves the whole lane the output heads, not the node alone, so a
+    // chain running on from it stays straight; a block on that lane moves as a body like anywhere
+    // else. Read after the lanes are settled and before the overlap sweep, so the inputs' own
+    // coordinates are final and the result is still subject to the same spacing rules as everything
+    // else this function places.
+    for bar in nodes
+        .iter()
+        .filter(|n| is_bar(n))
+        .map(|n| n.id.clone())
+        .collect::<Vec<String>>()
+    {
+        let inputs: Vec<&str> = candidates
+            .iter()
+            .filter(|(_, t)| *t == bar)
+            .map(|(s, _)| s.as_str())
+            .collect();
+        let outputs: Vec<&str> = candidates
+            .iter()
+            .filter(|(s, _)| *s == bar)
+            .map(|(_, t)| t.as_str())
+            .collect();
+        // A fork (one input, many outputs) and a degenerate one-in/one-out bar both keep the plain
+        // "the port is wherever the neighbour is" rule, which needs no movement at all.
+        let ([out], true) = (outputs.as_slice(), inputs.len() > 1) else {
+            continue;
+        };
+        let (Some(&oi), true) = (id_index.get(*out), !inputs.is_empty()) else {
+            continue;
+        };
+        let centroid = inputs
+            .iter()
+            .filter_map(|s| id_index.get(*s))
+            .map(|&i| cross(direction, &nodes[i].center))
+            .sum::<f64>()
+            / inputs.len() as f64;
+        let delta = centroid - cross(direction, &nodes[oi].center);
+        if delta.abs() <= EPS {
+            continue;
+        }
+        let lane = chains
+            .iter()
+            .find(|c| c.iter().any(|id| id == out))
+            .cloned()
+            .unwrap_or_else(|| vec![(*out).to_string()]);
+        let mut shifted: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for id in &lane {
+            let unit = units.unit_of(id).to_string();
+            if shifted.insert(unit.clone()) {
+                units.shift(direction, nodes, &id_index, &unit, delta);
+            }
+            if let Some(&i) = id_index.get(id.as_str()) {
+                if let Some(desired) = chain_desired.get_mut(&i) {
+                    *desired += delta;
+                }
+            }
         }
     }
 
@@ -4003,20 +4275,36 @@ pub(super) fn align_straight_lanes_with(
     // one mode `ORTHO_NODE_SEP` is dagre's actual `nodesep` for — §10-3 item 9's own density fix),
     // reused so a push respects the same gap the rank was laid out with in the first place,
     // whether or not either node in a pair moved at all.
-    for ids in by_rank.values() {
+    //
+    // §10-5 round 4: the thing being spaced is a **unit**, and what it takes up is its own band
+    // ([`LaneUnits::band`]) — a block's whole frame, not whichever one member happens to sit on this
+    // rank — so a node beside a block is pushed clear of the frame rather than of the member behind
+    // it. Two members of the same block on one rank collapse to a single occurrence, first in the
+    // rank's own fixed original order, since they cannot be separated from each other anyway.
+    // Ranks are visited in ascending order, not `HashMap` order: pushing a block on one rank moves
+    // it on every rank it occupies, so which rank is swept first is now observable.
+    let mut swept: Vec<i32> = by_rank.keys().copied().collect();
+    swept.sort_unstable();
+    for rank in swept {
+        let ids = &by_rank[&rank];
         let mut prev_far_edge: Option<f64> = None;
+        let mut seen: Vec<String> = Vec::new();
         for &i in ids {
-            let half = cross_extent(direction, &nodes[i]);
-            let mut c = cross(direction, &nodes[i].center);
-            if let Some(prev_edge) = prev_far_edge {
-                let min_c = prev_edge + super::ORTHO_NODE_SEP + half;
-                if c < min_c {
-                    c = min_c;
-                    let flow_v = flow(direction, &nodes[i].center);
-                    nodes[i].center = make(direction, flow_v, c);
-                }
+            let unit = units.unit_of(&nodes[i].id).to_string();
+            if seen.contains(&unit) {
+                continue;
             }
-            prev_far_edge = Some(c + half);
+            let (lo, hi) = units.band(direction, nodes, &id_index, &unit);
+            let far = match prev_far_edge {
+                Some(prev_edge) if lo < prev_edge + super::ORTHO_NODE_SEP => {
+                    let delta = prev_edge + super::ORTHO_NODE_SEP - lo;
+                    units.shift(direction, nodes, &id_index, &unit, delta);
+                    hi + delta
+                }
+                _ => hi,
+            };
+            seen.push(unit);
+            prev_far_edge = Some(far);
         }
     }
 
@@ -4046,8 +4334,29 @@ pub(super) fn align_straight_lanes_with(
     // itself, never a neighbour — which is enough to fix `3a`'s own `mermaid` (dumped and confirmed
     // visually: `設定のルール`'s ten-way fanout leaves just enough slack next to it) without ever
     // moving a second node whose own routing might depend on where it already was.
-    for ids in by_rank.values() {
-        for (pos, &i) in ids.iter().enumerate() {
+    //
+    // §10-5 round 4 reads this in units too: the room a reclaim needs is the *band*'s (a block
+    // moves as a body, so its whole frame has to fit), and the predecessor it has to leave room
+    // against is the previous distinct unit on the rank, not the previous node — which for a
+    // clusterless diagram is the same node it always was.
+    let mut reclaimed: Vec<i32> = by_rank.keys().copied().collect();
+    reclaimed.sort_unstable();
+    for rank in reclaimed {
+        let ids = &by_rank[&rank];
+        // The unit immediately before each node's own, in the rank's fixed original order —
+        // consecutive members of one block share whatever came before the run they are in.
+        let mut prev_of: HashMap<usize, Option<String>> = HashMap::new();
+        let mut prev_distinct: Option<String> = None;
+        let mut run_unit: Option<String> = None;
+        for &i in ids {
+            let unit = units.unit_of(&nodes[i].id).to_string();
+            if run_unit.as_deref() != Some(unit.as_str()) {
+                prev_distinct = run_unit.take();
+                run_unit = Some(unit);
+            }
+            prev_of.insert(i, prev_distinct.clone());
+        }
+        for &i in ids {
             let Some(&desired) = chain_desired.get(&i) else {
                 continue;
             };
@@ -4055,18 +4364,18 @@ pub(super) fn align_straight_lanes_with(
             if current <= desired + EPS {
                 continue; // already at (or before) its own desired spot — nothing to reclaim.
             }
-            let max_far = desired - cross_extent(direction, &nodes[i]) - super::ORTHO_NODE_SEP;
-            let predecessor_allows = match pos.checked_sub(1).map(|p| ids[p]) {
+            let unit = units.unit_of(&nodes[i].id).to_string();
+            let (lo, _) = units.band(direction, nodes, &id_index, &unit);
+            let max_far = lo + (desired - current) - super::ORTHO_NODE_SEP;
+            let predecessor_allows = match prev_of.get(&i).cloned().flatten() {
                 None => true, // first in the rank — nothing behind it to leave room against.
-                Some(j) => {
-                    let far_j =
-                        cross(direction, &nodes[j].center) + cross_extent(direction, &nodes[j]);
-                    far_j <= max_far + EPS
+                Some(prev) => {
+                    let (_, far_prev) = units.band(direction, nodes, &id_index, &prev);
+                    far_prev <= max_far + EPS
                 }
             };
             if predecessor_allows {
-                let flow_v = flow(direction, &nodes[i].center);
-                nodes[i].center = make(direction, flow_v, desired);
+                units.shift(direction, nodes, &id_index, &unit, desired - current);
             }
         }
     }
@@ -4147,12 +4456,19 @@ pub fn shift_cross(direction: Direction, p: &Point, delta: f64) -> Point {
 /// nudges further whenever the node's *current* box still overlaps the one being checked, so a node
 /// pushed clear of the first frame is re-tested against the next rather than only ever checked
 /// against its position before any push happened.
+///
+/// Returns whether it moved anything. A node foreign to *one* frame is very often a member of
+/// **another** (`zz-design-2b`'s own `解析サンドボックス`, a member of `クラウド` that overlapped its
+/// sibling frame `保存層`), so a push here leaves that node's own frame describing where it used to
+/// be — which is why `mod.rs`'s own caller re-derives the frames whenever this says yes.
+#[must_use]
 pub fn clear_foreign_cluster_overlaps(
     direction: Direction,
     nodes: &mut [PlacedNode],
     placed_clusters: &[PlacedCluster],
     tree: &super::clusters::Tree,
-) {
+) -> bool {
+    let mut moved = false;
     for cluster in placed_clusters {
         let (cl, ct, cr, cb) = cluster.bounds();
         for node in nodes.iter_mut() {
@@ -4182,8 +4498,10 @@ pub fn clear_foreign_cluster_overlaps(
             };
             let flow_v = flow(direction, &node.center);
             node.center = make(direction, flow_v, target);
+            moved = true;
         }
     }
+    moved
 }
 
 /// `side`'s tangent coordinate of a point already known to be a port on that face — `p.x` for
@@ -6112,7 +6430,13 @@ mod tests {
         ];
         let node_rank = ranks(&[("A", 0), ("B", 1), ("C", 2)]);
         let candidates = [edge("A", "B"), edge("B", "C")];
-        let _ = align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
+        let _ = align_straight_lanes(
+            Direction::TopToBottom,
+            &mut nodes,
+            &node_rank,
+            &candidates,
+            &LaneUnits::default(),
+        );
 
         for n in &nodes {
             assert!(
@@ -6156,8 +6480,13 @@ mod tests {
             edge("C", "TRUNK"),
             edge("TRUNK", "NEXT"),
         ];
-        let (_, chain_sources) =
-            align_straight_lanes(Direction::LeftToRight, &mut nodes, &node_rank, &candidates);
+        let (_, chain_sources) = align_straight_lanes(
+            Direction::LeftToRight,
+            &mut nodes,
+            &node_rank,
+            &candidates,
+            &LaneUnits::default(),
+        );
         let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         assert_eq!(
             by_id["C"].center.y,
@@ -6198,8 +6527,13 @@ mod tests {
         ];
         let node_rank = ranks(&[("MM", 0), ("IM", 0), ("RS", 1), ("FIT", 2)]);
         let candidates = [edge("MM", "RS"), edge("RS", "FIT"), edge("IM", "FIT")];
-        let (_, chain_sources) =
-            align_straight_lanes(Direction::LeftToRight, &mut nodes, &node_rank, &candidates);
+        let (_, chain_sources) = align_straight_lanes(
+            Direction::LeftToRight,
+            &mut nodes,
+            &node_rank,
+            &candidates,
+            &LaneUnits::default(),
+        );
         assert!(
             chain_sources.contains_key("RS"),
             "RS must have been selected to extend the MM -> RS -> FIT chain: {chain_sources:?}"
@@ -6227,7 +6561,13 @@ mod tests {
         ];
         let node_rank = ranks(&[("S1", 0), ("S2", 0), ("T", 1)]);
         let candidates = [edge("S1", "T"), edge("S2", "T")];
-        let _ = align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
+        let _ = align_straight_lanes(
+            Direction::TopToBottom,
+            &mut nodes,
+            &node_rank,
+            &candidates,
+            &LaneUnits::default(),
+        );
 
         let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         assert!(
@@ -6268,7 +6608,13 @@ mod tests {
         // Declared in an order that would win the *wrong* candidate if the sort fell back to
         // declaration order instead of the second key: `S -> Alef` listed first.
         let candidates = [edge("S", "Alef"), edge("S", "Zed")];
-        let _ = align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
+        let _ = align_straight_lanes(
+            Direction::TopToBottom,
+            &mut nodes,
+            &node_rank,
+            &candidates,
+            &LaneUnits::default(),
+        );
 
         let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         // S can pair with at most one target ("各ノード高々1出"). If it paired with Zed (smaller
@@ -6303,8 +6649,13 @@ mod tests {
         // ascending target-cross order would still (wrongly) land on TOP — this is not a
         // declaration-order artefact.
         let candidates = [edge("S", "TOP"), edge("S", "MID"), edge("S", "BOTTOM")];
-        let (_, chain_next) =
-            align_straight_lanes(Direction::LeftToRight, &mut nodes, &node_rank, &candidates);
+        let (_, chain_next) = align_straight_lanes(
+            Direction::LeftToRight,
+            &mut nodes,
+            &node_rank,
+            &candidates,
+            &LaneUnits::default(),
+        );
         assert_eq!(
             chain_next.get("S").map(String::as_str),
             Some("MID"),
@@ -6336,7 +6687,13 @@ mod tests {
         ];
         let node_rank = ranks(&[("A", 0), ("C", 0), ("P", 1), ("Q", 1)]);
         let candidates = [edge("A", "P"), edge("C", "Q")];
-        let _ = align_straight_lanes(Direction::TopToBottom, &mut nodes, &node_rank, &candidates);
+        let _ = align_straight_lanes(
+            Direction::TopToBottom,
+            &mut nodes,
+            &node_rank,
+            &candidates,
+            &LaneUnits::default(),
+        );
 
         let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
         assert!(

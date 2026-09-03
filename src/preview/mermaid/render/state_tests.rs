@@ -37,7 +37,8 @@ use super::tests::{
 };
 use super::Routing;
 use super::{
-    clusters, labels, orthogonal, shapes, svg, Diagram, Glyph, Label, PlacedNode, RenderError, Size,
+    clusters, labels, orthogonal, shapes, svg, Diagram, Glyph, Label, PlacedCluster, PlacedEdge,
+    PlacedNode, RenderError, Size,
 };
 use crate::preview::mermaid::flowchart::{Shape, Stroke};
 use crate::preview::mermaid::layout::Point;
@@ -1992,4 +1993,317 @@ fn orthogonal_state_cross_cluster_internal_edge_cycle_does_not_overflow_the_stac
     let d = laid_out_orthogonal(src);
     check_nodes_do_not_overlap("cross-cluster-cycle", &d);
     check_unrelated_clusters_do_not_overlap("cross-cluster-cycle", &d);
+}
+
+// ---------------------------------------------------------------------------------------------
+// 8. §10-5 round 4 — a composite state is one unit for ranking and for lane alignment
+// ---------------------------------------------------------------------------------------------
+
+/// The design-reference source called `name` — the same list `orthogonal_design_reference_dump`
+/// renders, so a round-4 test and the picture a person looks at can never drift apart.
+fn design_reference_source(name: &str) -> &'static str {
+    orthogonal_design_reference_corpus()
+        .into_iter()
+        .find(|(n, _)| *n == name)
+        .unwrap_or_else(|| panic!("{name} is in the design-reference corpus"))
+        .1
+}
+
+/// `d`'s node with this id, or a failure naming it — every round-4 test below reads specific,
+/// named boxes out of a real render rather than scanning for a shape.
+fn node_of<'a>(d: &'a Diagram, id: &str) -> &'a PlacedNode {
+    d.node(id)
+        .unwrap_or_else(|| panic!("the fixture must place a node called {id}"))
+}
+
+/// [`node_of`] for a frame.
+fn cluster_of<'a>(d: &'a Diagram, id: &str) -> &'a PlacedCluster {
+    d.cluster(id)
+        .unwrap_or_else(|| panic!("the fixture must place a frame called {id}"))
+}
+
+/// `d`'s edge between these two written endpoints.
+fn edge_of<'a>(d: &'a Diagram, from: &str, to: &str) -> &'a PlacedEdge {
+    d.edges
+        .iter()
+        .find(|e| e.from == from && e.to == to)
+        .unwrap_or_else(|| panic!("the fixture must draw {from} -> {to}"))
+}
+
+/// Every point of `e` shares one `x` — a dead-straight vertical run, which is what "曲げ 0" means
+/// for a `TB` diagram.
+fn assert_vertical(name: &str, e: &PlacedEdge, at: f64) {
+    for p in e.drawn_points() {
+        assert!(
+            (p.x - at).abs() <= 0.51,
+            "{name}: {} -> {} bends — point ({:.2},{:.2}) is off the x={at:.2} lane",
+            e.from,
+            e.to,
+            p.x,
+            p.y
+        );
+    }
+}
+
+/// §10-5 round 4, the ASAP re-rank's own point: **a composite state is re-layered as one body, and
+/// a node with slack beside it lands at the earliest rank it can reach**, not wherever network
+/// simplex's pivoting left it.
+///
+/// `B` here is the classic slack node — `A --> B --> D` with both edges at the default weight, so
+/// every rank between `A`'s and `D`'s costs the ranker exactly the same, and dagre is free to drop
+/// it anywhere (on `zz-design-4c` it dropped `監査` eleven ranks down, level with the *innermost*
+/// member of a two-level nest). The composite `C` beside it spans four ranks of its own, so this
+/// only comes out right if the re-rank reads `C` as one unit with an entry level and an exit level
+/// rather than as four unrelated nodes.
+///
+/// Pinned as "`B` sits on the same row as `C`'s own entry" rather than as a rank *number*: the row
+/// is what a reader sees, and it is the same statement §10-3 item 8 makes for a fan.
+#[test]
+fn orthogonal_a_composite_is_re_ranked_as_one_unit_beside_a_slack_node() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = "stateDiagram-v2\n  [*] --> A\n  A --> B\n  A --> C\n  state C {\n    \
+               [*] --> C1\n    C1 --> C2\n    C2 --> C3\n  }\n  B --> D\n  C --> D";
+    let d = laid_out_orthogonal(src);
+    let (b, entry) = (node_of(&d, "B"), node_of(&d, "C_start"));
+    assert!(
+        (b.center.y - entry.center.y).abs() <= 0.51,
+        "B (y={:.2}) must share the composite's own entry row (y={:.2}), not sink to a later rank",
+        b.center.y,
+        entry.center.y
+    );
+    // …and the composite's interior is untouched by the move: four members, four consecutive rows.
+    let interior: Vec<f64> = ["C_start", "C1", "C2", "C3"]
+        .iter()
+        .map(|id| node_of(&d, id).center.y)
+        .collect();
+    assert!(
+        interior.windows(2).all(|w| w[1] > w[0]),
+        "the composite's own members must keep their order down the flow: {interior:?}"
+    );
+}
+
+/// §10-5 round 4, the lane pass's own point: **a straight lane may cross a frame's border**. The
+/// node before the block, the block's frame, its internal start marker, every member of its
+/// internal spine and the node after it all sit on one cross coordinate, and every edge along the
+/// way is a single vertical with no bend outside the frame.
+///
+/// Before round 4 the two cluster-anchored edges here (`A --> C` and `C --> Z`, laid out against
+/// `C`'s entry and exit members) were filtered out of the lane candidates outright, so no lane
+/// could ever reach a block at all.
+#[test]
+fn orthogonal_a_lane_runs_straight_through_a_composite_frame() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    // `W` is what makes this discriminating rather than accidental: a wide sibling on the block's
+    // own rank pulls `A` (their shared source) well off the block's column, so `A --> C` genuinely
+    // has to move something to draw straight. Without it every node sits in one column anyway and
+    // the assertions below would pass whether or not a lane was ever selected.
+    let src = "stateDiagram-v2\n  [*] --> A\n  A --> C\n  state C {\n    [*] --> C1\n    \
+               C1 --> C2\n  }\n  C --> Z\n  A --> W\n  W --> Z\n  W : a deliberately wide sibling";
+    let d = laid_out_orthogonal(src);
+    let lane = node_of(&d, "A").center.x;
+    for id in ["C_start", "C1", "C2", "Z"] {
+        assert!(
+            (node_of(&d, id).center.x - lane).abs() <= 0.51,
+            "{id} (x={:.2}) must sit on the lane A starts (x={lane:.2})",
+            node_of(&d, id).center.x
+        );
+    }
+    assert!(
+        (cluster_of(&d, "C").center.x - lane).abs() <= 0.51,
+        "the frame's own centre (x={:.2}) is what a cluster-anchored edge aligns against — it has \
+         to be on the lane too (x={lane:.2})",
+        cluster_of(&d, "C").center.x
+    );
+    assert_vertical("lane-through-composite", edge_of(&d, "A", "C"), lane);
+    assert_vertical("lane-through-composite", edge_of(&d, "C", "Z"), lane);
+}
+
+/// `zz-design-4c`'s own G1: the fork's two branches share the row directly under the bar.
+///
+/// `監査` is the slack node (`fork_state --> 監査 --> join_state`); dagre put it eleven ranks down,
+/// level with `集計` — the innermost member of the two-level nest inside `処理` — which is what
+/// made the design's own "並行ブランチは各自の縦トランクを持ち" impossible to read at all.
+#[test]
+fn orthogonal_design_4c_fork_targets_share_the_row_below_the_bar() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let d = laid_out_orthogonal(design_reference_source("zz-design-4c"));
+    let (get, audit) = (node_of(&d, "取得"), node_of(&d, "監査"));
+    assert!(
+        (get.center.y - audit.center.y).abs() <= 0.51,
+        "取得 (y={:.2}) and 監査 (y={:.2}) are the fork's own two branches: same row",
+        get.center.y,
+        audit.center.y
+    );
+    let bar = node_of(&d, "fork_state");
+    assert!(
+        get.center.y > bar.center.y && get.center.y < node_of(&d, "処理_start").center.y,
+        "that row sits between the fork bar and the composite's own first member"
+    );
+    // The bar spans both trunks — S4's own "長さ＝接続先トランク span＋両端各16px".
+    let (bl, br) = (
+        bar.center.x - bar.size.w / 2.0,
+        bar.center.x + bar.size.w / 2.0,
+    );
+    for n in [get, audit] {
+        assert!(
+            n.center.x > bl && n.center.x < br,
+            "the fork bar ({bl:.2}..{br:.2}) must straddle {}'s trunk (x={:.2})",
+            n.id,
+            n.center.x
+        );
+    }
+}
+
+/// `zz-design-4c`'s own G2: **`取得 → 処理 → join` is one trunk**. The node above the frame, the
+/// frame itself, its internal start marker, its whole internal spine and the join bar's own port
+/// all sit on one `x`, and neither cluster-anchored edge bends outside the frame.
+#[test]
+fn orthogonal_design_4c_trunk_runs_straight_through_the_composite_to_the_join() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let d = laid_out_orthogonal(design_reference_source("zz-design-4c"));
+    let lane = node_of(&d, "取得").center.x;
+    for id in ["処理_start", "整形", "走査", "集計"] {
+        assert!(
+            (node_of(&d, id).center.x - lane).abs() <= 0.51,
+            "{id} (x={:.2}) must sit on 取得's own trunk (x={lane:.2})",
+            node_of(&d, id).center.x
+        );
+    }
+    for id in ["処理", "解析"] {
+        assert!(
+            (cluster_of(&d, id).center.x - lane).abs() <= 0.51,
+            "frame {id} (x={:.2}) must sit on the trunk too (x={lane:.2})",
+            cluster_of(&d, id).center.x
+        );
+    }
+    assert_vertical("zz-design-4c", edge_of(&d, "取得", "処理"), lane);
+    assert_vertical("zz-design-4c", edge_of(&d, "処理", "join_state"), lane);
+    // The parallel branch keeps a trunk of its own, all the way to the bar.
+    let other = node_of(&d, "監査").center.x;
+    assert_vertical("zz-design-4c", edge_of(&d, "監査", "join_state"), other);
+}
+
+/// `zz-design-4c`'s own G3: §10-5 S4's "join の下流出力はバー入力群の重心" only draws straight if the
+/// node downstream of the bar is *at* that centroid. A bar is not a lane participant (every other
+/// port on it simply repeats its neighbour's coordinate), so the lane pass moves the downstream
+/// lane there outright.
+#[test]
+fn orthogonal_design_4c_join_output_lane_sits_on_the_bar_centroid() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let d = laid_out_orthogonal(design_reference_source("zz-design-4c"));
+    let centroid = (node_of(&d, "集計").center.x + node_of(&d, "監査").center.x) / 2.0;
+    for id in ["完了", "root_end"] {
+        assert!(
+            (node_of(&d, id).center.x - centroid).abs() <= 0.51,
+            "{id} (x={:.2}) must sit on the join bar's own input centroid (x={centroid:.2})",
+            node_of(&d, id).center.x
+        );
+    }
+    assert_vertical("zz-design-4c", edge_of(&d, "join_state", "完了"), centroid);
+    assert_vertical("zz-design-4c", edge_of(&d, "完了", "root_end"), centroid);
+
+    // `zz-design-4c`'s own two branches straddle the join evenly, so dagre's barycentre already
+    // lands on the centroid there and the correction has nothing to do — which means the half
+    // above pins the *composition* but cannot prove the rule fires. This one can: `X --> B` drags
+    // `B` off centre, so the join's two inputs are lopsided and dagre's own placement for the node
+    // after the bar is 4px off the centroid its output port actually sits at (measured; a
+    // mutation that zeroes the correction leaves exactly that jog behind).
+    let d = laid_out_orthogonal(
+        "stateDiagram-v2\n  state f <<fork>>\n  state j <<join>>\n  [*] --> f\n  f --> A\n  \
+         f --> B\n  X --> B\n  A --> j\n  B --> j\n  j --> [*]",
+    );
+    let centroid = (node_of(&d, "A").center.x + node_of(&d, "B").center.x) / 2.0;
+    assert!(
+        (node_of(&d, "root_end").center.x - centroid).abs() <= 0.51,
+        "the node after a lopsided join must sit on its input centroid (x={centroid:.2}), not on \
+         wherever dagre's barycentre put it (x={:.2})",
+        node_of(&d, "root_end").center.x
+    );
+    assert_vertical("lopsided-join", edge_of(&d, "j", "root_end"), centroid);
+}
+
+/// `zz-design-4a`'s own G5: **the frame is treated as a node** — `ツリー` and the composite state
+/// share one cross coordinate, so `Enter` (in) and `q` (out) are both dead-vertical between
+/// `ツリー`'s bottom face and the frame's top face, `PORT_SPACING` apart on the retreat grid rather
+/// than one leaving a side face with two bends.
+#[test]
+fn orthogonal_design_4a_the_frame_aligns_with_the_node_above_it() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let d = laid_out_orthogonal(design_reference_source("zz-design-4a"));
+    let (tree_node, frame) = (node_of(&d, "ツリー"), cluster_of(&d, "プレビュー"));
+    assert!(
+        (tree_node.center.x - frame.center.x).abs() <= 0.51,
+        "ツリー (x={:.2}) and the プレビュー frame (x={:.2}) must share a lane",
+        tree_node.center.x,
+        frame.center.x
+    );
+    for (from, to) in [("ツリー", "プレビュー"), ("プレビュー", "ツリー")] {
+        let e = edge_of(&d, from, to);
+        let at = e.points[0].x;
+        assert_vertical("zz-design-4a", e, at);
+        let off = (at - frame.center.x).abs();
+        assert!(
+            off <= orthogonal::PORT_SPACING * 2.0 + 0.51,
+            "{from} -> {to} runs at x={at:.2}, {off:.2}px off the shared face centre — the two \
+             transitions are meant to sit on adjacent slots of the same retreat grid"
+        );
+    }
+    // The interior spine is a straight vertical of its own, on that same lane.
+    for id in ["プレビュー_start", "デコード中", "表示"] {
+        assert!(
+            (node_of(&d, id).center.x - frame.center.x).abs() <= 0.51,
+            "{id} must sit at the head of the frame's own internal lane"
+        );
+    }
+}
+
+/// `zz-design-4a`'s own G7: **the `q` back edge's label room lands between `ツリー` and the frame,
+/// never inside it.**
+///
+/// dagre reserves a rank for a labelled edge's proxy and sizes that rank to the label; for a back
+/// edge spanning a composite state, the proxy lands *inside* the block, stretching its interior by
+/// a row it has no content for (measured before round 4: `● → デコード中` 131.9px against
+/// `デコード中 → 表示` 110.8px, the wrong way round — only the second of those carries a label).
+/// The round-4 re-rank computes every column gap itself, charging each label to the gap right after
+/// its own tail's column, so the room ends up where the label is drawn.
+#[test]
+fn orthogonal_design_4a_back_edge_label_room_stays_outside_the_frame() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let d = laid_out_orthogonal(design_reference_source("zz-design-4a"));
+    let frame = cluster_of(&d, "プレビュー").bounds();
+    let q = edge_of(&d, "プレビュー", "ツリー")
+        .label
+        .as_ref()
+        .expect("the q transition carries a label");
+    assert!(
+        q.center.y < frame.1,
+        "the q label sits at y={:.2}, inside the frame that starts at y={:.2} — its room belongs \
+         in the gap above the frame",
+        q.center.y,
+        frame.1
+    );
+    // The unlabelled interior gap is exactly one `RANK_SEP` — no rank was reserved inside the
+    // block for a label drawn outside it.
+    let (start, first) = (node_of(&d, "プレビュー_start"), node_of(&d, "デコード中"));
+    let gap = (first.center.y - first.size.h / 2.0) - (start.center.y + start.size.h / 2.0);
+    assert!(
+        (gap - super::RANK_SEP).abs() <= 0.51,
+        "● → デコード中 carries no label, so its gap should be exactly RANK_SEP ({:.2}), not \
+         {gap:.2}",
+        super::RANK_SEP
+    );
 }

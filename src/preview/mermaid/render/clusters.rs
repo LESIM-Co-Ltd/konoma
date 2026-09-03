@@ -67,6 +67,15 @@ pub const TITLE_PAD_Y: f64 = 2.0;
 /// shapes use, which is why it is read from there rather than declared again.
 pub const TITLE_PAD_X: f64 = super::shapes::PADDING;
 
+/// Blank space between a frame's outline and whatever it holds, on every side.
+///
+/// `docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 4 ("枠の入れ子、枠とノード・外周レーンの余白は最低
+/// 16px") and §10-5 S2 ("内部＝ストリップ下＋周囲 16px パディング") ask for the same number, so the
+/// frame [`super::rebuild_frames`] derives under `Routing::Orthogonal` uses one constant for both.
+/// The splines path never reads it: there a frame is dagre's own border-node rectangle, padded by
+/// whatever half a `nodesep`/`ranksep` happens to be, and moving it would move every golden file.
+pub const PAD: f64 = 16.0;
+
 /// Stroke width of a frame. mermaid's `.cluster rect { stroke-width: 1px }` — deliberately
 /// thinner than a node's outline so the frame reads as background rather than as another box.
 pub const STROKE_WIDTH: f64 = 1.0;
@@ -392,6 +401,43 @@ impl Tree {
                 .find(|d| !disqualified.contains(d))
                 .unwrap_or(first),
         )
+    }
+
+    /// [`Tree::flatten_descendants`], public: every node id under `id`, nested blocks flattened in.
+    ///
+    /// `mod.rs`'s own round-4 cluster passes (`docs/FEATURE-MERMAID-RENDERER.md` §10-5) need this to
+    /// treat a block as one atomic unit — the whole set of nodes an ASAP re-rank or a lane shift has
+    /// to move together — which is the same set [`Tree::anchor`] already searches for one member.
+    pub fn descendants(&self, id: &str) -> Vec<&str> {
+        self.flatten_descendants(id)
+    }
+
+    /// The **outermost** block `id` belongs to — for a node, the depth-0 ancestor of the block that
+    /// lists it; for a block, its own depth-0 ancestor (itself, when it is already top level).
+    /// `None` for a node no block holds, and for an id this tree knows nothing about.
+    ///
+    /// This is the "unit" the round-4 passes move as one body: a nested block never moves
+    /// independently of the block that holds it, so the unit is always the depth-0 ancestor, not
+    /// whichever block lists `id` directly. Bounded the same way [`Tree::depth_of`] is, so a
+    /// dangling parent (which `Tree::from_blocks` already repairs) could not hang the walk.
+    pub fn outermost(&self, id: &str) -> Option<&str> {
+        // Every candidate is borrowed out of `self`, never out of `id`: the answer outlives the
+        // caller's own string.
+        let mut cur = self
+            .get(id)
+            .or_else(|| {
+                self.clusters
+                    .iter()
+                    .find(|c| c.member_nodes.iter().any(|m| m == id))
+            })
+            .map(|c| c.id.as_str())?;
+        for _ in 0..=self.clusters.len() {
+            match self.get(cur).and_then(|c| c.parent.as_deref()) {
+                Some(p) => cur = p,
+                None => return Some(cur),
+            }
+        }
+        Some(cur)
     }
 
     /// Whether an edge endpoint written as `id` has anything to do with the block `cluster_id`:

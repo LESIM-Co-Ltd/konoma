@@ -1354,13 +1354,15 @@ fn lay_out_spec_pass(
     );
 
     // §10-3 item 8 ("ファン先は同一ランクに整列する", `docs/FEATURE-MERMAID-RENDERER.md`) —
-    // `Routing::Orthogonal` only, and only when there is no subgraph frame in play (`tree.is_empty()`
-    // — `pull_back_fan_ranks`'s own doc explains the scope limit). See that function's doc for the
-    // full reasoning; in short, it throws dagre's own rank numbers away and recomputes every node's
-    // rank and flow-axis position from scratch by the classic "as-soon-as-possible" layering, which
-    // is immune to the "slack node lands wherever network simplex's pivoting happened to leave it"
-    // problem network simplex has no way around.
-    if spec.routing == Routing::Orthogonal && tree.is_empty() {
+    // `Routing::Orthogonal` only. See that function's doc for the full reasoning; in short, it throws
+    // dagre's own rank numbers away and recomputes every node's rank and flow-axis position from
+    // scratch by the classic "as-soon-as-possible" layering, which is immune to the "slack node lands
+    // wherever network simplex's pivoting happened to leave it" problem network simplex has no way
+    // around. §10-5 round 4 removed the `tree.is_empty()` gate this used to carry: `tree` is now
+    // passed in, every block is re-ranked as one atomic unit, and the frames themselves are re-derived
+    // from wherever the members end up (`rebuild_frames`) rather than read from dagre's own border
+    // nodes — which is exactly what the gate existed to avoid going stale.
+    if spec.routing == Routing::Orthogonal {
         pull_back_fan_ranks(
             &mut g,
             spec.direction,
@@ -1368,6 +1370,7 @@ fn lay_out_spec_pass(
             sizes,
             &measured,
             &edge_label_dims,
+            &tree,
         );
     }
 
@@ -1423,6 +1426,10 @@ fn lay_out_spec_pass(
     // per-edge-`minlen` numbering (`pull_back_fan_ranks`'s own recomputation), never dagre's raw
     // one, which is exactly what this map already is whenever `tree.is_empty()`.
     let mut node_rank: HashMap<String, i32> = HashMap::new();
+    // §10-5 round 4's own block-as-a-body model, built once for both cross-axis passes below
+    // (`align_straight_lanes` and `regroup_fan_lanes`) — empty, and therefore a no-op, for a diagram
+    // with no frames at all.
+    let lane_units = orthogonal::LaneUnits::build(&tree, &nodes);
     if spec.routing == Routing::Orthogonal {
         node_rank = nodes
             .iter()
@@ -1432,9 +1439,17 @@ fn lay_out_spec_pass(
                     .map(|r| (n.id.clone(), r))
             })
             .collect();
+        // §10-5 round 4: a cluster-anchored edge (one whose written endpoint names a block, so
+        // `d.tail`/`d.head` is the block's own anchor member rather than the endpoint the author
+        // wrote) **is** a lane candidate now. It used to be filtered out — `d.edge.from == d.tail &&
+        // d.edge.to == d.head` — which is why `zz-design-4c`'s own `取得 --> 処理` could never be a
+        // straight trunk: alignment simply never saw it. What makes it sound to let it through is
+        // `lane_units`: the anchor stands for its whole block, and a lane that picks it moves every
+        // descendant by the same delta (`orthogonal::LaneUnits`'s own doc). Self-loops stay out —
+        // a `(id, id)` pair would be selected as its own lane and then never appear as a chain head.
         let candidates: Vec<(String, String)> = drawable
             .iter()
-            .filter(|d| d.edge.from == d.tail && d.edge.to == d.head)
+            .filter(|d| d.tail != d.head)
             .map(|d| (d.tail.clone(), d.head.clone()))
             .collect();
         // §10-3's "ファン列内の並び順" (`docs/FEATURE-MERMAID-RENDERER.md`, `regroup_fan_lanes`'s own
@@ -1452,8 +1467,13 @@ fn lay_out_spec_pass(
         // grouped slot is what finally gives that sweep room to grant it the centreline. Its own
         // return is *not* always thrown away — see `touched` below: when `regroup_fan_lanes` finds
         // nothing to reorder, this first call's own results are the final ones.
-        let (probe_deltas, chain_next_probe) =
-            orthogonal::align_straight_lanes(spec.direction, &mut nodes, &node_rank, &candidates);
+        let (probe_deltas, chain_next_probe) = orthogonal::align_straight_lanes(
+            spec.direction,
+            &mut nodes,
+            &node_rank,
+            &candidates,
+            &lane_units,
+        );
         let has_class: HashMap<String, bool> = spec
             .nodes
             .iter()
@@ -1493,6 +1513,7 @@ fn lay_out_spec_pass(
                 &node_rank,
                 &candidates,
                 Some(&chain_next_probe),
+                &lane_units,
             );
         } else {
             (alignment_deltas, chain_next) = (probe_deltas, chain_next_probe);
@@ -1531,7 +1552,13 @@ fn lay_out_spec_pass(
     };
 
     // --- read the frames back, then grow them until their titles fit ----------------------------
-    let placed_clusters = read_clusters(&g, &tree, &nodes);
+    //
+    // Runs **after** every pass above that can still move a node (`pull_back_fan_ranks`,
+    // `align_straight_lanes`, `regroup_fan_lanes`) and **before** every pass below that reads a
+    // frame (`clear_foreign_cluster_overlaps`, `route_flowchart`'s own cluster ports and
+    // `content_bounds`): that ordering is what makes a frame derived from its members correct rather
+    // than stale, and it is the single place either fact is stated (`read_clusters`'s own doc).
+    let mut placed_clusters = read_clusters(&g, &tree, &nodes, spec.routing);
 
     // §10-5 part-3 item 1: a node that is not a member of a cluster must never end up sitting
     // inside that cluster's frame — `orthogonal::clear_foreign_cluster_overlaps`'s own doc has the
@@ -1540,14 +1567,28 @@ fn lay_out_spec_pass(
     // after every pass above that can still move a node's cross coordinate and after `placed_
     // clusters` has read every frame's final rectangle back, and before `route_flowchart` (below)
     // reads either `nodes` or `placed_clusters` to place a single port.
+    //
+    // Whatever it pushes clear of one frame is usually a member of **another** (`zz-design-2b`'s
+    // `解析サンドボックス` belongs to `クラウド` and overlapped its sibling `保存層`), so the frames are
+    // derived again from the moved members — round 4's own rule that a frame follows its contents
+    // rather than the other way round. Bounded rather than iterated to a fixpoint, the same
+    // finite-retry shape `lay_out_spec`'s own growth loop uses: a re-derived frame is larger, which
+    // can in principle swallow a node that was clear a moment ago, and two rounds settle every
+    // corpus source there is (measured: the second round already reports nothing moved).
     if spec.routing == Routing::Orthogonal {
-        orthogonal::clear_foreign_cluster_overlaps(
-            spec.direction,
-            &mut nodes,
-            &placed_clusters,
-            &tree,
-        );
+        for _ in 0..2 {
+            if !orthogonal::clear_foreign_cluster_overlaps(
+                spec.direction,
+                &mut nodes,
+                &placed_clusters,
+                &tree,
+            ) {
+                break;
+            }
+            rebuild_frames(&mut placed_clusters, &tree, &nodes);
+        }
     }
+    let placed_clusters = placed_clusters;
 
     // `orthogonal::route_edge`'s branch/merge shapes read a node's out-degree and its edges'
     // target's in-degree (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 1) — counted over exactly
@@ -2097,15 +2138,47 @@ struct Drawable<'a> {
 /// are both excluded from the constraint graph below the same way dagre's own `remove_self_edges`
 /// and cycle-reversal keep them out of its ranking).
 ///
-/// # Scope: no subgraph frames
+/// # Blocks are re-ranked as one unit
 ///
-/// A cluster frame's own rectangle is *read back* after this point (`read_clusters`, `lay_out_spec_pass`'s
-/// own next step) from dagre's compound-layout border nodes — this function never touches border,
-/// edge-label-proxy, or any other non-real node, so widening its scope to a diagram with subgraph
-/// frames would leave a frame's rectangle stale against members this pass just moved out from under
-/// it. `lay_out_spec_pass`'s own call site gates this on `tree.is_empty()` for exactly that reason;
-/// a clustered diagram keeps dagre's own rank and position, unchanged, same as `Routing::Splines`
-/// always has.
+/// §10-5 round 4. Until then this pass was skipped outright for any diagram with a frame in it
+/// (`tree.is_empty()`), because a frame's rectangle was *read back* from dagre's own compound-layout
+/// border nodes and this pass never touches a border node — so a moved member left the frame around
+/// it stale. `rebuild_frames` removes that reason: under `Routing::Orthogonal` a frame is derived
+/// from its members afterwards, so moving a member is simply moving a member.
+///
+/// What replaces the gate is a **unit**: every top-level block is one, and so is every node no block
+/// holds ([`clusters::Tree::outermost`]). A unit's members keep their relative *level* — their index
+/// within the sorted set of dagre ranks the unit's own members occupy — so the block's interior
+/// ordering survives untouched and only the block as a whole is re-layered. An edge crossing a
+/// border therefore reads as a constraint between two units, offset by the two levels it actually
+/// touches:
+///
+/// ```text
+/// start[unit(head)]  >=  start[unit(tail)] + level(tail) + minlen - level(head)
+/// ```
+///
+/// which is exactly the plain node ASAP rule when both units are single nodes (both levels are 0),
+/// and is what `AnchorRole::Entry`/`Exit` already mean geometrically: an edge into a block arrives
+/// at whichever level its entry member sits on, and one out of a block leaves from its exit
+/// member's. Edges wholly inside one unit are not constraints at all — the levels already encode
+/// them.
+///
+/// Solved by bounded relaxation rather than in one topological sweep: units are *not* guaranteed to
+/// be topologically ordered by their own lowest dagre rank (a wide block can receive an edge into a
+/// late member from a node that sits above the block's own first member), so a single ordered pass
+/// could read a predecessor's start before it was final. If the relaxation has not settled within
+/// one round per unit — only reachable from a cycle in the unit graph, which nesting a *block*'s
+/// members inside it cannot produce but a hand-built [`GraphSpec`] is not stopped from writing —
+/// this pass gives up and leaves dagre's own ranking exactly as it found it, rather than emitting a
+/// half-relaxed layering.
+///
+/// # Room for the frames themselves
+///
+/// The column loop below also has to leave the space a frame needs *around* its members, since
+/// nothing else will: [`clusters::PAD`] beyond the block's own first and last member column, plus
+/// the title band at the top, once per level of nesting that starts (or ends) on that column. That
+/// is the same arithmetic [`rebuild_frames`] does on the cross axis, applied to the flow axis, so a
+/// frame's edge never lands on the node in the column before it.
 ///
 /// # What this does not do
 ///
@@ -2123,6 +2196,7 @@ fn pull_back_fan_ranks(
     sizes: &HashMap<String, Size>,
     measured: &HashMap<&str, &SpecNode>,
     edge_label_dims: &HashMap<String, (f64, f64)>,
+    tree: &clusters::Tree,
 ) {
     let old_rank = |g: &Graph<NodeLabel, EdgeLabel>, id: &str| -> i32 {
         g.node(id).and_then(|n| n.rank).unwrap_or(0)
@@ -2131,10 +2205,37 @@ fn pull_back_fan_ranks(
     let mut ids: Vec<String> = measured.keys().map(|id| id.to_string()).collect();
     ids.sort_by_key(|id| old_rank(g, id));
 
-    // Forward-only adjacency, `(predecessor, minlen)` per node — a back edge or a self-loop is
+    // --- units, and each node's own level inside its unit ---------------------------------------
+    let unit_of: HashMap<&str, &str> = ids
+        .iter()
+        .map(|id| {
+            let unit = tree.outermost(id).unwrap_or(id.as_str());
+            (id.as_str(), unit)
+        })
+        .collect();
+    let mut unit_ranks: HashMap<&str, Vec<i32>> = HashMap::new();
+    for id in &ids {
+        unit_ranks
+            .entry(unit_of[id.as_str()])
+            .or_default()
+            .push(old_rank(g, id));
+    }
+    for rs in unit_ranks.values_mut() {
+        rs.sort_unstable();
+        rs.dedup();
+    }
+    let level_of = |id: &str| -> i32 {
+        let r = old_rank(g, id);
+        unit_ranks
+            .get(unit_of[id])
+            .and_then(|rs| rs.iter().position(|&x| x == r))
+            .unwrap_or(0) as i32
+    };
+
+    // Forward-only adjacency, `(predecessor unit, offset)` per unit — a back edge or a self-loop is
     // never a rank constraint, matching `classify`'s own `is_reverse` and dagre's own
-    // `remove_self_edges`/cycle-reversal respectively (this function's own doc explains why
-    // sorting by `old_rank` first makes this a safe, one-pass, no-recursion computation).
+    // `remove_self_edges`/cycle-reversal respectively, and an edge whose two ends share a unit is
+    // already expressed by the two levels themselves (this function's own doc).
     let mut incoming: HashMap<&str, Vec<(&str, i32)>> = HashMap::new();
     for d in drawable {
         if d.tail == d.head {
@@ -2144,27 +2245,61 @@ fn pull_back_fan_ranks(
         if tr <= sr {
             continue;
         }
+        let (Some(&tail_unit), Some(&head_unit)) =
+            (unit_of.get(d.tail.as_str()), unit_of.get(d.head.as_str()))
+        else {
+            continue;
+        };
+        if tail_unit == head_unit {
+            continue;
+        }
         let minlen = d.edge.minlen.max(1) as i32;
+        let offset = level_of(&d.tail) + minlen - level_of(&d.head);
         incoming
-            .entry(d.head.as_str())
+            .entry(head_unit)
             .or_default()
-            .push((d.tail.as_str(), minlen));
+            .push((tail_unit, offset));
     }
 
-    let mut new_rank: HashMap<String, i32> = HashMap::new();
-    for id in &ids {
-        let r = incoming
-            .get(id.as_str())
-            .map(|preds| {
-                preds
-                    .iter()
-                    .map(|(p, minlen)| new_rank.get(*p).copied().unwrap_or(0) + minlen)
-                    .max()
-                    .unwrap_or(0)
-            })
-            .unwrap_or(0);
-        new_rank.insert(id.clone(), r);
+    // Bounded relaxation to the least fixpoint — see this function's own doc on why one ordered
+    // sweep is not enough, and on why an unsettled result is thrown away rather than used.
+    let mut units: Vec<&str> = unit_ranks.keys().copied().collect();
+    units.sort_unstable();
+    let mut start: HashMap<&str, i32> = units.iter().map(|u| (*u, 0)).collect();
+    let mut settled = false;
+    for _ in 0..=units.len() {
+        let mut changed = false;
+        for u in &units {
+            let Some(preds) = incoming.get(*u) else {
+                continue;
+            };
+            let want = preds
+                .iter()
+                .map(|(p, offset)| start.get(*p).copied().unwrap_or(0) + offset)
+                .max()
+                .unwrap_or(0)
+                .max(0);
+            if want > start[*u] {
+                start.insert(u, want);
+                changed = true;
+            }
+        }
+        if !changed {
+            settled = true;
+            break;
+        }
     }
+    if !settled {
+        return;
+    }
+
+    let new_rank: HashMap<String, i32> = ids
+        .iter()
+        .map(|id| {
+            let r = start[unit_of[id.as_str()]] + level_of(id);
+            (id.clone(), r)
+        })
+        .collect();
 
     // --- recompute the flow-axis coordinate per rank column, tightly packed ---------------------
     //
@@ -2242,28 +2377,57 @@ fn pull_back_fan_ranks(
         }
     }
 
+    // Flow-axis room a frame's own edge needs beyond its first/last member column — one
+    // `clusters::PAD` (plus the title band at the top) per block that starts, or ends, on that
+    // column, summed so a nested block's frame and its parent's each get their own.
+    let (mut frame_head, mut frame_tail): (HashMap<i32, f64>, HashMap<i32, f64>) =
+        (HashMap::new(), HashMap::new());
+    for block in tree.iter() {
+        let member_ranks: Vec<i32> = tree
+            .descendants(&block.id)
+            .iter()
+            .filter_map(|m| new_rank.get(*m).copied())
+            .collect();
+        let (Some(&first), Some(&last)) = (member_ranks.iter().min(), member_ranks.iter().max())
+        else {
+            continue;
+        };
+        let title = Label::measure(&block.title);
+        let head = clusters::PAD
+            + if title.is_blank() {
+                0.0
+            } else {
+                title.height + clusters::TITLE_PAD_Y * 2.0
+            };
+        *frame_head.entry(first).or_insert(0.0) += head;
+        *frame_tail.entry(last).or_insert(0.0) += clusters::PAD;
+    }
+
     let mut column_flow: HashMap<i32, f64> = HashMap::new();
     let mut cursor = MARGIN;
     let mut prev_half = 0.0_f64;
+    let mut prev_tail = 0.0_f64;
     for (i, &r) in distinct_ranks.iter().enumerate() {
         let half = ids
             .iter()
             .filter(|id| new_rank.get(id.as_str()) == Some(&r))
             .map(|id| flow_extent(id))
             .fold(0.0_f64, f64::max);
+        let head = frame_head.get(&r).copied().unwrap_or(0.0);
         let pos = if i == 0 {
-            MARGIN + half
+            MARGIN + head + half
         } else {
             let extra = i
                 .checked_sub(1)
                 .and_then(|p| extra_gap.get(&p))
                 .copied()
                 .unwrap_or(0.0);
-            cursor + prev_half + RANK_SEP + extra + half
+            cursor + prev_half + prev_tail + RANK_SEP + extra + head + half
         };
         column_flow.insert(r, pos);
         cursor = pos;
         prev_half = half;
+        prev_tail = frame_tail.get(&r).copied().unwrap_or(0.0);
     }
 
     for id in &ids {
@@ -2357,12 +2521,17 @@ fn cross_extent_of(direction: Direction, n: &PlacedNode) -> f64 {
 /// the trunk (`before = 2/2 = 1`) — the same rule, unmodified, reproduces both `1b`'s "画像=上・な
 /// し=下" and `3a`'s "ブロックモデル 直下の 数式=上" without a second, size-specific formula.
 ///
-/// Unlike [`pull_back_fan_ranks`], this function is *not* skipped when the diagram has a subgraph
-/// frame (`tree.is_empty()`): it runs in the same, already-unguarded window `align_straight_lanes`
-/// itself always ran in, only ever permutes a rank's own cross-axis order, and never touches a
-/// frame's own border-node coordinates — `read_clusters` (`mod.rs`'s own caller, right after this
-/// point) still reads every member's *final* position, so a frame it computes afterwards already
-/// encloses wherever this pass leaves its members. The full corpus's own subgraph fixtures (`orthogonal_corpus`) are exercised by this scope and pass every invariant test unchanged.
+/// Unlike [`pull_back_fan_ranks`], this pass is *not* cluster-aware, and deliberately so even since
+/// §10-5 round 4 made a block one body everywhere else. It only ever permutes a rank's own
+/// cross-axis order, and its own caller re-runs [`orthogonal::align_straight_lanes`] whenever it
+/// reports having touched anything — so a block's internal spine, which is itself a lane, is
+/// re-straightened by that call before any frame is read (`read_clusters`/`rebuild_frames` run
+/// after it), and a frame left overlapping a neighbour is separated by
+/// [`orthogonal::clear_foreign_cluster_overlaps`] after that. A unit-aware version was written and
+/// then removed: three mutations (space a block by its member's box rather than its frame; move a
+/// block member on its own rather than the block) changed neither a test nor a single byte of any
+/// of the six design-reference renders, because those two later passes re-establish exactly what
+/// it was protecting.
 ///
 /// Callers must re-run [`orthogonal::align_straight_lanes`] afterwards (`lay_out_spec_pass` does):
 /// this function only ever permutes *which* node sits in which cross-axis slot and re-stacks the
@@ -2805,7 +2974,7 @@ fn reserve_pass_through_rows(
     moved
 }
 
-/// Reads the frames dagre computed and grows each one until its title fits inside it.
+/// Reads the frames dagre computed and settles each one's final rectangle.
 ///
 /// A frame arrives from dagre hugging its members: `removeBorderNodes` sets it from the border
 /// nodes' coordinates with no padding of its own, which leaves half a `nodesep` at the sides and
@@ -2818,13 +2987,28 @@ fn reserve_pass_through_rows(
 ///   consequence of `ranksep`, so a one-line title fits and a two-line one does not. mermaid does
 ///   not check, and draws the title over the node.
 ///
-/// Growing runs deepest-first so that a block which grew is final by the time its parent is
-/// measured, and every parent starts by absorbing its children — which is what keeps a grown
-/// block inside the frame that contains it instead of poking out of the top of it.
+/// [`fit_titles`] fixes exactly those two, starting from dagre's own rectangle — which is right for
+/// `Routing::Splines`, whose nodes sit precisely where dagre put them, and every golden file pins
+/// it. It is **not** right for `Routing::Orthogonal`, where three passes have already moved nodes
+/// across the flow since dagre's border nodes were computed (`lay_out_spec_pass`'s own call site
+/// names them), so the rectangle they describe is stale by construction: it only ever grows to
+/// swallow a moved member, never follows one, which leaves a frame lopsided around its own
+/// contents and — because [`orthogonal::classify`] reads a cluster end's box *centre* — makes a
+/// dead-straight lane through a block impossible to draw. So orthogonal takes [`rebuild_frames`]
+/// instead, which derives the rectangle from the members outright.
+///
+/// **Ordering.** Whichever half runs, it runs once, after every pass that can move a node and
+/// before every pass that reads a frame — `lay_out_spec_pass`'s own call site is where that is
+/// stated, and it is the only place it is stated.
+///
+/// Either way the work runs deepest-first so that a block which grew is final by the time its
+/// parent is measured, and every parent starts by absorbing its children — which is what keeps a
+/// nested block inside the frame that contains it instead of poking out of the top of it.
 fn read_clusters(
     g: &Graph<NodeLabel, EdgeLabel>,
     tree: &clusters::Tree,
     nodes: &[PlacedNode],
+    routing: Routing,
 ) -> Vec<PlacedCluster> {
     let mut out: Vec<PlacedCluster> = Vec::new();
     for c in tree.iter() {
@@ -2861,11 +3045,88 @@ fn read_clusters(
     // Outermost first, so drawing them in order puts a nested frame on top of the one that holds
     // it. `sort_by_key` is stable, so blocks at the same depth keep the parser's order.
     out.sort_by_key(|c| c.depth);
-    fit_titles(&mut out, tree, nodes);
+    match routing {
+        Routing::Splines => fit_titles(&mut out, tree, nodes),
+        Routing::Orthogonal => rebuild_frames(&mut out, tree, nodes),
+    }
     out
 }
 
-/// The growing half of [`read_clusters`].
+/// §10-5 round 4: **a frame is its members' bounding box, padded** — never dagre's own border-node
+/// rectangle, which stops describing anything real the moment a post-dagre pass moves a member.
+///
+/// * every side gets [`clusters::PAD`] (§10-1 item 4's "枠とノード…の余白は最低 16px");
+/// * a titled block gets the title's own band on top of that at the top (§10-5 S2's title strip:
+///   `svg::emit_cluster` draws the strip down to exactly `title.height + 2 * TITLE_PAD_Y` below the
+///   frame's top edge, and the interior starts under it), which is the same band [`fit_titles`]
+///   grows for on the splines path;
+/// * and the box is widened *symmetrically* if the title is wider than it, so the frame's own
+///   centre — the point [`orthogonal::classify`] measures a cluster-anchored edge's alignment
+///   against, and [`orthogonal::evict`] hands out ports around — stays exactly where the members
+///   put it. That is what makes "a lane runs dead straight from a node, through a frame's port,
+///   into the block's own internal spine" expressible at all: with the members centred on one
+///   cross coordinate, so is the frame.
+///
+/// Deepest-first, so a nested block is already final when the block holding it measures itself, and
+/// a parent's box is derived from that final child rectangle rather than from the child's members
+/// again — which is what makes the nesting gap exactly one [`clusters::PAD`] per level.
+///
+/// A block whose members this pass cannot find at all (none placed) keeps whatever rectangle
+/// `read_clusters` read: there is nothing to derive from, and dropping the frame outright would
+/// silently lose a box the source asked for.
+fn rebuild_frames(clusters: &mut [PlacedCluster], tree: &clusters::Tree, nodes: &[PlacedNode]) {
+    let mut order: Vec<usize> = (0..clusters.len()).collect();
+    order.sort_by(|a, b| clusters[*b].depth.cmp(&clusters[*a].depth));
+
+    for i in order {
+        let id = clusters[i].id.clone();
+        let mut rect: Option<clusters::Rect> = None;
+        let hold = |r: clusters::Rect, rect: &mut Option<clusters::Rect>| match rect {
+            Some(cur) => cur.absorb(&r),
+            None => *rect = Some(r),
+        };
+        for c in clusters.iter() {
+            if c.parent.as_deref() == Some(id.as_str()) {
+                hold(clusters::Rect::new(&c.center, c.size), &mut rect);
+            }
+        }
+        if let Some(block) = tree.get(&id) {
+            for m in &block.member_nodes {
+                if let Some(n) = nodes.iter().find(|n| &n.id == m) {
+                    let (l, t, r, b) = n.bounds();
+                    hold(
+                        clusters::Rect {
+                            left: l,
+                            top: t,
+                            right: r,
+                            bottom: b,
+                        },
+                        &mut rect,
+                    );
+                }
+            }
+        }
+        let Some(mut rect) = rect else { continue };
+        rect.left -= clusters::PAD;
+        rect.right += clusters::PAD;
+        rect.top -= clusters::PAD;
+        rect.bottom += clusters::PAD;
+
+        let title = clusters[i].title.clone();
+        if !title.is_blank() {
+            rect.top -= title.height + clusters::TITLE_PAD_Y * 2.0;
+            let short = (title.width + clusters::TITLE_PAD_X) - rect.size().w;
+            if short > 0.0 {
+                rect.left -= short / 2.0;
+                rect.right += short / 2.0;
+            }
+        }
+        clusters[i].center = rect.center();
+        clusters[i].size = rect.size();
+    }
+}
+
+/// The growing half of [`read_clusters`] under `Routing::Splines`.
 fn fit_titles(clusters: &mut [PlacedCluster], tree: &clusters::Tree, nodes: &[PlacedNode]) {
     let mut order: Vec<usize> = (0..clusters.len()).collect();
     order.sort_by(|a, b| clusters[*b].depth.cmp(&clusters[*a].depth));

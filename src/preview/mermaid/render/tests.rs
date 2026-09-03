@@ -1025,6 +1025,71 @@ pub(super) fn check_foreign_nodes_stay_out_of_clusters(
     }
 }
 
+/// (6c) §10-5 round 4: under `konoma-orthogonal` a frame is not merely *big enough* for its
+/// members — it is **derived** from them. Every side sits exactly [`clusters::PAD`] beyond the
+/// members' own bounding box, plus the title's band at the top, and the box is only ever widened
+/// symmetrically for a title too wide for it (`super::rebuild_frames`).
+///
+/// (6) alone cannot state this: dagre's own border-node rectangle held its members too, and it was
+/// still stale — lopsided around them by however far the post-dagre passes had moved one. What the
+/// exact derivation buys is the frame's own *centre*, which is what
+/// [`super::orthogonal::classify`] measures a cluster-anchored edge's alignment against and what
+/// [`super::orthogonal::evict`] hands out ports around; a frame merely "big enough" makes a
+/// dead-straight lane through a block impossible to draw.
+pub(super) fn check_frames_are_derived_from_members(
+    name: &str,
+    d: &Diagram,
+    tree: &clusters::Tree,
+) {
+    for c in &d.clusters {
+        let mut bbox: Option<(f64, f64, f64, f64)> = None;
+        let mut hold = |(l, t, r, b): (f64, f64, f64, f64)| {
+            bbox = Some(match bbox {
+                Some((cl, ct, cr, cb)) => (cl.min(l), ct.min(t), cr.max(r), cb.max(b)),
+                None => (l, t, r, b),
+            });
+        };
+        for child in d
+            .clusters
+            .iter()
+            .filter(|k| k.parent.as_deref() == Some(&c.id))
+        {
+            hold(child.bounds());
+        }
+        if let Some(block) = tree.get(&c.id) {
+            for m in &block.member_nodes {
+                if let Some(n) = d.nodes.iter().find(|n| &n.id == m) {
+                    hold(n.bounds());
+                }
+            }
+        }
+        let Some((l, t, r, b)) = bbox else { continue };
+        let pad = clusters::PAD;
+        let band = if c.title.is_blank() {
+            0.0
+        } else {
+            c.title.height + clusters::TITLE_PAD_Y * 2.0
+        };
+        let (fl, ft, fr, fb) = c.bounds();
+        // A title wider than its contents pushes both sides out by the same amount, so the *width*
+        // may exceed the derived one — but never asymmetrically, and never at top or bottom.
+        let widened = ((fr - fl) - (r - l + 2.0 * pad)).max(0.0) / 2.0;
+        for (label, got, want) in [
+            ("left", fl, l - pad - widened),
+            ("right", fr, r + pad + widened),
+            ("top", ft, t - pad - band),
+            ("bottom", fb, b + pad),
+        ] {
+            assert!(
+                (got - want).abs() <= 0.01,
+                "{name}: frame {} {label} edge is {got:.2}, derived from its members it should be \
+                 {want:.2}",
+                c.id
+            );
+        }
+    }
+}
+
 #[test]
 fn invariant_clusters_hold_their_members() {
     if !text_metrics::fonts_available() {
@@ -1032,6 +1097,24 @@ fn invariant_clusters_hold_their_members() {
     }
     for (name, src) in CORPUS {
         check_clusters_hold_their_members(name, &laid_out(src), &tree_of_src(src));
+    }
+}
+
+/// (6c) over every orthogonal fixture there is, including the design references — the invariant
+/// `super::rebuild_frames` exists to satisfy, stated against the real render rather than against
+/// the function's own arithmetic.
+#[test]
+fn invariant_orthogonal_frames_are_derived_from_their_members() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+        .chain(orthogonal_design_reference_corpus())
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        check_frames_are_derived_from_members(name, &d, &tree_of_src(src));
     }
 }
 
@@ -8463,6 +8546,13 @@ fn orthogonal_design_reference_dump() {
 /// own eviction growth *does* (a face too narrow for its ports grows the node, and `lay_out_spec`
 /// re-lays the whole diagram out from the grown size), so nothing before this audit had actually
 /// checked a frame still holds its members once that growth has happened.
+///
+/// The design-reference sources were **not** in this list until §10-5 round 4, and that gap cost a
+/// real bug: `zz-design-2b`'s own `解析サンドボックス` (a member of `クラウド` that
+/// `clear_foreign_cluster_overlaps` pushed clear of its sibling frame `保存層`) ended up outside its
+/// own frame, and every test stayed green — the state-diagram sibling of this test
+/// (`state_tests::orthogonal_state_nodes_and_clusters_stay_correct_after_growth`) had been running
+/// its own half of the design corpus all along, so only the flowchart half was blind.
 #[test]
 fn invariant_orthogonal_clusters_hold_their_members() {
     if !text_metrics::fonts_available() {
@@ -8471,6 +8561,7 @@ fn invariant_orthogonal_clusters_hold_their_members() {
     for (name, src) in orthogonal_corpus()
         .into_iter()
         .chain(orthogonal_only_corpus())
+        .chain(orthogonal_design_reference_corpus())
     {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
         let tree = tree_of_src(src);
@@ -8506,6 +8597,7 @@ fn invariant_orthogonal_nested_clusters_sit_inside_their_parent() {
     for (name, src) in orthogonal_corpus()
         .into_iter()
         .chain(orthogonal_only_corpus())
+        .chain(orthogonal_design_reference_corpus())
     {
         check_nested_clusters_sit_inside_their_parent(
             name,
@@ -8522,6 +8614,7 @@ fn invariant_orthogonal_unrelated_clusters_do_not_overlap() {
     for (name, src) in orthogonal_corpus()
         .into_iter()
         .chain(orthogonal_only_corpus())
+        .chain(orthogonal_design_reference_corpus())
     {
         check_unrelated_clusters_do_not_overlap(
             name,
@@ -8538,6 +8631,7 @@ fn invariant_orthogonal_cluster_titles_stay_inside_their_frame_and_off_every_nod
     for (name, src) in orthogonal_corpus()
         .into_iter()
         .chain(orthogonal_only_corpus())
+        .chain(orthogonal_design_reference_corpus())
     {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
         let tree = tree_of_src(src);
