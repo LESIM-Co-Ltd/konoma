@@ -5204,18 +5204,22 @@ fn orthogonal_branch_and_merge_edges_share_a_face_one_aligned_one_bends_twice() 
         "B->C (aligned) exits exactly on B's centre: {bc_exit_y} vs {}",
         b_node.center.y
     );
-    // B->D exits B's own Top face (D sits above B's own row), centred on it — B's only claim on
-    // that face — [`orthogonal::PORT_INSET`] outside the node's own top edge.
-    let (_, b_top, _, _) = b_node.bounds();
+    // B->D exits B's own Bottom face (D sits below B's own row), centred on it — B's only claim on
+    // that face — [`orthogonal::PORT_INSET`] outside the node's own bottom edge. *Below*, not
+    // above: `D` is a dead end (no out-edge of its own), and `super::fan_split` gives a dead-end
+    // branch the positive cross side. Until §10-3 item 11's own split was restated in terms of
+    // continuity (`docs/STATUS.md`'s own ★未修正 G8) the flat `before = len / 2` formula put the
+    // sole non-trunk branch above regardless of what it led to, and this assertion read `b_top`.
+    let (_, _, _, b_bottom) = b_node.bounds();
     let bd_exit = &bd.points[0];
     assert!(
         (bd_exit.x - b_node.center.x).abs() < 1e-6,
-        "B->D exits centred on B's own Top face: {bd_exit:?} vs centre x {}",
+        "B->D exits centred on B's own Bottom face: {bd_exit:?} vs centre x {}",
         b_node.center.x
     );
     assert!(
-        (bd_exit.y - (b_top - orthogonal::PORT_INSET)).abs() < 1e-6,
-        "B->D exits PORT_INSET outside B's own top edge: {bd_exit:?} vs top {b_top}",
+        (bd_exit.y - (b_bottom + orthogonal::PORT_INSET)).abs() < 1e-6,
+        "B->D exits PORT_INSET outside B's own bottom edge: {bd_exit:?} vs bottom {b_bottom}",
     );
 
     let merge = laid_out_flow(
@@ -9434,36 +9438,244 @@ fn orthogonal_settings_rules_sample_block_model_fan_puts_math_above_the_mermaid_
     );
 }
 
-/// A minimal, hand-built counterpart to the corpus pin above: a two-way fan with no colour classes
-/// at all (`3a`'s own `1b` case — a plain "image / none" split, `docs/FEATURE-MERMAID-RENDERER.md`
-/// §10-3 item 11's own "1b: 画像=上・なし=下"), confirming the rule holds independent of the
-/// colour-grouping machinery `regroup_fan_lanes_groups_by_colour_centres_the_trunk_and_pushes_
-/// classless_outermost` already pins for larger fans: with exactly one non-trunk member and no
-/// class on either child, `rest` still has exactly one entry, and `before = len / 2 = 1` still
-/// puts it ahead of the trunk.
+/// A minimal, hand-built counterpart to the corpus pin above, for the *other* half of
+/// [`super::fan_split`]'s own one-branch rule: a two-way fan with no colour classes at all, whose
+/// sole non-trunk branch is a **dead end** (`A` has no out-edge), goes *after* the trunk — the
+/// positive cross side, `LR` down / `TB` right.
+///
+/// This test used to assert the opposite (`A` before `T`) and was named for it. That expectation
+/// was the `before = len / 2` formula written down as if it were the rule, and
+/// `docs/STATUS.md`'s own ★未修正 **G8** is what it cost: `zz-design-4b`'s own `休止` (a dead end
+/// off `分岐`) came out *above* the `更新` trunk where every design reference puts it below. The
+/// formula was reverse-engineered from `1b` and `3a`'s own `ブロックモデル`, and in **both** of those
+/// the sole non-trunk branch happens to be one that continues (`1b`'s `画像 → デコード`, `3a`'s
+/// `数式 → ラスタライズ`) — so "before" and "continues" were indistinguishable in the two examples
+/// the formula came from. Run over all nine non-trunk branches of the design references at once,
+/// only continuity explains them; this fixture is the case that separates the two readings, which
+/// is why it is stated in both directions here.
 #[test]
-fn orthogonal_synthetic_two_way_fan_puts_the_non_trunk_member_before_the_trunk() {
-    let src = "flowchart LR\n  S --> A\n  S --> T\n  T --> D\n";
+fn orthogonal_synthetic_two_way_fan_puts_a_dead_end_branch_after_the_trunk() {
+    // `LR` (cross axis is y: "after" is down) and `TB` (cross axis is x: "after" is right). The
+    // third case adds a self-loop on `A`: a branch that only loops back to itself is still a dead
+    // end (`regroup_fan_lanes`'s own `continues` doc), so nothing about its side changes.
+    for (direction, cross_of, extra) in [
+        (
+            "LR",
+            (|n: &PlacedNode| n.center.y) as fn(&PlacedNode) -> f64,
+            "",
+        ),
+        ("TB", |n: &PlacedNode| n.center.x, ""),
+        ("LR", |n: &PlacedNode| n.center.y, "  A --> A\n"),
+    ] {
+        let src = format!("flowchart {direction}\n  S --> A\n  S --> T\n  T --> D\n{extra}");
+        let d = laid_out_flow(&src, "basis", "konoma-orthogonal");
+        let a = d.node("A").expect("A must exist");
+        let t = d.node("T").expect("T must exist");
+        let st = d
+            .edges
+            .iter()
+            .find(|e| e.from == "S" && e.to == "T")
+            .expect("S->T must exist");
+        assert_eq!(
+            st.points.len(),
+            2,
+            "{direction}: S->T is the trunk (T continues the chain via T->D) — a straight 2-point \
+             line: {:?}",
+            st.points
+        );
+        assert!(
+            cross_of(a) > cross_of(t),
+            "{direction}: the sole non-trunk branch (A) is a dead end, so it takes the positive \
+             cross side — after the trunk (T): A={:.1}, T={:.1}",
+            cross_of(a),
+            cross_of(t)
+        );
+    }
+}
+
+/// [`super::fan_split`]'s own two-branch case, in 1b's regime: **both** cross-axis faces are spoken
+/// for whatever the branches' continuity is, so the split stays at the centre and the trunk keeps
+/// one branch on each side.
+///
+/// Stated twice, once for each way the two branches can agree. Both continuing (`A -> P`, `B -> Q`)
+/// is the configuration where a naive "every continuing branch goes before the trunk" would stack
+/// both on one side and leave the other face empty; both dead ends is `3a`'s own `端末` fan
+/// (`圧縮転送` above, `ハーフブロック` below `画像プロトコル`), where the same naive reading would
+/// stack both *after* it. 1b's basic shape can seat neither.
+#[test]
+fn orthogonal_three_way_fan_whose_branches_agree_keeps_one_on_each_side() {
+    for (what, tail) in [
+        ("both continue", "  A --> P\n  B --> Q\n"),
+        ("both dead-end", ""),
+    ] {
+        let src = format!("flowchart LR\n  S --> A\n  S --> T\n  T --> D\n  S --> B\n{tail}");
+        let d = laid_out_flow(&src, "basis", "konoma-orthogonal");
+        let a = d.node("A").expect("A must exist");
+        let b = d.node("B").expect("B must exist");
+        let t = d.node("T").expect("T must exist");
+        assert!(
+            a.center.y < t.center.y && t.center.y < b.center.y,
+            "{what}: the trunk (T) keeps the centre slot with one branch either side: A.y={}, \
+             T.y={}, B.y={}",
+            a.center.y,
+            t.center.y,
+            b.center.y
+        );
+    }
+}
+
+/// `zz-design-2b`/`2c`'s own spine: **`API ゲート → ジョブキュー → ジョブ実行系 → 解析サンドボックス
+/// → コード置き場` is one straight run, and the two `保存層` stores fan off to one side of it** — the
+/// composition both design references draw, stated once for each axis (`2b` is `LR`, `2c` the same
+/// graph `TB`).
+///
+/// `ジョブ実行系` has four out-edges and only `解析サンドボックス` continues (into `コード置き場`,
+/// a member of a *different* frame), so `align_straight_lanes` picks it as the chain's own
+/// continuation — that part was never in doubt. What was wrong is where the rank then put it:
+/// `メタデータ DB` and `成果物保管` are members of `保存層` inside the same `クラウド` frame
+/// `ジョブ実行系` and `解析サンドボックス` sit in, and every pass that spaces a rank read each node's
+/// **outermost** frame, so all four counted as one indivisible unit and none of them was ever spaced
+/// against another. `解析サンドボックス` came out at *exactly* the same point as `成果物保管`, and
+/// `clear_foreign_cluster_overlaps` — which runs much later and knows nothing about lanes — broke
+/// the tie by shoving the one that was foreign to `保存層`, i.e. the lane's own member, out of the
+/// frame and off the spine. `成果物保管` was then left sitting on the lane, which is what read as
+/// "`成果物保管` is the straight continuation".
+///
+/// Which side the two stores end up on is dagre's own rank order, not a rule of §10-3's, so this
+/// asserts only that they are together and on *a* side, never which.
+#[test]
+fn orthogonal_design_2b_2c_spine_runs_straight_through_the_sandbox() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_design_reference_corpus()
+        .into_iter()
+        .filter(|(n, _)| *n != "zz-design-2a")
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for (from, to) in [("API", "Q"), ("Q", "W"), ("W", "SB"), ("SB", "GIT")] {
+            let e = d
+                .edges
+                .iter()
+                .find(|e| e.from == from && e.to == to)
+                .unwrap_or_else(|| panic!("{name}: {from}->{to} must exist"));
+            assert_eq!(
+                e.points.len(),
+                2,
+                "{name}: {from}->{to} is a spine segment — a straight 2-point line: {:?}",
+                e.points
+            );
+        }
+        // The two stores sit together, entirely to one side of the spine's own lane.
+        let cross = |id: &str| {
+            let n = d
+                .node(id)
+                .unwrap_or_else(|| panic!("{name}: {id} must exist"));
+            match name {
+                "zz-design-2b" => (n.center.y, n.size.h),
+                _ => (n.center.x, n.size.w),
+            }
+        };
+        let (lane, span) = cross("SB");
+        for store in ["DB", "AR"] {
+            let (c, store_span) = cross(store);
+            assert!(
+                (c - lane).abs() > (span + store_span) / 2.0,
+                "{name}: {store} (at {c:.1}) must fan clear of the spine's own lane ({lane:.1})"
+            );
+        }
+        let ((db, _), (ar, _)) = (cross("DB"), cross("AR"));
+        assert_eq!(
+            db < lane,
+            ar < lane,
+            "{name}: both 保存層 members belong on the same side of the spine — DB at {db:.1}, AR \
+             at {ar:.1}, lane at {lane:.1}"
+        );
+    }
+}
+
+/// The same shape as the fixture above, hand-built and minimal: a branching node whose only
+/// continuing branch leads *out of* the frame its dead-end siblings are in.
+///
+/// `C` continues (into `F`, which is a member of a *different* frame, so the branch that carries the
+/// diagram on is one that crosses a cluster boundary — `zz-design-2c`'s own `解析サンドボックス →
+/// コード置き場` in miniature), `D` and `E` do not and are the members of `store`. The trunk has to be
+/// `C`, the trunk edge has to be straight, and `C` — which does not belong to `store` — must not be
+/// laid out *between* `D` and `E`, because a frame is derived from wherever its members sit and `C`
+/// would then be inside a frame it has nothing to do with.
+#[test]
+fn orthogonal_fan_keeps_a_frames_members_together_and_the_trunk_outside_it() {
+    let src = "flowchart TB\n  A --> B\n  B --> C\n  B --> D\n  B --> E\n  C --> F\n  \
+               subgraph S[store]\n    D\n    E\n  end\n  subgraph T[out]\n    F\n  end\n";
     let d = laid_out_flow(src, "basis", "konoma-orthogonal");
-    let a = d.node("A").expect("A must exist");
-    let t = d.node("T").expect("T must exist");
-    let st = d
+    let bc = d
         .edges
         .iter()
-        .find(|e| e.from == "S" && e.to == "T")
-        .expect("S->T must exist");
+        .find(|e| e.from == "B" && e.to == "C")
+        .expect("B->C must exist");
     assert_eq!(
-        st.points.len(),
+        bc.points.len(),
         2,
-        "S->T is the trunk (T continues the chain via T->D) — a straight 2-point line: {:?}",
-        st.points
+        "B->C is the trunk (C is the only branch that continues) — a straight line: {:?}",
+        bc.points
     );
+    let x = |id: &str| {
+        d.node(id)
+            .unwrap_or_else(|| panic!("{id} must exist"))
+            .center
+            .x
+    };
+    assert_eq!(
+        x("D") < x("C"),
+        x("E") < x("C"),
+        "store's two members belong on the same side of C, which is not one of them: D={}, E={}, \
+         C={}",
+        x("D"),
+        x("E"),
+        x("C")
+    );
+    let frame = d.cluster("S").expect("the store frame must be placed");
+    let (left, right) = (
+        frame.center.x - frame.size.w / 2.0,
+        frame.center.x + frame.size.w / 2.0,
+    );
+    let c = d.node("C").expect("C must exist");
     assert!(
-        a.center.y < t.center.y,
-        "the sole non-trunk member (A) must sit before the trunk (T), same as the fan's own \
-         `before = len / 2 = 1` split: A.y={}, T.y={}",
-        a.center.y,
-        t.center.y
+        c.center.x + c.size.w / 2.0 < left || c.center.x - c.size.w / 2.0 > right,
+        "C is not a member of store, so its box must sit clear of that frame ({left:.1}..{right:.1}): \
+         C at {:.1} wide {:.1}",
+        c.center.x,
+        c.size.w
+    );
+}
+
+/// [`super::fan_split`]'s own two-branch case again, this time with the branches *disagreeing*: the
+/// dead end takes the positive cross side even when it was declared first, so the trunk still sits
+/// on the continuity boundary rather than wherever declaration order left it.
+///
+/// `A` is written before `B` and neither carries a class, so the colour grouping hands `rest` over
+/// as `[A, B]` — dead end first. Without the stable partition [`super::fan_split`] runs, the centre
+/// split would put `A` *above* the trunk and the continuing `B` below it; with it, `A` is last. The
+/// assertion is on `A` alone rather than on the whole order, because `T` and `B` both continue and
+/// the trunk pick between two equally-continuing branches is `align_straight_lanes`'s own
+/// coordinate tie-break, not this rule's — whichever of them wins, the dead end belongs after it.
+#[test]
+fn orthogonal_three_way_fan_orders_the_continuing_branch_ahead_of_the_dead_end() {
+    let src = "flowchart LR\n  S --> A\n  S --> T\n  T --> D\n  S --> B\n  B --> Q\n";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let y = |id: &str| {
+        d.node(id)
+            .unwrap_or_else(|| panic!("{id} must exist"))
+            .center
+            .y
+    };
+    assert!(
+        y("A") > y("T") && y("A") > y("B"),
+        "A is the fan's only dead end, so it sits below both continuing branches however they were \
+         declared: A.y={}, T.y={}, B.y={}",
+        y("A"),
+        y("T"),
+        y("B")
     );
 }
 

@@ -2307,3 +2307,82 @@ fn orthogonal_design_4a_back_edge_label_room_stays_outside_the_frame() {
         super::RANK_SEP
     );
 }
+
+/// `zz-design-4a`'s own **G6** (`docs/STATUS.md`'s own ★未修正): **`Q` leaves `ツリー`'s right face
+/// and reaches the end marker in one bend**, because the marker is a dead end and `プレビュー` — the
+/// trunk `ツリー` continues into — is not.
+///
+/// `ツリー` fans to exactly two members of one rank: the composite `プレビュー` (dagre anchors that
+/// edge on the block's own entry member, `プレビュー_start`) and the diagram's own end marker. That
+/// is `super::fan_split`'s one-branch case, and the branch is a dead end, so it takes the positive
+/// cross side — `TB`'s right. Before the split was restated in terms of continuity, the flat
+/// `before = len / 2` formula put the marker on the *left* instead, and `Q` left `ツリー`'s left face
+/// (`docs/render-check/zz-compare-4a-*.png`, the picture the design reference is read against).
+///
+/// Stated as "which side, and how many bends", not as coordinates: the design reference is a
+/// composition, and §10-4's own rule is not to chase its numbers.
+#[test]
+fn orthogonal_design_4a_the_end_marker_sits_right_of_the_trunk_one_bend_away() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let d = laid_out_orthogonal(design_reference_source("zz-design-4a"));
+    let (tree_node, marker) = (node_of(&d, "ツリー"), node_of(&d, "root_end"));
+    let entry = node_of(&d, "プレビュー_start");
+    assert!(
+        marker.center.x > entry.center.x,
+        "the end marker (x={:.2}) is the dead-end branch, so it takes the right of the プレビュー \
+         trunk (x={:.2})",
+        marker.center.x,
+        entry.center.x
+    );
+    let q = edge_of(&d, "ツリー", "root_end");
+    assert_eq!(
+        q.points.len(),
+        3,
+        "Q leaves ツリー's own cross-axis face and bends once into the marker's pole: {:?}",
+        q.points
+    );
+    let (_, _, tree_right, _) = tree_node.bounds();
+    assert!(
+        (q.points[0].x - (tree_right + orthogonal::PORT_INSET)).abs() <= 0.51
+            && (q.points[0].y - tree_node.center.y).abs() <= 0.51,
+        "Q exits ツリー's right face, centred on it: {:?} vs right edge {tree_right:.2}, centre y \
+         {:.2}",
+        q.points[0],
+        tree_node.center.y
+    );
+}
+
+/// `zz-design-4b`'s own **G8** (`docs/STATUS.md`'s own ★未修正): **`休止` sits below the `更新`
+/// trunk**, not above it.
+///
+/// The `分岐` choice fans to two states: `更新`, which carries the diagram on (`更新 → 通知 → 待機`),
+/// and `休止`, which ends there. `super::fan_split`'s one-branch case puts the dead end on the
+/// positive cross side — `LR`'s down. This is the fixture that separates "the sole non-trunk branch
+/// goes before the trunk" (the old `before = len / 2` formula, which every earlier reference happened
+/// to agree with because its own sole branch continued) from "a dead end goes after it".
+#[test]
+fn orthogonal_design_4b_the_dead_end_branch_sits_below_the_trunk() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let d = laid_out_orthogonal(design_reference_source("zz-design-4b"));
+    let (update, pause) = (node_of(&d, "更新"), node_of(&d, "休止"));
+    assert!(
+        pause.center.y > update.center.y,
+        "休止 (y={:.2}) is the dead end and belongs below the 更新 trunk (y={:.2})",
+        pause.center.y,
+        update.center.y
+    );
+    // And the trunk itself stays the diagram's straight spine through the choice.
+    for (from, to) in [("待機", "監視"), ("監視", "分岐"), ("分岐", "更新")] {
+        let e = edge_of(&d, from, to);
+        assert_eq!(
+            e.points.len(),
+            2,
+            "{from} -> {to} is a spine segment — a straight 2-point line: {:?}",
+            e.points
+        );
+    }
+}

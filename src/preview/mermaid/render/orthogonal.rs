@@ -158,7 +158,12 @@ pub const PORT_CLEARANCE: f64 = 8.0;
 /// [`classify`]'s own "多本数ファンアウト" threshold: the most branches 1b's basic shape (one
 /// straight trunk plus one on each of the two cross-axis faces) can seat one-per-face before the
 /// retreat rule has to take over — `classify`'s own `fan_eligible` doc has the full derivation.
-const FAN_ELIGIBLE_MIN_BRANCHES: usize = 3;
+///
+/// `pub(super)` because the same threshold separates the same two regimes on the *placement* side:
+/// `mod.rs`'s own `regroup_fan_lanes` decides a branch's cross-axis side from its own continuity
+/// while 1b's one-branch-per-face shape holds, and hands the order back to §10-3 item 1's own
+/// colour grouping once the retreat rule has packed every branch onto one face instead.
+pub(super) const FAN_ELIGIBLE_MIN_BRANCHES: usize = 3;
 
 /// §10-5 S3 ("流れと直交する辺…の中心±8pxの2ポート"): how far each of a self-transition's two
 /// dedicated ports sits from its face's own centre — never the generic [`PORT_SPACING`]/[`evict`]
@@ -3743,7 +3748,14 @@ fn cross_extent(direction: Direction, node: &PlacedNode) -> f64 {
 pub struct LaneUnits {
     /// Node id → the id of the outermost block holding it. A node with no block is simply absent.
     of_node: HashMap<String, String>,
-    /// Block id → every node id under it, nested blocks flattened in.
+    /// Node id → every block holding it, **outermost first**. A node with no block is simply absent.
+    /// What [`LaneUnits::separating_unit`] walks: which body a node moves as depends on who it is
+    /// being spaced against, and only the full chain can answer that.
+    ancestors: HashMap<String, Vec<String>>,
+    /// Block id → every node id under it, nested blocks flattened in. Every block, not only an
+    /// outermost one: [`LaneUnits::separating_unit`] can name a nested block as a unit, and
+    /// [`LaneUnits::band`]/[`LaneUnits::shift`] have to answer for it. [`LaneUnits::unit_of`] still
+    /// only ever returns an outermost block, so nothing that asks the old question sees a change.
     members: HashMap<String, Vec<String>>,
     /// Block id → how much blank space its own frame leaves around its members' bounding box on one
     /// cross-axis side: [`super::clusters::PAD`] for a leaf block, plus one more for every level of
@@ -3758,23 +3770,40 @@ pub struct LaneUnits {
 impl LaneUnits {
     /// Builds the model for one diagram's own block tree. `nodes` is only read for its ids.
     pub fn build(tree: &super::clusters::Tree, nodes: &[PlacedNode]) -> LaneUnits {
+        let placed: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
         let mut of_node: HashMap<String, String> = HashMap::new();
-        let mut members: HashMap<String, Vec<String>> = HashMap::new();
         for n in nodes {
             let Some(unit) = tree.outermost(&n.id) else {
                 continue;
             };
             of_node.insert(n.id.clone(), unit.to_string());
-            members
-                .entry(unit.to_string())
-                .or_default()
-                .push(n.id.clone());
+        }
+        // Every block's own placed members, and the mirror image of that map — each node's own
+        // ancestor blocks. Built from the same walk so the two can never disagree; shallowest
+        // first, which is the order `separating_unit` needs (the outermost body that still leaves
+        // the neighbour outside is the one that moves).
+        let mut blocks: Vec<&super::clusters::Cluster> = tree.iter().collect();
+        blocks.sort_by_key(|b| b.depth);
+        let mut members: HashMap<String, Vec<String>> = HashMap::new();
+        let mut ancestors: HashMap<String, Vec<String>> = HashMap::new();
+        for b in &blocks {
+            let held: Vec<String> = tree
+                .descendants(&b.id)
+                .into_iter()
+                .filter(|d| placed.contains(d))
+                .map(str::to_string)
+                .collect();
+            if held.is_empty() {
+                continue;
+            }
+            for id in &held {
+                ancestors.entry(id.clone()).or_default().push(b.id.clone());
+            }
+            members.insert(b.id.clone(), held);
         }
         // Deepest-first, so a nested block's own pad is already final when its parent adds to it.
-        let mut blocks: Vec<&super::clusters::Cluster> = tree.iter().collect();
-        blocks.sort_by_key(|b| std::cmp::Reverse(b.depth));
         let mut pad: HashMap<String, f64> = HashMap::new();
-        for b in blocks {
+        for b in blocks.iter().rev() {
             let inner = b
                 .child_clusters
                 .iter()
@@ -3785,6 +3814,7 @@ impl LaneUnits {
         pad.retain(|id, _| members.contains_key(id));
         LaneUnits {
             of_node,
+            ancestors,
             members,
             pad,
         }
@@ -3795,9 +3825,56 @@ impl LaneUnits {
         self.of_node.get(id).map(String::as_str).unwrap_or(id)
     }
 
+    /// The body `id` moves as **when it is being spaced against `other`**: its outermost ancestor
+    /// block that does not also hold `other`, or `id` itself when every block holding `id` holds
+    /// `other` too.
+    ///
+    /// [`LaneUnits::unit_of`] answers a different question — "which body does a *lane* move" — and
+    /// the outermost block is the right answer there, because a lane crossing a frame's border has
+    /// to take the whole frame with it. Separation is a question about a *pair*, and the outermost
+    /// block is the wrong answer for it: two nodes inside one frame are still two nodes, and asking
+    /// "does the frame overlap itself" answers nothing about them. `zz-design-2c` is where that
+    /// cost real geometry — `メタデータ DB`, `成果物保管` and `解析サンドボックス` all sit in
+    /// `クラウド`, so the overlap sweep collapsed the whole rank to one occurrence and never spaced
+    /// them at all; `成果物保管` and `解析サンドボックス` came out at *exactly* the same point, and
+    /// the much later `clear_foreign_cluster_overlaps` was left to break the tie, which it did by
+    /// shoving `解析サンドボックス` — the straight lane's own member — off its lane.
+    ///
+    /// The answer is always a body that holds `id` and not `other`, and symmetrically for the
+    /// reversed call, so the two never name the same body: whatever the nesting, a pair always has
+    /// two separable sides. `保存層` (holding `メタデータ DB` and `成果物保管`) against
+    /// `解析サンドボックス` is one frame against one node; `メタデータ DB` against `成果物保管` is
+    /// two plain boxes, since no frame separates them.
+    pub fn separating_unit<'a>(&'a self, id: &'a str, other: &str) -> &'a str {
+        self.ancestors
+            .get(id)
+            .into_iter()
+            .flatten()
+            .find(|block| {
+                !self
+                    .members
+                    .get(block.as_str())
+                    .is_some_and(|held| held.iter().any(|m| m == other))
+            })
+            .map(String::as_str)
+            .unwrap_or(id)
+    }
+
     /// Whether `unit` names a block (rather than a node standing for itself).
     pub fn is_block(&self, unit: &str) -> bool {
         self.members.contains_key(unit)
+    }
+
+    /// How far `unit`'s own frame reaches beyond its members' bounding box on one cross-axis side —
+    /// `0` for a node, which has no frame. [`LaneUnits::band`] already folds this in; a caller that
+    /// places *members* one at a time rather than moving whole bands (`mod.rs`'s own
+    /// `regroup_fan_lanes`) needs it separately, to leave the frames it is stepping across the same
+    /// room [`align_straight_lanes`]'s own overlap sweep would demand of them afterwards. Without
+    /// it that sweep finds the gap it wanted short by exactly this much and pushes — and what it
+    /// pushes is whichever member came later on the rank, which on `zz-design-2c` is the straight
+    /// lane's own.
+    pub fn frame_pad(&self, unit: &str) -> f64 {
+        self.pad.get(unit).copied().unwrap_or(0.0)
     }
 
     /// `unit`'s own cross-axis extent, as the pair `(near edge, far edge)`: a node's own box, or —
@@ -4279,32 +4356,37 @@ pub(super) fn align_straight_lanes_with(
     // §10-5 round 4: the thing being spaced is a **unit**, and what it takes up is its own band
     // ([`LaneUnits::band`]) — a block's whole frame, not whichever one member happens to sit on this
     // rank — so a node beside a block is pushed clear of the frame rather than of the member behind
-    // it. Two members of the same block on one rank collapse to a single occurrence, first in the
-    // rank's own fixed original order, since they cannot be separated from each other anyway.
-    // Ranks are visited in ascending order, not `HashMap` order: pushing a block on one rank moves
-    // it on every rank it occupies, so which rank is swept first is now observable.
+    // it. Which unit that is, is a question about the *pair* ([`LaneUnits::separating_unit`], whose
+    // own doc has the `zz-design-2c` bug this replaced): the outermost frame that leaves the
+    // neighbour outside. Two nodes in one frame with nothing between them are spaced as two plain
+    // boxes — the earlier reading, which asked only for each node's outermost block, saw one unit
+    // twice and skipped the second, so two same-frame nodes could (and on `zz-design-2c` did) end up
+    // at exactly the same point with nothing here to separate them. Ranks are visited in ascending
+    // order, not `HashMap` order: pushing a block on one rank moves it on every rank it occupies, so
+    // which rank is swept first is observable.
     let mut swept: Vec<i32> = by_rank.keys().copied().collect();
     swept.sort_unstable();
     for rank in swept {
         let ids = &by_rank[&rank];
-        let mut prev_far_edge: Option<f64> = None;
-        let mut seen: Vec<String> = Vec::new();
+        let mut prev: Option<usize> = None;
         for &i in ids {
-            let unit = units.unit_of(&nodes[i].id).to_string();
-            if seen.contains(&unit) {
-                continue;
-            }
-            let (lo, hi) = units.band(direction, nodes, &id_index, &unit);
-            let far = match prev_far_edge {
-                Some(prev_edge) if lo < prev_edge + super::ORTHO_NODE_SEP => {
-                    let delta = prev_edge + super::ORTHO_NODE_SEP - lo;
-                    units.shift(direction, nodes, &id_index, &unit, delta);
-                    hi + delta
-                }
-                _ => hi,
+            let Some(p) = prev.replace(i) else {
+                continue; // first on the rank — nothing behind it to be spaced against
             };
-            seen.push(unit);
-            prev_far_edge = Some(far);
+            let (behind, ahead) = (
+                units
+                    .separating_unit(&nodes[p].id, &nodes[i].id)
+                    .to_string(),
+                units
+                    .separating_unit(&nodes[i].id, &nodes[p].id)
+                    .to_string(),
+            );
+            let (_, far_behind) = units.band(direction, nodes, &id_index, &behind);
+            let (lo_ahead, _) = units.band(direction, nodes, &id_index, &ahead);
+            if lo_ahead < far_behind + super::ORTHO_NODE_SEP {
+                let delta = far_behind + super::ORTHO_NODE_SEP - lo_ahead;
+                units.shift(direction, nodes, &id_index, &ahead, delta);
+            }
         }
     }
 
@@ -4337,26 +4419,15 @@ pub(super) fn align_straight_lanes_with(
     //
     // §10-5 round 4 reads this in units too: the room a reclaim needs is the *band*'s (a block
     // moves as a body, so its whole frame has to fit), and the predecessor it has to leave room
-    // against is the previous distinct unit on the rank, not the previous node — which for a
-    // clusterless diagram is the same node it always was.
+    // against is the previous node's own body rather than the previous node's box. Which body each
+    // side of that pair is, is [`LaneUnits::separating_unit`]'s question, exactly as in the sweep
+    // above — the two passes have to agree, or a member the sweep pushed by spacing it against one
+    // body could be pulled back by measuring it against another.
     let mut reclaimed: Vec<i32> = by_rank.keys().copied().collect();
     reclaimed.sort_unstable();
     for rank in reclaimed {
         let ids = &by_rank[&rank];
-        // The unit immediately before each node's own, in the rank's fixed original order —
-        // consecutive members of one block share whatever came before the run they are in.
-        let mut prev_of: HashMap<usize, Option<String>> = HashMap::new();
-        let mut prev_distinct: Option<String> = None;
-        let mut run_unit: Option<String> = None;
-        for &i in ids {
-            let unit = units.unit_of(&nodes[i].id).to_string();
-            if run_unit.as_deref() != Some(unit.as_str()) {
-                prev_distinct = run_unit.take();
-                run_unit = Some(unit);
-            }
-            prev_of.insert(i, prev_distinct.clone());
-        }
-        for &i in ids {
+        for (slot, &i) in ids.iter().enumerate() {
             let Some(&desired) = chain_desired.get(&i) else {
                 continue;
             };
@@ -4364,14 +4435,22 @@ pub(super) fn align_straight_lanes_with(
             if current <= desired + EPS {
                 continue; // already at (or before) its own desired spot — nothing to reclaim.
             }
-            let unit = units.unit_of(&nodes[i].id).to_string();
+            let predecessor = slot.checked_sub(1).and_then(|s| ids.get(s)).copied();
+            let unit = match predecessor {
+                Some(p) => units.separating_unit(&nodes[i].id, &nodes[p].id),
+                None => units.unit_of(&nodes[i].id),
+            }
+            .to_string();
             let (lo, _) = units.band(direction, nodes, &id_index, &unit);
             let max_far = lo + (desired - current) - super::ORTHO_NODE_SEP;
-            let predecessor_allows = match prev_of.get(&i).cloned().flatten() {
+            let predecessor_allows = match predecessor {
                 None => true, // first in the rank — nothing behind it to leave room against.
-                Some(prev) => {
-                    let (_, far_prev) = units.band(direction, nodes, &id_index, &prev);
-                    far_prev <= max_far + EPS
+                Some(p) => {
+                    let behind = units
+                        .separating_unit(&nodes[p].id, &nodes[i].id)
+                        .to_string();
+                    let (_, far_behind) = units.band(direction, nodes, &id_index, &behind);
+                    far_behind <= max_far + EPS
                 }
             };
             if predecessor_allows {
