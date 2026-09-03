@@ -232,7 +232,7 @@ fn laid_out_curve(src: &str, curve: &str) -> Diagram {
 
 /// [`laid_out_curve`], with edges additionally routed by `routing` (`ui.mermaid_routing`'s raw
 /// string) the way [`lay_out_flow`] resolves it.
-fn laid_out_flow(src: &str, curve: &str, routing: &str) -> Diagram {
+pub(super) fn laid_out_flow(src: &str, curve: &str, routing: &str) -> Diagram {
     let chart = parse(src).unwrap_or_else(|e| panic!("corpus source must parse: {e}"));
     lay_out_flow(&chart, curve, routing)
         .unwrap_or_else(|e| panic!("corpus source must lay out: {e}"))
@@ -5472,6 +5472,196 @@ fn assert_endpoints_sit_outside_and_perpendicular(name: &str, d: &Diagram) {
     }
 }
 
+/// The shortest leg a routed polyline is allowed to have between two other legs, before it reads
+/// as an artefact rather than a bend: below this a segment is invisible at any realistic zoom, so a
+/// route that turns aside by less than this and turns straight back draws as a stub hanging off
+/// the line rather than as part of it.
+const MIN_JOG: f64 = 2.0;
+
+/// "No dangling fragment": the two shapes a routed polyline can take that read, in the finished
+/// picture, as a *piece of line that goes nowhere* rather than as a route.
+///
+/// 1. **A vanishing jog.** Three consecutive points whose middle leg is shorter than [`MIN_JOG`]
+///    and whose two neighbouring legs run in *opposite* directions along the same axis: the line
+///    leaves, moves a pixel or two sideways, and comes straight back. `orthogonal::remove_spikes`
+///    already collapses the exact-zero case (first and third point identical); this states the
+///    near-zero one, which it cannot see. Also stated for the zero-length middle leg's own
+///    degenerate sibling — two consecutive legs that are outright antiparallel, at any length —
+///    which no shape in this module is ever supposed to produce.
+/// 2. **An endpoint off its own face.** The existing
+///    [`assert_endpoints_sit_outside_and_perpendicular`] pins an endpoint's *perpendicular*
+///    coordinate ([`orthogonal::PORT_INSET`] outside one of the four faces) and the axis it
+///    arrives along, but says nothing about the coordinate *along* that face — so an endpoint
+///    sitting at the node's left-face offset yet metres above the node passes it, and the line
+///    into it hangs in empty space. §10-1 item 1's ports are always on the flat run of a real
+///    face; this is that half.
+///
+/// Written for `docs/render-check/zz-design-2c`'s own reported "stray hook under API ゲート"
+/// (`docs/STATUS.md`): that fragment turned out to be `API -> ID`'s own port stub and first leg,
+/// severed from the rest of its route by the 12px crossing gap it took over the `投入` trunk two
+/// pixels below the face it left — an artefact of the route being wrong (§10-3 item 4's branch
+/// half, now implemented), not of the gap. Both halves above are the invariants that would have
+/// named such a fragment as a fragment rather than leaving it to be spotted by eye.
+pub(super) fn assert_no_dangling_fragment(name: &str, d: &Diagram) {
+    for e in &d.edges {
+        for w in e.points.windows(3) {
+            let (a, b, c) = (&w[0], &w[1], &w[2]);
+            let (in_dx, in_dy) = (b.x - a.x, b.y - a.y);
+            let (out_dx, out_dy) = (c.x - b.x, c.y - b.y);
+            let antiparallel = (in_dx * out_dx + in_dy * out_dy) < -AXIS_EPS
+                && (in_dx * out_dy - in_dy * out_dx).abs() < AXIS_EPS;
+            assert!(
+                !antiparallel,
+                "{name}: edge {}->{} doubles straight back at {b:?}: {:?}",
+                e.from, e.to, e.points
+            );
+        }
+        for w in e.points.windows(4) {
+            let (a, b, c, dd) = (&w[0], &w[1], &w[2], &w[3]);
+            let jog = ((c.x - b.x).powi(2) + (c.y - b.y).powi(2)).sqrt();
+            if jog >= MIN_JOG {
+                continue;
+            }
+            let (in_dx, in_dy) = (b.x - a.x, b.y - a.y);
+            let (out_dx, out_dy) = (dd.x - c.x, dd.y - c.y);
+            assert!(
+                (in_dx * out_dx + in_dy * out_dy) >= -AXIS_EPS,
+                "{name}: edge {}->{} turns aside by {jog:.2}px at {b:?} and straight back at \
+                 {c:?}: {:?}",
+                e.from,
+                e.to,
+                e.points
+            );
+        }
+
+        if e.points.len() < 2 {
+            continue;
+        }
+        let n = e.points.len();
+        for (node_id, endpoint) in [(&e.from, &e.points[0]), (&e.to, &e.points[n - 1])] {
+            let bounds = d
+                .node(node_id)
+                .map(|n| n.bounds())
+                .or_else(|| d.cluster(node_id).map(|c| c.bounds()));
+            let Some((l, t, r, b)) = bounds else {
+                continue;
+            };
+            let vertical_face = (endpoint.x - (l - orthogonal::PORT_INSET)).abs() < AXIS_EPS
+                || (endpoint.x - (r + orthogonal::PORT_INSET)).abs() < AXIS_EPS;
+            let (lo, hi, along) = if vertical_face {
+                (t, b, endpoint.y)
+            } else {
+                (l, r, endpoint.x)
+            };
+            // The edges in the whole corpus this does not hold for, named one by one rather than
+            // hidden behind a widened tolerance. Every one of them is the same single, already
+            // recorded defect: `orthogonal::clear_self_puncture` slides **every** point sharing a
+            // coordinate — the route's own two ports included — when a back edge's return leg has
+            // to clear one of its own two endpoint nodes. `clear_self_puncture`'s own doc says in
+            // as many words that §10-3 item 13's "ポートは動かさない" was scoped to
+            // `clear_local_route`'s forward-edge callers and deliberately not extended to it, and
+            // `docs/STATUS.md` carries the residual. Closing it needs that function reworked to
+            // move one *run* (the way `local_detour` already does for a forward edge) rather than
+            // a whole coordinate — not a looser rule here. Listed as `(fixture, from, to)` so a
+            // *new* off-face endpoint anywhere still fails.
+            const KNOWN_PORT_SLIDES: [(&str, &str, &str); 4] = [
+                ("branch", "D", "B"),
+                ("basic", "Moving", "Still"),
+                ("styled", "Moving", "Still"),
+                ("style-separator", "Moving", "Still"),
+            ];
+            let known_port_slide = KNOWN_PORT_SLIDES
+                .iter()
+                .any(|&(f, from, to)| f == name && from == e.from && to == e.to);
+            assert!(
+                known_port_slide || (along >= lo - AXIS_EPS && along <= hi + AXIS_EPS),
+                "{name}: edge {}->{} endpoint {endpoint:?} is off {node_id}'s own face — its \
+                 span is {lo:.2}..{hi:.2}",
+                e.from,
+                e.to
+            );
+        }
+    }
+}
+
+/// The witness [`assert_no_dangling_fragment`] itself needs: no corpus source currently draws
+/// either shape (disabling `orthogonal::remove_spikes` outright changes not one fixture), so the
+/// corpus-wide run below can only ever prove the invariant *holds* — never that it would notice if
+/// it stopped. These three hand-built polylines are the proof it would: a route that turns aside by
+/// 1px and straight back, one that doubles back along the same axis at any length, and an endpoint
+/// on a node's face offset but far off the end of that face.
+#[test]
+fn assert_no_dangling_fragment_actually_rejects_each_shape_it_names() {
+    let node = placed_node("a", 100.0, 100.0, 40.0, 20.0);
+    let diagram = |points: Vec<Point>| Diagram {
+        width: 200.0,
+        height: 200.0,
+        nodes: vec![node.clone(), placed_node("b", 100.0, 180.0, 40.0, 20.0)],
+        edges: vec![PlacedEdge {
+            from: "a".to_string(),
+            to: "b".to_string(),
+            ..bent_edge(points, Curve::Linear)
+        }],
+        clusters: Vec::new(),
+        lifelines: Vec::new(),
+    };
+    let port_a = Point::new(100.0, 110.0 + orthogonal::PORT_INSET);
+    let port_b = Point::new(100.0, 170.0 - orthogonal::PORT_INSET);
+    // 1. a 1px jog and straight back.
+    let jog = diagram(vec![
+        port_a.clone(),
+        Point::new(100.0, 150.0),
+        Point::new(101.0, 150.0),
+        Point::new(101.0, 130.0),
+        Point::new(100.0, 130.0),
+        port_b.clone(),
+    ]);
+    assert!(
+        std::panic::catch_unwind(|| assert_no_dangling_fragment("jog", &jog)).is_err(),
+        "a 1px jog flanked by a reversal must be rejected"
+    );
+    // 2. doubling straight back along the same axis.
+    let doubled = diagram(vec![
+        port_a.clone(),
+        Point::new(100.0, 150.0),
+        Point::new(100.0, 130.0),
+        port_b.clone(),
+    ]);
+    assert!(
+        std::panic::catch_unwind(|| assert_no_dangling_fragment("doubled", &doubled)).is_err(),
+        "two antiparallel legs must be rejected"
+    );
+    // 3. an endpoint at the left face's own offset but well past the end of that face.
+    let dangling = diagram(vec![
+        Point::new(80.0 - orthogonal::PORT_INSET, 10.0),
+        Point::new(100.0, 10.0),
+        port_b,
+    ]);
+    assert!(
+        std::panic::catch_unwind(|| assert_no_dangling_fragment("dangling", &dangling)).is_err(),
+        "an endpoint off the end of its own face must be rejected"
+    );
+    // …and the same three points, with the endpoint moved onto the face, are accepted.
+    let ok = diagram(vec![
+        Point::new(80.0 - orthogonal::PORT_INSET, 100.0),
+        Point::new(100.0, 100.0),
+        Point::new(100.0, 170.0 - orthogonal::PORT_INSET),
+    ]);
+    assert_no_dangling_fragment("ok", &ok);
+}
+
+/// [`assert_no_dangling_fragment`], over every orthogonal fixture there is.
+#[test]
+fn orthogonal_no_polyline_leaves_a_dangling_fragment_across_the_whole_corpus() {
+    for (name, src) in orthogonal_full_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        assert_no_dangling_fragment(name, &d);
+    }
+}
+
 /// Every routed edge, checked over its **whole** length, must never re-enter its own two endpoint
 /// nodes' real (unpadded) interior — the invariant [`assert_no_segment_crosses_a_foreign_node`]
 /// structurally cannot state, because it excludes an edge's own two ends from the node list it
@@ -9543,6 +9733,344 @@ fn orthogonal_three_way_fan_whose_branches_agree_keeps_one_on_each_side() {
 ///
 /// Which side the two stores end up on is dagre's own rank order, not a rule of §10-3's, so this
 /// asserts only that they are together and on *a* side, never which.
+/// §10-3 item 4's own branch half (`orthogonal::EdgeShape::cross_lane_bend`), stated on a
+/// synthetic diagram built from the *shape* the rule is about rather than from any reference
+/// picture: a branching source whose long edge has to reach a target whose own column is occupied
+/// (`T3` sits directly above `Far`) and whose own flow-axis column carries a trunk (`T1`/`T2`), so
+/// neither of `classify`'s two ordinary shapes nor any flow-face rank-lane bend can clear.
+///
+/// Before this rule existed that combination fell to `staircase` — dagre's dummy waypoints, laid
+/// out before the cross-axis passes moved every node, so the chain pointed at columns that no
+/// longer held anything and `clear_local_route` walked it out and back in a nine-point zig-zag.
+/// What is asserted here is the rule, not that route's absence: the edge leaves through the face
+/// already turned towards its target, runs one straight leg down a lane that keeps
+/// [`orthogonal::PORT_CLEARANCE`] from every node, and turns into the target's own flow face —
+/// three bends, the two the rule allows plus the hop onto the lane.
+#[test]
+fn orthogonal_blocked_multi_rank_branch_runs_a_free_lane_off_the_face_facing_its_target() {
+    let src = "flowchart TB\n  S --> T1\n  T1 --> T2\n  T2 --> T3\n  T3 --> T4\n  \
+               T2 --> Blk\n  Blk --> Far\n  S --> Far";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let e = d
+        .edges
+        .iter()
+        .find(|e| e.from == "S" && e.to == "Far")
+        .expect("S -> Far must be routed");
+    let s = d.node("S").expect("S");
+    let far = d.node("Far").expect("Far");
+    assert!(
+        far.center.x > s.center.x,
+        "fixture assumption: Far must sit on S's right, not at {:?}",
+        far.center
+    );
+
+    // Leaves through the cross-axis face already turned towards the target, not the flow face a
+    // `staircase` fallback would use.
+    let (_, _, s_right, _) = s.bounds();
+    assert!(
+        (e.points[0].x - (s_right + orthogonal::PORT_INSET)).abs() < AXIS_EPS
+            && (e.points[0].y - s.center.y).abs() < AXIS_EPS,
+        "S -> Far must leave S's own right face at its centre, not {:?}: {:?}",
+        e.points[0],
+        e.points
+    );
+    assert_eq!(
+        e.points.len(),
+        5,
+        "S -> Far must be the rule's own four legs: {:?}",
+        e.points
+    );
+    // …into the target's flow-axis face.
+    let (far_l, far_t, far_r, _) = far.bounds();
+    let end = e.points.last().expect("non-empty");
+    assert!(
+        (end.y - (far_t - orthogonal::PORT_INSET)).abs() < AXIS_EPS
+            && end.x > far_l
+            && end.x < far_r,
+        "S -> Far must enter Far's own top face, not {end:?}: {:?}",
+        e.points
+    );
+
+    // The lane itself: one straight run along the flow axis, clear of every node's column by at
+    // least the module's own minimum port clearance on both sides.
+    let lane = e.points[1].x;
+    assert!(
+        (e.points[2].x - lane).abs() < AXIS_EPS && (e.points[2].y - e.points[1].y).abs() > 100.0,
+        "S -> Far's own second leg must be the long lane run: {:?}",
+        e.points
+    );
+    for n in &d.nodes {
+        if n.id == "S" || n.id == "Far" {
+            continue;
+        }
+        let (l, t, r, b) = n.bounds();
+        let spans_the_run = t < e.points[2].y && b > e.points[1].y;
+        assert!(
+            !spans_the_run
+                || lane <= l - orthogonal::PORT_CLEARANCE
+                || lane >= r + orthogonal::PORT_CLEARANCE,
+            "S -> Far's lane at x={lane:.2} is closer than {}px to {} {:?}",
+            orthogonal::PORT_CLEARANCE,
+            n.id,
+            n.bounds()
+        );
+    }
+}
+
+/// §10-5 round 4's own headline rule — "枠は 1 つの単位…ブロックは 1 つの body として動く"
+/// ([`orthogonal::LaneUnits::unit_of`]) — stated where it actually has consequences, because
+/// nothing stated it before: making that method the identity (every node its own unit) left the
+/// whole suite green for a while, which means "a block moves as a body" was believed rather than
+/// checked.
+///
+/// Two consequences, one per fixture, both of which the identity mutation breaks:
+///
+/// 1. **A lane that crosses a frame moves the block, it does not stretch it.** `A --> c2` reaches a
+///    member in the middle of a block whose own spine is `c1 --> c2` with `c3` off to the side, so
+///    aligning `A --> c2 --> B` has to move `c2`. Moving `c2` alone tears the block open — measured
+///    at a 414.8px-wide frame for three 74.8px boxes. A block is only ever as wide as its own
+///    members need, whatever a lane does to it.
+/// 2. **A neighbour is spaced from the frame, not from a member.** `N` sits beside a block whose
+///    nearest member (`c3`) stops well short of the frame's own border, so "spaced by
+///    [`ORTHO_NODE_SEP`]" has two possible readings and only one of them leaves the drawn boxes
+///    that far apart. Under the identity mutation the sweep never sees the frame at all and `N`
+///    ends up wherever `clear_foreign_cluster_overlaps` shoves it — 16px out, not 24.
+#[test]
+fn orthogonal_a_block_moves_as_one_body_and_is_spaced_as_one() {
+    // (1) an outside lane through the middle of a block.
+    let d = laid_out_flow(
+        "flowchart TB\n  A --> c2\n  subgraph C\n    c1 --> c2\n    c1 --> c3\n  end\n  c2 --> B",
+        "basis",
+        "konoma-orthogonal",
+    );
+    let frame = d.cluster("C").expect("C");
+    let members: Vec<&PlacedNode> = ["c1", "c2", "c3"]
+        .iter()
+        .filter_map(|id| d.node(id))
+        .collect();
+    // The widest a rank inside this block can legitimately be: its own boxes, side by side, one
+    // `ORTHO_NODE_SEP` apart — plus the frame's own padding on each side.
+    let mut widest_rank = 0.0_f64;
+    for m in &members {
+        let row: Vec<&&PlacedNode> = members
+            .iter()
+            .filter(|o| (o.center.y - m.center.y).abs() < 1.0)
+            .collect();
+        let spread: f64 = row.iter().map(|o| o.size.w).sum::<f64>()
+            + super::ORTHO_NODE_SEP * (row.len().saturating_sub(1)) as f64;
+        widest_rank = widest_rank.max(spread);
+    }
+    let allowed = widest_rank + 2.0 * clusters::PAD;
+    assert!(
+        frame.size.w <= allowed + 0.01,
+        "the lane through C stretched the block instead of moving it: frame is {:.2}px wide, \
+         its own members need {allowed:.2}px",
+        frame.size.w
+    );
+
+    // (2) a neighbour beside a block whose nearest member stops short of the frame.
+    let d = laid_out_flow(
+        "flowchart TB\n  A --> c1\n  A --> N\n  N --> M\n  subgraph C\n    c1 --> c2\n    \
+         c1 --> c3\n  end\n  c2 --> M",
+        "basis",
+        "konoma-orthogonal",
+    );
+    let frame = d.cluster("C").expect("C");
+    let n = d.node("N").expect("N");
+    let (fl, _, fr, _) = frame.bounds();
+    let (nl, _, nr, _) = n.bounds();
+    let gap = if nl >= fr { nl - fr } else { fl - nr };
+    assert!(
+        (gap - super::ORTHO_NODE_SEP).abs() < 0.01,
+        "N must sit {}px from C's own frame ({fl:.2}..{fr:.2}), not {gap:.2}px — it is at \
+         {nl:.2}..{nr:.2}",
+        super::ORTHO_NODE_SEP
+    );
+}
+
+/// §10-3 item 8's own ASAP re-ranking, on the one graph shape that used to switch it off for the
+/// **whole diagram**: an edge that leaves a block and comes straight back into it
+/// (`subgraph C { c1 --> c2 }` plus `c1 --> X --> c2`). Counting only the levels `C`'s own members
+/// occupy made `c1` and `c2` adjacent, and the unit graph then stated `X` after `C` and `C` after
+/// `X` at once — unsatisfiable, so the bounded relaxation never settled and `pull_back_fan_ranks`
+/// returned without re-ranking anything, fans included.
+///
+/// Two things are asserted, and the second is the point: the returning node keeps its own level
+/// between the two members (which is where dagre already had it, and the only place a forward
+/// route can reach it from), **and** the four-way fan further down still gets its ASAP layer —
+/// every `d*` on one rank, immediately after `c2`, with nothing between.
+#[test]
+fn orthogonal_a_block_leaving_and_returning_edge_still_leaves_asap_running() {
+    let src = "flowchart TB\n  subgraph C\n    c1 --> c2\n  end\n  c1 --> X\n  X --> c2\n  \
+               c2 --> d1\n  c2 --> d2\n  c2 --> d3\n  c2 --> d4";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let y = |id: &str| d.node(id).unwrap_or_else(|| panic!("{id}")).center.y;
+    assert!(
+        y("c1") < y("X") && y("X") < y("c2"),
+        "X must keep its own level between c1 ({:.2}) and c2 ({:.2}), not {:.2}",
+        y("c1"),
+        y("c2"),
+        y("X")
+    );
+    // ASAP: the fan is one rank, and it is the rank immediately after `c2` — no empty column, and
+    // no member left behind on a later one. Read as "every `d*` shares a row, and the gap from
+    // `c2` to that row is the same as the gap `c1`'s own straight successor got".
+    let fan: Vec<f64> = ["d1", "d2", "d3", "d4"].iter().map(|id| y(id)).collect();
+    for w in fan.windows(2) {
+        assert!(
+            (w[0] - w[1]).abs() < 0.01,
+            "the fan under c2 must be one rank: {fan:?}"
+        );
+    }
+    let rows: std::collections::BTreeSet<i64> = d
+        .nodes
+        .iter()
+        .map(|n| (n.center.y * 100.0) as i64)
+        .collect();
+    assert_eq!(
+        rows.len(),
+        4,
+        "the diagram must re-rank to four rows (c1 / X / c2 / the fan), not {}: {:?}",
+        rows.len(),
+        d.nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.center.y))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Two sibling subgraphs on the same rank, with a title long enough on one of them that dagre's
+/// own placement leaves the other's member inside it — the shape that exercises both halves of
+/// "a frame is spaced and reserved like one body":
+///
+/// 1. §10-1 item 4's own "枠とノード・外周レーンの余白は最低16px" read for a frame *pair*:
+///    `clear_foreign_cluster_overlaps` used to push the bare member box clear by
+///    [`orthogonal::PERIMETER_MARGIN`], and `rebuild_frames` then wrapped that member in exactly
+///    the same [`clusters::PAD`] — so `B`'s left edge landed precisely on `A`'s right edge and the
+///    two frames shared a line. The push is by body now, and the gap is the rank's own
+///    [`ORTHO_NODE_SEP`].
+/// 2. `pull_back_fan_ranks`'s own column gaps: the room a frame's edge needs past its first member
+///    column was *summed* over every block starting there, so two siblings reserved two heads' worth
+///    of gap where the picture only ever shows one. Nesting sums (one frame really is beyond the
+///    other); siblings take the maximum.
+#[test]
+fn orthogonal_sibling_frames_are_spaced_apart_and_reserve_one_column_gap() {
+    let src = "flowchart TB\n  s --> a1\n  s --> b1\n                 subgraph A[A very very very very very very very very very long title]\n    a1\n                 end\n  subgraph B[B]\n    b1\n  end";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let (a, b) = (d.cluster("A").expect("A"), d.cluster("B").expect("B"));
+    let (_, _, ar, _) = a.bounds();
+    let (bl, _, _, _) = b.bounds();
+    assert!(
+        (bl - ar - super::ORTHO_NODE_SEP).abs() < 0.01,
+        "two sibling frames must sit {}px apart, not {:.2}px (A ends at {ar:.2}, B starts at \
+         {bl:.2})",
+        super::ORTHO_NODE_SEP,
+        bl - ar
+    );
+
+    // One column gap, not two: `s`'s own bottom to the frames' top is exactly `RANK_SEP`, and from
+    // there to the member inside is that one frame's own head (its padding plus its title band).
+    let s = d.node("s").expect("s");
+    let (_, _, _, s_bottom) = s.bounds();
+    for frame in [a, b] {
+        let (_, ft, _, _) = frame.bounds();
+        assert!(
+            (ft - s_bottom - super::RANK_SEP).abs() < 0.01,
+            "frame {} must start {}px below s (which ends at {s_bottom:.2}), not {:.2}px — a \
+             sibling's own head must not be reserved twice",
+            frame.id,
+            super::RANK_SEP,
+            ft - s_bottom
+        );
+    }
+}
+
+/// The same rule on the two design references it was found on: `zz-design-2b`/`2c`'s own
+/// `API ゲート --> 認証基盤`, a four-rank branch whose direct column holds `メタデータ DB` and
+/// whose flow column holds the `投入` trunk.
+///
+/// Two things are pinned, both of them the rule rather than the picture: the edge leaves through
+/// whichever cross-axis face actually faces `認証基盤` (`2c`'s left, `2b`'s top — the axis flip is
+/// why both are here), and its long lane keeps clear of every **frame** it does not itself belong
+/// to. That second half is what makes `cross_lane_bends` read subgraph frames at all: without it
+/// `2c`'s nearest free lane is the 24px gap *between* `メタデータ DB` and `成果物保管`, which draws
+/// the line straight down the middle of `保存層`'s own rectangle.
+#[test]
+fn orthogonal_design_2b_2c_auth_edge_takes_a_free_lane_off_the_face_facing_it() {
+    for name in ["zz-design-2b", "zz-design-2c"] {
+        let (_, src) = orthogonal_design_reference_corpus()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .expect("design reference");
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let e = d
+            .edges
+            .iter()
+            .find(|e| e.from == "API" && e.to == "ID")
+            .expect("API -> ID must be routed");
+        let api = d.node("API").expect("API");
+        let id = d.node("ID").expect("ID");
+        let (l, t, r, b) = api.bounds();
+        let start = &e.points[0];
+        // `2c` is TB, so the cross axis is horizontal and `ID` sits to the left; `2b` is LR, so it
+        // is vertical and `ID` sits above. Either way: the face on the side the target is on.
+        let leaves_towards = if name == "zz-design-2c" {
+            (start.x - (l - orthogonal::PORT_INSET)).abs() < AXIS_EPS && id.center.x < api.center.x
+        } else {
+            (start.y - (t - orthogonal::PORT_INSET)).abs() < AXIS_EPS && id.center.y < api.center.y
+        };
+        assert!(
+            leaves_towards,
+            "{name}: API -> ID must leave the face facing 認証基盤, not {start:?} \
+             (API {:?}, ID {:?}): {:?}",
+            (l, t, r, b),
+            id.bounds(),
+            e.points
+        );
+        assert!(
+            e.points.len() <= 5,
+            "{name}: API -> ID must not need more than the rule's own four legs: {:?}",
+            e.points
+        );
+
+        for c in &d.clusters {
+            let (cl, ct, cr, cb) = c.bounds();
+            let holds = |p: &crate::preview::mermaid::layout::Point| {
+                p.x >= cl && p.x <= cr && p.y >= ct && p.y <= cb
+            };
+            if holds(&api.center) || holds(&id.center) {
+                continue; // the frames this edge starts inside / ends inside are not obstacles
+            }
+            for w in e.points.windows(2) {
+                let vertical = (w[0].x - w[1].x).abs() < AXIS_EPS;
+                let (lane, lo, hi) = if vertical {
+                    (w[0].x, cl, cr)
+                } else {
+                    (w[0].y, ct, cb)
+                };
+                let (run_lo, run_hi) = if vertical {
+                    (w[0].y.min(w[1].y), w[0].y.max(w[1].y))
+                } else {
+                    (w[0].x.min(w[1].x), w[0].x.max(w[1].x))
+                };
+                let (frame_lo, frame_hi) = if vertical { (ct, cb) } else { (cl, cr) };
+                if run_hi <= frame_lo || run_lo >= frame_hi {
+                    continue; // this leg never reaches the frame's own extent along its own axis
+                }
+                assert!(
+                    lane <= lo - orthogonal::PORT_CLEARANCE
+                        || lane >= hi + orthogonal::PORT_CLEARANCE,
+                    "{name}: API -> ID's leg at {lane:.2} runs inside the foreign frame {} \
+                     {:?}: {:?}",
+                    c.id,
+                    c.bounds(),
+                    e.points
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn orthogonal_design_2b_2c_spine_runs_straight_through_the_sandbox() {
     if !text_metrics::fonts_available() {

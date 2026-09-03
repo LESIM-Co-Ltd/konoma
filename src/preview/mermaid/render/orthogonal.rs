@@ -507,6 +507,25 @@ struct EdgeShape {
     /// drawn is provably the one collision-tested, never a second, potentially different computation
     /// over the same (unchanged, same layout pass) node positions.
     rank_lane_bend: Option<f64>,
+    /// §10-3 item 4's own **branch** half, the one the round-3 notes recorded as still unimplemented
+    /// ("分岐側は未実装のまま…既存の `staircase` フォールバック"): the cross-axis coordinate of the
+    /// free lane between two node columns that a rank-skipping *branch* runs along, when the plain
+    /// one-bend shape (straight down the target's own column) is blocked and so is every flow-face
+    /// attempt (straight down the source's own column). Only ever set together with
+    /// [`EdgeShape::rank_lane_bend`], and only on the shape whose source face is the cross-axis one
+    /// — the face already turned towards the target — so the edge still leaves through the side it
+    /// is going to, hops to a lane that is clear for the whole run, and crosses into the target's
+    /// own column in the rank gap immediately upstream of it ([`cross_lane_route`] draws exactly
+    /// those four legs, and [`shape_crosses_a_node`] tests the same four).
+    ///
+    /// The alternative this replaces is `staircase`, whose interior comes from dagre's own dummy
+    /// waypoints — computed before `align_straight_lanes`/`regroup_fan_lanes`/`pull_back_fan_ranks`
+    /// moved every node's cross coordinate, so on a diagram those passes rearranged, the chain
+    /// points at columns that no longer hold anything (dumped on `zz-design-2c`: `API -> ID`'s raw
+    /// chain sits at `x = 399.3` in dagre's own frame, where the finished picture has nothing at
+    /// all, and `clear_local_route`'s per-obstacle detours then walked it out along the クラウド
+    /// frame and back). A lane derived from the *finished* geometry cannot be stale that way.
+    cross_lane_bend: Option<f64>,
     /// Which face of the source the line leaves through, and which axis leaving perpendicular to
     /// it means moving along.
     source_side: Side,
@@ -675,7 +694,15 @@ fn shape_crosses_a_node(
     // the plain midpoint `bridge` would not have picked, so this collision test has to build the
     // *same* route [`route_with_ports`] will actually draw — reusing `bend_at` is what keeps the
     // two from ever silently disagreeing.
-    if let Some(bend) = shape.rank_lane_bend {
+    if let (Some(bend), Some(lane)) = (shape.rank_lane_bend, shape.cross_lane_bend) {
+        pts.extend(cross_lane_route(
+            direction,
+            lane,
+            bend,
+            &source_port,
+            &target_port,
+        ));
+    } else if let Some(bend) = shape.rank_lane_bend {
         pts.extend(bend_at(direction, bend, &source_port, &target_port));
     } else {
         pts.extend(bridge(
@@ -740,6 +767,12 @@ fn classify(
     source_out_degree: usize,
     target_in_degree: usize,
     nodes: &[PlacedNode],
+    // Every subgraph/composite-state frame in the diagram, boxed by [`cluster_node_boxes`]. Read by
+    // exactly one thing — [`cross_lane_bends`]'s own spacing search (§10-3 item 4's branch half) —
+    // and deliberately **not** folded into `nodes`: a frame is not a collision obstacle
+    // (`build_by_id`'s own doc on why `shape_crosses_a_node` never sees one), it only decides which
+    // free lanes are wide enough to be worth offering.
+    frames: &[PlacedNode],
     // §10-5 part-3 item 2's own scope guard: whether `source` is a subgraph/composite-state
     // frame's own box, not an ordinary node — see the `nothing_between` block, just below, for why
     // this is the one extra condition kept alongside the geometric "nothing real between the two
@@ -769,6 +802,7 @@ fn classify(
             staircase: false,
             fan_lane: false,
             rank_lane_bend: None,
+            cross_lane_bend: None,
             source_side: side,
             source_axis: axis_of(direction, side),
             target_side: side,
@@ -865,6 +899,7 @@ fn classify(
             staircase: false,
             fan_lane: false,
             rank_lane_bend: None,
+            cross_lane_bend: None,
             source_side,
             source_axis: axis_of(direction, source_side),
             target_side,
@@ -884,6 +919,7 @@ fn classify(
             staircase: false,
             fan_lane: false,
             rank_lane_bend: None,
+            cross_lane_bend: None,
             source_side,
             source_axis: Axis::Flow,
             target_side,
@@ -992,6 +1028,7 @@ fn classify(
         staircase: false,
         fan_lane: true,
         rank_lane_bend: None,
+        cross_lane_bend: None,
         source_side: merge_source_side,
         source_axis: Axis::Flow,
         target_side: branch_target_side,
@@ -1010,6 +1047,7 @@ fn classify(
         staircase: false,
         fan_lane: false,
         rank_lane_bend: None,
+        cross_lane_bend: None,
         source_side,
         source_axis: axis_of(direction, source_side),
         target_side,
@@ -1084,6 +1122,7 @@ fn classify(
             staircase: false,
             fan_lane: false,
             rank_lane_bend: None,
+            cross_lane_bend: None,
             source_side: alt_source_side,
             source_axis: axis_of(direction, alt_source_side),
             target_side: alt_target_side,
@@ -1123,6 +1162,45 @@ fn classify(
                 candidate.rank_lane_bend = Some(bend);
                 if !shape_crosses_a_node(direction, source, target, &candidate, nodes) {
                     return candidate;
+                }
+            }
+            // §10-3 item 4's own **branch** half, the round-3 notes' one outstanding piece of that
+            // rule ("分岐側は未実装のまま…既存の `staircase` フォールバック"). A branching source
+            // has just failed both ordinary shapes *and* every flow-face rank-lane bend, which
+            // together say the same thing twice: neither the target's own column nor the source's
+            // own is passable. What is still untried is the rule itself — a lane between two
+            // *other* columns. The face stays the one already turned towards the target
+            // (`branch_source_side`, the cross-axis one — `shape` here, since `flow_flow_base`
+            // took the other), so the edge leaves on the side it is going to rather than doubling
+            // out of its flow face the way `staircase` does.
+            //
+            // Only for `branching`: a genuine merge already has its own, better-specified
+            // fallback just below (§10-3 item 10 — it keeps its flow-axis faces and lets
+            // `clear_local_route` nudge), and rule 10 forbids it the cross-axis exit this shape
+            // is built on.
+            if branching {
+                let cross_base = if shape.source_axis == Axis::Cross {
+                    shape
+                } else {
+                    alt
+                };
+                for &bend in &candidates {
+                    for lane in cross_lane_bends(
+                        direction,
+                        source,
+                        target,
+                        cross_base.source_side,
+                        bend,
+                        nodes,
+                        frames,
+                    ) {
+                        let mut candidate = cross_base;
+                        candidate.rank_lane_bend = Some(bend);
+                        candidate.cross_lane_bend = Some(lane);
+                        if !shape_crosses_a_node(direction, source, target, &candidate, nodes) {
+                            return candidate;
+                        }
+                    }
                 }
             }
             // §10-3 item 10's own "面が曖昧" fix: a genuine merge never falls back to the
@@ -1371,7 +1449,17 @@ fn route_with_ports(
         // cross-axis `alt` shape) — the same local nudge a `staircase` edge already gets, kept
         // this route on its correct flow-axis faces instead of resynthesising from raw waypoints.
         let mut out = vec![source_port.clone()];
-        out.extend(bend_at(direction, bend, &source_port, &target_port));
+        match shape.cross_lane_bend {
+            // §10-3 item 4's branch half — `EdgeShape::cross_lane_bend`'s own doc.
+            Some(lane) => out.extend(cross_lane_route(
+                direction,
+                lane,
+                bend,
+                &source_port,
+                &target_port,
+            )),
+            None => out.extend(bend_at(direction, bend, &source_port, &target_port)),
+        }
         clear_local_route(out, nodes, (source.id.as_str(), target.id.as_str()))
     } else {
         // The one-bend shape branch and merge share, and aligned falls into too: `bridge` between
@@ -1472,6 +1560,139 @@ fn bend_at(direction: Direction, bend_flow: f64, a: &Point, b: &Point) -> Vec<Po
         make(direction, bend_flow, cross(direction, b)),
         b.clone(),
     ]
+}
+
+/// [`EdgeShape::cross_lane_bend`]'s own four legs, returned the same way [`bridge`] and
+/// [`bend_at`] return theirs (everything *after* `a`, so a caller holding `a` can `.extend()`):
+/// out of `a`'s cross-axis face to `lane`, along the flow axis in that lane, across into `b`'s own
+/// column inside the rank gap at `bend_flow`, and into `b`'s flow-axis face.
+///
+/// The tail is [`bend_at`] itself, run from the lane hop rather than from `a` — so the half of this
+/// route that a plain [`EdgeShape::rank_lane_bend`] edge already draws is literally the same code,
+/// and the two can never drift apart.
+fn cross_lane_route(
+    direction: Direction,
+    lane: f64,
+    bend_flow: f64,
+    a: &Point,
+    b: &Point,
+) -> Vec<Point> {
+    let hop = make(direction, flow(direction, a), lane);
+    let mut out = vec![hop.clone()];
+    out.extend(bend_at(direction, bend_flow, &hop, b));
+    out
+}
+
+/// §10-3 item 4's own branch half — every cross-axis coordinate the long, flow-axis leg of a
+/// blocked rank-skipping *branch* could run along, ordered so the caller tries the most local one
+/// first.
+///
+/// A lane has to be clear for the **whole** run, so the obstacles are every box whose own flow-axis
+/// span overlaps the run's (`source`'s own flow coordinate through to `bend_flow`), collapsed onto
+/// the cross axis and merged; a lane is then any gap left between two of those merged spans, taken
+/// at its midpoint, wide enough that the line keeps [`PORT_CLEARANCE`] on both sides. Subgraph
+/// frames count as obstacles here — not as *collision* obstacles (§10-1 item 4's own "辺と枠の交差は
+/// 隙間なし" keeps a frame out of every route's own collision test, `build_by_id`'s doc), but as
+/// spacing ones: item 4's other half asks for "枠とノード・外周レーンの余白は最低16px", and a lane
+/// threaded between two members *of the same frame* draws a line straight through the middle of that
+/// frame's own rectangle. Only frames holding neither end are obstacles — the frame an edge starts
+/// inside cannot be one, or an edge leaving a subgraph would have nowhere at all to go.
+///
+/// The band outside the outermost obstacle is offered too, but **last** and only as far as the
+/// diagram's own content already reaches (§10-3 item 4's own "外周に逃がさない" — this rule exists
+/// precisely so a long edge does not escape to the perimeter lane, so the fallback hugs the last
+/// obstacle column at [`PORT_CLEARANCE`] rather than drifting out to the diagram's edge).
+fn cross_lane_bends(
+    direction: Direction,
+    source: &PlacedNode,
+    target: &PlacedNode,
+    source_side: Side,
+    bend_flow: f64,
+    nodes: &[PlacedNode],
+    frames: &[PlacedNode],
+) -> Vec<f64> {
+    let sign = outward_sign(source_side);
+    let port_cross = cross(direction, &face_port(source, source_side, PORT_INSET));
+    let target_cross = cross(direction, &target.center);
+    let source_flow = flow(direction, &source.center);
+    let (run_lo, run_hi) = (source_flow.min(bend_flow), source_flow.max(bend_flow));
+
+    // Whether `b`'s own rectangle holds `p` — how a frame is told apart from an obstacle without
+    // this function having to know the cluster tree: the frame an endpoint sits inside is the one
+    // this edge is leaving (or arriving in), never something to route around.
+    let holds = |b: &PlacedNode, p: &Point| {
+        let (x0, y0, x1, y1) = b.bounds();
+        p.x >= x0 - EPS && p.x <= x1 + EPS && p.y >= y0 - EPS && p.y <= y1 + EPS
+    };
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    let mut content: Option<(f64, f64)> = None;
+    for (b, is_frame) in nodes
+        .iter()
+        .map(|n| (n, false))
+        .chain(frames.iter().map(|f| (f, true)))
+    {
+        let lo_cross = cross(direction, &b.center) - cross_extent(direction, b);
+        let hi_cross = cross(direction, &b.center) + cross_extent(direction, b);
+        content = Some(match content {
+            Some((lo, hi)) => (lo.min(lo_cross), hi.max(hi_cross)),
+            None => (lo_cross, hi_cross),
+        });
+        if b.id == source.id || b.id == target.id {
+            continue;
+        }
+        if is_frame && (holds(b, &source.center) || holds(b, &target.center)) {
+            continue;
+        }
+        let lo_flow = flow(direction, &b.center) - flow_extent(direction, b);
+        let hi_flow = flow(direction, &b.center) + flow_extent(direction, b);
+        if hi_flow < run_lo - COLLISION_MARGIN || lo_flow > run_hi + COLLISION_MARGIN {
+            continue;
+        }
+        spans.push((lo_cross, hi_cross));
+    }
+    spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut merged: Vec<(f64, f64)> = Vec::with_capacity(spans.len());
+    for (lo, hi) in spans {
+        match merged.last_mut() {
+            Some(last) if lo <= last.1 + EPS => last.1 = last.1.max(hi),
+            _ => merged.push((lo, hi)),
+        }
+    }
+
+    // Outward of the source's own face, or the first leg would double straight back through the
+    // node it just left.
+    let outward = |lane: f64| sign * (lane - port_cross) > EPS;
+    let mut lanes: Vec<f64> = merged
+        .windows(2)
+        .filter(|w| w[1].0 - w[0].1 >= 2.0 * PORT_CLEARANCE)
+        .map(|w| (w[0].1 + w[1].0) / 2.0)
+        .filter(|&lane| outward(lane))
+        .collect();
+    lanes.sort_by(|a, b| {
+        (a - target_cross)
+            .abs()
+            .partial_cmp(&(b - target_cross).abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if let (Some((content_lo, content_hi)), Some(first), Some(last)) =
+        (content, merged.first(), merged.last())
+    {
+        let (wall, room) = if sign < 0.0 {
+            (first.0, first.0 - content_lo)
+        } else {
+            (last.1, content_hi - last.1)
+        };
+        // [`PORT_SPACING`] rather than the gaps' own [`PORT_CLEARANCE`]: the band's *other* wall is
+        // the diagram's own outer content edge — a subgraph frame's border or the outermost node —
+        // which is exactly what §10-1 item 4's "枠とノード・外周レーンの余白は最低16px" is written
+        // about, so the lane keeps that much on both sides or is not offered at all.
+        let lane = wall + sign * PORT_SPACING;
+        if room >= 2.0 * PORT_SPACING && outward(lane) {
+            lanes.push(lane);
+        }
+    }
+    lanes.truncate(RANK_LANE_MAX_CANDIDATES);
+    lanes
 }
 
 /// §10-3 item 4's own "目標側の列間の空きレーン" — every flow-axis coordinate a rank-skipping
@@ -2692,6 +2913,8 @@ pub fn route_edge(
         source_out_degree,
         target_in_degree,
         &[],
+        // No frames in this isolated helper either — the same "no siblings" simplification.
+        &[],
         false,
         false,
     );
@@ -3158,13 +3381,52 @@ type BarPortsResult = (
 /// coordinate — `zz-design-4c`'s own `初期化 -> fork_state` port sits at `初期化`'s own centre `x`,
 /// not at the fork bar's midpoint between its two outputs, confirming the design reference draws
 /// this asymmetrically: only a join's *output* gets the centroid treatment, never a fork's input).
+/// **A bar that is a member of a frame never reaches outside it.** §10-5 S4's own port rule reads
+/// "the connected trunk's own coordinate", which for a fork whose branches are all inside the same
+/// composite state is exactly what the bar's own two neighbours already sit at. It stops being a
+/// safe rule the moment one branch leaves the block: `state C { state f <<fork>>; [*] --> f;
+/// f --> a; a --> [*] }` with `f --> X` outside `C` puts a port at `X`'s own trunk, and
+/// [`straddle_bar_ports`] then grows the bar's rectangle out through `C`'s own side (measured at
+/// 59.7px). Growing the frame instead does not settle: the frame swallows `X`,
+/// `clear_foreign_cluster_overlaps` pushes `X` further out, the bar follows it, and so on.
+///
+/// So S2's hard rule wins over S4's soft one — "枠は自分のメンバーを含む" is an invariant this
+/// module states over every corpus source (`check_clusters_hold_their_members`), while "fork→join
+/// を曲げ 0 **優先**" is a preference in its own wording. The port is clamped to the furthest the
+/// bar's own end can sit and still leave its frame's padding intact, and the edge to the outside
+/// node bends once instead of running straight.
 fn bar_ports(
     direction: Direction,
     by_id: &HashMap<&str, &PlacedNode>,
     edges: &[EligibleEdge],
     shapes: &[Option<EdgeShape>],
     eviction: &Eviction,
+    cluster_boxes: &[PlacedNode],
 ) -> BarPortsResult {
+    // The cross-axis range a bar's ports may occupy: the innermost frame whose box holds the bar's
+    // own centre, inset by that frame's own padding plus the bar's own end pad, so the rectangle
+    // `straddle_bar_ports` builds from these lands exactly on the members' bounding box the frame
+    // is re-derived from — a fixpoint rather than a ratchet. `None` for a bar no frame holds, which
+    // is every bar in every design reference (`zz-design-4c`'s two are top level).
+    let port_limits = |bar: &PlacedNode| -> Option<(f64, f64)> {
+        let inner = cluster_boxes
+            .iter()
+            .filter(|c| {
+                let (l, t, r, b) = c.bounds();
+                bar.center.x >= l && bar.center.x <= r && bar.center.y >= t && bar.center.y <= b
+            })
+            .min_by(|a, b| {
+                (a.size.w * a.size.h)
+                    .partial_cmp(&(b.size.w * b.size.h))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })?;
+        let inset = super::clusters::PAD + BAR_PORT_PAD;
+        let (lo, hi) = (
+            cross(direction, &inner.center) - cross_extent(direction, inner) + inset,
+            cross(direction, &inner.center) + cross_extent(direction, inner) - inset,
+        );
+        (hi > lo).then_some((lo, hi))
+    };
     #[derive(Default)]
     struct BarFaces {
         /// Edges entering the bar (this bar is the edge's `target`): `(edge id, source's own
@@ -3224,15 +3486,22 @@ fn bar_ports(
         } else {
             None
         };
+        // This bar's own frame, if it has one — see `port_limits` above.
+        let limits = by_id.get(bar_id.as_str()).and_then(|bar| port_limits(bar));
+        let clamp = |c: f64| match limits {
+            Some((lo, hi)) => c.clamp(lo, hi),
+            None => c,
+        };
         let mut lo = f64::INFINITY;
         let mut hi = f64::NEG_INFINITY;
         for (id, c) in faces.downstream {
-            let c = centroid.unwrap_or(c);
+            let c = clamp(centroid.unwrap_or(c));
             lo = lo.min(c);
             hi = hi.max(c);
             source_coord.insert(id, c);
         }
         for (id, c) in faces.upstream {
+            let c = clamp(c);
             lo = lo.min(c);
             hi = hi.max(c);
             target_coord.insert(id, c);
@@ -3316,6 +3585,7 @@ fn build_shapes_and_eviction<'a>(
     nodes: &'a [PlacedNode],
     by_id: &HashMap<&'a str, &'a PlacedNode>,
     edges: &[EligibleEdge],
+    cluster_boxes: &[PlacedNode],
     cluster_ids: &std::collections::HashSet<&str>,
     fixed_self_loops: bool,
     chain_next: &HashMap<String, String>,
@@ -3336,6 +3606,7 @@ fn build_shapes_and_eviction<'a>(
                 e.source_out_degree,
                 e.target_in_degree,
                 nodes,
+                cluster_boxes,
                 cluster_ids.contains(e.source),
                 fixed_self_loops,
             ))
@@ -3344,7 +3615,7 @@ fn build_shapes_and_eviction<'a>(
     retreat_fixed_self_loops(direction, edges, &mut shapes);
     let mut eviction = evict(direction, by_id, edges, &shapes, chain_next);
     let (bar_source_coord, bar_target_coord, bar_spans) =
-        bar_ports(direction, by_id, edges, &shapes, &eviction);
+        bar_ports(direction, by_id, edges, &shapes, &eviction, cluster_boxes);
     eviction.source_coord.extend(bar_source_coord);
     eviction.target_coord.extend(bar_target_coord);
     (shapes, eviction, bar_spans)
@@ -3492,6 +3763,7 @@ pub fn route_flowchart(
         nodes,
         &by_id,
         edges,
+        &cluster_boxes,
         &cluster_ids,
         fixed_self_loops,
         chain_next,
@@ -3522,6 +3794,7 @@ pub fn route_flowchart(
         nodes,
         &by_id,
         edges,
+        &cluster_boxes,
         &cluster_ids,
         fixed_self_loops,
         chain_next,
@@ -4315,10 +4588,32 @@ pub(super) fn align_straight_lanes_with(
         let (Some(&oi), true) = (id_index.get(*out), !inputs.is_empty()) else {
             continue;
         };
+        // What each input contributes to the mean has to be **the coordinate its own port will
+        // actually be placed at**, which for a cluster-anchored input is not its anchor member's
+        // centre: `evict` puts that port on the *frame's* own face, so [`bar_ports`] — which reads
+        // the finished eviction result and computes the very same mean for the bar's output port —
+        // averages frame coordinates while this loop averaged member coordinates, and the node this
+        // loop moves ends up somewhere the bar's port is not. Measured at 17.4px on a join with one
+        // block input and one plain one (`P --> j`, `R --> j`, `j --> Z`): the block's anchor sat at
+        // 46.8, its frame's own face at 81.6.
+        //
+        // The frame's own centre is [`LaneUnits::band`]'s midpoint — the same bounding box
+        // `rebuild_frames` derives the rectangle from, so the two agree by construction rather than
+        // by coincidence. Which body to ask about is [`LaneUnits::separating_unit`]'s question,
+        // asked against the bar: the outermost block holding the input but not the bar, which is
+        // `id` itself for a plain node (and then this is exactly the centre it always read).
         let centroid = inputs
             .iter()
-            .filter_map(|s| id_index.get(*s))
-            .map(|&i| cross(direction, &nodes[i].center))
+            .filter_map(|s| {
+                let unit = units.separating_unit(s, &bar);
+                if unit == *s {
+                    let &i = id_index.get(*s)?;
+                    Some(cross(direction, &nodes[i].center))
+                } else {
+                    let (lo, hi) = units.band(direction, nodes, &id_index, unit);
+                    Some((lo + hi) / 2.0)
+                }
+            })
             .sum::<f64>()
             / inputs.len() as f64;
         let delta = centroid - cross(direction, &nodes[oi].center);
@@ -4547,36 +4842,56 @@ pub fn clear_foreign_cluster_overlaps(
     placed_clusters: &[PlacedCluster],
     tree: &super::clusters::Tree,
 ) -> bool {
+    // §10-5 round 4: what actually has to end up clear of the frame is the pushed node's own
+    // **body** — a member of another block drags its whole block along, and it is that block's own
+    // rectangle, not the member's box, that must not touch the frame being cleared. Pushing the
+    // bare box left the two frames sharing an edge exactly: the push cleared the member by
+    // `PERIMETER_MARGIN` (16), `rebuild_frames` then wrapped it in `clusters::PAD` (also 16), and
+    // `B.left` landed precisely on `A.right` (measured on `s --> a1` / `s --> b1` with `a1` and
+    // `b1` in two sibling subgraphs and a title long enough on `A` to make them overlap at all).
+    let units = LaneUnits::build(tree, nodes);
+    let id_index: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
     let mut moved = false;
     for cluster in placed_clusters {
         let (cl, ct, cr, cb) = cluster.bounds();
-        for node in nodes.iter_mut() {
-            if tree.touches(&node.id, &cluster.id) {
-                continue;
-            }
-            let (nl, nt, nr, nb) = node.bounds();
-            let dx = nr.min(cr) - nl.max(cl);
-            let dy = nb.min(cb) - nt.max(ct);
-            if dx <= 0.0 || dy <= 0.0 {
-                continue; // already clear of this frame
-            }
-            // The node's own cross-axis half-extent, so the pushed box's near edge (not its
-            // centre) is what actually clears the frame's own cross edge by `PERIMETER_MARGIN`.
-            let half = cross_extent(direction, node);
-            let node_cross = cross(direction, &node.center);
+        // Collected before anything moves: a shift below relocates every member of a body at once,
+        // so the borrow that decides *what* to move cannot also be the one doing the moving.
+        let hits: Vec<String> = nodes
+            .iter()
+            .filter(|node| !tree.touches(&node.id, &cluster.id))
+            .filter(|node| {
+                let (nl, nt, nr, nb) = node.bounds();
+                nr.min(cr) - nl.max(cl) > 0.0 && nb.min(cb) - nt.max(ct) > 0.0
+            })
+            .map(|node| node.id.clone())
+            .collect();
+        for id in hits {
+            let unit = units.unit_of(&id).to_string();
+            let (band_lo, band_hi) = units.band(direction, nodes, &id_index, &unit);
             let (near_cross, far_cross) = match direction {
                 Direction::TopToBottom | Direction::BottomToTop => (cl, cr),
                 Direction::LeftToRight | Direction::RightToLeft => (ct, cb),
             };
-            let push_near = near_cross - PERIMETER_MARGIN - half;
-            let push_far = far_cross + PERIMETER_MARGIN + half;
-            let target = if (node_cross - push_near).abs() <= (push_far - node_cross).abs() {
-                push_near
+            // Between two frames the gap is the rank's own body separation, the same number
+            // `align_straight_lanes`'s overlap sweep leaves between any two bodies; a bare node
+            // beside a frame keeps §10-1 item 4's own 16px minimum, unchanged.
+            let margin = if unit == id {
+                PERIMETER_MARGIN
             } else {
-                push_far
+                super::ORTHO_NODE_SEP
             };
-            let flow_v = flow(direction, &node.center);
-            node.center = make(direction, flow_v, target);
+            let to_near = (near_cross - margin) - band_hi;
+            let to_far = (far_cross + margin) - band_lo;
+            let delta = if to_near.abs() <= to_far.abs() {
+                to_near
+            } else {
+                to_far
+            };
+            units.shift(direction, nodes, &id_index, &unit, delta);
             moved = true;
         }
     }
@@ -4748,6 +5063,7 @@ pub fn separate_coincident_detours(
                 e.source_out_degree,
                 e.target_in_degree,
                 nodes,
+                &cluster_boxes,
                 cluster_ids.contains(e.source),
                 // A self-loop's own shape is irrelevant here — this pass either skips a self-loop
                 // outright (`avoid_label_plates`'s own `shape.reverse { continue }`) or excludes it
@@ -4756,7 +5072,16 @@ pub fn separate_coincident_detours(
                 // reaches anything this function does.
                 false,
             );
-            ((shape.reverse || shape.staircase || is_flow_flow_bend(&shape))
+            // A `cross_lane_bend` edge is the newest member of this family (§10-3 item 4's branch
+            // half): its long leg is a free-floating lane between two columns, chosen per edge
+            // against node/frame geometry alone, so two of them leaving the same crowded corner can
+            // land on the identical lane exactly the way two `staircase` routes already could
+            // (`zz-design-2c`'s own `API -> ID` and `ジョブ実行系 -> モデル API` both reach for the
+            // gap between `保存層` and `解析サンドボックス`).
+            ((shape.reverse
+                || shape.staircase
+                || shape.cross_lane_bend.is_some()
+                || is_flow_flow_bend(&shape))
                 && source.id != target.id)
                 .then_some(e.id)
         })
@@ -4813,6 +5138,48 @@ pub fn separate_coincident_detours(
         }
         let Some((id, old_c, new_c, horizontal)) = fix else {
             break;
+        };
+        // Which way to step. This pass has always stepped in the increasing direction, which is
+        // only ever right by luck: the run it moves can just as easily have a node box sitting on
+        // that side, in which case separating two coinciding lines quietly creates a line *through
+        // a node* — a strictly worse defect than the one being fixed, and one the whole-corpus
+        // invariant (`no_segment_crosses_a_foreign_node`) states must never happen. Found the
+        // moment §10-3 item 4's branch half started producing lanes for `zz-design-2c`'s
+        // `API -> ID` and `ジョブ実行系 -> モデル API`: both picked the same free lane between
+        // `保存層` and `解析サンドボックス`, and the +8px step put the second one straight inside
+        // `解析サンドボックス`'s box. So both directions are built and the clear one is taken;
+        // when neither is clear the original increasing step stands, so a diagram with no room
+        // either way behaves exactly as it did before.
+        let (Some(ends), Some(pts)) = (
+            edges
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| (e.source, e.target)),
+            points.get(id),
+        ) else {
+            continue;
+        };
+        let moved = |c: f64| {
+            let mut out = pts.clone();
+            for p in out.iter_mut() {
+                if horizontal && (p.y - old_c).abs() < EPS {
+                    p.y = c;
+                } else if !horizontal && (p.x - old_c).abs() < EPS {
+                    p.x = c;
+                }
+            }
+            out
+        };
+        let clear = |candidate: &[Point]| {
+            !candidate
+                .windows(2)
+                .any(|w| segment_crosses_any_node(&w[0], &w[1], nodes, ends))
+        };
+        let back_c = old_c - (new_c - old_c);
+        let new_c = if clear(&moved(new_c)) || !clear(&moved(back_c)) {
+            new_c
+        } else {
+            back_c
         };
         if let Some(pts) = points.get_mut(id) {
             for p in pts.iter_mut() {
@@ -4888,6 +5255,7 @@ pub fn avoid_label_plates(
                 e.source_out_degree,
                 e.target_in_degree,
                 nodes,
+                &cluster_boxes,
                 cluster_ids.contains(e.source),
                 // A self-loop always hits `shape.reverse { continue }` below, before anything else
                 // this function does reads `shape` — see that branch's own comment.
@@ -5164,6 +5532,7 @@ pub fn insert_crossing_gaps(
                 e.source_out_degree,
                 e.target_in_degree,
                 nodes,
+                &cluster_boxes,
                 cluster_ids.contains(e.source),
                 // A self-loop's own shape is irrelevant here — this pass either skips a self-loop
                 // outright (`avoid_label_plates`'s own `shape.reverse { continue }`) or excludes it
@@ -5666,6 +6035,7 @@ mod tests {
             2,
             2,
             &nodes,
+            &[],
             false,
             false,
         );
@@ -5876,6 +6246,7 @@ mod tests {
             staircase: false,
             fan_lane: false,
             rank_lane_bend: None,
+            cross_lane_bend: None,
             source_side: Side::Top,
             source_axis: Axis::Cross,
             target_side: Side::Bottom,
@@ -5975,6 +6346,7 @@ mod tests {
                 staircase: false,
                 fan_lane: false,
                 rank_lane_bend: None,
+                cross_lane_bend: None,
                 source_side: Side::Bottom,
                 source_axis: Axis::Cross,
                 target_side: Side::Top,
@@ -5987,6 +6359,7 @@ mod tests {
                 staircase: false,
                 fan_lane: false,
                 rank_lane_bend: None,
+                cross_lane_bend: None,
                 source_side: Side::Bottom,
                 source_axis: Axis::Cross,
                 target_side: Side::Top,
@@ -5999,6 +6372,7 @@ mod tests {
                 staircase: false,
                 fan_lane: false,
                 rank_lane_bend: None,
+                cross_lane_bend: None,
                 source_side: Side::Right,
                 source_axis: Axis::Flow,
                 target_side: Side::Left,
@@ -7173,6 +7547,7 @@ mod tests {
             1, // source_out_degree — not branching
             2, // target_in_degree — a genuine merge
             &nodes,
+            &[],
             false,
             false,
         );

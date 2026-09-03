@@ -1794,19 +1794,7 @@ fn lay_out_spec_pass(
             pass_through_eligible: _,
             bar_geometry,
         } = routed;
-        // §10-5 S4's own bar geometry fix: `route_flowchart` computes every bar's corrected,
-        // port-straddling rectangle against its own *local* copy of `nodes` (its own doc on
-        // `bar_geometry` — the routing maths inside it never touches this function's own `nodes`
-        // at all), so the correction has to be written back here, onto the exact vector the final
-        // `Diagram::nodes` is built from below, or the drawn bar shape would stay at dagre's own
-        // (possibly port-mismatched) rectangle even though every edge's own polyline in `points`
-        // already reflects the corrected one.
-        for node in &mut nodes {
-            if let Some((center, size)) = bar_geometry.get(&node.id) {
-                node.center = center.clone();
-                node.size = *size;
-            }
-        }
+        apply_bar_geometry(&mut nodes, &bar_geometry);
         // §10-5 S4: `route_flowchart` itself never sizes a bar (`evict`'s own doc — a bar's face
         // is never claimed the way an ordinary node's is), so this pass's own `bar_min_sizes`
         // (computed above, from the *same* node positions this route was just drawn against) is
@@ -2242,6 +2230,50 @@ fn pull_back_fan_ranks(
             .or_default()
             .push(old_rank(g, id));
     }
+    // A node that **leaves a block and comes straight back into it** occupies one of that block's
+    // own flow levels, even though it is not a member: `subgraph C { c1 --> c2 }` with
+    // `c1 --> X --> c2` needs three levels across `C`'s span, and dagre already laid it out that
+    // way. Counting only the levels the *members* occupy collapses `c1` and `c2` to adjacent ones,
+    // which then makes the unit graph state two contradictory constraints at once (`X` after `C`,
+    // `C` after `X`) — the relaxation below could never satisfy them and gave up, dropping ASAP for
+    // the whole diagram. Giving the level back removes the contradiction at its source rather than
+    // papering over it: the constraints become `X >= C + 1` and `C >= X - 1`, which agree.
+    //
+    // Deliberately narrow — a rank strictly inside the block's own span, held by a node that both
+    // receives an edge from a member and feeds one back into it. Every *other* node that happens to
+    // share a rank with the block stays irrelevant, which is what keeps a wide block in a busy
+    // diagram (`zz-design-2b`'s own `クラウド`) from inventing levels it does not have.
+    {
+        let mut leaves: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
+        let mut returns: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
+        for d in drawable {
+            if d.tail == d.head {
+                continue;
+            }
+            let (Some(&tail_unit), Some(&head_unit)) =
+                (unit_of.get(d.tail.as_str()), unit_of.get(d.head.as_str()))
+            else {
+                continue;
+            };
+            if tail_unit == head_unit {
+                continue;
+            }
+            leaves.insert((tail_unit, d.head.as_str()));
+            returns.insert((head_unit, d.tail.as_str()));
+        }
+        for (unit, outside) in leaves.intersection(&returns) {
+            let r = old_rank(g, outside);
+            let Some(rs) = unit_ranks.get_mut(*unit) else {
+                continue;
+            };
+            let (Some(&lo), Some(&hi)) = (rs.iter().min(), rs.iter().max()) else {
+                continue;
+            };
+            if r > lo && r < hi && !rs.contains(&r) {
+                rs.push(r);
+            }
+        }
+    }
     for rs in unit_ranks.values_mut() {
         rs.sort_unstable();
         rs.dedup();
@@ -2275,8 +2307,41 @@ fn pull_back_fan_ranks(
         if tail_unit == head_unit {
             continue;
         }
+        // A cluster-anchored end constrains the rank of the **block**, not of whichever member
+        // `Drawable` resolved it to. `Tree::anchor` picks one member — the first descendant with no
+        // internal out-edge (`Exit`) or no internal in-edge (`Entry`) — and that member is very
+        // often *not* the block's own last (or first) level: in `state P { [*] --> p1; p1 --> p2;
+        // p1 --> p3; p3 --> p4 }`, `P`'s exit anchor is `p2`, one level above `p4`. Constraining
+        // `P --> Z` with `p2`'s level lands `Z` on `p4`'s own rank — beside `p4`, *inside* `P`'s
+        // flow span, with the edge forced out through the frame's side face — which is the whole
+        // shape §10-5's own S2 says a frame must not have (its ports are the ordinary ones, and a
+        // forward edge out of a block leaves through the flow face past the block's own end).
+        //
+        // So a block end is read as the block: the largest level any of its descendants occupies
+        // when it is the source, the smallest when it is the target — the block's own flow span,
+        // which is what an edge into or out of the frame actually has to clear. `level_of` already
+        // measures inside the **outermost** unit (`unit_of`), so this stays correct when the
+        // written endpoint is a *nested* block: its descendants' levels are still counted in the
+        // outer block's own rank list, which is the unit `start` is solved for.
+        let block_level = |written: &str, exit: bool| -> Option<i32> {
+            if !tree.contains(written) {
+                return None;
+            }
+            let levels = tree
+                .descendants(written)
+                .into_iter()
+                .filter(|m| unit_of.contains_key(m))
+                .map(level_of);
+            if exit {
+                levels.max()
+            } else {
+                levels.min()
+            }
+        };
         let minlen = d.edge.minlen.max(1) as i32;
-        let offset = level_of(&d.tail) + minlen - level_of(&d.head);
+        let tail_level = block_level(&d.edge.from, true).unwrap_or_else(|| level_of(&d.tail));
+        let head_level = block_level(&d.edge.to, false).unwrap_or_else(|| level_of(&d.head));
+        let offset = tail_level + minlen - head_level;
         incoming
             .entry(head_unit)
             .or_default()
@@ -2311,6 +2376,15 @@ fn pull_back_fan_ranks(
             break;
         }
     }
+    // Not settled: the unit graph still holds a genuine cycle — an edge that leaves a block and
+    // comes back into it through *more than one* outside node, so the level the returning path
+    // needs cannot be recovered the way the single-node case's is (just above). dagre's own
+    // ranking already resolved it (the cycle only exists once a block is collapsed to one unit),
+    // and measured on `subgraph C { c1 --> c2 }` + `c1 --> X --> Y --> c2` its answer is the better
+    // picture: five ranks with `c1 --> X --> Y --> c2` running forward the whole way, against the
+    // three ASAP would compress it to with `Y --> c2` forced onto the perimeter ring. So this keeps
+    // dagre's ranking rather than breaking the cycle by dropping a constraint — tried, and it made
+    // that diagram worse while changing nothing else in the corpus.
     if !settled {
         return;
     }
@@ -2400,29 +2474,66 @@ fn pull_back_fan_ranks(
     }
 
     // Flow-axis room a frame's own edge needs beyond its first/last member column — one
-    // `clusters::PAD` (plus the title band at the top) per block that starts, or ends, on that
-    // column, summed so a nested block's frame and its parent's each get their own.
-    let (mut frame_head, mut frame_tail): (HashMap<i32, f64>, HashMap<i32, f64>) =
-        (HashMap::new(), HashMap::new());
-    for block in tree.iter() {
-        let member_ranks: Vec<i32> = tree
-            .descendants(&block.id)
-            .iter()
-            .filter_map(|m| new_rank.get(*m).copied())
-            .collect();
-        let (Some(&first), Some(&last)) = (member_ranks.iter().min(), member_ranks.iter().max())
-        else {
-            continue;
-        };
+    // `clusters::PAD` (plus the title band at the top) for a block that starts, or ends, on that
+    // column.
+    //
+    // **Nesting sums; siblings take the maximum.** Two frames one inside the other really do each
+    // need their own padding past the same member column, one beyond the other. Two *sibling*
+    // frames starting on the same column do not: they sit side by side across the flow, so the room
+    // one needs is room the other is using at the same time, and adding them reserved twice the gap
+    // any picture ever shows (measured on `s --> a1` / `s --> b1` with `a1` and `b1` in two sibling
+    // subgraphs — `s`'s own gap to the frames' top came out as `RANK_SEP` plus *two* heads).
+    let head_of = |block: &clusters::Cluster| -> f64 {
         let title = Label::measure(&block.title);
-        let head = clusters::PAD
+        clusters::PAD
             + if title.is_blank() {
                 0.0
             } else {
                 title.height + clusters::TITLE_PAD_Y * 2.0
-            };
-        *frame_head.entry(first).or_insert(0.0) += head;
-        *frame_tail.entry(last).or_insert(0.0) += clusters::PAD;
+            }
+    };
+    // Each block's own first/last member column, once — read by the ancestor walk below as well as
+    // by the accumulation itself.
+    let span_of: HashMap<&str, (i32, i32)> = tree
+        .iter()
+        .filter_map(|block| {
+            let member_ranks: Vec<i32> = tree
+                .descendants(&block.id)
+                .iter()
+                .filter_map(|m| new_rank.get(*m).copied())
+                .collect();
+            let (&first, &last) = (member_ranks.iter().min()?, member_ranks.iter().max()?);
+            Some((block.id.as_str(), (first, last)))
+        })
+        .collect();
+    let (mut frame_head, mut frame_tail): (HashMap<i32, f64>, HashMap<i32, f64>) =
+        (HashMap::new(), HashMap::new());
+    for block in tree.iter() {
+        let Some(&(first, last)) = span_of.get(block.id.as_str()) else {
+            continue;
+        };
+        // This block's own nesting chain at `first`/`last`: itself plus every ancestor whose own
+        // span starts (ends) on the same column, which are exactly the frames whose edges stack up
+        // one beyond another there. Bounded by the tree's depth, which `Tree::build` keeps acyclic.
+        let mut chain_head = 0.0;
+        let mut chain_tail = 0.0;
+        let mut cur = Some(block);
+        for _ in 0..=tree.iter().len() {
+            let Some(b) = cur else { break };
+            match span_of.get(b.id.as_str()) {
+                Some(&(f, _)) if f == first => chain_head += head_of(b),
+                _ => {}
+            }
+            match span_of.get(b.id.as_str()) {
+                Some(&(_, l)) if l == last => chain_tail += clusters::PAD,
+                _ => {}
+            }
+            cur = b.parent.as_deref().and_then(|p| tree.get(p));
+        }
+        let head_entry = frame_head.entry(first).or_insert(0.0);
+        *head_entry = head_entry.max(chain_head);
+        let tail_entry = frame_tail.entry(last).or_insert(0.0);
+        *tail_entry = tail_entry.max(chain_tail);
     }
 
     let mut column_flow: HashMap<i32, f64> = HashMap::new();
@@ -3307,6 +3418,25 @@ fn read_clusters(
 /// A block whose members this pass cannot find at all (none placed) keeps whatever rectangle
 /// `read_clusters` read: there is nothing to derive from, and dropping the frame outright would
 /// silently lose a box the source asked for.
+/// §10-5 S4's own bar geometry, written onto the node vector [`Diagram::nodes`] is built from:
+/// [`orthogonal::route_flowchart`] computes every fork/join bar's corrected, port-straddling
+/// rectangle against its own *local* copy of `nodes` (its own doc on `bar_geometry` — the routing
+/// maths inside it never touches the caller's), so without this the drawn bar would stay at dagre's
+/// own, possibly port-mismatched, rectangle even though every polyline already meets the corrected
+/// one.
+///
+/// A free function rather than an inline loop so the "what a bar's drawn box actually is" question
+/// has one named answer next to [`rebuild_frames`], which is what derives a frame from that very
+/// box when the bar is a block member.
+fn apply_bar_geometry(nodes: &mut [PlacedNode], geometry: &HashMap<String, (Point, Size)>) {
+    for node in nodes {
+        if let Some((center, size)) = geometry.get(&node.id) {
+            node.center = center.clone();
+            node.size = *size;
+        }
+    }
+}
+
 fn rebuild_frames(clusters: &mut [PlacedCluster], tree: &clusters::Tree, nodes: &[PlacedNode]) {
     let mut order: Vec<usize> = (0..clusters.len()).collect();
     order.sort_by(|a, b| clusters[*b].depth.cmp(&clusters[*a].depth));

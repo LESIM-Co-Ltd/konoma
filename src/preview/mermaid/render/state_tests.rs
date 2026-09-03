@@ -998,13 +998,38 @@ fn orthogonal_design_reference_corpus() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
-/// [`CASES`] plus [`orthogonal_design_reference_corpus`] — every orthogonal invariant that has to
-/// see the design-reference sources iterates this rather than either half alone.
+/// Sources that exist only to hold an orthogonal-mode invariant honest — never in [`CASES`], so
+/// [`state_corpus_golden`] (the splines byte stream §10-2 forbids moving) never sees them.
+///
+/// The flowchart half of this module has had such a list since §10-5 part 2
+/// (`tests::orthogonal_only_corpus`); this is its state-diagram counterpart, opened by the one
+/// shape below.
+fn orthogonal_only_corpus() -> Vec<(&'static str, &'static str)> {
+    vec![(
+        // §10-5 S4 against S2: a fork **inside** a composite state, one of whose branches leaves
+        // the block. The bar's own port rule ("接続先トランクの座標に一致") reaches for `X`'s trunk,
+        // which is outside `C` — and `straddle_bar_ports` then grows the bar's rectangle out
+        // through `C`'s own side (measured at 59.7px before `bar_ports` learned to clamp).
+        // Deliberately here rather than in a single-purpose test: what this shape needs is for the
+        // *general* cluster invariants (`check_clusters_hold_their_members`,
+        // `check_frames_are_derived_from_members`, `check_foreign_nodes_stay_out_of_clusters`) to
+        // run on it every time, which is exactly what chaining it into `orthogonal_full_corpus`
+        // buys.
+        "orthogonal-fork-inside-a-composite",
+        "stateDiagram-v2\n  state C {\n    state f <<fork>>\n    [*] --> f\n    f --> a\n    \
+         a --> [*]\n  }\n  f --> X\n  C --> Y",
+    )]
+}
+
+/// [`CASES`] plus [`orthogonal_design_reference_corpus`] plus [`orthogonal_only_corpus`] — every
+/// orthogonal invariant that has to see the design-reference sources iterates this rather than any
+/// one part alone.
 fn orthogonal_full_corpus() -> Vec<(&'static str, &'static str)> {
     CASES
         .iter()
         .copied()
         .chain(orthogonal_design_reference_corpus())
+        .chain(orthogonal_only_corpus())
         .collect()
 }
 
@@ -1036,6 +1061,183 @@ fn laid_out_orthogonal(src: &str) -> Diagram {
     let model = state::parse(src).unwrap_or_else(|e| panic!("corpus source must parse: {e}"));
     lay_out(&model, Routing::Orthogonal)
         .unwrap_or_else(|e| panic!("corpus source must lay out under orthogonal: {e}"))
+}
+
+/// §10-5 S2 ("枠外→内部状態の直接遷移" / a frame's ports are the ordinary ones): an edge between a
+/// block and a node outside it constrains the **block's** own rank span, not the rank of whichever
+/// member `Tree::anchor` picked to represent it.
+///
+/// `Tree::anchor` resolves a source block to *a* descendant with no internal out-edge, and a target
+/// block to one with no internal in-edge — but "a sink" is not "the last one": `state P { [*] --> p1;
+/// p1 --> p2; p1 --> p3; p3 --> p4 }` has two sinks (`p2` and `p4`) and the anchor is `p2`, a whole
+/// level above `p4`. Ranking `P --> Z` from `p2` puts `Z` on `p4`'s own rank — inside `P`'s flow
+/// span, beside a member, with `P`'s frame having to reach out sideways to it. The mirror holds on
+/// the entry side (`Q --> P` with `P`'s entry anchor above its own first level pulls `Q` down beside
+/// a member).
+///
+/// Three shapes, all four of them stated the same way: the outside end sits entirely past the
+/// frame's own flow-axis extent, on the side the flow goes.
+#[test]
+fn orthogonal_cluster_anchored_edge_ranks_the_outside_end_past_the_whole_block() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let block = "state P {\n [*] --> p1\n p1 --> p2\n p1 --> p3\n p3 --> p4\n }";
+    let cases: [(&str, &str, &str, bool); 3] = [
+        // (name, source, the outside node's id, whether it is downstream of the block)
+        (
+            "exit",
+            &format!("stateDiagram-v2\n {block}\n P --> Z"),
+            "Z",
+            true,
+        ),
+        (
+            "exit-into-a-join-bar",
+            &format!("stateDiagram-v2\n {block}\n state j <<join>>\n P --> j\n j --> Z"),
+            "j",
+            true,
+        ),
+        (
+            "entry",
+            "stateDiagram-v2\n Q --> P\n state P {\n w --> z\n x --> y\n y --> z\n }",
+            "Q",
+            false,
+        ),
+    ];
+    for (name, src, outside, downstream) in cases {
+        let d = laid_out_orthogonal(src);
+        let frame = d.cluster("P").expect("P's frame");
+        let (_, ft, _, fb) = frame.bounds();
+        let n = d
+            .node(outside)
+            .unwrap_or_else(|| panic!("{name}: {outside}"));
+        let (_, nt, _, nb) = n.bounds();
+        if downstream {
+            assert!(
+                nt > fb,
+                "{name}: {outside} must sit past the whole block (frame ends at {fb:.2}), \
+                 not at {nt:.2}..{nb:.2}"
+            );
+        } else {
+            assert!(
+                nb < ft,
+                "{name}: {outside} must sit before the whole block (frame starts at {ft:.2}), \
+                 not at {nt:.2}..{nb:.2}"
+            );
+        }
+        // …and no member of the block shares its row, which is the same statement read off the
+        // members rather than off the derived frame.
+        for m in ["p1", "p2", "p3", "p4", "w", "x", "y", "z"] {
+            let Some(member) = d.node(m) else { continue };
+            assert!(
+                (member.center.y - n.center.y).abs() > 1.0,
+                "{name}: {outside} shares {m}'s own row at y={:.2}",
+                member.center.y
+            );
+        }
+    }
+
+    // The same shape in a flowchart, where `subgraph` plays `state`'s part and the block has no
+    // start marker at all: `Tree::anchor`'s "no internal in-edge" rule reads `p1` as the entry and
+    // still resolves the exit to `p2`, so this is the identical off-by-a-level, one syntax over.
+    let d = super::tests::laid_out_flow(
+        "flowchart TB\n  subgraph P\n    p1 --> p2\n    p1 --> p3\n    p3 --> p4\n  end\n  P --> Z",
+        "basis",
+        "konoma-orthogonal",
+    );
+    let frame = d.cluster("P").expect("P's frame");
+    let (_, _, _, fb) = frame.bounds();
+    let z = d.node("Z").expect("Z");
+    assert!(
+        z.bounds().1 > fb,
+        "flowchart: Z must sit past the whole subgraph (frame ends at {fb:.2}), not at {:.2}",
+        z.bounds().1
+    );
+
+    // The entry case's own edge: `Q --> P` enters the frame through its flow-axis face (`TB`'s
+    // top), the shape §10-5 S2 gives an ordinary node — not the side face a member-ranked `Q`
+    // forced it onto.
+    let d = laid_out_orthogonal(
+        "stateDiagram-v2\n Q --> P\n state P {\n w --> z\n x --> y\n y --> z\n }",
+    );
+    let frame = d.cluster("P").expect("P's frame");
+    let (_, ft, _, _) = frame.bounds();
+    let e = d
+        .edges
+        .iter()
+        .find(|e| e.from == "Q" && e.to == "P")
+        .expect("Q -> P");
+    let end = e.points.last().expect("non-empty");
+    assert!(
+        (end.y - (ft - orthogonal::PORT_INSET)).abs() < 0.01,
+        "Q -> P must enter P's own top face at {:.2}, not {end:?}",
+        ft - orthogonal::PORT_INSET
+    );
+}
+
+/// "No dangling fragment" — [`super::tests::assert_no_dangling_fragment`]'s own two halves (a
+/// vanishing jog flanked by a reversal, and an endpoint sitting off its own node's face), run over
+/// the state corpus as well as the flowchart one. A state diagram is where the shapes most likely
+/// to trip it live: S1's markers are tiny circles whose whole face is a few px wide, S4's bars are
+/// grown after routing, and S3's self-transition is the one route in the module built from two
+/// hand-placed ports rather than [`orthogonal::evict`]'s grid.
+#[test]
+fn orthogonal_state_edges_leave_no_dangling_fragment() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_full_corpus() {
+        let d = laid_out_orthogonal(src);
+        super::tests::assert_no_dangling_fragment(name, &d);
+    }
+}
+
+/// §10-5 S4's own "join の下流出力はバー入力群の重心", stated where the two halves of it used to
+/// disagree: `align_straight_lanes_with` moves the node downstream of a join bar onto the mean of
+/// the bar's inputs, and [`orthogonal::bar_ports`] independently computes the same mean to place
+/// the bar's own output port. A cluster-anchored input made the two read different numbers — a
+/// member's centre against the frame's own face — so the bar's port and the node it feeds ended up
+/// 17.4px apart and the one merged trunk left the bar with a jog. The rule says the output is
+/// straight; that is what is asserted.
+#[test]
+fn orthogonal_join_output_is_straight_when_one_input_is_a_block() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let d = laid_out_orthogonal(
+        "stateDiagram-v2\n state P {\n [*] --> p1\n p1 --> p2\n p1 --> p3\n p3 --> p4\n }\n \
+         state j <<join>>\n P --> j\n R --> j\n j --> Z",
+    );
+    let e = d
+        .edges
+        .iter()
+        .find(|e| e.from == "j" && e.to == "Z")
+        .expect("j -> Z");
+    assert_eq!(
+        e.points.len(),
+        2,
+        "a join's own output must be 0-bend: {:?}",
+        e.points
+    );
+    let z = d.node("Z").expect("Z");
+    assert!(
+        (e.points[0].x - z.center.x).abs() < 0.01,
+        "the bar's output port at {:.2} must sit on Z's own centre {:.2}",
+        e.points[0].x,
+        z.center.x
+    );
+    // …and that shared coordinate is the mean of the two inputs' own *ports*, the frame's face
+    // included — not of the anchor member `Tree::anchor` happened to pick inside `P`.
+    let frame = d.cluster("P").expect("P's frame");
+    let r = d.node("R").expect("R");
+    let want = (frame.center.x + r.center.x) / 2.0;
+    assert!(
+        (z.center.x - want).abs() < 1.0,
+        "Z must sit on the mean of P's frame ({:.2}) and R ({:.2}) = {want:.2}, not {:.2}",
+        frame.center.x,
+        r.center.x,
+        z.center.x
+    );
 }
 
 /// Every segment of every routed edge is axis-parallel — no diagonal line — the same property
@@ -1776,6 +1978,31 @@ fn orthogonal_state_bar_touching_edges_are_zero_bend_and_match_the_trunks_own_po
                 && upstream_count.get(e.from.as_str()).copied().unwrap_or(0) > 1
             {
                 continue; // the join centroid exception, this function's own doc.
+            }
+            // §10-5 S4's own second exception, and the one S2 forces: a bar that is a member of a
+            // frame cannot put a port outside that frame (`orthogonal::bar_ports`'s own doc — the
+            // rectangle `straddle_bar_ports` builds from its ports would then poke out through the
+            // frame's side, and growing the frame to follow it never settles). When the node at the
+            // other end sits outside the bar's own rectangle, the port was clamped and the edge
+            // bends once to reach it — "曲げ 0 **優先**", not required. Identified from the geometry
+            // rather than by name: only the clamp can leave a bar's neighbour outside its span,
+            // because every unclamped port *is* that neighbour's coordinate and the rectangle is
+            // built to cover every port.
+            let (bar_id, other_id) = if horizontal_by_id.contains_key(e.from.as_str()) {
+                (e.from.as_str(), e.to.as_str())
+            } else {
+                (e.to.as_str(), e.from.as_str())
+            };
+            if let (Some(bar), Some(other)) = (d.node(bar_id), d.node(other_id)) {
+                let (bl, bt, br, bb) = bar.bounds();
+                let (lo, hi, c) = if horizontal {
+                    (bl, br, other.center.x)
+                } else {
+                    (bt, bb, other.center.y)
+                };
+                if c < lo - 0.5 || c > hi + 0.5 {
+                    continue;
+                }
             }
             let coords: Vec<f64> = e
                 .points
