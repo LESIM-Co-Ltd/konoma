@@ -8604,7 +8604,32 @@ fn orthogonal_only_corpus() -> Vec<(&'static str, &'static str)> {
             "orthogonal-self-loop-crosses",
             "flowchart TD\n  A --> A\n  A --> B\n  C --> A\n  C --> B",
         ),
+        (
+            // `zz-design-2b`'s own `CLI -.->|リンク| PAY` reduced to the shape that produced it:
+            // three merge siblings converging on one target, one of which also carries an
+            // author-dotted aside to a node several ranks away that nothing else reaches
+            // (`super::aside_weight`'s own doc). `Z` is deliberately the *last* declared member of
+            // its rank, so with the aside weighted like a flow edge dagre drags `A` away from `B`
+            // and `C` to sit beside it. Kept as a plain, cluster-free flowchart on purpose: 2b's
+            // own frames add a second, unrelated effect on top (the aside's dummy chain is
+            // parented into the source's frame and stretches it — see
+            // `orthogonal_a_dotted_aside_does_not_reorder_a_rank`'s own note), and a fixture that
+            // mixes the two cannot say which one a failure came from.
+            "orthogonal-dotted-aside-merge",
+            "flowchart LR\n  A[A] --> M[merge]\n  B[B] --> M\n  C[C] --> M\n  M --> N[N]\n  \
+             N --> P[P]\n  N --> Q[Q]\n  N --> R[R]\n  R --> Z[Z]\n  A -.->|aside| Z",
+        ),
     ]
+}
+
+/// [`orthogonal_only_corpus`]'s own `orthogonal-dotted-aside-merge` — the two tests below both
+/// need it by name rather than by iterating the list.
+fn dotted_aside_merge_source() -> &'static str {
+    orthogonal_only_corpus()
+        .into_iter()
+        .find(|(n, _)| *n == "orthogonal-dotted-aside-merge")
+        .expect("orthogonal-dotted-aside-merge is in the orthogonal-only corpus")
+        .1
 }
 
 /// §10-4's own "一般化チェック" round 2's three sources, and round 4's `4a`/`4b`/`4c` (see
@@ -10695,4 +10720,339 @@ fn konoma_orthogonal_draws_the_design_reference_look() {
             );
         }
     }
+}
+
+/// [`super::aside_weight`]'s own truth table, stated directly rather than only through the two
+/// layout tests below: the zero weight is for an **author-dotted** edge under **`konoma-
+/// orthogonal`** and nothing else. Every other stroke, and every stroke at all under
+/// `Routing::Splines`, keeps `EdgeLabel`'s own default — which is what makes the default rendering
+/// of every diagram kind byte-identical (§10-2) rather than merely "probably unchanged".
+#[test]
+fn orthogonal_only_a_dotted_edge_is_an_aside_for_dagre() {
+    let default = crate::preview::mermaid::layout::EdgeLabel::default().weight;
+    assert_eq!(
+        super::aside_weight(Routing::Orthogonal, Stroke::Dotted),
+        0,
+        "a dotted edge under konoma-orthogonal is the aside the perimeter lane is for"
+    );
+    for stroke in [
+        Stroke::Normal,
+        Stroke::Thick,
+        Stroke::Invisible,
+        Stroke::Invalid,
+    ] {
+        assert_eq!(
+            super::aside_weight(Routing::Orthogonal, stroke),
+            default,
+            "{stroke:?} is not an aside — only the author's own dotted line marks one"
+        );
+    }
+    for stroke in [
+        Stroke::Normal,
+        Stroke::Thick,
+        Stroke::Dotted,
+        Stroke::Invisible,
+        Stroke::Invalid,
+    ] {
+        assert_eq!(
+            super::aside_weight(Routing::Splines, stroke),
+            default,
+            "{stroke:?} under splines keeps dagre's own default weight"
+        );
+    }
+}
+
+/// The design rule [`super::aside_weight`] exists to state, checked on the finished layout rather
+/// than on the weight it hands dagre: **an aside does not decide where the flow's own nodes go.**
+///
+/// Stated as "no two nodes that share a rank swap places when the aside is added" — the strongest
+/// form that is actually true, and the one that names the user-visible defect. `zz-design-2b`'s
+/// three clients are one rank; with the aside weighted like a flow edge they come out `EX, UI,
+/// CLI` and without it `CLI, UI, EX`, so `CLI` ends up at the far side of its own frame and its
+/// edge into `API ゲート` climbs back across `ブラウザ UI`'s. Nodes that do *not* share a rank are
+/// deliberately out of scope: `zz-design-2c`'s own `ブラウザ UI` (rank 1) and `決済ページ` (rank 17)
+/// do trade places on the cross axis, which is not a reordering of anything — they were never
+/// comparable.
+///
+/// The pair is built by deleting the one `-.->` line from each source, with the count asserted, so
+/// the design-reference sources stay single-sourced and cannot drift away from the pictures in
+/// `docs/render-check/`.
+///
+/// What this does **not** claim is that the two layouts are identical. An aside still spans its
+/// ranks, so dagre still normalises it into a dummy chain that occupies a lane in every rank
+/// between its ends; in `2b`/`2c` that chain is parented into the source's own frame (upstream
+/// dagre's `parentDummyChains` gives a dummy whose rank is within a cluster's own span that
+/// cluster as its parent) and has to sit outside the much wider `クラウド` frame, which stretches
+/// `クライアント` and lets the position phase spread the three clients apart — 69.4px pitch without
+/// the aside, 114.5/190.2px with it. That is a separate mechanism from the pull this rule removes,
+/// and it is left standing, and stated here, rather than papered over by a looser assertion.
+#[test]
+fn orthogonal_a_dotted_aside_does_not_reorder_a_rank() {
+    use crate::preview::mermaid::flowchart::Direction;
+
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let design = orthogonal_design_reference_corpus();
+    let named = |name: &str| -> &'static str {
+        design
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name} is in the design-reference corpus"))
+            .1
+    };
+    let cases: [(&str, &str, Direction); 3] = [
+        (
+            "orthogonal-dotted-aside-merge",
+            dotted_aside_merge_source(),
+            Direction::LeftToRight,
+        ),
+        (
+            "zz-design-2b",
+            named("zz-design-2b"),
+            Direction::LeftToRight,
+        ),
+        (
+            "zz-design-2c",
+            named("zz-design-2c"),
+            Direction::TopToBottom,
+        ),
+    ];
+    for (name, src, direction) in cases {
+        let kept: Vec<&str> = src.lines().filter(|l| !l.contains("-.->")).collect();
+        assert_eq!(
+            src.lines().count() - kept.len(),
+            1,
+            "{name}: the pair is built by deleting exactly one dotted line"
+        );
+        let without = laid_out_flow(&kept.join("\n"), "basis", "konoma-orthogonal");
+        let with = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let cross: HashMap<&str, f64> = with
+            .nodes
+            .iter()
+            .map(|n| (n.id.as_str(), super::cross_of(direction, n)))
+            .collect();
+        let mut ranks: HashMap<i64, Vec<&PlacedNode>> = HashMap::new();
+        for n in &without.nodes {
+            // A rank is a shared flow-axis centre. Keyed off the aside-free layout, which is the
+            // one this rule measures the other against; both layouts agree on every flow-axis
+            // coordinate, so the grouping is the same either way.
+            ranks
+                .entry((super::flow_of(direction, n) * 100.0).round() as i64)
+                .or_default()
+                .push(n);
+        }
+        let mut checked = 0usize;
+        for members in ranks.values() {
+            if members.len() < 2 {
+                continue;
+            }
+            let mut order: Vec<&PlacedNode> = members.clone();
+            order.sort_by(|a, b| {
+                super::cross_of(direction, a)
+                    .partial_cmp(&super::cross_of(direction, b))
+                    .expect("a placed centre is never NaN")
+            });
+            for pair in order.windows(2) {
+                let (lo, hi) = (pair[0].id.as_str(), pair[1].id.as_str());
+                let (Some(&a), Some(&b)) = (cross.get(lo), cross.get(hi)) else {
+                    continue;
+                };
+                assert!(
+                    a < b,
+                    "{name}: adding the aside swapped {lo} and {hi}, which share a rank — \
+                     without it {lo} comes first, with it {lo} is at {a:.2} and {hi} at {b:.2}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 2,
+            "{name}: no same-rank pair was compared — the check is vacuous"
+        );
+    }
+}
+
+/// The picture the rule above buys, on the cluster-free fixture where nothing else is in play
+/// (`orthogonal-dotted-aside-merge`): the three merge siblings stay stacked one node pitch apart
+/// in declaration order, and their three edges land on three distinct, evenly spaced ports of the
+/// target's own entry face in that same order, none crossing another.
+///
+/// The pitch bound is the layout's own — the tallest of the three plus [`super::ORTHO_NODE_SEP`],
+/// which is exactly what dagre's position phase leaves between two neighbours on one rank when
+/// nothing pulls them apart. With the aside weighted like a flow edge `A` is dragged past `B`
+/// instead (`orthogonal_a_dotted_aside_does_not_reorder_a_rank` states that half), so the port
+/// order below is the half that says the *merge* still reads correctly afterwards.
+#[test]
+fn orthogonal_dotted_aside_leaves_its_merge_siblings_evenly_stacked() {
+    use crate::preview::mermaid::flowchart::Direction;
+
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let d = laid_out_flow(dotted_aside_merge_source(), "basis", "konoma-orthogonal");
+    let node = |id: &str| -> &PlacedNode {
+        d.nodes
+            .iter()
+            .find(|n| n.id == id)
+            .unwrap_or_else(|| panic!("{id} is in the fixture"))
+    };
+    let sources = ["A", "B", "C"].map(node);
+    let pitch = sources.iter().map(|n| n.size.h).fold(0.0_f64, f64::max) + super::ORTHO_NODE_SEP;
+    for pair in sources.windows(2) {
+        let gap = super::cross_of(Direction::LeftToRight, pair[1])
+            - super::cross_of(Direction::LeftToRight, pair[0]);
+        assert!(
+            gap > 0.0 && gap <= pitch + 0.01,
+            "{} and {} are {gap:.2}px apart on the cross axis, more than one {pitch:.2}px \
+             node pitch — the merge siblings are no longer a stack",
+            pair[0].id,
+            pair[1].id
+        );
+    }
+
+    let merge = node("M");
+    let face = merge.center.x - merge.size.w / 2.0;
+    let mut ports: Vec<(&str, f64)> = Vec::new();
+    for from in ["A", "B", "C"] {
+        let e = d
+            .edges
+            .iter()
+            .find(|e| e.from == from && e.to == "M")
+            .unwrap_or_else(|| panic!("{from} -> M is in the fixture"));
+        let end = e.points.last().expect("a routed edge has points");
+        assert!(
+            (end.x - face).abs() <= orthogonal::PORT_INSET + 0.01,
+            "{from} -> M ends at x={:.2}, not on M's own left face at x={face:.2}",
+            end.x
+        );
+        ports.push((from, end.y));
+    }
+    for (i, (from, y)) in ports.iter().enumerate() {
+        for (other, other_y) in ports.iter().skip(i + 1) {
+            assert!(
+                (y - other_y).abs() >= orthogonal::PORT_SPACING - 0.01,
+                "{from} and {other} share a port on M's left face ({y:.2} vs {other_y:.2})"
+            );
+        }
+    }
+    assert!(
+        ports.windows(2).all(|p| p[0].1 < p[1].1),
+        "the ports on M's left face are not in the sources' own cross-axis order: {ports:?}"
+    );
+    let routed = |from: &str| -> &PlacedEdge {
+        d.edges
+            .iter()
+            .find(|e| e.from == from && e.to == "M")
+            .expect("checked above")
+    };
+    for (i, from) in ["A", "B", "C"].iter().enumerate() {
+        for other in ["A", "B", "C"].iter().skip(i + 1) {
+            assert!(
+                !orthogonal::polylines_cross(&routed(from).points, &routed(other).points),
+                "{from} -> M crosses {other} -> M"
+            );
+        }
+    }
+}
+
+/// §10-3 item 10's own hop nesting, stated as the ordering rule rather than only as "nothing
+/// crossed" (`orthogonal_merge_sibling_hops_never_cross_or_coincide_across_corpus` states that
+/// half): among merge siblings whose sources **share a rank**, the hop row nearest the target
+/// belongs to the sibling whose hop leg has to travel furthest along the cross axis.
+///
+/// This is what `orthogonal::nest_merge_target_hops`'s own `Candidate::span` tie-break decides,
+/// and it only ever has to decide it for a shared rank — siblings at different ranks are already
+/// separated by `max_reach`, which the widest leg has no claim over (a nearer source with a wide
+/// leg must still not be pushed past its own facing wall, `Candidate::max_reach`'s own doc). So
+/// the invariant is scoped exactly the way the tie-break is, and reads the finished polylines
+/// rather than any of that pass's internal numbers.
+#[test]
+fn orthogonal_merge_hops_from_one_rank_nest_widest_leg_first() {
+    use crate::preview::mermaid::flowchart::Direction;
+
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let mut checked = 0usize;
+    for (name, src) in orthogonal_full_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+    {
+        let direction = if src.contains("LR") || src.contains("RL") {
+            Direction::LeftToRight
+        } else {
+            Direction::TopToBottom
+        };
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let by_id: HashMap<&str, &PlacedNode> =
+            d.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        let mut out_degree: HashMap<&str, usize> = HashMap::new();
+        for e in &d.edges {
+            *out_degree.entry(e.from.as_str()).or_insert(0) += 1;
+        }
+        let mut by_target: HashMap<&str, Vec<&PlacedEdge>> = HashMap::new();
+        for e in &d.edges {
+            // The same scope `orthogonal::is_merge_hop_candidate` itself has: a genuine merge
+            // sibling, drawn as the four-point "out, across, in" hop this rule is about.
+            if e.stroke == Stroke::Invisible
+                || out_degree.get(e.from.as_str()).copied().unwrap_or(0) > 1
+                || e.points.len() != 4
+            {
+                continue;
+            }
+            by_target.entry(e.to.as_str()).or_default().push(e);
+        }
+        for (target, merge) in by_target {
+            let Some(&target_node) = by_id.get(target) else {
+                continue;
+            };
+            // Flow-axis distance from the target's own centre out to the hop row, and cross-axis
+            // width of the leg that runs along it — both read straight off the polyline.
+            let leg = |e: &PlacedEdge| -> Option<(f64, f64, f64)> {
+                let src_flow = super::flow_of(direction, by_id.get(e.from.as_str())?);
+                let hop = &e.points[1];
+                let (hop_flow, hop_cross) = match direction {
+                    Direction::TopToBottom | Direction::BottomToTop => (hop.y, hop.x),
+                    Direction::LeftToRight | Direction::RightToLeft => (hop.x, hop.y),
+                };
+                let tgt_flow = super::flow_of(direction, target_node);
+                let span = (hop_cross
+                    - match direction {
+                        Direction::TopToBottom | Direction::BottomToTop => e.points[2].x,
+                        Direction::LeftToRight | Direction::RightToLeft => e.points[2].y,
+                    })
+                .abs();
+                Some((src_flow, (tgt_flow - hop_flow).abs(), span))
+            };
+            for i in 0..merge.len() {
+                for j in (i + 1)..merge.len() {
+                    let (Some(a), Some(b)) = (leg(merge[i]), leg(merge[j])) else {
+                        continue;
+                    };
+                    // Same rank only, and only when the two legs are genuinely different widths —
+                    // two siblings whose legs match have nothing to nest.
+                    if (a.0 - b.0).abs() > 0.01 || (a.2 - b.2).abs() <= 0.01 {
+                        continue;
+                    }
+                    let (wide, narrow) = if a.2 > b.2 { (a, b) } else { (b, a) };
+                    assert!(
+                        wide.1 <= narrow.1 + 0.01,
+                        "{name}: into {target}, the {:.2}px-wide hop leg sits {:.2}px from the \
+                         target while the narrower {:.2}px leg sits {:.2}px — the wide leg has to \
+                         be the one nearest the target or the two cross",
+                        wide.2,
+                        wide.1,
+                        narrow.2,
+                        narrow.1
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "no same-rank merge siblings with differing leg widths were compared — the check is vacuous"
+    );
 }

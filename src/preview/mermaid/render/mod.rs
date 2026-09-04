@@ -1176,6 +1176,63 @@ fn apply_label_growth(boosts: &mut HashMap<String, f64>, shortfall: &HashMap<Str
 /// see that function's own doc for what each element means.
 type LayoutPassResult = (Diagram, HashMap<String, Size>, HashMap<String, f64>);
 
+/// The dagre `weight` an edge is handed with — how hard its two ends pull towards each other while
+/// dagre ranks, orders and positions the graph. Every edge has carried the default `1` since the
+/// vendored engine landed; this is the one exception.
+///
+/// §10-1 item 4 ("戻り辺・補助辺は破線で外周レーンを回す") says a dashed line is how the design marks an
+/// edge as an aside — a link the reader should be able to find, but not part of the flow the
+/// picture is about — and the design answers by taking it round the outside rather than through
+/// the middle. konoma never dashes an edge itself (§10-1's own note: the line style is the
+/// author's), so the author's own `-.->` is the whole signal.
+///
+/// This function is about the *layout* half of that, not the routing half:
+/// [`orthogonal::route_perimeter`] takes a **reverse** aside round the perimeter ring, while a
+/// forward one (`zz-design-2b`'s own `CLI -.-> PAY`, sixteen ranks apart and never closing a
+/// cycle) stays on its dagre waypoint chain like any other forward edge. Either way, where the
+/// aside is drawn is decided after the layout — so the layout has no reason to let it decide where
+/// the nodes go.
+///
+/// dagre, though, saw an ordinary edge and pulled just as hard on it. Measured on `zz-design-2b`,
+/// whose single `CLI -.->|リンク| PAY` is the only dotted edge in the diagram — raw dagre
+/// cross-axis positions, the same graph with and without that one line:
+///
+/// | node  | with the aside | without it |
+/// |-------|----------------|------------|
+/// | `EX`  | 102.7          | 241.5      |
+/// | `UI`  | 172.1          | 172.1      |
+/// | `CLI` | **413.0**      | **102.7**  |
+///
+/// Without it the three clients sit one node pitch (69.4px) apart in declaration order. With it
+/// `CLI` is dragged 240.9px — three and a half pitches — down to `決済ページ`'s own row at the far
+/// side of the diagram, out of the stack it belongs to, and its real edge into `API ゲート` then has
+/// to climb all the way back up and cross `ブラウザ UI`'s edge on the way. The tangle is the pull,
+/// not the routing.
+///
+/// Weight `0` states in dagre's own terms what the design already states about the edge: it is
+/// still drawn, and it still spans its ranks (`minlen` is untouched, so nothing about how far
+/// apart the two ends are allowed to be changes), but it gets no vote on *where* its endpoints go.
+/// The vendored engine takes a zero cleanly at each of the three phases that read a weight —
+/// `rank::network_simplex` sums it into a cut value, where it contributes nothing;
+/// `order::barycenter`, `order::sort` and `order::resolve_conflicts::merge_entries` all divide by
+/// a weight sum and all three already guard that divisor with `weight > 0`, so a node whose only
+/// in-edge is an aside comes back with no barycenter at all and `sort` leaves it at its original
+/// index rather than producing a NaN; `position::bk` never reads an edge label's weight (its own
+/// `weight` is a separation distance). `nesting_graph` sums every edge weight to size the frame-
+/// compaction edges it injects, which is one smaller per aside and still, as upstream intends,
+/// larger than any real edge's.
+///
+/// [`Routing::Splines`] is deliberately excluded: it routes a dotted edge exactly like any other
+/// and its output is pinned byte for byte (§10-2), so the default rendering of every diagram kind
+/// is untouched.
+fn aside_weight(routing: Routing, stroke: Stroke) -> i32 {
+    if routing == Routing::Orthogonal && stroke == Stroke::Dotted {
+        0
+    } else {
+        EdgeLabel::default().weight
+    }
+}
+
 /// One layout-and-route pass: builds the dagre graph at `sizes` (falling back to each
 /// [`SpecNode`]'s own `size` for any node `sizes` does not name — every node, on the first pass),
 /// lays it out, and routes every edge. Returns the diagram, the minimum size stage 2's port
@@ -1323,6 +1380,7 @@ fn lay_out_spec_pass(
                 width: w,
                 height: h,
                 minlen: edge.minlen.max(1) as i32,
+                weight: aside_weight(spec.routing, edge.stroke),
                 ..EdgeLabel::default()
             }),
             Some(edge.id.as_str()),

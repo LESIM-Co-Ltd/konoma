@@ -1924,6 +1924,23 @@ fn nest_merge_target_hops(
         /// much-longer-reaching `ページ描画`/`usvg` candidates first and left `数式` — whose own
         /// reach is short — to find there was nowhere left inside its own small gap).
         max_reach: f64,
+        /// How far this candidate's own hop leg has to travel along the **cross** axis — the gap
+        /// between its source port and its target port. Breaks a `max_reach` tie, widest first.
+        ///
+        /// Siblings merging out of one stack all share a rank, so they all share a `max_reach`,
+        /// and the order the loop below then processes them in decides the nesting: it only ever
+        /// pushes a hop *outward*, away from the target, so whoever is placed first keeps the hop
+        /// nearest the target and everyone after it is pushed out past that one. `evict` has
+        /// already spread the group's ports across the entry face in the sources' own cross order,
+        /// so the hop legs nest — the farther a source sits from the target's entry column, the
+        /// wider the leg that has to reach it, and the wider leg has to be the one nearest the
+        /// target. Reach it in the other order and the outermost sibling's own hop leg is pushed
+        /// out across the *source* leg of a sibling standing between it and the target, which is
+        /// exactly what `zz-design-2c`'s own `エディタ拡張` did to `ブラウザ UI` (their hops came out
+        /// at 99.2 and 147.2 with the target face at 203.85 — the wide leg on the near row, the
+        /// narrow leg on the far one, crossing at `ブラウザ UI`'s own column). Ties on `max_reach`
+        /// used to fall through to declaration order, which is unrelated to either quantity.
+        span: f64,
         source_port: Point,
         target_port: Point,
         src_y: f64,
@@ -1975,6 +1992,7 @@ fn nest_merge_target_hops(
                     idx: i,
                     orig_dist: dist(bend),
                     max_reach: dist(source_facing),
+                    span: (cross(direction, &source_port) - cross(direction, &target_port)).abs(),
                     source_port,
                     target_port,
                     src_y,
@@ -1989,6 +2007,12 @@ fn nest_merge_target_hops(
             a.max_reach
                 .partial_cmp(&b.max_reach)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                // Widest hop leg first — see `Candidate::span`.
+                .then_with(|| {
+                    b.span
+                        .partial_cmp(&a.span)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
 
         // Every already-placed sibling's own *full* polyline (source port → hop → hop → target
