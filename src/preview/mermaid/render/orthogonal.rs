@@ -580,6 +580,53 @@ fn rides_the_perimeter(shape: &EdgeShape) -> bool {
     shape.reverse || shape.aside
 }
 
+/// §10-5 round 5's own narrowing of §10-1 item 4's perimeter lane for an **aside**: whether this
+/// one's ordinary, direct route would cut through the picture at all.
+///
+/// Item 4 sends a supplementary (author-dotted) line round the outside so it does not run through
+/// the middle of a diagram it is not part of. That reasoning has a precondition — there has to be
+/// a middle to run through. Between two boxes with **nothing between them**, the ordinary shape is
+/// a straight line or a single corner, entirely inside the two boxes' own span; taking it round the
+/// perimeter instead trades that for a three-legged detour, which is §10-0's own rule ("lines must
+/// not get complicated") applied in reverse. `CORPUS`'s own `strokes` is where that showed:
+/// `B -.-> C`, two adjacent boxes on one row, drew a two-bend hop under the row where a two-point
+/// line reaches.
+///
+/// "Nothing between them" is read as the rectangle the two boxes span: no **other** unit may
+/// overlap it — no third node's box, and no frame that holds neither end. A frame holding one of
+/// the two ends is that end's *own* band, which the route leaves the way every ordinary edge out of
+/// that node already does, so it is not something in the way. That covers all three of the ways an
+/// aside can cut through the interior at once: another node in the way, a run between two units,
+/// and a span across more than one rank gap with something inside it.
+///
+/// Only a *forward* aside is ever affected. A reverse one falls through to [`classify`]'s own
+/// `is_reverse` branch immediately below the aside branch, which puts it on the perimeter for the
+/// independent reason that it is a back edge — `zz-design-2a`'s own `D -.-> F` and `2b`/`2c`'s own
+/// `CLI -.->|リンク| PAY` all keep the ring they had.
+fn aside_route_stays_local(
+    source: &PlacedNode,
+    target: &PlacedNode,
+    nodes: &[PlacedNode],
+    frames: &[PlacedNode],
+) -> bool {
+    let (sl, st, sr, sb) = source.bounds();
+    let (tl, tt, tr, tb) = target.bounds();
+    let (l, t, r, b) = (sl.min(tl), st.min(tt), sr.max(tr), sb.max(tb));
+    let clear = |(nl, nt, nr, nb): (f64, f64, f64, f64)| -> bool {
+        nl >= r - EPS || nr <= l + EPS || nt >= b - EPS || nb <= t + EPS
+    };
+    let holds = |(fl, ft, fr, fb): (f64, f64, f64, f64), n: &PlacedNode| -> bool {
+        n.center.x >= fl && n.center.x <= fr && n.center.y >= ft && n.center.y <= fb
+    };
+    nodes
+        .iter()
+        .all(|n| n.id == source.id || n.id == target.id || clear(n.bounds()))
+        && frames.iter().all(|f| {
+            let bounds = f.bounds();
+            holds(bounds, source) || holds(bounds, target) || clear(bounds)
+        })
+}
+
 /// Whether `node` draws as a fork/join bar — §10-5 S4's own "バーのポート位置は接続先トランクの座標に
 /// 一致…分配計算なし" applies to it and to nothing else, which both [`evict`] and
 /// [`align_straight_lanes_with`] have to ask about.
@@ -903,7 +950,10 @@ fn classify(
     };
     if nothing_between {
         // fall through to the branch/merge ladder below
-    } else if aside && source.id != target.id {
+    } else if aside
+        && source.id != target.id
+        && !aside_route_stays_local(source, target, nodes, frames)
+    {
         // §10-1 item 4 ("戻り辺・**補助辺**は破線で外周レーンを回す"): the author dotted this edge,
         // so it goes round the outside whichever way it points. Before this branch existed only a
         // *reverse* edge did, and a forward aside — `zz-design-2b`/`2c`'s own `CLI -.->|リンク|
@@ -918,6 +968,14 @@ fn classify(
         // A dotted **self-loop** is excluded and keeps its existing shape: a loop has no "way
         // round the outside" to take, and `route_with_ports` draws it from its own ports either
         // way (`route_with_ports`'s own doc on the `reverse && source.id == target.id` branch).
+        //
+        // §10-5 round 5 narrows this to the asides that actually *need* the outside: item 4's
+        // perimeter lane exists so a supplementary line does not cut through the middle of a
+        // picture, and an aside between two boxes with nothing between them cuts through nothing
+        // ([`aside_route_stays_local`]). Sending that one round the outside made the line *more*
+        // complicated, which is §10-0's own test of a rule read backwards — measured on the
+        // `strokes` corpus fixture, whose `B -.-> C` (adjacent boxes in a chain, on one row) went
+        // from a straight two-point line to a two-bend hop under the row.
         let ring = expand_bounds(
             box_bounds(nodes, frames, [source, target]),
             PERIMETER_MARGIN,
@@ -996,6 +1054,43 @@ fn classify(
         // axis the nodes are aligned on), so the collision fix's only move for it is the
         // fallback: a multi-rank aligned pair (e.g. a long edge that happens to line up) can
         // still run straight through a node sitting in one of the ranks it skips over.
+        if shape_crosses_a_node(direction, source, target, &shape, nodes) {
+            shape.staircase = true;
+        }
+        return shape;
+    }
+
+    // §10-5 round 5: the same 0-bend shape on the **other** axis. Two boxes that share a flow
+    // coordinate are joined by one straight run across the flow — the source leaves the cross-axis
+    // face turned towards the target, the target enters the opposite one — which is the simplest
+    // line two such boxes can possibly be joined by (§10-0: fewer bends, no detours).
+    //
+    // Unreachable for any layered pair: a forward edge's two ends sit on different ranks, and a
+    // rank *is* a flow-axis column, so their flow coordinates always differ (a same-rank pair is
+    // `is_reverse` and never reaches here). The one thing that can produce it is
+    // [`place_dead_end_tiers`], whose members are deliberately taken off the rank axis and put in
+    // their own source's column — so this branch fires exactly where that pass built the geometry
+    // for it, and every other diagram in the corpus is byte-for-byte unchanged.
+    let dflow = flow(direction, &target.center) - flow(direction, &source.center);
+    if dflow.abs() < 0.5 {
+        let source_side = cross_face(direction, dcross);
+        let target_side = source_side.opposite();
+        let mut shape = EdgeShape {
+            reverse: false,
+            self_loop_fixed: false,
+            aligned: true,
+            staircase: false,
+            fan_lane: false,
+            rank_lane_bend: None,
+            cross_lane_bend: None,
+            aside: false,
+            source_side,
+            source_axis: Axis::Cross,
+            target_side,
+            target_axis: Axis::Cross,
+        };
+        // Same reasoning as the flow-axis case just above: the two faces are fixed by which axis
+        // the pair lines up on, so a collision has no alternate shape to swap to.
         if shape_crosses_a_node(direction, source, target, &shape, nodes) {
             shape.staircase = true;
         }
@@ -3225,7 +3320,22 @@ enum FaceEnd {
 struct FaceClaim {
     edge_id: String,
     end: FaceEnd,
-    other_cross: f64,
+    /// Where the edge's **other** end sits, measured along the axis this face actually distributes
+    /// its ports on ([`tangent_coord`] — `x` for a `Top`/`Bottom` face, `y` for `Left`/`Right`),
+    /// never along the diagram's cross axis regardless of which face it is.
+    ///
+    /// §10-1 item 1's rule 1 is written as "もう一方の端点のcross座標順", and for a *flow-axis*
+    /// face (the busy one the 退避則 packs a fan onto — `Top`/`Bottom` under `TB`, `Left`/`Right`
+    /// under `LR`) the two readings are the same quantity, which is why the difference lay hidden.
+    /// On a **cross-axis** face they are perpendicular to each other, and sorting by the wrong one
+    /// puts the ports in an order that has nothing to do with where the lines leaving them go —
+    /// which is a crossing, guaranteed, the moment two of them head opposite ways. `zz-design-2c`'s
+    /// own `ジョブ実行系` is where that showed once §10-5 round 5 put `保存層` beside the spine:
+    /// `成果物保管` and `メタデータ DB` sit at almost the same cross coordinate (they are stacked
+    /// along the *flow* axis, one shelf), so the cross reading could not tell them apart at all,
+    /// while along the face's own axis one is 190px upstream of the other. The rule's own intent —
+    /// "the lines to those other ends never cross just before the face" — is what this reads.
+    other_tangent: f64,
     aligned: bool,
     /// §10-3 item 1 ("ファン面の中央ポート＝幹の直進辺"): whether this claim is the trunk/chain
     /// edge [`align_straight_lanes`] selected for this claim's own *source* — set only on the
@@ -3342,7 +3452,6 @@ struct Eviction {
 /// coordinates) still draws as the fan's `fan_lane` shape, not the flat `aligned` one, so
 /// `shape.aligned` alone cannot find it.
 fn evict(
-    direction: Direction,
     by_id: &HashMap<&str, &PlacedNode>,
     edges: &[EligibleEdge],
     shapes: &[Option<EdgeShape>],
@@ -3377,7 +3486,7 @@ fn evict(
                 .push(FaceClaim {
                     edge_id: edge.id.to_string(),
                     end: FaceEnd::Source,
-                    other_cross: cross(direction, &target.center),
+                    other_tangent: tangent_coord(shape.source_side, &target.center),
                     aligned: shape.aligned,
                     trunk: is_trunk,
                     fan_lane: shape.fan_lane,
@@ -3392,7 +3501,7 @@ fn evict(
             .push(FaceClaim {
                 edge_id: edge.id.to_string(),
                 end: FaceEnd::Target,
-                other_cross: cross(direction, &source.center),
+                other_tangent: tangent_coord(shape.target_side, &source.center),
                 aligned: shape.aligned,
                 // Deliberately NOT `is_trunk`: §10-3 item 1 is about the *fan* face — a source's
                 // own outgoing face, crowded with several siblings — not the target's incoming
@@ -3422,11 +3531,14 @@ fn evict(
             continue;
         };
 
-        // Deterministic order: "もう一方の端点のcross座標順" (rule 1), ties broken by edge id —
-        // a real, stable key, unlike the arbitrary order a `HashMap`-built group starts in.
+        // Deterministic order: rule 1's "もう一方の端点のcross座標順", read along the axis this
+        // face distributes on ([`FaceClaim::other_tangent`]'s own doc on why that is the same
+        // quantity for a flow-axis face and a perpendicular one for a cross-axis face), ties broken
+        // by edge id — a real, stable key, unlike the arbitrary order a `HashMap`-built group
+        // starts in.
         claims.sort_by(|a, b| {
-            a.other_cross
-                .partial_cmp(&b.other_cross)
+            a.other_tangent
+                .partial_cmp(&b.other_tangent)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.edge_id.cmp(&b.edge_id))
         });
@@ -3451,10 +3563,10 @@ fn evict(
         // §10-3 item 12's own fix (`docs/FEATURE-MERMAID-RENDERER.md`, "面のポートは相手の側で配る"):
         // this used to *move* the aligned/trunk claim from wherever it naturally sorted to an
         // array-symmetric `center_idx` (`claims.remove(aligned_pos); claims.insert(center_idx, ..)`)
-        // — but `claims` is already sorted by `other_cross` (rule 1's own "もう一方の端点のcross座標
-        // 順"), so every claim *before* the anchor in that order is genuinely on one side of the
-        // face's own centre and every claim *after* it is genuinely on the other (the sort key and
-        // the centre-side test are the same axis). Splicing the anchor into a *different* index
+        // — but `claims` is already sorted by `other_tangent` (rule 1's own "もう一方の端点のcross座標
+        // 順", read along this face's own axis), so every claim *before* the anchor in that order is
+        // genuinely on one side of the face's own centre and every claim *after* it is genuinely on
+        // the other (the sort key and the centre-side test are the same axis). Splicing the anchor into a *different* index
         // physically swaps other claims across that boundary — `セルに合わせる`'s real 3-way merge
         // (`docs/STATUS.md`'s own ★未修正 entry) is exactly this: naturally sorted
         // `[幹, デコード, キーフレーム]` (幹's own other-end sits almost exactly on the face centre,
@@ -3472,7 +3584,7 @@ fn evict(
         // written for (`3a`'s own ten-way fanout, referenced below): that geometry is engineered
         // upstream, at layout time, by `mod.rs::regroup_fan_lanes`, which places the trunk's own
         // *node* at the fan's array-centre index before dagre ever runs — so by the time this
-        // function's own sort runs, the trunk's `other_cross` is already the fan's own natural
+        // function's own sort runs, the trunk's `other_tangent` is already the fan's own natural
         // sorted middle, and anchoring on its natural position lands it at offset 0 regardless (the
         // two ends coincide for every corpus/regression fixture this module pins — `an_aligned_
         // edge_keeps_the_centre_port_and_siblings_move_outward`,
@@ -3889,7 +4001,7 @@ fn build_shapes_and_eviction<'a>(
         })
         .collect();
     retreat_fixed_self_loops(direction, edges, &mut shapes);
-    let mut eviction = evict(direction, by_id, edges, &shapes, chain_next);
+    let mut eviction = evict(by_id, edges, &shapes, chain_next);
     let (bar_source_coord, bar_target_coord, bar_spans) =
         bar_ports(direction, by_id, edges, &shapes, &eviction, cluster_boxes);
     eviction.source_coord.extend(bar_source_coord);
@@ -4209,6 +4321,32 @@ fn segment_is_vertical(a: &Point, b: &Point) -> bool {
 /// `None` only for a degenerate zero/one-point polyline, which [`route_with_ports`] never actually
 /// returns (its own doc: two distinct nodes cannot collapse onto the same point).
 pub fn label_slot(direction: Direction, points: &[Point]) -> Option<LabelSlot> {
+    label_slot_clear(direction, points, &|_| 0)
+}
+
+/// [`label_slot`], told what a plate centred at a given point would **cover**
+/// ([`plate_coverage`] is what every caller passes) — §10-5 round 5's own rule (coordinator
+/// instruction, 2026-09-04): *a plate must not be laid over another edge's line, or over a node or
+/// frame border.*
+///
+/// A plate is opaque, so a segment it covers simply disappears under it; and when the segment it
+/// covers is a *sibling's* entry leg into the same busy face, the damage does not stop at the
+/// picture — [`avoid_label_plates`] then pushes that sibling's port to get it out from under the
+/// plate, which is how `zz-design-2c`'s own three-way merge into `API ゲート` came to have its
+/// ports out of source order and `CLI -> API` crossing `ブラウザ UI -> API`. Choosing a clear
+/// segment in the first place removes the cause; the port-pushing pass then has nothing to do.
+///
+/// Coverage is the **first** key, ahead of §10-1 item 3's own preference rather than instead of it:
+/// among the segments that are clear (or, if none is, among those covering the fewest), the choice
+/// is still item 3's — the flow-axis segment, the longest of them — with "nearest the polyline's
+/// own arc midpoint" added as a final, deterministic tie-break. So an edge whose item-3 segment was
+/// already clear keeps exactly the plate it had, and only a plate that was actually lying on
+/// something moves.
+pub fn label_slot_clear(
+    direction: Direction,
+    points: &[Point],
+    covered: &dyn Fn(&Point) -> usize,
+) -> Option<LabelSlot> {
     if points.len() < 2 {
         return points.first().map(|p| LabelSlot {
             center: p.clone(),
@@ -4218,32 +4356,46 @@ pub fn label_slot(direction: Direction, points: &[Point]) -> Option<LabelSlot> {
         });
     }
     let flow_is_vertical = matches!(direction, Direction::TopToBottom | Direction::BottomToTop);
-    // (window index, length, is_flow_axis) of the best candidate seen so far.
-    let mut best: Option<(usize, f64, bool)> = None;
+    let total = super::edges::length(points);
+    // (window index, covered count, length, is_flow_axis, distance from the arc midpoint) of the
+    // best candidate seen so far.
+    let mut best: Option<(usize, usize, f64, bool, f64)> = None;
+    let mut run = 0.0;
     for (i, w) in points.windows(2).enumerate() {
         let (a, b) = (&w[0], &w[1]);
         let vertical = segment_is_vertical(a, b);
         let len = (b.x - a.x).hypot(b.y - a.y);
         let is_flow = vertical == flow_is_vertical;
+        let center = Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+        let from_mid = (run + len / 2.0 - total / 2.0).abs();
+        run += len;
+        let n = covered(&center);
         let better = match best {
             None => true,
-            // A flow-axis segment always outranks a cross-axis one, regardless of length — that
-            // is the whole point of preferring it (only a flow-axis segment's length is ever
-            // grown by a label's own size, so a longer cross-axis segment is not actually a
-            // safer bet). Within the same class, the longer one wins.
-            Some((_, best_len, best_is_flow)) => {
-                if is_flow != best_is_flow {
+            // A clear segment always outranks one that covers something, and fewer is always
+            // better than more. Then item 3's own two keys, unchanged: a flow-axis segment
+            // outranks a cross-axis one regardless of length (only a flow-axis segment's length is
+            // ever grown by a label's own size, so a longer cross-axis segment is not actually a
+            // safer bet), and within one class the longer one wins. The arc-midpoint distance
+            // breaks a remaining tie, and a strict `<` on it keeps the *first* segment when even
+            // that ties.
+            Some((_, best_n, best_len, best_is_flow, best_mid)) => {
+                if n != best_n {
+                    n < best_n
+                } else if is_flow != best_is_flow {
                     is_flow
-                } else {
+                } else if (len - best_len).abs() > EPS {
                     len > best_len
+                } else {
+                    from_mid < best_mid - EPS
                 }
             }
         };
         if better {
-            best = Some((i, len, is_flow));
+            best = Some((i, n, len, is_flow, from_mid));
         }
     }
-    let (i, len, is_flow) = best?;
+    let (i, _, len, is_flow, _) = best?;
     let (a, b) = (&points[i], &points[i + 1]);
     Some(LabelSlot {
         center: Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0),
@@ -4251,6 +4403,68 @@ pub fn label_slot(direction: Direction, points: &[Point]) -> Option<LabelSlot> {
         is_flow_axis: is_flow,
         horizontal: !segment_is_vertical(a, b),
     })
+}
+
+/// How many foreign things a label plate of `size` centred at `center` would be laid over — what
+/// [`label_slot_clear`] ranks its candidate segments by, and the same predicate the whole-corpus
+/// invariant states afterwards.
+///
+/// Three kinds of thing count, one each:
+///
+/// * **another edge's line** — `routes` is every routed polyline by edge id, and `own_id` is the
+///   one this plate belongs to. A plate always sits *on* its own line by construction (that is what
+///   "線上プレート" means), so its own edge is the one thing it is allowed to cover; every other
+///   edge counts once however many of its segments run under the plate.
+/// * **a node's box** — nodes are painted *after* edges (`svg::emit`'s own order), so a plate over
+///   one is simply painted out.
+/// * **a frame's border** — the four lines of the rectangle, not its interior: a plate *inside* a
+///   subgraph is ordinary and correct, a plate lying along its drawn border is not.
+pub fn plate_coverage(
+    center: &Point,
+    size: Size,
+    own_id: &str,
+    routes: &HashMap<String, Vec<Point>>,
+    nodes: &[PlacedNode],
+    frames: &[PlacedCluster],
+) -> usize {
+    let (l, t, r, b) = (
+        center.x - size.w / 2.0,
+        center.y - size.h / 2.0,
+        center.x + size.w / 2.0,
+        center.y + size.h / 2.0,
+    );
+    let mut n = routes
+        .iter()
+        .filter(|(id, pts)| {
+            id.as_str() != own_id
+                && pts
+                    .windows(2)
+                    .any(|w| segment_crosses_rect(&w[0], &w[1], center, size))
+        })
+        .count();
+    n += nodes
+        .iter()
+        .filter(|node| {
+            let (nl, nt, nr, nb) = node.bounds();
+            nl < r - EPS && nr > l + EPS && nt < b - EPS && nb > t + EPS
+        })
+        .count();
+    n += frames
+        .iter()
+        .filter(|frame| {
+            let (fl, ft, fr, fb) = frame.bounds();
+            let corners = [
+                (Point::new(fl, ft), Point::new(fr, ft)),
+                (Point::new(fl, fb), Point::new(fr, fb)),
+                (Point::new(fl, ft), Point::new(fl, fb)),
+                (Point::new(fr, ft), Point::new(fr, fb)),
+            ];
+            corners
+                .iter()
+                .any(|(a, b)| segment_crosses_rect(a, b, center, size))
+        })
+        .count();
+    n
 }
 
 /// The minimum length a labelled segment needs — §10-1 item 3: "ラベル付き区間の最低長 = ラベル幅
@@ -4413,6 +4627,16 @@ impl LaneUnits {
     /// Whether `unit` names a block (rather than a node standing for itself).
     pub fn is_block(&self, unit: &str) -> bool {
         self.members.contains_key(unit)
+    }
+
+    /// Every placed node `unit` holds — empty for a node standing for itself. The flow-axis
+    /// counterpart of [`LaneUnits::band`] ([`unit_flow_span`]) is the one caller: that question
+    /// needs the members themselves, not their cross-axis envelope.
+    pub fn members_of(&self, unit: &str) -> Vec<&str> {
+        self.members
+            .get(unit)
+            .map(|ids| ids.iter().map(String::as_str).collect())
+            .unwrap_or_default()
     }
 
     /// How far `unit`'s own frame reaches beyond its members' bounding box on one cross-axis side —
@@ -5075,6 +5299,370 @@ pub fn shift_cross(direction: Direction, p: &Point, delta: f64) -> Point {
     make(direction, flow(direction, p), cross(direction, p) + delta)
 }
 
+/// One block [`place_dead_end_tiers`] recognised as a tier, and where it put it — returned so the
+/// caller can state the two facts the rest of the pipeline needs (its members are off the rank
+/// axis, and the lane they hang off keeps its own geometry).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeadEndTier {
+    /// The block's own id.
+    pub block: String,
+    /// Its members, in the order they were placed along the flow axis (by their first source's own
+    /// position on the lane).
+    pub members: Vec<String>,
+    /// `+1` when the tier went to the positive cross-axis side (`LR` below / `TB` right), `-1` for
+    /// the other one.
+    pub side: f64,
+}
+
+/// §10-5 round 5's own **tier** rule (coordinator instruction, 2026-09-04; `docs/FEATURE-MERMAID-
+/// RENDERER.md` §10-0's own guiding principle — a rule earns its place by making lines *simpler*).
+///
+/// # What a tier is
+///
+/// A block whose members are **all dead ends** (none of them is any drawn edge's source, and none
+/// has a self-loop) and whose incoming edges **all come from nodes on one straight lane** — one
+/// chain of [`align_straight_lanes`]'s own selection, whose members really do share a cross
+/// coordinate — is a *tier*: a shelf hanging off the spine rather than a stage of it. It consumes
+/// no rank of its own. Every member is placed at its own **first source's flow coordinate**, so
+/// that edge drops straight out of the lane with zero bends ([`classify`]'s own cross-axis aligned
+/// shape), and the whole shelf sits one [`super::ORTHO_NODE_SEP`] clear of the lane on the far side
+/// of it, so a *further* input to the same member arrives with exactly one bend on the face turned
+/// towards its own source.
+///
+/// `docs/render-check/zz-design-2b-browser.png` is the reference this states: `保存層`
+/// (`メタデータ DB`, `成果物保管` — both dead ends, fed only by `API ゲート` and `ジョブ実行系`,
+/// two nodes of the `CLI → API ゲート → ジョブキュー → ジョブ実行系 → 解析サンドボックス` spine)
+/// sits *below* that spine with `メタデータ DB` directly under `API ゲート` and `成果物保管`
+/// directly under `ジョブ実行系`; `2c` is the same picture rotated, the shelf to the *right* of a
+/// `TB` spine. Without this rule the block takes a rank of its own downstream of everything that
+/// feeds it, and all three of its edges become long multi-bend runs back across the diagram.
+///
+/// # Which side
+///
+/// The side away from where the lane's other branches go — measured, not assumed: whichever cross
+/// side carries **fewer other units** whose own flow span overlaps the tier's. A node the lane
+/// itself runs through (its box contains the lane's coordinate) is on neither side and is not
+/// counted. A tie — including the common "nothing at all is beside this stretch of the lane" —
+/// takes the positive side, which is `LR`'s below and `TB`'s right, exactly as both design
+/// references draw it.
+///
+/// # Where exactly
+///
+/// The shelf's own frame edge sits `lane half-extent + ORTHO_NODE_SEP` beyond the lane's own
+/// coordinate, and each member another `frame pad + its own half-extent` beyond that — so members
+/// are flush on the side facing the lane (`2c`'s reference draws `メタデータ DB` and `成果物保管`
+/// left-aligned, not centred). Anything else already occupying that band is pushed *past*, never
+/// overlapped: the frame edge is moved outward until it clears every foreign unit whose flow span
+/// overlaps the tier's by the same `ORTHO_NODE_SEP`. The frame itself is not written here at all —
+/// `mod.rs`'s own `rebuild_frames` derives it from wherever the members end up, which is round 4's
+/// standing rule and the reason this pass only has to move nodes.
+///
+/// # Where it runs, and what it hands back
+///
+/// **After** every cross-axis pass (`align_straight_lanes`, `regroup_fan_lanes`, and the second
+/// alignment) and before any frame is read: the lane has to be final before a shelf can be hung off
+/// it, and this is the last thing that moves a node before `read_clusters`. That ordering is also
+/// what lets the outward push above be exact — every other unit is already where it will stay.
+///
+/// A tier member is **off the rank axis**, and the returned [`DeadEndTier`] list is how the caller
+/// says so: it drops the member's rank, so [`classify`] reads its faces from geometry
+/// ([`flow_rank_delta`]'s own `None` fallback) rather than from a rank number that no longer
+/// describes which column it sits in. Without that, the second input to a member (`ジョブ実行系 →
+/// メタデータ DB`, whose source is now *downstream* of it in the picture while still upstream of it
+/// by rank) enters the wrong face and doubles back.
+///
+/// Returns the tiers actually placed, in block order; an empty vector means nothing moved and the
+/// diagram is byte-for-byte what it was.
+pub fn place_dead_end_tiers(
+    direction: Direction,
+    nodes: &mut [PlacedNode],
+    tree: &super::clusters::Tree,
+    units: &LaneUnits,
+    chain_next: &HashMap<String, String>,
+    edges: &[(String, String, bool)],
+) -> Vec<DeadEndTier> {
+    if nodes.len() < 2 || tree.is_empty() {
+        return Vec::new();
+    }
+    let index: HashMap<String, usize> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.clone(), i))
+        .collect();
+
+    // Every selected lane, as "which chain is this node on" — the same node-disjoint simple paths
+    // `align_straight_lanes`'s own "at most one selected in/out edge per node" builds, so a node
+    // belongs to at most one. A node no lane runs through is simply absent, and a tier is only ever
+    // recognised off a real lane (this function's own doc): "one straight lane" is a fact about the
+    // selection, not about two coordinates happening to agree.
+    let heads: std::collections::HashSet<&str> = chain_next.values().map(String::as_str).collect();
+    let mut chain_of: HashMap<&str, usize> = HashMap::new();
+    let mut chain_ids: Vec<&str> = chain_next
+        .keys()
+        .map(String::as_str)
+        .filter(|s| !heads.contains(s))
+        .collect();
+    chain_ids.sort_unstable();
+    for (ci, head) in chain_ids.into_iter().enumerate() {
+        let mut cur = head;
+        chain_of.insert(cur, ci);
+        while let Some(next) = chain_next.get(cur) {
+            cur = next.as_str();
+            if chain_of.insert(cur, ci).is_some() {
+                break; // defensive: a selection this function did not build could still cycle
+            }
+        }
+    }
+
+    let mut blocks: Vec<&super::clusters::Cluster> = tree.iter().collect();
+    blocks.sort_by(|a, b| a.depth.cmp(&b.depth).then_with(|| a.id.cmp(&b.id)));
+    let mut placed: Vec<DeadEndTier> = Vec::new();
+    let mut spoken_for: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for block in blocks {
+        let members: Vec<String> = tree
+            .descendants(&block.id)
+            .into_iter()
+            .filter(|m| index.contains_key(*m))
+            .map(str::to_string)
+            .collect();
+        if members.is_empty() || members.iter().any(|m| spoken_for.contains(m)) {
+            // An already-placed outer tier owns these members; a nested block inside one is drawn
+            // by `rebuild_frames` around wherever they landed, not hung off the lane a second time.
+            continue;
+        }
+        let is_member = |id: &str| members.iter().any(|m| m == id);
+        // Dead ends only: no member is any drawn edge's source (a self-loop is caught by the same
+        // test, since its source is a member too).
+        if edges.iter().any(|(t, _, _)| is_member(t)) {
+            continue;
+        }
+        // A block the lane itself runs **through** is not a shelf beside the lane — it is where
+        // that lane goes. `zz-design-2b`/`2c`'s own `外部` is the case: its four members are all
+        // dead ends fed from the spine, exactly like `保存層`'s, but one of them (`コード置き場`) is
+        // the spine's own last node, so the block is the end of the flow and the design draws it as
+        // a rank of its own. Hanging it off the side instead would pull the trunk's own last
+        // segment out of the trunk.
+        if members.iter().any(|m| chain_of.contains_key(m.as_str())) {
+            continue;
+        }
+        // Every incoming edge's source, in declaration order, and each member's own first one.
+        // An **aside** (`render::is_aside` — the author dotted it) is not counted: it carries no
+        // ordering vote anywhere else in this pipeline (`EdgeLabel::rank_only`, weight 0) and is
+        // drawn on the perimeter rather than as a drop, so a member whose only input is an aside
+        // has nothing to be placed under. `zz-design-2b`'s own `決済ページ` is exactly that, which
+        // is the second, independent reason its block is not a tier.
+        let mut sources: Vec<&str> = Vec::new();
+        let mut first_source: HashMap<&str, &str> = HashMap::new();
+        let mut fed_from_inside = false;
+        for (t, h, aside) in edges {
+            if !is_member(h) {
+                continue;
+            }
+            if is_member(t) {
+                fed_from_inside = true;
+                break;
+            }
+            if *aside {
+                continue;
+            }
+            if !sources.contains(&t.as_str()) {
+                sources.push(t.as_str());
+            }
+            first_source.entry(h.as_str()).or_insert(t.as_str());
+        }
+        // A shelf **spans** a stretch of the lane; a single hook is just a branch. A block fed
+        // from one lane node has a natural column of its own — the rank after that node — and the
+        // ordinary fan machinery (§10-3's own `fan_split`/`regroup_fan_lanes`) already decides
+        // which side of the trunk it goes on and draws it with one bend. What this rule exists for
+        // is the case that has no such column: a group fed from *several* points along the lane,
+        // which any single rank forces into long runs back across the diagram whichever rank it
+        // picks. Two distinct sources is the least that can be true of.
+        if fed_from_inside
+            || sources.len() < 2
+            || members
+                .iter()
+                .any(|m| !first_source.contains_key(m.as_str()))
+        {
+            continue;
+        }
+        // One lane: every source on the same selected chain, and that chain really straight.
+        let Some(&lane) = chain_of.get(sources[0]) else {
+            continue;
+        };
+        if sources.iter().any(|s| chain_of.get(*s) != Some(&lane)) {
+            continue;
+        }
+        let lane_cross = cross(direction, &nodes[index[sources[0]]].center);
+        if sources
+            .iter()
+            .any(|s| (cross(direction, &nodes[index[*s]].center) - lane_cross).abs() >= 0.5)
+        {
+            continue;
+        }
+
+        // --- flow axis: each member under its own first source, in that order ------------------
+        let mut ordered: Vec<(String, f64)> = members
+            .iter()
+            .map(|m| {
+                let src = first_source[m.as_str()];
+                (m.clone(), flow(direction, &nodes[index[src]].center))
+            })
+            .collect();
+        ordered.sort_by(|a, b| {
+            a.1.partial_cmp(&b.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        // Two members fed by the *same* lane node want the same column; the second one is spaced
+        // past the first rather than drawn on top of it, and pays one bend for it — the same
+        // `ORTHO_NODE_SEP` every other pass here spaces a rank with.
+        let mut prev_far = f64::NEG_INFINITY;
+        for (id, want) in &mut ordered {
+            let half = flow_extent(direction, &nodes[index[id.as_str()]]);
+            if *want - half < prev_far + super::ORTHO_NODE_SEP {
+                *want = prev_far + super::ORTHO_NODE_SEP + half;
+            }
+            prev_far = *want + half;
+        }
+        let (span_lo, span_hi) = ordered.iter().fold(
+            (f64::INFINITY, f64::NEG_INFINITY),
+            |(lo, hi), (id, want)| {
+                let half = flow_extent(direction, &nodes[index[id.as_str()]]);
+                (lo.min(want - half), hi.max(want + half))
+            },
+        );
+
+        // --- which side ------------------------------------------------------------------------
+        //
+        // Counted over *units*, not nodes, and only over the stretch of the lane this tier covers.
+        // A box the lane runs through belongs to neither side.
+        let anchor = ordered[0].0.as_str();
+        let mut side_units: [std::collections::HashSet<String>; 2] = Default::default();
+        for n in nodes.iter() {
+            if is_member(&n.id) {
+                continue;
+            }
+            let c = cross(direction, &n.center);
+            let half = cross_extent(direction, n);
+            if (c - lane_cross).abs() <= half {
+                continue; // the lane itself runs through this box
+            }
+            let (n_lo, n_hi) = (
+                flow(direction, &n.center) - flow_extent(direction, n),
+                flow(direction, &n.center) + flow_extent(direction, n),
+            );
+            if n_hi < span_lo || n_lo > span_hi {
+                continue;
+            }
+            let slot = usize::from(c > lane_cross);
+            side_units[slot].insert(units.separating_unit(&n.id, anchor).to_string());
+        }
+        let side = if side_units[1].len() > side_units[0].len() {
+            -1.0
+        } else {
+            1.0
+        };
+
+        // --- cross axis: the shelf's own near edge, then every member flush against it ----------
+        //
+        // `lane_half` is the widest lane box over the stretch the tier covers — not the whole lane,
+        // whose far end can be anywhere and has nothing to do with how far this shelf has to clear.
+        let lane_half = nodes
+            .iter()
+            .filter(|n| {
+                (cross(direction, &n.center) - lane_cross).abs() < 0.5
+                    && flow(direction, &n.center) >= span_lo
+                    && flow(direction, &n.center) <= span_hi
+            })
+            .map(|n| cross_extent(direction, n))
+            .fold(0.0_f64, f64::max);
+        let near_is_top =
+            side > 0.0 && matches!(direction, Direction::LeftToRight | Direction::RightToLeft);
+        let pad_near = frame_near_pad(tree, &block.id, near_is_top);
+        // Outwardness: distance along the cross axis in the direction the shelf went, so one
+        // `max` reads the same for both sides.
+        let mut out_near = side * lane_cross + lane_half + super::ORTHO_NODE_SEP;
+        for n in nodes.iter() {
+            if is_member(&n.id) {
+                continue;
+            }
+            let unit = units.separating_unit(&n.id, anchor).to_string();
+            let (lo, hi) = units.band(direction, nodes, &index, &unit);
+            let (u_lo, u_hi) = unit_flow_span(direction, nodes, &index, units, &unit);
+            if u_hi < span_lo || u_lo > span_hi {
+                continue;
+            }
+            let far = (side * lo).max(side * hi);
+            out_near = out_near.max(far + super::ORTHO_NODE_SEP);
+        }
+        let member_near = out_near + pad_near;
+        for (id, want) in &ordered {
+            let i = index[id.as_str()];
+            let half = cross_extent(direction, &nodes[i]);
+            nodes[i].center = make(direction, *want, side * (member_near + half));
+        }
+        spoken_for.extend(members.iter().cloned());
+        placed.push(DeadEndTier {
+            block: block.id.clone(),
+            members: ordered.into_iter().map(|(id, _)| id).collect(),
+            side,
+        });
+    }
+    placed
+}
+
+/// How far a block's own frame edge sits beyond its members' bounding box on the side facing the
+/// lane — the same accumulation `mod.rs`'s own `rebuild_frames` performs, read from the block tree
+/// before any frame exists: [`super::clusters::PAD`] per level of nesting, plus the title band on
+/// whichever level actually starts on that side (only ever the *top*, and only when the near side
+/// is the top). Siblings take the deepest of the two, exactly as a rectangle absorbing both does.
+fn frame_near_pad(tree: &super::clusters::Tree, id: &str, near_is_top: bool) -> f64 {
+    let Some(block) = tree.get(id) else {
+        return 0.0;
+    };
+    let title = Label::measure(&block.title);
+    let own = super::clusters::PAD
+        + if near_is_top && !title.is_blank() {
+            title.height + super::clusters::TITLE_PAD_Y * 2.0
+        } else {
+            0.0
+        };
+    let inner = block
+        .child_clusters
+        .iter()
+        .map(|c| frame_near_pad(tree, c, near_is_top))
+        .fold(0.0_f64, f64::max);
+    own + inner
+}
+
+/// A unit's own extent along the **flow** axis — [`LaneUnits::band`]'s complement, which only ever
+/// answers for the cross one. [`place_dead_end_tiers`] needs both: a foreign unit only crowds a
+/// tier's band if it also overlaps the stretch of lane the tier hangs off.
+fn unit_flow_span(
+    direction: Direction,
+    nodes: &[PlacedNode],
+    index: &HashMap<String, usize>,
+    units: &LaneUnits,
+    unit: &str,
+) -> (f64, f64) {
+    let ids: Vec<&str> = if units.is_block(unit) {
+        units.members_of(unit)
+    } else {
+        vec![unit]
+    };
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for id in ids {
+        let Some(&i) = index.get(id) else { continue };
+        lo = lo.min(flow(direction, &nodes[i].center) - flow_extent(direction, &nodes[i]));
+        hi = hi.max(flow(direction, &nodes[i].center) + flow_extent(direction, &nodes[i]));
+    }
+    if lo.is_finite() {
+        (lo, hi)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
 /// §10-5 part-3 item 1's own invariant: **a node that does not belong to a cluster never sits
 /// inside that cluster's frame.** [`super::tests::check_clusters_hold_their_members`] already
 /// states the other half ("a member never pokes out of its own frame"); nothing before this
@@ -5245,27 +5833,33 @@ fn ports_on_face(
 ///
 /// A single `PORT_SPACING` step can land exactly on a port another edge already occupies on the
 /// same face: three ports evicted to `-PORT_SPACING`/`0`/`+PORT_SPACING` push the centre one onto
-/// the outer one's own coordinate. So this keeps stepping `PORT_SPACING` further, past every
-/// coordinate in `occupied` (compared within [`EPS`]), until it lands somewhere free. If that walks
-/// past the face's own flat run ([`face_flat_half_extent`] — the same bound `evict` sized the
-/// node's box to hold), it gives up and returns `cur` unchanged rather than push the port into the
-/// node's curved or chamfered corner: leaving the plate crossing this pass was trying to fix is
-/// better than creating a new one ([`avoid_label_plates`]'s own doc already accepts a documented
-/// approximation over a proven fixpoint, for the same reason).
+/// the outer one's own coordinate. **This nudge never steps past that sibling.** §10-1 item 1's own
+/// rule 1 ("もう一方の端点のcross座標順") fixes the order the ports on a face sit in, and a nudge
+/// that hops over a neighbour to find free space silently rewrites it — which is not a smaller
+/// version of the same fix but a different, worse defect: two edges whose ports are now in the
+/// wrong order have to cross each other to reach their own ends. Measured on `zz-design-2c`'s own
+/// three-way merge into `API ゲート`, where a wide `HTTPS` plate on the middle sibling's entry leg
+/// stepped `CLI`'s port past *two* siblings and guaranteed the crossing that produced.
+///
+/// So exactly one step is offered, and it is taken only if it is free and still on the face's own
+/// flat run ([`face_flat_half_extent`] — the same bound `evict` sized the node's box to hold);
+/// otherwise `cur` stands. Leaving the plate crossing this pass was trying to fix is better than
+/// creating a crossing or pushing the port into the node's curved or chamfered corner
+/// ([`avoid_label_plates`]'s own doc already accepts a documented approximation over a proven
+/// fixpoint, for the same reason) — and since §10-5 round 5 the plate is chosen not to sit on a
+/// sibling's line in the first place ([`label_slot_clear`]), so this pass is rarely asked at all.
 fn push_outward(node: &PlacedNode, side: Side, cur: f64, occupied: &[f64]) -> f64 {
     let center = face_center_coord(node, side);
     let dir = if cur >= center { 1.0 } else { -1.0 };
     let half_extent = face_flat_half_extent(node, side);
-    let mut candidate = cur;
-    loop {
-        candidate += dir * PORT_SPACING;
-        if (candidate - center).abs() > half_extent {
-            return cur;
-        }
-        if occupied.iter().all(|&o| (o - candidate).abs() > EPS) {
-            return candidate;
-        }
+    let candidate = cur + dir * PORT_SPACING;
+    if (candidate - center).abs() > half_extent {
+        return cur;
     }
+    if occupied.iter().any(|&o| (o - candidate).abs() <= EPS) {
+        return cur;
+    }
+    candidate
 }
 
 /// Whether the axis-parallel segment `a`–`b` crosses `plate`'s box — [`segment_crosses_node`]'s own
@@ -5273,11 +5867,26 @@ fn push_outward(node: &PlacedNode, side: Side, cur: f64, occupied: &[f64]) -> f6
 /// here: item 3 is about a lane running *through* the plate, not grazing its edge, and a label
 /// plate (unlike a node) has no stroke of its own for a margin to account for.
 fn segment_crosses_plate(a: &Point, b: &Point, plate: &PlacedEdgeLabel) -> bool {
+    segment_crosses_rect(a, b, &plate.center, plate.size)
+}
+
+/// [`segment_crosses_rect`], `pub(crate)` under a name that says what the rectangle is: the
+/// whole-corpus invariant `render::tests::invariant_orthogonal_no_label_plate_covers_a_foreign_line`
+/// states §10-5 round 5's rule against finished geometry, and it has to ask with the *same*
+/// predicate [`plate_coverage`] chose the segment with rather than a second hand-rolled copy of the
+/// arithmetic that could drift from it — the same reason [`segment_crossing`] is `pub(crate)`.
+pub(crate) fn segment_crosses_plate_box(a: &Point, b: &Point, center: &Point, size: Size) -> bool {
+    segment_crosses_rect(a, b, center, size)
+}
+
+/// [`segment_crosses_plate`], against a bare rectangle — [`plate_coverage`] asks the same question
+/// about a plate that does not exist yet, so it has no [`PlacedEdgeLabel`] to hand.
+fn segment_crosses_rect(a: &Point, b: &Point, center: &Point, size: Size) -> bool {
     let (l, t, r, bo) = (
-        plate.center.x - plate.size.w / 2.0,
-        plate.center.y - plate.size.h / 2.0,
-        plate.center.x + plate.size.w / 2.0,
-        plate.center.y + plate.size.h / 2.0,
+        center.x - size.w / 2.0,
+        center.y - size.h / 2.0,
+        center.x + size.w / 2.0,
+        center.y + size.h / 2.0,
     );
     if (a.y - b.y).abs() < EPS {
         let y = a.y;
@@ -5549,7 +6158,7 @@ pub fn avoid_label_plates(
     // freshly recomputed `source_coord`, not `evict`'s own port map, so it has to run its own
     // `evict` pass here too rather than threading one through from `route_flowchart` — the ports
     // it pushes have already drifted from whatever `evict` originally decided.
-    let fan_step = evict(direction, &by_id, edges, &shapes, chain_next).fan_step;
+    let fan_step = evict(&by_id, edges, &shapes, chain_next).fan_step;
 
     for (edge, shape) in edges.iter().zip(&shapes) {
         let Some(shape) = shape else { continue };
@@ -5597,9 +6206,13 @@ pub fn avoid_label_plates(
                 ring,
                 &blocked,
             );
-            if let Some(plate) = plates.get_mut(edge.id) {
-                if let Some(slot) = label_slot(direction, &rebuilt) {
-                    plate.center = slot.center;
+            if let Some(size) = plates.get(edge.id).map(|p| p.size) {
+                if let Some(slot) = label_slot_clear(direction, &rebuilt, &|center| {
+                    plate_coverage(center, size, edge.id, points, nodes, clusters)
+                }) {
+                    if let Some(plate) = plates.get_mut(edge.id) {
+                        plate.center = slot.center;
+                    }
                 }
             }
             points.insert(edge.id.to_string(), rebuilt);
@@ -5674,9 +6287,13 @@ pub fn avoid_label_plates(
             nodes,
             fan_step.get(edge.id).copied(),
         );
-        if let Some(plate) = plates.get_mut(edge.id) {
-            if let Some(slot) = label_slot(direction, &rebuilt) {
-                plate.center = slot.center;
+        if let Some(size) = plates.get(edge.id).map(|p| p.size) {
+            if let Some(slot) = label_slot_clear(direction, &rebuilt, &|center| {
+                plate_coverage(center, size, edge.id, points, nodes, clusters)
+            }) {
+                if let Some(plate) = plates.get_mut(edge.id) {
+                    plate.center = slot.center;
+                }
             }
         }
         points.insert(edge.id.to_string(), rebuilt);
@@ -5908,7 +6525,166 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_aside_is_local_only_when_no_other_unit_lies_between_its_ends() {
+        // §10-5 round 5's own narrowing of item 4's perimeter lane, stated on the predicate
+        // itself: a *frame* between the two ends is as much "something in the way" as a node is,
+        // and the whole-corpus fixtures cannot say so on their own — a frame always contains its
+        // members, so a frame overlapping the span almost always has a member overlapping it too,
+        // and the node test catches that first. What is left over, and what this pins, is the
+        // frame's own padding and title band: drawn area belonging to a unit the route is not part
+        // of.
+        let a = node("A", 0.0, 0.0, 40.0, 40.0);
+        let b = node("B", 200.0, 0.0, 40.0, 40.0);
+        let ends = [a.clone(), b.clone()];
+        assert!(
+            aside_route_stays_local(&a, &b, &ends, &[]),
+            "two boxes with nothing at all between them"
+        );
+        let between = node("S", 100.0, 0.0, 60.0, 60.0);
+        assert!(
+            !aside_route_stays_local(&a, &b, &ends, &[between]),
+            "a frame holding neither end is a third unit's band, and the route may not cut it"
+        );
+        let own = node("S2", 0.0, 0.0, 80.0, 80.0);
+        assert!(
+            aside_route_stays_local(&a, &b, &ends, &[own]),
+            "a frame holding one of the two ends is that end's own band, not something in the way"
+        );
+        let third = node("C", 100.0, 0.0, 40.0, 40.0);
+        assert!(
+            !aside_route_stays_local(&a, &b, &[a.clone(), b.clone(), third], &[]),
+            "a third node between the two ends"
+        );
+    }
+
     // --- stage 4: label placement --------------------------------------------------------------
+
+    #[test]
+    fn label_slot_takes_a_clear_segment_over_a_better_shaped_covered_one() {
+        // Two flow-axis (`TD`: vertical) legs — the first twice as long as the second, so §10-1
+        // item 3's own "longest wins" would take it outright. §10-5 round 5's coverage key comes
+        // first: with something lying under the first leg's own midpoint and nothing under the
+        // second's, the shorter, clear one is the one a plate can actually be read on.
+        let pts = vec![
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 100.0),
+            Point::new(60.0, 100.0),
+            Point::new(60.0, 150.0),
+        ];
+        let covered = |c: &Point| usize::from((c.x - 0.0).abs() < 1.0 && (c.y - 50.0).abs() < 1.0);
+        let slot =
+            label_slot_clear(Direction::TopToBottom, &pts, &covered).expect("must return a slot");
+        assert!(
+            (slot.center.x - 60.0).abs() < 1e-9 && (slot.center.y - 125.0).abs() < 1e-9,
+            "the clear leg must win over the longer covered one: {:?}",
+            slot.center
+        );
+        // …and with nothing covered at all, item 3's own preference is unchanged.
+        let slot = label_slot(Direction::TopToBottom, &pts).expect("must return a slot");
+        assert!(
+            (slot.center.x - 0.0).abs() < 1e-9 && (slot.center.y - 50.0).abs() < 1e-9,
+            "with nothing in the way the longest flow-axis leg still wins: {:?}",
+            slot.center
+        );
+    }
+
+    #[test]
+    fn label_slot_breaks_an_exact_length_tie_by_distance_to_the_arc_midpoint() {
+        // Two flow-axis legs of exactly 50px, both clear. `label_slot_keeps_the_first_segment_on_
+        // an_exact_length_tie` covers the symmetric case (both equidistant from the polyline's own
+        // midpoint, so the first wins); here a long trailing leg moves the midpoint, and the
+        // *second* vertical is the one nearest it — 5px against 95px.
+        let pts = vec![
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 50.0),
+            Point::new(40.0, 50.0),
+            Point::new(40.0, 100.0),
+            Point::new(140.0, 100.0),
+        ];
+        let slot = label_slot(Direction::TopToBottom, &pts).expect("must return a slot");
+        assert!(
+            (slot.center.x - 40.0).abs() < 1e-9 && (slot.center.y - 75.0).abs() < 1e-9,
+            "the tied leg nearer the arc midpoint must win: {:?}",
+            slot.center
+        );
+    }
+
+    #[test]
+    fn plate_coverage_counts_a_foreign_line_a_node_box_and_a_frame_border() {
+        let size = Size::new(40.0, 20.0);
+        let at = Point::new(100.0, 100.0);
+        let mut routes: HashMap<String, Vec<Point>> = HashMap::new();
+        routes.insert(
+            "own".to_string(),
+            vec![Point::new(0.0, 100.0), Point::new(200.0, 100.0)],
+        );
+        assert_eq!(
+            plate_coverage(&at, size, "own", &routes, &[], &[]),
+            0,
+            "a plate always sits on its own line — that is what 線上プレート means"
+        );
+        routes.insert(
+            "other".to_string(),
+            vec![Point::new(100.0, 0.0), Point::new(100.0, 200.0)],
+        );
+        assert_eq!(
+            plate_coverage(&at, size, "own", &routes, &[], &[]),
+            1,
+            "a foreign line under the plate counts"
+        );
+        let box_node = node("N", 100.0, 100.0, 30.0, 30.0);
+        assert_eq!(
+            plate_coverage(
+                &at,
+                size,
+                "own",
+                &routes,
+                std::slice::from_ref(&box_node),
+                &[]
+            ),
+            2,
+            "a node box under the plate counts too — nodes are painted over edges"
+        );
+        // A frame whose **border** runs under the plate counts; one that merely contains it does
+        // not, which is the ordinary case (every plate inside a subgraph).
+        let frame = |cx: f64, cy: f64, w: f64, h: f64| PlacedCluster {
+            id: "F".to_string(),
+            title: Label::measure(""),
+            center: Point::new(cx, cy),
+            size: Size::new(w, h),
+            parent: None,
+            depth: 0,
+            dashed: false,
+            filled: true,
+            sections: Vec::new(),
+            title_strip: false,
+        };
+        assert_eq!(
+            plate_coverage(
+                &at,
+                size,
+                "own",
+                &routes,
+                &[],
+                &[frame(100.0, 0.0, 400.0, 220.0)]
+            ),
+            2,
+            "a frame border under the plate counts"
+        );
+        assert_eq!(
+            plate_coverage(
+                &at,
+                size,
+                "own",
+                &routes,
+                &[],
+                &[frame(100.0, 100.0, 400.0, 400.0)]
+            ),
+            1,
+            "a frame that merely holds the plate does not"
+        );
+    }
 
     #[test]
     fn label_slot_prefers_the_flow_axis_segment_even_when_a_cross_axis_one_is_longer() {
@@ -5953,6 +6729,29 @@ mod tests {
         assert!(slot.is_flow_axis);
         assert!((slot.length - 100.0).abs() < 1e-9, "{}", slot.length);
         assert!((slot.center.x - 20.0).abs() < 1e-9 && (slot.center.y - 80.0).abs() < 1e-9);
+
+        // The same rule where length and §10-5 round 5's own arc-midpoint tie-break actively
+        // **disagree**: a 200px leg far from the polyline's midpoint against a 30px one sitting
+        // almost exactly on it. Length is the higher key, so the long leg still wins — without
+        // this case the shorter, better-centred leg happens to be the answer either way and
+        // nothing would notice the length key going missing.
+        let pts = vec![
+            Point::new(0.0, 0.0),
+            Point::new(0.0, 200.0),   // 200px leg, arc midpoint at 100 of 500
+            Point::new(20.0, 200.0),  // 20px hop
+            Point::new(20.0, 230.0),  // 30px leg, arc midpoint at 235 — 15px from the middle
+            Point::new(270.0, 230.0), // 250px tail, to put the polyline's midpoint at 250
+        ];
+        let slot = label_slot(Direction::TopToBottom, &pts).expect("must return a slot");
+        assert!(
+            (slot.length - 200.0).abs() < 1e-9
+                && (slot.center.x - 0.0).abs() < 1e-9
+                && (slot.center.y - 100.0).abs() < 1e-9,
+            "the longer flow-axis leg wins even when a shorter one sits nearer the midpoint: \
+             length {} at {:?}",
+            slot.length,
+            slot.center
+        );
     }
 
     #[test]
@@ -6559,28 +7358,29 @@ mod tests {
     }
 
     #[test]
-    fn push_outward_skips_a_coordinate_another_port_already_occupies() {
+    fn push_outward_stands_still_rather_than_step_over_a_sibling() {
         // Three ports evicted onto the same face at `-PORT_SPACING`/`0`/`+PORT_SPACING` — `evict`'s
         // own rule for `n == 3` (the `for (i, claim) in claims.iter().enumerate()` loop above,
-        // §10-1 item 3) — is exactly the shape that makes a single `PORT_SPACING` step collide: the
-        // review's own report. Pushing the centre port "further out" by one step would put it right
-        // on top of the sibling already sitting at `+PORT_SPACING`.
+        // §10-1 item 3). The centre port has nowhere to go: one step lands exactly on the sibling
+        // at `+PORT_SPACING`, and stepping *past* it would put the two ports in the wrong order
+        // (§10-5 round 5 — `push_outward`'s own doc: the two edges would then have to cross each
+        // other to reach their own ends, which is a worse defect than the plate crossing this pass
+        // was asked to fix). So it stands still.
         let a = node("A", 0.0, 0.0, 200.0, 40.0);
         let occupied = [-PORT_SPACING, PORT_SPACING];
         let pushed = push_outward(&a, Side::Bottom, 0.0, &occupied);
-        assert!(
-            occupied.iter().all(|&o| (o - pushed).abs() > EPS),
-            "pushed port {pushed} must not land on a sibling port {occupied:?}"
+        assert_eq!(
+            pushed, 0.0,
+            "a blocked nudge must keep its own coordinate, never hop over {occupied:?}"
         );
-        // Still moved outward, past the sibling it had to step over rather than landing short.
-        assert!(pushed > PORT_SPACING, "{pushed}");
     }
 
     #[test]
-    fn push_outward_never_collides_across_a_dense_face() {
-        // The same shape as above, generalised: every offset `evict` would ever hand out for
-        // `n` up to 9 ports on one face, with every slot but the one under test already occupied —
-        // the tightest case `push_outward` can be asked to solve on a face this wide.
+    fn push_outward_never_reorders_a_dense_face() {
+        // The same shape generalised: every offset `evict` would ever hand out for `n` up to 9
+        // ports on one face, with every slot but the one under test already occupied. Whatever the
+        // nudge returns, it must land on no sibling **and** keep every sibling on the side of it
+        // that it started on — the ordering §10-1 item 1's rule 1 fixed.
         let a = node("A", 0.0, 0.0, 400.0, 40.0);
         for n in 1..=9usize {
             let offsets: Vec<f64> = (0..n)
@@ -6592,6 +7392,12 @@ mod tests {
                 assert!(
                     occupied.iter().all(|&o| (o - pushed).abs() > EPS),
                     "n={n} cur={cur}: pushed {pushed} collided with {occupied:?}"
+                );
+                assert!(
+                    occupied
+                        .iter()
+                        .all(|&o| (o < cur) == (o < pushed) && (o > cur) == (o > pushed)),
+                    "n={n} cur={cur}: pushed {pushed} stepped over a sibling in {occupied:?}"
                 );
             }
         }
@@ -7011,7 +7817,7 @@ mod tests {
         // cross-axis faces instead, where there is no shared face — and so no centre-port contest —
         // for `chain_next` to arbitrate.
         //
-        // Rule 1's own "もう一方の端点のcross座標順" sort would otherwise put V (other_cross 180,
+        // Rule 1's own "もう一方の端点のcross座標順" sort would otherwise put V (other_tangent 180,
         // the middle of {120, 180, 240, 600}) in the centre slot on its own — T is deliberately the
         // *extreme* one (600) so this test can tell "rule 1's plain sort happened to centre the
         // trunk" apart from "the trunk-centring fix actually moved it there".
@@ -7062,6 +7868,58 @@ mod tests {
                 "{name}: a non-trunk sibling must not also claim the centre port: {port:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_faces_port_order_follows_the_axis_that_face_distributes_on() {
+        // `LR`, and the face under test is `A`'s **Top** — a cross-axis face, whose ports run
+        // along x (the flow axis), not along the diagram's own cross axis
+        // ([`FaceClaim::other_tangent`]'s own doc). The two sources sit at exactly the same y, so
+        // the pre-§10-5-round-5 key ("the other end's *cross* coordinate") cannot tell them apart
+        // at all and falls to the edge id — which here is deliberately the reverse of the answer,
+        // so a test that passed either way is impossible. Read along the face's own axis, `P`
+        // (x=100) is unambiguously before `Q` (x=500), and its port has to come first or the two
+        // lines cross on their way in.
+        let a = node("A", 300.0, 300.0, 200.0, 40.0);
+        let p = node("P", 100.0, 100.0, 40.0, 40.0);
+        let q = node("Q", 500.0, 100.0, 40.0, 40.0);
+        let nodes = [a.clone(), p.clone(), q.clone()];
+        let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        let into_top = EdgeShape {
+            reverse: false,
+            self_loop_fixed: false,
+            aligned: false,
+            staircase: false,
+            fan_lane: false,
+            rank_lane_bend: None,
+            cross_lane_bend: None,
+            aside: false,
+            source_side: Side::Bottom,
+            source_axis: Axis::Cross,
+            target_side: Side::Top,
+            target_axis: Axis::Cross,
+        };
+        let edge = |id: &'static str, source: &'static str| EligibleEdge {
+            id,
+            source,
+            target: "A",
+            raw: &[],
+            source_rank: Some(0),
+            target_rank: Some(1),
+            source_out_degree: 1,
+            target_in_degree: 2,
+            aside: false,
+        };
+        // "zz" is P's, "aa" is Q's: sorted by id alone, Q would come first.
+        let edges = vec![edge("zz", "P"), edge("aa", "Q")];
+        let shapes = vec![Some(into_top), Some(into_top)];
+        let eviction = evict(&by_id, &edges, &shapes, &HashMap::new());
+        let (from_p, from_q) = (eviction.target_coord["zz"], eviction.target_coord["aa"]);
+        assert!(
+            from_p < from_q,
+            "the port for the edge from P (x=100) must sit before the one from Q (x=500) along \
+             the face's own axis: P at {from_p}, Q at {from_q}"
+        );
     }
 
     #[test]

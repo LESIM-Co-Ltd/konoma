@@ -7074,6 +7074,87 @@ fn orthogonal_merge_sibling_hops_never_cross_or_coincide_across_corpus() {
     }
 }
 
+/// The mirror of [`orthogonal_merge_sibling_hops_never_cross_or_coincide_across_corpus`] on the
+/// **source** side: two edges leaving the same node never cross each other.
+///
+/// That is what §10-1 item 1's rule 1 is *for* — "もう一方の端点のcross座標順" orders a face's
+/// ports so the lines going to those other ends stay in the same order they leave in — and it is
+/// stated here because the rule was read along the wrong axis until §10-5 round 5
+/// (`orthogonal::FaceClaim::other_tangent`'s own doc): on a **cross-axis** face, "the other end's
+/// cross coordinate" is perpendicular to the axis the ports are actually laid out along, so the
+/// order it produced said nothing about where the two lines were going. `zz-design-2c`'s own
+/// `ジョブ実行系` is where it surfaced once round 5 put `保存層` beside the spine — its two green
+/// edges left the same face in the reverse of the order they needed and crossed each other
+/// immediately.
+///
+/// `Stroke::Invisible` is skipped for the same reason the merge-side test skips it: `~~~` is a
+/// layout-only link that is never drawn, so it cannot cross anything visibly. So is a **detour** —
+/// an edge whose route leaves the box its own two endpoints span, which is the perimeter lane and
+/// the `staircase` collision fallback. Those are a different shape family, out of a port-ordering
+/// rule's reach by construction (a route that goes right round the outside can cross anything on
+/// its way), and exactly the exclusion the merge-side test above states in prose for
+/// `subgraph-bypass`'s own `X -> Y` — stated here geometrically so it names the shape rather than
+/// the fixture. Every edge whose route stays between its own two ends is in scope, which is what
+/// rule 1 actually governs.
+#[test]
+fn orthogonal_edges_leaving_one_node_never_cross_each_other_across_corpus() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_full_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+        .chain([("settings-rules-sample", SETTINGS_RULES_SAMPLE)])
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let stays_between = |e: &PlacedEdge| -> bool {
+            let ends: Vec<(f64, f64, f64, f64)> = d
+                .nodes
+                .iter()
+                .filter(|n| n.id == e.from || n.id == e.to)
+                .map(|n| n.bounds())
+                .collect();
+            let (mut l, mut t, mut r, mut b) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+            for (nl, nt, nr, nb) in ends {
+                l = l.min(nl);
+                t = t.min(nt);
+                r = r.max(nr);
+                b = b.max(nb);
+            }
+            e.points
+                .iter()
+                .all(|p| p.x >= l - 0.01 && p.x <= r + 0.01 && p.y >= t - 0.01 && p.y <= b + 0.01)
+        };
+        let mut by_source: HashMap<&str, Vec<&PlacedEdge>> = HashMap::new();
+        for e in &d.edges {
+            if e.stroke == Stroke::Invisible || e.from == e.to || !stays_between(e) {
+                continue;
+            }
+            by_source.entry(e.from.as_str()).or_default().push(e);
+        }
+        for (source, fan) in by_source {
+            for i in 0..fan.len() {
+                for j in (i + 1)..fan.len() {
+                    let hit = fan[i].points.windows(2).find_map(|a| {
+                        fan[j]
+                            .points
+                            .windows(2)
+                            .find_map(|b| orthogonal::segment_crossing(a, b))
+                    });
+                    assert!(
+                        hit.is_none(),
+                        "{name}: {source}->{} crosses {source}->{} at {hit:?}: {:?} vs {:?}",
+                        fan[i].to,
+                        fan[j].to,
+                        fan[i].points,
+                        fan[j].points
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// §10-3 item 13's own rule ("列 A の行 R から出て列 T（T > A+1）へ入る辺は、間の各列で行 R を占め
 /// る"), stated purely from the finished layout's own geometry (never `reserve_pass_through_rows`'s
 /// own internal rank machinery, so this cannot silently drift the way a second copy of the same
@@ -7229,6 +7310,43 @@ fn labelled_plates(d: &Diagram) -> Vec<(&PlacedEdge, &super::PlacedEdgeLabel)> {
         .collect()
 }
 
+/// Every routed polyline in `d`, keyed by the edge's own index — [`orthogonal::plate_coverage`]
+/// wants a map by edge id, and a finished [`Diagram`] no longer carries the ids
+/// [`lay_out_spec_pass`] used, so the index stands in for one. All that matters is that the plate's
+/// own edge can be told apart from every other, which an index does exactly as well.
+///
+/// [`lay_out_spec_pass`]: super::lay_out_spec_pass
+fn routes_by_index(d: &Diagram) -> HashMap<String, Vec<Point>> {
+    d.edges
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (i.to_string(), e.points.clone()))
+        .collect()
+}
+
+/// The slot production actually chose for edge `i`'s own plate — [`orthogonal::label_slot_clear`]
+/// with the very same coverage question `lay_out_spec_pass` asked
+/// ([`orthogonal::plate_coverage`]), never the coverage-free [`orthogonal::label_slot`].
+///
+/// This distinction is the whole reason the helper exists: since §10-5 round 5 the two can name
+/// **different segments**, and a test that re-derived the slot from the coverage-free function
+/// would be measuring a segment the drawing does not use — konoma's own "the instrument drifted
+/// off the production path" failure mode (`docs/FEATURE-MERMAID-RENDERER.md` §6), caught here
+/// while writing the rule rather than after shipping it.
+fn plate_slot(
+    d: &Diagram,
+    direction: crate::preview::mermaid::flowchart::Direction,
+    i: usize,
+) -> Option<orthogonal::LabelSlot> {
+    let routes = routes_by_index(d);
+    let e = d.edges.get(i)?;
+    let size = e.label.as_ref()?.size;
+    let own = i.to_string();
+    orthogonal::label_slot_clear(direction, &e.points, &|center| {
+        orthogonal::plate_coverage(center, size, &own, &routes, &d.nodes, &d.clusters)
+    })
+}
+
 /// Every axis-parallel segment of `e`'s own polyline, as `(a, b)` pairs — what a plate is allowed
 /// to sit on top of without that counting as "off the line".
 fn own_segments(e: &PlacedEdge) -> impl Iterator<Item = (&Point, &Point)> {
@@ -7273,8 +7391,11 @@ fn every_label_plate_centre_sits_on_its_own_edges_line() {
 fn labelled_flow_axis_segments_meet_their_minimum_length() {
     for (name, src) in orthogonal_dag_corpus() {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
-        for (e, l) in labelled_plates(&d) {
-            let Some(slot) = orthogonal::label_slot(direction_of(src), &e.points) else {
+        for i in 0..d.edges.len() {
+            let Some(l) = d.edges[i].label.as_ref() else {
+                continue;
+            };
+            let Some(slot) = plate_slot(&d, direction_of(src), i) else {
                 continue;
             };
             if !slot.is_flow_axis {
@@ -7284,11 +7405,63 @@ fn labelled_flow_axis_segments_meet_their_minimum_length() {
             assert!(
                 slot.length + 1e-6 >= need,
                 "{name}: labelled segment {:?} is {}px, short of the {}px minimum for plate {:?}",
-                e.points,
+                d.edges[i].points,
                 slot.length,
                 need,
                 l.size
             );
+        }
+    }
+}
+
+/// §10-5 round 5's own rule as a whole-corpus invariant: **no label plate is laid over another
+/// edge's line.** A plate is opaque, so a line under one is simply gone from the picture, and a
+/// plate over a *sibling's* entry leg into a busy face is worse than that — it is what made
+/// `avoid_label_plates` push that sibling's port out of source order and put a crossing in
+/// `zz-design-2c`'s own three-way merge (`orthogonal::label_slot_clear`'s own doc).
+///
+/// The plate's **own** edge is the one thing it is allowed to cover — that is what "線上プレート"
+/// means. Stated over `orthogonal_full_corpus` plus the orthogonal-only fixtures, so it sees the
+/// design references and the narrow regression sources alike.
+///
+/// Deliberately about *lines* only, not about node boxes and frame borders: those are counted by
+/// [`orthogonal::plate_coverage`] too and are preferred against when a clear segment exists, but a
+/// plate can still legitimately end up on a frame's border when **every** segment of its own edge
+/// covers something (`zz-design-2b`'s own `HTTPS`, whose three candidate segments cover
+/// `クライアント`'s border, `エディタ拡張`'s leg and `クラウド`'s border respectively — one apiece).
+/// Lines are the half that has a consequence beyond the plate itself, and the half the rule is
+/// stated on.
+#[test]
+fn invariant_orthogonal_no_label_plate_covers_a_foreign_line() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_full_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for (i, e) in d.edges.iter().enumerate() {
+            let Some(l) = e.label.as_ref() else { continue };
+            for (j, other) in d.edges.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                let hit = other.points.windows(2).find(|w| {
+                    orthogonal::segment_crosses_plate_box(&w[0], &w[1], &l.center, l.size)
+                });
+                assert!(
+                    hit.is_none(),
+                    "{name}: {}->{}'s plate {:?} at {:?} is laid over {}->{}'s own line {:?}",
+                    e.from,
+                    e.to,
+                    l.label.lines,
+                    l.center,
+                    other.from,
+                    other.to,
+                    hit
+                );
+            }
         }
     }
 }
@@ -10173,6 +10346,512 @@ fn orthogonal_design_2b_2c_auth_edge_takes_a_free_lane_off_the_face_facing_it() 
     }
 }
 
+/// The set of `(name, source, direction)` triples §10-5 round 5's own tier rule
+/// (`orthogonal::place_dead_end_tiers`) is stated over: both design references, plus the same
+/// shape reduced to a plain chain in each direction so nothing about the rule can be reading a
+/// coincidence of those two particular pictures.
+fn tier_cases() -> Vec<(
+    &'static str,
+    String,
+    crate::preview::mermaid::flowchart::Direction,
+)> {
+    use crate::preview::mermaid::flowchart::Direction;
+    let design = |name: &str| -> String {
+        orthogonal_design_reference_corpus()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name} is in the design-reference corpus"))
+            .1
+            .to_string()
+    };
+    // `A --> B --> C --> E` is the lane; `store` holds two dead ends fed from two *different*
+    // nodes of it, which is `保存層`'s own shape with every incidental detail stripped out.
+    let chain = |dir: &str| -> String {
+        format!(
+            "flowchart {dir}\n  A --> B\n  B --> C\n  C --> E\n  subgraph T[store]\n    t1\n    \
+             t2\n  end\n  A --> t1\n  C --> t2"
+        )
+    };
+    vec![
+        (
+            "zz-design-2b",
+            design("zz-design-2b"),
+            Direction::LeftToRight,
+        ),
+        (
+            "zz-design-2c",
+            design("zz-design-2c"),
+            Direction::TopToBottom,
+        ),
+        ("chain-lr", chain("LR"), Direction::LeftToRight),
+        ("chain-tb", chain("TB"), Direction::TopToBottom),
+    ]
+}
+
+/// §10-5 round 5's own **tier** rule, stated on the finished picture
+/// (`orthogonal::place_dead_end_tiers`'s own doc has the rule and the reference it comes from).
+///
+/// A block whose members are all dead ends, fed only from nodes of one straight lane, hangs off
+/// that lane instead of taking a rank of its own: every member sits at its own first source's
+/// **flow** coordinate, so that edge is a straight, zero-bend run across the flow, and the whole
+/// shelf sits clear of the lane on one side of it.
+///
+/// `docs/render-check/zz-design-2b-browser.png` draws `メタデータ DB` directly under `API ゲート`
+/// and `成果物保管` directly under `ジョブ実行系`; `2c` is the same rotated, the shelf to the
+/// right. Before this rule the block took the rank after everything that fed it and all three of
+/// its edges were long multi-bend runs back across the picture (measured: `API -> DB` 1 bend over
+/// 714px of horizontal run, `W -> DB` 3 bends, `W -> AR` 2 bends).
+///
+/// Stated over the two design sources **and** the same shape reduced to a plain four-node chain in
+/// both directions, so it cannot be passing by reading something particular to those pictures.
+#[test]
+fn orthogonal_a_dead_end_block_fed_from_one_lane_hangs_off_it_with_zero_bend_drops() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src, direction) in tier_cases() {
+        let d = laid_out_flow(&src, "basis", "konoma-orthogonal");
+        let node = |id: &str| -> &PlacedNode {
+            d.nodes
+                .iter()
+                .find(|n| n.id == id)
+                .unwrap_or_else(|| panic!("{name}: {id} is in the fixture"))
+        };
+        let (block, drops) = if name.starts_with("zz-design") {
+            ("S", vec![("API", "DB"), ("W", "AR")])
+        } else {
+            ("T", vec![("A", "t1"), ("C", "t2")])
+        };
+        let lane_cross = super::cross_of(direction, node(drops[0].0));
+        for (source, member) in &drops {
+            let (s, m) = (node(source), node(member));
+            assert!(
+                (super::flow_of(direction, s) - super::flow_of(direction, m)).abs() < 0.5,
+                "{name}: {member} must sit at {source}'s own flow coordinate, not {:.2} against \
+                 {:.2}",
+                super::flow_of(direction, m),
+                super::flow_of(direction, s)
+            );
+            let e = d
+                .edges
+                .iter()
+                .find(|e| e.from == *source && e.to == *member)
+                .unwrap_or_else(|| panic!("{name}: {source} -> {member} must be routed"));
+            assert_eq!(
+                e.points.len(),
+                2,
+                "{name}: {source} -> {member} must be one straight drop, not {:?}",
+                e.points
+            );
+        }
+        // Every member on the same side of the lane, and every one of them clear of it.
+        let side = (super::cross_of(direction, node(drops[0].1)) - lane_cross).signum();
+        for (source, member) in &drops {
+            let (s, m) = (node(source), node(member));
+            let gap = side * (super::cross_of(direction, m) - lane_cross)
+                - super::cross_extent_of(direction, m)
+                - super::cross_extent_of(direction, s);
+            assert!(
+                gap >= super::ORTHO_NODE_SEP - 0.01,
+                "{name}: {member} sits {gap:.2}px clear of the lane, less than one \
+                 {}px separation",
+                super::ORTHO_NODE_SEP
+            );
+        }
+        // The shelf's own frame holds its members and nothing outside it overlaps them.
+        let frame = d
+            .cluster(block)
+            .unwrap_or_else(|| panic!("{name}: {block} is drawn"));
+        let (fl, ft, fr, fb) = frame.bounds();
+        for (_, member) in &drops {
+            let (ml, mt, mr, mb) = node(member).bounds();
+            assert!(
+                ml >= fl && mt >= ft && mr <= fr && mb <= fb,
+                "{name}: {block}'s frame {:?} must hold {member} {:?}",
+                frame.bounds(),
+                node(member).bounds()
+            );
+        }
+        let members: Vec<&str> = drops.iter().map(|(_, m)| *m).collect();
+        for m in &members {
+            let (ml, mt, mr, mb) = node(m).bounds();
+            for other in &d.nodes {
+                if members.contains(&other.id.as_str()) {
+                    continue;
+                }
+                let (ol, ot, or, ob) = other.bounds();
+                assert!(
+                    ml >= or || or <= ol || mr <= ol || mb <= ot || mt >= ob,
+                    "{name}: the tier member {m} {:?} overlaps {} {:?}",
+                    node(m).bounds(),
+                    other.id,
+                    other.bounds()
+                );
+                let _ = (mt, ot, ob, ol, or);
+            }
+        }
+    }
+}
+
+/// The tier rule's own scope, stated as the two things that stop it firing — both of them
+/// consequences of what a tier *is* rather than extra conditions bolted on:
+///
+/// 1. **a member that is not a dead end**: the block is a stage of the flow, not a shelf beside
+///    it, so it keeps its own rank;
+/// 2. **only one source**: a block fed from a single lane node already has a natural column (the
+///    rank after that node) and §10-3's own fan machinery already places it there with one bend.
+///    The rule exists for a group fed from *several* points along the lane, which no single rank
+///    can serve without long runs.
+/// 3. **the lane runs through a member**: a shelf hangs *off* the spine and cannot also *be* part
+///    of it — hanging the block off the side would take the trunk's own next node with it.
+///    `zz-design-2b`/`2c`'s own `外部` is this case (`コード置き場` is the spine's last node), which
+///    is why that block keeps a rank of its own while `保存層` does not.
+/// 4. **a member whose only input is an aside**: an aside carries no ordering vote anywhere else
+///    in this pipeline (`EdgeLabel::rank_only`, weight `0`) and is drawn on the perimeter rather
+///    than as a drop, so it is not something a member can be placed under. `zz-design-2b`'s own
+///    `決済ページ` is this case.
+///
+/// All four are stated the same way — the member does **not** end up at its source's own flow
+/// coordinate, which is the one thing a tier would guarantee.
+#[test]
+fn orthogonal_a_block_that_is_not_a_shelf_is_never_made_a_tier() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let cases = [
+        (
+            "a member with an out-edge",
+            "flowchart LR\n  A --> B\n  B --> C\n  C --> E\n  subgraph T[store]\n    t1\n    t2\n  \
+             end\n  A --> t1\n  C --> t2\n  t2 --> E",
+            "A",
+            "t1",
+        ),
+        (
+            "one source only",
+            "flowchart LR\n  A --> B\n  B --> C\n  C --> E\n  subgraph T[store]\n    t1\n    t2\n  \
+             end\n  A --> t1\n  A --> t2",
+            "A",
+            "t1",
+        ),
+        (
+            // A back edge is still an out-edge, and it is the form that reaches this test on its
+            // own merits: an ordinary forward out-edge usually makes the member a lane node too,
+            // so condition 3 would have caught the block anyway and this one would never be read.
+            "a member with a back edge out of it",
+            "flowchart LR\n  A --> B\n  B --> C\n  C --> E\n  E --> F\n  subgraph T[store]\n    \
+             t1\n    t2\n  end\n  A --> t1\n  C --> t2\n  t2 --> B",
+            "A",
+            "t1",
+        ),
+        (
+            "the lane runs through a member",
+            "flowchart LR\n  A --> B\n  B --> t1\n  subgraph T[store]\n    t1\n    t2\n  end\n  \
+             A --> t2",
+            "A",
+            "t2",
+        ),
+        (
+            "a member fed only by an aside",
+            "flowchart LR\n  A --> B\n  B --> C\n  C --> E\n  subgraph T[store]\n    t1\n    t2\n  \
+             end\n  A --> t1\n  C -.-> t2",
+            "A",
+            "t1",
+        ),
+    ];
+    for (why, src, source, member) in cases {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let node = |id: &str| -> &PlacedNode {
+            d.nodes
+                .iter()
+                .find(|n| n.id == id)
+                .unwrap_or_else(|| panic!("{why}: {id} is in the fixture"))
+        };
+        assert!(
+            (node(source).center.x - node(member).center.x).abs() > 0.5,
+            "{why}: {member} must keep a column of its own, not sit in {source}'s at x={:.2}",
+            node(member).center.x
+        );
+        if why == "the lane runs through a member" {
+            assert!(
+                (node("t1").center.y - node("A").center.y).abs() < 0.5,
+                "{why}: the trunk's own next node must stay on the lane, not be hung off it at \
+                 y={:.2} against the lane's {:.2}",
+                node("t1").center.y,
+                node("A").center.y
+            );
+        }
+    }
+}
+
+/// Which side of the lane a tier takes: the one carrying **fewer other units** over the stretch of
+/// lane it hangs off, positive (`LR` below / `TB` right) when the two tie —
+/// `place_dead_end_tiers`'s own doc.
+///
+/// The design references are both the tie case (nothing else sits beside that stretch of their
+/// spine at all), so the *other* branch needs a source of its own: one dead-end branch hanging
+/// below the lane inside the tier's own span pushes the shelf to the other side.
+#[test]
+fn orthogonal_a_tier_takes_the_emptier_side_of_its_lane() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = "flowchart LR\n  A --> B\n  B --> C\n  C --> E\n  E --> F\n  B --> X\n  \
+               subgraph T[store]\n    t1\n    t2\n  end\n  A --> t1\n  C --> t2";
+    let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+    let node = |id: &str| -> &PlacedNode {
+        d.nodes
+            .iter()
+            .find(|n| n.id == id)
+            .unwrap_or_else(|| panic!("{id} is in the fixture"))
+    };
+    let lane = node("A").center.y;
+    assert!(
+        node("X").center.y > lane,
+        "the fixture only means anything with X below the lane: {:.2} vs {lane:.2}",
+        node("X").center.y
+    );
+    for m in ["t1", "t2"] {
+        assert!(
+            node(m).center.y < lane,
+            "{m} must take the side away from X, not sit at {:.2} beside it (lane {lane:.2})",
+            node(m).center.y
+        );
+    }
+    // …and it is still a tier: each member under its own source, zero bends.
+    for (s, m) in [("A", "t1"), ("C", "t2")] {
+        assert!(
+            (node(s).center.x - node(m).center.x).abs() < 0.5,
+            "{m} must still sit in {s}'s own column"
+        );
+    }
+}
+
+/// The tier's own "nothing on this side may overlap it" half, stated directly on
+/// [`orthogonal::place_dead_end_tiers`] rather than through a whole diagram: an end-to-end fixture
+/// cannot hold *both* sides of a lane occupied without also disturbing the lane itself (measured —
+/// every attempt to give the lane a second branch either flipped the side or bent the lane, which
+/// then correctly stops the rule firing at all), and the push is exactly the part those fixtures
+/// therefore never reach.
+///
+/// One unit above the lane and one below, both inside the tier's own flow span: the sides tie, the
+/// shelf takes the positive one, and it has to clear the occupant there by [`super::ORTHO_NODE_SEP`]
+/// rather than landing on it.
+#[test]
+fn orthogonal_a_tier_is_pushed_past_whatever_already_occupies_its_band() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::flowchart::Direction;
+    let mut nodes = vec![
+        placed_node("A", 100.0, 100.0, 60.0, 40.0),
+        placed_node("B", 300.0, 100.0, 60.0, 40.0),
+        placed_node("C", 500.0, 100.0, 60.0, 40.0),
+        placed_node("X", 300.0, 200.0, 60.0, 40.0),
+        placed_node("Y", 300.0, 20.0, 60.0, 40.0),
+        placed_node("t1", 700.0, 100.0, 60.0, 40.0),
+        placed_node("t2", 700.0, 160.0, 60.0, 40.0),
+    ];
+    let blocks = vec![super::SpecBlock {
+        id: "T".to_string(),
+        title: String::new(),
+        members: vec!["t1".to_string(), "t2".to_string()],
+        dashed: false,
+    }];
+    let ids: HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
+    let tree = clusters::Tree::from_blocks(&blocks, |id| ids.contains(id));
+    let units = orthogonal::LaneUnits::build(&tree, &nodes);
+    let chain_next: HashMap<String, String> = [("A", "B"), ("B", "C")]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+    let edges: Vec<(String, String, bool)> = [
+        ("A", "B"),
+        ("B", "C"),
+        ("B", "X"),
+        ("B", "Y"),
+        ("A", "t1"),
+        ("C", "t2"),
+    ]
+    .into_iter()
+    .map(|(a, b)| (a.to_string(), b.to_string(), false))
+    .collect();
+    let tiers = orthogonal::place_dead_end_tiers(
+        Direction::LeftToRight,
+        &mut nodes,
+        &tree,
+        &units,
+        &chain_next,
+        &edges,
+    );
+    assert_eq!(
+        tiers.len(),
+        1,
+        "the block must be recognised as one tier: {tiers:?}"
+    );
+    assert_eq!(tiers[0].side, 1.0, "the tie must take the positive side");
+    let at = |id: &str| -> &PlacedNode { nodes.iter().find(|n| n.id == id).expect(id) };
+    assert!(
+        (at("t1").center.x - 100.0).abs() < 1e-6 && (at("t2").center.x - 500.0).abs() < 1e-6,
+        "each member sits in its own first source's column: {:?}",
+        nodes
+            .iter()
+            .map(|n| (n.id.as_str(), n.center.x, n.center.y))
+            .collect::<Vec<_>>()
+    );
+    // X's own far edge is 220; a frame pad of `clusters::PAD` sits between the shelf's edge and
+    // its members, so the nearest member's own top edge is 220 + ORTHO_NODE_SEP + PAD.
+    let want = 220.0 + super::ORTHO_NODE_SEP + clusters::PAD + 20.0;
+    for m in ["t1", "t2"] {
+        assert!(
+            (at(m).center.y - want).abs() < 1e-6,
+            "{m} must clear X by one {}px separation plus the frame's own pad: {:.2}, want \
+             {want:.2}",
+            super::ORTHO_NODE_SEP,
+            at(m).center.y
+        );
+    }
+}
+
+/// "One **straight** lane" is a geometric fact, not only a selection: the sources have to have
+/// actually ended up on one shared cross coordinate. A chain member can be pushed off its own
+/// chain average by `align_straight_lanes`'s own overlap sweep (that function's own doc on why its
+/// selection and its geometry can disagree), and a shelf hung off a lane that is not straight has
+/// no single coordinate to hang from — so the rule stands down and the block keeps its rank.
+///
+/// Stated directly on [`orthogonal::place_dead_end_tiers`], for the same reason the outward-push
+/// test above is: an end-to-end source whose chain the sweep actually bends is not something a
+/// fixture can ask for on demand.
+#[test]
+fn orthogonal_a_tier_needs_its_sources_on_one_straight_lane() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    use crate::preview::mermaid::flowchart::Direction;
+    let build = |c_cross: f64| -> Vec<PlacedNode> {
+        vec![
+            placed_node("A", 100.0, 100.0, 60.0, 40.0),
+            placed_node("B", 300.0, 100.0, 60.0, 40.0),
+            placed_node("C", 500.0, c_cross, 60.0, 40.0),
+            placed_node("t1", 700.0, 100.0, 60.0, 40.0),
+            placed_node("t2", 700.0, 160.0, 60.0, 40.0),
+        ]
+    };
+    let blocks = vec![super::SpecBlock {
+        id: "T".to_string(),
+        title: String::new(),
+        members: vec!["t1".to_string(), "t2".to_string()],
+        dashed: false,
+    }];
+    let chain_next: HashMap<String, String> = [("A", "B"), ("B", "C")]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+    let edges: Vec<(String, String, bool)> = [("A", "B"), ("B", "C"), ("A", "t1"), ("C", "t2")]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string(), false))
+        .collect();
+    for (why, c_cross, want) in [("straight", 100.0, 1), ("bent", 140.0, 0)] {
+        let mut nodes = build(c_cross);
+        let ids: HashSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
+        let tree = clusters::Tree::from_blocks(&blocks, |id| ids.contains(id));
+        let units = orthogonal::LaneUnits::build(&tree, &nodes);
+        let tiers = orthogonal::place_dead_end_tiers(
+            Direction::LeftToRight,
+            &mut nodes,
+            &tree,
+            &units,
+            &chain_next,
+            &edges,
+        );
+        assert_eq!(
+            tiers.len(),
+            want,
+            "a {why} lane must yield {want} tier(s), not {tiers:?}"
+        );
+    }
+}
+
+/// §10-5 round 5's own label rule, stated where it was reported: the three-way merge into
+/// `API ゲート`.
+///
+/// `HTTPS` is a wide plate (~54px) on the middle sibling. Placed on that sibling's *entry leg* —
+/// inside a corridor where §10-1 item 1 puts the three ports 16px apart — it covers its two
+/// neighbours' legs, and `avoid_label_plates` then pushed their ports out from under it, past each
+/// other, inverting item 1's own "もう一方の端点のcross座標順" and guaranteeing a crossing
+/// (measured before the fix: `CLI`'s port stepped over *two* siblings). Two changes remove it —
+/// the plate is chosen on a clear segment (`orthogonal::label_slot_clear`) and the nudge never
+/// steps over a sibling (`orthogonal::push_outward`'s own doc) — and this states the result rather
+/// than either mechanism: three ports one `PORT_SPACING` apart in **source order**, the trunk's own
+/// edge dead straight, and no two of the three crossing.
+#[test]
+fn orthogonal_design_2b_2c_the_merge_into_the_gate_keeps_its_port_order() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src, direction) in tier_cases()
+        .into_iter()
+        .filter(|(n, _, _)| n.starts_with("zz-design"))
+    {
+        let d = laid_out_flow(&src, "basis", "konoma-orthogonal");
+        let legs: Vec<(&str, &PlacedEdge)> = ["CLI", "UI", "EX"]
+            .iter()
+            .map(|from| {
+                (
+                    *from,
+                    d.edges
+                        .iter()
+                        .find(|e| e.from == *from && e.to == "API")
+                        .unwrap_or_else(|| panic!("{name}: {from} -> API must be routed")),
+                )
+            })
+            .collect();
+        // The port coordinate on `API`'s own flow-axis face runs along the cross axis (`LR`'s
+        // Left face varies in y, `TB`'s Top face in x), so this is the same reading in both.
+        let ports: Vec<f64> = legs
+            .iter()
+            .map(|(_, e)| match direction {
+                crate::preview::mermaid::flowchart::Direction::TopToBottom
+                | crate::preview::mermaid::flowchart::Direction::BottomToTop => {
+                    e.points[e.points.len() - 1].x
+                }
+                _ => e.points[e.points.len() - 1].y,
+            })
+            .collect();
+        for (i, w) in ports.windows(2).enumerate() {
+            assert!(
+                (w[1] - w[0] - orthogonal::PORT_SPACING).abs() < 0.01,
+                "{name}: the merge's ports must be one {}px step apart in source order \
+                 (CLI, UI, EX), not {ports:?} — {} then {}",
+                orthogonal::PORT_SPACING,
+                legs[i].0,
+                legs[i + 1].0
+            );
+        }
+        let cli = legs[0].1;
+        assert_eq!(
+            cli.points.len(),
+            2,
+            "{name}: CLI -> API is the trunk's own edge and must be dead straight: {:?}",
+            cli.points
+        );
+        for (i, (from_a, a)) in legs.iter().enumerate() {
+            for (from_b, b) in legs.iter().skip(i + 1) {
+                let crossing = a.points.windows(2).find_map(|wa| {
+                    b.points
+                        .windows(2)
+                        .find_map(|wb| orthogonal::segment_crossing(wa, wb))
+                });
+                assert!(
+                    crossing.is_none(),
+                    "{name}: {from_a} -> API crosses {from_b} -> API at {crossing:?}: {:?} vs {:?}",
+                    a.points,
+                    b.points
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn orthogonal_design_2b_2c_spine_runs_straight_through_the_sandbox() {
     if !text_metrics::fonts_available() {
@@ -11121,6 +11800,28 @@ fn dotted_aside_cases() -> Vec<(
             Direction::TopToBottom,
             ["CLI", "UI", "EX"],
         ),
+        // Added 2026-09-04 with §10-5 round 5's own tier rule
+        // (`orthogonal::place_dead_end_tiers`). `zz-design-2b`/`2c` used to be the *only* sources
+        // here whose forward aside actually crossed anything — `CLI -.->|リンク| PAY` left the
+        // client row sideways and cut across its two siblings' entry legs on the way out — and the
+        // tier rule takes the detour out of that picture entirely (the aside now leaves the row's
+        // outer face and crosses nothing at all, which is the improvement, not a regression). The
+        // crossing-gap machinery still has to stay covered, so the same *shape* is stated on its
+        // own two-line fixture, where nothing else can quietly stop reproducing it: a stack of
+        // three siblings all feeding one hub, with the aside leaving the **middle** one, so its
+        // way out of the row is across a sibling's leg whichever side it takes.
+        (
+            "orthogonal-aside-crosses-a-sibling-leg-lr",
+            "flowchart LR\n  subgraph S[row]\n    A\n    B\n    D\n  end\n  A --> H\n  B --> H\n  D --> H\n  H --> Z\n  B -.-> Z",
+            Direction::LeftToRight,
+            ["A", "B", "D"],
+        ),
+        (
+            "orthogonal-aside-crosses-a-sibling-leg-tb",
+            "flowchart TB\n  subgraph S[row]\n    A\n    B\n    D\n  end\n  A --> H\n  B --> H\n  D --> H\n  H --> Z\n  B -.-> Z",
+            Direction::TopToBottom,
+            ["A", "B", "D"],
+        ),
     ]
 }
 
@@ -11254,19 +11955,27 @@ fn orthogonal_an_aside_only_target_still_ranks_after_its_source() {
 }
 
 /// §10-1 item 4's **routing** half: "戻り辺・補助辺は破線で外周レーンを回す…外周レーンは最も外側の枠
-/// から16px以上外に置く". Every author-dotted edge — forward as well as reverse — leaves the
-/// content box by at least [`orthogonal::PERIMETER_MARGIN`] px somewhere along its run, and gets
-/// there in no more corners than the design's own drawing of it uses.
+/// から16px以上外に置く", as §10-5 round 5 narrowed it — an author-dotted edge whose direct route
+/// would **cut through the picture** leaves the content box by at least
+/// [`orthogonal::PERIMETER_MARGIN`] px somewhere along its run, and gets there in no more corners
+/// than the design's own drawing of it uses; one with nothing at all between its two ends stays a
+/// plain, local line instead.
 ///
-/// Before this, [`orthogonal::route_perimeter`] was reached only by a *reverse* edge, so a forward
-/// aside stayed on dagre's own waypoint chain and was drawn straight through the middle of the
-/// picture the design takes round the outside — `zz-design-2b`'s own `CLI -.->|リンク| PAY` ran
-/// the full 1301px width of the diagram between two frames.
+/// Before item 4's routing half existed, [`orthogonal::route_perimeter`] was reached only by a
+/// *reverse* edge, so a forward aside stayed on dagre's own waypoint chain and was drawn straight
+/// through the middle of the picture the design takes round the outside — `zz-design-2b`'s own
+/// `CLI -.->|リンク| PAY` ran the full 1301px width of the diagram between two frames. The
+/// narrowing is the opposite error, found on `CORPUS`'s own `strokes`: `B -.-> C`, two adjacent
+/// boxes on one row with nothing between them, was sent round the outside and came back a two-bend
+/// hop where a straight two-point line reaches (§10-0 — a rule is adopted if it makes lines
+/// simpler).
 ///
-/// The content box is recomputed here from the finished diagram's own nodes and frames rather
-/// than read from `orthogonal::content_bounds`, so the check is an independent statement of the
-/// same quantity rather than the implementation agreeing with itself. Four bends is the design's
-/// own worst case (`zz-design-2c`: down, along, down, in) — `2a` draws two and `2b` three.
+/// Which of the two an aside is, is decided here from the finished picture — *is anything at all
+/// inside the rectangle its two ends span* — rather than by asking the implementation
+/// (`orthogonal::aside_route_stays_local`), so the two are independent statements of the same rule
+/// rather than the implementation agreeing with itself. The content box is recomputed here from the
+/// diagram's own nodes and frames for the same reason. Four bends is the design's own worst case
+/// (`zz-design-2c`: down, along, down, in) — `2a` draws two and `2b` three.
 #[test]
 fn orthogonal_every_aside_rides_the_outer_perimeter_lane() {
     if !text_metrics::fonts_available() {
@@ -11301,6 +12010,44 @@ fn orthogonal_every_aside_rides_the_outer_perimeter_lane() {
                     || p.x >= r + orthogonal::PERIMETER_MARGIN - 0.01
                     || p.y >= b + orthogonal::PERIMETER_MARGIN - 0.01
             });
+            // Is there anything at all between the two ends? Restated here from the finished
+            // picture: the rectangle the two boxes span, against every other node box and every
+            // frame that does not hold both of them.
+            let node_of = |id: &str| {
+                d.nodes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .unwrap_or_else(|| panic!("{name}: {id} is a node"))
+            };
+            let (sl, st, sr, sb) = node_of(&e.from).bounds();
+            let (tl, tt, tr, tb) = node_of(&e.to).bounds();
+            let span = (sl.min(tl), st.min(tt), sr.max(tr), sb.max(tb));
+            let clear = |(nl, nt, nr, nb): (f64, f64, f64, f64)| {
+                nl >= span.2 || nr <= span.0 || nt >= span.3 || nb <= span.1
+            };
+            let holds = |(fl, ft, fr, fb): (f64, f64, f64, f64), n: &PlacedNode| {
+                n.center.x >= fl && n.center.x <= fr && n.center.y >= ft && n.center.y <= fb
+            };
+            let nothing_between = d
+                .nodes
+                .iter()
+                .all(|n| n.id == e.from || n.id == e.to || clear(n.bounds()))
+                && d.clusters.iter().all(|c| {
+                    let bounds = c.bounds();
+                    (holds(bounds, node_of(&e.from)) && holds(bounds, node_of(&e.to)))
+                        || clear(bounds)
+                });
+            if nothing_between {
+                assert!(
+                    !outside && e.points.len() <= 3,
+                    "{name}: the aside {}->{} has nothing between its two ends and must stay a \
+                     plain local line, not take the perimeter: {:?}",
+                    e.from,
+                    e.to,
+                    e.points
+                );
+                continue;
+            }
             assert!(
                 outside,
                 "{name}: the aside {}->{} never reaches the perimeter lane — no vertex sits \

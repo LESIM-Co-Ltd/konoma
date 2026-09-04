@@ -1615,6 +1615,50 @@ fn lay_out_spec_pass(
         } else {
             chain_next = chain_next_probe;
         }
+        // §10-5 round 5's own tier rule (`orthogonal::place_dead_end_tiers`'s own doc). Runs here,
+        // last of the passes that move a node and after every one that moves it *across* the flow:
+        // a shelf can only be hung off a lane once that lane is final, and its own outward push
+        // ("nothing on this side may overlap it") is only exact once every other unit has stopped
+        // moving. `read_clusters`, immediately below, then derives the frame around wherever the
+        // members landed, the same way it does for every other pass here.
+        //
+        // Its own edge list, not `candidates`: this pass needs a self-loop (which disqualifies its
+        // owner from being a dead end) and needs to know which edges are asides, neither of which
+        // the lane candidates carry.
+        let tier_edges: Vec<(String, String, bool)> = drawable
+            .iter()
+            .map(|d| {
+                (
+                    d.tail.clone(),
+                    d.head.clone(),
+                    is_aside(spec.routing, d.edge.stroke),
+                )
+            })
+            .collect();
+        let tiers = orthogonal::place_dead_end_tiers(
+            spec.direction,
+            &mut nodes,
+            &tree,
+            &lane_units,
+            &chain_next,
+            &tier_edges,
+        );
+        for member in tiers.iter().flat_map(|t| t.members.iter()) {
+            // A tier member is off the rank axis (`place_dead_end_tiers`'s own doc): it sits in its
+            // source's own column, not in a column of its own, so a rank number would now say the
+            // wrong thing about which side of it is downstream. Dropped from both readings of it —
+            // `g` (what `EligibleEdge::source_rank`/`target_rank` are built from, so `classify`
+            // falls back to geometry through `flow_rank_delta`) and `node_rank` (what
+            // `reserve_pass_through_rows` counts rank gaps with).
+            if let Some(n) = g.node_mut(member) {
+                n.rank = None;
+            }
+            node_rank.remove(member);
+            // ...and off the lane selection too: a lane that ended on this member would otherwise
+            // still claim it as a trunk target (`evict`'s own centre-port rule) after this pass has
+            // deliberately taken it off that lane.
+            chain_next.retain(|_, t| t != member);
+        }
         // Every cross-axis pass above is now behind us, so this is the total move from dagre's own
         // placement — `alignment_deltas`'s own doc above explains why it is taken here rather than
         // from whichever pass ran last.
@@ -1963,8 +2007,23 @@ fn lay_out_spec_pass(
         // this existed, found by dumping a real routed diagram rather than guessed at).
         let placed_label = edge.label.clone().and_then(|l| {
             if is_orthogonal {
-                let slot = orthogonal::label_slot(spec.direction, &points)?;
                 let size = Size::new(l.width + LABEL_PAD_X * 2.0, l.height + LABEL_PAD_Y * 2.0);
+                // §10-5 round 5: which segment the plate goes on is decided against every *other*
+                // routed line and every node/frame border, not on the polyline alone
+                // (`orthogonal::label_slot_clear`'s own doc). Every orthogonal route in the
+                // diagram is already final here — `route_flowchart` returned the whole map before
+                // this loop started — so this is asking the question against the finished picture,
+                // not against a half-built one.
+                let slot = orthogonal::label_slot_clear(spec.direction, &points, &|center| {
+                    orthogonal::plate_coverage(
+                        center,
+                        size,
+                        edge.id.as_str(),
+                        &orthogonal_points,
+                        &nodes,
+                        &placed_clusters,
+                    )
+                })?;
                 // §10-5 S3 ("ラベルはループ外側4pxに浮かせて中央揃え…線上プレート則の唯一の例外"):
                 // a self-transition's label never sits *on* its own line the way every other
                 // orthogonal edge's does — `label_slot` already finds the loop's one flow-axis
