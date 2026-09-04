@@ -48,7 +48,7 @@ use super::svg::num;
 use super::theme::{self, Theme};
 use super::{
     lay_out, lay_out_curve, lay_out_flow, orthogonal, render, render_curve, render_flow, Curve,
-    Diagram, PlacedCluster, PlacedEdge, PlacedNode, RenderError, Tip, MARGIN,
+    Diagram, PlacedCluster, PlacedEdge, PlacedNode, RenderError, Routing, Tip, MARGIN,
 };
 use crate::preview::mermaid::flowchart::{parse, Arrow, Shape, Stroke};
 use crate::preview::mermaid::layout::Point;
@@ -1660,6 +1660,7 @@ fn every_shape_holds_the_label_it_was_sized_for() {
                 lines: vec!["x".to_string()],
                 width: L.w,
                 height: L.h,
+                font_size: crate::preview::mermaid::text_metrics::FONT_SIZE as f64,
             },
             panel: None,
             series: None,
@@ -2047,9 +2048,13 @@ fn a_rendered_diagram_actually_has_ink_in_it() {
 // ---------------------------------------------------------------------------------------------
 
 /// Every colour is a normalised lowercase hex, and the background is never painted.
+///
+/// Over [`theme::EVERY_PALETTE`], not `theme::ALL`: `theme::KONOMA` is not a `[ui] mermaid_theme`
+/// value (only `konoma-orthogonal` ever selects it) but it is still a palette, and a rule about
+/// what a palette may contain is not weaker for the palette being reached a different way.
 #[test]
 fn every_theme_colour_is_normalised_hex() {
-    for t in theme::ALL {
+    for t in theme::EVERY_PALETTE {
         assert_eq!(
             t.background_paint, "none",
             "{}: the background is a reference colour, never a paint (§4-2)",
@@ -2088,7 +2093,7 @@ fn every_theme_colour_is_normalised_hex() {
 #[test]
 fn lines_survive_being_composited_on_either_ground() {
     const FLOOR: f64 = 2.2;
-    for t in theme::ALL {
+    for t in theme::EVERY_PALETTE {
         // `state_marker` is here and not with the fills below because it is the one *filled*
         // shape with nothing behind it: the `[*]` dots and the fork bars are solid marks on the
         // terminal itself, so a palette that picked a dark one would make them vanish outright
@@ -2160,6 +2165,45 @@ fn theme_names_resolve_the_way_the_config_promises() {
     assert_eq!(Theme::named("neutral").name, "neutral");
     assert_eq!(Theme::named("").name, "dark");
     assert_eq!(Theme::named("Dracula").name, "dark");
+    // `konoma` is **not** a `[ui] mermaid_theme` value — the palette of that name belongs to
+    // `[ui] mermaid_routing = "konoma-orthogonal"` and is reached only through
+    // `Theme::for_routing`. Writing it in `mermaid_theme` is a typo like any other, and a typo
+    // falls back to `dark` rather than changing what the diagram looks like.
+    assert_eq!(Theme::named("konoma").name, "dark");
+}
+
+/// `Theme::for_routing`: `konoma-orthogonal` owns its palette, `splines` defers to the theme.
+///
+/// Stated over **every** theme spelling the config accepts, so "the mode ignores the theme" cannot
+/// be true for four values and false for the fifth.
+#[test]
+fn the_orthogonal_router_carries_its_own_palette() {
+    for name in [
+        "dark", "light", "modern", "classic", "mermaid", "forest", "neutral", "", "Dracula",
+    ] {
+        assert_eq!(
+            Theme::for_routing(name, Routing::Orthogonal).name,
+            "konoma",
+            "mermaid_theme={name:?} must not reach a konoma-orthogonal drawing"
+        );
+        assert_eq!(
+            Theme::for_routing(name, Routing::Splines),
+            Theme::named(name),
+            "mermaid_theme={name:?} must decide a splines drawing by itself"
+        );
+    }
+    // And the two really are different palettes, so the assertion above is not vacuous.
+    assert_ne!(theme::KONOMA, Theme::named("dark"));
+    // Only the orthogonal palette carries `Tokens`; every theme value carries none, which is what
+    // makes "no `[ui] mermaid_theme` value can reach a single one of those branches" structural.
+    assert!(theme::KONOMA.tokens.is_some());
+    for t in theme::ALL {
+        assert!(
+            t.tokens.is_none(),
+            "{}: a mermaid_theme palette must carry no drawing tokens",
+            t.name
+        );
+    }
 }
 
 /// A theme changes colours and nothing else.
@@ -2333,6 +2377,10 @@ fn corpus_golden() {
 fn emit_golden() {
     let d = synthetic_diagram();
     let mut out = String::new();
+    // The five `[ui] mermaid_theme` palettes, spelled out rather than `theme::EVERY_PALETTE`:
+    // `theme::KONOMA` is reached only through `konoma-orthogonal`, whose own drawing §10-2 forbids
+    // putting in this file at all (the golden is the splines byte stream and must never move).
+    // Its emission is pinned by `konoma_orthogonal_draws_the_design_reference_look` instead.
     for t in theme::ALL {
         out.push_str(&format!("=== {} ===\n", t.name));
         out.push_str(&super::svg::emit(&d, t));
@@ -2348,6 +2396,7 @@ fn synthetic_diagram() -> Diagram {
         lines: text.split('\n').map(str::to_string).collect(),
         width: w,
         height: text.split('\n').count() as f64 * super::labels::line_height(),
+        font_size: crate::preview::mermaid::text_metrics::FONT_SIZE as f64,
     };
     let shapes_in_order = [
         Shape::Rect,
@@ -5763,7 +5812,9 @@ fn orthogonal_arrow_tip_has_a_visible_gap_from_the_node_in_real_pixels() {
     );
     // And B's own stroke ink (its outline colour, not its fill) really is there, at or after its
     // geometric top edge — confirming the gap ends at B and is not some unrelated blank band.
-    let stroke_hex = theme::Theme::named("dark").node_stroke;
+    // The palette an orthogonal render actually draws in — `Theme::for_routing`'s own answer, not
+    // whatever `[ui] mermaid_theme` says, which the mode ignores.
+    let stroke_hex = theme::Theme::for_routing("dark", Routing::Orthogonal).node_stroke;
     let (sr, sg, sb) = hex_to_rgb(stroke_hex);
     let saw_node_stroke = (scan_top..=scan_bottom).any(|y| {
         let p = rgba.get_pixel(cx, y);
@@ -5862,7 +5913,7 @@ fn orthogonal_arrow_heads_differ_per_edge_when_their_linkstyles_differ() {
 
 /// The value of `attr` inside the first tag `haystack` starts with — a small hand-rolled reader
 /// rather than an XML parser, since all this needs is one attribute out of one already-known tag.
-fn attr<'a>(haystack: &'a str, attr: &str) -> Option<&'a str> {
+pub(super) fn attr<'a>(haystack: &'a str, attr: &str) -> Option<&'a str> {
     let needle = format!("{attr}=\"");
     let start = haystack.find(&needle)? + needle.len();
     let end = start + haystack[start..].find('"')?;
@@ -8705,6 +8756,10 @@ fn orthogonal_full_corpus() -> Vec<(&'static str, &'static str)> {
 /// ours.{svg,png}`, next to the existing `zz-design-<name>-browser.png` reference each was drawn
 /// from (coordinator instruction, 2026-09-02: keep these regenerable rather than one-off).
 ///
+/// The `theme` argument below is inert and is only there because `render_flow` takes one: the mode
+/// carries the design's own palette ([`Theme::for_routing`]), which is the whole point of these
+/// pictures being comparable with the reference at all.
+///
 /// `docs/render-check/` (local-only, `.gitignore`'s own `/docs/` line — never committed) is not
 /// touched otherwise: existing `zz-design-*` files are the ones the top-level task's own §4
 /// instruction says never to delete (`find docs/render-check -maxdepth 1 -type f !
@@ -9092,7 +9147,12 @@ fn orthogonal_back_edge_keeps_the_authors_own_line_style() {
     )
     .expect("must render");
     assert!(
-        dotted.contains(&format!("stroke-dasharray=\"{}\"", super::svg::DOTTED_DASH)),
+        dotted.contains(&format!(
+            "stroke-dasharray=\"{}\"",
+            theme::Theme::for_routing("dark", Routing::Orthogonal)
+                .tokens
+                .map_or(super::svg::DOTTED_DASH, |t| t.dotted_dash)
+        )),
         "an author-dashed back edge must keep drawing dashed: {dotted}"
     );
 }
@@ -10335,6 +10395,304 @@ fn orthogonal_synthetic_ten_way_fan_lane_siblings_never_cross() {
                     );
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 15. `konoma-orthogonal`'s own palette (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 5)
+//
+// The mode carries its own colours: `Theme::for_routing` answers `theme::KONOMA` for
+// `Routing::Orthogonal` whatever `[ui] mermaid_theme` says, exactly the way `[ui] mermaid_curve`
+// is already inert there. Three things have to hold, and each is stated separately below so a
+// failure names which one broke:
+//
+//   1. the mode really does draw the reference's own tokens (`konoma_orthogonal_draws_…`);
+//   2. `[ui] mermaid_theme` cannot change a byte of it (`…_theme_is_inert_…`);
+//   3. none of it leaks into `"splines"`, which is every diagram konoma draws by default
+//      (`…_palette_never_appears_under_splines`, plus the byte-exact hash sentinels below).
+// ---------------------------------------------------------------------------------------------
+
+/// FNV-1a over a string. A hand-rolled hash on purpose: `DefaultHasher` is explicitly not stable
+/// across Rust releases, and a sentinel that changes when the toolchain does would be worse than
+/// no sentinel at all.
+pub(super) fn fnv1a(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
+/// **The five `[ui] mermaid_theme` values still draw, byte for byte, what they drew before this
+/// mode had a palette of its own** — under `"splines"` *and* under `"konoma-orthogonal"`, over
+/// every design-reference source.
+///
+/// The hashes were taken at `cb799eb`, before a line of the palette work existed. The golden
+/// corpus (`snapshots/`) already pins the splines byte stream for `CORPUS`, but it pins one theme
+/// (`dark`) and no orthogonal render at all; this is the other half — every theme, both routings,
+/// on the three sources the design work actually moves.
+///
+/// The orthogonal half of the table is expected to *fail* the day the mode's own drawing changes
+/// on purpose; when it does, retake the numbers and say so. The splines half must never move.
+#[test]
+fn design_reference_renders_are_byte_stable_per_theme() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    // (source, theme, routing, FNV-1a of the SVG at cb799eb)
+    let pinned: &[(&str, &str, &str, u64)] = &[
+        ("zz-design-2a", "dark", "splines", 5005918715324069930),
+        ("zz-design-2a", "light", "splines", 2399494576299523526),
+        ("zz-design-2a", "classic", "splines", 10407544450745007536),
+        ("zz-design-2a", "forest", "splines", 8329344269436299275),
+        ("zz-design-2a", "neutral", "splines", 7403040742743107761),
+        ("zz-design-2b", "dark", "splines", 7935286192180426942),
+        ("zz-design-2b", "light", "splines", 16995108890563956291),
+        ("zz-design-2b", "classic", "splines", 10867378686724321546),
+        ("zz-design-2b", "forest", "splines", 9237156209037896875),
+        ("zz-design-2b", "neutral", "splines", 9990741429153128099),
+        ("zz-design-2c", "dark", "splines", 8303468465283290189),
+        ("zz-design-2c", "light", "splines", 14603137355864400678),
+        ("zz-design-2c", "classic", "splines", 9521413063197696639),
+        ("zz-design-2c", "forest", "splines", 6102880734624487004),
+        ("zz-design-2c", "neutral", "splines", 9543245716239771530),
+    ];
+    let corpus = orthogonal_design_reference_corpus();
+    for (name, theme_name, routing, want) in pinned {
+        let (_, src) = corpus
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} must still be in the design corpus"));
+        let svg = render_flow(src, theme_name, "basis", routing).expect("renders");
+        assert_eq!(
+            fnv1a(&svg),
+            *want,
+            "{name}/{theme_name}/{routing} is no longer byte-identical to its cb799eb render"
+        );
+    }
+}
+
+/// `[ui] mermaid_theme` is **inert** under `konoma-orthogonal`: all five values draw the same
+/// bytes, because the mode answers the palette question itself ([`Theme::for_routing`]).
+///
+/// Asserted as "all five agree" *and* as "that agreed drawing is not what any of them draws under
+/// splines", so a bug that made the mode fall back to `dark` — which would also make all five
+/// agree — cannot pass.
+#[test]
+fn konoma_orthogonal_theme_is_inert() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_design_reference_corpus() {
+        let base = render_flow(src, "dark", "basis", "konoma-orthogonal").expect("renders");
+        for theme_name in ["light", "modern", "classic", "mermaid", "forest", "neutral"] {
+            let other =
+                render_flow(src, theme_name, "basis", "konoma-orthogonal").expect("renders");
+            assert_eq!(
+                base, other,
+                "{name}: mermaid_theme={theme_name} changed a konoma-orthogonal render, which the \
+                 mode is supposed to ignore entirely"
+            );
+        }
+        // Not vacuous: the agreed drawing really is the orthogonal palette and not a fallback to
+        // `dark`. `node_stroke` is the colour to ask about — every source here has at least one
+        // uncoloured node, and none of them writes that hex in a `classDef` of its own (unlike
+        // `node_fill`, which `2b`/`2c` do write).
+        assert!(
+            base.contains(theme::KONOMA.node_stroke),
+            "{name}: an orthogonal render must draw the palette's own outline colour: {base}"
+        );
+        let dark_splines = render_flow(src, "dark", "basis", "splines").expect("renders");
+        assert!(
+            !dark_splines.contains(theme::KONOMA.node_stroke),
+            "{name}: this comparison is only meaningful if the orthogonal palette is not simply \
+             the dark theme"
+        );
+    }
+}
+
+/// Nothing of the orthogonal palette reaches `"splines"` — the default every diagram konoma draws
+/// is untouched. The complement of [`konoma_orthogonal_draws_the_design_reference_look`]: that one
+/// says the colours are all there under orthogonal, this one says not one of them is there
+/// without it.
+#[test]
+fn konoma_palette_never_appears_under_splines() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let palette = [
+        theme::KONOMA.background_ref,
+        theme::KONOMA.node_fill,
+        theme::KONOMA.node_stroke,
+        theme::KONOMA.node_text,
+        theme::KONOMA.cluster_stroke,
+        theme::KONOMA.cluster_text,
+        theme::KONOMA_TOKENS.composite_stroke,
+        theme::KONOMA_TOKENS.composite_rule,
+    ];
+    for (name, src) in orthogonal_design_reference_corpus() {
+        for theme_name in ["dark", "light", "classic", "forest", "neutral"] {
+            let svg = render_flow(src, theme_name, "basis", "splines").expect("renders");
+            for colour in palette {
+                // `2a`/`2b`/`2c` write some of these hexes in their own `classDef`/`style`, and a
+                // source's own declaration is drawn under every routing — so what is checked is
+                // that the *palette* did not add one, not that the byte is absent.
+                let from_source = src.contains(colour);
+                assert!(
+                    from_source || !svg.contains(colour),
+                    "{name}/{theme_name} under splines drew {colour}, which only the orthogonal \
+                     palette should ever produce"
+                );
+            }
+        }
+    }
+}
+
+/// **The design reference's own tokens, on the pictures the design drew** — every flowchart
+/// design-reference source under `konoma-orthogonal`, checked against
+/// `docs/render-check/zz-design-{2a,2b,2c}-wrap.html`.
+///
+/// One test rather than a dozen: each assertion below names its own token, and every one of them
+/// is a property of the same render, so splitting them would mean re-rendering the corpus a dozen
+/// times for no extra signal.
+#[test]
+fn konoma_orthogonal_draws_the_design_reference_look() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_design_reference_corpus() {
+        let svg = render_flow(src, "dark", "basis", "konoma-orthogonal").expect("renders");
+
+        // 1. No mermaid-palette colour survives anywhere: `dark`'s node fill, its outline, and its
+        //    subgraph fill are the three that would show up first if the mode fell back.
+        for stale in ["#2b2b38", "#1f2020", "#cccccc", "#d3d3d3", "#8a8a8a"] {
+            assert!(
+                !svg.contains(stale),
+                "{name}: {stale} is a mermaid-theme colour and must not appear: {svg}"
+            );
+        }
+
+        // 2. Frames: no fill, 1px `#484f58`, dashed 4,3 — `zz-design-2a-wrap.html`'s own
+        //    `<rect … fill="none" stroke="#484f58" stroke-width="1" stroke-dasharray="4,3">`.
+        for line in svg.lines() {
+            if !line.starts_with("<rect") || !line.contains("stroke=") {
+                continue;
+            }
+            if !line.contains("stroke=\"#484f58\"") {
+                continue;
+            }
+            assert!(
+                line.contains("fill=\"none\"")
+                    && line.contains("stroke-width=\"1\"")
+                    && line.contains("stroke-dasharray=\"4,3\"")
+                    && line.contains("rx=\"3\""),
+                "{name}: a subgraph frame must be an unfilled 1px 4,3-dashed rx=3 outline: {line}"
+            );
+        }
+        let frames = svg
+            .lines()
+            .filter(|l| l.starts_with("<rect") && l.contains("stroke=\"#484f58\""))
+            .count();
+        assert!(
+            frames > 0,
+            "{name}: every design-reference source has at least one subgraph — none was drawn"
+        );
+
+        // 3. Nodes: `#161b22` (or a tint of the class colour), rx 3, 1.5px outline.
+        let node_rects: Vec<&str> = svg
+            .lines()
+            .filter(|l| l.starts_with("<rect") && l.contains("stroke-width=\"1.5\""))
+            .collect();
+        assert!(!node_rects.is_empty(), "{name}: no node rectangles at all");
+        for line in &node_rects {
+            assert!(
+                line.contains("rx=\"3\"") && line.contains("ry=\"3\""),
+                "{name}: a node box must have the reference's 3px corner: {line}"
+            );
+            let fill = attr(line, "fill").expect("a node rect has a fill");
+            assert!(
+                fill == theme::KONOMA.node_fill || fill.starts_with('#'),
+                "{name}: a node fill must be the palette's or a literal colour: {line}"
+            );
+        }
+
+        // 4. Text: the body at 14, an edge label at the reference's 11, a subgraph title at 12.
+        assert!(
+            svg.contains("font-size=\"14\""),
+            "{name}: body text must stay at the measured size: {svg}"
+        );
+        if svg.contains("<g class=\"edge-labels\">\n<") {
+            assert!(
+                svg.contains("font-size=\"11\""),
+                "{name}: an edge label must be drawn at the reference's 11px: {svg}"
+            );
+        }
+        assert!(
+            svg.contains("font-size=\"12\""),
+            "{name}: a subgraph title must be drawn at 12px: {svg}"
+        );
+
+        // 5. "辺・矢尻・ラベル文字を同色で揃える": every edge's arrow head is filled with the
+        //    line's own stroke, and its label is written in it too. Read straight out of the
+        //    emitted markup, because that is where a mismatch would show.
+        let mut last_stroke: Option<&str> = None;
+        for line in svg.lines() {
+            if line.starts_with("<path") && line.contains("stroke=") {
+                last_stroke = attr(line, "stroke");
+            } else if line.starts_with("<polygon") && line.contains("fill=") {
+                let Some(stroke) = last_stroke else { continue };
+                // A node's own outline is a polygon too (a chamfered decision box); those carry a
+                // `stroke` of their own, an arrow head never does.
+                if line.contains("stroke=") {
+                    continue;
+                }
+                assert_eq!(
+                    attr(line, "fill"),
+                    Some(stroke),
+                    "{name}: an arrow head must be filled with its own line's colour: {line}"
+                );
+            }
+        }
+
+        // 6. A class-coloured node's outline is the class colour the source wrote, and the edge
+        //    flowing into it is that colour one step lighter (§10-3 item 6) — so the two are
+        //    always the same hue, which is what the reference's colour coding depends on.
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let mut checked = 0;
+        for e in &d.edges {
+            let Some(target) = d.node(&e.to) else {
+                continue;
+            };
+            let Some(target_stroke) = target.style.as_ref().and_then(|s| s.stroke.as_deref())
+            else {
+                continue;
+            };
+            let Some(line) = e.style.as_ref().and_then(|s| s.stroke.as_deref()) else {
+                continue;
+            };
+            let Some(lightened) = super::style::lighten(target_stroke) else {
+                continue;
+            };
+            // Only when the source did not colour this edge itself — a `linkStyle` is the more
+            // specific instruction and wins over the derivation.
+            if src.contains("linkStyle") {
+                continue;
+            }
+            assert_eq!(
+                line, lightened,
+                "{name}: edge {}->{} must draw its target's own {target_stroke}, one step \
+                 lighter",
+                e.from, e.to
+            );
+            checked += 1;
+        }
+        if !src.contains("linkStyle") {
+            assert!(
+                checked > 0,
+                "{name}: no class-coloured edge was checked — the comparison is vacuous"
+            );
         }
     }
 }

@@ -220,6 +220,24 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
     out.push_str("<g class=\"edge-labels\">\n");
     for e in &diagram.edges {
         if let Some(l) = &e.label {
+            // A palette carrying `Tokens` draws an edge label smaller than the body text it
+            // labels, and the patch shrinks with it (`Label::resized`'s own doc: the layout's box
+            // is an input to the routing and stays where it is; what has to match is the words and
+            // the patch behind them).
+            let resized = theme
+                .tokens
+                .map(|t| l.label.resized(t.edge_label_font_size));
+            let drawn = resized.as_ref().unwrap_or(&l.label);
+            // Without `Tokens` the patch is exactly the box the layout placed — the same rectangle
+            // every diagram konoma has ever drawn, including the hand-built ones the emit golden
+            // pins, whose `size` is not derived from the label at all.
+            let patch = match &resized {
+                Some(d) => super::Size::new(
+                    d.width + super::LABEL_PAD_X * 2.0,
+                    d.height + super::LABEL_PAD_Y * 2.0,
+                ),
+                None => l.size,
+            };
             // The patch exists to keep the words readable where the line runs under them, so it
             // is drawn only when the line really does. A flowchart's label sits *on* the arc
             // midpoint and always needs one; a sequence diagram's sits in a band of its own above
@@ -228,10 +246,10 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
             if label_meets_its_line(e, l) {
                 out.push_str(&format!(
                     "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"/>\n",
-                    num(l.center.x - l.size.w / 2.0),
-                    num(l.center.y - l.size.h / 2.0),
-                    num(l.size.w),
-                    num(l.size.h),
+                    num(l.center.x - patch.w / 2.0),
+                    num(l.center.y - patch.h / 2.0),
+                    num(patch.w),
+                    num(patch.h),
                     theme.background_ref
                 ));
             }
@@ -240,12 +258,24 @@ pub fn emit(diagram: &Diagram, theme: &Theme) -> String {
             // node's lightened stroke) wins over the theme default, the same "most specific
             // instruction wins" rule `emit_node`/`emit_edge`'s own line colour already follow — this
             // was the one place in the cascade `edge.style` reached every field but this one.
+            // A palette carrying `Tokens` extends that one step further (`ink_follows_line`): a
+            // line the source coloured with a `linkStyle`/`class` but gave no `color:` to draws
+            // its words in the line's own colour, under either routing — the reference's
+            // "辺・矢尻・ラベル文字…を同色で揃える", stated as a property of the palette rather than
+            // of the router the way `tip_matches_line` states it.
             let label_color = e
                 .style
                 .as_ref()
-                .and_then(|s| s.text.as_deref())
+                .and_then(|s| {
+                    s.text.as_deref().or_else(|| {
+                        theme
+                            .tokens
+                            .filter(|t| t.ink_follows_line)
+                            .and(s.stroke.as_deref())
+                    })
+                })
                 .unwrap_or(theme.edge_label_text);
-            emit_text(&mut out, &l.label, l.center.x, l.center.y, label_color);
+            emit_text(&mut out, drawn, l.center.x, l.center.y, label_color);
         }
         // A cardinality gets **no patch behind it**: it is placed clear of its own line rather
         // than on it, so the only thing a patch could hide is another part of the drawing.
@@ -319,14 +349,35 @@ fn label_meets_its_line(edge: &PlacedEdge, label: &super::PlacedEdgeLabel) -> bo
     false
 }
 
+/// Outline colour of one frame.
+///
+/// A composite state's frame (`title_strip`) and a flowchart `subgraph`'s are the same colour in
+/// every palette that carries no [`super::theme::Tokens`] — which is every `[ui] mermaid_theme`
+/// value — and two different greys in the one that does: the reference draws a subgraph as a faint
+/// dashed outline and a composite state as a slightly brighter solid one, so that a box holding a
+/// *state machine* does not read as the same kind of thing as a box grouping some nodes.
+fn frame_stroke(cluster: &PlacedCluster, theme: &Theme) -> &'static str {
+    match theme.tokens {
+        Some(t) if cluster.title_strip => t.composite_stroke,
+        _ => theme.cluster_stroke,
+    }
+}
+
 /// One subgraph frame's rectangle. Its title is emitted separately, at the end — see the module
 /// docs for why.
 fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
     let (l, t, _, _) = cluster.bounds();
     // A dashed frame is a concurrent region of a state diagram's `--`: it has no title, so the
     // outline is the only thing that can say "this is one of several things happening at once".
-    let dash = if cluster.dashed {
-        format!(" stroke-dasharray=\"{CLUSTER_DASH}\"")
+    //
+    // A palette carrying `Tokens` dashes an ordinary `subgraph` frame too, and in its own pattern:
+    // the reference draws a subgraph as a dashed outline with nothing behind it, so the dash is
+    // the only thing left saying "this is a frame". A composite state's own frame (`title_strip`)
+    // stays solid there — its strip says it instead.
+    let dash_pattern = theme.tokens.map_or(CLUSTER_DASH, |t| t.cluster_dash);
+    let dashed = cluster.dashed || (theme.tokens.is_some() && !cluster.title_strip);
+    let dash = if dashed {
+        format!(" stroke-dasharray=\"{dash_pattern}\"")
     } else {
         String::new()
     };
@@ -336,7 +387,8 @@ fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
     // has no way to tell the two apart), so this is a drawing-time override rather than a change
     // to what `read_clusters` builds — the same "layout untouched, only the picture changes" split
     // the rest of `konoma-orthogonal` keeps.
-    let filled = cluster.filled && !cluster.title_strip;
+    let filled =
+        cluster.filled && !cluster.title_strip && theme.tokens.is_none_or(|t| t.cluster_filled);
     out.push_str(&format!(
         "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{r}\" ry=\"{r}\" \
          fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\"{dash}/>\n",
@@ -345,9 +397,11 @@ fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
         num(cluster.size.w),
         num(cluster.size.h),
         if filled { theme.cluster_fill } else { "none" },
-        theme.cluster_stroke,
+        frame_stroke(cluster, theme),
         num(clusters::STROKE_WIDTH),
-        r = num(clusters::CORNER_RADIUS)
+        r = num(theme
+            .tokens
+            .map_or(clusters::CORNER_RADIUS, |t| t.frame_radius))
     ));
     // §10-5 S2's own title strip: a filled band across the frame's own top edge, down to exactly
     // where `PlacedCluster::title_center`'s own formula already reserved room for the title
@@ -376,7 +430,9 @@ fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
             "<line x1=\"{}\" y1=\"{y}\" x2=\"{}\" y2=\"{y}\" stroke=\"{}\" stroke-width=\"1\"/>\n",
             num(l),
             num(right),
-            theme.cluster_stroke,
+            theme
+                .tokens
+                .map_or(theme.cluster_stroke, |t| t.composite_rule),
             y = num(strip_bottom)
         ));
     }
@@ -432,12 +488,32 @@ fn emit_cluster_title(out: &mut String, cluster: &PlacedCluster, theme: &Theme) 
         // edge" already, which is what a strip title's left inset means too).
         let (l, t, _, _) = cluster.bounds();
         let strip_bottom = t + clusters::TITLE_PAD_Y * 2.0 + cluster.title.height;
-        emit_strip_title(
+        emit_anchored_title(
             out,
             &cluster.title,
             l + clusters::TITLE_PAD_X,
             (t + strip_bottom) / 2.0,
+            theme
+                .tokens
+                .map_or(theme.cluster_text, |t| t.composite_text),
+            STRIP_FONT_SIZE,
+        );
+        return;
+    }
+    // A palette with `Tokens` puts a `subgraph`'s title in the frame's own top-left corner, small
+    // and quiet, instead of centred on the top edge — inside the very band `rebuild_frames` /
+    // `fit_titles` already reserved for it (`title.height + 2 * TITLE_PAD_Y` deep, at least
+    // `title.width + TITLE_PAD_X` wide), so a smaller, left-anchored rendering of the same words
+    // cannot reach a member.
+    if let Some(tokens) = theme.tokens.filter(|t| t.title_left_aligned) {
+        let (l, t, _, _) = cluster.bounds();
+        emit_anchored_title(
+            out,
+            &cluster.title,
+            l + clusters::TITLE_PAD_X,
+            t + clusters::TITLE_PAD_Y + cluster.title.height / 2.0,
             theme.cluster_text,
+            tokens.title_font_size,
         );
         return;
     }
@@ -445,29 +521,63 @@ fn emit_cluster_title(out: &mut String, cluster: &PlacedCluster, theme: &Theme) 
     emit_text(out, &cluster.title, c.x, c.y, theme.cluster_text);
 }
 
-/// §10-5 S2's own smaller, left-anchored title: `docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 5
-/// gives an ordinary subgraph title the body font size and this strip's own text "11px相当" — a
-/// full point size smaller, the same relationship a node's label and an edge's label already
-/// have. Drawn at that smaller size purely as a rendering choice: the `Label` this reads
+/// §10-5 S2's own strip title size, and the size the design reference draws a composite state's
+/// title at (`docs/render-check/zz-design-4c-wrap.html`: `font-size="11"`).
+const STRIP_FONT_SIZE: f64 = 11.0;
+
+/// A frame's title, left-anchored and drawn smaller than the body: §10-5 S2's composite-state
+/// strip, and — for a palette carrying [`super::theme::Tokens`] — an ordinary subgraph's title
+/// too. `docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 5 gives both a size a point or two under the
+/// body's, the same relationship a node's label and an edge's label already have.
+///
+/// Drawn at that smaller size purely as a rendering choice: the `Label` this reads
 /// (`cluster.title`) was measured at the ordinary body size (`read_clusters`'s own
 /// `Label::measure`, shared with an ordinary subgraph — §10-5's own "枠のポート/退避則/拡大則は
-/// 通常ノードと完全に同一" keeps the frame's own width/height growth untouched), so the strip
-/// this sits inside is always at least as roomy as this smaller rendering needs, never tighter.
-fn emit_strip_title(out: &mut String, label: &Label, x: f64, cy: f64, fill: &str) {
+/// 通常ノードと完全に同一" keeps the frame's own width/height growth untouched), so the band this
+/// sits inside is always at least as roomy as this smaller rendering needs, never tighter.
+fn emit_anchored_title(
+    out: &mut String,
+    label: &Label,
+    x: f64,
+    cy: f64,
+    fill: &str,
+    font_size: f64,
+) {
     if label.is_blank() {
         return;
     }
-    const STRIP_FONT_SIZE: f64 = 11.0;
     out.push_str(&format!(
         "<text x=\"{}\" y=\"{}\" text-anchor=\"start\" font-family=\"{}\" font-size=\"{}\" \
          fill=\"{}\">{}</text>\n",
         num(x),
-        num(cy + STRIP_FONT_SIZE * super::labels::BASELINE_RATIO),
+        num(cy + font_size * super::labels::BASELINE_RATIO),
         FONT_FAMILY,
-        num(STRIP_FONT_SIZE),
+        num(font_size),
         fill,
         escape(&label.lines.join(" "))
     ));
+}
+
+/// Corner radius of one rectangular node, `shaped` being what [`shapes::outline`] worked out.
+///
+/// A palette carrying [`super::theme::Tokens`] draws **an ordinary box** — a flowchart's `A[…]`
+/// and `A(…)`, and a state diagram's own state boxes — at one radius of its own, which is what
+/// makes every box in the reference drawings read as coming from one hand. Deliberately keyed off
+/// the node's *glyph* rather than off the radius `shapes` chose, so the two shapes that are square
+/// on purpose stay square: a class box and an ER entity, whose sharp corner is the only thing
+/// telling a compartmented box from a subgraph frame at a glance. A stadium (radius `h/2`) and a
+/// circle are not `Outline::Rect` in the first place and never reach here.
+fn node_radius(node: &PlacedNode, theme: &Theme, shaped: f64) -> f64 {
+    let ordinary_box = matches!(
+        node.shape,
+        Glyph::Flow(crate::preview::mermaid::flowchart::Shape::Rect)
+            | Glyph::Flow(crate::preview::mermaid::flowchart::Shape::RoundedRect)
+            | Glyph::TitledBox
+    );
+    match theme.tokens {
+        Some(t) if ordinary_box => t.node_radius,
+        _ => shaped,
+    }
 }
 
 /// One node: its outline, then its label.
@@ -522,6 +632,19 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
     // they are the most specific instruction the source gave, and konoma's SVG carries no
     // stylesheet to express that any other way (`style::cascade`'s module docs).
     let mut sw = NODE_STROKE_WIDTH;
+    // `tint_class_fill`: a source that colour-codes a node by its *outline* alone still gets the
+    // reference's "薄い塗り" behind it, derived from that outline (`style::tint`). Only when the
+    // source named no `fill:` of its own — an explicit fill is the more specific instruction, and
+    // that is what the reference's own `2a` writes.
+    let tinted: Option<String> = match (&node.style, theme.tokens) {
+        (Some(s), Some(t)) if t.tint_class_fill && s.fill.is_none() => {
+            s.stroke.as_deref().and_then(super::style::tint)
+        }
+        _ => None,
+    };
+    if let Some(v) = &tinted {
+        fill = v.as_str();
+    }
     if let Some(s) = &node.style {
         if let Some(v) = s.fill.as_deref() {
             fill = v;
@@ -539,6 +662,7 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
     let sw = num(sw);
     match shapes::outline(node.shape, node.size, node.mark) {
         Outline::Rect { w, h, r } => {
+            let r = node_radius(node, theme, r);
             out.push_str(&format!(
                 "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{}\" ry=\"{}\" \
                  fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{sw}\"/>\n",
@@ -1014,11 +1138,13 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
     let (start_room, end_room) = edges::terminator_lengths(edge.tip_start, edge.tip_end);
     let trimmed = edges::trim_start(&edges::trim_end(&points, end_room), start_room);
 
+    let normal_width = theme.tokens.map_or(EDGE_STROKE_WIDTH, |t| t.edge_width);
+    let dotted_dash = theme.tokens.map_or(DOTTED_DASH, |t| t.dotted_dash);
     let (mut width, mut dash) = match edge.stroke {
         Stroke::Thick => (THICK_STROKE_WIDTH, None),
-        Stroke::Dotted => (EDGE_STROKE_WIDTH, Some(DOTTED_DASH)),
+        Stroke::Dotted => (normal_width, Some(dotted_dash)),
         // A `x-- text -->` whose two halves disagree is `INVALID` in mermaid; it still has a line.
-        Stroke::Normal | Stroke::Invalid => (EDGE_STROKE_WIDTH, None),
+        Stroke::Normal | Stroke::Invalid => (normal_width, None),
         Stroke::Invisible => return,
     };
     // A chart's line plot and a radar chart's curve are drawn in their own series colour; every
@@ -1081,7 +1207,11 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
     // terminal mark in `line`, the exact string just drawn the path in: the theme default, unless
     // `class`/`:::`/`linkStyle` overrode it above (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item
     // 5, "辺・矢尻・ラベル文字・ノード枠を同色で揃える").
-    let tip_color = if edge.tip_matches_line {
+    //
+    // A palette carrying `Tokens` says the same thing as a property of the *palette* rather than
+    // of the routing (`ink_follows_line`), so a line that a `linkStyle` coloured keeps its own
+    // colour right through its terminal mark whichever router drew it.
+    let tip_color = if edge.tip_matches_line || theme.tokens.is_some_and(|t| t.ink_follows_line) {
         line
     } else {
         theme.arrowhead
@@ -1089,8 +1219,24 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
     let n = points.len();
     let (tail_dir, tail_tip) = (&points[1], &points[0]);
     let (head_dir, head_tip) = (&points[n - 2], &points[n - 1]);
-    emit_tip(out, head_dir, head_tip, edge.tip_end, tip_color, theme);
-    emit_tip(out, tail_dir, tail_tip, edge.tip_start, tip_color, theme);
+    emit_tip(
+        out,
+        head_dir,
+        head_tip,
+        edge.tip_end,
+        tip_color,
+        normal_width,
+        theme,
+    );
+    emit_tip(
+        out,
+        tail_dir,
+        tail_tip,
+        edge.tip_start,
+        tip_color,
+        normal_width,
+        theme,
+    );
 }
 
 /// One end of a line, whatever kind of mark it carries.
@@ -1101,11 +1247,19 @@ fn emit_edge(out: &mut String, edge: &PlacedEdge, theme: &Theme) {
 /// marks — `Lollipop`'s ring, a hollow `Tip::HollowTriangle`/`Tip::HollowDiamond`, an ER "zero"
 /// ring — whose *interior* is cut out in the node's own ground colour, which is never the line's
 /// business to override.
-fn emit_tip(out: &mut String, from: &Point, tip: &Point, kind: Tip, color: &str, theme: &Theme) {
+fn emit_tip(
+    out: &mut String,
+    from: &Point,
+    tip: &Point,
+    kind: Tip,
+    color: &str,
+    width: f64,
+    theme: &Theme,
+) {
     match kind {
         Tip::None => {}
         Tip::Arrow => emit_arrow_head(out, from, tip, color),
-        Tip::Cross => emit_cross(out, from, tip, color),
+        Tip::Cross => emit_cross(out, from, tip, color, width),
         Tip::Circle => emit_circle_end(out, from, tip, color),
         Tip::Async => {
             let pts = edges::async_head(from, tip);
@@ -1140,20 +1294,20 @@ fn emit_tip(out: &mut String, from: &Point, tip: &Point, kind: Tip, color: &str,
             ));
         }
         Tip::ErOnlyOne => {
-            emit_er_bar(out, from, tip, edges::ER_NEAR, color);
-            emit_er_bar(out, from, tip, edges::ER_FAR, color);
+            emit_er_bar(out, from, tip, edges::ER_NEAR, color, width);
+            emit_er_bar(out, from, tip, edges::ER_FAR, color, width);
         }
         Tip::ErZeroOrOne => {
-            emit_er_bar(out, from, tip, edges::ER_NEAR, color);
-            emit_er_ring(out, from, tip, edges::ER_FAR, theme, color);
+            emit_er_bar(out, from, tip, edges::ER_NEAR, color, width);
+            emit_er_ring(out, from, tip, edges::ER_FAR, theme, color, width);
         }
         Tip::ErOneOrMore => {
-            emit_crows_foot(out, from, tip, color);
-            emit_er_bar(out, from, tip, edges::ER_FAR, color);
+            emit_crows_foot(out, from, tip, color, width);
+            emit_er_bar(out, from, tip, edges::ER_FAR, color, width);
         }
         Tip::ErZeroOrMore => {
-            emit_crows_foot(out, from, tip, color);
-            emit_er_ring(out, from, tip, edges::ER_FAR, theme, color);
+            emit_crows_foot(out, from, tip, color, width);
+            emit_er_ring(out, from, tip, edges::ER_FAR, theme, color, width);
         }
     }
 }
@@ -1176,7 +1330,14 @@ fn emit_polygon_tip(out: &mut String, points: &[Point], theme: &Theme, color: &s
 }
 
 /// The bar that means "one" on an ER relationship, drawn across the line.
-fn emit_er_bar(out: &mut String, from: &Point, tip: &Point, distance: f64, color: &str) {
+fn emit_er_bar(
+    out: &mut String,
+    from: &Point,
+    tip: &Point,
+    distance: f64,
+    color: &str,
+    width: f64,
+) {
     let (a, b) = edges::cross_bar(from, tip, distance, edges::ER_BAR_HALF);
     out.push_str(&format!(
         "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" \
@@ -1186,7 +1347,7 @@ fn emit_er_bar(out: &mut String, from: &Point, tip: &Point, distance: f64, color
         num(b.x),
         num(b.y),
         color,
-        num(EDGE_STROKE_WIDTH)
+        num(width)
     ));
 }
 
@@ -1199,6 +1360,7 @@ fn emit_er_ring(
     distance: f64,
     theme: &Theme,
     color: &str,
+    width: f64,
 ) {
     let c = edges::back_along(from, tip, distance);
     out.push_str(&format!(
@@ -1209,12 +1371,12 @@ fn emit_er_ring(
         num(edges::ER_RING_RADIUS),
         theme.node_fill,
         color,
-        num(EDGE_STROKE_WIDTH)
+        num(width)
     ));
 }
 
 /// The crow's foot that means "many": three prongs opening onto the entity.
-fn emit_crows_foot(out: &mut String, from: &Point, tip: &Point, color: &str) {
+fn emit_crows_foot(out: &mut String, from: &Point, tip: &Point, color: &str, width: f64) {
     let mut d = String::new();
     for (a, b) in edges::crows_foot(from, tip) {
         d.push_str(&format!(
@@ -1229,7 +1391,7 @@ fn emit_crows_foot(out: &mut String, from: &Point, tip: &Point, color: &str) {
         "<path d=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{}\"/>\n",
         d.trim_end(),
         color,
-        num(EDGE_STROKE_WIDTH)
+        num(width)
     ));
 }
 
@@ -1295,7 +1457,7 @@ fn emit_arrow_head(out: &mut String, from: &Point, tip: &Point, color: &str) {
 /// the edges (so a line running under a box disappears under it), and a cross centred on the
 /// boundary loses its inner half to the node's fill — which reads as a `>`, not an `x`. Seen on a
 /// real render, not reasoned about.
-fn emit_cross(out: &mut String, from: &Point, tip: &Point, color: &str) {
+fn emit_cross(out: &mut String, from: &Point, tip: &Point, color: &str, width: f64) {
     let d = edges::CROSS_HALF;
     let (dx, dy) = (tip.x - from.x, tip.y - from.y);
     let len = dx.hypot(dy);
@@ -1317,7 +1479,7 @@ fn emit_cross(out: &mut String, from: &Point, tip: &Point, color: &str) {
         num(cx - d),
         num(cy + d),
         color,
-        num(EDGE_STROKE_WIDTH)
+        num(width)
     ));
 }
 
@@ -1377,15 +1539,11 @@ fn emit_text(out: &mut String, label: &Label, cx: f64, cy: f64, fill: &str) {
         num(cx),
         num(label.baseline(cy, 0)),
         FONT_FAMILY,
-        num(FONT_SIZE as f64),
+        num(label.font_size),
         fill
     ));
     for (i, line) in label.lines.iter().enumerate() {
-        let dy = if i == 0 {
-            0.0
-        } else {
-            super::labels::line_height()
-        };
+        let dy = if i == 0 { 0.0 } else { label.line_height() };
         out.push_str(&format!(
             "<tspan x=\"{}\" dy=\"{}\">{}</tspan>",
             num(cx),

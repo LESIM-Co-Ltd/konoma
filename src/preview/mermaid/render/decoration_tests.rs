@@ -58,6 +58,7 @@ fn label(text: &str, w: f64) -> Label {
         lines: text.split('\n').map(str::to_string).collect(),
         width: w,
         height: text.split('\n').count() as f64 * labels::line_height(),
+        font_size: crate::preview::mermaid::text_metrics::FONT_SIZE as f64,
     }
 }
 

@@ -3860,6 +3860,7 @@ fn synthetic_glyph_diagram() -> Diagram {
         lines: text.split('\n').map(str::to_string).collect(),
         width: w,
         height: text.split('\n').count() as f64 * super::labels::line_height(),
+        font_size: crate::preview::mermaid::text_metrics::FONT_SIZE as f64,
     };
     let mut nodes: Vec<PlacedNode> = Vec::new();
     let mut push = |id: &str, shape: Glyph, x: f64, y: f64, size: Size, mark: Option<Mark>| {

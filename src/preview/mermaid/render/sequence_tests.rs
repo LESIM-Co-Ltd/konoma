@@ -1592,6 +1592,7 @@ fn synthetic_sequence() -> Diagram {
         lines: text.split('\n').map(str::to_string).collect(),
         width: w,
         height: text.split('\n').count() as f64 * labels::line_height(),
+        font_size: crate::preview::mermaid::text_metrics::FONT_SIZE as f64,
     };
     let participant = |id: &str, x: f64, y: f64| PlacedNode {
         id: id.to_string(),

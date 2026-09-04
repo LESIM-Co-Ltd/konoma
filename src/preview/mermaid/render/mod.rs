@@ -634,6 +634,9 @@ pub fn render_curve(code: &str, theme: &str, curve: &str) -> Result<String, Rend
 /// (every other diagram kind ignores it, always `Curve::Basis`); `routing` does not — a state
 /// diagram reads it too, through its own entry point ([`state::render_flow`], §10-5), while the
 /// rest still ignore it and stay `Routing::Splines` (`GraphSpec::routing`'s own doc).
+///
+/// `theme` is `[ui] mermaid_theme`'s raw string and reaches the drawing only under `"splines"`:
+/// `"konoma-orthogonal"` carries its own palette, for the reason [`Theme::for_routing`] gives.
 pub fn render_flow(
     code: &str,
     theme: &str,
@@ -642,7 +645,10 @@ pub fn render_flow(
 ) -> Result<String, RenderError> {
     let chart = flowchart::parse(code)?;
     let diagram = lay_out_flow(&chart, curve, routing)?;
-    Ok(svg::emit(&diagram, &Theme::named(theme)))
+    Ok(svg::emit(
+        &diagram,
+        &Theme::for_routing(theme, Routing::parse(routing)),
+    ))
 }
 
 /// Measures, sizes, lays out and routes — everything except turning geometry into markup.

@@ -106,8 +106,9 @@ pub fn render(code: &str, theme: &str) -> Result<String, RenderError> {
 /// mermaid_routing` for every diagram kind, not just the flowchart.
 pub fn render_flow(code: &str, theme: &str, routing: &str) -> Result<String, RenderError> {
     let diagram = state::parse(code)?;
-    let laid = lay_out(&diagram, Routing::parse(routing))?;
-    Ok(svg::emit(&laid, &Theme::named(theme)))
+    let routing = Routing::parse(routing);
+    let laid = lay_out(&diagram, routing)?;
+    Ok(svg::emit(&laid, &Theme::for_routing(theme, routing)))
 }
 
 /// Measures, sizes, lays out and routes a parsed state diagram.

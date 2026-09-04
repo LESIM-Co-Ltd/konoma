@@ -35,6 +35,7 @@ use super::tests::{
     check_unrelated_clusters_do_not_overlap, check_view_box_contains_everything, dist_to_boundary,
     mask_numbers, path_boxes, text_widths, tree_of,
 };
+use super::theme;
 use super::Routing;
 use super::{
     clusters, labels, orthogonal, shapes, svg, Diagram, Glyph, Label, PlacedCluster, PlacedEdge,
@@ -837,6 +838,7 @@ fn synthetic_state_diagram() -> Diagram {
         lines: text.split('\n').map(str::to_string).collect(),
         width: w,
         height: text.split('\n').count() as f64 * labels::line_height(),
+        font_size: crate::preview::mermaid::text_metrics::FONT_SIZE as f64,
     };
     let glyphs = [
         Glyph::StateStart,
@@ -1036,7 +1038,8 @@ fn orthogonal_full_corpus() -> Vec<(&'static str, &'static str)> {
 /// Redumps `4a`/`4b`/`4c` under `konoma-orthogonal` to `docs/render-check/zz-design-<name>-
 /// ours.{svg,png}`, next to the existing `zz-design-<name>-browser.png` reference each was drawn
 /// from — the state-diagram sibling of `tests::orthogonal_design_reference_dump`, see that
-/// function's own doc for the naming rationale and why `docs/render-check/` is safe to write to.
+/// function's own doc for the naming rationale, for why `docs/render-check/` is safe to write to,
+/// and for why the `theme` argument is inert here.
 ///
 /// `#[ignore]`d like [`gallery`] — run explicitly:
 /// `cargo test --features git -- --ignored orthogonal_design_reference_dump`.
@@ -2611,5 +2614,166 @@ fn orthogonal_design_4b_the_dead_end_branch_sits_below_the_trunk() {
             "{from} -> {to} is a spine segment — a straight 2-point line: {:?}",
             e.points
         );
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 8. `konoma-orthogonal`'s own palette, state-diagram half (§10-5 S1/S2/S4, §10-1 item 5)
+//
+// The flowchart half is in `tests` (section 15) and states the same three properties; these are
+// the parts only a state diagram has — the composite frame's title strip, the `[*]` markers and
+// the fork/join bars.
+// ---------------------------------------------------------------------------------------------
+
+/// The state-diagram half of `tests::design_reference_renders_are_byte_stable_per_theme`. Hashes
+/// taken at `cb799eb`; the splines half must never move.
+#[test]
+fn state_design_reference_renders_are_byte_stable_per_theme() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    // (source, theme, routing, FNV-1a of the SVG at cb799eb)
+    let pinned: &[(&str, &str, &str, u64)] = &[
+        ("zz-design-4a", "dark", "splines", 7004168073624398822),
+        ("zz-design-4a", "light", "splines", 13661105247628949983),
+        ("zz-design-4a", "classic", "splines", 2980815141733825474),
+        ("zz-design-4a", "forest", "splines", 772292026003802635),
+        ("zz-design-4a", "neutral", "splines", 12645926741510707161),
+        ("zz-design-4b", "dark", "splines", 7480886941676071156),
+        ("zz-design-4b", "light", "splines", 13346044918952469266),
+        ("zz-design-4b", "classic", "splines", 8755767652772902564),
+        ("zz-design-4b", "forest", "splines", 16583190199525592688),
+        ("zz-design-4b", "neutral", "splines", 16102262824161866582),
+        ("zz-design-4c", "dark", "splines", 9137426850463779750),
+        ("zz-design-4c", "light", "splines", 16473896323501141994),
+        ("zz-design-4c", "classic", "splines", 6955967639176173105),
+        ("zz-design-4c", "forest", "splines", 11273572884432843892),
+        ("zz-design-4c", "neutral", "splines", 233752226837397143),
+    ];
+    let corpus = orthogonal_design_reference_corpus();
+    for (name, theme_name, routing, want) in pinned {
+        let (_, src) = corpus
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} must still be in the design corpus"));
+        let svg = render_flow(src, theme_name, routing).expect("renders");
+        assert_eq!(
+            super::tests::fnv1a(&svg),
+            *want,
+            "{name}/{theme_name}/{routing} is no longer byte-identical to its cb799eb render"
+        );
+    }
+}
+
+/// `[ui] mermaid_theme` is inert under `konoma-orthogonal` for a state diagram too.
+#[test]
+fn state_konoma_orthogonal_theme_is_inert() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_design_reference_corpus() {
+        let base = render_flow(src, "dark", "konoma-orthogonal").expect("renders");
+        assert!(
+            base.contains(theme::KONOMA.node_stroke),
+            "{name}: an orthogonal render must draw the palette's own outline colour"
+        );
+        for theme_name in ["light", "modern", "classic", "mermaid", "forest", "neutral"] {
+            let other = render_flow(src, theme_name, "konoma-orthogonal").expect("renders");
+            assert_eq!(
+                base, other,
+                "{name}: mermaid_theme={theme_name} changed a konoma-orthogonal render"
+            );
+        }
+        let splines = render_flow(src, "dark", "splines").expect("renders");
+        assert!(
+            !splines.contains(theme::KONOMA.node_stroke),
+            "{name}: this comparison is only meaningful if the two palettes differ"
+        );
+    }
+}
+
+/// **§10-5 S1/S2/S4's own tokens, on the pictures the design drew** — every state design-reference
+/// source under `konoma-orthogonal`, against `docs/render-check/zz-design-{4a,4b,4c}-wrap.html`.
+#[test]
+fn state_konoma_orthogonal_draws_the_design_reference_look() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_design_reference_corpus() {
+        let svg = render_flow(src, "dark", "konoma-orthogonal").expect("renders");
+
+        for stale in ["#2b2b38", "#1f2020", "#cccccc", "#d3d3d3", "#8a8a8a"] {
+            assert!(
+                !svg.contains(stale),
+                "{name}: {stale} is a mermaid-theme colour and must not appear: {svg}"
+            );
+        }
+
+        // S2: a composite frame is an unfilled solid 1px `#6e7681` rx=3 outline, and it is the
+        // *only* kind of frame a state diagram draws here (`4c`'s own two nested ones).
+        let frames: Vec<&str> = svg
+            .lines()
+            .filter(|l| l.starts_with("<rect") && l.contains("stroke=\"#6e7681\""))
+            .collect();
+        for line in &frames {
+            assert!(
+                line.contains("fill=\"none\"")
+                    && line.contains("stroke-width=\"1\"")
+                    && line.contains("rx=\"3\"")
+                    && !line.contains("stroke-dasharray"),
+                "{name}: a composite frame must be an unfilled solid 1px rx=3 outline: {line}"
+            );
+        }
+        if src.contains("state ") && src.contains('{') {
+            assert!(
+                !frames.is_empty(),
+                "{name}: the source declares a composite state"
+            );
+            // …with the strip `emit_cluster` fills in the node colour, the 1px rule under it, and
+            // its 11px title.
+            assert!(
+                svg.contains(&format!("fill=\"{}\"/>", theme::KONOMA.node_fill)),
+                "{name}: the title strip must be filled in the node colour: {svg}"
+            );
+            assert!(
+                svg.contains(&format!(
+                    "stroke=\"{}\" stroke-width=\"1\"",
+                    theme::KONOMA_TOKENS.composite_rule
+                )),
+                "{name}: the strip's own rule must be drawn: {svg}"
+            );
+            assert!(
+                svg.contains(&format!(
+                    "font-size=\"11\" fill=\"{}\"",
+                    theme::KONOMA_TOKENS.composite_text
+                )),
+                "{name}: the strip title must be 11px in the palette's own colour: {svg}"
+            );
+        }
+
+        // S1: the `[*]` marks and the fork/join bars are solid `#8b949e`, and a state box is the
+        // same 3px-cornered 1.5px-outlined box a flowchart draws.
+        assert!(
+            svg.contains(&format!("fill=\"{}\"/>", theme::KONOMA.state_marker)),
+            "{name}: a state marker must be a solid fill in the palette's marker colour: {svg}"
+        );
+        for line in svg.lines() {
+            if line.starts_with("<rect") && line.contains("stroke-width=\"1.5\"") {
+                assert!(
+                    line.contains("rx=\"3\"") && line.contains(theme::KONOMA.node_fill),
+                    "{name}: a state box must be the palette's own box: {line}"
+                );
+            }
+        }
+        assert!(
+            svg.contains("font-size=\"14\""),
+            "{name}: body text must stay at the measured size: {svg}"
+        );
+        if svg.contains("<g class=\"edge-labels\">\n<") {
+            assert!(
+                svg.contains("font-size=\"11\""),
+                "{name}: an edge label must be drawn at the reference's 11px: {svg}"
+            );
+        }
     }
 }

@@ -178,6 +178,40 @@ pub fn lighten(color: &str) -> Option<String> {
     Some(format!("#{r:02x}{g:02x}{b:02x}"))
 }
 
+/// `Theme::tokens`'s `tint_class_fill` (`konoma` only): the "薄い塗り" a class-coloured node is
+/// filled with, derived from the class's own `stroke:` colour — hue kept, saturation and lightness
+/// both scaled down, so the fill reads as the same colour as the outline seen through a very dark
+/// page.
+///
+/// # Why these two factors
+///
+/// The design reference hand-picked three fills against its three accent strokes
+/// (`docs/render-check/zz-design-2a-wrap.html`): `#58a6ff`→`#0f2038`, `#3fb950`→`#0f2617`,
+/// `#d4a017`/`#d29922`→`#271d0b`. Measured in HSL, the **lightness** ratio is almost constant
+/// across all three (0.207 / 0.214 / 0.205) while the **saturation** ratio is not (0.58 / 0.88 /
+/// 0.78) — so one lightness factor is a real regularity and one saturation factor is a fit. Both
+/// are single numbers rather than a per-colour table, for the same reason [`lighten`] is: a table
+/// would silently do nothing for a fourth colour. The pair below is the minimax fit over the three
+/// references: **no channel of any of them is off by more than 3 of 255**, which is under a step of
+/// the 8-bit ramp a terminal shows them on. The tests below pin the exact output and that bound.
+///
+/// `None` on the same two inputs [`lighten`] refuses: an unparsable colour, and the literal
+/// keyword `"none"` (no hue to tint).
+pub fn tint(color: &str) -> Option<String> {
+    if color.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    let c = svgtypes::Color::from_str(color).ok()?;
+    let (h, s, l) = rgb_to_hsl(c.red, c.green, c.blue);
+    let (r, g, b) = hsl_to_rgb(h, s * TINT_SATURATION, l * TINT_LIGHTNESS);
+    Some(format!("#{r:02x}{g:02x}{b:02x}"))
+}
+
+/// See [`tint`]'s own doc for how these were fit.
+const TINT_LIGHTNESS: f64 = 0.213;
+/// See [`tint`]'s own doc for how these were fit.
+const TINT_SATURATION: f64 = 0.623;
+
 /// See [`lighten`]'s own doc for how this was fit.
 const LIGHTEN_FACTOR: f64 = 1.2;
 /// Never lighten all the way to white, however low the source lightness — a stroke has to stay a
@@ -466,6 +500,68 @@ mod tests {
     fn rgb_to_hsl_hex(hex: &str) -> (f64, f64, f64) {
         let c = svgtypes::Color::from_str(hex).unwrap_or_else(|_| panic!("{hex} must parse"));
         rgb_to_hsl(c.red, c.green, c.blue)
+    }
+
+    /// [`tint`]'s own doc: a two-parameter HSL fit against the design reference's three
+    /// hand-picked class fills, not an exact reproduction of them. Both halves are asserted —
+    /// the documented worst-case error against every reference, and the exact output — so a
+    /// retune has to be deliberate and a silent drift inside the tolerance is still caught.
+    #[test]
+    fn tint_approximates_the_three_reference_fills_within_its_documented_error() {
+        let reference = [
+            ("#58a6ff", "#0f2038"),
+            ("#3fb950", "#0f2617"),
+            ("#d29922", "#271d0b"),
+        ];
+        for (stroke, fill) in reference {
+            let got = tint(stroke).unwrap_or_else(|| panic!("{stroke} must parse"));
+            let a = svgtypes::Color::from_str(&got).expect("tint emits #rrggbb");
+            let b = svgtypes::Color::from_str(fill).expect("the reference is #rrggbb");
+            for (channel, (x, y)) in [
+                ("r", (a.red, b.red)),
+                ("g", (a.green, b.green)),
+                ("b", (a.blue, b.blue)),
+            ] {
+                let error = (x as i32 - y as i32).abs();
+                assert!(
+                    error <= 3,
+                    "{stroke}->{got} (reference {fill}): {channel} is off by {error}, past the \
+                     documented 3-of-255 worst case"
+                );
+            }
+        }
+        assert_eq!(tint("#58a6ff").as_deref(), Some("#0e233b"));
+        assert_eq!(tint("#3fb950").as_deref(), Some("#122315"));
+        assert_eq!(tint("#d29922").as_deref(), Some("#261e0e"));
+    }
+
+    /// A tint is always **darker** than the colour it came from, whatever that colour is — the
+    /// whole point of the rule is that a node's own outline still reads against its fill. Checked
+    /// over the corners and octants of the RGB cube rather than over the three references, so a
+    /// factor that happened to work for the design's own accents but inverted somewhere else
+    /// cannot pass.
+    #[test]
+    fn a_tint_is_always_darker_than_its_source() {
+        let cases = [
+            "#ffffff", "#000000", "#808080", "#ff0000", "#00ff00", "#0000ff", "#ffff00", "#00ffff",
+            "#ff00ff", "#58a6ff", "#f85149",
+        ];
+        for source in cases {
+            let got = tint(source).unwrap_or_else(|| panic!("{source} must parse"));
+            let (_, _, l_source) = rgb_to_hsl_hex(source);
+            let (_, _, l_got) = rgb_to_hsl_hex(&got);
+            assert!(
+                l_got <= l_source + 1e-9,
+                "{source} -> {got}: lightness went up ({l_source} -> {l_got})"
+            );
+        }
+    }
+
+    #[test]
+    fn tint_leaves_none_and_an_unparsable_colour_alone() {
+        assert_eq!(tint("none"), None, "\"none\" has no hue to tint");
+        assert_eq!(tint("NONE"), None, "the keyword check is case-insensitive");
+        assert_eq!(tint("notacolor"), None);
     }
 
     #[test]

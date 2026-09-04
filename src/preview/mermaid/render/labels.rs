@@ -33,7 +33,7 @@ pub const LINE_HEIGHT_RATIO: f64 = 1.1;
 /// would make a mixed-script line jump.
 pub const BASELINE_RATIO: f64 = 0.35;
 
-/// Height of one line of text, in px.
+/// Height of one line of body text, in px.
 pub fn line_height() -> f64 {
     FONT_SIZE as f64 * LINE_HEIGHT_RATIO
 }
@@ -47,6 +47,17 @@ pub struct Label {
     pub width: f64,
     /// `lines.len()` line heights.
     pub height: f64,
+    /// The px size this label was **measured at**, and therefore the size [`super::svg`] draws it
+    /// at.
+    ///
+    /// Almost always [`FONT_SIZE`] — the body size every diagram konoma has ever drawn uses, and
+    /// what [`Label::measure`] fills in. The exception is an edge label under
+    /// `Routing::Orthogonal`, which the design reference draws smaller than the body text
+    /// (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 5): carrying the size **on the label** is
+    /// what keeps "what was measured" and "what is drawn" the same number, so a smaller label
+    /// shrinks the plate behind it and the rank the router widens for it, instead of leaving a
+    /// box sized for text that is no longer there.
+    pub font_size: f64,
 }
 
 impl Label {
@@ -65,6 +76,12 @@ impl Label {
     /// per-line and drawn as something else. With every line already trimmed there is nothing at
     /// a line boundary to fold.
     pub fn measure(text: &str) -> Label {
+        Label::measure_at(text, FONT_SIZE as f64)
+    }
+
+    /// [`Label::measure`] at a font size other than the body's — see [`Label::font_size`] for the
+    /// one caller that needs it and why the size travels with the label.
+    pub fn measure_at(text: &str, font_size: f64) -> Label {
         // `common.getRows` — mermaid splits a label into rows **at render time**, for every
         // diagram kind, on the four `<br>` spellings *and* on a literal `\n`. Doing it here rather
         // than in each parser is what makes it true for all of them at once: the flowchart parser
@@ -78,12 +95,13 @@ impl Label {
             .collect();
         let width = lines
             .iter()
-            .map(|l| text_metrics::measure(l, FONT_SIZE) as f64)
+            .map(|l| text_metrics::measure(l, font_size as f32) as f64)
             .fold(0.0_f64, f64::max);
         Label {
-            height: lines.len() as f64 * line_height(),
+            height: lines.len() as f64 * font_size * LINE_HEIGHT_RATIO,
             lines,
             width,
+            font_size,
         }
     }
 
@@ -93,11 +111,41 @@ impl Label {
         self.lines.iter().all(|l| l.trim().is_empty())
     }
 
+    /// The same words at a different size, for a palette that draws an edge label smaller than
+    /// the body text it labels ([`super::theme::Tokens::edge_label_font_size`]).
+    ///
+    /// Scaled rather than re-measured, and that is the design of it: a glyph's advance is
+    /// proportional to the font size, so `width * (new / old)` **is** the measurement, to within
+    /// the hinting a rasteriser applies at the end. Re-measuring would be no more accurate and
+    /// would put a second `text_metrics` call on the drawing path.
+    ///
+    /// Why the size changes here and not at measuring time: the box the layout reserved for an
+    /// edge label is an *input to the routing* (`orthogonal::label_min_length` widens a rank to
+    /// hold it), so shrinking the label before the layout would move every diagram in the mode —
+    /// measured on the state corpus, it collapses `concurrent`'s own perimeter ring into a
+    /// sub-pixel doubling-back. What this keeps true is the thing that matters at drawing time —
+    /// **the patch behind the words is the size of the words** — while the rank the router opened
+    /// for the label stays as roomy as it always was.
+    pub fn resized(&self, font_size: f64) -> Label {
+        let scale = font_size / self.font_size;
+        Label {
+            lines: self.lines.clone(),
+            width: self.width * scale,
+            height: self.height * scale,
+            font_size,
+        }
+    }
+
+    /// Height of one of this label's own lines, in px.
+    pub fn line_height(&self) -> f64 {
+        self.font_size * LINE_HEIGHT_RATIO
+    }
+
     /// Baseline y of line `i` when the block is centred on `center_y`.
     pub fn baseline(&self, center_y: f64, i: usize) -> f64 {
         let top = center_y - self.height / 2.0;
         // Line `i` occupies `[top + i*lh, top + (i+1)*lh]`; its baseline sits `BASELINE_RATIO`
         // of an em below the middle of that box.
-        top + (i as f64 + 0.5) * line_height() + FONT_SIZE as f64 * BASELINE_RATIO
+        top + (i as f64 + 0.5) * self.line_height() + self.font_size * BASELINE_RATIO
     }
 }

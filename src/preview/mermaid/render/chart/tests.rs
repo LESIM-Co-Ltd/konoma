@@ -2356,6 +2356,7 @@ fn synthetic_chart_diagram() -> Diagram {
         lines: text.split('\n').map(str::to_string).collect(),
         width: w,
         height: text.split('\n').count() as f64 * super::super::labels::line_height(),
+        font_size: crate::preview::mermaid::text_metrics::FONT_SIZE as f64,
     };
     let node = |id: &str, shape: Glyph, x: f64, y: f64, w: f64, h: f64, series: Option<usize>| {
         PlacedNode {
