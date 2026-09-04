@@ -8780,16 +8780,21 @@ fn orthogonal_only_corpus() -> Vec<(&'static str, &'static str)> {
             "flowchart TD\n  A --> A\n  A --> B\n  C --> A\n  C --> B",
         ),
         (
-            // `zz-design-2b`'s own `CLI -.->|リンク| PAY` reduced to the shape that produced it:
-            // three merge siblings converging on one target, one of which also carries an
-            // author-dotted aside to a node several ranks away that nothing else reaches
-            // (`super::aside_weight`'s own doc). `Z` is deliberately the *last* declared member of
-            // its rank, so with the aside weighted like a flow edge dagre drags `A` away from `B`
-            // and `C` to sit beside it. Kept as a plain, cluster-free flowchart on purpose: 2b's
-            // own frames add a second, unrelated effect on top (the aside's dummy chain is
-            // parented into the source's frame and stretches it — see
-            // `orthogonal_a_dotted_aside_does_not_reorder_a_rank`'s own note), and a fixture that
-            // mixes the two cannot say which one a failure came from.
+            // The shape that produced the `aside_weight` rule: three merge siblings converging on
+            // one target, one of which also carries an author-dotted aside to a node several ranks
+            // away that nothing else reaches (`super::aside_weight`'s own doc). Originally reduced
+            // from `zz-design-2b` when that source was still mistranscribed as
+            // `CLI -.->|リンク| PAY` (`CLI` being the row's first sibling, matching `A` here) — the
+            // corrected source (`UI -.->|リンク| PAY`, the *middle* sibling) does not reproduce the
+            // reorder even hypothetically (`orthogonal_a_dotted_aside_does_not_reorder_a_rank`'s
+            // own note), so this fixture is kept deliberately independent of either design
+            // reference, with the aside still on `A` (the first of three) to state the general
+            // case. `Z` is deliberately the *last* declared member of its rank, so with the aside
+            // weighted like a flow edge dagre drags `A` away from `B` and `C` to sit beside it.
+            // Kept as a plain, cluster-free flowchart on purpose: 2b's own frames add a second,
+            // unrelated effect on top (the aside's dummy chain is parented into the source's frame
+            // and stretches it — see `orthogonal_a_dotted_aside_does_not_reorder_a_rank`'s own
+            // note), and a fixture that mixes the two cannot say which one a failure came from.
             "orthogonal-dotted-aside-merge",
             "flowchart LR\n  A[A] --> M[merge]\n  B[B] --> M\n  C[C] --> M\n  M --> N[N]\n  \
              N --> P[P]\n  N --> Q[Q]\n  N --> R[R]\n  R --> Z[Z]\n  A -.->|aside| Z",
@@ -8898,7 +8903,7 @@ fn orthogonal_design_reference_corpus() -> Vec<(&'static str, &'static str)> {
   W --> LLM
   W -->|ツール実行| SB
   SB --> GIT
-  CLI -.->|リンク| PAY
+  UI -.->|リンク| PAY
   classDef data fill:#161b22,stroke:#3fb950,color:#e6edf3
   classDef model fill:#161b22,stroke:#a371f7,color:#e6edf3
   classDef exec fill:#161b22,stroke:#f85149,color:#e6edf3
@@ -8944,7 +8949,7 @@ fn orthogonal_design_reference_corpus() -> Vec<(&'static str, &'static str)> {
   W --> LLM
   W -->|ツール実行| SB
   SB --> GIT
-  CLI -.->|リンク| PAY
+  UI -.->|リンク| PAY
   classDef data fill:#161b22,stroke:#3fb950,color:#e6edf3
   classDef model fill:#161b22,stroke:#a371f7,color:#e6edf3
   classDef exec fill:#161b22,stroke:#f85149,color:#e6edf3
@@ -11156,29 +11161,36 @@ pub(super) fn fnv1a(s: &str) -> u64 {
 /// on the three sources the design work actually moves.
 ///
 /// The orthogonal half of the table is expected to *fail* the day the mode's own drawing changes
-/// on purpose; when it does, retake the numbers and say so. The splines half must never move.
+/// on purpose; when it does, retake the numbers and say so. The splines half must never move —
+/// except for the source itself changing, which is what happened on 2026-09-04: `2b`/`2c` had
+/// mistranscribed the design SVG's own dashed aside as `CLI -.->|リンク| PAY` when the SVG (read
+/// again at `docs/render-check/zz-design-2b-wrap.html`'s `M48,298 …` / `2c-wrap.html`'s
+/// `M482,96 …`, both starting at `ブラウザ UI`'s own rect, not `CLI`'s) draws it from `UI` — the
+/// `zz-design-2b`/`zz-design-2c` rows below were retaken after that fixture correction (`2a` is
+/// untouched and keeps its `cb799eb` numbers).
 #[test]
 fn design_reference_renders_are_byte_stable_per_theme() {
     if !text_metrics::fonts_available() {
         return;
     }
-    // (source, theme, routing, FNV-1a of the SVG at cb799eb)
+    // (source, theme, routing, FNV-1a of the SVG at cb799eb; 2b/2c retaken 2026-09-04 after the
+    // CLI -> UI aside-source fixture fix)
     let pinned: &[(&str, &str, &str, u64)] = &[
         ("zz-design-2a", "dark", "splines", 5005918715324069930),
         ("zz-design-2a", "light", "splines", 2399494576299523526),
         ("zz-design-2a", "classic", "splines", 10407544450745007536),
         ("zz-design-2a", "forest", "splines", 8329344269436299275),
         ("zz-design-2a", "neutral", "splines", 7403040742743107761),
-        ("zz-design-2b", "dark", "splines", 7935286192180426942),
-        ("zz-design-2b", "light", "splines", 16995108890563956291),
-        ("zz-design-2b", "classic", "splines", 10867378686724321546),
-        ("zz-design-2b", "forest", "splines", 9237156209037896875),
-        ("zz-design-2b", "neutral", "splines", 9990741429153128099),
-        ("zz-design-2c", "dark", "splines", 8303468465283290189),
-        ("zz-design-2c", "light", "splines", 14603137355864400678),
-        ("zz-design-2c", "classic", "splines", 9521413063197696639),
-        ("zz-design-2c", "forest", "splines", 6102880734624487004),
-        ("zz-design-2c", "neutral", "splines", 9543245716239771530),
+        ("zz-design-2b", "dark", "splines", 4855966213328743171),
+        ("zz-design-2b", "light", "splines", 12029727072260798938),
+        ("zz-design-2b", "classic", "splines", 15853370727686744861),
+        ("zz-design-2b", "forest", "splines", 4296702879392111820),
+        ("zz-design-2b", "neutral", "splines", 12627844136969084978),
+        ("zz-design-2c", "dark", "splines", 1588470325509767146),
+        ("zz-design-2c", "light", "splines", 518541127552166087),
+        ("zz-design-2c", "classic", "splines", 9403615098161555140),
+        ("zz-design-2c", "forest", "splines", 551714785681794027),
+        ("zz-design-2c", "neutral", "splines", 16108982091935030433),
     ];
     let corpus = orthogonal_design_reference_corpus();
     for (name, theme_name, routing, want) in pinned {
@@ -11462,13 +11474,19 @@ fn orthogonal_only_a_dotted_edge_is_an_aside_for_dagre() {
 /// than on the weight it hands dagre: **an aside does not decide where the flow's own nodes go.**
 ///
 /// Stated as "no two nodes that share a rank swap places when the aside is added" — the strongest
-/// form that is actually true, and the one that names the user-visible defect. `zz-design-2b`'s
-/// three clients are one rank; with the aside weighted like a flow edge they come out `EX, UI,
-/// CLI` and without it `CLI, UI, EX`, so `CLI` ends up at the far side of its own frame and its
-/// edge into `API ゲート` climbs back across `ブラウザ UI`'s. Nodes that do *not* share a rank are
-/// deliberately out of scope: `zz-design-2c`'s own `ブラウザ UI` (rank 1) and `決済ページ` (rank 17)
-/// do trade places on the cross axis, which is not a reordering of anything — they were never
-/// comparable.
+/// form that is actually true, and the one that names the user-visible defect. The defect was
+/// found when `zz-design-2b`/`2c` were still mistranscribed as `CLI -.->|リンク| PAY` (`CLI` being
+/// the client row's *first* declared sibling): with that aside weighted like a flow edge the three
+/// clients came out `EX, UI, CLI` instead of `CLI, UI, EX`, so `CLI` ended up at the far side of
+/// its own frame with its edge into `API ゲート` climbing back across `ブラウザ UI`'s. The corrected
+/// source (`UI -.->|リンク| PAY` — `UI` is the *middle* sibling, verified against
+/// `docs/render-check/zz-design-2b-wrap.html`'s own SVG) does not reproduce that reorder even
+/// hypothetically weighted like a flow edge (re-measured after the fix: `CLI, UI, EX` either way,
+/// on both `2b` and `2c`), which is exactly why the general shape still needs its own fixture —
+/// see `orthogonal-dotted-aside-merge` below, kept independent of which sibling either design
+/// reference happens to use. Nodes that do *not* share a rank are deliberately out of scope:
+/// `zz-design-2c`'s own `ブラウザ UI` (rank 1) and `決済ページ` (rank 17) do trade places on the
+/// cross axis, which is not a reordering of anything — they were never comparable.
 ///
 /// The pair is built by deleting the one `-.->` line from each source, with the count asserted, so
 /// the design-reference sources stay single-sourced and cannot drift away from the pictures in
@@ -11801,15 +11819,18 @@ fn dotted_aside_cases() -> Vec<(
             ["CLI", "UI", "EX"],
         ),
         // Added 2026-09-04 with §10-5 round 5's own tier rule
-        // (`orthogonal::place_dead_end_tiers`). `zz-design-2b`/`2c` used to be the *only* sources
-        // here whose forward aside actually crossed anything — `CLI -.->|リンク| PAY` left the
-        // client row sideways and cut across its two siblings' entry legs on the way out — and the
-        // tier rule takes the detour out of that picture entirely (the aside now leaves the row's
-        // outer face and crosses nothing at all, which is the improvement, not a regression). The
-        // crossing-gap machinery still has to stay covered, so the same *shape* is stated on its
-        // own two-line fixture, where nothing else can quietly stop reproducing it: a stack of
-        // three siblings all feeding one hub, with the aside leaving the **middle** one, so its
-        // way out of the row is across a sibling's leg whichever side it takes.
+        // (`orthogonal::place_dead_end_tiers`), back when `zz-design-2b`/`2c` were still
+        // mistranscribed as `CLI -.->|リンク| PAY` (`CLI` the row's first sibling) — under that
+        // source the tier rule took the aside's detour out of the picture entirely for both, so
+        // this synthetic fixture (aside off the row's own middle sibling) was added to keep the
+        // crossing-gap machinery covered by something that still reproduces it. With the source
+        // corrected to `UI -.->|リンク| PAY` (`UI` genuinely is the middle sibling), `2c`'s own
+        // aside crosses a sibling's leg once again (re-measured: `2b`/`LR` 0 crossings, `2c`/`TB`
+        // 1) — this synthetic fixture is kept anyway, since it pins the shape on its own two-line
+        // diagram rather than depending on whichever of the two design directions happens to
+        // reproduce it: a stack of three siblings all feeding one hub, with the aside leaving the
+        // **middle** one, so its way out of the row is across a sibling's leg whichever side it
+        // takes.
         (
             "orthogonal-aside-crosses-a-sibling-leg-lr",
             "flowchart LR\n  subgraph S[row]\n    A\n    B\n    D\n  end\n  A --> H\n  B --> H\n  D --> H\n  H --> Z\n  B -.-> Z",
@@ -11887,7 +11908,7 @@ fn orthogonal_a_dotted_aside_leaves_its_source_stack_at_one_node_pitch() {
 /// Stated on the flow axis of the finished picture rather than on a rank number, so it holds
 /// whatever `pull_back_fan_ranks` afterwards does with the ranks: an aside's target is never
 /// upstream of its source. `zz-design-2b`/`2c`'s own `決済ページ` is reached by the dotted
-/// `CLI -.->|リンク| PAY` and by nothing else at all, which is exactly the shape at issue; the
+/// `UI -.->|リンク| PAY` and by nothing else at all, which is exactly the shape at issue; the
 /// third case states it on a two-line diagram where nothing else could possibly be holding the
 /// target in place.
 #[test]
@@ -11923,14 +11944,14 @@ fn orthogonal_an_aside_only_target_still_ranks_after_its_source() {
             "zz-design-2b",
             named("zz-design-2b"),
             Direction::LeftToRight,
-            "CLI",
+            "UI",
             "PAY",
         ),
         (
             "zz-design-2c",
             named("zz-design-2c"),
             Direction::TopToBottom,
-            "CLI",
+            "UI",
             "PAY",
         ),
     ];
@@ -11964,7 +11985,7 @@ fn orthogonal_an_aside_only_target_still_ranks_after_its_source() {
 /// Before item 4's routing half existed, [`orthogonal::route_perimeter`] was reached only by a
 /// *reverse* edge, so a forward aside stayed on dagre's own waypoint chain and was drawn straight
 /// through the middle of the picture the design takes round the outside — `zz-design-2b`'s own
-/// `CLI -.->|リンク| PAY` ran the full 1301px width of the diagram between two frames. The
+/// `UI -.->|リンク| PAY` ran the full 1301px width of the diagram between two frames. The
 /// narrowing is the opposite error, found on `CORPUS`'s own `strokes`: `B -.-> C`, two adjacent
 /// boxes on one row with nothing between them, was sent round the outside and came back a two-bend
 /// hop where a straight two-point line reaches (§10-0 — a rule is adopted if it makes lines
