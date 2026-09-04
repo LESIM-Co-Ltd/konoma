@@ -15,6 +15,15 @@ All notable changes to konoma are documented in this file. The format is based o
   size themselves to the span of the trunks they connect and take ports exactly at those trunks;
   and TB transition labels stay on-line plates. `"splines"` and every other diagram kind (class,
   ER, sequence, …) are unchanged.
+- **`konoma-orthogonal` now draws diagrams in konoma's own designed palette and style, not the
+  configured `mermaid_theme`.** Node fill is `#161b22` with 3px rounded corners and 1.5px
+  strokes; body text is `#e6edf3` (14px, edge labels 11px on their on-line plates); subgraph
+  frames draw as a 1px dashed `#484f58` outline with no fill and a small grey title; edges default
+  to a neutral `#8b949e`; `classDef`/`style` colors apply consistently to a node's border, its
+  edges, arrowheads, and label, with a dark tint of the node's own fill color. State diagrams
+  share the same palette (start/end markers, composite-state frames, the choice pseudostate, and
+  fork/join bars). `mermaid_theme` has no effect under `konoma-orthogonal`, exactly like
+  `mermaid_curve` already doesn't.
 
 ### Changed
 - **`konoma-orthogonal` draws the user-confirmed round-3 reference layout.** A fan-out's edges

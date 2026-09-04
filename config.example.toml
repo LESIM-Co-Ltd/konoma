@@ -233,6 +233,8 @@ mermaid = "image"
 # Color theme for mermaid diagrams. The background is always transparent (blends with the terminal).
 #   "dark" (default) … mermaid.js dark theme (for dark terminals).
 #   "light"          … a modern light palette / "classic" … mermaid.js default / "forest" / "neutral".
+# Has no effect when mermaid_routing = "konoma-orthogonal" — that mode always uses konoma's own
+# designed palette instead.
 mermaid_theme = "dark"
 
 # Curve a flowchart's edges are drawn in — mermaid's `flowchart.curve` (mermaid-js#2817 / #2549,
@@ -284,7 +286,10 @@ mermaid_curve = "basis"
 #                         Graphviz's `splines=ortho`; the "konoma-" prefix marks it as konoma's
 #                         own value so it can never collide with a future mermaid-defined
 #                         "orthogonal". mermaid_curve has no effect in this mode — there is no
-#                         curve, only right-angle segments.
+#                         curve, only right-angle segments. This mode also switches the diagram to
+#                         konoma's own designed palette and style (dark node fill, rounded
+#                         corners, dashed subgraph frames, colored classes tinting border/edge/
+#                         label together) — mermaid_theme has no effect here either.
 # An unrecognized value falls back to "splines".
 mermaid_routing = "splines"
 

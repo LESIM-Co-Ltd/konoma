@@ -44,7 +44,11 @@ as real pixels).
   bends only at right angles with sharp corners, decision diamonds become
   chamfered rectangles so edges land on a flat face, and a straight-through
   edge across ranks aligns into a single unbent lane — a clean schematic
-  look, for those two diagram kinds only. Set it with
+  look, for those two diagram kinds only. This mode also switches the
+  diagram to konoma's own designed palette and style — dark node fill with
+  rounded corners, dashed subgraph frames, neutral edges, and `classDef`/
+  `style` colors applied consistently to a node's border, its edges, and its
+  label — so `ui.mermaid_theme` has no effect here. Set it with
   `ui.mermaid_routing = "konoma-orthogonal"`.
 - **LaTeX math**: `$…$` and `$$…$$` (or `\(…\)` / `\[…\]`) are typeset in pure
   Rust and drawn as images — no browser, no Node, no TeX installation. An

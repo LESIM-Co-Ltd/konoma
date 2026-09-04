@@ -221,6 +221,7 @@ mermaid = "image"
 # mermaid 図の配色テーマ。背景は常に透過(端末の背景に馴染む)。
 #   "dark" (既定) … mermaid.js の dark テーマ(暗い端末向け)
 #   "light"       … モダンなライト配色 / "classic" … mermaid.js 既定 / "forest" / "neutral"
+# mermaid_routing = "konoma-orthogonal" のときは無効(このモードは常に konoma 独自の設計配色を使う)。
 mermaid_theme = "dark"
 
 # flowchart の辺(エッジ)の線の形 — mermaid の `flowchart.curve`(mermaid-js#2817 / #2549、
@@ -263,7 +264,9 @@ mermaid_curve = "basis"
 #                       `edgeRouting: ORTHOGONAL` と Graphviz の `splines=ortho`。"konoma-" 接頭辞は
 #                       konoma 独自仕様の値であることの印で、将来 mermaid 本家が "orthogonal" を
 #                       定義しても衝突しない。このモードでは mermaid_curve は無効(直交折れ線に
-#                       "曲線"の概念が無いため)。
+#                       "曲線"の概念が無いため)。このモードは konoma 独自の設計配色・スタイル
+#                       (ダークなノード塗り・角丸・破線のサブグラフ枠・classDef の色をノード枠/辺/
+#                       ラベルへ一貫適用)にも自動で切り替わる — mermaid_theme もここでは無効。
 # 未知の値は "splines" にフォールバックする。
 mermaid_routing = "splines"
 
