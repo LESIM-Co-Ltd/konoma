@@ -1176,22 +1176,35 @@ fn apply_label_growth(boosts: &mut HashMap<String, f64>, shortfall: &HashMap<Str
 /// see that function's own doc for what each element means.
 type LayoutPassResult = (Diagram, HashMap<String, Size>, HashMap<String, f64>);
 
+/// Whether an edge is an **aside** — §10-1 item 4's "補助辺", a link the reader should be able to
+/// find but which is not part of the flow the picture is about.
+///
+/// §10-1 item 4 ("戻り辺・補助辺は破線で外周レーンを回す") says a dashed line is how the design marks
+/// one, and the design answers by taking it round the outside rather than through the middle.
+/// konoma never dashes an edge itself (§10-1's own note: the line style is the author's), so the
+/// author's own `-.->` is the whole signal.
+///
+/// Three separate decisions read this one predicate, so that "what counts as an aside" is stated
+/// once: [`aside_weight`] (it gets no vote on where the flow's nodes go), the vendored engine's
+/// [`EdgeLabel::rank_only`] (it constrains ranks and nothing else — [`lay_out_spec_pass`]'s own
+/// call site), and [`orthogonal::classify`] (it is drawn on the outer perimeter lane, forward or
+/// reverse).
+///
+/// [`Routing::Splines`] is deliberately excluded from all three: it routes a dotted edge exactly
+/// like any other and its output is pinned byte for byte (§10-2), so the default rendering of
+/// every diagram kind is untouched.
+fn is_aside(routing: Routing, stroke: Stroke) -> bool {
+    routing == Routing::Orthogonal && stroke == Stroke::Dotted
+}
+
 /// The dagre `weight` an edge is handed with — how hard its two ends pull towards each other while
 /// dagre ranks, orders and positions the graph. Every edge has carried the default `1` since the
-/// vendored engine landed; this is the one exception.
+/// vendored engine landed; an [`is_aside`] edge is the one exception.
 ///
-/// §10-1 item 4 ("戻り辺・補助辺は破線で外周レーンを回す") says a dashed line is how the design marks an
-/// edge as an aside — a link the reader should be able to find, but not part of the flow the
-/// picture is about — and the design answers by taking it round the outside rather than through
-/// the middle. konoma never dashes an edge itself (§10-1's own note: the line style is the
-/// author's), so the author's own `-.->` is the whole signal.
-///
-/// This function is about the *layout* half of that, not the routing half:
-/// [`orthogonal::route_perimeter`] takes a **reverse** aside round the perimeter ring, while a
-/// forward one (`zz-design-2b`'s own `CLI -.-> PAY`, sixteen ranks apart and never closing a
-/// cycle) stays on its dagre waypoint chain like any other forward edge. Either way, where the
-/// aside is drawn is decided after the layout — so the layout has no reason to let it decide where
-/// the nodes go.
+/// This function is about the *layout* half of §10-1 item 4, not the routing half:
+/// [`orthogonal::classify`] takes every aside — forward or reverse — round the perimeter ring, so
+/// where an aside is drawn is decided after the layout, and the layout has no reason to let it
+/// decide where the nodes go.
 ///
 /// dagre, though, saw an ordinary edge and pulled just as hard on it. Measured on `zz-design-2b`,
 /// whose single `CLI -.->|リンク| PAY` is the only dotted edge in the diagram — raw dagre
@@ -1222,11 +1235,12 @@ type LayoutPassResult = (Diagram, HashMap<String, Size>, HashMap<String, f64>);
 /// compaction edges it injects, which is one smaller per aside and still, as upstream intends,
 /// larger than any real edge's.
 ///
-/// [`Routing::Splines`] is deliberately excluded: it routes a dotted edge exactly like any other
-/// and its output is pinned byte for byte (§10-2), so the default rendering of every diagram kind
-/// is untouched.
+/// Weight `0` and [`EdgeLabel::rank_only`] are two halves of one rule, not alternatives: the
+/// weight is what the *rank* phase reads (the edge holds its `minlen` and asks for nothing else),
+/// and `rank_only` is what takes the edge out of `order`/`position` entirely, so it cannot spread
+/// a rank by way of the dummy chain `normalize` would otherwise build for it.
 fn aside_weight(routing: Routing, stroke: Stroke) -> i32 {
-    if routing == Routing::Orthogonal && stroke == Stroke::Dotted {
+    if is_aside(routing, stroke) {
         0
     } else {
         EdgeLabel::default().weight
@@ -1381,6 +1395,14 @@ fn lay_out_spec_pass(
                 height: h,
                 minlen: edge.minlen.max(1) as i32,
                 weight: aside_weight(spec.routing, edge.stroke),
+                // §10-1 item 4's layout half, second and larger part (`EdgeLabel::rank_only`'s own
+                // doc in the vendored engine): an aside constrains ranks and nothing else. Without
+                // this it still spanned its ranks as a dummy chain, which `parent_dummy_chains`
+                // parents into the source's own subgraph and which then has to sit outside every
+                // wider sibling frame — measured on `zz-design-2b`, that one chain stretched
+                // `クライアント` far enough for `position::bk` to spread its three members to
+                // 114.5/190.2px apart where one node pitch is 69.4px.
+                rank_only: is_aside(spec.routing, edge.stroke),
                 ..EdgeLabel::default()
             }),
             Some(edge.id.as_str()),
@@ -1807,6 +1829,10 @@ fn lay_out_spec_pass(
                     target_rank: g.node(p.head_id.as_str()).and_then(|n| n.rank),
                     source_out_degree: out_degree.get(&p.edge.from).copied().unwrap_or(0),
                     target_in_degree: in_degree.get(&p.edge.to).copied().unwrap_or(0),
+                    // §10-1 item 4's routing half, the counterpart of the `rank_only`/
+                    // `aside_weight` pair this same edge was handed to dagre with: an aside is
+                    // drawn on the outer perimeter lane whichever way it points.
+                    aside: is_aside(spec.routing, p.edge.stroke),
                 }
             })
             .collect()

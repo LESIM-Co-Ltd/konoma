@@ -278,6 +278,20 @@ pub struct EdgeLabel {
     pub parent: Option<String>,
     pub edge_label: Option<Box<EdgeLabel>>,
     pub edge_obj: Option<crate::preview::mermaid::layout::graph::Edge>,
+    /// **konoma addition — not in upstream `dagre`.** When set, this edge is a *ranking
+    /// constraint only*: `layout` keeps it for the rank phase (so `minlen` still holds its two
+    /// ends apart) and then lifts it out of the graph before `normalize`, so it never becomes a
+    /// dummy chain, never occupies a lane in the ranks it spans, and never reaches `order` or
+    /// `position`. It is put back, with `points` empty, just before `assignNodeIntersects`, so a
+    /// caller that handed `layout` N edges gets N edges back — this one drawn as the plain
+    /// border-to-border straight line an edge with no waypoints always gets, for the caller to
+    /// route itself.
+    ///
+    /// Defaults to `false`, so every graph that does not set it — upstream's own tests and
+    /// `cross_validate.rs`'s 30 recorded `@dagrejs/dagre` graphs included — runs the unmodified
+    /// pipeline. konoma sets it for exactly one thing: an author-dotted "aside" under
+    /// `Routing::Orthogonal` (`render::is_aside`).
+    pub rank_only: bool,
 }
 
 impl Default for EdgeLabel {
@@ -304,6 +318,7 @@ impl Default for EdgeLabel {
             parent: None,
             edge_label: None,
             edge_obj: None,
+            rank_only: false,
         }
     }
 }

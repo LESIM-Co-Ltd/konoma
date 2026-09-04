@@ -89,6 +89,30 @@ import ordering only; it touched `layout/tests.rs`, `layout/normalize.rs`,
 `layout/order/mod.rs`, `layout/position/bk.rs` and
 `layout/rank/network_simplex.rs`.
 
+### 5b. Behaviour added: `EdgeLabel::rank_only`
+
+The one place the vendored engine does something upstream does not. `EdgeLabel` gains a
+`rank_only: bool` field (`layout/types.rs`), defaulting to **`false`**, and `layout()`
+(`layout/mod.rs`) gains two steps around it:
+
+- **11b**, between `removeEdgeLabelProxies` and `normalize`: `take_rank_only_edges` lifts
+  every edge with the flag out of the graph, remembering its descriptor and label.
+- **24b**, between `translateGraph` and `assignNodeIntersects`: `restore_rank_only_edges`
+  puts each one back under the exact same key, with `points` cleared, so step 25 gives it
+  the plain border-to-border pair of points it gives any edge with no waypoints.
+
+Between those two lines the edge does not exist, so it builds no dummy chain, occupies no
+lane in the ranks it spans, and reaches neither `order` nor `position`; before and after
+them it is an ordinary edge, so it holds its `minlen` through the rank phase and is
+un-reversed by `acyclic::undo` like any other. konoma sets the flag for one thing only: an
+author-dotted "aside" under `mermaid_routing = "konoma-orthogonal"`
+(`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 4).
+
+**This does not weaken the dagre.js cross-validation.** The flag defaults to `false` and the
+two new steps are no-ops on a graph that never sets it, which is every graph in
+`cross-validate/reference_data.json`, every one of upstream's own 482 unit tests, and every
+diagram konoma renders under the default `mermaid_routing = "splines"`.
+
 ### 6. Code that was dropped
 
 - **`src/graph/json.rs` (127 lines)** and its `pub mod json;` declaration. It

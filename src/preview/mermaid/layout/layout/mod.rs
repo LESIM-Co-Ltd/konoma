@@ -119,6 +119,12 @@ pub fn layout(g: &mut Graph<NodeLabel, EdgeLabel>, opts: Option<LayoutOptions>) 
     // 11. Remove edge label proxies
     remove_edge_label_proxies(g);
 
+    // 11b. konoma addition (see `EdgeLabel::rank_only`): every rank-only edge leaves the graph
+    // here, between the last step that reads a rank and the first step that turns an edge into
+    // geometry. Everything above this line has already run with the edge in place, so the ranks
+    // are exactly the ones it asked for; everything below runs as if it had never been declared.
+    let rank_only = take_rank_only_edges(g);
+
     // 12. Normalize long edges
     let mut dummy_chains = Vec::new();
     normalize::run(g, &mut dummy_chains);
@@ -170,6 +176,15 @@ pub fn layout(g: &mut Graph<NodeLabel, EdgeLabel>, opts: Option<LayoutOptions>) 
     // 24. Translate graph
     translate_graph(g);
 
+    // 24b. konoma addition (see `EdgeLabel::rank_only`): the rank-only edges rejoin the graph
+    // here — after `translate_graph`, so they cannot move the bounding box, and before
+    // `assign_node_intersects`, so step 25 gives each of them the same border-to-border pair of
+    // points it gives any other edge that carries no waypoints of its own. Steps 26 and 27 then
+    // treat them exactly like every other edge (a rank-only edge `acyclic::run` reversed still
+    // carries its own `reversed`/`forward_name`, so `acyclic::undo` puts it back the right way
+    // round).
+    restore_rank_only_edges(g, rank_only);
+
     // 25. Assign node intersects
     assign_node_intersects(g);
 
@@ -196,6 +211,47 @@ pub fn layout(g: &mut Graph<NodeLabel, EdgeLabel>, opts: Option<LayoutOptions>) 
 // ============================================================
 // Helper functions ported from dagre.js layout.ts
 // ============================================================
+
+/// **konoma addition — not in upstream `dagre`.** Removes every [`EdgeLabel::rank_only`] edge
+/// from `g`, returning each one's descriptor and label so [`restore_rank_only_edges`] can put it
+/// back later. See [`EdgeLabel::rank_only`] for what the flag means and why the split exists;
+/// a graph that sets it on no edge (every upstream graph) gets an empty vector and no other
+/// change at all.
+///
+/// The descriptor is taken *as the graph currently holds it*, which is the post-`acyclic::run`
+/// orientation: a rank-only edge that closed a cycle is stored reversed, and re-inserting it
+/// under the same key with the same label is what lets `acyclic::undo` un-reverse it at the end.
+fn take_rank_only_edges(g: &mut Graph<NodeLabel, EdgeLabel>) -> Vec<(Edge, EdgeLabel)> {
+    let flagged: Vec<Edge> = g
+        .edges()
+        .into_iter()
+        .filter(|e| {
+            g.edge(&e.v, &e.w, e.name.as_deref())
+                .is_some_and(|label| label.rank_only)
+        })
+        .collect();
+    flagged
+        .into_iter()
+        .filter_map(|e| {
+            let label = g.remove_edge(&e.v, &e.w, e.name.as_deref())?;
+            Some((e, label))
+        })
+        .collect()
+}
+
+/// **konoma addition — not in upstream `dagre`.** The other half of [`take_rank_only_edges`]:
+/// puts each lifted edge back under the exact key it was removed from, with no waypoints, so the
+/// `assign_node_intersects` step immediately after this gives it a plain two-point line between
+/// the two node outlines.
+fn restore_rank_only_edges(g: &mut Graph<NodeLabel, EdgeLabel>, edges: Vec<(Edge, EdgeLabel)>) {
+    for (e, mut label) in edges {
+        // Defensive: nothing between removal and here can have written a point onto a label the
+        // graph no longer holds, but an edge that comes back carrying stale geometry would have
+        // `assign_node_intersects` append to it rather than build it.
+        label.points.clear();
+        g.set_edge(&e.v, &e.w, Some(label), e.name.as_deref());
+    }
+}
 
 /// Halve ranksep in graph label. For each edge: double minlen.
 /// If labelpos != Center and rankdir is TB/BT, add labeloffset to edge width;

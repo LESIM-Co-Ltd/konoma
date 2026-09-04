@@ -7508,6 +7508,7 @@ fn avoid_label_plates_pushes_only_the_port_that_actually_crosses_a_plate() {
             target_rank: Some(1),
             source_out_degree: 1,
             target_in_degree: 1,
+            aside: false,
         },
         EligibleEdge {
             id: "cd",
@@ -7518,6 +7519,7 @@ fn avoid_label_plates_pushes_only_the_port_that_actually_crosses_a_plate() {
             target_rank: Some(1),
             source_out_degree: 1,
             target_in_degree: 1,
+            aside: false,
         },
     ];
     let routed = orthogonal::route_flowchart(
@@ -8618,6 +8620,21 @@ fn orthogonal_only_corpus() -> Vec<(&'static str, &'static str)> {
             "orthogonal-dotted-aside-merge",
             "flowchart LR\n  A[A] --> M[merge]\n  B[B] --> M\n  C[C] --> M\n  M --> N[N]\n  \
              N --> P[P]\n  N --> Q[Q]\n  N --> R[R]\n  R --> Z[Z]\n  A -.->|aside| Z",
+        ),
+        (
+            // The same shape as `orthogonal-dotted-aside-merge`, laid out `TB` and **with the
+            // three merge sources inside a frame** — the two things `2b`/`2c` add on top of the
+            // plain fixture above, and the pair that actually produced §10-1 item 4's layout
+            // defect: the aside's dummy chain is parented into the source's own subgraph
+            // (`parent_dummy_chains`), has to sit outside every wider sibling frame, and stretches
+            // the frame far enough for `position::bk` to spread the stack. The cluster-free
+            // fixture above never showed it, which is why it needs a framed sibling of its own
+            // rather than a second unframed direction.
+            "orthogonal-dotted-aside-merge-tb",
+            "flowchart TB\n  subgraph F[front]\n    A[A]\n    B[B]\n    C[C]\n  end\n  \
+             subgraph G[back]\n    M[merge]\n    N[N]\n    P[P]\n    Q[Q]\n    R[R]\n    Z[Z]\n  \
+             end\n  A --> M\n  B --> M\n  C --> M\n  M --> N\n  N --> P\n  N --> Q\n  N --> R\n  \
+             R --> Z\n  A -.->|aside| Z",
         ),
     ]
 }
@@ -10778,14 +10795,13 @@ fn orthogonal_only_a_dotted_edge_is_an_aside_for_dagre() {
 /// the design-reference sources stay single-sourced and cannot drift away from the pictures in
 /// `docs/render-check/`.
 ///
-/// What this does **not** claim is that the two layouts are identical. An aside still spans its
-/// ranks, so dagre still normalises it into a dummy chain that occupies a lane in every rank
-/// between its ends; in `2b`/`2c` that chain is parented into the source's own frame (upstream
-/// dagre's `parentDummyChains` gives a dummy whose rank is within a cluster's own span that
-/// cluster as its parent) and has to sit outside the much wider `クラウド` frame, which stretches
-/// `クライアント` and lets the position phase spread the three clients apart — 69.4px pitch without
-/// the aside, 114.5/190.2px with it. That is a separate mechanism from the pull this rule removes,
-/// and it is left standing, and stated here, rather than papered over by a looser assertion.
+/// What this does **not** claim is that the two layouts are identical — only that no rank is
+/// reordered. How *wide* a rank comes out is the second half of the same design rule and is stated
+/// separately, by [`orthogonal_a_dotted_aside_leaves_its_source_stack_at_one_node_pitch`]: an aside
+/// used to still span its ranks as a dummy chain, which `parentDummyChains` parents into the
+/// source's own frame and which then has to sit outside every wider sibling frame, stretching the
+/// frame until the position phase could spread its members (69.4px pitch without the aside,
+/// 114.5/190.2px with it, measured on `2b` before `EdgeLabel::rank_only` existed).
 #[test]
 fn orthogonal_a_dotted_aside_does_not_reorder_a_rank() {
     use crate::preview::mermaid::flowchart::Direction;
@@ -11054,5 +11070,533 @@ fn orthogonal_merge_hops_from_one_rank_nest_widest_leg_first() {
     assert!(
         checked > 0,
         "no same-rank merge siblings with differing leg widths were compared — the check is vacuous"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// §10-1 item 4, both halves: an aside constrains ranks and nothing else (`super::is_aside` /
+// `EdgeLabel::rank_only`), and it is drawn on the outer perimeter lane whichever way it points
+// (`orthogonal::classify`'s own `aside` branch).
+// ---------------------------------------------------------------------------------------------
+
+/// The four sources that carry an author-dotted aside, paired with the direction they are laid out
+/// in and the merge stack the aside leaves from — the two synthetic fixtures
+/// ([`orthogonal_only_corpus`]'s own `orthogonal-dotted-aside-merge` and its framed `TB` sibling)
+/// and the two design references that produced the rule.
+fn dotted_aside_cases() -> Vec<(
+    &'static str,
+    &'static str,
+    crate::preview::mermaid::flowchart::Direction,
+    [&'static str; 3],
+)> {
+    use crate::preview::mermaid::flowchart::Direction;
+    let named = |list: Vec<(&'static str, &'static str)>, name: &str| -> &'static str {
+        list.iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name} is in the corpus"))
+            .1
+    };
+    vec![
+        (
+            "orthogonal-dotted-aside-merge",
+            named(orthogonal_only_corpus(), "orthogonal-dotted-aside-merge"),
+            Direction::LeftToRight,
+            ["A", "B", "C"],
+        ),
+        (
+            "orthogonal-dotted-aside-merge-tb",
+            named(orthogonal_only_corpus(), "orthogonal-dotted-aside-merge-tb"),
+            Direction::TopToBottom,
+            ["A", "B", "C"],
+        ),
+        (
+            "zz-design-2b",
+            named(orthogonal_design_reference_corpus(), "zz-design-2b"),
+            Direction::LeftToRight,
+            ["CLI", "UI", "EX"],
+        ),
+        (
+            "zz-design-2c",
+            named(orthogonal_design_reference_corpus(), "zz-design-2c"),
+            Direction::TopToBottom,
+            ["CLI", "UI", "EX"],
+        ),
+    ]
+}
+
+/// §10-1 item 4's **layout** half, stated on the finished picture: a rank an aside leaves from is
+/// no wider for the aside being there.
+///
+/// `super::aside_weight` (weight `0`) alone was not enough, and the gap it left is what this
+/// states. An aside still spans its ranks, so — until `EdgeLabel::rank_only` — `normalize` built it
+/// a dummy chain that occupied a lane in every rank in between; `parent_dummy_chains` parents a
+/// dummy whose rank falls inside a cluster's own span into that cluster, that lane then has to sit
+/// outside every wider sibling frame, and the frame it was parented into stretches to hold it,
+/// which gives `position::bk` room to spread the members. Measured on `zz-design-2b`: the three
+/// clients came out **114.5 and 190.2px** apart where one node pitch is 69.4.
+///
+/// The bound is the layout's own — the widest member's own cross-axis size plus
+/// [`super::ORTHO_NODE_SEP`], which is what dagre's position phase leaves between two neighbours on
+/// one rank when nothing pulls them apart — never a recorded coordinate, so this cannot pass by
+/// being re-recorded. Runs over the framed fixtures as well as the plain one: the cluster-free
+/// `orthogonal-dotted-aside-merge` already stacked correctly under weight `0` alone, so a test that
+/// only saw it would have said the defect was fixed when it was not.
+#[test]
+fn orthogonal_a_dotted_aside_leaves_its_source_stack_at_one_node_pitch() {
+    use crate::preview::mermaid::flowchart::Direction;
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src, direction, stack) in dotted_aside_cases() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let node = |id: &str| -> &PlacedNode {
+            d.nodes
+                .iter()
+                .find(|n| n.id == id)
+                .unwrap_or_else(|| panic!("{name}: {id} is in the fixture"))
+        };
+        let members = stack.map(node);
+        let cross_size = |n: &PlacedNode| match direction {
+            Direction::TopToBottom | Direction::BottomToTop => n.size.w,
+            Direction::LeftToRight | Direction::RightToLeft => n.size.h,
+        };
+        for pair in members.windows(2) {
+            // One pitch is the two neighbours' own half-sizes plus the separation dagre keeps
+            // between them; the widest member's full size is the same quantity rounded up, which
+            // is the form the pre-existing sibling test already uses.
+            let pitch = cross_size(pair[0]).max(cross_size(pair[1])) + super::ORTHO_NODE_SEP;
+            let gap = super::cross_of(direction, pair[1]) - super::cross_of(direction, pair[0]);
+            assert!(
+                gap > 0.0 && gap <= pitch + 0.01,
+                "{name}: {} and {} sit {gap:.2}px apart on the cross axis, more than one \
+                 {pitch:.2}px node pitch — the aside is still spreading the rank it leaves",
+                pair[0].id,
+                pair[1].id
+            );
+        }
+    }
+}
+
+/// The half of §10-1 item 4's layout rule that says why the aside is lifted out **after** ranking
+/// rather than never handed to dagre at all: a target nothing else reaches would otherwise have no
+/// in-edge, and dagre's own ranking would put it at rank 0 — *upstream* of the source that links
+/// to it (`super::aside_weight`'s own doc records the same measurement for the rejected "drop it
+/// entirely" variant).
+///
+/// Stated on the flow axis of the finished picture rather than on a rank number, so it holds
+/// whatever `pull_back_fan_ranks` afterwards does with the ranks: an aside's target is never
+/// upstream of its source. `zz-design-2b`/`2c`'s own `決済ページ` is reached by the dotted
+/// `CLI -.->|リンク| PAY` and by nothing else at all, which is exactly the shape at issue; the
+/// third case states it on a two-line diagram where nothing else could possibly be holding the
+/// target in place.
+#[test]
+fn orthogonal_an_aside_only_target_still_ranks_after_its_source() {
+    use crate::preview::mermaid::flowchart::Direction;
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let design = orthogonal_design_reference_corpus();
+    let named = |name: &str| -> &'static str {
+        design
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name} is in the design-reference corpus"))
+            .1
+    };
+    let cases: [(&str, &str, Direction, &str, &str); 4] = [
+        (
+            "bare-lr",
+            "flowchart LR\n  A --> B\n  A -.-> D",
+            Direction::LeftToRight,
+            "A",
+            "D",
+        ),
+        (
+            "bare-tb",
+            "flowchart TB\n  A --> B\n  A -.-> D",
+            Direction::TopToBottom,
+            "A",
+            "D",
+        ),
+        (
+            "zz-design-2b",
+            named("zz-design-2b"),
+            Direction::LeftToRight,
+            "CLI",
+            "PAY",
+        ),
+        (
+            "zz-design-2c",
+            named("zz-design-2c"),
+            Direction::TopToBottom,
+            "CLI",
+            "PAY",
+        ),
+    ];
+    for (name, src, direction, source, target) in cases {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let node = |id: &str| -> &PlacedNode {
+            d.nodes
+                .iter()
+                .find(|n| n.id == id)
+                .unwrap_or_else(|| panic!("{name}: {id} is in the fixture"))
+        };
+        let (s, t) = (
+            super::flow_of(direction, node(source)),
+            super::flow_of(direction, node(target)),
+        );
+        assert!(
+            t > s + 0.01,
+            "{name}: the aside's target {target} sits at flow {t:.2}, not downstream of its \
+             source {source} at {s:.2} — the aside stopped being a ranking constraint"
+        );
+    }
+}
+
+/// §10-1 item 4's **routing** half: "戻り辺・補助辺は破線で外周レーンを回す…外周レーンは最も外側の枠
+/// から16px以上外に置く". Every author-dotted edge — forward as well as reverse — leaves the
+/// content box by at least [`orthogonal::PERIMETER_MARGIN`] px somewhere along its run, and gets
+/// there in no more corners than the design's own drawing of it uses.
+///
+/// Before this, [`orthogonal::route_perimeter`] was reached only by a *reverse* edge, so a forward
+/// aside stayed on dagre's own waypoint chain and was drawn straight through the middle of the
+/// picture the design takes round the outside — `zz-design-2b`'s own `CLI -.->|リンク| PAY` ran
+/// the full 1301px width of the diagram between two frames.
+///
+/// The content box is recomputed here from the finished diagram's own nodes and frames rather
+/// than read from `orthogonal::content_bounds`, so the check is an independent statement of the
+/// same quantity rather than the implementation agreeing with itself. Four bends is the design's
+/// own worst case (`zz-design-2c`: down, along, down, in) — `2a` draws two and `2b` three.
+#[test]
+fn orthogonal_every_aside_rides_the_outer_perimeter_lane() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let mut checked = 0usize;
+    for (name, src) in orthogonal_full_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let (mut l, mut t, mut r, mut b) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for (nl, nt, nr, nb) in d
+            .nodes
+            .iter()
+            .map(|n| n.bounds())
+            .chain(d.clusters.iter().map(|c| c.bounds()))
+        {
+            l = l.min(nl);
+            t = t.min(nt);
+            r = r.max(nr);
+            b = b.max(nb);
+        }
+        for e in &d.edges {
+            if e.stroke != Stroke::Dotted || e.from == e.to {
+                continue;
+            }
+            checked += 1;
+            let outside = e.points.iter().any(|p| {
+                p.x <= l - orthogonal::PERIMETER_MARGIN + 0.01
+                    || p.y <= t - orthogonal::PERIMETER_MARGIN + 0.01
+                    || p.x >= r + orthogonal::PERIMETER_MARGIN - 0.01
+                    || p.y >= b + orthogonal::PERIMETER_MARGIN - 0.01
+            });
+            assert!(
+                outside,
+                "{name}: the aside {}->{} never reaches the perimeter lane — no vertex sits \
+                 {}px outside the content box ({l:.2},{t:.2})-({r:.2},{b:.2}): {:?}",
+                e.from,
+                e.to,
+                orthogonal::PERIMETER_MARGIN,
+                e.points
+            );
+            let bends = e.points.len().saturating_sub(2);
+            assert!(
+                bends <= 4,
+                "{name}: the aside {}->{} takes {bends} corners to get round the outside, more \
+                 than the design's own worst case of 4: {:?}",
+                e.from,
+                e.to,
+                e.points
+            );
+        }
+    }
+    assert!(
+        checked >= 5,
+        "only {checked} asides were checked — the corpus lost its dotted edges and the check is \
+         vacuous"
+    );
+}
+
+/// §10-1 item 4's own "跨ぐ側の線に12pxの隙間を開ける", for the newest member of the perimeter
+/// family: where a **forward** aside crosses another edge, the aside is the side that is cut, and
+/// exactly [`orthogonal::CROSSING_GAP`] px of its own arc length is left undrawn.
+///
+/// By arc length along the whole polyline, never straight-line distance between the gap's two
+/// endpoints — `orthogonal_crossing_gaps_cut_the_horizontal_side_of_each_crossing`'s own doc has
+/// the Linux-CI regression that distinction exists to catch.
+#[test]
+fn orthogonal_a_forward_aside_carries_the_crossing_gaps() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let mut checked = 0usize;
+    for (name, src, _, _) in dotted_aside_cases() {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for e in &d.edges {
+            if e.stroke != Stroke::Dotted || e.from == e.to {
+                continue;
+            }
+            // Every crossing this aside actually makes against another edge, counted from the
+            // finished geometry — the aside must carry at least that many gaps of its own.
+            let crossings = d
+                .edges
+                .iter()
+                .filter(|o| !std::ptr::eq(*o, e))
+                .flat_map(|o| {
+                    e.points.windows(2).flat_map(move |a| {
+                        o.points
+                            .windows(2)
+                            .filter_map(move |b| orthogonal::segment_crossing(a, b))
+                    })
+                })
+                .count();
+            assert_eq!(
+                e.gaps.len(),
+                crossings,
+                "{name}: the aside {}->{} crosses {crossings} other edge segments but carries \
+                 {} gaps — the perimeter side is the one that has to be cut: {:?}",
+                e.from,
+                e.to,
+                e.gaps.len(),
+                e.points
+            );
+            for (g0, g1) in &e.gaps {
+                let arc = edges::arc_length_between(&e.points, g0, g1).unwrap_or_else(|| {
+                    panic!(
+                        "{name}: the aside {}->{}'s gap {g0:?}-{g1:?} is not on its own \
+                         segments {:?}",
+                        e.from, e.to, e.points
+                    )
+                });
+                assert!(
+                    (arc - orthogonal::CROSSING_GAP).abs() < 1e-6,
+                    "{name}: the aside {}->{}'s gap removes {arc:.3}px of arc length, not \
+                     {}px",
+                    e.from,
+                    e.to,
+                    orthogonal::CROSSING_GAP
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "no forward aside crossed anything — the check is vacuous"
+    );
+}
+
+/// §10-3's own 8px nested-lane pitch, stated over the whole corpus for the shape
+/// [`orthogonal::nest_merge_target_hops`] owns: two merge siblings' own hop legs never run
+/// alongside each other closer than [`orthogonal::PORT_CLEARANCE`] px.
+///
+/// The sibling invariant next to this one
+/// (`orthogonal_merge_sibling_hops_never_cross_or_coincide_across_corpus`) asks whether two routes
+/// ever *meet*; this asks whether they ever fail to separate, which is a different question and
+/// the one `zz-design-2b` failed: `ブラウザ UI`'s and `エディタ拡張`'s hops into `API ゲート` came
+/// out **2.53px** apart and ran alongside each other for 37.4px, reading as one thick line. They
+/// never touch, so nothing that asks about meeting could see it.
+///
+/// Scoped to the four-point "out, across, in" hop — `points.len() == 4` — which is exactly the
+/// shape whose middle segment `nest_merge_target_hops` is free to move, and therefore exactly the
+/// crowding it can be asked to fix. Two legs that do not overlap along the cross axis are not
+/// running alongside each other at all and are out of scope by construction.
+#[test]
+fn orthogonal_merge_hop_legs_stay_eight_px_apart_across_the_corpus() {
+    use crate::preview::mermaid::flowchart::Direction;
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let mut checked = 0usize;
+    for (name, src) in orthogonal_full_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+        .chain([("settings-rules-sample", SETTINGS_RULES_SAMPLE)])
+    {
+        let direction = if src.contains("LR") || src.contains("RL") {
+            Direction::LeftToRight
+        } else {
+            Direction::TopToBottom
+        };
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let mut by_target: HashMap<&str, Vec<&PlacedEdge>> = HashMap::new();
+        for e in &d.edges {
+            if e.stroke == Stroke::Invisible || e.points.len() != 4 {
+                continue;
+            }
+            by_target.entry(e.to.as_str()).or_default().push(e);
+        }
+        // The hop leg is the middle segment: its flow coordinate is the lane, its cross span is
+        // how much of the corridor it occupies.
+        let leg = |e: &PlacedEdge| -> (f64, f64, f64) {
+            let (a, b) = (&e.points[1], &e.points[2]);
+            let (lo, hi) = match direction {
+                Direction::TopToBottom | Direction::BottomToTop => (a.x.min(b.x), a.x.max(b.x)),
+                Direction::LeftToRight | Direction::RightToLeft => (a.y.min(b.y), a.y.max(b.y)),
+            };
+            let lane = match direction {
+                Direction::TopToBottom | Direction::BottomToTop => a.y,
+                Direction::LeftToRight | Direction::RightToLeft => a.x,
+            };
+            (lane, lo, hi)
+        };
+        for (target, merge) in by_target {
+            for i in 0..merge.len() {
+                for j in (i + 1)..merge.len() {
+                    let (a, b) = (leg(merge[i]), leg(merge[j]));
+                    // Only legs that genuinely run alongside each other.
+                    if a.1.max(b.1) >= a.2.min(b.2) - 1e-6 {
+                        continue;
+                    }
+                    checked += 1;
+                    assert!(
+                        (a.0 - b.0).abs() >= orthogonal::PORT_CLEARANCE - 1e-6,
+                        "{name}: {}->{target} and {}->{target} run their hop legs {:.2}px apart \
+                         over an overlapping stretch — §10-3's nested lanes are {}px: {:?} / {:?}",
+                        merge[i].from,
+                        merge[j].from,
+                        (a.0 - b.0).abs(),
+                        orthogonal::PORT_CLEARANCE,
+                        merge[i].points,
+                        merge[j].points
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "no two merge hop legs overlapped anywhere in the corpus — the check is vacuous"
+    );
+}
+
+/// The vendored engine's own half of §10-1 item 4, tested against `layout()` directly rather than
+/// through a diagram: an [`crate::preview::mermaid::layout::EdgeLabel::rank_only`] edge holds its
+/// `minlen` through the rank phase and then leaves the graph before `normalize`, so it builds no
+/// dummy chain, occupies no lane in the ranks it spans, and comes back as the plain two-point
+/// border-to-border line an edge with no waypoints always gets.
+///
+/// `dummy_chains` is the graph label field `normalize::run` writes and `normalize::undo` reads —
+/// one entry per long edge it split — so "did this edge become a chain" is answerable directly
+/// rather than inferred from geometry. `A -> D` spans three ranks, which is exactly the shape that
+/// produces one.
+///
+/// The second half is why the lift happens *after* ranking rather than instead of it: `Z` has no
+/// in-edge but the rank-only one, and still ranks below `A`. Drop the edge before `rank::rank` and
+/// `Z` falls to rank 0, above the node that links to it.
+#[test]
+fn rank_only_edges_hold_their_ranks_and_build_no_dummy_chain() {
+    use crate::preview::mermaid::layout::graph::{Graph, GraphOptions};
+    use crate::preview::mermaid::layout::{
+        layout, EdgeLabel, GraphLabel, LayoutOptions, NodeLabel,
+    };
+
+    let build = |rank_only: bool| -> Graph<NodeLabel, EdgeLabel> {
+        let mut g: Graph<NodeLabel, EdgeLabel> = Graph::with_options(GraphOptions {
+            directed: true,
+            multigraph: true,
+            compound: false,
+        });
+        for id in ["A", "B", "C", "D", "Z"] {
+            g.set_node(
+                id.to_string(),
+                Some(NodeLabel {
+                    width: 40.0,
+                    height: 20.0,
+                    ..NodeLabel::default()
+                }),
+            );
+        }
+        for (v, w) in [("A", "B"), ("B", "C"), ("C", "D")] {
+            g.set_edge(v, w, Some(EdgeLabel::default()), None);
+        }
+        // The long edge, and the one whose target nothing else reaches.
+        for (v, w, minlen) in [("A", "D", 3), ("A", "Z", 2)] {
+            g.set_edge(
+                v,
+                w,
+                Some(EdgeLabel {
+                    minlen,
+                    rank_only,
+                    ..EdgeLabel::default()
+                }),
+                None,
+            );
+        }
+        layout(&mut g, Some(LayoutOptions::default()));
+        g
+    };
+
+    let plain = build(false);
+    let lifted = build(true);
+
+    let chains = |g: &Graph<NodeLabel, EdgeLabel>| {
+        g.graph_label::<GraphLabel>()
+            .map(|gl| gl.dummy_chains.len())
+            .unwrap_or(0)
+    };
+    // Every edge here spans more than one rank once `make_space_for_edge_labels` has doubled every
+    // `minlen`, so the three `A-B-C-D` chain edges each produce a chain of their own either way;
+    // what the flag has to remove is exactly the two long edges' chains, no more and no fewer.
+    assert_eq!(
+        chains(&plain),
+        5,
+        "the fixture must produce one chain per edge without the flag, or it proves nothing"
+    );
+    assert_eq!(
+        chains(&lifted),
+        3,
+        "a rank-only edge must never be normalised into a dummy chain, and must not stop any          other edge from being"
+    );
+
+    // Every edge handed in comes back, and the lifted ones carry exactly the two border points
+    // `assign_node_intersects` gives an edge with no waypoints of its own.
+    // `Graph::edges()`, not `edge_count()`: the cached counter drifts through `normalize`'s own
+    // add/remove churn in the vendored engine (measured: 3 for the unflagged graph, 6 for the
+    // flagged one, both of which really hold the same five edges), and nothing in the pipeline
+    // reads it — the descriptor list is the honest answer.
+    assert_eq!(
+        lifted.edges(),
+        plain.edges(),
+        "a rank-only edge must come back under the exact key it was handed in under"
+    );
+    for (v, w) in [("A", "D"), ("A", "Z")] {
+        let points = &lifted.edge(v, w, None).expect("the edge comes back").points;
+        assert_eq!(
+            points.len(),
+            2,
+            "{v}->{w} must be a plain two-point line for konoma to route itself: {points:?}"
+        );
+    }
+
+    // The ranking constraint is still in force, both for a node the flow also reaches (`D`, held
+    // three ranks below `A` by the long edge alongside the `A-B-C-D` chain) and for one only the
+    // rank-only edge reaches at all (`Z`).
+    let rank = |g: &Graph<NodeLabel, EdgeLabel>, id: &str| {
+        g.node(id)
+            .and_then(|n| n.rank)
+            .expect("every node is ranked")
+    };
+    // Ranks are counted in dagre's own doubled units — `make_space_for_edge_labels` doubles every
+    // `minlen` so a labelled edge has a rank of its own to put its label in — so `minlen: 3` holds
+    // `D` six ranks below `A`, and `minlen: 2` holds `Z` four.
+    assert_eq!(rank(&lifted, "D"), rank(&lifted, "A") + 6);
+    assert_eq!(
+        rank(&lifted, "Z"),
+        rank(&lifted, "A") + 4,
+        "Z ranks at {} against A's {} — a rank-only edge must still hold its own minlen, and it          is the only thing ranking Z at all",
+        rank(&lifted, "Z"),
+        rank(&lifted, "A")
     );
 }

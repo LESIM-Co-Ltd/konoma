@@ -1715,6 +1715,7 @@ fn orthogonal_self_transition_retreats_when_its_canonical_face_is_taken() {
         target_rank: Some(0),
         source_out_degree: 2,
         target_in_degree: 1,
+        aside: false,
     };
     let self_loop = super::orthogonal::EligibleEdge {
         id: "loop",
@@ -1725,6 +1726,7 @@ fn orthogonal_self_transition_retreats_when_its_canonical_face_is_taken() {
         target_rank: Some(0),
         source_out_degree: 2,
         target_in_degree: 1,
+        aside: false,
     };
     let edges = [occupier, self_loop];
     let chain_next = HashMap::new();
