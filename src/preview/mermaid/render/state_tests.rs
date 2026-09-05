@@ -838,6 +838,7 @@ fn synthetic_state_diagram() -> Diagram {
         lines: text.split('\n').map(str::to_string).collect(),
         width: w,
         height: text.split('\n').count() as f64 * labels::line_height(),
+        line_pitch: labels::line_height(),
         font_size: crate::preview::mermaid::text_metrics::FONT_SIZE as f64,
     };
     let glyphs = [
@@ -2951,5 +2952,180 @@ fn state_title_strip_corner_arcs_survive_rasterisation() {
     assert!(
         checked_a_corner,
         "the design corpus must contain at least one composite state to exercise this"
+    );
+}
+
+/// The exclusions again, through the real renderer this time: a state diagram's markers, choice
+/// and bars keep the sizes §10-5 S1/S4 gives them under `konoma-orthogonal`, with §10-8 in force
+/// for the ordinary state boxes beside them.
+#[test]
+fn orthogonal_state_markers_choice_and_bars_keep_their_own_sizes_under_n8() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let d = laid_out_orthogonal(
+        "stateDiagram-v2\n  state c <<choice>>\n  state f <<fork>>\n  [*] --> A\n  A --> c\n  \
+         c --> B\n  c --> C\n  B --> f\n  f --> D\n  D --> [*]",
+    );
+    for n in &d.nodes {
+        match n.shape {
+            Glyph::StateStart | Glyph::StateEnd => assert_eq!(
+                (n.size.w, n.size.h),
+                (
+                    shapes::STATE_MARKER_RADIUS * 2.0,
+                    shapes::STATE_MARKER_RADIUS * 2.0
+                ),
+                "S1: {} is a marker dot, never a 96x36 box",
+                n.id
+            ),
+            Glyph::ChamferedRect if n.id == "c" => assert_eq!(
+                (n.size.w, n.size.h),
+                (28.0, 28.0),
+                "S4: a choice is a fixed 28x28 square"
+            ),
+            Glyph::Bar { .. } => assert!(
+                n.size.w.min(n.size.h) <= 6.0,
+                "S4: {} is a 6px-thick bar, not a box: {:?}",
+                n.id,
+                n.size
+            ),
+            _ => assert_eq!(
+                n.size.h,
+                shapes::ortho_height(n.label.lines.len()),
+                "N1/N5: {} is an ordinary state box, nested or not",
+                n.id
+            ),
+        }
+    }
+}
+
+/// §10-1 item 4, with `4b`'s own "完了" as the case: a back edge whose dagre chain runs on a lane
+/// clear of the row leaves through the **cross** face, not the flow face — however wide the boxes
+/// have grown.
+///
+/// The design draws `通知 --> 待機` under the row, in two corners, crossing nothing, and so did
+/// konoma until §10-8 widened every box (2026-09-05): `classify`'s own `dominant_face` weighs the
+/// flow-axis step to the chain's first dummy against the cross-axis one, and the flow-axis step is
+/// about half a node plus half a rank gap — it grows with the boxes. Past 96px it overtook the
+/// 34.7px the chain drops below the row, the edge was read as leaving sideways, and it came back
+/// over the top of the diagram in four corners, crossing `監視`'s own self-loop twice.
+///
+/// Stated as the two things that must hold — the ports are on the cross faces, and the route stays
+/// clear of the self-loop it used to cut — rather than as coordinates, so the picture may move
+/// without this going quiet.
+#[test]
+fn orthogonal_design_4b_back_edge_leaves_through_the_face_its_lane_is_on() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = orthogonal_design_reference_corpus()
+        .into_iter()
+        .find(|(n, _)| *n == "zz-design-4b")
+        .expect("4b is in the design-reference corpus")
+        .1;
+    let d = laid_out_orthogonal(src);
+    let back = d
+        .edges
+        .iter()
+        .find(|e| e.from == "通知" && e.to == "待機")
+        .expect("通知 --> 待機 must exist");
+    let loop_edge = d
+        .edges
+        .iter()
+        .find(|e| e.from == "監視" && e.to == "監視")
+        .expect("監視's self-transition must exist");
+
+    // LR, so the cross axis is y: both ends must leave through a horizontal face, which means the
+    // first and last legs run vertically.
+    assert!(
+        (back.points[0].x - back.points[1].x).abs() < 1e-6,
+        "通知 leaves through its Top or Bottom face, not sideways: {:?}",
+        back.points
+    );
+    let n = back.points.len();
+    assert!(
+        (back.points[n - 1].x - back.points[n - 2].x).abs() < 1e-6,
+        "待機 is entered through its Top or Bottom face: {:?}",
+        back.points
+    );
+    assert_eq!(
+        n - 2,
+        2,
+        "two corners, the way the design draws it: {:?}",
+        back.points
+    );
+
+    // And it crosses nothing — the self-loop is the line it used to cut.
+    let crosses = |a: &Point, b: &Point, c: &Point, dd: &Point| {
+        let o = |p: &Point, q: &Point, r: &Point| {
+            let v = (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+            if v > 1e-9 {
+                1
+            } else if v < -1e-9 {
+                -1
+            } else {
+                0
+            }
+        };
+        o(a, b, c) != o(a, b, dd) && o(c, dd, a) != o(c, dd, b)
+    };
+    for w1 in back.points.windows(2) {
+        for w2 in loop_edge.points.windows(2) {
+            assert!(
+                !crosses(&w1[0], &w1[1], &w2[0], &w2[1]),
+                "the back edge must not cut the self-loop: {:?} vs {:?}",
+                back.points,
+                loop_edge.points
+            );
+        }
+    }
+}
+
+/// N5, over the whole state corpus: an ordinary state box follows N1 whatever it is nested in.
+/// "内部ノードにも N1〜N4 をそのまま適用…入れ子段数による縮小はしない".
+#[test]
+fn orthogonal_state_boxes_follow_n1_at_every_nesting_depth() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let mut nested = 0usize;
+    for (name, src) in orthogonal_full_corpus() {
+        let d = laid_out_orthogonal(src);
+        for n in &d.nodes {
+            // A `<<choice>>` shares `Glyph::ChamferedRect` with a decision node, and only its size
+            // tells them apart downstream — §10-5 S4's own fixed square, which N3 lists among its
+            // exclusions. Named by the constant rather than by `28.0` so the two cannot drift.
+            let is_choice = n.shape == Glyph::ChamferedRect
+                && n.size.w == super::state::STATE_CHOICE_ORTHO_SIZE
+                && n.size.h == super::state::STATE_CHOICE_ORTHO_SIZE;
+            if !shapes::orthogonal_covers(n.shape) || is_choice {
+                continue;
+            }
+            let label_box = shapes::orthogonal_label_box(n.shape, &n.label);
+            assert!(
+                n.size.h >= label_box.h - 1e-6 && n.size.w >= label_box.w - 1e-6,
+                "{name}: {} is smaller than N1/N2 asks for: {:?} vs {label_box:?}",
+                n.id,
+                n.size
+            );
+            // Nesting is what N5 is about, so it is counted rather than assumed to be present:
+            // a node sitting inside any frame is a nested one.
+            if d.clusters.iter().any(|c| {
+                let (l, t, r, b) = c.bounds();
+                n.center.x > l && n.center.x < r && n.center.y > t && n.center.y < b
+            }) {
+                nested += 1;
+                assert_eq!(
+                    label_box.h,
+                    shapes::ortho_height(n.label.lines.len()),
+                    "{name}: {} is inside a frame and must NOT be shrunk for it",
+                    n.id
+                );
+            }
+        }
+    }
+    assert!(
+        nested > 5,
+        "the corpus must actually contain nested states: only {nested} seen"
     );
 }

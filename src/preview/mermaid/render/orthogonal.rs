@@ -1045,6 +1045,45 @@ fn classify(
         } else {
             Vec::new()
         };
+        // With an interior chain to read, the faces are dagre's own opinion about which way round
+        // the back edge went, and that is the best information there is. With **no** interior
+        // chain there is no opinion, and the fallback below — aim each end at the other node's
+        // centre — is not a neutral default: for two boxes on the same row it names the two faces
+        // that look straight at each other, and a perimeter route between those has to leave, run
+        // the length of the diagram along the ring, and come back on the same side. That is the
+        // shape the aside branch above already solves properly, by costing all sixteen face pairs
+        // against the ring and the lines already drawn, so a reverse edge with nothing to read
+        // asks the same question rather than guessing.
+        //
+        // Found on `zz-design-4b` when §10-8's node sizes landed (2026-09-05): `通知 --> 待機`
+        // ("完了") lost its interior waypoints, took the facing pair, and came out with four
+        // corners crossing `監視`'s own self-loop twice — where the design (and konoma, before the
+        // sizes moved) runs it under the row with two corners and no crossings.
+        // Which face a back edge leaves and enters through is dagre's own opinion, read off the
+        // dummy chain it laid out for it — but read the right way. [`dominant_face`] weighs the
+        // flow-axis step to the first dummy against the cross-axis one, and the flow-axis step is
+        // roughly "half a node plus half a rank gap": it grows with the boxes. §10-8's own widening
+        // (2026-09-05) grew it past the cross step on `zz-design-4b`, and `通知 --> 待機` ("完了"),
+        // whose chain runs along a lane a clear 34.7px **below** the row, was suddenly read as
+        // leaving sideways — four corners back over the top of the diagram, across `監視`'s own
+        // self-loop twice, where the design (and konoma, at the old sizes) runs it under the row
+        // with two corners and no crossings.
+        //
+        // So the chain's own lane is asked first, and only about the axis it is evidence for: if
+        // the dummy the chain starts on sits further across the flow than the node's own box
+        // reaches, the chain has gone **around** on that axis, whatever the flow-axis step happens
+        // to measure, and the port belongs on the face pointing at it. Both coordinates come out of
+        // `raw` (dagre's own frame, which the alignment passes have since moved the nodes out of),
+        // so the comparison is frame-consistent; only the box's own extent, which no pass changes,
+        // is read off `source`/`target`. A chain that stays in the node's own cross band — a local
+        // back edge between neighbours — falls through to `dominant_face` exactly as before.
+        let lane_face = |node: &PlacedNode, at_node: &Point, on_chain: &Point| -> Option<Side> {
+            let dcross = cross(direction, on_chain) - cross(direction, at_node);
+            // `cross_extent` is already the half-extent — how far the box reaches from its own
+            // centre across the flow.
+            let reach = cross_extent(direction, node);
+            (dcross.abs() > reach).then(|| cross_face(direction, dcross))
+        };
         let ref_start = interior
             .first()
             .cloned()
@@ -1053,8 +1092,16 @@ fn classify(
             .last()
             .cloned()
             .unwrap_or_else(|| source.center.clone());
-        let source_side = dominant_face(direction, &source.center, &ref_start);
-        let target_side = dominant_face(direction, &target.center, &ref_end);
+        let source_side = interior
+            .first()
+            .zip(raw.first())
+            .and_then(|(on_chain, at_node)| lane_face(source, at_node, on_chain))
+            .unwrap_or_else(|| dominant_face(direction, &source.center, &ref_start));
+        let target_side = interior
+            .last()
+            .zip(raw.last())
+            .and_then(|(on_chain, at_node)| lane_face(target, at_node, on_chain))
+            .unwrap_or_else(|| dominant_face(direction, &target.center, &ref_end));
         return EdgeShape {
             reverse: true,
             self_loop_fixed: false,
@@ -3187,7 +3234,54 @@ fn route_perimeter(
     out.push(target_ring);
     out.extend(target_exit.into_iter().rev().skip(1));
     out.push(target_port);
+    collapse_retraced(&mut out);
     out
+}
+
+/// Drops every interior vertex whose two legs run back along each other — the line reaching a
+/// point and returning the way it came.
+///
+/// [`route_perimeter`] can build one, and it is the whole reason this exists: the two ends' own
+/// [`safe_ring_exit`] L-shapes can reach the ring at the **same point** on the **same lane**, and
+/// the route is then `hop → (out to the ring) → (all the way back past where it started) → hop`,
+/// with `ring_path` contributing nothing in between because there is no distance to travel. Seen
+/// on the state corpus' own `concurrent` (`NumLockOn --> NumLockOff`, two same-width boxes in one
+/// `--` region, both leaving Right onto the identical `x`): the line ran 66px down past the frame
+/// and 167px straight back up over itself.
+///
+/// Collapsing is safe, not a guess: `a → c` after dropping `b` is a sub-segment of `a → b` or of
+/// `c → b`, whichever is longer — antiparallel and collinear is exactly what makes that true — and
+/// both of those were already established clear by whoever produced them (`safe_ring_exit` tests
+/// each candidate leg against `blocked`; a `ring_path` leg runs along the ring, outside everything
+/// by construction). A subsegment of a clear segment cannot hit anything the whole did not.
+///
+/// It also cannot disturb §10-1 item 1's perpendicular entry: dropping the vertex next to a port
+/// leaves the port joined to a point that was collinear with the leg it already had, so the
+/// first/last segment keeps its axis.
+fn collapse_retraced(points: &mut Vec<Point>) {
+    // Zero-length legs come first, and they are not tidiness: `route_perimeter` emits the shared
+    // ring point twice whenever `ring_path` finds nothing to travel, and a duplicate sitting
+    // between the two halves of a retrace makes both of its legs `(0, 0)` — which is neither
+    // parallel nor antiparallel, so the sweep below would walk straight past the very case it
+    // exists for.
+    points.dedup_by(|a, b| (a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS);
+    let mut i = 1;
+    while i + 1 < points.len() {
+        let (a, b, c) = (&points[i - 1], &points[i], &points[i + 1]);
+        let (in_dx, in_dy) = (b.x - a.x, b.y - a.y);
+        let (out_dx, out_dy) = (c.x - b.x, c.y - b.y);
+        let antiparallel = (in_dx * out_dx + in_dy * out_dy) < -EPS
+            && (in_dx * out_dy - in_dy * out_dx).abs() < EPS;
+        if antiparallel {
+            points.remove(i);
+            // Removing `b` can leave `a` and `c` at the same place, and can make the vertex
+            // *before* `a` a retrace in its turn, so back up rather than moving on.
+            points.dedup_by(|a, b| (a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS);
+            i = i.saturating_sub(1).max(1);
+        } else {
+            i += 1;
+        }
+    }
 }
 
 /// The two faces an [`EdgeShape::aside`] leaves and enters through — §10-1 item 4's "ports on the
@@ -5387,7 +5481,24 @@ pub(super) fn align_straight_lanes_with(
                         let tc2 = cross(direction, &nodes[id_index[t2]].center);
                         let d1 = (tc1 - median_of(s1)).abs();
                         let d2 = (tc2 - median_of(s2)).abs();
-                        d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+                        // Compared with a tolerance, not exactly, and that is load-bearing rather
+                        // than defensive. This key's own claim above — "a fan of exactly two
+                        // candidates is always tied here by construction" — is true of the
+                        // arithmetic and *false* of the floating point that evaluates it: the
+                        // midpoint of `264.09999999999997` and `381.4` is `322.75`, from which the
+                        // two are `58.65000000000003` and `58.650000000000006` away. 3e-14px then
+                        // decides which target the whole spine runs through, and which way it
+                        // falls changes with any unrelated change to a coordinate upstream. Found
+                        // on `3a` when §10-8's node sizes moved every box: `MD`'s two-candidate fan
+                        // silently reselected `数式` over `mermaid` and put a bend in a spine
+                        // segment `orthogonal_settings_rules_sample_fan_column_matches_3a_and_
+                        // spine_is_all_zero_bend` pins as straight. Anything a hair's breadth from
+                        // tied is tied, and the deterministic keys below decide it instead.
+                        if (d1 - d2).abs() < EPS {
+                            std::cmp::Ordering::Equal
+                        } else {
+                            d1.partial_cmp(&d2).unwrap_or(std::cmp::Ordering::Equal)
+                        }
                     })
                     .then_with(|| {
                         let tc1 = cross(direction, &nodes[id_index[t1]].center);
@@ -7398,6 +7509,86 @@ mod tests {
         }
     }
 
+    /// [`route_perimeter`] must never draw a line that goes out and comes straight back along
+    /// itself. Two same-width boxes stacked in one column both leave their Right face onto the
+    /// identical `x`, and if each end's own [`safe_ring_exit`] L-shape reaches the ring at the same
+    /// point, the ring leg between them is empty and the two exits meet head-on.
+    ///
+    /// Hand-built coordinates, no fonts and no layout — the state corpus' own `concurrent`
+    /// (`NumLockOn --> NumLockOff`) is the real diagram that produced it, and
+    /// `state_tests::orthogonal_state_edges_leave_no_dangling_fragment` is where that half is
+    /// checked; this is the mechanism on its own, so it stays pinned however the corpus moves.
+    #[test]
+    fn route_perimeter_never_retraces_a_leg_it_just_drew() {
+        let ring = (0.0, 0.0, 200.0, 400.0);
+        // Both ports nearer the ring's bottom than its top, so both L-shapes pick the same
+        // corner and reach the ring at the same point — the case that retraces.
+        let source_port = Point::new(120.0, 300.0);
+        let target_port = Point::new(120.0, 250.0);
+        // Only the two direct runs out to the ring's own right edge are blocked, so both ends fall
+        // to the same near-corner L and land on the identical ring point — exactly `concurrent`'s
+        // geometry, forced here rather than waited for.
+        let blocked =
+            |a: &Point, b: &Point| (a.x - 120.0).abs() < 1e-9 && (b.x - ring.2).abs() < 1e-9;
+        let route = route_perimeter(
+            Side::Right,
+            Side::Right,
+            source_port.clone(),
+            target_port.clone(),
+            ring,
+            &blocked,
+        );
+        for w in route.windows(3) {
+            let (a, b, c) = (&w[0], &w[1], &w[2]);
+            let dot = (b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y);
+            let cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+            assert!(
+                !(dot < -EPS && cross.abs() < EPS),
+                "the route doubles straight back at {b:?}: {route:?}"
+            );
+        }
+        assert_eq!(route.first(), Some(&source_port), "{route:?}");
+        assert_eq!(route.last(), Some(&target_port), "{route:?}");
+        // And it is the *short* route, not merely a non-retracing one: two corners, straight up
+        // the lane both exits share.
+        assert_eq!(route.len(), 4, "{route:?}");
+    }
+
+    /// [`collapse_retraced`] on its own, including the duplicated vertex `route_perimeter` emits
+    /// when `ring_path` has nothing to travel — a retrace with a zero-length leg wedged in the
+    /// middle of it is the shape the corpus actually produced, and a sweep that only looked at
+    /// antiparallel pairs walked straight past it.
+    #[test]
+    fn collapse_retraced_removes_a_doubling_back_even_through_a_duplicated_point() {
+        let mut pts = vec![
+            Point::new(0.0, 100.0),
+            Point::new(8.0, 100.0),
+            Point::new(8.0, 200.0),
+            Point::new(8.0, 200.0),
+            Point::new(8.0, 20.0),
+            Point::new(0.0, 20.0),
+        ];
+        collapse_retraced(&mut pts);
+        assert_eq!(
+            pts,
+            vec![
+                Point::new(0.0, 100.0),
+                Point::new(8.0, 100.0),
+                Point::new(8.0, 20.0),
+                Point::new(0.0, 20.0),
+            ]
+        );
+        // An ordinary right-angle route has nothing to collapse.
+        let mut plain = vec![
+            Point::new(0.0, 0.0),
+            Point::new(50.0, 0.0),
+            Point::new(50.0, 80.0),
+        ];
+        let before = plain.clone();
+        collapse_retraced(&mut plain);
+        assert_eq!(plain, before);
+    }
+
     /// The end-to-end version of the same fix, over all four `Direction`s: a decision node whose
     /// loop-back edge needs the L-shaped fallback at both ends (`raw` seeded with an interior
     /// waypoint that sits *inside* the sibling node on the direct path, so `classify`'s own
@@ -8922,6 +9113,60 @@ mod tests {
         assert!(
             !next.contains_key("S2"),
             "S2 is the median, but the spine clause outranks it: {next:?}"
+        );
+    }
+
+    /// The median-distance key must be a genuine no-op for a two-candidate fan — its own comment
+    /// says so ("both sit equally far from their shared midpoint"), and that is true of the
+    /// arithmetic but not of the floating point that evaluates it.
+    ///
+    /// The coordinates here are the ones `3a` actually produced once §10-8's node sizes moved every
+    /// box: `mermaid` at `264.09999999999997` and `数式` at `381.4` have midpoint `322.75`, from
+    /// which the two are `58.65000000000003` and `58.650000000000006` away. That 3e-14px used to
+    /// decide the whole spine — `MD` picked `数式`, and `MD --> mermaid`, a segment
+    /// `tests::orthogonal_settings_rules_sample_fan_column_matches_3a_and_spine_is_all_zero_bend`
+    /// pins as straight, came out with a bend in it. With the key tied as it is meant to be, the
+    /// documented keys after it decide: both targets continue, so ascending target cross wins and
+    /// the upper one takes the lane.
+    ///
+    /// Hand-built so the exact bit patterns are the test rather than a by-product of a layout that
+    /// could drift away from them.
+    #[test]
+    fn the_median_distance_key_ties_for_a_two_candidate_fan_despite_float_noise() {
+        let mut nodes = vec![
+            node("MD", 0.0, 351.4, 40.0, 30.0),
+            node("MM", 100.0, 264.09999999999997, 40.0, 30.0),
+            node("MA", 100.0, 381.4, 40.0, 30.0),
+            node("RS", 200.0, 300.0, 40.0, 30.0),
+        ];
+        // The midpoint is not representable in a way that leaves both distances equal.
+        let mid = (264.09999999999997_f64 + 381.4) / 2.0;
+        assert_ne!(
+            (264.09999999999997_f64 - mid).abs(),
+            (381.4_f64 - mid).abs(),
+            "the fixture must actually exhibit the noise it exists for"
+        );
+        let node_rank = ranks(&[("MD", 0), ("MM", 1), ("MA", 1), ("RS", 2)]);
+        // Both targets continue on to `RS`, so the "does this keep the chain going" key ties too
+        // and the median key is the only one left before ascending target cross.
+        let candidates = [
+            edge("MD", "MA"),
+            edge("MD", "MM"),
+            edge("MM", "RS"),
+            edge("MA", "RS"),
+        ];
+        let (_, next) = align_straight_lanes(
+            Direction::LeftToRight,
+            &mut nodes,
+            &node_rank,
+            &candidates,
+            &LaneUnits::default(),
+        );
+        assert_eq!(
+            next.get("MD").map(String::as_str),
+            Some("MM"),
+            "a two-candidate fan is tied on the median key, so the smaller target cross takes the \
+             lane — never whichever side the floating-point error happened to fall on: {next:?}"
         );
     }
 

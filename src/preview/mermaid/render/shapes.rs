@@ -48,6 +48,9 @@ use crate::preview::mermaid::layout::intersect::{
     intersect_ellipse, intersect_polygon, intersect_rect,
 };
 use crate::preview::mermaid::layout::Point;
+use crate::preview::mermaid::text_metrics::FONT_SIZE;
+
+use super::labels;
 
 /// mermaid's `flowchart.padding`. Schema default 15 (`config.schema.yaml`).
 pub const PADDING: f64 = 15.0;
@@ -837,6 +840,142 @@ pub fn size(glyph: Glyph, label: Size) -> Size {
         // NOT double the box the way `Shape::Diamond` does.
         Glyph::ChamferedRect => flow_size(Shape::Rect, label),
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// §10-8: the node box under `Routing::Orthogonal`
+// ---------------------------------------------------------------------------------------------
+//
+// `size` above is mermaid's, and every number in it is mermaid's. This section is konoma's own,
+// and none of it is: the design reference (`docs/mermaid-theme/handoff/round5-Konoma-Flowchart-
+// Routing.dc.html`, transcribed as `docs/FEATURE-MERMAID-RENDERER.md` §10-8) fixes a node's box at
+// a declared 36px tall and a multiple of 8px wide, because the router downstream of it is
+// orthogonal: a long flat face along the flow axis is what lets several edges land perpendicular
+// without the eviction rule having to grow the node, and one height for every one-line node makes
+// a straight lane's centre line the same number on every rank.
+//
+// It exists **beside** `size` rather than inside it so that `Routing::Splines` cannot be changed
+// by editing it. Every caller reaches it through `orthogonal_node`, which returns `None` for a
+// glyph N3 puts out of scope, and the splines path is then the one it always was.
+
+/// §10-8 N2 ("左右パディング各 20px"): the blank space a node box keeps on each side of its words.
+pub const ORTHO_PAD_X: f64 = 20.0;
+
+/// §10-8 N1 ("上下パディング各 11px"): the blank space a node box keeps above and below its words.
+/// With [`text_metrics::FONT_SIZE`] this is what makes a one-line node exactly 36px tall.
+pub const ORTHO_PAD_Y: f64 = 11.0;
+
+/// §10-8 N2 ("最低 96px"): the narrowest a node box gets, however short its label.
+pub const ORTHO_MIN_WIDTH: f64 = 96.0;
+
+/// §10-8 N2 ("8px 単位に切り上げ"): the grid every node width is rounded up onto.
+pub const ORTHO_WIDTH_STEP: f64 = 8.0;
+
+/// §10-8 N2 ("上限 240px"): the width past which a label wraps instead of the box growing.
+///
+/// A cap, not a clamp — N2 is explicit that a single unbreakable run wider than this keeps its box
+/// ("折り返し後も超える場合のみ上限を撤廃・切らない・省略記号なし"), because a truncated label is a
+/// diagram that lies and an over-wide one is only ugly.
+pub const ORTHO_MAX_WIDTH: f64 = 240.0;
+
+/// Whether §10-8 N1–N3 sizes a node drawn as `glyph`.
+///
+/// The rule is about **boxes**: a glyph whose outline *is* its bounding rectangle, which is every
+/// shape the design reference actually draws (a flowchart `[...]`/`(...)`, a state box, a state box
+/// with a rule under its title, and the chamfered rectangle a decision node becomes under this
+/// routing — N3 names that one explicitly as in scope).
+///
+/// Everything else keeps mermaid's own [`size`], in two groups and for two different reasons:
+///
+/// * N3's own exclusions — [`Glyph::Choice`], the two `[*]` markers, a fork/join bar, and a
+///   composite-state or subgraph frame — have sizes the design fixes elsewhere (§10-5 S1/S4) or
+///   derives from their contents. `state::spec_of` overrides the first four before this is ever
+///   consulted, and a frame is not a `SpecNode` at all; they are listed in the `matches!` below
+///   only to make the exclusion visible where a reader looks for it.
+/// * A shape with geometry of its own — a circle, a stadium's caps, a hexagon's slants, a
+///   cylinder, a subroutine's frames, a trapezoid — is **not** covered, because §10-8 says nothing
+///   about them and a rule written for a rectangle produces a wrong picture when applied to one:
+///   96×36 turns mermaid's circle into an ellipse. Leaving them on mermaid's formulas keeps the
+///   only description of those proportions that is not a guess (this module's own opening note).
+pub fn orthogonal_covers(glyph: Glyph) -> bool {
+    matches!(
+        glyph,
+        Glyph::Flow(Shape::Rect | Shape::RoundedRect) | Glyph::ChamferedRect | Glyph::TitledBox
+    )
+}
+
+/// §10-8 N3: how much more horizontal padding `glyph` keeps than [`ORTHO_PAD_X`], per side.
+///
+/// Only a chamfered rectangle has any: its corner is cut back by [`CHAMFER`] along both axes, so
+/// the same 20px of blank space measured from the *box* leaves less than 20px of it beside the
+/// words on the line the cut passes through. N3 spells the compensation out — "面取り 6px 分の
+/// 左右パディング +6px".
+fn ortho_extra_pad_x(glyph: Glyph) -> f64 {
+    if glyph == Glyph::ChamferedRect {
+        CHAMFER
+    } else {
+        0.0
+    }
+}
+
+/// §10-8 N1: the height of a box holding `lines` lines of body text.
+///
+/// `14k + 6(k−1) + 22`, written as the padding it is. Equal to `k * labels::ortho_line_pitch() +
+/// 2*ORTHO_PAD_Y - ORTHO_LINE_GAP`, and `orthogonal_box_height_is_the_label_block_plus_padding`
+/// pins the two spellings together so the box a label is given and the block
+/// [`super::svg::emit_text`] centres inside it cannot drift.
+pub fn ortho_height(lines: usize) -> f64 {
+    let k = lines.max(1) as f64;
+    FONT_SIZE as f64 * k + labels::ORTHO_LINE_GAP * (k - 1.0) + ORTHO_PAD_Y * 2.0
+}
+
+/// §10-8 N2: `text_width` grown by `glyph`'s padding, floored at [`ORTHO_MIN_WIDTH`] and rounded up
+/// onto the [`ORTHO_WIDTH_STEP`] grid.
+///
+/// Order matters and is N2's own: pad, then floor, then round. Rounding last is what makes "every
+/// node width is a multiple of 8" true without exception — flooring after it could hand back a 96
+/// that had never been through the grid (96 is on it, but a future minimum need not be), and
+/// rounding a floored value can only ever leave it on the grid or above it.
+pub fn ortho_width(glyph: Glyph, text_width: f64) -> f64 {
+    let padded = text_width + (ORTHO_PAD_X + ortho_extra_pad_x(glyph)) * 2.0;
+    let floored = padded.max(ORTHO_MIN_WIDTH);
+    (floored / ORTHO_WIDTH_STEP).ceil() * ORTHO_WIDTH_STEP
+}
+
+/// The label and box §10-8 gives a node drawn as `glyph` whose source text is `text`, or `None`
+/// when N3 leaves `glyph` on mermaid's own [`size`].
+///
+/// This is the single entry point both languages' `spec_of` calls — the flowchart's in
+/// `super::spec_of`, the state diagram's in `super::state::spec_of` — so N5 ("複合状態の内部ノードにも
+/// N1〜N4 をそのまま適用") is true by construction rather than by a second implementation that has
+/// to be kept in step: a state nested three composites deep reaches exactly this function, with
+/// nothing about its depth in scope.
+///
+/// The label comes back **with** the size because N2's cap can change it: a label wider than the
+/// cap is re-wrapped ([`labels::Label::measure_wrapped`]), and the box is then sized from the
+/// wrapped lines. Returning the pair is what keeps the box and the words in it the same
+/// measurement — handing back only a size would leave the caller to re-measure and hope.
+pub fn orthogonal_node(glyph: Glyph, text: &str) -> Option<(labels::Label, Size)> {
+    if !orthogonal_covers(glyph) {
+        return None;
+    }
+    let budget = ORTHO_MAX_WIDTH - (ORTHO_PAD_X + ortho_extra_pad_x(glyph)) * 2.0;
+    let label = labels::Label::measure_wrapped(text, budget, FONT_SIZE as f64);
+    let size = orthogonal_label_box(glyph, &label);
+    Some((label, size))
+}
+
+/// §10-8 N1 and N2 applied to a label that has already been measured and wrapped — the
+/// **label-derived** half of N4's `max(ラベル由来, ポート由来)`.
+///
+/// Split out of [`orthogonal_node`] so that a check downstream of the layout can ask the question
+/// N4 actually poses — "is this box the label's own, or has the eviction rule grown it?" — from
+/// the label the node ended up carrying, without re-deriving N1/N2 a second time somewhere else.
+pub fn orthogonal_label_box(glyph: Glyph, label: &labels::Label) -> Size {
+    Size::new(
+        ortho_width(glyph, label.width),
+        ortho_height(label.lines.len()),
+    )
 }
 
 /// The outline of `glyph` inside a bounding box of `size`.

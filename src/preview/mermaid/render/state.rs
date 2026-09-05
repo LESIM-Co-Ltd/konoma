@@ -71,7 +71,7 @@ pub const NOTE_GAP: f64 = 24.0;
 /// [`Glyph::ChamferedRect`] rather than [`Glyph::Choice`], for the same reason the flowchart's
 /// own `spec_of` swaps a decision `Shape::Diamond` for one: a diamond has no flat run for
 /// [`super::orthogonal::evict`] to spread more than one port along, only a point at each vertex.
-const STATE_CHOICE_ORTHO_SIZE: f64 = 28.0;
+pub(super) const STATE_CHOICE_ORTHO_SIZE: f64 = 28.0;
 
 /// §10-5 S4: a fork/join bar's thickness under orthogonal routing — thinner than splines' own
 /// [`shapes::BAR_THICKNESS`] (10px), which stays exactly as `forkJoin.ts` draws it. The bar's
@@ -169,13 +169,13 @@ pub fn spec_of(diagram: &StateDiagram, routing: Routing) -> GraphSpec {
             continue;
         }
         let glyph = glyph_of(s.kind, s.titled, horizontal_bars);
-        let label = Label::measure(&s.label);
         // §10-5 S4: under orthogonal routing a choice is a fixed 28x28 chamfered square, not the
         // 40px diamond splines draws — see `STATE_CHOICE_ORTHO_SIZE`'s own doc. A choice draws no
         // label either way (`glyph_of`'s own doc), so the override does not need the label size.
-        let (glyph, size) = if routing == Routing::Orthogonal && s.kind == Kind::Choice {
+        let (glyph, label, size) = if routing == Routing::Orthogonal && s.kind == Kind::Choice {
             (
                 Glyph::ChamferedRect,
+                Label::measure(&s.label),
                 Size::new(STATE_CHOICE_ORTHO_SIZE, STATE_CHOICE_ORTHO_SIZE),
             )
         } else if routing == Routing::Orthogonal && matches!(s.kind, Kind::Fork | Kind::Join) {
@@ -193,17 +193,26 @@ pub fn spec_of(diagram: &StateDiagram, routing: Routing) -> GraphSpec {
             let horizontal = matches!(glyph, Glyph::Bar { horizontal: true });
             (
                 glyph,
+                Label::measure(&s.label),
                 if horizontal {
                     Size::new(min_length, BAR_THICKNESS_ORTHO)
                 } else {
                     Size::new(BAR_THICKNESS_ORTHO, min_length)
                 },
             )
+        } else if let Some((label, size)) = (routing == Routing::Orthogonal)
+            .then(|| shapes::orthogonal_node(glyph, &s.label))
+            .flatten()
+        {
+            // §10-8 N1–N5: an ordinary state box — nested in a composite or not, N5 draws no
+            // distinction — is 36px tall on an 8px width grid, exactly as a flowchart node is.
+            // The three glyphs above have their own sizes (N3's own exclusions) and never reach
+            // here; `orthogonal_node` returns `None` for a note, which is not laid out at all.
+            (glyph, label, size)
         } else {
-            (
-                glyph,
-                shapes::size(glyph, shapes::Size::new(label.width, label.height)),
-            )
+            let label = Label::measure(&s.label);
+            let size = shapes::size(glyph, shapes::Size::new(label.width, label.height));
+            (glyph, label, size)
         };
         nodes.push(SpecNode {
             id: s.id.clone(),

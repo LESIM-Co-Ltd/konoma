@@ -930,6 +930,7 @@ fn synthetic_panel_diagram() -> Diagram {
         lines: text.split('\n').map(str::to_string).collect(),
         width: w,
         height: text.split('\n').count() as f64 * labels::line_height(),
+        line_pitch: labels::line_height(),
         font_size: crate::preview::mermaid::text_metrics::FONT_SIZE as f64,
     };
 

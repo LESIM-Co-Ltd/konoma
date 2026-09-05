@@ -1660,6 +1660,7 @@ fn every_shape_holds_the_label_it_was_sized_for() {
                 lines: vec!["x".to_string()],
                 width: L.w,
                 height: L.h,
+                line_pitch: L.h,
                 font_size: crate::preview::mermaid::text_metrics::FONT_SIZE as f64,
             },
             panel: None,
@@ -2396,6 +2397,7 @@ fn synthetic_diagram() -> Diagram {
         lines: text.split('\n').map(str::to_string).collect(),
         width: w,
         height: text.split('\n').count() as f64 * super::labels::line_height(),
+        line_pitch: super::labels::line_height(),
         font_size: crate::preview::mermaid::text_metrics::FONT_SIZE as f64,
     };
     let shapes_in_order = [
@@ -5343,14 +5345,26 @@ fn decision_node_is_chamfered_under_orthogonal_and_a_diamond_under_splines() {
         "a chamfered rectangle has eight vertices: {polygon:?}"
     );
 
-    // Sized like an ordinary rectangle, not doubled the way a diamond is (§10-1: "菱形の2倍拡大を
-    // しない").
-    let rect_size = shapes::size(
-        Glyph::Flow(Shape::Rect),
+    // Sized as §10-8 sizes a box, not doubled the way a diamond is (§10-1: "菱形の2倍拡大を
+    // しない"). The numbers moved when §10-8 landed (2026-09-05) — the box was `flow_size(Rect)`
+    // of the label before, and is N1/N2's own 36px-tall, 8px-grid box now — but the *rule* this
+    // test states did not, so it is restated against the rule rather than against either set of
+    // numbers: the box is exactly what §10-8 asks for, and it is nowhere near the square a
+    // diamond's `w + h` side would make.
+    let (_, spec_size) = shapes::orthogonal_node(Glyph::ChamferedRect, "cond")
+        .expect("a chamfered rectangle is in §10-8 N3's scope");
+    assert_eq!(b_ortho.size.w, spec_size.w);
+    assert_eq!(b_ortho.size.h, spec_size.h);
+    let diamond = shapes::size(
+        Glyph::Flow(Shape::Diamond),
         Size::new(b_ortho.label.width, b_ortho.label.height),
     );
-    assert_eq!(b_ortho.size.w, rect_size.w);
-    assert_eq!(b_ortho.size.h, rect_size.h);
+    assert!(
+        b_ortho.size.h < diamond.h,
+        "a chamfered rectangle must not be doubled into a diamond's square: \
+         {:?} vs {diamond:?}",
+        b_ortho.size
+    );
 
     // Reaches the actual SVG, not just the geometry model.
     let svg = render_flow(src, "dark", "basis", "konoma-orthogonal").expect("must render");
@@ -5990,10 +6004,16 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
         "Z's width must grow to exactly 2 * (4*PORT_SPACING + PORT_CLEARANCE) = 144px — item 12's \
          own symmetric grow around the median-anchored, two-sided merge item 10 asks for"
     );
-    // Height is untouched: nothing asked Z's Left/Right faces to grow at all any more.
+    // Height is untouched: nothing asked Z's Left/Right faces to grow at all any more, so it is
+    // still exactly the height §10-8 N1 gives a one-line label — 36px since 2026-09-05, and the
+    // splines box's own 45.4px before that. Stated against N1's own function rather than against
+    // either number so that what this line pins stays "nothing grew it" (N4's own "拡大はポートが
+    // 乗る軸のみ") rather than a height that has nothing to do with this fixture.
+    let (_, z_label_box) =
+        shapes::orthogonal_node(z_ortho.shape, "Z").expect("Z is a plain rectangle");
     assert_eq!(
-        z_ortho.size.h, z_splines.size.h,
-        "no face asked Z's height to grow, so it must not have"
+        z_ortho.size.h, z_label_box.h,
+        "no face asked Z's height to grow, so it must still be its label-derived height"
     );
 
     let (z_left, z_top, _, _) = z_ortho.bounds();
@@ -6149,15 +6169,43 @@ fn orthogonal_one_sided_merge_grows_to_fit_both_siblings_on_the_same_side() {
         "Z is reached from two ranks, so this is not a pure merge and A --> Z — the only \
          candidate in its own rank window — keeps the lane, leaving B and C on one side"
     );
+    // The rule is "both non-aligned claims sit on the SAME side of the lane", which this fixture
+    // used to state through `Z`'s grown width alone (`2*(2*PORT_SPACING+PORT_CLEARANCE) = 80px`,
+    // against splines' natural ~68.55px). §10-8 N2's own 96px minimum (2026-09-05) is wider than
+    // that 80px, so the width can no longer show it — N4 takes the max and the label's own box
+    // wins. Stated on the ports themselves instead, which is what item 12 is actually about and
+    // what the old width was only ever a proxy for.
+    let port_dx = |from: &str| {
+        let e = ortho
+            .edges
+            .iter()
+            .find(|e| e.from == from && e.to == "Z")
+            .unwrap_or_else(|| panic!("{from} --> Z must exist"));
+        e.points.last().expect("a routed edge has points").x - z_ortho.center.x
+    };
     assert_eq!(
-        z_ortho.size.w, 80.0,
-        "B and C both genuinely sit right of Z, so Z must grow to 2*(2*PORT_SPACING+PORT_CLEARANCE) \
-         = 80px to fit both on the same side: {:?} vs splines' natural {:?}",
-        z_ortho.size, z_splines.size
+        (port_dx("A"), port_dx("B"), port_dx("C")),
+        (
+            0.0,
+            orthogonal::PORT_SPACING,
+            2.0 * orthogonal::PORT_SPACING
+        ),
+        "A keeps the lane and B and C both take ports on the SAME (right) side of it — never one \
+         either side of the centre"
     );
+    let needed = 2.0 * (2.0 * orthogonal::PORT_SPACING + orthogonal::PORT_CLEARANCE);
+    assert!(
+        z_ortho.size.w >= needed,
+        "Z's Top face must be wide enough for the outermost of those ports to keep its corner \
+         clearance: {:?} vs {needed} needed, splines' natural {:?}",
+        z_ortho.size,
+        z_splines.size
+    );
+    let (_, z_label_box) =
+        shapes::orthogonal_node(z_ortho.shape, "Z").expect("Z is a plain rectangle");
     assert_eq!(
-        z_ortho.size.h, z_splines.size.h,
-        "no face asked Z's height to grow, so it must not have"
+        z_ortho.size.h, z_label_box.h,
+        "no face asked Z's height to grow, so it must still be its label-derived height"
     );
 }
 
@@ -6742,7 +6790,21 @@ fn orthogonal_shared_merge_target_face_one_aligned_one_bends_twice() {
     // §10-3 item 4's own column-gap routing for an edge that skips a populated rank). `B->D` no
     // longer has a "bend row" to check at all — it is a straight line now (the assertion above
     // already pins its only two points). Dumped and confirmed by hand, not assumed.
-    let cd_expected_row = 274.2;
+    //
+    // The absolute number moved with §10-8 (2026-09-05): every box in this fixture is 36px tall
+    // now instead of 45.4px, so every rank below the first sits higher — `274.2` became `246.0`,
+    // a pure consequence of the node heights and not of any routing change. The *rule* is stated
+    // first and structurally, so that a future size change re-derives the number rather than
+    // hiding a real move: the bend must fall in the clear band between `B`'s own rank and `D`.
+    let (_, b_top, _, b_bottom) = d.node("B").expect("B must exist").bounds();
+    let (_, d_top, _, _) = d_node.bounds();
+    assert!(
+        cd.points[1].y > b_bottom && cd.points[1].y < d_top,
+        "C->D's bend must land in the clear band between B's rank and D: {:?} vs B {b_top}..\
+         {b_bottom}, D top {d_top}",
+        cd.points
+    );
+    let cd_expected_row = 246.0;
     assert!(
         (cd.points[1].y - cd_expected_row).abs() < 1e-6,
         "C->D's bend row: {:?} vs {cd_expected_row}",
@@ -8960,9 +9022,16 @@ fn orthogonal_only_corpus() -> Vec<(&'static str, &'static str)> {
             // ports), with every node a member of the same subgraph frame — the growth retry
             // (`lay_out_spec`'s own loop) re-lays the whole diagram out afterward, so the cluster
             // invariants have to hold against the *grown*, not the original, geometry.
+            // Seven sources, not the five this fixture was written with: §10-8 N2's own 96px
+            // minimum width (2026-09-05) is wider than the `2*(2*PORT_SPACING + PORT_CLEARANCE)
+            // = 80px` five merge ports need, so five no longer force any growth at all and the
+            // fixture would quietly stop exercising the thing it exists for. Seven ask for
+            // `2*(3*PORT_SPACING + PORT_CLEARANCE) = 112px`, past the minimum, and
+            // `orthogonal_eviction_growth_inside_a_subgraph_still_fits_the_frame` asserts the
+            // growth actually happens rather than trusting the count.
             "orthogonal-subgraph-growth",
             "flowchart TD\n  subgraph one [Group]\n    W1 --> T\n    W2 --> T\n    W3 --> T\n    \
-             W4 --> T\n    W5 --> T\n  end\n  T --> X",
+             W4 --> T\n    W5 --> T\n    W6 --> T\n    W7 --> T\n  end\n  T --> X",
         ),
         (
             // Finding 4: a long title forces the frame `one` wider/taller than its one small
@@ -9148,6 +9217,28 @@ fn orthogonal_design_reference_corpus() -> Vec<(&'static str, &'static str)> {
             // `zz-design-2c-browser.png`'s own source: `2b`'s identical graph laid out `TB`
             // instead of `LR` — the axis flip is the point (§10-4's own "2b/2c" pair), so keeping
             // both here catches anything that only shows up under one `direction`.
+            // §10-8's own 5b artboard, made a diagram: the four worked examples side by side, so
+            // the sizing rules are visible in a rendered picture the same way 2a/2b/2c make the
+            // routing rules visible. 「表」 is the 96px minimum, 「ブロックモデル」 the 144px
+            // text-derived width, 「合流先」 the four-port face N4 grows, and 「ルールに一致?」 the
+            // decision node with the chamfer's own 6px a side. `LR` puts the merge's four ports on
+            // 「合流先」's left face, which is the face 5b draws them on.
+            //
+            // In this list rather than in `orthogonal_only_corpus` for exactly the reason that
+            // list's own doc gives: this is a picture the design reference is checked against, and
+            // it wants the whole corpus-wide invariant suite run over it on every test run.
+            "zz-design-5b",
+            r#"flowchart LR
+  TB[表] --> MD[ブロックモデル]
+  MD --> R{ルールに一致?}
+  R -->|一致| A[あ]
+  R -->|不一致| B[い]
+  A --> Z[合流先]
+  B --> Z
+  C[う] --> Z
+  D[え] --> Z"#,
+        ),
+        (
             "zz-design-2c",
             r#"flowchart TB
   subgraph C[クライアント]
@@ -9365,10 +9456,11 @@ fn orthogonal_eviction_growth_inside_a_subgraph_still_fits_the_frame() {
         .1;
     let d = laid_out_flow(src, "basis", "konoma-orthogonal");
     let t = d.node("T").expect("T must exist");
-    let label_only = shapes::size(
-        Glyph::Flow(Shape::Rect),
-        Size::new(t.label.width, t.label.height),
-    );
+    // §10-8 N4's own label-derived half, since 2026-09-05 — `shapes::size(Flow(Rect), …)` before
+    // that. The rule this test pins is "the ports grew it, and only along their own axis", which
+    // is a statement about the *difference* from the label-derived box, so it is stated against
+    // whatever that box currently is rather than against the numbers it once produced.
+    let label_only = shapes::orthogonal_label_box(t.shape, &t.label);
     assert!(
         t.size.w > label_only.w + 1.0,
         "T must actually grow past its label-only width to fit its five merge ports on its Top \
@@ -9747,11 +9839,40 @@ fn orthogonal_self_loop_does_not_consume_a_perimeter_lane() {
         .iter()
         .find(|e| e.from == "C" && e.to == "A")
         .expect("C->A must exist");
-    assert_eq!(
-        ca_with.points, ca_without.points,
-        "C->A's own route must be byte-identical whether or not A also carries a self-loop \
-         (the self-loop must never consume a perimeter lane slot): with={:?} without={:?}",
-        ca_with.points, ca_without.points
+    // The rule is about the **lane**: `perimeter_lanes` hands out ring offsets, and a self-loop
+    // must never take one, so the back edge's ring leg has to sit at exactly the same coordinate
+    // either way. That is asserted directly.
+    //
+    // It used to be asserted through the whole route being byte-identical, which was a proxy and
+    // stopped being a true one when §10-8's node sizes landed (2026-09-05): with `A` a full 96px
+    // wide, `C -> A` can reach `A`'s Right face centre when nothing else is on it, and a flowchart
+    // self-loop **is** something else on it (`route_flowchart`'s own `fixed_self_loops` is `false`
+    // for a flowchart, so its two ports are ordinary claims on `evict`'s grid — only a state
+    // diagram's self-transition gets the dedicated §10-5 S3 pair). So the back edge legitimately
+    // enters a different *face* when the loop is there, while riding the identical ring lane. The
+    // ring leg is the thing `perimeter_lanes` decides and the thing this test is named for.
+    let ring_leg = |e: &super::PlacedEdge| {
+        assert!(
+            e.points.len() >= 3,
+            "C->A rides the ring, so it has a leg between its two exits: {:?}",
+            e.points
+        );
+        e.points[1].x
+    };
+    assert!(
+        (ring_leg(ca_with) - ring_leg(ca_without)).abs() < 1e-6,
+        "C->A's own ring lane must be the same whether or not A also carries a self-loop (the \
+         self-loop must never consume a perimeter lane slot): with={:?} without={:?}",
+        ca_with.points,
+        ca_without.points
+    );
+    // And the lane is a real one on both sides — a ring leg that had collapsed onto the node's own
+    // face would compare equal to itself and say nothing.
+    let (_, _, a_right, _) = with_loop.node("A").expect("A must exist").bounds();
+    assert!(
+        ring_leg(ca_with) > a_right,
+        "C->A's ring leg must run outside A, not along its face: {:?}",
+        ca_with.points
     );
 }
 
@@ -11144,9 +11265,11 @@ fn orthogonal_design_2b_2c_spine_runs_straight_through_the_sandbox() {
     if !text_metrics::fonts_available() {
         return;
     }
+    // `2b`/`2c` by name: `2a` is a different graph, and `5b` (§10-8's own sizing artboard) is a
+    // third — this test is about one specific spine in one specific pair of pictures.
     for (name, src) in orthogonal_design_reference_corpus()
         .into_iter()
-        .filter(|(n, _)| *n != "zz-design-2a")
+        .filter(|(n, _)| *n == "zz-design-2b" || *n == "zz-design-2c")
     {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
         for (from, to) in [("API", "Q"), ("Q", "W"), ("W", "SB"), ("SB", "GIT")] {
@@ -11610,9 +11733,10 @@ fn konoma_orthogonal_draws_the_design_reference_look() {
             .lines()
             .filter(|l| l.starts_with("<rect") && l.contains("stroke=\"#484f58\""))
             .count();
-        assert!(
+        assert_eq!(
             frames > 0,
-            "{name}: every design-reference source has at least one subgraph — none was drawn"
+            src.contains("subgraph"),
+            "{name}: a source with a subgraph must draw a frame, and one without must not"
         );
 
         // 3. Nodes: `#161b22` (or a tint of the class colour), rx 3, 1.5px outline.
@@ -11644,9 +11768,11 @@ fn konoma_orthogonal_draws_the_design_reference_look() {
                 "{name}: an edge label must be drawn at the reference's 11px: {svg}"
             );
         }
-        assert!(
+        assert_eq!(
             svg.contains("font-size=\"12\""),
-            "{name}: a subgraph title must be drawn at 12px: {svg}"
+            src.contains("subgraph"),
+            "{name}: a subgraph title is drawn at 12px, and a source with no subgraph draws none: \
+             {svg}"
         );
 
         // 5. "辺・矢尻・ラベル文字を同色で揃える": every edge's arrow head is filled with the
@@ -11703,7 +11829,9 @@ fn konoma_orthogonal_draws_the_design_reference_look() {
             );
             checked += 1;
         }
-        if !src.contains("linkStyle") {
+        // Only a source that actually declares a class can have a class-coloured edge — `5b` is
+        // §10-8's sizing artboard and is deliberately monochrome, like the artboard it comes from.
+        if !src.contains("linkStyle") && src.contains("classDef") {
             assert!(
                 checked > 0,
                 "{name}: no class-coloured edge was checked — the comparison is vacuous"
@@ -12819,4 +12947,571 @@ fn rank_only_edges_hold_their_ranks_and_build_no_dummy_chain() {
         rank(&lifted, "Z"),
         rank(&lifted, "A")
     );
+}
+
+// =============================================================================================
+// §10-8: node sizing under `konoma-orthogonal`
+// =============================================================================================
+//
+// `docs/FEATURE-MERMAID-RENDERER.md` §10-8 (original: `docs/mermaid-theme/handoff/round5-Konoma-
+// Flowchart-Routing.dc.html`, sections 5a and 5b). The 5b artboard is a set of worked examples
+// drawn at 100%, which is exactly a set of assertions, so it is transcribed as one below and the
+// rules it is drawn from are stated separately over the corpus.
+
+/// The four worked examples 5b draws at 100%, each to the exact pixel.
+///
+/// These are the acceptance test for N1 and N2 and are written from the artboard's own numbers,
+/// not from what the implementation produces: 「表」's box is `<rect width="96" height="36">`,
+/// 「ブロックモデル」's is `144x36` (annotated "7 字 = 98px＋40px = 138px → 144"), and the decision
+/// node's polygon spans `x=24..168` by `y=330..366` — 144x36 again, chamfer included.
+///
+/// The fourth (a left face with four ports, `max(36, 3x16+16) = 64`) is N4 rather than N1/N2, so
+/// it is asserted through a real routed diagram in
+/// [`orthogonal_five_b_merge_target_grows_to_its_four_ports`] instead of through `orthogonal_node`,
+/// which only ever answers the label-derived half.
+#[test]
+fn orthogonal_node_reproduces_the_five_b_worked_examples() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let box_of = |glyph, text: &str| {
+        shapes::orthogonal_node(glyph, text)
+            .unwrap_or_else(|| panic!("{text}: {glyph:?} is in §10-8 N3's scope"))
+            .1
+    };
+
+    // 「表」: one CJK character, 14px of text. 14 + 40 = 54, floored at the 96px minimum.
+    assert_eq!(
+        box_of(Glyph::Flow(Shape::Rect), "表"),
+        Size::new(96.0, 36.0)
+    );
+
+    // 「ブロックモデル」: seven CJK characters, 98px of text. 98 + 40 = 138, rounded up to 144.
+    assert_eq!(
+        text_metrics::measure("ブロックモデル", 14.0) as f64,
+        98.0,
+        "5b's own annotation — the artboard's arithmetic starts from this measurement"
+    );
+    assert_eq!(
+        box_of(Glyph::Flow(Shape::Rect), "ブロックモデル"),
+        Size::new(144.0, 36.0)
+    );
+
+    // 「ルールに一致?」 as a decision node: 91.79px of text, +40 padding, +12 for the two 6px
+    // chamfers = 143.79, rounded up to 144 — the polygon 5b draws spans exactly that.
+    assert_eq!(
+        box_of(Glyph::ChamferedRect, "ルールに一致?"),
+        Size::new(144.0, 36.0)
+    );
+}
+
+/// 5b's third example, which is N4 rather than N1/N2 and therefore only observable on a routed
+/// diagram: a merge target whose face carries four ports grows along **that face's axis only**,
+/// by `(n-1) * PORT_SPACING + 2 * PORT_CLEARANCE`, and stays centred on its own middle.
+///
+/// **Where konoma and 5b's drawing differ, and why the difference is not this rule breaking.** 5b
+/// draws the four ports centred on the face — `±8`, `±24` — which makes the box `3*16 + 16 = 64`
+/// tall. konoma puts one of the four *on* the centre line, because §10-3 item 12 anchors a merge's
+/// own trunk claim at its natural sort position and §10-3 item 10 promotes a median source to be
+/// that trunk: `合流先` is reached by a straight, zero-bend edge, which is only possible if that
+/// edge's port is the face's own centre. The remaining three then sit at `-16`, `+16`, `+32`, and
+/// N4's own arithmetic — the outermost port plus its 8px corner clearance, doubled for symmetry —
+/// gives 80 rather than 64. The formula is the same formula; 5b's *64* is the value it takes on a
+/// face with no trunk on it, which this test pins separately just below. Straightening the spine
+/// is what §10-0 ranks first, so the centred trunk port stays and 5b's centred four is recorded
+/// here as the arithmetic it is rather than forced onto a diagram that would then bend.
+///
+/// `LR` so the four merges land on the target's **left** face, which is the face 5b draws them on
+/// — under §10-3 item 3 a merge always rides the flow-axis face, so the direction is what puts
+/// them there rather than a special case.
+#[test]
+fn orthogonal_five_b_merge_target_grows_to_its_four_ports() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    // 5b's own arithmetic, on the centred four-port face it draws: "16px×3＋両端 8px = 64px".
+    assert_eq!(
+        3.0 * orthogonal::PORT_SPACING + 2.0 * orthogonal::PORT_CLEARANCE,
+        64.0
+    );
+    let d = laid_out_flow(
+        "flowchart LR\n  A[あ] --> Z[合流先]\n  B[い] --> Z\n  C[う] --> Z\n  D[え] --> Z",
+        "basis",
+        "konoma-orthogonal",
+    );
+    let z = d.node("Z").expect("Z must exist");
+    let (left, top, _, bottom) = z.bounds();
+    let mut ys: Vec<f64> = d
+        .edges
+        .iter()
+        .filter(|e| e.to == "Z")
+        .map(|e| {
+            let p = e.points.last().expect("routed");
+            assert!(
+                (p.x - (left - orthogonal::PORT_INSET)).abs() < 1e-6,
+                "5b puts all four ports on Z's own left face: {p:?} vs left {left}"
+            );
+            p.y
+        })
+        .collect();
+    assert_eq!(ys.len(), 4, "all four sources must reach Z");
+    ys.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+
+    // 16px pitch, and 8px of corner clearance at each end — N4's two terms, read off the picture.
+    for w in ys.windows(2) {
+        assert_eq!(
+            w[1] - w[0],
+            orthogonal::PORT_SPACING,
+            "the four ports sit on the 16px grid: {ys:?}"
+        );
+    }
+    let reach = (ys[3] - z.center.y).abs().max((ys[0] - z.center.y).abs());
+    assert_eq!(
+        z.size.h,
+        2.0 * (reach + orthogonal::PORT_CLEARANCE),
+        "N4: the face is the outermost port plus its 8px clearance, doubled — {ys:?}"
+    );
+    assert!(
+        ys[0] - top >= orthogonal::PORT_CLEARANCE - 1e-6
+            && bottom - ys[3] >= orthogonal::PORT_CLEARANCE - 1e-6,
+        "no port may sit closer than 8px to its face's own corner: {ys:?} in {top}..{bottom}"
+    );
+
+    let (_, label_box) =
+        shapes::orthogonal_node(z.shape, "合流先").expect("a plain rectangle is in scope");
+    assert!(
+        z.size.h > label_box.h,
+        "the ports are what grew it: {:?} vs {label_box:?}",
+        z.size
+    );
+    assert_eq!(
+        z.size.w, label_box.w,
+        "N4: growth is along the ports' own axis only — the width stays label-derived"
+    );
+    assert!(
+        ((top + bottom) / 2.0 - z.center.y).abs() < 1e-6,
+        "N4: the grown box stays symmetric about its own centre line"
+    );
+}
+
+/// N2's 96px floor, and the exact width the floor gives way at.
+///
+/// Both sides of the boundary, so neither "always 96" nor "never 96" can pass: 56px of text pads
+/// to exactly 96 and is the widest label the minimum still covers, and a hair more rounds up to
+/// the next 8px step.
+#[test]
+fn orthogonal_width_floors_at_ninety_six_then_follows_the_text() {
+    let w = |t: f64| shapes::ortho_width(Glyph::Flow(Shape::Rect), t);
+    assert_eq!(w(0.0), 96.0, "an empty label still gets N2's minimum");
+    assert_eq!(w(20.0), 96.0);
+    assert_eq!(w(56.0), 96.0, "56 + 40 = 96 exactly — still the minimum");
+    assert_eq!(w(56.5), 104.0, "past the minimum, the 8px grid takes over");
+    assert_eq!(w(58.0), 104.0, "58 + 40 = 98 -> 104");
+}
+
+/// N2's "8px 単位に切り上げ", at every residue class — a rounding that only worked for multiples of
+/// 8 would pass a single-value check.
+#[test]
+fn orthogonal_width_rounds_up_onto_the_eight_pixel_grid() {
+    for text in [
+        58.0, 60.0, 63.9, 64.0, 64.1, 71.9, 72.0, 100.0, 137.5, 160.0,
+    ] {
+        let w = shapes::ortho_width(Glyph::Flow(Shape::Rect), text);
+        assert_eq!(
+            w % shapes::ORTHO_WIDTH_STEP,
+            0.0,
+            "text {text} -> {w} must land on the 8px grid"
+        );
+        assert!(
+            w >= text + 2.0 * shapes::ORTHO_PAD_X,
+            "text {text} -> {w} must still hold the words plus 20px a side"
+        );
+        assert!(
+            w < text + 2.0 * shapes::ORTHO_PAD_X + shapes::ORTHO_WIDTH_STEP
+                || w == shapes::ORTHO_MIN_WIDTH,
+            "text {text} -> {w} must round UP, not up-and-then-some"
+        );
+    }
+    // Exactly on the grid already: rounding up must be the identity, not one more step.
+    assert_eq!(
+        shapes::ortho_width(Glyph::Flow(Shape::Rect), 104.0 - 40.0),
+        104.0
+    );
+}
+
+/// N3's chamfer allowance: the same words in a decision node get 6px more padding a side than in
+/// a plain rectangle — 12px in all, before the 8px rounding.
+#[test]
+fn orthogonal_decision_node_pays_six_more_pixels_a_side_for_its_chamfer() {
+    // Chosen so neither value is on the 96px floor and the 12px difference cannot be swallowed by
+    // the 8px rounding (both land on their own step).
+    let text = 108.0;
+    let rect = shapes::ortho_width(Glyph::Flow(Shape::Rect), text);
+    let decision = shapes::ortho_width(Glyph::ChamferedRect, text);
+    assert_eq!(rect, 152.0, "108 + 40 = 148 -> 152");
+    assert_eq!(
+        decision, 160.0,
+        "108 + 40 + 12 = 160, already on the grid — 8px more box for the two 6px chamfers"
+    );
+    assert_eq!(
+        decision - rect,
+        8.0,
+        "the chamfer allowance survives the rounding rather than being rounded away"
+    );
+}
+
+/// N1's height for k lines, `14k + 6(k-1) + 22`, and the identity the drawing path depends on: the
+/// box is exactly the label block [`super::svg::emit_text`] centres inside it plus 2 x
+/// [`shapes::ORTHO_PAD_Y`]. The doc on [`shapes::ortho_height`] names this test for that reason —
+/// if the two spellings ever disagree, the words drift off centre in every multi-line node.
+#[test]
+fn orthogonal_box_height_is_the_label_block_plus_padding() {
+    for (k, expected) in [(1, 36.0), (2, 56.0), (3, 76.0), (4, 96.0)] {
+        assert_eq!(shapes::ortho_height(k), expected, "{k} lines");
+        let block = k as f64 * super::labels::ortho_line_pitch();
+        assert_eq!(
+            shapes::ortho_height(k),
+            block + 2.0 * shapes::ORTHO_PAD_Y - super::labels::ORTHO_LINE_GAP,
+            "{k} lines: the box must be the drawn block plus N1's own padding"
+        );
+    }
+    assert_eq!(
+        super::labels::ortho_line_pitch(),
+        20.0,
+        "N1: 14px of text and a 6px gap"
+    );
+}
+
+/// N2's cap: a label too wide for 240px wraps at a word boundary and the box grows *down* instead
+/// of out — two lines, `14*2 + 6 + 22 = 56` tall.
+#[test]
+fn orthogonal_label_wider_than_the_cap_wraps_instead_of_widening() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let text = "resolve the preview kind and hand it to the right renderer";
+    let one_line = text_metrics::measure(text, 14.0) as f64;
+    assert!(
+        one_line + 2.0 * shapes::ORTHO_PAD_X > shapes::ORTHO_MAX_WIDTH,
+        "the fixture must actually be over the cap: {one_line}px of text"
+    );
+    let (label, size) =
+        shapes::orthogonal_node(Glyph::Flow(Shape::Rect), text).expect("a rectangle is in scope");
+    assert!(
+        label.lines.len() >= 2,
+        "it must wrap, not overflow: {:?}",
+        label.lines
+    );
+    assert_eq!(
+        size.h,
+        shapes::ortho_height(label.lines.len()),
+        "N1's height for however many lines it took"
+    );
+    assert!(
+        size.w <= shapes::ORTHO_MAX_WIDTH,
+        "wrapping must bring it back under the cap: {size:?}"
+    );
+    // Nothing is thrown away and nothing is invented — the words come back in order, whole.
+    assert_eq!(
+        label.lines.join(" "),
+        text,
+        "N2 forbids truncation and an ellipsis alike"
+    );
+    for line in &label.lines {
+        assert!(
+            !line.contains('…') && !line.ends_with("..."),
+            "no ellipsis: {line:?}"
+        );
+    }
+}
+
+/// N2's exact wrap: a label that is *just* over the cap comes back as two lines and 56px tall,
+/// pinning the height formula for `k = 2` on a real label rather than on `ortho_height` alone.
+#[test]
+fn orthogonal_two_line_wrap_is_fifty_six_pixels_tall() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    // 16 CJK characters = 224px of text; 224 + 40 = 264 > 240, and any 15 of them (210 + 40 = 250)
+    // would still be over, so this genuinely exercises the per-character CJK rule.
+    let text = "設定のルールに従って描画方法を決める";
+    let (label, size) =
+        shapes::orthogonal_node(Glyph::Flow(Shape::Rect), text).expect("a rectangle is in scope");
+    assert_eq!(label.lines.len(), 2, "two lines: {:?}", label.lines);
+    assert_eq!(size.h, 56.0, "14*2 + 6 + 22 = 56");
+    assert_eq!(
+        label.lines.concat(),
+        text,
+        "CJK wraps between characters, and no character is lost or added"
+    );
+    assert!(
+        label.lines.iter().all(|l| l.chars().count() > 1),
+        "per character does not mean one character per line: {:?}",
+        label.lines
+    );
+}
+
+/// N2's own escape hatch: a single unbreakable run wider than the cap keeps its box rather than
+/// being cut. "折り返し後も超える場合のみ上限を撤廃（切らない・省略記号なし）".
+#[test]
+fn orthogonal_unbreakable_run_widens_past_the_cap_rather_than_being_truncated() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let text = "A".repeat(30);
+    let (label, size) =
+        shapes::orthogonal_node(Glyph::Flow(Shape::Rect), &text).expect("a rectangle is in scope");
+    assert_eq!(
+        label.lines,
+        vec![text.clone()],
+        "there is nowhere to break, so it stays one line"
+    );
+    assert!(
+        size.w > shapes::ORTHO_MAX_WIDTH,
+        "the cap gives way, the text does not: {size:?}"
+    );
+    assert_eq!(
+        size.w,
+        shapes::ortho_width(Glyph::Flow(Shape::Rect), label.width),
+        "still padded and still on the 8px grid — only the cap is lifted"
+    );
+    assert_eq!(size.h, 36.0, "one line is still one line");
+}
+
+/// The mixed case the two rules above meet in: a long unbreakable token *and* ordinary words. The
+/// words wrap around the token, the token keeps its own line whole, and the box is as wide as the
+/// token needs.
+#[test]
+fn orthogonal_wrapping_keeps_a_long_token_whole_and_wraps_the_words_around_it() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let token = "A".repeat(30);
+    let text = format!("open {token} now please and then some more words");
+    let (label, _) =
+        shapes::orthogonal_node(Glyph::Flow(Shape::Rect), &text).expect("a rectangle is in scope");
+    assert!(
+        label.lines.iter().any(|l| l.contains(&token)),
+        "the token is never split: {:?}",
+        label.lines
+    );
+    assert_eq!(label.lines.join(" "), text, "every word survives, in order");
+    assert!(
+        label.lines.len() >= 3,
+        "the words either side of it wrap: {:?}",
+        label.lines
+    );
+}
+
+/// N3's exclusions, stated where they are decided. A glyph out of scope must come back `None` so
+/// that `spec_of` falls through to mermaid's own [`shapes::size`] — the state markers, a choice, a
+/// fork/join bar (all of which §10-5 S1/S4 size), and every shape with geometry of its own.
+#[test]
+fn orthogonal_node_sizing_leaves_n3s_exclusions_to_mermaids_own_sizes() {
+    for glyph in [
+        Glyph::StateStart,
+        Glyph::StateEnd,
+        Glyph::Choice,
+        Glyph::Bar { horizontal: true },
+        Glyph::Bar { horizontal: false },
+        Glyph::Note,
+        Glyph::Flow(Shape::Circle),
+        Glyph::Flow(Shape::DoubleCircle),
+        Glyph::Flow(Shape::Stadium),
+        Glyph::Flow(Shape::Hexagon),
+        Glyph::Flow(Shape::Cylinder),
+        Glyph::Flow(Shape::Subroutine),
+        Glyph::Flow(Shape::Diamond),
+        Glyph::Flow(Shape::Trapezoid),
+    ] {
+        assert!(
+            shapes::orthogonal_node(glyph, "text").is_none(),
+            "{glyph:?} is outside §10-8 N3 and must keep mermaid's own size"
+        );
+        assert!(!shapes::orthogonal_covers(glyph), "{glyph:?}");
+    }
+    for glyph in [
+        Glyph::Flow(Shape::Rect),
+        Glyph::Flow(Shape::RoundedRect),
+        Glyph::ChamferedRect,
+        Glyph::TitledBox,
+    ] {
+        assert!(
+            shapes::orthogonal_covers(glyph),
+            "{glyph:?} is a box §10-8 sizes"
+        );
+    }
+}
+
+/// §10-8 applies **only** to `konoma-orthogonal`. Every splines box comes back exactly as
+/// [`shapes::size`] alone would have made it — the same claim `splines_routing_signature_is_pinned`
+/// and the goldens make about the whole byte stream, stated here on the one thing this change
+/// touched, in a form that fails loudly rather than through a snapshot diff.
+#[test]
+fn splines_node_sizes_are_untouched_by_the_orthogonal_rules() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_full_corpus() {
+        let d = laid_out_curve(src, "basis");
+        for n in &d.nodes {
+            let expected = shapes::size(n.shape, Size::new(n.label.width, n.label.height));
+            assert_eq!(
+                (n.size.w, n.size.h),
+                (expected.w, expected.h),
+                "{name}: {} must keep mermaid's own size under splines",
+                n.id
+            );
+            assert_eq!(
+                n.label.line_pitch,
+                super::labels::line_height(),
+                "{name}: {} must keep mermaid's own 1.1em line pitch under splines",
+                n.id
+            );
+        }
+    }
+}
+
+/// N1-N4 as a corpus-wide invariant, over every source the orthogonal mode is checked against.
+///
+/// Four separate claims, because each can fail on its own:
+///
+/// 1. no box is ever **smaller** than its own label asks for (N4's `max`, from the label side);
+/// 2. a width is either exactly the label-derived one — on the 8px grid, at least 96 — or a
+///    port-derived one, which is `2*(k*8 + PORT_CLEARANCE)` plus a chamfered node's own allowance;
+/// 3. a height is either N1's `14k + 6(k-1) + 22` or, again, a port-derived value on that grid;
+/// 4. the box is symmetric about its own centre, so growth never slid a node sideways.
+///
+/// "Or port-derived" is not a loophole: `apply_growth` never shrinks (`mod.rs`'s own doc on why
+/// that is what makes the retry loop converge), so a face that needed room in an early pass keeps
+/// it even if a later pass reroutes the edge that asked. What must stay true is that any box
+/// bigger than its label is bigger by exactly what some face's port grid asks for — never by an
+/// arbitrary amount.
+#[test]
+fn orthogonal_every_box_is_label_derived_or_on_the_port_grid() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let on_port_grid = |v: f64, glyph: Glyph| {
+        let chamfer = if glyph == Glyph::ChamferedRect {
+            2.0 * shapes::CHAMFER
+        } else {
+            0.0
+        };
+        let reach = (v - chamfer) / 2.0 - orthogonal::PORT_CLEARANCE;
+        reach >= -1e-6 && (reach / (orthogonal::PORT_SPACING / 2.0)).fract().abs() < 1e-6
+    };
+    let mut checked = 0usize;
+    for (name, src) in orthogonal_full_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for n in &d.nodes {
+            if !shapes::orthogonal_covers(n.shape) {
+                continue;
+            }
+            checked += 1;
+            let label_box = shapes::orthogonal_label_box(n.shape, &n.label);
+            assert!(
+                n.size.w >= label_box.w - 1e-6 && n.size.h >= label_box.h - 1e-6,
+                "{name}: {} is smaller than its own label needs: {:?} vs {label_box:?}",
+                n.id,
+                n.size
+            );
+            assert_eq!(
+                label_box.w % shapes::ORTHO_WIDTH_STEP,
+                0.0,
+                "{name}: {}'s label-derived width must be on the 8px grid",
+                n.id
+            );
+            assert!(
+                label_box.w >= shapes::ORTHO_MIN_WIDTH,
+                "{name}: {}'s label-derived width must be at least 96",
+                n.id
+            );
+            assert_eq!(
+                label_box.h,
+                shapes::ortho_height(n.label.lines.len()),
+                "{name}: {}'s label-derived height must be N1's own",
+                n.id
+            );
+            if (n.size.w - label_box.w).abs() > 1e-6 {
+                assert!(
+                    on_port_grid(n.size.w, n.shape),
+                    "{name}: {} is wider than its label by something that is not a port grid: \
+                     {:?} vs {label_box:?}",
+                    n.id,
+                    n.size
+                );
+            }
+            if (n.size.h - label_box.h).abs() > 1e-6 {
+                assert!(
+                    on_port_grid(n.size.h, n.shape),
+                    "{name}: {} is taller than its label by something that is not a port grid: \
+                     {:?} vs {label_box:?}",
+                    n.id,
+                    n.size
+                );
+            }
+            let (l, t, r, b) = n.bounds();
+            assert!(
+                ((l + r) / 2.0 - n.center.x).abs() < 1e-6
+                    && ((t + b) / 2.0 - n.center.y).abs() < 1e-6,
+                "{name}: {}'s box must stay symmetric about its own centre",
+                n.id
+            );
+        }
+    }
+    assert!(
+        checked > 100,
+        "the corpus must actually reach the boxes §10-8 sizes: only {checked} seen"
+    );
+}
+
+/// N1/N2's padding, checked as the thing padding is *for*: no node's words touch its box.
+///
+/// Measured against the drawn label block ([`super::labels::Label`]'s own width and the pitch
+/// [`super::svg::emit_text`] steps by), not against a second guess at the text extent, and stated
+/// with a 1px slack because a rounded-up width can leave a hair more room than the padding alone.
+#[test]
+fn orthogonal_no_node_text_overflows_its_own_box() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (name, src) in orthogonal_full_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        for n in &d.nodes {
+            if !shapes::orthogonal_covers(n.shape) || n.label.is_blank() {
+                continue;
+            }
+            let pad_x = shapes::ORTHO_PAD_X
+                + if n.shape == Glyph::ChamferedRect {
+                    shapes::CHAMFER
+                } else {
+                    0.0
+                };
+            assert!(
+                n.label.width <= n.size.w - 2.0 * pad_x + 1.0,
+                "{name}: {}'s words ({:.2}px) run into its own {:.2}px box",
+                n.id,
+                n.label.width,
+                n.size.w
+            );
+            // The ink is `14k + 6(k-1)`; the label block carries half a line gap above the first
+            // line and below the last, which is what centres it — so the comparison subtracts one
+            // gap rather than pretending the block and the ink are the same number.
+            let ink = n.label.height - super::labels::ORTHO_LINE_GAP;
+            assert!(
+                ink <= n.size.h - 2.0 * shapes::ORTHO_PAD_Y + 1e-6,
+                "{name}: {}'s {} line(s) run past its own {:.2}px box",
+                n.id,
+                n.label.lines.len(),
+                n.size.h
+            );
+        }
+    }
 }

@@ -748,7 +748,6 @@ fn spec_of(chart: &Flowchart, curve: &str, routing: Routing) -> GraphSpec {
         .nodes
         .iter()
         .map(|node| {
-            let label = Label::measure(&node.label);
             // A decision node under orthogonal routing draws as a chamfered rectangle rather than
             // a diamond — see `Glyph::ChamferedRect`'s own docs for why. Nothing else changes: the
             // parsed `Shape` konoma keeps for every other reader of `chart` (`docs`, `%%{init}%%`
@@ -758,7 +757,19 @@ fn spec_of(chart: &Flowchart, curve: &str, routing: Routing) -> GraphSpec {
             } else {
                 Glyph::Flow(node.shape)
             };
-            let size = shapes::size(glyph, Size::new(label.width, label.height));
+            // §10-8 N1–N3, and only under orthogonal routing: a declared 36px-tall box on an 8px
+            // width grid, with the label re-wrapped if it would push past the 240px cap.
+            // `orthogonal_node` answers `None` for anything N3 leaves alone, and `Routing::Splines`
+            // never asks — so the `unwrap_or_else` arm below is byte-for-byte the path this
+            // function has always taken.
+            let (label, size) = (routing == Routing::Orthogonal)
+                .then(|| shapes::orthogonal_node(glyph, &node.label))
+                .flatten()
+                .unwrap_or_else(|| {
+                    let label = Label::measure(&node.label);
+                    let size = shapes::size(glyph, Size::new(label.width, label.height));
+                    (label, size)
+                });
             SpecNode {
                 id: node.id.clone(),
                 glyph,

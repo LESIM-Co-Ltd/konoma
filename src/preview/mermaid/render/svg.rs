@@ -1081,7 +1081,11 @@ fn emit_node(out: &mut String, node: &PlacedNode, theme: &Theme) {
     // `SHAPE_STATE_WITH_DESC` does. The rule goes where the first line ends, so it is derived
     // from the label rather than declared: a box whose label grew a line moves it by itself.
     if node.shape == Glyph::TitledBox && node.label.lines.len() > 1 {
-        let y = cy - node.label.height / 2.0 + super::labels::line_height();
+        // The label's **own** pitch, not the module-level one: a konoma-orthogonal node label is
+        // set at §10-8 N1's `14 + 6` rather than mermaid's `1.1em`, and the rule has to land where
+        // that label's first line actually ends. Identical under `Routing::Splines`, where every
+        // label carries the module-level pitch.
+        let y = cy - node.label.height / 2.0 + node.label.line_height();
         out.push_str(&format!(
             "<line x1=\"{}\" y1=\"{y}\" x2=\"{}\" y2=\"{y}\" stroke=\"{stroke}\" \
              stroke-width=\"{}\"/>\n",
