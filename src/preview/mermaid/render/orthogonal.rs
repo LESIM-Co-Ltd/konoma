@@ -4718,6 +4718,202 @@ impl LaneUnits {
     }
 }
 
+/// How many sources a merge needs before [`merge_trunk_index`]'s own median rule is the one that
+/// picks its trunk, rather than §10-1 item 2's plain "タイは上・左優先" greedy.
+///
+/// Three, because three is where the median's own reason starts to exist: the design draws a merge
+/// as the mirror of a fan root, the straight edge in the middle and the siblings **split between**
+/// the ±16px ports either side of it, and only a middle source splits anything. With two sources
+/// the picture is the same either way — one straight edge and one sibling, on one side of the
+/// centre port whichever of the two is picked — so there is nothing for a rule to buy, and the
+/// design references bear that out: both of their two-source merges (`zz-design-2a`'s own
+/// `kitty 転送`, `3a`'s own `ラスタライズ`) are settled by which source carries the spine, and the
+/// greedy's own leading `used_in` key (`align_straight_lanes`'s own candidate sort) has always
+/// applied exactly that — the same answer [`merge_trunk_index`]'s first clause would give, without
+/// this rule needing to reach them at all.
+///
+/// It is also where the median stops being reachable. A chain is aligned onto its members' own
+/// **average** cross coordinate and the overlap sweep after it can only ever push a node *later*
+/// on its rank (`align_straight_lanes`'s own "reclaim" doc) — so a trunk that is the *last* of its
+/// rank's sources, which is exactly what `len / 2` picks out of two, is pulled up into its own
+/// predecessor and pushed straight back, leaving the lane on neither source and **both** edges
+/// bending. Measured on `A --> C`/`B --> C`/`C --> D`: the greedy's own pick draws 2 bends over
+/// the three edges, the two-source median 4. With three or more the trunk is an interior source,
+/// its rank has slack on both sides of it, and the sweep has somewhere to put the siblings —
+/// `zz-design-2b`'s own three clients move as one stack.
+const MERGE_MEDIAN_MIN_SOURCES: usize = 3;
+
+/// Which of a **pure merge**'s sources owns the straight edge into the shared target — the
+/// merge-side mirror of `mod.rs`'s own [`fan_split`](super::fan_split), and the answer §10-1
+/// item 2's plain "タイは上・左優先" greedy gets wrong the moment several sources of one rank all
+/// land on one target.
+///
+/// `sources` is the merge's own sources **in declaration order** (the order the author wrote the
+/// edges in, deduplicated); `on_a_lane` says whether a source already carries a through-lane —
+/// some earlier rank window already selected an edge that lands on it. The index returned is the
+/// trunk's:
+///
+/// * the one source already on a lane, when **exactly** one is. §10-0 ("線が複雑にならない"):
+///   bending a spine to make room for a sibling costs the chain its whole centreline and trades
+///   one bend for two, so a merge never takes the lane away from a chain that is already running.
+///   `3a`'s own `ラスタライズ` is this case (`MM`/`MA` both on rank 3, `MD --> MM` already
+///   selected when the window opens) and it is what keeps that diagram's pinned seven-segment
+///   spine whole. Two or more sources already on lanes is not a case this can arbitrate — one of
+///   the chains has to bend whatever it picks — so it falls through to the median, and so does
+///   "none of them", the ordinary case at the head of a diagram. Worth recording: in every real
+///   `flowchart` source tried, dagre's own ordering phase puts a merge's lane-carrying source at
+///   the group's geometric middle, which is also where the declaration median lands, so the two
+///   answers coincide — this clause is stated (and tested, in `tests`'s own
+///   `a_pure_merge_leaves_a_lane_carrying_source_on_its_own_spine`) on hand-built ranks rather
+///   than on a corpus fixture, because no corpus fixture separates them.
+/// * otherwise the **median** in declaration order (`len / 2`, integer division: three sources
+///   pick the second, two sources pick the second). The design references draw the merge as the
+///   exact mirror of a fan root — the straight edge in the middle, the rest entering the ±16px
+///   ports either side of it with one bend each ([`evict`]'s own merge mirror) — and only a
+///   middle source splits the siblings between the two sides. Picking an end source instead
+///   pushes every sibling onto one side, where each has to cross the whole face to reach its
+///   port: `zz-design-2b`'s own three clients into `API ゲート` (`CLI`, `ブラウザ UI`,
+///   `エディタ拡張`, declared in that order) is exactly this, and the design puts the middle one,
+///   `ブラウザ UI`, on the target's own lane. `len / 2` rather than a "middle by cross
+///   coordinate": the cross order at this point is dagre's, which a later pass
+///   (`mod.rs`'s own `regroup_fan_lanes`, this function's own caller's second alignment pass) may
+///   still permute, while declaration order is the author's and is stable.
+pub(super) fn merge_trunk_index(sources: &[&str], on_a_lane: &dyn Fn(&str) -> bool) -> usize {
+    let on_lane: Vec<usize> = sources
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| on_a_lane(s))
+        .map(|(i, _)| i)
+        .collect();
+    match on_lane.as_slice() {
+        [only] => *only,
+        _ => sources.len() / 2,
+    }
+}
+
+/// One **pure merge**: several sources on one rank all feeding one target, and nothing else —
+/// the symmetric reading of `mod.rs`'s own `regroup_fan_lanes` fan trigger, and the shape
+/// [`merge_trunk_index`] arbitrates. [`pure_merges`] finds them; [`promote_merge_trunks`] uses one
+/// to pick the trunk edge, and [`align_straight_lanes_with`] uses the same one again to keep the
+/// sources a stack once that trunk has moved.
+struct PureMerge {
+    /// The shared target.
+    target: String,
+    /// Every source that reaches it from the one rank below, in declaration order, deduplicated.
+    sources: Vec<String>,
+}
+
+/// Every **pure merge** in `candidates`: a target reached, from the one rank immediately below its
+/// own, by [`MERGE_MEDIAN_MIN_SOURCES`] or more sources, with no other in-edge on it from that
+/// rank and no source of it reaching any other target on the target's own rank.
+///
+/// "The one rank immediately below" is not a restriction this adds — it is what
+/// [`align_straight_lanes`] can act on at all, since it only ever considers *adjacent* ranks. An
+/// in-edge from further back is a different rank window's business and can never be a straight
+/// lane here, so it neither qualifies nor disqualifies the merge: `3a`'s own `セルに合わせる`,
+/// reached from three different ranks, has exactly one edge in each window and is therefore not a
+/// merge in any of them.
+///
+/// The "no source of it fans out too" half mirrors the fan trigger's own "every member of the rank
+/// traces back to **exactly one** common predecessor", and `regroup_fan_lanes` states the reason
+/// in its own words: "a rank mixing two unrelated branches' targets is left exactly as
+/// `align_straight_lanes` laid it out". The median only says which sibling belongs in the middle
+/// *of one merge*, so applying it to two merges that share their sources decides each in ignorance
+/// of the other. `amp-chain`'s own `A & B --> C & D` is that shape exactly — a complete bipartite
+/// pair of merges, where taking the median source for `C` and again for `D` picks `B` both times,
+/// leaves `A` the other, and crosses the two lanes over each other. §10-0 ("線が複雑にならない")
+/// settles it: the plain "タイは上・左優先" greedy draws that shape without a crossing, so the
+/// merge rule stays out of it.
+///
+/// Bars are left out on both ends (§10-5 S4: a fork/join bar is never a lane participant, and the
+/// selection loop skips its edges outright), so a join's several inputs are never mistaken for a
+/// merge.
+fn pure_merges(
+    node_rank: &HashMap<String, i32>,
+    candidates: &[(String, String)],
+    is_bar_id: &dyn Fn(&str) -> bool,
+) -> Vec<PureMerge> {
+    let mut ranks: Vec<i32> = node_rank.values().copied().collect();
+    ranks.sort_unstable();
+    ranks.dedup();
+    // Targets in the order they are first written, so the returned list is the author's own and
+    // not a `HashMap`'s.
+    let mut targets: Vec<&str> = Vec::new();
+    for (_, t) in candidates {
+        if !targets.contains(&t.as_str()) {
+            targets.push(t.as_str());
+        }
+    }
+    let mut merges = Vec::new();
+    for target in targets {
+        if is_bar_id(target) {
+            continue;
+        }
+        let Some(&target_rank) = node_rank.get(target) else {
+            continue;
+        };
+        let Some(&below) = ranks.iter().rev().find(|&&r| r < target_rank) else {
+            continue; // nothing below it — the head of the diagram.
+        };
+        let mut sources: Vec<String> = Vec::new();
+        for (s, t) in candidates {
+            if t != target || is_bar_id(s) || node_rank.get(s) != Some(&below) {
+                continue;
+            }
+            if !sources.iter().any(|seen| seen == s) {
+                sources.push(s.clone());
+            }
+        }
+        if sources.len() < MERGE_MEDIAN_MIN_SOURCES {
+            continue;
+        }
+        let fans_out = candidates.iter().any(|(s, t)| {
+            t != target && node_rank.get(t) == Some(&target_rank) && sources.contains(s)
+        });
+        if fans_out {
+            continue;
+        }
+        merges.push(PureMerge {
+            target: target.to_string(),
+            sources,
+        });
+    }
+    merges
+}
+
+/// Applies [`merge_trunk_index`] to one rank window's already-sorted lane candidates, by moving
+/// each pure merge's trunk edge to the front of *its own target's* group.
+///
+/// The promotion is a permutation *within* one target's own group and nothing else: every entry
+/// this does not promote keeps its relative order with every other entry, so a window with no
+/// merge in it — the overwhelming majority — comes out of here byte-identical to the sort's own
+/// result, and a merge's own group is the only place the greedy's outcome can change.
+///
+/// `merges` is the whole diagram's own list ([`pure_merges`]); a merge whose edges are not in this
+/// window simply finds none of them here and is skipped.
+fn promote_merge_trunks(
+    window: &mut Vec<&(String, String)>,
+    merges: &[PureMerge],
+    used_in: &std::collections::HashSet<String>,
+) {
+    for merge in merges {
+        let sources: Vec<&str> = merge.sources.iter().map(String::as_str).collect();
+        let trunk = sources[merge_trunk_index(&sources, &|id| used_in.contains(id))];
+        let (Some(from), Some(to)) = (
+            window
+                .iter()
+                .position(|(s, t)| s == trunk && *t == merge.target),
+            window.iter().position(|(_, t)| *t == merge.target),
+        ) else {
+            continue; // not this window's merge.
+        };
+        if from != to {
+            let edge = window.remove(from);
+            window.insert(to, edge);
+        }
+    }
+}
+
 /// §10-1 item 2's "レーン揃え": greedily selects a maximal set of node-disjoint "straight lane"
 /// edges between *adjacent* ranks, then slides every node in each resulting chain onto one shared
 /// cross coordinate — after which [`classify`]'s existing `aligned` check (unchanged) recognises
@@ -4823,6 +5019,16 @@ pub(super) fn align_straight_lanes_with(
                 .then_with(|| nodes[a].id.cmp(&nodes[b].id))
         });
     }
+
+    // §10-3 item 10's own merge-side mirror of `fan_split` ([`pure_merges`]). Computed once, off
+    // `candidates` and `node_rank` alone, so both halves of the rule see the same list: the
+    // selection loop below picks each merge's trunk with it, and the alignment step after that
+    // keeps the merge's own sources a stack once that trunk has moved. Derived here rather than
+    // inside the selection loop because the `preselected` branch skips that loop entirely and
+    // still needs the second half.
+    let merges = pure_merges(node_rank, candidates, &|id| {
+        id_index.get(id).is_some_and(|&i| is_bar(&nodes[i]))
+    });
 
     // --- greedy straight-lane selection, rank pair by rank pair, in rank order -------------------
     //
@@ -4937,6 +5143,14 @@ pub(super) fn align_straight_lanes_with(
                     .then_with(|| s1.cmp(s2))
                     .then_with(|| t1.cmp(t2))
             });
+            // §10-3 item 10's own merge-side mirror of `fan_split` — [`promote_merge_trunks`] and
+            // [`merge_trunk_index`] carry the rule and why it is not the sort's own "タイは上・左
+            // 優先". Applied here, after the sort and as a permutation inside each merge's own
+            // group, rather than as one more `sort_by` key: which source of a merge owns the
+            // straight edge is a statement about that one target, not an ordering between
+            // unrelated candidates, and folding it into the comparator would silently reorder
+            // every non-merge pair in the window against it.
+            promote_merge_trunks(&mut pair_candidates, &merges, &used_in);
             for (s, t) in pair_candidates {
                 if used_out.contains(s) || used_in.contains(t) {
                     continue;
@@ -5050,6 +5264,57 @@ pub(super) fn align_straight_lanes_with(
             let flow_v = flow(direction, &nodes[i].center);
             nodes[i].center = make(direction, flow_v, avg);
             chain_desired.insert(i, avg);
+        }
+    }
+
+    // --- a pure merge's sources stay a stack: the siblings follow the trunk ---------------------
+    //
+    // §10-1 item 1's "ランク内の並び順は変えない・従来の最小間隔を維持する", read on a merge whose
+    // trunk is not the first of its rank ([`merge_trunk_index`]'s own median). Putting the trunk on
+    // the target's lane **translates** the sources' stack; it must not stretch it. The overlap
+    // sweep below cannot say that on its own — it only ever pushes a node *later* on its rank
+    // (its own doc), so a trunk that moves later leaves whatever sits before it exactly where it
+    // was, opening a gap the sweep has no reason to close. Measured on `orthogonal-dotted-aside-
+    // merge` (`A`/`B`/`C` all into `merge`, `B` the trunk): `B` moves 27.8px onto the lane and `A`
+    // stays, leaving the row 97.2px/69.4px instead of the one 69.4px pitch dagre gave it, which
+    // §10-7's own `orthogonal_a_dotted_aside_leaves_its_source_stack_at_one_node_pitch` states as
+    // a defect in its own right.
+    //
+    // Its own mirror on the fan side is `mod.rs`'s `regroup_fan_lanes`, which re-stacks a fan's
+    // targets around the source's centreline for the same reason. A merge whose sources are all in
+    // one block already gets this for free — the chain moves the whole body ([`LaneUnits`]), which
+    // is exactly why `zz-design-2b`'s three clients need nothing here — so the units already moved
+    // are skipped rather than moved twice.
+    //
+    // A sibling that is itself a chain member is left alone: its own lane is a straight edge this
+    // has no standing to bend, and §10-1 item 2's "各ノード高々1入1出" makes that lane just as much
+    // a spine as the merge's own trunk. The sweep then spaces whatever is left, as it always did.
+    for merge in &merges {
+        let trunk = match next.iter().find(|(_, t)| **t == merge.target) {
+            Some((s, _)) if merge.sources.contains(s) => s.clone(),
+            _ => continue, // this merge's target took its lane from somewhere else, or from nothing
+        };
+        let Some(&ti) = id_index.get(trunk.as_str()) else {
+            continue;
+        };
+        let delta = cross(direction, &nodes[ti].center) - initial_cross[ti];
+        if delta.abs() <= EPS {
+            continue;
+        }
+        let mut moved: std::collections::HashSet<String> =
+            std::collections::HashSet::from([units.unit_of(&trunk).to_string()]);
+        for sibling in &merge.sources {
+            let Some(&si) = id_index.get(sibling.as_str()) else {
+                continue;
+            };
+            if chain_desired.contains_key(&si) {
+                continue;
+            }
+            let unit = units.unit_of(sibling).to_string();
+            if !moved.insert(unit.clone()) {
+                continue;
+            }
+            units.shift(direction, nodes, &id_index, &unit, delta);
         }
     }
 
@@ -8197,6 +8462,177 @@ mod tests {
         assert_eq!(
             by_id["S2"].center.x, 500.0,
             "S2 lost the tie and must be left exactly where it started"
+        );
+    }
+
+    /// §10-3 item 10's own merge mirror, at the one place it decides anything on its own:
+    /// [`merge_trunk_index`]'s median clause. Three sources, none of them carrying a lane already,
+    /// so the trunk is the **median in declaration order** — the second — regardless of which
+    /// sorts first by cross coordinate. Named so the mutation it exists to catch says what it is:
+    /// turning `sources.len() / 2` into `0` (or into `len - 1`) picks an end source and fails
+    /// here.
+    #[test]
+    fn merge_trunk_index_takes_the_median_source_in_declaration_order() {
+        let never = |_: &str| false;
+        assert_eq!(merge_trunk_index(&["a", "b", "c"], &never), 1);
+        assert_eq!(merge_trunk_index(&["a", "b", "c", "d"], &never), 2);
+        assert_eq!(merge_trunk_index(&["a", "b", "c", "d", "e"], &never), 2);
+        // Stated for completeness even though `MERGE_MEDIAN_MIN_SOURCES` keeps a two-source merge
+        // away from this function in practice: the formula itself has no special case.
+        assert_eq!(merge_trunk_index(&["a", "b"], &never), 1);
+    }
+
+    /// [`merge_trunk_index`]'s own first clause, which outranks the median: the one source already
+    /// carrying a through-lane keeps it (§10-0 — a spine is never bent to make room for a
+    /// sibling). Exactly one, though: with two spines arriving there is no arbitration to make, so
+    /// the median decides, and so it does with none.
+    #[test]
+    fn merge_trunk_index_keeps_the_lane_on_the_one_source_that_already_has_one() {
+        let sources = ["a", "b", "c"];
+        assert_eq!(merge_trunk_index(&sources, &|id| id == "a"), 0);
+        assert_eq!(merge_trunk_index(&sources, &|id| id == "c"), 2);
+        assert_eq!(
+            merge_trunk_index(&sources, &|id| id == "a" || id == "c"),
+            1,
+            "two spines cannot both keep their lane, so the median decides"
+        );
+        assert_eq!(merge_trunk_index(&sources, &|_| false), 1);
+    }
+
+    /// [`pure_merges`]'s own trigger, stated on the three shapes that decide it.
+    ///
+    /// A merge is pure when several sources on the one rank below all feed one target and nothing
+    /// else — the symmetric reading of `mod.rs`'s own `regroup_fan_lanes` fan trigger. A source
+    /// that also reaches another target on the same rank (`amp-chain`'s own `A & B --> C & D`)
+    /// disqualifies it, because deciding two merges that share their sources in ignorance of each
+    /// other crosses their lanes; and fewer than [`MERGE_MEDIAN_MIN_SOURCES`] sources is not a
+    /// merge this rule speaks about at all.
+    #[test]
+    fn pure_merges_needs_three_sources_that_go_nowhere_else() {
+        let never_a_bar = |_: &str| false;
+        let node_rank = ranks(&[("A", 0), ("B", 0), ("C", 0), ("T", 1), ("U", 1)]);
+
+        let plain = [edge("A", "T"), edge("B", "T"), edge("C", "T")];
+        let found = pure_merges(&node_rank, &plain, &never_a_bar);
+        assert_eq!(found.len(), 1, "three sources into one target is a merge");
+        assert_eq!(found[0].target, "T");
+        assert_eq!(
+            found[0].sources,
+            vec!["A".to_string(), "B".to_string(), "C".to_string()],
+            "sources come back in declaration order, which is what the median is taken over"
+        );
+
+        let two = [edge("A", "T"), edge("B", "T")];
+        assert!(
+            pure_merges(&node_rank, &two, &never_a_bar).is_empty(),
+            "two sources keep §10-1 item 2's own greedy"
+        );
+
+        let bipartite = [
+            edge("A", "T"),
+            edge("B", "T"),
+            edge("C", "T"),
+            edge("A", "U"),
+        ];
+        assert!(
+            pure_merges(&node_rank, &bipartite, &never_a_bar).is_empty(),
+            "a source that also fans out on the same rank is not a pure merge"
+        );
+    }
+
+    /// The picture [`merge_trunk_index`]'s median buys, through the whole of
+    /// [`align_straight_lanes`] rather than the formula alone: `T` lands on the **middle** source's
+    /// own centreline, and the two siblings stay one rank pitch either side of it rather than
+    /// being left behind where the trunk started.
+    ///
+    /// The stack half is `align_straight_lanes`'s own "a pure merge's sources stay a stack" step:
+    /// remove it and `S2` alone moves onto the lane, opening a gap above it the overlap sweep has
+    /// no reason to close (it only ever pushes a node *later*).
+    #[test]
+    fn a_pure_merge_puts_the_median_source_on_the_lane_and_moves_the_stack_with_it() {
+        let mut nodes = vec![
+            // 70px apart: comfortably more than the `ORTHO_NODE_SEP` minimum the overlap sweep
+            // enforces, so a gap that *does* open here can only have come from this pass.
+            node("S1", 0.0, 0.0, 40.0, 30.0),
+            node("S2", 70.0, 0.0, 40.0, 30.0),
+            node("S3", 140.0, 0.0, 40.0, 30.0),
+            node("T", 200.0, 100.0, 40.0, 30.0),
+            node("U", 200.0, 200.0, 40.0, 30.0),
+        ];
+        let node_rank = ranks(&[("S1", 0), ("S2", 0), ("S3", 0), ("T", 1), ("U", 2)]);
+        let candidates = [
+            edge("S1", "T"),
+            edge("S2", "T"),
+            edge("S3", "T"),
+            edge("T", "U"),
+        ];
+        let _ = align_straight_lanes(
+            Direction::TopToBottom,
+            &mut nodes,
+            &node_rank,
+            &candidates,
+            &LaneUnits::default(),
+        );
+        let by_id: HashMap<&str, &PlacedNode> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        let (s1, s2, s3, t) = (
+            by_id["S1"].center.x,
+            by_id["S2"].center.x,
+            by_id["S3"].center.x,
+            by_id["T"].center.x,
+        );
+        assert!(
+            (t - s2).abs() < 1e-9,
+            "T must sit on S2, the median source, not on S1 the leftmost: S1={s1} S2={s2} T={t}"
+        );
+        assert!(
+            (s2 - s1 - 70.0).abs() < 1e-9 && (s3 - s2 - 70.0).abs() < 1e-9,
+            "the three sources keep the one pitch they started with: {s1} {s2} {s3}"
+        );
+    }
+
+    /// [`merge_trunk_index`]'s own first clause through the whole of [`align_straight_lanes`]:
+    /// `S1` arrives already carrying a lane (`S0 --> S1`, selected in the earlier rank window), so
+    /// it keeps `T`'s lane even though `S2` is the median of the three in declaration order.
+    /// §10-0 — a spine is never bent to make room for a sibling.
+    ///
+    /// Hand-built rather than driven from a `flowchart` source on purpose: in every real source
+    /// tried, dagre's own ordering phase puts the lane-carrying member of a merge at the group's
+    /// geometric middle, which is also where the declaration median lands, so the two answers
+    /// coincide and nothing a `laid_out_flow` fixture can say separates them. Setting the ranks and
+    /// the cross coordinates directly is the only way to state the clause on its own.
+    #[test]
+    fn a_pure_merge_leaves_a_lane_carrying_source_on_its_own_spine() {
+        let mut nodes = vec![
+            node("S0", 70.0, -100.0, 40.0, 30.0),
+            node("S1", 0.0, 0.0, 40.0, 30.0),
+            node("S2", 70.0, 0.0, 40.0, 30.0),
+            node("S3", 140.0, 0.0, 40.0, 30.0),
+            node("T", 200.0, 100.0, 40.0, 30.0),
+        ];
+        let node_rank = ranks(&[("S0", 0), ("S1", 1), ("S2", 1), ("S3", 1), ("T", 2)]);
+        // `S0 --> S1` first, so the earlier window puts `S1` in `used_in`; the merge's own three
+        // edges are declared `S1`, `S2`, `S3`, whose median is `S2`.
+        let candidates = [
+            edge("S0", "S1"),
+            edge("S1", "T"),
+            edge("S2", "T"),
+            edge("S3", "T"),
+        ];
+        let (_, next) = align_straight_lanes(
+            Direction::TopToBottom,
+            &mut nodes,
+            &node_rank,
+            &candidates,
+            &LaneUnits::default(),
+        );
+        assert_eq!(
+            next.get("S1").map(String::as_str),
+            Some("T"),
+            "S1 already carries the S0 --> S1 lane, so the merge must not take it away: {next:?}"
+        );
+        assert!(
+            !next.contains_key("S2"),
+            "S2 is the median, but the spine clause outranks it: {next:?}"
         );
     }
 

@@ -5939,29 +5939,30 @@ pub(super) fn attr<'a>(haystack: &'a str, attr: &str) -> Option<&'a str> {
 /// A real 9-way fan-in (`A`..`I` all merge into `Z`) is not evenly spread by dagre. Before
 /// `align_straight_lanes`'s `r + 1` adjacency bug was fixed (2026-09-01), the function never
 /// selected a lane at all, so this fixture's expected values were dagre's own unaligned placement.
-/// Now that lane alignment actually runs, `A` (the smallest cross-coordinate candidate — every one
-/// of `A`..`I` has exactly one out-edge to `Z`, so `Z`'s single incoming chain slot goes to
-/// whichever wins "タイは上・左優先", `align_straight_lanes`'s own tie-break) wins the slot and
-/// `Z` moves to sit under `A` instead — the leftmost node in the whole fan, not the centre.
 ///
-/// §10-3 item 3's own correction (`classify`'s `merge_target_side` doc): a merge target now always
+/// §10-3 item 10's own merge-side mirror (`orthogonal::merge_trunk_index`) is what picks the lane
+/// now: this is a **pure merge** — nine sources on one rank, one target, nothing else — so the
+/// straight edge is not "タイは上・左優先"'s own leftmost source but the **median in declaration
+/// order**, `E`, the fifth of nine (`sources.len() / 2 == 4`). None of the nine carries a
+/// through-lane of its own, so `merge_trunk_index`'s first clause does not fire and the median is
+/// the answer. `Z` moves to sit under `E`, the middle of the row.
+///
+/// §10-3 item 3's own correction (`classify`'s `merge_target_side` doc): a merge target always
 /// rides the *flow*-axis face, not the cross-axis one this fixture originally exercised — for `TD`
-/// that is Top/Bottom, so `A->Z` (aligned) and every one of `B->Z`..`I->Z` (ordinary merges) all
+/// that is Top/Bottom, so `E->Z` (aligned) and every one of the other eight (ordinary merges) all
 /// land on `Z`'s single Top face together, dumped and confirmed (all nine share the exact same
 /// `y`), not assumed — `Z`'s Left/Right faces go entirely unused.
 ///
 /// §10-3 item 12's own "面のポートは相手の側で配る" (`docs/FEATURE-MERMAID-RENDERER.md`) decides how
-/// wide: `A` is not the fan's own geometric centre here, it is dagre's own *leftmost* candidate
-/// (this test's own doc, above — `align_straight_lanes`'s "タイは上・左優先" tie-break, not
-/// `mod.rs::regroup_fan_lanes`, which only rearranges a *source's* own fan-out, never a merge
-/// target's incoming claims). Dumped and confirmed: every one of `B`..`I` sits to `A`'s own right,
-/// so all eight non-aligned claims land on the *same* side of `Z`'s centre — item 12's own "ノード
-/// は大きい側に合わせて中心対称に拡大" still grows the box symmetrically around that centre even
-/// though the near side carries nothing, `(8)*16 + 2*8 = 144px` of *reach* on the busy side alone
-/// (the widest single offset any port sits at, `8 * PORT_SPACING = 128px`), doubled for the
-/// symmetric grow: `2 * (128 + 8) = 272px`. Wider than a naïve "eight ports, `(9-1)*16 + 2*8`"
-/// count would suggest, because that count implicitly assumes an even split across both sides —
-/// item 12 does not force one when the geometry genuinely is not.
+/// wide, and with the median on the lane the answer is the *symmetric* one the design draws:
+/// `A`..`D` genuinely sit left of `E` and `F`..`I` genuinely sit right of it, so the eight
+/// non-aligned claims split four a side — `4 * PORT_SPACING = 64px` of reach either way, plus the
+/// corner clearance, doubled for item 12's own "中心対称に拡大": `2 * (4*PORT_SPACING +
+/// PORT_CLEARANCE) = 144px`. The pre-mirror pick (`A`, the leftmost) put all eight on one side and
+/// needed `2 * (8*PORT_SPACING + PORT_CLEARANCE) = 272px` — nearly twice the box for the same nine
+/// ports, which is exactly the "lines must not get complicated" cost §10-0 weighs the rule by
+/// (measured over the whole fixture at the same time: 28 bends and one crossing before, 20 bends
+/// and none after).
 #[test]
 fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
     let src = "flowchart TD\n  A --> Z\n  B --> Z\n  C --> Z\n  D --> Z\n  E --> Z\n  \
@@ -5976,13 +5977,13 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
 
     let ortho = laid_out_flow(src, "basis", "konoma-orthogonal");
     let z_ortho = ortho.node("Z").expect("Z must exist");
-    // §10-3 items 3 and 12 (this test's own doc): all nine edges land on Z's Top face, and `A`
-    // (dagre's own leftmost pick, not the fan's centre) anchors at offset 0 with all eight
-    // remaining claims genuinely on its right — `2 * (8 * PORT_SPACING + PORT_CLEARANCE) = 272px`.
+    // §10-3 items 3, 10 and 12 (this test's own doc): all nine edges land on Z's Top face, the
+    // median source `E` anchors at offset 0, and the eight remaining claims split four a side —
+    // `2 * (4 * PORT_SPACING + PORT_CLEARANCE) = 144px`.
     assert_eq!(
-        z_ortho.size.w, 272.0,
-        "Z's width must grow to exactly 2 * (8*PORT_SPACING + PORT_CLEARANCE) = 272px — item 12's \
-         own symmetric grow around a genuinely one-sided fan"
+        z_ortho.size.w, 144.0,
+        "Z's width must grow to exactly 2 * (4*PORT_SPACING + PORT_CLEARANCE) = 144px — item 12's \
+         own symmetric grow around the median-anchored, two-sided merge item 10 asks for"
     );
     // Height is untouched: nothing asked Z's Left/Right faces to grow at all any more.
     assert_eq!(
@@ -6007,8 +6008,9 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
         );
         if bends == 0 {
             assert_eq!(
-                e.from, "A",
-                "A is the smallest-cross-coordinate source, so it wins Z's one aligned slot: {e:?}"
+                e.from, "E",
+                "E is the median source in declaration order, so it wins Z's one aligned slot \
+                 (§10-3 item 10's merge mirror, not the leftmost-source tie-break): {e:?}"
             );
             aligned_count += 1;
         } else {
@@ -6053,14 +6055,14 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
     }
     assert_eq!(
         aligned_count, 1,
-        "exactly one edge must be the aligned A->Z"
+        "exactly one edge must be the aligned E->Z"
     );
     assert_eq!(top_xs.len(), 9, "all nine edges must share Z's Top face");
 
     top_xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    // 16px apart, but — §10-3 item 12 — one-sided, not symmetric about Z's own centre: `A`'s own
-    // aligned claim (offset 0) sits *at* the centre, and every one of `B`..`I` genuinely sits to
-    // its right, so the whole nine-port run occupies only the right half of the grown face.
+    // 16px apart and — §10-3 items 10 and 12 together — symmetric about Z's own centre: `E`'s own
+    // aligned claim (offset 0) sits *at* the centre with four ports either side of it, because the
+    // merge mirror put the median source on the lane rather than an end one.
     for w in top_xs.windows(2) {
         assert!(
             (w[1] - w[0] - orthogonal::PORT_SPACING).abs() < 1e-6,
@@ -6068,13 +6070,14 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
         );
     }
     assert!(
-        (top_xs[0] - z_ortho.center.x).abs() < 1e-6,
-        "the aligned A->Z takes the exact centre slot, the run's own leftmost port: {top_xs:?} vs {}",
+        (top_xs[4] - z_ortho.center.x).abs() < 1e-6,
+        "the aligned E->Z takes the exact centre slot, the run's own middle port: {top_xs:?} vs {}",
         z_ortho.center.x
     );
     assert!(
-        (top_xs[8] - (z_ortho.center.x + 8.0 * orthogonal::PORT_SPACING)).abs() < 1e-6,
-        "the run's own rightmost port sits 8*PORT_SPACING right of centre: {top_xs:?} vs {}",
+        (top_xs[0] - (z_ortho.center.x - 4.0 * orthogonal::PORT_SPACING)).abs() < 1e-6
+            && (top_xs[8] - (z_ortho.center.x + 4.0 * orthogonal::PORT_SPACING)).abs() < 1e-6,
+        "the run's own two ends sit 4*PORT_SPACING either side of centre: {top_xs:?} vs {}",
         z_ortho.center.x
     );
     // The box itself still grows symmetrically about the centre (item 12's own "中心対称に拡大") —
@@ -6100,24 +6103,47 @@ fn orthogonal_growth_widens_a_node_whose_face_cannot_fit_its_ports() {
 }
 
 /// A three-way merge whose own claims genuinely need more room than `Z`'s natural width — §10-3
-/// items 3 and 12 (`docs/FEATURE-MERMAID-RENDERER.md`): `A --> Z` is aligned (`A.center.x ==
-/// Z.center.x`, dumped) and lands on `Z`'s Top face at offset 0; `B` and `C` both genuinely sit to
-/// `Z`'s right (`B.center.x = 141.3`, `C.center.x = 235.1`, both past `Z.center.x = 48.0`), so
-/// item 12 puts both non-aligned claims on the same (right) side rather than splitting them across
-/// the centre — `+16`/`+32`. `required_flat = 2 * (2*PORT_SPACING + PORT_CLEARANCE) = 80px`, wider
-/// than `Z`'s own natural (splines) width of ~68.55px, so `Z` must grow. Before item 12's fix this
-/// fixture's own name ("a face with room to spare must not grow") held — the old array-symmetric
-/// grid split the two non-aligned claims onto opposite sides of `Z`'s centre (`-16`/`+16`), whose
-/// narrower `max_abs_offset = 16` fit inside 68.55px without growing at all; that was the
-/// side-crossing bug (§10-3 item 12's own "同じ辺にn本つく…下から来る辺が中心より上のポートへ回り込
-/// む形は禁止"), not a genuinely roomy face.
+/// items 3 and 12 (`docs/FEATURE-MERMAID-RENDERER.md`): `A --> Z` is aligned and lands on `Z`'s
+/// Top face at offset 0; `B` and `C` both genuinely sit to `Z`'s right (dumped: `B.center.x =
+/// 141.3`, `C.center.x = 235.1`, both past `Z.center.x = 48.0`), so item 12 puts both non-aligned
+/// claims on the same (right) side rather than splitting them across the centre — `+16`/`+32`.
+/// `required_flat = 2 * (2*PORT_SPACING + PORT_CLEARANCE) = 80px`, wider than `Z`'s own natural
+/// (splines) width of ~68.55px, so `Z` must grow. Before item 12's fix this fixture's own name
+/// ("a face with room to spare must not grow") held — the old array-symmetric grid split the two
+/// non-aligned claims onto opposite sides of `Z`'s centre (`-16`/`+16`), whose narrower
+/// `max_abs_offset = 16` fit inside 68.55px without growing at all; that was the side-crossing bug
+/// (§10-3 item 12's own "同じ辺にn本つく…下から来る辺が中心より上のポートへ回り込む形は禁止"), not a
+/// genuinely roomy face.
+///
+/// `X --> A` is what keeps the merge one-sided, and it is not decoration: without it the three
+/// sources share one rank and §10-3 item 10's own merge mirror
+/// (`orthogonal::pure_merges`/`merge_trunk_index`) hands the lane to the **median** source, which
+/// splits `A` and `C` either side of `B` and needs no growth at all. With it, `A` sits one rank
+/// past `B` and `C`, so `Z` is reached from two different ranks — not a pure merge at all
+/// (`pure_merges`'s own "from the one rank immediately below" reading, which is simply what
+/// `align_straight_lanes` can act on, since it only ever considers adjacent ranks) — the mirror
+/// stays out, and `A --> Z`, the only candidate in its own rank window, takes the lane with both
+/// siblings genuinely on one side of it. That is exactly the geometry item 12 is about, and
+/// asserting which edge is straight is what keeps this fixture honest about producing it.
 #[test]
 fn orthogonal_one_sided_merge_grows_to_fit_both_siblings_on_the_same_side() {
-    let src = "flowchart TD\n  A --> Z\n  B --> Z\n  C --> Z";
+    let src = "flowchart TD\n  X --> A\n  A --> Z\n  B --> Z\n  C --> Z";
     let splines = laid_out_curve(src, "basis");
     let ortho = laid_out_flow(src, "basis", "konoma-orthogonal");
     let z_splines = splines.node("Z").expect("Z must exist");
     let z_ortho = ortho.node("Z").expect("Z must exist");
+    let aligned: Vec<&str> = ortho
+        .edges
+        .iter()
+        .filter(|e| e.to == "Z" && e.points.len() == 2)
+        .map(|e| e.from.as_str())
+        .collect();
+    assert_eq!(
+        aligned,
+        vec!["A"],
+        "Z is reached from two ranks, so this is not a pure merge and A --> Z — the only \
+         candidate in its own rank window — keeps the lane, leaving B and C on one side"
+    );
     assert_eq!(
         z_ortho.size.w, 80.0,
         "B and C both genuinely sit right of Z, so Z must grow to 2*(2*PORT_SPACING+PORT_CLEARANCE) \
@@ -6127,6 +6153,181 @@ fn orthogonal_one_sided_merge_grows_to_fit_both_siblings_on_the_same_side() {
     assert_eq!(
         z_ortho.size.h, z_splines.size.h,
         "no face asked Z's height to grow, so it must not have"
+    );
+}
+
+/// §10-3 item 10's own merge-side mirror of `mod.rs`'s `fan_split`, stated on the plainest shape
+/// it is about — three sources on one rank, one target, nothing else — once per flow direction, so
+/// neither axis can be the only one that happens to work.
+///
+/// None of the three carries a through-lane, so `orthogonal::merge_trunk_index` falls to its
+/// median clause and the **second-declared** source takes the target's own lane, with the other
+/// two entering on the `±PORT_SPACING` ports either side of it in cross order, two bends each
+/// (§10-1 item 1's own "退避則適用時は2回まで"), and no two of the three crossing. Mutating that
+/// median to either end source (`sources.len() / 2` → `0`, or → `len - 1`) fails here as well as
+/// in `orthogonal::tests::merge_trunk_index_takes_the_median_source_in_declaration_order`: this is
+/// the composition test for the same rule, through the real `lay_out_flow` entry point rather than
+/// the formula alone.
+#[test]
+fn orthogonal_pure_merge_puts_the_median_source_on_the_targets_lane() {
+    use crate::preview::mermaid::flowchart::Direction;
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for (direction, header) in [
+        (Direction::LeftToRight, "flowchart LR"),
+        (Direction::TopToBottom, "flowchart TB"),
+    ] {
+        let src = format!("{header}\n  A --> Z\n  B --> Z\n  C --> Z\n  Z --> W");
+        let d = laid_out_flow(&src, "basis", "konoma-orthogonal");
+        let z = d.node("Z").expect("Z must exist");
+        let z_cross = super::cross_of(direction, z);
+        let leg = |from: &str| -> &PlacedEdge {
+            d.edges
+                .iter()
+                .find(|e| e.from == from && e.to == "Z")
+                .unwrap_or_else(|| panic!("{from} -> Z must be routed"))
+        };
+        // The port coordinate on Z's own flow-axis entry face runs along the cross axis — the same
+        // reading in both directions, which is why `cross_of`'s own axis choice is reused here.
+        let port = |e: &PlacedEdge| match direction {
+            Direction::TopToBottom | Direction::BottomToTop => e.points[e.points.len() - 1].x,
+            _ => e.points[e.points.len() - 1].y,
+        };
+        let (a, b, c) = (leg("A"), leg("B"), leg("C"));
+        assert_eq!(
+            b.points.len(),
+            2,
+            "{header}: B is the median source in declaration order, so its edge is the straight \
+             one: {:?}",
+            b.points
+        );
+        assert!(
+            (port(b) - z_cross).abs() < 0.01,
+            "{header}: the trunk enters on Z's own centre port: {} vs {z_cross}",
+            port(b)
+        );
+        for (name, e, want) in [
+            ("A", a, z_cross - orthogonal::PORT_SPACING),
+            ("C", c, z_cross + orthogonal::PORT_SPACING),
+        ] {
+            assert_eq!(
+                e.points.len(),
+                4,
+                "{header}: {name} -> Z is port-displaced, so §10-1 item 1 gives it two bends: {:?}",
+                e.points
+            );
+            assert!(
+                (port(e) - want).abs() < 0.01,
+                "{header}: {name} -> Z enters one PORT_SPACING off the trunk's own port, on the \
+                 side {name} genuinely sits (§10-3 item 12): {} vs {want}",
+                port(e)
+            );
+        }
+        for (i, (from_a, x)) in [("A", a), ("B", b), ("C", c)].iter().enumerate() {
+            for (from_b, y) in [("A", a), ("B", b), ("C", c)].iter().skip(i + 1) {
+                let crossing = x.points.windows(2).find_map(|wa| {
+                    y.points
+                        .windows(2)
+                        .find_map(|wb| orthogonal::segment_crossing(wa, wb))
+                });
+                assert!(
+                    crossing.is_none(),
+                    "{header}: {from_a} -> Z crosses {from_b} -> Z at {crossing:?}: {:?} vs {:?}",
+                    x.points,
+                    y.points
+                );
+            }
+        }
+    }
+}
+
+/// The lower edge of §10-3 item 10's own regime ([`orthogonal::MERGE_MEDIAN_MIN_SOURCES`]): a
+/// **two**-source merge keeps §10-1 item 2's plain "タイは上・左優先" greedy, so the *first*
+/// source in cross order takes the lane, not the second.
+///
+/// Two sources give the median nothing to buy — one straight edge and one sibling on one side of
+/// the centre port either way — and the alignment cannot deliver it anyway: a chain is aligned
+/// onto its members' own average and the overlap sweep after it only ever pushes a node later on
+/// its rank, so making the *last* of two sources the trunk pulls it up into its own predecessor
+/// and it is pushed straight back, leaving the lane on neither and both edges bending (measured on
+/// this exact source: 2 bends over the three edges the greedy's way, 4 the two-source median's).
+/// Mutating `MERGE_MEDIAN_MIN_SOURCES` from 3 to 2 fails here.
+#[test]
+fn orthogonal_two_source_merge_keeps_the_top_left_tie_break() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for header in ["flowchart LR", "flowchart TB"] {
+        let src = format!("{header}\n  A --> C\n  B --> C\n  C --> D");
+        let d = laid_out_flow(&src, "basis", "konoma-orthogonal");
+        let straight: Vec<&str> = d
+            .edges
+            .iter()
+            .filter(|e| e.to == "C" && e.points.len() == 2)
+            .map(|e| e.from.as_str())
+            .collect();
+        assert_eq!(
+            straight,
+            vec!["A"],
+            "{header}: with only two sources the greedy's own top/left pick keeps the lane"
+        );
+    }
+}
+
+/// [`orthogonal::pure_merges`]'s own "no source of it fans out too" half, through the real entry
+/// point: a complete bipartite pair of merges, three sources feeding both of two targets.
+///
+/// Deciding each merge's trunk in ignorance of the other picks the same median source (`B`) for
+/// both, which cannot be — §10-1 item 2's own "各ノード高々1入1出" gives `B` one out-lane — so one
+/// of the two targets ends up taking a lane from a source the other has already claimed, and the
+/// two lanes cross. §10-0 settles it, since the plain "タイは上・左優先" greedy draws the same six
+/// edges without a crossing at all. `amp-chain`'s own `A & B --> C & D` is the corpus shape this
+/// was found on (it failed both corpus-wide crossing invariants,
+/// `orthogonal_edges_leaving_one_node_never_cross_each_other_across_corpus` and
+/// `orthogonal_no_edge_crosses_its_own_endpoint_across_the_whole_corpus`); this fixture states it
+/// with three sources rather than two so it is the *purity* check being tested rather than
+/// [`orthogonal::MERGE_MEDIAN_MIN_SOURCES`], which excludes a two-source merge anyway.
+#[test]
+fn orthogonal_merge_rule_stays_out_of_two_merges_that_share_their_sources() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let d = laid_out_flow(
+        "flowchart LR\n  A & B & C --> T & U\n  T --> V",
+        "basis",
+        "konoma-orthogonal",
+    );
+    let straight: Vec<(&str, &str)> = d
+        .edges
+        .iter()
+        .filter(|e| e.points.len() == 2 && (e.to == "T" || e.to == "U"))
+        .map(|e| (e.from.as_str(), e.to.as_str()))
+        .collect();
+    assert_eq!(
+        straight,
+        vec![("A", "T"), ("B", "U")],
+        "the greedy's own top/left pick stands: A takes T's lane and B takes U's, two lanes that \
+         do not cross"
+    );
+    // The two lanes themselves never cross — which is the whole of what the greedy buys here. A
+    // complete bipartite graph has crossings no routing can remove (`A -> U` and `B -> T` have to
+    // swap sides somewhere), so a diagram-wide "no crossing" assertion would be pinning something
+    // this rule neither promises nor could deliver.
+    let lanes: Vec<&PlacedEdge> = d
+        .edges
+        .iter()
+        .filter(|e| (e.from == "A" && e.to == "T") || (e.from == "B" && e.to == "U"))
+        .collect();
+    let crossing = lanes[0].points.windows(2).find_map(|wa| {
+        lanes[1]
+            .points
+            .windows(2)
+            .find_map(|wb| orthogonal::segment_crossing(wa, wb))
+    });
+    assert!(
+        crossing.is_none(),
+        "the two selected lanes must stay parallel: {crossing:?}"
     );
 }
 
@@ -10776,18 +10977,30 @@ fn orthogonal_a_tier_needs_its_sources_on_one_straight_lane() {
     }
 }
 
-/// §10-5 round 5's own label rule, stated where it was reported: the three-way merge into
-/// `API ゲート`.
+/// §10-5 round 5's own label rule and §10-3 item 10's own merge mirror, both stated where they
+/// were reported: the three-way merge into `API ゲート`.
 ///
-/// `HTTPS` is a wide plate (~54px) on the middle sibling. Placed on that sibling's *entry leg* —
-/// inside a corridor where §10-1 item 1 puts the three ports 16px apart — it covers its two
-/// neighbours' legs, and `avoid_label_plates` then pushed their ports out from under it, past each
-/// other, inverting item 1's own "もう一方の端点のcross座標順" and guaranteeing a crossing
+/// The label half. `HTTPS` is a wide plate (~54px) on the middle sibling. Placed on that sibling's
+/// *entry leg* — inside a corridor where §10-1 item 1 puts the three ports 16px apart — it covers
+/// its two neighbours' legs, and `avoid_label_plates` then pushed their ports out from under it,
+/// past each other, inverting item 1's own "もう一方の端点のcross座標順" and guaranteeing a crossing
 /// (measured before the fix: `CLI`'s port stepped over *two* siblings). Two changes remove it —
 /// the plate is chosen on a clear segment (`orthogonal::label_slot_clear`) and the nudge never
-/// steps over a sibling (`orthogonal::push_outward`'s own doc) — and this states the result rather
-/// than either mechanism: three ports one `PORT_SPACING` apart in **source order**, the trunk's own
-/// edge dead straight, and no two of the three crossing.
+/// steps over a sibling (`orthogonal::push_outward`'s own doc).
+///
+/// The merge half (`docs/render-check/zz-design-2b-browser.png`, read against this output). The
+/// three clients are a **pure merge** and none of them carries a through-lane, so
+/// `orthogonal::merge_trunk_index`'s median clause picks the middle of the three *in declaration
+/// order* — `UI`, exactly the source the design draws level with `API ゲート` — and `CLI` (above)
+/// and `EX` (below) come in on the `±PORT_SPACING` ports either side of it. `align_straight_lanes`'s
+/// own "タイは上・左優先" greedy used to hand the lane to `CLI`, the first-declared, which bent both
+/// of the others in from the same side and grew `API ゲート` to 80px tall to fit three ports below
+/// its own centre; `docs/STATUS.md`'s own ★未修正 entry reported it as the defect it is.
+///
+/// What this states, rather than either mechanism: three ports one `PORT_SPACING` apart in
+/// **source order**, `UI`'s own edge dead straight while its two siblings each take the two bends
+/// §10-1 item 1 allows a port-displaced edge ("退避則適用時は2回まで" — the design draws the same
+/// out-across-in shape), and no two of the three crossing.
 #[test]
 fn orthogonal_design_2b_2c_the_merge_into_the_gate_keeps_its_port_order() {
     if !text_metrics::fonts_available() {
@@ -10822,23 +11035,59 @@ fn orthogonal_design_2b_2c_the_merge_into_the_gate_keeps_its_port_order() {
                 _ => e.points[e.points.len() - 1].y,
             })
             .collect();
-        for (i, w) in ports.windows(2).enumerate() {
+        // Evenly spaced, ascending in source order, and a whole number of `PORT_SPACING` slots
+        // apart — not necessarily *one* slot. §10-1 item 1 puts the grid at 16px, and §10-7's own
+        // label rule is allowed to step a port one slot further out when a plate is in its way, so
+        // long as it never steps over a sibling (`orthogonal::push_outward`). Both design
+        // directions exercise one of those two cases: `2b`/`LR` takes one slot each side, while
+        // `2c`/`TB` takes two, because there the `HTTPS` plate sits centred on the trunk's own
+        // vertical line at exactly the `y` both siblings' cross legs run along (measured: plate
+        // 360.7..414.6, the two legs stopping at 355.7 and 419.7). Pinning "exactly one slot"
+        // would be pinning which direction the plate happens to land in, not the rule.
+        let steps: Vec<f64> = ports.windows(2).map(|w| w[1] - w[0]).collect();
+        for (i, &step) in steps.iter().enumerate() {
+            let slots = (step / orthogonal::PORT_SPACING).round();
             assert!(
-                (w[1] - w[0] - orthogonal::PORT_SPACING).abs() < 0.01,
-                "{name}: the merge's ports must be one {}px step apart in source order \
-                 (CLI, UI, EX), not {ports:?} — {} then {}",
+                slots >= 1.0 && (step - slots * orthogonal::PORT_SPACING).abs() < 0.01,
+                "{name}: the merge's ports must be a whole ascending {}px step apart in source \
+                 order (CLI, UI, EX), not {ports:?} — {} then {}",
                 orthogonal::PORT_SPACING,
                 legs[i].0,
                 legs[i + 1].0
             );
         }
-        let cli = legs[0].1;
-        assert_eq!(
-            cli.points.len(),
-            2,
-            "{name}: CLI -> API is the trunk's own edge and must be dead straight: {:?}",
-            cli.points
+        assert!(
+            (steps[0] - steps[1]).abs() < 0.01,
+            "{name}: the two siblings straddle the trunk's own port symmetrically: {ports:?}"
         );
+        let ui = legs[1].1;
+        assert_eq!(
+            ui.points.len(),
+            2,
+            "{name}: UI -> API is the merge's own trunk (the median source in declaration order) \
+             and must be dead straight: {:?}",
+            ui.points
+        );
+        let api = d.node("API").expect("API ゲート must exist");
+        let api_cross = match direction {
+            crate::preview::mermaid::flowchart::Direction::TopToBottom
+            | crate::preview::mermaid::flowchart::Direction::BottomToTop => api.center.x,
+            _ => api.center.y,
+        };
+        assert!(
+            (ports[1] - api_cross).abs() < 0.01,
+            "{name}: the trunk enters on API's own centre port, so its two siblings straddle it: \
+             {ports:?} vs {api_cross}"
+        );
+        for (from, leg) in [legs[0], legs[2]] {
+            assert_eq!(
+                leg.points.len(),
+                4,
+                "{name}: {from} -> API is port-displaced, so §10-1 item 1 gives it two bends — out \
+                 of its own face, across, and in: {:?}",
+                leg.points
+            );
+        }
         for (i, (from_a, a)) in legs.iter().enumerate() {
             for (from_b, b) in legs.iter().skip(i + 1) {
                 let crossing = a.points.windows(2).find_map(|wa| {
