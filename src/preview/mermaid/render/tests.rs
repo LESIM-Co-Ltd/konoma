@@ -9015,6 +9015,34 @@ fn orthogonal_only_corpus() -> Vec<(&'static str, &'static str)> {
              end\n  A --> M\n  B --> M\n  C --> M\n  M --> N\n  N --> P\n  N --> Q\n  N --> R\n  \
              R --> Z\n  A -.->|aside| Z",
         ),
+        (
+            // An aside whose source is **boxed in on every side by main flow**: `B` is the middle
+            // of three framed siblings that one node feeds and one node collects, so the corridor
+            // above the row, the corridor below it, the runs in and the runs out are all occupied
+            // by a sibling's leg — every one of `perimeter_faces`' sixteen candidate pairs has to
+            // cut one to get out. (The `orthogonal-aside-off-a-middle-sibling-*` pair
+            // `dotted_aside_cases` carries inline is this same shape with the row fed from one side
+            // only, which leaves the other side free and is why that one crosses nothing.)
+            //
+            // This is the case §10-1 item 4's own crossing gap exists for, and after 2026-09-05 it
+            // is the only one left: the crossing term added that day (§10-0, "交差は遠回りより悪い")
+            // took every other corpus aside's crossing away — `orthogonal_a_forward_aside_carries_
+            // the_crossing_gaps` measured nothing at all and said so — and a rule with nothing left
+            // to measure it on is a rule that quietly stops being true. It states the converse of
+            // the new term too: that the term never invents a detour when no face pair is free,
+            // which is what `invariant_orthogonal_aside_crosses_no_more_than_the_best_face_pair_
+            // could` reading a non-zero minimum here says.
+            //
+            // **`LR` only, deliberately.** The identical graph laid out `TB` reaches its own
+            // fewest-crossings pair only through a five-corner route, which
+            // `orthogonal_every_aside_rides_the_outer_perimeter_lane`'s own ≤4-corner bound
+            // (measured off the design references) forbids — a real tension in ranking crossings
+            // above corners, reported rather than papered over here by relaxing that bound or by
+            // reaching for a fixture whose numbers happen to sit under it.
+            "orthogonal-aside-must-cross-a-leg-lr",
+            "flowchart LR\n  P --> A\n  P --> B\n  P --> D\n  subgraph S[row]\n    A\n    B\n    \
+             D\n  end\n  A --> H\n  B --> H\n  D --> H\n  H --> Z\n  B -.-> Z",
+        ),
     ]
 }
 
@@ -12067,29 +12095,33 @@ fn dotted_aside_cases() -> Vec<(
             Direction::TopToBottom,
             ["CLI", "UI", "EX"],
         ),
-        // Added 2026-09-04 with §10-5 round 5's own tier rule
-        // (`orthogonal::place_dead_end_tiers`), back when `zz-design-2b`/`2c` were still
-        // mistranscribed as `CLI -.->|リンク| PAY` (`CLI` the row's first sibling) — under that
-        // source the tier rule took the aside's detour out of the picture entirely for both, so
-        // this synthetic fixture (aside off the row's own middle sibling) was added to keep the
-        // crossing-gap machinery covered by something that still reproduces it. With the source
-        // corrected to `UI -.->|リンク| PAY` (`UI` genuinely is the middle sibling), `2c`'s own
-        // aside crosses a sibling's leg once again (re-measured: `2b`/`LR` 0 crossings, `2c`/`TB`
-        // 1) — this synthetic fixture is kept anyway, since it pins the shape on its own two-line
-        // diagram rather than depending on whichever of the two design directions happens to
-        // reproduce it: a stack of three siblings all feeding one hub, with the aside leaving the
-        // **middle** one, so its way out of the row is across a sibling's leg whichever side it
-        // takes.
+        // A stack of three siblings all feeding one hub, with the aside leaving the **middle**
+        // one, so its way out of the row has to pass a sibling's leg on whichever side it takes.
+        // Added 2026-09-04 to keep the crossing-gap machinery covered by a two-line diagram of its
+        // own rather than by whichever design direction happened to reproduce a crossing that
+        // week; renamed 2026-09-05 (it used to be `…-crosses-a-sibling-leg-…`) because it no
+        // longer crosses one: with nothing feeding the row from the other side, the aside now
+        // leaves the row the *free* way and goes round, which is §10-0's own preference and what
+        // the crossing term added that day is for. It stays in the list as the case that states
+        // exactly that — a middle sibling's aside gets out without cutting anything — while
+        // `orthogonal-aside-must-cross-a-leg-lr` (`orthogonal_only_corpus`, the same shape with the
+        // row fed from both sides) carries the crossing the gap rule needs.
         (
-            "orthogonal-aside-crosses-a-sibling-leg-lr",
+            "orthogonal-aside-off-a-middle-sibling-lr",
             "flowchart LR\n  subgraph S[row]\n    A\n    B\n    D\n  end\n  A --> H\n  B --> H\n  D --> H\n  H --> Z\n  B -.-> Z",
             Direction::LeftToRight,
             ["A", "B", "D"],
         ),
         (
-            "orthogonal-aside-crosses-a-sibling-leg-tb",
+            "orthogonal-aside-off-a-middle-sibling-tb",
             "flowchart TB\n  subgraph S[row]\n    A\n    B\n    D\n  end\n  A --> H\n  B --> H\n  D --> H\n  H --> Z\n  B -.-> Z",
             Direction::TopToBottom,
+            ["A", "B", "D"],
+        ),
+        (
+            "orthogonal-aside-must-cross-a-leg-lr",
+            named(orthogonal_only_corpus(), "orthogonal-aside-must-cross-a-leg-lr"),
+            Direction::LeftToRight,
             ["A", "B", "D"],
         ),
     ]
@@ -12224,6 +12256,54 @@ fn orthogonal_an_aside_only_target_still_ranks_after_its_source() {
     }
 }
 
+/// The content box every node and every frame of `d` fits in — what [`orthogonal::PERIMETER_MARGIN`]
+/// is measured out from, recomputed here from the finished picture rather than asked of the router.
+fn diagram_content_box(d: &Diagram) -> (f64, f64, f64, f64) {
+    let (mut l, mut t, mut r, mut b) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for (nl, nt, nr, nb) in d
+        .nodes
+        .iter()
+        .map(|n| n.bounds())
+        .chain(d.clusters.iter().map(|c| c.bounds()))
+    {
+        l = l.min(nl);
+        t = t.min(nt);
+        r = r.max(nr);
+        b = b.max(nb);
+    }
+    (l, t, r, b)
+}
+
+/// Whether `e` is one of the lines drawn **on the perimeter ring** — read off the finished picture:
+/// the ring is [`orthogonal::PERIMETER_MARGIN`] px outside the content box, so a rider is exactly a
+/// line with a vertex out there. A self-loop is excluded, the same way `orthogonal::routes_last`
+/// excludes it: it is `reverse` but is drawn locally, and is main flow as far as anything crossing
+/// it is concerned.
+fn rides_the_ring(e: &PlacedEdge, (l, t, r, b): (f64, f64, f64, f64)) -> bool {
+    e.from != e.to
+        && e.points.iter().any(|p| {
+            p.x <= l - orthogonal::PERIMETER_MARGIN + 0.01
+                || p.y <= t - orthogonal::PERIMETER_MARGIN + 0.01
+                || p.x >= r + orthogonal::PERIMETER_MARGIN - 0.01
+                || p.y >= b + orthogonal::PERIMETER_MARGIN - 0.01
+        })
+}
+
+/// How many segments of `polylines` the line `pts` crosses, through the same
+/// [`orthogonal::segment_crossing`] the router itself counts with (so a shared port or a
+/// T-junction — a touch, not a crossing — is not one here either).
+fn crossings_against(pts: &[Point], polylines: &[Vec<Point>]) -> usize {
+    pts.windows(2)
+        .map(|a| {
+            polylines
+                .iter()
+                .flat_map(|o| o.windows(2))
+                .filter(|b| orthogonal::segment_crossing(a, b).is_some())
+                .count()
+        })
+        .sum()
+}
+
 /// §10-1 item 4's **routing** half: "戻り辺・補助辺は破線で外周レーンを回す…外周レーンは最も外側の枠
 /// から16px以上外に置く", as §10-5 round 5 narrowed it — an author-dotted edge whose direct route
 /// would **cut through the picture** leaves the content box by at least
@@ -12257,29 +12337,13 @@ fn orthogonal_every_aside_rides_the_outer_perimeter_lane() {
         .chain(orthogonal_only_corpus())
     {
         let d = laid_out_flow(src, "basis", "konoma-orthogonal");
-        let (mut l, mut t, mut r, mut b) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-        for (nl, nt, nr, nb) in d
-            .nodes
-            .iter()
-            .map(|n| n.bounds())
-            .chain(d.clusters.iter().map(|c| c.bounds()))
-        {
-            l = l.min(nl);
-            t = t.min(nt);
-            r = r.max(nr);
-            b = b.max(nb);
-        }
+        let (l, t, r, b) = diagram_content_box(&d);
         for e in &d.edges {
             if e.stroke != Stroke::Dotted || e.from == e.to {
                 continue;
             }
             checked += 1;
-            let outside = e.points.iter().any(|p| {
-                p.x <= l - orthogonal::PERIMETER_MARGIN + 0.01
-                    || p.y <= t - orthogonal::PERIMETER_MARGIN + 0.01
-                    || p.x >= r + orthogonal::PERIMETER_MARGIN - 0.01
-                    || p.y >= b + orthogonal::PERIMETER_MARGIN - 0.01
-            });
+            let outside = rides_the_ring(e, (l, t, r, b));
             // Is there anything at all between the two ends? Restated here from the finished
             // picture: the rectangle the two boxes span, against every other node box and every
             // frame that does not hold both of them.
@@ -12412,6 +12476,140 @@ fn orthogonal_a_forward_aside_carries_the_crossing_gaps() {
         checked > 0,
         "no forward aside crossed anything — the check is vacuous"
     );
+}
+
+/// §10-0 ("線が複雑にならないこと — 交差は遠回りより悪い"), stated over the whole orthogonal corpus
+/// for the lines [`orthogonal::perimeter_faces`] decides: **an aside on the perimeter ring never
+/// crosses more main-flow lines than the best of its sixteen candidate face pairs would have.**
+///
+/// The two halves are measured differently on purpose. The left-hand side is the *drawn* line — the
+/// polyline in the finished diagram, crossings counted against every line that is not itself on the
+/// ring — so a route that picked the right faces and then lost them to eviction, a local detour or a
+/// label plate is still caught. The right-hand side is `orthogonal::fewest_perimeter_crossings`, the
+/// router's own candidate table, so "could it have done better" is answered by scoring the fifteen
+/// pairs it did not take rather than by a second, hand-rolled idea of what the alternatives were.
+///
+/// Scoped to asides, which is exactly the set of riders `perimeter_faces` chooses faces for: a
+/// genuine **back edge** on the same ring takes its two faces from dagre's own waypoint chain
+/// (`classify`'s `is_reverse` branch calls `dominant_face`, never `perimeter_faces`), so there is no
+/// candidate table to hold it to and this says nothing about it.
+#[test]
+fn invariant_orthogonal_aside_crosses_no_more_than_the_best_face_pair_could() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let mut checked = 0usize;
+    let mut with_a_crossing = 0usize;
+    for (name, src) in orthogonal_full_corpus()
+        .into_iter()
+        .chain(orthogonal_only_corpus())
+    {
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let content = diagram_content_box(&d);
+        let main_flow: Vec<Vec<Point>> = d
+            .edges
+            .iter()
+            .filter(|e| !rides_the_ring(e, content))
+            .map(|e| e.points.clone())
+            .collect();
+        for e in &d.edges {
+            if e.stroke != Stroke::Dotted || !rides_the_ring(e, content) {
+                continue;
+            }
+            let node_of = |id: &str| {
+                d.nodes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .unwrap_or_else(|| panic!("{name}: {id} is a node"))
+            };
+            let drawn = crossings_against(&e.points, &main_flow);
+            let best = orthogonal::fewest_perimeter_crossings(
+                node_of(&e.from),
+                node_of(&e.to),
+                &d.nodes,
+                &d.clusters,
+                &main_flow,
+            );
+            assert!(
+                drawn <= best,
+                "{name}: the aside {}->{} crosses {drawn} main-flow segments, but a face pair \
+                 crossing only {best} was available — §10-0 makes a crossing worse than any \
+                 detour: {:?}",
+                e.from,
+                e.to,
+                e.points
+            );
+            checked += 1;
+            with_a_crossing += usize::from(drawn > 0);
+        }
+    }
+    assert!(
+        checked >= 6,
+        "only {checked} perimeter-riding asides were checked — the corpus lost its dotted edges \
+         and the check is vacuous"
+    );
+    // Without a fixture whose every face pair crosses something, `drawn <= best` would hold for the
+    // trivial reason that both sides are always 0, and the ranking could be deleted without this
+    // test noticing (`orthogonal-aside-must-cross-a-leg-lr` is that fixture, and its own comment
+    // says why it exists).
+    assert!(
+        with_a_crossing > 0,
+        "no corpus aside crosses anything at all — `drawn <= best` is then vacuously true whatever \
+         `perimeter_faces` ranks by"
+    );
+}
+
+/// The defect the crossing term was added for (2026-09-05), pinned on the two design references
+/// that showed it: `zz-design-2b`/`2c`'s own `UI -.->|リンク| PAY` leaves ブラウザ UI, goes round,
+/// and **crosses nothing at all**.
+///
+/// Before the term, `2b`'s aside left ブラウザ UI's Right face — the short way, two corners — and
+/// cut straight through `エディタ拡張 --> API` (one gapped crossing); `2c`'s cut a sibling's leg the
+/// same way. The design draws neither: it takes the aside out of the picture's own body, which is
+/// §10-1 item 4's whole reason for the perimeter lane.
+///
+/// Stated as "zero crossings against the whole rest of the diagram", not as a face name or a
+/// coordinate: which face is free depends on where dagre puts the row, and pinning `Left` here
+/// would fail for a layout that is just as correct. The corpus-wide sibling of this test
+/// (`invariant_orthogonal_aside_crosses_no_more_than_the_best_face_pair_could`) is what states the
+/// general rule; this one states that these two particular pictures actually reach zero.
+#[test]
+fn orthogonal_the_design_reference_asides_cross_nothing() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    for name in ["zz-design-2a", "zz-design-2b", "zz-design-2c"] {
+        let src = orthogonal_design_reference_corpus()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name} is in the design-reference corpus"))
+            .1;
+        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
+        let others: Vec<Vec<Point>> = d
+            .edges
+            .iter()
+            .filter(|e| e.stroke != Stroke::Dotted)
+            .map(|e| e.points.clone())
+            .collect();
+        let mut asides = 0usize;
+        for e in &d.edges {
+            if e.stroke != Stroke::Dotted || e.from == e.to {
+                continue;
+            }
+            asides += 1;
+            assert_eq!(
+                crossings_against(&e.points, &others),
+                0,
+                "{name}: the aside {}->{} must reach {} without crossing a single main-flow \
+                 line — §10-0's own 交差は遠回りより悪い: {:?}",
+                e.from,
+                e.to,
+                e.to,
+                e.points
+            );
+        }
+        assert_eq!(asides, 1, "{name} carries exactly one author-dotted aside");
+    }
 }
 
 /// §10-3's own 8px nested-lane pitch, stated over the whole corpus for the shape

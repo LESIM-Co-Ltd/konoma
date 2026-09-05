@@ -580,6 +580,39 @@ fn rides_the_perimeter(shape: &EdgeShape) -> bool {
     shape.reverse || shape.aside
 }
 
+/// Whether this edge is one of the lines [`route_flowchart`] routes **last** — a perimeter rider
+/// that really does go round the outside, [`rides_the_perimeter`] minus the self-loop its own doc
+/// explains is drawn locally by [`route_with_ports`] instead. The same pair of conditions
+/// [`perimeter_lanes`] and [`insert_crossing_gaps`] already ask together, named once so the routing
+/// order, the lane assignment and the crossing-gap rule cannot drift apart about what a rider is.
+fn routes_last(shape: &EdgeShape, source: &PlacedNode, target: &PlacedNode) -> bool {
+    rides_the_perimeter(shape) && source.id != target.id
+}
+
+/// Every already-routed **main-flow** polyline: what a perimeter rider's own candidate routes are
+/// scored against ([`perimeter_faces`]'s crossing term). Everything that is not a rider counts,
+/// self-loops included — a self-loop is a real line drawn inside the picture, not something on the
+/// ring. Order carries no meaning: the only thing read off this list is a count.
+fn main_flow_polylines(
+    edges: &[EligibleEdge],
+    shapes: &[Option<EdgeShape>],
+    by_id: &HashMap<&str, &PlacedNode>,
+    points: &HashMap<String, Vec<Point>>,
+) -> Vec<Vec<Point>> {
+    edges
+        .iter()
+        .zip(shapes)
+        .filter_map(|(e, s)| {
+            let shape = s.as_ref()?;
+            let (&source, &target) = (by_id.get(e.source)?, by_id.get(e.target)?);
+            if routes_last(shape, source, target) {
+                return None;
+            }
+            points.get(e.id).cloned()
+        })
+        .collect()
+}
+
 /// §10-5 round 5's own narrowing of §10-1 item 4's perimeter lane for an **aside**: whether this
 /// one's ordinary, direct route would cut through the picture at all.
 ///
@@ -858,6 +891,13 @@ fn classify(
     // (`render::is_aside`). An aside is drawn on the outer perimeter lane whichever way it points
     // — see the `aside` branch below — where before only a *reverse* edge went there.
     aside: bool,
+    // Every main-flow polyline already routed in this diagram, for [`perimeter_faces`]'s own
+    // crossing term. Read by the `aside` branch below and by nothing else, so every caller that
+    // only wants one of this function's *predicates* out of the returned shape (is it a perimeter
+    // rider, is it a staircase) passes an empty slice: with nothing to cross, every candidate face
+    // pair scores zero and the ranking falls back to exactly the corners-then-length order this
+    // function used before the term existed.
+    main_flow: &[Vec<Point>],
 ) -> EdgeShape {
     // §10-5 S3's own early return: a self-transition is `source.id == target.id`, which the
     // `is_reverse`/`nothing_between` machinery below would otherwise read as an ordinary back
@@ -980,7 +1020,7 @@ fn classify(
             box_bounds(nodes, frames, [source, target]),
             PERIMETER_MARGIN,
         );
-        let (source_side, target_side) = perimeter_faces(source, target, ring, nodes);
+        let (source_side, target_side) = perimeter_faces(source, target, ring, nodes, main_flow);
         return EdgeShape {
             // A reverse aside is still a back edge — both facts are true of it, and both are read
             // downstream (`EdgeShape::aside`'s own doc).
@@ -3179,15 +3219,52 @@ fn route_perimeter(
 /// reachable (`zz-design-2a`'s own `D -.-> F`: both nodes sit exactly on the ring's own centre
 /// column, so leaving left and leaving right cost the identical 2 bends and 879.9px), and an
 /// arbitrary-but-stable answer is what keeps the same source drawing the same picture.
+///
+/// `main_flow` is every **already-routed** non-perimeter polyline in the diagram — [`route_
+/// flowchart`] routes the riders last precisely so this list exists by the time a face pair is
+/// judged. It buys the second cost term, ranked directly under self-puncture and above corners and
+/// length: §10-0 ("線が複雑にならないこと — 交差は遠回りより悪い") makes a crossing worse than every
+/// detour, so a longer way round that meets nothing wins over a short hop that cuts a main line.
+/// `zz-design-2b`'s own `UI -.->|リンク| PAY` is the case: leaving ブラウザ UI's Right face is the
+/// short way and crosses `エディタ拡張 --> API`, leaving its Left face goes round the left and the
+/// bottom and crosses nothing, and corners-then-length alone chose the crossing.
 fn perimeter_faces(
     source: &PlacedNode,
     target: &PlacedNode,
     ring: (f64, f64, f64, f64),
     nodes: &[PlacedNode],
+    main_flow: &[Vec<Point>],
 ) -> (Side, Side) {
+    let mut best: Option<(PerimeterCost, (Side, Side))> = None;
+    for (cost, sides) in perimeter_face_candidates(source, target, ring, nodes, main_flow) {
+        let rank = |c: &PerimeterCost| (c.0, c.1, c.2);
+        let better = best.as_ref().is_none_or(|(seen, _)| {
+            rank(&cost) < rank(seen) || (rank(&cost) == rank(seen) && cost.3 < seen.3 - EPS)
+        });
+        if better {
+            best = Some((cost, sides));
+        }
+    }
+    best.map(|(_, sides)| sides)
+        // Unreachable: the loop above always runs sixteen times and always records the first.
+        .unwrap_or((Side::Top, Side::Top))
+}
+
+/// All sixteen `(source face, target face)` pairs [`perimeter_faces`] chooses between, each with
+/// the cost it is ranked by, in [`PERIMETER_FACE_ORDER`] (so "first of an exact tie wins" is just
+/// "first in this list"). Split out from `perimeter_faces` so the corpus-wide invariant
+/// ([`fewest_perimeter_crossings`]) scores candidates with the very function production ranks them
+/// with, rather than a second copy of the same arithmetic that could drift away from it.
+fn perimeter_face_candidates(
+    source: &PlacedNode,
+    target: &PlacedNode,
+    ring: (f64, f64, f64, f64),
+    nodes: &[PlacedNode],
+    main_flow: &[Vec<Point>],
+) -> Vec<(PerimeterCost, (Side, Side))> {
     let ids = (source.id.as_str(), target.id.as_str());
     let blocked = |a: &Point, b: &Point| segment_crosses_any_node(a, b, nodes, ids);
-    let mut best: Option<(PerimeterCost, (Side, Side))> = None;
+    let mut out = Vec::with_capacity(PERIMETER_FACE_ORDER.len() * PERIMETER_FACE_ORDER.len());
     for &source_side in &PERIMETER_FACE_ORDER {
         for &target_side in &PERIMETER_FACE_ORDER {
             let route = route_perimeter(
@@ -3205,29 +3282,73 @@ fn perimeter_faces(
             // directly on that row as a clean two-corner route — through the target's own box.
             let punctures =
                 staircase_punctures_its_own_endpoint(&route, Some(source), Some(target));
-            let cost = (
-                usize::from(punctures),
-                route.len().saturating_sub(2),
-                polyline_length(&route),
-            );
-            let better = best.as_ref().is_none_or(|(seen, _)| {
-                (cost.0, cost.1) < (seen.0, seen.1)
-                    || ((cost.0, cost.1) == (seen.0, seen.1) && cost.2 < seen.2 - EPS)
-            });
-            if better {
-                best = Some((cost, (source_side, target_side)));
-            }
+            out.push((
+                (
+                    usize::from(punctures),
+                    crossings_with(&route, main_flow),
+                    route.len().saturating_sub(2),
+                    polyline_length(&route),
+                ),
+                (source_side, target_side),
+            ));
         }
     }
-    best.map(|(_, sides)| sides)
-        // Unreachable: the loop above always runs sixteen times and always records the first.
-        .unwrap_or((Side::Top, Side::Top))
+    out
+}
+
+/// The fewest main-flow segments any candidate face pair could have crossed, for an aside between
+/// `source` and `target` in a finished diagram — what the corpus-wide invariant compares the route
+/// actually drawn against ("no pair with fewer crossings existed").
+///
+/// Measured over the candidates that do **not** run back through one of their own two boxes,
+/// whenever there are any: self-puncture outranks crossings in [`PerimeterCost`], so a puncturing
+/// pair is never chosen while a clean one exists and must not set the bar the chosen route is held
+/// to either.
+pub(crate) fn fewest_perimeter_crossings(
+    source: &PlacedNode,
+    target: &PlacedNode,
+    nodes: &[PlacedNode],
+    clusters: &[PlacedCluster],
+    main_flow: &[Vec<Point>],
+) -> usize {
+    let frames = cluster_node_boxes(clusters);
+    let ring = expand_bounds(
+        box_bounds(nodes, &frames, [source, target]),
+        PERIMETER_MARGIN,
+    );
+    let candidates = perimeter_face_candidates(source, target, ring, nodes, main_flow);
+    let clean = candidates.iter().any(|(c, _)| c.0 == 0);
+    candidates
+        .iter()
+        .filter(|(c, _)| !clean || c.0 == 0)
+        .map(|(c, _)| c.1)
+        .min()
+        .unwrap_or(0)
+}
+
+/// How many of `main_flow`'s segments `route` would cross — [`perimeter_faces`]'s own crossing
+/// term, and the same question [`insert_crossing_gaps`] later answers about the finished picture,
+/// asked through the same [`segment_crossing`] helper so the two can never disagree about what a
+/// crossing is. Two lines that merely *touch* (a shared port, a T-junction where one line's end
+/// lands on another's run) are not crossings: `segment_crossing` needs both segments' interiors.
+fn crossings_with(route: &[Point], main_flow: &[Vec<Point>]) -> usize {
+    route
+        .windows(2)
+        .map(|w| {
+            main_flow
+                .iter()
+                .flat_map(|other| other.windows(2))
+                .filter(|o| segment_crossing(w, o).is_some())
+                .count()
+        })
+        .sum()
 }
 
 /// What [`perimeter_faces`] ranks a candidate pair by, cheapest first: whether the route would run
-/// back through one of its own two boxes (never, unless every pair would), then how many corners it
-/// takes, then how long it is. Its own doc has the reasoning for each of the three.
-type PerimeterCost = (usize, usize, f64);
+/// back through one of its own two boxes (never, unless every pair would), then how many main-flow
+/// lines it would cross, then how many corners it takes, then how long it is. Its own doc has the
+/// reasoning for each of the four.
+type PerimeterCost = (usize, usize, usize, f64);
 
 /// The order [`perimeter_faces`] tries faces in, and therefore the order it breaks an exact tie in
 /// — see its own doc. Flow-forward faces before flow-backward ones on each axis, so a tie between
@@ -3280,6 +3401,9 @@ pub fn route_edge(
         // and no unit test below routes a dotted edge through it. A real diagram's aside goes
         // through `route_flowchart` like every other edge.
         false,
+        // No other edge exists in this isolated single-edge helper, so there is no main flow to
+        // cross either — the same "no siblings" simplification as the two empty slices above.
+        &[],
     );
     let source_coord = face_center_coord(source, shape.source_side);
     let target_coord = face_center_coord(target, shape.target_side);
@@ -3976,6 +4100,10 @@ fn build_shapes_and_eviction<'a>(
     cluster_ids: &std::collections::HashSet<&str>,
     fixed_self_loops: bool,
     chain_next: &HashMap<String, String>,
+    // [`perimeter_faces`]' crossing term: empty on the first pass (nothing is routed yet), and the
+    // finished main flow on the re-run [`route_flowchart`] does once its riders have something to
+    // be judged against.
+    main_flow: &[Vec<Point>],
 ) -> BuildShapesResult {
     let mut shapes: Vec<Option<EdgeShape>> = edges
         .iter()
@@ -3997,6 +4125,7 @@ fn build_shapes_and_eviction<'a>(
                 cluster_ids.contains(e.source),
                 fixed_self_loops,
                 e.aside,
+                main_flow,
             ))
         })
         .collect();
@@ -4156,6 +4285,8 @@ pub fn route_flowchart(
         &cluster_ids,
         fixed_self_loops,
         chain_next,
+        // Nothing is routed yet, and only `bar_spans` is read out of this pass anyway.
+        &[],
     );
 
     // S4: move/grow every bar so its own drawn rectangle actually reaches every port bar_ports
@@ -4178,7 +4309,7 @@ pub fn route_flowchart(
     // box that no longer exists there). A bar-anchored edge's own shape is unaffected either way
     // (classify's bar_anchored branch returns before ever calling the collision pre-check), so
     // bar_ports's own output is identical between the two passes -- no third pass needed.
-    let (mut shapes, eviction, _) = build_shapes_and_eviction(
+    let (mut shapes, mut eviction, _) = build_shapes_and_eviction(
         direction,
         nodes,
         &by_id,
@@ -4187,6 +4318,9 @@ pub fn route_flowchart(
         &cluster_ids,
         fixed_self_loops,
         chain_next,
+        // Nothing is routed yet, so the riders' faces this pass decides are provisional — the
+        // re-run below is what settles them.
+        &[],
     );
 
     // 10-3 item 10's own hop nesting: run only once every sibling's exact port coordinate
@@ -4197,15 +4331,152 @@ pub fn route_flowchart(
     nest_merge_target_hops(direction, edges, &by_id, &mut shapes, &eviction);
 
     let base_bounds = content_bounds(nodes, clusters);
-    let lane_of = perimeter_lanes(&by_id, edges, &shapes);
+    let mut lane_of = perimeter_lanes(&by_id, edges, &shapes);
 
+    // §10-0 ("交差は遠回りより悪い"), in two phases: the main flow first, then the perimeter riders
+    // ([`routes_last`]) — so a rider's own face pair can be judged against lines that actually
+    // exist, which is the one thing `perimeter_faces` could never see while every edge was routed
+    // in one pass. Only an **aside** reads that judgement (a genuine back edge takes its faces from
+    // dagre's own waypoint chain, `classify`'s `is_reverse` branch), so a diagram with no aside
+    // skips the re-run entirely and draws byte-for-byte what it drew before this split existed.
     let mut points = HashMap::with_capacity(edges.len());
-    for (edge, shape) in edges.iter().zip(&shapes) {
+    route_pass(
+        RoutePass {
+            direction,
+            edges,
+            shapes: &shapes,
+            by_id: &by_id,
+            eviction: &eviction,
+            lane_of: &lane_of,
+            base_bounds,
+            nodes,
+        },
+        false,
+        &mut points,
+    );
+
+    if shapes.iter().flatten().any(|s| s.aside) {
+        let main_flow = main_flow_polylines(edges, &shapes, &by_id, &points);
+        let (mut retry_shapes, retry_eviction, _) = build_shapes_and_eviction(
+            direction,
+            nodes,
+            &by_id,
+            edges,
+            &cluster_boxes,
+            &cluster_ids,
+            fixed_self_loops,
+            chain_next,
+            &main_flow,
+        );
+        let moved = shapes.iter().zip(&retry_shapes).any(|(was, now)| {
+            matches!((was, now), (Some(was), Some(now))
+                if was.aside
+                    && (was.source_side != now.source_side || was.target_side != now.target_side))
+        });
+        if moved {
+            // An aside claims a port on each of its two faces like any other edge (`evict` has no
+            // exemption for one), so moving it to another face re-spaces whatever else shares the
+            // faces it left and the faces it joined — which is why the whole diagram is re-routed
+            // from the new eviction rather than only the aside itself. The main flow the decision
+            // was scored against is therefore the pre-move one: a single step, not a fixpoint, and
+            // deliberately so — a second move could only be judged against a third routing, and
+            // §10-0 asks for a line that crosses nothing, not for a converged search.
+            nest_merge_target_hops(direction, edges, &by_id, &mut retry_shapes, &retry_eviction);
+            shapes = retry_shapes;
+            eviction = retry_eviction;
+            lane_of = perimeter_lanes(&by_id, edges, &shapes);
+            points.clear();
+            route_pass(
+                RoutePass {
+                    direction,
+                    edges,
+                    shapes: &shapes,
+                    by_id: &by_id,
+                    eviction: &eviction,
+                    lane_of: &lane_of,
+                    base_bounds,
+                    nodes,
+                },
+                false,
+                &mut points,
+            );
+        }
+    }
+
+    route_pass(
+        RoutePass {
+            direction,
+            edges,
+            shapes: &shapes,
+            by_id: &by_id,
+            eviction: &eviction,
+            lane_of: &lane_of,
+            base_bounds,
+            nodes,
+        },
+        true,
+        &mut points,
+    );
+
+    let pass_through_eligible: std::collections::HashSet<String> = edges
+        .iter()
+        .zip(&shapes)
+        .filter_map(|(e, s)| {
+            s.as_ref()
+                .filter(|s| is_pass_through_shape(s))
+                .map(|_| e.id.to_string())
+        })
+        .collect();
+
+    RoutedFlowchart {
+        points,
+        required_size: eviction.required_size,
+        pass_through_eligible,
+        bar_geometry,
+    }
+}
+
+/// Everything one [`route_pass`] needs that does not change between its two phases — a struct
+/// rather than eight more parameters, because the two calls have to be handed *identical* inputs
+/// for "the main flow, then the riders" to mean the same thing as "every edge, in one pass".
+struct RoutePass<'a> {
+    direction: Direction,
+    edges: &'a [EligibleEdge<'a>],
+    shapes: &'a [Option<EdgeShape>],
+    by_id: &'a HashMap<&'a str, &'a PlacedNode>,
+    eviction: &'a Eviction,
+    lane_of: &'a HashMap<&'a str, usize>,
+    base_bounds: (f64, f64, f64, f64),
+    nodes: &'a [PlacedNode],
+}
+
+/// Builds the polyline for every edge of one phase — `riders == false` for the main flow,
+/// `riders == true` for the perimeter riders ([`routes_last`]) — into `points`.
+///
+/// Splitting the single loop this used to be changes no geometry by itself: each edge's route is a
+/// pure function of its own shape, ports, ring and the node boxes, so the order they are built in
+/// is invisible in the result. What the split buys is that `points` already holds the whole main
+/// flow by the time the second phase runs, which is what [`perimeter_faces`] needs to see.
+fn route_pass(pass: RoutePass, riders: bool, points: &mut HashMap<String, Vec<Point>>) {
+    let RoutePass {
+        direction,
+        edges,
+        shapes,
+        by_id,
+        eviction,
+        lane_of,
+        base_bounds,
+        nodes,
+    } = pass;
+    for (edge, shape) in edges.iter().zip(shapes) {
         let Some(shape) = shape else { continue };
         let (Some(&source), Some(&target)) = (by_id.get(edge.source), by_id.get(edge.target))
         else {
             continue;
         };
+        if routes_last(shape, source, target) != riders {
+            continue;
+        }
         let source_coord = eviction
             .source_coord
             .get(edge.id)
@@ -4246,23 +4517,6 @@ pub fn route_flowchart(
         // `clear_local_route` pass) is assembled, to catch a spike straddling that boundary.
         let routed = remove_spikes(routed);
         points.insert(edge.id.to_string(), routed);
-    }
-
-    let pass_through_eligible: std::collections::HashSet<String> = edges
-        .iter()
-        .zip(&shapes)
-        .filter_map(|(e, s)| {
-            s.as_ref()
-                .filter(|s| is_pass_through_shape(s))
-                .map(|_| e.id.to_string())
-        })
-        .collect();
-
-    RoutedFlowchart {
-        points,
-        required_size: eviction.required_size,
-        pass_through_eligible,
-        bar_geometry,
     }
 }
 
@@ -6223,6 +6477,10 @@ pub fn separate_coincident_detours(
                 // reaches anything this function does.
                 false,
                 e.aside,
+                // Only the returned shape's *family* is read below, never its faces — see
+                // `classify`'s own `main_flow` parameter doc on why that makes an empty slice the
+                // right thing to pass, not an approximation.
+                &[],
             );
             // A `cross_lane_bend` edge is the newest member of this family (§10-3 item 4's branch
             // half): its long leg is a free-floating lane between two columns, chosen per edge
@@ -6391,31 +6649,58 @@ pub fn avoid_label_plates(
     let by_id = build_by_id(nodes, &cluster_boxes);
     let cluster_ids: std::collections::HashSet<&str> =
         clusters.iter().map(|c| c.id.as_str()).collect();
-    let shapes: Vec<Option<EdgeShape>> = edges
-        .iter()
-        .map(|e| {
-            let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target)) else {
-                return None;
-            };
-            Some(classify(
-                direction,
-                source,
-                target,
-                e.raw,
-                e.source_rank,
-                e.target_rank,
-                e.source_out_degree,
-                e.target_in_degree,
-                nodes,
-                &cluster_boxes,
-                cluster_ids.contains(e.source),
-                // A self-loop always hits `shape.reverse { continue }` below, before anything else
-                // this function does reads `shape` — see that branch's own comment.
-                false,
-                e.aside,
-            ))
-        })
-        .collect();
+    let shapes_of = |main_flow: &[Vec<Point>]| -> Vec<Option<EdgeShape>> {
+        edges
+            .iter()
+            .map(|e| {
+                let (Some(&source), Some(&target)) = (by_id.get(e.source), by_id.get(e.target))
+                else {
+                    return None;
+                };
+                Some(classify(
+                    direction,
+                    source,
+                    target,
+                    e.raw,
+                    e.source_rank,
+                    e.target_rank,
+                    e.source_out_degree,
+                    e.target_in_degree,
+                    nodes,
+                    &cluster_boxes,
+                    cluster_ids.contains(e.source),
+                    // A self-loop always hits `shape.reverse { continue }` below, before anything
+                    // else this function does reads `shape` — see that branch's own comment.
+                    false,
+                    e.aside,
+                    main_flow,
+                ))
+            })
+            .collect()
+    };
+    // Unlike `separate_coincident_detours`/`insert_crossing_gaps`, this pass *does* read an aside's
+    // two faces back out (the `route_perimeter` rebuild below re-uses them together with the ports
+    // the drawn route already has), so it has to reach the same face pair `route_flowchart` did —
+    // which means running `perimeter_faces`' own crossing term over the same main flow. Rider-ness
+    // itself is face-independent, so one crossing-blind pass is enough to say which of `points` is
+    // main flow, and the second pass then sees exactly what `route_flowchart`'s second phase saw.
+    //
+    // **Not exercised by any corpus source (2026-09-05).** The rebuild below only fires for a rider
+    // that runs through a foreign label plate, and now that an aside's route avoids the main flow,
+    // no corpus aside meets one: the only shape that does is two riders on one diagram with the
+    // aside's outer lane crossing the inner rider's own plate — and that shape trips a *pre-existing*
+    // defect in this same pass (the rebuilt route dodges the plate, the plate stays put, and
+    // `invariant_orthogonal_no_label_plate_covers_a_foreign_line` fails on it with the crossing term
+    // disabled too), so the fixture that would prove this fires is out of scope here. Kept anyway
+    // and written down rather than dropped: passing `&[]` here would be a silently wrong face pair
+    // the day that branch does fire, which is a worse trade than an unexercised guard.
+    let shapes = shapes_of(&[]);
+    let shapes = if shapes.iter().flatten().any(|s| s.aside) {
+        let main_flow = main_flow_polylines(edges, &shapes, &by_id, points);
+        shapes_of(&main_flow)
+    } else {
+        shapes
+    };
     let base_bounds = content_bounds(nodes, clusters);
     let lane_of = perimeter_lanes(&by_id, edges, &shapes);
     // `route_fan_lane`'s own doc on why a fan-lane edge's bend depth needs a whole-face pass: this
@@ -6709,6 +6994,9 @@ pub fn insert_crossing_gaps(
                 // reaches anything this function does.
                 false,
                 e.aside,
+                // Only the returned shape's *family* is read below, never its faces — see
+                // `classify`'s own `main_flow` parameter doc.
+                &[],
             );
             Some((
                 e.id,
@@ -7394,6 +7682,7 @@ mod tests {
             false,
             false,
             false,
+            &[],
         );
         assert!(
             shape.staircase,
@@ -9157,6 +9446,7 @@ mod tests {
             false,
             false,
             false,
+            &[],
         );
         assert!(
             shape.rank_lane_bend.is_some(),
@@ -9414,6 +9704,60 @@ mod tests {
         );
     }
 
+    /// §10-0 ("交差は遠回りより悪い") as [`perimeter_faces`] ranks it: the crossing term sits
+    /// **above** corners and length, so a longer, more-cornered way round that meets nothing beats
+    /// the short hop that cuts a main-flow line.
+    ///
+    /// Hand-built coordinates, no font involved — the same reason the neighbouring unit tests are
+    /// (`docs/STATUS.md`'s own v0.28.3 note: a Linux-only CI failure that only a font-independent
+    /// test could reproduce on macOS). Two cases, because they fail to different mutations:
+    ///
+    /// * **plain** — nothing in the way, so `Bottom`/`Bottom` and `Top`/`Top` are the identical 2
+    ///   corners and 328.5px and `PERIMETER_FACE_ORDER` would give the tie to `Bottom`. The main
+    ///   flow crosses the bottom run and not the top one, so the answer moves to `Top`: this is the
+    ///   term being consulted **at all**.
+    /// * **walled** — a box right above `A` makes every route off its `Top` face pay
+    ///   `safe_ring_exit`'s extra corner, so now the fewest-corner pair (`Bottom`/`Bottom`, 2
+    ///   corners) is the one that crosses and the crossing-free pair (`Left`/`Top`, 3 corners,
+    ///   560.5px) costs more of both. This is the term being ranked **before corners**, which the
+    ///   plain case alone cannot tell apart from ranking it after them.
+    #[test]
+    fn perimeter_faces_takes_a_longer_way_round_over_crossing_the_main_flow() {
+        let a = node("A", 100.0, 100.0, 80.0, 40.0);
+        let b = node("B", 400.0, 100.0, 80.0, 40.0);
+        // One main-flow line, dropping between the two boxes: it crosses the bottom run of the
+        // ring and stops short of the top one.
+        let flow = vec![vec![Point::new(250.0, 95.0), Point::new(250.0, 1000.0)]];
+
+        let plain = [a.clone(), b.clone()];
+        let ring = expand_bounds(box_bounds(&plain, &[], [&a, &b]), PERIMETER_MARGIN);
+        assert_eq!(
+            perimeter_faces(&a, &b, ring, &plain, &[]),
+            (Side::Bottom, Side::Bottom),
+            "with no main flow to see, the tie still resolves the way PERIMETER_FACE_ORDER says"
+        );
+        assert_eq!(
+            perimeter_faces(&a, &b, ring, &plain, &flow),
+            (Side::Top, Side::Top),
+            "the bottom run crosses the main flow and the top one does not, at the same 2 corners"
+        );
+
+        // A wall directly above `A`: every exit off its top face now needs an extra corner.
+        let walled = [a.clone(), b.clone(), node("W", 100.0, 40.0, 120.0, 20.0)];
+        let ring = expand_bounds(box_bounds(&walled, &[], [&a, &b]), PERIMETER_MARGIN);
+        assert_eq!(
+            perimeter_faces(&a, &b, ring, &walled, &[]),
+            (Side::Bottom, Side::Bottom),
+            "blind to the main flow, the two-corner bottom pair is the cheapest there is"
+        );
+        assert_eq!(
+            perimeter_faces(&a, &b, ring, &walled, &flow),
+            (Side::Left, Side::Top),
+            "three corners and 560.5px that cross nothing beat two corners and 328.5px that cut \
+             the main flow — a crossing outranks both corners and length"
+        );
+    }
+
     /// [`perimeter_faces`]'s own rule, on the two shapes it has to tell apart: with nothing in the
     /// way, an aside between two nodes on the same row leaves and enters through the *same* ring
     /// side (two corners, the fewest any perimeter route can have); with that side blocked, it
@@ -9430,7 +9774,7 @@ mod tests {
         let pair = [a.clone(), b.clone()];
         let ring = expand_bounds(box_bounds(&pair, &[], [&a, &b]), PERIMETER_MARGIN);
         assert_eq!(
-            perimeter_faces(&a, &b, ring, &pair),
+            perimeter_faces(&a, &b, ring, &pair, &[]),
             (Side::Bottom, Side::Bottom),
             "with nothing in the way both ends should reach the same ring side"
         );
@@ -9440,7 +9784,7 @@ mod tests {
         let blocked = [a.clone(), b.clone(), wall];
         let ring = expand_bounds(box_bounds(&blocked, &[], [&a, &b]), PERIMETER_MARGIN);
         assert_eq!(
-            perimeter_faces(&a, &b, ring, &blocked),
+            perimeter_faces(&a, &b, ring, &blocked, &[]),
             (Side::Top, Side::Top),
             "the bottom is blocked, so the cheapest pair is the top"
         );

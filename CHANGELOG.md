@@ -35,6 +35,13 @@ All notable changes to konoma are documented in this file. The format is based o
   paths can be followed by colour. Defaults (`"splines"`) are byte-identical as always.
 
 ### Fixed
+- **`konoma-orthogonal`: a dotted aside took a short way round that cut through the diagram
+  instead of a longer one that crossed nothing.** The faces an aside leaves and enters were ranked
+  by corners and length only, because every edge was routed in one pass and so no other line
+  existed yet to be judged against. Perimeter-routed lines (asides and back edges) are now routed
+  last, after the main flow, and an aside's sixteen candidate face pairs are ranked by how many
+  main-flow lines each would cross — above corners and above length, since a crossing is worse than
+  a longer route. Defaults (`"splines"`) are byte-identical as always.
 - **`konoma-orthogonal`: a long cross-subgraph edge could still cut straight through an unrelated
   sibling node's box.** Local obstacle avoidance cleared a route away from whichever node it first
   found crossing it by sliding the route's entire shared coordinate to one new value — a single
