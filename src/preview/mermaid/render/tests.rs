@@ -5827,7 +5827,10 @@ fn orthogonal_arrow_tip_has_a_visible_gap_from_the_node_in_real_pixels() {
 }
 
 /// `#rrggbb` → `(r, g, b)`, for comparing against a rasterised pixel.
-fn hex_to_rgb(hex: &str) -> (u8, u8, u8) {
+///
+/// `pub(super)`: the state-diagram half of this harness (`state_tests.rs`) shares it too, rather
+/// than duplicating the same hex parse.
+pub(super) fn hex_to_rgb(hex: &str) -> (u8, u8, u8) {
     let hex = hex.trim_start_matches('#');
     let r = u8::from_str_radix(&hex[0..2], 16).unwrap();
     let g = u8::from_str_radix(&hex[2..4], 16).unwrap();
@@ -5837,7 +5840,9 @@ fn hex_to_rgb(hex: &str) -> (u8, u8, u8) {
 
 /// Whether two 8-bit channel values are close enough to call the same colour — antialiasing at a
 /// shape's own edge blends a pixel or two, so an exact match is the wrong bar here.
-fn close(a: u8, b: u8) -> bool {
+///
+/// `pub(super)`: shared with `state_tests.rs`, see [`hex_to_rgb`].
+pub(super) fn close(a: u8, b: u8) -> bool {
     (a as i16 - b as i16).abs() <= 6
 }
 

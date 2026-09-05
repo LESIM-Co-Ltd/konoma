@@ -389,20 +389,9 @@ fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
     // the rest of `konoma-orthogonal` keeps.
     let filled =
         cluster.filled && !cluster.title_strip && theme.tokens.is_none_or(|t| t.cluster_filled);
-    out.push_str(&format!(
-        "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{r}\" ry=\"{r}\" \
-         fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\"{dash}/>\n",
-        num(l),
-        num(t),
-        num(cluster.size.w),
-        num(cluster.size.h),
-        if filled { theme.cluster_fill } else { "none" },
-        frame_stroke(cluster, theme),
-        num(clusters::STROKE_WIDTH),
-        r = num(theme
-            .tokens
-            .map_or(clusters::CORNER_RADIUS, |t| t.frame_radius))
-    ));
+    let radius = theme
+        .tokens
+        .map_or(clusters::CORNER_RADIUS, |t| t.frame_radius);
     // §10-5 S2's own title strip: a filled band across the frame's own top edge, down to exactly
     // where `PlacedCluster::title_center`'s own formula already reserved room for the title
     // (`top + TITLE_PAD_Y*2 + title.height` — read off the same two quantities `title_center`
@@ -410,21 +399,44 @@ fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
     // machinery actually reserved rather than risking a mismatch against it), with a 1px rule
     // dividing it from the body below. Skipped for a blank title (an untitled concurrent region,
     // `dashed` already says what that is) — there is no room reserved for one to draw a strip in.
+    //
+    // Emitted *before* the frame's own outline below, not after: the strip's fill sits directly on
+    // top of the frame's own rounded top corners (same `radius`), and painting a plain fill on top
+    // of an already-drawn stroke covers the inner half of that stroke, and the corner arcs
+    // entirely, wherever the strip's shape reaches them — this is exactly the bug
+    // `docs/render-check/zz-design-4a-ours.svg` showed (§10-5 S2): the top stroke and both top
+    // corner arcs went missing under the strip's square-cornered, unclipped fill. Painting the
+    // frame's outline *last* keeps its stroke on top unconditionally, so nothing drawn for the
+    // strip can ever cover it. The strip's own top corners are rounded to the same `radius`, via a
+    // two-arc `path` rather than a plain `rect` — only the top is meant to be round, the bottom
+    // edge is an internal seam the rule line marks, not part of the frame's own boundary — and the
+    // whole shape is inset by half the frame's stroke width so its fill never reaches past the
+    // stroke's own outer edge at the sides or the top corners either.
     if cluster.title_strip && !cluster.title.is_blank() {
         let (_, _, right, _) = cluster.bounds();
         let strip_bottom = t + clusters::TITLE_PAD_Y * 2.0 + cluster.title.height;
+        let inset = clusters::STROKE_WIDTH / 2.0;
+        let x0 = l + inset;
+        let x1 = right - inset;
+        let y0 = t + inset;
+        let r = (radius - inset).max(0.0);
         out.push_str(&format!(
-            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"/>\n",
-            num(l),
-            num(t),
-            num(right - l),
-            num(strip_bottom - t),
+            "<path d=\"M{x0_r},{y0} H{x1_r} A{r},{r} 0 0 1 {x1},{y0_r} V{bottom} H{x0} \
+             V{y0_r} A{r},{r} 0 0 1 {x0_r},{y0} Z\" fill=\"{fill}\"/>\n",
+            x0_r = num(x0 + r),
+            y0 = num(y0),
+            x1_r = num(x1 - r),
+            r = num(r),
+            x1 = num(x1),
+            y0_r = num(y0 + r),
+            bottom = num(strip_bottom),
+            x0 = num(x0),
             // `theme.node_fill`, not `cluster_fill`: the design reference's own token list
             // (`docs/FEATURE-MERMAID-RENDERER.md` §10-1 item 5) gives the strip the identical
             // "ノード塗り" value, not the frame's own (different) fill — the strip is meant to
             // read as a small header bar, the same weight as a node, not as a tinted patch of the
             // frame's own interior.
-            theme.node_fill
+            fill = theme.node_fill,
         ));
         out.push_str(&format!(
             "<line x1=\"{}\" y1=\"{y}\" x2=\"{}\" y2=\"{y}\" stroke=\"{}\" stroke-width=\"1\"/>\n",
@@ -436,6 +448,18 @@ fn emit_cluster(out: &mut String, cluster: &PlacedCluster, theme: &Theme) {
             y = num(strip_bottom)
         ));
     }
+    out.push_str(&format!(
+        "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"{r}\" ry=\"{r}\" \
+         fill=\"{}\" stroke=\"{}\" stroke-width=\"{}\"{dash}/>\n",
+        num(l),
+        num(t),
+        num(cluster.size.w),
+        num(cluster.size.h),
+        if filled { theme.cluster_fill } else { "none" },
+        frame_stroke(cluster, theme),
+        num(clusters::STROKE_WIDTH),
+        r = num(radius)
+    ));
     // A section rule spans the frame and is drawn with it, so a message inside the section below
     // is drawn over it rather than under it.
     let (_, _, right, _) = cluster.bounds();

@@ -2779,3 +2779,177 @@ fn state_konoma_orthogonal_draws_the_design_reference_look() {
         }
     }
 }
+
+/// §10-5 S2's title-strip-over-outline bug (`docs/render-check/zz-design-4a-ours.svg`, found
+/// 2026-09-05): `emit_cluster` used to draw the frame's own `<rect>` outline first and the title
+/// strip's fill on top of it, so the strip's square corners painted over the inner half of the
+/// frame's stroke and its two top corner arcs wherever the strip reached them. The fix draws the
+/// strip (a two-arc `path`, rounded to the frame's own top corners) — plus its dividing rule —
+/// *before* the frame's `<rect>`, so the frame's stroke is always painted last, on top, and can
+/// never be covered. This pins that document order, and that the strip's own corner radius tracks
+/// the frame's, on every composite state in the permanent design corpus.
+#[test]
+fn state_title_strip_is_drawn_under_the_frame_outline_with_matching_corners() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let mut saw_a_strip = false;
+    for (name, src) in orthogonal_design_reference_corpus() {
+        let rendered = render_flow(src, "dark", "konoma-orthogonal").expect("renders");
+        let lines: Vec<&str> = rendered.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            let is_strip = line.starts_with("<path")
+                && line.ends_with(&format!("fill=\"{}\"/>", theme::KONOMA.node_fill));
+            if !is_strip {
+                continue;
+            }
+            saw_a_strip = true;
+
+            // `emit_cluster` writes a strip's path, its own rule, and its own frame `<rect>` back
+            // to back in one call — nothing from another cluster can land between them.
+            let rule = *lines
+                .get(i + 1)
+                .unwrap_or_else(|| panic!("{name}: a strip must be followed by its rule: {line}"));
+            assert!(
+                rule.starts_with("<line"),
+                "{name}: line right after the strip must be its dividing rule, not: {rule}"
+            );
+            let frame = *lines.get(i + 2).unwrap_or_else(|| {
+                panic!("{name}: a strip's rule must be followed by the frame outline: {line}")
+            });
+            assert!(
+                frame.starts_with("<rect") && frame.contains("stroke=\"#6e7681\""),
+                "{name}: the frame outline must be drawn right after its own strip, not: {frame}"
+            );
+
+            // The strip's own top corners are rounded to the frame's radius, minus half the
+            // frame's stroke width (the inset that keeps the strip's fill off the stroke's own
+            // outer edge) — `rx="3"` on the frame means two `A2.5,2.5` arcs in the strip's `path`.
+            let rx: f64 = frame
+                .split("rx=\"")
+                .nth(1)
+                .and_then(|s| s.split('"').next())
+                .unwrap_or_else(|| panic!("{name}: frame must carry rx: {frame}"))
+                .parse()
+                .unwrap_or_else(|_| panic!("{name}: frame rx must be numeric: {frame}"));
+            let want_r = rx - clusters::STROKE_WIDTH / 2.0;
+            let arc = format!("A{},{}", svg::num(want_r), svg::num(want_r));
+            assert_eq!(
+                line.matches(&arc).count(),
+                2,
+                "{name}: the strip must round both its top corners to {arc}, matching the \
+                 frame's own rx={rx}: {line}"
+            );
+        }
+    }
+    assert!(
+        saw_a_strip,
+        "the design corpus must contain at least one composite state to exercise this"
+    );
+}
+
+/// The rasterised half of the fix above: the frame's own stroke colour must be present at the 45°
+/// midpoint of both of a composite state's top corner arcs — a point that sits exactly on the
+/// rounded boundary circle (distance `radius` from the corner's own arc centre), strictly inside
+/// the region only the rounding carves out. The search window around that point is kept to a
+/// fraction of `radius` on every side — small enough that it can never reach either flat edge (so
+/// it cannot pick up the frame's own ordinary side stroke instead, which would pass even with the
+/// bug reproduced), yet wide enough to absorb antialiasing at the high scale this test rasterises
+/// at. A pixel further in from that same corner, well past the stroke, must be the strip's own
+/// fill colour: the strip still reaches its own corner, it is not left with a notch.
+#[test]
+fn state_title_strip_corner_arcs_survive_rasterisation() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    // A nominal request, not the scale pixel maths actually use below — `rasterize_bytes` clamps
+    // its own output to `HARD_MAX_PX` (4096), which the tallest source here (`zz-design-4c`, at
+    // 960.6 SVG units) would exceed at 8×; the *actual* scale it applied is read back from the
+    // image it returns instead of assumed, so this holds for every source regardless of size.
+    let requested_scale = 8.0_f64;
+    let (stroke_r, stroke_g, stroke_b) =
+        super::tests::hex_to_rgb(theme::KONOMA_TOKENS.composite_stroke);
+    let (fill_r, fill_g, fill_b) = super::tests::hex_to_rgb(theme::KONOMA.node_fill);
+    let radius = theme::KONOMA_TOKENS.frame_radius;
+    // A window this size (in raw SVG units), centred on the diagonal point, stays within
+    // (0, radius) of the corner's own arc centre on each axis: the diagonal point itself sits at
+    // 0.293·radius; +-0.15·radius keeps the whole window inside (0.14·radius, 0.44·radius), clear
+    // of the tangent points at 0 and at radius where the flat edges begin.
+    let tolerance_raw = radius * 0.15;
+
+    let mut checked_a_corner = false;
+    for (name, src) in orthogonal_design_reference_corpus() {
+        let d = laid_out_orthogonal(src);
+        let rendered = render_flow(src, "dark", "konoma-orthogonal").expect("renders");
+        let img = crate::preview::svg::rasterize_bytes(
+            rendered.as_bytes(),
+            std::path::Path::new("title-strip-corner.svg"),
+            (d.width.max(d.height) * requested_scale).round() as u32,
+        )
+        .unwrap_or_else(|| panic!("{name}: must rasterise"));
+        let rgba = img.to_rgba8();
+        let (w, h) = (rgba.width() as i64, rgba.height() as i64);
+        // The scale `rasterize_bytes` actually used, read back from its own output rather than
+        // assumed — see the comment on `requested_scale` above.
+        let scale = if d.width >= d.height {
+            rgba.width() as f64 / d.width
+        } else {
+            rgba.height() as f64 / d.height
+        };
+        let tolerance_px = ((tolerance_raw * scale).ceil() as i64).max(1);
+        let is_close = |x: i64, y: i64, want: (u8, u8, u8)| {
+            x >= 0 && y >= 0 && x < w && y < h && {
+                let p = rgba.get_pixel(x as u32, y as u32);
+                p[3] == 255
+                    && super::tests::close(p[0], want.0)
+                    && super::tests::close(p[1], want.1)
+                    && super::tests::close(p[2], want.2)
+            }
+        };
+        let any_close_near = |cx: f64, cy: f64, want: (u8, u8, u8)| {
+            let px = (cx * scale).round() as i64;
+            let py = (cy * scale).round() as i64;
+            (-tolerance_px..=tolerance_px)
+                .any(|dy| (-tolerance_px..=tolerance_px).any(|dx| is_close(px + dx, py + dy, want)))
+        };
+
+        for cluster in d
+            .clusters
+            .iter()
+            .filter(|c| c.title_strip && !c.title.is_blank())
+        {
+            checked_a_corner = true;
+            let (l, t, right, _) = cluster.bounds();
+            let half = radius / std::f64::consts::SQRT_2;
+            let center_y = t + radius;
+
+            // `sign` is the diagonal's own x-direction: up-and-left off the left corner's arc
+            // centre, up-and-right off the right corner's.
+            for (edge_x, center_x, sign) in
+                [(l, l + radius, -1.0_f64), (right, right - radius, 1.0)]
+            {
+                let diag_x = center_x + sign * half;
+                let diag_y = center_y - half;
+                assert!(
+                    any_close_near(diag_x, diag_y, (stroke_r, stroke_g, stroke_b)),
+                    "{name}: no frame stroke at the 45° arc point of the corner at x={edge_x} \
+                     (checked near ({diag_x},{diag_y})) — the corner arc is missing or covered"
+                );
+            }
+
+            // Further in from the top-left corner than the stroke's own arc, past the rounding,
+            // into the strip's own flat interior — its own fill colour must be there.
+            let inside_x = l + radius + 4.0;
+            let inside_y = t + 3.0;
+            assert!(
+                any_close_near(inside_x, inside_y, (fill_r, fill_g, fill_b)),
+                "{name}: no strip fill colour just inside the top-left corner (checked near \
+                 ({inside_x},{inside_y})) — the strip is cut short of its own corner"
+            );
+        }
+    }
+    assert!(
+        checked_a_corner,
+        "the design corpus must contain at least one composite state to exercise this"
+    );
+}
