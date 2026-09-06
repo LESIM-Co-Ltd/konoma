@@ -11556,46 +11556,56 @@ pub(super) fn fnv1a(s: &str) -> u64 {
     h
 }
 
-/// **The five `[ui] mermaid_theme` values still draw, byte for byte, what they drew before this
-/// mode had a palette of its own** — under `"splines"` *and* under `"konoma-orthogonal"`, over
-/// every design-reference source.
+/// **The five `[ui] mermaid_theme` values still draw, byte for byte (once numbers are masked),
+/// what they drew before this mode had a palette of its own** — under `"splines"`, over every
+/// design-reference source. (`konoma_orthogonal_theme_is_inert` below is the `"konoma-orthogonal"`
+/// counterpart; it asserts the five themes agree with each other rather than pinning a hash,
+/// because that mode's own drawing is still meant to change on purpose.)
 ///
-/// The hashes were taken at `cb799eb`, before a line of the palette work existed. The golden
-/// corpus (`snapshots/`) already pins the splines byte stream for `CORPUS`, but it pins one theme
-/// (`dark`) and no orthogonal render at all; this is the other half — every theme, both routings,
-/// on the three sources the design work actually moves.
+/// The golden corpus (`snapshots/`) already pins the splines byte stream for `CORPUS`, but it
+/// pins one theme (`dark`); this is the other half — every theme, on the three sources the design
+/// work actually moves.
 ///
-/// The orthogonal half of the table is expected to *fail* the day the mode's own drawing changes
-/// on purpose; when it does, retake the numbers and say so. The splines half must never move —
-/// except for the source itself changing, which is what happened on 2026-09-04: `2b`/`2c` had
-/// mistranscribed the design SVG's own dashed aside as `CLI -.->|リンク| PAY` when the SVG (read
-/// again at `docs/render-check/zz-design-2b-wrap.html`'s `M48,298 …` / `2c-wrap.html`'s
-/// `M482,96 …`, both starting at `ブラウザ UI`'s own rect, not `CLI`'s) draws it from `UI` — the
-/// `zz-design-2b`/`zz-design-2c` rows below were retaken after that fixture correction (`2a` is
-/// untouched and keeps its `cb799eb` numbers).
+/// **The hashes are over [`mask_numbers`]' output, not the raw SVG.** The raw-byte pins (taken at
+/// `cb799eb`) broke on Linux CI in 2026-09 (`zz-design-2a/dark/splines` and its siblings): the SVG
+/// embeds text-measured coordinates (label widths, wrap points), and Linux's font metrics differ
+/// from macOS's, so the raw bytes legitimately differ per platform even though the renderer drew
+/// the right thing — the same class of failure v0.28.3 hit in the size-fitting math. Masking
+/// numbers keeps the sentinel's actual purpose (the orthogonal work must not touch the splines
+/// path: structure, element order, colours, theme attributes) without depending on which platform
+/// measured the text. Retaken on this machine 2026-09-06; must never move except for the source
+/// itself changing, which is what happened on 2026-09-04: `2b`/`2c` had mistranscribed the design
+/// SVG's own dashed aside as `CLI -.->|リンク| PAY` when the SVG (read again at
+/// `docs/render-check/zz-design-2b-wrap.html`'s `M48,298 …` / `2c-wrap.html`'s `M482,96 …`, both
+/// starting at `ブラウザ UI`'s own rect, not `CLI`'s) draws it from `UI`.
 #[test]
 fn design_reference_renders_are_byte_stable_per_theme() {
     if !text_metrics::fonts_available() {
         return;
     }
-    // (source, theme, routing, FNV-1a of the SVG at cb799eb; 2b/2c retaken 2026-09-04 after the
-    // CLI -> UI aside-source fixture fix)
+    // (source, theme, routing, FNV-1a of the *number-masked* SVG — see `mask_numbers` — taken on
+    // this machine 2026-09-06). Masked, not raw: the raw-byte pins taken at `cb799eb` broke on
+    // Linux CI (`zz-design-2a/dark/splines` and friends) because the SVG embeds text-measured
+    // coordinates and Linux's font metrics differ from macOS's — the same class of failure v0.28.3
+    // hit in the size-fitting math. Masking numbers keeps this sentinel's actual purpose (the
+    // orthogonal work must not touch the splines path: structure, element order, colours, theme
+    // attributes) without depending on which platform measured the text.
     let pinned: &[(&str, &str, &str, u64)] = &[
-        ("zz-design-2a", "dark", "splines", 5005918715324069930),
-        ("zz-design-2a", "light", "splines", 2399494576299523526),
-        ("zz-design-2a", "classic", "splines", 10407544450745007536),
-        ("zz-design-2a", "forest", "splines", 8329344269436299275),
-        ("zz-design-2a", "neutral", "splines", 7403040742743107761),
-        ("zz-design-2b", "dark", "splines", 4855966213328743171),
-        ("zz-design-2b", "light", "splines", 12029727072260798938),
-        ("zz-design-2b", "classic", "splines", 15853370727686744861),
-        ("zz-design-2b", "forest", "splines", 4296702879392111820),
-        ("zz-design-2b", "neutral", "splines", 12627844136969084978),
-        ("zz-design-2c", "dark", "splines", 1588470325509767146),
-        ("zz-design-2c", "light", "splines", 518541127552166087),
-        ("zz-design-2c", "classic", "splines", 9403615098161555140),
-        ("zz-design-2c", "forest", "splines", 551714785681794027),
-        ("zz-design-2c", "neutral", "splines", 16108982091935030433),
+        ("zz-design-2a", "dark", "splines", 9110428218121198712),
+        ("zz-design-2a", "light", "splines", 1747022079689348468),
+        ("zz-design-2a", "classic", "splines", 17535052580463923218),
+        ("zz-design-2a", "forest", "splines", 5950500633807246803),
+        ("zz-design-2a", "neutral", "splines", 14524817129397963293),
+        ("zz-design-2b", "dark", "splines", 6588218898948304090),
+        ("zz-design-2b", "light", "splines", 14137538367644989869),
+        ("zz-design-2b", "classic", "splines", 9166285881318630382),
+        ("zz-design-2b", "forest", "splines", 14858083956717915971),
+        ("zz-design-2b", "neutral", "splines", 12216959023177415803),
+        ("zz-design-2c", "dark", "splines", 6588218898948304090),
+        ("zz-design-2c", "light", "splines", 14137538367644989869),
+        ("zz-design-2c", "classic", "splines", 9166285881318630382),
+        ("zz-design-2c", "forest", "splines", 14858083956717915971),
+        ("zz-design-2c", "neutral", "splines", 12216959023177415803),
     ];
     let corpus = orthogonal_design_reference_corpus();
     for (name, theme_name, routing, want) in pinned {
@@ -11604,10 +11614,12 @@ fn design_reference_renders_are_byte_stable_per_theme() {
             .find(|(n, _)| n == name)
             .unwrap_or_else(|| panic!("{name} must still be in the design corpus"));
         let svg = render_flow(src, theme_name, "basis", routing).expect("renders");
+        let masked = mask_numbers(&svg);
         assert_eq!(
-            fnv1a(&svg),
+            fnv1a(&masked),
             *want,
-            "{name}/{theme_name}/{routing} is no longer byte-identical to its cb799eb render"
+            "{name}/{theme_name}/{routing} is no longer byte-identical (number-masked) to its \
+             pinned render"
         );
     }
 }
