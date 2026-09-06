@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.28.4] - 2026-09-06
+
 ### Added
 - **`konoma-orthogonal` now also routes `stateDiagram-v2` (state diagrams), not just flowcharts.**
   Composite states get the same frame/port rules as subgraphs; the start (`●`) and end (`◎`)
@@ -33,6 +35,21 @@ All notable changes to konoma are documented in this file. The format is based o
   end to end; where two ordinary edges cross, the horizontal one yields a 12px gap; and an edge
   with no explicit `linkStyle` takes its downstream node's class colour, lightened, so a diagram's
   paths can be followed by colour. Defaults (`"splines"`) are byte-identical as always.
+- **`konoma-orthogonal` lays diagrams out to the design references' composition, under one rule:
+  lines must not get complicated.** Subgraphs and composite states now take part in the
+  as-soon-as-possible re-ranking and the straight-lane alignment as single units (a frame moves as a
+  body and is redrawn around its members), so a branch beside a composite shares its sibling's row
+  and a lane runs straight through a frame. A subgraph whose members are all dead ends fed from one
+  straight lane hangs off that lane as a tier (each member directly below its source, straight
+  drops) instead of taking a rank of its own. Author-dotted asides no longer pull nodes in the
+  layout at all and ride the outer perimeter lane, choosing the faces that cross the fewest
+  lines; an aside with a free direct route stays direct. A pure merge of three or more sources
+  puts its median source on the target's lane; a fan's dead-end branches go to the far side and its
+  continuing ones toward the flow. Label plates never cover another line, and merge hops keep 8px
+  apart. Nodes follow the design's sizing: 36px high for one line (wrapping past 240px), text width
+  plus 20px each side, at least 96px wide on an 8px grid; decision nodes add 6px a side for the
+  chamfer; markers, choice, bars and frames keep their own sizes. Composite-state title strips no
+  longer hide the frame's rounded corners. Defaults (`"splines"`) are byte-identical as always.
 
 ### Fixed
 - **`konoma-orthogonal`: a dotted aside took a short way round that cut through the diagram
@@ -2427,7 +2444,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.3...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.4...HEAD
+[0.28.4]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.3...v0.28.4
 [0.28.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.2...v0.28.3
 [0.28.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.1...v0.28.2
 [0.28.1]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.0...v0.28.1
