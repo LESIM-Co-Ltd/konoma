@@ -83,6 +83,16 @@ join. It is where the basic shapes read most clearly.
 
 <MermaidSettingGrid lang="en" role="routing" group={s01.routing} notes={routingNotes} />
 
+#### Direction
+
+A flowchart states its direction as the header's own keyword — `flowchart LR`,
+`TB`, `RL` or `BT`. The routing rules are the same in every direction: `RL` and
+`BT` are the exact mirror of `LR` and `TB` along the flow axis, while which side
+a branch takes is unchanged. The konoma-orthogonal design references `2b` and
+`2c` are the same graph in LR and TB for exactly that reason.
+
+<MermaidSettingGrid lang="en" role="direction" group={s01.direction} />
+
 #### `mermaid_curve`
 
 <MermaidSettingGrid lang="en" role="curve" group={s01.curve} />
