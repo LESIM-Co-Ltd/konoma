@@ -1,0 +1,192 @@
+---
+// One entry of the Mermaid catalog: the render(s) konoma produced for a single ```mermaid fence
+// of samples/mermaid(.ja).md, plus the fence source in a collapsed <details>.
+//
+// The images and the sources both come from site/src/assets/mermaid-catalog/<lang>/manifest.json,
+// written by the Rust test `site_mermaid_catalog_dump` — so a re-run of that test updates this page
+// without anyone editing markup. Never hand-edit the PNGs or the manifest.
+//
+// Layout notes (the same ones TerminalDemo.astro learned the hard way):
+// - `not-content` opts the widget out of Starlight's markdown flow spacing, which otherwise
+//   injects margins into every child and pulls the grid apart.
+// - The plate behind each picture is dark in both site themes on purpose: the PNGs have a
+//   transparent background because they are drawn to sit on a terminal's own background.
+import { Image } from 'astro:assets';
+
+interface Render {
+	variant: string;
+	routing: string;
+	file: string;
+}
+
+interface Item {
+	order: number;
+	kind: string;
+	orthogonal: boolean;
+	renders: Render[];
+	source: string;
+}
+
+interface Props {
+	lang?: 'en' | 'ja';
+	item: Item;
+}
+
+const { lang = 'en', item } = Astro.props;
+
+// Eager glob so every catalog PNG goes through Astro's asset pipeline (hashed, optimised,
+// width/height known at build time). Keys are exactly the pattern's relative paths.
+const images = import.meta.glob<ImageMetadata>('../assets/mermaid-catalog/*/*.png', {
+	eager: true,
+	import: 'default',
+});
+
+// The device scale the PNGs were dumped at, read from the manifest the dump wrote next to them
+// rather than hard-coded here: it is what turns a stored pixel width back into a CSS-pixel width.
+const manifests = import.meta.glob<{ scale: number }>('../assets/mermaid-catalog/*/manifest.json', {
+	eager: true,
+	import: 'default',
+});
+
+const t =
+	lang === 'ja'
+		? {
+				source: 'Mermaid ソース',
+				alt: (kind: string, routing: string) =>
+					`konoma 自身の Mermaid レンダラが描いた ${kind} 図 (routing = ${routing})`,
+			}
+		: {
+				source: 'Mermaid source',
+				alt: (kind: string, routing: string) =>
+					`A ${kind} diagram drawn by konoma's own Mermaid renderer (routing = ${routing})`,
+			};
+
+// Captions are config values, not prose: identical in both languages.
+const caption = (variant: string) =>
+	variant === 'orthogonal' ? 'konoma-orthogonal' : 'default (splines)';
+
+const renders = item.renders.map((r) => {
+	const key = `../assets/mermaid-catalog/${lang}/${r.file}`;
+	const src = images[key];
+	if (!src) throw new Error(`Mermaid catalog: no image for ${key} — re-run site_mermaid_catalog_dump`);
+	return { ...r, src };
+});
+
+const pair = renders.length > 1;
+
+// Legibility beats symmetry. A side-by-side column is only about 45% of the content column, so a
+// diagram that is already wide at 1:1 would be shrunk past the point where its labels can be read.
+// Above this threshold the two renders go full width instead, stacked — konoma-orthogonal on top,
+// exactly the order the narrow-screen stack uses. `src.width` is the stored (2×) pixel width, so
+// dividing by the dump's scale gives the CSS-pixel width the browser would lay out at 1:1.
+const WIDE_CSS_PX = 520;
+const scale = manifests[`../assets/mermaid-catalog/${lang}/manifest.json`]?.scale ?? 1;
+const naturalCssWidth = Math.max(...renders.map((r) => r.src.width / scale));
+const sideBySide = pair && naturalCssWidth <= WIDE_CSS_PX;
+---
+
+<div class="mmcat not-content">
+	<div class:list={['shots', { pair: sideBySide }]}>
+		{
+			renders.map((r) => (
+				<figure>
+					<div class="plate">
+						<Image src={r.src} alt={t.alt(item.kind, r.routing)} loading="lazy" />
+					</div>
+					{pair && <figcaption>{caption(r.variant)}</figcaption>}
+				</figure>
+			))
+		}
+	</div>
+	<details>
+		<summary>{t.source}</summary>
+		<pre><code>{item.source}</code></pre>
+	</details>
+</div>
+
+<style>
+	.mmcat {
+		margin: 1rem 0 2rem;
+	}
+
+	.shots {
+		display: grid;
+		gap: 1rem;
+		grid-template-columns: minmax(0, 1fr);
+	}
+	/* Two columns only when there is room; below this the pair stacks, and because
+	   konoma-orthogonal is first in the DOM it is the one on top. */
+	@media (min-width: 60rem) {
+		.shots.pair {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+	}
+
+	figure {
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	/* Both plates of a pair fill the row, so the two captions sit on one line however
+	   differently shaped the two renders of the same diagram are. */
+	.plate {
+		flex: 1;
+	}
+
+	/* Fixed dark plate: the diagrams are transparent PNGs drawn for a terminal, so they stay on a
+	   terminal-coloured ground even in the light theme (same rule as the hero terminal). */
+	.plate {
+		background: #0d1117;
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 6px;
+		padding: 1rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		overflow-x: auto;
+	}
+	.plate :global(img) {
+		max-width: 100%;
+		height: auto;
+		display: block;
+	}
+
+	figcaption {
+		font-family: var(--konoma-mono);
+		font-variant-numeric: tabular-nums;
+		font-size: 0.78rem;
+		color: var(--sl-color-gray-3);
+		text-align: center;
+	}
+
+	details {
+		margin-top: 0.8rem;
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 6px;
+		background: var(--sl-color-gray-6);
+	}
+	summary {
+		cursor: pointer;
+		padding: 0.4rem 0.8rem;
+		font-family: var(--konoma-mono);
+		font-size: 0.8rem;
+		color: var(--sl-color-gray-2);
+	}
+	details[open] summary {
+		border-bottom: 1px solid var(--sl-color-gray-5);
+	}
+	pre {
+		margin: 0;
+		padding: 0.8rem;
+		overflow-x: auto;
+		background: transparent;
+	}
+	code {
+		font-family: var(--konoma-mono);
+		font-size: 0.8rem;
+		line-height: 1.5;
+		color: var(--sl-color-white);
+		white-space: pre;
+	}
+</style>

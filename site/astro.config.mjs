@@ -54,6 +54,7 @@ export default defineConfig({
 					items: [
 						{ slug: 'guides/agent-watch' },
 						{ slug: 'guides/preview' },
+						{ slug: 'guides/mermaid-catalog' },
 						{ slug: 'guides/git' },
 						{ slug: 'guides/files' },
 					],

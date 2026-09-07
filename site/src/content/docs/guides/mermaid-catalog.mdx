@@ -1,0 +1,246 @@
+---
+title: Mermaid catalog
+description: All 23 Mermaid diagram kinds, drawn by konoma's own renderer — with the konoma-orthogonal routing shown next to mermaid's default look.
+sidebar:
+  order: 3
+---
+
+import MermaidCatalogItem from '../../../components/MermaidCatalogItem.astro';
+import manifest from '../../../assets/mermaid-catalog/en/manifest.json';
+
+konoma parses, lays out and draws **every** Mermaid diagram itself — no browser,
+no Node, no external renderer, nothing to install. A ```` ```mermaid ```` fence
+in a Markdown file becomes a real picture in the terminal, and a standalone
+`.mmd` file opens full screen.
+
+![konoma showing samples/mermaid.md, with a sequence diagram and a ZenUML diagram drawn inline as real images](../../../assets/mermaid-gallery.png)
+
+Every picture below was produced by that same renderer, from the fences in
+[`samples/mermaid.md`](https://github.com/LESIM-Co-Ltd/konoma/blob/main/samples/mermaid.md),
+at the shipped defaults (`ui.mermaid_theme = "dark"`, `ui.mermaid_curve = "basis"`).
+The backgrounds are transparent — in a terminal the diagram sits on your own
+background; here it sits on a dark plate.
+
+## Two looks, one config line
+
+The default look is **mermaid's own**: nothing changes unless you ask for it.
+One line switches flowcharts and state diagrams to konoma's own orthogonal
+router and designed palette:
+
+```toml
+[ui]
+mermaid_routing = "konoma-orthogonal"
+```
+
+In that mode every edge bends only at right angles with sharp corners, decision
+diamonds become chamfered rectangles so an edge can land on a flat face, a
+straight-through edge across ranks aligns into a single unbent lane, and the
+diagram switches to konoma's own palette — dark node fills, dashed subgraph
+frames, and `classDef`/`style` colors carried consistently onto a node's border,
+its edges and its label (so `ui.mermaid_theme` has no effect there).
+
+It applies to **`flowchart` and `stateDiagram-v2` only**. Those two are shown
+twice below — konoma-orthogonal first, then the default `splines` — and the
+other 21 kinds are shown once, because routing never reaches them.
+
+See [Configuration](../../reference/configuration/) for every Mermaid option, and
+[Previews in depth](../preview/) for the keys that zoom, pan and open a diagram
+full screen.
+
+## Graphs
+
+### `flowchart` — boxes and arrows
+
+The workhorse: three quarters of the mermaid in the wild is this one kind. Note
+the direction (`LR`), the stadium and diamond shapes, and the labels riding on
+the arrows.
+
+<MermaidCatalogItem lang="en" item={manifest.items[0]} />
+
+### Colour — `classDef`, `:::`, `style`, `linkStyle`
+
+Colour is how a flowchart says what belongs together. `classDef` names a set of
+declarations, `class` (or the `:::` shorthand) attaches it to nodes, `style`
+paints one node directly, and `linkStyle` paints edges by declaration index.
+
+<MermaidCatalogItem lang="en" item={manifest.items[1]} />
+
+### Size — a diagram is drawn at the size it needs
+
+konoma lays a diagram out at the size of the text around it and never blows it
+up. A busy one is genuinely wide — this is konoma's own preview dispatch, every
+format it knows and the three ways a picture can reach a terminal.
+
+<MermaidCatalogItem lang="en" item={manifest.items[2]} />
+
+### `stateDiagram-v2` — modes and transitions
+
+konoma's whole UI is two modes and the moves between them. `[*]` is the start
+and end marker, and a state can contain a state machine of its own — the frame
+around `Preview` is drawn from the nesting, not from a hint.
+
+<MermaidCatalogItem lang="en" item={manifest.items[3]} />
+
+### `classDiagram` — types and what they know
+
+A class box has compartments: the name, then fields, then methods, with `+`/`-`
+for visibility. `<|--` is inheritance and `-->` a plain association.
+
+<MermaidCatalogItem lang="en" item={manifest.items[4]} />
+
+### `erDiagram` — entities and how many of each
+
+The crow's-foot marks are the point: `||` is exactly one, `o{` is zero or more.
+An entity can carry an attribute block with types and `PK`/`FK` keys.
+
+<MermaidCatalogItem lang="en" item={manifest.items[5]} />
+
+## Interactions
+
+### `sequenceDiagram` — who says what, in order
+
+Time runs down the page: an actor, an activation bar (`+` … `deactivate`) for
+the worker thread being busy, and an `alt` block for the branch every terminal
+takes differently.
+
+<MermaidCatalogItem lang="en" item={manifest.items[6]} />
+
+### `zenuml` — the same story, written as code
+
+ZenUML describes an interaction as nested calls rather than as arrows. A block
+with `{ … }` is the callee doing work, and `if`/`else` reads as it would in a
+program.
+
+<MermaidCatalogItem lang="en" item={manifest.items[7]} />
+
+## Trees and boards
+
+### `mindmap` — one idea, branching
+
+Written as indentation alone. konoma lays a mindmap out left to right rather
+than radially, because a radial layout puts half the labels on the wrong side of
+the line in a terminal.
+
+<MermaidCatalogItem lang="en" item={manifest.items[8]} />
+
+### `kanban` — columns of cards
+
+Columns come from the first indent level, cards from the second. `@{ … }`
+attaches metadata to a card — assignee, priority, ticket.
+
+<MermaidCatalogItem lang="en" item={manifest.items[9]} />
+
+## Time
+
+### `journey` — how a task actually feels
+
+Each step gets a score from 1 to 5, drawn as a face, and the people involved
+after the score. Sections band the day.
+
+<MermaidCatalogItem lang="en" item={manifest.items[10]} />
+
+### `timeline` — what happened when
+
+Periods on the left, events on the right; `section` bands them. A period can
+carry several events separated by `:`.
+
+<MermaidCatalogItem lang="en" item={manifest.items[11]} />
+
+### `gantt` — bars against a calendar
+
+Note the `section` bands, the `after` dependency that chains one bar to the end
+of another, the `crit` tag, and the `milestone` drawn as a diamond.
+
+<MermaidCatalogItem lang="en" item={manifest.items[12]} />
+
+## Structure
+
+### `requirementDiagram` — what must hold, and what proves it
+
+A requirement carries an id, a text, a risk and a verification method; an
+element is the thing that satisfies or verifies it.
+
+<MermaidCatalogItem lang="en" item={manifest.items[13]} />
+
+### `gitGraph` — branches and merges
+
+Commits run along a lane; `branch` opens a new one, `checkout` moves between
+them, and `merge` brings one back. Tags sit above the commit they mark.
+
+<MermaidCatalogItem lang="en" item={manifest.items[14]} />
+
+### `C4Context` — systems, people and boundaries
+
+The C4 vocabulary: a `Person`, a `System` we own, a `System_Ext` we do not, and
+a boundary drawn around what is ours. Relations can carry a technology as a
+second label.
+
+<MermaidCatalogItem lang="en" item={manifest.items[15]} />
+
+### `block-beta` — a grid you place things on
+
+Unlike a flowchart, `columns` decides the shape: it says how many cells a row
+holds, `:n` widens a block across several, and a `block:` frame nests a grid
+inside a cell.
+
+<MermaidCatalogItem lang="en" item={manifest.items[16]} />
+
+### `architecture-beta` — services, groups and which side a wire leaves from
+
+Every edge names the side it leaves and the side it arrives on (`R` right, `L`
+left, `T` top, `B` bottom), so the picture is stated rather than inferred.
+
+<MermaidCatalogItem lang="en" item={manifest.items[17]} />
+
+## Data
+
+### `pie` — parts of a whole
+
+`showData` prints the raw number beside each label as well as the share.
+
+<MermaidCatalogItem lang="en" item={manifest.items[18]} />
+
+### `xychart-beta` — bars and lines on the same axes
+
+Two series over one x-axis: a bar for what was measured, a line for what was
+budgeted.
+
+<MermaidCatalogItem lang="en" item={manifest.items[19]} />
+
+### `quadrantChart` — two axes, four verdicts
+
+Points are placed by `[x, y]` in the unit square, and each quadrant gets a name.
+
+<MermaidCatalogItem lang="en" item={manifest.items[20]} />
+
+### `radar-beta` — several things scored on the same axes
+
+One closed curve per subject over shared axes — the shape is the comparison.
+
+<MermaidCatalogItem lang="en" item={manifest.items[21]} />
+
+### `treemap-beta` — nested boxes sized by value
+
+Area is the number. Indentation nests, so a section's box is as big as its
+leaves put together.
+
+<MermaidCatalogItem lang="en" item={manifest.items[22]} />
+
+### `packet-beta` — bit fields laid out in rows
+
+Ranges are bit offsets, so a wide field really is drawn wide.
+
+<MermaidCatalogItem lang="en" item={manifest.items[23]} />
+
+### `sankey-beta` — flow that splits and keeps its width
+
+Comma-separated `source,target,value`. The band widths stay proportional as the
+flow divides.
+
+<MermaidCatalogItem lang="en" item={manifest.items[24]} />
+
+## If konoma cannot draw it
+
+Nothing is invented. A kind konoma does not know, or a syntax error, falls back
+to the source shown as text — and `ui.mermaid = "text"` asks for the legacy
+Unicode rendering everywhere.

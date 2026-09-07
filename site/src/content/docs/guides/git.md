@@ -2,7 +2,7 @@
 title: The git suite
 description: Changes hub, full-screen diffs, log, a custom-rendered commit graph, and branch management — without leaving the browser.
 sidebar:
-  order: 3
+  order: 4
 ---
 
 Inside a git repository, the tree already shows status: changed files are
