@@ -95,34 +95,95 @@ fn rust_source(n: usize) -> String {
     s
 }
 
+/// Result of `measure_scaling_alloc`: `.small_min`/`.large_min` are the steady-state costs a guard
+/// should assert on; `.small_runs`/`.large_runs` are the two raw per-size samples, kept only so a
+/// failing assertion's message can show them (seeing whether a single run spiked, or both moved
+/// together, is what tells a real regression apart from the one-off flake this helper exists for).
+struct ScalingAlloc {
+    small_min: u64,
+    large_min: u64,
+    small_runs: [u64; 2],
+    large_runs: [u64; 2],
+}
+
+/// Shared by every allocation-scaling `*_is_bounded` guard in this file (the shape "doubling the
+/// input must not triple/quadruple the allocation"): warms whatever process-wide shared state
+/// `small`/`large` touch by running each once, unmeasured, then measures each **twice** and reports
+/// both raw runs alongside their minimum.
+///
+/// # Why this exists (2026-09-07, PR #9 Linux CI, ratio 3.23 on unchanged production code)
+/// `render_markdown`/`highlight_lang` (and friends) touch process-wide *shared* state: syntect's
+/// one-time-per-process grammar compile behind `preview::code::assets()`, and
+/// `preview::markdown::code_block_cache()` — a capacity-64 LRU (`Mutex<HashMap<..>>`) shared across
+/// *every* test thread in the process, not just this test's. `mem_tests::allocated_by` only counts
+/// bytes allocated **on the calling thread**, so a concurrent test cannot add bytes to this thread's
+/// count directly — but it CAN fill that shared LRU past its cap. When that happens, *this* thread's
+/// own cache insert is the one that pays `code_block_cache`'s eviction scan (an O(cache size)
+/// `min_by_key` plus a key `.clone()` — itself allocation-heavy), and whichever of the two
+/// measurements below happens to run while the shared cache is near/over capacity eats that one-off
+/// rebuild cost inside the measured region. Which one that is depends on `cargo test`'s parallel
+/// scheduling, hence a genuine flake and not a regression: `render_markdown_large_doc_is_bounded`
+/// failed CI with "2倍のブロック数で確保バイト数が3倍を超えた: small=7476051 large=24161137" (ratio
+/// 3.23) although this exact production code had passed on the immediately preceding `main` runs.
+///
+/// Mitigation, two parts:
+///  1. Render `small` and `large` **once each, unmeasured**, before measuring anything — this warms
+///     every shared cache either closure touches (grammar compiles, the two specific
+///     `code_block_cache` entries), so neither measured run below can be the very first, most
+///     expensive one.
+///  2. Measure each size **twice** and keep the **minimum** — the steady-state, cache-hit cost,
+///     immune to a one-off rebuild a concurrent thread forces into just one of the two runs (an
+///     eviction storm would have to land on both runs of the *same* size to survive the `min`, far
+///     less likely than landing on a single run).
+fn measure_scaling_alloc(mut small: impl FnMut(), mut large: impl FnMut()) -> ScalingAlloc {
+    small(); // warm-up: unmeasured
+    large(); // warm-up: unmeasured
+    let small_runs = [
+        crate::mem_tests::allocated_by(&mut small),
+        crate::mem_tests::allocated_by(&mut small),
+    ];
+    let large_runs = [
+        crate::mem_tests::allocated_by(&mut large),
+        crate::mem_tests::allocated_by(&mut large),
+    ];
+    ScalingAlloc {
+        small_min: small_runs[0].min(small_runs[1]),
+        large_min: large_runs[0].min(large_runs[1]),
+        small_runs,
+        large_runs,
+    }
+}
+
 // GUARDS: preview::code::highlight_lang must stay roughly linear on big inputs (no per-line
 // re-compilation of the grammar / no accidental O(n^2)). Converted from a wall-clock bound (which
 // flakes under shared-CI-runner load — see the top-of-file note and the module doc) to a
 // **deterministic allocation-scaling** check: 2x the lines should allocate roughly 2x, not ~4x
 // (quadratic) or worse. Bytes allocated are a CPU/load-independent proxy for "how much work
 // happened", so — unlike `Instant` — this doesn't need CI-noise headroom, which is what lets it run
-// in the normal suite instead of behind `#[ignore]`.
+// in the normal suite instead of behind `#[ignore]`. Uses `measure_scaling_alloc` (see its doc) so a
+// concurrent test filling/evicting a shared process-wide cache mid-measurement can't flake this.
 #[test]
 fn highlight_lang_large_source_is_bounded() {
-    // Warm the "rust" grammar once outside the measurement: the very first highlight of a language
-    // in the whole test binary compiles its regex patterns (a one-time, allocation-heavy cost —
-    // see `warm_dir_makes_subsequent_highlight_fast`'s doc in preview/code.rs), which would otherwise
-    // land on whichever of the two measurements below runs first and skew the ratio.
-    let _ = crate::preview::code::highlight_lang(&rust_source(10), "rust", "TwoDark");
-
     let small = rust_source(1500);
     let large = rust_source(3000); // 2x lines
-    let small_alloc = crate::mem_tests::allocated_by(|| {
-        let lines = crate::preview::code::highlight_lang(&small, "rust", "TwoDark");
-        assert_eq!(lines.len(), 1500, "全行ハイライトされる");
-    });
-    let large_alloc = crate::mem_tests::allocated_by(|| {
-        let lines = crate::preview::code::highlight_lang(&large, "rust", "TwoDark");
-        assert_eq!(lines.len(), 3000, "全行ハイライトされる");
-    });
+    let scaling = measure_scaling_alloc(
+        || {
+            let lines = crate::preview::code::highlight_lang(&small, "rust", "TwoDark");
+            assert_eq!(lines.len(), 1500, "全行ハイライトされる");
+        },
+        || {
+            let lines = crate::preview::code::highlight_lang(&large, "rust", "TwoDark");
+            assert_eq!(lines.len(), 3000, "全行ハイライトされる");
+        },
+    );
     assert!(
-        large_alloc < small_alloc.saturating_mul(3),
-        "2倍の行数で確保バイト数が3倍を超えた(回帰: O(n^2)?): small={small_alloc} large={large_alloc}"
+        scaling.large_min < scaling.small_min.saturating_mul(3),
+        "2倍の行数で確保バイト数が3倍を超えた(回帰: O(n^2)?): small_min={} large_min={} \
+         (small_runs={:?} large_runs={:?})",
+        scaling.small_min,
+        scaling.large_min,
+        scaling.small_runs,
+        scaling.large_runs
     );
 }
 
@@ -188,6 +249,9 @@ fn md_doc(blocks: usize) -> String {
 // above): doubling the block count should roughly double the allocation, not quadruple it.
 // Tables are **not** covered here — see `md_doc`'s own doc comment for why, and
 // `render_markdown_large_table_is_bounded` below for the guard that does cover them.
+// Uses `measure_scaling_alloc` (see its doc for why: this test's own CI failure is the motivating
+// case) so a concurrent test filling/evicting the shared `code_block_cache` LRU mid-measurement
+// can't flake this.
 #[test]
 fn render_markdown_large_doc_is_bounded() {
     let render = |src: &str| {
@@ -199,20 +263,20 @@ fn render_markdown_large_doc_is_bounded() {
             false,
         )
     };
-    // Warm the "rust" fence's grammar outside the measurement (same reasoning as the highlight_lang guard).
-    let _ = render(&md_doc(1));
-
     let small = md_doc(100);
     let large = md_doc(200); // 2x blocks
-    let small_alloc = crate::mem_tests::allocated_by(|| {
-        assert!(!render(&small).is_empty());
-    });
-    let large_alloc = crate::mem_tests::allocated_by(|| {
-        assert!(!render(&large).is_empty());
-    });
+    let scaling = measure_scaling_alloc(
+        || assert!(!render(&small).is_empty()),
+        || assert!(!render(&large).is_empty()),
+    );
     assert!(
-        large_alloc < small_alloc.saturating_mul(3),
-        "2倍のブロック数で確保バイト数が3倍を超えた(回帰: O(n^2)?): small={small_alloc} large={large_alloc}"
+        scaling.large_min < scaling.small_min.saturating_mul(3),
+        "2倍のブロック数で確保バイト数が3倍を超えた(回帰: O(n^2)?): small_min={} large_min={} \
+         (small_runs={:?} large_runs={:?})",
+        scaling.small_min,
+        scaling.large_min,
+        scaling.small_runs,
+        scaling.large_runs
     );
 }
 
@@ -273,6 +337,8 @@ fn html_table(rows: usize, cols: usize, cell: &str) -> String {
 // `render_table_cells`'s width-shaving loop, which sheds one column at a time from whichever column
 // is currently widest — `O((total natural width - budget) * ncol)`, which is why the 20,000-character
 // cells cost seconds while ten times as many *cells* cost a third of a second.
+// Uses `measure_scaling_alloc` (see its doc) so a concurrent test filling/evicting a shared
+// process-wide cache mid-measurement can't flake either axis below.
 #[test]
 fn render_markdown_large_table_is_bounded() {
     let render = |src: &str| {
@@ -283,14 +349,6 @@ fn render_markdown_large_table_is_bounded() {
             "TwoDark",
             false,
         )
-    };
-    // Warm whatever one-time state the first render of any document builds, outside the
-    // measurement (same reasoning as the two guards above).
-    let _ = render(&gfm_table(1, 1, "x"));
-    let alloc = |src: &str| {
-        crate::mem_tests::allocated_by(|| {
-            assert!(!render(src).is_empty());
-        })
     };
 
     // --- axis 1: rows. 2x the rows must not be ~4x the work (an O(rows^2) cell read, say — the
@@ -313,11 +371,18 @@ fn render_markdown_large_table_is_bounded() {
             html_table(60, 50, "cell"),
         ),
     ] {
-        let (small_alloc, large_alloc) = (alloc(&small), alloc(&large));
+        let scaling = measure_scaling_alloc(
+            || assert!(!render(&small).is_empty()),
+            || assert!(!render(&large).is_empty()),
+        );
         assert!(
-            large_alloc < small_alloc.saturating_mul(3),
+            scaling.large_min < scaling.small_min.saturating_mul(3),
             "{why}: 2倍の表で確保バイト数が3倍を超えた(回帰: O(n^2)?): \
-             small={small_alloc} large={large_alloc}"
+             small_min={} large_min={} (small_runs={:?} large_runs={:?})",
+            scaling.small_min,
+            scaling.large_min,
+            scaling.small_runs,
+            scaling.large_runs
         );
     }
 
