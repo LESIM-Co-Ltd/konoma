@@ -9333,6 +9333,151 @@ fn orthogonal_design_reference_dump() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Docs-site Mermaid catalog
+// ---------------------------------------------------------------------------------------------
+
+/// Every ```mermaid fence in `samples/mermaid.md`, in document order, with the trailing newline
+/// dropped so each entry is exactly the byte string a Markdown preview hands the renderer.
+///
+/// Deliberately a hand-written scanner rather than a pull through the Markdown block model: the
+/// samples never nest a fence inside a fence, and a scanner keeps this dump independent of the
+/// block model's own churn — the point of the catalog is the *renderer's* output, not the parser's.
+fn mermaid_fences_of(md: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut open: Option<String> = None;
+    for line in md.lines() {
+        match &mut open {
+            None => {
+                if line.trim_start().starts_with("```mermaid") {
+                    open = Some(String::new());
+                }
+            }
+            Some(buf) => {
+                if line.trim_start().starts_with("```") {
+                    out.push(std::mem::take(buf).trim_end().to_string());
+                    open = None;
+                } else {
+                    buf.push_str(line);
+                    buf.push('\n');
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Renders every fence of the two sample galleries for the documentation site's Mermaid catalog
+/// page (`site/src/content/docs/guides/mermaid-catalog.mdx` and its `ja/` twin), writing 2×-scale
+/// PNGs plus a `manifest.json` the page's Astro component is driven by.
+///
+/// **Production path, not a parallel renderer.** Each fence goes through
+/// [`crate::preview::markdown::mermaid_to_svg_flow`] — the exact function `App::media_load` /
+/// `md_media` call for an inline ```mermaid fence — with the shipped defaults `[ui]
+/// mermaid_theme = "dark"` and `[ui] mermaid_curve = "basis"`. Only `routing` varies.
+///
+/// **Why only two kinds are drawn twice.** `mermaid_to_svg_reason_flow`'s dispatcher threads
+/// `routing` into exactly two arms: `render_konoma_flow` (claimed by `flowchart_is_ours`) and
+/// `render_konoma_state` (claimed by `state_is_ours`). Every other kind is routed through the
+/// shared `Draw` table, whose signature is `fn(&str, &str) -> Result<String, RenderError>` — code
+/// and theme only, so `[ui] mermaid_routing` is *structurally* unable to reach them. The
+/// predicates below are the dispatcher's own, so this file cannot drift from that claim.
+///
+/// Stale files are removed first: an image nobody regenerated is worse than a missing one, because
+/// the page would keep shipping it.
+///
+/// `#[ignore]`d like [`orthogonal_design_reference_dump`] — run explicitly:
+/// `cargo test -- --ignored site_mermaid_catalog_dump`.
+#[test]
+#[ignore = "writes PNG files for the docs site: cargo test -- --ignored site_mermaid_catalog_dump"]
+fn site_mermaid_catalog_dump() {
+    /// Device scale of the written PNGs. The SVG is laid out in CSS px; a 2× raster keeps the
+    /// labels crisp on a HiDPI screen without doubling again into multi-MB files.
+    const SCALE: u32 = 2;
+
+    for (lang, sample) in [
+        ("en", "samples/mermaid.md"),
+        ("ja", "samples/mermaid.ja.md"),
+    ] {
+        let md = std::fs::read_to_string(sample)
+            .unwrap_or_else(|e| panic!("{lang}: read {sample}: {e}"));
+        let fences = mermaid_fences_of(&md);
+        assert!(
+            !fences.is_empty(),
+            "{lang}: {sample} must contain ```mermaid fences"
+        );
+
+        let dir = std::path::Path::new("site/src/assets/mermaid-catalog").join(lang);
+        // Delete first: a renamed or dropped fence must not leave an orphan PNG behind.
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap_or_else(|e| panic!("{lang}: clear {dir:?}: {e}"));
+        }
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("{lang}: create {dir:?}: {e}"));
+
+        let mut items = Vec::new();
+        for (i, code) in fences.iter().enumerate() {
+            let order = i + 1;
+            let kind = crate::preview::mermaid::chart::first_word(code);
+            // The dispatcher's own predicates (see this test's doc comment).
+            let takes_routing = crate::preview::mermaid::flowchart::is_flowchart(code)
+                || crate::preview::mermaid::state::is_state_diagram(code);
+            let variants: &[(&str, &str)] = if takes_routing {
+                // Orthogonal first: the catalog page leads with konoma's own routing.
+                &[("orthogonal", "konoma-orthogonal"), ("splines", "splines")]
+            } else {
+                &[("default", "splines")]
+            };
+
+            let mut renders = Vec::new();
+            for (variant, routing) in variants {
+                let svg =
+                    crate::preview::markdown::mermaid_to_svg_flow(code, "dark", "basis", routing)
+                        .unwrap_or_else(|| {
+                            panic!("{lang} #{order} ({kind}): must render under routing={routing}")
+                        });
+                let file = format!("{order:02}-{kind}-{variant}.png");
+                let path = dir.join(&file);
+                let (w, h) = crate::preview::svg::intrinsic_size_bytes(svg.as_bytes())
+                    .unwrap_or_else(|| panic!("{lang} #{order} ({kind}): SVG must have a size"));
+                // `rasterize_bytes` takes a target for the *longest* side, so asking for
+                // `SCALE * max(w, h)` is exactly a `SCALE`× device-pixel-ratio raster. The
+                // background stays transparent, the same as in the terminal.
+                let img =
+                    crate::preview::svg::rasterize_bytes(svg.as_bytes(), &path, SCALE * w.max(h))
+                        .unwrap_or_else(|| panic!("{lang} #{order} ({kind}): must rasterise"));
+                img.save(&path)
+                    .unwrap_or_else(|e| panic!("{lang} #{order} ({kind}): write {path:?}: {e}"));
+                renders.push(serde_json::json!({
+                    "variant": variant,
+                    "routing": routing,
+                    "file": file,
+                }));
+            }
+
+            items.push(serde_json::json!({
+                "order": order,
+                "kind": kind,
+                "orthogonal": takes_routing,
+                "renders": renders,
+                "source": code,
+            }));
+        }
+
+        let manifest = serde_json::json!({
+            "lang": lang,
+            "sample": sample,
+            "theme": "dark",
+            "curve": "basis",
+            "scale": SCALE,
+            "items": items,
+        });
+        let mut text = serde_json::to_string_pretty(&manifest).expect("serialise manifest");
+        text.push('\n');
+        let path = dir.join("manifest.json");
+        std::fs::write(&path, text).unwrap_or_else(|e| panic!("{lang}: write {path:?}: {e}"));
+    }
+}
+
 /// Finding 1 (high): the cluster invariants stage 1b already states over `CORPUS` under
 /// `"splines"` (`check_clusters_hold_their_members` and its three siblings, `pub(super)` above so
 /// this section can reuse them rather than re-deriving the same geometry questions), run again

@@ -1,0 +1,354 @@
+{
+  "curve": "basis",
+  "items": [
+    {
+      "kind": "flowchart",
+      "order": 1,
+      "orthogonal": true,
+      "renders": [
+        {
+          "file": "01-flowchart-orthogonal.png",
+          "routing": "konoma-orthogonal",
+          "variant": "orthogonal"
+        },
+        {
+          "file": "01-flowchart-splines.png",
+          "routing": "splines",
+          "variant": "splines"
+        }
+      ],
+      "source": "flowchart LR\n  K([キー入力]) --> S{どの面か}\n  S -->|ツリー| M[移動・開く]\n  S -->|プレビュー| P[スクロール・検索]\n  M --> R[再描画]\n  P --> R"
+    },
+    {
+      "kind": "flowchart",
+      "order": 2,
+      "orthogonal": true,
+      "renders": [
+        {
+          "file": "02-flowchart-orthogonal.png",
+          "routing": "konoma-orthogonal",
+          "variant": "orthogonal"
+        },
+        {
+          "file": "02-flowchart-splines.png",
+          "routing": "splines",
+          "variant": "splines"
+        }
+      ],
+      "source": "flowchart LR\n  F[ファイル] --> R{ルールに一致?}\n  R -->|画像| I[デコード]:::media\n  R -->|Markdown| M[ブロックモデル]:::text\n  R -->|なし| X[プレビュー不可]\n  I --> K[kitty 転送]:::media\n  M --> K\n  classDef media fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  classDef text fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  style X fill:#2d2418,stroke:#d4a017,color:#c9d1d9\n  linkStyle 0 stroke:#8b949e\n  linkStyle 1,4 stroke:#1f6feb\n  linkStyle 2,5 stroke:#2da44e\n  linkStyle 3 stroke:#d4a017"
+    },
+    {
+      "kind": "flowchart",
+      "order": 3,
+      "orthogonal": true,
+      "renders": [
+        {
+          "file": "03-flowchart-orthogonal.png",
+          "routing": "konoma-orthogonal",
+          "variant": "orthogonal"
+        },
+        {
+          "file": "03-flowchart-splines.png",
+          "routing": "splines",
+          "variant": "splines"
+        }
+      ],
+      "source": "flowchart LR\n  F[ファイル] --> C{設定のルール}\n  C -->|テキスト| T[窓読み]\n  C -->|コード| S[構文強調]\n  C -->|Markdown| MD[ブロックモデル]\n  C -->|CSV / TSV| TB[表]\n  C -->|画像| IM[デコード]\n  C -->|PDF| PD[ページ描画]\n  C -->|SVG| SV[usvg]\n  C -->|動画| VD[キーフレーム]\n  C -->|書庫| AR[一覧]\n  C -->|なし| NA[プレビュー不可]\n  MD --> MM[mermaid]\n  MD --> MA[数式]\n  MM --> RS[ラスタライズ]\n  MA --> RS\n  SV --> RS\n  PD --> RS\n  IM --> FIT[セルに合わせる]\n  RS --> FIT\n  VD --> FIT\n  FIT --> K{端末}\n  K -->|kitty| KT[圧縮転送]\n  K -->|sixel / iTerm2| RI[画像プロトコル]\n  K -->|それ以外| HB[ハーフブロック]\n  classDef pix fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  classDef txt fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  class IM,PD,SV,VD,MM,MA,RS,FIT,KT,RI,HB pix\n  class T,S,MD,TB,AR txt\n  style NA fill:#2d2418,stroke:#d4a017,color:#c9d1d9"
+    },
+    {
+      "kind": "stateDiagram-v2",
+      "order": 4,
+      "orthogonal": true,
+      "renders": [
+        {
+          "file": "04-stateDiagram-v2-orthogonal.png",
+          "routing": "konoma-orthogonal",
+          "variant": "orthogonal"
+        },
+        {
+          "file": "04-stateDiagram-v2-splines.png",
+          "routing": "splines",
+          "variant": "splines"
+        }
+      ],
+      "source": "stateDiagram-v2\n  [*] --> ツリー\n  ツリー --> プレビュー : Enter\n  プレビュー --> ツリー : q\n  state プレビュー {\n    [*] --> デコード中\n    デコード中 --> 表示 : 画像が届く\n  }\n  ツリー --> [*] : Q"
+    },
+    {
+      "kind": "classDiagram",
+      "order": 5,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "05-classDiagram-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "classDiagram\n  class Preview {\n    +PathBuf path\n    +DisplayMode mode\n    +render(width) Lines\n  }\n  class Renderer {\n    +draw(source) Svg\n  }\n  class MermaidRenderer {\n    +DiagramKind kind\n    +draw(source) Svg\n  }\n  Preview --> Renderer : 委譲する\n  Renderer <|-- MermaidRenderer"
+    },
+    {
+      "kind": "erDiagram",
+      "order": 6,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "06-erDiagram-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "erDiagram\n  TAB[\"タブ\"] {\n    int index PK\n    string root\n    string cursor\n  }\n  MARK[\"ブックマーク\"] {\n    string key PK\n    string path\n  }\n  ROOT[\"ルート\"] {\n    string path PK\n  }\n  TAB ||--|| ROOT : 起点にする\n  TAB ||--o{ MARK : 覚える"
+    },
+    {
+      "kind": "sequenceDiagram",
+      "order": 7,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "07-sequenceDiagram-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "sequenceDiagram\n  actor U as あなた\n  participant K as konoma\n  participant W as ワーカー\n  U->>K: .png で Enter\n  K->>+W: UI とは別スレッドで復号\n  alt kitty graphics\n    W-->>K: 圧縮した RGBA\n  else 非対応\n    W-->>K: ハーフブロック\n  end\n  deactivate W\n  K-->>U: 全画面プレビュー"
+    },
+    {
+      "kind": "zenuml",
+      "order": 8,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "08-zenuml-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "zenuml\n  title ファイルを開く\n  @Actor You\n  You->konoma: Enter\n  konoma->Resolver.resolve(path) {\n    return kind\n  }\n  if(kind == \"image\") {\n    konoma->Decoder: 復号する\n  } else {\n    konoma->Window: 1 画面ぶん読む\n  }\n  konoma->You: 全画面プレビュー"
+    },
+    {
+      "kind": "mindmap",
+      "order": 9,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "09-mindmap-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "mindmap\n  root((konoma のプレビュー))\n    テキスト\n      Markdown\n      ソースコード\n    メディア\n      画像\n      PDF と動画\n    データ\n      CSV の表\n      書庫"
+    },
+    {
+      "kind": "kanban",
+      "order": 10,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "10-kanban-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "kanban\n  未着手\n    k1[sixel の色を調整する]\n  作業中\n    k2[mermaid ギャラリーを書く]@{ assigned: 'konoma', priority: 'High' }\n  完了\n    k3[レンダラの依存を外す]@{ ticket: 'v0.27.0' }"
+    },
+    {
+      "kind": "journey",
+      "order": 11,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "11-journey-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "journey\n  title AI と組んで書く午前\n  section 読む\n    差分をながめる: 4: 私, AI\n    落ちている所を開く: 5: 私\n  section 直す\n    真因を見つける: 2: 私\n    テストが緑になる: 5: 私, AI"
+    },
+    {
+      "kind": "timeline",
+      "order": 12,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "12-timeline-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "timeline\n  title プレビュー種別とリリース\n  section 2026 年前半\n    v0.4 : CSV の表 : 行の範囲選択\n    v0.11 : キャレット行でエディタを開く\n  section 2026 年後半\n    v0.15 : mermaid を画像として描く\n    v0.27 : 全図種を自前で描く"
+    },
+    {
+      "kind": "gantt",
+      "order": 13,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "13-gantt-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "gantt\n  title レンダラを出すまで\n  dateFormat YYYY-MM-DD\n  axisFormat %m/%d\n  section 作る\n    パーサ     :p1, 2026-08-01, 6d\n    レイアウト :after p1, 5d\n  section 出す\n    監査       :crit, a1, 2026-08-12, 2d\n    リリース   :milestone, m1, after a1, 0d\n    告知       :after m1, 1d"
+    },
+    {
+      "kind": "requirementDiagram",
+      "order": 14,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "14-requirementDiagram-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "requirementDiagram\n  requirement 描画は止まらない {\n    id: 1\n    text: 再描画は必ず 60ms 以内に終わる\n    risk: high\n    verifymethod: test\n  }\n  element 速度テスト {\n    type: simulation\n  }\n  速度テスト - verifies -> 描画は止まらない"
+    },
+    {
+      "kind": "gitGraph",
+      "order": 15,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "15-gitGraph-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "gitGraph\n  commit id: \"v0.26.5\"\n  branch renderer\n  commit id: \"解析\"\n  commit id: \"配置\"\n  checkout main\n  merge renderer tag: \"v0.27.0\""
+    },
+    {
+      "kind": "C4Context",
+      "order": 16,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "16-C4Context-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "C4Context\n  title AI と組むときの konoma\n  Person(dev, \"開発者\", \"左で読み、右で指示する。\")\n  Enterprise_Boundary(term, \"1 つの端末\") {\n    System(konoma, \"konoma\", \"ツリーと全画面プレビュー。\")\n    System(agent, \"コーディング AI\", \"ファイルを編集する。\")\n  }\n  System_Ext(editor, \"エディタ\", \"必要なときに行を指定して開く。\")\n  Rel(dev, konoma, \"閲覧する\")\n  Rel(agent, konoma, \"配下を書き換える\", \"fs イベント\")\n  Rel(konoma, editor, \"委譲する\", \"$EDITOR\")"
+    },
+    {
+      "kind": "block-beta",
+      "order": 17,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "17-block-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "block-beta\n  columns 2\n  ui[\"ツリーとプレビュー\"]:2\n  block:workers:1\n    columns 1\n    img[\"画像の復号\"]\n    git[\"git status\"]\n  end\n  cache[(\"キャッシュ\")]\n  ui --> workers\n  workers --> cache"
+    },
+    {
+      "kind": "architecture-beta",
+      "order": 18,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "18-architecture-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "architecture-beta\n  group term(cloud)[端末]\n    service tree(server)[ツリー] in term\n    service prev(server)[プレビュー] in term\n  service repo(database)[git リポジトリ]\n  service cache(disk)[画像キャッシュ]\n  tree:R --> L:prev\n  tree:B --> T:repo\n  prev:B --> T:cache"
+    },
+    {
+      "kind": "pie",
+      "order": 19,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "19-pie-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "pie showData\n  title 全画面 1 回の再描画の内訳（ms）\n  \"端末への転送\" : 31\n  \"画像の復号\" : 12\n  \"レイアウト\" : 4\n  \"その他\" : 3"
+    },
+    {
+      "kind": "xychart-beta",
+      "order": 20,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "20-xychart-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "xychart-beta\n  title \"図のレイアウト時間\"\n  x-axis [flow, state, class, er, seq]\n  y-axis \"マイクロ秒\" 0 --> 1200\n  bar \"実測\" [90, 140, 260, 300, 880]\n  line \"目標\" [1000, 1000, 1000, 1000, 1000]"
+    },
+    {
+      "kind": "quadrantChart",
+      "order": 21,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "21-quadrantChart-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "quadrantChart\n  title 手間と需要で見たプレビュー種別\n  x-axis 安い --> 高い\n  y-axis まれ --> よくある\n  quadrant-1 やる価値あり\n  quadrant-2 すぐ効く\n  quadrant-3 いつか\n  quadrant-4 よく考える\n  Markdown: [0.62, 0.78]\n  画像: [0.8, 0.62]\n  CSV: [0.34, 0.3]\n  書庫: [0.2, 0.12]"
+    },
+    {
+      "kind": "radar-beta",
+      "order": 22,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "22-radar-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "radar-beta\n  title 端末にできること\n  axis img[\"画像\"], vid[\"動画\"], spd[\"速度\"], col[\"色\"]\n  curve k[\"kitty graphics\"]{5, 5, 5, 4}\n  curve s[\"sixel\"]{4, 3, 3, 4}\n  curve h[\"ハーフブロック\"]{2, 2, 4, 3}\n  max 5\n  min 0"
+    },
+    {
+      "kind": "treemap-beta",
+      "order": 23,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "23-treemap-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "treemap-beta\n\"src\"\n  \"preview\": 21\n  \"app\": 14\n\"docs\"\n  \"PRD\": 9\n  \"STATUS\": 5"
+    },
+    {
+      "kind": "packet-beta",
+      "order": 24,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "24-packet-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "packet-beta\n0-7: \"マジック\"\n8-11: \"版\"\n12-15: \"フラグ\"\n16-47: \"本体の長さ\"\n48-63: \"チェックサム\""
+    },
+    {
+      "kind": "sankey-beta",
+      "order": 25,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "25-sankey-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "sankey-beta\nリポジトリ,テキスト,62\nリポジトリ,メディア,21\nテキスト,Markdown プレビュー,38\nテキスト,コードプレビュー,24\nメディア,画像プレビュー,15\nメディア,動画サムネイル,6"
+    }
+  ],
+  "lang": "ja",
+  "sample": "samples/mermaid.ja.md",
+  "scale": 2,
+  "theme": "dark"
+}

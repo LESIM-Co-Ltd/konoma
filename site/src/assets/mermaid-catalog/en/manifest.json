@@ -1,0 +1,354 @@
+{
+  "curve": "basis",
+  "items": [
+    {
+      "kind": "flowchart",
+      "order": 1,
+      "orthogonal": true,
+      "renders": [
+        {
+          "file": "01-flowchart-orthogonal.png",
+          "routing": "konoma-orthogonal",
+          "variant": "orthogonal"
+        },
+        {
+          "file": "01-flowchart-splines.png",
+          "routing": "splines",
+          "variant": "splines"
+        }
+      ],
+      "source": "flowchart LR\n  K([Key press]) --> S{Which surface?}\n  S -->|Tree| M[Move or open]\n  S -->|Preview| P[Scroll or search]\n  M --> R[Redraw]\n  P --> R"
+    },
+    {
+      "kind": "flowchart",
+      "order": 2,
+      "orthogonal": true,
+      "renders": [
+        {
+          "file": "02-flowchart-orthogonal.png",
+          "routing": "konoma-orthogonal",
+          "variant": "orthogonal"
+        },
+        {
+          "file": "02-flowchart-splines.png",
+          "routing": "splines",
+          "variant": "splines"
+        }
+      ],
+      "source": "flowchart LR\n  F[File] --> R{Rule match?}\n  R -->|image| I[Decode]:::media\n  R -->|markdown| M[Block model]:::text\n  R -->|none| X[can not preview]\n  I --> K[kitty transfer]:::media\n  M --> K\n  classDef media fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  classDef text fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  style X fill:#2d2418,stroke:#d4a017,color:#c9d1d9\n  linkStyle 0 stroke:#8b949e\n  linkStyle 1,4 stroke:#1f6feb\n  linkStyle 2,5 stroke:#2da44e\n  linkStyle 3 stroke:#d4a017"
+    },
+    {
+      "kind": "flowchart",
+      "order": 3,
+      "orthogonal": true,
+      "renders": [
+        {
+          "file": "03-flowchart-orthogonal.png",
+          "routing": "konoma-orthogonal",
+          "variant": "orthogonal"
+        },
+        {
+          "file": "03-flowchart-splines.png",
+          "routing": "splines",
+          "variant": "splines"
+        }
+      ],
+      "source": "flowchart LR\n  F[File] --> C{config rule}\n  C -->|text| T[window reader]\n  C -->|code| S[syntax highlight]\n  C -->|markdown| MD[block model]\n  C -->|csv / tsv| TB[table]\n  C -->|image| IM[decode]\n  C -->|pdf| PD[page raster]\n  C -->|svg| SV[usvg]\n  C -->|video| VD[keyframe]\n  C -->|archive| AR[entry list]\n  C -->|none| NA[can not preview]\n  MD --> MM[mermaid]\n  MD --> MA[math]\n  MM --> RS[rasterize]\n  MA --> RS\n  SV --> RS\n  PD --> RS\n  IM --> FIT[fit to cells]\n  RS --> FIT\n  VD --> FIT\n  FIT --> K{terminal}\n  K -->|kitty| KT[compressed transfer]\n  K -->|sixel / iTerm2| RI[image protocol]\n  K -->|anything else| HB[halfblocks]\n  classDef pix fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  classDef txt fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  class IM,PD,SV,VD,MM,MA,RS,FIT,KT,RI,HB pix\n  class T,S,MD,TB,AR txt\n  style NA fill:#2d2418,stroke:#d4a017,color:#c9d1d9"
+    },
+    {
+      "kind": "stateDiagram-v2",
+      "order": 4,
+      "orthogonal": true,
+      "renders": [
+        {
+          "file": "04-stateDiagram-v2-orthogonal.png",
+          "routing": "konoma-orthogonal",
+          "variant": "orthogonal"
+        },
+        {
+          "file": "04-stateDiagram-v2-splines.png",
+          "routing": "splines",
+          "variant": "splines"
+        }
+      ],
+      "source": "stateDiagram-v2\n  [*] --> Tree\n  Tree --> Preview : Enter\n  Preview --> Tree : q\n  state Preview {\n    [*] --> Decoding\n    Decoding --> Ready : image arrives\n  }\n  Tree --> [*] : Q"
+    },
+    {
+      "kind": "classDiagram",
+      "order": 5,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "05-classDiagram-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "classDiagram\n  class Preview {\n    +PathBuf path\n    +DisplayMode mode\n    +render(width) Lines\n  }\n  class Renderer {\n    +draw(source) Svg\n  }\n  class MermaidRenderer {\n    +DiagramKind kind\n    +draw(source) Svg\n  }\n  Preview --> Renderer : delegates to\n  Renderer <|-- MermaidRenderer"
+    },
+    {
+      "kind": "erDiagram",
+      "order": 6,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "06-erDiagram-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "erDiagram\n  TAB ||--|| ROOT : is rooted at\n  TAB ||--o{ BOOKMARK : remembers\n  TAB {\n    int index PK\n    string root\n    string cursor\n  }\n  BOOKMARK {\n    string key PK\n    string path\n  }"
+    },
+    {
+      "kind": "sequenceDiagram",
+      "order": 7,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "07-sequenceDiagram-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "sequenceDiagram\n  actor You\n  participant K as konoma\n  participant W as Worker\n  You->>K: Enter on a .png\n  K->>+W: decode off the UI thread\n  alt kitty graphics\n    W-->>K: compressed RGBA\n  else no protocol\n    W-->>K: half blocks\n  end\n  deactivate W\n  K-->>You: full-screen preview"
+    },
+    {
+      "kind": "zenuml",
+      "order": 8,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "08-zenuml-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "zenuml\n  title Opening a file\n  @Actor You\n  You->konoma: Enter\n  konoma->Resolver.resolve(path) {\n    return kind\n  }\n  if(kind == \"image\") {\n    konoma->Decoder: decode\n  } else {\n    konoma->Window: read one page\n  }\n  konoma->You: full-screen preview"
+    },
+    {
+      "kind": "mindmap",
+      "order": 9,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "09-mindmap-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "mindmap\n  root((konoma previews))\n    Text\n      Markdown\n      Source code\n    Media\n      Images\n      PDF and video\n    Data\n      CSV tables\n      Archives"
+    },
+    {
+      "kind": "kanban",
+      "order": 10,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "10-kanban-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "kanban\n  Backlog\n    k1[Tune the sixel palette]\n  Doing\n    k2[Write the mermaid gallery]@{ assigned: 'konoma', priority: 'High' }\n  Done\n    k3[Drop the renderer dependency]@{ ticket: 'v0.27.0' }"
+    },
+    {
+      "kind": "journey",
+      "order": 11,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "11-journey-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "journey\n  title A morning of pair programming\n  section Read\n    Skim the diff: 4: Me, Agent\n    Open the failing file: 5: Me\n  section Fix\n    Find the real cause: 2: Me\n    Watch the tests go green: 5: Me, Agent"
+    },
+    {
+      "kind": "timeline",
+      "order": 12,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "12-timeline-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "timeline\n  title Preview kinds, by release\n  section 2026 H1\n    v0.4 : CSV tables : line selection\n    v0.11 : Open the editor at the caret\n  section 2026 H2\n    v0.15 : Mermaid drawn as images\n    v0.27 : Every diagram drawn in-house"
+    },
+    {
+      "kind": "gantt",
+      "order": 13,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "13-gantt-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "gantt\n  title Shipping a renderer\n  dateFormat YYYY-MM-DD\n  axisFormat %m/%d\n  section Build\n    Parser        :p1, 2026-08-01, 6d\n    Layout        :after p1, 5d\n  section Ship\n    Audit         :crit, a1, 2026-08-12, 2d\n    Release       :milestone, m1, after a1, 0d\n    Announce      :after m1, 1d"
+    },
+    {
+      "kind": "requirementDiagram",
+      "order": 14,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "14-requirementDiagram-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "requirementDiagram\n  requirement never_blocks {\n    id: 1\n    text: a redraw always finishes under 60ms\n    risk: high\n    verifymethod: test\n  }\n  element speed_tests {\n    type: test suite\n  }\n  speed_tests - verifies -> never_blocks"
+    },
+    {
+      "kind": "gitGraph",
+      "order": 15,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "15-gitGraph-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "gitGraph\n  commit id: \"v0.26.5\"\n  branch renderer\n  commit id: \"parser\"\n  commit id: \"layout\"\n  checkout main\n  merge renderer tag: \"v0.27.0\""
+    },
+    {
+      "kind": "C4Context",
+      "order": 16,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "16-C4Context-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "C4Context\n  title konoma in an AI pair-programming setup\n  Person(dev, \"Developer\", \"Reads on the left.\")\n  Enterprise_Boundary(term, \"One terminal\") {\n    System(konoma, \"konoma\", \"Tree and full-screen preview.\")\n    System(agent, \"Coding agent\", \"Edits the files.\")\n  }\n  System_Ext(editor, \"Editor\", \"Opened on demand, at a line.\")\n  Rel(dev, konoma, \"Browses with\")\n  Rel(agent, konoma, \"Changes files under\", \"fs events\")\n  Rel(konoma, editor, \"Delegates to\", \"$EDITOR\")"
+    },
+    {
+      "kind": "block-beta",
+      "order": 17,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "17-block-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "block-beta\n  columns 2\n  ui[\"Tree and preview UI\"]:2\n  block:workers:1\n    columns 1\n    img[\"image decode\"]\n    git[\"git status\"]\n  end\n  cache[(\"cache\")]\n  ui --> workers\n  workers --> cache"
+    },
+    {
+      "kind": "architecture-beta",
+      "order": 18,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "18-architecture-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "architecture-beta\n  group term(cloud)[Terminal]\n    service tree(server)[Tree] in term\n    service prev(server)[Preview] in term\n  service repo(database)[Git repo]\n  service cache(disk)[Image cache]\n  tree:R --> L:prev\n  tree:B --> T:repo\n  prev:B --> T:cache"
+    },
+    {
+      "kind": "pie",
+      "order": 19,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "19-pie-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "pie showData\n  title Where one full-screen image redraw goes (ms)\n  \"Terminal transfer\" : 31\n  \"Image decode\" : 12\n  \"Layout\" : 4\n  \"Everything else\" : 3"
+    },
+    {
+      "kind": "xychart-beta",
+      "order": 20,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "20-xychart-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "xychart-beta\n  title \"Diagram layout time\"\n  x-axis [flow, state, class, er, seq]\n  y-axis \"microseconds\" 0 --> 1200\n  bar \"measured\" [90, 140, 260, 300, 880]\n  line \"budget\" [1000, 1000, 1000, 1000, 1000]"
+    },
+    {
+      "kind": "quadrantChart",
+      "order": 21,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "21-quadrantChart-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "quadrantChart\n  title Preview kinds by cost and demand\n  x-axis Cheap --> Expensive\n  y-axis Rare --> Common\n  quadrant-1 Worth the work\n  quadrant-2 Quick wins\n  quadrant-3 Someday\n  quadrant-4 Think twice\n  Markdown: [0.62, 0.78]\n  Images: [0.8, 0.62]\n  CSV: [0.34, 0.3]\n  Archives: [0.2, 0.12]"
+    },
+    {
+      "kind": "radar-beta",
+      "order": 22,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "22-radar-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "radar-beta\n  title What a terminal can do\n  axis img[\"Images\"], vid[\"Video\"], spd[\"Speed\"], col[\"Colour\"]\n  curve k[\"kitty graphics\"]{5, 5, 5, 4}\n  curve s[\"sixel\"]{4, 3, 3, 4}\n  curve h[\"half blocks\"]{2, 2, 4, 3}\n  max 5\n  min 0"
+    },
+    {
+      "kind": "treemap-beta",
+      "order": 23,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "23-treemap-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "treemap-beta\n\"src\"\n  \"preview\": 21\n  \"app\": 14\n\"docs\"\n  \"PRD\": 9\n  \"STATUS\": 5"
+    },
+    {
+      "kind": "packet-beta",
+      "order": 24,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "24-packet-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "packet-beta\n0-7: \"Magic\"\n8-11: \"Version\"\n12-15: \"Flags\"\n16-47: \"Payload length\"\n48-63: \"Checksum\""
+    },
+    {
+      "kind": "sankey-beta",
+      "order": 25,
+      "orthogonal": false,
+      "renders": [
+        {
+          "file": "25-sankey-beta-default.png",
+          "routing": "splines",
+          "variant": "default"
+        }
+      ],
+      "source": "sankey-beta\nRepository,Text,62\nRepository,Media,21\nText,Markdown preview,38\nText,Code preview,24\nMedia,Image preview,15\nMedia,Video thumbnail,6"
+    }
+  ],
+  "lang": "en",
+  "sample": "samples/mermaid.md",
+  "scale": 2,
+  "theme": "dark"
+}
