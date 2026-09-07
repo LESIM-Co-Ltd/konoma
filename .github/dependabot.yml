@@ -15,6 +15,11 @@ updates:
       # version in Cargo.toml without re-syncing that vendored tree by hand produces a build that
       # silently ignores the patch, so this one is upgraded manually.
       - dependency-name: "mermaid-text"
+      # konoma measures mermaid text with skrifa at the exact version usvg reads glyph metrics
+      # with (see the note above `skrifa` in Cargo.toml and src/preview/mermaid/text_metrics.rs).
+      # A bump of skrifa alone puts measurement and drawing on different versions and adds a
+      # second copy of the crate, so skrifa only moves together with resvg/usvg, by hand.
+      - dependency-name: "skrifa"
 
   - package-ecosystem: github-actions
     directory: "/"
