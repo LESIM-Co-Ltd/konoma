@@ -9625,14 +9625,17 @@ fn site_mermaid_catalog_dump() {
 
         // ----- settings gallery: every sample a setting reaches, under every value of it -----
         //
-        // One block per fence the settings can actually change, written under `settings/<nn>/` so
-        // the file names stay the same from sample to sample. Which options a sample gets is the
+        // One block per fence, written under `settings/<nn>/` so the file names stay the same from
+        // sample to sample — `settings[i]` and `items[i]` are the same fence, which is what lets
+        // the kind gallery hang a theme strip under a render. Which options a sample gets is the
         // dispatcher's claim again, not a hand-kept list:
         //
         // - a **flowchart** reads all three, so it gets `routing` ×2, `curve` ×13, `theme` ×5;
         // - a **state diagram** reads `routing` (already drawn as the pair in the kind gallery
-        //   above) but never `curve`, so it gets `theme` ×5 only;
-        // - every other kind reads none of them and is skipped entirely.
+        //   above) but never `curve`, so it gets `theme` ×5;
+        // - **every other kind** is routed through the shared `Draw` table, whose signature is
+        //   `fn(&str, &str)` — code and theme. `routing` and `curve` are structurally unable to
+        //   reach it, but `theme` reaches *all* of them, so every kind gets its `theme` ×5 too.
         //
         // All three samples rather than only the smallest one, because a setting shows itself on a
         // different sample: `theme` is legible against author-set `classDef` colours (02), and
@@ -9646,9 +9649,6 @@ fn site_mermaid_catalog_dump() {
             let order = i + 1;
             let is_flow = crate::preview::mermaid::flowchart::is_flowchart(code);
             let is_state = crate::preview::mermaid::state::is_state_diagram(code);
-            if !is_flow && !is_state {
-                continue;
-            }
             let kind = crate::preview::mermaid::chart::first_word(code);
             let dir_of = settings_root.join(format!("{order:02}"));
             std::fs::create_dir_all(&dir_of)
@@ -9801,9 +9801,12 @@ fn site_mermaid_catalog_dump() {
 
             settings.push(serde_json::Value::Object(block));
         }
-        assert!(
-            !settings.is_empty(),
-            "{lang}: {sample} must contain a fence some setting reaches"
+        // The kind gallery hangs each kind's theme strip off `settings[i]` while drawing
+        // `items[i]`, so the two lists must stay index-for-index the same fences.
+        assert_eq!(
+            settings.len(),
+            items.len(),
+            "{lang}: every fence needs a settings block — the page pairs them by index"
         );
 
         // ----- `[ui] mermaid = "text"`: the Unicode box-drawing fallback, as text -----
@@ -9880,10 +9883,22 @@ fn site_mermaid_catalog_dump() {
 /// production both call — rather than [`render_flow`], because this runs over state-diagram
 /// sources too and the flowchart entry point cannot draw one.
 ///
-/// `reads_curve` is the dispatcher's own division, not a per-sample opinion: only a flowchart's
-/// edges read `[ui] mermaid_curve`, so a state diagram would draw 13 identical pictures and
-/// "pairwise different" would be a false claim rather than a failing one.
-fn assert_catalog_settings_change_one_sample(name: &str, code: &str, reads_curve: bool) {
+/// `reads_curve` and `reads_routing` are the dispatcher's own divisions, not per-sample opinions:
+///
+/// * only a **flowchart**'s edges read `[ui] mermaid_curve`, so anything else would draw 13
+///   identical pictures and "pairwise different" would be a false claim rather than a failing one;
+/// * only a flowchart and a **state diagram** read `[ui] mermaid_routing`. Every other kind goes
+///   through the shared `Draw` table (`fn(&str, &str)` — code and theme), which routing cannot
+///   reach, so "the theme is inert under konoma-orthogonal" is not true of them: with no orthogonal
+///   palette in play the theme still paints, exactly as it does under `"splines"`.
+///
+/// `theme` is checked for **every** sample, because it reaches every kind.
+fn assert_catalog_settings_change_one_sample(
+    name: &str,
+    code: &str,
+    reads_curve: bool,
+    reads_routing: bool,
+) {
     let render = |theme: &str, curve: &str, routing: &str| {
         crate::preview::markdown::mermaid_to_svg_flow(code, theme, curve, routing).unwrap_or_else(
             || panic!("{name}: must render (theme={theme} curve={curve} routing={routing})"),
@@ -9922,6 +9937,9 @@ fn assert_catalog_settings_change_one_sample(name: &str, code: &str, reads_curve
         }
     }
 
+    if !reads_routing {
+        return;
+    }
     let baseline = render("dark", "basis", "konoma-orthogonal");
     if reads_curve {
         for curve in CATALOG_CURVES {
@@ -9980,30 +9998,33 @@ fn catalog_settings_values_really_change_the_picture() {
         "inline three-rank flowchart",
         "flowchart TD\n  A[Tree] --> B{Kind}\n  B --> C[Image]\n  C --> D[Draw]\n  A --> D",
         true,
+        true,
     );
 
     let sample = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("samples/mermaid.md");
     let md = std::fs::read_to_string(&sample).unwrap_or_else(|e| panic!("read {sample:?}: {e}"));
+    // **Every** fence, not only the ones a routing or a curve reaches: `mermaid_theme` is passed
+    // to all 23 kinds, so the catalog now hangs a theme strip under every render in the kind
+    // gallery, and this is the assertion that those strips are five pictures rather than five
+    // copies.
     let mut covered = 0;
     for (i, code) in mermaid_fences_of(&md).iter().enumerate() {
         let is_flow = crate::preview::mermaid::flowchart::is_flowchart(code);
         let is_state = crate::preview::mermaid::state::is_state_diagram(code);
-        if !is_flow && !is_state {
-            continue;
-        }
         assert_catalog_settings_change_one_sample(
             &format!("samples/mermaid.md fence #{:02}", i + 1),
             code,
             is_flow,
+            is_flow || is_state,
         );
         covered += 1;
     }
-    // The loop must actually have run over the page's four settings samples — a scanner that
+    // The loop must actually have run over every sample the gallery draws — a scanner that
     // silently found nothing would leave every assertion above un-evaluated and still pass.
     assert!(
-        covered >= 4,
-        "samples/mermaid.md must still hold the three flowcharts and the state diagram the \
-         settings section is built from: found {covered}"
+        covered >= 23,
+        "samples/mermaid.md must still hold one fence per Mermaid kind the catalog draws: found \
+         {covered}"
     );
 }
 

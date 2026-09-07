@@ -198,12 +198,22 @@ for visibility. `<|--` is inheritance and `-->` a plain association.
 
 <MermaidCatalogItem lang="en" item={manifest.items[4]} />
 
+#### `mermaid_theme`
+
+Every kind follows the theme; shown on dark and light plates.
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[4].theme} />
+
 ### `erDiagram` — entities and how many of each
 
 The crow's-foot marks are the point: `||` is exactly one, `o{` is zero or more.
 An entity can carry an attribute block with types and `PK`/`FK` keys.
 
 <MermaidCatalogItem lang="en" item={manifest.items[5]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[5].theme} />
 
 ## Interactions
 
@@ -215,6 +225,10 @@ takes differently.
 
 <MermaidCatalogItem lang="en" item={manifest.items[6]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[6].theme} />
+
 ### `zenuml` — the same story, written as code
 
 ZenUML describes an interaction as nested calls rather than as arrows. A block
@@ -222,6 +236,10 @@ with `{ … }` is the callee doing work, and `if`/`else` reads as it would in a
 program.
 
 <MermaidCatalogItem lang="en" item={manifest.items[7]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[7].theme} />
 
 ## Trees and boards
 
@@ -233,12 +251,20 @@ the line in a terminal.
 
 <MermaidCatalogItem lang="en" item={manifest.items[8]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[8].theme} />
+
 ### `kanban` — columns of cards
 
 Columns come from the first indent level, cards from the second. `@{ … }`
 attaches metadata to a card — assignee, priority, ticket.
 
 <MermaidCatalogItem lang="en" item={manifest.items[9]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[9].theme} />
 
 ## Time
 
@@ -249,6 +275,10 @@ after the score. Sections band the day.
 
 <MermaidCatalogItem lang="en" item={manifest.items[10]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[10].theme} />
+
 ### `timeline` — what happened when
 
 Periods on the left, events on the right; `section` bands them. A period can
@@ -256,12 +286,20 @@ carry several events separated by `:`.
 
 <MermaidCatalogItem lang="en" item={manifest.items[11]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[11].theme} />
+
 ### `gantt` — bars against a calendar
 
 Note the `section` bands, the `after` dependency that chains one bar to the end
 of another, the `crit` tag, and the `milestone` drawn as a diamond.
 
 <MermaidCatalogItem lang="en" item={manifest.items[12]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[12].theme} />
 
 ## Structure
 
@@ -272,12 +310,20 @@ element is the thing that satisfies or verifies it.
 
 <MermaidCatalogItem lang="en" item={manifest.items[13]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[13].theme} />
+
 ### `gitGraph` — branches and merges
 
 Commits run along a lane; `branch` opens a new one, `checkout` moves between
 them, and `merge` brings one back. Tags sit above the commit they mark.
 
 <MermaidCatalogItem lang="en" item={manifest.items[14]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[14].theme} />
 
 ### `C4Context` — systems, people and boundaries
 
@@ -287,6 +333,10 @@ second label.
 
 <MermaidCatalogItem lang="en" item={manifest.items[15]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[15].theme} />
+
 ### `block-beta` — a grid you place things on
 
 Unlike a flowchart, `columns` decides the shape: it says how many cells a row
@@ -295,12 +345,20 @@ inside a cell.
 
 <MermaidCatalogItem lang="en" item={manifest.items[16]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[16].theme} />
+
 ### `architecture-beta` — services, groups and which side a wire leaves from
 
 Every edge names the side it leaves and the side it arrives on (`R` right, `L`
 left, `T` top, `B` bottom), so the picture is stated rather than inferred.
 
 <MermaidCatalogItem lang="en" item={manifest.items[17]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[17].theme} />
 
 ## Data
 
@@ -310,6 +368,10 @@ left, `T` top, `B` bottom), so the picture is stated rather than inferred.
 
 <MermaidCatalogItem lang="en" item={manifest.items[18]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[18].theme} />
+
 ### `xychart-beta` — bars and lines on the same axes
 
 Two series over one x-axis: a bar for what was measured, a line for what was
@@ -317,17 +379,29 @@ budgeted.
 
 <MermaidCatalogItem lang="en" item={manifest.items[19]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[19].theme} />
+
 ### `quadrantChart` — two axes, four verdicts
 
 Points are placed by `[x, y]` in the unit square, and each quadrant gets a name.
 
 <MermaidCatalogItem lang="en" item={manifest.items[20]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[20].theme} />
+
 ### `radar-beta` — several things scored on the same axes
 
 One closed curve per subject over shared axes — the shape is the comparison.
 
 <MermaidCatalogItem lang="en" item={manifest.items[21]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[21].theme} />
 
 ### `treemap-beta` — nested boxes sized by value
 
@@ -336,11 +410,19 @@ leaves put together.
 
 <MermaidCatalogItem lang="en" item={manifest.items[22]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[22].theme} />
+
 ### `packet-beta` — bit fields laid out in rows
 
 Ranges are bit offsets, so a wide field really is drawn wide.
 
 <MermaidCatalogItem lang="en" item={manifest.items[23]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[23].theme} />
 
 ### `sankey-beta` — flow that splits and keeps its width
 
@@ -348,6 +430,10 @@ Comma-separated `source,target,value`. The band widths stay proportional as the
 flow divides.
 
 <MermaidCatalogItem lang="en" item={manifest.items[24]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={manifest.settings[24].theme} />
 
 ## If konoma cannot draw it
 

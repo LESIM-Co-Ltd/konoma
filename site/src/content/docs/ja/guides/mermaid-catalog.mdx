@@ -185,12 +185,22 @@ konoma の UI は 2 つのモードと、その間の行き来だけでできて
 
 <MermaidCatalogItem lang="ja" item={manifest.items[4]} />
 
+#### `mermaid_theme`
+
+どの図種もテーマに従います。暗い板と明るい板の両方で示しています。
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[4].theme} />
+
 ### `erDiagram` — 実体と、その個数
 
 鳥の足のような記号が要点です。`||` はちょうど 1 つ、`o{` は 0 個以上を表します。実体には
 型と `PK`/`FK` を並べた属性表を持たせられます。
 
 <MermaidCatalogItem lang="ja" item={manifest.items[5]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[5].theme} />
 
 ## やりとり
 
@@ -201,12 +211,20 @@ konoma の UI は 2 つのモードと、その間の行き来だけでできて
 
 <MermaidCatalogItem lang="ja" item={manifest.items[6]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[6].theme} />
+
 ### `zenuml` — 同じ話を、コードのように書く
 
 ZenUML は矢印ではなく入れ子の呼び出しとしてやりとりを書きます。`{ … }` の中は呼ばれた
 側の仕事で、`if`/`else` はプログラムそのままの読み方になります。
 
 <MermaidCatalogItem lang="ja" item={manifest.items[7]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[7].theme} />
 
 ## 木と board
 
@@ -217,12 +235,20 @@ ZenUML は矢印ではなく入れ子の呼び出しとしてやりとりを書�
 
 <MermaidCatalogItem lang="ja" item={manifest.items[8]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[8].theme} />
+
 ### `kanban` — カードの並ぶ列
 
 字下げの 1 段目が列、2 段目がカードです。`@{ … }` でカードに担当・優先度・チケットを
 付けられます。
 
 <MermaidCatalogItem lang="ja" item={manifest.items[9]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[9].theme} />
 
 ## 時間
 
@@ -233,6 +259,10 @@ ZenUML は矢印ではなく入れ子の呼び出しとしてやりとりを書�
 
 <MermaidCatalogItem lang="ja" item={manifest.items[10]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[10].theme} />
+
 ### `timeline` — 何がいつ起きたか
 
 左に期間、右に出来事。`section` で帯に分けます。1 つの期間に `:` 区切りで複数の出来事を
@@ -240,12 +270,20 @@ ZenUML は矢印ではなく入れ子の呼び出しとしてやりとりを書�
 
 <MermaidCatalogItem lang="ja" item={manifest.items[11]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[11].theme} />
+
 ### `gantt` — 暦に対する棒
 
 `section` の帯、前の棒の終わりに繋ぐ `after` の依存、`crit` タグ、棒ではなくひし形で
 描かれる `milestone` に注目してください。
 
 <MermaidCatalogItem lang="ja" item={manifest.items[12]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[12].theme} />
 
 ## 構造
 
@@ -255,12 +293,20 @@ ZenUML は矢印ではなく入れ子の呼び出しとしてやりとりを書�
 
 <MermaidCatalogItem lang="ja" item={manifest.items[13]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[13].theme} />
+
 ### `gitGraph` — 枝と合流
 
 コミットがレーンに並び、`branch` で枝が増え、`checkout` で移り、`merge` で戻ります。
 タグは対象のコミットの脇に出ます。
 
 <MermaidCatalogItem lang="ja" item={manifest.items[14]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[14].theme} />
 
 ### `C4Context` — 人・システム・境界
 
@@ -269,6 +315,10 @@ C4 の語彙です。`Person`（人）、自分たちの `System`、外部の `S
 
 <MermaidCatalogItem lang="ja" item={manifest.items[15]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[15].theme} />
+
 ### `block-beta` — 置き場所としての格子
 
 flowchart と違い、形を決めるのは `columns` です。1 行に入る枡の数を指定し、`:n` で横に
@@ -276,12 +326,20 @@ flowchart と違い、形を決めるのは `columns` です。1 行に入る枡
 
 <MermaidCatalogItem lang="ja" item={manifest.items[16]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[16].theme} />
+
 ### `architecture-beta` — サービスと、線が出る辺
 
 辺ごとにどちら側から出てどちら側に入るかを書きます（`R` 右・`L` 左・`T` 上・`B` 下）。
 推測ではなく指定された絵になります。
 
 <MermaidCatalogItem lang="ja" item={manifest.items[17]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[17].theme} />
 
 ## データ
 
@@ -291,11 +349,19 @@ flowchart と違い、形を決めるのは `columns` です。1 行に入る枡
 
 <MermaidCatalogItem lang="ja" item={manifest.items[18]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[18].theme} />
+
 ### `xychart-beta` — 同じ軸に棒と折れ線
 
 1 つの x 軸に 2 系列。実測を棒で、目標を折れ線で重ねています。
 
 <MermaidCatalogItem lang="ja" item={manifest.items[19]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[19].theme} />
 
 ### `quadrantChart` — 2 軸 4 象限
 
@@ -303,11 +369,19 @@ flowchart と違い、形を決めるのは `columns` です。1 行に入る枡
 
 <MermaidCatalogItem lang="ja" item={manifest.items[20]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[20].theme} />
+
 ### `radar-beta` — 同じ軸で複数を比べる
 
 軸を共有して、対象ごとに閉じた曲線を 1 本ずつ。形そのものが比較になります。
 
 <MermaidCatalogItem lang="ja" item={manifest.items[21]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[21].theme} />
 
 ### `treemap-beta` — 値の大きさが面積になる入れ子の箱
 
@@ -315,17 +389,29 @@ flowchart と違い、形を決めるのは `columns` です。1 行に入る枡
 
 <MermaidCatalogItem lang="ja" item={manifest.items[22]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[22].theme} />
+
 ### `packet-beta` — ビット位置で並ぶフィールド
 
 範囲はビットの位置なので、幅の広いフィールドは本当に広く描かれます。
 
 <MermaidCatalogItem lang="ja" item={manifest.items[23]} />
 
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[23].theme} />
+
 ### `sankey-beta` — 分かれても幅を保つ流れ
 
 `source,target,value` をカンマ区切りで書きます。流れが分かれても帯の幅は比例したままです。
 
 <MermaidCatalogItem lang="ja" item={manifest.items[24]} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={manifest.settings[24].theme} />
 
 ## 描けないときは
 

@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
+    "gen:catalog": "bash scripts/gen-catalog.sh",
+    "prebuild": "test -f src/assets/mermaid-catalog/en/manifest.json && test -f src/assets/mermaid-catalog/ja/manifest.json || { printf '\\nThe mermaid catalog under src/assets/mermaid-catalog/ is generated, not committed, and is missing or incomplete.\\nRender it with konoma first:\\n\\n    npm run gen:catalog\\n\\n(that runs cargo, so it is a few minutes on a cold build; the Docs workflow does the same before building the site.)\\n\\n' >&2; exit 1; }",
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro"
