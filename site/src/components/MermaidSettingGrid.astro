@@ -1,21 +1,25 @@
 ---
-// One `[ui]` option of the Mermaid catalog's "What the settings change" section: the same small
-// flowchart drawn once per value of that option, captioned with the value itself.
+// One block of the Mermaid catalog's "What the settings change" section: the same sample drawn
+// once per value of one thing, captioned with the value itself.
 //
 // Like MermaidCatalogItem.astro this is entirely data-driven from
 // site/src/assets/mermaid-catalog/<lang>/manifest.json, written by the Rust test
 // `site_mermaid_catalog_dump`. Adding a curve or a theme to that test's value list puts a new cell
 // here with no markup change. Never hand-edit the PNGs or the manifest.
 //
-// The claim this component makes visually — that every cell is a *different* picture, and that
-// both lists are inert under konoma-orthogonal — is asserted permanently in Rust by
-// `catalog_settings_values_really_change_the_picture`, so a grid of identical pictures with
-// different captions cannot ship unnoticed.
+// The claim these grids make visually — that every cell is a *different* picture, and that curve
+// and theme are inert under konoma-orthogonal — is asserted permanently in Rust by
+// `catalog_settings_values_really_change_the_picture` and its two siblings, so a grid of identical
+// pictures with different captions cannot ship unnoticed.
 import { Image } from 'astro:assets';
 
 interface Value {
 	value: string;
 	file: string;
+	/** Device scale this PNG was rastered at — per image, see the width rule below. */
+	scale: number;
+	/** `override` cells only: the exact line the sample gains. */
+	line?: string;
 }
 
 interface Group {
@@ -25,46 +29,46 @@ interface Group {
 
 interface Props {
 	lang?: 'en' | 'ja';
-	/** The `[ui]` key this row is about — used in the alt text, so it says what moved. */
-	option: string;
-	group: Group;
-	/** `pair` reuses the catalog's two-up rule; `grid` is the compact many-values layout. */
-	layout?: 'pair' | 'grid';
 	/**
-	 * `auto` lets the grid widen with the viewport (2 → 3 → 4). `two` pins it at two columns at
-	 * every width — for a list whose values differ by the *shape of a line* rather than by colour,
-	 * where a third column shrinks the cell past the point the difference survives.
+	 * What this block varies. It decides the layout as well as the wording, because the two are
+	 * the same decision: a list of two gets the catalog's two-up rule, a list of thirteen gets a
+	 * grid, and how tight that grid may be depends on whether the difference is a line's shape or
+	 * a colour.
 	 */
-	columns?: 'auto' | 'two';
+	role: 'routing' | 'direction' | 'curve' | 'override' | 'theme';
+	group: Group;
 	/** Optional one-sentence note under a value's caption, keyed by value. */
 	notes?: Record<string, string>;
 }
 
-const { lang = 'en', option, group, layout = 'grid', columns = 'auto', notes } = Astro.props;
+const { lang = 'en', role, group, notes } = Astro.props;
 
-// Same eager glob as MermaidCatalogItem, one directory deeper: manifest `file` values in this
-// section are `settings/<name>.png`, so the pattern has to spell that level out.
-const images = import.meta.glob<ImageMetadata>('../assets/mermaid-catalog/*/settings/*.png', {
+// Same eager glob as MermaidCatalogItem, two directories deeper: manifest `file` values in this
+// section are `settings/<nn>/<name>.png`, so the pattern has to spell those levels out.
+const images = import.meta.glob<ImageMetadata>('../assets/mermaid-catalog/*/settings/*/*.png', {
 	eager: true,
 	import: 'default',
 });
 
-const manifests = import.meta.glob<{ scale: number }>('../assets/mermaid-catalog/*/manifest.json', {
-	eager: true,
-	import: 'default',
-});
+// `routing`/`curve`/`theme` name a `[ui]` key; `direction`/`override` are properties of the
+// diagram's own source, so they get no key prefix.
+const optionName = ['routing', 'curve', 'theme'].includes(role) ? `mermaid_${role}` : role;
 
 const t =
 	lang === 'ja'
 		? {
 				dflt: '既定',
+				dark: '暗い端末',
+				light: '明るい端末',
 				alt: (value: string) =>
-					`同じ flowchart を konoma 自身の Mermaid レンダラで ${option} = "${value}" として描いたもの`,
+					`同じ図を konoma 自身の Mermaid レンダラで ${optionName} = "${value}" として描いたもの`,
 			}
 		: {
 				dflt: 'default',
+				dark: 'dark terminal',
+				light: 'light terminal',
 				alt: (value: string) =>
-					`The same flowchart drawn by konoma's own Mermaid renderer with ${option} = "${value}"`,
+					`The same diagram drawn by konoma's own Mermaid renderer with ${optionName} = "${value}"`,
 			};
 
 const cells = group.values.map((v) => {
@@ -74,36 +78,66 @@ const cells = group.values.map((v) => {
 	return { ...v, src, note: notes?.[v.value] };
 });
 
-// The catalog's own legibility rule, reused verbatim for the two-up row: a side-by-side column is
-// about 45% of the content column, so a diagram already wide at 1:1 would be shrunk past the point
-// where its labels can be read — above the threshold the two renders stack full width instead,
-// konoma-orthogonal on top either way because it is first in the DOM. `src.width` is the stored
-// (2×) pixel width, so dividing by the dump's scale gives the CSS-pixel width at 1:1.
+// The catalog's own legibility rule. A side-by-side column is about 45% of the content column, so a
+// render already wide at 1:1 would be shrunk past the point where its labels can be read; above
+// this threshold a two-up block stacks full width instead. `src.width` is the stored pixel width,
+// so dividing by that image's own dumped scale gives the CSS-pixel width the browser lays out at
+// 1:1 — per image, because the dump rasters a wide diagram at 1× and a narrow one at 2×, which is
+// exactly the case this rule has to keep telling apart.
 const WIDE_CSS_PX = 520;
-const scale = manifests[`../assets/mermaid-catalog/${lang}/manifest.json`]?.scale ?? 1;
-const naturalCssWidth = Math.max(...cells.map((c) => c.src.width / scale));
-// `twoUp` is deliberately a different name from the `pair` *layout*: the layout is what the page
-// asked for, `twoUp` is whether the width rule granted it. (Spelling both `pair` cost a first
-// screenshot: the layout name went out as a class of its own and matched the two-column rule
+const naturalCssWidth = Math.max(...cells.map((c) => c.src.width / (c.scale || 1)));
+
+// The same test, generalised to a grid of N columns: a cell of an N-column grid is about a
+// content-column-width / N, so a render wider than N × 520 CSS px cannot survive that grid either.
+// `wide` is therefore "too wide even for two columns" — true of the busy `03` sample (1552 CSS px)
+// and false of the other three, which is exactly the split the page wants.
+const wide = naturalCssWidth > 2 * WIDE_CSS_PX;
+
+// `pair` is deliberately a different name from the two-up *roles*: the role is what the block is,
+// `pair` is whether the width rule granted it two columns. (Spelling both the same cost a
+// screenshot once — the role name went out as a class of its own and matched the two-column rule
 // whatever the measurement said.)
-const twoUp = layout === 'pair' && naturalCssWidth <= WIDE_CSS_PX;
+const twoUpRole = role === 'routing' || role === 'direction' || role === 'override';
+const pair = twoUpRole && naturalCssWidth <= WIDE_CSS_PX;
+
+// Themes are the one block where the plate colour is part of the information: the PNGs are
+// transparent because a diagram sits on the terminal's own background, so `light` and `neutral`
+// only make sense once you have seen them on a light one.
+const bothPlates = role === 'theme';
 ---
 
 <div
 	class:list={[
 		'mmset not-content',
-		`layout-${layout}`,
-		{ 'two-up': twoUp, 'cols-two': columns === 'two' },
+		`role-${role}`,
+		{ pair, 'cols-one': role === 'curve' && wide, 'cols-two': role === 'theme' && wide },
 	]}
 >
 	{
 		cells.map((c) => (
 			<figure>
-				<div class="plate">
-					<Image src={c.src} alt={t.alt(c.value)} loading="lazy" />
-				</div>
+				{bothPlates ? (
+					<div class="plates">
+						<div class="shot">
+							<div class="plate">
+								<Image src={c.src} alt={t.alt(c.value)} loading="lazy" />
+							</div>
+							<span class="ground">{t.dark}</span>
+						</div>
+						<div class="shot">
+							<div class="plate light">
+								<Image src={c.src} alt={t.alt(c.value)} loading="lazy" />
+							</div>
+							<span class="ground">{t.light}</span>
+						</div>
+					</div>
+				) : (
+					<div class="plate">
+						<Image src={c.src} alt={t.alt(c.value)} loading="lazy" />
+					</div>
+				)}
 				<figcaption>
-					<span class="val">{c.value}</span>
+					<span class="val">{c.line ?? c.value}</span>
 					{c.value === group.default && <span class="tag">{t.dflt}</span>}
 				</figcaption>
 				{c.note && <p class="note">{c.note}</p>}
@@ -120,35 +154,38 @@ const twoUp = layout === 'pair' && naturalCssWidth <= WIDE_CSS_PX;
 		grid-template-columns: minmax(0, 1fr);
 	}
 
-	/* Two-up row (mermaid_routing), only when the width rule above granted it: one column until
-	   there is room for two. Stacked or not, konoma-orthogonal is first in the DOM. */
+	/* Two-up row, only when the width rule granted it: one column until there is room for two.
+	   Stacked or not, konoma-orthogonal is first in the DOM. */
 	@media (min-width: 60rem) {
-		.mmset.two-up {
+		.mmset.pair {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 	}
 
-	/* Many-values grid (mermaid_curve, mermaid_theme): two columns on a phone, three from a
-	   tablet up. A fourth column only on a genuinely wide screen — with 13 curves, three columns
-	   keeps each cell wide enough that the *shape of the line* is still the thing you see. */
-	.mmset.layout-grid {
+	/* Many-values grids. Curves stay at two columns at every width whatever the viewport: the 13
+	   values differ by the shape of a line, and a third column shrinks the cell past the point
+	   that difference survives. Themes differ by colour, which reads small, so they widen. */
+	.mmset.role-curve,
+	.mmset.role-theme {
 		gap: 0.9rem 0.8rem;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
 	@media (min-width: 50rem) {
-		.mmset.layout-grid {
+		.mmset.role-theme {
 			grid-template-columns: repeat(3, minmax(0, 1fr));
 		}
 	}
 	@media (min-width: 100rem) {
-		.mmset.layout-grid {
+		.mmset.role-theme {
 			grid-template-columns: repeat(4, minmax(0, 1fr));
 		}
 	}
-	/* `columns="two"` opts out of all of the above — (0,3,0) beats the (0,2,0) rules whatever the
-	   source order, so it does not depend on sitting after the media queries. Used by
-	   mermaid_curve: 13 splines that differ only in the shape of a line need the cell width. */
-	.mmset.layout-grid.cols-two {
+	/* The width rule's own overrides for a sample too wide for the grid above — (0,3,0), so they
+	   win over the media queries whatever the source order. */
+	.mmset.role-curve.cols-one {
+		grid-template-columns: minmax(0, 1fr);
+	}
+	.mmset.role-theme.cols-two {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
 
@@ -159,12 +196,31 @@ const twoUp = layout === 'pair' && naturalCssWidth <= WIDE_CSS_PX;
 		gap: 0.4rem;
 	}
 	/* Every plate in a row fills it, so the captions of differently shaped renders line up. */
-	.plate {
+	.plate,
+	.plates {
 		flex: 1;
 	}
 
-	/* Fixed dark plate, the same as the catalog's: the PNGs are transparent, drawn for a
-	   terminal's own background, so they keep a terminal-coloured ground in the light theme too. */
+	.plates {
+		display: grid;
+		gap: 0.4rem;
+		grid-template-columns: minmax(0, 1fr);
+	}
+	.shot {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+	}
+	.ground {
+		font-family: var(--konoma-mono);
+		font-size: 0.65rem;
+		color: var(--sl-color-gray-3);
+		text-align: center;
+	}
+
+	/* Fixed plates: the diagrams are transparent PNGs drawn for a terminal, so they keep a
+	   terminal-coloured ground in both site themes (same rule as the hero terminal). The light
+	   plate is the same idea for a light terminal, not a site-theme variant. */
 	.plate {
 		background: #0d1117;
 		border: 1px solid var(--sl-color-gray-5);
@@ -175,8 +231,16 @@ const twoUp = layout === 'pair' && naturalCssWidth <= WIDE_CSS_PX;
 		justify-content: center;
 		overflow-x: auto;
 	}
-	.mmset.layout-grid .plate {
+	.plate.light {
+		background: #ffffff;
+		border-color: #d0d7de;
+	}
+	.mmset.role-curve .plate,
+	.mmset.role-theme .plate {
 		padding: 0.55rem;
+	}
+	.mmset.role-curve.cols-one .plate {
+		padding: 1rem;
 	}
 	.plate :global(img) {
 		max-width: 100%;
@@ -198,6 +262,7 @@ const twoUp = layout === 'pair' && naturalCssWidth <= WIDE_CSS_PX;
 	}
 	.val {
 		color: var(--sl-color-white);
+		overflow-wrap: anywhere;
 	}
 	.tag {
 		font-size: 0.68rem;

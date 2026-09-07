@@ -17,6 +17,8 @@ interface Render {
 	variant: string;
 	routing: string;
 	file: string;
+	/** Device scale this PNG was rastered at — per image, see the width rule below. */
+	scale: number;
 }
 
 interface Item {
@@ -37,13 +39,6 @@ const { lang = 'en', item } = Astro.props;
 // Eager glob so every catalog PNG goes through Astro's asset pipeline (hashed, optimised,
 // width/height known at build time). Keys are exactly the pattern's relative paths.
 const images = import.meta.glob<ImageMetadata>('../assets/mermaid-catalog/*/*.png', {
-	eager: true,
-	import: 'default',
-});
-
-// The device scale the PNGs were dumped at, read from the manifest the dump wrote next to them
-// rather than hard-coded here: it is what turns a stored pixel width back into a CSS-pixel width.
-const manifests = import.meta.glob<{ scale: number }>('../assets/mermaid-catalog/*/manifest.json', {
 	eager: true,
 	import: 'default',
 });
@@ -77,11 +72,12 @@ const pair = renders.length > 1;
 // Legibility beats symmetry. A side-by-side column is only about 45% of the content column, so a
 // diagram that is already wide at 1:1 would be shrunk past the point where its labels can be read.
 // Above this threshold the two renders go full width instead, stacked — konoma-orthogonal on top,
-// exactly the order the narrow-screen stack uses. `src.width` is the stored (2×) pixel width, so
-// dividing by the dump's scale gives the CSS-pixel width the browser would lay out at 1:1.
+// exactly the order the narrow-screen stack uses. `src.width` is the stored pixel width, so
+// dividing by that image's own dumped scale gives the CSS-pixel width the browser lays out at 1:1.
+// The scale is per image (the dump rasters a wide diagram at 1× and a narrow one at 2×), so it is
+// read from the render's own manifest entry rather than from one number for the whole file.
 const WIDE_CSS_PX = 520;
-const scale = manifests[`../assets/mermaid-catalog/${lang}/manifest.json`]?.scale ?? 1;
-const naturalCssWidth = Math.max(...renders.map((r) => r.src.width / scale));
+const naturalCssWidth = Math.max(...renders.map((r) => r.src.width / (r.scale || 1)));
 const sideBySide = pair && naturalCssWidth <= WIDE_CSS_PX;
 ---
 

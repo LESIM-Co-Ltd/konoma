@@ -9,11 +9,13 @@
         {
           "file": "01-flowchart-orthogonal.png",
           "routing": "konoma-orthogonal",
+          "scale": 2,
           "variant": "orthogonal"
         },
         {
           "file": "01-flowchart-splines.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "splines"
         }
       ],
@@ -27,11 +29,13 @@
         {
           "file": "02-flowchart-orthogonal.png",
           "routing": "konoma-orthogonal",
+          "scale": 2,
           "variant": "orthogonal"
         },
         {
           "file": "02-flowchart-splines.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "splines"
         }
       ],
@@ -45,11 +49,13 @@
         {
           "file": "03-flowchart-orthogonal.png",
           "routing": "konoma-orthogonal",
+          "scale": 1,
           "variant": "orthogonal"
         },
         {
           "file": "03-flowchart-splines.png",
           "routing": "splines",
+          "scale": 1,
           "variant": "splines"
         }
       ],
@@ -63,11 +69,13 @@
         {
           "file": "04-stateDiagram-v2-orthogonal.png",
           "routing": "konoma-orthogonal",
+          "scale": 2,
           "variant": "orthogonal"
         },
         {
           "file": "04-stateDiagram-v2-splines.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "splines"
         }
       ],
@@ -81,6 +89,7 @@
         {
           "file": "05-classDiagram-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -94,6 +103,7 @@
         {
           "file": "06-erDiagram-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -107,6 +117,7 @@
         {
           "file": "07-sequenceDiagram-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -120,6 +131,7 @@
         {
           "file": "08-zenuml-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -133,6 +145,7 @@
         {
           "file": "09-mindmap-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -146,6 +159,7 @@
         {
           "file": "10-kanban-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -159,6 +173,7 @@
         {
           "file": "11-journey-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -172,6 +187,7 @@
         {
           "file": "12-timeline-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -185,6 +201,7 @@
         {
           "file": "13-gantt-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -198,6 +215,7 @@
         {
           "file": "14-requirementDiagram-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -211,6 +229,7 @@
         {
           "file": "15-gitGraph-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -224,6 +243,7 @@
         {
           "file": "16-C4Context-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -237,6 +257,7 @@
         {
           "file": "17-block-beta-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -250,6 +271,7 @@
         {
           "file": "18-architecture-beta-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -263,6 +285,7 @@
         {
           "file": "19-pie-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -276,6 +299,7 @@
         {
           "file": "20-xychart-beta-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -289,6 +313,7 @@
         {
           "file": "21-quadrantChart-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -302,6 +327,7 @@
         {
           "file": "22-radar-beta-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -315,6 +341,7 @@
         {
           "file": "23-treemap-beta-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -328,6 +355,7 @@
         {
           "file": "24-packet-beta-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -341,6 +369,7 @@
         {
           "file": "25-sankey-beta-default.png",
           "routing": "splines",
+          "scale": 2,
           "variant": "default"
         }
       ],
@@ -349,105 +378,474 @@
   ],
   "lang": "ja",
   "sample": "samples/mermaid.ja.md",
-  "scale": 2,
-  "settings": {
-    "curve": {
-      "default": "basis",
-      "values": [
-        {
-          "file": "settings/curve-basis.png",
-          "value": "basis"
-        },
-        {
-          "file": "settings/curve-linear.png",
-          "value": "linear"
-        },
-        {
-          "file": "settings/curve-step.png",
-          "value": "step"
-        },
-        {
-          "file": "settings/curve-stepBefore.png",
-          "value": "stepBefore"
-        },
-        {
-          "file": "settings/curve-stepAfter.png",
-          "value": "stepAfter"
-        },
-        {
-          "file": "settings/curve-natural.png",
-          "value": "natural"
-        },
-        {
-          "file": "settings/curve-cardinal.png",
-          "value": "cardinal"
-        },
-        {
-          "file": "settings/curve-catmullRom.png",
-          "value": "catmullRom"
-        },
-        {
-          "file": "settings/curve-monotoneX.png",
-          "value": "monotoneX"
-        },
-        {
-          "file": "settings/curve-monotoneY.png",
-          "value": "monotoneY"
-        },
-        {
-          "file": "settings/curve-bumpX.png",
-          "value": "bumpX"
-        },
-        {
-          "file": "settings/curve-bumpY.png",
-          "value": "bumpY"
-        },
-        {
-          "file": "settings/curve-rounded.png",
-          "value": "rounded"
-        }
-      ]
+  "scale_2x_max_css_px": 800,
+  "settings": [
+    {
+      "curve": {
+        "default": "basis",
+        "values": [
+          {
+            "file": "settings/01/curve-basis.png",
+            "scale": 2,
+            "value": "basis"
+          },
+          {
+            "file": "settings/01/curve-linear.png",
+            "scale": 2,
+            "value": "linear"
+          },
+          {
+            "file": "settings/01/curve-step.png",
+            "scale": 2,
+            "value": "step"
+          },
+          {
+            "file": "settings/01/curve-stepBefore.png",
+            "scale": 2,
+            "value": "stepBefore"
+          },
+          {
+            "file": "settings/01/curve-stepAfter.png",
+            "scale": 2,
+            "value": "stepAfter"
+          },
+          {
+            "file": "settings/01/curve-natural.png",
+            "scale": 2,
+            "value": "natural"
+          },
+          {
+            "file": "settings/01/curve-cardinal.png",
+            "scale": 2,
+            "value": "cardinal"
+          },
+          {
+            "file": "settings/01/curve-catmullRom.png",
+            "scale": 2,
+            "value": "catmullRom"
+          },
+          {
+            "file": "settings/01/curve-monotoneX.png",
+            "scale": 2,
+            "value": "monotoneX"
+          },
+          {
+            "file": "settings/01/curve-monotoneY.png",
+            "scale": 2,
+            "value": "monotoneY"
+          },
+          {
+            "file": "settings/01/curve-bumpX.png",
+            "scale": 2,
+            "value": "bumpX"
+          },
+          {
+            "file": "settings/01/curve-bumpY.png",
+            "scale": 2,
+            "value": "bumpY"
+          },
+          {
+            "file": "settings/01/curve-rounded.png",
+            "scale": 2,
+            "value": "rounded"
+          }
+        ]
+      },
+      "kind": "flowchart",
+      "label": "01-flowchart",
+      "options": [
+        "routing",
+        "curve",
+        "override",
+        "theme"
+      ],
+      "order": 1,
+      "override": {
+        "default": "basis",
+        "values": [
+          {
+            "file": "settings/01/override-init-step.png",
+            "line": "%%{init: {\"flowchart\": {\"curve\": \"step\"}}}%%",
+            "scale": 2,
+            "value": "init-step"
+          },
+          {
+            "file": "settings/01/override-linkstyle-stepAfter.png",
+            "line": "linkStyle 1 interpolate stepAfter",
+            "scale": 2,
+            "value": "linkstyle-stepAfter"
+          }
+        ]
+      },
+      "routing": {
+        "default": "splines",
+        "values": [
+          {
+            "file": "settings/01/routing-konoma-orthogonal.png",
+            "scale": 2,
+            "value": "konoma-orthogonal"
+          },
+          {
+            "file": "settings/01/routing-splines.png",
+            "scale": 2,
+            "value": "splines"
+          }
+        ]
+      },
+      "source": "flowchart LR\n  K([キー入力]) --> S{どの面か}\n  S -->|ツリー| M[移動・開く]\n  S -->|プレビュー| P[スクロール・検索]\n  M --> R[再描画]\n  P --> R",
+      "theme": {
+        "default": "dark",
+        "values": [
+          {
+            "file": "settings/01/theme-dark.png",
+            "scale": 2,
+            "value": "dark"
+          },
+          {
+            "file": "settings/01/theme-light.png",
+            "scale": 2,
+            "value": "light"
+          },
+          {
+            "file": "settings/01/theme-classic.png",
+            "scale": 2,
+            "value": "classic"
+          },
+          {
+            "file": "settings/01/theme-forest.png",
+            "scale": 2,
+            "value": "forest"
+          },
+          {
+            "file": "settings/01/theme-neutral.png",
+            "scale": 2,
+            "value": "neutral"
+          }
+        ]
+      }
     },
-    "kind": "flowchart",
-    "routing": {
-      "default": "splines",
-      "values": [
-        {
-          "file": "settings/routing-konoma-orthogonal.png",
-          "value": "konoma-orthogonal"
-        },
-        {
-          "file": "settings/routing-splines.png",
-          "value": "splines"
-        }
-      ]
+    {
+      "curve": {
+        "default": "basis",
+        "values": [
+          {
+            "file": "settings/02/curve-basis.png",
+            "scale": 2,
+            "value": "basis"
+          },
+          {
+            "file": "settings/02/curve-linear.png",
+            "scale": 2,
+            "value": "linear"
+          },
+          {
+            "file": "settings/02/curve-step.png",
+            "scale": 2,
+            "value": "step"
+          },
+          {
+            "file": "settings/02/curve-stepBefore.png",
+            "scale": 2,
+            "value": "stepBefore"
+          },
+          {
+            "file": "settings/02/curve-stepAfter.png",
+            "scale": 2,
+            "value": "stepAfter"
+          },
+          {
+            "file": "settings/02/curve-natural.png",
+            "scale": 2,
+            "value": "natural"
+          },
+          {
+            "file": "settings/02/curve-cardinal.png",
+            "scale": 2,
+            "value": "cardinal"
+          },
+          {
+            "file": "settings/02/curve-catmullRom.png",
+            "scale": 2,
+            "value": "catmullRom"
+          },
+          {
+            "file": "settings/02/curve-monotoneX.png",
+            "scale": 2,
+            "value": "monotoneX"
+          },
+          {
+            "file": "settings/02/curve-monotoneY.png",
+            "scale": 2,
+            "value": "monotoneY"
+          },
+          {
+            "file": "settings/02/curve-bumpX.png",
+            "scale": 2,
+            "value": "bumpX"
+          },
+          {
+            "file": "settings/02/curve-bumpY.png",
+            "scale": 2,
+            "value": "bumpY"
+          },
+          {
+            "file": "settings/02/curve-rounded.png",
+            "scale": 2,
+            "value": "rounded"
+          }
+        ]
+      },
+      "kind": "flowchart",
+      "label": "02-flowchart",
+      "options": [
+        "routing",
+        "curve",
+        "theme"
+      ],
+      "order": 2,
+      "routing": {
+        "default": "splines",
+        "values": [
+          {
+            "file": "settings/02/routing-konoma-orthogonal.png",
+            "scale": 2,
+            "value": "konoma-orthogonal"
+          },
+          {
+            "file": "settings/02/routing-splines.png",
+            "scale": 2,
+            "value": "splines"
+          }
+        ]
+      },
+      "source": "flowchart LR\n  F[ファイル] --> R{ルールに一致?}\n  R -->|画像| I[デコード]:::media\n  R -->|Markdown| M[ブロックモデル]:::text\n  R -->|なし| X[プレビュー不可]\n  I --> K[kitty 転送]:::media\n  M --> K\n  classDef media fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  classDef text fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  style X fill:#2d2418,stroke:#d4a017,color:#c9d1d9\n  linkStyle 0 stroke:#8b949e\n  linkStyle 1,4 stroke:#1f6feb\n  linkStyle 2,5 stroke:#2da44e\n  linkStyle 3 stroke:#d4a017",
+      "theme": {
+        "default": "dark",
+        "values": [
+          {
+            "file": "settings/02/theme-dark.png",
+            "scale": 2,
+            "value": "dark"
+          },
+          {
+            "file": "settings/02/theme-light.png",
+            "scale": 2,
+            "value": "light"
+          },
+          {
+            "file": "settings/02/theme-classic.png",
+            "scale": 2,
+            "value": "classic"
+          },
+          {
+            "file": "settings/02/theme-forest.png",
+            "scale": 2,
+            "value": "forest"
+          },
+          {
+            "file": "settings/02/theme-neutral.png",
+            "scale": 2,
+            "value": "neutral"
+          }
+        ]
+      }
     },
-    "source": "flowchart LR\n  K([キー入力]) --> S{どの面か}\n  S -->|ツリー| M[移動・開く]\n  S -->|プレビュー| P[スクロール・検索]\n  M --> R[再描画]\n  P --> R",
-    "theme": {
-      "default": "dark",
-      "values": [
-        {
-          "file": "settings/theme-dark.png",
-          "value": "dark"
-        },
-        {
-          "file": "settings/theme-light.png",
-          "value": "light"
-        },
-        {
-          "file": "settings/theme-classic.png",
-          "value": "classic"
-        },
-        {
-          "file": "settings/theme-forest.png",
-          "value": "forest"
-        },
-        {
-          "file": "settings/theme-neutral.png",
-          "value": "neutral"
-        }
-      ]
+    {
+      "curve": {
+        "default": "basis",
+        "values": [
+          {
+            "file": "settings/03/curve-basis.png",
+            "scale": 1,
+            "value": "basis"
+          },
+          {
+            "file": "settings/03/curve-linear.png",
+            "scale": 1,
+            "value": "linear"
+          },
+          {
+            "file": "settings/03/curve-step.png",
+            "scale": 1,
+            "value": "step"
+          },
+          {
+            "file": "settings/03/curve-stepBefore.png",
+            "scale": 1,
+            "value": "stepBefore"
+          },
+          {
+            "file": "settings/03/curve-stepAfter.png",
+            "scale": 1,
+            "value": "stepAfter"
+          },
+          {
+            "file": "settings/03/curve-natural.png",
+            "scale": 1,
+            "value": "natural"
+          },
+          {
+            "file": "settings/03/curve-cardinal.png",
+            "scale": 1,
+            "value": "cardinal"
+          },
+          {
+            "file": "settings/03/curve-catmullRom.png",
+            "scale": 1,
+            "value": "catmullRom"
+          },
+          {
+            "file": "settings/03/curve-monotoneX.png",
+            "scale": 1,
+            "value": "monotoneX"
+          },
+          {
+            "file": "settings/03/curve-monotoneY.png",
+            "scale": 1,
+            "value": "monotoneY"
+          },
+          {
+            "file": "settings/03/curve-bumpX.png",
+            "scale": 1,
+            "value": "bumpX"
+          },
+          {
+            "file": "settings/03/curve-bumpY.png",
+            "scale": 1,
+            "value": "bumpY"
+          },
+          {
+            "file": "settings/03/curve-rounded.png",
+            "scale": 1,
+            "value": "rounded"
+          }
+        ]
+      },
+      "kind": "flowchart",
+      "label": "03-flowchart",
+      "options": [
+        "routing",
+        "curve",
+        "theme"
+      ],
+      "order": 3,
+      "routing": {
+        "default": "splines",
+        "values": [
+          {
+            "file": "settings/03/routing-konoma-orthogonal.png",
+            "scale": 1,
+            "value": "konoma-orthogonal"
+          },
+          {
+            "file": "settings/03/routing-splines.png",
+            "scale": 1,
+            "value": "splines"
+          }
+        ]
+      },
+      "source": "flowchart LR\n  F[ファイル] --> C{設定のルール}\n  C -->|テキスト| T[窓読み]\n  C -->|コード| S[構文強調]\n  C -->|Markdown| MD[ブロックモデル]\n  C -->|CSV / TSV| TB[表]\n  C -->|画像| IM[デコード]\n  C -->|PDF| PD[ページ描画]\n  C -->|SVG| SV[usvg]\n  C -->|動画| VD[キーフレーム]\n  C -->|書庫| AR[一覧]\n  C -->|なし| NA[プレビュー不可]\n  MD --> MM[mermaid]\n  MD --> MA[数式]\n  MM --> RS[ラスタライズ]\n  MA --> RS\n  SV --> RS\n  PD --> RS\n  IM --> FIT[セルに合わせる]\n  RS --> FIT\n  VD --> FIT\n  FIT --> K{端末}\n  K -->|kitty| KT[圧縮転送]\n  K -->|sixel / iTerm2| RI[画像プロトコル]\n  K -->|それ以外| HB[ハーフブロック]\n  classDef pix fill:#132a3a,stroke:#1f6feb,color:#c9d1d9\n  classDef txt fill:#12291c,stroke:#2da44e,color:#c9d1d9\n  class IM,PD,SV,VD,MM,MA,RS,FIT,KT,RI,HB pix\n  class T,S,MD,TB,AR txt\n  style NA fill:#2d2418,stroke:#d4a017,color:#c9d1d9",
+      "theme": {
+        "default": "dark",
+        "values": [
+          {
+            "file": "settings/03/theme-dark.png",
+            "scale": 1,
+            "value": "dark"
+          },
+          {
+            "file": "settings/03/theme-light.png",
+            "scale": 1,
+            "value": "light"
+          },
+          {
+            "file": "settings/03/theme-classic.png",
+            "scale": 1,
+            "value": "classic"
+          },
+          {
+            "file": "settings/03/theme-forest.png",
+            "scale": 1,
+            "value": "forest"
+          },
+          {
+            "file": "settings/03/theme-neutral.png",
+            "scale": 1,
+            "value": "neutral"
+          }
+        ]
+      }
+    },
+    {
+      "direction": {
+        "default": "TB",
+        "values": [
+          {
+            "file": "settings/04/direction-TB.png",
+            "scale": 2,
+            "value": "TB"
+          },
+          {
+            "file": "settings/04/direction-LR.png",
+            "scale": 2,
+            "value": "LR"
+          }
+        ]
+      },
+      "kind": "stateDiagram-v2",
+      "label": "04-stateDiagram-v2",
+      "options": [
+        "direction",
+        "theme"
+      ],
+      "order": 4,
+      "source": "stateDiagram-v2\n  [*] --> ツリー\n  ツリー --> プレビュー : Enter\n  プレビュー --> ツリー : q\n  state プレビュー {\n    [*] --> デコード中\n    デコード中 --> 表示 : 画像が届く\n  }\n  ツリー --> [*] : Q",
+      "theme": {
+        "default": "dark",
+        "values": [
+          {
+            "file": "settings/04/theme-dark.png",
+            "scale": 2,
+            "value": "dark"
+          },
+          {
+            "file": "settings/04/theme-light.png",
+            "scale": 2,
+            "value": "light"
+          },
+          {
+            "file": "settings/04/theme-classic.png",
+            "scale": 2,
+            "value": "classic"
+          },
+          {
+            "file": "settings/04/theme-forest.png",
+            "scale": 2,
+            "value": "forest"
+          },
+          {
+            "file": "settings/04/theme-neutral.png",
+            "scale": 2,
+            "value": "neutral"
+          }
+        ]
+      }
     }
+  ],
+  "text": {
+    "columns": 100,
+    "items": [
+      {
+        "file": "text/01-flowchart.txt",
+        "kind": "flowchart",
+        "order": 1
+      },
+      {
+        "file": "text/07-sequenceDiagram.txt",
+        "kind": "sequenceDiagram",
+        "order": 7
+      }
+    ]
   },
   "theme": "dark"
 }

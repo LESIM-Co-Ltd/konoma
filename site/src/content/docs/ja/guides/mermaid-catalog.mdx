@@ -7,7 +7,13 @@ sidebar:
 
 import MermaidCatalogItem from '../../../../components/MermaidCatalogItem.astro';
 import MermaidSettingGrid from '../../../../components/MermaidSettingGrid.astro';
+import MermaidTextBlock from '../../../../components/MermaidTextBlock.astro';
 import manifest from '../../../../assets/mermaid-catalog/ja/manifest.json';
+
+export const s01 = manifest.settings[0];
+export const s02 = manifest.settings[1];
+export const s03 = manifest.settings[2];
+export const s04 = manifest.settings[3];
 
 export const routingNotes = {
 	'konoma-orthogonal':
@@ -52,35 +58,93 @@ Mermaid 関連の設定は[設定リファレンス](../../reference/configurati
 
 ## 設定で変わる見え方
 
-図の描かれ方を変える `[ui]` の設定は 3 つあります。この節の絵はすべて**同じ flowchart**
-（このページの冒頭にあるキー入力の図）で、設定を 1 つだけ動かして描き直したものです。
-違って見えるものは、キャプションが示す設定だけが原因です。
+図の描かれ方を変える `[ui]` の設定は 3 つあり、さらに図が自分のソースの中から
+そのうち 1 つを上書きできます。この節の絵はどれも、このページの下にあるサンプルを
+1 つだけ動かして描き直したものです。違って見えるものは、キャプションが示すものだけが
+原因です。
 
-### `mermaid_routing` — 辺の配線方法
+どの図にも共通する決まりがいくつかあります。`mermaid_curve` を読むのは flowchart
+自身の辺だけです。`mermaid_curve` と `mermaid_theme` は `konoma-orthogonal` では
+どちらも無効です — そのモードに曲線は無く直角の区間だけがあり、配色も専用のものを
+持っているためです。テーマの背景は常に透過なので、図は端末の背景に馴染みます。
 
-<MermaidSettingGrid
-	lang="ja"
-	option="mermaid_routing"
-	group={manifest.settings.routing}
-	layout="pair"
-	notes={routingNotes}
-/>
+### 01 — キー入力の flowchart
 
-### `mermaid_curve` — 線の形
+3 つの中でいちばん素直な図です。角丸・判定のひし形・2 本の分岐・合流だけででき
+ていて、基本の形がいちばんよく読めます。
 
-この設定を読むのは flowchart 自身の辺だけで、`konoma-orthogonal` では無効です
-（そのモードに曲線は無く、直角の区間だけがあります）。曲線の指定は 3 段階
-（弱い順）: この設定 < 図側の `%%{init: {"flowchart": {"curve": "..."}}}%%`
-ディレクティブ < 特定の辺だけを指す `linkStyle <n> interpolate <curve>`。
+#### `mermaid_routing`
 
-<MermaidSettingGrid lang="ja" option="mermaid_curve" group={manifest.settings.curve} columns="two" />
+<MermaidSettingGrid lang="ja" role="routing" group={s01.routing} notes={routingNotes} />
 
-### `mermaid_theme` — 配色
+#### `mermaid_curve`
 
-背景は常に透過なので、図は端末の背景に馴染みます。`konoma-orthogonal` のときは
-無効です — そのモードは常に konoma 独自の設計配色を使います。
+<MermaidSettingGrid lang="ja" role="curve" group={s01.curve} />
 
-<MermaidSettingGrid lang="ja" option="mermaid_theme" group={manifest.settings.theme} />
+#### 図側の上書き
+
+設定を既定の `basis` のままにしても、図の側から別の曲線を要求できます。弱い順に、
+この設定 < 図側の `%%{init: {"flowchart": {"curve": "..."}}}%%` ディレクティブ <
+特定の辺だけを指す `linkStyle <n> interpolate <curve>`。どちらも
+`konoma-orthogonal` では無効です。
+
+<MermaidSettingGrid lang="ja" role="override" group={s01.override} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={s01.theme} />
+
+### 02 — 色の flowchart
+
+`classDef` / `:::` / `style` で図が自分の色を指定しています。テーマと作者が選んだ色の
+関係が見える図です — テーマは図が塗らなかった部分を塗り、作者の色はその上に残ります。
+
+#### `mermaid_routing`
+
+<MermaidSettingGrid lang="ja" role="routing" group={s02.routing} />
+
+#### `mermaid_curve`
+
+<MermaidSettingGrid lang="ja" role="curve" group={s02.curve} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={s02.theme} />
+
+### 03 — 大きさの flowchart
+
+中身の多い図で、下の曲線の一覧が 1 列なのはこの図だからです。辺がいくつものランクを
+またいで伸びており、13 種の曲線が実際に差を見せるのはこうした長い辺の上です。
+
+#### `mermaid_routing`
+
+<MermaidSettingGrid lang="ja" role="routing" group={s03.routing} />
+
+#### `mermaid_curve`
+
+<MermaidSettingGrid lang="ja" role="curve" group={s03.curve} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={s03.theme} />
+
+### 04 — 状態図
+
+`mermaid_routing` は状態図にも効きます（2 枚の比較は下の
+[`stateDiagram-v2`](#statediagram-v2--モードと遷移) にあります）が、`mermaid_curve`
+は届きません。残るのは、テーマごとの状態機械の配色と、並べる向きです。
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="ja" role="theme" group={s04.theme} />
+
+#### 向き
+
+状態図は本文中の `direction` 行で向きを指定し、書かなければ上から下です。配線の規則は
+どちらでも同じです — konoma-orthogonal の設計参照 `2b` と `2c` が同じグラフの LR 版と
+TB 版なのは、まさにそのためです。
+
+<MermaidSettingGrid lang="ja" role="direction" group={s04.direction} />
 
 ## グラフ
 
@@ -266,4 +330,11 @@ flowchart と違い、形を決めるのは `columns` です。1 行に入る枡
 ## 描けないときは
 
 でっち上げません。konoma が知らない図種や構文エラーは、ソースをテキストとして表示します。
-`ui.mermaid = "text"` を指定すれば、常に従来の Unicode 描画になります。
+
+### `mermaid = "text"`
+
+`ui.mermaid = "text"` を指定すると、常に Unicode の罫線による描画になります。
+グラフィックプロトコルを持たない端末で表示されるのもこれです。画像ではなく文字なので、
+ここに置いてあるのはスクリーンショットではなく描画そのものです:
+
+<MermaidTextBlock lang="ja" items={manifest.text.items} />

@@ -5153,15 +5153,21 @@ fn unknown_routing_falls_back_to_splines_without_crashing() {
 #[test]
 fn orthogonal_routing_draws_only_axis_parallel_segments() {
     for (name, src) in orthogonal_full_corpus() {
-        let d = laid_out_flow(src, "basis", "konoma-orthogonal");
-        for (a, b) in edge_segments(&d) {
-            let dx = (b.x - a.x).abs();
-            let dy = (b.y - a.y).abs();
-            assert!(
-                dx < AXIS_EPS || dy < AXIS_EPS,
-                "{name}: diagonal segment {a:?} -> {b:?}"
-            );
-        }
+        check_only_axis_parallel_segments(name, &laid_out_flow(src, "basis", "konoma-orthogonal"));
+    }
+}
+
+/// The invariant just above, as a helper, so a second caller states the *same* property rather
+/// than re-deriving "no diagonal" with its own epsilon (the catalog's direction block reuses it —
+/// its whole claim is that the routing rules do not change with `rankdir`).
+pub(super) fn check_only_axis_parallel_segments(name: &str, d: &Diagram) {
+    for (a, b) in edge_segments(d) {
+        let dx = (b.x - a.x).abs();
+        let dy = (b.y - a.y).abs();
+        assert!(
+            dx < AXIS_EPS || dy < AXIS_EPS,
+            "{name}: diagonal segment {a:?} -> {b:?}"
+        );
     }
 }
 
@@ -9367,9 +9373,25 @@ fn mermaid_fences_of(md: &str) -> Vec<String> {
     out
 }
 
-/// Device scale of the catalog's PNGs. The SVG is laid out in CSS px; a 2× raster keeps the
-/// labels crisp on a HiDPI screen without doubling again into multi-MB files.
-const CATALOG_SCALE: u32 = 2;
+/// The widest a diagram may be, in its own CSS px, and still be rastered at 2×.
+///
+/// Above this the page has already shrunk the picture to fit its ~900px content column, so the
+/// extra pixels are thrown away by the browser on the way to the screen — the busy `03` sample is
+/// 1552 CSS px wide, and at 2× it cost 6.2 MB per language for detail nobody could see. Below it a
+/// diagram is shown at or near 1:1, where 2× is what keeps the labels crisp on a HiDPI screen.
+const CATALOG_SCALE_2X_MAX_CSS_PX: u32 = 800;
+
+/// Device scale for one diagram, from its own natural width — see
+/// [`CATALOG_SCALE_2X_MAX_CSS_PX`]. Recorded per image in the manifest rather than assumed by the
+/// page, because the page's own width rule divides a stored pixel width by exactly this number to
+/// recover the CSS width it will lay out at.
+fn catalog_scale_for(width_css_px: u32) -> u32 {
+    if width_css_px <= CATALOG_SCALE_2X_MAX_CSS_PX {
+        2
+    } else {
+        1
+    }
+}
 
 /// `[ui] mermaid_routing`'s values, as the catalog's "What the settings change" section lists
 /// them — **`konoma-orthogonal` first**, because that mode is what the page is about, and the
@@ -9398,8 +9420,81 @@ const CATALOG_CURVES: [&str; 13] = [
 /// `[ui] mermaid_theme`'s 5 values, default first — the configuration reference's own order.
 const CATALOG_THEMES: [&str; 5] = ["dark", "light", "classic", "forest", "neutral"];
 
-/// Renders one fence through the production path and writes it as a [`CATALOG_SCALE`]× PNG at
-/// `dir/file`.
+/// Terminal width the `[ui] mermaid = "text"` fallback is drawn at for the catalog. Wide enough
+/// that neither sample has to wrap (wrapping is a property of the pane, not of the renderer, and
+/// the page shows the drawing), narrow enough to stay a plausible pane.
+const CATALOG_TEXT_COLUMNS: u16 = 100;
+
+/// A flowchart's four `rankdir` keywords, in mermaid's own order. The catalog draws the sample
+/// once per direction under `konoma-orthogonal` to show that the routing rules do not change with
+/// it — `docs/FEATURE-MERMAID-RENDERER.md` §10's own design references `2b`/`2c` are the same
+/// graph in LR and TB for exactly that reason.
+const CATALOG_FLOW_DIRECTIONS: [&str; 4] = ["LR", "TB", "RL", "BT"];
+
+/// A state diagram states its direction with a `direction` line inside the body rather than on the
+/// header, and the absence of one means `TB` — so the catalog's pair is "as written" against "with
+/// `direction LR` added".
+const CATALOG_STATE_DIRECTIONS: [&str; 2] = ["TB", "LR"];
+
+/// The sample's flowchart header with its direction keyword replaced.
+///
+/// Deliberately narrow: it keeps the header's own keyword (`flowchart` / `graph`) and replaces
+/// everything after it, which is exactly right for a header of the shape `flowchart LR` and wrong
+/// for anything more elaborate. The dump asserts the header really is that shape before calling
+/// this, so a rewritten sample cannot silently produce a diagram nobody meant.
+fn with_flow_direction(code: &str, direction: &str) -> String {
+    let mut lines = code.lines();
+    let head = lines.next().unwrap_or_default();
+    let keyword = head.split_whitespace().next().unwrap_or("flowchart");
+    let body: String = lines.map(|l| format!("\n{l}")).collect();
+    format!("{keyword} {direction}{body}")
+}
+
+/// The sample's state-diagram source with a `direction <dir>` line added just under the header —
+/// or returned untouched for `"TB"`, which is what the absence of that line already means.
+fn with_state_direction(code: &str, direction: &str) -> String {
+    if direction == "TB" {
+        return code.to_string();
+    }
+    let mut lines = code.lines();
+    let head = lines.next().unwrap_or_default();
+    let body: String = lines.map(|l| format!("\n{l}")).collect();
+    format!("{head}\n  direction {direction}{body}")
+}
+
+/// The two ways a diagram overrides `[ui] mermaid_curve` from inside its own source, as the
+/// catalog shows them: `(file stem, the line the sample gains, whether it goes on the front)`.
+///
+/// Both are drawn with the config left at its default `"basis"`, so the difference in the picture
+/// is the diagram's own doing — which is the whole point of the block.
+const CATALOG_OVERRIDES: [(&str, &str, bool); 2] = [
+    (
+        "init-step",
+        "%%{init: {\"flowchart\": {\"curve\": \"step\"}}}%%",
+        true,
+    ),
+    // Edge **1**, not 0. `linkStyle` counts edges in declaration order, and the sample's edge 0
+    // (`K --> S`) is a straight horizontal run that draws the same under every curve — the SVG
+    // bytes would differ (the assertion would pass) while the picture on the page did not, which
+    // is the worst of both. Edge 1 (`S -->|Tree| M`) bends, so the override is visible.
+    (
+        "linkstyle-stepAfter",
+        "  linkStyle 1 interpolate stepAfter",
+        false,
+    ),
+];
+
+/// Applies one [`CATALOG_OVERRIDES`] entry to a source.
+fn with_override(code: &str, line: &str, prepend: bool) -> String {
+    if prepend {
+        format!("{line}\n{code}")
+    } else {
+        format!("{code}\n{line}")
+    }
+}
+
+/// Renders one fence through the production path and writes it as a PNG at `dir/file`, returning
+/// the device scale it chose ([`catalog_scale_for`]) so the caller can record it in the manifest.
 ///
 /// Shared by the kind gallery and the settings gallery below so both are provably the *same*
 /// path: [`crate::preview::markdown::mermaid_to_svg_flow`] is the exact function `App::media_load`
@@ -9413,19 +9508,21 @@ fn write_catalog_png(
     curve: &str,
     routing: &str,
     what: &str,
-) {
+) -> u32 {
     let svg = crate::preview::markdown::mermaid_to_svg_flow(code, theme, curve, routing)
         .unwrap_or_else(|| panic!("{what}: must render under routing={routing}"));
     let path = dir.join(file);
     let (w, h) = crate::preview::svg::intrinsic_size_bytes(svg.as_bytes())
         .unwrap_or_else(|| panic!("{what}: SVG must have a size"));
-    // `rasterize_bytes` takes a target for the *longest* side, so asking for
-    // `CATALOG_SCALE * max(w, h)` is exactly a `CATALOG_SCALE`× device-pixel-ratio raster. The
-    // background stays transparent, the same as in the terminal.
-    let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), &path, CATALOG_SCALE * w.max(h))
+    let scale = catalog_scale_for(w);
+    // `rasterize_bytes` takes a target for the *longest* side, so asking for `scale * max(w, h)`
+    // is exactly a `scale`× device-pixel-ratio raster. The background stays transparent, the same
+    // as in the terminal.
+    let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), &path, scale * w.max(h))
         .unwrap_or_else(|| panic!("{what}: must rasterise"));
     img.save(&path)
         .unwrap_or_else(|e| panic!("{what}: write {path:?}: {e}"));
+    scale
 }
 
 /// Renders every fence of the two sample galleries for the documentation site's Mermaid catalog
@@ -9444,15 +9541,17 @@ fn write_catalog_png(
 /// and theme only, so `[ui] mermaid_routing` is *structurally* unable to reach them. The
 /// predicates below are the dispatcher's own, so this file cannot drift from that claim.
 ///
-/// **The settings gallery.** Alongside the per-kind renders the dump also writes a `settings/`
-/// set: the sample's *first flowchart* fence (the small one) drawn once under every value of the
-/// three `[ui]` options that change how a diagram looks — both `mermaid_routing` values, all 13
-/// `mermaid_curve` values, all 5 `mermaid_theme` values. Same production entry point, same 2×
-/// raster; only the argument under test moves, so a difference between two pictures in that
-/// section can only have come from the setting the caption names. That those values really do
-/// change the picture (and really are inert under `konoma-orthogonal`) is asserted permanently by
-/// [`catalog_settings_values_really_change_the_picture`], which is *not* `#[ignore]`d — the dump
-/// writes pictures, the test states the claim the page makes about them.
+/// **The settings gallery.** Alongside the per-kind renders the dump also writes a `settings/<nn>/`
+/// set per sample the settings reach — every flowchart fence under both `mermaid_routing` values,
+/// all 13 `mermaid_curve` values and all 5 `mermaid_theme` values, and the state-diagram fence
+/// under the 5 themes (it never reads a curve, and its routing pair is already in the kind gallery
+/// above). Same production entry point, same 2× raster; only the argument under test moves, so a
+/// difference between two pictures in that section can only have come from the setting the caption
+/// names. That those values really do change the picture (and really are inert under
+/// `konoma-orthogonal`) is asserted permanently by
+/// [`catalog_settings_values_really_change_the_picture`], which is *not* `#[ignore]`d and runs over
+/// these same sample sources — the dump writes pictures, the test states the claim the page makes
+/// about them.
 ///
 /// Stale files are removed first: an image nobody regenerated is worse than a missing one, because
 /// the page would keep shipping it. Removing the language directory takes `settings/` with it.
@@ -9498,7 +9597,7 @@ fn site_mermaid_catalog_dump() {
             let mut renders = Vec::new();
             for (variant, routing) in variants {
                 let file = format!("{order:02}-{kind}-{variant}.png");
-                write_catalog_png(
+                let scale = write_catalog_png(
                     &dir,
                     &file,
                     code,
@@ -9511,6 +9610,7 @@ fn site_mermaid_catalog_dump() {
                     "variant": variant,
                     "routing": routing,
                     "file": file,
+                    "scale": scale,
                 }));
             }
 
@@ -9523,71 +9623,249 @@ fn site_mermaid_catalog_dump() {
             }));
         }
 
-        // ----- settings gallery: one small diagram under every value of the three options -----
+        // ----- settings gallery: every sample a setting reaches, under every value of it -----
         //
-        // The *first flowchart* fence deliberately: `mermaid_curve` and `mermaid_routing` only
-        // reach a flowchart at all, and the sample's first one is the six-node keypress diagram —
-        // small enough that 20 renders of it stay a modest download, busy enough that its edges
-        // actually bend (a straight two-point edge would draw the same under several curves).
-        let settings_src = fences
-            .iter()
-            .find(|code| crate::preview::mermaid::flowchart::is_flowchart(code))
-            .unwrap_or_else(|| panic!("{lang}: {sample} must contain a flowchart fence"));
-        let settings_dir = dir.join("settings");
-        std::fs::create_dir_all(&settings_dir)
-            .unwrap_or_else(|e| panic!("{lang}: create {settings_dir:?}: {e}"));
+        // One block per fence the settings can actually change, written under `settings/<nn>/` so
+        // the file names stay the same from sample to sample. Which options a sample gets is the
+        // dispatcher's claim again, not a hand-kept list:
+        //
+        // - a **flowchart** reads all three, so it gets `routing` ×2, `curve` ×13, `theme` ×5;
+        // - a **state diagram** reads `routing` (already drawn as the pair in the kind gallery
+        //   above) but never `curve`, so it gets `theme` ×5 only;
+        // - every other kind reads none of them and is skipped entirely.
+        //
+        // All three samples rather than only the smallest one, because a setting shows itself on a
+        // different sample: `theme` is legible against author-set `classDef` colours (02), and
+        // `curve` only really separates on the long rank-spanning edges of the busy one (03).
+        let settings_root = dir.join("settings");
+        std::fs::create_dir_all(&settings_root)
+            .unwrap_or_else(|e| panic!("{lang}: create {settings_root:?}: {e}"));
 
-        // One closure per option would repeat the same three lines; this one takes the file-name
-        // prefix and the three arguments, and the caller varies exactly one of them.
-        let shot = |prefix: &str, value: &str, theme: &str, curve: &str, routing: &str| {
-            let file = format!("{prefix}-{value}.png");
-            write_catalog_png(
-                &settings_dir,
-                &file,
-                settings_src,
-                theme,
-                curve,
-                routing,
-                &format!("{lang} settings {prefix}={value}"),
+        let mut settings = Vec::new();
+        for (i, code) in fences.iter().enumerate() {
+            let order = i + 1;
+            let is_flow = crate::preview::mermaid::flowchart::is_flowchart(code);
+            let is_state = crate::preview::mermaid::state::is_state_diagram(code);
+            if !is_flow && !is_state {
+                continue;
+            }
+            let kind = crate::preview::mermaid::chart::first_word(code);
+            let dir_of = settings_root.join(format!("{order:02}"));
+            std::fs::create_dir_all(&dir_of)
+                .unwrap_or_else(|e| panic!("{lang}: create {dir_of:?}: {e}"));
+
+            // One closure per option would repeat the same three lines; this one takes the
+            // file-name prefix and the three arguments, and the caller varies exactly one of them.
+            let shot = |prefix: &str, value: &str, theme: &str, curve: &str, routing: &str| {
+                let file = format!("{prefix}-{value}.png");
+                let scale = write_catalog_png(
+                    &dir_of,
+                    &file,
+                    code,
+                    theme,
+                    curve,
+                    routing,
+                    &format!("{lang} settings {order:02} {prefix}={value}"),
+                );
+                serde_json::json!({
+                    "value": value,
+                    "file": format!("settings/{order:02}/{file}"),
+                    "scale": scale,
+                })
+            };
+
+            let mut block = serde_json::Map::new();
+            block.insert("order".into(), serde_json::json!(order));
+            block.insert("kind".into(), serde_json::json!(kind));
+            // A language-neutral identifier, not display text: the page writes its own headings,
+            // in its own language. This is what an alt string and a debug message name.
+            block.insert(
+                "label".into(),
+                serde_json::json!(format!("{order:02}-{kind}")),
             );
-            serde_json::json!({
-                "value": value,
-                "file": format!("settings/{file}"),
-            })
-        };
+            block.insert("source".into(), serde_json::json!(code));
 
-        // `curve` is passed as the shipped default here and is genuinely irrelevant under
-        // `konoma-orthogonal` (there is no curve, only right-angle segments) — the permanent test
-        // below states that as an assertion rather than leaving it as a claim in a comment.
-        let routings: Vec<_> = CATALOG_ROUTINGS
-            .iter()
-            .map(|r| shot("routing", r, "dark", "basis", r))
-            .collect();
-        let curves: Vec<_> = CATALOG_CURVES
-            .iter()
-            .map(|c| shot("curve", c, "dark", c, "splines"))
-            .collect();
-        let themes: Vec<_> = CATALOG_THEMES
-            .iter()
-            .map(|t| shot("theme", t, t, "basis", "splines"))
-            .collect();
+            // A variant of the *source* rather than of an argument: same three writes, but the
+            // caption is what was edited into the diagram, not a config value.
+            let shot_src = |prefix: &str, value: &str, src: &str, routing: &str| {
+                let file = format!("{prefix}-{value}.png");
+                let scale = write_catalog_png(
+                    &dir_of,
+                    &file,
+                    src,
+                    "dark",
+                    "basis",
+                    routing,
+                    &format!("{lang} settings {order:02} {prefix}={value}"),
+                );
+                serde_json::json!({
+                    "value": value,
+                    "file": format!("settings/{order:02}/{file}"),
+                    "scale": scale,
+                })
+            };
+
+            if is_flow {
+                // `curve` is passed as the shipped default for the routing pair and is genuinely
+                // irrelevant under `konoma-orthogonal` (there is no curve, only right-angle
+                // segments) — the permanent test below states that as an assertion rather than
+                // leaving it as a claim in a comment.
+                let routings: Vec<_> = CATALOG_ROUTINGS
+                    .iter()
+                    .map(|r| shot("routing", r, "dark", "basis", r))
+                    .collect();
+                let curves: Vec<_> = CATALOG_CURVES
+                    .iter()
+                    .map(|c| shot("curve", c, "dark", c, "splines"))
+                    .collect();
+                block.insert(
+                    "routing".into(),
+                    serde_json::json!({ "default": "splines", "values": routings }),
+                );
+                block.insert(
+                    "curve".into(),
+                    serde_json::json!({ "default": "basis", "values": curves }),
+                );
+            }
+
+            // Per-diagram overrides go on the *first* flowchart only: they are one point about
+            // precedence, and repeating them on every sample would multiply the page's download
+            // for nothing.
+            //
+            // **A flowchart `direction` block is deliberately not written here.** It was built and
+            // then withdrawn: under `konoma-orthogonal` this renderer draws `RL` byte-identically
+            // to `LR` and `BT` byte-identically to `TB`, so a four-cell grid captioned
+            // LR/TB/RL/BT would be two pairs of duplicates presented as four pictures. The defect
+            // and its cause are recorded in
+            // [`catalog_flowchart_rl_and_bt_are_mirrored_under_orthogonal`]; the state diagram's
+            // own direction pair below is unaffected and does ship.
+            if is_flow && order == 1 {
+                let overrides: Vec<_> = CATALOG_OVERRIDES
+                    .iter()
+                    .map(|(stem, line, prepend)| {
+                        let mut v = shot_src(
+                            "override",
+                            stem,
+                            &with_override(code, line, *prepend),
+                            "splines",
+                        );
+                        // The exact line the reader would add, shown next to the picture: the
+                        // block is about precedence, and precedence is a property of that line.
+                        v["line"] = serde_json::json!(line.trim());
+                        v
+                    })
+                    .collect();
+                block.insert(
+                    "override".into(),
+                    serde_json::json!({ "default": "basis", "values": overrides }),
+                );
+            }
+
+            if is_state {
+                let directions: Vec<_> = CATALOG_STATE_DIRECTIONS
+                    .iter()
+                    .map(|d| {
+                        shot_src(
+                            "direction",
+                            d,
+                            &with_state_direction(code, d),
+                            "konoma-orthogonal",
+                        )
+                    })
+                    .collect();
+                block.insert(
+                    "direction".into(),
+                    serde_json::json!({ "default": "TB", "values": directions }),
+                );
+            }
+            // `theme` is drawn under `"splines"` for every sample, state diagram included: it is
+            // inert under `konoma-orthogonal`, so five identical pictures is the only other thing
+            // this loop could produce.
+            let themes: Vec<_> = CATALOG_THEMES
+                .iter()
+                .map(|t| shot("theme", t, t, "basis", "splines"))
+                .collect();
+            block.insert(
+                "theme".into(),
+                serde_json::json!({ "default": "dark", "values": themes }),
+            );
+
+            // Which blocks this sample got, in the order the page renders them: the routing rules,
+            // then those rules under each direction, then the shape of the line, then the two ways
+            // a diagram overrides that shape itself, then the colours.
+            let options: Vec<&str> = ["routing", "direction", "curve", "override", "theme"]
+                .into_iter()
+                .filter(|k| block.contains_key(*k))
+                .collect();
+            block.insert("options".into(), serde_json::json!(options));
+
+            settings.push(serde_json::Value::Object(block));
+        }
+        assert!(
+            !settings.is_empty(),
+            "{lang}: {sample} must contain a fence some setting reaches"
+        );
+
+        // ----- `[ui] mermaid = "text"`: the Unicode box-drawing fallback, as text -----
+        //
+        // Written as `.txt` rather than as a picture, because text is literally what the terminal
+        // puts on the screen in that mode — a screenshot of it would be a picture of characters.
+        // The entry point is [`crate::preview::markdown::render_mermaid_file`], what a standalone
+        // `.mmd` file goes through; its `Line`s carry no styling on this path (each is built from
+        // one owned `String`), so joining the spans back gives exactly the drawn text.
+        //
+        // Two fences: the first flowchart, and the sequence diagram — the two shapes the fallback
+        // handles most differently (boxes and arrows vs. lifelines, activation bars and an `alt`).
+        let text_dir = dir.join("text");
+        std::fs::create_dir_all(&text_dir)
+            .unwrap_or_else(|e| panic!("{lang}: create {text_dir:?}: {e}"));
+        let mut texts = Vec::new();
+        for (i, code) in fences.iter().enumerate() {
+            let order = i + 1;
+            let kind = crate::preview::mermaid::chart::first_word(code);
+            if order != 1 && kind != "sequenceDiagram" {
+                continue;
+            }
+            let drawn: Vec<String> =
+                crate::preview::markdown::render_mermaid_file(code, CATALOG_TEXT_COLUMNS)
+                    .iter()
+                    .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+                    .collect();
+            assert!(
+                drawn.len() > 3,
+                "{lang} #{order} ({kind}): the text fallback must actually draw something, got \
+                 {drawn:?}"
+            );
+            let file = format!("{order:02}-{kind}.txt");
+            let path = text_dir.join(&file);
+            std::fs::write(&path, format!("{}\n", drawn.join("\n")))
+                .unwrap_or_else(|e| panic!("{lang}: write {path:?}: {e}"));
+            texts.push(serde_json::json!({
+                "order": order,
+                "kind": kind,
+                "file": format!("text/{file}"),
+            }));
+        }
+        assert_eq!(
+            texts.len(),
+            2,
+            "{lang}: the text block needs the first flowchart and the sequence diagram"
+        );
 
         let manifest = serde_json::json!({
             "lang": lang,
             "sample": sample,
             "theme": "dark",
             "curve": "basis",
-            "scale": CATALOG_SCALE,
+            // The device scale is **per image** (each render's own `scale` field): a diagram wide
+            // enough that the page shrinks it is rastered at 1×. This records only the rule.
+            "scale_2x_max_css_px": CATALOG_SCALE_2X_MAX_CSS_PX,
             "items": items,
-            "settings": {
-                "source": settings_src,
-                "kind": crate::preview::mermaid::chart::first_word(settings_src),
-                // Ordered: the page renders these lists as it finds them, so the order here is the
-                // order a reader sees — konoma-orthogonal first, then each option's own default.
-                "routing": { "default": "splines", "values": routings },
-                "curve": { "default": "basis", "values": curves },
-                "theme": { "default": "dark", "values": themes },
-            },
+            // Sample order, and within a sample each option's values in the order above — the page
+            // renders both lists as it finds them, so this order is the order a reader sees:
+            // konoma-orthogonal first, then each option's own default.
+            "settings": settings,
+            "text": { "columns": CATALOG_TEXT_COLUMNS, "items": texts },
         });
         let mut text = serde_json::to_string_pretty(&manifest).expect("serialise manifest");
         text.push('\n');
@@ -9596,18 +9874,86 @@ fn site_mermaid_catalog_dump() {
     }
 }
 
-/// The catalog page's "What the settings change" section shows 20 pictures and claims each one is
-/// a *different* look. This states that claim as an assertion, permanently — the dump above is
-/// `#[ignore]`d, so nothing there ever runs in CI, and a change that quietly collapsed two curves
-/// (or made `mermaid_theme` inert under `splines`) would leave the page shipping a grid of
-/// identical pictures with different captions under them.
+/// One sample's worth of the claim [`catalog_settings_values_really_change_the_picture`] makes.
+///
+/// Goes through [`crate::preview::markdown::mermaid_to_svg_flow`] — the dispatcher the dump and
+/// production both call — rather than [`render_flow`], because this runs over state-diagram
+/// sources too and the flowchart entry point cannot draw one.
+///
+/// `reads_curve` is the dispatcher's own division, not a per-sample opinion: only a flowchart's
+/// edges read `[ui] mermaid_curve`, so a state diagram would draw 13 identical pictures and
+/// "pairwise different" would be a false claim rather than a failing one.
+fn assert_catalog_settings_change_one_sample(name: &str, code: &str, reads_curve: bool) {
+    let render = |theme: &str, curve: &str, routing: &str| {
+        crate::preview::markdown::mermaid_to_svg_flow(code, theme, curve, routing).unwrap_or_else(
+            || panic!("{name}: must render (theme={theme} curve={curve} routing={routing})"),
+        )
+    };
+
+    if reads_curve {
+        let curves: Vec<(&str, String)> = CATALOG_CURVES
+            .iter()
+            .map(|c| (*c, render("dark", c, "splines")))
+            .collect();
+        for i in 0..curves.len() {
+            for j in (i + 1)..curves.len() {
+                assert_ne!(
+                    curves[i].1, curves[j].1,
+                    "{name}: mermaid_curve {} and {} must draw differently — the catalog shows \
+                     them as two pictures",
+                    curves[i].0, curves[j].0
+                );
+            }
+        }
+    }
+
+    let themes: Vec<(&str, String)> = CATALOG_THEMES
+        .iter()
+        .map(|t| (*t, render(t, "basis", "splines")))
+        .collect();
+    for i in 0..themes.len() {
+        for j in (i + 1)..themes.len() {
+            assert_ne!(
+                themes[i].1, themes[j].1,
+                "{name}: mermaid_theme {} and {} must draw differently — the catalog shows them \
+                 as two pictures",
+                themes[i].0, themes[j].0
+            );
+        }
+    }
+
+    let baseline = render("dark", "basis", "konoma-orthogonal");
+    if reads_curve {
+        for curve in CATALOG_CURVES {
+            assert_eq!(
+                render("dark", curve, "konoma-orthogonal"),
+                baseline,
+                "{name}: mermaid_curve {curve} must be inert under konoma-orthogonal — the page \
+                 says so"
+            );
+        }
+    }
+    for theme in CATALOG_THEMES {
+        assert_eq!(
+            render(theme, "basis", "konoma-orthogonal"),
+            baseline,
+            "{name}: mermaid_theme {theme} must be inert under konoma-orthogonal — the page says so"
+        );
+    }
+}
+
+/// The catalog page's "What the settings change" section shows 65 pictures and claims each one
+/// inside a grid is a *different* look. This states that claim as an assertion, permanently — the
+/// dump above is `#[ignore]`d, so nothing there ever runs in CI, and a change that quietly
+/// collapsed two curves (or made `mermaid_theme` inert under `splines`) would leave the page
+/// shipping grids of identical pictures with different captions under them.
 ///
 /// Three claims, one per sub-block of that section:
 ///
 /// 1. All 13 `mermaid_curve` values draw a **pairwise different** SVG. Stronger than
 ///    `different_curves_draw_different_svg_path_data` (three of them) and than
 ///    `the_eight_new_curves_draw_different_paths_from_each_other` (eight, and at the free-function
-///    level rather than through `render_flow`), and stated over exactly [`CATALOG_CURVES`] — the
+///    level rather than through the dispatcher), and stated over exactly [`CATALOG_CURVES`] — the
 ///    same list the page's grid is built from, so the two cannot drift apart.
 /// 2. All 5 `mermaid_theme` values draw a pairwise different SVG.
 /// 3. Under `"konoma-orthogonal"`, changing either produces a **byte-identical** SVG. That is the
@@ -9615,67 +9961,216 @@ fn site_mermaid_catalog_dump() {
 ///    it is the converse of 1 and 2: an assertion that only says "these differ" would still pass
 ///    if the orthogonal mode had started reading the curve.
 ///
-/// The source is a tiny inline flowchart rather than a corpus entry, so the test says what it
-/// needs on its own line: `A --> D` spans three ranks, which is what gives dagre the intermediate
-/// waypoints a curve can differ *on* — on a straight two-point edge several of these 13 agree, and
-/// `different_curves_draw_different_svg_path_data`'s own doc records that trap being hit for real.
+/// **Stated over the sources the page actually ships**, not only a lab specimen. The tiny inline
+/// flowchart comes first and says what it needs on its own line — `A --> D` spans three ranks,
+/// which is what gives dagre the intermediate waypoints a curve can differ *on* (on a straight
+/// two-point edge several of these 13 agree, and `different_curves_draw_different_svg_path_data`'s
+/// own doc records that trap being hit for real). Then every fence of `samples/mermaid.md` that
+/// the dump writes a settings block for goes through the same three claims, so the assertion covers
+/// the busy `03` diagram whose long rank-spanning edges are what actually separate the curves on
+/// the page, the `02` diagram whose author-set `classDef` colours the themes have to survive, and
+/// the state diagram (themes only). The sample is read through `CARGO_MANIFEST_DIR` so the test
+/// does not depend on the working directory a runner happens to use.
 #[test]
 fn catalog_settings_values_really_change_the_picture() {
     if !text_metrics::fonts_available() {
         return;
     }
-    let src = "flowchart TD\n  A[Tree] --> B{Kind}\n  B --> C[Image]\n  C --> D[Draw]\n  A --> D";
+    assert_catalog_settings_change_one_sample(
+        "inline three-rank flowchart",
+        "flowchart TD\n  A[Tree] --> B{Kind}\n  B --> C[Image]\n  C --> D[Draw]\n  A --> D",
+        true,
+    );
 
-    let mut curves: Vec<(&str, String)> = Vec::new();
-    for curve in CATALOG_CURVES {
-        let svg = render_flow(src, "dark", curve, "splines")
-            .unwrap_or_else(|e| panic!("curve={curve}: must render: {e}"));
-        curves.push((curve, svg));
-    }
-    for i in 0..curves.len() {
-        for j in (i + 1)..curves.len() {
-            assert_ne!(
-                curves[i].1, curves[j].1,
-                "mermaid_curve {} and {} must draw differently — the catalog shows them as two \
-                 pictures",
-                curves[i].0, curves[j].0
-            );
+    let sample = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("samples/mermaid.md");
+    let md = std::fs::read_to_string(&sample).unwrap_or_else(|e| panic!("read {sample:?}: {e}"));
+    let mut covered = 0;
+    for (i, code) in mermaid_fences_of(&md).iter().enumerate() {
+        let is_flow = crate::preview::mermaid::flowchart::is_flowchart(code);
+        let is_state = crate::preview::mermaid::state::is_state_diagram(code);
+        if !is_flow && !is_state {
+            continue;
         }
-    }
-
-    let mut themes: Vec<(&str, String)> = Vec::new();
-    for theme in CATALOG_THEMES {
-        let svg = render_flow(src, theme, "basis", "splines")
-            .unwrap_or_else(|e| panic!("theme={theme}: must render: {e}"));
-        themes.push((theme, svg));
-    }
-    for i in 0..themes.len() {
-        for j in (i + 1)..themes.len() {
-            assert_ne!(
-                themes[i].1, themes[j].1,
-                "mermaid_theme {} and {} must draw differently — the catalog shows them as two \
-                 pictures",
-                themes[i].0, themes[j].0
-            );
-        }
-    }
-
-    let baseline = render_flow(src, "dark", "basis", "konoma-orthogonal")
-        .unwrap_or_else(|e| panic!("orthogonal baseline must render: {e}"));
-    for curve in CATALOG_CURVES {
-        let svg = render_flow(src, "dark", curve, "konoma-orthogonal")
-            .unwrap_or_else(|e| panic!("orthogonal curve={curve}: must render: {e}"));
-        assert_eq!(
-            svg, baseline,
-            "mermaid_curve {curve} must be inert under konoma-orthogonal — the page says so"
+        assert_catalog_settings_change_one_sample(
+            &format!("samples/mermaid.md fence #{:02}", i + 1),
+            code,
+            is_flow,
         );
+        covered += 1;
     }
-    for theme in CATALOG_THEMES {
-        let svg = render_flow(src, theme, "basis", "konoma-orthogonal")
-            .unwrap_or_else(|e| panic!("orthogonal theme={theme}: must render: {e}"));
+    // The loop must actually have run over the page's four settings samples — a scanner that
+    // silently found nothing would leave every assertion above un-evaluated and still pass.
+    assert!(
+        covered >= 4,
+        "samples/mermaid.md must still hold the three flowcharts and the state diagram the \
+         settings section is built from: found {covered}"
+    );
+}
+
+/// Every direction the catalog's "Direction" block draws still obeys the orthogonal rules, and the
+/// two directions the block can honestly ship do change the picture.
+///
+/// Stated with the very helper `orthogonal_routing_draws_only_axis_parallel_segments` uses
+/// ([`check_only_axis_parallel_segments`]) rather than a private re-derivation. `orthogonal_corpus`
+/// already carries all four directions, but on *its own* sources; this pins the claim on the source
+/// the page actually prints under that sentence.
+///
+/// The block's other half — "all four directions draw a different picture" — is
+/// [`catalog_flowchart_rl_and_bt_are_mirrored_under_orthogonal`], `#[ignore]`d because it does not
+/// hold today. See that test for the defect.
+#[test]
+fn catalog_direction_renders_obey_the_orthogonal_rules() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let sample = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("samples/mermaid.md");
+    let md = std::fs::read_to_string(&sample).unwrap_or_else(|e| panic!("read {sample:?}: {e}"));
+    let fences = mermaid_fences_of(&md);
+    let code = fences
+        .first()
+        .expect("samples/mermaid.md must still open with a fence");
+    assert!(
+        crate::preview::mermaid::flowchart::is_flowchart(code),
+        "the direction block is built on the first fence, which must still be a flowchart"
+    );
+
+    let mut drawn: Vec<(&str, String)> = Vec::new();
+    for direction in CATALOG_FLOW_DIRECTIONS {
+        let src = with_flow_direction(code, direction);
+        check_only_axis_parallel_segments(
+            &format!("catalog direction {direction}"),
+            &laid_out_flow(&src, "basis", "konoma-orthogonal"),
+        );
+        let svg = crate::preview::markdown::mermaid_to_svg_flow(
+            &src,
+            "dark",
+            "basis",
+            "konoma-orthogonal",
+        )
+        .unwrap_or_else(|| panic!("direction={direction}: must render"));
+        drawn.push((direction, svg));
+    }
+    // The one flowchart pair that is genuinely two pictures today — LR turns the flow axis, which
+    // is the half of `rankdir` the orthogonal path does read.
+    assert_ne!(
+        drawn[0].1, drawn[1].1,
+        "LR and TB must draw differently under konoma-orthogonal"
+    );
+
+    // The state diagram's own half: `direction LR` must move it off the default TB. This one does
+    // hold — a state diagram goes through `state::render_flow`, not the flowchart path the defect
+    // below lives on.
+    let state = fences
+        .iter()
+        .find(|c| crate::preview::mermaid::state::is_state_diagram(c))
+        .expect("samples/mermaid.md must still hold a state diagram");
+    let by_dir: Vec<(&str, String)> = CATALOG_STATE_DIRECTIONS
+        .iter()
+        .map(|d| {
+            let src = with_state_direction(state, d);
+            let svg = crate::preview::markdown::mermaid_to_svg_flow(
+                &src,
+                "dark",
+                "basis",
+                "konoma-orthogonal",
+            )
+            .unwrap_or_else(|| panic!("state direction={d}: must render"));
+            (*d, svg)
+        })
+        .collect();
+    assert_ne!(
+        by_dir[0].1, by_dir[1].1,
+        "a state diagram's `direction LR` must draw differently from the default TB"
+    );
+}
+
+/// **Known defect, found while building the catalog's direction block (2026-09-07).** Under
+/// `[ui] mermaid_routing = "konoma-orthogonal"` a flowchart's `RL` renders **byte-identical** to
+/// `LR`, and `BT` byte-identical to `TB` — the reversal is silently dropped. Under `"splines"` all
+/// four are correct (measured: `RL` puts `Key press` at x≈658 and `Redraw` at x≈62, the mirror of
+/// `LR`; under `"konoma-orthogonal"` both give `Key press` x≈50 and `Redraw` x≈637).
+///
+/// Cause, from the coordinates rather than from reading alone: the orthogonal path re-assigns every
+/// node's flow-axis position from its rank (`lay_out_spec`'s `column_flow` cursor in `render/mod.rs`,
+/// the loop that ends `Direction::TopToBottom | Direction::BottomToTop => node.y = Some(flow_pos)`).
+/// That cursor only ever increases, and the `match` picks the flow *axis* without ever looking at
+/// its *sign*, so whatever mirroring dagre's `coordinate_system::undo` applied for `BT`/`RL` is
+/// overwritten. It is one rule, missing in one place — but it moves geometry in the mode that is
+/// pinned to the §10 design references, so it is recorded rather than patched here.
+///
+/// `#[ignore]`d deliberately: this is the shape `docs/STATUS.md`'s ★未修正 entries take, and the
+/// alternative — asserting the current behaviour — would pin a bug as if it were the specification.
+#[test]
+#[ignore = "known defect: konoma-orthogonal drops a flowchart's RL/BT reversal (see doc comment)"]
+fn catalog_flowchart_rl_and_bt_are_mirrored_under_orthogonal() {
+    let sample = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("samples/mermaid.md");
+    let md = std::fs::read_to_string(&sample).unwrap_or_else(|e| panic!("read {sample:?}: {e}"));
+    let code = mermaid_fences_of(&md)
+        .first()
+        .expect("samples/mermaid.md must still open with a fence")
+        .clone();
+    let draw = |d: &str| {
+        crate::preview::markdown::mermaid_to_svg_flow(
+            &with_flow_direction(&code, d),
+            "dark",
+            "basis",
+            "konoma-orthogonal",
+        )
+        .unwrap_or_else(|| panic!("direction={d}: must render"))
+    };
+    assert_ne!(draw("LR"), draw("RL"), "RL must mirror LR");
+    assert_ne!(draw("TB"), draw("BT"), "BT must mirror TB");
+}
+
+/// The catalog's "Overrides written in the diagram" block claims two things that are easy to write
+/// and easy to get wrong: that a `%%{init}%%` directive and a `linkStyle ... interpolate` really
+/// do beat the config default (`"basis"` here, untouched), and that both are ignored under
+/// `konoma-orthogonal` — the same precedence sentence the configuration reference prints.
+///
+/// Stated on the exact source the page shows, with the exact lines it shows being added, so the
+/// captions and the pictures cannot drift apart from what actually happens.
+#[test]
+fn catalog_override_block_beats_the_default_curve_and_is_inert_under_orthogonal() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let sample = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("samples/mermaid.md");
+    let md = std::fs::read_to_string(&sample).unwrap_or_else(|e| panic!("read {sample:?}: {e}"));
+    let code = mermaid_fences_of(&md)
+        .first()
+        .expect("samples/mermaid.md must still open with a fence")
+        .clone();
+
+    let plain = crate::preview::markdown::mermaid_to_svg_flow(&code, "dark", "basis", "splines")
+        .expect("the plain sample must render");
+    let orthogonal =
+        crate::preview::markdown::mermaid_to_svg_flow(&code, "dark", "basis", "konoma-orthogonal")
+            .expect("the plain sample must render under konoma-orthogonal");
+
+    for (stem, line, prepend) in CATALOG_OVERRIDES {
+        let src = with_override(&code, line, prepend);
+        let splines =
+            crate::preview::markdown::mermaid_to_svg_flow(&src, "dark", "basis", "splines")
+                .unwrap_or_else(|| panic!("{stem}: must render"));
+        assert_ne!(
+            splines,
+            plain,
+            "{stem}: `{}` must beat the default mermaid_curve = \"basis\" — the catalog shows it \
+             as a different picture",
+            line.trim()
+        );
+        let ortho = crate::preview::markdown::mermaid_to_svg_flow(
+            &src,
+            "dark",
+            "basis",
+            "konoma-orthogonal",
+        )
+        .unwrap_or_else(|| panic!("{stem}: must render under konoma-orthogonal"));
         assert_eq!(
-            svg, baseline,
-            "mermaid_theme {theme} must be inert under konoma-orthogonal — the page says so"
+            ortho,
+            orthogonal,
+            "{stem}: `{}` must be inert under konoma-orthogonal — the page says so",
+            line.trim()
         );
     }
 }

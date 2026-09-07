@@ -7,7 +7,13 @@ sidebar:
 
 import MermaidCatalogItem from '../../../components/MermaidCatalogItem.astro';
 import MermaidSettingGrid from '../../../components/MermaidSettingGrid.astro';
+import MermaidTextBlock from '../../../components/MermaidTextBlock.astro';
 import manifest from '../../../assets/mermaid-catalog/en/manifest.json';
+
+export const s01 = manifest.settings[0];
+export const s02 = manifest.settings[1];
+export const s03 = manifest.settings[2];
+export const s04 = manifest.settings[3];
 
 export const routingNotes = {
 	'konoma-orthogonal':
@@ -57,38 +63,99 @@ full screen.
 
 ## What the settings change
 
-Three `[ui]` options change how a diagram is drawn. Every picture in this
-section is the **same flowchart** — the keypress one at the top of this page —
-redrawn with one setting moved, so anything you see differing came from the
-setting the caption names.
+Three `[ui]` options change how a diagram is drawn, and a diagram can override
+one of them from inside its own source. Every picture in this section is one of
+the samples further down this page, redrawn with a single thing moved — so
+anything you see differing came from the thing the caption names.
 
-### `mermaid_routing` — how the edges are routed
+A few rules hold across all of them. `mermaid_curve` is read by a flowchart's own
+edges and by nothing else. Both `mermaid_curve` and `mermaid_theme` are ignored
+under `konoma-orthogonal`: that mode has no curve, only right-angle segments, and
+it carries its own designed palette. A theme's background is always transparent,
+so a diagram blends with whatever your terminal's background is.
 
-<MermaidSettingGrid
-	lang="en"
-	option="mermaid_routing"
-	group={manifest.settings.routing}
-	layout="pair"
-	notes={routingNotes}
-/>
+### 01 — the keypress flowchart
 
-### `mermaid_curve` — what shape the line is
+The plainest of the three: a stadium, a decision diamond, two branches and a
+join. It is where the basic shapes read most clearly.
 
-Only a flowchart's own edges read this, and it is ignored under
-`konoma-orthogonal` — there is no curve in that mode, only right-angle
-segments. Three ways to set the curve, weakest first: this setting < the
-diagram's own `%%{init: {"flowchart": {"curve": "..."}}}%%` directive < a
-`linkStyle <n> interpolate <curve>` naming one edge.
+#### `mermaid_routing`
 
-<MermaidSettingGrid lang="en" option="mermaid_curve" group={manifest.settings.curve} columns="two" />
+<MermaidSettingGrid lang="en" role="routing" group={s01.routing} notes={routingNotes} />
 
-### `mermaid_theme` — what colours it is drawn in
+#### `mermaid_curve`
 
-The background is always transparent, so a diagram blends with the terminal.
-Ignored under `konoma-orthogonal` — that mode always uses konoma's own designed
-palette instead.
+<MermaidSettingGrid lang="en" role="curve" group={s01.curve} />
 
-<MermaidSettingGrid lang="en" option="mermaid_theme" group={manifest.settings.theme} />
+#### Overrides written in the diagram
+
+With the setting left at its default `basis`, a diagram can still ask for a
+different curve itself. Weakest first: the setting < the diagram's own
+`%%{init: {"flowchart": {"curve": "..."}}}%%` directive < a
+`linkStyle <n> interpolate <curve>` naming one edge. Both are ignored under
+`konoma-orthogonal`.
+
+<MermaidSettingGrid lang="en" role="override" group={s01.override} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={s01.theme} />
+
+### 02 — the colour flowchart
+
+This one sets its own colours with `classDef`, `:::` and `style`. It shows how a
+theme relates to colours the author picked: the theme paints everything the
+diagram did not, and the author's colours survive on top of it.
+
+#### `mermaid_routing`
+
+<MermaidSettingGrid lang="en" role="routing" group={s02.routing} />
+
+#### `mermaid_curve`
+
+<MermaidSettingGrid lang="en" role="curve" group={s02.curve} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={s02.theme} />
+
+### 03 — the size flowchart
+
+The busy one, and the reason the curve grid below is a single column: its edges
+span several ranks, and a long rank-spanning edge is where the 13 curves actually
+separate from each other.
+
+#### `mermaid_routing`
+
+<MermaidSettingGrid lang="en" role="routing" group={s03.routing} />
+
+#### `mermaid_curve`
+
+<MermaidSettingGrid lang="en" role="curve" group={s03.curve} />
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={s03.theme} />
+
+### 04 — the state diagram
+
+`mermaid_routing` reaches state diagrams too — its pair is in
+[`stateDiagram-v2`](#statediagram-v2--modes-and-transitions) below — but
+`mermaid_curve` never does. What is left is the palette each theme gives a state
+machine, and the direction it is laid out in.
+
+#### `mermaid_theme`
+
+<MermaidSettingGrid lang="en" role="theme" group={s04.theme} />
+
+#### Direction
+
+A state diagram states its direction with a `direction` line in the body; without
+one it runs top to bottom. The routing rules are the same either way — the
+konoma-orthogonal design references `2b` and `2c` are the same graph in LR and
+TB for exactly that reason.
+
+<MermaidSettingGrid lang="en" role="direction" group={s04.direction} />
 
 ## Graphs
 
@@ -285,5 +352,12 @@ flow divides.
 ## If konoma cannot draw it
 
 Nothing is invented. A kind konoma does not know, or a syntax error, falls back
-to the source shown as text — and `ui.mermaid = "text"` asks for the legacy
-Unicode rendering everywhere.
+to the source shown as text.
+
+### `mermaid = "text"`
+
+`ui.mermaid = "text"` asks for the Unicode box-drawing rendering everywhere,
+which is also what a terminal with no graphics protocol gets. It is text, not a
+picture, so this is the drawing itself rather than a screenshot of it:
+
+<MermaidTextBlock lang="en" items={manifest.text.items} />
