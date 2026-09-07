@@ -9367,6 +9367,67 @@ fn mermaid_fences_of(md: &str) -> Vec<String> {
     out
 }
 
+/// Device scale of the catalog's PNGs. The SVG is laid out in CSS px; a 2× raster keeps the
+/// labels crisp on a HiDPI screen without doubling again into multi-MB files.
+const CATALOG_SCALE: u32 = 2;
+
+/// `[ui] mermaid_routing`'s values, as the catalog's "What the settings change" section lists
+/// them — **`konoma-orthogonal` first**, because that mode is what the page is about, and the
+/// site leads with it everywhere else too.
+const CATALOG_ROUTINGS: [&str; 2] = ["konoma-orthogonal", "splines"];
+
+/// `[ui] mermaid_curve`'s 13 values, in the configuration reference's own order (the default
+/// `"basis"` first, then the straight/right-angle family, the through-the-waypoints splines, the
+/// non-overshooting pair, the bumps, and mermaid's own `"rounded"`).
+const CATALOG_CURVES: [&str; 13] = [
+    "basis",
+    "linear",
+    "step",
+    "stepBefore",
+    "stepAfter",
+    "natural",
+    "cardinal",
+    "catmullRom",
+    "monotoneX",
+    "monotoneY",
+    "bumpX",
+    "bumpY",
+    "rounded",
+];
+
+/// `[ui] mermaid_theme`'s 5 values, default first — the configuration reference's own order.
+const CATALOG_THEMES: [&str; 5] = ["dark", "light", "classic", "forest", "neutral"];
+
+/// Renders one fence through the production path and writes it as a [`CATALOG_SCALE`]× PNG at
+/// `dir/file`.
+///
+/// Shared by the kind gallery and the settings gallery below so both are provably the *same*
+/// path: [`crate::preview::markdown::mermaid_to_svg_flow`] is the exact function `App::media_load`
+/// / `md_media` call for an inline ```mermaid fence. `what` is the caller's own label for the
+/// panic messages, since neither gallery names a render the same way.
+fn write_catalog_png(
+    dir: &FsPath,
+    file: &str,
+    code: &str,
+    theme: &str,
+    curve: &str,
+    routing: &str,
+    what: &str,
+) {
+    let svg = crate::preview::markdown::mermaid_to_svg_flow(code, theme, curve, routing)
+        .unwrap_or_else(|| panic!("{what}: must render under routing={routing}"));
+    let path = dir.join(file);
+    let (w, h) = crate::preview::svg::intrinsic_size_bytes(svg.as_bytes())
+        .unwrap_or_else(|| panic!("{what}: SVG must have a size"));
+    // `rasterize_bytes` takes a target for the *longest* side, so asking for
+    // `CATALOG_SCALE * max(w, h)` is exactly a `CATALOG_SCALE`× device-pixel-ratio raster. The
+    // background stays transparent, the same as in the terminal.
+    let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), &path, CATALOG_SCALE * w.max(h))
+        .unwrap_or_else(|| panic!("{what}: must rasterise"));
+    img.save(&path)
+        .unwrap_or_else(|e| panic!("{what}: write {path:?}: {e}"));
+}
+
 /// Renders every fence of the two sample galleries for the documentation site's Mermaid catalog
 /// page (`site/src/content/docs/guides/mermaid-catalog.mdx` and its `ja/` twin), writing 2×-scale
 /// PNGs plus a `manifest.json` the page's Astro component is driven by.
@@ -9383,18 +9444,24 @@ fn mermaid_fences_of(md: &str) -> Vec<String> {
 /// and theme only, so `[ui] mermaid_routing` is *structurally* unable to reach them. The
 /// predicates below are the dispatcher's own, so this file cannot drift from that claim.
 ///
+/// **The settings gallery.** Alongside the per-kind renders the dump also writes a `settings/`
+/// set: the sample's *first flowchart* fence (the small one) drawn once under every value of the
+/// three `[ui]` options that change how a diagram looks — both `mermaid_routing` values, all 13
+/// `mermaid_curve` values, all 5 `mermaid_theme` values. Same production entry point, same 2×
+/// raster; only the argument under test moves, so a difference between two pictures in that
+/// section can only have come from the setting the caption names. That those values really do
+/// change the picture (and really are inert under `konoma-orthogonal`) is asserted permanently by
+/// [`catalog_settings_values_really_change_the_picture`], which is *not* `#[ignore]`d — the dump
+/// writes pictures, the test states the claim the page makes about them.
+///
 /// Stale files are removed first: an image nobody regenerated is worse than a missing one, because
-/// the page would keep shipping it.
+/// the page would keep shipping it. Removing the language directory takes `settings/` with it.
 ///
 /// `#[ignore]`d like [`orthogonal_design_reference_dump`] — run explicitly:
 /// `cargo test -- --ignored site_mermaid_catalog_dump`.
 #[test]
 #[ignore = "writes PNG files for the docs site: cargo test -- --ignored site_mermaid_catalog_dump"]
 fn site_mermaid_catalog_dump() {
-    /// Device scale of the written PNGs. The SVG is laid out in CSS px; a 2× raster keeps the
-    /// labels crisp on a HiDPI screen without doubling again into multi-MB files.
-    const SCALE: u32 = 2;
-
     for (lang, sample) in [
         ("en", "samples/mermaid.md"),
         ("ja", "samples/mermaid.ja.md"),
@@ -9430,23 +9497,16 @@ fn site_mermaid_catalog_dump() {
 
             let mut renders = Vec::new();
             for (variant, routing) in variants {
-                let svg =
-                    crate::preview::markdown::mermaid_to_svg_flow(code, "dark", "basis", routing)
-                        .unwrap_or_else(|| {
-                            panic!("{lang} #{order} ({kind}): must render under routing={routing}")
-                        });
                 let file = format!("{order:02}-{kind}-{variant}.png");
-                let path = dir.join(&file);
-                let (w, h) = crate::preview::svg::intrinsic_size_bytes(svg.as_bytes())
-                    .unwrap_or_else(|| panic!("{lang} #{order} ({kind}): SVG must have a size"));
-                // `rasterize_bytes` takes a target for the *longest* side, so asking for
-                // `SCALE * max(w, h)` is exactly a `SCALE`× device-pixel-ratio raster. The
-                // background stays transparent, the same as in the terminal.
-                let img =
-                    crate::preview::svg::rasterize_bytes(svg.as_bytes(), &path, SCALE * w.max(h))
-                        .unwrap_or_else(|| panic!("{lang} #{order} ({kind}): must rasterise"));
-                img.save(&path)
-                    .unwrap_or_else(|e| panic!("{lang} #{order} ({kind}): write {path:?}: {e}"));
+                write_catalog_png(
+                    &dir,
+                    &file,
+                    code,
+                    "dark",
+                    "basis",
+                    routing,
+                    &format!("{lang} #{order} ({kind})"),
+                );
                 renders.push(serde_json::json!({
                     "variant": variant,
                     "routing": routing,
@@ -9463,18 +9523,160 @@ fn site_mermaid_catalog_dump() {
             }));
         }
 
+        // ----- settings gallery: one small diagram under every value of the three options -----
+        //
+        // The *first flowchart* fence deliberately: `mermaid_curve` and `mermaid_routing` only
+        // reach a flowchart at all, and the sample's first one is the six-node keypress diagram —
+        // small enough that 20 renders of it stay a modest download, busy enough that its edges
+        // actually bend (a straight two-point edge would draw the same under several curves).
+        let settings_src = fences
+            .iter()
+            .find(|code| crate::preview::mermaid::flowchart::is_flowchart(code))
+            .unwrap_or_else(|| panic!("{lang}: {sample} must contain a flowchart fence"));
+        let settings_dir = dir.join("settings");
+        std::fs::create_dir_all(&settings_dir)
+            .unwrap_or_else(|e| panic!("{lang}: create {settings_dir:?}: {e}"));
+
+        // One closure per option would repeat the same three lines; this one takes the file-name
+        // prefix and the three arguments, and the caller varies exactly one of them.
+        let shot = |prefix: &str, value: &str, theme: &str, curve: &str, routing: &str| {
+            let file = format!("{prefix}-{value}.png");
+            write_catalog_png(
+                &settings_dir,
+                &file,
+                settings_src,
+                theme,
+                curve,
+                routing,
+                &format!("{lang} settings {prefix}={value}"),
+            );
+            serde_json::json!({
+                "value": value,
+                "file": format!("settings/{file}"),
+            })
+        };
+
+        // `curve` is passed as the shipped default here and is genuinely irrelevant under
+        // `konoma-orthogonal` (there is no curve, only right-angle segments) — the permanent test
+        // below states that as an assertion rather than leaving it as a claim in a comment.
+        let routings: Vec<_> = CATALOG_ROUTINGS
+            .iter()
+            .map(|r| shot("routing", r, "dark", "basis", r))
+            .collect();
+        let curves: Vec<_> = CATALOG_CURVES
+            .iter()
+            .map(|c| shot("curve", c, "dark", c, "splines"))
+            .collect();
+        let themes: Vec<_> = CATALOG_THEMES
+            .iter()
+            .map(|t| shot("theme", t, t, "basis", "splines"))
+            .collect();
+
         let manifest = serde_json::json!({
             "lang": lang,
             "sample": sample,
             "theme": "dark",
             "curve": "basis",
-            "scale": SCALE,
+            "scale": CATALOG_SCALE,
             "items": items,
+            "settings": {
+                "source": settings_src,
+                "kind": crate::preview::mermaid::chart::first_word(settings_src),
+                // Ordered: the page renders these lists as it finds them, so the order here is the
+                // order a reader sees — konoma-orthogonal first, then each option's own default.
+                "routing": { "default": "splines", "values": routings },
+                "curve": { "default": "basis", "values": curves },
+                "theme": { "default": "dark", "values": themes },
+            },
         });
         let mut text = serde_json::to_string_pretty(&manifest).expect("serialise manifest");
         text.push('\n');
         let path = dir.join("manifest.json");
         std::fs::write(&path, text).unwrap_or_else(|e| panic!("{lang}: write {path:?}: {e}"));
+    }
+}
+
+/// The catalog page's "What the settings change" section shows 20 pictures and claims each one is
+/// a *different* look. This states that claim as an assertion, permanently — the dump above is
+/// `#[ignore]`d, so nothing there ever runs in CI, and a change that quietly collapsed two curves
+/// (or made `mermaid_theme` inert under `splines`) would leave the page shipping a grid of
+/// identical pictures with different captions under them.
+///
+/// Three claims, one per sub-block of that section:
+///
+/// 1. All 13 `mermaid_curve` values draw a **pairwise different** SVG. Stronger than
+///    `different_curves_draw_different_svg_path_data` (three of them) and than
+///    `the_eight_new_curves_draw_different_paths_from_each_other` (eight, and at the free-function
+///    level rather than through `render_flow`), and stated over exactly [`CATALOG_CURVES`] — the
+///    same list the page's grid is built from, so the two cannot drift apart.
+/// 2. All 5 `mermaid_theme` values draw a pairwise different SVG.
+/// 3. Under `"konoma-orthogonal"`, changing either produces a **byte-identical** SVG. That is the
+///    sentence both language versions of the page print ("ignored under konoma-orthogonal"), and
+///    it is the converse of 1 and 2: an assertion that only says "these differ" would still pass
+///    if the orthogonal mode had started reading the curve.
+///
+/// The source is a tiny inline flowchart rather than a corpus entry, so the test says what it
+/// needs on its own line: `A --> D` spans three ranks, which is what gives dagre the intermediate
+/// waypoints a curve can differ *on* — on a straight two-point edge several of these 13 agree, and
+/// `different_curves_draw_different_svg_path_data`'s own doc records that trap being hit for real.
+#[test]
+fn catalog_settings_values_really_change_the_picture() {
+    if !text_metrics::fonts_available() {
+        return;
+    }
+    let src = "flowchart TD\n  A[Tree] --> B{Kind}\n  B --> C[Image]\n  C --> D[Draw]\n  A --> D";
+
+    let mut curves: Vec<(&str, String)> = Vec::new();
+    for curve in CATALOG_CURVES {
+        let svg = render_flow(src, "dark", curve, "splines")
+            .unwrap_or_else(|e| panic!("curve={curve}: must render: {e}"));
+        curves.push((curve, svg));
+    }
+    for i in 0..curves.len() {
+        for j in (i + 1)..curves.len() {
+            assert_ne!(
+                curves[i].1, curves[j].1,
+                "mermaid_curve {} and {} must draw differently — the catalog shows them as two \
+                 pictures",
+                curves[i].0, curves[j].0
+            );
+        }
+    }
+
+    let mut themes: Vec<(&str, String)> = Vec::new();
+    for theme in CATALOG_THEMES {
+        let svg = render_flow(src, theme, "basis", "splines")
+            .unwrap_or_else(|e| panic!("theme={theme}: must render: {e}"));
+        themes.push((theme, svg));
+    }
+    for i in 0..themes.len() {
+        for j in (i + 1)..themes.len() {
+            assert_ne!(
+                themes[i].1, themes[j].1,
+                "mermaid_theme {} and {} must draw differently — the catalog shows them as two \
+                 pictures",
+                themes[i].0, themes[j].0
+            );
+        }
+    }
+
+    let baseline = render_flow(src, "dark", "basis", "konoma-orthogonal")
+        .unwrap_or_else(|e| panic!("orthogonal baseline must render: {e}"));
+    for curve in CATALOG_CURVES {
+        let svg = render_flow(src, "dark", curve, "konoma-orthogonal")
+            .unwrap_or_else(|e| panic!("orthogonal curve={curve}: must render: {e}"));
+        assert_eq!(
+            svg, baseline,
+            "mermaid_curve {curve} must be inert under konoma-orthogonal — the page says so"
+        );
+    }
+    for theme in CATALOG_THEMES {
+        let svg = render_flow(src, theme, "basis", "konoma-orthogonal")
+            .unwrap_or_else(|e| panic!("orthogonal theme={theme}: must render: {e}"));
+        assert_eq!(
+            svg, baseline,
+            "mermaid_theme {theme} must be inert under konoma-orthogonal — the page says so"
+        );
     }
 }
 

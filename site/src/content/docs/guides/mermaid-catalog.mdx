@@ -6,7 +6,15 @@ sidebar:
 ---
 
 import MermaidCatalogItem from '../../../components/MermaidCatalogItem.astro';
+import MermaidSettingGrid from '../../../components/MermaidSettingGrid.astro';
 import manifest from '../../../assets/mermaid-catalog/en/manifest.json';
+
+export const routingNotes = {
+	'konoma-orthogonal':
+		"konoma's own router: every edge bends only at 90° and meets a border head-on, decision nodes become chamfered rectangles, and the diagram is drawn in konoma's own designed palette.",
+	splines:
+		'The shipped default — mermaid’s own layout, with every edge following the curve mermaid_curve names.',
+};
 
 konoma parses, lays out and draws **every** Mermaid diagram itself — no browser,
 no Node, no external renderer, nothing to install. A ```` ```mermaid ```` fence
@@ -46,6 +54,41 @@ other 21 kinds are shown once, because routing never reaches them.
 See [Configuration](../../reference/configuration/) for every Mermaid option, and
 [Previews in depth](../preview/) for the keys that zoom, pan and open a diagram
 full screen.
+
+## What the settings change
+
+Three `[ui]` options change how a diagram is drawn. Every picture in this
+section is the **same flowchart** — the keypress one at the top of this page —
+redrawn with one setting moved, so anything you see differing came from the
+setting the caption names.
+
+### `mermaid_routing` — how the edges are routed
+
+<MermaidSettingGrid
+	lang="en"
+	option="mermaid_routing"
+	group={manifest.settings.routing}
+	layout="pair"
+	notes={routingNotes}
+/>
+
+### `mermaid_curve` — what shape the line is
+
+Only a flowchart's own edges read this, and it is ignored under
+`konoma-orthogonal` — there is no curve in that mode, only right-angle
+segments. Three ways to set the curve, weakest first: this setting < the
+diagram's own `%%{init: {"flowchart": {"curve": "..."}}}%%` directive < a
+`linkStyle <n> interpolate <curve>` naming one edge.
+
+<MermaidSettingGrid lang="en" option="mermaid_curve" group={manifest.settings.curve} columns="two" />
+
+### `mermaid_theme` — what colours it is drawn in
+
+The background is always transparent, so a diagram blends with the terminal.
+Ignored under `konoma-orthogonal` — that mode always uses konoma's own designed
+palette instead.
+
+<MermaidSettingGrid lang="en" option="mermaid_theme" group={manifest.settings.theme} />
 
 ## Graphs
 

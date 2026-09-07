@@ -350,5 +350,104 @@
   "lang": "ja",
   "sample": "samples/mermaid.ja.md",
   "scale": 2,
+  "settings": {
+    "curve": {
+      "default": "basis",
+      "values": [
+        {
+          "file": "settings/curve-basis.png",
+          "value": "basis"
+        },
+        {
+          "file": "settings/curve-linear.png",
+          "value": "linear"
+        },
+        {
+          "file": "settings/curve-step.png",
+          "value": "step"
+        },
+        {
+          "file": "settings/curve-stepBefore.png",
+          "value": "stepBefore"
+        },
+        {
+          "file": "settings/curve-stepAfter.png",
+          "value": "stepAfter"
+        },
+        {
+          "file": "settings/curve-natural.png",
+          "value": "natural"
+        },
+        {
+          "file": "settings/curve-cardinal.png",
+          "value": "cardinal"
+        },
+        {
+          "file": "settings/curve-catmullRom.png",
+          "value": "catmullRom"
+        },
+        {
+          "file": "settings/curve-monotoneX.png",
+          "value": "monotoneX"
+        },
+        {
+          "file": "settings/curve-monotoneY.png",
+          "value": "monotoneY"
+        },
+        {
+          "file": "settings/curve-bumpX.png",
+          "value": "bumpX"
+        },
+        {
+          "file": "settings/curve-bumpY.png",
+          "value": "bumpY"
+        },
+        {
+          "file": "settings/curve-rounded.png",
+          "value": "rounded"
+        }
+      ]
+    },
+    "kind": "flowchart",
+    "routing": {
+      "default": "splines",
+      "values": [
+        {
+          "file": "settings/routing-konoma-orthogonal.png",
+          "value": "konoma-orthogonal"
+        },
+        {
+          "file": "settings/routing-splines.png",
+          "value": "splines"
+        }
+      ]
+    },
+    "source": "flowchart LR\n  K([キー入力]) --> S{どの面か}\n  S -->|ツリー| M[移動・開く]\n  S -->|プレビュー| P[スクロール・検索]\n  M --> R[再描画]\n  P --> R",
+    "theme": {
+      "default": "dark",
+      "values": [
+        {
+          "file": "settings/theme-dark.png",
+          "value": "dark"
+        },
+        {
+          "file": "settings/theme-light.png",
+          "value": "light"
+        },
+        {
+          "file": "settings/theme-classic.png",
+          "value": "classic"
+        },
+        {
+          "file": "settings/theme-forest.png",
+          "value": "forest"
+        },
+        {
+          "file": "settings/theme-neutral.png",
+          "value": "neutral"
+        }
+      ]
+    }
+  },
   "theme": "dark"
 }

@@ -6,7 +6,15 @@ sidebar:
 ---
 
 import MermaidCatalogItem from '../../../../components/MermaidCatalogItem.astro';
+import MermaidSettingGrid from '../../../../components/MermaidSettingGrid.astro';
 import manifest from '../../../../assets/mermaid-catalog/ja/manifest.json';
+
+export const routingNotes = {
+	'konoma-orthogonal':
+		'konoma 独自のルータ。辺は 90° でしか曲がらず枠へは必ず垂直に入射し、判定ノードは面取り矩形になります。配色も konoma 独自の設計配色に切り替わります。',
+	splines:
+		'出荷時の既定。従来の mermaid のレイアウトで、辺は mermaid_curve が指す曲線に従います。',
+};
 
 konoma は Mermaid の図を**すべて自分で**解析し、配置し、描いています。ブラウザも
 Node も外部レンダラも要りません。Markdown の ```` ```mermaid ```` フェンスは
@@ -41,6 +49,38 @@ mermaid_routing = "konoma-orthogonal"
 
 Mermaid 関連の設定は[設定リファレンス](../../reference/configuration/)、
 ズーム・パン・全画面のキーは[プレビューを使い倒す](../preview/)を参照してください。
+
+## 設定で変わる見え方
+
+図の描かれ方を変える `[ui]` の設定は 3 つあります。この節の絵はすべて**同じ flowchart**
+（このページの冒頭にあるキー入力の図）で、設定を 1 つだけ動かして描き直したものです。
+違って見えるものは、キャプションが示す設定だけが原因です。
+
+### `mermaid_routing` — 辺の配線方法
+
+<MermaidSettingGrid
+	lang="ja"
+	option="mermaid_routing"
+	group={manifest.settings.routing}
+	layout="pair"
+	notes={routingNotes}
+/>
+
+### `mermaid_curve` — 線の形
+
+この設定を読むのは flowchart 自身の辺だけで、`konoma-orthogonal` では無効です
+（そのモードに曲線は無く、直角の区間だけがあります）。曲線の指定は 3 段階
+（弱い順）: この設定 < 図側の `%%{init: {"flowchart": {"curve": "..."}}}%%`
+ディレクティブ < 特定の辺だけを指す `linkStyle <n> interpolate <curve>`。
+
+<MermaidSettingGrid lang="ja" option="mermaid_curve" group={manifest.settings.curve} columns="two" />
+
+### `mermaid_theme` — 配色
+
+背景は常に透過なので、図は端末の背景に馴染みます。`konoma-orthogonal` のときは
+無効です — そのモードは常に konoma 独自の設計配色を使います。
+
+<MermaidSettingGrid lang="ja" option="mermaid_theme" group={manifest.settings.theme} />
 
 ## グラフ
 

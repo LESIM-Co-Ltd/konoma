@@ -1,0 +1,217 @@
+---
+// One `[ui]` option of the Mermaid catalog's "What the settings change" section: the same small
+// flowchart drawn once per value of that option, captioned with the value itself.
+//
+// Like MermaidCatalogItem.astro this is entirely data-driven from
+// site/src/assets/mermaid-catalog/<lang>/manifest.json, written by the Rust test
+// `site_mermaid_catalog_dump`. Adding a curve or a theme to that test's value list puts a new cell
+// here with no markup change. Never hand-edit the PNGs or the manifest.
+//
+// The claim this component makes visually — that every cell is a *different* picture, and that
+// both lists are inert under konoma-orthogonal — is asserted permanently in Rust by
+// `catalog_settings_values_really_change_the_picture`, so a grid of identical pictures with
+// different captions cannot ship unnoticed.
+import { Image } from 'astro:assets';
+
+interface Value {
+	value: string;
+	file: string;
+}
+
+interface Group {
+	default: string;
+	values: Value[];
+}
+
+interface Props {
+	lang?: 'en' | 'ja';
+	/** The `[ui]` key this row is about — used in the alt text, so it says what moved. */
+	option: string;
+	group: Group;
+	/** `pair` reuses the catalog's two-up rule; `grid` is the compact many-values layout. */
+	layout?: 'pair' | 'grid';
+	/**
+	 * `auto` lets the grid widen with the viewport (2 → 3 → 4). `two` pins it at two columns at
+	 * every width — for a list whose values differ by the *shape of a line* rather than by colour,
+	 * where a third column shrinks the cell past the point the difference survives.
+	 */
+	columns?: 'auto' | 'two';
+	/** Optional one-sentence note under a value's caption, keyed by value. */
+	notes?: Record<string, string>;
+}
+
+const { lang = 'en', option, group, layout = 'grid', columns = 'auto', notes } = Astro.props;
+
+// Same eager glob as MermaidCatalogItem, one directory deeper: manifest `file` values in this
+// section are `settings/<name>.png`, so the pattern has to spell that level out.
+const images = import.meta.glob<ImageMetadata>('../assets/mermaid-catalog/*/settings/*.png', {
+	eager: true,
+	import: 'default',
+});
+
+const manifests = import.meta.glob<{ scale: number }>('../assets/mermaid-catalog/*/manifest.json', {
+	eager: true,
+	import: 'default',
+});
+
+const t =
+	lang === 'ja'
+		? {
+				dflt: '既定',
+				alt: (value: string) =>
+					`同じ flowchart を konoma 自身の Mermaid レンダラで ${option} = "${value}" として描いたもの`,
+			}
+		: {
+				dflt: 'default',
+				alt: (value: string) =>
+					`The same flowchart drawn by konoma's own Mermaid renderer with ${option} = "${value}"`,
+			};
+
+const cells = group.values.map((v) => {
+	const key = `../assets/mermaid-catalog/${lang}/${v.file}`;
+	const src = images[key];
+	if (!src) throw new Error(`Mermaid catalog: no image for ${key} — re-run site_mermaid_catalog_dump`);
+	return { ...v, src, note: notes?.[v.value] };
+});
+
+// The catalog's own legibility rule, reused verbatim for the two-up row: a side-by-side column is
+// about 45% of the content column, so a diagram already wide at 1:1 would be shrunk past the point
+// where its labels can be read — above the threshold the two renders stack full width instead,
+// konoma-orthogonal on top either way because it is first in the DOM. `src.width` is the stored
+// (2×) pixel width, so dividing by the dump's scale gives the CSS-pixel width at 1:1.
+const WIDE_CSS_PX = 520;
+const scale = manifests[`../assets/mermaid-catalog/${lang}/manifest.json`]?.scale ?? 1;
+const naturalCssWidth = Math.max(...cells.map((c) => c.src.width / scale));
+// `twoUp` is deliberately a different name from the `pair` *layout*: the layout is what the page
+// asked for, `twoUp` is whether the width rule granted it. (Spelling both `pair` cost a first
+// screenshot: the layout name went out as a class of its own and matched the two-column rule
+// whatever the measurement said.)
+const twoUp = layout === 'pair' && naturalCssWidth <= WIDE_CSS_PX;
+---
+
+<div
+	class:list={[
+		'mmset not-content',
+		`layout-${layout}`,
+		{ 'two-up': twoUp, 'cols-two': columns === 'two' },
+	]}
+>
+	{
+		cells.map((c) => (
+			<figure>
+				<div class="plate">
+					<Image src={c.src} alt={t.alt(c.value)} loading="lazy" />
+				</div>
+				<figcaption>
+					<span class="val">{c.value}</span>
+					{c.value === group.default && <span class="tag">{t.dflt}</span>}
+				</figcaption>
+				{c.note && <p class="note">{c.note}</p>}
+			</figure>
+		))
+	}
+</div>
+
+<style>
+	.mmset {
+		display: grid;
+		gap: 1rem;
+		margin: 1rem 0 2rem;
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	/* Two-up row (mermaid_routing), only when the width rule above granted it: one column until
+	   there is room for two. Stacked or not, konoma-orthogonal is first in the DOM. */
+	@media (min-width: 60rem) {
+		.mmset.two-up {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+	}
+
+	/* Many-values grid (mermaid_curve, mermaid_theme): two columns on a phone, three from a
+	   tablet up. A fourth column only on a genuinely wide screen — with 13 curves, three columns
+	   keeps each cell wide enough that the *shape of the line* is still the thing you see. */
+	.mmset.layout-grid {
+		gap: 0.9rem 0.8rem;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	@media (min-width: 50rem) {
+		.mmset.layout-grid {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+		}
+	}
+	@media (min-width: 100rem) {
+		.mmset.layout-grid {
+			grid-template-columns: repeat(4, minmax(0, 1fr));
+		}
+	}
+	/* `columns="two"` opts out of all of the above — (0,3,0) beats the (0,2,0) rules whatever the
+	   source order, so it does not depend on sitting after the media queries. Used by
+	   mermaid_curve: 13 splines that differ only in the shape of a line need the cell width. */
+	.mmset.layout-grid.cols-two {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	figure {
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	/* Every plate in a row fills it, so the captions of differently shaped renders line up. */
+	.plate {
+		flex: 1;
+	}
+
+	/* Fixed dark plate, the same as the catalog's: the PNGs are transparent, drawn for a
+	   terminal's own background, so they keep a terminal-coloured ground in the light theme too. */
+	.plate {
+		background: #0d1117;
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 6px;
+		padding: 1rem;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		overflow-x: auto;
+	}
+	.mmset.layout-grid .plate {
+		padding: 0.55rem;
+	}
+	.plate :global(img) {
+		max-width: 100%;
+		height: auto;
+		display: block;
+	}
+
+	figcaption {
+		display: flex;
+		align-items: baseline;
+		justify-content: center;
+		gap: 0.4rem;
+		flex-wrap: wrap;
+		font-family: var(--konoma-mono);
+		font-variant-numeric: tabular-nums;
+		font-size: 0.78rem;
+		color: var(--sl-color-gray-3);
+		text-align: center;
+	}
+	.val {
+		color: var(--sl-color-white);
+	}
+	.tag {
+		font-size: 0.68rem;
+		letter-spacing: 0.03em;
+		padding: 0.05rem 0.35rem;
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 999px;
+		color: var(--sl-color-gray-3);
+	}
+
+	.note {
+		margin: 0;
+		font-size: 0.85rem;
+		line-height: 1.6;
+		color: var(--sl-color-gray-2);
+	}
+</style>
