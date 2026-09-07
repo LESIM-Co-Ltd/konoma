@@ -1,0 +1,88 @@
+---
+// `[ui] mermaid = "text"`: konoma's Unicode box-drawing fallback, shown as text.
+//
+// Text and not a picture on purpose — that is literally what the terminal puts on the screen in
+// that mode, so a screenshot of it would be a photograph of characters. The drawings come from
+// site/src/assets/mermaid-catalog/<lang>/text/*.txt, written by `site_mermaid_catalog_dump`
+// through `render_mermaid_file`, the same entry point a standalone `.mmd` file goes through.
+
+interface Item {
+	order: number;
+	kind: string;
+	file: string;
+}
+
+interface Props {
+	lang?: 'en' | 'ja';
+	items: Item[];
+}
+
+const { lang = 'en', items } = Astro.props;
+
+// `?raw` hands back the file's own bytes as a string, which is what a <pre> wants. Eager, like the
+// image globs, so a missing file is a build error rather than a blank block at runtime.
+const texts = import.meta.glob<string>('../assets/mermaid-catalog/*/text/*.txt', {
+	eager: true,
+	query: '?raw',
+	import: 'default',
+});
+
+const blocks = items.map((it) => {
+	const key = `../assets/mermaid-catalog/${lang}/${it.file}`;
+	const body = texts[key];
+	if (body === undefined)
+		throw new Error(`Mermaid catalog: no text for ${key} — re-run site_mermaid_catalog_dump`);
+	return { ...it, body: body.replace(/\n+$/, '') };
+});
+---
+
+<div class="mmtext not-content">
+	{
+		blocks.map((b) => (
+			<figure>
+				<figcaption>{b.kind}</figcaption>
+				<pre><code>{b.body}</code></pre>
+			</figure>
+		))
+	}
+</div>
+
+<style>
+	.mmtext {
+		display: grid;
+		gap: 1.2rem;
+		margin: 1rem 0 2rem;
+	}
+
+	figure {
+		margin: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+
+	figcaption {
+		font-family: var(--konoma-mono);
+		font-size: 0.78rem;
+		color: var(--sl-color-gray-3);
+	}
+
+	/* A terminal box: fixed dark ground in both site themes (this *is* a terminal), never wrapped
+	   — box drawing depends on every line keeping its columns — and scrolled sideways instead. */
+	pre {
+		margin: 0;
+		padding: 0.9rem 1rem;
+		background: #0d1117;
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 6px;
+		overflow-x: auto;
+	}
+	code {
+		font-family: var(--konoma-mono);
+		font-size: 0.72rem;
+		line-height: 1.25;
+		color: #e6edf3;
+		white-space: pre;
+		display: block;
+	}
+</style>

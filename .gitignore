@@ -58,5 +58,11 @@ Icon?
 /site/dist/
 /site/.astro/
 
+# mermaid カタログの画像/テキスト/manifest = konoma 自身が描く生成物
+# (テスト `site_mermaid_catalog_dump` が書き出す)。Docs ワークフローが build 前に再生成する。
+# 手元で site を建てる前に `site/scripts/gen-catalog.sh` (= npm run gen:catalog) を実行する。
+# 手作業のスクリーンショット等 site/src/assets/ の他のアセットは従来どおり追跡する。
+/site/src/assets/mermaid-catalog/
+
 # ローカルに落ちた作業スクリーンショット(公開アセットは assets/ に置く)
 /スクリーンショット*.png

@@ -2,7 +2,7 @@
 title: Files, bookmarks & tabs
 description: Filtering, file operations with a safety net, bookmarks that work from previews, tabs, and path copying.
 sidebar:
-  order: 4
+  order: 5
 ---
 
 ## Moving around
