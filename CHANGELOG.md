@@ -6,6 +6,25 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.28.5] - 2026-09-07
+
+### Fixed
+- **`konoma-orthogonal`: `flowchart RL` and `BT` drew the same picture as `LR` and `TB`.** The
+  orthogonal post-layout passes re-assign every node's flow-axis coordinate from its rank and read
+  the flow axis without its sign, so the mirroring the layout had applied for a reversed direction
+  was overwritten — and dagre's edge waypoints stayed in the mirrored space, which also bent
+  self-loops and long edges out of shape under `BT`/`RL`. The layout is now canonicalised to
+  `LR`/`TB` before those passes and mirrored back along the flow axis once, so `RL`/`BT` are the exact
+  mirror of `LR`/`TB` (cross-axis rules such as which side a branch takes are unchanged). Defaults
+  (`"splines"`) are byte-identical as always.
+
+### Changed
+- **Dependency updates**: `flate2` 1.1.10, `toml` 1.1.5, `trash` 5.2.7 (orphaned-entry handling on
+  the Cosmic desktop) and `ratatui-image` 11.0.7 (sliced-sixel raster size accounting; font size
+  from `ioctl`/environment hints when a terminal does not answer the capability query). Only
+  terminals without kitty graphics go through `ratatui-image`; konoma's own kitty transfer is
+  unchanged.
+
 ## [0.28.4] - 2026-09-06
 
 ### Added
@@ -52,14 +71,6 @@ All notable changes to konoma are documented in this file. The format is based o
   longer hide the frame's rounded corners. Defaults (`"splines"`) are byte-identical as always.
 
 ### Fixed
-- **`konoma-orthogonal`: `flowchart RL` and `BT` drew the same picture as `LR` and `TB`.** The
-  orthogonal post-layout passes re-assign every node's flow-axis coordinate from its rank and read
-  the flow axis without its sign, so the mirroring the layout had applied for a reversed direction
-  was overwritten — and dagre's edge waypoints stayed in the mirrored space, which also bent
-  self-loops and long edges out of shape under `BT`/`RL`. The layout is now canonicalised to
-  `LR`/`TB` before those passes and mirrored back along the flow axis once, so `RL`/`BT` are the exact
-  mirror of `LR`/`TB` (cross-axis rules such as which side a branch takes are unchanged). Defaults
-  (`"splines"`) are byte-identical as always.
 - **`konoma-orthogonal`: a dotted aside took a short way round that cut through the diagram
   instead of a longer one that crossed nothing.** The faces an aside leaves and enters were ranked
   by corners and length only, because every edge was routed in one pass and so no other line
@@ -2452,7 +2463,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.4...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.5...HEAD
+[0.28.5]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.4...v0.28.5
 [0.28.4]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.3...v0.28.4
 [0.28.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.2...v0.28.3
 [0.28.2]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.1...v0.28.2
