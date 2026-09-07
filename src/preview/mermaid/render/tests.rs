@@ -9739,18 +9739,32 @@ fn site_mermaid_catalog_dump() {
                 );
             }
 
-            // Per-diagram overrides go on the *first* flowchart only: they are one point about
-            // precedence, and repeating them on every sample would multiply the page's download
-            // for nothing.
-            //
-            // **A flowchart `direction` block is deliberately not written here.** It was built and
-            // then withdrawn: under `konoma-orthogonal` this renderer draws `RL` byte-identically
-            // to `LR` and `BT` byte-identically to `TB`, so a four-cell grid captioned
-            // LR/TB/RL/BT would be two pairs of duplicates presented as four pictures. The defect
-            // and its cause are recorded in
-            // [`catalog_flowchart_rl_and_bt_are_mirrored_under_orthogonal`]; the state diagram's
-            // own direction pair below is unaffected and does ship.
+            // Both a flowchart `direction` block and the per-diagram overrides go on the *first*
+            // flowchart only: each is one point (routing is direction-agnostic; a diagram can
+            // override the curve from inside its own source), and repeating either on every sample
+            // would multiply the page's download for nothing.
             if is_flow && order == 1 {
+                // konoma-orthogonal's post-dagre passes used to key on the flow *axis* without its
+                // *sign*, so `RL` rendered byte-identical to `LR` and `BT` to `TB` — fixed by the
+                // mirror rule `super::canonicalise_flow_axis` / `super::mirror_flow_axis` names
+                // (`orthogonal_rl_is_the_exact_mirror_of_lr` / `orthogonal_bt_is_the_exact_mirror_
+                // of_tb` pin it permanently), so all four directions are genuinely four pictures now.
+                let directions: Vec<_> = CATALOG_FLOW_DIRECTIONS
+                    .iter()
+                    .map(|d| {
+                        shot_src(
+                            "direction",
+                            d,
+                            &with_flow_direction(code, d),
+                            "konoma-orthogonal",
+                        )
+                    })
+                    .collect();
+                block.insert(
+                    "direction".into(),
+                    serde_json::json!({ "default": "LR", "values": directions }),
+                );
+
                 let overrides: Vec<_> = CATALOG_OVERRIDES
                     .iter()
                     .map(|(stem, line, prepend)| {
@@ -10040,16 +10054,17 @@ fn catalog_settings_values_really_change_the_picture() {
 }
 
 /// Every direction the catalog's "Direction" block draws still obeys the orthogonal rules, and the
-/// two directions the block can honestly ship do change the picture.
+/// picture matches what the page's own sentence claims: `RL` is the exact mirror of `LR`, `BT` is
+/// the exact mirror of `TB`, and `LR` genuinely differs from `TB` — turning the flow axis is the
+/// half of `rankdir` the orthogonal path reads.
 ///
-/// Stated with the very helper `orthogonal_routing_draws_only_axis_parallel_segments` uses
-/// ([`check_only_axis_parallel_segments`]) rather than a private re-derivation. `orthogonal_corpus`
-/// already carries all four directions, but on *its own* sources; this pins the claim on the source
-/// the page actually prints under that sentence.
-///
-/// The block's other half — "all four directions draw a different picture" — is
-/// [`catalog_flowchart_rl_and_bt_are_mirrored_under_orthogonal`], `#[ignore]`d because it does not
-/// hold today. See that test for the defect.
+/// Stated with the very helpers the general corpus uses rather than a private re-derivation:
+/// [`check_only_axis_parallel_segments`] (also used by
+/// `orthogonal_routing_draws_only_axis_parallel_segments`) for the axis-parallel claim, and
+/// [`assert_mirrored_diagrams`] — the same mirror check [`orthogonal_rl_is_the_exact_mirror_of_lr`]
+/// and [`orthogonal_bt_is_the_exact_mirror_of_tb`] state over the general corpus — for the mirror
+/// claim. `orthogonal_corpus` and that corpus already carry all four directions, but on *their own*
+/// sources; this pins the same claims on the source the page actually prints them under.
 #[test]
 fn catalog_direction_renders_obey_the_orthogonal_rules() {
     if !text_metrics::fonts_available() {
@@ -10066,13 +10081,14 @@ fn catalog_direction_renders_obey_the_orthogonal_rules() {
         "the direction block is built on the first fence, which must still be a flowchart"
     );
 
+    // `CATALOG_FLOW_DIRECTIONS` is `["LR", "TB", "RL", "BT"]` — the catalog's own printed order —
+    // so index 0/2 is the LR/RL pair and 1/3 is the TB/BT pair.
+    let mut laid_out: Vec<(&str, Diagram)> = Vec::new();
     let mut drawn: Vec<(&str, String)> = Vec::new();
     for direction in CATALOG_FLOW_DIRECTIONS {
         let src = with_flow_direction(code, direction);
-        check_only_axis_parallel_segments(
-            &format!("catalog direction {direction}"),
-            &laid_out_flow(&src, "basis", "konoma-orthogonal"),
-        );
+        let diagram = laid_out_flow(&src, "basis", "konoma-orthogonal");
+        check_only_axis_parallel_segments(&format!("catalog direction {direction}"), &diagram);
         let svg = crate::preview::markdown::mermaid_to_svg_flow(
             &src,
             "dark",
@@ -10080,18 +10096,31 @@ fn catalog_direction_renders_obey_the_orthogonal_rules() {
             "konoma-orthogonal",
         )
         .unwrap_or_else(|| panic!("direction={direction}: must render"));
+        laid_out.push((direction, diagram));
         drawn.push((direction, svg));
     }
-    // The one flowchart pair that is genuinely two pictures today — LR turns the flow axis, which
-    // is the half of `rankdir` the orthogonal path does read.
+    // LR turns the flow axis relative to TB, which is the half of `rankdir` the orthogonal path
+    // does read — the two are genuinely different pictures.
     assert_ne!(
         drawn[0].1, drawn[1].1,
         "LR and TB must draw differently under konoma-orthogonal"
     );
+    // The reversal itself: `RL` is `LR` reflected along the flow axis, and `BT` is `TB` reflected —
+    // the exact sentence the page prints under the grid.
+    assert_mirrored_diagrams(
+        "catalog direction LR/RL",
+        &laid_out[0].1,
+        &laid_out[2].1,
+        false,
+    );
+    assert_mirrored_diagrams(
+        "catalog direction TB/BT",
+        &laid_out[1].1,
+        &laid_out[3].1,
+        true,
+    );
 
-    // The state diagram's own half: `direction LR` must move it off the default TB. This one does
-    // hold — a state diagram goes through `state::render_flow`, not the flowchart path the defect
-    // below lives on.
+    // The state diagram's own half: `direction LR` must move it off the default TB.
     let state = fences
         .iter()
         .find(|c| crate::preview::mermaid::state::is_state_diagram(c))
@@ -10114,44 +10143,6 @@ fn catalog_direction_renders_obey_the_orthogonal_rules() {
         by_dir[0].1, by_dir[1].1,
         "a state diagram's `direction LR` must draw differently from the default TB"
     );
-}
-
-/// **Known defect, found while building the catalog's direction block (2026-09-07).** Under
-/// `[ui] mermaid_routing = "konoma-orthogonal"` a flowchart's `RL` renders **byte-identical** to
-/// `LR`, and `BT` byte-identical to `TB` — the reversal is silently dropped. Under `"splines"` all
-/// four are correct (measured: `RL` puts `Key press` at x≈658 and `Redraw` at x≈62, the mirror of
-/// `LR`; under `"konoma-orthogonal"` both give `Key press` x≈50 and `Redraw` x≈637).
-///
-/// Cause, from the coordinates rather than from reading alone: the orthogonal path re-assigns every
-/// node's flow-axis position from its rank (`lay_out_spec`'s `column_flow` cursor in `render/mod.rs`,
-/// the loop that ends `Direction::TopToBottom | Direction::BottomToTop => node.y = Some(flow_pos)`).
-/// That cursor only ever increases, and the `match` picks the flow *axis* without ever looking at
-/// its *sign*, so whatever mirroring dagre's `coordinate_system::undo` applied for `BT`/`RL` is
-/// overwritten. It is one rule, missing in one place — but it moves geometry in the mode that is
-/// pinned to the §10 design references, so it is recorded rather than patched here.
-///
-/// `#[ignore]`d deliberately: this is the shape `docs/STATUS.md`'s ★未修正 entries take, and the
-/// alternative — asserting the current behaviour — would pin a bug as if it were the specification.
-#[test]
-#[ignore = "known defect: konoma-orthogonal drops a flowchart's RL/BT reversal (see doc comment)"]
-fn catalog_flowchart_rl_and_bt_are_mirrored_under_orthogonal() {
-    let sample = FsPath::new(env!("CARGO_MANIFEST_DIR")).join("samples/mermaid.md");
-    let md = std::fs::read_to_string(&sample).unwrap_or_else(|e| panic!("read {sample:?}: {e}"));
-    let code = mermaid_fences_of(&md)
-        .first()
-        .expect("samples/mermaid.md must still open with a fence")
-        .clone();
-    let draw = |d: &str| {
-        crate::preview::markdown::mermaid_to_svg_flow(
-            &with_flow_direction(&code, d),
-            "dark",
-            "basis",
-            "konoma-orthogonal",
-        )
-        .unwrap_or_else(|| panic!("direction={d}: must render"))
-    };
-    assert_ne!(draw("LR"), draw("RL"), "RL must mirror LR");
-    assert_ne!(draw("TB"), draw("BT"), "BT must mirror TB");
 }
 
 /// The catalog's "Overrides written in the diagram" block claims two things that are easy to write

@@ -77,6 +77,16 @@ Mermaid 関連の設定は[設定リファレンス](../../reference/configurati
 
 <MermaidSettingGrid lang="ja" role="routing" group={s01.routing} notes={routingNotes} />
 
+#### 向き
+
+flowchart はヘッダの語で向きを指定します（`flowchart LR` / `TB` / `RL` / `BT`）。
+配線の規則はどの向きでも同じです — `RL` と `BT` はそれぞれ `LR` と `TB` を流れの
+軸に沿って鏡映しにしたもので、分岐がどちら側に出るかは変わりません。
+konoma-orthogonal の設計参照 `2b` と `2c` が同じグラフの LR 版と TB 版なのは、
+まさにそのためです。
+
+<MermaidSettingGrid lang="ja" role="direction" group={s01.direction} />
+
 #### `mermaid_curve`
 
 <MermaidSettingGrid lang="ja" role="curve" group={s01.curve} />
