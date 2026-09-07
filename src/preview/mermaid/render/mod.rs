@@ -1450,6 +1450,14 @@ fn lay_out_spec_pass(
         }),
     );
 
+    // Everything below runs in the **canonical orientation** (`docs/FEATURE-MERMAID-RENDERER.md`
+    // §10; [`canonicalise_flow_axis`]'s own doc): downstream is a larger flow coordinate, which is
+    // what `LR`/`TB` already are and what `BT`/`RL` become here. [`mirror_flow_axis`], at the end of
+    // this function, is the single place the reflection is undone.
+    if spec.routing == Routing::Orthogonal {
+        canonicalise_flow_axis(&mut g, spec.direction);
+    }
+
     // §10-3 item 8 ("ファン先は同一ランクに整列する", `docs/FEATURE-MERMAID-RENDERER.md`) —
     // `Routing::Orthogonal` only. See that function's doc for the full reasoning; in short, it throws
     // dagre's own rank numbers away and recomputes every node's rank and flow-axis position from
@@ -2249,6 +2257,13 @@ fn lay_out_spec_pass(
         clusters: placed_clusters,
         lifelines: Vec::new(),
     };
+    // The one place `BT`/`RL` stop being `TB`/`LR`: every pass above ran in the canonical
+    // orientation [`canonicalise_flow_axis`] established, and the finished geometry is reflected
+    // back once, here. `normalise` immediately after is what puts the reflected drawing back at
+    // `MARGIN` — so this only has to negate, never to know the diagram's own size.
+    if spec.routing == Routing::Orthogonal {
+        mirror_flow_axis(&mut diagram, spec.direction);
+    }
     normalise(&mut diagram);
     Ok((diagram, required_size, label_shortfall))
 }
@@ -3810,6 +3825,195 @@ fn normalise(diagram: &mut Diagram) {
     }
     diagram.width = (max_x - min_x) + MARGIN * 2.0;
     diagram.height = (max_y - min_y) + MARGIN * 2.0;
+}
+
+/// Whether the flow axis is **vertical** — `y` for `TB`/`BT`, `x` for `LR`/`RL`. The axis half of
+/// the direction, with no sign in it; [`flow_axis_is_reversed`] is the sign half.
+fn flow_axis_is_vertical(direction: Direction) -> bool {
+    matches!(direction, Direction::TopToBottom | Direction::BottomToTop)
+}
+
+/// Whether the flow runs **backwards along that axis on screen** — `BT` and `RL`, the two
+/// directions whose downstream end is at a *smaller* coordinate.
+///
+/// This is the sign every `match` on `TopToBottom | BottomToTop` / `LeftToRight | RightToLeft`
+/// deliberately does not carry: those arms pick an *axis*, and an axis has no direction. Naming the
+/// sign separately, in one place, is what lets [`canonicalise_flow_axis`] and [`mirror_flow_axis`]
+/// be the only two functions in the orthogonal pipeline that ever have to know it.
+fn flow_axis_is_reversed(direction: Direction) -> bool {
+    matches!(direction, Direction::BottomToTop | Direction::RightToLeft)
+}
+
+/// Reflects dagre's own output along the flow axis for `BT`/`RL`, so that every pass after it runs
+/// in the **canonical orientation**: downstream is a *larger* flow coordinate.
+///
+/// # Why the passes need this
+///
+/// `docs/FEATURE-MERMAID-RENDERER.md` §10's rules are written flow-relative — "分岐は流れ方向の辺"
+/// (§10-3 item 1), "合流は…流れ方向の面（左辺）" (item 10), §10-5 S1's own "TB: 開始は下極" — and the
+/// code that implements them reads the flow axis through helpers that select an axis and not a
+/// direction (`orthogonal::flow`, `orthogonal::flow_face`, [`cross_of`]/[`flow_of`] here). That
+/// is only sound if "further downstream" and "larger coordinate" mean the same thing, which
+/// `orthogonal::flow_face`'s own doc states as a standing assumption. `LR` and `TB` satisfy it.
+/// `BT` and `RL` do not: `layout::coordinate_system::undo` negates the flow axis for exactly those
+/// two, which is what makes the picture come out mirrored in the first place.
+///
+/// Reflecting once, here, restores the assumption for all four directions instead of threading a
+/// sign through some forty axis-selecting `match` arms — where a missed one is silent, and where
+/// the *cross*-axis rules that are stated in absolute screen terms ("非幹の枝は上から宣言順",
+/// §10-5 S3's "自己遷移は LR: 上辺／TB: 右辺", a tie broken "上・左優先") would each have to opt back
+/// out of it. A reflection of the flow axis alone leaves every one of those literally true, because
+/// it never touches the cross axis.
+///
+/// # Why the pivot is the bounding box
+///
+/// Any pivot leaves the geometry congruent, which is all the passes need. This one uses the exact
+/// box `layout::translate_graph` measured a moment earlier — node boxes, plus the edge-label
+/// boxes whose position is set — so the reflection maps that box onto itself and reproduces the
+/// mirror-image direction's coordinates *exactly*, not merely up to a translation: `RL` becomes
+/// byte-for-byte the `LR` layout of the same source, and `BT` the `TB` one.
+///
+/// # Why the waypoints, not just the nodes
+///
+/// [`pull_back_fan_ranks`] already rewrites every real node's flow coordinate from scratch, so
+/// before this existed the nodes alone came out canonical — which is why `BT`/`RL` rendered
+/// *identically* to `TB`/`LR` rather than obviously broken. dagre's own edge waypoints
+/// (`EdgeLabel::points`, read back as `PreparedEdge::raw` and used by `orthogonal`'s self-loop and
+/// staircase shapes) were left in the mirrored space, so the two disagreed: measured on the
+/// `self-loop` corpus source, `A --> A`'s loop under `BT` was drawn around `B`'s box (y 88–130)
+/// while `A` sat at y 26. Both halves are reflected together here, which is the whole of what
+/// "canonical orientation" has to mean.
+fn canonicalise_flow_axis(g: &mut Graph<NodeLabel, EdgeLabel>, direction: Direction) {
+    if !flow_axis_is_reversed(direction) {
+        return;
+    }
+    let vertical = flow_axis_is_vertical(direction);
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut grow = |center: f64, extent: f64| {
+        lo = lo.min(center - extent / 2.0);
+        hi = hi.max(center + extent / 2.0);
+    };
+    for v in g.nodes() {
+        let Some(n) = g.node(&v) else { continue };
+        // Both coordinates, the way `translate_graph` reads them: a node with only one set is one
+        // dagre never positioned, and its other axis measures nothing.
+        let (Some(x), Some(y)) = (n.x, n.y) else {
+            continue;
+        };
+        if vertical {
+            grow(y, n.height);
+        } else {
+            grow(x, n.width);
+        }
+    }
+    for e in g.edges() {
+        let Some(l) = g.edge(&e.v, &e.w, e.name.as_deref()) else {
+            continue;
+        };
+        let (Some(x), Some(y)) = (l.x, l.y) else {
+            continue;
+        };
+        if vertical {
+            grow(y, l.height);
+        } else {
+            grow(x, l.width);
+        }
+    }
+    if !lo.is_finite() {
+        return;
+    }
+
+    let pivot = lo + hi;
+    for v in g.nodes() {
+        let Some(n) = g.node_mut(&v) else { continue };
+        let c = if vertical { &mut n.y } else { &mut n.x };
+        if let Some(c) = c.as_mut() {
+            *c = pivot - *c;
+        }
+    }
+    for e in g.edges() {
+        let Some(l) = g.edge_mut(&e.v, &e.w, e.name.as_deref()) else {
+            continue;
+        };
+        if vertical {
+            if let Some(y) = l.y.as_mut() {
+                *y = pivot - *y;
+            }
+            for p in &mut l.points {
+                p.y = pivot - p.y;
+            }
+        } else {
+            if let Some(x) = l.x.as_mut() {
+                *x = pivot - *x;
+            }
+            for p in &mut l.points {
+                p.x = pivot - p.x;
+            }
+        }
+    }
+}
+
+/// Reflects a finished diagram along the flow axis for `BT`/`RL` — the inverse of
+/// [`canonicalise_flow_axis`], and the one place the two directions stop being `TB`/`LR`.
+///
+/// Runs immediately before [`normalise`], and touches exactly the geometry `normalise` translates,
+/// for the same reason: those are the coordinates that end up drawn. Negation is enough — the
+/// drawing lands wherever it lands and `normalise` puts it back at [`MARGIN`], which works out to
+/// `width - x` (or `height - y`) for every coordinate, an exact mirror of the same source laid out
+/// `LR` (or `TB`).
+///
+/// **The flow axis only.** Every §10 rule about the *cross* axis is stated in absolute screen terms
+/// — a self-transition uses `LR`'s top face and `TB`'s right face (§10-5 S3), a fan's non-trunk
+/// branches pack top-down in declaration order (§10-3 item 11), a dead-end tier hangs off whichever
+/// side of the trunk is emptier — and a reflection of the flow axis leaves all of them exactly as
+/// they were.
+///
+/// **Text is not reflected**, only where it sits: a label's `center` moves, its glyphs do not. Node
+/// and cluster boxes are reflected by their centres, which is the same thing for a rectangle.
+///
+/// [`PlacedNode::mark`], [`PlacedCluster::sections`] and [`Diagram::lifelines`] are not touched
+/// because [`lay_out_spec_pass`] cannot produce them: a `Mark` belongs to a pie/sankey/journey/
+/// block/radar glyph, sections to a sequence diagram's `else`, and this function builds `lifelines`
+/// as an empty vector two lines above its own call site. Only a flowchart and a state diagram ever
+/// reach `Routing::Orthogonal` (`GraphSpec::routing`'s own doc), and neither has any of the three.
+fn mirror_flow_axis(diagram: &mut Diagram, direction: Direction) {
+    if !flow_axis_is_reversed(direction) {
+        return;
+    }
+    let vertical = flow_axis_is_vertical(direction);
+    let flip = |p: &Point| {
+        if vertical {
+            Point::new(p.x, -p.y)
+        } else {
+            Point::new(-p.x, p.y)
+        }
+    };
+    for n in &mut diagram.nodes {
+        n.center = flip(&n.center);
+    }
+    for c in &mut diagram.clusters {
+        c.center = flip(&c.center);
+    }
+    for e in &mut diagram.edges {
+        for p in &mut e.points {
+            *p = flip(p);
+        }
+        for (a, b) in &mut e.gaps {
+            *a = flip(a);
+            *b = flip(b);
+        }
+        for l in [
+            &mut e.label,
+            &mut e.start_label,
+            &mut e.end_label,
+            &mut e.badge,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            l.center = flip(&l.center);
+        }
+    }
 }
 
 /// mermaid's direction keyword as dagre's `rankdir`.

@@ -1027,12 +1027,21 @@ fn orthogonal_only_corpus() -> Vec<(&'static str, &'static str)> {
 /// [`CASES`] plus [`orthogonal_design_reference_corpus`] plus [`orthogonal_only_corpus`] — every
 /// orthogonal invariant that has to see the design-reference sources iterates this rather than any
 /// one part alone.
+///
+/// Also chains [`orthogonal_reversed_direction_corpus`] — the sample and the three design
+/// references in all four directions, so `RL` and `BT` are checked by every invariant here and not
+/// only by the two mirror tests at the end of this file.
 fn orthogonal_full_corpus() -> Vec<(&'static str, &'static str)> {
     CASES
         .iter()
         .copied()
         .chain(orthogonal_design_reference_corpus())
         .chain(orthogonal_only_corpus())
+        .chain(
+            orthogonal_reversed_direction_corpus()
+                .iter()
+                .map(|(name, src)| (name.as_str(), src.as_str())),
+        )
         .collect()
 }
 
@@ -3132,5 +3141,151 @@ fn orthogonal_state_boxes_follow_n1_at_every_nesting_depth() {
     assert!(
         nested > 5,
         "the corpus must actually contain nested states: only {nested} seen"
+    );
+}
+
+// =============================================================================================
+// `direction`'s **sign** for a state diagram — `RL` is `LR` mirrored, `BT` is `TB` mirrored
+// (`docs/FEATURE-MERMAID-RENDERER.md` §10-5; `super::canonicalise_flow_axis`/`super::
+// mirror_flow_axis`). The flowchart half of this is `tests`'s own section of the same name.
+// =============================================================================================
+
+/// `samples/mermaid.md`'s own `stateDiagram-v2`, byte-for-byte — the sample the coordinator names,
+/// kept as a source here for the same reason `tests::SAMPLE_FIRST_FLOWCHART` is.
+const SAMPLE_STATE_DIAGRAM: &str =
+    "stateDiagram-v2\n  [*] --> Tree\n  Tree --> Preview : Enter\n  \
+     Preview --> Tree : q\n  state Preview {\n    [*] --> Decoding\n    \
+     Decoding --> Ready : image arrives\n  }\n  Tree --> [*] : Q";
+
+/// The same source laid out in `direction` — **appended**, not substituted.
+///
+/// A state diagram's direction is a statement rather than a header word, and the parser keeps the
+/// last *top-level* one it reads (`state::parser`'s own `direction_statement` arm: it assigns
+/// unconditionally when `stack.len() == 1`, and a `direction` written inside a block is read and
+/// deliberately ignored). So one line at the end settles the whole diagram's axis without having
+/// to find, and correctly scope, whatever `direction` the source may already carry — `zz-design-4b`
+/// carries its own `direction LR`, and `4a`/`4c` carry none.
+pub(super) fn state_with_direction(src: &str, direction: &str) -> String {
+    let out = format!("{src}\n  direction {direction}");
+    assert_eq!(
+        state::parse(&out)
+            .expect("a state fixture parses")
+            .direction,
+        crate::preview::mermaid::flowchart::Direction::parse(direction)
+            .expect("a direction keyword this module wrote itself"),
+        "appending `direction {direction}` has to be what the parser ends up with"
+    );
+    out
+}
+
+/// The sources the state-diagram mirror is stated over: the sample above and round 4's own three
+/// design references.
+fn direction_fixture_sources() -> Vec<(&'static str, &'static str)> {
+    std::iter::once(("sample-state-diagram", SAMPLE_STATE_DIAGRAM))
+        .chain(orthogonal_design_reference_corpus())
+        .collect()
+}
+
+/// [`direction_fixture_sources`] in all four directions, chained into [`orthogonal_full_corpus`] so
+/// every §10-5 invariant runs on the reversed half of each axis too — derived from the sources
+/// rather than copied, for the reason `tests::orthogonal_reversed_direction_corpus`'s own doc gives.
+fn orthogonal_reversed_direction_corpus() -> &'static [(String, String)] {
+    static CACHE: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (name, src) in direction_fixture_sources() {
+            for direction in ["LR", "RL", "TB", "BT"] {
+                out.push((
+                    format!("{name}-{direction}"),
+                    state_with_direction(src, direction),
+                ));
+            }
+        }
+        out
+    })
+}
+
+/// §10-5 under `RL`: the same drawing as `LR`, reflected along x — a start marker's own pole port
+/// (S1), a self-transition's fixed cross-axis face (S3) and a fork/join bar's ports (S4) included.
+#[test]
+fn orthogonal_state_rl_is_the_exact_mirror_of_lr() {
+    for (name, src) in direction_fixture_sources() {
+        let lr = lay_out(
+            &state::parse(&state_with_direction(src, "LR")).expect("parses"),
+            Routing::Orthogonal,
+        )
+        .expect("lays out");
+        let rl = lay_out(
+            &state::parse(&state_with_direction(src, "RL")).expect("parses"),
+            Routing::Orthogonal,
+        )
+        .expect("lays out");
+        super::tests::assert_mirrored_diagrams(&format!("{name} LR/RL"), &lr, &rl, false);
+    }
+}
+
+/// §10-5 under `BT`: the same drawing as `TB`, reflected along y.
+#[test]
+fn orthogonal_state_bt_is_the_exact_mirror_of_tb() {
+    for (name, src) in direction_fixture_sources() {
+        let tb = lay_out(
+            &state::parse(&state_with_direction(src, "TB")).expect("parses"),
+            Routing::Orthogonal,
+        )
+        .expect("lays out");
+        let bt = lay_out(
+            &state::parse(&state_with_direction(src, "BT")).expect("parses"),
+            Routing::Orthogonal,
+        )
+        .expect("lays out");
+        super::tests::assert_mirrored_diagrams(&format!("{name} TB/BT"), &tb, &bt, true);
+    }
+}
+
+/// The sample state diagram's own `LR` and `TB` are **two different layouts**, and the mirror does
+/// not make either of them the other.
+///
+/// This is the half of the statement the two mirror tests above cannot make: they would both pass
+/// on an implementation that collapsed all four directions into one drawing, which is exactly the
+/// bug that was there. `Tree` and `Preview` sit on the axis the direction names, so a diagram laid
+/// out `LR` is wider than it is tall and a `TB` one is not.
+#[test]
+fn orthogonal_state_lr_and_tb_stay_two_different_layouts() {
+    let lr = lay_out(
+        &state::parse(&state_with_direction(SAMPLE_STATE_DIAGRAM, "LR")).expect("parses"),
+        Routing::Orthogonal,
+    )
+    .expect("lays out");
+    let tb = lay_out(
+        &state::parse(&state_with_direction(SAMPLE_STATE_DIAGRAM, "TB")).expect("parses"),
+        Routing::Orthogonal,
+    )
+    .expect("lays out");
+    let flow_gap = |d: &Diagram, vertical: bool| {
+        let of = |id: &str| {
+            let n = d.nodes.iter().find(|n| n.id == id).expect("state exists");
+            if vertical {
+                n.center.y
+            } else {
+                n.center.x
+            }
+        };
+        of("Decoding") - of("Tree")
+    };
+    assert!(
+        flow_gap(&lr, false) > 0.0,
+        "LR runs the flow along x: Decoding sits to the right of Tree"
+    );
+    assert!(
+        flow_gap(&tb, true) > 0.0,
+        "TB runs the flow along y: Decoding sits below Tree"
+    );
+    assert!(
+        lr.width > lr.height && tb.height > tb.width,
+        "the two directions are two layouts: LR came out {}x{} and TB {}x{}",
+        lr.width,
+        lr.height,
+        tb.width,
+        tb.height
     );
 }

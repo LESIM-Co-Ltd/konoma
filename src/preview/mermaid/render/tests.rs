@@ -48,9 +48,10 @@ use super::svg::num;
 use super::theme::{self, Theme};
 use super::{
     lay_out, lay_out_curve, lay_out_flow, orthogonal, render, render_curve, render_flow, Curve,
-    Diagram, PlacedCluster, PlacedEdge, PlacedNode, RenderError, Routing, Tip, MARGIN,
+    Diagram, PlacedCluster, PlacedEdge, PlacedEdgeLabel, PlacedNode, RenderError, Routing, Tip,
+    MARGIN,
 };
-use crate::preview::mermaid::flowchart::{parse, Arrow, Shape, Stroke};
+use crate::preview::mermaid::flowchart::{parse, Arrow, Direction, Shape, Stroke};
 use crate::preview::mermaid::layout::Point;
 use crate::preview::mermaid::text_metrics;
 use crate::preview::svg::shared_fontdb;
@@ -9290,10 +9291,20 @@ fn orthogonal_design_reference_corpus() -> Vec<(&'static str, &'static str)> {
 /// 2026-09-02) iterates this rather than either half alone. Deliberately does **not** also chain
 /// in [`orthogonal_only_corpus`] — see that function's own doc for why folding it in is scope
 /// creep this list does not want.
+///
+/// Also chains [`orthogonal_reversed_direction_corpus`] — the same design references, and the two
+/// direction fixtures, laid out in the direction that reverses each one's own. Every invariant
+/// below was written over `LR`/`TB` sources only, which is how `RL`/`BT` went unchecked long
+/// enough to render as `LR`/`TB` outright.
 fn orthogonal_full_corpus() -> Vec<(&'static str, &'static str)> {
     orthogonal_corpus()
         .into_iter()
         .chain(orthogonal_design_reference_corpus())
+        .chain(
+            orthogonal_reversed_direction_corpus()
+                .iter()
+                .map(|(name, src)| (name.as_str(), src.as_str())),
+        )
         .collect()
 }
 
@@ -13523,6 +13534,560 @@ fn orthogonal_no_node_text_overflows_its_own_box() {
                 n.id,
                 n.label.lines.len(),
                 n.size.h
+            );
+        }
+    }
+}
+
+// =============================================================================================
+// `direction`'s **sign** — `RL` is `LR` mirrored, `BT` is `TB` mirrored
+// (`docs/FEATURE-MERMAID-RENDERER.md` §10; `super::canonicalise_flow_axis`/`super::
+// mirror_flow_axis`)
+//
+// Under `konoma-orthogonal` all four directions used to come out of the same two layouts: every
+// post-dagre pass keys on the flow *axis* without its *sign*, and `pull_back_fan_ranks` rewrote
+// every node's flow coordinate as "ascending with rank" for all four — so `RL` rendered
+// byte-identical to `LR` and `BT` to `TB` (measured on the sample flowchart: `Key press` at x=50.4
+// and `Redraw` at x=636.6 under both `LR` and `RL`, where splines puts them at 50.4/645.9 and
+// 657.6/62.1 — a real mirror). dagre's own edge waypoints were *not* rewritten, so the eight corpus
+// sources with a self-loop or a staircase fallback came out worse than identical: `self-loop`'s own
+// `A --> A` under `BT` was drawn around `B`'s box (y 88-130) while `A` sat at y 26.
+// =============================================================================================
+
+/// `samples/mermaid.md`'s **first** flowchart, byte-for-byte — the diagram the direction bug was
+/// found on, kept here as a source rather than read off disk for the same reason
+/// [`SETTINGS_RULES_SAMPLE`] is: several tests below need this exact string, and a fixture nobody
+/// can diff against the sample is worse than one copy of it.
+const SAMPLE_FIRST_FLOWCHART: &str = "flowchart LR\n  K([Key press]) --> S{Which surface?}\n  \
+     S -->|Tree| M[Move or open]\n  S -->|Preview| P[Scroll or search]\n  M --> R[Redraw]\n  \
+     P --> R";
+
+/// One source carrying every shape whose §10 rule is stated **flow-relative** and therefore has to
+/// mirror, so that a mirror test over it is not just a test of ordinary boxes and straight lines:
+///
+/// * a **fan** wide enough for §10-3 item 1's own multi-branch regime (five branches, past
+///   `orthogonal::FAN_ELIGIBLE_MIN_BRANCHES`), whose ports go on the source's *flow-direction* face;
+/// * the **merge** back onto one target, whose ports go on that target's own *upstream* flow face
+///   (§10-3 item 10) — the face that is the left one under `LR` and the right one under `RL`;
+/// * an **aside** (`-.->`, `render::is_aside`) that is also a **back edge**, so the outer perimeter
+///   lane (§10-1 item 4) is in the picture;
+/// * a **self-loop**, the one shape still drawn from dagre's own waypoints
+///   (`orthogonal::route_staircase_with_ports`) and so the one that catches a waypoint set left
+///   behind in the un-mirrored space;
+/// * a **dead-end tier** — a block whose members are all dead ends fed from the trunk and which the
+///   trunk does not itself run through (`orthogonal::place_dead_end_tiers`), whose side is chosen on
+///   the *cross* axis and must therefore come out on the **same** side under both directions;
+/// * **edge labels**, so the label plates and their §10-1 item 3 minimum segment lengths are in it.
+const FAN_MERGE_ASIDE_TIER: &str = "flowchart LR\n  A[入力] --> D{振り分け}\n  \
+     D -->|1| B1[枝一]\n  D -->|2| B2[枝二]\n  D -->|3| B3[枝三]\n  D -->|4| B4[枝四]\n  \
+     D -->|5| B5[枝五]\n  B1 --> M[合流]\n  B2 --> M\n  B3 --> M\n  B4 --> M\n  B5 --> M\n  \
+     M --> Z[出力]\n  subgraph T[控え]\n    T1[記録]\n    T2[計測]\n  end\n  M --> T1\n  \
+     M --> T2\n  Z -.->|再試行| A\n  Z --> Z";
+
+/// The sources [`orthogonal_rl_is_the_exact_mirror_of_lr`] and its `BT` sibling state the mirror
+/// over — the two above plus [`SETTINGS_RULES_SAMPLE`], the twenty-node sample §10-3 was written
+/// against, because a source this size is where a pass that silently drops the sign shows up.
+fn direction_fixture_sources() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("sample-first-flowchart", SAMPLE_FIRST_FLOWCHART),
+        ("fan-merge-aside-tier", FAN_MERGE_ASIDE_TIER),
+        ("settings-rules-sample", SETTINGS_RULES_SAMPLE),
+    ]
+}
+
+/// [`direction_fixture_sources`], minus the ones whose **`TB` form** trips a corpus-wide invariant
+/// for a reason that has nothing to do with `direction`.
+///
+/// [`SETTINGS_RULES_SAMPLE`] is the one: it is authored `LR` (and is drawn `LR` everywhere it is
+/// used), and laying the same graph out `TB` puts `設定のルール`'s own `Markdown` label plate over
+/// the neighbouring `画像` edge, and orders two of `ラスタライズ`'s merge hop legs widest-last.
+/// Both reproduce with the flow-axis mirror disabled — they are pre-existing `TB` layout faults
+/// this task did not introduce and is not scoped to fix (recorded rather than papered over; the
+/// mirror tests above still run this source in all four directions, and it mirrors exactly).
+fn direction_corpus_sources() -> Vec<(&'static str, &'static str)> {
+    direction_fixture_sources()
+        .into_iter()
+        .filter(|(name, _)| *name != "settings-rules-sample")
+        .collect()
+}
+
+/// The same source with its header's `direction` keyword replaced — `flowchart LR` into
+/// `flowchart RL`, and so on. Panics rather than returning an `Option`: every caller is a test with
+/// a source it wrote itself, so a header this cannot read is a mistake in the test, not a case to
+/// skip silently.
+pub(super) fn flowchart_with_direction(src: &str, direction: &str) -> String {
+    let (head, rest) = src.split_once('\n').unwrap_or((src, ""));
+    let mut words = head.split_whitespace();
+    let kind = words
+        .next()
+        .filter(|w| matches!(*w, "flowchart" | "graph"))
+        .unwrap_or_else(|| {
+            panic!("a flowchart fixture starts with `flowchart` or `graph`: {head}")
+        });
+    assert!(
+        words
+            .next()
+            .is_none_or(|w| matches!(w, "TB" | "TD" | "BT" | "LR" | "RL")),
+        "a flowchart fixture's header carries nothing but a direction: {head}"
+    );
+    format!("{kind} {direction}\n{rest}")
+}
+
+/// [`direction_corpus_sources`] in all four directions, plus every
+/// [`orthogonal_design_reference_corpus`] source in the direction that reverses its own — chained
+/// into [`orthogonal_full_corpus`], so every corpus-wide invariant (axis-parallel segments,
+/// perpendicular entry, no puncture, no crossing, frames holding their members…) runs over the
+/// reversed half of each axis too, which before the mirror existed nothing did.
+///
+/// **Derived, not copied.** Writing `flowchart RL` variants out by hand would be four more
+/// near-duplicates of sources that already have one near-duplicate each (`2b`/`2c` are the same
+/// graph in `LR` and `TB`), and a hand copy drifts from the source it mirrors the first time either
+/// is edited. Built once into a [`OnceLock`] so the borrowed `&'static str`s outlive every caller.
+///
+/// [`OnceLock`]: std::sync::OnceLock
+fn orthogonal_reversed_direction_corpus() -> &'static [(String, String)] {
+    static CACHE: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (name, src) in direction_corpus_sources() {
+            for direction in ["LR", "RL", "TB", "BT"] {
+                out.push((
+                    format!("{name}-{direction}"),
+                    flowchart_with_direction(src, direction),
+                ));
+            }
+        }
+        for (name, src) in orthogonal_design_reference_corpus() {
+            let reversed = match src
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .split_whitespace()
+                .nth(1)
+            {
+                Some("LR") => "RL",
+                Some("RL") => "LR",
+                Some("BT") => "TB",
+                // `flowchart` with nothing after it is `TB`, the parser's own default.
+                Some("TB") | Some("TD") | None => "BT",
+                Some(other) => panic!("{name}: unknown direction {other}"),
+            };
+            out.push((
+                format!("{name}-{reversed}"),
+                flowchart_with_direction(src, reversed),
+            ));
+        }
+        out
+    })
+}
+
+/// How far two coordinates may differ and still be the same point. The mirror is a reflection of
+/// finished geometry — one negation and one translation, both exact in binary floating point for
+/// the magnitudes a diagram uses — so this is a guard against a stray rounding, not a tolerance
+/// the implementation is expected to need.
+pub(super) const MIRROR_EPS: f64 = 1e-6;
+
+/// Asserts `b` is `a` reflected along the flow axis: every coordinate on that axis at `span - v`
+/// (`span` being the diagram's own extent along it), every coordinate across it unchanged, and
+/// every size, id and ordering identical.
+///
+/// Shared with [`super::state_tests`], which states the same property over a state diagram's own
+/// design references.
+pub(super) fn assert_mirrored_diagrams(label: &str, a: &Diagram, b: &Diagram, vertical: bool) {
+    assert!(
+        (a.width - b.width).abs() < MIRROR_EPS && (a.height - b.height).abs() < MIRROR_EPS,
+        "{label}: a mirror keeps the diagram's own size — {}x{} became {}x{}",
+        a.width,
+        a.height,
+        b.width,
+        b.height
+    );
+    let span = if vertical { a.height } else { a.width };
+    // `(flow, cross)` of a point, with the flow coordinate already reflected on `b`'s side, so the
+    // two sides below are compared with one `assert` rather than two mirrored ones.
+    let split = |p: &Point, mirrored: bool| -> (f64, f64) {
+        let (flow, cross) = if vertical { (p.y, p.x) } else { (p.x, p.y) };
+        (if mirrored { span - flow } else { flow }, cross)
+    };
+    let same = |what: &str, id: &str, pa: &Point, pb: &Point| {
+        let ((fa, ca), (fb, cb)) = (split(pa, false), split(pb, true));
+        assert!(
+            (fa - fb).abs() < MIRROR_EPS && (ca - cb).abs() < MIRROR_EPS,
+            "{label}: {what} {id} sits at {pa:?}, whose mirror is flow {fa} cross {ca} — \
+             the reversed direction drew it at {pb:?} (flow {fb} cross {cb})"
+        );
+    };
+
+    assert_eq!(
+        a.nodes.iter().map(|n| &n.id).collect::<Vec<_>>(),
+        b.nodes.iter().map(|n| &n.id).collect::<Vec<_>>(),
+        "{label}: a mirror keeps every node, in order"
+    );
+    for (na, nb) in a.nodes.iter().zip(&b.nodes) {
+        assert_eq!(
+            (na.size.w, na.size.h),
+            (nb.size.w, nb.size.h),
+            "{label}: node {}'s own box is reflected, not resized",
+            na.id
+        );
+        assert_eq!(
+            na.shape, nb.shape,
+            "{label}: node {}'s own glyph is unchanged by the direction",
+            na.id
+        );
+        same("node", &na.id, &na.center, &nb.center);
+    }
+
+    assert_eq!(
+        a.clusters.iter().map(|c| &c.id).collect::<Vec<_>>(),
+        b.clusters.iter().map(|c| &c.id).collect::<Vec<_>>(),
+        "{label}: a mirror keeps every frame, in order"
+    );
+    for (ca, cb) in a.clusters.iter().zip(&b.clusters) {
+        assert_eq!(
+            (ca.size.w, ca.size.h),
+            (cb.size.w, cb.size.h),
+            "{label}: frame {}'s own rectangle is reflected, not resized",
+            ca.id
+        );
+        same("frame", &ca.id, &ca.center, &cb.center);
+    }
+
+    assert_eq!(
+        a.edges.iter().map(|e| (&e.from, &e.to)).collect::<Vec<_>>(),
+        b.edges.iter().map(|e| (&e.from, &e.to)).collect::<Vec<_>>(),
+        "{label}: a mirror keeps every edge, in order"
+    );
+    for (ea, eb) in a.edges.iter().zip(&b.edges) {
+        let id = format!("{}->{}", ea.from, ea.to);
+        assert_eq!(
+            ea.points.len(),
+            eb.points.len(),
+            "{label}: edge {id} is the same route reflected, so it has the same number of \
+             corners — {:?} against {:?}",
+            ea.points,
+            eb.points
+        );
+        for (pa, pb) in ea.points.iter().zip(&eb.points) {
+            same("edge", &id, pa, pb);
+        }
+        assert_eq!(
+            ea.gaps.len(),
+            eb.gaps.len(),
+            "{label}: edge {id} keeps its own §10-1 item 4 crossing gaps"
+        );
+        for ((a0, a1), (b0, b1)) in ea.gaps.iter().zip(&eb.gaps) {
+            same("gap start", &id, a0, b0);
+            same("gap end", &id, a1, b1);
+        }
+        for (what, la, lb) in [
+            ("label", &ea.label, &eb.label),
+            ("start label", &ea.start_label, &eb.start_label),
+            ("end label", &ea.end_label, &eb.end_label),
+            ("badge", &ea.badge, &eb.badge),
+        ] {
+            match (la, lb) {
+                (Some(la), Some(lb)) => {
+                    assert_eq!(
+                        (la.size.w, la.size.h),
+                        (lb.size.w, lb.size.h),
+                        "{label}: edge {id}'s {what} is moved, not re-measured"
+                    );
+                    same(what, &id, &la.center, &lb.center);
+                }
+                (None, None) => {}
+                _ => panic!("{label}: edge {id} has a {what} in one direction and not the other"),
+            }
+        }
+    }
+}
+
+/// §10 under `RL`: the same drawing as `LR`, reflected along x.
+///
+/// The **whole** drawing, not a sample of it — node centres, frame rectangles, every polyline
+/// vertex (which is where the ports are: a route's first and last point *is* its port, pulled
+/// `PORT_INSET` outside the face), every crossing gap and every label plate. Stated as an exact
+/// reflection rather than as "looks different from `LR`" because that is what the direction
+/// actually means, and because a weaker statement passes on a drawing that is merely translated.
+#[test]
+fn orthogonal_rl_is_the_exact_mirror_of_lr() {
+    for (name, src) in direction_fixture_sources()
+        .into_iter()
+        .chain(orthogonal_design_reference_corpus())
+    {
+        let lr = laid_out_flow(
+            &flowchart_with_direction(src, "LR"),
+            "basis",
+            "konoma-orthogonal",
+        );
+        let rl = laid_out_flow(
+            &flowchart_with_direction(src, "RL"),
+            "basis",
+            "konoma-orthogonal",
+        );
+        assert_mirrored_diagrams(&format!("{name} LR/RL"), &lr, &rl, false);
+    }
+}
+
+/// §10 under `BT`: the same drawing as `TB`, reflected along y. [`orthogonal_rl_is_the_exact_
+/// mirror_of_lr`]'s own doc has the reasoning; this is the other axis.
+#[test]
+fn orthogonal_bt_is_the_exact_mirror_of_tb() {
+    for (name, src) in direction_fixture_sources()
+        .into_iter()
+        .chain(orthogonal_design_reference_corpus())
+    {
+        let tb = laid_out_flow(
+            &flowchart_with_direction(src, "TB"),
+            "basis",
+            "konoma-orthogonal",
+        );
+        let bt = laid_out_flow(
+            &flowchart_with_direction(src, "BT"),
+            "basis",
+            "konoma-orthogonal",
+        );
+        assert_mirrored_diagrams(&format!("{name} TB/BT"), &tb, &bt, true);
+    }
+}
+
+/// The mirror is a **reflection**, not a relabelling: `RL` must not simply come out as `LR` again.
+///
+/// The bug this pins was exactly that — every one of the four directions produced one of two
+/// layouts — so a mirror suite alone could be satisfied by a diagram whose flow axis happens to be
+/// symmetric. This states the thing that cannot be true of one: the reversed direction moves the
+/// **first** node past the middle of the diagram and the last one back before it.
+#[test]
+fn orthogonal_reversing_the_direction_actually_moves_the_flow() {
+    for (name, src) in direction_fixture_sources() {
+        for (forward, reverse, vertical) in [("LR", "RL", false), ("TB", "BT", true)] {
+            let a = laid_out_flow(
+                &flowchart_with_direction(src, forward),
+                "basis",
+                "konoma-orthogonal",
+            );
+            let b = laid_out_flow(
+                &flowchart_with_direction(src, reverse),
+                "basis",
+                "konoma-orthogonal",
+            );
+            let head = &a.nodes[0].id;
+            let flow = |d: &Diagram, id: &str| {
+                let n = d.nodes.iter().find(|n| n.id == id).expect("node exists");
+                if vertical {
+                    n.center.y
+                } else {
+                    n.center.x
+                }
+            };
+            let span = if vertical { a.height } else { a.width };
+            assert!(
+                flow(&a, head) < span / 2.0 && flow(&b, head) > span / 2.0,
+                "{name}: {head} is the source's own first node — {forward} puts it in the near \
+                 half of a {span}px diagram (at {}) and {reverse} must put it in the far half, \
+                 not at {}",
+                flow(&a, head),
+                flow(&b, head)
+            );
+        }
+    }
+}
+
+/// A rule §10 states about the **cross** axis is stated in absolute screen terms and must
+/// therefore *not* mirror: §10-5 S3's own self-transition face ("`LR`: 上辺"), §10-3 item 11's own
+/// "非幹の枝は上から宣言順", and `orthogonal::place_dead_end_tiers`' own "the emptier side".
+///
+/// [`assert_mirrored_diagrams`] already implies this (a flow-axis reflection leaves the cross axis
+/// alone, and it checks every cross coordinate), but only as a consequence. Saying it directly is
+/// what would fail loudly if the mirror were ever widened into a point reflection or a rotation —
+/// which is the shape a "just flip both axes" reading of `RL` would take, and which would silently
+/// put the tier on the wrong side and reverse the fan's own declaration order.
+#[test]
+fn orthogonal_mirroring_the_flow_axis_leaves_the_cross_axis_alone() {
+    let lr = laid_out_flow(
+        &flowchart_with_direction(FAN_MERGE_ASIDE_TIER, "LR"),
+        "basis",
+        "konoma-orthogonal",
+    );
+    let rl = laid_out_flow(
+        &flowchart_with_direction(FAN_MERGE_ASIDE_TIER, "RL"),
+        "basis",
+        "konoma-orthogonal",
+    );
+    let cross = |d: &Diagram, id: &str| {
+        d.nodes
+            .iter()
+            .find(|n| n.id == id)
+            .unwrap_or_else(|| panic!("{id} is a node of the fixture"))
+            .center
+            .y
+    };
+    // The fan's own five branches, in declaration order, and the tier's own two members: both
+    // groups' cross-axis order is a rule about the screen, not about the flow.
+    for id in ["B1", "B2", "B3", "B4", "B5", "T1", "T2"] {
+        assert!(
+            (cross(&lr, id) - cross(&rl, id)).abs() < MIRROR_EPS,
+            "{id} sits at y {} under LR and y {} under RL — the cross axis is not mirrored",
+            cross(&lr, id),
+            cross(&rl, id)
+        );
+    }
+    let tier_side = |d: &Diagram| cross(d, "T1") > cross(d, "M");
+    assert_eq!(
+        tier_side(&lr),
+        tier_side(&rl),
+        "the dead-end tier hangs off the same side of the trunk in both directions"
+    );
+}
+
+/// [`super::mirror_flow_axis`] on its own, over a hand-built diagram — no font, no layout, and one
+/// of every piece of geometry the function has to carry.
+///
+/// The corpus tests above state the *property*; this states the **coverage**. A mirror that forgot
+/// `PlacedEdge::gaps`, or an edge's `start_label`/`end_label`/`badge`, would still pass every
+/// mirror assertion over a flowchart source — no flowchart edge carries the last three, and a
+/// crossing gap only appears in a diagram busy enough to have one. `super::normalise` already had
+/// exactly this hole once (its own doc records `gaps` being left pointing at the pre-translation
+/// location), and it is the same list, so it is the same hole.
+#[test]
+fn mirror_flow_axis_reflects_every_piece_of_geometry_and_only_for_bt_and_rl() {
+    let built = || {
+        let mut edge = bent_edge(
+            vec![Point::new(10.0, 20.0), Point::new(30.0, 40.0)],
+            Curve::Basis,
+        );
+        edge.gaps = vec![(Point::new(12.0, 22.0), Point::new(18.0, 28.0))];
+        let plate = |x: f64, y: f64| PlacedEdgeLabel {
+            center: Point::new(x, y),
+            size: Size::new(8.0, 4.0),
+            label: Label::measure(""),
+        };
+        edge.label = Some(plate(50.0, 60.0));
+        edge.start_label = Some(plate(52.0, 62.0));
+        edge.end_label = Some(plate(54.0, 64.0));
+        edge.badge = Some(plate(56.0, 66.0));
+        Diagram {
+            width: 0.0,
+            height: 0.0,
+            nodes: vec![placed_node("n", 100.0, 200.0, 40.0, 20.0)],
+            clusters: vec![PlacedCluster {
+                id: "c".to_string(),
+                title: Label::measure(""),
+                center: Point::new(300.0, 400.0),
+                size: Size::new(60.0, 30.0),
+                parent: None,
+                depth: 0,
+                dashed: false,
+                filled: true,
+                sections: Vec::new(),
+                title_strip: false,
+            }],
+            edges: vec![edge],
+            lifelines: Vec::new(),
+        }
+    };
+
+    for direction in [Direction::LeftToRight, Direction::TopToBottom] {
+        let mut d = built();
+        super::mirror_flow_axis(&mut d, direction);
+        assert_eq!(
+            d,
+            built(),
+            "{direction:?} is already the canonical orientation: the mirror must not touch it"
+        );
+    }
+
+    // Every coordinate on the flow axis negated, every coordinate across it left alone. Listed as
+    // whole points rather than checked with a loop, so a piece of geometry the function forgets is
+    // a failing assertion and not a silently shorter list.
+    let mut rl = built();
+    super::mirror_flow_axis(&mut rl, Direction::RightToLeft);
+    assert_eq!(rl.nodes[0].center, Point::new(-100.0, 200.0));
+    assert_eq!(
+        rl.nodes[0].size,
+        Size::new(40.0, 20.0),
+        "sizes do not reflect"
+    );
+    assert_eq!(rl.clusters[0].center, Point::new(-300.0, 400.0));
+    assert_eq!(
+        rl.edges[0].points,
+        vec![Point::new(-10.0, 20.0), Point::new(-30.0, 40.0)]
+    );
+    assert_eq!(
+        rl.edges[0].gaps,
+        vec![(Point::new(-12.0, 22.0), Point::new(-18.0, 28.0))]
+    );
+    for (what, plate) in [
+        ("label", &rl.edges[0].label),
+        ("start_label", &rl.edges[0].start_label),
+        ("end_label", &rl.edges[0].end_label),
+        ("badge", &rl.edges[0].badge),
+    ] {
+        let plate = plate.as_ref().unwrap_or_else(|| panic!("{what} survives"));
+        assert!(
+            plate.center.x < 0.0 && plate.center.y > 0.0,
+            "{what} sits at {:?}: its flow coordinate is reflected and its cross one is not",
+            plate.center
+        );
+    }
+
+    let mut bt = built();
+    super::mirror_flow_axis(&mut bt, Direction::BottomToTop);
+    assert_eq!(bt.nodes[0].center, Point::new(100.0, -200.0));
+    assert_eq!(bt.clusters[0].center, Point::new(300.0, -400.0));
+    assert_eq!(
+        bt.edges[0].points,
+        vec![Point::new(10.0, -20.0), Point::new(30.0, -40.0)]
+    );
+    assert_eq!(
+        bt.edges[0].gaps,
+        vec![(Point::new(12.0, -22.0), Point::new(18.0, -28.0))]
+    );
+}
+
+/// A self-loop stays on its **own** node's box in every one of the four directions — the half of
+/// the direction bug that was not a plain mirror.
+///
+/// `pull_back_fan_ranks` rewrites every *node*'s flow coordinate, so the nodes came out canonical
+/// under `BT`/`RL` all along; dagre's own edge waypoints did not, and a self-loop is the one shape
+/// still drawn from them (`orthogonal::route_staircase_with_ports`). The two therefore disagreed by
+/// the whole diagram's flow extent: on the `self-loop` corpus source laid out `BT`, `A --> A` was
+/// drawn spanning y 88-130 while `A` sat at y 26 — a loop around `B`. Stated with a bound tight
+/// enough that a loop attached to the *next* node along the flow cannot pass, which is what the
+/// corpus-wide "no dangling fragment" check catches only incidentally.
+#[test]
+fn orthogonal_a_self_loop_hugs_its_own_node_in_every_direction() {
+    // The loop bumps `SELF_LOOP_BUMP` px clear of the face plus its own label room; one rank gap
+    // (`RANK_SEP`, 50px) is the distance to the next node, and anything under it is unambiguously
+    // "on its own box".
+    const BUMP_MARGIN: f64 = 45.0;
+    let src = "flowchart LR\n  A --> A\n  A --> B\n  B --> C";
+    for direction in ["LR", "RL", "TB", "BT"] {
+        let d = laid_out_flow(
+            &flowchart_with_direction(src, direction),
+            "basis",
+            "konoma-orthogonal",
+        );
+        let loop_edge = d
+            .edges
+            .iter()
+            .find(|e| e.from == "A" && e.to == "A")
+            .unwrap_or_else(|| panic!("{direction}: the self-loop must still be drawn"));
+        let (l, t, r, b) = d
+            .nodes
+            .iter()
+            .find(|n| n.id == "A")
+            .expect("A is a node")
+            .bounds();
+        for p in &loop_edge.points {
+            assert!(
+                p.x >= l - BUMP_MARGIN
+                    && p.x <= r + BUMP_MARGIN
+                    && p.y >= t - BUMP_MARGIN
+                    && p.y <= b + BUMP_MARGIN,
+                "{direction}: A's self-loop runs through {p:?}, which is more than {BUMP_MARGIN}px \
+                 outside A's own box ({l},{t})-({r},{b}) — the loop is drawn from dagre's own \
+                 waypoints, so this is what a waypoint left in the un-canonicalised space looks like"
             );
         }
     }
