@@ -298,6 +298,14 @@ codegen-units = 1
 
 # debug ビルドでも syntect/fancy-regex の正規表現コンパイルは重い(TS 等の巨大文法で数秒)。
 # 自分のコードはデバッグ可能なまま、これら依存クレートだけ最適化して初回ハイライトを実用域にする。
+# Line tables only: backtraces keep their file:line, but the per-codegen-unit object files that
+# macOS's default `split-debuginfo = "unpacked"` leaves next to every test binary shrink by an
+# order of magnitude. Two weeks of parallel `cargo test` runs had left 231,808 `.o` files
+# (56 GB on disk) under target/debug/deps, none of them needed (2026-09-08). Full DWARF is one
+# `CARGO_PROFILE_DEV_DEBUG=2 cargo test` away when a debugger session actually needs it.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package.fancy-regex]
 opt-level = 3
 [profile.dev.package.regex]
