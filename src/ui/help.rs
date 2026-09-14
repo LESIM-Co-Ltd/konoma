@@ -119,6 +119,7 @@ fn common_sections(app: &App) -> Vec<HelpSection> {
     let l = |m| tr(lang, m);
     let mut out = vec![HelpSection::new(l(crate::i18n::Msg::HelpTabs))
         .row("t", l(crate::i18n::Msg::HelpNewTab))
+        .row("I", l(crate::i18n::Msg::HelpNewTabAfter))
         .row("[ / ]", l(crate::i18n::Msg::PrevNextTab))
         .row("1 - 9", l(crate::i18n::Msg::HelpJumpTab))
         .row("T", l(crate::i18n::Msg::HelpTabList))];

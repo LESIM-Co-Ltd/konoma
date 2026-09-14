@@ -6,6 +6,9 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- `I` opens a new tab right after the current one (`tab_new_after`); `t` keeps appending at the end.
+
 ## [0.28.5] - 2026-09-07
 
 ### Fixed

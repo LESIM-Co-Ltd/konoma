@@ -518,8 +518,9 @@ mod tests {
             // being added doesn't push it off-screen; on a real small terminal, scrolling (j/k) to
             // see the bottom is the correct behavior).
             // Bumped 50→54 for the Agent Watch (C/n·N/F) 3-line addition. Bumped 54→55 for the
-            // Space→D duplicate 1-line addition.
-            let mut term = Terminal::new(TestBackend::new(72, 55)).unwrap();
+            // Space→D duplicate 1-line addition. Bumped 55→56 for the `I` (tab_new_after) 1-line
+            // addition to the Tabs section.
+            let mut term = Terminal::new(TestBackend::new(72, 56)).unwrap();
             term.draw(|f| render(f, app)).unwrap();
             term.backend()
                 .buffer()

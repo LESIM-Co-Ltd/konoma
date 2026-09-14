@@ -470,7 +470,9 @@ builtin = "pdf"
 #   <key> = "<action>"
 #
 # ■ Surface names — a separate map per "which screen am I on". snake_case:
-#   global        : effective on any surface (tabs t/[/]/1-9, T=tab list, help ?). w is unbound by default
+#   global        : effective on any surface (tabs t/I/[/]/1-9, T=tab list, help ?). "tab_new" (t) always
+#                  appends a new tab at the end; "tab_new_after" (I) inserts it right after the current
+#                  tab instead. w is unbound by default
 #                  (it clashes with vim's word motion; close is the tree's q; restore with "w"="tab_close").
 #   tree          : the full-screen tree      tree_visual   : the tree's visual selection
 #   preview_text  : text/Markdown             preview_image : images    preview_git_diff : git diff

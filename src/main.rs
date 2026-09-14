@@ -1546,6 +1546,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::Noop => {}
         Action::Navigate(m) => dispatch_navigate(app, sfc, m),
         Action::TabNew => app.tab_new()?,
+        Action::TabNewAfter => app.tab_new_after()?,
         Action::TabClose => app.tab_close(),
         Action::TabPrev => app.tab_cycle(-1),
         Action::TabNext => app.tab_cycle(1),
@@ -2121,7 +2122,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         Resolution::Action(a) => dispatch_action(app, a, sfc),
         Resolution::Unbound => {
             // Bookmark list: a plain letter unbound in the keymap jumps directly as a bookmark name
-            // (a-z = local / A-Z = global). q/j/k and global's t/T/F/Q etc. are already resolved
+            // (a-z = local / A-Z = global). q/j/k and global's t/T/F/Q/I etc. are already resolved
             // above = excluded here.
             if sfc == Surface::Bookmarks && !kp.ctrl {
                 if let KeyCode::Char(c) = kp.code {
@@ -3123,6 +3124,11 @@ mod tests {
         handle_key(&mut app, key('t')).unwrap();
         assert_eq!(app.tab_count(), tc, "絞り込み中は t で新タブにしない");
         assert_eq!(app.filter_query(), Some("t"));
+        // Same for I (tab_new_after): a text-input surface never inherits global, so it's typed
+        // literally too, not turned into a new tab.
+        handle_key(&mut app, key('I')).unwrap();
+        assert_eq!(app.tab_count(), tc, "絞り込み中は I でも新タブにしない");
+        assert_eq!(app.filter_query(), Some("tI"));
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
 
         // Even while in the git view, t can open a new tab. The new tab is a plain Tree (git mode

@@ -1389,6 +1389,109 @@ fn e2e_ctrl_t_opens_selected_in_new_tab() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+#[test]
+fn e2e_shift_i_inserts_tab_right_of_current_and_shifts_the_rest() {
+    // `I` (tab_new_after) inserts immediately to the right of the active tab, unlike `t`
+    // (tab_new) which always appends at the end. Tabs are told apart here by which file each
+    // one is left previewing (tab_label reflects the preview target's file name in Preview mode).
+    let dir = sandbox("shift_i_insert");
+    std::fs::write(dir.join("a.txt"), "AAA\n").unwrap();
+    std::fs::write(dir.join("b.txt"), "BBB\n").unwrap();
+    std::fs::write(dir.join("c.txt"), "CCC\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+
+    s.select("a.txt");
+    s.enter(); // tab0 previews a.txt
+    s.key('t'); // t always appends: tab1
+    s.select("b.txt");
+    s.enter(); // tab1 previews b.txt
+    s.key('t'); // appends again: tab2
+    s.select("c.txt");
+    s.enter(); // tab2 previews c.txt
+    assert_eq!(s.app.tab_count(), 3, "前提: 3タブ");
+
+    // Back to the first tab, then I inserts right next to it (not at the end).
+    s.key('1');
+    assert_eq!(s.app.active_tab_index(), 0);
+    s.key('I');
+    assert_eq!(s.app.tab_count(), 4, "I でタブが増える");
+    assert_eq!(s.app.active_tab_index(), 1, "挿入した新規タブがアクティブ");
+    assert_eq!(s.app.tab_label(0), "a.txt", "元 tab0 はそのまま");
+    assert_eq!(s.app.tab.mode, Mode::Tree, "挿入直後は素の Tree");
+    assert_eq!(
+        s.app.tab_label(2),
+        "b.txt",
+        "元 tab1 (b.txt) は 1 個右へずれて index2"
+    );
+    assert_eq!(
+        s.app.tab_label(3),
+        "c.txt",
+        "元 tab2 (c.txt) は 1 個右へずれて index3"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_plain_t_still_appends_from_the_first_tab() {
+    // Unchanged behavior for every existing `t` caller: from the first tab, t still lands at
+    // the end, not right after the current tab.
+    let dir = sandbox("plain_t_appends");
+    seed_files(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    assert_eq!(s.app.active_tab_index(), 0);
+    s.key('t');
+    assert_eq!(s.app.tab_count(), 2);
+    assert_eq!(s.app.active_tab_index(), 1, "t は末尾に追加");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_shift_i_on_the_last_tab_appends_like_t() {
+    // On the last tab, "right of current" and "the end" are the same slot: I behaves like t.
+    let dir = sandbox("shift_i_last_tab");
+    seed_files(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('t');
+    assert_eq!(s.app.tab_count(), 2);
+    assert_eq!(s.app.active_tab_index(), 1, "前提: 最後のタブがアクティブ");
+    s.key('I');
+    assert_eq!(s.app.tab_count(), 3);
+    assert_eq!(
+        s.app.active_tab_index(),
+        2,
+        "最後のタブからの I は末尾に追加(t と同じ)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn e2e_shift_i_works_from_preview_and_preserves_the_original_tab() {
+    // I works while the active tab is showing Preview, not just Tree. The new tab starts in
+    // Tree at the same root; the original tab's preview survives the round trip via ]/[.
+    let dir = sandbox("shift_i_from_preview");
+    std::fs::write(dir.join("note.txt"), "HELLO_FROM_I\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("note.txt");
+    s.enter();
+    assert_eq!(s.app.tab.mode, Mode::Preview, "前提: プレビュー中");
+    s.see("HELLO_FROM_I");
+
+    s.key('I');
+    assert_eq!(s.app.tab_count(), 2);
+    assert_eq!(s.app.active_tab_index(), 1, "挿入した新規タブがアクティブ");
+    assert_eq!(s.app.tab.mode, Mode::Tree, "新規タブは Tree から始まる");
+    s.dont_see("HELLO_FROM_I");
+
+    // ] then [ round-trips back to the original tab, preview intact.
+    s.key('[');
+    assert_eq!(s.app.active_tab_index(), 0);
+    assert_eq!(s.app.tab.mode, Mode::Preview, "元タブのプレビューは残る");
+    s.see("HELLO_FROM_I");
+    s.key(']');
+    assert_eq!(s.app.active_tab_index(), 1);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // =============================================================================
 // Bookmarks
 // =============================================================================

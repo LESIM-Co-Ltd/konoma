@@ -16,7 +16,8 @@ information contextually inside the app.
 |---|---|
 | `?` | help for the current screen |
 | `Q` | quit (confirmation unless `ui.confirm_quit = false`; `qq` is quick) |
-| `t` | new tab (closing is `q` on the tree; `w` is deliberately unbound — vim word-motion muscle memory) |
+| `t` | new tab, appended at the end (closing is `q` on the tree; `w` is deliberately unbound — vim word-motion muscle memory) |
+| `I` | new tab, inserted right after the current one (like vim's `:tabnew`) |
 | `[` / `]` / `1`-`9` | previous / next / numbered tab |
 | `F` | follow mode (auto-show whatever changes on disk) |
 | `T` | tab list (switch / close tabs; the tab bar shows `‹n / n›` when tabs overflow) |
@@ -125,5 +126,5 @@ information contextually inside the app.
 | `Ctrl-e` / `Ctrl-d` | edit target in editor / delete bookmark |
 | `'` `q` `Esc` | close |
 
-Letters used by the list or global keys (`F` `P` `Q` `T` `j` `k` `q` `t`) can't
+Letters used by the list or global keys (`F` `I` `P` `Q` `T` `j` `k` `q` `t`) can't
 letter-jump — select those with `j`/`k` + `Enter`, or rebind.
