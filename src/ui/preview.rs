@@ -79,14 +79,23 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             .row("e", l(crate::i18n::Msg::EditExternal))
             .row("q / Esc", l(crate::i18n::Msg::BackToTree))];
     }
-    vec![HelpSection::new(l(crate::i18n::Msg::PreviewTextMarkdown))
+    let mut sec = HelpSection::new(l(crate::i18n::Msg::PreviewTextMarkdown))
         .row("j / k / ↑ ↓", l(crate::i18n::Msg::Scroll))
         .row("g / G", l(crate::i18n::Msg::TopBottom))
         .row("h / l / ← →", l(crate::i18n::Msg::HScroll))
         .row("0 / $", l(crate::i18n::Msg::LineStartEnd))
-        .row("/  n / N", l(crate::i18n::Msg::SearchHint))
-        .row("v / V → y", l(crate::i18n::Msg::PreviewSelectHelp))
-        .row("Y", l(crate::i18n::Msg::AtRefHelp))
+        .row("/  n / N", l(crate::i18n::Msg::SearchHint));
+    // `v / V → y` (range selection) only works windowed (raw source / plain code/text) —
+    // `preview_enter_visual` requires it. The decorated view still has `Y`, but it only ever
+    // copies the whole-file `@path` there (no caret/selection to speak of on a Tab-focused item).
+    if app.is_windowed() {
+        sec = sec
+            .row("v / V → y", l(crate::i18n::Msg::PreviewSelectHelp))
+            .row("Y", l(crate::i18n::Msg::AtRefHelp));
+    } else {
+        sec = sec.row("Y", l(crate::i18n::Msg::AtRefPathHelp));
+    }
+    vec![sec
         .row("R", l(crate::i18n::Msg::MdRawToggleHelp))
         .row("o", l(crate::i18n::Msg::HintOutline))
         .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
@@ -142,32 +151,51 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         return v;
     }
     if matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))) && !app.is_raw_source() {
-        // Markdown (decorated view)-specific link/checkbox operations (Tab to focus / Enter to open /
-        // Space to toggle — shown only for documents with a checkbox) + R to switch to source view.
+        // Markdown (decorated view): `Tab` always cycles focus; everything else here is
+        // focus-dependent (`app.md_focused_kind()`) — a hint is shown iff the key would actually
+        // do what the label says right now, mirroring `md_activate_focused` /
+        // `md_open_focused_link_new_tab` / the `Space` fixed key in main.rs exactly (see
+        // `MdFocus`'s own doc comment). No focus at all → none of the `↵`/`C-t`/`Space` hints.
+        use crate::app::MdFocus;
         let mut v = vec![
             hint(lang, "jk", crate::i18n::Msg::Scroll),
-            hint(lang, "Tab", crate::i18n::Msg::HintLink),
-            hint(lang, "↵", crate::i18n::Msg::HintOpen),
-            hint(lang, "C-t", crate::i18n::Msg::HintNewTab),
+            hint(lang, "Tab", crate::i18n::Msg::HintFocus),
         ];
-        // While a code block is focused, y→c copies that block (shows up in y's copy menu).
-        if app.md_focused_code() {
-            v.push(hint(lang, "y c", crate::i18n::Msg::HintCopyCode));
-        }
-        // While an inline mermaid diagram is focused: zoom in place (+/-); while zoomed, hjkl=pan.
-        if app.focused_mermaid_ordinal().is_some() {
-            v.push(hint(lang, "+/-", crate::i18n::Msg::Zoom));
-            if app.fence_zoom_level() > 1.001 {
-                v.push(hint(lang, "hjkl", crate::i18n::Msg::HintPan));
-                v.push(hint(lang, "0", crate::i18n::Msg::HintFit));
+        match app.md_focused_kind() {
+            Some(MdFocus::LocalLink) => {
+                v.push(hint(lang, "↵", crate::i18n::Msg::HintOpen));
+                v.push(hint(lang, "C-t", crate::i18n::Msg::HintNewTab));
             }
-        }
-        if app.md_has_tasks() || app.md_focused_details().is_some() {
-            v.push(hint(lang, "Space", crate::i18n::Msg::HintToggle));
+            Some(MdFocus::AnchorLink) => {
+                v.push(hint(lang, "↵", crate::i18n::Msg::HintJump));
+            }
+            Some(MdFocus::ExternalLink) => {
+                v.push(hint(lang, "↵", crate::i18n::Msg::HintBrowser));
+            }
+            Some(MdFocus::Task) | Some(MdFocus::Details) => {
+                v.push(hint(lang, "Space/↵", crate::i18n::Msg::HintToggle));
+            }
+            // A code block has no Enter action; `y c` (via the copy leader) copies it instead.
+            Some(MdFocus::CodeBlock) => {
+                v.push(hint(lang, "y c", crate::i18n::Msg::HintCopyCode));
+            }
+            Some(MdFocus::MermaidFence) => {
+                v.push(hint(lang, "↵", crate::i18n::Msg::HintFullScreen));
+                v.push(hint(lang, "+/-", crate::i18n::Msg::Zoom));
+                // hjkl/0 pan only once zoomed AND the diagram is fully on screen — mirrors
+                // `fence_pan_motion`'s own gate exactly.
+                if app.fence_zoom_level() > 1.001 && app.focused_fence_fully_visible() {
+                    v.push(hint(lang, "hjkl", crate::i18n::Msg::HintPan));
+                    v.push(hint(lang, "0", crate::i18n::Msg::HintFit));
+                }
+            }
+            None => {}
         }
         v.extend([
             hint(lang, "o", crate::i18n::Msg::HintOutline),
             hint(lang, "R", crate::i18n::Msg::HintRawSource),
+            hint(lang, "/", crate::i18n::Msg::HintSearch),
+            hint(lang, "F", crate::i18n::Msg::StFollow),
             hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
             hint(lang, "q", crate::i18n::Msg::GitBack),
             hint(lang, "?", crate::i18n::Msg::HintHelp),
@@ -1416,6 +1444,74 @@ mod scroll_indicator_tests {
             rows(&term).iter().any(|r| r.contains("[Bot]")),
             "末尾のラベルは Bot:\n{}",
             rows(&term).join("\n")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::help_sections;
+    use crate::app::App;
+    use crate::config::Config;
+    use crate::test_support::unique_tmp;
+
+    /// The decorated Markdown view's `?` help must not advertise `v / V → y` range selection (it's
+    /// a no-op there — `preview_enter_visual` requires `is_windowed()`), but keeps `Y` with a text
+    /// specific to that view (`AtRefPathHelp`: it only ever copies the whole-file `@path`, since
+    /// there's no caret/selection concept on a Tab-focused item). The raw source view (`R`) is
+    /// windowed, so it keeps both the original `v / V → y` row and the caret/selection-aware `Y`
+    /// text (`AtRefHelp`).
+    #[test]
+    fn decorated_markdown_help_drops_v_row_raw_source_keeps_it() {
+        let dir = unique_tmp("konoma_md_help_vrow_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.md"), b"# t\n\nbody\n").unwrap();
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
+        app.tree_activate().unwrap();
+
+        // Decorated view (default): no `v / V → y` row; `Y` uses the path-only text.
+        assert!(!app.is_windowed(), "前提: 装飾ビューは windowed でない");
+        let sections = help_sections(&app);
+        let rows = &sections[0].rows;
+        assert!(
+            !rows.iter().any(|(k, _)| k == "v / V → y"),
+            "装飾ビューに v/V 選択行が出ている: {rows:?}"
+        );
+        let y_row = rows
+            .iter()
+            .find(|(k, _)| k == "Y")
+            .expect("Y 行が無い")
+            .1
+            .clone();
+        assert_eq!(
+            y_row,
+            crate::i18n::tr(app.lang, crate::i18n::Msg::AtRefPathHelp),
+            "装飾ビューの Y は @path 専用の文言"
+        );
+
+        // Raw source view (`R`): windowed, so v/V → y comes back, and Y reverts to the
+        // caret/selection-aware text.
+        app.toggle_md_raw();
+        assert!(app.is_windowed(), "前提: R 後は windowed");
+        let sections = help_sections(&app);
+        let rows = &sections[0].rows;
+        assert!(
+            rows.iter().any(|(k, _)| k == "v / V → y"),
+            "ソース表示に v/V 選択行が無い: {rows:?}"
+        );
+        let y_row = rows
+            .iter()
+            .find(|(k, _)| k == "Y")
+            .expect("Y 行が無い")
+            .1
+            .clone();
+        assert_eq!(
+            y_row,
+            crate::i18n::tr(app.lang, crate::i18n::Msg::AtRefHelp),
+            "ソース表示の Y はキャレット/選択対応の文言"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

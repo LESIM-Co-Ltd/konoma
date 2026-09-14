@@ -9,6 +9,20 @@ All notable changes to konoma are documented in this file. The format is based o
 ### Added
 - `I` opens a new tab right after the current one (`tab_new_after`); `t` keeps appending at the end.
 
+### Fixed
+- **Markdown preview footer hints now follow the focused item.** `↵`/`C-t`/`Space` used to show
+  unconditionally in the decorated Markdown footer whenever *any* item of that kind existed in the
+  document, regardless of what was actually focused — `C-t:new tab` was shown even while a
+  `#anchor` link was focused (`Ctrl-t` only scrolls to it in place for those; it can't sensibly
+  open a same-document anchor in a new tab), and `Space:toggle` was shown for the whole document
+  merely because it contained a checkbox somewhere. The footer now shows a hint iff the key would
+  actually do that action for the item currently focused (no focus → none of those three hints;
+  a local link → `↵:open` + `C-t:new tab`; an anchor link → `↵:jump`; an external link →
+  `↵:browser`; a task or `<details>` → `Space/↵:toggle`; a code block → `y c:copy code`; a mermaid
+  fence → `↵:full screen`). The `?` help no longer advertises `v`/`V` range selection in the
+  decorated view either (it's windowed-only); its `Y` row there now says it copies the `@path`
+  reference instead of the caret/selection-aware text that only applies to the raw source view.
+
 ## [0.28.5] - 2026-09-07
 
 ### Fixed

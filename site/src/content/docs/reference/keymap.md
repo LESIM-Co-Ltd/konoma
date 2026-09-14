@@ -55,7 +55,7 @@ information contextually inside the app.
 | `/` `n` `N` | search / next / previous match |
 | `Tab` / `Shift-Tab` | focus next / previous link or checkbox (Markdown) |
 | `Enter` | open focused link / toggle focused checkbox |
-| `Ctrl-t` | open the focused link in a new tab (URLs open in the browser either way) |
+| `Ctrl-t` | open the focused **local** link in a new tab (anchors jump in place instead; URLs open in the browser either way) |
 | `Space` | toggle focused checkbox |
 | `R` | toggle rendered ⇄ raw source (Markdown/Mermaid) |
 | `o` | heading outline of a Markdown preview (`Enter` jumps to a heading) |

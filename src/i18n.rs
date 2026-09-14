@@ -492,7 +492,6 @@ pub enum Msg {
     HintHscroll,
     HintInfo,
     HintLineEnds,
-    HintLink,
     HintMark,
     HintToggle,
     BusyGitScan,
@@ -679,6 +678,19 @@ pub enum Msg {
     RenameSlashInName,
     /// `build_rename_plan`: two targets rendered to the same final name within the same batch.
     RenameDestDuplicate,
+    /// Footer hint for `↵` on a focused Markdown `#anchor` link: it scrolls in place (not a new tab).
+    HintJump,
+    /// Footer hint for `↵` on a focused Markdown external (URL/mailto/tel) link: it opens externally.
+    HintBrowser,
+    /// Footer hint for `↵` on a focused inline mermaid diagram: opens it full screen.
+    HintFullScreen,
+    /// Decorated Markdown footer's `Tab` hint: cycles focus across links, checkboxes, code blocks,
+    /// diagrams and `<details>` — not just links (replaces the old link-only `Tab` hint).
+    HintFocus,
+    /// Decorated Markdown `?` help's `Y` row: unlike the windowed view (`AtRefHelp`, caret/selection
+    /// aware), the decorated view only ever copies the current file's `@path` (no line numbers — the
+    /// notion of "caret line" doesn't apply to a Tab-focused item).
+    AtRefPathHelp,
 }
 
 /// English table.
@@ -840,7 +852,7 @@ fn en(msg: Msg) -> &'static str {
         TreeFileInfo => "file info (size/modified/permissions)",
         TreeFilter => "filter / recursive find (Esc to clear)",
         GitFilterByName => "filter by name",
-        FocusMdLink => "focus md link / checkbox / code block / diagram (y c = copy code)",
+        FocusMdLink => "focus md link / checkbox / code block / diagram / <details> (y c = copy code)",
         MdTaskToggleHelp => "toggle focused checkbox (writes to the file)",
         HintDetailsToggle => "expand/collapse the focused <details>",
         GitToolFailed => "git tool failed: ",
@@ -927,7 +939,7 @@ fn en(msg: Msg) -> &'static str {
         NotFound => "not found: ",
         NothingStaged => "nothing staged",
         OpenFailed => "open failed: ",
-        OpenLinkHint => "open link (URL=browser / local=konoma) / toggle checkbox / open diagram full screen",
+        OpenLinkHint => "open link (URL=browser / local=konoma / anchor=jump in place) / toggle checkbox or <details> / open diagram full screen",
         Opened => "opened: ",
         OperationFailed => "operation failed: ",
         PanHint => "pan (when zoomed/clipped)",
@@ -1049,7 +1061,7 @@ fn en(msg: Msg) -> &'static str {
         PasteJumpNotFound => "path not found: ",
         HintPasteJump => "goto path",
         HintNewTab => "new tab",
-        OpenLinkNewTabHelp => "open the focused link in a new tab",
+        OpenLinkNewTabHelp => "open the focused local link in a new tab (anchors jump in place, URLs open in the browser)",
         MermaidZoomHelp => "zoom the focused diagram in place (hjkl pan while zoomed, 0 fits)",
         OpenInNewTabHelp => "open the entry under the cursor in a new tab",
         BookmarkOverwriteConfirm => "Overwrite bookmark",
@@ -1081,7 +1093,6 @@ fn en(msg: Msg) -> &'static str {
         HintHscroll => "hscroll",
         HintInfo => "info",
         HintLineEnds => "line ends",
-        HintLink => "link",
         HintMark => "mark",
         HintToggle => "toggle",
         BusyGitScan => "git scan",
@@ -1177,6 +1188,11 @@ fn en(msg: Msg) -> &'static str {
         RenameEmptyName => "the rendered name is empty",
         RenameSlashInName => "name cannot contain /: ",
         RenameDestDuplicate => "duplicate rename destination: ",
+        HintJump => "jump",
+        HintBrowser => "browser",
+        HintFullScreen => "full screen",
+        HintFocus => "focus",
+        AtRefPathHelp => "copy the @path reference",
     }
 }
 
@@ -1337,7 +1353,7 @@ fn jp(msg: Msg) -> &'static str {
         TreeFileInfo => "ファイル情報 (サイズ/更新/権限)",
         TreeFilter => "絞り込み / 再帰検索 (Esc で解除)",
         GitFilterByName => "名前で絞り込み",
-        FocusMdLink => "Markdown リンク/チェックボックス/コードブロック/mermaid図をフォーカス (y c=コードをコピー)",
+        FocusMdLink => "Markdown リンク/チェックボックス/コードブロック/mermaid図/<details>をフォーカス (y c=コードをコピー)",
         MdTaskToggleHelp => "フォーカス中のチェックボックスをトグル(ファイルに書込み)",
         HintDetailsToggle => "フォーカス中の <details> を開閉",
         GitToolFailed => "git ツール起動失敗: ",
@@ -1420,7 +1436,7 @@ fn jp(msg: Msg) -> &'static str {
         NotFound => "見つかりません: ",
         NothingStaged => "ステージ無し",
         OpenFailed => "起動失敗: ",
-        OpenLinkHint => "リンクを開く (URL=ブラウザ/ローカル=konoma)・チェックボックスはトグル・mermaid図は全画面",
+        OpenLinkHint => "リンクを開く (URL=ブラウザ/ローカル=konoma/アンカー=その場で移動)・チェックボックス/<details>はトグル・mermaid図は全画面",
         Opened => "開きました: ",
         OperationFailed => "操作に失敗: ",
         PanHint => "パン(拡大して見切れた時)",
@@ -1542,7 +1558,7 @@ fn jp(msg: Msg) -> &'static str {
         PasteJumpNotFound => "パスが見つかりません: ",
         HintPasteJump => "パス移動",
         HintNewTab => "別タブ",
-        OpenLinkNewTabHelp => "フォーカス中のリンクを別タブで開く",
+        OpenLinkNewTabHelp => "フォーカス中のローカルリンクを別タブで開く(アンカーはその場で移動・URL はブラウザ)",
         MermaidZoomHelp => "フォーカス中の図をその場でズーム(ズーム中 hjkl=パン・0=フィット)",
         OpenInNewTabHelp => "カーソル下のエントリを別タブで開く",
         BookmarkOverwriteConfirm => "ブックマークを上書き",
@@ -1574,7 +1590,6 @@ fn jp(msg: Msg) -> &'static str {
         HintHscroll => "横移動",
         HintInfo => "情報",
         HintLineEnds => "行頭/末",
-        HintLink => "リンク",
         HintMark => "登録",
         HintToggle => "トグル",
         BusyGitScan => "git スキャン",
@@ -1660,6 +1675,11 @@ fn jp(msg: Msg) -> &'static str {
         RenameEmptyName => "空の名前になります",
         RenameSlashInName => "名前に / は使えません: ",
         RenameDestDuplicate => "リネーム先が重複: ",
+        HintJump => "移動",
+        HintBrowser => "ブラウザ",
+        HintFullScreen => "全画面",
+        HintFocus => "フォーカス",
+        AtRefPathHelp => "@パス参照をコピー",
     }
 }
 
@@ -2080,7 +2100,6 @@ mod tests {
         Msg::HintHscroll,
         Msg::HintInfo,
         Msg::HintLineEnds,
-        Msg::HintLink,
         Msg::HintMark,
         Msg::HintToggle,
         Msg::BusyGitScan,
@@ -2214,6 +2233,11 @@ mod tests {
         Msg::RenameEmptyName,
         Msg::RenameSlashInName,
         Msg::RenameDestDuplicate,
+        Msg::HintJump,
+        Msg::HintBrowser,
+        Msg::HintFullScreen,
+        Msg::HintFocus,
+        Msg::AtRefPathHelp,
     ];
 
     #[test]

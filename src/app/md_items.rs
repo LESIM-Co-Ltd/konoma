@@ -390,29 +390,56 @@ impl App {
         }
     }
 
-    /// Whether the rendered Markdown preview has any task checkboxes (drives the footer hint).
+    /// Whether the rendered Markdown preview has any task checkboxes. Used only by tests now — the
+    /// decorated footer's `Space` hint is focus-dependent (`md_focused_kind`), not document-wide.
+    #[cfg(test)]
     pub fn md_has_tasks(&self) -> bool {
         self.md_items
             .iter()
             .any(|it| matches!(it.kind, MdItemKind::Task { .. }))
     }
 
+    /// Classify the currently Tab-focused Markdown item for the decorated footer/help hints
+    /// (`ui/preview.rs`). `None` in the raw source view or with nothing focused — no
+    /// focus-dependent hint should show either way. See `MdFocus`'s own doc comment for the rule
+    /// each variant encodes and how it stays in lockstep with `md_activate_focused` /
+    /// `md_open_focused_link_new_tab`.
+    pub fn md_focused_kind(&self) -> Option<MdFocus> {
+        if self.is_raw_source() {
+            return None;
+        }
+        let it = self.tab.focused_item.and_then(|f| self.md_items.get(f))?;
+        Some(match &it.kind {
+            MdItemKind::Link { target } => match classify_md_link_target(target) {
+                LinkClass::Local => MdFocus::LocalLink,
+                LinkClass::Anchor => MdFocus::AnchorLink,
+                LinkClass::External => MdFocus::ExternalLink,
+            },
+            MdItemKind::Task { .. } => MdFocus::Task,
+            MdItemKind::CodeBlock { .. } => MdFocus::CodeBlock,
+            MdItemKind::MermaidFence { .. } => MdFocus::MermaidFence,
+            MdItemKind::Details { .. } => MdFocus::Details,
+        })
+    }
+
     /// Open a link target. `scheme://`/`mailto:`, etc. are delegated externally; local paths open in konoma
     /// (file=preview / directory=make it the new root and Tree).
     pub(super) fn open_link_target(&mut self, target: &str) -> Result<()> {
         let t = target.trim();
-        if t.contains("://") || t.starts_with("mailto:") || t.starts_with("tel:") {
-            return self.open_external(t);
-        }
-        if let Some(anchor) = t.strip_prefix('#') {
-            if !self.md_scroll_to_anchor(anchor) {
-                self.flash = Some(format!(
-                    "{}{}",
-                    tr(self.lang, crate::i18n::Msg::AnchorNotFound),
-                    t
-                ));
+        match classify_md_link_target(t) {
+            LinkClass::External => return self.open_external(t),
+            LinkClass::Anchor => {
+                let anchor = t.strip_prefix('#').unwrap_or(t);
+                if !self.md_scroll_to_anchor(anchor) {
+                    self.flash = Some(format!(
+                        "{}{}",
+                        tr(self.lang, crate::i18n::Msg::AnchorNotFound),
+                        t
+                    ));
+                }
+                return Ok(());
             }
-            return Ok(());
+            LinkClass::Local => {}
         }
         let path_part = t.split('#').next().unwrap_or(t);
         let resolved = self.resolve_link_local(t);
@@ -475,13 +502,12 @@ impl App {
             _ => return Ok(()),
         };
         let t = target.trim();
-        // URL/mailto/tel can't become a tab, so open it externally (browser, etc.) just like Enter.
-        if t.contains("://") || t.starts_with("mailto:") || t.starts_with("tel:") {
-            return self.open_external(t);
-        }
-        if t.starts_with('#') {
+        match classify_md_link_target(t) {
+            // URL/mailto/tel can't become a tab, so open it externally (browser, etc.) just like Enter.
+            LinkClass::External => return self.open_external(t),
             // A same-document anchor makes no sense in a new tab — scroll in place instead.
-            return self.open_link_target(t);
+            LinkClass::Anchor => return self.open_link_target(t),
+            LinkClass::Local => {}
         }
         // Resolve the local path relative to the current md file's location before creating the tab.
         let resolved = self.resolve_link_local(t);
@@ -580,6 +606,31 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// The three ways a Markdown link target resolves.
+enum LinkClass {
+    /// A local file/dir path: opens within konoma (in place, or in a new tab via `Ctrl-t`).
+    Local,
+    /// A same-document `#anchor`: scrolls to it in place, never a new tab.
+    Anchor,
+    /// A `scheme://`/`mailto:`/`tel:` target: handed to the OS opener.
+    External,
+}
+
+/// Which of Markdown's three link classes `target` falls into, by the exact predicates
+/// `open_link_target` and `md_open_focused_link_new_tab` act on. Both handlers and
+/// `App::md_focused_kind` (the footer/help hint classifier) call this one function, so the
+/// hints shown can never drift from what `Enter`/`Ctrl-t` actually do for a given link.
+fn classify_md_link_target(target: &str) -> LinkClass {
+    let t = target.trim();
+    if t.contains("://") || t.starts_with("mailto:") || t.starts_with("tel:") {
+        LinkClass::External
+    } else if t.starts_with('#') {
+        LinkClass::Anchor
+    } else {
+        LinkClass::Local
     }
 }
 
