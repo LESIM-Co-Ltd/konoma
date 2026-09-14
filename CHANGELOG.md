@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.28.6] - 2026-09-14
+
 ### Added
 - `I` opens a new tab right after the current one (`tab_new_after`); `t` keeps appending at the end.
 
@@ -2480,7 +2482,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.5...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.6...HEAD
+[0.28.6]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.5...v0.28.6
 [0.28.5]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.4...v0.28.5
 [0.28.4]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.3...v0.28.4
 [0.28.3]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.2...v0.28.3
