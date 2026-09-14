@@ -233,6 +233,65 @@ mod tests {
         (dir, base)
     }
 
+    /// `tab_new_after` (`I`) inserts to the right of the active tab, and the session file written
+    /// right after reflects that new on-screen order (not the old push-at-end order) with `active`
+    /// pointing at the freshly inserted tab.
+    #[test]
+    fn session_tab_new_after_persists_new_on_screen_order() {
+        let (dir, base) = setup("konoma_sess_tab_new_after_test");
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        let c = dir.join("sub/c.txt");
+
+        // tab0 previews a.txt.
+        let _ = app.reveal_path_deep(&a);
+        app.enter_preview(&a);
+        // tab1 (appended via plain tab_new, unaffected by this feature) previews b.txt.
+        app.tab_new().unwrap();
+        let _ = app.reveal_path_deep(&b);
+        app.enter_preview(&b);
+        // tab2 (appended too) stays in Tree with the cursor on sub/c.txt.
+        app.tab_new().unwrap();
+        let _ = app.reveal_path_deep(&c);
+        assert_eq!(app.tab_count(), 3, "前提: 3タブ");
+
+        // Back to tab0, then I inserts a brand-new tab immediately to its right.
+        app.tab_goto(0);
+        app.tab_new_after().unwrap();
+        assert_eq!(app.tab_count(), 4);
+        assert_eq!(app.active_tab_index(), 1, "挿入した新規タブがアクティブ");
+
+        let saved = SessionStore::with_base(base.clone(), &dir)
+            .read()
+            .expect("tab_new_after が保存済み");
+        assert_eq!(saved.active, 1, "アクティブは挿入位置");
+        assert_eq!(saved.tabs.len(), 4);
+        assert_eq!(
+            saved.tabs[0].preview.as_deref(),
+            Some(a.to_string_lossy().as_ref()),
+            "元の tab0 (a.txt) はそのまま先頭"
+        );
+        assert!(
+            saved.tabs[1].preview.is_none(),
+            "挿入された新規タブはプレビュー無しの素の Tree"
+        );
+        assert_eq!(
+            saved.tabs[2].preview.as_deref(),
+            Some(b.to_string_lossy().as_ref()),
+            "元 tab1 (b.txt) は 1 個右へずれて 2 番目"
+        );
+        assert_eq!(
+            saved.tabs[3].cursor.as_deref(),
+            Some(c.to_string_lossy().as_ref()),
+            "元 tab2 (sub/c.txt) は 1 個右へずれて 3 番目"
+        );
+
+        fs::remove_dir_all(&dir).ok();
+        fs::remove_dir_all(&base).ok();
+    }
+
     #[test]
     fn session_restore_rebuilds_tabs_cursor_and_preview() {
         let (dir, base) = setup("konoma_sess_restore_test");

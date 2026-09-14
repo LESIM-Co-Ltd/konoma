@@ -1,5 +1,13 @@
 use super::*;
 
+/// Where `tab_new_at` places the freshly created tab.
+enum TabInsert {
+    /// Append at the end of `self.tabs` (`tab_new` / `t`).
+    End,
+    /// Insert immediately to the right of the currently active tab (`tab_new_after` / `I`).
+    AfterCurrent,
+}
+
 impl App {
     // ---- Tabs (FR-5) ----
 
@@ -236,16 +244,33 @@ impl App {
             .unwrap_or_else(|| path.display().to_string())
     }
 
-    /// New tab. Create another tree context starting from the current root and switch to it.
-    /// The new tab starts in Tree (since it has no preview target). The source tab's preview is
-    /// preserved by `save_active`, so it is not lost.
     /// Hand out the next unused `PerTab::id`.
     fn next_tab_id(&mut self) -> u64 {
         self.tab_seq = self.tab_seq.wrapping_add(1);
         self.tab_seq
     }
 
+    /// New tab. Create another tree context starting from the current root and switch to it.
+    /// The new tab starts in Tree (since it has no preview target). The source tab's preview is
+    /// preserved by `save_active`, so it is not lost. Always appends at the end of `self.tabs`.
     pub fn tab_new(&mut self) -> Result<()> {
+        self.tab_new_at(TabInsert::End)
+    }
+
+    /// Like `tab_new`, but inserts the new tab immediately to the right of the currently active
+    /// one instead of appending at the end (mirrors vim's `:tabnew` / tmux's `new-window -a`).
+    pub fn tab_new_after(&mut self) -> Result<()> {
+        self.tab_new_at(TabInsert::AfterCurrent)
+    }
+
+    fn tab_new_at(&mut self, at: TabInsert) -> Result<()> {
+        // Where the new tab lands has to be captured before `save_active` (which doesn't move
+        // `active_tab` itself, but reads it — capturing here keeps the intent next to the read
+        // instead of relying on that invariant holding a few lines further down).
+        let insert_idx = match at {
+            TabInsert::End => None,
+            TabInsert::AfterCurrent => Some(self.active_tab + 1),
+        };
         self.save_active();
         // The heading outline overlay isn't carried into the new tab (prevents an empty overlay
         // on an empty tab).
@@ -343,8 +368,16 @@ impl App {
         // Bumping the generation makes the discard structural, the way every other switch does it.
         self.invalidate_filter_pool_scan();
         self.search_clear();
-        self.tabs.push(self.snapshot_tab());
-        self.active_tab = self.tabs.len() - 1;
+        match insert_idx {
+            None => {
+                self.tabs.push(self.snapshot_tab());
+                self.active_tab = self.tabs.len() - 1;
+            }
+            Some(idx) => {
+                self.tabs.insert(idx, self.snapshot_tab());
+                self.active_tab = idx;
+            }
+        }
         // Save the session at the checkpoint where the tab set changes (the most recent tab
         // layout survives even an abnormal exit).
         self.save_session();

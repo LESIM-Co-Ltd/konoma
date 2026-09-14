@@ -53,7 +53,11 @@ pub enum Action {
     Navigate(Motion),
 
     // --- Global (tabs / help / path copy) ---
+    /// `t`: new tab, always appended at the end of the tab list.
     TabNew,
+    /// `I`: new tab inserted immediately to the right of the currently active one (mirrors vim's
+    /// `:tabnew` / tmux's `new-window -a`). `t` keeps appending.
+    TabNewAfter,
     TabClose,
     TabPrev,
     TabNext,
@@ -1132,6 +1136,11 @@ impl KeyMap {
         // either Tree or Preview.
         global.insert(KeyPress::ch('F'), run(Action::ToggleFollow));
         global.insert(KeyPress::ch('t'), run(Action::TabNew));
+        // I = "insert" a new tab next to this one (tab_new_after), landing right of the active
+        // tab instead of at the end. Chosen because it's a letter no tab-allowing surface uses
+        // for anything else, so it's never shadowed by a surface-specific binding; `t` keeps
+        // appending at the end (unchanged for every existing caller).
+        global.insert(KeyPress::ch('I'), run(Action::TabNewAfter));
         global.insert(KeyPress::ch('T'), run(Action::ToggleTabList));
         // P = read a path/GitHub link from the clipboard and jump there (reveal + preview). Global
         // so it works from either Tree or Preview. Changeable via `[keys.global]`.
@@ -1829,6 +1838,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "noop" | "disabled" => Action::Noop,
         // Global
         "tab_new" => Action::TabNew,
+        "tab_new_after" => Action::TabNewAfter,
         "tab_close" => Action::TabClose,
         "tab_prev" => Action::TabPrev,
         "tab_next" => Action::TabNext,
@@ -2028,6 +2038,7 @@ pub fn action_name(a: Action) -> String {
         Action::Noop => "noop",
         Action::Navigate(m) => return format!("navigate:{}", motion_name(m)),
         Action::TabNew => "tab_new",
+        Action::TabNewAfter => "tab_new_after",
         Action::TabClose => "tab_close",
         Action::TabPrev => "tab_prev",
         Action::TabNext => "tab_next",
@@ -2362,6 +2373,30 @@ mod tests {
     }
 
     #[test]
+    fn shift_i_opens_new_tab_after_current_via_global() {
+        // I = insert a new tab right of the currently active one (tab_new_after). Global, so it
+        // resolves the same way from Tree/Preview *and* from the Bookmarks/Tabs list surfaces
+        // (neither binds `I` for anything of its own, so it falls through to global rather than
+        // being available as a bookmark-name jump letter — same treatment as t/T/F/Q). `t` keeps
+        // appending.
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        for sfc in [
+            Surface::Tree,
+            Surface::PreviewText,
+            Surface::Bookmarks,
+            Surface::Tabs,
+        ] {
+            assert_eq!(
+                m.resolve(sfc, None, KeyPress::ch('I')),
+                Resolution::Action(Action::TabNewAfter),
+                "I が {sfc:?} で tab_new_after に解決する"
+            );
+        }
+        assert_eq!(action_from_str("tab_new_after"), Some(Action::TabNewAfter));
+        assert_eq!(action_name(Action::TabNewAfter), "tab_new_after");
+    }
+
+    #[test]
     fn shift_q_quits_via_global_on_keymap_surfaces() {
         // Q = quit the whole app. Placed on global, so every allows_tabs() surface (all but
         // text-input/confirm-modal) inherits it.
@@ -2566,6 +2601,7 @@ mod tests {
             Action::Navigate(Motion::PageDown),
             Action::Navigate(Motion::LineHome),
             Action::TabNew,
+            Action::TabNewAfter,
             Action::ToggleHelp,
             Action::CopyPath(CopyKind::Full),
             Action::CopyPath(CopyKind::Parent),
