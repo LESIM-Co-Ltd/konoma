@@ -510,7 +510,8 @@ builtin = "pdf"
 #                    with j/k + Enter (or move the key elsewhere in the config).
 #   Preview      : "preview_back" "search_start" "search_next" "search_prev"
 #                  "preview_copy_selection_ref" (Y: copy the @path#L reference of the selection/caret)
-#                  "link_open" (Enter: open the link in the same tab) "open_link_new_tab" (Ctrl-t: open the link in a new tab)
+#                  "link_open" (Enter: open the link in the same tab) "open_link_new_tab" (Ctrl-t: open a local link in a new
+#                    tab; a same-document #anchor link jumps in place instead, and a URL/mailto/tel link opens externally)
 #                  "preview_next_file" "preview_prev_file" (Ctrl-n/Ctrl-p: preview the next/prev file in tree order
 #                    = file paging. Directories are skipped; wraps at the ends.)
 #                  "toggle_outline" (o: open the heading outline of a Markdown preview; Enter jumps to a heading)

@@ -583,8 +583,10 @@ impl App {
 
     /// Whether the focused inline diagram's reserved block is fully visible in the preview viewport
     /// (mirrors the renderer's in-place-zoom condition: `row_off == 0 && vis_rows >= rows`).
-    /// Viewport 0 (no render pass yet — tests) counts as visible.
-    fn focused_fence_fully_visible(&self) -> bool {
+    /// Viewport 0 (no render pass yet — tests) counts as visible. `pub` so the footer's hjkl/0 pan
+    /// hints (`ui/preview.rs::footer_hints`) can mirror exactly the condition `fence_pan_motion`
+    /// itself gates on, instead of drifting from it.
+    pub fn focused_fence_fully_visible(&self) -> bool {
         let Some(ord) = self.focused_mermaid_ordinal() else {
             return false;
         };

@@ -1726,6 +1726,30 @@ enum MdItemKind {
     Details { ordinal: usize },
 }
 
+/// Classification of the currently Tab-focused Markdown item, for the decorated preview's footer
+/// hints and `?` help (`ui/preview.rs`). **The rule**: a hint is shown iff the key would actually
+/// do what the label says right now, so this must mirror exactly what `md_activate_focused` /
+/// `md_open_focused_link_new_tab` do for that same item — the `Link` variants come from
+/// `classify_md_link_target` (`app/md_items.rs`), the single predicate both those handlers and
+/// this classifier read, so display and behavior cannot drift apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MdFocus {
+    /// A local file/dir link: `↵` opens it here, `Ctrl-t` opens it in a new tab.
+    LocalLink,
+    /// A same-document `#anchor` link: `↵`/`Ctrl-t` both just scroll to it in place.
+    AnchorLink,
+    /// A `scheme://`/`mailto:`/`tel:` link: `↵`/`Ctrl-t` both hand it to the OS opener.
+    ExternalLink,
+    /// A task checkbox: `Space`/`↵` toggle it.
+    Task,
+    /// A fenced code block: `y c` copies its source (no `↵` action).
+    CodeBlock,
+    /// An inline mermaid diagram: `↵` opens it full screen; `+/-` zoom in place.
+    MermaidFence,
+    /// A `<details>` summary: `Space`/`↵` toggle collapsed ⇄ expanded.
+    Details,
+}
+
 /// Cache of highlighted lines for windowed reading.
 /// The key is (path, top byte, height). Rebuilt only when scroll/vertical resize changes it.
 /// (Line content does not depend on display width, so width is not part of the key.)

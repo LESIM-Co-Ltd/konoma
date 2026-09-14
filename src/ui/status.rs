@@ -454,7 +454,7 @@ fn whichkey_spans(app: &App) -> Option<Vec<Span<'static>>> {
 
 /// Operation hints are **owned by each view**. Here we just delegate to the active view.
 /// (Tree = `ui::tree::footer_hints` / Preview = `ui::preview::footer_hints`. Kind differences are absorbed inside preview.)
-fn hint_tokens(app: &App) -> Vec<String> {
+pub(crate) fn hint_tokens(app: &App) -> Vec<String> {
     match app.tab.mode {
         Mode::Tree => crate::ui::tree::footer_hints(app),
         Mode::Preview => crate::ui::preview::footer_hints(app),
@@ -537,45 +537,197 @@ mod tests {
     use crate::config::Config;
     use crate::test_support::unique_tmp;
 
+    /// Helper: preview `name` in `dir` (found by exact filename suffix), triggering a real render
+    /// pass so `md_items`/`md_cache` are populated (the same route `tree_activate` + a draw takes
+    /// in production — `enter_preview` alone does not build the decoration cache).
+    fn preview_and_render(app: &mut App, name: &str) {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        app.tab.selected = app
+            .tab
+            .entries
+            .iter()
+            .position(|e| e.path.ends_with(name))
+            .unwrap();
+        app.tree_activate().unwrap();
+        let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        term.draw(|fr| crate::ui::render(fr, app)).unwrap();
+    }
+
+    /// **The rule under test**: in the decorated Markdown footer, a hint is shown iff the key
+    /// would actually do what the label says *right now* — not because the document merely
+    /// contains a matching item somewhere. Case (a): nothing focused → `Tab:focus` but none of
+    /// `↵`/`C-t`/`Space`. Case (h): `/:search`/`F:FOLLOW` are always present in the decorated
+    /// view (previously missing — only the code/plain-text branch had them).
     #[test]
-    fn markdown_preview_footer_shows_link_keys() {
-        // The Markdown preview footer shows link operations (Tab = focus / ↵ = open).
-        // Plain text/code doesn't show them (there are no links).
-        let dir = unique_tmp("konoma_md_hints_test");
+    fn markdown_preview_footer_no_focus_shows_only_focus_search_follow() {
+        let dir = unique_tmp("konoma_md_hints_nofocus_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("a.md"), b"[x](https://e.com)\n").unwrap();
+        std::fs::write(dir.join("a.md"), b"[x](https://e.com)\n\n- [ ] task\n").unwrap();
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        preview_and_render(&mut app, "a.md");
+        assert_eq!(app.focused_item(), None, "前提: 起動直後は未フォーカス");
+
+        let toks = hint_tokens(&app);
+        let md = toks.join(" ");
+        assert!(toks.iter().any(|t| t == "Tab:focus"), "Tab:{md}");
+        assert!(
+            !toks.iter().any(|t| t.starts_with("↵:")),
+            "無フォーカスで ↵ が出ている: {md}"
+        );
+        assert!(
+            !toks.iter().any(|t| t.starts_with("C-t:")),
+            "無フォーカスで C-t が出ている: {md}"
+        );
+        assert!(
+            !toks.iter().any(|t| t.starts_with("Space")),
+            "ドキュメントにチェックボックスがあるだけで Space が出ている(フォーカス依存でない): {md}"
+        );
+        assert!(toks.iter().any(|t| t == "/:search"), "/:{md}");
+        assert!(toks.iter().any(|t| t == "F:FOLLOW"), "F:{md}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Plain text preview is unaffected by the decorated-Markdown rework (regression guard for the
+    /// `Tab:focus`/`↵` rename — plain text has neither).
+    #[test]
+    fn plain_text_preview_footer_has_no_markdown_hints() {
+        let dir = unique_tmp("konoma_md_hints_plaintext_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("b.txt"), b"plain text\n").unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
-
-        // Preview a.md → link operations present.
-        app.tab.selected = app
-            .tab
-            .entries
-            .iter()
-            .position(|e| e.path.ends_with("a.md"))
-            .unwrap();
-        app.tree_activate().unwrap();
-        let md = hint_tokens(&app).join(" ");
-        assert!(md.contains("Tab:link"), "md にリンク操作が無い: {md}");
-        assert!(md.contains("↵:open"), "md に開く操作が無い: {md}");
-
-        // Preview b.txt → no link operations (the normal text hints).
-        app.tab.selected = app
-            .tab
-            .entries
-            .iter()
-            .position(|e| e.path.ends_with("b.txt"))
-            .unwrap();
-        app.tree_activate().unwrap();
+        preview_and_render(&mut app, "b.txt");
         let txt = hint_tokens(&app).join(" ");
         assert!(
-            !txt.contains("Tab:link") && !txt.contains("↵:open"),
-            "テキストにリンク操作が出ている: {txt}"
+            !txt.contains("Tab:focus") && !txt.contains("↵:open"),
+            "テキストに Markdown 操作が出ている: {txt}"
         );
         assert!(txt.contains("hl:"), "テキストは横移動ヒントを出す: {txt}");
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// Cases (b)/(c)/(d): `↵`'s (and `C-t`'s) label follows the focused link's class exactly —
+    /// local (open here + new tab), anchor (jump in place, never a new tab), external (browser,
+    /// never a new tab) — mirroring `md_focused_kind`/`classify_md_link_target`.
+    #[test]
+    fn markdown_preview_footer_link_hint_follows_focused_link_class() {
+        let dir = unique_tmp("konoma_md_hints_linkclass_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a.md"),
+            b"# Head\n\n[local](sub.txt)\n\n[anchor](#head)\n\n[ext](https://example.com)\n",
+        )
+        .unwrap();
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        preview_and_render(&mut app, "a.md");
+
+        // (b) local link: ↵:open + C-t:new tab.
+        app.md_focus_move(1);
+        assert_eq!(app.md_focused_kind(), Some(crate::app::MdFocus::LocalLink));
+        let toks = hint_tokens(&app);
+        assert!(toks.iter().any(|t| t == "↵:open"), "{toks:?}");
+        assert!(toks.iter().any(|t| t == "C-t:new tab"), "{toks:?}");
+
+        // (c) anchor link: ↵:jump, never C-t (a same-doc anchor can't open in a new tab).
+        app.md_focus_move(1);
+        assert_eq!(app.md_focused_kind(), Some(crate::app::MdFocus::AnchorLink));
+        let toks = hint_tokens(&app);
+        assert!(toks.iter().any(|t| t == "↵:jump"), "{toks:?}");
+        assert!(
+            !toks.iter().any(|t| t.starts_with("C-t:")),
+            "アンカーで C-t が出ている: {toks:?}"
+        );
+
+        // (d) external link: ↵:browser, never C-t.
+        app.md_focus_move(1);
+        assert_eq!(
+            app.md_focused_kind(),
+            Some(crate::app::MdFocus::ExternalLink)
+        );
+        let toks = hint_tokens(&app);
+        assert!(toks.iter().any(|t| t == "↵:browser"), "{toks:?}");
+        assert!(
+            !toks.iter().any(|t| t.starts_with("C-t:")),
+            "外部リンクで C-t が出ている: {toks:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Case (e): `Space` shows only while a task checkbox or a `<details>` summary is focused —
+    /// not merely because the document contains one (the old, document-wide `md_has_tasks()`
+    /// gate this replaces).
+    #[test]
+    fn markdown_preview_footer_space_toggle_follows_focus_not_document() {
+        let dir = unique_tmp("konoma_md_hints_space_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a.md"),
+            b"[link](https://e.com)\n\n- [ ] task\n\n<details>\n<summary>more</summary>\n\nbody\n\n</details>\n",
+        )
+        .unwrap();
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        preview_and_render(&mut app, "a.md");
+
+        // Link focused: the doc has a checkbox and a <details>, but neither is focused → no Space.
+        app.md_focus_move(1);
+        assert_eq!(
+            app.md_focused_kind(),
+            Some(crate::app::MdFocus::ExternalLink)
+        );
+        let toks = hint_tokens(&app);
+        assert!(
+            !toks.iter().any(|t| t.starts_with("Space")),
+            "リンクフォーカス中に Space が出ている: {toks:?}"
+        );
+
+        // Task focused: Space/↵:toggle.
+        app.md_focus_move(1);
+        assert_eq!(app.md_focused_kind(), Some(crate::app::MdFocus::Task));
+        let toks = hint_tokens(&app);
+        assert!(toks.iter().any(|t| t == "Space/↵:toggle"), "{toks:?}");
+
+        // <details> summary focused: Space/↵:toggle too.
+        app.md_focus_move(1);
+        assert_eq!(app.md_focused_kind(), Some(crate::app::MdFocus::Details));
+        let toks = hint_tokens(&app);
+        assert!(toks.iter().any(|t| t == "Space/↵:toggle"), "{toks:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Case (f): a focused code block has no Enter action (only `y c` copies it) — no `↵:` hint.
+    #[test]
+    fn markdown_preview_footer_code_block_shows_copy_not_open() {
+        let dir = unique_tmp("konoma_md_hints_code_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a.md"),
+            b"[link](https://e.com)\n\n```rust\nfn f() {}\n```\n",
+        )
+        .unwrap();
+        let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+        preview_and_render(&mut app, "a.md");
+        app.md_focus_move(1); // the link
+        app.md_focus_move(1); // the code block
+        assert_eq!(app.md_focused_kind(), Some(crate::app::MdFocus::CodeBlock));
+        let toks = hint_tokens(&app);
+        assert!(toks.iter().any(|t| t == "y c:copy code"), "{toks:?}");
+        assert!(
+            !toks.iter().any(|t| t.starts_with("↵:")),
+            "コードブロックに ↵ が出ている: {toks:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // Case (g) (mermaid fence footer hints) lives in `app::tests` instead of here: it needs the
+    // private `App::picker`/`enter_preview`/`PerTab::fence_zoom` fields that only a descendant of
+    // the `app` module can reach (see
+    // `app::tests::markdown_preview_footer_mermaid_fence_full_screen_and_pan_gate`, which calls
+    // this file's `hint_tokens` — `pub(crate)` for exactly that reason).
 
     /// The footer is a single shared line, so every hint label has to be a short word. `v`/`V` used
     /// to be wired to `Msg::PreviewSelectHelp` — the explanatory sentence written for the `?` help

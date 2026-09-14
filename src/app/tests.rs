@@ -2570,6 +2570,168 @@ fn md_code_block_is_tab_focusable_and_copies_source() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `Ctrl-t` (`md_open_focused_link_new_tab`) on a focused `#anchor` link must NOT open a new tab
+/// (a same-document anchor makes no sense in a new tab) — it scrolls to the heading in place, the
+/// same as `Enter`/`open_link_target` would. Also covers the "nothing focused" no-op: before this
+/// fix there was no test of either case, only of the plain-local-link path.
+#[test]
+fn ctrl_t_on_anchor_link_scrolls_in_place_not_a_new_tab() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let dir = unique_tmp("konoma_ctrl_t_anchor_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Padding pushes "## Target" well below the fold so a successful anchor jump is visible as a
+    // non-zero preview_scroll, not just "happened to already be on screen".
+    let filler = "filler line\n\n".repeat(30);
+    std::fs::write(
+        dir.join("doc.md"),
+        format!("# Top\n\n[Jump to Target](#target)\n\n{filler}## Target\n\nbody\n"),
+    )
+    .unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+
+    assert_eq!(app.tab_count(), 1);
+    app.md_focus_move(1); // the only Tab-focusable item: the link
+    assert_eq!(
+        app.md_focused_kind(),
+        Some(MdFocus::AnchorLink),
+        "#target はアンカーリンクとして分類される"
+    );
+
+    app.md_open_focused_link_new_tab().unwrap();
+    assert_eq!(app.tab_count(), 1, "アンカーは新規タブを作らない");
+    assert!(
+        !app.flash
+            .as_deref()
+            .unwrap_or_default()
+            .contains(tr(app.lang, crate::i18n::Msg::AnchorNotFound)),
+        "見出しは見つかっているはず: {:?}",
+        app.flash
+    );
+    assert!(
+        app.tab.preview_scroll > 0,
+        "見出しまでその場でスクロールする"
+    );
+
+    // Ctrl-t with nothing focused is a no-op (no tab, no scroll change, no panic).
+    app.tab.focused_item = None;
+    let scroll_before = app.tab.preview_scroll;
+    app.md_open_focused_link_new_tab().unwrap();
+    assert_eq!(app.tab_count(), 1, "無フォーカスでもタブは増えない");
+    assert_eq!(
+        app.tab.preview_scroll, scroll_before,
+        "無フォーカスでは何もしない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `Ctrl-t` on a focused external (URL/mailto/tel) link hands it to the OS opener exactly like
+/// `Enter` would (never creates a tab). Uses the `[external] open_links = false` seam so the test
+/// never actually spawns a browser: the refusal flash proves the external-open branch ran, not
+/// the local-link-new-tab branch.
+#[test]
+fn ctrl_t_on_external_link_opens_externally_not_a_new_tab() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let dir = unique_tmp("konoma_ctrl_t_external_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("doc.md"), b"[x](https://example.com/page)\n").unwrap();
+    let mut cfg = Config::default();
+    cfg.external.open_links = false;
+    let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
+    app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
+    app.tree_activate().unwrap();
+    let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+
+    app.md_focus_move(1); // the only item: the link
+    assert_eq!(
+        app.md_focused_kind(),
+        Some(MdFocus::ExternalLink),
+        "https:// はローカルでなく外部リンクとして分類される"
+    );
+
+    app.md_open_focused_link_new_tab().unwrap();
+    assert_eq!(app.tab_count(), 1, "外部リンクは新規タブを作らない");
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(tr(app.lang, crate::i18n::Msg::ExternalOpenLinksDisabled)),
+        "open_external 経路を通った(タブは作らない): {:?}",
+        app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Case (g) of the decorated Markdown footer's focus-dependent hints (the rest live in
+/// `ui::status::tests`, which cannot reach `App::picker`/`enter_preview`/`PerTab::fence_zoom` —
+/// private outside `app`'s own descendants): a focused inline mermaid diagram shows
+/// `↵:full screen` + `+/-:zoom` always; `hjkl:pan`/`0:fit` only once zoomed — mirroring
+/// `fence_pan_motion`'s own gate (`fence_zoom_level() > 1` **and**
+/// `focused_fence_fully_visible()`) exactly, including the "scrolled off screen" case that gate
+/// exists for (same fixture/pattern as `zoomed_fence_offscreen_does_not_eat_motion_keys`).
+#[test]
+fn markdown_preview_footer_mermaid_fence_full_screen_and_pan_gate() {
+    use crate::ui::status::hint_tokens;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let dir = unique_tmp("konoma_md_hints_mermaid_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let md = dir.join("a.md");
+    let mut src = String::from("```mermaid\ngraph LR\n  A --> B\n```\n\n");
+    for i in 0..60 {
+        src.push_str(&format!("line {i}\n\n"));
+    }
+    std::fs::write(&md, src).unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+
+    app.md_focus_move(1); // the only Tab item: the mermaid fence
+    assert_eq!(app.md_focused_kind(), Some(MdFocus::MermaidFence));
+
+    // 1x (not zoomed): full screen + zoom hints, no pan/fit.
+    let toks = hint_tokens(&app);
+    assert!(toks.iter().any(|t| t == "↵:full screen"), "{toks:?}");
+    assert!(toks.iter().any(|t| t == "+/-:zoom"), "{toks:?}");
+    assert!(
+        !toks.iter().any(|t| t.starts_with("hjkl:") || t == "0:fit"),
+        "1x なのに pan/fit が出ている: {toks:?}"
+    );
+
+    // Zoomed and on screen: hjkl:pan + 0:fit appear.
+    app.image_zoom_by(2.0);
+    let toks = hint_tokens(&app);
+    assert!(toks.iter().any(|t| t == "hjkl:pan"), "{toks:?}");
+    assert!(toks.iter().any(|t| t == "0:fit"), "{toks:?}");
+
+    // Scrolled off screen while still zoomed: pan/fit hints disappear again (mirrors
+    // `fence_pan_motion` refusing to consume hjkl for an invisible diagram).
+    app.tab.preview_scroll = 500;
+    term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
+    assert!(app.tab.fence_zoom > 1.9, "前提: ズーム状態は保持");
+    let toks = hint_tokens(&app);
+    assert!(
+        !toks.iter().any(|t| t.starts_with("hjkl:") || t == "0:fit"),
+        "画面外なのに pan/fit が出ている: {toks:?}"
+    );
+    assert!(
+        toks.iter().any(|t| t == "↵:full screen"),
+        "画面外でも full screen 自体は出る: {toks:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn links_collapse_to_label_only_with_optional_icon() {
     use ratatui::style::{Color, Modifier, Style};
