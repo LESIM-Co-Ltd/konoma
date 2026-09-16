@@ -2002,6 +2002,137 @@ fn e2e_diff_view_preview_representation_q_returns_to_hub() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Regression test for a real bug (rust-konoma-reviewer): `PerTab::preview_from_diff` was never
+/// cleared by `App::enter_preview`, despite that field's own doc comment claiming it was. Following
+/// a Tab-focused local link (`Enter`) out of the diff's own `Preview` representation into a
+/// *different* file must land on an ordinary preview of that file — `R` behaves like the normal
+/// raw/rendered toggle (not "return to the diff"), and `q` returns to the tree (not the diff/hub) —
+/// not carry the flag (and the stale `came_from_git_view`/diff target) along to the new file.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_preview_representation_link_to_another_file_clears_the_flag() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_preview_link_clears_flag");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    std::fs::write(
+        dir.join("doc.md"),
+        "# Title\n\noriginal\n\n[go](./other.md)\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("other.md"), "# Other\n\nsome other content\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(
+        dir.join("doc.md"),
+        "# Title\n\nchanged\n\n[go](./other.md)\n",
+    )
+    .unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    s.key('R'); // -> Preview representation
+    assert!(s.app.preview_from_diff_for_test());
+
+    s.tab(); // focus the "go" link
+    s.enter(); // follow it to other.md
+    assert!(
+        s.app
+            .tab
+            .preview_path
+            .as_deref()
+            .is_some_and(|p| p.ends_with("other.md")),
+        "リンク先(other.md)へ遷移しているはず"
+    );
+    assert!(
+        !s.app.preview_from_diff_for_test(),
+        "別ファイルへ移ったら preview_from_diff は解除されるはず(実バグ: enter_preview がクリアしていなかった)"
+    );
+
+    s.key('R'); // must be the ordinary raw/rendered toggle now, not "return to diff"
+    assert!(
+        s.app.is_md_raw(),
+        "R は通常の raw トグルとして働くはず(diff への復帰ではない)"
+    );
+    assert!(!s.app.is_git_diff_preview());
+    s.key('R'); // back to decorated, so `q` below isn't confused by raw-source state
+    s.key('q');
+    assert_eq!(
+        s.app.tab.mode,
+        Mode::Tree,
+        "q は通常どおりツリーへ戻るはず(古い diff/ハブへ飛んではいけない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The `Ctrl-n` (file-paging) counterpart of the test above: paging to a *different* file from the
+/// diff's `Preview` representation must clear `preview_from_diff` the same way following a link
+/// does — both funnel through `App::enter_preview`.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_preview_representation_file_paging_clears_the_flag() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_preview_paging_clears_flag");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    std::fs::write(dir.join("a-doc.md"), "# Title\n\noriginal\n").unwrap();
+    std::fs::write(dir.join("b-other.md"), "# Other\n\nsome other content\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(dir.join("a-doc.md"), "# Title\n\nchanged\n").unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("a-doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    s.key('R'); // -> Preview representation
+    assert!(s.app.preview_from_diff_for_test());
+
+    s.ctrl('n'); // page to the next file in tree order (b-other.md)
+    assert!(
+        s.app
+            .tab
+            .preview_path
+            .as_deref()
+            .is_some_and(|p| p.ends_with("b-other.md")),
+        "隣のファイル(b-other.md)へ移っているはず"
+    );
+    assert!(
+        !s.app.preview_from_diff_for_test(),
+        "ファイル送りで移った先でも preview_from_diff は解除されるはず"
+    );
+
+    s.key('R');
+    assert!(s.app.is_md_raw(), "R は通常の raw トグルとして働くはず");
+    assert!(!s.app.is_git_diff_preview());
+    s.key('R');
+    s.key('q');
+    assert_eq!(s.app.tab.mode, Mode::Tree, "q は通常どおりツリーへ戻るはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A diff whose current content exceeds `FOLLOW_BASELINE_FILE_CAP` falls back to `Source` with a
 /// flash explaining why (`docs/FEATURE-MD-RENDERED-DIFF.md` §5), instead of hanging or showing a
 /// half-built `Rendered` presentation.
@@ -2015,7 +2146,7 @@ fn e2e_diff_view_rendered_falls_back_to_source_for_oversized_file() {
     std::fs::write(dir.join("doc.md"), &big).unwrap();
     let mut s = Sim::new(&canon(&dir));
     s.select("doc.md");
-    s.key('d');
+    s.key('d'); // exactly one draw happens inside this key press
     assert_eq!(
         s.app.diff_view_for_test(),
         DiffView::Source,
@@ -2028,6 +2159,20 @@ fn e2e_diff_view_rendered_falls_back_to_source_for_oversized_file() {
             .is_some_and(|f| f.contains("unavailable")),
         "理由を説明するフラッシュが出るはず: {:?}",
         s.app.flash
+    );
+    // Regression test for a real bug (rust-konoma-reviewer): `render_gitdiff`'s own doc comment
+    // claimed `render_diff_rendered` falls back to `render_gitdiff_source` in the *same* frame
+    // when `ensure_md_cache` rounds `diff_view` down like this, but the fallback call was never
+    // actually implemented — the state above (`diff_view`/`flash`) was already correct (it's set
+    // inside `ensure_md_cache`, independent of the render dispatch), so it alone couldn't catch
+    // this: the **screen** stayed a blank, title-only pane for this entire first draw instead of
+    // showing the unified diff. Pin that the unified diff's own line-number gutter (`GUTTER_W`-wide
+    // right-aligned "1", `new_no` of the diff's first added line) is already on screen here, not
+    // only after a *second* key press.
+    assert!(
+        s.screen().contains("   1"),
+        "同じフレームで source(行番号ガター付きの unified diff) が描かれているはず: {}",
+        s.screen()
     );
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -1730,10 +1730,10 @@ pub fn file_diff(_root: &Path, _file: &Path) -> Vec<DiffLine> {
 /// hands back for a file macOS wrote with decomposed codepoints — otherwise fails to resolve even
 /// though the file is right there. Confirmed empirically: without this, `base_contents` returned
 /// `None` for an NFD-named tracked file (see `base_contents_finds_an_nfd_named_file`).
-// Not yet called from production code — see `crate::vcs::Vcs::base_contents`'s doc comment for why
-// (a later stage of the same feature wires the consumer in). Exercised directly by this module's
-// tests in the meantime.
-#[allow(dead_code)]
+///
+/// Called from production code via `impl Vcs for Git` (`src/vcs/mod.rs`) — the diff's `Rendered`
+/// presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §2) and the ordinary decorated Markdown
+/// preview's own change gutter (§3) both reach it through `crate::vcs::base_contents`.
 #[cfg(feature = "git")]
 pub fn base_contents(root: &Path, file: &Path) -> Option<Vec<u8>> {
     if !external_git_enabled() {
@@ -1760,8 +1760,8 @@ pub fn base_contents(root: &Path, file: &Path) -> Option<Vec<u8>> {
 /// `base_contents` for a repository libgit2 will not open: HEAD's blob via `git cat-file`, mirroring
 /// `file_diff_via_cli`'s own "before" side. Kept as its own function (rather than inlined into
 /// `base_contents`'s fallback arm) so a test can call it directly and compare it against the git2
-/// path, the same way `file_diff`/`file_diff_via_cli` are compared.
-#[allow(dead_code)] // used by tests directly and by `base_contents`'s CLI-fallback arm
+/// path, the same way `file_diff`/`file_diff_via_cli` are compared. Called from production code by
+/// `base_contents`'s own CLI-fallback arm above.
 #[cfg(feature = "git")]
 fn base_contents_via_cli(root: &Path, file: &Path) -> Option<Vec<u8>> {
     let dir = cli_dir(root)?;

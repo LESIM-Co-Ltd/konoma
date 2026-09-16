@@ -3652,6 +3652,15 @@ impl App {
         self.tab.fence_zoom = 1.0;
         self.tab.fence_center = (0.5, 0.5);
         self.tab.md_raw = false; // A new file starts in decorated display (Markdown/Mermaid). `R` switches to raw.
+                                 // This preview is not the diff's own `Preview` representation unless the one caller that
+                                 // wants that (`App::cycle_diff_view`'s `enter_diff_preview_representation`) re-sets it
+                                 // immediately after this call returns — every *other* way of reaching a preview (a tree
+                                 // `Enter`, a Markdown link, `Ctrl-n`/`Ctrl-p` file paging, a bookmark jump, ...) must start
+                                 // `false`, matching this field's own doc comment ("Cleared by `App::enter_preview`'s own
+                                 // reset"). Without this, `R`/`q` from a *later* file reached via one of those (after first
+                                 // having been on the diff's own `Preview` representation) kept routing back into a stale
+                                 // diff for the *original* file instead of behaving like an ordinary preview.
+        self.tab.preview_from_diff = false;
         self.md_cache = None; // Switching to a different file: invalidate the decoration cache
         self.md_items.clear();
         if !same_file {
