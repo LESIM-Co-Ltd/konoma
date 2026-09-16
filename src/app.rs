@@ -1170,9 +1170,6 @@ pub struct App {
 
     /// Cache of raw diff lines for the GitDiff preview (per path). Avoids recomputing `git diff` every frame.
     diff_cache: Option<DiffCache>,
-    /// Decoration cache for the diff's `Rendered` presentation — see [`MdDiffCache`].
-    #[cfg(feature = "git")]
-    md_diff_cache: Option<MdDiffCache>,
     gutter_cache: Option<GutterCache>,
 
     /// Interactive items in the Markdown preview (links + task checkboxes, collected on each render).
@@ -1648,12 +1645,38 @@ struct MdCache {
     /// through the diff). Logical-line ranges into `lines`, in the vocabulary
     /// `preview::markdown::PreviewMark` shares with `render::DiffMark` (see that type's own doc
     /// comment for why it isn't `DiffMark` itself). Empty when `[ui] git_gutter` is off, the file
-    /// has no committed baseline to compare (untracked, outside a repo), or there is genuinely no
-    /// difference — see `App::ensure_md_cache`'s own diff-marks step.
-    diff_marks: Vec<(
+    /// has no committed baseline to compare (untracked, outside a repo), there is genuinely no
+    /// difference, or `source` is `Diff` (that case uses `diff_marks` below instead — the two are
+    /// never both non-empty for the same cache entry). See `App::ensure_md_cache`'s own
+    /// diff-marks step.
+    preview_gutter_marks: Vec<(
         std::ops::Range<usize>,
         crate::preview::markdown::PreviewMark,
     )>,
+    /// The diff's `Rendered` presentation's own gutter marks (`docs/FEATURE-MD-RENDERED-DIFF.md`
+    /// §2) — straight from `DecoratedMarkdown::diff_marks`. Empty for `source == File`. See
+    /// `preview_gutter_marks`'s own doc comment for why this is a separate field, not the same one
+    /// re-typed: an old block here is real, dimmed *removed* content actually drawn in `lines`,
+    /// while `preview_gutter_marks`'s `Deleted` is a one-row boundary anchor with no such content
+    /// — reusing one field/glyph-renderer for both would either dim a boundary row of perfectly
+    /// ordinary current content (wrong) or lose the dim-old-content treatment `Removed` needs here.
+    diff_marks: Vec<(std::ops::Range<usize>, crate::preview::markdown::DiffMark)>,
+    /// Which `DecoratedSource` branch of `App::build_decorated` produced this cache entry — part of
+    /// the cache key alongside `path`/`width` (`App::ensure_md_cache`'s own hit-check) so switching
+    /// `PerTab::diff_view` between `Rendered` and anything else for the *same* `path` at the *same*
+    /// `width` (a real, reachable sequence — `R` cycling within `Surface::PreviewGitDiff` never
+    /// calls `App::open_git_diff` again, unlike a fresh diff open, and does not itself reset
+    /// `md_cache`) can never reuse a stale entry built for the other source.
+    source: MdCacheSource,
+}
+
+/// See `MdCache::source`'s own doc comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MdCacheSource {
+    /// The file's current on-disk content (the ordinary preview) — `DecoratedSource::File`.
+    File,
+    /// The diff's `Rendered` presentation — `DecoratedSource::Diff`.
+    Diff,
 }
 
 /// Cache of raw diff lines for the GitDiff preview. `file_diff` (the git call) does not depend on display width
@@ -1665,37 +1688,11 @@ struct DiffCache {
     lines: Vec<crate::git::DiffLine>,
 }
 
-/// Decoration cache for the diff's `Rendered` presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §2)
-/// — Markdown only, `PerTab.diff_view == DiffView::Rendered`. Parallels [`MdCache`] (same wrap-row-
-/// prefix / image-placement shape, sliced the same way by `App::md_diff_slice`), but built from
-/// [`crate::preview::markdown::render_markdown_diff_aligned`] instead of the ordinary single-
-/// document renderer, so it carries `marks` (which rows are `Added`/`Modified`/`Removed`) that
-/// [`MdCache`] has no equivalent of. Kept as a wholly separate cache/struct rather than folded into
-/// [`MdCache`] itself: the two are built from different inputs (one document vs. two) and read by
-/// different render paths (`ui/preview.rs::render_decorated` vs. `render_diff_rendered`) that must
-/// never accidentally cross-contaminate — a stale `Rendered` cache surviving a switch to `Source`,
-/// say, would otherwise have no structural reason to ever be noticed.
-#[cfg(feature = "git")]
-struct MdDiffCache {
-    path: PathBuf,
-    width: u16,
-    lines: Vec<Line<'static>>,
-    /// Nothing is ever drawn from `render_markdown_diff_aligned`'s own image-placement output for
-    /// this cache (`App::ensure_md_diff_cache`'s `slot_of`/`mermaid_slot`/`math_slot` closures
-    /// always answer "unavailable/text/raw" — see that function's own doc comment for the v1 scope
-    /// cut this is), so it is never even kept here.
-    row_prefix: Vec<usize>,
-    max_line_cols: usize,
-    marks: Vec<(std::ops::Range<usize>, crate::preview::markdown::DiffMark)>,
-    /// The visual (post-wrap) row of the first mark, if any — where `App::open_git_diff`/
-    /// `App::cycle_diff_view`'s `diff_scroll_pending` consumption scrolls to. `None` when `marks` is
-    /// empty (nothing changed to scroll to — front-matter-only edits, e.g.).
-    first_mark_row: Option<usize>,
-}
-
 /// Per-file cap for a follow baseline snapshot: a dirty file larger than this is not snapshotted
 /// (recorded as `None`), and its follow diff falls back to the full git diff (honest degradation).
-#[cfg(feature = "git")]
+/// Also the size cap `App::diff_rendered_sources` (`src/app/md_render.rs`) applies to either side
+/// of the diff's `Rendered` presentation — not itself behind `#[cfg(feature = "git")]` (unlike the
+/// follow-specific constants below it) because that caller compiles on every build.
 const FOLLOW_BASELINE_FILE_CAP: usize = 5 * 1024 * 1024;
 /// Total cap across all snapshotted baseline files: once exceeded, remaining dirty files are recorded
 /// as `None` (full-diff fallback) so pressing `F` on a fully-dirty tree never balloons memory.
@@ -2343,6 +2340,13 @@ struct DecoratedMarkdown {
     /// `MdRenderExtras::default()` (both lists empty) for a non-Markdown preview kind, which builds
     /// no `MdItem`s of either kind to read it at all. See `MdCache::items`'s own doc comment.
     extras: crate::preview::markdown::MdRenderExtras,
+    /// The diff's `Rendered` presentation's own gutter marks (`docs/FEATURE-MD-RENDERED-DIFF.md`
+    /// §2), straight from `render_markdown_diff_aligned`'s own `marks` output — empty for
+    /// `DecoratedSource::File` (an ordinary, non-diff preview has no such thing; its own change
+    /// gutter, §3, is computed separately — see `MdCache::preview_gutter_marks`). Stored here (not
+    /// unpacked at the call site) purely so `App::ensure_md_cache` has one shared place to read it
+    /// from regardless of which `DecoratedSource` branch of `App::build_decorated` produced it.
+    diff_marks: Vec<(std::ops::Range<usize>, crate::preview::markdown::DiffMark)>,
 }
 
 /// Which of the full-screen diff's three presentations a Markdown/text diff is currently shown in
@@ -2355,8 +2359,10 @@ pub(crate) enum DiffView {
     /// `Surface::PreviewGitDiff`.
     Source,
     /// Both versions' changed blocks, decorated, old (red/dim) then new (amber) —
-    /// `Surface::PreviewGitDiff` still, drawn by `App::ensure_md_diff_cache` +
-    /// `ui/preview.rs::render_diff_rendered`. Markdown only — see `App::diff_representation_count`.
+    /// `Surface::PreviewGitDiff` still, drawn through the same `App::ensure_md_cache` +
+    /// `ui/preview.rs::render_decorated` path an ordinary preview uses
+    /// (`App::ensure_md_cache`'s own `DecoratedSource::Diff` branch) and its thin
+    /// `render_diff_rendered` wrapper. Markdown only — see `App::diff_representation_count`.
     Rendered,
     /// The file's own ordinary preview (ordinary `Surface::PreviewText`/ `PreviewImage`), with a
     /// change gutter on the current content. Leaves `Surface::PreviewGitDiff` entirely — see
@@ -2694,8 +2700,6 @@ impl App {
             pending_git_tool: false,
             md_cache: None,
             diff_cache: None,
-            #[cfg(feature = "git")]
-            md_diff_cache: None,
             gutter_cache: None,
             md_items: Vec::new(),
             details_open: std::collections::HashMap::new(),
@@ -5120,7 +5124,6 @@ fn with_git_gutter(
 /// the "old block, drawn dim" reading a deleted block gets in this presentation. Same "no marks at
 /// all = no column" contract as `with_git_gutter` (a document with nothing changed never gains a
 /// gutter it doesn't need).
-#[cfg(feature = "git")]
 fn with_diff_gutter(
     lines: Vec<Line<'static>>,
     lo: usize,

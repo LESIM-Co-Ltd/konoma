@@ -270,7 +270,15 @@ pub enum Msg {
     /// `DiffScrollDiscardHint` without the `s:unified/split/auto` segment — the diff's `Rendered`
     /// presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §2) has no split view of its own, so `s`
     /// does nothing there and the hint must not advertise it (`App::diff_rendered_active`).
+    /// `h/l:hscroll` still applies here — used when `[ui] wrap` is off (the `Rendered`
+    /// presentation is wrap-aware, unlike `Source`, which always scrolls horizontally regardless
+    /// of `wrap`; see `DiffScrollDiscardHintRenderedWrap` for the `wrap = true` case).
     DiffScrollDiscardHintRendered,
+    /// `DiffScrollDiscardHintRendered` without `h/l:hscroll` — used while `[ui] wrap` is on (the
+    /// default), where horizontal scroll is a no-op in the `Rendered` presentation, matching the
+    /// ordinary decorated Markdown footer's identical wrap-gated `h/l` hint
+    /// ([[hint-shown-iff-key-acts]]).
+    DiffScrollDiscardHintRenderedWrap,
     HelpJumpTab,
     JustNow,
     Keymap,
@@ -460,6 +468,10 @@ pub enum Msg {
     /// `DiffScrollNoDiscardHint`'s `Rendered`-presentation counterpart — see
     /// `DiffScrollDiscardHintRendered`.
     DiffScrollNoDiscardHintRendered,
+    /// `DiffScrollNoDiscardHintRendered` without `h/l:hscroll` — see
+    /// `DiffScrollDiscardHintRenderedWrap`.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    DiffScrollNoDiscardHintRenderedWrap,
     StGit,
     /// Flash when a write is asked of a backend that only reads (jj).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -930,8 +942,10 @@ fn en(msg: Msg) -> &'static str {
         DiffScrollHint => "j/k:scroll  h/l:hscroll  s:unified/split/auto  g/G:ends  q/Esc:back",
         DiffScrollDiscardHint => "j/k:scroll  n/N:next/prev file  h/l:hscroll  s:unified/split/auto  x:discard  q/Esc:back",
         DiffScrollDiscardHintRendered => "j/k:scroll  n/N:next/prev file  h/l:hscroll  x:discard  q/Esc:back",
+        DiffScrollDiscardHintRenderedWrap => "j/k:scroll  n/N:next/prev file  x:discard  q/Esc:back",
         DiffScrollNoDiscardHint => "j/k:scroll  n/N:next/prev file  h/l:hscroll  s:unified/split/auto  q/Esc:back",
         DiffScrollNoDiscardHintRendered => "j/k:scroll  n/N:next/prev file  h/l:hscroll  q/Esc:back",
+        DiffScrollNoDiscardHintRenderedWrap => "j/k:scroll  n/N:next/prev file  q/Esc:back",
         HelpJumpTab => "jump to tab by number",
         JustNow => "just now",
         Keymap => "keymap",
@@ -1436,8 +1450,10 @@ fn jp(msg: Msg) -> &'static str {
         DiffScrollHint => "j/k:スクロール  h/l:横移動  s:縦/横/Auto  g/G:先頭/末尾  q/Esc:戻る",
         DiffScrollDiscardHint => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  s:縦/横/Auto  x:破棄  q/Esc:戻る",
         DiffScrollDiscardHintRendered => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  x:破棄  q/Esc:戻る",
+        DiffScrollDiscardHintRenderedWrap => "j/k:スクロール  n/N:次/前の変更  x:破棄  q/Esc:戻る",
         DiffScrollNoDiscardHint => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  s:縦/横/Auto  q/Esc:戻る",
         DiffScrollNoDiscardHintRendered => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  q/Esc:戻る",
+        DiffScrollNoDiscardHintRenderedWrap => "j/k:スクロール  n/N:次/前の変更  q/Esc:戻る",
         HelpJumpTab => "番号でタブへジャンプ",
         JustNow => "たった今",
         Keymap => "キーマップ",
@@ -2007,7 +2023,9 @@ mod tests {
         Msg::DiffScrollHint,
         Msg::DiffScrollDiscardHint,
         Msg::DiffScrollDiscardHintRendered,
+        Msg::DiffScrollDiscardHintRenderedWrap,
         Msg::DiffScrollNoDiscardHintRendered,
+        Msg::DiffScrollNoDiscardHintRenderedWrap,
         Msg::HelpJumpTab,
         Msg::JustNow,
         Msg::Keymap,

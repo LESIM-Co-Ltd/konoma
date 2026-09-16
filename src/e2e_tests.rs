@@ -2160,6 +2160,159 @@ fn e2e_follow_diff_rendered_compares_against_follow_baseline_not_head() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Regression test for a real bug found on a real terminal (tmux, 100 columns): the change gutter
+/// used to be prepended *after* rendering the body at the full viewport width, so a full-width
+/// heading-underline rule line grew 1 column too wide once gutted, overflowed, and wrapped into a
+/// spurious extra row that the cached row layout never knew about — everything below it (here, a
+/// mermaid diagram, and the plain paragraph after it) then landed 1 row too high on the real
+/// screen, overlapping the rule. `App::gutter_will_be_active` now decides the gutter up front and
+/// renders 1 column narrower, so the cache's own belief of where a later line lands
+/// (`App::md_visual_span_for_test`) matches where it *actually* lands on the real `Sim` screen
+/// buffer — pinned by comparing the two directly for a marker paragraph placed right after the
+/// diagram (a text search on the real buffer, not a guess about which row an overflow would land
+/// on): confirmed this fails 1 row off (`left: 12, right: 13`) when the gutter-narrowing fix is
+/// reverted, before restoring it here.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_rendered_row_after_mermaid_lands_where_the_cache_says() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_rendered_heading_overlap");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    let body = "# Title\n\n{PARA}\n\n## Diagram\n\n```mermaid\nflowchart TD\nA-->B\n```\n\nAFTERMARKERTEXT\n";
+    std::fs::write(&doc, body.replace("{PARA}", "original")).unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    // Uncommitted change, so the diff's Rendered presentation has a non-empty gutter.
+    std::fs::write(&doc, body.replace("{PARA}", "changed")).unwrap();
+
+    // 100 columns — the same width the real-terminal repro used.
+    let mut s = Sim::with_config_sized(&canon(&dir), Config::default(), 100, 30).with_picker();
+    s.select("doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    // The auto-scroll-to-first-mark lands well above this small document's own total row count,
+    // so it always clamps to the top — but read it back rather than assume, for robustness.
+    let scroll = s.app.tab.preview_scroll;
+
+    // Where the cache believes the marker paragraph (right after the diagram) starts, as a
+    // *screen* row: `md_visual_span_for_test` gives the visual (post-wrap) row, `+1` for the
+    // block's own top border, `- scroll`. Reuses the exact width the real render already built
+    // the cache at (`md_cache_width_for_test`) rather than guessing the border/gutter arithmetic
+    // and risking a silent rebuild at the wrong width.
+    let cache_width = s
+        .app
+        .md_cache_width_for_test()
+        .expect("直前の描画でキャッシュが構築されているはず");
+    let lines = s.app.decorated_lines(cache_width);
+    let marker_line = lines
+        .iter()
+        .position(|l| {
+            l.spans
+                .iter()
+                .any(|sp| sp.content.as_ref().contains("AFTERMARKERTEXT"))
+        })
+        .expect("マーカー段落が見つかるはず");
+    let (marker_visual_row, _) = s.app.md_visual_span_for_test(marker_line);
+    // +1 for the top status row (`[ui] statusbar = "split"`, the default, always reserves one) and
+    // +1 for the preview block's own top border.
+    let expected_screen_row = 2 + marker_visual_row - scroll as usize;
+
+    // Where the marker paragraph *actually* is on the real, rendered screen.
+    let (actual_screen_row, _) = s
+        .find_text("AFTERMARKERTEXT")
+        .expect("マーカー段落が画面に見えるはず");
+
+    assert_eq!(
+        actual_screen_row as usize, expected_screen_row,
+        "キャッシュの想定行と実描画行が一致するはず(はみ出しラップで 1 行ズレていないか)"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The `Rendered` presentation draws real mermaid diagrams, not a text-only fallback
+/// (`docs/FEATURE-MD-RENDERED-DIFF.md` §2): a fence that only exists in the *old* version and one
+/// that only exists in the *new* version (the old one removed, a different one added) both get
+/// their own placement — proving `App::build_decorated`'s `DecoratedSource::Diff` arm collects
+/// `mermaid_fences` from both sides, not only the current file's text. Also exercises `R` cycling
+/// all the way around (`Rendered → Preview → Source → Rendered`) landing on the identical result,
+/// and that an external FS edit drops and rebuilds the cache instead of showing stale placements.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_rendered_reserves_mermaid_fences_from_both_versions_and_survives_fs_and_r_cycle() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_rendered_both_fences");
+    seed_repo_markdown(&dir); // doc.md/plain.txt/new.md — only doc.md matters here
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\n```mermaid\nflowchart TD\nOLD-->X\n```\n").unwrap();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "add fenced doc"]);
+    // Uncommitted: the old fence is replaced by a *different* one (distinct content-hash key).
+    std::fs::write(&doc, "# Title\n\n```mermaid\nflowchart TD\nNEW-->Y\n```\n").unwrap();
+
+    let mut s = Sim::new(&canon(&dir)).with_picker();
+    s.select("doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    let placements_rendered = s.app.md_images().len();
+    assert_eq!(
+        placements_rendered, 2,
+        "旧フェンス(削除)・新フェンス(追加)それぞれに placement があるはず"
+    );
+
+    // R cycles Rendered -> Preview -> Source -> Rendered; the final Rendered must reproduce the
+    // identical placement count (the cache was rebuilt from scratch, not just reused by luck).
+    s.key('R'); // -> Preview
+    assert!(s.app.preview_from_diff_for_test());
+    s.key('R'); // -> Source (back into the diff)
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
+    s.key('R'); // -> Rendered again
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    assert_eq!(
+        s.app.md_images().len(),
+        placements_rendered,
+        "R を一周しても同じ結果が再現されるはず"
+    );
+
+    // An external edit (a third fence, replacing the "new" one) must drop the stale cache and
+    // rebuild against the fresh working-tree content, not keep showing the old placements.
+    std::fs::write(
+        &doc,
+        "# Title\n\n```mermaid\nflowchart TD\nNEWER-->Z\n```\n\n```mermaid\nflowchart TD\nSECOND-->W\n```\n",
+    )
+    .unwrap();
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&doc));
+    s.draw();
+    assert_eq!(
+        s.app.md_images().len(),
+        3,
+        "外部編集後は新しい内容(旧フェンス1つ+新フェンス2つ)で再構築されるはず"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[cfg(feature = "git")]
 #[test]
 fn e2e_changed_filter_and_jumps() {
@@ -3615,6 +3768,98 @@ fn e2e_jj_follow_opens_full_screen_diff() {
         Some((1, 1)),
         "セッションに 1 ファイル → (1/1)"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The full-screen diff's `Rendered` presentation on the jj backend (`docs/FEATURE-MD-RENDERED-DIFF.md`
+/// §2): `App::build_decorated`'s `DecoratedSource::Diff` arm and `App::diff_rendered_sources` both go
+/// through `crate::vcs::base_contents`, backend-agnostic by construction — this pins that a jj
+/// workspace's Markdown diff actually opens `Rendered` with non-empty marks, `R` still cycles through
+/// all 3 presentations, and (since jj is read-only, `Vcs::caps().write == false`) the footer never
+/// advertises `x:discard`. Skips itself where no `jj` binary is installed, matching every other jj
+/// e2e test in this file.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_diff_view_rendered_marks_and_r_cycle_no_discard_hint() {
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let dir = sandbox("jj_diff_view_rendered");
+    let jj = |args: &[&str]| -> bool {
+        std::process::Command::new("jj")
+            .current_dir(&dir)
+            .env("HOME", &dir)
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !jj(&["git", "init", "--no-colocate", "."]) {
+        return;
+    }
+    std::fs::write(
+        dir.join("doc.md"),
+        "# Title\n\nOriginal paragraph.\n\n## Section\n\nUnchanged paragraph.\n",
+    )
+    .unwrap();
+    if !jj(&["commit", "-m", "seed"]) {
+        return;
+    }
+    // Uncommitted (in the new working-copy commit): a changed paragraph plus a new section, the
+    // identical fixture shape `e2e_diff_view_default_is_rendered_for_markdown` uses for git.
+    std::fs::write(
+        dir.join("doc.md"),
+        "# Title\n\nCHANGED paragraph.\n\n## Section\n\nUnchanged paragraph.\n\n\
+         ## New Section\n\nBrand new content.\n",
+    )
+    .unwrap();
+
+    use crate::app::DiffView;
+    use crate::preview::markdown::DiffMark;
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.key('d');
+    assert!(s.app.is_git_diff_preview(), "jj でも全画面 diff で開くはず");
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "jj でも既定は rendered"
+    );
+    let marks = s
+        .app
+        .diff_rendered_marks_for_test()
+        .expect("rendered キャッシュが構築されているはず");
+    assert!(
+        !marks.is_empty(),
+        "jj の diff でも変更ブロックの印があるはず: {marks:?}"
+    );
+    assert!(marks.iter().any(|(_, m)| *m == DiffMark::Modified));
+    assert!(marks.iter().any(|(_, m)| *m == DiffMark::Added));
+
+    // jj is read-only: the footer must never advertise `x:discard`, with or without the presentation
+    // hint appended (`ui::status::footer_spans`), regardless of which of the 3 presentations shows.
+    let footer_has_discard = |s: &Sim| -> bool {
+        crate::ui::status::footer_spans(&s.app, 200)
+            .iter()
+            .any(|sp| sp.content.contains("discard"))
+    };
+    assert!(
+        !footer_has_discard(&s),
+        "jj は書けないので discard を出してはいけない"
+    );
+
+    s.key('R'); // Rendered -> Preview
+    assert!(s.app.preview_from_diff_for_test());
+    s.key('R'); // Preview -> Source (back into the diff)
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
+    assert!(!footer_has_discard(&s));
+    s.key('R'); // Source -> Rendered
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    assert!(!footer_has_discard(&s));
+
     std::fs::remove_dir_all(&dir).ok();
 }
 

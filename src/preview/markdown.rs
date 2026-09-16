@@ -38,11 +38,8 @@ pub(crate) mod render;
 // `diff` submodule directly, which it cannot) so `crate::preview::markdown::{BlockOp, DiffMark,
 // PreviewMark}` is the one path this file's own diff entry points, `render.rs`'s own test suite,
 // and the App layer all need — keeping which of `diff`/`render` actually defines each type an
-// implementation detail. `BlockOp` itself is named through this re-export only by `render.rs`'s
-// own `#[cfg(test)]` suite (every production caller lets inference carry `Vec<BlockOp>` through
-// `diff::block_ops` without ever naming the type) — `#[allow(unused_imports)]` for the identical
-// "unused outside `cfg(test)`" reason `render.rs`'s/`model.rs`'s own file-header allows document.
-#[allow(unused_imports)]
+// implementation detail. `BlockOp` is named directly by this file's own `diff_has_any_change`
+// (below) and by `render.rs`'s own `#[cfg(test)]` suite.
 pub(crate) use diff::BlockOp;
 pub(crate) use diff::PreviewMark;
 pub(crate) use render::DiffMark;
@@ -760,6 +757,24 @@ pub(crate) fn markdown_preview_marks(
     let new = model::Doc::parse(new_src);
     let ops = diff::block_ops(&old, &new, old_src, new_src);
     diff::preview_marks(&ops, new_block_rows)
+}
+
+/// Whether aligning `old_src`'s and `new_src`'s top-level blocks (`diff::block_ops`) finds **any**
+/// change at all — i.e. whether a change-gutter column would end up non-empty for this pair,
+/// without rendering anything. `App::ensure_md_cache` calls this *before* deciding what width to
+/// render at (`docs/FEATURE-MD-RENDERED-DIFF.md`'s own "ガターを出すかは描画前に決める"): a gutter
+/// column narrows the body by 1 cell, and that decision has to be made before the width-dependent
+/// render (image/mermaid/math cell sizing, line wrapping) runs at all — discovering the overflow
+/// only after the fact is exactly the real bug (`▔`/mermaid-over-heading-rule/wrapped-gutter-only
+/// rows) this function exists to prevent. Cheap: `Doc::parse` + a Myers diff over block keys, no
+/// actual block rendering (the same pure layer `markdown_preview_marks`/
+/// `render_markdown_diff_aligned` build on, `diff::block_ops` itself).
+pub(crate) fn diff_has_any_change(old_src: &str, new_src: &str) -> bool {
+    let old = model::Doc::parse(old_src);
+    let new = model::Doc::parse(new_src);
+    diff::block_ops(&old, &new, old_src, new_src)
+        .iter()
+        .any(|op| !matches!(op, BlockOp::Equal { .. }))
 }
 
 /// Reserved rows for one math image: `rows` blank lines the image overlays, centered for display math

@@ -3,10 +3,11 @@
 //! (`cycle_diff_view`), and the footer/help hints that only ever advertise a key that would
 //! actually do something (`docs/FEATURE-MD-RENDERED-DIFF.md` §4, [[hint-shown-iff-key-acts]]).
 //!
-//! The `Rendered` presentation's own cache (`MdDiffCache`) and its build step
-//! (`App::ensure_md_diff_cache`) live in `md_render.rs`, next to the ordinary (non-diff) Markdown
-//! decoration cache it parallels — this file owns the *state machine* around all three
-//! presentations, not the rendering of any one of them.
+//! The `Rendered` presentation draws through the **same** decorated-Markdown machinery an
+//! ordinary preview does — `App::ensure_md_cache`'s own `DecoratedSource::Diff` branch
+//! (`md_render.rs`) — rather than a cache/render path of its own, so real images/mermaid
+//! diagrams/math render there exactly as they do everywhere else. This file owns the *state
+//! machine* around all three presentations, not the rendering of any one of them.
 
 use super::*;
 
@@ -31,22 +32,22 @@ impl App {
     }
 
     /// Test-only view of the `Rendered` presentation's own gutter marks (row range, `DiffMark`) —
-    /// `MdDiffCache::marks`, `None` when there is no such cache built yet. `MdDiffCache` itself
-    /// only exists on a `git`-feature build, so this accessor does too (unlike its two siblings
-    /// above, which stay compiled — just unused — everywhere).
-    #[cfg(all(test, feature = "git"))]
+    /// `MdCache::diff_marks`, `None` when there is no such cache built yet (or the cache on hand is
+    /// `MdCacheSource::File`, which never populates this field). See `diff_view_for_test`'s own doc
+    /// comment for why this is `allow(dead_code)`, not `cfg(feature = "git")`, on a no-`git` test
+    /// build.
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn diff_rendered_marks_for_test(
         &self,
     ) -> Option<Vec<(std::ops::Range<usize>, crate::preview::markdown::DiffMark)>> {
-        self.md_diff_cache.as_ref().map(|c| c.marks.clone())
+        self.md_cache.as_ref().map(|c| c.diff_marks.clone())
     }
 
     /// Test-only view of the ordinary decorated Markdown preview's own gutter marks —
-    /// `MdCache::diff_marks`, `None` when there is no such cache built yet. See
+    /// `MdCache::preview_gutter_marks`, `None` when there is no such cache built yet. See
     /// `diff_view_for_test`'s own doc comment for why this is `allow(dead_code)`, not `cfg(feature
-    /// = "git")`, on a no-`git` test build (`MdCache::diff_marks` itself stays populated-or-empty
-    /// on every build — see that field's own doc comment — only every *test* reading it happens to
-    /// live in a `#[cfg(feature = "git")]` fixture).
+    /// = "git")`, on a no-`git` test build.
     #[cfg(test)]
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn md_diff_marks_for_test(
@@ -57,22 +58,46 @@ impl App {
             crate::preview::markdown::PreviewMark,
         )>,
     > {
-        self.md_cache.as_ref().map(|c| c.diff_marks.clone())
+        self.md_cache
+            .as_ref()
+            .map(|c| c.preview_gutter_marks.clone())
+    }
+
+    /// Test-only view of the decorated Markdown cache's own key `width` (the *viewport* width it
+    /// was built for — `MdCache::width`, not the possibly-1-narrower internal render width the
+    /// gutter uses; see `App::ensure_md_cache`'s own `render_width`). Lets a test that only knows
+    /// the terminal's own total column count (`Sim::with_config_sized`) reproduce the exact same
+    /// cache the real render already built, instead of guessing the border/gutter arithmetic
+    /// itself and risking silently rebuilding a *different* cache at the wrong width. See
+    /// `diff_view_for_test`'s own doc comment for why this is `allow(dead_code)`, not `cfg(feature
+    /// = "git")`, on a no-`git` test build.
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn md_cache_width_for_test(&self) -> Option<u16> {
+        self.md_cache.as_ref().map(|c| c.width)
     }
 
     /// Drops every cache whose content depends on "what did the working tree used to look like" —
-    /// the raw diff (`DiffCache`) and, on a `git`-feature build, the `Rendered` presentation's own
-    /// decoration cache (`MdDiffCache`). One name for the five call sites that used to set
-    /// `self.diff_cache = None` on their own (a new file's diff opened, the working tree changed,
-    /// a follow session (re)started) — see `git_view.rs::open_git_diff`, `follow.rs` (×3), and
-    /// `bookmark_actions.rs::jump_changed`'s refresh path — each of which now also needs to drop
-    /// `md_diff_cache` for the identical reason and would otherwise have had to remember to add a
-    /// second line.
+    /// the raw diff (`DiffCache`) and, when it is currently the diff's `Rendered` presentation
+    /// (`MdCacheSource::Diff` — the `Rendered` presentation now builds into `MdCache` just like an
+    /// ordinary preview does, see this module's own doc comment), the decoration cache too. One
+    /// name for the five call sites that used to set only `self.diff_cache = None` on their own (a
+    /// new file's diff opened, the working tree changed, a follow session (re)started) — see
+    /// `git_view.rs::open_git_diff`, `follow.rs` (×3), and `bookmark_actions.rs::jump_changed`'s
+    /// refresh path — each of which also needs a decorated Markdown `Rendered` view rebuilt against
+    /// the *new* baseline (`f` toggling since-follow-start ⇄ full git diff, say) and would otherwise
+    /// have had to remember a second line to do it.
+    ///
+    /// Deliberately does **not** clear an ordinary (`MdCacheSource::File`) `md_cache` — that cache
+    /// has its own, narrower invalidation (`App::reload_preview`, gated on `preview_affected_by`)
+    /// precisely so an unrelated FS event during heavy agent file churn does not force a re-render
+    /// of whatever happens to be on screen (`refresh_fs_inner`'s own "hot path" doc comment); a
+    /// blanket clear here would have silently defeated that (confirmed: broke
+    /// `app::tests::preview_reloads_only_for_relevant_fs_changes` when first tried).
     pub(super) fn invalidate_diff_caches(&mut self) {
         self.diff_cache = None;
-        #[cfg(feature = "git")]
-        {
-            self.md_diff_cache = None;
+        if matches!(&self.md_cache, Some(c) if c.source == MdCacheSource::Diff) {
+            self.md_cache = None;
         }
     }
 

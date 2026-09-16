@@ -23222,3 +23222,163 @@ fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
         );
     }
 }
+
+// =============================================================================
+// The diff's `Rendered` presentation shares the ordinary decorated-Markdown pipeline
+// (docs/FEATURE-MD-RENDERED-DIFF.md §2) — images/mermaid fences/math from *both* versions.
+// =============================================================================
+
+/// `App::ensure_md_cache`'s `DecoratedSource::Diff` branch draws real images, not a text-only
+/// fallback: a standalone image that only exists in the *old* version and one that only exists in
+/// the *new* version both get a real placement (`ImageSlot::Inline`, not `Unavailable`/`Loading`),
+/// proving `App::build_decorated`'s remote/fence/math collection (and the shared `slot_of` closure)
+/// really does run against both `old_pre` and `new_pre`, not only the current file's text.
+#[cfg(feature = "git")]
+#[test]
+fn diff_rendered_reserves_images_from_both_old_and_new_versions() {
+    let dir = unique_tmp("konoma_diff_rendered_both_images");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+
+    // Two tiny real PNGs, both present on disk at once (only referenced by one version's text
+    // each — `resolve_md_image_path` only cares that the *file* exists now, never about which git
+    // revision "has" it, so both simply sit in the same directory as the markdown file).
+    let old_png = dir.join("old.png");
+    let new_png = dir.join("new.png");
+    image::RgbaImage::from_pixel(4, 2, image::Rgba([1, 2, 3, 255]))
+        .save(&old_png)
+        .unwrap();
+    image::RgbaImage::from_pixel(6, 3, image::Rgba([4, 5, 6, 255]))
+        .save(&new_png)
+        .unwrap();
+
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\n![old](old.png)\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    // Uncommitted: the standalone image swaps from old.png to new.png.
+    std::fs::write(&doc, "# Title\n\n![new](new.png)\n").unwrap();
+
+    let root = dir.canonicalize().unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    app.open_git_diff(&root.join("doc.md"));
+    assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
+
+    let images = app.md_layout(80);
+    let _ = images; // builds the cache
+    let placements = app.md_images();
+    let urls: Vec<&str> = placements.iter().map(|p| p.url.as_str()).collect();
+    assert!(
+        urls.iter().any(|u| u.contains("old.png")),
+        "旧版だけにある画像も予約されるはず: {urls:?}"
+    );
+    assert!(
+        urls.iter().any(|u| u.contains("new.png")),
+        "新版だけにある画像も予約されるはず: {urls:?}"
+    );
+    assert_eq!(placements.len(), 2, "旧・新の画像それぞれ1つずつ: {urls:?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression test for a real bug (confirmed on a real terminal, tmux 100 cols): the change gutter
+/// column used to be prepended *after* rendering the body at the full viewport width, so a
+/// full-width line (a heading's own underline rule, a centered mermaid/image placeholder row) grew
+/// 1 column too wide once the gutter was added — overflowing and wrapping into a spurious extra row
+/// that `row_prefix` (computed *before* the gutter existed) never accounted for. Anything reading a
+/// cached row position (`ImagePlacement.line` via `md_visual_span`) then pointed 1 row too high
+/// once the real render's extra wrap pushed everything below it down by one — a mermaid diagram
+/// ending up drawn over the heading-rule row right above it. Fixed by deciding whether the gutter
+/// will be non-empty *before* any width-dependent rendering (`App::gutter_will_be_active`) and
+/// rendering the body 1 column narrower up front when it will be
+/// (`docs/FEATURE-MD-RENDERED-DIFF.md`'s own "ガターを出すかは描画前に決める").
+///
+/// This pins it two ways: (a) summing `Paragraph::line_count` of every **gutter-prepended** line at
+/// the real viewport width must reproduce `row_prefix`'s own total exactly (before the fix, the
+/// heading-rule line's sum came out 1 row too high) — the direct, general invariant; (b) no
+/// individual gutter-prepended line may exceed the viewport width at all — the literal symptom.
+#[cfg(feature = "git")]
+#[test]
+fn diff_rendered_gutter_never_causes_an_overflow_wrap() {
+    let dir = unique_tmp("konoma_diff_rendered_gutter_overflow");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    std::fs::write(
+        &doc,
+        "# Title\n\noriginal\n\n## Diagram\n\n```mermaid\nflowchart TD\nA-->B\n```\n",
+    )
+    .unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    // Uncommitted change, so the diff's Rendered presentation has a non-empty gutter.
+    std::fs::write(
+        &doc,
+        "# Title\n\nchanged\n\n## Diagram\n\n```mermaid\nflowchart TD\nA-->B\n```\n",
+    )
+    .unwrap();
+
+    let root = dir.canonicalize().unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    app.open_git_diff(&root.join("doc.md"));
+    assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
+
+    let width: u16 = 40;
+    let (total_rows, _) = app.md_layout(width);
+    assert!(total_rows > 0, "何か描画されているはず");
+    let (lines, _) = app.md_slice(0, total_rows as u16);
+    assert!(!lines.is_empty());
+
+    use ratatui::text::Text;
+    use ratatui::widgets::{Paragraph, Wrap};
+    let real_total: usize = lines
+        .iter()
+        .map(|l| {
+            Paragraph::new(Text::from(vec![l.clone()]))
+                .wrap(Wrap { trim: false })
+                .line_count(width)
+                .max(1)
+        })
+        .sum();
+    assert_eq!(
+        real_total,
+        total_rows,
+        "ガター込みの実描画行数が row_prefix の想定と一致するはず(はみ出しラップが無い): \
+         lines={:?}",
+        lines
+            .iter()
+            .map(|l| (l.width(), l.spans.first().map(|s| s.content.to_string())))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        lines.iter().all(|l| l.width() as u16 <= width),
+        "ガター込みの行幅が width を超えてはいけない: {:?}",
+        lines.iter().map(|l| l.width()).collect::<Vec<_>>()
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
