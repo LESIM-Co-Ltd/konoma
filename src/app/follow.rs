@@ -11,7 +11,7 @@ impl App {
             // A new follow session: default to "since start" display, pinning this moment as the baseline.
             self.follow_diff_full = false;
             // If a follow diff is currently displayed, re-fetch it against the new baseline (drop the stale old diff a matching path would otherwise keep).
-            self.diff_cache = None;
+            self.invalidate_diff_caches();
             #[cfg(feature = "git")]
             self.capture_follow_baseline();
             // Pin the root this session/baseline describes (see `follow_root`'s doc comment).
@@ -125,7 +125,7 @@ impl App {
     pub fn toggle_follow_diff_scope(&mut self) {
         if self.is_git_diff_preview() && self.diff_follow_scope {
             self.follow_diff_full = !self.follow_diff_full;
-            self.diff_cache = None;
+            self.invalidate_diff_caches();
             let msg = if self.follow_diff_full {
                 crate::i18n::Msg::FollowShowFull
             } else {
@@ -275,7 +275,7 @@ impl App {
         if !self.follow_scope_valid() {
             self.follow_session.clear();
             self.follow_diff_full = false;
-            self.diff_cache = None;
+            self.invalidate_diff_caches();
             #[cfg(feature = "git")]
             self.capture_follow_baseline();
             self.follow_root = Some(self.tab.root.clone());
@@ -306,8 +306,19 @@ impl App {
     /// "watch the agent work" (Zed follows the edit position; diffpane scrolls to the latest change).
     /// A few context lines are kept above, and the caret lands on the changed line (ready for `v`/`Y`).
     /// No-ops for non-windowed previews, untracked files (all-new → top is right), and outside a repo.
-    fn follow_scroll_to_first_change(&mut self) {
+    ///
+    /// Non-windowed decorated Markdown (not raw source) has no scroll position it can compute
+    /// *here* — a wrapped visual row depends on the terminal width, which isn't known until the
+    /// next render actually measures it — so it defers instead: `tab.diff_scroll_pending` is set
+    /// and consumed by that next render once `App::ensure_md_cache` has built `MdCache::diff_marks`
+    /// at the real width (`ui/preview.rs::render_decorated`, `docs/FEATURE-MD-RENDERED-DIFF.md` §3's
+    /// own follow-scroll extension). A no-op (the flag is simply consumed to nothing) when the
+    /// document turns out to have no baseline/no changes to mark at all.
+    pub(super) fn follow_scroll_to_first_change(&mut self) {
         if !self.is_windowed() {
+            if self.is_decorated_kind() && !self.is_raw_source() {
+                self.tab.diff_scroll_pending = true;
+            }
             return;
         }
         let Some(path) = self.tab.preview_path.clone() else {

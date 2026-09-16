@@ -539,7 +539,7 @@ impl App {
         self.win_cache = None;
         self.preview_total_lines = None;
         self.md_cache = None;
-        self.diff_cache = None; // opening another file's diff: invalidate the raw diff cache
+        self.invalidate_diff_caches(); // opening another file's diff: invalidate both diff caches
         self.md_items.clear();
         self.tab.focused_item = None;
         self.hl_pending = false;
@@ -548,6 +548,15 @@ impl App {
         self.tab.git_view = false;
         // Defaults to the full git change scope (only the follow-originated case has the caller override it to true).
         self.diff_follow_scope = false;
+        // A fresh diff starts from `[ui] diff_view` (rounded to what `path` can actually show) —
+        // `diff_jump_changed` (`n`/`N`) saves/restores the tab's *current* value around this call
+        // instead, so cycling files never resets the presentation (`DiffView`'s own doc comment).
+        self.tab.diff_view = self.default_diff_view_for(path);
+        self.tab.diff_scroll_pending = self.tab.diff_view == DiffView::Rendered;
+        // Leaving whatever *other* preview this tab may have been showing (including the diff's own
+        // `Preview` representation, if `R`/`n`/`N` reached here from it) — this is a fresh open of
+        // the diff surface, not a continuation of that preview.
+        self.tab.preview_from_diff = false;
         self.tab.mode = Mode::Preview;
     }
 
@@ -619,9 +628,13 @@ impl App {
     }
 
     /// Close the GitDiff preview (q/Esc). Returns to the Git view if it came from there,
-    /// otherwise returns to the tree.
+    /// otherwise returns to the tree. Also the return path from the diff's `Preview` representation
+    /// (`main.rs`'s `Action::PreviewBack` routes here whenever `tab.preview_from_diff` is set, not
+    /// only for an actual `Surface::PreviewGitDiff`) — `preview_from_diff` is cleared unconditionally
+    /// here so either origin ends up in the identical "no longer inside a diff" state.
     pub fn close_git_diff(&mut self) {
         let return_to_git = self.tab.came_from_git_view;
+        self.tab.preview_from_diff = false;
         self.back_to_tree();
         if return_to_git {
             self.tab.came_from_git_view = false;

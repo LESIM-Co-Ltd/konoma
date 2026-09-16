@@ -24,6 +24,8 @@
 //! behavior so a future stage-2 change shows up as an intentional test update, not a silent
 //! regression) — not an oversight.
 
+use std::ops::Range;
+
 use similar::{capture_diff_slices, Algorithm, DiffOp};
 
 use super::model::{Block, Doc};
@@ -127,6 +129,145 @@ pub(crate) fn block_ops(
                     out.push(BlockOp::Insert { new: new_index + i });
                 }
             }
+        }
+    }
+    out
+}
+
+/// Which of the three left-edge markers one [`preview_marks`] range gets — the same three-color
+/// convention the code/text preview's own change gutter (`app::GutterMark`) uses (green added /
+/// amber modified / red deleted), kept as its own tiny type here (rather than reusing `app::
+/// GutterMark` or `render::DiffMark`) for the identical reason `render::DiffMark`'s own doc comment
+/// gives: this module has no dependency on `crate::app`/`crate::git`, and `Deleted` here names a
+/// different thing than either of those two enums' own third variant — `render::DiffMark::Removed`
+/// draws the *old* block's own content (the `rendered` presentation actually shows what was
+/// deleted); `PreviewMark::Deleted` marks one anchor row of the *new* document's own next-drawn
+/// block (nothing deleted is ever shown at all in the `preview` presentation — see this type's own
+/// call site, `preview_marks`, for exactly which row).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreviewMark {
+    /// An inserted block (`BlockOp::Insert`), covering its own whole row range.
+    Added,
+    /// The new half of a `BlockOp::Replace` pair, covering its own whole row range.
+    Modified,
+    /// A one-row anchor: the first row of whichever block draws immediately after one or more
+    /// deleted blocks (the last block's own final row, if the deletion runs to the end of the
+    /// document instead).
+    Deleted,
+}
+
+/// Derives the `preview` presentation's own gutter marks (`docs/FEATURE-MD-RENDERED-DIFF.md` §1's
+/// third row) from `ops` (`block_ops(old, new, ..)`) and `new_block_rows` — `new`'s own top-level
+/// blocks' final row ranges, in the same order as `new.blocks` (`render::RenderOut::block_rows`,
+/// from rendering `new` **alone**, the ordinary non-diff decorated render every other Markdown
+/// preview already produces — the `preview` presentation draws nothing but `new`'s own current
+/// content, so it needs no `render_doc_diff` pass of its own at all).
+///
+/// `Insert`/`Replace` mark their own `new` block's whole row range `Added`/`Modified`; `Equal`
+/// contributes nothing (unchanged). A `Delete` (or the deleted half of a `Replace`, which this
+/// function never receives — `Replace`'s own `old` half is not a `Delete`) has nothing to draw at
+/// all in this presentation, so instead it leaves a one-row `Deleted` anchor at the very first row
+/// of whichever block draws immediately after it (the next `Equal`/`Insert`/`Replace`'s own `new`
+/// row range) — or, if the deletion runs all the way to the end of the document, the *last* row of
+/// the block drawn immediately before it.
+///
+/// Returned ranges are **non-overlapping and sorted** by construction: this function resolves a
+/// row that would otherwise carry two marks at once — the anchor row of a `Delete` immediately
+/// followed by an `Insert`/`Replace` with no intervening `Equal`, i.e. no context line for the
+/// anchor to land on undisturbed — by priority `Deleted` > `Modified` > `Added` (a vanished
+/// neighbor is the rarer, more surprising fact, so it wins the one glyph column a row can show),
+/// then coalesces adjacent same-kind rows into one range the same way `render_doc_diff`'s own
+/// `marks` already do (each entry there is one block's whole extent, not one row at a time either).
+pub(crate) fn preview_marks(
+    ops: &[BlockOp],
+    new_block_rows: &[Range<usize>],
+) -> Vec<(Range<usize>, PreviewMark)> {
+    // Per-row resolution, `Deleted` > `Modified` > `Added`, matching the priority the doc comment
+    // above promises. A `BTreeMap` keeps the final coalescing pass below trivial (iteration is
+    // already row-ascending).
+    let mut by_row: std::collections::BTreeMap<usize, PreviewMark> =
+        std::collections::BTreeMap::new();
+    let mark_range = |by_row: &mut std::collections::BTreeMap<usize, PreviewMark>,
+                      range: Range<usize>,
+                      mark: PreviewMark| {
+        for row in range {
+            let slot = by_row.entry(row).or_insert(mark);
+            if rank(mark) > rank(*slot) {
+                *slot = mark;
+            }
+        }
+    };
+    fn rank(m: PreviewMark) -> u8 {
+        match m {
+            PreviewMark::Added => 0,
+            PreviewMark::Modified => 1,
+            PreviewMark::Deleted => 2,
+        }
+    }
+
+    let mut pending_delete = false;
+    let mut last_drawn_end: Option<usize> = None;
+    for op in ops {
+        match *op {
+            BlockOp::Equal { new: n } => {
+                if let Some(range) = new_block_rows.get(n).cloned() {
+                    if pending_delete {
+                        if let Some(row) = range.clone().next() {
+                            mark_range(&mut by_row, row..row + 1, PreviewMark::Deleted);
+                        }
+                        pending_delete = false;
+                    }
+                    last_drawn_end = Some(range.end);
+                }
+            }
+            BlockOp::Insert { new: n } => {
+                if let Some(range) = new_block_rows.get(n).cloned() {
+                    if pending_delete {
+                        if let Some(row) = range.clone().next() {
+                            mark_range(&mut by_row, row..row + 1, PreviewMark::Deleted);
+                        }
+                        pending_delete = false;
+                    }
+                    mark_range(&mut by_row, range.clone(), PreviewMark::Added);
+                    last_drawn_end = Some(range.end);
+                }
+            }
+            BlockOp::Replace { old: _, new: n } => {
+                if let Some(range) = new_block_rows.get(n).cloned() {
+                    if pending_delete {
+                        if let Some(row) = range.clone().next() {
+                            mark_range(&mut by_row, row..row + 1, PreviewMark::Deleted);
+                        }
+                        pending_delete = false;
+                    }
+                    mark_range(&mut by_row, range.clone(), PreviewMark::Modified);
+                    last_drawn_end = Some(range.end);
+                }
+            }
+            BlockOp::Delete { old: _ } => {
+                pending_delete = true;
+            }
+        }
+    }
+    // The document's own last block(s) were deleted (deletion ran to EOF): anchor to the last row
+    // actually drawn before it, rather than dropping the mark.
+    if pending_delete {
+        if let Some(end) = last_drawn_end {
+            if end > 0 {
+                let row = end - 1;
+                mark_range(&mut by_row, row..row + 1, PreviewMark::Deleted);
+            }
+        }
+    }
+
+    // Coalesce adjacent rows carrying the same mark into one range.
+    let mut out: Vec<(Range<usize>, PreviewMark)> = Vec::new();
+    for (row, mark) in by_row {
+        match out.last_mut() {
+            Some((range, last_mark)) if range.end == row && *last_mark == mark => {
+                range.end = row + 1;
+            }
+            _ => out.push((row..row + 1, mark)),
         }
     }
     out
@@ -493,5 +634,143 @@ mod tests {
             }
         }
         out
+    }
+
+    // --- preview_marks -----------------------------------------------------------------------
+
+    /// Fabricated `new_block_rows`: block `i` occupies rows `[sum of previous heights, +heights[i])`.
+    /// Real callers get this from `render::RenderOut::block_rows`; these tests only need *some*
+    /// non-overlapping, ascending row ranges to check `preview_marks`'s own row-level logic against
+    /// — the heights themselves don't have to mean anything.
+    fn rows(heights: &[usize]) -> Vec<Range<usize>> {
+        let mut out = Vec::new();
+        let mut at = 0usize;
+        for h in heights {
+            out.push(at..at + h);
+            at += h;
+        }
+        out
+    }
+
+    #[test]
+    fn all_equal_has_no_marks() {
+        let ops = vec![
+            BlockOp::Equal { new: 0 },
+            BlockOp::Equal { new: 1 },
+            BlockOp::Equal { new: 2 },
+        ];
+        assert_eq!(preview_marks(&ops, &rows(&[2, 3, 1])), Vec::new());
+    }
+
+    #[test]
+    fn insert_marks_its_own_whole_range_added() {
+        let ops = vec![BlockOp::Equal { new: 0 }, BlockOp::Insert { new: 1 }];
+        let got = preview_marks(&ops, &rows(&[2, 3]));
+        assert_eq!(got, vec![(2..5, PreviewMark::Added)]);
+    }
+
+    #[test]
+    fn replace_marks_its_own_whole_range_modified() {
+        let ops = vec![
+            BlockOp::Equal { new: 0 },
+            BlockOp::Replace { old: 5, new: 1 },
+        ];
+        let got = preview_marks(&ops, &rows(&[2, 4]));
+        assert_eq!(got, vec![(2..6, PreviewMark::Modified)]);
+    }
+
+    /// A lone `Delete` followed by an `Equal` anchors a single-row `Deleted` mark on the `Equal`
+    /// block's own first row (not its whole range — only the code/text gutter's boundary marker
+    /// shape, one row, not a whole block).
+    #[test]
+    fn delete_then_equal_anchors_first_row_of_the_equal_block() {
+        let ops = vec![BlockOp::Delete { old: 0 }, BlockOp::Equal { new: 0 }];
+        let got = preview_marks(&ops, &rows(&[3]));
+        assert_eq!(got, vec![(0..1, PreviewMark::Deleted)]);
+    }
+
+    /// A deletion running all the way to the end of the document (nothing drawn after it) anchors
+    /// to the *last* row of the block drawn immediately *before* it instead.
+    #[test]
+    fn delete_at_end_of_document_anchors_last_row_of_the_previous_block() {
+        let ops = vec![BlockOp::Equal { new: 0 }, BlockOp::Delete { old: 1 }];
+        let got = preview_marks(&ops, &rows(&[4]));
+        assert_eq!(got, vec![(3..4, PreviewMark::Deleted)]);
+    }
+
+    /// A document whose *every* block was deleted (new is empty) leaves no anchor at all — there is
+    /// no row left in the new document to put one on.
+    #[test]
+    fn delete_of_the_whole_document_leaves_no_anchor() {
+        let ops = vec![BlockOp::Delete { old: 0 }, BlockOp::Delete { old: 1 }];
+        assert_eq!(preview_marks(&ops, &[]), Vec::new());
+    }
+
+    /// Two consecutive deletions collapse into the same one-row anchor as a single deletion would
+    /// (the anchor names *a position*, not *how many* blocks vanished there).
+    #[test]
+    fn two_consecutive_deletes_still_anchor_one_row() {
+        let ops = vec![
+            BlockOp::Delete { old: 0 },
+            BlockOp::Delete { old: 1 },
+            BlockOp::Equal { new: 0 },
+        ];
+        let got = preview_marks(&ops, &rows(&[2]));
+        assert_eq!(got, vec![(0..1, PreviewMark::Deleted)]);
+    }
+
+    /// When a `Delete` is immediately followed by an `Insert`/`Replace` (no intervening `Equal` —
+    /// the pairing `block_ops` itself prefers whenever it can, so this is the *common* shape, not a
+    /// rare corner), the anchor row and the inserted/modified block's own first row are the same
+    /// row. Priority (doc comment: `Deleted` > `Modified` > `Added`) resolves the conflict: the
+    /// vanished-neighbor signal wins that one row, and the rest of the inserted/modified range keeps
+    /// its own color.
+    #[test]
+    fn delete_immediately_before_insert_prioritizes_deleted_on_the_shared_row() {
+        let ops = vec![BlockOp::Delete { old: 0 }, BlockOp::Insert { new: 0 }];
+        let got = preview_marks(&ops, &rows(&[3]));
+        assert_eq!(
+            got,
+            vec![(0..1, PreviewMark::Deleted), (1..3, PreviewMark::Added)]
+        );
+    }
+
+    #[test]
+    fn delete_immediately_before_replace_prioritizes_deleted_on_the_shared_row() {
+        let ops = vec![
+            BlockOp::Delete { old: 0 },
+            BlockOp::Replace { old: 1, new: 0 },
+        ];
+        let got = preview_marks(&ops, &rows(&[2]));
+        assert_eq!(
+            got,
+            vec![(0..1, PreviewMark::Deleted), (1..2, PreviewMark::Modified)]
+        );
+    }
+
+    /// Ranges out never overlap and are always sorted ascending, over the same randomized corpus
+    /// `every_block_on_both_sides_is_covered_exactly_once_in_order` already exercises (reusing the
+    /// same generator keeps this a true property check rather than a handful of hand-picked cases).
+    #[test]
+    fn marks_are_always_sorted_and_non_overlapping() {
+        for seed in 0..30u64 {
+            let mut rng = seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(7);
+            let old_src = random_doc_src(&mut rng);
+            let new_src = random_doc_src(&mut rng);
+            let old = Doc::parse(&old_src);
+            let new = Doc::parse(&new_src);
+            let ops = block_ops(&old, &new, &old_src, &new_src);
+            // One fabricated row per block (heights of 1) is enough to check ordering/overlap —
+            // the exact row *count* per block is render.rs's own concern, exercised separately by
+            // `render::tests` against real `block_rows`.
+            let block_rows = rows(&vec![1; new.blocks.len()]);
+            let got = preview_marks(&ops, &block_rows);
+            for w in got.windows(2) {
+                assert!(
+                    w[0].0.end <= w[1].0.start,
+                    "seed {seed}: overlapping/out-of-order marks: {got:?}"
+                );
+            }
+        }
     }
 }

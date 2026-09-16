@@ -1013,13 +1013,23 @@ impl App {
         } else {
             let _ = self.reveal_path_deep(&target);
         }
-        // open_git_diff resets came_from_git_view / diff_follow_scope, so save and restore them
-        // (so cycling from a hub-opened diff still returns to the hub with `q`, and a follow-scoped cycle keeps going).
+        // open_git_diff resets came_from_git_view / diff_follow_scope / diff_view (to the target
+        // file's own config default), so save and restore them (so cycling from a hub-opened diff
+        // still returns to the hub with `q`, a follow-scoped cycle keeps going, and the presentation
+        // — source/rendered/preview — is never reset by simply moving to the next changed file:
+        // `docs/FEATURE-MD-RENDERED-DIFF.md` §4's "n/N で次のファイルの diff へ移っても表現は維持").
+        // `Preview` never reaches this point at all (n/N is bound only in `Surface::PreviewGitDiff`,
+        // which the `Preview` representation has already left), so the restored value is always
+        // `Source`/`Rendered` — still rounded down to `Source` here in case the new target can't
+        // show `Rendered` (a Markdown diff cycling to a plain-text one, say).
         let came = self.tab.came_from_git_view;
         let scope = self.diff_follow_scope;
+        let view = self.tab.diff_view;
         self.open_git_diff(&target);
         self.tab.came_from_git_view = came;
         self.diff_follow_scope = scope;
+        self.tab.diff_view = self.round_diff_view(view, &target);
+        self.tab.diff_scroll_pending = self.tab.diff_view == DiffView::Rendered;
     }
 
     /// The follow session's reviewable files (recorded while `F` was ON), pruned to still-existing
@@ -1599,7 +1609,7 @@ impl App {
         } else {
             self.refresh_git_status_only(); // statuses+branch only (ignored keeps its cache)
         }
-        self.diff_cache = None; // the working tree may have changed → drop the diff cache (keeps up with external edits)
+        self.invalidate_diff_caches(); // the working tree may have changed → drop the diff caches (keeps up with external edits)
         self.gutter_cache = None; // same as above: the git change gutter is also rebuilt on a working-tree change
                                   // We do rebuild the tree, but its transient failure (e.g. a subdirectory being
                                   // expanded briefly becomes unreadable while an agent bulk-rewrites files)

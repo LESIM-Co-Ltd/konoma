@@ -118,6 +118,19 @@ impl App {
             }
             _ => {}
         }
+        // The **ordinary** (non-diff) decorated Markdown preview's own change gutter
+        // (`docs/FEATURE-MD-RENDERED-DIFF.md` §3) — computed here, once per cache build, from the
+        // exact `block_rows`/`pre_src` this pass just produced, so it never needs a second render
+        // pass of its own. Markdown only (`extras.block_rows` is empty for every other preview
+        // kind, so `preview_diff_marks` below would return nothing anyway, but gating explicitly
+        // avoids a wasted `base_contents` call on every Code/Text file opened).
+        let diff_marks = if self.cfg.ui.git_gutter
+            && matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_)))
+        {
+            self.preview_diff_marks(&decorated.pre_src, &decorated.extras.block_rows)
+        } else {
+            Vec::new()
+        };
         self.md_cache = Some(MdCache {
             path,
             width,
@@ -132,7 +145,85 @@ impl App {
             details_states: crate::preview::markdown::current_details_states(),
             pre_src: decorated.pre_src,
             pre_origin: decorated.pre_origin,
+            diff_marks,
         });
+    }
+
+    /// The committed baseline for `App::preview_diff_marks`'s own `old_src`: `None` outside a
+    /// repository, for an untracked/newly-added file (nothing committed to compare against — the
+    /// caller treats that the same as "no gutter" rather than drawing every block `Added`, matching
+    /// the code/text gutter's own "no marks at all outside a repo" contract, not the *diff*
+    /// presentations' "empty baseline = all-added" one: this is an ordinary content preview, not a
+    /// diff view, so an untracked file simply has no gutter to show, the same as it has none today),
+    /// or when the bytes aren't valid UTF-8 (binary/mixed encoding — never attempted as Markdown).
+    fn preview_diff_baseline(&self, path: &Path) -> Option<String> {
+        let bytes = crate::vcs::base_contents(&self.tab.root, path)?;
+        String::from_utf8(bytes).ok()
+    }
+
+    /// `docs/FEATURE-MD-RENDERED-DIFF.md` §3's own gutter marks for the **current** decorated
+    /// Markdown preview: `new_pre_src`/`new_block_rows` are this cache build's own `pre_src`/
+    /// `extras.block_rows` (the exact text/row-layout the renderer just produced), and the baseline
+    /// is the committed version of the *same* path, put through the identical pre-pass chain
+    /// (`preprocess_md_src`) so both sides are compared as the renderer would actually parse them —
+    /// front matter stripped, footnotes/inline HTML already rewritten, matching
+    /// `preview::markdown::markdown_preview_marks`'s own doc comment. Empty when there is no
+    /// baseline to compare (`preview_diff_baseline`) or the file has genuinely not changed.
+    fn preview_diff_marks(
+        &self,
+        new_pre_src: &str,
+        new_block_rows: &[std::ops::Range<usize>],
+    ) -> Vec<(
+        std::ops::Range<usize>,
+        crate::preview::markdown::PreviewMark,
+    )> {
+        let Some(path) = self.tab.preview_path.clone() else {
+            return Vec::new();
+        };
+        let Some(old_raw) = self.preview_diff_baseline(&path) else {
+            return Vec::new();
+        };
+        let old_pre_src = self.preprocess_md_src(&old_raw);
+        crate::preview::markdown::markdown_preview_marks(&old_pre_src, new_pre_src, new_block_rows)
+    }
+
+    /// The exact pre-pass chain `build_decorated` applies to a Markdown file's raw bytes before
+    /// handing the result to the renderer — front matter strip, then footnotes, then inline HTML,
+    /// each gated by its own `[ui] md_*` setting — factored out so `preview_diff_marks` can put an
+    /// arbitrary baseline string (never read from disk, so it has no `LineOrigin` of its own to
+    /// thread through) through the identical chain without a second, hand-copied mirror of it. The
+    /// `LineOrigin` `build_decorated` itself keeps (for the checkbox-toggle write-back path) is
+    /// discarded here — a diff comparison only needs the resulting text, never a line's own
+    /// provenance.
+    fn preprocess_md_src(&self, src: &str) -> String {
+        let src = if self.cfg.ui.md_frontmatter {
+            crate::preview::markdown::strip_front_matter(src).1
+        } else {
+            src.to_string()
+        };
+        let origin = crate::preview::markdown::identity_origin(&src);
+        let (src, origin) = if self.cfg.ui.md_footnotes {
+            crate::preview::markdown::process_footnotes_traced(&src, &origin)
+        } else {
+            (src, origin)
+        };
+        let (src, _origin) = if self.cfg.ui.md_inline_html {
+            crate::preview::markdown::process_inline_html_traced(&src, &origin)
+        } else {
+            (src, origin)
+        };
+        src
+    }
+
+    /// The ordinary decorated Markdown preview's own first change-gutter mark, as a **visual**
+    /// (post-wrap) display row — where `ui/preview.rs::render_decorated` scrolls to on the first
+    /// draw after `App::take_diff_scroll_pending` returns `true` for a follow jump into a decorated
+    /// Markdown document (§3's own follow-scroll extension). Must be called after `md_layout`/
+    /// `ensure_md_cache` has already built the cache for the current width (`md_visual_span` reads
+    /// its wrap-row prefix sums); `None` when there is no cache yet or no mark at all.
+    pub(crate) fn md_first_diff_mark_row(&self) -> Option<usize> {
+        let logical = self.md_cache.as_ref()?.diff_marks.first()?.0.start;
+        Some(self.md_visual_span(logical).0)
     }
 
     /// The default open state of a `<details>` block from `ui.md_details` and its `open` attribute
@@ -252,6 +343,10 @@ impl App {
                 }
             }
         }
+        // The ordinary decorated Markdown preview's own change gutter (§3) — the very last pass,
+        // after search highlight/focus inversion have already touched the visible lines, matching
+        // `render_doc_diff`'s own "marks applied after decoration" ordering.
+        let out = with_preview_diff_gutter(out, lo, &c.diff_marks);
         (out, local)
     }
 
@@ -593,5 +688,191 @@ pub(super) fn details_default_open(md_details: &str, open_attr: bool) -> bool {
         "open" => true,
         "closed" => false,
         _ => open_attr,
+    }
+}
+
+/// The diff's `Rendered` presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §2) — its own cache
+/// build step, parallel to `ensure_md_cache`/`md_layout`/`md_slice` above but reading two documents
+/// instead of one, so it lives in its own `impl` block (git-only: the presentation itself only
+/// ever exists on a `git`-feature build — see `Action::CycleDiffView`'s own `#[cfg(feature = "git")]`).
+#[cfg(feature = "git")]
+impl App {
+    /// Build (or reuse) the `Rendered` presentation's decoration cache at display width `width`.
+    /// Markdown only (`App::cycle_diff_view`/`App::open_git_diff` never set `DiffView::Rendered`
+    /// for any other kind, so this is never called otherwise). Standalone images, ```mermaid
+    /// fences, and inline/display LaTeX math all draw through their existing **text** fallback in
+    /// this one presentation — never the real pixel image `App::ensure_md_cache`'s ordinary
+    /// decorated Markdown path shows for the same content (principle #3, "unsupported is safe":
+    /// the diff-block alignment/coloring is this presentation's own value; a known, documented v1
+    /// scope cut, not an oversight — see `docs/STATUS.md`).
+    ///
+    /// Degrades to `Source` (§5), with a flash explaining why, when either side can't be compared
+    /// as text at all: unreadable, non-UTF-8, or over `FOLLOW_BASELINE_FILE_CAP`.
+    pub(super) fn ensure_md_diff_cache(&mut self, width: u16) {
+        let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() else {
+            return;
+        };
+        let hit = matches!(&self.md_diff_cache, Some(c) if c.path == path && c.width == width);
+        if hit {
+            return;
+        }
+        let Some((old_pre, new_pre)) = self.diff_rendered_sources(&path) else {
+            self.tab.diff_view = DiffView::Source;
+            self.flash = Some(tr(self.lang, crate::i18n::Msg::DiffRenderedUnavailable).into());
+            return;
+        };
+        let theme = &self.cfg.ui.theme;
+        let code = crate::preview::markdown::CodeStyle {
+            bg: theme.code_bg(),
+            label_bg: theme.code_label_bg(),
+            label_right: theme.code_label_right(),
+            tab_width: self.cfg.ui.tab_width,
+            wrap: self.cfg.ui.wrap,
+        };
+        let tasks = self.cfg.ui.md_task_state_chars();
+        let slot_of =
+            |_url: &str, _max_cols: Option<u16>| crate::preview::markdown::ImageSlot::Unavailable;
+        let mermaid_slot = |_code: &str| crate::preview::markdown::MermaidSlot::Text;
+        let math_slot = |_latex: &str, _display: bool| crate::preview::markdown::MathSlot::Raw;
+        let (lines, _images, _extras, marks) =
+            crate::preview::markdown::render_markdown_diff_aligned(
+                &old_pre,
+                &new_pre,
+                width,
+                code,
+                &theme.code_theme,
+                self.cfg.ui.icons,
+                &tasks,
+                &slot_of,
+                &mermaid_slot,
+                tr(self.lang, crate::i18n::Msg::MermaidCaption),
+                self.cfg.ui.md_alerts,
+                &math_slot,
+                false,
+                self.cfg.ui.md_block_aligns(),
+            );
+        let max_line_cols = lines.iter().map(|l| l.width()).max().unwrap_or(0);
+        let row_prefix = if self.cfg.ui.wrap && width > 0 {
+            use ratatui::text::Text;
+            use ratatui::widgets::{Paragraph, Wrap};
+            let mut pre = Vec::with_capacity(lines.len() + 1);
+            let mut acc = 0usize;
+            pre.push(0);
+            for line in &lines {
+                acc += Paragraph::new(Text::from(vec![line.clone()]))
+                    .wrap(Wrap { trim: false })
+                    .line_count(width)
+                    .max(1);
+                pre.push(acc);
+            }
+            pre
+        } else {
+            Vec::new()
+        };
+        // §5's "front matter だけの変更" degeneration: the block-diff found nothing (front matter is
+        // stripped before either side ever reaches `Doc::parse`), yet the file *does* have a diff
+        // (the raw unified diff is non-empty) — explain why nothing is marked rather than leaving
+        // the reader to wonder whether the feature is broken.
+        if marks.is_empty() && !self.git_diff_lines().is_empty() {
+            self.flash = Some(tr(self.lang, crate::i18n::Msg::DiffRenderedFrontMatterOnly).into());
+        }
+        let first_mark_row = marks.first().map(|(range, _)| {
+            if self.cfg.ui.wrap && row_prefix.len() == lines.len() + 1 {
+                row_prefix[range.start.min(lines.len())]
+            } else {
+                range.start
+            }
+        });
+        self.md_diff_cache = Some(MdDiffCache {
+            path,
+            width,
+            lines,
+            row_prefix,
+            max_line_cols,
+            marks,
+            first_mark_row,
+        });
+    }
+
+    /// `old`/`new` text for `ensure_md_diff_cache`, already through the identical pre-pass chain
+    /// the renderer itself parses (`App::preprocess_md_src`). `new` is the file's current on-disk
+    /// bytes; `old` is the committed baseline the diff's `Source` presentation already compares
+    /// against — the follow-session snapshot while `diff_follow_scope` is active and not toggled to
+    /// the full range (`App::follow_baseline_contents`, the same baseline
+    /// `App::compute_gitdiff_lines` selects), the backend's committed blob otherwise
+    /// (`crate::vcs::base_contents`). No committed baseline at all (`None` — an untracked file, or
+    /// one created since follow-start) reads as an empty string, matching §5's "旧版が無い…全ブロック
+    /// Insert" rule — the *same* "missing = empty" contract `follow_baseline_diff` already applies
+    /// to the unified diff. `None` overall only for a genuine read/size/encoding failure on either
+    /// side (`ensure_md_diff_cache`'s own caller then falls back to `Source`).
+    fn diff_rendered_sources(&self, path: &Path) -> Option<(String, String)> {
+        let new_bytes = std::fs::read(path).ok()?;
+        if new_bytes.len() > FOLLOW_BASELINE_FILE_CAP {
+            return None;
+        }
+        let new_raw = String::from_utf8(new_bytes).ok()?;
+
+        let old_bytes = if self.diff_follow_scope && !self.follow_diff_full {
+            self.follow_baseline_contents(path)
+        } else {
+            crate::vcs::base_contents(&self.tab.root, path)
+        };
+        let old_bytes = match old_bytes {
+            Some(b) if b.len() > FOLLOW_BASELINE_FILE_CAP => return None,
+            Some(b) => b,
+            None => Vec::new(),
+        };
+        let old_raw = String::from_utf8(old_bytes).ok()?;
+
+        Some((
+            self.preprocess_md_src(&old_raw),
+            self.preprocess_md_src(&new_raw),
+        ))
+    }
+
+    /// Ensures the cache and returns (total display rows, widest line in cells) — the `Rendered`
+    /// presentation's own counterpart to `App::md_layout`.
+    pub(crate) fn md_diff_layout(&mut self, width: u16) -> (usize, usize) {
+        self.ensure_md_diff_cache(width);
+        let Some(c) = &self.md_diff_cache else {
+            return (0, 0);
+        };
+        let total = if self.cfg.ui.wrap {
+            c.row_prefix.last().copied().unwrap_or(c.lines.len())
+        } else {
+            c.lines.len()
+        };
+        (total, c.max_line_cols)
+    }
+
+    /// The visible slice of the `Rendered` presentation, gutter marks already applied — the
+    /// counterpart to `App::md_slice`.
+    pub(crate) fn md_diff_slice(&self, scroll: u16, height: u16) -> (Vec<Line<'static>>, u16) {
+        let Some(c) = &self.md_diff_cache else {
+            return (Vec::new(), 0);
+        };
+        let s = scroll as usize;
+        let h = height.max(1) as usize;
+        let (lo, hi, local) = if self.cfg.ui.wrap && c.row_prefix.len() == c.lines.len() + 1 {
+            let lo = c.row_prefix.partition_point(|&p| p <= s).saturating_sub(1);
+            let hi = c
+                .row_prefix
+                .partition_point(|&p| p < s + h)
+                .min(c.lines.len());
+            (lo, hi.max(lo), (s - c.row_prefix[lo]) as u16)
+        } else {
+            let lo = s.min(c.lines.len());
+            let hi = (s + h).min(c.lines.len());
+            (lo, hi, 0)
+        };
+        let out = c.lines[lo..hi].to_vec();
+        (with_diff_gutter(out, lo, &c.marks), local)
+    }
+
+    /// The visual (post-wrap) row of the `Rendered` presentation's first mark, if any — where
+    /// `ui/preview.rs::render_diff_rendered` scrolls to on the first draw after `App::open_git_diff`/
+    /// `App::cycle_diff_view` set `tab.diff_scroll_pending`.
+    pub(crate) fn md_diff_first_mark_row(&self) -> Option<usize> {
+        self.md_diff_cache.as_ref().and_then(|c| c.first_mark_row)
     }
 }

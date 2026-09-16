@@ -6,6 +6,19 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **The full-screen diff now has 3 presentations you can switch between with `R`.** `source` is
+  the classic unified/split diff; `rendered` (the new default, `[ui] diff_view`) draws a Markdown
+  file's diff as decorated blocks — removed content in red/dim, added in green, changed-to in
+  amber — so an AI edit's *deletions* stay visible, not only its final result; `preview` is the
+  file's ordinary preview with a change gutter on the current content (also wired into the
+  **ordinary** decorated Markdown preview, not only the diff, so opening a changed `.md` file
+  directly now shows the same gutter code/text previews already had). `R` cycles between whichever
+  presentations a given file actually has: all 3 for Markdown, `source ⇄ preview` for any other
+  text file, none at all for a non-text file (no hint is shown for those). `n`/`N` preserve the
+  current presentation while cycling files. A file whose diff can't be compared as text at all
+  (unreadable, non-UTF-8, or over 5 MB) falls back to `source` with a flash explaining why.
+
 ## [0.28.6] - 2026-09-14
 
 ### Added

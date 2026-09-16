@@ -74,12 +74,9 @@ pub trait Vcs: Send + Sync {
     /// (`docs/FEATURE-MD-RENDERED-DIFF.md` §2): it, `file_diff`, and the follow-baseline snapshot
     /// (`App::follow_baseline_contents`) are the three ways konoma learns what a file used to look
     /// like, and this is the one a caller reaches for when it wants the *bytes* rather than an
-    /// already-diffed line list — e.g. to run its own comparison (a block-level Markdown diff)
-    /// against the current content instead of git's/jj's line-level one.
-    // Not yet called from production code: the consumer (`preview/markdown/diff.rs`, the "pure"
-    // layer in `docs/FEATURE-MD-RENDERED-DIFF.md` §2) is a later stage of the same feature.
-    // Exercised directly by this module's own tests and by `git.rs`'s/`jj.rs`'s in the meantime.
-    #[allow(dead_code)]
+    /// already-diffed line list — used by `App::preview_diff_baseline`/`diff_rendered_sources`
+    /// (`src/app/md_render.rs`) to run their own comparison (a block-level Markdown diff) against
+    /// the current content instead of git's/jj's line-level one.
     fn base_contents(&self, root: &Path, file: &Path) -> Option<Vec<u8>>;
 
     /// The changed files, one entry per file, sorted by path — what the changed-file list and the
@@ -441,7 +438,6 @@ pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
 }
 
 /// See [`Vcs::base_contents`].
-#[allow(dead_code)] // not yet called from production code — see the trait method's doc comment
 pub fn base_contents(root: &Path, file: &Path) -> Option<Vec<u8>> {
     backend_for(root).base_contents(root, file)
 }

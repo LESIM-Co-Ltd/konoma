@@ -174,6 +174,10 @@ pub enum Action {
     GitDiffDiscard,
     #[cfg(feature = "git")]
     CycleDiffLayout,
+    /// `R` in `Surface::PreviewGitDiff`: cycles the diff's three presentations (source/rendered/
+    /// preview) — `docs/FEATURE-MD-RENDERED-DIFF.md` §4.
+    #[cfg(feature = "git")]
+    CycleDiffView,
     /// In a follow-opened diff: toggle between the diff since follow-start and the full git diff.
     #[cfg(feature = "git")]
     ToggleFollowDiffScope,
@@ -919,6 +923,7 @@ impl KeyMap {
             pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
             pgit.insert(KeyPress::ch('x'), run(Action::GitDiffDiscard));
             pgit.insert(KeyPress::ch('s'), run(Action::CycleDiffLayout));
+            pgit.insert(KeyPress::ch('R'), run(Action::CycleDiffView));
             // f = toggle the range of a follow-opened diff (since follow-start ⇄ full). No-op for
             // a non-follow diff.
             pgit.insert(KeyPress::ch('f'), run(Action::ToggleFollowDiffScope));
@@ -1940,6 +1945,8 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         #[cfg(feature = "git")]
         "cycle_diff_layout" => Action::CycleDiffLayout,
         #[cfg(feature = "git")]
+        "cycle_diff_view" => Action::CycleDiffView,
+        #[cfg(feature = "git")]
         "toggle_follow_diff_scope" => Action::ToggleFollowDiffScope,
         #[cfg(feature = "git")]
         "git_stage" => Action::GitStage,
@@ -2129,6 +2136,8 @@ pub fn action_name(a: Action) -> String {
         Action::GitDiffDiscard => "git_diff_discard",
         #[cfg(feature = "git")]
         Action::CycleDiffLayout => "cycle_diff_layout",
+        #[cfg(feature = "git")]
+        Action::CycleDiffView => "cycle_diff_view",
         #[cfg(feature = "git")]
         Action::ToggleFollowDiffScope => "toggle_follow_diff_scope",
         #[cfg(feature = "git")]
@@ -2621,6 +2630,7 @@ mod tests {
             samples.push(Action::GitStage);
             samples.push(Action::GitOpenGraph);
             samples.push(Action::CycleDiffLayout);
+            samples.push(Action::CycleDiffView);
             samples.push(Action::BranchDelete);
             samples.push(Action::GitClose);
         }

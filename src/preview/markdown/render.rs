@@ -213,6 +213,16 @@ pub(crate) struct RenderOut {
     /// is the render pass's own record, not an independent re-scan the caller has to reconcile by
     /// count against what actually ended up on screen (see `app::md_tasks::md_toggle_focused_task`).
     pub tasks: Vec<(char, usize)>,
+    /// Every top-level block's own final (post-`decorate_headings_and_extras`) logical row range,
+    /// in document order, ascending and non-overlapping — `doc.blocks[i]` drew rows `block_rows[i]`
+    /// (so `block_rows.len() == doc.blocks.len()` always). This is the ordinary, non-diff render's
+    /// own counterpart to [`DiffRenderOut::marks`]'s row-extent bookkeeping (the identical
+    /// `w.lines.len() + w.heading_rule_shift` conversion — see [`render_marked_block`]'s own doc
+    /// comment for the mechanism both share), computed here so a caller wanting to mark up the
+    /// *plain* decorated document (the `preview` diff presentation,
+    /// `docs/FEATURE-MD-RENDERED-DIFF.md` §1's third row — `preview::markdown::diff::preview_marks`)
+    /// never needs a second, independent render pass just to learn where each block landed.
+    pub block_rows: Vec<Range<usize>>,
 }
 
 /// Three independent "how deep in the tree am I, and does it still apply" flags every recursive block
@@ -541,7 +551,9 @@ pub(crate) fn render_doc_aligned(
     // (this `Vec`, `contains_unsupported` itself, `render_markdown_with_images`'s own legacy
     // fallback) are kept, not removed, for this pass — see this file's own module doc comment.
     let mut unsupported: Vec<&'static str> = Vec::new();
+    let mut block_rows: Vec<Range<usize>> = Vec::with_capacity(doc.blocks.len());
     for block in &doc.blocks {
+        let block_row_start = w.lines.len() + w.heading_rule_shift;
         match &block.kind {
             BlockKind::Heading {
                 level,
@@ -662,6 +674,8 @@ pub(crate) fn render_doc_aligned(
                 render_html_table_from_model(&mut w, src, body_spans, rows)
             }
         }
+        let block_row_end = w.lines.len() + w.heading_rule_shift;
+        block_rows.push(block_row_start..block_row_end);
     }
     let lines = decorate_headings_and_extras(w.lines, width, icons, tasks);
     RenderOut {
@@ -670,6 +684,7 @@ pub(crate) fn render_doc_aligned(
         unsupported,
         code_blocks: w.code_blocks,
         tasks: w.task_marks,
+        block_rows,
     }
 }
 
@@ -837,6 +852,13 @@ pub(crate) fn render_doc_diff(
             unsupported: Vec::new(),
             code_blocks: w.code_blocks,
             tasks: w.task_marks,
+            // A diff render has no use for per-block row bookkeeping of its own: `marks`, above,
+            // already carries the row extent of every *changed* block (the only ones the `rendered`
+            // presentation needs), and this function's own `Equal` arm draws straight from
+            // `render_block` rather than the row-recording top-level loop `render_doc_aligned` uses
+            // to fill this field — see `RenderOut::block_rows`'s own doc comment for who actually
+            // reads it (the *non*-diff `preview` presentation's own gutter, `diff::preview_marks`).
+            block_rows: Vec::new(),
         },
         marks,
     }
@@ -9400,6 +9422,7 @@ mod tests {
                 unsupported: Vec::new(),
                 code_blocks: Vec::new(),
                 tasks: Vec::new(),
+                block_rows: Vec::new(),
             }),
             vec!["line1", "line2"]
         );
@@ -10091,6 +10114,7 @@ mod tests {
                 unsupported: Vec::new(),
                 code_blocks: Vec::new(),
                 tasks: Vec::new(),
+                block_rows: Vec::new(),
             }),
             vec!["lead $$"],
             "both the flushed pending text and the un-closed opener replay onto one line"
@@ -10226,6 +10250,7 @@ mod tests {
                 unsupported: Vec::new(),
                 code_blocks: Vec::new(),
                 tasks: Vec::new(),
+                block_rows: Vec::new(),
             }),
             vec!["line1", "line2"]
         );
@@ -10566,6 +10591,7 @@ mod tests {
                 unsupported: Vec::new(),
                 code_blocks: Vec::new(),
                 tasks: Vec::new(),
+                block_rows: Vec::new(),
             }),
             vec!["synthetic       tail"],
             "\"synthetic \" (10 cells) keeps its own trailing space — the math is inline, not a \
@@ -10623,6 +10649,7 @@ mod tests {
                 unsupported: Vec::new(),
                 code_blocks: Vec::new(),
                 tasks: Vec::new(),
+                block_rows: Vec::new(),
             }),
             vec!["synthetic", "", "", "tail"],
             "\"synthetic\" has lost its own trailing space (a lift): {:?}",

@@ -1646,8 +1646,11 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::VisualSelectSiblings => app.visual_select_scope(false),
         Action::VisualSelectAll => app.visual_select_scope(true),
         Action::PreviewBack => {
-            // A git diff preview returns to the Git view. Everything else returns to the tree.
-            if app.is_git_diff_preview() {
+            // A git diff preview — or an ordinary preview that *is* the diff's own `Preview`
+            // representation (`tab.preview_from_diff`, `docs/FEATURE-MD-RENDERED-DIFF.md` §4) —
+            // returns to the Git view (or the tree, whichever it came from). Everything else
+            // returns to the tree.
+            if app.is_git_diff_preview() || app.preview_is_diff_representation() {
                 app.close_git_diff();
             } else {
                 app.back_to_tree();
@@ -1661,7 +1664,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::PreviewCopySelection => app.preview_copy_selection(),
         Action::PreviewCopySelectionRef => app.preview_copy_selection_ref(),
         Action::PreviewExitVisual => app.preview_exit_visual(),
-        Action::ToggleMarkdownRaw => app.toggle_md_raw(),
+        Action::ToggleMarkdownRaw => app.toggle_md_raw_or_return_to_diff(),
         Action::LinkFocusNext => app.md_focus_move(1),
         Action::LinkFocusPrev => app.md_focus_move(-1),
         Action::LinkOpen => app.md_activate_focused()?,
@@ -1691,6 +1694,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::GitDiffDiscard => app.git_diff_start_discard(),
         #[cfg(feature = "git")]
         Action::CycleDiffLayout => app.cycle_diff_layout(),
+        #[cfg(feature = "git")]
+        Action::CycleDiffView => app.cycle_diff_view(),
         #[cfg(feature = "git")]
         Action::ToggleFollowDiffScope => app.toggle_follow_diff_scope(),
         #[cfg(feature = "git")]

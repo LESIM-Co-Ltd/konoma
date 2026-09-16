@@ -45,6 +45,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         return vec![HelpSection::new(l(crate::i18n::Msg::PreviewGitDiff))
             .row("j / k / ↑ ↓", l(crate::i18n::Msg::Scroll))
             .row("g / G", l(crate::i18n::Msg::TopBottom))
+            .row("R", l(crate::i18n::Msg::DiffViewCycleHelp))
             .row("n / N", l(crate::i18n::Msg::JumpChangeHelp))
             .row("f", l(crate::i18n::Msg::HintFollowScope))
             .row(crate::ui::status::page_help(app), "")
@@ -95,8 +96,15 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     } else {
         sec = sec.row("Y", l(crate::i18n::Msg::AtRefPathHelp));
     }
+    // While this preview *is* the diff's own `Preview` representation, `R` returns to the diff
+    // instead of toggling raw source (`docs/FEATURE-MD-RENDERED-DIFF.md` §4).
+    let r_help = if app.preview_is_diff_representation() {
+        l(crate::i18n::Msg::HintReturnToDiff)
+    } else {
+        l(crate::i18n::Msg::MdRawToggleHelp)
+    };
     vec![sec
-        .row("R", l(crate::i18n::Msg::MdRawToggleHelp))
+        .row("R", r_help)
         .row("o", l(crate::i18n::Msg::HintOutline))
         .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
         .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
@@ -191,9 +199,14 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             }
             None => {}
         }
+        // R normally goes decorated → raw source; while this preview *is* the diff's own `Preview`
+        // representation, it instead returns to the diff (`App::diff_preview_raw_hint`, §4).
+        let r_msg = app
+            .diff_preview_raw_hint()
+            .unwrap_or(crate::i18n::Msg::HintRawSource);
         v.extend([
             hint(lang, "o", crate::i18n::Msg::HintOutline),
-            hint(lang, "R", crate::i18n::Msg::HintRawSource),
+            hint(lang, "R", r_msg),
             hint(lang, "/", crate::i18n::Msg::HintSearch),
             hint(lang, "F", crate::i18n::Msg::StFollow),
             hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
@@ -232,8 +245,15 @@ pub fn footer_hints(app: &App) -> Vec<String> {
     if app.follow_diff_scope_msg().is_some() {
         v.push(hint(lang, "f", crate::i18n::Msg::HintFollowScope));
     }
-    // For Markdown/Mermaid, R toggles decorated view ⇄ raw source view (the label switches with the current mode).
-    if app.is_decorated_kind() {
+    // For Markdown/Mermaid, R toggles decorated view ⇄ raw source view (the label switches with the
+    // current mode) — *unless* this preview is itself the diff's own `Preview` representation
+    // (`docs/FEATURE-MD-RENDERED-DIFF.md` §4), in which case R returns to the diff instead (checked
+    // first, and for *any* windowed kind — not only Markdown/Mermaid — since a plain Code/Text
+    // file's diff can reach its `Preview` representation too: `App::diff_preview_raw_hint`'s own
+    // doc comment). [[hint-shown-iff-key-acts]]: exactly one of the two ever applies.
+    if let Some(msg) = app.diff_preview_raw_hint() {
+        v.push(hint(lang, "R", msg));
+    } else if app.is_decorated_kind() {
         let msg = if app.is_md_raw() {
             crate::i18n::Msg::HintRendered
         } else {
@@ -585,6 +605,17 @@ fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
     let (total_rows, max_line_cols) = app.md_layout(inner.width);
     let wrap = app.cfg.ui.wrap;
 
+    // A follow jump into a decorated Markdown document requested a scroll to its first change-
+    // gutter mark (`docs/FEATURE-MD-RENDERED-DIFF.md` §3) but couldn't compute the display row
+    // itself at jump time (it depends on this very width) — the cache above now has one, so this
+    // is the first draw where it's actually knowable. A no-op when there is no mark to scroll to
+    // (the flag is simply consumed to nothing).
+    if app.take_diff_scroll_pending() {
+        if let Some(row) = app.md_first_diff_mark_row() {
+            app.scroll_preview_to_row_with_context(row);
+        }
+    }
+
     let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
     app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
     app.tab.preview_viewport = inner.height;
@@ -831,6 +862,25 @@ fn overlay_inline_images(frame: &mut Frame, app: &mut App, inner: Rect) {
 /// GitDiff preview rendering. Displays the lines from `git::file_diff` Zed-style (gutter + change bar + colored body + row background)
 /// with full-screen scrolling. If the diff is empty (clean), shows "(no changes)" in the center.
 fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
+    // The `Rendered` presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §2) is a wholly separate
+    // draw path — decorated blocks, not the unified/split diff `render_gitdiff_source` below draws
+    // — so it's dispatched away first, the same way `ui/preview.rs::render`'s own top-level match
+    // routes each preview kind to its own function. `render_diff_rendered` itself falls back to
+    // `render_gitdiff_source` (rather than returning here) when building its own cache discovers it
+    // has to give up and round `tab.diff_view` down to `Source` (§5) — that has to happen inside
+    // the *same* frame, or the screen would go blank for one frame instead of showing the fallback.
+    #[cfg(feature = "git")]
+    if app.diff_rendered_active() {
+        render_diff_rendered(frame, app, area);
+        return;
+    }
+    render_gitdiff_source(frame, app, area);
+}
+
+/// The classic unified/split diff — `render_gitdiff`'s pre-existing body, extracted so
+/// `render_diff_rendered` can fall back into it directly (same frame) when the `Rendered`
+/// presentation's own cache build has to give up and round down to `Source` (§5).
+fn render_gitdiff_source(frame: &mut Frame, app: &mut App, area: Rect) {
     // Auto is resolved by the inner width. Estimate the frame's inner width first.
     let split = app.diff_is_split(Block::bordered().inner(area).width);
     let mode_tag = if split { " ⇆" } else { "" };
@@ -934,6 +984,103 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
     let para = Paragraph::new(Text::from(lines))
         .block(titled(app, extent))
         .scroll((0, para_hscroll));
+    frame.render_widget(para, area);
+    render_scrollbar(frame, area, extent);
+}
+
+/// The diff's `Rendered` presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §1/§2): both versions'
+/// changed blocks, decorated — removed (red/dim), added (green), changed-to (amber) — sharing the
+/// same title/scroll-label/scrollbar conventions `render_gitdiff`'s own unified/split body uses,
+/// but built from `App::md_diff_layout`/`md_diff_slice` (`MdDiffCache`) instead of the raw
+/// `DiffLine` list.
+#[cfg(feature = "git")]
+fn render_diff_rendered(frame: &mut Frame, app: &mut App, area: Rect) {
+    let pos = app
+        .diff_change_position()
+        .map(|(i, n)| format!(" ({i}/{n})"))
+        .unwrap_or_default();
+    let scope = app
+        .follow_diff_scope_msg()
+        .map(|m| format!(" · {}", tr(app.lang, m)))
+        .unwrap_or_default();
+    let inner = Block::bordered().inner(area);
+    let titled = |app: &App, e: ScrollExtent| {
+        let title = app
+            .tab
+            .preview_path
+            .clone()
+            .map(|p| format!(" diff ⟨rendered⟩: {}{pos}{scope} ", app.format_path(&p)))
+            .unwrap_or_else(|| " diff ".to_string());
+        Block::bordered()
+            .title(title)
+            .title(scroll_title(app.lang, e))
+    };
+    app.tab.preview_viewport = inner.height;
+
+    // `md_diff_layout` builds/reuses `MdDiffCache` at this width (it may fall back to `Source` and
+    // flash a reason — `App::ensure_md_diff_cache`'s own doc comment — in which case this function
+    // is never drawn again this frame: `render_gitdiff`'s own dispatch above re-checks
+    // `diff_rendered_active` every frame, so the very next one already takes the `Source` path).
+    let (total_rows, max_line_cols) = app.md_diff_layout(inner.width);
+    if !app.diff_rendered_active() {
+        // `ensure_md_diff_cache` gave up (either side unreadable/non-UTF-8/too large) and already
+        // rounded `tab.diff_view` down to `Source` with a flash explaining why (§5) — draw that
+        // presentation now, in this same frame, instead of leaving the screen blank for one.
+        render_gitdiff_source(frame, app, area);
+        return;
+    }
+
+    // No marks at all *and* the raw diff is also empty: a genuinely unchanged file — the same
+    // "(no changes)" the `Source` presentation shows (§5). A non-empty raw diff with no marks
+    // (front-matter-only edit) already got its own flash inside `ensure_md_diff_cache`, and still
+    // draws here as an all-`Equal` document (nothing marked, but the file's own current content is
+    // shown) — not this branch.
+    if total_rows == 0 && app.git_diff_lines().is_empty() {
+        let extent = ScrollExtent::new(0, 0, inner.height as u64);
+        frame.render_widget(titled(app, extent), area);
+        let msg = tr(app.lang, crate::i18n::Msg::GitNoChanges);
+        let y = inner.y + inner.height / 2;
+        let line_area = Rect {
+            x: inner.x,
+            y,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(msg).alignment(Alignment::Center), line_area);
+        render_scrollbar(frame, area, extent);
+        return;
+    }
+
+    // Consume a pending "scroll to the first change" request (set by `App::open_git_diff`/
+    // `App::cycle_diff_view` the moment this presentation appeared) now that the cache built above
+    // actually has a `first_mark_row` to scroll to — mirrors `render_decorated`'s own identical
+    // consumption for the ordinary decorated Markdown preview's gutter (§3).
+    if app.take_diff_scroll_pending() {
+        if let Some(row) = app.md_diff_first_mark_row() {
+            app.scroll_preview_to_row_with_context(row);
+        }
+    }
+
+    let wrap = app.cfg.ui.wrap;
+    let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
+    app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
+    let max_h = if wrap {
+        0
+    } else {
+        max_line_cols.saturating_sub(inner.width as usize) as u16
+    };
+    app.tab.preview_hscroll = app.tab.preview_hscroll.min(max_h);
+    let extent = ScrollExtent::new(
+        app.tab.preview_scroll as u64,
+        max_v as u64,
+        inner.height as u64,
+    );
+    let (lines, local_scroll) = app.md_diff_slice(app.tab.preview_scroll, inner.height);
+    let mut para = Paragraph::new(Text::from(lines)).block(titled(app, extent));
+    if wrap {
+        para = para.wrap(Wrap { trim: false });
+    }
+    let para = para.scroll((local_scroll, app.tab.preview_hscroll));
     frame.render_widget(para, area);
     render_scrollbar(frame, area, extent);
 }

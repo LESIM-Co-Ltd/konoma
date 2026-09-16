@@ -267,6 +267,10 @@ pub enum Msg {
     GraphPickerHeadLocked,
     DiffScrollHint,
     DiffScrollDiscardHint,
+    /// `DiffScrollDiscardHint` without the `s:unified/split/auto` segment — the diff's `Rendered`
+    /// presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §2) has no split view of its own, so `s`
+    /// does nothing there and the hint must not advertise it (`App::diff_rendered_active`).
+    DiffScrollDiscardHintRendered,
     HelpJumpTab,
     JustNow,
     Keymap,
@@ -453,6 +457,9 @@ pub enum Msg {
     /// Diff-view keys for a backend that cannot write: `DiffScrollDiscardHint` without `x:discard`.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     DiffScrollNoDiscardHint,
+    /// `DiffScrollNoDiscardHint`'s `Rendered`-presentation counterpart — see
+    /// `DiffScrollDiscardHintRendered`.
+    DiffScrollNoDiscardHintRendered,
     StGit,
     /// Flash when a write is asked of a backend that only reads (jj).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -526,6 +533,26 @@ pub enum Msg {
     HintOutline,
     HintRendered,
     MdRawToggleHelp,
+    /// `R`'s footer/help label in `Surface::PreviewGitDiff`, naming the presentation it would
+    /// switch *to* — `docs/FEATURE-MD-RENDERED-DIFF.md` §4. Hidden entirely when `R` would do
+    /// nothing (`App::diff_view_cycle_hint`), never shown as a static "cycle" label.
+    DiffViewSource,
+    DiffViewRendered,
+    DiffViewPreview,
+    /// `R`'s footer/help label in `Surface::PreviewText` while that preview *is* the diff's own
+    /// `Preview` representation (`PerTab::preview_from_diff`) — returns to the diff's `Source`.
+    HintReturnToDiff,
+    /// Flash: the `Rendered` presentation gave up and fell back to `Source` — either side of the
+    /// diff couldn't be compared as text (unreadable, non-UTF-8, or over the size cap). Only ever
+    /// constructed by `App::ensure_md_diff_cache`, which exists on a `git`-feature build only.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    DiffRenderedUnavailable,
+    /// Flash: the `Rendered` presentation shows no marks at all even though the file does have a
+    /// diff — the only change was to front matter, which is stripped before either side is compared.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    DiffRenderedFrontMatterOnly,
+    /// `?` help row description for `R` in `Surface::PreviewGitDiff`.
+    DiffViewCycleHelp,
     WkRelative,
     WkRename,
     HintSearch,
@@ -902,7 +929,9 @@ fn en(msg: Msg) -> &'static str {
         GraphPickerHeadLocked => "current branch (HEAD) is always shown",
         DiffScrollHint => "j/k:scroll  h/l:hscroll  s:unified/split/auto  g/G:ends  q/Esc:back",
         DiffScrollDiscardHint => "j/k:scroll  n/N:next/prev file  h/l:hscroll  s:unified/split/auto  x:discard  q/Esc:back",
+        DiffScrollDiscardHintRendered => "j/k:scroll  n/N:next/prev file  h/l:hscroll  x:discard  q/Esc:back",
         DiffScrollNoDiscardHint => "j/k:scroll  n/N:next/prev file  h/l:hscroll  s:unified/split/auto  q/Esc:back",
+        DiffScrollNoDiscardHintRendered => "j/k:scroll  n/N:next/prev file  h/l:hscroll  q/Esc:back",
         HelpJumpTab => "jump to tab by number",
         JustNow => "just now",
         Keymap => "keymap",
@@ -1129,6 +1158,13 @@ fn en(msg: Msg) -> &'static str {
         HintOutline => "outline",
         HintRendered => "rendered",
         MdRawToggleHelp => "toggle rendered / raw source (raw is selectable)",
+        DiffViewSource => "source",
+        DiffViewRendered => "rendered",
+        DiffViewPreview => "preview",
+        HintReturnToDiff => "back to diff",
+        DiffRenderedUnavailable => "rendered diff unavailable (falling back to source)",
+        DiffRenderedFrontMatterOnly => "only front matter changed (not shown here — press R to see it as source)",
+        DiffViewCycleHelp => "cycle diff view (source → rendered → preview)",
         WkRelative => "relative",
         WkRename => "rename",
         HintSearch => "search",
@@ -1399,7 +1435,9 @@ fn jp(msg: Msg) -> &'static str {
         GraphPickerHeadLocked => "現在ブランチ(HEAD)は常に表示されます",
         DiffScrollHint => "j/k:スクロール  h/l:横移動  s:縦/横/Auto  g/G:先頭/末尾  q/Esc:戻る",
         DiffScrollDiscardHint => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  s:縦/横/Auto  x:破棄  q/Esc:戻る",
+        DiffScrollDiscardHintRendered => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  x:破棄  q/Esc:戻る",
         DiffScrollNoDiscardHint => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  s:縦/横/Auto  q/Esc:戻る",
+        DiffScrollNoDiscardHintRendered => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  q/Esc:戻る",
         HelpJumpTab => "番号でタブへジャンプ",
         JustNow => "たった今",
         Keymap => "キーマップ",
@@ -1621,6 +1659,13 @@ fn jp(msg: Msg) -> &'static str {
         HintOutline => "アウトライン",
         HintRendered => "装飾表示",
         MdRawToggleHelp => "装飾表示 / ソース表示 を切替(ソースは選択可)",
+        DiffViewSource => "ソース",
+        DiffViewRendered => "整形",
+        DiffViewPreview => "プレビュー",
+        HintReturnToDiff => "diff に戻る",
+        DiffRenderedUnavailable => "整形diffを表示できません(ソースへ切替)",
+        DiffRenderedFrontMatterOnly => "front matter のみの変更(ここには出ません・R でソース表示)",
+        DiffViewCycleHelp => "表現を切り替え（ソース → 整形 → プレビュー）",
         WkRelative => "相対",
         WkRename => "改名",
         HintSearch => "検索",
@@ -1961,6 +2006,8 @@ mod tests {
         Msg::GraphPickerHeadLocked,
         Msg::DiffScrollHint,
         Msg::DiffScrollDiscardHint,
+        Msg::DiffScrollDiscardHintRendered,
+        Msg::DiffScrollNoDiscardHintRendered,
         Msg::HelpJumpTab,
         Msg::JustNow,
         Msg::Keymap,
@@ -2131,6 +2178,13 @@ mod tests {
         Msg::HintOutline,
         Msg::HintRendered,
         Msg::MdRawToggleHelp,
+        Msg::DiffViewSource,
+        Msg::DiffViewRendered,
+        Msg::DiffViewPreview,
+        Msg::HintReturnToDiff,
+        Msg::DiffRenderedUnavailable,
+        Msg::DiffRenderedFrontMatterOnly,
+        Msg::DiffViewCycleHelp,
         Msg::QuitOrCloseTab,
         Msg::WkRelative,
         Msg::WkRename,

@@ -1708,6 +1708,458 @@ fn e2e_git_diff_from_tree_and_cycle_files() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// =============================================================================
+// The full-screen diff's 3 presentations (source/rendered/preview) —
+// docs/FEATURE-MD-RENDERED-DIFF.md
+// =============================================================================
+
+/// A repository with a committed Markdown file, a committed plain-text file, and uncommitted
+/// changes to both, plus one wholly untracked Markdown file — the fixture the `diff_view` test
+/// cluster below shares. `doc.md`'s edit is deliberately structural (one paragraph changed, one
+/// section added) so the block-diff has all three `DiffMark`/`PreviewMark` kinds to find.
+#[cfg(feature = "git")]
+fn seed_repo_markdown(dir: &std::path::Path) {
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    run(&["init", "-q", "."]);
+    run(&["config", "user.email", "t@t"]);
+    run(&["config", "user.name", "t"]);
+    std::fs::write(
+        dir.join("doc.md"),
+        "# Title\n\nOriginal paragraph.\n\n## Section\n\nUnchanged paragraph.\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("plain.txt"), "line one\nline two\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "init"]);
+    // Uncommitted changes: doc.md gets a changed paragraph (Replace) and a whole new section
+    // (Insert); plain.txt gets a one-word edit; new.md is wholly untracked.
+    std::fs::write(
+        dir.join("doc.md"),
+        "# Title\n\nCHANGED paragraph.\n\n## Section\n\nUnchanged paragraph.\n\n\
+         ## New Section\n\nBrand new content.\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("plain.txt"), "line one\nline TWO changed\n").unwrap();
+    std::fs::write(dir.join("new.md"), "# Untracked\n\nAll new content.\n").unwrap();
+}
+
+/// `[ui] diff_view` default (`"rendered"`): opening a Markdown file's diff shows the `Rendered`
+/// presentation (docs §1), its title carries the `⟨rendered⟩` marker, and the block-diff found all
+/// three mark kinds this fixture's edit produces (the changed paragraph as a `Replace` — old
+/// `Removed`, new `Modified` — and the new section as `Insert`/`Added`).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_default_is_rendered_for_markdown() {
+    use crate::app::DiffView;
+    use crate::preview::markdown::DiffMark;
+    let dir = sandbox("diff_view_default_md");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.key('d');
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "既定 [ui] diff_view = \"rendered\""
+    );
+    s.see("⟨rendered⟩");
+    let marks = s
+        .app
+        .diff_rendered_marks_for_test()
+        .expect("rendered キャッシュが構築されているはず");
+    assert!(!marks.is_empty(), "変更ブロックの印があるはず: {marks:?}");
+    assert!(
+        marks.iter().any(|(_, m)| *m == DiffMark::Removed),
+        "変更前の段落が Removed で出るはず: {marks:?}"
+    );
+    assert!(
+        marks.iter().any(|(_, m)| *m == DiffMark::Modified),
+        "変更後の段落が Modified で出るはず: {marks:?}"
+    );
+    assert!(
+        marks.iter().any(|(_, m)| *m == DiffMark::Added),
+        "New Section は Added のはず: {marks:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `[ui] diff_view = "source"` keeps the classic unified diff as the default — the config default
+/// only changed konoma's own default, not the presentation `"source"` itself still means.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_ui_diff_view_source_config_keeps_classic_diff() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_source_cfg");
+    seed_repo_markdown(&dir);
+    let mut cfg = Config::default();
+    cfg.ui.diff_view = "source".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
+    s.dont_see("⟨rendered⟩");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// An unrecognized `[ui] diff_view` value falls back to `"rendered"` (the same "unknown = default"
+/// contract every other mode string in `config/mod.rs` has), not to `"source"`.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_unknown_config_value_falls_back_to_rendered() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_bogus_cfg");
+    seed_repo_markdown(&dir);
+    let mut cfg = Config::default();
+    cfg.ui.diff_view = "sideways".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `R` cycles a Markdown diff `Source → Rendered → Preview → Source` — starting from the default
+/// `Rendered`, so this exercises the full 3-way loop: `Rendered --R--> Preview --R--> Source
+/// --R--> Rendered`. The `Preview` representation leaves `Surface::PreviewGitDiff` entirely
+/// (`tab.mode` becomes an ordinary `Preview`, not the diff surface).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_r_cycles_through_all_three_for_markdown() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_cycle_md");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+
+    s.key('R');
+    assert!(
+        s.app.preview_from_diff_for_test(),
+        "Rendered から R で Preview 表現に入るはず"
+    );
+    assert!(!s.app.is_git_diff_preview(), "GitDiff 面を離れているはず");
+    assert_eq!(s.app.tab.mode, Mode::Preview);
+
+    s.key('R');
+    assert!(
+        s.app.is_git_diff_preview(),
+        "Preview 表現から R で diff へ戻るはず"
+    );
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Source,
+        "戻り先は常に Source(設定既定ではない)"
+    );
+    assert!(!s.app.preview_from_diff_for_test());
+
+    s.key('R');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A plain-text file's diff has no `Rendered` presentation at all — `R` cycles `Source ⇄ Preview`
+/// only, starting from `Source` (never `Rendered`, even though the config default is `"rendered"`:
+/// `App::round_diff_view`).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_text_file_cycles_source_preview_only() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_text_cycle");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("plain.txt");
+    s.key('d');
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Source,
+        "rendered を持たないファイルは source から始まる"
+    );
+    s.key('R');
+    assert!(s.app.preview_from_diff_for_test());
+    assert!(!s.app.is_git_diff_preview());
+    s.key('R');
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// An untracked Markdown file's `Rendered` diff marks every block `Added` (no committed baseline
+/// to compare against — `docs/FEATURE-MD-RENDERED-DIFF.md` §5's "旧版が無い…全ブロック Insert").
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_untracked_markdown_is_all_added() {
+    use crate::app::DiffView;
+    use crate::preview::markdown::DiffMark;
+    let dir = sandbox("diff_view_untracked_md");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("new.md");
+    s.key('d');
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    let marks = s.app.diff_rendered_marks_for_test().unwrap();
+    assert!(!marks.is_empty());
+    assert!(
+        marks.iter().all(|(_, m)| *m == DiffMark::Added),
+        "未追跡ファイルは全ブロック Added のはず: {marks:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `n`/`N` moving to the next changed file preserves the current presentation when the new target
+/// can show it (`doc.md` → `new.md`, both Markdown, stays `Rendered`), and rounds it down to
+/// `Source` when it can't (`new.md` → `plain.txt`, `Rendered` has no meaning for plain text) —
+/// `docs/FEATURE-MD-RENDERED-DIFF.md` §4's "n/N で次のファイルの diff へ移っても表現は維持".
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_n_next_file_preserves_presentation() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_n_preserve");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+
+    s.key('n'); // sorted change set: doc.md -> new.md -> plain.txt
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("new.md")));
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "markdown 同士なら n で表現を維持"
+    );
+
+    s.key('n');
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("plain.txt")));
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Source,
+        "rendered を持たないファイルへ移ったら source に丸める"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `q` from the diff's `Preview` representation returns wherever `q` would have returned from the
+/// diff itself: the tree, when the diff was opened straight from it (`d`).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_preview_representation_q_returns_to_tree() {
+    let dir = sandbox("diff_view_preview_q_tree");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.key('d');
+    assert!(s.app.is_git_diff_preview());
+    s.key('R');
+    assert!(s.app.preview_from_diff_for_test());
+    s.key('q');
+    assert_eq!(
+        s.app.tab.mode,
+        Mode::Tree,
+        "ツリーから開いた diff の Preview 表現は q でツリーへ"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The hub-opened counterpart of the test above: `q` from the `Preview` representation returns to
+/// the Git changes hub, matching `close_git_diff`'s own `came_from_git_view` behavior.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_preview_representation_q_returns_to_hub() {
+    let dir = sandbox("diff_view_preview_q_hub");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.key('o');
+    s.see("doc.md");
+    s.enter(); // opens the diff of whichever entry the hub's cursor is on
+    assert!(s.app.is_git_diff_preview());
+    s.key('R');
+    assert!(s.app.preview_from_diff_for_test());
+    s.key('q');
+    assert!(
+        s.app.is_git_view(),
+        "ハブから開いた diff の Preview 表現は q でハブへ"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A diff whose current content exceeds `FOLLOW_BASELINE_FILE_CAP` falls back to `Source` with a
+/// flash explaining why (`docs/FEATURE-MD-RENDERED-DIFF.md` §5), instead of hanging or showing a
+/// half-built `Rendered` presentation.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_rendered_falls_back_to_source_for_oversized_file() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_oversized");
+    seed_repo_markdown(&dir);
+    let big = "x".repeat(5 * 1024 * 1024 + 1);
+    std::fs::write(dir.join("doc.md"), &big).unwrap();
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.key('d');
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Source,
+        "5MB 超は rendered を諦めて source へ"
+    );
+    assert!(
+        s.app
+            .flash
+            .as_deref()
+            .is_some_and(|f| f.contains("unavailable")),
+        "理由を説明するフラッシュが出るはず: {:?}",
+        s.app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The ordinary decorated Markdown preview's own change gutter (§3): opening `doc.md` normally
+/// (not through the diff) still marks its changed blocks, using the same `Added`/`Modified` (and,
+/// were there one, `Deleted`) vocabulary as the diff's `preview` representation.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_md_preview_gutter_marks_changed_blocks() {
+    use crate::preview::markdown::PreviewMark;
+    let dir = sandbox("md_preview_gutter");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.enter();
+    assert!(matches!(
+        s.app.tab.preview_kind,
+        Some(crate::preview::PreviewKind::Markdown(_))
+    ));
+    let marks = s
+        .app
+        .md_diff_marks_for_test()
+        .expect("md_cache が構築されているはず");
+    assert!(!marks.is_empty(), "変更ブロックの印があるはず: {marks:?}");
+    assert!(
+        marks.iter().any(|(_, m)| *m == PreviewMark::Added),
+        "New Section は Added のはず: {marks:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `[ui] git_gutter = false` disables the ordinary Markdown preview's own change gutter too (not
+/// only the code/text one it was originally written for).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_md_preview_gutter_marks_are_empty_when_disabled() {
+    let dir = sandbox("md_preview_gutter_off");
+    seed_repo_markdown(&dir);
+    let mut cfg = Config::default();
+    cfg.ui.git_gutter = false;
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("doc.md");
+    s.enter();
+    let marks = s.app.md_diff_marks_for_test().unwrap_or_default();
+    assert!(marks.is_empty(), "git_gutter オフでは印を付けない");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// An untracked Markdown file's *ordinary* preview gets no gutter at all (unlike the diff's own
+/// `Rendered`/`Preview` presentations, which treat "no baseline" as "everything added") — there is
+/// no committed version to compare against, and this is not a diff view (`App::preview_diff_baseline`'s
+/// own doc comment).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_md_preview_gutter_is_empty_for_untracked_file() {
+    let dir = sandbox("md_preview_gutter_untracked");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("new.md");
+    s.enter();
+    let marks = s.app.md_diff_marks_for_test().unwrap_or_default();
+    assert!(
+        marks.is_empty(),
+        "未追跡ファイルの通常プレビューには印を付けない: {marks:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A follow-opened diff's `Rendered` presentation compares against the **follow-start baseline**,
+/// not simply the file's committed HEAD — constructed so the two would disagree: the file is
+/// already dirty (an extra section) when `F` is pressed, and after `F` that section is removed
+/// again, landing back on HEAD's exact bytes. A HEAD-based comparison would then see no diff at all
+/// (`Removed`/`Modified`/`Added` would all be absent); the follow baseline sees the section vanish.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_diff_rendered_compares_against_follow_baseline_not_head() {
+    use crate::app::DiffView;
+    use crate::preview::markdown::DiffMark;
+    let dir = sandbox("follow_diff_rendered_baseline");
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    run(&["init", "-q", "."]);
+    run(&["config", "user.email", "t@t"]);
+    run(&["config", "user.name", "t"]);
+    let v1 = "# Title\n\nOriginal paragraph.\n";
+    std::fs::write(dir.join("doc.md"), v1).unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "init"]);
+
+    // Dirty *before* F: an extra section appears, uncommitted.
+    let v2 = "# Title\n\nOriginal paragraph.\n\n## Midway Section\n\nMidway content.\n";
+    std::fs::write(dir.join("doc.md"), v2).unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.key('F');
+    assert!(s.app.follow_enabled());
+
+    // After F: the extra section is removed again — back to exactly v1's bytes.
+    std::fs::write(dir.join("doc.md"), v1).unwrap();
+    let doc = s.app.tab.root.join("doc.md");
+    assert!(
+        s.app.follow_note_change(&doc),
+        "変更ファイルは有効な追尾対象"
+    );
+    s.app.follow_jump(&doc);
+    s.draw();
+
+    assert!(
+        s.app.is_git_diff_preview(),
+        "追尾先は全画面 diff で開くはず"
+    );
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    let marks = s
+        .app
+        .diff_rendered_marks_for_test()
+        .expect("rendered キャッシュが構築されているはず");
+    assert!(
+        !marks.is_empty(),
+        "follow ベースライン(F 時点の dirty 内容)との比較なら Midway Section の削除が見えるはず: {marks:?}"
+    );
+    assert!(marks.iter().any(|(_, m)| *m == DiffMark::Removed));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[cfg(feature = "git")]
 #[test]
 fn e2e_changed_filter_and_jumps() {
@@ -9015,6 +9467,12 @@ const UI_CONFIG_COVERAGE: &[(&str, Coverage)] = &[
         "follow_view",
         Coverage::Covered(
             "e2e_follow_opens_full_screen_diff (default) / e2e_ui_follow_view_file_shows_content_preview_not_diff",
+        ),
+    ),
+    (
+        "diff_view",
+        Coverage::Covered(
+            "e2e_diff_view_default_is_rendered_for_markdown / e2e_ui_diff_view_source_config_keeps_classic_diff",
         ),
     ),
     (

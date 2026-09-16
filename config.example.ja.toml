@@ -136,6 +136,17 @@ filter_mode = "fuzzy"
 # diff に切替。フォローは粘着的=q / もう一度 F / テキスト入力 でのみ解除(スクロール/n/N/f は維持)。
 follow_view = "diff"
 
+# 全画面 diff の 3 表現のうち、開いた時にどれを見せるか。
+#   "rendered" (既定) … Markdown ファイルの diff を装飾ブロックで描く: 削除は赤/dim、追加は緑、
+#                        変更後は琥珀 — AI 編集の「何が消えたか」が最終結果だけでなく見える。
+#                        Markdown 以外のファイルは "source" に丸める(ブロック単位の diff が無いため)。
+#   "source"            … 従来の unified/split diff (`s` で unified/split/auto を巡回)。
+#   "preview"           … そのファイルの通常プレビュー(現在の内容に変更ガターを重ねる)。
+# R キーで、対象ファイルが持つ表現だけを巡回する(Markdown = 3 つ全部・その他のテキスト系 =
+# source ⇄ preview のみ・非テキストは表現が 1 つも無く R は無反応でヒントも出さない)。
+# 不明な値は "rendered" にフォールバック。
+diff_view = "rendered"
+
 # Markdown プレビューのタスクリスト(チェックボックス)で Space が巡回する状態の配列(巡回順)。
 # 各要素は 1 文字。既定 [" ", "x"] = GFM 標準の 未完 ⇄ 完了。
 # 例: [" ", "/", "x"] で Obsidian 流の「作業中 [/]」を挟む。標準状態は Nerd Font の
@@ -491,7 +502,7 @@ builtin = "pdf"
 #   並べ替え     : "sort_name" "sort_size" "sort_modified" "sort_ext" "sort_toggle_reverse" "sort_toggle_dirs_first"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
 #                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
-#                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "git_diff_discard"
+#                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "cycle_diff_view" "git_diff_discard"
 #                  "jj_sync"(R= ハブで jj に作業コピーを取り込ませる。konoma が jj リポジトリに
 #                    書き込む唯一の操作で、確認ダイアログが先に出る。git リポジトリでは何もしない)
 #   Git グラフ   : "git_graph_toggle_all"(a= バックエンドの既定範囲でなく全リビジョンを表示。

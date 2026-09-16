@@ -35,14 +35,16 @@ pub(crate) mod model;
 pub(crate) mod render;
 
 // Re-exported at this module's own top level (rather than requiring a caller to name the private
-// `diff` submodule directly, which it cannot) so `crate::preview::markdown::{BlockOp, DiffMark}` is
-// the one path both this file's own diff entry point below and any future caller need — keeping which
-// of `diff`/`render` actually defines each type an implementation detail. `BlockOp` itself is not yet
-// named anywhere in this file (`render_markdown_diff_aligned` below calls `diff::block_ops` directly
-// and lets inference carry its `Vec<BlockOp>` result through) — `#[allow(unused_imports)]` for the
-// same "future App-level caller, not wired up yet" reason as that function's own `#[allow(dead_code)]`.
+// `diff` submodule directly, which it cannot) so `crate::preview::markdown::{BlockOp, DiffMark,
+// PreviewMark}` is the one path this file's own diff entry points, `render.rs`'s own test suite,
+// and the App layer all need — keeping which of `diff`/`render` actually defines each type an
+// implementation detail. `BlockOp` itself is named through this re-export only by `render.rs`'s
+// own `#[cfg(test)]` suite (every production caller lets inference carry `Vec<BlockOp>` through
+// `diff::block_ops` without ever naming the type) — `#[allow(unused_imports)]` for the identical
+// "unused outside `cfg(test)`" reason `render.rs`'s/`model.rs`'s own file-header allows document.
 #[allow(unused_imports)]
 pub(crate) use diff::BlockOp;
+pub(crate) use diff::PreviewMark;
 pub(crate) use render::DiffMark;
 
 // Decoration colors. A code block is enclosed as a "special area" with a background + left gutter.
@@ -568,6 +570,10 @@ pub fn mermaid_focus_border_x(align: BlockAlign, pane: u16, bw: u16) -> u16 {
 pub struct MdRenderExtras {
     pub code_blocks: Vec<String>,
     pub tasks: Vec<(char, usize)>,
+    /// Every top-level block's own final row range, straight from `render::RenderOut::block_rows`
+    /// — see that field's own doc comment. Empty for every non-Markdown `DecoratedMarkdown` branch,
+    /// same as `code_blocks`/`tasks` above.
+    pub block_rows: Vec<std::ops::Range<usize>>,
 }
 
 /// (Production goes through `render_markdown_with_images_aligned` with the configured block
@@ -655,6 +661,7 @@ pub fn render_markdown_with_images_aligned(
         MdRenderExtras {
             code_blocks: out.code_blocks,
             tasks: out.tasks,
+            block_rows: out.block_rows,
         },
     )
 }
@@ -670,13 +677,11 @@ pub fn render_markdown_with_images_aligned(
 /// configuration (width/code style/theme/icons/tasks/image & mermaid & math slots/alerts/alignments)
 /// applied uniformly whichever of `old`/`new` a given block is drawn from, the same way a single
 /// preview pane's config never differs between "what the file used to say" and "what it says now".
-// `render_markdown_diff_aligned`/`diff::block_ops`/`BlockOp` are `docs/FEATURE-MD-RENDERED-DIFF.md`
-// stage 1's pure layer — this function is the intended App-level entry point (the Markdown `rendered`
-// diff presentation, §1), but wiring an actual caller (`PerTab.diff_view`, §4) into `app`/`ui` is a
-// separate pass. `#[allow(dead_code)]` here, not a crate-wide lint change, for the same "not wired up
-// yet" reason `render.rs`'s/`model.rs`'s own `#![allow(dead_code)]` file headers already document for
-// the block-model renderer during its own migration.
-#[allow(dead_code)]
+// `render_markdown_diff_aligned` is the App-level entry point for the Markdown `rendered` diff
+// presentation (§1) — wired from `App::ensure_md_diff_cache` (`src/app/md_render.rs`), which exists
+// on a `git`-feature build only (the presentation itself is reachable only through
+// `Action::CycleDiffView`, itself `#[cfg(feature = "git")]`) — hence the `allow` on a no-`git` build.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 #[allow(clippy::too_many_arguments)] // as render_markdown_with_images_aligned, plus new_src/ops
 #[allow(clippy::type_complexity)] // matches render_markdown_with_images_aligned's own tuple shape, plus one more element (marks)
 pub fn render_markdown_diff_aligned(
@@ -728,9 +733,33 @@ pub fn render_markdown_diff_aligned(
         MdRenderExtras {
             code_blocks: diff_out.out.code_blocks,
             tasks: diff_out.out.tasks,
+            block_rows: diff_out.out.block_rows,
         },
         diff_out.marks,
     )
+}
+
+/// The `preview` diff presentation's own gutter marks (`docs/FEATURE-MD-RENDERED-DIFF.md` §1's
+/// third row): aligns `old_src`'s and `new_src`'s top-level blocks (`diff::block_ops`, the identical
+/// alignment [`render_markdown_diff_aligned`] uses for the `rendered` presentation) and turns that
+/// into per-row marks against `new_block_rows` — `new`'s own already-rendered `MdRenderExtras::
+/// block_rows` from an **ordinary**, non-diff decorated render of `new_src` (see
+/// `diff::preview_marks`'s own doc comment for exactly why no second `render_doc_diff` pass is
+/// needed here: this presentation draws nothing but `new`'s own current content).
+///
+/// Both `old_src`/`new_src` must be the exact strings a caller would pass to [`model::Doc::parse`]
+/// for the two versions being compared — i.e. already through whatever front-matter/footnote/inline-
+/// HTML pre-pass produced `new_block_rows` in the first place, so the two sides classify blocks
+/// against the identical text the renderer itself parsed (`App::build_decorated`'s own `pre_src`).
+pub(crate) fn markdown_preview_marks(
+    old_src: &str,
+    new_src: &str,
+    new_block_rows: &[std::ops::Range<usize>],
+) -> Vec<(std::ops::Range<usize>, PreviewMark)> {
+    let old = model::Doc::parse(old_src);
+    let new = model::Doc::parse(new_src);
+    let ops = diff::block_ops(&old, &new, old_src, new_src);
+    diff::preview_marks(&ops, new_block_rows)
 }
 
 /// Reserved rows for one math image: `rows` blank lines the image overlays, centered for display math
