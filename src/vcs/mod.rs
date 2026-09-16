@@ -65,6 +65,23 @@ pub trait Vcs: Send + Sync {
     /// all-added.
     fn file_diff(&self, root: &Path, file: &Path) -> Vec<DiffLine>;
 
+    /// The committed bytes of `file` that [`Vcs::file_diff`] compares the working copy against
+    /// (git: HEAD's blob; jj: the working-copy commit's parent `@-`). `None` when the committed
+    /// state has no such file (untracked / added since), `root` is not inside a repository, or the
+    /// backend cannot answer at all — the same "quietly render blank" contract as `file_diff`.
+    ///
+    /// This is the state-layer half of the Markdown rendered-diff feature
+    /// (`docs/FEATURE-MD-RENDERED-DIFF.md` §2): it, `file_diff`, and the follow-baseline snapshot
+    /// (`App::follow_baseline_contents`) are the three ways konoma learns what a file used to look
+    /// like, and this is the one a caller reaches for when it wants the *bytes* rather than an
+    /// already-diffed line list — e.g. to run its own comparison (a block-level Markdown diff)
+    /// against the current content instead of git's/jj's line-level one.
+    // Not yet called from production code: the consumer (`preview/markdown/diff.rs`, the "pure"
+    // layer in `docs/FEATURE-MD-RENDERED-DIFF.md` §2) is a later stage of the same feature.
+    // Exercised directly by this module's own tests and by `git.rs`'s/`jj.rs`'s in the meantime.
+    #[allow(dead_code)]
+    fn base_contents(&self, root: &Path, file: &Path) -> Option<Vec<u8>>;
+
     /// The changed files, one entry per file, sorted by path — what the changed-file list and the
     /// jumps between changes walk.
     fn changed_files(&self, root: &Path) -> Vec<ChangeEntry>;
@@ -126,6 +143,10 @@ impl Vcs for Git {
 
     fn file_diff(&self, root: &Path, file: &Path) -> Vec<DiffLine> {
         crate::git::file_diff(root, file)
+    }
+
+    fn base_contents(&self, root: &Path, file: &Path) -> Option<Vec<u8>> {
+        crate::git::base_contents(root, file)
     }
 
     fn changed_files(&self, root: &Path) -> Vec<ChangeEntry> {
@@ -290,6 +311,10 @@ impl Vcs for Jj {
         jj::file_diff(root, file)
     }
 
+    fn base_contents(&self, root: &Path, file: &Path) -> Option<Vec<u8>> {
+        jj::base_contents(root, file)
+    }
+
     fn changed_files(&self, root: &Path) -> Vec<ChangeEntry> {
         jj::changed_files(root)
     }
@@ -415,6 +440,12 @@ pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
     backend_for(root).file_diff(root, file)
 }
 
+/// See [`Vcs::base_contents`].
+#[allow(dead_code)] // not yet called from production code — see the trait method's doc comment
+pub fn base_contents(root: &Path, file: &Path) -> Option<Vec<u8>> {
+    backend_for(root).base_contents(root, file)
+}
+
 /// See [`Vcs::log`].
 pub fn log(root: &Path, max: usize) -> Vec<CommitInfo> {
     backend_for(root).log(root, max)
@@ -497,6 +528,66 @@ mod tests {
                 "worktree_origin {root:?}"
             );
         }
+    }
+
+    /// `base_contents` needs a `file` argument that only makes sense per-root (unlike the four
+    /// `root`-only methods `backend_agrees_with_the_free_functions` loops over above), so it gets
+    /// its own test rather than folding into that loop: konoma's own `Cargo.toml` (tracked, present
+    /// at HEAD) for the real repository, and a path that cannot exist for the plain directory.
+    ///
+    /// `#[cfg(feature = "git")]`: it asserts real (non-empty) content for the real-repo case, which
+    /// the no-git stub can never produce — see `backend_base_contents_is_the_no_git_stub_when_the_
+    /// feature_is_off` below for that build's own version of this promise.
+    #[cfg(feature = "git")]
+    #[test]
+    fn backend_base_contents_agrees_with_the_free_function() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let file = root.join("Cargo.toml");
+        assert_eq!(
+            backend_for(root).base_contents(root, &file),
+            crate::git::base_contents(root, &file),
+            "base_contents (real repo)"
+        );
+        assert!(
+            backend_for(root)
+                .base_contents(root, &file)
+                .is_some_and(|b| !b.is_empty()),
+            "比較が空同士で成立していない"
+        );
+
+        let plain = std::path::Path::new("/");
+        let missing = plain.join("no-such-konoma-fixture-file.txt");
+        assert_eq!(
+            backend_for(plain).base_contents(plain, &missing),
+            crate::git::base_contents(plain, &missing),
+            "base_contents (plain directory)"
+        );
+    }
+
+    /// The no-git build's counterpart to `backend_base_contents_agrees_with_the_free_function`:
+    /// with the `git` feature off, `crate::git::base_contents` is unconditionally the `None` stub
+    /// (see its doc in `git.rs`), and `backend_for` can only ever resolve to `Git` (there is no `Jj`
+    /// variant without the feature — see `VcsKind`), so both the free function and the
+    /// trait-dispatched call must answer `None` even for konoma's own tracked `Cargo.toml`, which a
+    /// `--features git` build resolves to real content (see the test above).
+    #[cfg(not(feature = "git"))]
+    #[test]
+    fn backend_base_contents_is_the_no_git_stub_when_the_feature_is_off() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let file = root.join("Cargo.toml");
+        assert!(
+            crate::git::base_contents(root, &file).is_none(),
+            "no-git スタブは常に None"
+        );
+        assert!(
+            backend_for(root).base_contents(root, &file).is_none(),
+            "backend_for 経由でも同じスタブに落ちる"
+        );
+        assert_eq!(
+            backend_for(root).base_contents(root, &file),
+            base_contents(root, &file),
+            "自由関数の窓口も同じ答え"
+        );
     }
 
     /// A worker thread owns the backend while it scans, so it has to be `Send + Sync`.
