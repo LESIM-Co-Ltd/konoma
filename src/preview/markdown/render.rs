@@ -389,6 +389,89 @@ pub(crate) fn render_doc(
     )
 }
 
+/// Builds the fresh "top of the document" `Writer`/`BlockCtx` pair every *whole-document* render
+/// starts from — factored out of `render_doc_aligned`'s own construction so [`render_doc_diff`]'s
+/// mixed old/new block walk (this file's own diff renderer, built on the same `Writer`/`render_block`
+/// machinery — see that function's own doc comment) shares exactly the same starting state, rather
+/// than a second, independently maintained copy of the same dozen fields that could quietly drift out
+/// of sync with it. Purely an extraction: `render_doc_aligned`'s own behavior — byte for byte, per its
+/// own golden-snapshot suite — is unchanged by this refactor; see its call site immediately below for
+/// what used to be inlined there.
+///
+/// `fences_on`: the identical probe `render_markdown_with_images` itself runs
+/// (`!matches!(mermaid_slot(""), MermaidSlot::Text)`) — whether a ```mermaid fence is extracted to a
+/// diagram placement at all, computed once for the whole render rather than re-probed at every fence
+/// (`split_block_parts`'s own doc comment: an empty string is indistinguishable from a real, empty
+/// fence body, so probing it *once*, up front, is also what keeps a genuinely empty fence from
+/// misreading the probe's own answer as its own slot — see `render_mermaid_slot`'s own doc comment for
+/// the empty-fence-body case this is not that).
+///
+/// `ctx`'s three fields all start at their "top of the tree" values — `math_here: math.is_some()`
+/// (whether `math_on` was set at all — `render_doc`'s/`render_doc_diff`'s own dispatch is never inside
+/// a `Quote`, so this is simply that answer), `extract_here: true` *unconditionally* (image/mermaid
+/// extraction is never gated by `math_on` in production — see `BlockCtx::extract_here`'s own doc
+/// comment for the bug this distinction closes), and `details_interactive: true` (the other half of
+/// the identical "top of the tree" reasoning — see `BlockCtx`'s own doc comment).
+#[allow(clippy::too_many_arguments)] // mirrors render_doc_aligned's own parameter list, minus doc/src
+fn new_top_writer<'m>(
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &'m [char],
+    slot_of: &'m dyn Fn(&str, Option<u16>) -> ImageSlot,
+    mermaid_slot: &'m dyn Fn(&str) -> MermaidSlot,
+    mermaid_caption: &'m str,
+    alerts: bool,
+    math_slot: &'m dyn Fn(&str, bool) -> MathSlot,
+    math_on: bool,
+    aligns: BlockAligns,
+) -> (Writer<'m>, BlockCtx) {
+    let styles = KonomaStyles { code_bg: code.bg };
+    let math = math_on.then_some(MathCtx {
+        slot: math_slot,
+        width,
+    });
+    let mermaid = MermaidCtx {
+        slot: mermaid_slot,
+        caption: mermaid_caption,
+        width,
+        fences_on: !matches!(mermaid_slot(""), MermaidSlot::Text),
+        ord: 0,
+    };
+    let ctx = BlockCtx {
+        math_here: math.is_some(),
+        extract_here: true,
+        details_interactive: true,
+        list_depth: 0,
+    };
+    let w = Writer {
+        lines: Vec::new(),
+        inline_styles: Vec::new(),
+        link: None,
+        styles,
+        pending_block_gap: false,
+        math,
+        mermaid,
+        slot_of,
+        images: Vec::new(),
+        code_blocks: Vec::new(),
+        task_marks: Vec::new(),
+        after_math: false,
+        fresh_boundary: false,
+        pending_para_start: None,
+        heading_rule_shift: 0,
+        code,
+        theme: theme.to_string(),
+        width,
+        icons,
+        tasks,
+        alerts,
+        aligns,
+    };
+    (w, ctx)
+}
+
 /// [`render_doc`] plus the block alignments this render runs under (`[ui] md_table_align` /
 /// `[ui] md_image_align`, resolved by `config::UiConfig::md_block_aligns`). `render_doc` is this
 /// function with [`BlockAligns::default`] — konoma's own historical layout (tables left, images and
@@ -416,63 +499,20 @@ pub(crate) fn render_doc_aligned(
     math_on: bool,
     aligns: BlockAligns,
 ) -> RenderOut {
-    let styles = KonomaStyles { code_bg: code.bg };
-    let math = math_on.then_some(MathCtx {
-        slot: math_slot,
+    let (mut w, ctx) = new_top_writer(
         width,
-    });
-    // `fences_on`: the identical probe `render_markdown_with_images` itself runs
-    // (`!matches!(mermaid_slot(""), MermaidSlot::Text)`) — whether a ```mermaid fence is extracted to
-    // a diagram placement at all, computed once for the whole render rather than re-probed at every
-    // fence (`split_block_parts`'s own doc comment: an empty string is indistinguishable from a real,
-    // empty fence body, so probing it *once*, up front, is also what keeps a genuinely empty fence
-    // from misreading the probe's own answer as its own slot — see `render_mermaid_slot`'s own doc
-    // comment for the empty-fence-body case this is not that).
-    let mermaid = MermaidCtx {
-        slot: mermaid_slot,
-        caption: mermaid_caption,
-        width,
-        fences_on: !matches!(mermaid_slot(""), MermaidSlot::Text),
-        ord: 0,
-    };
-    // Whether math lifting applies at all, at the *top* of the tree — `render_doc`'s own dispatch is
-    // never inside a `Quote`, so this is simply "was `math_on` set", the same answer `math.is_some()`
-    // would give; computed once, ahead of `w`'s own construction (which moves `math` into it), so
-    // nothing below needs to keep re-deriving `w.math.is_some()`. `extract_here: true` is
-    // *unconditional* — image/mermaid extraction is never gated by `math_on` in production either
-    // (see `BlockCtx.extract_here`'s own doc comment for the bug this distinction closes).
-    // `details_interactive: true` is the *other* half of the identical "top of the tree" reasoning —
-    // see `BlockCtx`'s own doc comment.
-    let ctx = BlockCtx {
-        math_here: math.is_some(),
-        extract_here: true,
-        details_interactive: true,
-        list_depth: 0,
-    };
-    let mut w = Writer {
-        lines: Vec::new(),
-        inline_styles: Vec::new(),
-        link: None,
-        styles,
-        pending_block_gap: false,
-        math,
-        mermaid,
-        slot_of,
-        images: Vec::new(),
-        code_blocks: Vec::new(),
-        task_marks: Vec::new(),
-        after_math: false,
-        fresh_boundary: false,
-        pending_para_start: None,
-        heading_rule_shift: 0,
         code,
-        theme: theme.to_string(),
-        width,
+        theme,
         icons,
         tasks,
+        slot_of,
+        mermaid_slot,
+        mermaid_caption,
         alerts,
+        math_slot,
+        math_on,
         aligns,
-    };
+    );
     // ## A raw, un-stripped YAML front-matter block draws directly from `doc.events`
     //
     // `Options::ENABLE_YAML_STYLE_METADATA_BLOCKS` is always on (`model::parse_options`, built on
@@ -630,6 +670,200 @@ pub(crate) fn render_doc_aligned(
         unsupported,
         code_blocks: w.code_blocks,
         tasks: w.task_marks,
+    }
+}
+
+/// Which of the three colors (`docs/FEATURE-MD-RENDERED-DIFF.md` §1) one marked line range in
+/// [`DiffRenderOut::marks`] gets — the same three-color convention the code/text preview's own change
+/// gutter uses for `GutterMark` (green added / blue modified / red removed: "同じ意味には同じ色", §1) —
+/// kept as its own small type here rather than reusing `GutterMark` itself, since this module has no
+/// dependency on `crate::git`/`crate::vcs` at all, and a block-diff render only ever needs `old`/`new`
+/// `Doc`/`src` context (`render_block`'s own parameters), never a `GutterMark`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DiffMark {
+    /// An inserted block, drawn from `new`'s own content (`BlockOp::Insert`).
+    Added,
+    /// The **new** half of a `BlockOp::Replace` pair — drawn immediately after its own `Removed` half.
+    Modified,
+    /// A deleted block, drawn from `old`'s own content, in `old`'s own context — reference-style link
+    /// definitions and footnotes resolve against `old`, not `new` (`BlockOp::Delete`, and the first
+    /// half of `BlockOp::Replace`).
+    Removed,
+}
+
+/// [`RenderOut`] plus the diff marks [`render_doc_diff`] produces alongside it.
+pub(crate) struct DiffRenderOut {
+    pub out: RenderOut,
+    /// Every non-`Equal` block's own final (post-`decorate_headings_and_extras`) logical line range,
+    /// in document order, ascending and non-overlapping — an `Equal` block contributes no entry at
+    /// all (nothing to mark). See [`render_doc_diff`]'s own doc comment for how each range is measured.
+    pub marks: Vec<(Range<usize>, DiffMark)>,
+}
+
+/// Renders a Markdown diff (`docs/FEATURE-MD-RENDERED-DIFF.md` §3): `old`'s and `new`'s top-level
+/// blocks, mixed together in the order `ops` (`diff::block_ops(old, new, ..)`) lays out, into one
+/// shared [`Writer`] — the identical `Writer`/`BlockCtx` state [`render_doc_aligned`] itself starts
+/// from ([`new_top_writer`]), and the identical per-block dispatcher, [`render_block`], every nested
+/// container in this file already calls (a `List`'s own items, a `Quote`'s own body, ...) — this
+/// function is simply the top-level loop that used to be `render_doc_aligned`'s own `for block in
+/// &doc.blocks` calling it once per op instead, on whichever of `old`/`new`'s own blocks that op
+/// names.
+///
+/// `render_block` takes `doc`/`src` as its own parameters specifically so it can resolve a leaf
+/// block's inline content, a reference-style link's definition, and a footnote number against the
+/// *whole* document it came from (see `model::Doc`'s own module doc comment on why a whole-document
+/// parse matters for exactly this). That is why a deleted block renders from `old`/`old_src`, not by
+/// splicing `old_src`'s own bytes into `new_src` and reparsing the concatenation: two adjacent lists
+/// from different documents can glue into one on a naive text splice, an anchor id can collide, and
+/// neither failure is something a caller can predict from the outside — see the module doc comment's
+/// own "Why the top-level list only"/[`diff`]'s sibling reasoning for the identical shape of argument.
+///
+/// `unsupported` is always empty (`render_block`'s own doc comment: every `BlockKind` this file
+/// covers is dispatched, the same way `render_doc_aligned`'s no-longer-fallible `contains_unsupported`
+/// is) — there is no analogous field on [`DiffRenderOut`] at all, unlike [`RenderOut`], since nothing
+/// downstream of a diff render has ever read it (see [`RenderOut::unsupported`]'s own doc comment for
+/// why that field survives on the *non*-diff path regardless).
+///
+/// A raw, un-stripped YAML front-matter block ([`render_doc_aligned`]'s own `render_metadata_block`
+/// call) is **not** drawn here at all: front matter is never a member of `Doc::blocks` in the first
+/// place (`model::is_unmodeled_container_tag`), so `ops` never names one — and in production, a
+/// document reaching this function has already had its front matter stripped by the caller's own
+/// pre-pass before either `Doc::parse` ever ran (`MdCache::pre_src`; see
+/// `docs/FEATURE-MD-RENDERED-DIFF.md` §5's "front matter だけの変更" row for how the one config that can
+/// still leave it in place, `[ui] md_frontmatter = false`, is handled at the caller/App level instead
+/// — there being no single "old vs. new front matter" concept for `ops`, built purely from
+/// `Doc::blocks`, to hand this function in the first place).
+///
+/// `marks`: each op that draws a block records the block's own pre-decoration row extent
+/// (`w.lines.len()`) *plus* `w.heading_rule_shift` on both sides of the call to `render_block` —
+/// exactly the same `w.lines.len() + w.heading_rule_shift` conversion every other placement in this
+/// file already applies to turn a mid-walk row count into a row index valid against the *fully
+/// decorated* `RenderOut::lines` array this function returns (see `Writer::heading_rule_shift`'s own
+/// doc comment for the full mechanism, and e.g. `render_image_group`'s identical `placement_line`
+/// computation for another call site relying on it) — so a mark naming rows `3..5` is correct against
+/// `DiffRenderOut::out.lines` exactly the way an `ImagePlacement.line` already is. A zero-length
+/// extent (nothing at all pushed for that op — not something any current `BlockKind` produces, but not
+/// structurally impossible either) records no mark rather than an empty range, keeping the "every mark
+/// range is non-empty" invariant the module's own tests below pin.
+#[allow(clippy::too_many_arguments)] // mirrors render_doc_aligned's own parameter list, plus `ops`
+pub(crate) fn render_doc_diff(
+    old: &Doc<'_>,
+    old_src: &str,
+    new: &Doc<'_>,
+    new_src: &str,
+    ops: &[super::diff::BlockOp],
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+    slot_of: &dyn Fn(&str, Option<u16>) -> ImageSlot,
+    mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
+    mermaid_caption: &str,
+    alerts: bool,
+    math_slot: &dyn Fn(&str, bool) -> MathSlot,
+    math_on: bool,
+    aligns: BlockAligns,
+) -> DiffRenderOut {
+    let (mut w, ctx) = new_top_writer(
+        width,
+        code,
+        theme,
+        icons,
+        tasks,
+        slot_of,
+        mermaid_slot,
+        mermaid_caption,
+        alerts,
+        math_slot,
+        math_on,
+        aligns,
+    );
+    let mut marks: Vec<(Range<usize>, DiffMark)> = Vec::new();
+    for op in ops {
+        match *op {
+            super::diff::BlockOp::Equal { new: n } => {
+                render_block(&new.blocks[n], &mut w, new, new_src, ctx);
+            }
+            super::diff::BlockOp::Insert { new: n } => {
+                render_marked_block(
+                    &mut w,
+                    new,
+                    new_src,
+                    &new.blocks[n],
+                    ctx,
+                    DiffMark::Added,
+                    &mut marks,
+                );
+            }
+            super::diff::BlockOp::Delete { old: o } => {
+                render_marked_block(
+                    &mut w,
+                    old,
+                    old_src,
+                    &old.blocks[o],
+                    ctx,
+                    DiffMark::Removed,
+                    &mut marks,
+                );
+            }
+            super::diff::BlockOp::Replace { old: o, new: n } => {
+                render_marked_block(
+                    &mut w,
+                    old,
+                    old_src,
+                    &old.blocks[o],
+                    ctx,
+                    DiffMark::Removed,
+                    &mut marks,
+                );
+                render_marked_block(
+                    &mut w,
+                    new,
+                    new_src,
+                    &new.blocks[n],
+                    ctx,
+                    DiffMark::Modified,
+                    &mut marks,
+                );
+            }
+        }
+    }
+    let lines = decorate_headings_and_extras(w.lines, width, icons, tasks);
+    DiffRenderOut {
+        out: RenderOut {
+            lines,
+            images: w.images,
+            unsupported: Vec::new(),
+            code_blocks: w.code_blocks,
+            tasks: w.task_marks,
+        },
+        marks,
+    }
+}
+
+/// Renders one block via [`render_block`] and, if it produced at least one line, records its own
+/// final (post-decoration) row extent in `out` under `kind` — the shared body [`render_doc_diff`]'s
+/// `Insert`/`Delete`/`Replace` arms all call (an `Equal` block never reaches this: see that function's
+/// own doc comment on why only non-`Equal` ops get a mark at all). `w.lines.len() + w.
+/// heading_rule_shift`, read immediately before and after the call, is the same conversion every other
+/// placement in this file already applies — see `render_doc_diff`'s own doc comment ("marks") for the
+/// full mechanism this reuses, not reinvents.
+#[allow(clippy::too_many_arguments)]
+fn render_marked_block(
+    w: &mut Writer<'_>,
+    doc: &Doc<'_>,
+    src: &str,
+    block: &Block,
+    ctx: BlockCtx,
+    kind: DiffMark,
+    out: &mut Vec<(Range<usize>, DiffMark)>,
+) {
+    let start = w.lines.len() + w.heading_rule_shift;
+    render_block(block, w, doc, src, ctx);
+    let end = w.lines.len() + w.heading_rule_shift;
+    if end > start {
+        out.push((start..end, kind));
     }
 }
 
@@ -10861,6 +11095,417 @@ mod tests {
             "front matter content missing from render_doc's own output: {:?}",
             out.lines
         );
+    }
+
+    /// [`render_doc_diff`] — `docs/FEATURE-MD-RENDERED-DIFF.md` §3/§7. All default-configuration
+    /// (no images/mermaid/math, alerts on, default alignments) — the media-specific cases below build
+    /// their own slot closures instead.
+    mod diff_render_tests {
+        use super::*;
+
+        fn no_math(_: &str, _: bool) -> MathSlot {
+            MathSlot::Raw
+        }
+
+        fn diff_of(old_src: &str, new_src: &str) -> DiffRenderOut {
+            let old = Doc::parse(old_src);
+            let new = Doc::parse(new_src);
+            let ops = crate::preview::markdown::diff::block_ops(&old, &new, old_src, new_src);
+            render_doc_diff(
+                &old,
+                old_src,
+                &new,
+                new_src,
+                &ops,
+                80,
+                CodeStyle::default(),
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "Enter: full screen",
+                true,
+                &no_math,
+                false,
+                BlockAligns::default(),
+            )
+        }
+
+        /// Every mark's own range is non-empty, the ranges never overlap, and they appear in
+        /// ascending document order — the basic shape any caller (the App-level `preview`
+        /// presentation, §1) needs to be able to rely on without re-sorting or re-validating.
+        fn assert_marks_well_formed(marks: &[(std::ops::Range<usize>, DiffMark)]) {
+            let mut prev_end = 0usize;
+            for (i, (range, _)) in marks.iter().enumerate() {
+                assert!(
+                    !range.is_empty(),
+                    "mark {i} is empty: {range:?} (marks: {marks:?})"
+                );
+                assert!(
+                    range.start >= prev_end,
+                    "mark {i} ({range:?}) overlaps or precedes the previous one (prev_end \
+                     {prev_end}): {marks:?}"
+                );
+                prev_end = range.end;
+            }
+        }
+
+        #[test]
+        fn all_equal_ops_render_identically_to_render_doc_aligned() {
+            let src = "# Title\n\nSome text.\n\n- a\n- b\n\n```\ncode\n```\n\n> quote\n";
+            let diff_out = diff_of(src, src);
+            assert!(
+                diff_out.marks.is_empty(),
+                "an unchanged document must record no diff marks: {:?}",
+                diff_out.marks
+            );
+            let doc = Doc::parse(src);
+            let plain = render_doc(
+                &doc,
+                src,
+                80,
+                CodeStyle::default(),
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "Enter: full screen",
+                true,
+                &no_math,
+                false,
+            );
+            assert_eq!(
+                diff_out.out.lines, plain.lines,
+                "an all-Equal diff render must match render_doc_aligned's own output line for line"
+            );
+        }
+
+        #[test]
+        fn marks_are_well_formed_across_insert_delete_and_replace() {
+            let old_src = "keep before.\n\ngone.\n\nold word here.\n\nkeep after.\n";
+            let new_src = "keep before.\n\nnew word here.\n\nkeep after.\n\nadded.\n";
+            let diff_out = diff_of(old_src, new_src);
+            assert!(
+                !diff_out.marks.is_empty(),
+                "a document with real changes must record at least one mark"
+            );
+            assert_marks_well_formed(&diff_out.marks);
+        }
+
+        /// `BlockOp::Replace` draws its `Removed` half immediately before its `Modified` half — no
+        /// other op's mark can land between the two in `marks`' own document-order sequence.
+        #[test]
+        fn replace_marks_removed_immediately_followed_by_modified() {
+            let old_src = "before.\n\nold word here.\n\nafter.\n";
+            let new_src = "before.\n\nnew word here.\n\nafter.\n";
+            let diff_out = diff_of(old_src, new_src);
+            assert_eq!(
+                diff_out.marks.len(),
+                2,
+                "one Replace pair must record exactly two marks: {:?}",
+                diff_out.marks
+            );
+            assert_eq!(diff_out.marks[0].1, DiffMark::Removed);
+            assert_eq!(diff_out.marks[1].1, DiffMark::Modified);
+            assert_eq!(
+                diff_out.marks[0].0.end, diff_out.marks[1].0.start,
+                "no blank separator row exists between a Replace pair's own two halves — the old \
+                 block's own trailing gap belongs to whatever follows it, not between the pair: {:?}",
+                diff_out.marks
+            );
+            assert_marks_well_formed(&diff_out.marks);
+        }
+
+        /// A pure tail insertion (nothing deleted, nothing replaced: every old block stays `Equal`)
+        /// renders to *exactly* `new`'s own `render_doc` output — the diff walk draws only `new`'s
+        /// blocks in that case, in the same order a plain render would.
+        #[test]
+        fn pure_insertion_matches_a_plain_render_of_new() {
+            let old_src = "para one.\n\npara two.\n";
+            let new_src = "para one.\n\npara two.\n\npara three.\n";
+            let diff_out = diff_of(old_src, new_src);
+            let new_doc = Doc::parse(new_src);
+            let plain_new = render_doc(
+                &new_doc,
+                new_src,
+                80,
+                CodeStyle::default(),
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "Enter: full screen",
+                true,
+                &no_math,
+                false,
+            );
+            assert_eq!(diff_out.out.lines, plain_new.lines);
+        }
+
+        /// Inserting one block increases the total line count by exactly that block's own mark
+        /// extent (§7: "Insert 1 ブロックで行数が新側の当該ブロック分だけ増える") — checked by comparing
+        /// against a solo render of the unchanged prefix (`old_src` alone).
+        #[test]
+        fn one_inserted_block_grows_the_line_count_by_its_own_mark_length() {
+            let old_src = "para one.\n\npara two.\n";
+            let new_src = "para one.\n\npara two.\n\npara three appended here.\n";
+            let old_doc = Doc::parse(old_src);
+            let old_alone = render_doc(
+                &old_doc,
+                old_src,
+                80,
+                CodeStyle::default(),
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "Enter: full screen",
+                true,
+                &no_math,
+                false,
+            );
+            let diff_out = diff_of(old_src, new_src);
+            assert_eq!(diff_out.marks.len(), 1);
+            assert_eq!(diff_out.marks[0].1, DiffMark::Added);
+            let mark_len = diff_out.marks[0].0.len();
+            assert_eq!(
+                diff_out.out.lines.len(),
+                old_alone.lines.len() + mark_len,
+                "total lines must grow by exactly the inserted block's own mark length: old {} + \
+                 mark {} != diff {}",
+                old_alone.lines.len(),
+                mark_len,
+                diff_out.out.lines.len()
+            );
+        }
+
+        /// An `ImagePlacement.line` recorded for a block that survives unchanged (`Equal`) still
+        /// reflects however many lines an *earlier* deleted block contributed — because it is
+        /// recorded against the shared `Writer`'s own running `w.lines.len()`, which the deleted
+        /// block's own render already advanced by the time the image's block is reached. Pinned by
+        /// comparing against the same image as the very first thing in the document (line 0).
+        #[test]
+        fn image_placement_line_shifts_by_a_preceding_deleted_block() {
+            fn slot(_: &str, _: Option<u16>) -> ImageSlot {
+                ImageSlot::Inline { cols: 4, rows: 2 }
+            }
+            let old_src = "a paragraph that goes away.\n\n![alt](pic.png)\n";
+            let new_src = "![alt](pic.png)\n";
+            let old = Doc::parse(old_src);
+            let new = Doc::parse(new_src);
+            let ops = crate::preview::markdown::diff::block_ops(&old, &new, old_src, new_src);
+            let diff_out = render_doc_diff(
+                &old,
+                old_src,
+                &new,
+                new_src,
+                &ops,
+                80,
+                CodeStyle::default(),
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &slot,
+                &no_mermaid,
+                "Enter: full screen",
+                true,
+                &no_math,
+                false,
+                BlockAligns::default(),
+            );
+            assert_eq!(diff_out.out.images.len(), 1);
+            // The image's own block is `Equal` (identical on both sides), so it earns no mark of its
+            // own — but its recorded line must still be strictly past 0, because the deleted
+            // paragraph ahead of it (`BlockOp::Delete`) rendered first into the very same `Writer`.
+            assert!(
+                diff_out.out.images[0].line > 0,
+                "the image's own line must reflect the deleted block rendered ahead of it: {:?}",
+                diff_out.out.images
+            );
+
+            // Control: the identical image with nothing ahead of it at all sits at line 0.
+            let solo_doc = Doc::parse(new_src);
+            let solo = render_doc(
+                &solo_doc,
+                new_src,
+                80,
+                CodeStyle::default(),
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &slot,
+                &no_mermaid,
+                "Enter: full screen",
+                true,
+                &no_math,
+                false,
+            );
+            assert_eq!(solo.images[0].line, 0);
+        }
+
+        /// A mermaid fence present, with *different* bodies, on both sides of a `Replace` pair
+        /// produces one image placement per version — `old`'s own fence body and `new`'s own,
+        /// resolved through `slot_of`'s content-keyed cache lookup (`docs/FEATURE-MD-RENDERED-DIFF.md`
+        /// §3: "旧版の図は旧版のソースで描かれ、新版と別のキャッシュ項目になる"), never collapsed into one.
+        #[test]
+        fn mermaid_fence_changed_between_versions_yields_one_placement_per_version() {
+            use std::cell::RefCell;
+            let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
+            let mermaid_slot = |code: &str| {
+                if !code.is_empty() {
+                    seen.borrow_mut().push(code.to_string());
+                }
+                MermaidSlot::Image { cols: 10, rows: 4 }
+            };
+            let old_src = "```mermaid\ngraph TD; A-->B;\n```\n";
+            let new_src = "```mermaid\ngraph TD; A-->C;\n```\n";
+            let old = Doc::parse(old_src);
+            let new = Doc::parse(new_src);
+            let ops = crate::preview::markdown::diff::block_ops(&old, &new, old_src, new_src);
+            assert_eq!(
+                ops,
+                vec![crate::preview::markdown::BlockOp::Replace { old: 0, new: 0 }]
+            );
+            let diff_out = render_doc_diff(
+                &old,
+                old_src,
+                &new,
+                new_src,
+                &ops,
+                80,
+                CodeStyle::default(),
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &mermaid_slot,
+                "Enter: full screen",
+                true,
+                &no_math,
+                false,
+                BlockAligns::default(),
+            );
+            assert_eq!(
+                diff_out.out.images.len(),
+                2,
+                "one placement per version's own fence body: {:?}",
+                diff_out.out.images
+            );
+            let recorded = seen.into_inner();
+            assert!(
+                recorded.iter().any(|c| c.contains("A-->B")),
+                "old fence body never reached slot_of: {recorded:?}"
+            );
+            assert!(
+                recorded.iter().any(|c| c.contains("A-->C")),
+                "new fence body never reached slot_of: {recorded:?}"
+            );
+        }
+
+        /// A math expression present, with different LaTeX, on both sides of a `Replace` pair — the
+        /// same "one placement per version" contract mermaid gets above, for `math_slot`.
+        #[test]
+        fn math_expression_changed_between_versions_yields_one_placement_per_version() {
+            use std::cell::RefCell;
+            let seen: RefCell<Vec<String>> = RefCell::new(Vec::new());
+            let math_slot = |latex: &str, _display: bool| {
+                seen.borrow_mut().push(latex.to_string());
+                MathSlot::Image { cols: 4, rows: 1 }
+            };
+            let old_src = "$$x^2$$\n";
+            let new_src = "$$y^2$$\n";
+            let old = Doc::parse(old_src);
+            let new = Doc::parse(new_src);
+            let ops = crate::preview::markdown::diff::block_ops(&old, &new, old_src, new_src);
+            let diff_out = render_doc_diff(
+                &old,
+                old_src,
+                &new,
+                new_src,
+                &ops,
+                80,
+                CodeStyle::default(),
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "Enter: full screen",
+                true,
+                &math_slot,
+                true,
+                BlockAligns::default(),
+            );
+            assert_eq!(diff_out.out.images.len(), 2, "{:?}", diff_out.out.images);
+            let recorded = seen.into_inner();
+            assert!(recorded.iter().any(|l| l.contains("x^2")), "{recorded:?}");
+            assert!(recorded.iter().any(|l| l.contains("y^2")), "{recorded:?}");
+        }
+
+        /// A footnote reference/definition survives konoma's own `process_footnotes` pre-pass (run
+        /// before `Doc::parse`, same as production — `markdown.rs`'s own module doc comment) into a
+        /// superscript marker in the referencing paragraph plus a trailing numbered list block. When
+        /// the reference (and with it, the generated list) is removed entirely in `new`, the deleted
+        /// list block renders from `old`'s own context, and the paragraph carrying the superscript
+        /// marker — itself changed only by the marker disappearing — still shows it on the `Removed`
+        /// half of its own `Replace` pair.
+        #[test]
+        fn footnote_definition_block_present_only_in_old_renders_in_old_context() {
+            let old_raw = "See the note.[^a]\n\n[^a]: Old definition text.\n";
+            let new_raw = "See the note.\n";
+            let old_src = crate::preview::markdown::process_footnotes(old_raw);
+            let new_src = crate::preview::markdown::process_footnotes(new_raw);
+            let old = Doc::parse(&old_src);
+            let new = Doc::parse(&new_src);
+            // `process_footnotes` appends `"\n---\n\n"` (a thematic break) ahead of the numbered
+            // definitions section it invents (see that function's own body) — so `old` gains *two*
+            // trailing blocks (the rule, then the list), `new` none, confirming the fixture actually
+            // exercises "definition block[s] only in old" rather than accidentally testing something
+            // else.
+            assert_eq!(old.blocks.len(), 3, "old_src: {old_src:?}");
+            assert_eq!(new.blocks.len(), 1, "new_src: {new_src:?}");
+            let ops = crate::preview::markdown::diff::block_ops(&old, &new, &old_src, &new_src);
+            let diff_out = render_doc_diff(
+                &old,
+                &old_src,
+                &new,
+                &new_src,
+                &ops,
+                80,
+                CodeStyle::default(),
+                "TwoDark",
+                false,
+                &[' ', 'x'],
+                &no_images,
+                &no_mermaid,
+                "Enter: full screen",
+                true,
+                &no_math,
+                false,
+                BlockAligns::default(),
+            );
+            let rendered: String = diff_out
+                .out
+                .lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                rendered.contains("Old definition text"),
+                "the deleted footnote-list block must still render, from old's own context: \
+                 {rendered:?}"
+            );
+        }
     }
 }
 
