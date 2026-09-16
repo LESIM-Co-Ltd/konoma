@@ -44,6 +44,9 @@ konoma が自らそのファイルを開きますが、強調されるのは**�
 - `.git` 内部・gitignore 対象・隠しファイルは追尾しません。
 - `ui.follow_view = "file"` にすると、diff でなく通常プレビュー(変更ガター付き・
   最初の変更ハンクへスクロール)で開きます。
+- Markdown ファイルでは、diff 自体に 3 つの表現(`source`・`rendered`(装飾ブロック・既定。
+  [git スイート](../git/#diff)参照)・`preview`)があり、`follow_view` とは独立に `R` で
+  巡回できます。
 
 ## 変更ファイルビュー — `C`
 

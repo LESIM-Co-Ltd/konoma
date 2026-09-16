@@ -65,6 +65,11 @@ as real pixels).
   *within* a cell, which a column's `:---:` still decides.
 - **Raw source**: `R` toggles the decorated view against the raw Markdown
   source, where precise line/column selection works.
+- **Change gutter**: a file with uncommitted changes shows the same
+  editor-style git gutter (green added / blue modified / red deleted) as code
+  and text previews, block-aware here — a changed paragraph or list item is
+  marked as a whole. See [The git suite](../git/#diffs) for the full-screen
+  diff's own `rendered` presentation of a Markdown file's changes.
 
 ## Code and text
 

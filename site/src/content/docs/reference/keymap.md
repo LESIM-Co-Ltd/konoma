@@ -57,7 +57,7 @@ information contextually inside the app.
 | `Enter` | open focused link / toggle focused checkbox |
 | `Ctrl-t` | open the focused **local** link in a new tab (anchors jump in place instead; URLs open in the browser either way) |
 | `Space` | toggle focused checkbox |
-| `R` | toggle rendered ⇄ raw source (Markdown/Mermaid) |
+| `R` | toggle rendered ⇄ raw source (Markdown/Mermaid); while this preview *is* a diff's `preview` presentation, returns to that diff instead |
 | `o` | heading outline of a Markdown preview (`Enter` jumps to a heading) |
 | `v` / `V` | select by character / by line, then `y` copies |
 | `y` → `c` | copy the focused Markdown code block (`Tab` focuses one; the rest of the `y` menu copies paths) |
@@ -95,7 +95,7 @@ information contextually inside the app.
 | Hub (`o`): `s` `u` / `S` `U` | stage/unstage file / all |
 | Hub: `c` / `x` / `Enter` | commit / discard file / open diff |
 | Hub: `l` / `g` / `b` / `w` | log / commit graph / branches / worktrees |
-| Diff: `s` / `n` `N` / `x` | layout unified⇄split⇄auto / next/prev changed file / discard |
+| Diff: `s` / `R` / `n` `N` / `x` | layout unified⇄split⇄auto / cycle source⇄rendered⇄preview (`[ui] diff_view`) / next/prev changed file / discard |
 | Follow diff: `f` | toggle scope: since follow-start (default) ⇄ full git diff |
 | Log & graph: `Enter` / `y` | commit detail (full message + diff) / copy commit info |
 | Graph: `s` / `x` `0` / `b` | pin base branch / unpin / branch picker |
