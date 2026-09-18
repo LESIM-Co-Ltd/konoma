@@ -551,7 +551,12 @@ impl App {
         // A fresh diff starts from `[ui] diff_view` (rounded to what `path` can actually show) —
         // `diff_jump_changed` (`n`/`N`) saves/restores the tab's *current* value around this call
         // instead, so cycling files never resets the presentation (`DiffView`'s own doc comment).
-        self.tab.diff_view = self.default_diff_view_for(path);
+        // `apply_diff_view` (not a direct assignment) is what validates/rounds `Rendered` down to
+        // `Source` with a flash when it isn't actually readable, and flashes (while staying
+        // `Rendered`) when there's nothing to mark — done here, at the moment the presentation is
+        // decided, not later inside the render path (`App::apply_diff_view`'s own doc comment).
+        let view = self.default_diff_view_for(path);
+        self.apply_diff_view(view, path);
         self.tab.diff_scroll_pending = self.tab.diff_view == DiffView::Rendered;
         // Leaving whatever *other* preview this tab may have been showing (including the diff's own
         // `Preview` representation, if `R`/`n`/`N` reached here from it) — this is a fresh open of

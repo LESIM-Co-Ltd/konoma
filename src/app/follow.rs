@@ -222,6 +222,16 @@ impl App {
                 });
                 // Follow-originated diff: n/N and the position indicator cycle through "files changed during this session".
                 self.diff_follow_scope = true;
+                // `open_git_diff` just resolved `tab.diff_view` (`App::apply_diff_view`) with
+                // `diff_follow_scope` still `false` — it always resets that flag itself, and the
+                // line above only sets it back to `true` afterward — so a Markdown target's
+                // `Rendered` readability/mark check would have read the wrong baseline (the
+                // backend's committed blob instead of the follow-session snapshot just cached
+                // above). Re-run the same decision now that the scope — and the cache it reads
+                // through `git_diff_lines` — are both correct.
+                let view = self.default_diff_view_for(path);
+                self.apply_diff_view(view, path);
+                self.tab.diff_scroll_pending = self.tab.diff_view == DiffView::Rendered;
                 return;
             }
         }

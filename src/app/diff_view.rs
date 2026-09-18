@@ -165,9 +165,12 @@ impl App {
             self.enter_diff_preview_representation(&path);
             return;
         }
-        self.tab.diff_view = next;
+        // `apply_diff_view`, not a direct assignment: this is the moment `next` (`Rendered` or
+        // `Source`) is decided, so validating/rounding it (and flashing why, if it does) has to
+        // happen here — see that fn's own doc comment (`docs/FEATURE-MD-RENDERED-DIFF.md` §5).
+        self.apply_diff_view(next, &path);
         self.tab.preview_scroll = 0;
-        self.tab.diff_scroll_pending = next == DiffView::Rendered;
+        self.tab.diff_scroll_pending = self.tab.diff_view == DiffView::Rendered;
     }
 
     /// Takes (and clears) the pending "scroll to first change" request set by `App::open_git_diff`/

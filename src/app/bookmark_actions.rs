@@ -1028,7 +1028,11 @@ impl App {
         self.open_git_diff(&target);
         self.tab.came_from_git_view = came;
         self.diff_follow_scope = scope;
-        self.tab.diff_view = self.round_diff_view(view, &target);
+        // `apply_diff_view`, not a direct assignment — `scope` is already restored above, so this
+        // validates/rounds the carried-over presentation against the *target*'s own readability
+        // (`App::apply_diff_view`'s own doc comment).
+        let rounded = self.round_diff_view(view, &target);
+        self.apply_diff_view(rounded, &target);
         self.tab.diff_scroll_pending = self.tab.diff_view == DiffView::Rendered;
     }
 

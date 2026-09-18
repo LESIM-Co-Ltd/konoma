@@ -298,6 +298,22 @@ impl Sim {
         self.term.draw(|f| ui::render(f, app)).expect("draw");
     }
 
+    /// Resizes the simulated terminal and redraws — with no key press in between. The only way
+    /// (short of an actual FS event) to force a cache whose key includes the viewport width
+    /// (`App::ensure_md_cache`'s `width`) to miss and rebuild on a draw that isn't itself the
+    /// direct result of `handle_key`, used to isolate "does a *render*, by itself, ever write
+    /// state" from "does the *keypress* that decided to render it" (`App::apply_diff_view`). Its
+    /// one caller is itself `#[cfg(feature = "git")]` (the diff's `Rendered` presentation only ever
+    /// moves on a `git`-feature build), so this is unused — not unreachable — on a no-`git` build.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    fn resize(&mut self, w: u16, h: u16) {
+        self.term.backend_mut().resize(w, h);
+        self.term
+            .resize(ratatui::layout::Rect::new(0, 0, w, h))
+            .expect("resize");
+        self.draw();
+    }
+
     fn press(&mut self, code: KeyCode, mods: KeyModifiers) {
         let res = handle_key(&mut self.app, KeyEvent::new(code, mods));
         // Same as the run loop, a recoverable Err becomes a flash (a simplified equivalent of resolve_key_result).
@@ -2173,6 +2189,256 @@ fn e2e_diff_view_rendered_falls_back_to_source_for_oversized_file() {
         s.screen().contains("   1"),
         "同じフレームで source(行番号ガター付きの unified diff) が描かれているはず: {}",
         s.screen()
+    );
+    // Round 5's own regression: the decision to round `diff_view` down (and the flash explaining
+    // why) now happens at the moment `d` opens the diff (`App::apply_diff_view`, called from
+    // `open_git_diff`), *before* this key press's own draw — not lazily inside `ensure_md_cache`
+    // (the render path) the way it used to. So the flash text itself, not only `app.flash`'s raw
+    // state, must already be on the **screen buffer** after this single key press.
+    s.see("unavailable");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression test for the real bug this round fixes (reported from the installed binary + tmux —
+/// no existing `Sim` test caught it, since every earlier one only read `app.flash`'s raw state, not
+/// the screen `App::ensure_md_cache` actually painted it onto): opening a Markdown diff whose only
+/// change is in the front matter (stripped before either side ever reaches `Doc::parse`, so the
+/// block-diff finds nothing to mark despite a non-empty raw diff) used to flash
+/// `DiffRenderedFrontMatterOnly` from *inside* `ensure_md_cache` — the render path itself — so on a
+/// real terminal the flash was set too late relative to that frame's own footer draw (or not drawn
+/// again at all, once the cache already hit) and never actually appeared; the body rendered fine,
+/// unmarked, with the footer's ordinary hints, leaving no clue why nothing was marked. Confirmed
+/// this fails (the flash text is absent from the screen after the single key press that opens the
+/// diff) when the flash-write is moved back into `ensure_md_cache` (reverting `App::apply_diff_view`
+/// to a no-op passthrough), before restoring the fix here.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_rendered_front_matter_only_change_flashes_on_the_first_draw() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_front_matter_only_open");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "---\ntitle: Old\n---\n\n# Title\n\nUnchanged body.\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    // Uncommitted change: front matter only, body byte-for-byte identical.
+    std::fs::write(&doc, "---\ntitle: New\n---\n\n# Title\n\nUnchanged body.\n").unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.key('d'); // exactly one draw happens inside this key press
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "front matter だけの変更でも Rendered のまま(本文自体は正しく描ける)"
+    );
+    let marks = s.app.diff_rendered_marks_for_test().unwrap_or_default();
+    assert!(
+        marks.is_empty(),
+        "front matter は block-diff の対象外なので印は付かないはず: {marks:?}"
+    );
+    s.see("only front matter changed");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The same front-matter-only degeneration as the test above, but entering `Rendered` via `R`
+/// (`App::cycle_diff_view`) instead of a fresh `d` open — pinning that `App::apply_diff_view` is
+/// wired into *every* site that decides the presentation, not only `App::open_git_diff`.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_rendered_front_matter_only_change_flashes_when_entered_via_r_cycle() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_front_matter_only_cycle");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "---\ntitle: Old\n---\n\n# Title\n\nUnchanged body.\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, "---\ntitle: New\n---\n\n# Title\n\nUnchanged body.\n").unwrap();
+
+    // Start on `Source` so `R` is the one key press that actually *enters* `Rendered`.
+    let mut cfg = Config::default();
+    cfg.ui.diff_view = "source".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
+    s.app.flash = None; // clear whatever `d` itself may have flashed, to isolate `R`'s own effect
+
+    s.key('R'); // Source -> Rendered
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    s.see("only front matter changed");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression test pinning that the render path — `App::ensure_md_cache` (and, transitively,
+/// `App::md_layout`) — never writes `self.flash` or `tab.diff_view` itself; only the moment the
+/// presentation is *decided* (`App::apply_diff_view`, called from a keypress) may. Opens the same
+/// front-matter-only diff the tests above use (so the very first draw legitimately sets a flash via
+/// `apply_diff_view`), then clears the flash and forces a **second** cache rebuild — a resize, not a
+/// key press, so nothing but the render path itself runs — and checks the flash stays cleared and
+/// `diff_view` stays put. Confirmed this fails (the flash reappears) when the front-matter-only
+/// flash-write is moved back into `ensure_md_cache`, before restoring the fix here.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_rendered_render_path_never_writes_flash_or_diff_view() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_rendered_render_path_readonly");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "---\ntitle: Old\n---\n\n# Title\n\nUnchanged body.\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, "---\ntitle: New\n---\n\n# Title\n\nUnchanged body.\n").unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    assert!(
+        s.app.flash.is_some(),
+        "最初の draw で front-matter-only のフラッシュが立つはず(前 2 テストで確認済み)"
+    );
+
+    // Clear the flash and force a *second* cache rebuild with no key press in between — a resize
+    // changes `ensure_md_cache`'s own cache-key `width`, the same "miss" signal the bug used to
+    // react to from inside the render path.
+    s.app.flash = None;
+    s.resize(95, 26);
+    assert_eq!(
+        s.app.flash, None,
+        "描画パス(ensure_md_cache/md_layout)は flash を書かないはず"
+    );
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "描画パスは diff_view を書き換えないはず"
+    );
+
+    // And once more — a plain redraw with nothing new to invalidate — changes nothing either.
+    s.draw();
+    assert_eq!(s.app.flash, None);
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A follow-originated jump (`App::follow_jump`) that opens `doc.md`'s diff also has to run
+/// `App::apply_diff_view`'s "front matter only" check against the **follow-session baseline**, not
+/// the backend's committed blob — the same distinction `App::diff_rendered_sources` already makes
+/// for the *unified* diff's own baseline (`e2e_follow_diff_rendered_compares_against_follow_baseline_not_head`
+/// above). Real bug this pins: `App::open_git_diff` always resets `diff_follow_scope` to `false`
+/// *before* it resolves `tab.diff_view` via `apply_diff_view`, and `follow_jump` only sets the flag
+/// back to `true` *after* `open_git_diff` returns — so without `follow_jump`'s own re-validation
+/// (its "Re-run the same decision" comment), the very first check would silently compare against
+/// the wrong baseline. Constructed so the two baselines actually disagree: the committed HEAD has
+/// body `X`; the file is already dirty (body `Y`) *before* `F` starts following, so that becomes the
+/// follow-session baseline; the change that triggers `follow_jump` only touches the front matter,
+/// keeping body `Y` — front-matter-only against the **follow baseline** (`Y` vs `Y`), but a real
+/// body change against **HEAD** (`X` vs `Y`). Confirmed this fails (no flash — the wrong, HEAD-based
+/// baseline sees a real body change) when `follow_jump`'s re-validation lines are removed, before
+/// restoring the fix here.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_diff_rendered_front_matter_only_flash_uses_follow_baseline_not_head() {
+    use crate::app::DiffView;
+    let dir = sandbox("follow_diff_rendered_front_matter_only_baseline");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    // HEAD: front matter A, body X.
+    std::fs::write(&doc, "---\ntitle: A\n---\n\n# Title\n\nOriginal body.\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+
+    // Dirty *before* F: front matter unchanged, body changes to Y. This becomes the follow
+    // baseline once F starts.
+    std::fs::write(
+        &doc,
+        "---\ntitle: A\n---\n\n# Title\n\nFollow-baseline body.\n",
+    )
+    .unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.key('F');
+    assert!(s.app.follow_enabled());
+
+    // After F: front matter changes (A -> B), body stays exactly Y — front-matter-only against
+    // the follow baseline, but a real body change (X -> Y) against HEAD. `doc` is rebuilt from
+    // `s.app.tab.root` (not the pre-canonicalization `dir`), matching `follow_target_ok`'s own
+    // `path.starts_with(&self.tab.root)` check.
+    let doc = s.app.tab.root.join("doc.md");
+    std::fs::write(
+        &doc,
+        "---\ntitle: B\n---\n\n# Title\n\nFollow-baseline body.\n",
+    )
+    .unwrap();
+    assert!(
+        s.app.follow_note_change(&doc),
+        "変更ファイルは有効な追尾対象"
+    );
+    s.app.follow_jump(&doc);
+    s.draw();
+
+    assert!(
+        s.app.is_git_diff_preview(),
+        "追尾先は全画面 diff で開くはず"
+    );
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    let marks = s.app.diff_rendered_marks_for_test().unwrap_or_default();
+    assert!(
+        marks.is_empty(),
+        "follow ベースラインと比べれば本文は不変(front matter だけの変更)のはず: {marks:?}"
+    );
+    assert!(
+        s.app
+            .flash
+            .as_deref()
+            .is_some_and(|f| f.contains("only front matter changed")),
+        "follow ベースライン基準の front-matter-only フラッシュが出るはず: {:?}",
+        s.app.flash
     );
     std::fs::remove_dir_all(&dir).ok();
 }

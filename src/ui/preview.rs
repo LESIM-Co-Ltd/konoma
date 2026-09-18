@@ -909,17 +909,16 @@ fn render_gitdiff(frame: &mut Frame, app: &mut App, area: Rect) {
     // The `Rendered` presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §2) is a wholly separate
     // draw path — decorated blocks, not the unified/split diff `render_gitdiff_source` below draws
     // — so it's dispatched away first, the same way `ui/preview.rs::render`'s own top-level match
-    // routes each preview kind to its own function. `render_diff_rendered` calling into
-    // `App::md_layout` can discover mid-draw that its own cache build has to give up (unreadable/
-    // non-UTF-8/over the size cap — §5) and round `tab.diff_view` down to `Source` — checked again
-    // right after, so the fallback draws in the *same* frame instead of leaving the blank/
-    // title-only pane `render_diff_rendered` already drew for a cache that never got built.
+    // routes each preview kind to its own function. Whether `Rendered` is even readable and has
+    // anything to mark is decided up front, at the moment `tab.diff_view` is *set*
+    // (`App::apply_diff_view`, called from every site that decides the presentation — §5's "描画中に
+    // 状態を変えて表示に頼る設計をやめる"), not discovered mid-draw here: `App::md_layout`/
+    // `ensure_md_cache` only ever *read* `tab.diff_view` now, so there is no same-frame fallback
+    // left to check for (a previous version of this function had one, for a case that no longer
+    // exists — `App::ensure_md_cache`'s own doc comment).
     #[cfg(feature = "git")]
     if app.diff_rendered_active() {
         render_diff_rendered(frame, app, area);
-        if !app.diff_rendered_active() {
-            render_gitdiff_source(frame, app, area);
-        }
         return;
     }
     render_gitdiff_source(frame, app, area);

@@ -45,20 +45,24 @@ impl App {
             return;
         }
 
-        // The `Rendered` presentation needs both versions' preprocessed text up front — resolved
-        // here (not inside `build_decorated`, which never touches disk/git itself) so a failure
-        // (unreadable, non-UTF-8, over the size cap) can fall back to `Source` with a flash before
-        // any rendering is attempted. `owned_diff_src` outlives the `DecoratedSource` borrowing it.
+        // Whether the `Rendered` presentation is even readable (size cap, UTF-8) and whether it has
+        // anything to mark has already been validated at the moment `tab.diff_view` was *set* to
+        // `Rendered` (`App::apply_diff_view`, called from `open_git_diff`/`cycle_diff_view`/
+        // `diff_jump_changed`/`follow_jump` — every site that decides the presentation), not here.
+        // This is the render path: `docs/FEATURE-MD-RENDERED-DIFF.md` §5's "描画中に状態を変えて
+        // 表示に頼る設計をやめる" — a flash (or a `tab.diff_view` rewrite) set mid-render was
+        // confirmed, on a real terminal, not to show reliably (the footer for *this* frame may
+        // already be drawn, and nothing repaints again before the next keypress). So this only ever
+        // *reads* `tab.diff_view` and re-resolves the same sources `apply_diff_view` already found
+        // readable (`owned_diff_src` outlives the `DecoratedSource` borrowing it). A `None` here can
+        // only be a narrow race (the file/repo changed between that validation and this draw) —
+        // degrade silently by leaving the previous cache/frame in place rather than touching
+        // `tab.diff_view`/`self.flash` itself.
         let owned_diff_src: Option<(String, String)> = if want_diff_rendered {
-            match self.diff_rendered_sources(&path) {
-                Some(pair) => Some(pair),
-                None => {
-                    self.tab.diff_view = DiffView::Source;
-                    self.flash =
-                        Some(tr(self.lang, crate::i18n::Msg::DiffRenderedUnavailable).into());
-                    return;
-                }
-            }
+            let Some(pair) = self.diff_rendered_sources(&path) else {
+                return;
+            };
+            Some(pair)
         } else {
             None
         };
@@ -215,17 +219,13 @@ impl App {
         // `decorated.diff_marks` — `App::build_decorated`'s `DecoratedSource::Diff` arm already
         // computed it via `render_markdown_diff_aligned`.
         let (diff_marks, preview_gutter_marks) = match cache_source {
-            MdCacheSource::Diff => {
-                // §5's "front matter だけの変更" degeneration: the block-diff found nothing (front
-                // matter is stripped before either side ever reaches `Doc::parse`), yet the file
-                // *does* have a diff (the raw unified diff is non-empty) — explain why nothing is
-                // marked rather than leaving the reader to wonder whether the feature is broken.
-                if decorated.diff_marks.is_empty() && !self.git_diff_lines().is_empty() {
-                    self.flash =
-                        Some(tr(self.lang, crate::i18n::Msg::DiffRenderedFrontMatterOnly).into());
-                }
-                (std::mem::take(&mut decorated.diff_marks), Vec::new())
-            }
+            // §5's "front matter だけの変更" degeneration (the block-diff finds nothing because
+            // front matter is stripped before either side ever reaches `Doc::parse`, yet the file
+            // does have a diff) is explained with a flash — but that decision was already made in
+            // `App::apply_diff_view`, at the moment `tab.diff_view` became `Rendered`, not here (see
+            // this function's own doc comment on `owned_diff_src` above for why the render path
+            // itself never writes `self.flash`).
+            MdCacheSource::Diff => (std::mem::take(&mut decorated.diff_marks), Vec::new()),
             MdCacheSource::File => {
                 let pgm = if self.cfg.ui.git_gutter
                     && matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_)))
@@ -337,6 +337,46 @@ impl App {
             self.preprocess_md_src(&old_raw),
             self.preprocess_md_src(&new_raw),
         ))
+    }
+
+    /// Sets `tab.diff_view` to `view` for `path`'s diff, resolving **now** — not lazily, inside a
+    /// later render — everything the `Rendered` presentation needs to already be true by the time
+    /// it is the one on screen (`docs/FEATURE-MD-RENDERED-DIFF.md` §5's "描画中に状態を変えて表示に
+    /// 頼る設計をやめる"; `App::ensure_md_cache`'s own doc comment has the full "why": a flash set
+    /// mid-render was confirmed, on a real terminal, not to show reliably before the next keypress).
+    /// Every site that *decides* the presentation calls this instead of assigning `tab.diff_view`
+    /// directly: `App::open_git_diff` (a fresh open), `App::cycle_diff_view` (`R`),
+    /// `diff_jump_changed`'s own restore (`n`/`N`), and `App::follow_jump`'s re-validation after it
+    /// corrects `diff_follow_scope` (that fn's own doc comment explains why it must run again there
+    /// — `open_git_diff` always resets the scope to `false` itself before this runs the first time).
+    ///
+    /// Non-`Rendered` values need no validation (`Source`/`Preview` have no block-diff of their own
+    /// to be unreadable or empty) and are set as-is. For `Rendered`: `App::diff_rendered_sources`
+    /// unreadable (over the size cap, not valid UTF-8, ...) rounds down to `Source` with a flash
+    /// (`DiffRenderedUnavailable`); readable but with nothing to mark despite a non-empty raw diff —
+    /// `App::diff_has_any_change`'s own "front matter only changed" degeneration (front matter is
+    /// stripped before either side ever reaches `Doc::parse`) — flashes `DiffRenderedFrontMatterOnly`
+    /// while staying `Rendered` (there is something to look at, just nothing marked; explaining why
+    /// beats leaving the reader to wonder if the feature is broken).
+    pub(super) fn apply_diff_view(&mut self, view: DiffView, path: &Path) {
+        self.tab.diff_view = view;
+        if view != DiffView::Rendered {
+            return;
+        }
+        match self.diff_rendered_sources(path) {
+            None => {
+                self.tab.diff_view = DiffView::Source;
+                self.flash = Some(tr(self.lang, crate::i18n::Msg::DiffRenderedUnavailable).into());
+            }
+            Some((old_pre, new_pre)) => {
+                if !crate::preview::markdown::diff_has_any_change(&old_pre, &new_pre)
+                    && !self.git_diff_lines().is_empty()
+                {
+                    self.flash =
+                        Some(tr(self.lang, crate::i18n::Msg::DiffRenderedFrontMatterOnly).into());
+                }
+            }
+        }
     }
 
     /// The committed baseline for `App::preview_diff_marks`'s own `old_src`: `None` outside a
