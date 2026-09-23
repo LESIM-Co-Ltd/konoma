@@ -323,6 +323,12 @@ impl App {
         self.tab.git_view_sel = 0;
         self.tab.git_view_entries.clear();
         self.tab.came_from_git_view = false;
+        // A new tab also starts the diff-view state from scratch (part of the PerTab duplication
+        // set) — otherwise it would silently inherit whichever presentation the tab it was opened
+        // from happened to be showing, despite having no diff of its own open at all yet.
+        self.tab.diff_view = DiffView::Rendered;
+        self.tab.diff_scroll_pending = None;
+        self.tab.preview_from_diff = false;
         self.tab.git_log = None;
         self.tab.git_log_sel = 0;
         self.tab.git_detail = None;

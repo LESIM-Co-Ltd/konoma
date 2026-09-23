@@ -34,6 +34,132 @@ pub(crate) fn count_stat_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
     (out, STAT_CALLS.with(|c| c.get()).saturating_sub(before))
 }
 
+thread_local! {
+    /// How many times `App::apply_diff_view` ran **on this thread** — `App::open_git_diff_with`'s
+    /// own doc comment is the "why": before it existed, `follow_jump`/`diff_jump_changed` each
+    /// opened a diff via a fresh `open_git_diff` (validating the presentation once, against the
+    /// wrong scope) and then re-validated a second time once the real scope was known, and the
+    /// first, wrongly-scoped validation's flash was never cleared. Thread-local for the same reason
+    /// `STAT_CALLS` is (see its own doc comment) — each test runs on its own thread.
+    static APPLY_DIFF_VIEW_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `App::apply_diff_view` right before it does anything. Cheap enough to be
+/// unconditional in test builds; compiled out entirely otherwise (the call site is `#[cfg(test)]`).
+pub(crate) fn note_apply_diff_view_call() {
+    let _ = APPLY_DIFF_VIEW_CALLS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times apply_diff_view ran while it did)`. Only ever
+/// called from `#[cfg(feature = "git")]` tests (the presentation state this counts only ever moves
+/// on a `git`-feature build) — unused, not unreachable, on a no-`git` test build.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_apply_diff_view_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = APPLY_DIFF_VIEW_CALLS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        APPLY_DIFF_VIEW_CALLS
+            .with(|c| c.get())
+            .saturating_sub(before),
+    )
+}
+
+thread_local! {
+    /// How many times `vcs::base_contents` ran **on this thread** — the call this measures is a
+    /// real backend invocation (a `jj log` + `jj file show` subprocess pair under jj, ~20-25ms), so
+    /// a caller that reaches it more than once per logical "what did the committed version look
+    /// like" question is doing real, avoidable work. Since `docs/STATUS.md` ★未修正 item 4, the
+    /// only production caller is `App::compute_md_diff` (`src/app/md_diff.rs`), which runs on a
+    /// background worker thread — a test attaching `md_diff_tx` and driving the UI thread through
+    /// `count_base_contents_calls` should therefore see **zero** calls on the UI thread's own copy
+    /// of this counter (the worker's calls land on its own thread's copy instead). Thread-local for
+    /// the same reason `STAT_CALLS` is.
+    static BASE_CONTENTS_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `vcs::base_contents` right before it dispatches to a backend. Cheap enough to be
+/// unconditional in test builds; compiled out entirely otherwise (the call site is `#[cfg(test)]`).
+pub(crate) fn note_base_contents_call() {
+    let _ = BASE_CONTENTS_CALLS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times base_contents ran while it did)`. Only ever
+/// called from `#[cfg(feature = "git")]` tests (`vcs::base_contents` itself only does real work on
+/// a `git`-feature build) — unused, not unreachable, on a no-`git` test build.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_base_contents_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = BASE_CONTENTS_CALLS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        BASE_CONTENTS_CALLS.with(|c| c.get()).saturating_sub(before),
+    )
+}
+
+thread_local! {
+    /// How many times `vcs::file_diff` ran **on this thread** — the unified line-diff (a real
+    /// backend invocation, distinct from `base_contents`/`diff_align`'s block-diff machinery above).
+    /// `App::open_git_diff_with`'s own `seeded_diff` exists precisely so a diff the caller already
+    /// computed (`follow_jump`'s own `compute_gitdiff_lines`, `diff_jump_changed`'s `n`/`N`) is
+    /// reused rather than recomputed the moment `App::git_diff_lines()` is first asked for it —
+    /// this counter is what `count_file_diff_calls` uses to pin that reuse. Thread-local for the
+    /// same reason `STAT_CALLS` is.
+    static FILE_DIFF_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `vcs::file_diff` right before it dispatches to a backend. Cheap enough to be
+/// unconditional in test builds; compiled out entirely otherwise (the call site is `#[cfg(test)]`).
+pub(crate) fn note_file_diff_call() {
+    let _ = FILE_DIFF_CALLS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times file_diff ran while it did)`. Only ever called
+/// from `#[cfg(feature = "git")]` tests (`vcs::file_diff` itself only does real work on a
+/// `git`-feature build) — unused, not unreachable, on a no-`git` test build.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_file_diff_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = FILE_DIFF_CALLS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        FILE_DIFF_CALLS.with(|c| c.get()).saturating_sub(before),
+    )
+}
+
+thread_local! {
+    /// How many times `preview::markdown::diff_align` ran **on this thread** — the call this
+    /// measures is a `Doc::parse` pair + a Myers diff over block keys (`block_ops`), a real,
+    /// measurable CPU cost on a large document (see `diff_align`'s own doc comment: ~3ms on a
+    /// 20k-line document in a release build). Since `docs/STATUS.md` ★未修正 item 4, the only
+    /// production caller is `App::compute_md_diff` (`src/app/md_diff.rs`), which runs on a
+    /// background worker thread — see `BASE_CONTENTS_CALLS`'s own doc comment above for what that
+    /// means for a UI-thread assertion via `count_diff_align_calls`. Thread-local for the same
+    /// reason `STAT_CALLS` is.
+    static DIFF_ALIGN_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `preview::markdown::diff_align` right before it parses either side. Cheap enough to
+/// be unconditional in test builds; compiled out entirely otherwise (the call site is
+/// `#[cfg(test)]`).
+pub(crate) fn note_diff_align_call() {
+    let _ = DIFF_ALIGN_CALLS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times diff_align ran while it did)`. Only ever
+/// called from `#[cfg(feature = "git")]` tests (the two scenarios it pins — the ordinary preview's
+/// gutter and the diff's `Rendered` presentation — both need a real backend to set up) — unused,
+/// not unreachable, on a no-`git` test build.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_diff_align_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = DIFF_ALIGN_CALLS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        DIFF_ALIGN_CALLS.with(|c| c.get()).saturating_sub(before),
+    )
+}
+
 /// A unique temp directory *path* per call (pid + a process-global counter). Tests that build a
 /// fixture under `std::env::temp_dir()` must never use a fixed name: two `cargo test` binaries
 /// (git-feature and no-git-feature builds, or two concurrent CI/dev runs) sharing one machine's

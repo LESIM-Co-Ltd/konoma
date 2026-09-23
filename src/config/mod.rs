@@ -433,6 +433,15 @@ pub struct UiConfig {
     /// to the first changed hunk. Files with no diff (unchanged / outside a repo) and media
     /// (image/SVG/video/PDF) always fall back to the content preview.
     pub follow_view: String,
+    /// Which of the full-screen diff's three presentations (`docs/FEATURE-MD-RENDERED-DIFF.md`)
+    /// it opens showing: `"rendered"` (default) draws a Markdown file's diff as decorated blocks —
+    /// removed content in red/dim, added in green, changed in amber — so an AI edit's *deletions*
+    /// stay visible instead of only its final result; `"source"` is the classic unified/split diff;
+    /// `"preview"` is the file's ordinary preview with a change gutter. `R` cycles between whichever
+    /// of the three apply to the file being diffed (a non-Markdown text file only ever has
+    /// `"source"`/`"preview"` — `"rendered"` rounds down to `"source"` for it; a non-text file has
+    /// none of the three and never cycles at all). An unrecognized value falls back to `"rendered"`.
+    pub diff_view: String,
     /// Color each column of a CSV/TSV table preview with a rotating "rainbow" palette (default true), the way
     /// Rainbow CSV / csvlens do, so columns are easy to tell apart. false = monochrome (still aligned, still navigable).
     pub csv_rainbow: bool,
@@ -811,6 +820,7 @@ impl Default for UiConfig {
             confirm_jj_sync: true,
             csv_rainbow: true,
             follow_view: "diff".into(),
+            diff_view: "rendered".into(),
             md_task_states: vec![" ".into(), "x".into()],
             md_autolink: true,
             md_alerts: true,

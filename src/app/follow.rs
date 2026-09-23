@@ -1,3 +1,4 @@
+use super::git_view::DiffOpen;
 use super::*;
 
 impl App {
@@ -11,7 +12,7 @@ impl App {
             // A new follow session: default to "since start" display, pinning this moment as the baseline.
             self.follow_diff_full = false;
             // If a follow diff is currently displayed, re-fetch it against the new baseline (drop the stale old diff a matching path would otherwise keep).
-            self.diff_cache = None;
+            self.invalidate_diff_caches();
             #[cfg(feature = "git")]
             self.capture_follow_baseline();
             // Pin the root this session/baseline describes (see `follow_root`'s doc comment).
@@ -70,32 +71,45 @@ impl App {
         self.follow_root.as_deref() == Some(self.tab.root.as_path())
     }
 
-    /// The follow diff for `path`: baseline (follow-start) content vs the current on-disk content, as
-    /// `DiffLine`s for the existing GitDiff renderer. None (→ caller uses the full git diff) when there
-    /// is no baseline session, the session belongs to a different root than the current tab (see
-    /// `follow_scope_valid` — critically, this also catches a same-tab root switch between linked
-    /// worktrees, where `blob_at` would otherwise *successfully* resolve against the wrong worktree's
-    /// HEAD and produce a plausible-looking but wrong diff), the file was dirty-but-too-large at
-    /// follow-start, the current file is unreadable / too large, or either side is non-UTF-8 (binary).
+    /// The follow-start baseline content for `path`: the `dirty` snapshot taken at `F`-on, or (for a
+    /// file that was clean at follow-start) the pinned HEAD blob, or None. Pulled out of
+    /// `follow_baseline_diff` as its own selection step — see `docs/FEATURE-MD-RENDERED-DIFF.md`
+    /// §2, which needs these bytes directly (to run its own block-level Markdown diff) rather than
+    /// an already-line-diffed result.
+    ///
+    /// None means: there is no baseline session, the session belongs to a different root than the
+    /// current tab (see `follow_scope_valid` — critically, this also catches a same-tab root switch
+    /// between linked worktrees, where `blob_at` would otherwise *successfully* resolve against the
+    /// wrong worktree's HEAD and produce a plausible-looking but wrong result), or the file was
+    /// dirty-but-too-large at follow-start (→ caller falls back to the full git diff).
     #[cfg(feature = "git")]
-    pub(super) fn follow_baseline_diff(&self, path: &Path) -> Option<Vec<crate::git::DiffLine>> {
+    pub(super) fn follow_baseline_contents(&self, path: &Path) -> Option<Vec<u8>> {
         if !self.follow_scope_valid() {
             return None;
         }
         let base = self.follow_baseline.as_ref()?;
         let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let baseline: Vec<u8> = match base.dirty.get(&key) {
-            Some(Some(content)) => content.clone(),
-            Some(None) => return None, // dirty at follow-start but too large → full diff
+        match base.dirty.get(&key) {
+            Some(Some(content)) => Some(content.clone()),
+            Some(None) => None, // dirty at follow-start but too large → full diff
             None => {
                 // Clean at follow-start → HEAD blob; a file created after follow-start is absent from
                 // the pinned tree → empty baseline = all-added (correct: it is new since follow-start).
                 // No HEAD to diff against (not a repo / unborn) → `?` returns None so `compute_gitdiff_lines`
                 // defers to `file_diff`, which is empty outside a repo → `follow_jump` shows the file preview.
                 let h = base.head.as_deref()?;
-                crate::git::blob_at(&self.tab.root, h, path).unwrap_or_default()
+                Some(crate::git::blob_at(&self.tab.root, h, path).unwrap_or_default())
             }
-        };
+        }
+    }
+
+    /// The follow diff for `path`: baseline (follow-start) content vs the current on-disk content, as
+    /// `DiffLine`s for the existing GitDiff renderer. None (→ caller uses the full git diff) when
+    /// `follow_baseline_contents` has none to offer, the current file is unreadable / too large, or
+    /// either side is non-UTF-8 (binary).
+    #[cfg(feature = "git")]
+    pub(super) fn follow_baseline_diff(&self, path: &Path) -> Option<Vec<crate::git::DiffLine>> {
+        let baseline = self.follow_baseline_contents(path)?;
         let current = std::fs::read(path).ok()?;
         if current.len() > FOLLOW_BASELINE_FILE_CAP {
             return None;
@@ -112,7 +126,7 @@ impl App {
     pub fn toggle_follow_diff_scope(&mut self) {
         if self.is_git_diff_preview() && self.diff_follow_scope {
             self.follow_diff_full = !self.follow_diff_full;
-            self.diff_cache = None;
+            self.invalidate_diff_caches();
             let msg = if self.follow_diff_full {
                 crate::i18n::Msg::FollowShowFull
             } else {
@@ -201,14 +215,22 @@ impl App {
             // Follow-originated → baseline diff since start (or the conventional full diff if follow_diff_full).
             let diff = self.compute_gitdiff_lines(path, true);
             if !diff.is_empty() {
-                self.open_git_diff(path);
-                // Put the diff we just took into the cache to avoid re-fetching (re-running git) on render.
-                self.diff_cache = Some(DiffCache {
-                    path: path.to_path_buf(),
-                    lines: diff,
-                });
-                // Follow-originated diff: n/N and the position indicator cycle through "files changed during this session".
-                self.diff_follow_scope = true;
+                // `follow_scope: true` and the seeded cache are both already final before
+                // `open_git_diff_with` ever validates the presentation, so a Markdown target's
+                // `Rendered` readability/mark check reads the right baseline (the follow-session
+                // snapshot, not the backend's committed blob) on the only pass — see that fn's own
+                // doc comment for why this replaced a fresh `open_git_diff` + save/restore + re-run.
+                self.open_git_diff_with(
+                    path,
+                    DiffOpen {
+                        follow_scope: true,
+                        seeded_diff: Some(DiffCache {
+                            path: path.to_path_buf(),
+                            lines: diff,
+                        }),
+                        ..Default::default()
+                    },
+                );
                 return;
             }
         }
@@ -262,7 +284,7 @@ impl App {
         if !self.follow_scope_valid() {
             self.follow_session.clear();
             self.follow_diff_full = false;
-            self.diff_cache = None;
+            self.invalidate_diff_caches();
             #[cfg(feature = "git")]
             self.capture_follow_baseline();
             self.follow_root = Some(self.tab.root.clone());
@@ -293,13 +315,26 @@ impl App {
     /// "watch the agent work" (Zed follows the edit position; diffpane scrolls to the latest change).
     /// A few context lines are kept above, and the caret lands on the changed line (ready for `v`/`Y`).
     /// No-ops for non-windowed previews, untracked files (all-new → top is right), and outside a repo.
-    fn follow_scroll_to_first_change(&mut self) {
-        if !self.is_windowed() {
-            return;
-        }
+    ///
+    /// Non-windowed decorated Markdown (not raw source) has no scroll position it can compute
+    /// *here* — a wrapped visual row depends on the terminal width, which isn't known until the
+    /// next render actually measures it — so it defers instead: `tab.diff_scroll_pending` is set to
+    /// `Some(path)` and consumed by that next render of **this exact path**
+    /// (`App::take_diff_scroll_pending_for`) once `App::ensure_md_cache` has built
+    /// `MdCache::diff_marks` at the real width (`ui/preview.rs::render_decorated`,
+    /// `docs/FEATURE-MD-RENDERED-DIFF.md` §3's own follow-scroll extension). A no-op (the
+    /// reservation is simply consumed to nothing) when the document turns out to have no baseline/no
+    /// changes to mark at all, or when the tab moves on to a different file before that render runs.
+    pub(super) fn follow_scroll_to_first_change(&mut self) {
         let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
+        if !self.is_windowed() {
+            if self.is_decorated_kind() && !self.is_raw_source() {
+                self.tab.diff_scroll_pending = Some(path);
+            }
+            return;
+        }
         // Get the changed lines even with the gutter setting OFF (if ON, the same computation is cached in gutter_cache and reused for rendering).
         let marks = if self.cfg.ui.git_gutter {
             self.git_gutter_marks()
@@ -319,5 +354,217 @@ impl App {
             self.tab.preview_top_line = top;
             self.tab.preview_cursor_line = line0;
         }
+    }
+}
+
+#[cfg(all(test, feature = "git"))]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::test_support::unique_tmp;
+
+    fn sh(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} 失敗: {out:?}");
+    }
+
+    fn init_git_repo(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        sh(dir, &["init", "-q", "."]);
+        sh(dir, &["config", "user.email", "t@t"]);
+        sh(dir, &["config", "user.name", "t"]);
+        sh(dir, &["config", "commit.gpgsign", "false"]);
+    }
+
+    fn commit_all(dir: &Path, msg: &str) {
+        sh(dir, &["add", "-A"]);
+        sh(dir, &["commit", "-q", "-m", msg]);
+    }
+
+    /// **The pin this refactor exists to protect.** `follow_baseline_diff` used to select its
+    /// baseline inline; now it is literally `diff_contents(follow_baseline_contents(path),
+    /// current)` (see both functions' doc comments). This exercises both branches
+    /// `follow_baseline_contents` picks between — the follow-start `dirty` snapshot for a file
+    /// already modified when `F` was pressed, and the pinned HEAD blob for one that was still
+    /// clean — and asserts `follow_baseline_diff`'s result is exactly what feeding
+    /// `follow_baseline_contents`'s answer through `diff_contents` produces, field for field.
+    #[test]
+    fn follow_baseline_diff_equals_diff_contents_of_follow_baseline_contents() {
+        let dir = unique_tmp("konoma_follow_baseline_contents_pin_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        init_git_repo(&dir);
+        let root = dir.canonicalize().unwrap();
+        std::fs::write(root.join("clean.txt"), b"one\ntwo\n").unwrap();
+        std::fs::write(root.join("dirty.txt"), b"already\nmodified\n").unwrap();
+        commit_all(&root, "init");
+
+        // dirty.txt is already modified before F is pressed → goes into the `dirty` snapshot arm.
+        std::fs::write(root.join("dirty.txt"), b"already\nCHANGED-BEFORE-F\n").unwrap();
+
+        let mut app = App::new(root.clone(), Config::default()).unwrap();
+        app.toggle_follow();
+        assert!(app.follow_enabled());
+
+        // clean.txt changes AFTER F → its baseline comes from the pinned-HEAD-blob arm instead.
+        std::fs::write(root.join("clean.txt"), b"one\nTWO\n").unwrap();
+
+        for name in ["clean.txt", "dirty.txt"] {
+            let path = root.join(name);
+            let baseline = app
+                .follow_baseline_contents(&path)
+                .unwrap_or_else(|| panic!("{name}: follow_baseline_contents は Some のはず"));
+            let current = std::fs::read(&path).unwrap();
+            let expected = crate::git::diff_contents(
+                &String::from_utf8(baseline).unwrap(),
+                &String::from_utf8(current).unwrap(),
+            );
+            let actual = app
+                .follow_baseline_diff(&path)
+                .unwrap_or_else(|| panic!("{name}: follow_baseline_diff は Some のはず"));
+            assert_eq!(
+                expected.len(),
+                actual.len(),
+                "{name}: follow_baseline_diff が follow_baseline_contents から再構成できる: \
+                 expected={expected:?} actual={actual:?}"
+            );
+            for (e, a) in expected.iter().zip(actual.iter()) {
+                assert_eq!(e.kind, a.kind, "{name}: kind");
+                assert_eq!(e.old_no, a.old_no, "{name}: old_no");
+                assert_eq!(e.new_no, a.new_no, "{name}: new_no");
+                assert_eq!(e.text, a.text, "{name}: text");
+            }
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `follow_baseline_contents` refuses (None) for the same reason `follow_baseline_diff` always
+    /// did: the session/baseline describe a different root than the tab's current one (see
+    /// `follow_scope_valid`'s doc — a same-tab root change without an intervening
+    /// `follow_note_change`, e.g. `l`/`h`, a tab switch, a bookmark jump).
+    #[test]
+    fn follow_baseline_contents_is_none_when_the_scope_root_changed() {
+        let dir_a = unique_tmp("konoma_follow_baseline_contents_scope_a");
+        let _ = std::fs::remove_dir_all(&dir_a);
+        init_git_repo(&dir_a);
+        let root_a = dir_a.canonicalize().unwrap();
+        std::fs::write(root_a.join("a.txt"), b"one\n").unwrap();
+        commit_all(&root_a, "init");
+
+        let dir_b = unique_tmp("konoma_follow_baseline_contents_scope_b");
+        let _ = std::fs::remove_dir_all(&dir_b);
+        init_git_repo(&dir_b);
+        let root_b = dir_b.canonicalize().unwrap();
+        std::fs::write(root_b.join("a.txt"), b"one\n").unwrap();
+        commit_all(&root_b, "init");
+
+        let mut app = App::new(root_a.clone(), Config::default()).unwrap();
+        app.toggle_follow();
+        assert_eq!(app.follow_root, Some(root_a.clone()));
+
+        app.jump_to_dir(root_b.clone());
+        assert!(!app.follow_scope_valid(), "root 変更直後はスコープ無効");
+        assert!(
+            app.follow_baseline_contents(&root_b.join("a.txt"))
+                .is_none(),
+            "スコープが無効な間は安い判定だけで None"
+        );
+
+        std::fs::remove_dir_all(&dir_a).ok();
+        std::fs::remove_dir_all(&dir_b).ok();
+    }
+
+    /// A file already dirty at follow-start but larger than the snapshot cap is recorded as `None`
+    /// in the `dirty` map (`capture_follow_baseline`'s size pre-check), so both
+    /// `follow_baseline_contents` and `follow_baseline_diff` defer to the full diff instead of
+    /// claiming there is no change.
+    #[test]
+    fn follow_baseline_contents_is_none_for_a_dirty_file_over_the_snapshot_cap() {
+        let dir = unique_tmp("konoma_follow_baseline_contents_cap_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        init_git_repo(&dir);
+        let root = dir.canonicalize().unwrap();
+        std::fs::write(root.join("big.txt"), b"small\n").unwrap();
+        commit_all(&root, "init");
+        // Over FOLLOW_BASELINE_FILE_CAP so capture_follow_baseline skips snapshotting it.
+        let big = vec![b'x'; FOLLOW_BASELINE_FILE_CAP + 1];
+        std::fs::write(root.join("big.txt"), &big).unwrap();
+
+        let mut app = App::new(root.clone(), Config::default()).unwrap();
+        app.toggle_follow();
+
+        assert!(
+            app.follow_baseline_contents(&root.join("big.txt"))
+                .is_none(),
+            "上限超の dirty ファイルは None(全文差分にフォールバック)"
+        );
+        assert!(
+            app.follow_baseline_diff(&root.join("big.txt")).is_none(),
+            "follow_baseline_diff も同じ理由で None"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **The bug `App::open_git_diff_with` exists to fix** (that fn's own doc comment). A
+    /// follow-originated diff whose HEAD-committed version is over `FOLLOW_BASELINE_FILE_CAP` but
+    /// whose follow-session-start snapshot is not must land straight in `Rendered` with **no** stale
+    /// `DiffRenderedUnavailable` flash. Before the fix, `follow_jump` opened via a fresh
+    /// `open_git_diff` (which always starts `diff_follow_scope = false`, so `Rendered`'s validation
+    /// read the over-cap HEAD blob and flashed `DiffRenderedUnavailable` + rounded down to `Source`)
+    /// and only afterward set `diff_follow_scope = true` and re-validated — successfully switching to
+    /// `Rendered`, but never clearing the flash the first, wrongly-scoped validation had already set.
+    #[test]
+    fn follow_jump_into_markdown_rendered_diff_does_not_flash_stale_unavailable() {
+        let dir = unique_tmp("konoma_follow_jump_rendered_flash_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        init_git_repo(&dir);
+        let root = dir.canonicalize().unwrap();
+        let path = root.join("big.md");
+        // HEAD-committed version is over the cap — the full-scope baseline (`vcs::base_contents`)
+        // can't be read as a `Rendered` source.
+        let big = "x".repeat(FOLLOW_BASELINE_FILE_CAP + 1);
+        std::fs::write(&path, format!("# t\n\n{big}\n")).unwrap();
+        commit_all(&root, "init big");
+
+        // Shrink it before `F` — dirty at follow-start, so what gets captured is the (well-under-cap)
+        // follow-session snapshot, not the over-cap HEAD blob.
+        std::fs::write(&path, "# t\n\nsmall before follow\n").unwrap();
+
+        let mut app = App::new(root.clone(), Config::default()).unwrap();
+        app.toggle_follow();
+        assert!(app.follow_enabled());
+        app.flash = None; // clear the "follow: on" flash `toggle_follow` itself just set
+
+        // Change it again after `F` — this is the edit `follow_jump` reacts to.
+        std::fs::write(&path, "# t\n\nsmall after follow\n").unwrap();
+
+        let (_, apply_calls) =
+            crate::test_support::count_apply_diff_view_calls(|| app.follow_jump(&path));
+        assert_eq!(
+            apply_calls, 1,
+            "apply_diff_view は最終スコープが確定した後に1回だけ走るはず(2回目が黙って直すのではない)"
+        );
+
+        assert!(
+            app.is_git_diff_preview(),
+            "follow_jump はこのファイルの diff を開くはず"
+        );
+        assert_eq!(
+            app.diff_view_for_test(),
+            DiffView::Rendered,
+            "follow スコープの版は cap 未満なので Rendered に入れるはず"
+        );
+        assert_eq!(
+            app.flash, None,
+            "1 回目の(誤った scope=false での)判定が立てた stale フラッシュが残っている: {:?}",
+            app.flash
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

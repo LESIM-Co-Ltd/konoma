@@ -48,6 +48,10 @@ Details that make it comfortable:
 - `.git` internals, gitignored and hidden files are never followed.
 - `ui.follow_view = "file"` switches the default presentation from diff to a
   normal preview with the git gutter, scrolled to the first changed hunk.
+- For a Markdown file, the diff itself has 3 presentations — `source`,
+  `rendered` (decorated blocks, the default — see
+  [The git suite](../git/#diffs)), and `preview` — cycled independently with
+  `R`, regardless of `follow_view`.
 
 ## Changed-files view — `C`
 

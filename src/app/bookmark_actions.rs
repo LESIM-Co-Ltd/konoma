@@ -1,5 +1,6 @@
 //! Bookmarks: set/jump leader state and the bookmark-list overlay — methods on `App`.
 
+use super::git_view::DiffOpen;
 use super::*;
 
 /// What one coalesced filesystem-event burst did, beyond the list of paths it touched. Accumulated
@@ -1013,13 +1014,27 @@ impl App {
         } else {
             let _ = self.reveal_path_deep(&target);
         }
-        // open_git_diff resets came_from_git_view / diff_follow_scope, so save and restore them
-        // (so cycling from a hub-opened diff still returns to the hub with `q`, and a follow-scoped cycle keeps going).
-        let came = self.tab.came_from_git_view;
-        let scope = self.diff_follow_scope;
-        self.open_git_diff(&target);
-        self.tab.came_from_git_view = came;
-        self.diff_follow_scope = scope;
+        // A fresh `open_git_diff` would reset `came_from_git_view`/`diff_follow_scope`/the
+        // presentation to the target file's own config default, so carry the current ones over
+        // instead (so cycling from a hub-opened diff still returns to the hub with `q`, a
+        // follow-scoped cycle keeps going, and the presentation — source/rendered/preview — is never
+        // reset by simply moving to the next changed file: `docs/FEATURE-MD-RENDERED-DIFF.md` §4's
+        // "n/N で次のファイルの diff へ移っても表現は維持"). `Preview` never reaches this point at all
+        // (n/N is bound only in `Surface::PreviewGitDiff`, which the `Preview` representation has
+        // already left), so the carried-over presentation is always `Source`/`Rendered` —
+        // `open_git_diff_with` still rounds it down to `Source` in case the new target can't show
+        // `Rendered` (a Markdown diff cycling to a plain-text one, say), and validates it against the
+        // *target*'s own readability in the one `apply_diff_view` call this now makes (see that fn's
+        // own doc comment for why a save/restore + re-run used to sit here).
+        self.open_git_diff_with(
+            &target,
+            DiffOpen {
+                follow_scope: self.diff_follow_scope,
+                view: Some(self.tab.diff_view),
+                came_from_git_view: Some(self.tab.came_from_git_view),
+                ..Default::default()
+            },
+        );
     }
 
     /// The follow session's reviewable files (recorded while `F` was ON), pruned to still-existing
@@ -1599,7 +1614,7 @@ impl App {
         } else {
             self.refresh_git_status_only(); // statuses+branch only (ignored keeps its cache)
         }
-        self.diff_cache = None; // the working tree may have changed → drop the diff cache (keeps up with external edits)
+        self.invalidate_diff_caches(); // the working tree may have changed → drop the diff caches (keeps up with external edits)
         self.gutter_cache = None; // same as above: the git change gutter is also rebuilt on a working-tree change
                                   // We do rebuild the tree, but its transient failure (e.g. a subdirectory being
                                   // expanded briefly becomes unreadable while an agent bulk-rewrites files)

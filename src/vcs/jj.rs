@@ -585,31 +585,70 @@ pub fn changed_files(root: &Path) -> Vec<crate::git::ChangeEntry> {
 /// fabricated one.
 pub fn file_diff(root: &Path, file: &Path) -> Vec<crate::git::DiffLine> {
     let mut out = Vec::new();
-    let Some(ws) = workspace_root(root) else {
-        return out;
-    };
-    // Checked on `file` itself, before it is ever canonicalized: `Path::canonicalize` resolves
-    // *every* symlink in the path, including a symlink `file` itself — so checking the resolved
-    // `abs` below would silently test the target's own metadata instead and never see the
-    // symlink at all. `file` is what the caller actually asked about.
-    if std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_symlink()) {
-        return out; // decline rather than compare two unrelated things — see the doc above
-    }
-    let abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
-    let ws_abs = ws.canonicalize().unwrap_or_else(|_| ws.clone());
-    let Ok(rel) = abs.strip_prefix(&ws_abs) else {
-        return out; // outside this workspace
-    };
-    let Some(rel_str) = rel.to_str() else {
+    let Some((ws, abs, rel_str)) = resolve_ws_rel(root, file) else {
         return out;
     };
     let Some(m) = meta(&ws) else {
         return out; // jj could not answer: stay quiet rather than guess
     };
-    let before = parent_bytes(&ws, rel_str, m.parent.as_deref());
+    let before = parent_bytes(&ws, &rel_str, m.parent.as_deref());
     let after = std::fs::read(&abs).ok();
-    crate::git::push_file_diff(&mut out, rel, before.as_deref(), after.as_deref(), false);
+    crate::git::push_file_diff(
+        &mut out,
+        Path::new(&rel_str),
+        before.as_deref(),
+        after.as_deref(),
+        false,
+    );
     out
+}
+
+/// The working-copy commit's parent (`@-`) bytes for `file`, or None when: the parent has no such
+/// file (untracked / added since — the same reading `file_diff` gives it), `file` is a symlink (see
+/// `file_diff`'s doc for why those are declined outright), `file` is outside the workspace, or jj
+/// cannot be asked at all. This is the jj half of `crate::vcs::Vcs::base_contents` — see that trait
+/// method's doc for the cross-backend contract.
+///
+/// Shares `file_diff`'s own path resolution (`resolve_ws_rel`) rather than repeating it, so the two
+/// can never silently drift on what counts as "the same file" (symlink handling, workspace
+/// boundary, path normalization).
+///
+/// Anchored to [`Meta::parent`] (the working-copy commit's first parent, read through jj's template
+/// engine) rather than the literal revset `"@-"`: `@-` means "parents of `@`", and the moment `@` is
+/// a merge commit (an ordinary state after `jj new A B`) it has more than one parent, so jj's own
+/// revset resolver refuses to disambiguate and the read fails outright — see `Meta::parent`'s doc
+/// for the full reasoning and the concrete failure. `file_diff`/`parent_bytes` already avoid that
+/// trap; `base_contents` reuses the same resolved parent so both give the same answer for a merge
+/// working copy.
+// Not yet called from production code — see `crate::vcs::Vcs::base_contents`'s doc comment for why
+// (a later stage of the same feature wires the consumer in). Exercised directly by this module's
+// tests in the meantime.
+#[allow(dead_code)]
+pub fn base_contents(root: &Path, file: &Path) -> Option<Vec<u8>> {
+    let (ws, _abs, rel_str) = resolve_ws_rel(root, file)?;
+    let m = meta(&ws)?;
+    parent_bytes(&ws, &rel_str, m.parent.as_deref())
+}
+
+/// Resolves `file` to (workspace root, canonicalized absolute path, workspace-relative path
+/// string) — the path-handling `file_diff` and `base_contents` both need before they can ask jj
+/// anything. `None` when `root` is not inside a jj workspace, `file` is a symlink (declined rather
+/// than diffed — see `file_diff`'s doc comment for the two compounding reasons), `file` resolves
+/// outside the workspace, or the relative path is not valid UTF-8 (jj's CLI takes text arguments).
+fn resolve_ws_rel(root: &Path, file: &Path) -> Option<(PathBuf, PathBuf, String)> {
+    let ws = workspace_root(root)?;
+    // Checked on `file` itself, before it is ever canonicalized: `Path::canonicalize` resolves
+    // *every* symlink in the path, including a symlink `file` itself — so checking the resolved
+    // `abs` below would silently test the target's own metadata instead and never see the
+    // symlink at all. `file` is what the caller actually asked about.
+    if std::fs::symlink_metadata(file).is_ok_and(|m| m.file_type().is_symlink()) {
+        return None; // decline rather than compare two unrelated things — see file_diff's doc above
+    }
+    let abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let ws_abs = ws.canonicalize().unwrap_or_else(|_| ws.clone());
+    let rel = abs.strip_prefix(&ws_abs).ok()?; // outside this workspace
+    let rel_str = rel.to_str()?.to_string();
+    Some((ws, abs, rel_str))
 }
 
 /// The working copy's first parent's bytes for one path, or None when that parent does not have
@@ -1643,6 +1682,73 @@ mod tests {
         assert!(
             added.iter().all(|l| l.old_no.is_none()),
             "a file the parent does not have must read as all-added: {added:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One field-for-field DiffLine tuple — same purpose as `git.rs`'s own `diff_line_tuples`: lets
+    /// two independently-produced `Vec<DiffLine>` be compared with `assert_eq!` even though
+    /// `DiffLine` derives no `PartialEq`.
+    fn diff_line_tuples(
+        lines: &[crate::git::DiffLine],
+    ) -> Vec<(crate::git::DiffLineKind, Option<u32>, Option<u32>, &str)> {
+        lines
+            .iter()
+            .map(|l| (l.kind, l.old_no, l.new_no, l.text.as_str()))
+            .collect()
+    }
+
+    /// `base_contents` returns the working-copy commit's parent's (`@-`) bytes — exactly what
+    /// `file_diff` itself diffs against — and feeding it through the same pure differ
+    /// (`crate::git::diff_contents`) as `file_diff`'s "before" side produces the identical
+    /// `DiffLine` sequence. This is the jj half of `crate::vcs::Vcs::base_contents`.
+    #[test]
+    fn base_contents_is_the_parents_bytes_and_drives_the_same_diff_as_file_diff() {
+        let Some(dir) = scratch_repo("base_contents") else {
+            return;
+        };
+        let changed = dir.join("changed.txt");
+        let base = base_contents(&dir, &changed).expect("changed.txt の親には中身がある");
+        assert_eq!(base, b"before\n", "base_contents は @- 時点の中身");
+
+        let current = std::fs::read(&changed).unwrap();
+        let via_base_contents = crate::git::diff_contents(
+            &String::from_utf8(base).unwrap(),
+            &String::from_utf8(current).unwrap(),
+        );
+        let via_file_diff = file_diff(&dir, &changed);
+        assert_eq!(
+            diff_line_tuples(&via_base_contents),
+            diff_line_tuples(&via_file_diff),
+            "base_contents 起点の diff と file_diff が同じ DiffLine 列になる"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file the parent commit does not have (added since) reads as None, matching `file_diff`'s
+    /// own "a file the parent does not have reads as all-added" contract on the diff side.
+    #[test]
+    fn base_contents_is_none_for_a_file_the_parent_does_not_have() {
+        let Some(dir) = scratch_repo("base_contents_added") else {
+            return;
+        };
+        assert!(
+            base_contents(&dir, &dir.join("added.txt")).is_none(),
+            "親コミットに無いファイルは None"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A symlink is declined outright — same reasoning as `file_diff`'s own symlink guard (see its
+    /// doc comment): there is no honest "before" content to hand back.
+    #[test]
+    fn base_contents_declines_a_symlink() {
+        let Some(dir) = scratch_repo("base_contents_symlink") else {
+            return;
+        };
+        assert!(
+            base_contents(&dir, &dir.join("link.txt")).is_none(),
+            "symlink は file_diff と同じく declines(None)"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

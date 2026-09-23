@@ -1711,6 +1711,70 @@ pub fn file_diff(_root: &Path, _file: &Path) -> Vec<DiffLine> {
     Vec::new()
 }
 
+/// The committed bytes `file_diff` compares the working copy against — HEAD's blob for `file` — or
+/// `None` when HEAD has no such file (untracked / added since, or the repository is unborn), `root`
+/// is not inside a repository, or the git integration is off. This is `base_contents` from
+/// `crate::vcs::Vcs`; see that trait method's doc for the cross-backend contract.
+///
+/// Deliberately **not** built on top of [`blob_at`]: `blob_at` takes an already-resolved commit sha
+/// (its `git2::Oid::from_str` call rejects the symbolic ref `"HEAD"` outright, so `blob_at(root,
+/// "HEAD", file)` cannot work as written), and resolving HEAD to a sha first (`head_commit_id` then
+/// `blob_at`) would cost a second git call/child-process on the CLI fallback path for no benefit.
+/// Instead this mirrors `file_diff`'s own "before" side directly — the git2 branch reads HEAD's tree
+/// the same way `file_diff` does, and the CLI fallback ([`base_contents_via_cli`]) reads
+/// `cli_blob(&dir, "HEAD", rel)`, exactly what `file_diff_via_cli`'s own "before" side already does.
+///
+/// Also mirrors `file_diff`'s [`precomposed_pathspec`] call on macOS: `Tree::get_path` (like
+/// `git2::DiffOptions::pathspec`) matches against the tree's own (NFC, once
+/// `core.precomposeunicode` has run) spelling, so an NFD-spelled `rel` — what `canonicalize()`
+/// hands back for a file macOS wrote with decomposed codepoints — otherwise fails to resolve even
+/// though the file is right there. Confirmed empirically: without this, `base_contents` returned
+/// `None` for an NFD-named tracked file (see `base_contents_finds_an_nfd_named_file`).
+///
+/// Called from production code via `impl Vcs for Git` (`src/vcs/mod.rs`) — the diff's `Rendered`
+/// presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §2) and the ordinary decorated Markdown
+/// preview's own change gutter (§3) both reach it through `crate::vcs::base_contents`.
+#[cfg(feature = "git")]
+pub fn base_contents(root: &Path, file: &Path) -> Option<Vec<u8>> {
+    if !external_git_enabled() {
+        return None;
+    }
+    let Some(repo) = open_repo(root) else {
+        return base_contents_via_cli(root, file);
+    };
+    let workdir = repo.workdir()?;
+    let workdir = workdir
+        .canonicalize()
+        .unwrap_or_else(|_| workdir.to_path_buf());
+    let file_abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let rel = file_abs.strip_prefix(&workdir).ok()?;
+    let rel_str = precomposed_pathspec(&workdir, &rel.to_string_lossy());
+    // `repo.head()` fails outright for the unborn (no-commits-yet) repository, same as `file_diff`'s
+    // `head_tree` computation — both read that as "no committed state to compare against".
+    let tree = repo.head().ok()?.peel_to_tree().ok()?;
+    let entry = tree.get_path(Path::new(&rel_str)).ok()?;
+    let obj = entry.to_object(&repo).ok()?;
+    Some(obj.as_blob()?.content().to_vec())
+}
+
+/// `base_contents` for a repository libgit2 will not open: HEAD's blob via `git cat-file`, mirroring
+/// `file_diff_via_cli`'s own "before" side. Kept as its own function (rather than inlined into
+/// `base_contents`'s fallback arm) so a test can call it directly and compare it against the git2
+/// path, the same way `file_diff`/`file_diff_via_cli` are compared. Called from production code by
+/// `base_contents`'s own CLI-fallback arm above.
+#[cfg(feature = "git")]
+fn base_contents_via_cli(root: &Path, file: &Path) -> Option<Vec<u8>> {
+    let dir = cli_dir(root)?;
+    let file_abs = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let rel = file_abs.strip_prefix(&dir).ok()?;
+    cli_blob(&dir, "HEAD", rel)
+}
+
+#[cfg(not(feature = "git"))]
+pub fn base_contents(_root: &Path, _file: &Path) -> Option<Vec<u8>> {
+    None
+}
+
 /// Line-level diff between two in-memory contents (`old` → `new`), producing the same `DiffLine`
 /// shape as `file_diff` so the existing GitDiff renderer consumes it unchanged. Used by the follow
 /// baseline diff, where `old` is the file's content at follow-start and `new` is its content now.
@@ -3364,6 +3428,7 @@ mod tests {
         assert!(commit_diff(&dir, &commit_id).is_empty(), "commit_diff");
         assert!(worktree_diff(&dir).is_empty(), "worktree_diff");
         assert!(head_commit_id(&dir).is_none(), "head_commit_id");
+        assert!(base_contents(&dir, &file).is_none(), "base_contents");
         // Mutations: all route through the shared `run_git` gate.
         assert!(stage(&dir, &file).is_err(), "stage");
         assert!(unstage(&dir, &file).is_err(), "unstage");
@@ -3401,6 +3466,10 @@ mod tests {
         assert!(
             !worktrees(&dir).is_empty(),
             "worktrees work again once re-enabled"
+        );
+        assert!(
+            base_contents(&dir, &file).is_some(),
+            "base_contents works again once re-enabled"
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -4669,6 +4738,7 @@ mod tests {
                 let _ = branch_tip(&dir, &branch_name);
                 let _ = head_commit_id(&dir);
                 let _ = blob_at(&dir, &head, &canon.join("a.txt"));
+                let _ = base_contents(&dir, &canon.join("a.txt"));
                 let _ = worktree_diff(&dir);
                 let _ = diff_since(&dir, &branch_name);
                 let _ = merge_base_time(&dir, &branch_name);
@@ -4950,6 +5020,16 @@ mod tests {
             blob_at(&dir, &head, &file),
             cli_blob(&canon, &head, Path::new("a.txt")),
             "blob_at の中身"
+        );
+        assert_eq!(
+            base_contents(&dir, &file),
+            base_contents_via_cli(&dir, &file),
+            "base_contents の中身"
+        );
+        assert_eq!(
+            base_contents(&dir, &file).as_deref(),
+            Some(body.as_bytes()),
+            "base_contents は HEAD 時点(変更前)の中身"
         );
         // A *root* commit, where the two paths reach the "no parent" case by different routes
         // (`parent(0)`-or-empty-tree vs `diff-tree --root`).
@@ -5355,6 +5435,231 @@ mod tests {
         assert!(
             diff.iter().any(|l| l.kind == DiffLineKind::Removed),
             "Removed 行が無い(NFD パスの diff が空): {diff:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // =========================================================================================
+    // base_contents (`crate::vcs::Vcs::base_contents`'s git backend)
+    // =========================================================================================
+
+    /// One field-for-field DiffLine tuple, so two `Vec<DiffLine>` (produced by two different diff
+    /// engines — `diff_contents`'s `similar` vs `file_diff`'s libgit2) can be compared with
+    /// `assert_eq!` even though `DiffLine` itself derives no `PartialEq`.
+    #[cfg(feature = "git")]
+    fn diff_line_tuples(lines: &[DiffLine]) -> Vec<(DiffLineKind, Option<u32>, Option<u32>, &str)> {
+        lines
+            .iter()
+            .map(|l| (l.kind, l.old_no, l.new_no, l.text.as_str()))
+            .collect()
+    }
+
+    /// The core promise: `base_contents` is HEAD's blob (not the working tree, not the index), and
+    /// feeding it through the same pure differ `follow_baseline_diff` uses (`diff_contents`)
+    /// produces the *exact same* `DiffLine` sequence — kind, line numbers, and text — as `file_diff`
+    /// (which is backed by libgit2's own tree-to-workdir diff). That equality is the proof the two
+    /// APIs describe the same comparison, not just a similar-looking one.
+    #[cfg(feature = "git")]
+    #[test]
+    fn base_contents_is_head_and_drives_the_same_diff_as_file_diff() {
+        let dir = unique_tmp("konoma_base_contents_head_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+        let file = canon.join("a.txt");
+        let before_text = "one\ntwo\nthree\n";
+        std::fs::write(&file, before_text).unwrap();
+        commit_all(&dir, "init");
+        // Simple, unambiguous edit (one changed line + one appended line) so two independent diff
+        // algorithms (similar vs libgit2/Myers) cannot legitimately disagree on the alignment.
+        let after_text = "one\nTWO\nthree\nfour\n";
+        std::fs::write(&file, after_text).unwrap();
+
+        let base = base_contents(&dir, &file).expect("base_contents");
+        assert_eq!(
+            base,
+            before_text.as_bytes(),
+            "base_contents は作業ツリーの現在値ではなくコミット時点の中身"
+        );
+
+        let via_base_contents = diff_contents(
+            &String::from_utf8(base).unwrap(),
+            &String::from_utf8(std::fs::read(&file).unwrap()).unwrap(),
+        );
+        let via_file_diff = file_diff(&dir, &file);
+        assert_eq!(
+            diff_line_tuples(&via_base_contents),
+            diff_line_tuples(&via_file_diff),
+            "base_contents 起点の diff と file_diff が同じ DiffLine 列になる"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn base_contents_is_none_for_an_untracked_file() {
+        let dir = unique_tmp("konoma_base_contents_untracked_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+        // A repository needs at least one commit so `repo.head()` resolves at all — otherwise this
+        // would exercise the unborn-repo case (also None) rather than the untracked-file case.
+        std::fs::write(canon.join("committed.txt"), b"one\n").unwrap();
+        commit_all(&dir, "init");
+        let fresh = canon.join("fresh.txt");
+        std::fs::write(&fresh, b"brand new\n").unwrap();
+
+        assert!(
+            base_contents(&dir, &fresh).is_none(),
+            "HEAD に無いファイルは None(untracked)"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn base_contents_is_none_for_an_unborn_repository() {
+        let dir = unique_tmp("konoma_base_contents_unborn_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+        let file = canon.join("a.txt");
+        std::fs::write(&file, b"never committed\n").unwrap();
+
+        assert!(
+            base_contents(&dir, &file).is_none(),
+            "コミットが一つも無い repo は None"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A change already staged (in the index) must still read as HEAD's content, not the index's —
+    /// `base_contents` mirrors `file_diff`'s own tree-vs-workdir comparison, which the index plays
+    /// no part in either.
+    #[cfg(feature = "git")]
+    #[test]
+    fn base_contents_reads_head_not_the_index_for_a_staged_change() {
+        let dir = unique_tmp("konoma_base_contents_staged_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+        let file = canon.join("a.txt");
+        std::fs::write(&file, b"one\n").unwrap();
+        commit_all(&dir, "init");
+        std::fs::write(&file, b"two\n").unwrap();
+        stage(&dir, &file).unwrap(); // staged, not committed
+
+        assert_eq!(
+            base_contents(&dir, &file),
+            Some(b"one\n".to_vec()),
+            "ステージ済みでも基準は HEAD(index ではない)"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(feature = "git")]
+    #[test]
+    fn base_contents_is_none_outside_a_repository() {
+        let dir = unique_tmp("konoma_base_contents_outside_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("plain.txt");
+        std::fs::write(&file, b"hello\n").unwrap();
+
+        assert!(base_contents(&dir, &file).is_none(), "リポジトリ外は None");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A `root` that is a subdirectory of the repository, addressed with an absolute path to the
+    /// changed file — the shape the diff view actually calls this with (a git hub opened from a
+    /// nested directory, or a tab rooted below the repository top).
+    #[cfg(feature = "git")]
+    #[test]
+    fn base_contents_works_from_a_subdirectory_root_with_an_absolute_path() {
+        let dir = unique_tmp("konoma_base_contents_subdir_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+        std::fs::create_dir_all(canon.join("sub")).unwrap();
+        let file = canon.join("sub/nested.txt");
+        std::fs::write(&file, b"alpha\n").unwrap();
+        commit_all(&dir, "init");
+        std::fs::write(&file, b"beta\n").unwrap();
+
+        assert_eq!(
+            base_contents(&canon.join("sub"), &file),
+            Some(b"alpha\n".to_vec()),
+            "サブディレクトリ root からでも repo 全体の HEAD を基準にする"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// macOS-only regression companion to `file_diff_finds_changes_for_an_nfd_named_file`:
+    /// `base_contents` is looked up through the tree directly (`Tree::get_path`), not through
+    /// `git2::DiffOptions::pathspec` (the mechanism `precomposed_pathspec` exists to work around),
+    /// so this pins that the NFD/NFC precomposition quirk that affects `file_diff`'s pathspec match
+    /// does not also affect this different lookup path.
+    #[cfg(all(feature = "git", target_os = "macos"))]
+    #[test]
+    fn base_contents_finds_an_nfd_named_file() {
+        let dir = unique_tmp("konoma_base_contents_nfd_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+        // NFD spelling: か (U+304B) + the combining voiced sound mark (U+3099) — decomposed が.
+        let nfd_path = canon.join("\u{304B}\u{3099}_nfd.txt");
+        std::fs::write(&nfd_path, b"alpha\nbeta\n").unwrap();
+        stage(&dir, &nfd_path).unwrap();
+        commit(&dir, "init").unwrap();
+        std::fs::write(&nfd_path, b"alpha\ngamma\n").unwrap();
+
+        assert_eq!(
+            base_contents(&dir, &nfd_path),
+            Some(b"alpha\nbeta\n".to_vec()),
+            "NFD パスでも HEAD の中身が引ける"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// git2 vs the CLI fallback must describe the same repository — same shape as
+    /// `the_cli_fallback_and_libgit2_describe_the_same_repository`, isolated to `base_contents`
+    /// specifically since that test only exercises `blob_at`, not this new function.
+    #[cfg(feature = "git")]
+    #[test]
+    fn base_contents_cli_fallback_agrees_with_libgit2() {
+        let dir = unique_tmp("konoma_base_contents_cli_parity_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        let canon = dir.canonicalize().unwrap();
+        let file = canon.join("a.txt");
+        std::fs::write(&file, b"one\ntwo\nthree\n").unwrap();
+        commit_all(&dir, "init");
+        std::fs::write(&file, b"changed\n").unwrap();
+
+        assert_eq!(
+            base_contents(&dir, &file),
+            base_contents_via_cli(&dir, &file),
+            "git2 経路と CLI フォールバックが同じ中身を返す"
+        );
+        assert_eq!(
+            base_contents(&dir, &file),
+            Some(b"one\ntwo\nthree\n".to_vec()),
+            "比較が空同士で成立していない"
+        );
+        // The untracked/no-such-file side of the same parity: both must agree on None too.
+        let fresh = canon.join("fresh.txt");
+        std::fs::write(&fresh, b"brand new\n").unwrap();
+        assert_eq!(
+            base_contents_via_cli(&dir, &fresh),
+            None,
+            "CLI フォールバックも untracked は None"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

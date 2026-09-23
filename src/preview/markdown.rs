@@ -30,8 +30,23 @@ use ratatui::text::{Line, Span};
 use pulldown_cmark::Options as ParseOptions;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+mod diff;
 pub(crate) mod model;
 pub(crate) mod render;
+
+// Re-exported at this module's own top level (rather than requiring a caller to name the private
+// `diff` submodule directly, which it cannot) so `crate::preview::markdown::{BlockOp, DiffMark,
+// PreviewMark}` is the one path this file's own diff entry points, `render.rs`'s own test suite,
+// and the App layer all need — keeping which of `diff`/`render` actually defines each type an
+// implementation detail. `BlockOp` is named directly by this file's own `ops_has_any_change`
+// (below), by `App::compute_md_diff` (`src/app/md_diff.rs`), and by `render.rs`'s own
+// `#[cfg(test)]` suite. `preview_marks` is named directly by `App::ensure_md_cache` (`src/app/
+// md_render.rs`), which — holding an already-computed `ops` from a landed `MdDiffOutcome` — calls
+// it straight rather than re-parsing/re-aligning `old_src`/`new_src` again just to get there.
+pub(crate) use diff::preview_marks;
+pub(crate) use diff::BlockOp;
+pub(crate) use diff::PreviewMark;
+pub(crate) use render::DiffMark;
 
 // Decoration colors. A code block is enclosed as a "special area" with a background + left gutter.
 const CODE_GUTTER_FG: Color = Color::Cyan;
@@ -556,6 +571,10 @@ pub fn mermaid_focus_border_x(align: BlockAlign, pane: u16, bw: u16) -> u16 {
 pub struct MdRenderExtras {
     pub code_blocks: Vec<String>,
     pub tasks: Vec<(char, usize)>,
+    /// Every top-level block's own final row range, straight from `render::RenderOut::block_rows`
+    /// — see that field's own doc comment. Empty for every non-Markdown `DecoratedMarkdown` branch,
+    /// same as `code_blocks`/`tasks` above.
+    pub block_rows: Vec<std::ops::Range<usize>>,
 }
 
 /// (Production goes through `render_markdown_with_images_aligned` with the configured block
@@ -643,7 +662,165 @@ pub fn render_markdown_with_images_aligned(
         MdRenderExtras {
             code_blocks: out.code_blocks,
             tasks: out.tasks,
+            block_rows: out.block_rows,
         },
+    )
+}
+
+/// Parses both `old_src` and `new_src` and aligns their top-level blocks (`diff::block_ops`) — the
+/// one shared computation every diff-presentation entry point in this file needs. `App::
+/// compute_md_diff` (`src/app/md_diff.rs`) is the one production caller that needs the `ops` half
+/// on its own (it runs on a background worker thread, `docs/STATUS.md` ★未修正 item 4, and sends
+/// only `ops`/`old_pre`/`new_pre` back across the channel — a `Doc<'a>` cannot itself cross it, see
+/// `MdDiffOutcome`'s own doc comment); `App::ensure_md_cache` then re-parses `Doc`s from those
+/// already-diffed strings when it actually renders (cheap next to `block_ops` — ~1.7ms at 20k
+/// lines). `render_markdown_diff_aligned` (below) is a second, render-only entry point for a
+/// caller with no earlier-computed triple of its own to reuse (tests, mainly).
+pub(crate) fn diff_align<'a>(
+    old_src: &'a str,
+    new_src: &'a str,
+) -> (model::Doc<'a>, model::Doc<'a>, Vec<BlockOp>) {
+    #[cfg(test)]
+    crate::test_support::note_diff_align_call();
+    let old = model::Doc::parse(old_src);
+    let new = model::Doc::parse(new_src);
+    let ops = diff::block_ops(&old, &new, old_src, new_src);
+    (old, new, ops)
+}
+
+/// Whether an already-computed [`diff_align`] result marks any change at all — the pure "any
+/// non-`Equal` op" test over `ops`, for a caller holding an `ops` it already computed (rather than
+/// raw `old_src`/`new_src`) so it can ask the question without re-parsing/re-diffing to get there.
+pub(crate) fn ops_has_any_change(ops: &[BlockOp]) -> bool {
+    ops.iter().any(|op| !matches!(op, BlockOp::Equal { .. }))
+}
+
+/// [`render_markdown_with_images_aligned`]'s diff counterpart (`docs/FEATURE-MD-RENDERED-DIFF.md`
+/// §1's `rendered` presentation, stage 1): parses both `old_src` and `new_src`, aligns their top-level
+/// blocks (`diff::block_ops`), and renders the result into one shared decorated document
+/// (`render::render_doc_diff`) — same post-processing shape as the non-diff entry point above (an
+/// `(lines, images, extras)` tuple), plus a fourth element: every non-equal block's own final line
+/// range and which of the three diff colors it gets (`DiffMark`; see that type's own doc comment).
+///
+/// Every other parameter is exactly `render_markdown_with_images_aligned`'s own — one render
+/// configuration (width/code style/theme/icons/tasks/image & mermaid & math slots/alerts/alignments)
+/// applied uniformly whichever of `old`/`new` a given block is drawn from, the same way a single
+/// preview pane's config never differs between "what the file used to say" and "what it says now".
+///
+/// Parses+aligns via [`diff_align`] itself — a caller that already has that triple in hand (`App::
+/// ensure_md_cache`, which computed it moments earlier for `compute_gutter_align`'s own decision)
+/// calls [`render_markdown_diff_from_parts`] directly instead, to render from it without a second
+/// `Doc::parse`+`block_ops` pass over the identical pair.
+// `render_markdown_diff_aligned` is the App-level entry point for the Markdown `rendered` diff
+// presentation (§1) — wired from `App::ensure_md_diff_cache` (`src/app/md_render.rs`), which exists
+// on a `git`-feature build only (the presentation itself is reachable only through
+// `Action::CycleDiffView`, itself `#[cfg(feature = "git")]`) — hence the `allow` on a no-`git` build.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+#[allow(clippy::too_many_arguments)] // as render_markdown_with_images_aligned, plus new_src/ops
+#[allow(clippy::type_complexity)] // matches render_markdown_with_images_aligned's own tuple shape, plus one more element (marks)
+pub fn render_markdown_diff_aligned(
+    old_src: &str,
+    new_src: &str,
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+    slot_of: &dyn Fn(&str, Option<u16>) -> ImageSlot,
+    mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
+    mermaid_caption: &str,
+    alerts: bool,
+    math_slot: &dyn Fn(&str, bool) -> MathSlot,
+    math_on: bool,
+    aligns: BlockAligns,
+) -> (
+    Vec<Line<'static>>,
+    Vec<ImagePlacement>,
+    MdRenderExtras,
+    Vec<(std::ops::Range<usize>, DiffMark)>,
+) {
+    let (old, new, ops) = diff_align(old_src, new_src);
+    render_markdown_diff_from_parts(
+        &old,
+        old_src,
+        &new,
+        new_src,
+        &ops,
+        width,
+        code,
+        theme,
+        icons,
+        tasks,
+        slot_of,
+        mermaid_slot,
+        mermaid_caption,
+        alerts,
+        math_slot,
+        math_on,
+        aligns,
+    )
+}
+
+/// [`render_markdown_diff_aligned`]'s own render step, taking an already-parsed-and-aligned
+/// [`diff_align`] triple instead of parsing/aligning `old_src`/`new_src` itself — the seam
+/// `App::ensure_md_cache` uses to render straight from the identical `(old, new, ops)` its own
+/// pre-render `compute_gutter_align` decision already produced (this function's module-level doc
+/// comment on [`diff_align`] has the full "why").
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn render_markdown_diff_from_parts(
+    old: &model::Doc<'_>,
+    old_src: &str,
+    new: &model::Doc<'_>,
+    new_src: &str,
+    ops: &[BlockOp],
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+    slot_of: &dyn Fn(&str, Option<u16>) -> ImageSlot,
+    mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
+    mermaid_caption: &str,
+    alerts: bool,
+    math_slot: &dyn Fn(&str, bool) -> MathSlot,
+    math_on: bool,
+    aligns: BlockAligns,
+) -> (
+    Vec<Line<'static>>,
+    Vec<ImagePlacement>,
+    MdRenderExtras,
+    Vec<(std::ops::Range<usize>, DiffMark)>,
+) {
+    let diff_out = render::render_doc_diff(
+        old,
+        old_src,
+        new,
+        new_src,
+        ops,
+        width,
+        code,
+        theme,
+        icons,
+        tasks,
+        slot_of,
+        mermaid_slot,
+        mermaid_caption,
+        alerts,
+        math_slot,
+        math_on,
+        aligns,
+    );
+    (
+        diff_out.out.lines,
+        diff_out.out.images,
+        MdRenderExtras {
+            code_blocks: diff_out.out.code_blocks,
+            tasks: diff_out.out.tasks,
+            block_rows: diff_out.out.block_rows,
+        },
+        diff_out.marks,
     )
 }
 

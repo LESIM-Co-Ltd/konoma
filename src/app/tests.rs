@@ -13287,6 +13287,83 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
     std::fs::remove_file(&outside).ok();
 }
 
+/// `n`/`N` (`diff_jump_changed`) inside a follow-scoped diff must not re-trigger the same stale-flash
+/// bug `follow_jump` itself was fixed for (`App::open_git_diff_with`'s own doc comment) — cycling
+/// from one follow-session file onto a Markdown target whose HEAD-committed version is over
+/// `FOLLOW_BASELINE_FILE_CAP`, but whose follow-session snapshot is not, must land in `Rendered` with
+/// no leftover `DiffRenderedUnavailable` flash. Before the fix, `diff_jump_changed` opened the target
+/// via a fresh `open_git_diff` (always `diff_follow_scope = false` there) and only restored the real
+/// scope afterward — so the one-and-only `apply_diff_view` call it went on to make (with the restored
+/// scope) would have been fine on its own, but the intermediate `open_git_diff` call's *own*
+/// `apply_diff_view` (wrongly scoped) had already set the flash, and nothing ever cleared it.
+#[cfg(feature = "git")]
+#[test]
+fn diff_jump_changed_into_big_markdown_does_not_flash_stale_unavailable() {
+    let dir = unique_tmp("konoma_diff_jump_changed_rendered_flash_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} 失敗");
+    };
+    let canon = dir.canonicalize().unwrap();
+    std::fs::write(canon.join("a.md"), "# a\n\nbody\n").unwrap();
+    // HEAD-committed version of big.md is over the cap — the full-scope baseline
+    // (`vcs::base_contents`) can't be read as a `Rendered` source.
+    let big = "x".repeat(FOLLOW_BASELINE_FILE_CAP + 1);
+    std::fs::write(canon.join("big.md"), format!("# t\n\n{big}\n")).unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-m", "init"]);
+    // Shrink big.md before `F` — dirty at follow-start, so what gets captured is the
+    // (well-under-cap) follow-session snapshot, not the over-cap HEAD blob.
+    std::fs::write(canon.join("big.md"), "# t\n\nsmall before follow\n").unwrap();
+
+    let mut app = App::new(canon.clone(), Config::default()).unwrap();
+    app.toggle_follow();
+    assert!(app.follow_session.is_empty());
+
+    // Both files change after `F`.
+    std::fs::write(canon.join("a.md"), "# a\n\nCHANGED\n").unwrap();
+    std::fs::write(canon.join("big.md"), "# t\n\nsmall after follow\n").unwrap();
+    assert!(app.follow_note_change(&canon.join("a.md")));
+    assert!(app.follow_note_change(&canon.join("big.md")));
+
+    app.follow_jump(&canon.join("a.md"));
+    assert!(app.is_git_diff_preview());
+    assert_eq!(
+        app.tab.preview_path.as_deref(),
+        Some(canon.join("a.md").as_path())
+    );
+
+    // n cycles onto big.md — this is the `diff_jump_changed` call under test.
+    let (_, apply_calls) = crate::test_support::count_apply_diff_view_calls(|| app.jump_changed(1));
+    assert_eq!(
+        apply_calls, 1,
+        "apply_diff_view は最終スコープが確定した後に1回だけ走るはず(2回目が黙って直すのではない)"
+    );
+    assert_eq!(
+        app.tab.preview_path.as_deref(),
+        Some(canon.join("big.md").as_path())
+    );
+    assert_eq!(
+        app.diff_view_for_test(),
+        DiffView::Rendered,
+        "follow スコープの版は cap 未満なので Rendered に入れるはず"
+    );
+    assert_eq!(
+        app.flash, None,
+        "誤った scope での中間判定が立てた stale フラッシュが残っている: {:?}",
+        app.flash
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // =============================================================================
 // Follow scope leaking across a root change (`follow_root`, 2026-08)
 //
@@ -16797,6 +16874,969 @@ fn apply_statuses_with_a_panic_shaped_result_still_clears_pending() {
     assert!(
         app.git_status_pending.is_some(),
         "stale では pending を残す(現行計算待ちのまま)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- Markdown block-diff worker (`docs/STATUS.md` ★未修正 item 4, `src/app/md_diff.rs`) ---------
+
+/// The ordinary decorated preview's change gutter is computed on a separate thread: the moment
+/// `ensure_md_cache` (via `md_layout`) first builds for a Markdown file with `[ui] git_gutter` on,
+/// it must dispatch to the worker and draw **without** the gutter for that frame (no blocking), not
+/// compute `vcs::base_contents`/`diff_align` inline. Only once the worker's result is applied does
+/// the gutter appear.
+#[cfg(feature = "git")]
+#[test]
+fn md_diff_gutter_is_offloaded_to_a_worker_thread() {
+    let dir = unique_tmp("konoma_md_diff_gutter_async_offload");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nOriginal.\n").unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, "# Title\n\nCHANGED.\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_md_diff_loader(tx);
+
+    let i = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path.file_name().is_some_and(|n| n == "doc.md"))
+        .expect("doc.md がツリーにあるはず");
+    app.tab.selected = i;
+    app.tree_activate().unwrap();
+    // `tree_activate` alone doesn't build the decoration cache — `md_layout` (`ensure_md_cache`,
+    // the render path's own entry point) is the one that polls/kicks the block-diff.
+    let _ = app.md_layout(80);
+
+    // The old (pre-worker) implementation computed the baseline+alignment inline right here, so
+    // the gutter would already be populated. It must not be: a computation was merely dispatched.
+    assert!(
+        app.md_diff_pending_for_current(),
+        "別スレッドへ計算を投げているはず"
+    );
+    assert!(
+        app.md_diff_marks_for_test().unwrap_or_default().is_empty(),
+        "UI スレッドでは block-diff を計算しない(旧実装ならここで印が付いて落ちる)"
+    );
+    assert!(
+        !app.md_gutter_active(),
+        "計算中はガター列を予約しない(本文が全幅のまま描画される)"
+    );
+
+    // It's only reflected once the worker's result is received and applied.
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_md_diff(res), "現世代の結果は適用される");
+    assert!(
+        !app.md_diff_pending_for_current(),
+        "適用で pending が解ける"
+    );
+    // `apply_md_diff` only invalidates `md_cache`; the next `md_layout` rebuilds it for real.
+    let _ = app.md_layout(80);
+    let marks = app
+        .md_diff_marks_for_test()
+        .expect("md_cache が構築されているはず");
+    assert!(!marks.is_empty(), "適用後は印があるはず: {marks:?}");
+    assert!(app.md_gutter_active(), "適用後はガター列があるはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The diff's `Rendered` presentation follows the identical offload contract as the ordinary
+/// gutter above: `App::apply_diff_view` only kicks the computation (no synchronous
+/// `vcs::base_contents`/`diff_align` on the UI thread), and the caller sees `None` back from
+/// `App::poll_md_diff` until the worker lands.
+#[cfg(feature = "git")]
+#[test]
+fn md_diff_rendered_is_offloaded_to_a_worker_thread() {
+    let dir = unique_tmp("konoma_md_diff_rendered_async_offload");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nOriginal.\n").unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, "# Title\n\nCHANGED.\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_md_diff_loader(tx);
+
+    let (base_calls, align_calls) = {
+        let (align_result, base) = crate::test_support::count_base_contents_calls(|| {
+            crate::test_support::count_diff_align_calls(|| {
+                app.open_git_diff(&doc);
+            })
+        });
+        (base, align_result.1)
+    };
+    assert_eq!(
+        app.diff_view_for_test(),
+        crate::app::DiffView::Rendered,
+        "Rendered になっているはず(まだ結果は届いていない)"
+    );
+    assert_eq!(
+        base_calls, 0,
+        "UI スレッドでは base_contents を呼ばない(ワーカースレッドの別カウンタに乗る)"
+    );
+    assert_eq!(
+        align_calls, 0,
+        "UI スレッドでは diff_align を呼ばない(ワーカースレッドの別カウンタに乗る)"
+    );
+    assert!(
+        app.md_diff_pending_for_current(),
+        "別スレッドへ計算を投げているはず"
+    );
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_md_diff(res), "現世代の結果は適用される");
+    // Sanity: the worker really did run diff_align/base_contents on *its own* thread — the recv
+    // above only returns after it finished, so by now the work provably happened somewhere.
+    let _ = app.md_layout(80);
+    let marks = app
+        .diff_rendered_marks_for_test()
+        .expect("結果適用後は md_cache が構築されているはず");
+    assert!(!marks.is_empty(), "結果適用後は印があるはず: {marks:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M27 (pre-merge review of PR #21): `App::open_git_diff_with`'s `seeded_diff` exists purely for
+/// performance — the caller (`follow_jump`'s own `compute_gitdiff_lines`, `diff_jump_changed`'s
+/// `n`/`N`) already computed the unified diff and hands it over so `App::git_diff_lines()` (the
+/// render path's own accessor) doesn't invoke `vcs::file_diff` a second time the moment it's first
+/// read. Pinned with `count_file_diff_calls` rather than by comparing the *result* (identical either
+/// way — recomputing the same diff from the same working tree yields the same lines) since this
+/// guard is about avoided work, not correctness.
+#[cfg(feature = "git")]
+#[test]
+fn open_git_diff_with_seeded_diff_avoids_recomputing_it_on_first_read() {
+    let dir = unique_tmp("konoma_open_git_diff_seeded_avoids_recompute");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nOriginal.\n").unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, "# Title\n\nCHANGED.\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+
+    // Baseline: no seed at all — `git_diff_lines()` must compute it itself on first read (confirms
+    // the counter/setup actually observes a real call before trusting the "0 calls" assertion below).
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&doc); // DiffOpen::default() — no seeded_diff
+    let (_, unseeded_calls) = crate::test_support::count_file_diff_calls(|| {
+        app.git_diff_lines();
+    });
+    assert_eq!(
+        unseeded_calls, 1,
+        "シード無しでは初回読み出しで1回 file_diff が走るはず(前提の確認)"
+    );
+
+    // Seeded: the caller already has the lines in hand.
+    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    let lines = crate::vcs::file_diff(&dir, &doc);
+    app2.open_git_diff_with(
+        &doc,
+        super::git_view::DiffOpen {
+            seeded_diff: Some(DiffCache {
+                path: doc.clone(),
+                lines,
+            }),
+            ..Default::default()
+        },
+    );
+    let (_, seeded_calls) = crate::test_support::count_file_diff_calls(|| {
+        app2.git_diff_lines();
+    });
+    assert_eq!(
+        seeded_calls, 0,
+        "seeded_diff があれば初回読み出しで file_diff を再実行してはならない: {seeded_calls}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `App::apply_md_diff`'s "is this landed result actually about the `Rendered` presentation
+/// currently on screen" gate is three independent conditions (`res.kind == Rendered`, `on_screen`,
+/// `self.tab.diff_view == Rendered`) — each pinned in isolation below (M16/M17/M18, pre-merge review
+/// of PR #21) by constructing the `MdDiffResult` directly (bypassing `kick_md_diff`, whose single
+/// monotonic `gen` counter makes it impossible to produce a same-`gen` mismatch on `kind` through
+/// any real user flow — see each test's own doc comment) rather than through a full worker round
+/// trip. Not `#[cfg(feature = "git")]`: `apply_md_diff`/`DiffView` compile unconditionally.
+///
+/// M16: a landed `Rendered` result for a path that is no longer on screen (the tab moved on to
+/// something else in the meantime, with no new kick — same `gen`) must not touch the *current*
+/// screen's `diff_view`/`flash` at all, even though `kind`/`diff_view` both still say "Rendered".
+#[test]
+fn apply_md_diff_ignores_a_landed_result_for_a_path_no_longer_on_screen() {
+    let dir = unique_tmp("konoma_apply_md_diff_off_screen");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let doc = dir.join("doc.md");
+    let other = dir.join("other.md"); // whatever is actually on screen now
+    app.tab.preview_path = Some(other.clone());
+    app.tab.diff_view = DiffView::Rendered;
+    app.md_diff_gen = 7;
+    app.flash = None;
+    let res = MdDiffResult {
+        gen: 7,
+        path: doc,
+        kind: MdDiffKind::Rendered,
+        outcome: MdDiffOutcome::Unavailable,
+    };
+    assert!(
+        app.apply_md_diff(res),
+        "gen は一致しているので landed 自体は記録されるはず"
+    );
+    assert_eq!(
+        app.tab.diff_view,
+        DiffView::Rendered,
+        "画面上の other.md には無関係の結果のはず — Source へ丸められてはならない"
+    );
+    assert!(
+        app.flash.is_none(),
+        "画面上のファイルと無関係な結果でフラッシュを出してはならない: {:?}",
+        app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M17: a landed `Gutter`-kind result for the exact path/gen currently showing as `Rendered` must
+/// not be mistaken for a `Rendered` result — `kind` is checked independently of `gen`/`on_screen`.
+/// (In production this exact `gen` collision can't arise through `kick_md_diff`'s own monotonic
+/// counter — every kick bumps `gen` uniquely, so a matching `gen` always carries the kind that was
+/// actually kicked at that generation — but the check stands on its own as the function's contract:
+/// nothing about `MdDiffResult` intrinsically ties `kind` to `gen`, so `apply_md_diff` must not rely
+/// on that as an invariant it doesn't itself enforce.)
+#[test]
+fn apply_md_diff_ignores_a_landed_gutter_result_while_rendered_is_showing() {
+    let dir = unique_tmp("konoma_apply_md_diff_kind_mismatch");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let doc = dir.join("doc.md");
+    app.tab.preview_path = Some(doc.clone());
+    app.tab.diff_view = DiffView::Rendered;
+    app.md_diff_gen = 7;
+    app.flash = None;
+    let res = MdDiffResult {
+        gen: 7,
+        path: doc,
+        kind: MdDiffKind::Gutter,
+        outcome: MdDiffOutcome::Unavailable,
+    };
+    assert!(app.apply_md_diff(res));
+    assert_eq!(
+        app.tab.diff_view,
+        DiffView::Rendered,
+        "Gutter 種別の結果で Rendered の表現を変えてはならない"
+    );
+    assert!(
+        app.flash.is_none(),
+        "Gutter 種別の結果で Rendered 用のフラッシュを出してはならない: {:?}",
+        app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M18: a landed `Rendered` result for the exact path/gen, arriving *after* the user already left
+/// the `Rendered` presentation (`R`, before this result landed) for `Source`, must not resurrect any
+/// `Rendered`-only side effect (here: the front-matter-only flash) — `self.tab.diff_view ==
+/// Rendered` is checked independently of `kind`/`on_screen`.
+#[test]
+fn apply_md_diff_ignores_a_landed_rendered_result_after_leaving_rendered_for_source() {
+    let dir = unique_tmp("konoma_apply_md_diff_diff_view_mismatch");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let doc = dir.join("doc.md");
+    app.tab.preview_path = Some(doc.clone());
+    app.tab.diff_view = DiffView::Source; // already left Rendered by the time this result lands
+    app.md_diff_gen = 7;
+    app.flash = None;
+    let res = MdDiffResult {
+        gen: 7,
+        path: doc,
+        kind: MdDiffKind::Rendered,
+        outcome: MdDiffOutcome::Ready {
+            old_pre: String::new(),
+            new_pre: String::new(),
+            ops: Vec::new(),
+            any_change: false,
+            front_matter_only: true,
+        },
+    };
+    assert!(app.apply_md_diff(res));
+    assert_eq!(
+        app.tab.diff_view,
+        DiffView::Source,
+        "Source から離れていない(Rendered へ戻されてはならない)"
+    );
+    assert!(
+        app.flash.is_none(),
+        "Source 表示中は front-matter-only フラッシュを出してはならない: {:?}",
+        app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- `diff_scroll_pending`'s defense layers, isolated (the top-level task description calls these
+// (12)/(13)/(14)/(15); the fifth layer, (16) — `ui/preview.rs::render_decorated_body`'s
+// `md_diff_pending_for_current` consumption gate — is only observable through a real async worker
+// round trip and is pinned in `e2e_tests.rs` instead, alongside the two sync-fallback scroll tests
+// it complements). Each test below isolates exactly one layer by driving the state directly
+// (`app.tab.diff_scroll_pending`) rather than through the full key-press flow that always exercises
+// several layers together (`PerTab::diff_scroll_pending`'s own doc comment on `App::app.rs`).
+
+/// (12): `App::enter_preview` drops *any* leftover "scroll to first change" reservation up front,
+/// unconditionally — not just one that happens to match the path being entered. Without this, a
+/// stale reservation left behind by a `Rendered` diff that was never consumed (rounded down to
+/// `Source` before the next render, or simply abandoned mid-flight) would survive to scroll a later,
+/// wholly unrelated Markdown preview opened in the same tab.
+#[test]
+fn enter_preview_clears_any_pending_diff_scroll_reservation() {
+    let dir = unique_tmp("konoma_enter_preview_clears_scroll_pending");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nBody.\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // A stale reservation for an unrelated (and non-existent) path — exactly the shape
+    // `enter_preview`'s own doc comment describes as needing to be dropped, not just one that
+    // happens to name `doc.md` itself.
+    app.tab.diff_scroll_pending = Some(dir.join("stale-unrelated.md"));
+    app.enter_preview(&doc);
+    assert!(
+        app.tab.diff_scroll_pending.is_none(),
+        "enter_preview は先頭で古い予約を必ず消すはず(相手パスが一致するかどうかに関係なく)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// (13): `App::open_git_diff_with` drops any leftover reservation up front (mirroring `enter_preview`
+/// above), then arms a *fresh* one of its own only when the presentation it lands on is `Rendered` —
+/// opening into `Source` must leave no reservation behind at all (nothing in `Source`'s own render
+/// path would ever consume it).
+#[cfg(feature = "git")]
+#[test]
+fn open_git_diff_with_clears_stale_pending_and_only_arms_a_fresh_one_for_rendered() {
+    let dir = unique_tmp("konoma_open_git_diff_with_scroll_pending");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nOriginal.\n").unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, "# Title\n\nCHANGED.\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.tab.diff_scroll_pending = Some(dir.join("stale-unrelated.md"));
+    app.open_git_diff_with(
+        &doc,
+        super::git_view::DiffOpen {
+            view: Some(DiffView::Source),
+            ..Default::default()
+        },
+    );
+    assert_eq!(app.diff_view_for_test(), DiffView::Source);
+    assert!(
+        app.tab.diff_scroll_pending.is_none(),
+        "Source を開いた時は古い予約を消すだけで新しい予約は立てないはず(Source は消費側を持たない)"
+    );
+
+    app.tab.diff_scroll_pending = Some(dir.join("stale-unrelated-2.md"));
+    app.open_git_diff_with(
+        &doc,
+        super::git_view::DiffOpen {
+            view: Some(DiffView::Rendered),
+            ..Default::default()
+        },
+    );
+    assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
+    assert_eq!(
+        app.tab.diff_scroll_pending.as_deref(),
+        Some(doc.as_path()),
+        "Rendered を開いた時は古い予約を消し、今開いた doc.md 宛ての新しい予約を立てるはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// (14): `App::take_diff_scroll_pending_for` only reports `true` for the path it was armed for, but
+/// unconditionally consumes the reservation either way (`Option::take`) — a mismatched check must
+/// not leave a stale reservation sitting around to misfire against whatever the tab shows next.
+#[test]
+fn take_diff_scroll_pending_for_only_matches_its_own_path_and_always_consumes() {
+    let dir = unique_tmp("konoma_take_diff_scroll_pending_for_match");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let a = dir.join("a.md");
+    let b = dir.join("b.md");
+
+    app.tab.diff_scroll_pending = Some(a.clone());
+    assert!(
+        !app.take_diff_scroll_pending_for(&b),
+        "別パス(b.md)宛ての要求には応えないはず"
+    );
+    assert!(
+        app.tab.diff_scroll_pending.is_none(),
+        "不一致でも Option::take で予約自体は必ず消費されるはず(stale reservation を残さない)"
+    );
+
+    app.tab.diff_scroll_pending = Some(a.clone());
+    assert!(
+        app.take_diff_scroll_pending_for(&a),
+        "一致するパス(a.md)には応えるはず"
+    );
+    assert!(
+        app.tab.diff_scroll_pending.is_none(),
+        "消費後は None のはず(二重に応えてはならない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// (15): `App::apply_md_diff`'s `Unavailable` branch drops the "scroll to first change" reservation
+/// for its own path — `Rendered` is no longer reachable, so nothing would ever consume it otherwise
+/// (only `render_decorated_body`'s `Rendered`-drawing path does, and `Unavailable` rounds down to
+/// `Source`, which never calls it).
+#[test]
+fn apply_md_diff_unavailable_clears_the_scroll_reservation_for_its_own_path() {
+    let dir = unique_tmp("konoma_apply_md_diff_unavailable_clears_own_scroll_pending");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let path = dir.join("doc.md");
+    app.tab.preview_path = Some(path.clone());
+    app.tab.diff_view = DiffView::Rendered;
+    app.md_diff_gen = 5;
+    app.tab.diff_scroll_pending = Some(path.clone());
+
+    let res = MdDiffResult {
+        gen: 5,
+        path: path.clone(),
+        kind: MdDiffKind::Rendered,
+        outcome: MdDiffOutcome::Unavailable,
+    };
+    assert!(app.apply_md_diff(res), "現世代なので適用される");
+    assert_eq!(
+        app.diff_view_for_test(),
+        DiffView::Source,
+        "Unavailable は Source へ丸められるはず"
+    );
+    assert!(
+        app.tab.diff_scroll_pending.is_none(),
+        "Rendered が届かなくなったので自分(doc.md)宛ての予約は消すはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// (15), continued: the same `Unavailable` branch must not touch a reservation armed for some
+/// *other* path — only `res.path`'s own reservation is stale, not whatever the tab may have queued
+/// up for a different file in the meantime.
+#[test]
+fn apply_md_diff_unavailable_does_not_clear_a_different_paths_scroll_reservation() {
+    let dir = unique_tmp("konoma_apply_md_diff_unavailable_other_path_scroll_pending");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let path = dir.join("doc.md");
+    let other = dir.join("other.md");
+    app.tab.preview_path = Some(path.clone());
+    app.tab.diff_view = DiffView::Rendered;
+    app.md_diff_gen = 5;
+    app.tab.diff_scroll_pending = Some(other.clone());
+
+    let res = MdDiffResult {
+        gen: 5,
+        path: path.clone(),
+        kind: MdDiffKind::Rendered,
+        outcome: MdDiffOutcome::Unavailable,
+    };
+    assert!(app.apply_md_diff(res), "現世代なので適用される");
+    assert_eq!(
+        app.tab.diff_scroll_pending.as_deref(),
+        Some(other.as_path()),
+        "別ファイル(other.md)宛ての予約を巻き込んではならない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M5 (pre-merge review of PR #21): `App::md_diff_landed_for`'s `gen` check. `App::kick_md_diff`
+/// bumps `md_diff_gen` on every kick but never clears `md_diff_landed` itself — only
+/// `App::invalidate_md_diff`/`App::apply_md_diff`'s own overwrite do that — so a landed result can
+/// sit there describing a `gen` that is no longer current (some *other* kick, for a different
+/// path/kind, ran since). `poll_md_diff` must not resurface it as "ready" in that state; it must
+/// re-kick a fresh computation instead. Constructed directly (not through a full A→B→A worker round
+/// trip) since the observable effect — "was the stale landed value reused, or was a fresh
+/// computation run" — is the same either way and this isolates the one condition under test.
+#[test]
+fn poll_md_diff_does_not_reuse_a_landed_result_whose_gen_no_longer_matches() {
+    let dir = unique_tmp("konoma_poll_md_diff_stale_landed_gen");
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nHello.\n").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // A landed `Ready` result under an old generation.
+    app.md_diff_landed = Some((
+        doc.clone(),
+        MdDiffKind::Gutter,
+        3,
+        MdDiffOutcome::Ready {
+            old_pre: "old".into(),
+            new_pre: "new".into(),
+            ops: Vec::new(),
+            any_change: true,
+            front_matter_only: false,
+        },
+    ));
+    app.md_diff_gen = 4; // bumped since — the landed tuple above is now stale
+    app.md_diff_pending = None;
+
+    // No `md_diff_tx` attached: the re-kick this should trigger runs the synchronous fallback for
+    // real (against `doc`, which sits outside a repo — `Gutter` with no baseline lands
+    // `NoBaseline`, never `Ready`), applying immediately — so a single call proves both "the stale
+    // value wasn't reused" and "a fresh computation actually ran".
+    let outcome = app.poll_md_diff(&doc, MdDiffKind::Gutter);
+    assert!(
+        matches!(outcome, Some(MdDiffOutcome::NoBaseline)),
+        "gen 不一致の landed 結果を再利用せず、再計算(NoBaseline)されるはず: {outcome:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M6 (pre-merge review of PR #21): `App::md_diff_landed_for`'s `kind` check. A landed `Gutter`
+/// result, even at the *current* `gen`, must never be handed back for a `Rendered` request at the
+/// same path — `kind` is checked independently of `gen`/path.
+#[test]
+fn poll_md_diff_does_not_reuse_a_landed_gutter_result_for_a_rendered_request() {
+    let dir = unique_tmp("konoma_poll_md_diff_kind_mismatch_landed");
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nHello.\n").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.md_diff_gen = 5;
+    app.md_diff_landed = Some((
+        doc.clone(),
+        MdDiffKind::Gutter,
+        5, // matches the current gen
+        MdDiffOutcome::Ready {
+            old_pre: "old".into(),
+            new_pre: "new".into(),
+            ops: Vec::new(),
+            any_change: true,
+            front_matter_only: false,
+        },
+    ));
+    app.md_diff_pending = None;
+
+    // `doc` sits outside a repo, so a genuinely fresh `Rendered` computation lands `Ready` with an
+    // *empty* old side (§5's "no baseline = all added") — never the Gutter-flavored `old_pre` ("old")
+    // stashed above. That difference is what distinguishes "reused the wrong-kind landed result"
+    // from "ran a real computation" here.
+    let outcome = app.poll_md_diff(&doc, MdDiffKind::Rendered);
+    match outcome {
+        Some(MdDiffOutcome::Ready { old_pre, .. }) => assert_eq!(
+            old_pre, "",
+            "Gutter 用の landed 結果(old_pre=\"old\")を Rendered の要求に流用してはならない"
+        ),
+        other => panic!("Rendered は §5 により Ready(全 Insert) のはず: {other:?}"),
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M21 (pre-merge review of PR #21): `App::md_diff_pending_for_current`'s path comparison. A
+/// computation in flight for a *different* file must not block the current file's own "scroll to
+/// first change" reservation from being consumed (`ui/preview.rs::render_decorated_body`'s guard).
+#[test]
+fn md_diff_pending_for_current_is_false_when_the_pending_computation_is_for_a_different_path() {
+    let dir = unique_tmp("konoma_md_diff_pending_for_current_path_mismatch");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let a = dir.join("a.md");
+    let b = dir.join("b.md");
+    app.tab.preview_path = Some(a);
+    app.md_diff_pending = Some((b, MdDiffKind::Gutter));
+    assert!(
+        !app.md_diff_pending_for_current(),
+        "別ファイル(b.md)の計算中は a.md 自身の消費を止めてはならない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M2 (pre-merge review of PR #21): `App::diff_baseline`'s `follow_scope_valid()` check. If the
+/// tab's root moves to a *different* repository while a follow session is still active — without
+/// going through `toggle_follow` again, which is the ordinary way this happens
+/// (`follow_root`'s own doc comment: tab switch, `l`/`h`, worktree switch, paste-jump, a bookmark
+/// jump, ...) — the block-diff worker must not keep comparing against the *old* repo's follow
+/// baseline: two repos (linked worktrees included) share nothing that guarantees a HEAD sha or a
+/// dirty-file snapshot means the same thing in the other one (`follow_baseline_contents`'s own doc
+/// comment names the identical bug class for its own, parallel check — `blob_at` under a linked
+/// worktree can *successfully* resolve against the wrong worktree's HEAD and produce a
+/// plausible-looking but wrong result).
+#[cfg(feature = "git")]
+#[test]
+fn diff_baseline_falls_back_to_vcs_when_the_tab_root_moved_to_a_different_repo() {
+    let dir_a = unique_tmp("konoma_diff_baseline_scope_repo_a");
+    let dir_b = unique_tmp("konoma_diff_baseline_scope_repo_b");
+    let _ = std::fs::remove_dir_all(&dir_a);
+    let _ = std::fs::remove_dir_all(&dir_b);
+    std::fs::create_dir_all(&dir_a).unwrap();
+    std::fs::create_dir_all(&dir_b).unwrap();
+    init_git_repo(&dir_a);
+    init_git_repo(&dir_b);
+    let sh = |dir: &Path, args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    std::fs::write(dir_a.join("doc.md"), "# A\n\nOriginal A.\n").unwrap();
+    sh(&dir_a, &["add", "-A"]);
+    sh(&dir_a, &["commit", "-q", "-m", "init a"]);
+    // Dirty at follow-start in repo A — this is exactly the case that would resolve to a
+    // `FollowSnapshot`/`FollowHead` baseline if `follow_scope_valid()` didn't stop it.
+    std::fs::write(
+        dir_a.join("doc.md"),
+        "# A\n\nCHANGED A (dirty at follow-start).\n",
+    )
+    .unwrap();
+
+    std::fs::write(dir_b.join("doc.md"), "# B\n\nOriginal B.\n").unwrap();
+    sh(&dir_b, &["add", "-A"]);
+    sh(&dir_b, &["commit", "-q", "-m", "init b"]);
+
+    let dir_a = dir_a.canonicalize().unwrap();
+    let dir_b = dir_b.canonicalize().unwrap();
+
+    let mut app = App::new(dir_a.clone(), Config::default()).unwrap();
+    app.toggle_follow(); // captures a real follow_baseline scoped to dir_a
+                         // `diff_follow_scope` is what a follow-originated diff actually sets
+                         // (`follow_jump`'s own `DiffOpen{follow_scope: true, ..}`) — `toggle_follow` alone doesn't
+                         // touch it, so it has to be set here to simulate "currently showing a follow-scoped diff".
+    app.diff_follow_scope = true;
+
+    // Simulate the root moving to a different repo without going through `toggle_follow` again —
+    // exactly the window `follow_root`'s own doc comment describes.
+    app.tab.root = dir_b.clone();
+
+    let baseline =
+        app.diff_baseline_for_test(&dir_b.join("doc.md"), crate::app::MdDiffKind::Rendered);
+    assert!(
+        matches!(baseline, crate::app::DiffBaseline::Vcs),
+        "root が repo B へ移った後は repo A のフォローベースラインを使ってはならない(Vcs へ)"
+    );
+    std::fs::remove_dir_all(&dir_a).ok();
+    std::fs::remove_dir_all(&dir_b).ok();
+}
+
+/// M4 (pre-merge review of PR #21): `App::diff_baseline`'s handling of a file that was **dirty at
+/// follow-start but too large to snapshot** (`FollowBaseline::dirty` records `Some(None)` for it —
+/// `App::capture_follow_baseline`'s own size-cap check). The doc comment right there is explicit
+/// about the intent: this maps to `DiffBaseline::Empty` ("no baseline" — §5's "旧版が無い" rule),
+/// **not** a fallback to the pinned HEAD blob (the `None` dirty-map branch) and not `Unavailable`.
+/// Reading that intent is what this test pins: a `Gutter`-kind lookup on the same key must *not*
+/// silently fall through to `base.head` and compare against the wrong (pre-existing) baseline —
+/// only the file's own genuinely-new content (§5's "全ブロック Insert", pinned separately in
+/// `md_diff.rs`'s own `rendered_kind_with_no_baseline_is_ready_all_added`) should ever result.
+///
+/// This is a deliberately different contract from the *unified line-diff* path
+/// (`App::follow_baseline_diff`): that one falls back to the **full** git diff against HEAD in the
+/// identical situation (`follow_baseline_contents` returns `None` for `Some(None)` too, so
+/// `App::compute_gitdiff_lines` falls through to `vcs::file_diff`) — the two presentations
+/// (`Rendered`'s block-diff vs. the diff's `Source`/the "should I even open a diff" decision)
+/// intentionally do not agree on what "no snapshot was taken" means for a file this large. Recorded
+/// here rather than "fixed" to match, since the block-diff's own doc comment is explicit that this
+/// is the design, not an oversight.
+#[cfg(feature = "git")]
+#[test]
+fn diff_baseline_maps_dirty_too_large_to_snapshot_to_empty_not_head() {
+    let dir = unique_tmp("konoma_diff_baseline_dirty_too_large_to_snapshot");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nCommitted.\n").unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.diff_follow_scope = true;
+    app.follow_root = Some(dir.clone());
+    let mut dirty = std::collections::HashMap::new();
+    dirty.insert(doc.clone(), None); // dirty at follow-start, too large to snapshot
+    app.follow_baseline = Some(FollowBaseline {
+        dirty,
+        head: crate::git::head_commit_id(&dir), // present — this must NOT be what gets used
+    });
+
+    let baseline = app.diff_baseline_for_test(&doc, crate::app::MdDiffKind::Rendered);
+    assert!(
+        matches!(baseline, crate::app::DiffBaseline::Empty),
+        "dirty-but-too-large は Empty のはず(HEAD blob へフォールバックしてはならない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// End-to-end pin for the "Rendered renders ~4x more than the ordinary preview" regression
+/// (`docs/FEATURE-MD-RENDERED-DIFF.md`'s own investigation history): a document past
+/// `preview::text::MAX_LINES` (5,000), **committed byte-identical** (HEAD == working copy, so every
+/// block classifies `Equal` — `App::open_git_diff`'s baseline is the file's own HEAD blob), must
+/// produce the *exact same* decorated lines through the diff's `Rendered` presentation as through an
+/// ordinary (non-diff) preview of the identical file. Before `App::compute_md_diff`'s `Rendered` arm
+/// capped its own `old_pre`/`new_pre` the same way `Gutter`/the ordinary preview already do
+/// (`cap_for_display`, `md_diff.rs`), `Rendered` read/rendered the file's *entire* content
+/// under nothing but the much looser `FOLLOW_BASELINE_FILE_CAP` (5 MiB, no line cap at all) while the
+/// ordinary preview always stops at `MAX_LINES` — so for a document past that line count, the two
+/// presentations' own line counts were never comparable, which read as duplicate rendering from the
+/// outside (`docs/STATUS.md`'s own investigation) but was really just two never-truncated-the-same-
+/// way views of the same file.
+#[cfg(feature = "git")]
+#[test]
+fn diff_rendered_matches_the_ordinary_preview_for_a_document_past_the_line_cap() {
+    let dir = unique_tmp("konoma_diff_rendered_matches_ordinary_preview_over_cap");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc_path = dir.join("doc.md");
+    // Comfortably past `preview::text::MAX_LINES` (5,000), unique per section so a misaligned
+    // truncation boundary (old capped one way, new capped another) would show up as a spurious
+    // change instead of silently agreeing by coincidence.
+    let mut body = String::new();
+    for i in 0..1800 {
+        body.push_str(&format!(
+            "## Section {i}\n\nParagraph text for section {i}.\n\n"
+        ));
+    }
+    assert!(
+        body.lines().count() > 5000,
+        "テストの前提: MAX_LINES を超える行数"
+    );
+    std::fs::write(&doc_path, &body).unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    // HEAD == working copy: every block should classify `Equal`, so this isolates the truncation
+    // parity question from `block_ops`'s own (separately, already-tested) classification logic.
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+    let width: u16 = 100;
+
+    let mut ordinary = App::new(dir.clone(), Config::default()).unwrap();
+    ordinary.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    ordinary.tab.preview_path = Some(doc.clone());
+    ordinary.tab.preview_kind = Some(PreviewKind::Markdown(doc.clone()));
+    ordinary.tab.mode = Mode::Preview;
+    let ordinary_lines = ordinary.decorated_lines(width);
+
+    let mut diffed = App::new(dir.clone(), Config::default()).unwrap();
+    diffed.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    diffed.open_git_diff(&doc);
+    assert_eq!(diffed.diff_view_for_test(), crate::app::DiffView::Rendered);
+    let diff_lines = diffed.decorated_lines(width);
+    let marks = diffed
+        .diff_rendered_marks_for_test()
+        .expect("md_cache が構築されているはず");
+    assert!(
+        marks.is_empty(),
+        "HEAD と作業コピーが同一なので印は無いはず(全 Equal): {marks:?}"
+    );
+
+    assert_eq!(
+        diff_lines.len(),
+        ordinary_lines.len(),
+        "MAX_LINES 超のファイルでも、無変更なら Rendered は通常プレビューと同じ行数のはず \
+         (旧: 通常プレビューの ~4 倍だった)"
+    );
+    assert_eq!(
+        diff_lines, ordinary_lines,
+        "無変更なら Rendered は通常プレビューとバイト単位で一致するはず"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A block-diff result whose generation no longer matches (an FS refresh / another open
+/// invalidated it while the worker was still computing) is discarded, exactly like
+/// `apply_statuses`'s own staleness contract — `App::apply_md_diff`'s `gen` check, not a
+/// panic-shaped fallback this time: this pins the *ordinary* staleness path (a second dispatch
+/// superseding the first), matching `md_diff_gen`'s own doc comment on `App::invalidate_md_diff`.
+#[cfg(feature = "git")]
+#[test]
+fn stale_md_diff_result_is_rejected_after_invalidate_diff_caches() {
+    let dir = unique_tmp("konoma_md_diff_stale_rejected");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nOriginal.\n").unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, "# Title\n\nCHANGED.\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_md_diff_loader(tx);
+
+    app.open_git_diff(&doc);
+    assert_eq!(app.diff_view_for_test(), crate::app::DiffView::Rendered);
+    assert!(app.md_diff_pending_for_current(), "計算中のはず");
+
+    // Simulate an FS refresh landing before the worker's result does (the exact call
+    // `refresh_fs_inner` makes on every event).
+    app.invalidate_diff_caches();
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("ワーカーが結果を返す");
+    assert!(
+        !app.apply_md_diff(res),
+        "無効化後に届いた古い世代の結果は破棄されるはず"
+    );
+    assert!(
+        app.md_diff_marks_for_test().is_none() || app.md_diff_marks_for_test().unwrap().is_empty(),
+        "破棄された結果は画面に反映されないはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A worker panic (`compute_or_fallback`'s catch) must not latch `md_diff_pending` forever — the
+/// same boundary `apply_statuses_with_a_panic_shaped_result_still_clears_pending` pins for status,
+/// tested the identical way (feeding `apply_md_diff` the fallback *shape* a caught panic sends,
+/// since a real worker panic can't be induced on demand from a test).
+#[test]
+fn apply_md_diff_with_a_panic_shaped_result_still_clears_pending() {
+    let dir = unique_tmp("konoma_apply_md_diff_panic_shaped");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let path = dir.join("doc.md");
+    app.md_diff_gen = 9;
+    app.md_diff_pending = Some((path.clone(), crate::app::MdDiffKind::Gutter));
+
+    let panic_fallback = crate::app::MdDiffResult {
+        gen: 9,
+        path: path.clone(),
+        kind: crate::app::MdDiffKind::Gutter,
+        outcome: crate::app::MdDiffOutcome::Unavailable,
+    };
+    assert!(app.apply_md_diff(panic_fallback), "現世代なので適用される");
+    assert!(
+        app.md_diff_pending.is_none(),
+        "パニックのフォールバック結果でも pending が解ける(スピナーが固着せず\
+         ガター/Rendered も固まらない)"
+    );
+
+    // A stale-generation fallback must still be discarded, and must not clear the *current* pending.
+    app.md_diff_gen = 10;
+    app.md_diff_pending = Some((path.clone(), crate::app::MdDiffKind::Gutter));
+    let stale_panic_fallback = crate::app::MdDiffResult {
+        gen: 9,
+        path,
+        kind: crate::app::MdDiffKind::Gutter,
+        outcome: crate::app::MdDiffOutcome::Unavailable,
+    };
+    assert!(
+        !app.apply_md_diff(stale_panic_fallback),
+        "古い世代のフォールバックは捨てる"
+    );
+    assert!(
+        app.md_diff_pending.is_some(),
+        "stale では pending を残す(現行計算待ちのまま)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The diff's `Rendered` presentation works on a no-`git` build too (not `#[cfg(feature = "git")]`
+/// — deliberately runs under both). `App::diff_baseline`'s `Vcs` branch resolves through
+/// `vcs::base_contents`'s no-git stub (always `None`), so an untracked/no-repository file's block-
+/// diff is §5's "旧版が無い→全ブロック Insert", not a broken/empty feature.
+#[test]
+fn diff_rendered_works_without_the_git_feature() {
+    let dir = unique_tmp("konoma_diff_rendered_no_git_build");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("doc.md"), "# Title\n\nAll new.\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&doc);
+    assert_eq!(app.diff_view_for_test(), crate::app::DiffView::Rendered);
+    let _ = app.md_layout(80);
+    let marks = app
+        .diff_rendered_marks_for_test()
+        .expect("md_cache が構築されているはず(feature 有無に関わらず)");
+    assert!(
+        !marks.is_empty(),
+        "旧版が無いので全ブロック Insert のはず: {marks:?}"
     );
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -23221,4 +24261,289 @@ fn writes_repository_set_is_pinned_add_new_write_actions_to_e2e_tests_too() {
             "{name} is a read/navigation action and must not be gated as a write"
         );
     }
+}
+
+// =============================================================================
+// The diff's `Rendered` presentation shares the ordinary decorated-Markdown pipeline
+// (docs/FEATURE-MD-RENDERED-DIFF.md §2) — images/mermaid fences/math from *both* versions.
+// =============================================================================
+
+/// `App::ensure_md_cache`'s `DecoratedSource::Diff` branch draws real images, not a text-only
+/// fallback: a standalone image that only exists in the *old* version and one that only exists in
+/// the *new* version both get a real placement (`ImageSlot::Inline`, not `Unavailable`/`Loading`),
+/// proving `App::build_decorated`'s remote/fence/math collection (and the shared `slot_of` closure)
+/// really does run against both `old_pre` and `new_pre`, not only the current file's text.
+#[cfg(feature = "git")]
+#[test]
+fn diff_rendered_reserves_images_from_both_old_and_new_versions() {
+    let dir = unique_tmp("konoma_diff_rendered_both_images");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+
+    // Two tiny real PNGs, both present on disk at once (only referenced by one version's text
+    // each — `resolve_md_image_path` only cares that the *file* exists now, never about which git
+    // revision "has" it, so both simply sit in the same directory as the markdown file).
+    let old_png = dir.join("old.png");
+    let new_png = dir.join("new.png");
+    image::RgbaImage::from_pixel(4, 2, image::Rgba([1, 2, 3, 255]))
+        .save(&old_png)
+        .unwrap();
+    image::RgbaImage::from_pixel(6, 3, image::Rgba([4, 5, 6, 255]))
+        .save(&new_png)
+        .unwrap();
+
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\n![old](old.png)\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    // Uncommitted: the standalone image swaps from old.png to new.png.
+    std::fs::write(&doc, "# Title\n\n![new](new.png)\n").unwrap();
+
+    let root = dir.canonicalize().unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    app.open_git_diff(&root.join("doc.md"));
+    assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
+
+    let images = app.md_layout(80);
+    let _ = images; // builds the cache
+    let placements = app.md_images();
+    let urls: Vec<&str> = placements.iter().map(|p| p.url.as_str()).collect();
+    assert!(
+        urls.iter().any(|u| u.contains("old.png")),
+        "旧版だけにある画像も予約されるはず: {urls:?}"
+    );
+    assert!(
+        urls.iter().any(|u| u.contains("new.png")),
+        "新版だけにある画像も予約されるはず: {urls:?}"
+    );
+    assert_eq!(placements.len(), 2, "旧・新の画像それぞれ1つずつ: {urls:?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression test for a real bug (confirmed on a real terminal, tmux 100 cols): the change gutter
+/// column used to be prepended *after* rendering the body at the full viewport width, so a
+/// full-width line (a heading's own underline rule, a centered mermaid/image placeholder row) grew
+/// 1 column too wide once the gutter was added — overflowing and wrapping into a spurious extra row
+/// that `row_prefix` (computed *before* the gutter existed) never accounted for. Anything reading a
+/// cached row position (`ImagePlacement.line` via `md_visual_span`) then pointed 1 row too high
+/// once the real render's extra wrap pushed everything below it down by one — a mermaid diagram
+/// ending up drawn over the heading-rule row right above it. Fixed by deciding whether the gutter
+/// will be non-empty *before* any width-dependent rendering (`App::compute_gutter_align`) and
+/// rendering the body 1 column narrower up front when it will be
+/// (`docs/FEATURE-MD-RENDERED-DIFF.md`'s own "ガターを出すかは描画前に決める").
+///
+/// This pins it two ways: (a) summing `Paragraph::line_count` of every **gutter-prepended** line at
+/// the real viewport width must reproduce `row_prefix`'s own total exactly (before the fix, the
+/// heading-rule line's sum came out 1 row too high) — the direct, general invariant; (b) no
+/// individual gutter-prepended line may exceed the viewport width at all — the literal symptom.
+#[cfg(feature = "git")]
+#[test]
+fn diff_rendered_gutter_never_causes_an_overflow_wrap() {
+    let dir = unique_tmp("konoma_diff_rendered_gutter_overflow");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    std::fs::write(
+        &doc,
+        "# Title\n\noriginal\n\n## Diagram\n\n```mermaid\nflowchart TD\nA-->B\n```\n",
+    )
+    .unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    // Uncommitted change, so the diff's Rendered presentation has a non-empty gutter.
+    std::fs::write(
+        &doc,
+        "# Title\n\nchanged\n\n## Diagram\n\n```mermaid\nflowchart TD\nA-->B\n```\n",
+    )
+    .unwrap();
+
+    let root = dir.canonicalize().unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    app.open_git_diff(&root.join("doc.md"));
+    assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
+
+    let width: u16 = 40;
+    let (total_rows, _) = app.md_layout(width);
+    assert!(total_rows > 0, "何か描画されているはず");
+    let (lines, _) = app.md_slice(0, total_rows as u16);
+    assert!(!lines.is_empty());
+
+    use ratatui::text::Text;
+    use ratatui::widgets::{Paragraph, Wrap};
+    let real_total: usize = lines
+        .iter()
+        .map(|l| {
+            Paragraph::new(Text::from(vec![l.clone()]))
+                .wrap(Wrap { trim: false })
+                .line_count(width)
+                .max(1)
+        })
+        .sum();
+    assert_eq!(
+        real_total,
+        total_rows,
+        "ガター込みの実描画行数が row_prefix の想定と一致するはず(はみ出しラップが無い): \
+         lines={:?}",
+        lines
+            .iter()
+            .map(|l| (l.width(), l.spans.first().map(|s| s.content.to_string())))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        lines.iter().all(|l| l.width() as u16 <= width),
+        "ガター込みの行幅が width を超えてはいけない: {:?}",
+        lines.iter().map(|l| l.width()).collect::<Vec<_>>()
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `App::compute_gutter_align` (the decision, made before any width-dependent render — see
+/// `diff_rendered_gutter_never_causes_an_overflow_wrap` above for why that ordering exists at all)
+/// must predict against **exactly** the text `build_decorated_file` (the render itself) goes on to
+/// parse. Before `decorated_file_text` unified them, the `File` branch of the (then differently
+/// named) decision joined `content.lines` without `build_decorated_file`'s own truncation-notice
+/// suffix ("— (省略...) —", itself Markdown text) — so for a document long enough to hit the
+/// display cap (`text::MAX_LINES`), the decision could disagree with what the render actually marks.
+///
+/// This constructs the scenario where the disagreement is *observable*, not just theoretical: the
+/// committed baseline is made **byte-identical** to the working file's own first-5000-line prefix
+/// (what `text::load` truncates it down to) — so a decision that joins `content.lines` **without**
+/// the suffix sees no difference at all (no change found, gutter predicted inactive,
+/// `build_decorated_file` then called at the *full* `width`), while the real render always did (and
+/// still does) include the suffix — an extra trailing paragraph the baseline doesn't have — so the
+/// final marks step (computed from the real, suffixed render) finds it `Added` and the gutter
+/// column gets drawn anyway, into a body that was rendered assuming it wouldn't be: a full-width
+/// line grows 1 column too wide and wraps into a spurious extra row — the exact class of bug
+/// `diff_rendered_gutter_never_causes_an_overflow_wrap` (above) already pins for the diff's own
+/// `Rendered` presentation, reached here through the ordinary preview's `File` branch instead.
+#[cfg(feature = "git")]
+#[test]
+fn ordinary_preview_gutter_decision_matches_render_for_a_truncated_file() {
+    let dir = unique_tmp("konoma_gutter_will_be_active_truncated_text_mismatch");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+
+    // Each filler is its own paragraph (blank line between) so this stays one short decorated
+    // `Line` per paragraph — a single huge merged paragraph would exercise ratatui's own word-wrap
+    // sensitivity for a pathologically long logical line, an unrelated concern this test isn't
+    // about. Long enough (> text::MAX_LINES = 5000 raw lines) to be truncated on load.
+    let mut full_body = String::from("# Title\n\n");
+    for i in 0..3000 {
+        full_body.push_str(&format!("filler line {i}\n\n"));
+    }
+    // `text::load`'s own line splitting (`str::lines()`, then `truncate(MAX_LINES)`) — reproduced
+    // here so the committed baseline can be made an exact match of the *un-suffixed* prefix.
+    let capped_prefix: String = full_body.lines().take(5000).collect::<Vec<_>>().join("\n");
+
+    // Commit exactly that prefix as the baseline.
+    std::fs::write(&doc, &capped_prefix).unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    // The uncommitted working file is the full (longer) body — truncated back down to that
+    // identical prefix on load, so nothing but the truncation-notice suffix can make the two sides
+    // differ.
+    std::fs::write(&doc, &full_body).unwrap();
+
+    let root = dir.canonicalize().unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+
+    // Confirm the two preconditions this test exists to exercise.
+    let content = crate::preview::text::load(&root.join("doc.md")).unwrap();
+    assert!(content.truncated, "前提: MAX_LINES 超で truncated のはず");
+    assert_eq!(
+        content.lines.join("\n"),
+        capped_prefix,
+        "前提: サフィックス抜きの新版はベースラインと完全一致するはず(そうでないと判定が\
+         元々ズレていてもこのシナリオでは見えない)"
+    );
+
+    let i = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path.file_name().is_some_and(|n| n == "doc.md"))
+        .expect("doc.md がツリーにあるはず");
+    app.tab.selected = i;
+    app.tree_activate().unwrap();
+    assert!(matches!(
+        app.tab.preview_kind,
+        Some(crate::preview::PreviewKind::Markdown(_))
+    ));
+
+    let width: u16 = 40;
+    let (total_rows, _) = app.md_layout(width);
+    assert!(total_rows > 0, "何か描画されているはず");
+
+    // The real render always includes the truncation-notice paragraph, so it must find a mark —
+    // this scenario really does have something for the gutter to show.
+    let marks = app.md_diff_marks_for_test().unwrap_or_default();
+    assert!(
+        !marks.is_empty(),
+        "省略サフィックスの段落は baseline に無いので Added の印を持つはず: {marks:?}"
+    );
+
+    let (lines, _) = app.md_slice(0, total_rows as u16);
+    assert!(!lines.is_empty());
+
+    use ratatui::text::Text;
+    use ratatui::widgets::{Paragraph, Wrap};
+    let real_total: usize = lines
+        .iter()
+        .map(|l| {
+            Paragraph::new(Text::from(vec![l.clone()]))
+                .wrap(Wrap { trim: false })
+                .line_count(width)
+                .max(1)
+        })
+        .sum();
+    assert_eq!(
+        real_total, total_rows,
+        "ガター込みの実描画行数が row_prefix の想定と一致するはず(はみ出しラップが無い)"
+    );
+    assert!(
+        lines.iter().all(|l| l.width() as u16 <= width),
+        "ガター込みの行幅が width を超えてはいけない: {:?}",
+        lines.iter().map(|l| l.width()).collect::<Vec<_>>()
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
 }

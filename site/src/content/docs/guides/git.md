@@ -23,12 +23,25 @@ The staging area. Each uncommitted file on one line with its status:
 
 ## Diffs
 
-From the hub, from the tree (`d` on any changed file), or from follow mode:
+From the hub, from the tree (`d` on any changed file), or from follow mode. A diff has up to 3
+presentations, cycled with `R` (`[ui] diff_view`, default `rendered`):
 
-- `s` cycles the layout: unified (vertical) → split (side by side) → auto.
+- **`rendered`** — a Markdown file's diff drawn as decorated blocks: removed content in red/dim,
+  added in green, changed-to in amber — so an edit's *deletions* stay visible, not only its final
+  result. Falls back to `source` for a non-Markdown file, which has no block-diff renderer.
+- **`source`** — the classic unified/split diff.
+- **`preview`** — the file's ordinary preview, with a change gutter on the current content; `R`
+  there returns to the diff instead of toggling raw source.
+
+`R` cycles between whichever presentations the file being diffed actually has: all 3 for Markdown,
+`source ⇄ preview` for any other text file, none for a non-text file (no hint is shown for those).
+For a file over 5,000 lines or 1 MiB, `rendered`/`preview` stop at the same position an ordinary
+preview would — switch to `source` (`R`) to see changes past that point.
+
+- `s` cycles the `source` layout: unified (vertical) → split (side by side) → auto.
 - `n` / `N` jump straight to the next/previous changed file's diff without
   leaving the view — the title shows `(2/5)`. Reviewing a whole change set is
-  one keystroke per file.
+  one keystroke per file; the current presentation is kept as you move between files.
 - `x` discards the whole file's changes (confirmed).
 
 ## Log — `l`

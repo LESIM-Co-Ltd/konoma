@@ -533,6 +533,26 @@ fn cfg_ui_follow_view_default_and_parse() {
     );
 }
 
+/// `diff_view`: default `"rendered"`; any other string (`"source"`/`"preview"`/a typo) is stored
+/// verbatim — resolution into `app::DiffView` (permissive: unknown = `Rendered`) happens at the
+/// `App` layer (`App::open_git_diff`), the same "raw field stores verbatim, an app-layer accessor
+/// resolves it permissively" split `md_details`/`follow_view` already use.
+#[test]
+fn cfg_ui_diff_view_default_and_parse() {
+    assert_eq!(
+        toml::from_str::<Config>("[ui]\n").unwrap().ui.diff_view,
+        "rendered"
+    );
+    assert_eq!(
+        toml::from_str::<Config>("[ui]\ndiff_view = \"source\"\n")
+            .unwrap()
+            .ui
+            .diff_view,
+        "source"
+    );
+    assert_eq!(Config::default().ui.diff_view, "rendered");
+}
+
 #[test]
 fn cfg_ui_tree_cursor_default_and_parse() {
     assert_eq!(
@@ -708,6 +728,7 @@ mermaid_curve = "monotoneX"
 mermaid_routing = "hyperspace"
 math = "vector-art"
 md_details = "sideways"
+diff_view = "sideways"
 "#,
     )
     .unwrap();
@@ -726,6 +747,7 @@ md_details = "sideways"
     assert_eq!(cfg.ui.mermaid_routing, "hyperspace");
     assert_eq!(cfg.ui.math, "vector-art");
     assert_eq!(cfg.ui.md_details, "sideways");
+    assert_eq!(cfg.ui.diff_view, "sideways");
 }
 
 #[test]
@@ -830,6 +852,7 @@ fn cfg_ui_empty_toml_yields_all_scalar_defaults() {
     assert_eq!(ui.mermaid_routing, "splines");
     assert_eq!(ui.mermaid_rows, 24);
     assert_eq!(ui.follow_view, "diff");
+    assert_eq!(ui.diff_view, "rendered");
     assert!(ui.restore_tabs);
     assert!(ui.md_autolink);
     assert!(ui.md_alerts);

@@ -2,6 +2,37 @@
 
 use super::*;
 
+/// How a diff is being opened — the input `App::open_git_diff_with` needs *before* it decides
+/// `diff_follow_scope`/`came_from_git_view`/the presentation and validates that presentation
+/// exactly once. `Default` is the ordinary "fresh open, from a tree/hub selection" shape that plain
+/// `App::open_git_diff` uses; the other three call sites (`follow_jump`, `n`/`N`, the `Preview`
+/// representation's own `R` back to `Source`) each override just the fields they need.
+#[derive(Default)]
+pub(super) struct DiffOpen {
+    /// `true` for a follow-originated diff — `n`/`N` then cycles only the follow session's own
+    /// changed-file list, and the `Rendered` presentation's baseline is the follow-session snapshot
+    /// rather than the backend's committed blob (`App::diff_baseline`, `md_diff.rs`). Defaults to
+    /// `false` (the full uncommitted change set, the backend's committed blob).
+    pub follow_scope: bool,
+    /// The presentation to open into, rounded to what the *target* path can actually show
+    /// (`App::round_diff_view`) either way. `None` (the default) resolves fresh from `[ui] diff_view`
+    /// (`App::default_diff_view_for`) — a brand new diff surface. `Some(v)` carries an
+    /// already-chosen presentation over instead, so moving to another file (`n`/`N`) or returning
+    /// from the `Preview` representation doesn't reset it.
+    pub view: Option<DiffView>,
+    /// `Some(b)` preserves a `came_from_git_view` value the caller already has, instead of the
+    /// ordinary "opened straight from wherever the tab's Git view currently is" rule
+    /// (`self.tab.git_view`, which a fresh open always reads and then closes). `n`/`N` and the
+    /// `Preview` return both want this — they are continuing a diff that was already open, not
+    /// opening one from the Git view.
+    pub came_from_git_view: Option<bool>,
+    /// A diff already fetched by the caller (`follow_jump`'s own `compute_gitdiff_lines`), seeded
+    /// into `diff_cache` so the first render of the `Source` presentation doesn't have to re-invoke
+    /// git for something already in hand. `None` (the default) leaves the cache empty
+    /// (`invalidate_diff_caches` already clears it) for the render to populate lazily.
+    pub seeded_diff: Option<DiffCache>,
+}
+
 /// Outcome of checking whether the worktree list's selected row can be switched to / opened in a
 /// new tab (`worktree_goto`/`worktree_goto_new_tab` share this).
 #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -526,8 +557,31 @@ impl App {
 
     // --- Git view stubs (replaced by phase 4/5) -------------------------
     /// `Enter`/`l`: Open the selected file's diff in the GitDiff preview. Closes the Git view and
-    /// remembers where it came from (came_from_git_view) so Esc/q can return to the Git view.
+    /// remembers where it came from (came_from_git_view) so Esc/q can return to the Git view. A
+    /// fresh, tree-/hub-originated open — `open_git_diff_with`'s own doc comment covers the other
+    /// three call shapes (follow-originated, `n`/`N`, returning from the `Preview` representation).
     pub fn open_git_diff(&mut self, path: &Path) {
+        self.open_git_diff_with(path, DiffOpen::default());
+    }
+
+    /// `open_git_diff`, generalized over *how* the diff is being opened — the single place that
+    /// decides `diff_follow_scope`, `came_from_git_view` and the presentation (`apply_diff_view`)
+    /// from already-final inputs and calls `apply_diff_view` exactly once, rather than a caller
+    /// opening with the wrong scope and immediately re-deciding once it knows better.
+    ///
+    /// Before this existed, `follow_jump` and `diff_jump_changed` (`n`/`N`) each called
+    /// `open_git_diff` — which always resets `diff_follow_scope` to `false` and validates the
+    /// `Rendered` presentation against *that* scope's baseline — and only afterward set the scope
+    /// they actually wanted and re-ran `apply_diff_view` to re-validate. For a follow-originated
+    /// Markdown diff whose HEAD-committed version exceeded the size cap but whose follow-session
+    /// snapshot did not, the first call would flash `DiffRenderedUnavailable` and round down to
+    /// `Source`; the second call would then successfully switch to `Rendered` — but never cleared
+    /// the stale flash, which sat in the footer (looking exactly like the "am I broken?" case that
+    /// flash exists to head off) despite `Rendered` already being on screen. `return_to_diff_from_
+    /// preview` had the same save/restore shape for `came_from_git_view`/`diff_follow_scope` (though
+    /// not the double-validation bug, since it never re-entered `Rendered`). All three now build a
+    /// `DiffOpen` up front and call this once.
+    pub(super) fn open_git_diff_with(&mut self, path: &Path, open: DiffOpen) {
         self.tab.preview_path = Some(path.to_path_buf());
         self.tab.preview_kind = Some(PreviewKind::GitDiff(path.to_path_buf()));
         // The diff preview draws itself (it doesn't use window/image/md). Reset the related state.
@@ -535,19 +589,51 @@ impl App {
         self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
+        // A fresh open: drop any leftover "scroll to first change" reservation before deciding, at
+        // the bottom of this fn, whether to arm a new one for `path` — mirrors `App::enter_preview`'s
+        // own up-front clear (`diff_scroll_pending`'s own doc comment).
+        self.tab.diff_scroll_pending = None;
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
         self.md_cache = None;
-        self.diff_cache = None; // opening another file's diff: invalidate the raw diff cache
+        self.invalidate_diff_caches(); // opening another file's diff: invalidate both diff caches
+        if let Some(seeded) = open.seeded_diff {
+            // A diff the caller already fetched (`follow_jump`'s own `compute_gitdiff_lines`) —
+            // seed it so the very first render (and `apply_diff_view`'s own `git_diff_lines` read,
+            // below) doesn't re-invoke git for something already in hand.
+            self.diff_cache = Some(seeded);
+        }
         self.md_items.clear();
         self.tab.focused_item = None;
         self.hl_pending = false;
         self.hl_warming = false;
-        self.tab.came_from_git_view = self.tab.git_view;
+        self.tab.came_from_git_view = open.came_from_git_view.unwrap_or(self.tab.git_view);
         self.tab.git_view = false;
-        // Defaults to the full git change scope (only the follow-originated case has the caller override it to true).
-        self.diff_follow_scope = false;
+        self.diff_follow_scope = open.follow_scope;
+        // The presentation: a fresh open (`open.view == None`) starts from `[ui] diff_view` rounded
+        // to what `path` can actually show (`default_diff_view_for`); a carried-over one (`n`/`N`,
+        // the `Preview` return) is rounded the same way instead of trusting the caller already did
+        // it against the *new* target. `apply_diff_view` (not a direct assignment) is used, not
+        // because it validates anything itself — for `Rendered` it only **kicks** the block-diff
+        // computation (`App::poll_md_diff`) so it's already in flight by the time the first frame
+        // draws — but so every `Rendered` open goes through the one place that does that kick. The
+        // actual rounding-down to `Source` (if the result lands `Unavailable`) or the "nothing to
+        // mark but front matter" flash happens later, once the worker's result actually lands
+        // (`App::apply_md_diff`, run from the event loop, never from here or the render path) — by
+        // which point every input `apply_diff_view` reads here (`diff_follow_scope` above, the seeded
+        // cache above) is already stale history, not something this fn needs to wait on.
+        let view = match open.view {
+            Some(v) => self.round_diff_view(v, path),
+            None => self.default_diff_view_for(path),
+        };
+        self.apply_diff_view(view, path);
+        self.tab.diff_scroll_pending =
+            (self.tab.diff_view == DiffView::Rendered).then(|| path.to_path_buf());
+        // Leaving whatever *other* preview this tab may have been showing (including the diff's own
+        // `Preview` representation, if `R`/`n`/`N` reached here from it) — this is a fresh open of
+        // the diff surface, not a continuation of that preview.
+        self.tab.preview_from_diff = false;
         self.tab.mode = Mode::Preview;
     }
 
@@ -604,9 +690,18 @@ impl App {
     pub fn diff_is_split(&self, width: u16) -> bool {
         self.diff_layout.is_split(width)
     }
-    /// Cycle the diff layout unified→split→Auto (`s`). Called from both the GitDiff preview and the detail view.
+    /// Cycle the diff layout unified→split→Auto (`s`). Called from both the GitDiff preview and the
+    /// detail view. No-op while the `Rendered` presentation is on screen (`diff_rendered_active`) —
+    /// it draws decorated Markdown blocks, not the unified/split raw-line layout this key cycles,
+    /// so there is nothing here for it to change. The footer already hides the `s:...` hint in
+    /// exactly that case ([[hint-shown-iff-key-acts]], `ui/status.rs::mode_footer`'s own
+    /// `diff_rendered_active` check) — this is the key-handler half of the same gate, so pressing
+    /// `s` there doesn't flash a layout label for a layout that isn't actually showing.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn cycle_diff_layout(&mut self) {
+        if self.diff_rendered_active() {
+            return;
+        }
         self.diff_layout = self.diff_layout.next();
         self.tab.preview_hscroll = 0;
         self.tab.git_detail_hscroll = 0; // reset the horizontal position on layout switch (its meaning changes)
@@ -619,9 +714,13 @@ impl App {
     }
 
     /// Close the GitDiff preview (q/Esc). Returns to the Git view if it came from there,
-    /// otherwise returns to the tree.
+    /// otherwise returns to the tree. Also the return path from the diff's `Preview` representation
+    /// (`main.rs`'s `Action::PreviewBack` routes here whenever `tab.preview_from_diff` is set, not
+    /// only for an actual `Surface::PreviewGitDiff`) — `preview_from_diff` is cleared unconditionally
+    /// here so either origin ends up in the identical "no longer inside a diff" state.
     pub fn close_git_diff(&mut self) {
         let return_to_git = self.tab.came_from_git_view;
+        self.tab.preview_from_diff = false;
         self.back_to_tree();
         if return_to_git {
             self.tab.came_from_git_view = false;
@@ -2251,5 +2350,58 @@ mod tests {
             "唯一の候補＝自分自身のブランチは除外されるので None"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `s` (`cycle_diff_layout`) is a no-op while the diff's `Rendered` presentation is on screen —
+    /// the same gate the footer already uses to hide the `s:...` hint there
+    /// (`ui/status.rs::mode_footer`'s own `diff_rendered_active` check, [[hint-shown-iff-key-acts]]).
+    /// `Source`/`Preview` are unaffected (still cycle normally), and the commit-detail view (where
+    /// `s` also works — `diff_layout_and_word_diff...` tests that) is unaffected too, since
+    /// `diff_rendered_active` is gated on `is_git_diff_preview()`.
+    #[cfg(feature = "git")]
+    #[test]
+    fn cycle_diff_layout_is_a_no_op_while_rendered_is_active() {
+        let dir = unique_tmp("konoma_cycle_diff_layout_rendered_noop_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        std::fs::write(dir.join("a.md"), "# t\n\nbody\n").unwrap();
+        sh(&dir, &["add", "-A"]);
+        sh(&dir, &["commit", "-q", "-m", "init"]);
+        std::fs::write(dir.join("a.md"), "# t\n\nCHANGED\n").unwrap();
+
+        let canon = dir.canonicalize().unwrap();
+        let mut app = App::new(canon.clone(), Config::default()).unwrap();
+        app.open_git_diff(&canon.join("a.md"));
+        assert_eq!(
+            app.diff_view_for_test(),
+            crate::app::DiffView::Rendered,
+            "前提: 既定は Rendered"
+        );
+        assert!(app.diff_rendered_active());
+
+        let layout_before = app.diff_layout;
+        app.cycle_diff_layout();
+        assert_eq!(
+            app.diff_layout, layout_before,
+            "Rendered 中は s で layout が変わってはいけない"
+        );
+        assert!(
+            app.flash.is_none(),
+            "Rendered 中の s はレイアウトラベルを flash してはいけない: {:?}",
+            app.flash
+        );
+
+        // Leaving Rendered (→ Source, set directly — `cycle_diff_view` from `Rendered` goes to the
+        // `Preview` representation instead, a different surface entirely) makes `s` work again.
+        app.tab.diff_view = crate::app::DiffView::Source;
+        assert!(!app.diff_rendered_active());
+        app.cycle_diff_layout();
+        assert_ne!(
+            app.diff_layout, layout_before,
+            "Source では s が通常どおり効く"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

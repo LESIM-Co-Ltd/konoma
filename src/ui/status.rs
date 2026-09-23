@@ -265,7 +265,8 @@ pub fn context_spans(app: &App) -> Vec<Span<'static>> {
 /// Dialog/visual keys are shown here (the delete confirmation's y/!/n also appears in the box, but the source of truth is here).
 fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
     let lang = app.lang;
-    let s = match app.internal_mode()? {
+    let mode = app.internal_mode()?;
+    let s = match mode {
         // Help's own operation keys (j/k/g/G scroll, q/Esc close). If we kept showing hints from
         // the surface underneath (Tree/Preview), it would advertise keys you can't press while
         // help is showing (the centered popup doesn't cover the top/bottom edges, so the footer
@@ -311,17 +312,52 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
         InternalMode::GitBranch => tr(lang, crate::i18n::Msg::BranchesNavHint),
         InternalMode::GitWorktrees => tr(lang, crate::i18n::Msg::WorktreesNavHint),
         // `x:discard` is a write. A backend that cannot take one must not advertise it — an
-        // advertised key gets pressed.
+        // advertised key gets pressed. `s:unified/split/auto` is likewise dropped while the
+        // `Rendered` presentation is showing (`App::diff_rendered_active`) — it has no split view
+        // of its own, so `s` would do nothing there. `h/l:hscroll` is *also* dropped there while
+        // `[ui] wrap` is on — unlike `Source` (always horizontal-scrollable, `wrap`-independent),
+        // `Rendered` shares the ordinary decorated Markdown preview's own wrap-aware layout, where
+        // horizontal scroll is a no-op the moment lines wrap ([[hint-shown-iff-key-acts]]).
         InternalMode::GitDiff if !crate::vcs::caps(&app.tab.root).write => {
-            tr(lang, crate::i18n::Msg::DiffScrollNoDiscardHint)
+            if app.diff_rendered_active() {
+                if app.cfg.ui.wrap {
+                    tr(lang, crate::i18n::Msg::DiffScrollNoDiscardHintRenderedWrap)
+                } else {
+                    tr(lang, crate::i18n::Msg::DiffScrollNoDiscardHintRendered)
+                }
+            } else {
+                tr(lang, crate::i18n::Msg::DiffScrollNoDiscardHint)
+            }
         }
-        InternalMode::GitDiff => tr(lang, crate::i18n::Msg::DiffScrollDiscardHint),
+        InternalMode::GitDiff => {
+            if app.diff_rendered_active() {
+                if app.cfg.ui.wrap {
+                    tr(lang, crate::i18n::Msg::DiffScrollDiscardHintRenderedWrap)
+                } else {
+                    tr(lang, crate::i18n::Msg::DiffScrollDiscardHintRendered)
+                }
+            } else {
+                tr(lang, crate::i18n::Msg::DiffScrollDiscardHint)
+            }
+        }
         InternalMode::Commit => tr(lang, crate::i18n::Msg::StCommitHint),
         InternalMode::GitLog => tr(lang, crate::i18n::Msg::GitNavDetailHint),
         InternalMode::GitDetail => tr(lang, crate::i18n::Msg::DiffScrollHint),
         // Filter/search/sort/mark/bookmarks are handled by their dedicated prompt below.
         _ => return None,
     };
+    // `R`'s presentation-cycle hint (`docs/FEATURE-MD-RENDERED-DIFF.md` §4) is the one part of the
+    // GitDiff footer that depends on per-file state (how many presentations the target has, and
+    // which one is showing) rather than being a fixed string keyed only on the backend's write
+    // capability — so it's appended here instead of folding into the match above.
+    // [[hint-shown-iff-key-acts]]: `diff_view_cycle_hint` is `None` (nothing appended) for a target
+    // with only one presentation, e.g. an image whose diff is shown here.
+    let mut s = s.to_string();
+    if mode == InternalMode::GitDiff {
+        if let Some(msg) = app.diff_view_cycle_hint() {
+            s.push_str(&format!("  R:{}", tr(lang, msg)));
+        }
+    }
     Some(vec![Span::from(s).bold()])
 }
 
@@ -1267,6 +1303,144 @@ mod tests {
         std::fs::remove_dir_all(&git_dir).ok();
     }
 
+    /// The diff's `Rendered` presentation shares the ordinary decorated Markdown preview's own
+    /// wrap-aware layout — `h/l:hscroll` is a no-op the moment lines wrap, so the footer must not
+    /// advertise it while `[ui] wrap` is on (the default), matching the ordinary decorated
+    /// Markdown footer's identical wrap-gated `h/l` hint ([[hint-shown-iff-key-acts]]). `Source`
+    /// (the plain unified/split diff, never wrap-aware) keeps showing `h/l` unconditionally either
+    /// way — not exercised by the `wrap = false` half below, but implicitly covered by
+    /// `diff_footer_hides_discard_for_read_only_backend_shows_for_git`, which never sets `wrap`
+    /// off and still sees `h/l` for a `Source`-only (plain text) target.
+    #[cfg(feature = "git")]
+    #[test]
+    fn diff_footer_hscroll_hint_matches_wrap_setting_for_rendered() {
+        let dir = unique_tmp("konoma_status_diff_rendered_wrap_footer");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sh = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        sh(&["init", "-q", "."]);
+        sh(&["config", "user.email", "t@t"]);
+        sh(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("doc.md"), "# Title\n\noriginal\n").unwrap();
+        sh(&["add", "-A"]);
+        sh(&["commit", "-q", "-m", "init"]);
+        std::fs::write(dir.join("doc.md"), "# Title\n\nchanged\n").unwrap();
+        let root = dir.canonicalize().unwrap();
+
+        // `[ui] wrap = true` (default): no `h/l` hint at all in the Rendered footer.
+        let mut app = App::new(root.clone(), Config::default()).unwrap();
+        app.open_git_diff(&root.join("doc.md"));
+        assert_eq!(app.diff_view_for_test(), crate::app::DiffView::Rendered);
+        let footer: String = footer_spans(&app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !footer.contains("h/l"),
+            "wrap=true では横スクロールは no-op のはず: {footer}"
+        );
+
+        // `[ui] wrap = false`: horizontal scroll is meaningful again, so the hint returns.
+        let mut cfg = Config::default();
+        cfg.ui.wrap = false;
+        let mut app_nowrap = App::new(root.clone(), cfg).unwrap();
+        app_nowrap.open_git_diff(&root.join("doc.md"));
+        assert_eq!(
+            app_nowrap.diff_view_for_test(),
+            crate::app::DiffView::Rendered
+        );
+        let footer_nowrap: String = footer_spans(&app_nowrap, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            footer_nowrap.contains("h/l"),
+            "wrap=false では h/l:hscroll が出るはず: {footer_nowrap}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Test-hole coverage, jj side: `diff_footer_hscroll_hint_matches_wrap_setting_for_rendered`
+    /// (above) only ever exercised a git backend. jj is konoma's other backend and — unlike git —
+    /// cannot write (`diff_footer_hides_discard_for_read_only_backend_shows_for_git`'s own
+    /// contrast), so this pins that the `h/l` wrap-gate is independent of write capability: the
+    /// `Rendered` presentation's wrap-aware layout works identically on a read-only backend.
+    #[cfg(feature = "git")]
+    #[test]
+    fn diff_footer_hscroll_hint_matches_wrap_setting_for_rendered_under_jj() {
+        fn jj_scratch_md(name: &str) -> Option<std::path::PathBuf> {
+            if !crate::vcs::jj::available() {
+                return None;
+            }
+            let dir = unique_tmp(name);
+            std::fs::create_dir_all(&dir).ok()?;
+            let jj = |args: &[&str]| {
+                std::process::Command::new("jj")
+                    .current_dir(&dir)
+                    .env("HOME", &dir) // never touch the running machine's own jj config
+                    .env("JJ_USER", "konoma test")
+                    .env("JJ_EMAIL", "test@example.invalid")
+                    .args(args)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            };
+            if !jj(&["git", "init", "--no-colocate", "."]) {
+                return None;
+            }
+            std::fs::write(dir.join("doc.md"), b"# Title\n\noriginal\n").ok()?;
+            if !jj(&["commit", "-m", "seed"]) {
+                return None;
+            }
+            std::fs::write(dir.join("doc.md"), b"# Title\n\nchanged\n").ok()?;
+            Some(dir)
+        }
+        let Some(dir) = jj_scratch_md("konoma_status_jj_diff_rendered_wrap_footer") else {
+            return;
+        };
+
+        // `[ui] wrap = true` (default): no `h/l` hint at all in the Rendered footer.
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        app.open_git_diff(&dir.join("doc.md"));
+        assert_eq!(app.diff_view_for_test(), crate::app::DiffView::Rendered);
+        let footer: String = footer_spans(&app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !footer.contains("h/l"),
+            "wrap=true では横スクロールは no-op のはず: {footer}"
+        );
+
+        // `[ui] wrap = false`: horizontal scroll is meaningful again, so the hint returns.
+        let mut cfg = Config::default();
+        cfg.ui.wrap = false;
+        let mut app_nowrap = App::new(dir.clone(), cfg).unwrap();
+        app_nowrap.open_git_diff(&dir.join("doc.md"));
+        assert_eq!(
+            app_nowrap.diff_view_for_test(),
+            crate::app::DiffView::Rendered
+        );
+        let footer_nowrap: String = footer_spans(&app_nowrap, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            footer_nowrap.contains("h/l"),
+            "wrap=false では h/l:hscroll が出るはず: {footer_nowrap}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// (status.rs item 2, diff) The GitDiff footer hides the discard key for a read-only backend
     /// (`Msg::DiffScrollNoDiscardHint`) and shows it for git (`Msg::DiffScrollDiscardHint`). Uses
     /// `open_git_diff` directly with a path that need not actually exist — the footer only reads
@@ -1284,7 +1458,16 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
-        assert_eq!(footer, tr(Lang::En, Msg::DiffScrollNoDiscardHint));
+        // `a.txt` is a plain text file, so `R` cycles straight `source ⇄ preview`
+        // (`docs/FEATURE-MD-RENDERED-DIFF.md` §4) — the footer now also carries that hint.
+        assert_eq!(
+            footer,
+            format!(
+                "{}  R:{}",
+                tr(Lang::En, Msg::DiffScrollNoDiscardHint),
+                tr(Lang::En, Msg::DiffViewPreview)
+            )
+        );
         assert!(
             !footer.contains("discard"),
             "jj は書けないので discard を出してはいけない: {footer}"
@@ -1303,6 +1486,10 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
+        // Unlike the jj case above, this repository has no commits and `a.txt` was never written to
+        // disk (`init_test_git_repo` only `git init`s an empty directory) — `resolve_preview` can't
+        // classify a file that doesn't exist, so it degrades to `CanNotPreview` (one representation,
+        // no `R` hint at all: `App::diff_view_cycle_hint`'s own no-op gate).
         assert_eq!(footer, tr(Lang::En, Msg::DiffScrollDiscardHint));
         assert!(footer.contains("discard"));
         std::fs::remove_dir_all(&git_dir).ok();
