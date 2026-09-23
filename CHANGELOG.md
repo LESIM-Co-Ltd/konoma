@@ -21,7 +21,9 @@ All notable changes to konoma are documented in this file. The format is based o
   The block-diff itself (reading the committed baseline, preprocessing, aligning blocks) now runs
   on a background thread rather than the UI thread: the ordinary preview's change gutter appears
   once the comparison finishes rather than on the very first frame, and `rendered` shows a brief
-  "computing diff…" placeholder while its own comparison is still in flight.
+  "computing diff…" placeholder while its own comparison is still in flight. For a file over 5,000
+  lines or 1 MiB, `rendered`/`preview` stop at the same position an ordinary preview would; press
+  `R` to switch to `source` to see changes past that point.
 
 ## [0.28.6] - 2026-09-14
 

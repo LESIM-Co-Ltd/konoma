@@ -176,16 +176,28 @@ impl App {
         // happen here — see that fn's own doc comment (`docs/FEATURE-MD-RENDERED-DIFF.md` §5).
         self.apply_diff_view(next, &path);
         self.tab.preview_scroll = 0;
-        self.tab.diff_scroll_pending = self.tab.diff_view == DiffView::Rendered;
+        self.tab.diff_scroll_pending =
+            (self.tab.diff_view == DiffView::Rendered).then(|| path.clone());
     }
 
-    /// Takes (and clears) the pending "scroll to first change" request set by `App::open_git_diff`/
-    /// `App::cycle_diff_view` (the `Rendered` representation, `tab.diff_view == Rendered`) or
-    /// `follow.rs`'s own decorated-Markdown branch of `follow_scroll_to_first_change` (an ordinary
-    /// preview's own gutter, §3) — consumed by the very next render of whichever one actually
-    /// applies (`ui/preview.rs::render_diff_rendered`/`render_decorated`).
-    pub(crate) fn take_diff_scroll_pending(&mut self) -> bool {
-        std::mem::take(&mut self.tab.diff_scroll_pending)
+    /// Takes (and clears) the pending "scroll to first change" reservation, if it is armed for
+    /// `path` — set by `App::open_git_diff_with`/`App::cycle_diff_view` (the `Rendered`
+    /// presentation, `tab.diff_view == Rendered`) or `follow.rs`'s own decorated-Markdown branch of
+    /// `follow_scroll_to_first_change` (an ordinary preview's own gutter, §3) — consumed by the very
+    /// next render of whichever one actually applies (`ui/preview.rs::render_diff_rendered`/
+    /// `render_decorated`).
+    ///
+    /// Always clears the reservation, whether or not `path` matches (`Option::take`): a reservation
+    /// for some *other* path is stale by construction (every fresh entry point that could have left
+    /// it behind clears it up front — `App::enter_preview`, `App::open_git_diff_with`) and must be
+    /// dropped rather than risk firing against whatever unrelated document is on screen when this is
+    /// next checked. This is what closes the real bug the bare-`bool` version had: a reservation
+    /// armed for a `Rendered` diff that landed `Unavailable` (rounded down to `Source`, which never
+    /// consumes it — only `render_decorated_body` does) — or a follow jump's — surviving to scroll a
+    /// later, wholly unrelated Markdown preview opened in the same tab, with no key pressed for it
+    /// at all.
+    pub(crate) fn take_diff_scroll_pending_for(&mut self, path: &Path) -> bool {
+        matches!(self.tab.diff_scroll_pending.take(), Some(p) if p.as_path() == path)
     }
 
     /// Scrolls the decorated preview so display row `row` lands a few lines below the top — the

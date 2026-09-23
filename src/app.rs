@@ -1785,13 +1785,6 @@ struct MdCache {
     /// calls `App::open_git_diff` again, unlike a fresh diff open, and does not itself reset
     /// `md_cache`) can never reuse a stale entry built for the other source.
     source: MdCacheSource,
-    /// `true` only for the `Rendered` presentation's "computing…" placeholder (`docs/STATUS.md`
-    /// ★未修正 item 4, `App::md_diff_computing_cache`) — a single centered line, no real marks.
-    /// `ui/preview.rs::render_decorated_body` reads this to **not** consume
-    /// `App::take_diff_scroll_pending` against it: doing so on the placeholder frame would burn the
-    /// "scroll to first change" request against a cache with no marks at all, silently losing it
-    /// for the *real* frame that lands once the block-diff finishes.
-    is_diff_computing_placeholder: bool,
 }
 
 /// See `MdCache::source`'s own doc comment.
@@ -2564,13 +2557,25 @@ pub(crate) struct PerTab {
     /// restore it around their own `open_git_diff` call so cycling files never resets it — see
     /// [`DiffView`]'s own doc comment.
     diff_view: DiffView,
-    /// Set by `App::open_git_diff`/`App::cycle_diff_view` whenever the `Rendered` presentation
-    /// (re)appears (a fresh file, or `R` cycling into it) — consumed by the very next render of it
-    /// (`ui/preview.rs::render_diff_rendered`), which scrolls to the first changed block (§1's "最初
-    /// の印の位置に自動スクロールして開く") and clears this flag. Without it, every frame would have
-    /// no way to tell "just opened, scroll to the first change" apart from "the user scrolled back
-    /// to the top on purpose" — both look like `preview_scroll == 0`.
-    diff_scroll_pending: bool,
+    /// The target of a pending "scroll to the first change" request, if any — `Some(path)` set by
+    /// `App::open_git_diff_with`/`App::cycle_diff_view` whenever the `Rendered` presentation
+    /// (re)appears for `path` (a fresh file, or `R` cycling into it), or by `follow.rs`'s own
+    /// decorated-Markdown branch of `follow_scroll_to_first_change`. Consumed by the very next
+    /// render of `path` (`App::take_diff_scroll_pending_for`, called from
+    /// `ui/preview.rs::render_decorated_body`), which scrolls to the first changed block (§1's "最初
+    /// の印の位置に自動スクロールして開く") and clears this. Without it, every frame would have no
+    /// way to tell "just opened, scroll to the first change" apart from "the user scrolled back to
+    /// the top on purpose" — both look like `preview_scroll == 0`.
+    ///
+    /// Carries **which** path it's for (not a bare flag) so a reservation that never got consumed
+    /// on its own target — the worker landed `Unavailable` and rounded `Rendered` down to `Source`
+    /// before the next render (`App::apply_md_diff`, which also clears this explicitly), or the tab
+    /// simply moved on to an unrelated file before the next render ran — can never misfire against
+    /// whatever *other* Markdown document happens to be on screen by the time it's checked. Every
+    /// fresh preview entry (`App::enter_preview`, `App::open_git_diff_with`) drops any leftover
+    /// reservation up front, and the one caller that wants a new one right away
+    /// (`App::cycle_diff_view`'s `enter_diff_preview_representation`) re-arms it immediately after.
+    diff_scroll_pending: Option<PathBuf>,
     /// Set by `App::cycle_diff_view` the moment it leaves `Surface::PreviewGitDiff` for the
     /// `Preview` representation (an ordinary content preview, opened via `App::enter_preview`) —
     /// the one fact that distinguishes "this Markdown/text preview *is* the diff's own `preview`
@@ -2710,7 +2715,7 @@ impl Default for PerTab {
             // from config the moment one is. `Rendered` (not e.g. `Source`) simply so a fresh
             // `PerTab` never claims a presentation it never actually resolved.
             diff_view: DiffView::Rendered,
-            diff_scroll_pending: false,
+            diff_scroll_pending: None,
             preview_from_diff: false,
             git_log: None,
             git_log_sel: 0,
@@ -3754,6 +3759,14 @@ impl App {
         self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
+        // A fresh preview entry: drop any leftover "scroll to first change" reservation left behind
+        // by whatever this tab was showing before — a stray one from a `Rendered` diff that never
+        // got consumed (rounded down to `Source` on `Unavailable`, or simply never rendered before
+        // the user moved on) must never survive to scroll *this* unrelated document instead. The one
+        // caller that wants a fresh reservation right away (`App::cycle_diff_view`'s
+        // `enter_diff_preview_representation`) re-arms it immediately after this call returns, via
+        // `follow_scroll_to_first_change`.
+        self.tab.diff_scroll_pending = None;
         // Reset image state every time. SVG/GIF start loading on a separate thread (doesn't block the UI).
         self.clear_image();
         // For a PDF, get the page count first (hayro-syntax, pure Rust, no external process, ~a

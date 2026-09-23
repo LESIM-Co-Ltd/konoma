@@ -58,6 +58,18 @@ impl App {
         DiffBaseline::Vcs
     }
 
+    /// Test-only direct access to `diff_baseline` — lets a test pin its `follow_scope_valid()` gate
+    /// (M2, pre-merge review of PR #21) without a full worker round trip. `diff_baseline` itself
+    /// stays private (`app/tests.rs`, a sibling module of `md_diff`, can't otherwise reach it). Every
+    /// current caller is `#[cfg(feature = "git")]` (the follow-session branch it pins only exists on
+    /// that build) — `allow(dead_code)`, not `cfg(feature = "git")`, on a no-`git` test build, same
+    /// as `diff_view_for_test`'s own doc comment explains.
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(crate) fn diff_baseline_for_test(&self, path: &Path, kind: MdDiffKind) -> DiffBaseline {
+        self.diff_baseline(path, kind)
+    }
+
     /// The landed result for `(path, kind)`, if it matches the current generation — factored out of
     /// `poll_md_diff` so it can be checked both before *and* after a kick: the synchronous fallback
     /// (`spawn_or_sync_md_diff` with no `md_diff_tx` attached — every test that doesn't explicitly
@@ -289,6 +301,14 @@ impl App {
             match &res.outcome {
                 MdDiffOutcome::Unavailable => {
                     self.tab.diff_view = DiffView::Source;
+                    // `Rendered` is no longer reachable for this path — the "scroll to first change"
+                    // reservation `App::open_git_diff_with`/`App::cycle_diff_view` armed for it (if
+                    // any) will never be consumed by `render_decorated_body` now that `Source` draws
+                    // through a different renderer entirely. Drop it explicitly rather than leave it
+                    // dangling on `res.path` until some later, unrelated event clears it.
+                    if self.tab.diff_scroll_pending.as_deref() == Some(res.path.as_path()) {
+                        self.tab.diff_scroll_pending = None;
+                    }
                     self.flash =
                         Some(tr(self.lang, crate::i18n::Msg::DiffRenderedUnavailable).into());
                 }
@@ -312,13 +332,21 @@ impl App {
     }
 
     /// Whether a block-diff for the **currently previewed path** is still in flight (either kind).
-    /// `ui/preview.rs::render_decorated_body` reads this — alongside `App::md_diff_is_computing_
-    /// placeholder` for the `Rendered` case — to defer consuming `App::take_diff_scroll_pending`
-    /// (a follow jump's or a fresh diff open's "scroll to the first change" request) rather than
-    /// burning it against a frame drawn before the gutter's own marks exist yet (`docs/STATUS.md`
-    /// ★未修正 item 4): an ordinary preview's still-computing gutter builds a real, non-placeholder
-    /// `MdCache` (full width, simply with no marks), so `is_diff_computing_placeholder` alone
-    /// doesn't cover it.
+    /// `ui/preview.rs::render_decorated_body` reads this alone (pre-merge review of PR #21 found the
+    /// guard it used to sit alongside — `App::md_diff_is_computing_placeholder`, checking
+    /// `MdCache::is_diff_computing_placeholder` — strictly redundant here and removed it) to defer
+    /// consuming `App::take_diff_scroll_pending_for` (a follow jump's or a fresh diff open's "scroll
+    /// to the first change" request) rather than burning it against a frame drawn before the
+    /// gutter's own marks exist yet (`docs/STATUS.md` ★未修正 item 4).
+    ///
+    /// Covers both shapes the "still computing" frame can take: the `Rendered` presentation's own
+    /// placeholder body (`App::md_diff_computing_cache`) is built **only** when `poll_md_diff`
+    /// returns `None` for the current `(path, Rendered)`, which is exactly when this is `true` for
+    /// that path — so the old placeholder check could never observe anything this one didn't already
+    /// cover. An ordinary preview's still-computing *gutter*, by contrast, has no placeholder body at
+    /// all (`ensure_md_cache`'s `File` branch draws the real content immediately, simply without a
+    /// gutter column yet) — this check is the *only* thing that defers scroll consumption for that
+    /// case, which is why it can't be dropped in the other direction.
     pub(crate) fn md_diff_pending_for_current(&self) -> bool {
         let Some(path) = self.tab.preview_path.as_deref() else {
             return false;
@@ -577,6 +605,48 @@ mod tests {
             matches!(App::compute_md_diff(&r), MdDiffOutcome::Unavailable),
             "上限超の新版は Unavailable のはず"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// M11 (pre-merge review of PR #21): the *baseline's own* `FOLLOW_BASELINE_FILE_CAP` check
+    /// (`b.len() > FOLLOW_BASELINE_FILE_CAP`, right before the `String::from_utf8` in
+    /// `App::compute_md_diff`) is gated `req.kind == MdDiffKind::Rendered` only — `Gutter`'s old
+    /// side has **no such gate at all**, only the post-decode line cap (`cap_for_display`) applies
+    /// once it's already a valid `String`. Pins that this asymmetry is the current, deliberate
+    /// contract (not an accidental omission that should also reject a huge `Gutter` baseline
+    /// outright): a baseline well over the cap is `Unavailable` for `Rendered` but still `Ready` for
+    /// `Gutter`, given the identical bytes.
+    #[test]
+    fn baseline_file_cap_gates_rendered_only_not_gutter() {
+        let dir = unique_tmp("konoma_baseline_file_cap_kind_asymmetry");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.md");
+        std::fs::write(&path, "line\n".repeat(10)).unwrap();
+        // Comfortably over FOLLOW_BASELINE_FILE_CAP (5 MiB), valid UTF-8.
+        let big_old = "x".repeat(FOLLOW_BASELINE_FILE_CAP + 1);
+
+        let r_rendered = req(
+            path.clone(),
+            MdDiffKind::Rendered,
+            DiffBaseline::FollowSnapshot(big_old.clone().into_bytes()),
+        );
+        assert!(
+            matches!(
+                App::compute_md_diff(&r_rendered),
+                MdDiffOutcome::Unavailable
+            ),
+            "Rendered は旧版が上限超なら Unavailable のはず"
+        );
+
+        let r_gutter = req(
+            path,
+            MdDiffKind::Gutter,
+            DiffBaseline::FollowSnapshot(big_old.into_bytes()),
+        );
+        match App::compute_md_diff(&r_gutter) {
+            MdDiffOutcome::Ready { .. } => {} // Gutter has no file-size gate on the old side.
+            other => panic!("Gutter は旧版の上限を見ないので Ready のはず: {other:?}"),
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

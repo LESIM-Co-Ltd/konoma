@@ -318,21 +318,23 @@ impl App {
     ///
     /// Non-windowed decorated Markdown (not raw source) has no scroll position it can compute
     /// *here* — a wrapped visual row depends on the terminal width, which isn't known until the
-    /// next render actually measures it — so it defers instead: `tab.diff_scroll_pending` is set
-    /// and consumed by that next render once `App::ensure_md_cache` has built `MdCache::diff_marks`
-    /// at the real width (`ui/preview.rs::render_decorated`, `docs/FEATURE-MD-RENDERED-DIFF.md` §3's
-    /// own follow-scroll extension). A no-op (the flag is simply consumed to nothing) when the
-    /// document turns out to have no baseline/no changes to mark at all.
+    /// next render actually measures it — so it defers instead: `tab.diff_scroll_pending` is set to
+    /// `Some(path)` and consumed by that next render of **this exact path**
+    /// (`App::take_diff_scroll_pending_for`) once `App::ensure_md_cache` has built
+    /// `MdCache::diff_marks` at the real width (`ui/preview.rs::render_decorated`,
+    /// `docs/FEATURE-MD-RENDERED-DIFF.md` §3's own follow-scroll extension). A no-op (the
+    /// reservation is simply consumed to nothing) when the document turns out to have no baseline/no
+    /// changes to mark at all, or when the tab moves on to a different file before that render runs.
     pub(super) fn follow_scroll_to_first_change(&mut self) {
-        if !self.is_windowed() {
-            if self.is_decorated_kind() && !self.is_raw_source() {
-                self.tab.diff_scroll_pending = true;
-            }
-            return;
-        }
         let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
+        if !self.is_windowed() {
+            if self.is_decorated_kind() && !self.is_raw_source() {
+                self.tab.diff_scroll_pending = Some(path);
+            }
+            return;
+        }
         // Get the changed lines even with the gutter setting OFF (if ON, the same computation is cached in gutter_cache and reused for rendering).
         let marks = if self.cfg.ui.git_gutter {
             self.git_gutter_marks()

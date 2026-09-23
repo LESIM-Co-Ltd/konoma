@@ -17028,6 +17028,417 @@ fn md_diff_rendered_is_offloaded_to_a_worker_thread() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// M27 (pre-merge review of PR #21): `App::open_git_diff_with`'s `seeded_diff` exists purely for
+/// performance — the caller (`follow_jump`'s own `compute_gitdiff_lines`, `diff_jump_changed`'s
+/// `n`/`N`) already computed the unified diff and hands it over so `App::git_diff_lines()` (the
+/// render path's own accessor) doesn't invoke `vcs::file_diff` a second time the moment it's first
+/// read. Pinned with `count_file_diff_calls` rather than by comparing the *result* (identical either
+/// way — recomputing the same diff from the same working tree yields the same lines) since this
+/// guard is about avoided work, not correctness.
+#[cfg(feature = "git")]
+#[test]
+fn open_git_diff_with_seeded_diff_avoids_recomputing_it_on_first_read() {
+    let dir = unique_tmp("konoma_open_git_diff_seeded_avoids_recompute");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nOriginal.\n").unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, "# Title\n\nCHANGED.\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+
+    // Baseline: no seed at all — `git_diff_lines()` must compute it itself on first read (confirms
+    // the counter/setup actually observes a real call before trusting the "0 calls" assertion below).
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&doc); // DiffOpen::default() — no seeded_diff
+    let (_, unseeded_calls) = crate::test_support::count_file_diff_calls(|| {
+        app.git_diff_lines();
+    });
+    assert_eq!(
+        unseeded_calls, 1,
+        "シード無しでは初回読み出しで1回 file_diff が走るはず(前提の確認)"
+    );
+
+    // Seeded: the caller already has the lines in hand.
+    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    let lines = crate::vcs::file_diff(&dir, &doc);
+    app2.open_git_diff_with(
+        &doc,
+        super::git_view::DiffOpen {
+            seeded_diff: Some(DiffCache {
+                path: doc.clone(),
+                lines,
+            }),
+            ..Default::default()
+        },
+    );
+    let (_, seeded_calls) = crate::test_support::count_file_diff_calls(|| {
+        app2.git_diff_lines();
+    });
+    assert_eq!(
+        seeded_calls, 0,
+        "seeded_diff があれば初回読み出しで file_diff を再実行してはならない: {seeded_calls}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `App::apply_md_diff`'s "is this landed result actually about the `Rendered` presentation
+/// currently on screen" gate is three independent conditions (`res.kind == Rendered`, `on_screen`,
+/// `self.tab.diff_view == Rendered`) — each pinned in isolation below (M16/M17/M18, pre-merge review
+/// of PR #21) by constructing the `MdDiffResult` directly (bypassing `kick_md_diff`, whose single
+/// monotonic `gen` counter makes it impossible to produce a same-`gen` mismatch on `kind` through
+/// any real user flow — see each test's own doc comment) rather than through a full worker round
+/// trip. Not `#[cfg(feature = "git")]`: `apply_md_diff`/`DiffView` compile unconditionally.
+///
+/// M16: a landed `Rendered` result for a path that is no longer on screen (the tab moved on to
+/// something else in the meantime, with no new kick — same `gen`) must not touch the *current*
+/// screen's `diff_view`/`flash` at all, even though `kind`/`diff_view` both still say "Rendered".
+#[test]
+fn apply_md_diff_ignores_a_landed_result_for_a_path_no_longer_on_screen() {
+    let dir = unique_tmp("konoma_apply_md_diff_off_screen");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let doc = dir.join("doc.md");
+    let other = dir.join("other.md"); // whatever is actually on screen now
+    app.tab.preview_path = Some(other.clone());
+    app.tab.diff_view = DiffView::Rendered;
+    app.md_diff_gen = 7;
+    app.flash = None;
+    let res = MdDiffResult {
+        gen: 7,
+        path: doc,
+        kind: MdDiffKind::Rendered,
+        outcome: MdDiffOutcome::Unavailable,
+    };
+    assert!(
+        app.apply_md_diff(res),
+        "gen は一致しているので landed 自体は記録されるはず"
+    );
+    assert_eq!(
+        app.tab.diff_view,
+        DiffView::Rendered,
+        "画面上の other.md には無関係の結果のはず — Source へ丸められてはならない"
+    );
+    assert!(
+        app.flash.is_none(),
+        "画面上のファイルと無関係な結果でフラッシュを出してはならない: {:?}",
+        app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M17: a landed `Gutter`-kind result for the exact path/gen currently showing as `Rendered` must
+/// not be mistaken for a `Rendered` result — `kind` is checked independently of `gen`/`on_screen`.
+/// (In production this exact `gen` collision can't arise through `kick_md_diff`'s own monotonic
+/// counter — every kick bumps `gen` uniquely, so a matching `gen` always carries the kind that was
+/// actually kicked at that generation — but the check stands on its own as the function's contract:
+/// nothing about `MdDiffResult` intrinsically ties `kind` to `gen`, so `apply_md_diff` must not rely
+/// on that as an invariant it doesn't itself enforce.)
+#[test]
+fn apply_md_diff_ignores_a_landed_gutter_result_while_rendered_is_showing() {
+    let dir = unique_tmp("konoma_apply_md_diff_kind_mismatch");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let doc = dir.join("doc.md");
+    app.tab.preview_path = Some(doc.clone());
+    app.tab.diff_view = DiffView::Rendered;
+    app.md_diff_gen = 7;
+    app.flash = None;
+    let res = MdDiffResult {
+        gen: 7,
+        path: doc,
+        kind: MdDiffKind::Gutter,
+        outcome: MdDiffOutcome::Unavailable,
+    };
+    assert!(app.apply_md_diff(res));
+    assert_eq!(
+        app.tab.diff_view,
+        DiffView::Rendered,
+        "Gutter 種別の結果で Rendered の表現を変えてはならない"
+    );
+    assert!(
+        app.flash.is_none(),
+        "Gutter 種別の結果で Rendered 用のフラッシュを出してはならない: {:?}",
+        app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M18: a landed `Rendered` result for the exact path/gen, arriving *after* the user already left
+/// the `Rendered` presentation (`R`, before this result landed) for `Source`, must not resurrect any
+/// `Rendered`-only side effect (here: the front-matter-only flash) — `self.tab.diff_view ==
+/// Rendered` is checked independently of `kind`/`on_screen`.
+#[test]
+fn apply_md_diff_ignores_a_landed_rendered_result_after_leaving_rendered_for_source() {
+    let dir = unique_tmp("konoma_apply_md_diff_diff_view_mismatch");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let doc = dir.join("doc.md");
+    app.tab.preview_path = Some(doc.clone());
+    app.tab.diff_view = DiffView::Source; // already left Rendered by the time this result lands
+    app.md_diff_gen = 7;
+    app.flash = None;
+    let res = MdDiffResult {
+        gen: 7,
+        path: doc,
+        kind: MdDiffKind::Rendered,
+        outcome: MdDiffOutcome::Ready {
+            old_pre: String::new(),
+            new_pre: String::new(),
+            ops: Vec::new(),
+            any_change: false,
+            front_matter_only: true,
+        },
+    };
+    assert!(app.apply_md_diff(res));
+    assert_eq!(
+        app.tab.diff_view,
+        DiffView::Source,
+        "Source から離れていない(Rendered へ戻されてはならない)"
+    );
+    assert!(
+        app.flash.is_none(),
+        "Source 表示中は front-matter-only フラッシュを出してはならない: {:?}",
+        app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M5 (pre-merge review of PR #21): `App::md_diff_landed_for`'s `gen` check. `App::kick_md_diff`
+/// bumps `md_diff_gen` on every kick but never clears `md_diff_landed` itself — only
+/// `App::invalidate_md_diff`/`App::apply_md_diff`'s own overwrite do that — so a landed result can
+/// sit there describing a `gen` that is no longer current (some *other* kick, for a different
+/// path/kind, ran since). `poll_md_diff` must not resurface it as "ready" in that state; it must
+/// re-kick a fresh computation instead. Constructed directly (not through a full A→B→A worker round
+/// trip) since the observable effect — "was the stale landed value reused, or was a fresh
+/// computation run" — is the same either way and this isolates the one condition under test.
+#[test]
+fn poll_md_diff_does_not_reuse_a_landed_result_whose_gen_no_longer_matches() {
+    let dir = unique_tmp("konoma_poll_md_diff_stale_landed_gen");
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nHello.\n").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // A landed `Ready` result under an old generation.
+    app.md_diff_landed = Some((
+        doc.clone(),
+        MdDiffKind::Gutter,
+        3,
+        MdDiffOutcome::Ready {
+            old_pre: "old".into(),
+            new_pre: "new".into(),
+            ops: Vec::new(),
+            any_change: true,
+            front_matter_only: false,
+        },
+    ));
+    app.md_diff_gen = 4; // bumped since — the landed tuple above is now stale
+    app.md_diff_pending = None;
+
+    // No `md_diff_tx` attached: the re-kick this should trigger runs the synchronous fallback for
+    // real (against `doc`, which sits outside a repo — `Gutter` with no baseline lands
+    // `NoBaseline`, never `Ready`), applying immediately — so a single call proves both "the stale
+    // value wasn't reused" and "a fresh computation actually ran".
+    let outcome = app.poll_md_diff(&doc, MdDiffKind::Gutter);
+    assert!(
+        matches!(outcome, Some(MdDiffOutcome::NoBaseline)),
+        "gen 不一致の landed 結果を再利用せず、再計算(NoBaseline)されるはず: {outcome:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M6 (pre-merge review of PR #21): `App::md_diff_landed_for`'s `kind` check. A landed `Gutter`
+/// result, even at the *current* `gen`, must never be handed back for a `Rendered` request at the
+/// same path — `kind` is checked independently of `gen`/path.
+#[test]
+fn poll_md_diff_does_not_reuse_a_landed_gutter_result_for_a_rendered_request() {
+    let dir = unique_tmp("konoma_poll_md_diff_kind_mismatch_landed");
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nHello.\n").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.md_diff_gen = 5;
+    app.md_diff_landed = Some((
+        doc.clone(),
+        MdDiffKind::Gutter,
+        5, // matches the current gen
+        MdDiffOutcome::Ready {
+            old_pre: "old".into(),
+            new_pre: "new".into(),
+            ops: Vec::new(),
+            any_change: true,
+            front_matter_only: false,
+        },
+    ));
+    app.md_diff_pending = None;
+
+    // `doc` sits outside a repo, so a genuinely fresh `Rendered` computation lands `Ready` with an
+    // *empty* old side (§5's "no baseline = all added") — never the Gutter-flavored `old_pre` ("old")
+    // stashed above. That difference is what distinguishes "reused the wrong-kind landed result"
+    // from "ran a real computation" here.
+    let outcome = app.poll_md_diff(&doc, MdDiffKind::Rendered);
+    match outcome {
+        Some(MdDiffOutcome::Ready { old_pre, .. }) => assert_eq!(
+            old_pre, "",
+            "Gutter 用の landed 結果(old_pre=\"old\")を Rendered の要求に流用してはならない"
+        ),
+        other => panic!("Rendered は §5 により Ready(全 Insert) のはず: {other:?}"),
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M21 (pre-merge review of PR #21): `App::md_diff_pending_for_current`'s path comparison. A
+/// computation in flight for a *different* file must not block the current file's own "scroll to
+/// first change" reservation from being consumed (`ui/preview.rs::render_decorated_body`'s guard).
+#[test]
+fn md_diff_pending_for_current_is_false_when_the_pending_computation_is_for_a_different_path() {
+    let dir = unique_tmp("konoma_md_diff_pending_for_current_path_mismatch");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let a = dir.join("a.md");
+    let b = dir.join("b.md");
+    app.tab.preview_path = Some(a);
+    app.md_diff_pending = Some((b, MdDiffKind::Gutter));
+    assert!(
+        !app.md_diff_pending_for_current(),
+        "別ファイル(b.md)の計算中は a.md 自身の消費を止めてはならない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// M2 (pre-merge review of PR #21): `App::diff_baseline`'s `follow_scope_valid()` check. If the
+/// tab's root moves to a *different* repository while a follow session is still active — without
+/// going through `toggle_follow` again, which is the ordinary way this happens
+/// (`follow_root`'s own doc comment: tab switch, `l`/`h`, worktree switch, paste-jump, a bookmark
+/// jump, ...) — the block-diff worker must not keep comparing against the *old* repo's follow
+/// baseline: two repos (linked worktrees included) share nothing that guarantees a HEAD sha or a
+/// dirty-file snapshot means the same thing in the other one (`follow_baseline_contents`'s own doc
+/// comment names the identical bug class for its own, parallel check — `blob_at` under a linked
+/// worktree can *successfully* resolve against the wrong worktree's HEAD and produce a
+/// plausible-looking but wrong result).
+#[cfg(feature = "git")]
+#[test]
+fn diff_baseline_falls_back_to_vcs_when_the_tab_root_moved_to_a_different_repo() {
+    let dir_a = unique_tmp("konoma_diff_baseline_scope_repo_a");
+    let dir_b = unique_tmp("konoma_diff_baseline_scope_repo_b");
+    let _ = std::fs::remove_dir_all(&dir_a);
+    let _ = std::fs::remove_dir_all(&dir_b);
+    std::fs::create_dir_all(&dir_a).unwrap();
+    std::fs::create_dir_all(&dir_b).unwrap();
+    init_git_repo(&dir_a);
+    init_git_repo(&dir_b);
+    let sh = |dir: &Path, args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    std::fs::write(dir_a.join("doc.md"), "# A\n\nOriginal A.\n").unwrap();
+    sh(&dir_a, &["add", "-A"]);
+    sh(&dir_a, &["commit", "-q", "-m", "init a"]);
+    // Dirty at follow-start in repo A — this is exactly the case that would resolve to a
+    // `FollowSnapshot`/`FollowHead` baseline if `follow_scope_valid()` didn't stop it.
+    std::fs::write(
+        dir_a.join("doc.md"),
+        "# A\n\nCHANGED A (dirty at follow-start).\n",
+    )
+    .unwrap();
+
+    std::fs::write(dir_b.join("doc.md"), "# B\n\nOriginal B.\n").unwrap();
+    sh(&dir_b, &["add", "-A"]);
+    sh(&dir_b, &["commit", "-q", "-m", "init b"]);
+
+    let dir_a = dir_a.canonicalize().unwrap();
+    let dir_b = dir_b.canonicalize().unwrap();
+
+    let mut app = App::new(dir_a.clone(), Config::default()).unwrap();
+    app.toggle_follow(); // captures a real follow_baseline scoped to dir_a
+                         // `diff_follow_scope` is what a follow-originated diff actually sets
+                         // (`follow_jump`'s own `DiffOpen{follow_scope: true, ..}`) — `toggle_follow` alone doesn't
+                         // touch it, so it has to be set here to simulate "currently showing a follow-scoped diff".
+    app.diff_follow_scope = true;
+
+    // Simulate the root moving to a different repo without going through `toggle_follow` again —
+    // exactly the window `follow_root`'s own doc comment describes.
+    app.tab.root = dir_b.clone();
+
+    let baseline =
+        app.diff_baseline_for_test(&dir_b.join("doc.md"), crate::app::MdDiffKind::Rendered);
+    assert!(
+        matches!(baseline, crate::app::DiffBaseline::Vcs),
+        "root が repo B へ移った後は repo A のフォローベースラインを使ってはならない(Vcs へ)"
+    );
+    std::fs::remove_dir_all(&dir_a).ok();
+    std::fs::remove_dir_all(&dir_b).ok();
+}
+
+/// M4 (pre-merge review of PR #21): `App::diff_baseline`'s handling of a file that was **dirty at
+/// follow-start but too large to snapshot** (`FollowBaseline::dirty` records `Some(None)` for it —
+/// `App::capture_follow_baseline`'s own size-cap check). The doc comment right there is explicit
+/// about the intent: this maps to `DiffBaseline::Empty` ("no baseline" — §5's "旧版が無い" rule),
+/// **not** a fallback to the pinned HEAD blob (the `None` dirty-map branch) and not `Unavailable`.
+/// Reading that intent is what this test pins: a `Gutter`-kind lookup on the same key must *not*
+/// silently fall through to `base.head` and compare against the wrong (pre-existing) baseline —
+/// only the file's own genuinely-new content (§5's "全ブロック Insert", pinned separately in
+/// `md_diff.rs`'s own `rendered_kind_with_no_baseline_is_ready_all_added`) should ever result.
+///
+/// This is a deliberately different contract from the *unified line-diff* path
+/// (`App::follow_baseline_diff`): that one falls back to the **full** git diff against HEAD in the
+/// identical situation (`follow_baseline_contents` returns `None` for `Some(None)` too, so
+/// `App::compute_gitdiff_lines` falls through to `vcs::file_diff`) — the two presentations
+/// (`Rendered`'s block-diff vs. the diff's `Source`/the "should I even open a diff" decision)
+/// intentionally do not agree on what "no snapshot was taken" means for a file this large. Recorded
+/// here rather than "fixed" to match, since the block-diff's own doc comment is explicit that this
+/// is the design, not an oversight.
+#[cfg(feature = "git")]
+#[test]
+fn diff_baseline_maps_dirty_too_large_to_snapshot_to_empty_not_head() {
+    let dir = unique_tmp("konoma_diff_baseline_dirty_too_large_to_snapshot");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nCommitted.\n").unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.diff_follow_scope = true;
+    app.follow_root = Some(dir.clone());
+    let mut dirty = std::collections::HashMap::new();
+    dirty.insert(doc.clone(), None); // dirty at follow-start, too large to snapshot
+    app.follow_baseline = Some(FollowBaseline {
+        dirty,
+        head: crate::git::head_commit_id(&dir), // present — this must NOT be what gets used
+    });
+
+    let baseline = app.diff_baseline_for_test(&doc, crate::app::MdDiffKind::Rendered);
+    assert!(
+        matches!(baseline, crate::app::DiffBaseline::Empty),
+        "dirty-but-too-large は Empty のはず(HEAD blob へフォールバックしてはならない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// End-to-end pin for the "Rendered renders ~4x more than the ordinary preview" regression
 /// (`docs/FEATURE-MD-RENDERED-DIFF.md`'s own investigation history): a document past
 /// `preview::text::MAX_LINES` (5,000), **committed byte-identical** (HEAD == working copy, so every

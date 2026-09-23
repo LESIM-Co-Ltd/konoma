@@ -658,16 +658,24 @@ fn render_decorated_body(
     // requested a scroll to its first change-gutter mark (`docs/FEATURE-MD-RENDERED-DIFF.md` §2/§3)
     // but couldn't compute the display row itself at jump time (it depends on this very width) —
     // the cache above now has one, so this is the first draw where it's actually knowable. A no-op
-    // when there is no mark to scroll to (the flag is simply consumed to nothing).
+    // when there is no mark to scroll to, or when the reservation isn't for the path on screen right
+    // now (the reservation is simply consumed to nothing either way — `take_diff_scroll_pending_for`).
     //
     // Skipped entirely while the block-diff behind this cache is still computing on a separate
-    // thread (`docs/STATUS.md` ★未修正 item 4) — the `Rendered` presentation's "computing…"
-    // placeholder has no marks by construction, and an ordinary preview's still-computing gutter
-    // draws a real (non-placeholder) cache with no marks yet either way. Consuming the request
-    // against either here would lose it for the *real* frame that lands once the worker finishes.
-    if !app.md_diff_is_computing_placeholder()
-        && !app.md_diff_pending_for_current()
-        && app.take_diff_scroll_pending()
+    // thread (`docs/STATUS.md` ★未修正 item 4) — `App::md_diff_pending_for_current` alone covers
+    // both shapes that takes (its own doc comment has the detail): the `Rendered` presentation's
+    // "computing…" placeholder body only ever exists exactly when this is `true` for the on-screen
+    // path, and an ordinary preview's still-computing gutter has no placeholder at all, so this is
+    // the only signal for it. A second, narrower placeholder-only check used to sit alongside this
+    // one; pre-merge review of PR #21 found it could never be `true` without this one also being
+    // `true`, so it was dropped as redundant. Consuming the request while either kind is still
+    // computing would lose it for the *real* frame that lands once the worker finishes.
+    if !app.md_diff_pending_for_current()
+        && app
+            .tab
+            .preview_path
+            .clone()
+            .is_some_and(|p| app.take_diff_scroll_pending_for(&p))
     {
         if let Some(row) = app.md_first_diff_mark_row() {
             app.scroll_preview_to_row_with_context(row);

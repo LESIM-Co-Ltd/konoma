@@ -35,6 +35,8 @@ presentations, cycled with `R` (`[ui] diff_view`, default `rendered`):
 
 `R` cycles between whichever presentations the file being diffed actually has: all 3 for Markdown,
 `source ⇄ preview` for any other text file, none for a non-text file (no hint is shown for those).
+For a file over 5,000 lines or 1 MiB, `rendered`/`preview` stop at the same position an ordinary
+preview would — switch to `source` (`R`) to see changes past that point.
 
 - `s` cycles the `source` layout: unified (vertical) → split (side by side) → auto.
 - `n` / `N` jump straight to the next/previous changed file's diff without

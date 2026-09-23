@@ -348,7 +348,6 @@ impl App {
             preview_gutter_marks,
             diff_marks,
             source: cache_source,
-            is_diff_computing_placeholder: false,
         });
     }
 
@@ -407,7 +406,6 @@ impl App {
             preview_gutter_marks: Vec::new(),
             diff_marks: Vec::new(),
             source: MdCacheSource::Diff,
-            is_diff_computing_placeholder: true,
         }
     }
 
@@ -438,7 +436,7 @@ impl App {
 
     /// The current decorated Markdown cache's first change-gutter mark, as a **visual** (post-wrap)
     /// display row — where `ui/preview.rs`'s shared decorated-preview body scrolls to on the first
-    /// draw after `App::take_diff_scroll_pending` returns `true` (either a follow jump into a
+    /// draw after `App::take_diff_scroll_pending_for` returns `true` (either a follow jump into a
     /// decorated Markdown document, §3, or a fresh `Rendered` diff open/cycle, §2 — whichever kind
     /// of mark the current cache actually carries, `MdCache::source` says which). Must be called
     /// after `md_layout`/`ensure_md_cache` has already built the cache for the current width
@@ -463,16 +461,6 @@ impl App {
         self.md_cache
             .as_ref()
             .is_some_and(|c| !c.diff_marks.is_empty() || !c.preview_gutter_marks.is_empty())
-    }
-
-    /// Whether the current decorated Markdown cache is the `Rendered` presentation's "computing…"
-    /// placeholder (`App::md_diff_computing_cache`) rather than a real render — see
-    /// `MdCache::is_diff_computing_placeholder`'s own doc comment for why `ui/preview.rs` needs to
-    /// ask this before consuming `App::take_diff_scroll_pending`.
-    pub(crate) fn md_diff_is_computing_placeholder(&self) -> bool {
-        self.md_cache
-            .as_ref()
-            .is_some_and(|c| c.is_diff_computing_placeholder)
     }
 
     /// The default open state of a `<details>` block from `ui.md_details` and its `open` attribute

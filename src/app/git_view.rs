@@ -589,6 +589,10 @@ impl App {
         self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;
         self.tab.preview_top_line = 0;
+        // A fresh open: drop any leftover "scroll to first change" reservation before deciding, at
+        // the bottom of this fn, whether to arm a new one for `path` — mirrors `App::enter_preview`'s
+        // own up-front clear (`diff_scroll_pending`'s own doc comment).
+        self.tab.diff_scroll_pending = None;
         self.preview_win = None;
         self.win_cache = None;
         self.preview_total_lines = None;
@@ -610,17 +614,22 @@ impl App {
         // The presentation: a fresh open (`open.view == None`) starts from `[ui] diff_view` rounded
         // to what `path` can actually show (`default_diff_view_for`); a carried-over one (`n`/`N`,
         // the `Preview` return) is rounded the same way instead of trusting the caller already did
-        // it against the *new* target. `apply_diff_view` (not a direct assignment) is what validates/
-        // rounds `Rendered` down to `Source` with a flash when it isn't actually readable, and
-        // flashes (while staying `Rendered`) when there's nothing to mark — and by now every input
-        // it reads (`diff_follow_scope` above, the seeded cache above) is already final, so this is
-        // the only time it needs to run.
+        // it against the *new* target. `apply_diff_view` (not a direct assignment) is used, not
+        // because it validates anything itself — for `Rendered` it only **kicks** the block-diff
+        // computation (`App::poll_md_diff`) so it's already in flight by the time the first frame
+        // draws — but so every `Rendered` open goes through the one place that does that kick. The
+        // actual rounding-down to `Source` (if the result lands `Unavailable`) or the "nothing to
+        // mark but front matter" flash happens later, once the worker's result actually lands
+        // (`App::apply_md_diff`, run from the event loop, never from here or the render path) — by
+        // which point every input `apply_diff_view` reads here (`diff_follow_scope` above, the seeded
+        // cache above) is already stale history, not something this fn needs to wait on.
         let view = match open.view {
             Some(v) => self.round_diff_view(v, path),
             None => self.default_diff_view_for(path),
         };
         self.apply_diff_view(view, path);
-        self.tab.diff_scroll_pending = self.tab.diff_view == DiffView::Rendered;
+        self.tab.diff_scroll_pending =
+            (self.tab.diff_view == DiffView::Rendered).then(|| path.to_path_buf());
         // Leaving whatever *other* preview this tab may have been showing (including the diff's own
         // `Preview` representation, if `R`/`n`/`N` reached here from it) — this is a fresh open of
         // the diff surface, not a continuation of that preview.

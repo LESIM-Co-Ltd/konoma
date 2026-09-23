@@ -434,6 +434,8 @@ pub fn worktree_origin(root: &Path) -> Option<String> {
 
 /// See [`Vcs::file_diff`].
 pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
+    #[cfg(test)]
+    crate::test_support::note_file_diff_call();
     backend_for(root).file_diff(root, file)
 }
 

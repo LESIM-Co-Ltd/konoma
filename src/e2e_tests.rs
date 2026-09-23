@@ -2891,6 +2891,81 @@ fn e2e_stale_md_diff_result_is_discarded_when_superseded_before_landing() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// M8 (pre-merge review of PR #21): `App::kick_md_diff`'s own `md_diff_gen` bump, isolated from
+/// `App::invalidate_md_diff`'s — the test above only exercises staleness through *that* one, since
+/// re-opening a diff always goes through `App::invalidate_diff_caches` first. Here, two kicks for
+/// the *same path* happen with **no** `invalidate_diff_caches`/`invalidate_md_diff` call between
+/// them at all: `R` from the diff's `Rendered` presentation into its `Preview` representation
+/// (`App::enter_diff_preview_representation`) neither invalidates nor touches `md_diff_pending`, and
+/// the very next render then kicks a **different-kind** request (`Gutter`) for the identical file.
+/// The earlier (`Rendered`) request's eventual result must still be staled out once it lands after
+/// the later one already has — proving `kick_md_diff`'s own bump, not just `invalidate_md_diff`'s,
+/// is what keeps this safe.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_stale_md_diff_result_is_discarded_when_a_later_kick_never_went_through_invalidate() {
+    let dir = sandbox("md_diff_stale_kick_without_invalidate");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir)).with_async_md_diff(); // git_gutter on (default) — needed below
+    s.select("doc.md");
+    s.enter();
+    // `s.enter()`'s own draw already kicked doc.md's ordinary-preview Gutter request (git_gutter is
+    // on) — drain it now so the channel only ever holds the *two* kicks under test below, not a
+    // third, unrelated one from this incidental first entry.
+    s.drain_md_diff();
+    let path = s.app.tab.preview_path.clone().expect("プレビュー中のはず");
+
+    // Opens the diff (`Rendered` — kicks a `Rendered` request, gen=g1). The *only*
+    // `invalidate_diff_caches` call in this whole test happens here, before either kick under test.
+    s.app.open_git_diff(&path);
+    assert_eq!(s.app.diff_view_for_test(), crate::app::DiffView::Rendered);
+    assert!(
+        s.app.md_diff_pending_for_current(),
+        "1回目(Rendered)の計算が進行中のはず"
+    );
+
+    // `R`: Rendered → the diff's own `Preview` representation. `enter_diff_preview_representation`
+    // calls `App::enter_preview` (no `invalidate_diff_caches`/`invalidate_md_diff` anywhere in it)
+    // and `follow_scroll_to_first_change` — neither touches `md_diff_gen`/`md_diff_pending`.
+    s.key('R');
+    assert!(
+        !s.app.is_git_diff_preview(),
+        "Preview 表現(通常プレビュー)へ移っているはず"
+    );
+    // The draw inside `s.key('R')` already ran `ensure_md_cache` for the ordinary preview, which —
+    // git_gutter is on — kicks a **second**, `Gutter`-kind request for the identical path (gen=g2),
+    // with no invalidate ever having run between this kick and the first one.
+    assert!(
+        s.app.md_diff_pending_for_current(),
+        "2回目(Gutter)の計算が進行中のはず"
+    );
+
+    // Drain both worker results (order not guaranteed — see the test above's own comment).
+    let a = s
+        .md_diff_rx
+        .as_ref()
+        .unwrap()
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("1件目のワーカー結果");
+    let b = s
+        .md_diff_rx
+        .as_ref()
+        .unwrap()
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("2件目のワーカー結果");
+    let a_applied = s.app.apply_md_diff(a);
+    let b_applied = s.app.apply_md_diff(b);
+    assert!(
+        a_applied != b_applied,
+        "invalidate を挟まない2件のうち、ちょうど1件(現世代)だけが適用されるはず: \
+         a={a_applied} b={b_applied}"
+    );
+    s.draw();
+    let marks = s.app.md_diff_marks_for_test().unwrap_or_default();
+    assert!(!marks.is_empty(), "現世代(Gutter)の印があるはず: {marks:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A follow-session diff (`F` then jump into a changed file) computes its block-diff against the
 /// **follow-session baseline** (snapshot or pinned HEAD, `App::diff_baseline`'s `FollowSnapshot`/
 /// `FollowHead` branches), not the backend's committed blob — on the real background path, so this
@@ -3015,6 +3090,179 @@ fn e2e_md_preview_gutter_marks_are_empty_when_disabled() {
     s.enter();
     let marks = s.app.md_diff_marks_for_test().unwrap_or_default();
     assert!(marks.is_empty(), "git_gutter オフでは印を付けない");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Real-bug regression (pre-merge review of PR #21): a "scroll to the first change" reservation
+/// (`PerTab::diff_scroll_pending`) armed while opening a `Rendered` diff must never survive to
+/// scroll a *later, wholly unrelated* Markdown preview in the same tab once its own block-diff
+/// worker result lands — even though nothing asked for that scroll at all. The old, bare-`bool`
+/// version couldn't tell "still pending for the file I armed it for" apart from "pending for
+/// whatever's on screen now": `App::apply_md_diff`'s `Unavailable` branch rounded `Rendered` down
+/// to `Source` (which draws through a wholly different renderer that never consumes the flag) but
+/// never cleared it, so it sat there until *some* later frame's `render_decorated_body` happened to
+/// satisfy the unrelated `!App::md_diff_pending_for_current()` guard and consumed it against
+/// whatever Markdown document was on screen by then.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_stale_diff_scroll_reservation_does_not_scroll_an_unrelated_later_preview() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_scroll_pending_leak");
+    seed_repo_markdown(&dir); // doc.md/plain.txt/new.md, doc.md carries a real change
+    let dir = canon(&dir);
+    // A second Markdown file with its own committed baseline + a real, uncommitted change — the
+    // "later, unrelated Markdown preview" the stray reservation must never scroll. Padded with
+    // enough unchanged filler above the changed paragraph that a wrongful scroll (landing well past
+    // row 3, `scroll_preview_to_row_with_context`'s own context margin) is unambiguous — a mark near
+    // the very top would round back down to `preview_scroll == 0` either way and the assertion below
+    // would pass for the wrong reason.
+    let filler: String = (0..40)
+        .map(|i| format!("Filler paragraph {i}.\n\n"))
+        .collect();
+    std::fs::write(
+        dir.join("other.md"),
+        format!("# Other\n\n{filler}Original other paragraph.\n"),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "add other.md"]);
+    std::fs::write(
+        dir.join("other.md"),
+        format!("# Other\n\n{filler}CHANGED other paragraph.\n"),
+    )
+    .unwrap();
+
+    // doc.md: corrupt the *current* content to invalid UTF-8, so the block-diff worker lands
+    // `Unavailable` for its `Rendered` presentation (`App::compute_md_diff`'s `String::from_utf8`
+    // failure branch) — the exact scenario that used to leave the reservation dangling.
+    std::fs::write(dir.join("doc.md"), [0xffu8, 0xfe, b'#', b' ', b'x']).unwrap();
+
+    let mut s = Sim::new(&dir).with_async_md_diff();
+    let doc = dir.join("doc.md");
+    s.app.open_git_diff(&doc);
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "結果が届くまでは楽観的に Rendered のまま(まだ届いていない)"
+    );
+    s.drain_md_diff();
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Source,
+        "非 UTF-8 の現版は Unavailable → Source へ丸められるはず"
+    );
+
+    // In the *same tab*, open a wholly unrelated Markdown file's ordinary preview — no key press
+    // ever asked for a scroll here. `q` from the `Source` diff returns to the tree first (this diff
+    // was tree-originated, so `came_from_git_view` is `false`).
+    s.key('q');
+    assert_eq!(s.app.tab.mode, Mode::Tree, "diff から q でツリーへ戻るはず");
+    s.select("other.md");
+    s.enter();
+    assert_eq!(
+        s.app.tab.preview_scroll, 0,
+        "other.md を開いた直後(まだ計算中)はスクロールしていないはず"
+    );
+    s.drain_md_diff(); // other.md's own Gutter block-diff result lands
+    let marks = s.app.md_diff_marks_for_test().unwrap_or_default();
+    assert!(
+        !marks.is_empty(),
+        "other.md 自身には実変更があり印が付くはず: {marks:?}"
+    );
+    assert_eq!(
+        s.app.tab.preview_scroll, 0,
+        "doc.md の diff 用に予約されたスクロールが、無関係な other.md の \
+         プレビューへ横流しされてはならない(実バグ: 予約に対象が無かった)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The same leak, via `follow.rs`'s own reservation (`[ui] follow_view = "file"`): a follow jump
+/// arms a reservation for the followed file, but the user (not follow) pages on to a *different*,
+/// unrelated file (`Ctrl-n`, `App::preview_jump_file`) before that reservation was ever consumed —
+/// the reservation must not survive to scroll the unrelated file once *its* own gutter lands.
+///
+/// A **second** `follow_jump` deliberately isn't used here to reach the second file: unlike an
+/// ordinary preview transition, `follow_jump` itself re-arms a brand new (legitimate) reservation
+/// for whatever file it jumps to (`follow_scroll_to_first_change`, called again) — scrolling there
+/// on arrival is the intended behavior, not a leak, so it can't tell a fixed leak apart from a
+/// still-broken one. `Ctrl-n` file paging is an ordinary preview transition with no scroll request
+/// of its own, matching the diff version of this regression above.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_file_view_scroll_reservation_does_not_leak_to_a_later_unrelated_preview() {
+    let dir = sandbox("follow_file_scroll_leak");
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    run(&["init", "-q", "."]);
+    run(&["config", "user.email", "t@t"]);
+    run(&["config", "user.name", "t"]);
+    // b.md's changed paragraph sits well below the top (padded with unchanged filler) so a
+    // wrongful scroll onto it is unambiguous — a mark near row 0-3 would round back down to
+    // `preview_scroll == 0` via `scroll_preview_to_row_with_context`'s own context margin either
+    // way, making the final assertion pass for the wrong reason.
+    let filler: String = (0..40)
+        .map(|i| format!("Filler paragraph {i}.\n\n"))
+        .collect();
+    std::fs::write(dir.join("a.md"), "# A\n\nOriginal A.\n").unwrap();
+    std::fs::write(dir.join("b.md"), format!("# B\n\n{filler}Original B.\n")).unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "init"]);
+    std::fs::write(dir.join("a.md"), "# A\n\nCHANGED A.\n").unwrap();
+    std::fs::write(dir.join("b.md"), format!("# B\n\n{filler}CHANGED B.\n")).unwrap();
+
+    let dir = canon(&dir);
+    let mut cfg = Config::default();
+    cfg.ui.follow_view = "file".into();
+    let mut s = Sim::with_config(&dir, cfg).with_async_md_diff();
+    s.key('F'); // follow on
+
+    // Jump into a.md — `follow_scroll_to_first_change` arms a reservation for a.md. Nothing has
+    // drawn since the jump itself (which doesn't draw on its own), so a.md's own block-diff was
+    // never even kicked, let alone landed.
+    s.app.follow_jump(&dir.join("a.md"));
+    assert_eq!(
+        s.app.tab.preview_path.as_deref(),
+        Some(dir.join("a.md").as_path())
+    );
+
+    // The user pages on to b.md (`Ctrl-n`, tree order: a.md then b.md) before a.md's reservation
+    // was ever consumed — `App::enter_preview` (called from `App::preview_jump_file`) must drop it.
+    s.ctrl('n');
+    assert_eq!(
+        s.app.tab.preview_path.as_deref(),
+        Some(dir.join("b.md").as_path()),
+        "Ctrl-n で b.md へ移っているはず"
+    );
+    assert_eq!(
+        s.app.tab.preview_scroll, 0,
+        "b.md を開いた直後(まだ計算中)はスクロールしていないはず"
+    );
+
+    s.drain_md_diff(); // b.md's own Gutter block-diff result lands (kicked by the draw inside Ctrl-n)
+    let marks = s.app.md_diff_marks_for_test().unwrap_or_default();
+    assert!(
+        !marks.is_empty(),
+        "b.md 自身には実変更があり印が付くはず: {marks:?}"
+    );
+    assert_eq!(
+        s.app.tab.preview_scroll, 0,
+        "a.md 用に予約されたスクロールが b.md へ横流しされてはならない"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
