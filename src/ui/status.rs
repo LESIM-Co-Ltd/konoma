@@ -1368,6 +1368,79 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Test-hole coverage, jj side: `diff_footer_hscroll_hint_matches_wrap_setting_for_rendered`
+    /// (above) only ever exercised a git backend. jj is konoma's other backend and — unlike git —
+    /// cannot write (`diff_footer_hides_discard_for_read_only_backend_shows_for_git`'s own
+    /// contrast), so this pins that the `h/l` wrap-gate is independent of write capability: the
+    /// `Rendered` presentation's wrap-aware layout works identically on a read-only backend.
+    #[cfg(feature = "git")]
+    #[test]
+    fn diff_footer_hscroll_hint_matches_wrap_setting_for_rendered_under_jj() {
+        fn jj_scratch_md(name: &str) -> Option<std::path::PathBuf> {
+            if !crate::vcs::jj::available() {
+                return None;
+            }
+            let dir = unique_tmp(name);
+            std::fs::create_dir_all(&dir).ok()?;
+            let jj = |args: &[&str]| {
+                std::process::Command::new("jj")
+                    .current_dir(&dir)
+                    .env("HOME", &dir) // never touch the running machine's own jj config
+                    .env("JJ_USER", "konoma test")
+                    .env("JJ_EMAIL", "test@example.invalid")
+                    .args(args)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false)
+            };
+            if !jj(&["git", "init", "--no-colocate", "."]) {
+                return None;
+            }
+            std::fs::write(dir.join("doc.md"), b"# Title\n\noriginal\n").ok()?;
+            if !jj(&["commit", "-m", "seed"]) {
+                return None;
+            }
+            std::fs::write(dir.join("doc.md"), b"# Title\n\nchanged\n").ok()?;
+            Some(dir)
+        }
+        let Some(dir) = jj_scratch_md("konoma_status_jj_diff_rendered_wrap_footer") else {
+            return;
+        };
+
+        // `[ui] wrap = true` (default): no `h/l` hint at all in the Rendered footer.
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        app.open_git_diff(&dir.join("doc.md"));
+        assert_eq!(app.diff_view_for_test(), crate::app::DiffView::Rendered);
+        let footer: String = footer_spans(&app, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            !footer.contains("h/l"),
+            "wrap=true では横スクロールは no-op のはず: {footer}"
+        );
+
+        // `[ui] wrap = false`: horizontal scroll is meaningful again, so the hint returns.
+        let mut cfg = Config::default();
+        cfg.ui.wrap = false;
+        let mut app_nowrap = App::new(dir.clone(), cfg).unwrap();
+        app_nowrap.open_git_diff(&dir.join("doc.md"));
+        assert_eq!(
+            app_nowrap.diff_view_for_test(),
+            crate::app::DiffView::Rendered
+        );
+        let footer_nowrap: String = footer_spans(&app_nowrap, 200)
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            footer_nowrap.contains("h/l"),
+            "wrap=false では h/l:hscroll が出るはず: {footer_nowrap}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// (status.rs item 2, diff) The GitDiff footer hides the discard key for a read-only backend
     /// (`Msg::DiffScrollNoDiscardHint`) and shows it for git (`Msg::DiffScrollDiscardHint`). Uses
     /// `open_git_diff` directly with a path that need not actually exist — the footer only reads

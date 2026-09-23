@@ -94,11 +94,16 @@ impl App {
     /// of whatever happens to be on screen (`refresh_fs_inner`'s own "hot path" doc comment); a
     /// blanket clear here would have silently defeated that (confirmed: broke
     /// `app::tests::preview_reloads_only_for_relevant_fs_changes` when first tried).
+    ///
+    /// Also drops `diff_rendered_sources_cache` (`App::diff_rendered_sources`'s own memo) — every
+    /// input that cache reads changes only at one of this fn's own call sites, so it goes stale at
+    /// exactly the same moments the caches above do.
     pub(super) fn invalidate_diff_caches(&mut self) {
         self.diff_cache = None;
         if matches!(&self.md_cache, Some(c) if c.source == MdCacheSource::Diff) {
             self.md_cache = None;
         }
+        self.diff_rendered_sources_cache = None;
     }
 
     /// How many of the three presentations (`docs/FEATURE-MD-RENDERED-DIFF.md` §1) `path`'s diff
@@ -230,6 +235,24 @@ impl App {
         })
     }
 
+    /// `R`'s **description** for the `?` help row in `Surface::PreviewGitDiff` — unlike
+    /// `diff_view_cycle_hint` (the footer's "which state R goes to next" label), this names the
+    /// whole cycle `R` walks through, gated by the identical `diff_representation_count` predicate
+    /// so the row disappears in exactly the same case the footer already hides its own hint
+    /// ([[hint-shown-iff-key-acts]]): `None` for a target with only one representation (nothing for
+    /// `R` to do), `DiffViewCycleHelpPair` ("source ⇄ preview") for a target with two, and
+    /// `DiffViewCycleHelp` ("source → rendered → preview") for Markdown's three.
+    pub fn diff_view_help_hint(&self) -> Option<crate::i18n::Msg> {
+        let PreviewKind::GitDiff(path) = self.tab.preview_kind.as_ref()? else {
+            return None;
+        };
+        match self.diff_representation_count(path) {
+            0 | 1 => None,
+            2 => Some(crate::i18n::Msg::DiffViewCycleHelpPair),
+            _ => Some(crate::i18n::Msg::DiffViewCycleHelp),
+        }
+    }
+
     /// `R` in `Surface::PreviewText`/`PreviewImage` while `preview_from_diff` is set: instead of the
     /// ordinary raw-source toggle, returns to the diff's own `Source` presentation
     /// (`docs/FEATURE-MD-RENDERED-DIFF.md` §4's "`R`＝Source の diff に戻る") — the counterpart to
@@ -277,23 +300,26 @@ impl App {
 
     /// The reverse of `enter_diff_preview_representation`: `R` from the `Preview` representation
     /// back to the diff's own `Source` (not whatever `[ui] diff_view` configures — the design's own
-    /// explicit choice: "`R`＝Source の diff に戻る", not a fresh open). Reuses `open_git_diff` for
-    /// every other bit of state it resets (the windowed reader, `md_cache`, the raw-diff cache, ...)
-    /// and overrides just the two fields that call would otherwise get wrong: the presentation
-    /// (`Source`, not the config default) and `came_from_git_view`/`diff_follow_scope` (which
-    /// `open_git_diff` always resets — preserved here exactly like `diff_jump_changed` already
-    /// preserves them around its own `open_git_diff` call, for the identical reason: this is a
-    /// *return*, not a fresh open).
+    /// explicit choice: "`R`＝Source の diff に戻る", not a fresh open). Reuses `open_git_diff_with`
+    /// for every other bit of state it resets (the windowed reader, `md_cache`, the raw-diff cache,
+    /// ...) and overrides just the fields that a fresh open would otherwise get wrong: the
+    /// presentation (`Source`, not the config default) and `came_from_git_view`/`diff_follow_scope`
+    /// (which a fresh open always resets to their own rules — carried over here instead, for the
+    /// same reason `diff_jump_changed` carries them over around its own call: this is a *return*,
+    /// not a fresh open).
     #[cfg(feature = "git")]
     fn return_to_diff_from_preview(&mut self) {
         let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
-        let came_from_git_view = self.tab.came_from_git_view;
-        let diff_follow_scope = self.diff_follow_scope;
-        self.open_git_diff(&path);
-        self.tab.diff_view = DiffView::Source;
-        self.tab.came_from_git_view = came_from_git_view;
-        self.diff_follow_scope = diff_follow_scope;
+        self.open_git_diff_with(
+            &path,
+            super::git_view::DiffOpen {
+                follow_scope: self.diff_follow_scope,
+                view: Some(DiffView::Source),
+                came_from_git_view: Some(self.tab.came_from_git_view),
+                ..Default::default()
+            },
+        );
     }
 }

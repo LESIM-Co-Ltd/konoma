@@ -1172,6 +1172,18 @@ pub struct App {
     diff_cache: Option<DiffCache>,
     gutter_cache: Option<GutterCache>,
 
+    /// Cached result of `App::diff_rendered_sources` (old/new text, already pre-processed), keyed
+    /// by path only. `App::apply_diff_view`'s validation and `App::ensure_md_cache`'s own build of
+    /// the `Rendered` presentation both need this for the identical path moments apart (deciding the
+    /// presentation, then actually rendering it) — without this they each independently re-read the
+    /// file and re-invoke the backend (`vcs::base_contents` / `follow_baseline_contents`, a
+    /// subprocess under jj) to reach the same answer. Invalidated alongside `diff_cache`/`md_cache`
+    /// wherever `App::invalidate_diff_caches` already runs (a fresh file's diff opened, the working
+    /// tree changed, a follow session (re)started, the `f` scope toggle, ...) — every input this
+    /// reads (`diff_follow_scope`, `follow_diff_full`, the file's own bytes, the baseline) only ever
+    /// changes at one of those points.
+    diff_rendered_sources_cache: Option<(PathBuf, Option<(String, String)>)>,
+
     /// Interactive items in the Markdown preview (links + task checkboxes, collected on each render).
     /// Focus with Tab/⇧Tab; Enter opens a link / toggles a checkbox, Space toggles a checkbox.
     md_items: Vec<MdItem>,
@@ -2701,6 +2713,7 @@ impl App {
             md_cache: None,
             diff_cache: None,
             gutter_cache: None,
+            diff_rendered_sources_cache: None,
             md_items: Vec::new(),
             details_open: std::collections::HashMap::new(),
             table_search_hits: std::collections::HashSet::new(),

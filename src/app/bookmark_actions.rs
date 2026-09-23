@@ -1,5 +1,6 @@
 //! Bookmarks: set/jump leader state and the bookmark-list overlay — methods on `App`.
 
+use super::git_view::DiffOpen;
 use super::*;
 
 /// What one coalesced filesystem-event burst did, beyond the list of paths it touched. Accumulated
@@ -1013,27 +1014,27 @@ impl App {
         } else {
             let _ = self.reveal_path_deep(&target);
         }
-        // open_git_diff resets came_from_git_view / diff_follow_scope / diff_view (to the target
-        // file's own config default), so save and restore them (so cycling from a hub-opened diff
-        // still returns to the hub with `q`, a follow-scoped cycle keeps going, and the presentation
-        // — source/rendered/preview — is never reset by simply moving to the next changed file:
-        // `docs/FEATURE-MD-RENDERED-DIFF.md` §4's "n/N で次のファイルの diff へ移っても表現は維持").
-        // `Preview` never reaches this point at all (n/N is bound only in `Surface::PreviewGitDiff`,
-        // which the `Preview` representation has already left), so the restored value is always
-        // `Source`/`Rendered` — still rounded down to `Source` here in case the new target can't
-        // show `Rendered` (a Markdown diff cycling to a plain-text one, say).
-        let came = self.tab.came_from_git_view;
-        let scope = self.diff_follow_scope;
-        let view = self.tab.diff_view;
-        self.open_git_diff(&target);
-        self.tab.came_from_git_view = came;
-        self.diff_follow_scope = scope;
-        // `apply_diff_view`, not a direct assignment — `scope` is already restored above, so this
-        // validates/rounds the carried-over presentation against the *target*'s own readability
-        // (`App::apply_diff_view`'s own doc comment).
-        let rounded = self.round_diff_view(view, &target);
-        self.apply_diff_view(rounded, &target);
-        self.tab.diff_scroll_pending = self.tab.diff_view == DiffView::Rendered;
+        // A fresh `open_git_diff` would reset `came_from_git_view`/`diff_follow_scope`/the
+        // presentation to the target file's own config default, so carry the current ones over
+        // instead (so cycling from a hub-opened diff still returns to the hub with `q`, a
+        // follow-scoped cycle keeps going, and the presentation — source/rendered/preview — is never
+        // reset by simply moving to the next changed file: `docs/FEATURE-MD-RENDERED-DIFF.md` §4's
+        // "n/N で次のファイルの diff へ移っても表現は維持"). `Preview` never reaches this point at all
+        // (n/N is bound only in `Surface::PreviewGitDiff`, which the `Preview` representation has
+        // already left), so the carried-over presentation is always `Source`/`Rendered` —
+        // `open_git_diff_with` still rounds it down to `Source` in case the new target can't show
+        // `Rendered` (a Markdown diff cycling to a plain-text one, say), and validates it against the
+        // *target*'s own readability in the one `apply_diff_view` call this now makes (see that fn's
+        // own doc comment for why a save/restore + re-run used to sit here).
+        self.open_git_diff_with(
+            &target,
+            DiffOpen {
+                follow_scope: self.diff_follow_scope,
+                view: Some(self.tab.diff_view),
+                came_from_git_view: Some(self.tab.came_from_git_view),
+                ..Default::default()
+            },
+        );
     }
 
     /// The follow session's reviewable files (recorded while `F` was ON), pruned to still-existing

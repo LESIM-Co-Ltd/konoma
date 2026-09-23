@@ -439,6 +439,8 @@ pub fn file_diff(root: &Path, file: &Path) -> Vec<DiffLine> {
 
 /// See [`Vcs::base_contents`].
 pub fn base_contents(root: &Path, file: &Path) -> Option<Vec<u8>> {
+    #[cfg(test)]
+    crate::test_support::note_base_contents_call();
     backend_for(root).base_contents(root, file)
 }
 

@@ -563,8 +563,14 @@ pub enum Msg {
     /// diff — the only change was to front matter, which is stripped before either side is compared.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     DiffRenderedFrontMatterOnly,
-    /// `?` help row description for `R` in `Surface::PreviewGitDiff`.
+    /// `?` help row description for `R` in `Surface::PreviewGitDiff`, when the target has all
+    /// three presentations (Markdown).
     DiffViewCycleHelp,
+    /// `?` help row description for `R` in `Surface::PreviewGitDiff`, when the target has only
+    /// two presentations (a windowed-capable text kind — code, plain text, `.mmd`, a text-mode
+    /// delegated command). Never shown for a target with just one (`App::diff_view_help_hint`'s
+    /// own gate, [[hint-shown-iff-key-acts]]).
+    DiffViewCycleHelpPair,
     WkRelative,
     WkRename,
     HintSearch,
@@ -1179,6 +1185,7 @@ fn en(msg: Msg) -> &'static str {
         DiffRenderedUnavailable => "rendered diff unavailable (falling back to source)",
         DiffRenderedFrontMatterOnly => "only front matter changed (not shown here — press R to see it)",
         DiffViewCycleHelp => "cycle diff view (source → rendered → preview)",
+        DiffViewCycleHelpPair => "cycle diff view (source ⇄ preview)",
         WkRelative => "relative",
         WkRename => "rename",
         HintSearch => "search",
@@ -1682,6 +1689,7 @@ fn jp(msg: Msg) -> &'static str {
         DiffRenderedUnavailable => "整形diffを表示できません(ソースへ切替)",
         DiffRenderedFrontMatterOnly => "front matter だけの変更(ここには出ません・R で表示)",
         DiffViewCycleHelp => "表現を切り替え（ソース → 整形 → プレビュー）",
+        DiffViewCycleHelpPair => "表現を切り替え（ソース ⇄ プレビュー）",
         WkRelative => "相対",
         WkRename => "改名",
         HintSearch => "検索",
@@ -2203,6 +2211,7 @@ mod tests {
         Msg::DiffRenderedUnavailable,
         Msg::DiffRenderedFrontMatterOnly,
         Msg::DiffViewCycleHelp,
+        Msg::DiffViewCycleHelpPair,
         Msg::QuitOrCloseTab,
         Msg::WkRelative,
         Msg::WkRename,

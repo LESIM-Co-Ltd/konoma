@@ -42,10 +42,16 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     let l = |m| tr(lang, m);
     if app.is_git_diff_preview() {
         // The file-diff preview opened via Enter from the Git changes hub (`o`).
-        return vec![HelpSection::new(l(crate::i18n::Msg::PreviewGitDiff))
+        let mut sec = HelpSection::new(l(crate::i18n::Msg::PreviewGitDiff))
             .row("j / k / ↑ ↓", l(crate::i18n::Msg::Scroll))
-            .row("g / G", l(crate::i18n::Msg::TopBottom))
-            .row("R", l(crate::i18n::Msg::DiffViewCycleHelp))
+            .row("g / G", l(crate::i18n::Msg::TopBottom));
+        // Same gate as the footer's own `R` hint ([[hint-shown-iff-key-acts]]): omit the row for a
+        // target with only one presentation, and word it for however many `R` actually cycles
+        // through (`App::diff_view_help_hint`).
+        if let Some(msg) = app.diff_view_help_hint() {
+            sec = sec.row("R", l(msg));
+        }
+        return vec![sec
             .row("n / N", l(crate::i18n::Msg::JumpChangeHelp))
             .row("f", l(crate::i18n::Msg::HintFollowScope))
             .row(crate::ui::status::page_help(app), "")
@@ -1616,6 +1622,7 @@ mod help_tests {
 
 #[cfg(all(test, feature = "git"))]
 mod gitdiff_tests {
+    use super::help_sections;
     use crate::app::App;
     use crate::config::Config;
     use crate::test_support::unique_tmp;
@@ -1776,6 +1783,86 @@ mod gitdiff_tests {
             s.contains("no changes") || s.contains("変更なし"),
             "クリーン表示が出ない: {s:?}"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The `?` help's `R` row in `Surface::PreviewGitDiff` must be gated by the same
+    /// `diff_representation_count` predicate the footer's own hint already uses
+    /// ([[hint-shown-iff-key-acts]]): omitted entirely for a target with just one representation
+    /// (an unsupported extension here), worded "source ⇄ preview" for a windowed-capable text kind
+    /// (two representations), and the full "source → rendered → preview" for Markdown (three).
+    /// Previously this row was unconditional and always read the three-way text, so it lied about
+    /// `R` for the first two cases.
+    #[test]
+    fn gitdiff_help_r_row_matches_representation_count() {
+        let dir = unique_tmp("konoma_ui_gitdiff_help_r_row");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        init_repo(&dir);
+        // A NUL byte forces `is_probably_text` to classify this as binary (`resolve_preview`
+        // degrades to `CanNotPreview`) — an extension with no matching rule alone still resolves to
+        // ordinary `Text` for text content (two representations), which is not what this row wants
+        // to exercise.
+        std::fs::write(dir.join("a.xyz"), b"seed\0\n").unwrap();
+        std::fs::write(dir.join("a.rs"), b"seed\n").unwrap();
+        std::fs::write(dir.join("a.md"), b"seed\n").unwrap();
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-m", "init"]);
+        std::fs::write(dir.join("a.xyz"), b"changed\0\n").unwrap();
+        std::fs::write(dir.join("a.rs"), b"changed\n").unwrap();
+        std::fs::write(dir.join("a.md"), b"changed\n").unwrap();
+
+        let canon = dir.canonicalize().unwrap();
+        let mut app = App::new(canon.clone(), Config::default()).unwrap();
+
+        // One representation (CanNotPreview): no `R` row at all.
+        app.open_git_diff(&canon.join("a.xyz"));
+        assert!(
+            matches!(
+                app.cfg.resolve_preview(&canon.join("a.xyz")),
+                crate::preview::PreviewKind::CanNotPreview { .. }
+            ),
+            "前提: a.xyz は CanNotPreview に解決されるはず"
+        );
+        let sections = help_sections(&app);
+        assert!(
+            !sections[0].rows.iter().any(|(k, _)| k == "R"),
+            "1 表現なのに R 行が出ている: {:?}",
+            sections[0].rows
+        );
+
+        // Two representations (code): "source ⇄ preview".
+        app.open_git_diff(&canon.join("a.rs"));
+        let sections = help_sections(&app);
+        let r_row = sections[0]
+            .rows
+            .iter()
+            .find(|(k, _)| k == "R")
+            .expect("2 表現なら R 行がある")
+            .1
+            .clone();
+        assert_eq!(
+            r_row,
+            crate::i18n::tr(app.lang, crate::i18n::Msg::DiffViewCycleHelpPair),
+            "2 表現の R 行は source ⇄ preview のはず"
+        );
+
+        // Three representations (Markdown): the full cycle text.
+        app.open_git_diff(&canon.join("a.md"));
+        let sections = help_sections(&app);
+        let r_row = sections[0]
+            .rows
+            .iter()
+            .find(|(k, _)| k == "R")
+            .expect("3 表現なら R 行がある")
+            .1
+            .clone();
+        assert_eq!(
+            r_row,
+            crate::i18n::tr(app.lang, crate::i18n::Msg::DiffViewCycleHelp),
+            "3 表現の R 行は source → rendered → preview のはず"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }

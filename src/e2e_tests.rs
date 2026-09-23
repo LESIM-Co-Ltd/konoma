@@ -1807,6 +1807,33 @@ fn e2e_diff_view_default_is_rendered_for_markdown() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Performance regression: opening a Markdown diff straight into the `Rendered` presentation must
+/// invoke `vcs::base_contents` exactly **once**, not twice. Before `App::diff_rendered_sources` was
+/// memoized (`diff_rendered_sources_cache`), `App::apply_diff_view` (deciding/validating the
+/// presentation, inside `open_git_diff`) and `App::ensure_md_cache` (actually building it, on the
+/// very next render — the same keypress's own `draw()` here) each independently re-read the file and
+/// re-invoked the backend for the identical path.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_rendered_open_calls_base_contents_once() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_rendered_base_contents_once");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    let (_, calls) = crate::test_support::count_base_contents_calls(|| s.key('d'));
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    // Sanity: the rendered cache really did build (a vacuous 0-work pass would prove nothing).
+    assert!(s.app.diff_rendered_marks_for_test().is_some());
+    assert_eq!(
+        calls, 1,
+        "diff を Rendered で開く間に base_contents が複数回呼ばれている(検証と実際の構築で\
+         別々に取得している)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// `[ui] diff_view = "source"` keeps the classic unified diff as the default — the config default
 /// only changed konoma's own default, not the presentation `"source"` itself still means.
 #[cfg(feature = "git")]
@@ -2443,6 +2470,74 @@ fn e2e_follow_diff_rendered_front_matter_only_flash_uses_follow_baseline_not_hea
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Test-hole coverage: `f` (`toggle_follow_diff_scope`) inside a follow-opened `Rendered` diff must
+/// actually change what's marked — before this test existed, removing `App::diff_rendered_sources`'
+/// own `&& !self.follow_diff_full` guard (i.e. always reading the follow-session baseline even after
+/// `f` asked for the full range) stayed all-green. Sets up two paragraphs that each change at a
+/// *different* point: paragraph 1 (AAA→XXX) before `F`, so it's folded into the follow baseline and
+/// invisible in the since-follow-start scope; paragraph 2 (BBB→YYY) after `F`, so it's the only
+/// change the follow-session scope sees. Against HEAD (full scope, `f` toggled) both show up.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_diff_rendered_f_toggle_switches_marks_between_scopes() {
+    use crate::app::DiffView;
+    let dir = sandbox("follow_diff_rendered_f_toggle_scope");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    // HEAD.
+    std::fs::write(&doc, "# Title\n\nAAA paragraph.\n\nBBB paragraph.\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+
+    // Dirty *before* F: paragraph 1 changes (AAA -> XXX). This becomes the follow baseline.
+    std::fs::write(&doc, "# Title\n\nXXX paragraph.\n\nBBB paragraph.\n").unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.key('F');
+    assert!(s.app.follow_enabled());
+
+    // After F: paragraph 2 changes (BBB -> YYY); paragraph 1 stays exactly XXX (unchanged since
+    // the follow baseline captured it). `doc` rebuilt from `s.app.tab.root` — see the sibling
+    // front-matter-only test above for why.
+    let doc = s.app.tab.root.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nXXX paragraph.\n\nYYY paragraph.\n").unwrap();
+    assert!(s.app.follow_note_change(&doc));
+    s.app.follow_jump(&doc);
+    s.draw();
+
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+
+    // Since-follow-start (default): only paragraph 2 (BBB -> YYY) is a change — paragraph 1 (XXX,
+    // unchanged since the follow baseline already had it) contributes no mark of its own.
+    let since_marks = s.app.diff_rendered_marks_for_test().unwrap_or_default();
+    assert!(
+        !since_marks.is_empty(),
+        "BBB→YYY は変更として出るはず: {since_marks:?}"
+    );
+
+    // `f`: switch to the full range (vs HEAD) — now paragraph 1 (AAA -> XXX) is a change too.
+    s.key('f');
+    let full_marks = s.app.diff_rendered_marks_for_test().unwrap_or_default();
+    assert!(
+        full_marks.len() > since_marks.len(),
+        "f で全範囲に切り替えると AAA→XXX も変更として増えるはず: since={since_marks:?} full={full_marks:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The ordinary decorated Markdown preview's own change gutter (§3): opening `doc.md` normally
 /// (not through the diff) still marks its changed blocks, using the same `Added`/`Modified` (and,
 /// were there one, `Deleted`) vocabulary as the diff's `preview` representation.
@@ -2467,6 +2562,40 @@ fn e2e_md_preview_gutter_marks_changed_blocks() {
     assert!(
         marks.iter().any(|(_, m)| *m == PreviewMark::Added),
         "New Section は Added のはず: {marks:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Performance regression: building the ordinary Markdown preview's own change gutter must invoke
+/// the backend's `vcs::base_contents` (a `jj log` + `jj file show` subprocess pair under jj,
+/// ~20-25ms) exactly **once**, not twice. Before `App::ensure_md_cache` threaded one shared
+/// `preview_diff_baseline` fetch into both `App::gutter_will_be_active` (the decision: will the
+/// gutter be non-empty, decided before the width-dependent render) and `App::preview_diff_marks`
+/// (the actual marks, computed moments later in the same build), each of those two independently
+/// called `preview_diff_baseline` → `vcs::base_contents` for the identical path.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_md_preview_gutter_build_calls_base_contents_once() {
+    let dir = sandbox("md_preview_gutter_base_contents_once");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    let (_, calls) = crate::test_support::count_base_contents_calls(|| s.enter());
+    assert!(matches!(
+        s.app.tab.preview_kind,
+        Some(crate::preview::PreviewKind::Markdown(_))
+    ));
+    // Sanity: the gutter really did build (there is something to compute a baseline for) — a
+    // vacuous "0 calls because nothing happened" pass would prove nothing.
+    let marks = s
+        .app
+        .md_diff_marks_for_test()
+        .expect("md_cache が構築されているはず");
+    assert!(!marks.is_empty(), "変更ブロックの印があるはず: {marks:?}");
+    assert_eq!(
+        calls, 1,
+        "通常プレビューのガター構築中に base_contents が複数回呼ばれている(判定と実マークで\
+         別々に取得している)"
     );
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -2504,6 +2633,56 @@ fn e2e_md_preview_gutter_is_empty_for_untracked_file() {
     assert!(
         marks.is_empty(),
         "未追跡ファイルの通常プレビューには印を付けない: {marks:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Test-hole coverage: the ordinary preview's own change gutter (§3) is Markdown-only
+/// (`App::gutter_will_be_active`'s `File` branch gates on `PreviewKind::Markdown`) — a changed,
+/// git-tracked standalone `.mmd` file (`PreviewKind::Mermaid`) must never get a gutter column.
+/// Deliberately **without** a picker (`Sim::new`, no `.with_picker()`): with real image support a
+/// standalone `.mmd` renders as an image (`App::is_image_preview`) and never even builds `md_cache`
+/// at all, which would make this assertion vacuous (confirmed while writing this test — with a
+/// picker attached, `md_cache_width_for_test()` came back `None`). Without one, konoma falls back
+/// to the text-only decorated render (`ensure_md_cache`/`build_decorated_file`'s own `Mermaid` arm)
+/// — the actual scenario the Markdown-only gate has to hold up against.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_standalone_mmd_preview_never_gets_a_gutter() {
+    let dir = sandbox("mmd_preview_no_gutter");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    std::fs::write(dir.join("a.mmd"), "flowchart TD\nA-->B\n").unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    // Uncommitted change — the same shape as the Markdown gutter tests above, so if the Markdown-
+    // only gate ever regressed, this would show a mark exactly the way `doc.md` does.
+    std::fs::write(dir.join("a.mmd"), "flowchart TD\nA-->B-->C\n").unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("a.mmd");
+    s.enter();
+    assert!(
+        matches!(
+            s.app.tab.preview_kind,
+            Some(crate::preview::PreviewKind::Mermaid(_))
+        ),
+        "前提: .mmd は Mermaid kind のはず"
+    );
+    let marks = s.app.md_diff_marks_for_test().unwrap_or_default();
+    assert!(
+        marks.is_empty(),
+        "単体 .mmd の通常プレビューには印が付いてはいけない: {marks:?}"
     );
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -2650,6 +2829,134 @@ fn e2e_diff_view_rendered_row_after_mermaid_lands_where_the_cache_says() {
         "キャッシュの想定行と実描画行が一致するはず(はみ出しラップで 1 行ズレていないか)"
     );
 
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Test-hole coverage: swapping `md_first_diff_mark_row`'s source lookup (`MdCacheSource::Diff` →
+/// `c.diff_marks` / `MdCacheSource::File` → `c.preview_gutter_marks`) stayed all-green before this
+/// test existed — nothing actually checked that opening a diff (or following into a decorated file,
+/// the sibling test right below) auto-scrolls to the first change at all when that change is below
+/// the fold. This is the diff-open half: `d` on a Markdown file whose first (and only) change is
+/// deep enough in a long document that it starts off-screen must land with `preview_scroll > 0` and
+/// the changed text actually visible.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_rendered_open_scrolls_to_first_change_below_the_fold() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_rendered_scroll_first_change");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    let mut body = String::from("# Title\n\n");
+    for i in 0..80 {
+        body.push_str(&format!(
+            "Filler paragraph number {i} with a few words to take up vertical space.\n\n"
+        ));
+    }
+    body.push_str("ORIGINAL MARKER paragraph.\n\n");
+    std::fs::write(&doc, &body).unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    let changed = body.replace("ORIGINAL MARKER paragraph.", "CHANGED MARKER paragraph.");
+    std::fs::write(&doc, &changed).unwrap();
+
+    let mut s = Sim::new(&canon(&dir)); // 90x26 — far shorter than 80 filler paragraphs' own rows
+    s.select("doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    assert!(
+        s.app.tab.preview_scroll > 0,
+        "変更は画面より下にあるので自動スクロールで scroll>0 のはず: {}",
+        s.app.tab.preview_scroll
+    );
+    assert!(
+        s.find_text("CHANGED MARKER").is_some(),
+        "最初の変更行が画面内に入っているはず:\n{}",
+        s.screen()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Test-hole coverage, sibling of the diff-open test above: following into a decorated Markdown
+/// file (`ui.follow_view = "file"`) whose first change is below the fold must also auto-scroll —
+/// the `MdCacheSource::File` half of `md_first_diff_mark_row`'s source swap, which nothing checked
+/// either.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_jump_into_decorated_file_scrolls_to_first_change_below_the_fold() {
+    let dir = sandbox("follow_file_scroll_first_change");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    let mut body = String::from("# Title\n\n");
+    for i in 0..80 {
+        body.push_str(&format!(
+            "Filler paragraph number {i} with a few words to take up vertical space.\n\n"
+        ));
+    }
+    body.push_str("ORIGINAL MARKER paragraph.\n\n");
+    std::fs::write(&doc, &body).unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+
+    let mut cfg = Config::default();
+    cfg.ui.follow_view = "file".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.key('F');
+    assert!(s.app.follow_enabled(), "F でフォロー ON");
+
+    let changed = body.replace("ORIGINAL MARKER paragraph.", "CHANGED MARKER paragraph.");
+    std::fs::write(&doc, &changed).unwrap();
+    // `follow_target_ok`'s `starts_with(&self.tab.root)` needs the *canonical* path (`tab.root` is
+    // canonicalized in `App::new`; `dir` itself may not be — e.g. `/tmp` vs `/private/tmp` on
+    // macOS) — same reason `e2e_ui_follow_view_file_shows_content_preview_not_diff` builds its own
+    // target path off `s.app.tab.root`, not the raw `dir`.
+    let canonical_doc = s.app.tab.root.join("doc.md");
+    assert!(s.app.follow_note_change(&canonical_doc));
+    s.app.follow_jump(&canonical_doc);
+    s.draw();
+
+    assert!(
+        !s.app.is_git_diff_preview(),
+        "follow_view=\"file\" は通常プレビューのはず"
+    );
+    assert!(
+        matches!(
+            s.app.tab.preview_kind,
+            Some(crate::preview::PreviewKind::Markdown(_))
+        ),
+        "装飾 Markdown のはず"
+    );
+    assert!(
+        s.app.tab.preview_scroll > 0,
+        "変更は画面より下にあるので自動スクロールで scroll>0 のはず: {}",
+        s.app.tab.preview_scroll
+    );
+    assert!(
+        s.find_text("CHANGED MARKER").is_some(),
+        "最初の変更行が画面内に入っているはず:\n{}",
+        s.screen()
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

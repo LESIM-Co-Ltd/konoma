@@ -1,3 +1,4 @@
+use super::git_view::DiffOpen;
 use super::*;
 
 impl App {
@@ -214,24 +215,22 @@ impl App {
             // Follow-originated → baseline diff since start (or the conventional full diff if follow_diff_full).
             let diff = self.compute_gitdiff_lines(path, true);
             if !diff.is_empty() {
-                self.open_git_diff(path);
-                // Put the diff we just took into the cache to avoid re-fetching (re-running git) on render.
-                self.diff_cache = Some(DiffCache {
-                    path: path.to_path_buf(),
-                    lines: diff,
-                });
-                // Follow-originated diff: n/N and the position indicator cycle through "files changed during this session".
-                self.diff_follow_scope = true;
-                // `open_git_diff` just resolved `tab.diff_view` (`App::apply_diff_view`) with
-                // `diff_follow_scope` still `false` — it always resets that flag itself, and the
-                // line above only sets it back to `true` afterward — so a Markdown target's
-                // `Rendered` readability/mark check would have read the wrong baseline (the
-                // backend's committed blob instead of the follow-session snapshot just cached
-                // above). Re-run the same decision now that the scope — and the cache it reads
-                // through `git_diff_lines` — are both correct.
-                let view = self.default_diff_view_for(path);
-                self.apply_diff_view(view, path);
-                self.tab.diff_scroll_pending = self.tab.diff_view == DiffView::Rendered;
+                // `follow_scope: true` and the seeded cache are both already final before
+                // `open_git_diff_with` ever validates the presentation, so a Markdown target's
+                // `Rendered` readability/mark check reads the right baseline (the follow-session
+                // snapshot, not the backend's committed blob) on the only pass — see that fn's own
+                // doc comment for why this replaced a fresh `open_git_diff` + save/restore + re-run.
+                self.open_git_diff_with(
+                    path,
+                    DiffOpen {
+                        follow_scope: true,
+                        seeded_diff: Some(DiffCache {
+                            path: path.to_path_buf(),
+                            lines: diff,
+                        }),
+                        ..Default::default()
+                    },
+                );
                 return;
             }
         }
@@ -504,6 +503,64 @@ mod tests {
         assert!(
             app.follow_baseline_diff(&root.join("big.txt")).is_none(),
             "follow_baseline_diff も同じ理由で None"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **The bug `App::open_git_diff_with` exists to fix** (that fn's own doc comment). A
+    /// follow-originated diff whose HEAD-committed version is over `FOLLOW_BASELINE_FILE_CAP` but
+    /// whose follow-session-start snapshot is not must land straight in `Rendered` with **no** stale
+    /// `DiffRenderedUnavailable` flash. Before the fix, `follow_jump` opened via a fresh
+    /// `open_git_diff` (which always starts `diff_follow_scope = false`, so `Rendered`'s validation
+    /// read the over-cap HEAD blob and flashed `DiffRenderedUnavailable` + rounded down to `Source`)
+    /// and only afterward set `diff_follow_scope = true` and re-validated — successfully switching to
+    /// `Rendered`, but never clearing the flash the first, wrongly-scoped validation had already set.
+    #[test]
+    fn follow_jump_into_markdown_rendered_diff_does_not_flash_stale_unavailable() {
+        let dir = unique_tmp("konoma_follow_jump_rendered_flash_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        init_git_repo(&dir);
+        let root = dir.canonicalize().unwrap();
+        let path = root.join("big.md");
+        // HEAD-committed version is over the cap — the full-scope baseline (`vcs::base_contents`)
+        // can't be read as a `Rendered` source.
+        let big = "x".repeat(FOLLOW_BASELINE_FILE_CAP + 1);
+        std::fs::write(&path, format!("# t\n\n{big}\n")).unwrap();
+        commit_all(&root, "init big");
+
+        // Shrink it before `F` — dirty at follow-start, so what gets captured is the (well-under-cap)
+        // follow-session snapshot, not the over-cap HEAD blob.
+        std::fs::write(&path, "# t\n\nsmall before follow\n").unwrap();
+
+        let mut app = App::new(root.clone(), Config::default()).unwrap();
+        app.toggle_follow();
+        assert!(app.follow_enabled());
+        app.flash = None; // clear the "follow: on" flash `toggle_follow` itself just set
+
+        // Change it again after `F` — this is the edit `follow_jump` reacts to.
+        std::fs::write(&path, "# t\n\nsmall after follow\n").unwrap();
+
+        let (_, apply_calls) =
+            crate::test_support::count_apply_diff_view_calls(|| app.follow_jump(&path));
+        assert_eq!(
+            apply_calls, 1,
+            "apply_diff_view は最終スコープが確定した後に1回だけ走るはず(2回目が黙って直すのではない)"
+        );
+
+        assert!(
+            app.is_git_diff_preview(),
+            "follow_jump はこのファイルの diff を開くはず"
+        );
+        assert_eq!(
+            app.diff_view_for_test(),
+            DiffView::Rendered,
+            "follow スコープの版は cap 未満なので Rendered に入れるはず"
+        );
+        assert_eq!(
+            app.flash, None,
+            "1 回目の(誤った scope=false での)判定が立てた stale フラッシュが残っている: {:?}",
+            app.flash
         );
 
         std::fs::remove_dir_all(&dir).ok();

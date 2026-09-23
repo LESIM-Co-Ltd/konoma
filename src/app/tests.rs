@@ -13287,6 +13287,83 @@ fn follow_diff_n_cycles_only_session_files_and_clears_flash() {
     std::fs::remove_file(&outside).ok();
 }
 
+/// `n`/`N` (`diff_jump_changed`) inside a follow-scoped diff must not re-trigger the same stale-flash
+/// bug `follow_jump` itself was fixed for (`App::open_git_diff_with`'s own doc comment) — cycling
+/// from one follow-session file onto a Markdown target whose HEAD-committed version is over
+/// `FOLLOW_BASELINE_FILE_CAP`, but whose follow-session snapshot is not, must land in `Rendered` with
+/// no leftover `DiffRenderedUnavailable` flash. Before the fix, `diff_jump_changed` opened the target
+/// via a fresh `open_git_diff` (always `diff_follow_scope = false` there) and only restored the real
+/// scope afterward — so the one-and-only `apply_diff_view` call it went on to make (with the restored
+/// scope) would have been fine on its own, but the intermediate `open_git_diff` call's *own*
+/// `apply_diff_view` (wrongly scoped) had already set the flash, and nothing ever cleared it.
+#[cfg(feature = "git")]
+#[test]
+fn diff_jump_changed_into_big_markdown_does_not_flash_stale_unavailable() {
+    let dir = unique_tmp("konoma_diff_jump_changed_rendered_flash_test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} 失敗");
+    };
+    let canon = dir.canonicalize().unwrap();
+    std::fs::write(canon.join("a.md"), "# a\n\nbody\n").unwrap();
+    // HEAD-committed version of big.md is over the cap — the full-scope baseline
+    // (`vcs::base_contents`) can't be read as a `Rendered` source.
+    let big = "x".repeat(FOLLOW_BASELINE_FILE_CAP + 1);
+    std::fs::write(canon.join("big.md"), format!("# t\n\n{big}\n")).unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-m", "init"]);
+    // Shrink big.md before `F` — dirty at follow-start, so what gets captured is the
+    // (well-under-cap) follow-session snapshot, not the over-cap HEAD blob.
+    std::fs::write(canon.join("big.md"), "# t\n\nsmall before follow\n").unwrap();
+
+    let mut app = App::new(canon.clone(), Config::default()).unwrap();
+    app.toggle_follow();
+    assert!(app.follow_session.is_empty());
+
+    // Both files change after `F`.
+    std::fs::write(canon.join("a.md"), "# a\n\nCHANGED\n").unwrap();
+    std::fs::write(canon.join("big.md"), "# t\n\nsmall after follow\n").unwrap();
+    assert!(app.follow_note_change(&canon.join("a.md")));
+    assert!(app.follow_note_change(&canon.join("big.md")));
+
+    app.follow_jump(&canon.join("a.md"));
+    assert!(app.is_git_diff_preview());
+    assert_eq!(
+        app.tab.preview_path.as_deref(),
+        Some(canon.join("a.md").as_path())
+    );
+
+    // n cycles onto big.md — this is the `diff_jump_changed` call under test.
+    let (_, apply_calls) = crate::test_support::count_apply_diff_view_calls(|| app.jump_changed(1));
+    assert_eq!(
+        apply_calls, 1,
+        "apply_diff_view は最終スコープが確定した後に1回だけ走るはず(2回目が黙って直すのではない)"
+    );
+    assert_eq!(
+        app.tab.preview_path.as_deref(),
+        Some(canon.join("big.md").as_path())
+    );
+    assert_eq!(
+        app.diff_view_for_test(),
+        DiffView::Rendered,
+        "follow スコープの版は cap 未満なので Rendered に入れるはず"
+    );
+    assert_eq!(
+        app.flash, None,
+        "誤った scope での中間判定が立てた stale フラッシュが残っている: {:?}",
+        app.flash
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // =============================================================================
 // Follow scope leaking across a root change (`follow_root`, 2026-08)
 //
@@ -23373,6 +23450,131 @@ fn diff_rendered_gutter_never_causes_an_overflow_wrap() {
             .iter()
             .map(|l| (l.width(), l.spans.first().map(|s| s.content.to_string())))
             .collect::<Vec<_>>()
+    );
+    assert!(
+        lines.iter().all(|l| l.width() as u16 <= width),
+        "ガター込みの行幅が width を超えてはいけない: {:?}",
+        lines.iter().map(|l| l.width()).collect::<Vec<_>>()
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `App::gutter_will_be_active` (the decision, made before any width-dependent render — see
+/// `diff_rendered_gutter_never_causes_an_overflow_wrap` above for why that ordering exists at all)
+/// must predict against **exactly** the text `build_decorated_file` (the render itself) goes on to
+/// parse. Before `decorated_file_text` unified them, the `File` branch of `gutter_will_be_active`
+/// joined `content.lines` without `build_decorated_file`'s own truncation-notice suffix
+/// ("— (省略...) —", itself Markdown text) — so for a document long enough to hit the display cap
+/// (`text::MAX_LINES`), the decision could disagree with what the render actually marks.
+///
+/// This constructs the scenario where the disagreement is *observable*, not just theoretical: the
+/// committed baseline is made **byte-identical** to the working file's own first-5000-line prefix
+/// (what `text::load` truncates it down to) — so a decision that joins `content.lines` **without**
+/// the suffix sees no difference at all (`diff_has_any_change` = false, gutter predicted inactive,
+/// `build_decorated_file` then called at the *full* `width`), while the real render always did (and
+/// still does) include the suffix — an extra trailing paragraph the baseline doesn't have — so
+/// `preview_diff_marks` (computed from the real, suffixed render) finds it `Added` and the gutter
+/// column gets drawn anyway, into a body that was rendered assuming it wouldn't be: a full-width
+/// line grows 1 column too wide and wraps into a spurious extra row — the exact class of bug
+/// `diff_rendered_gutter_never_causes_an_overflow_wrap` (above) already pins for the diff's own
+/// `Rendered` presentation, reached here through the ordinary preview's `File` branch instead.
+#[cfg(feature = "git")]
+#[test]
+fn ordinary_preview_gutter_decision_matches_render_for_a_truncated_file() {
+    let dir = unique_tmp("konoma_gutter_will_be_active_truncated_text_mismatch");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+
+    // Each filler is its own paragraph (blank line between) so this stays one short decorated
+    // `Line` per paragraph — a single huge merged paragraph would exercise ratatui's own word-wrap
+    // sensitivity for a pathologically long logical line, an unrelated concern this test isn't
+    // about. Long enough (> text::MAX_LINES = 5000 raw lines) to be truncated on load.
+    let mut full_body = String::from("# Title\n\n");
+    for i in 0..3000 {
+        full_body.push_str(&format!("filler line {i}\n\n"));
+    }
+    // `text::load`'s own line splitting (`str::lines()`, then `truncate(MAX_LINES)`) — reproduced
+    // here so the committed baseline can be made an exact match of the *un-suffixed* prefix.
+    let capped_prefix: String = full_body.lines().take(5000).collect::<Vec<_>>().join("\n");
+
+    // Commit exactly that prefix as the baseline.
+    std::fs::write(&doc, &capped_prefix).unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    // The uncommitted working file is the full (longer) body — truncated back down to that
+    // identical prefix on load, so nothing but the truncation-notice suffix can make the two sides
+    // differ.
+    std::fs::write(&doc, &full_body).unwrap();
+
+    let root = dir.canonicalize().unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+
+    // Confirm the two preconditions this test exists to exercise.
+    let content = crate::preview::text::load(&root.join("doc.md")).unwrap();
+    assert!(content.truncated, "前提: MAX_LINES 超で truncated のはず");
+    assert_eq!(
+        content.lines.join("\n"),
+        capped_prefix,
+        "前提: サフィックス抜きの新版はベースラインと完全一致するはず(そうでないと判定が\
+         元々ズレていてもこのシナリオでは見えない)"
+    );
+
+    let i = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path.file_name().is_some_and(|n| n == "doc.md"))
+        .expect("doc.md がツリーにあるはず");
+    app.tab.selected = i;
+    app.tree_activate().unwrap();
+    assert!(matches!(
+        app.tab.preview_kind,
+        Some(crate::preview::PreviewKind::Markdown(_))
+    ));
+
+    let width: u16 = 40;
+    let (total_rows, _) = app.md_layout(width);
+    assert!(total_rows > 0, "何か描画されているはず");
+
+    // The real render always includes the truncation-notice paragraph, so it must find a mark —
+    // this scenario really does have something for the gutter to show.
+    let marks = app.md_diff_marks_for_test().unwrap_or_default();
+    assert!(
+        !marks.is_empty(),
+        "省略サフィックスの段落は baseline に無いので Added の印を持つはず: {marks:?}"
+    );
+
+    let (lines, _) = app.md_slice(0, total_rows as u16);
+    assert!(!lines.is_empty());
+
+    use ratatui::text::Text;
+    use ratatui::widgets::{Paragraph, Wrap};
+    let real_total: usize = lines
+        .iter()
+        .map(|l| {
+            Paragraph::new(Text::from(vec![l.clone()]))
+                .wrap(Wrap { trim: false })
+                .line_count(width)
+                .max(1)
+        })
+        .sum();
+    assert_eq!(
+        real_total, total_rows,
+        "ガター込みの実描画行数が row_prefix の想定と一致するはず(はみ出しラップが無い)"
     );
     assert!(
         lines.iter().all(|l| l.width() as u16 <= width),
