@@ -17028,6 +17028,90 @@ fn md_diff_rendered_is_offloaded_to_a_worker_thread() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// End-to-end pin for the "Rendered renders ~4x more than the ordinary preview" regression
+/// (`docs/FEATURE-MD-RENDERED-DIFF.md`'s own investigation history): a document past
+/// `preview::text::MAX_LINES` (5,000), **committed byte-identical** (HEAD == working copy, so every
+/// block classifies `Equal` — `App::open_git_diff`'s baseline is the file's own HEAD blob), must
+/// produce the *exact same* decorated lines through the diff's `Rendered` presentation as through an
+/// ordinary (non-diff) preview of the identical file. Before `App::compute_md_diff`'s `Rendered` arm
+/// capped its own `old_pre`/`new_pre` the same way `Gutter`/the ordinary preview already do
+/// (`cap_for_display`, `md_diff.rs`), `Rendered` read/rendered the file's *entire* content
+/// under nothing but the much looser `FOLLOW_BASELINE_FILE_CAP` (5 MiB, no line cap at all) while the
+/// ordinary preview always stops at `MAX_LINES` — so for a document past that line count, the two
+/// presentations' own line counts were never comparable, which read as duplicate rendering from the
+/// outside (`docs/STATUS.md`'s own investigation) but was really just two never-truncated-the-same-
+/// way views of the same file.
+#[cfg(feature = "git")]
+#[test]
+fn diff_rendered_matches_the_ordinary_preview_for_a_document_past_the_line_cap() {
+    let dir = unique_tmp("konoma_diff_rendered_matches_ordinary_preview_over_cap");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc_path = dir.join("doc.md");
+    // Comfortably past `preview::text::MAX_LINES` (5,000), unique per section so a misaligned
+    // truncation boundary (old capped one way, new capped another) would show up as a spurious
+    // change instead of silently agreeing by coincidence.
+    let mut body = String::new();
+    for i in 0..1800 {
+        body.push_str(&format!(
+            "## Section {i}\n\nParagraph text for section {i}.\n\n"
+        ));
+    }
+    assert!(
+        body.lines().count() > 5000,
+        "テストの前提: MAX_LINES を超える行数"
+    );
+    std::fs::write(&doc_path, &body).unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    // HEAD == working copy: every block should classify `Equal`, so this isolates the truncation
+    // parity question from `block_ops`'s own (separately, already-tested) classification logic.
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+    let width: u16 = 100;
+
+    let mut ordinary = App::new(dir.clone(), Config::default()).unwrap();
+    ordinary.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    ordinary.tab.preview_path = Some(doc.clone());
+    ordinary.tab.preview_kind = Some(PreviewKind::Markdown(doc.clone()));
+    ordinary.tab.mode = Mode::Preview;
+    let ordinary_lines = ordinary.decorated_lines(width);
+
+    let mut diffed = App::new(dir.clone(), Config::default()).unwrap();
+    diffed.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    diffed.open_git_diff(&doc);
+    assert_eq!(diffed.diff_view_for_test(), crate::app::DiffView::Rendered);
+    let diff_lines = diffed.decorated_lines(width);
+    let marks = diffed
+        .diff_rendered_marks_for_test()
+        .expect("md_cache が構築されているはず");
+    assert!(
+        marks.is_empty(),
+        "HEAD と作業コピーが同一なので印は無いはず(全 Equal): {marks:?}"
+    );
+
+    assert_eq!(
+        diff_lines.len(),
+        ordinary_lines.len(),
+        "MAX_LINES 超のファイルでも、無変更なら Rendered は通常プレビューと同じ行数のはず \
+         (旧: 通常プレビューの ~4 倍だった)"
+    );
+    assert_eq!(
+        diff_lines, ordinary_lines,
+        "無変更なら Rendered は通常プレビューとバイト単位で一致するはず"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A block-diff result whose generation no longer matches (an FS refresh / another open
 /// invalidated it while the worker was still computing) is discarded, exactly like
 /// `apply_statuses`'s own staleness contract — `App::apply_md_diff`'s `gen` check, not a

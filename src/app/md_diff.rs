@@ -179,7 +179,18 @@ impl App {
         // The current file: `Gutter` reads it exactly as an ordinary preview does
         // (`preview::text::load`, which truncates rather than failing on an oversized file — see
         // `decorated_file_text`'s own doc comment for why the truncation suffix must be appended
-        // here too); `Rendered` reads the raw bytes under the same cap the follow baseline uses.
+        // here too). `Rendered` used to read the raw bytes under only the much looser
+        // `FOLLOW_BASELINE_FILE_CAP` (5 MiB) and no line cap at all — a real bug (not the duplicate-
+        // rendering one it looked like from the outside): a document past `preview::text::MAX_LINES`
+        // (5,000 lines) renders *fully* here while the ordinary preview of the identical file stops
+        // at 5,000, so the two presentations' own line counts were never comparable in the first
+        // place for a large file, and rendering/wrapping the whole thing synchronously on the UI
+        // thread is exactly the kind of unbounded work `docs/PRD.md`'s "UI is never blocked" principle
+        // exists to prevent. `cap_for_display` (below) now applies the identical
+        // `MAX_BYTES`/`MAX_LINES` cap `Gutter`'s own `preview::text::load` already enforces, via the
+        // same `decorated_file_text` suffix — the `FOLLOW_BASELINE_FILE_CAP` checks below stay as a
+        // separate, coarser safety net (§5's own "5MB 超 → rendered を諦める" — reading a truly huge
+        // file into memory at all, unrelated to how much of it is then *displayed*).
         let new_raw = match req.kind {
             MdDiffKind::Gutter => match crate::preview::text::load(&req.path) {
                 Ok(content) => super::md_render::decorated_file_text(&content),
@@ -194,7 +205,7 @@ impl App {
                     return MdDiffOutcome::Unavailable;
                 }
                 match String::from_utf8(bytes) {
-                    Ok(s) => s,
+                    Ok(s) => cap_for_display(s),
                     Err(_) => return MdDiffOutcome::Unavailable,
                 }
             }
@@ -207,7 +218,17 @@ impl App {
                     return MdDiffOutcome::Unavailable;
                 }
                 match String::from_utf8(b) {
-                    Ok(s) => s,
+                    // The baseline gets the identical display cap the current-file side already
+                    // gets, for **both** kinds — `Gutter`'s own old side used to be read straight
+                    // through, uncapped, while its own new side (`preview::text::load`, above) was
+                    // always capped at `MAX_LINES`. For any committed file past that line count, an
+                    // *entirely unchanged* file therefore diffed the capped new content against the
+                    // baseline's full, uncapped tail — a spurious "everything past line 5,000 was
+                    // deleted" — which activated the gutter (and shifted `render_width` by 1) on a
+                    // file with no real changes in its own displayed portion at all. Found while
+                    // pinning `Rendered`'s own parity against this exact presentation
+                    // (`app::tests::diff_rendered_matches_the_ordinary_preview_for_a_document_past_the_line_cap`).
+                    Ok(s) => cap_for_display(s),
                     // Gutter: an undecodable baseline is just "no baseline to compare" (never
                     // attempted as Markdown, same as `preview_diff_baseline`'s old contract).
                     Err(_) if req.kind == MdDiffKind::Gutter => return MdDiffOutcome::NoBaseline,
@@ -328,6 +349,37 @@ impl App {
         self.md_diff_landed = None;
         self.md_diff_pending = None;
     }
+}
+
+/// Bounds an already-decoded Markdown string to the same display cap every other Markdown preview
+/// in konoma already enforces (`preview::text::MAX_BYTES`/`MAX_LINES`, applied via `cap_lines` —
+/// the identical function `preview::text::load` itself calls), and appends the identical
+/// "— (省略: 表示上限に達しました) —" notice `decorated_file_text` already appends for the ordinary
+/// preview/`Gutter`'s own current-file side when it fires. Two call sites used to skip this, each its
+/// own bug found while investigating the same symptom (a `Rendered` diff rendering ~4x the line count
+/// of an "equivalent" ordinary preview):
+///
+/// * `new_raw` for `MdDiffKind::Rendered` used to read/render the whole file under nothing but the
+///   much looser `FOLLOW_BASELINE_FILE_CAP` (5 MiB, meant to bound the *follow baseline snapshot*
+///   feature's memory use, not how much of a file a preview ever displays) — a document past
+///   `MAX_LINES` rendered fully in `Rendered` while the ordinary preview of the identical file
+///   stopped at `MAX_LINES`, leaving `Rendered`'s own decoration/wrap pass (run synchronously on the
+///   UI thread) with unbounded work.
+/// * `old_raw` (the baseline) for **both** kinds used to be read straight through, uncapped, even
+///   though the corresponding current-file side (`new_raw`) was always capped (`Gutter`, via
+///   `preview::text::load`) or is capped now (`Rendered`, this function). For any committed file
+///   past `MAX_LINES`, an *entirely unchanged* file therefore diffed the capped new content against
+///   the baseline's full, uncapped tail — a spurious "everything past the cap was deleted" — which
+///   activated `Gutter`'s own column (and shifted the render width by 1 cell) for a file with no real
+///   change in its own displayed portion at all.
+///
+/// Called on `new_raw` for `MdDiffKind::Rendered` and on `old_raw` for both kinds.
+fn cap_for_display(s: String) -> String {
+    let (lines, truncated) = crate::preview::text::cap_lines(s.as_bytes());
+    if !truncated {
+        return s;
+    }
+    super::md_render::decorated_file_text(&crate::preview::text::TextContent { lines, truncated })
 }
 
 /// The exact pre-pass chain `build_decorated`/`build_decorated_file` apply to a Markdown file's raw
@@ -545,6 +597,157 @@ mod tests {
             matches!(App::compute_md_diff(&r), MdDiffOutcome::Unavailable),
             "新版が読めない場合は Unavailable のはず"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The regression this whole group pins: `Rendered` used to read/render a document's *entire*
+    /// content under nothing but the much looser `FOLLOW_BASELINE_FILE_CAP` (5 MiB, no line cap at
+    /// all), while `Gutter`/the ordinary preview always stop at `preview::text::MAX_LINES` (5,000) —
+    /// so a document past that line count rendered ~4x more content in `Rendered` than the "ordinary
+    /// preview" of the identical file ever showed, which looked like duplicate rendering from the
+    /// outside but was actually two presentations of the same file simply never agreeing on how much
+    /// of it to display. `cap_for_display` closes that gap: both `old_pre`/`new_pre` must
+    /// come out capped to the exact same content `preview::text::cap_lines` (the function `Gutter`'s
+    /// own `preview::text::load` already calls) would keep, with the identical truncation notice
+    /// `decorated_file_text` appends.
+    #[test]
+    fn rendered_kind_caps_new_content_the_same_way_the_ordinary_preview_does() {
+        let dir = unique_tmp("konoma_compute_md_diff_rendered_line_cap_new");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.md");
+        // Comfortably past `preview::text::MAX_LINES` (5,000) — each line unique so a byte-for-byte
+        // comparison against `cap_lines`'s own output is unambiguous.
+        let mut big = String::new();
+        for i in 0..6000 {
+            big.push_str(&format!("line {i}\n"));
+        }
+        std::fs::write(&path, &big).unwrap();
+        // Preprocessing (front matter/footnotes/inline HTML) off — the fixture has none of those
+        // constructs, so this isolates the truncation behavior under test from the separate
+        // pre-pass chain `preprocess_md_src_pure` still applies afterward in production.
+        let mut r = req(path, MdDiffKind::Rendered, DiffBaseline::Empty);
+        r.md_frontmatter = false;
+        r.md_footnotes = false;
+        r.md_inline_html = false;
+        let new_pre = match App::compute_md_diff(&r) {
+            MdDiffOutcome::Ready { new_pre, .. } => new_pre,
+            other => panic!("Ready のはず: {other:?}"),
+        };
+        let (capped_lines, truncated) = crate::preview::text::cap_lines(big.as_bytes());
+        assert!(truncated, "6000 行は MAX_LINES を超えるはず(テストの前提)");
+        let expected = super::md_render::decorated_file_text(&crate::preview::text::TextContent {
+            lines: capped_lines,
+            truncated,
+        });
+        assert_eq!(
+            new_pre, expected,
+            "Rendered の new_pre は Gutter/通常プレビューと同じ上限・同じ省略通知で切り詰められるはず"
+        );
+        assert!(
+            !new_pre.contains("line 5999"),
+            "上限を超えた末尾はもう描かれないはず: {}",
+            &new_pre[new_pre.len().saturating_sub(200)..]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The mirror of the above for the **old** (baseline) side: a baseline past `MAX_LINES` is
+    /// capped identically, not just the current file. Without this, a change confined to the current
+    /// file's own capped prefix could still classify as `Replace`d against an *uncapped* old block
+    /// that no longer has any capped counterpart on the new side, producing spurious `Delete`s for
+    /// every old block past the cap instead of simply not comparing that tail at all (the same
+    /// "nothing past the cap is part of this presentation" contract the ordinary preview already
+    /// has).
+    #[test]
+    fn rendered_kind_caps_baseline_content_the_same_way() {
+        let dir = unique_tmp("konoma_compute_md_diff_rendered_line_cap_old");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.md");
+        let mut big = String::new();
+        for i in 0..6000 {
+            big.push_str(&format!("line {i}\n"));
+        }
+        std::fs::write(&path, &big).unwrap();
+        let mut r = req(
+            path,
+            MdDiffKind::Rendered,
+            DiffBaseline::FollowSnapshot(big.as_bytes().to_vec()),
+        );
+        r.md_frontmatter = false;
+        r.md_footnotes = false;
+        r.md_inline_html = false;
+        let old_pre = match App::compute_md_diff(&r) {
+            MdDiffOutcome::Ready { old_pre, .. } => old_pre,
+            other => panic!("Ready のはず: {other:?}"),
+        };
+        let (capped_lines, truncated) = crate::preview::text::cap_lines(big.as_bytes());
+        let expected = super::md_render::decorated_file_text(&crate::preview::text::TextContent {
+            lines: capped_lines,
+            truncated,
+        });
+        assert_eq!(
+            old_pre, expected,
+            "Rendered の old_pre(baseline) も同じ上限で切り詰められるはず"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A document *under* both caps is unaffected byte for byte — `cap_for_display` must be
+    /// a true no-op below the threshold, matching `cap_lines_is_a_noop_under_both_caps`
+    /// (`preview/text.rs`) at this call site too.
+    #[test]
+    fn rendered_kind_leaves_a_small_document_untouched() {
+        let dir = unique_tmp("konoma_compute_md_diff_rendered_small_untouched");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.md");
+        let body = "# Title\n\nA small, ordinary document.\n";
+        std::fs::write(&path, body).unwrap();
+        let r = req(path, MdDiffKind::Rendered, DiffBaseline::Empty);
+        let new_pre = match App::compute_md_diff(&r) {
+            MdDiffOutcome::Ready { new_pre, .. } => new_pre,
+            other => panic!("Ready のはず: {other:?}"),
+        };
+        assert_eq!(
+            new_pre, body,
+            "上限未満では切り詰めもサフィックスも入らないはず"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A second, adjacent bug found while pinning the above: `Gutter`'s own baseline (`old_raw`) used
+    /// to be read straight through, uncapped, even though its own current-file side (`new_raw`) was
+    /// already capped via `preview::text::load`. For a **byte-identical** baseline/current pair past
+    /// `MAX_LINES`, that asymmetry alone used to make `block_ops` see a spurious trailing deletion
+    /// (capped new vs. uncapped old) — `ops_has_any_change` came back `true` for a file with no real
+    /// change in its own displayed portion at all, which is exactly what this test pins the negative
+    /// of. Mirrors `ready_is_inactive_for_byte_identical_content`, just past the line cap.
+    #[test]
+    fn gutter_kind_is_inactive_for_a_byte_identical_baseline_past_the_line_cap() {
+        let dir = unique_tmp("konoma_compute_md_diff_gutter_identical_past_cap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.md");
+        let mut big = String::new();
+        for i in 0..6000 {
+            big.push_str(&format!("line {i}\n"));
+        }
+        std::fs::write(&path, &big).unwrap();
+        let r = req(
+            path,
+            MdDiffKind::Gutter,
+            DiffBaseline::FollowSnapshot(big.as_bytes().to_vec()),
+        );
+        match App::compute_md_diff(&r) {
+            MdDiffOutcome::Ready {
+                any_change, ops, ..
+            } => {
+                assert!(
+                    !any_change,
+                    "バイト同一のベースラインなので無変更のはず(旧: 切り詰め非対称で偽の削除): \
+                     {ops:?}"
+                );
+            }
+            other => panic!("Ready のはず: {other:?}"),
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }
