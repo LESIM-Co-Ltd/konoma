@@ -659,7 +659,16 @@ fn render_decorated_body(
     // but couldn't compute the display row itself at jump time (it depends on this very width) —
     // the cache above now has one, so this is the first draw where it's actually knowable. A no-op
     // when there is no mark to scroll to (the flag is simply consumed to nothing).
-    if app.take_diff_scroll_pending() {
+    //
+    // Skipped entirely while the block-diff behind this cache is still computing on a separate
+    // thread (`docs/STATUS.md` ★未修正 item 4) — the `Rendered` presentation's "computing…"
+    // placeholder has no marks by construction, and an ordinary preview's still-computing gutter
+    // draws a real (non-placeholder) cache with no marks yet either way. Consuming the request
+    // against either here would lose it for the *real* frame that lands once the worker finishes.
+    if !app.md_diff_is_computing_placeholder()
+        && !app.md_diff_pending_for_current()
+        && app.take_diff_scroll_pending()
+    {
         if let Some(row) = app.md_first_diff_mark_row() {
             app.scroll_preview_to_row_with_context(row);
         }

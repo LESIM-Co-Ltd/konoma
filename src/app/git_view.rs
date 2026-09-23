@@ -11,8 +11,8 @@ use super::*;
 pub(super) struct DiffOpen {
     /// `true` for a follow-originated diff — `n`/`N` then cycles only the follow session's own
     /// changed-file list, and the `Rendered` presentation's baseline is the follow-session snapshot
-    /// rather than the backend's committed blob (`App::diff_rendered_sources`). Defaults to `false`
-    /// (the full uncommitted change set, the backend's committed blob).
+    /// rather than the backend's committed blob (`App::diff_baseline`, `md_diff.rs`). Defaults to
+    /// `false` (the full uncommitted change set, the backend's committed blob).
     pub follow_scope: bool,
     /// The presentation to open into, rounded to what the *target* path can actually show
     /// (`App::round_diff_view`) either way. `None` (the default) resolves fresh from `[ui] diff_view`
@@ -27,9 +27,9 @@ pub(super) struct DiffOpen {
     /// opening one from the Git view.
     pub came_from_git_view: Option<bool>,
     /// A diff already fetched by the caller (`follow_jump`'s own `compute_gitdiff_lines`), seeded
-    /// into `diff_cache` so neither the first render nor `apply_diff_view`'s own `git_diff_lines`
-    /// read has to re-invoke git for something already in hand. `None` (the default) leaves the
-    /// cache empty (`invalidate_diff_caches` already clears it) for the render to populate lazily.
+    /// into `diff_cache` so the first render of the `Source` presentation doesn't have to re-invoke
+    /// git for something already in hand. `None` (the default) leaves the cache empty
+    /// (`invalidate_diff_caches` already clears it) for the render to populate lazily.
     pub seeded_diff: Option<DiffCache>,
 }
 

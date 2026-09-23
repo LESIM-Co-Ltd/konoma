@@ -67,13 +67,14 @@ pub(crate) fn count_apply_diff_view_calls<T>(f: impl FnOnce() -> T) -> (T, usize
 
 thread_local! {
     /// How many times `vcs::base_contents` ran **on this thread** — the call this measures is a
-    /// real backend invocation (a `jj log` + `jj file show` subprocess pair under jj, ~20-25ms),
-    /// so a caller that reaches it more than once per logical "what did the committed version look
-    /// like" question is doing real, avoidable work. `App::diff_rendered_sources` (memoized by path
-    /// in `diff_rendered_sources_cache`) and the single `preview_diff_baseline` fetch
-    /// `App::ensure_md_cache` now makes per build (threaded into `App::compute_gutter_align`
-    /// instead of being re-fetched independently at each of its call sites) both exist to keep
-    /// this at exactly one call per open/build. Thread-local for the same reason `STAT_CALLS` is.
+    /// real backend invocation (a `jj log` + `jj file show` subprocess pair under jj, ~20-25ms), so
+    /// a caller that reaches it more than once per logical "what did the committed version look
+    /// like" question is doing real, avoidable work. Since `docs/STATUS.md` ★未修正 item 4, the
+    /// only production caller is `App::compute_md_diff` (`src/app/md_diff.rs`), which runs on a
+    /// background worker thread — a test attaching `md_diff_tx` and driving the UI thread through
+    /// `count_base_contents_calls` should therefore see **zero** calls on the UI thread's own copy
+    /// of this counter (the worker's calls land on its own thread's copy instead). Thread-local for
+    /// the same reason `STAT_CALLS` is.
     static BASE_CONTENTS_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -100,15 +101,11 @@ thread_local! {
     /// How many times `preview::markdown::diff_align` ran **on this thread** — the call this
     /// measures is a `Doc::parse` pair + a Myers diff over block keys (`block_ops`), a real,
     /// measurable CPU cost on a large document (see `diff_align`'s own doc comment: ~3ms on a
-    /// 20k-line document in a release build). Before `App::compute_gutter_align`/`GutterAlign`
-    /// existed, an ordinary preview's gutter build called the equivalent parse+align twice (once
-    /// for the pre-render "will the gutter be active" decision, again for the final marks) and the
-    /// diff's `Rendered` presentation's first build called it up to three times (`App::
-    /// apply_diff_view`'s own flash decision, the pre-render decision, and the render itself) — all
-    /// for the identical `(old_src, new_src)` pair. `App::apply_diff_view`'s own call is the one
-    /// legitimate *separate* alignment left (it runs before `App::ensure_md_cache` even builds
-    /// anything, to decide a flash message) — everything reached through `App::ensure_md_cache`
-    /// itself now aligns exactly once per build. Thread-local for the same reason `STAT_CALLS` is.
+    /// 20k-line document in a release build). Since `docs/STATUS.md` ★未修正 item 4, the only
+    /// production caller is `App::compute_md_diff` (`src/app/md_diff.rs`), which runs on a
+    /// background worker thread — see `BASE_CONTENTS_CALLS`'s own doc comment above for what that
+    /// means for a UI-thread assertion via `count_diff_align_calls`. Thread-local for the same
+    /// reason `STAT_CALLS` is.
     static DIFF_ALIGN_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 

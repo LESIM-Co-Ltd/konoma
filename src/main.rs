@@ -43,8 +43,8 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use app::{
     App, FileOpResult, FilterPoolResult, FsBurstKinds, GitOpResult, IgnoredResult, KittyResult,
-    MdEncodeRequest, MdEncodeResult, MdImageResult, MediaResult, RemoteFetch, SortKey,
-    StatusResult,
+    MdDiffResult, MdEncodeRequest, MdEncodeResult, MdImageResult, MediaResult, RemoteFetch,
+    SortKey, StatusResult,
 };
 use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 
@@ -336,6 +336,10 @@ fn main() -> Result<()> {
     // repo it's ~5ms, and on a large repo it can take hundreds of ms, stalling the UI on every tab
     // switch/directory move.
     let (status_tx, status_rx) = std::sync::mpsc::channel::<StatusResult>();
+    // Markdown block-diff computation (`docs/STATUS.md` ★未修正 item 4: the ordinary preview's own
+    // change gutter and the diff's `Rendered` presentation both need "old/new text, preprocessed,
+    // `diff_align`'d" — I/O + a real CPU cost on a large document — also goes to a separate thread.
+    let (md_diff_tx, md_diff_rx) = std::sync::mpsc::channel::<MdDiffResult>();
     // Long-running file operations (copy/move/duplicate/delete) also go to a separate thread.
     // Pasting/deleting a large directory used to freeze input/rendering (design principle #4).
     let (fileop_tx, fileop_rx) = std::sync::mpsc::channel::<FileOpResult>();
@@ -357,6 +361,7 @@ fn main() -> Result<()> {
     app.attach_remote_md_loader(md_remote_tx);
     app.attach_git_loader(ignored_tx);
     app.attach_status_loader(status_tx);
+    app.attach_md_diff_loader(md_diff_tx);
     app.attach_fileop_runner(fileop_tx);
     app.attach_gitop_runner(gitop_tx);
     app.attach_filter_pool_loader(pool_tx);
@@ -401,6 +406,7 @@ fn main() -> Result<()> {
             md_enc: md_enc_res_rx,
             ignored: ignored_rx,
             status: status_rx,
+            md_diff: md_diff_rx,
             fileop: fileop_rx,
             gitop: gitop_rx,
             pool: pool_rx,
@@ -605,6 +611,7 @@ struct WorkerRx {
     md_enc: std::sync::mpsc::Receiver<MdEncodeResult>,
     ignored: std::sync::mpsc::Receiver<IgnoredResult>,
     status: std::sync::mpsc::Receiver<StatusResult>,
+    md_diff: std::sync::mpsc::Receiver<MdDiffResult>,
     fileop: std::sync::mpsc::Receiver<FileOpResult>,
     gitop: std::sync::mpsc::Receiver<GitOpResult>,
     pool: std::sync::mpsc::Receiver<FilterPoolResult>,
@@ -893,6 +900,15 @@ fn run(
         // Re-render since applying it updates the tree's change marker/branch name.
         while let Ok(result) = rx.status.try_recv() {
             if app.apply_statuses(result) {
+                needs_redraw = true;
+            }
+        }
+
+        // Apply the separate thread's Markdown block-diff completion(s) (all of them, if there are
+        // several; discard stale generations). Re-render since applying it either fills in the
+        // change gutter or replaces the `Rendered` presentation's "computing…" placeholder.
+        while let Ok(result) = rx.md_diff.try_recv() {
+            if app.apply_md_diff(result) {
                 needs_redraw = true;
             }
         }

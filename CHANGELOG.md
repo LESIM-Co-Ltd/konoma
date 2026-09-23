@@ -18,6 +18,10 @@ All notable changes to konoma are documented in this file. The format is based o
   text file, none at all for a non-text file (no hint is shown for those). `n`/`N` preserve the
   current presentation while cycling files. A file whose diff can't be compared as text at all
   (unreadable, non-UTF-8, or over 5 MB) falls back to `source` with a flash explaining why.
+  The block-diff itself (reading the committed baseline, preprocessing, aligning blocks) now runs
+  on a background thread rather than the UI thread: the ordinary preview's change gutter appears
+  once the comparison finishes rather than on the very first frame, and `rendered` shows a brief
+  "computing diff…" placeholder while its own comparison is still in flight.
 
 ## [0.28.6] - 2026-09-14
 

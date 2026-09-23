@@ -44,6 +44,15 @@ struct Sim {
     media_rx: Option<std::sync::mpsc::Receiver<crate::app::MediaResult>>,
     /// Receiver for background remote (http/https) Markdown image fetches (`with_media`). Drained by `drain_remote`.
     md_remote_rx: Option<std::sync::mpsc::Receiver<crate::app::RemoteFetch>>,
+    /// Receiver for background Markdown block-diff computation (`with_async_md_diff` —
+    /// `docs/STATUS.md` ★未修正 item 4). `None` = the synchronous fallback in `spawn_or_sync_md_diff`
+    /// is used (every test that doesn't explicitly opt in, matching every other `with_async_*`).
+    /// Every current user is a `git`-feature scenario (the block-diff itself isn't feature-gated,
+    /// but every test exercising the real background path happens to need a git repo too) —
+    /// `#[cfg(feature = "git")]` here, not `allow(dead_code)`, so a no-`git` build doesn't carry
+    /// dead weight for a path nothing there reaches.
+    #[cfg(feature = "git")]
+    md_diff_rx: Option<std::sync::mpsc::Receiver<crate::app::MdDiffResult>>,
 }
 
 impl Sim {
@@ -75,6 +84,8 @@ impl Sim {
             md_enc_rx: None,
             media_rx: None,
             md_remote_rx: None,
+            #[cfg(feature = "git")]
+            md_diff_rx: None,
         };
         sim.draw();
         sim
@@ -87,6 +98,19 @@ impl Sim {
         let (tx, rx) = std::sync::mpsc::channel();
         self.app.attach_fileop_runner(tx);
         self.fileop_rx = Some(rx);
+        self
+    }
+
+    /// Opt in to the **real background path** for Markdown block-diff computation (`docs/STATUS.md`
+    /// ★未修正 item 4 — the ordinary preview's own change gutter and the diff's `Rendered`
+    /// presentation): attach a loader channel just like `main` does, so `App::poll_md_diff` spawns
+    /// a worker thread instead of computing synchronously in place. Results are applied by
+    /// `drain_md_diff`.
+    #[cfg(feature = "git")]
+    fn with_async_md_diff(mut self) -> Sim {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.app.attach_md_diff_loader(tx);
+        self.md_diff_rx = Some(rx);
         self
     }
 
@@ -290,6 +314,23 @@ impl Sim {
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("ワーカーが結果を返す");
         assert!(self.app.apply_git_op(res), "現世代の結果は適用される");
+        self.draw();
+    }
+
+    /// Wait for the in-flight Markdown block-diff's result and apply it (the run loop's
+    /// `rx.md_diff.try_recv()` step), then redraw — the counterpart to `drain_git_ops` for
+    /// `with_async_md_diff`.
+    #[cfg(feature = "git")]
+    #[track_caller]
+    fn drain_md_diff(&mut self) {
+        let rx = self
+            .md_diff_rx
+            .as_ref()
+            .expect("with_async_md_diff() を呼んでいない");
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("ワーカーが結果を返す");
+        assert!(self.app.apply_md_diff(res), "現世代の結果は適用される");
         self.draw();
     }
 
@@ -2630,15 +2671,17 @@ fn e2e_md_preview_gutter_build_aligns_blocks_once() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Performance regression (performance investigation task, 段2): the diff's `Rendered`
-/// presentation aligns blocks (`preview::markdown::diff_align`) exactly **once** per
-/// `App::ensure_md_cache` build — not up to three times, as it did before `GutterAlign` existed
-/// (once for `App::apply_diff_view`'s own "is there anything to mark" flash decision, again for
-/// `ensure_md_cache`'s pre-render "will the gutter be active" decision, and a third time inside
-/// the render itself). `App::apply_diff_view`'s own alignment (run once, when the presentation is
-/// *chosen* — before `ensure_md_cache` ever builds anything) is the one legitimate call left
-/// outside `ensure_md_cache`'s own single one; this test pins both counts separately, and also
-/// pins that a later rebuild with no new "open" (e.g. a terminal resize) still aligns only once.
+/// Performance regression (`docs/STATUS.md` ★未修正 item 4): the diff's `Rendered` presentation
+/// aligns blocks (`preview::markdown::diff_align`) exactly **once in total** for an open + however
+/// many later rebuilds — not once per `App::ensure_md_cache` build (the pre-worker invariant this
+/// test used to pin — down from "up to three times" before `GutterAlign` existed to "once per
+/// build" once it did) and not even once per open+build pair. `App::apply_diff_view` now only
+/// *kicks* the block-diff (`App::poll_md_diff`); with no `md_diff_tx` attached (this test, like
+/// every test that doesn't explicitly wire the channel) that kick computes `compute_md_diff`
+/// synchronously and lands it in `md_diff_landed` right there — so by the time
+/// `App::ensure_md_cache` first builds, the alignment (`ops`) is already sitting in the landed
+/// result, and `App::compute_gutter_align` only re-parses `Doc`s from it (cheap, not `diff_align`).
+/// A later rebuild (a resize) reuses the same landed generation and aligns nothing at all.
 #[cfg(feature = "git")]
 #[test]
 fn diff_rendered_build_aligns_blocks_once_per_ensure_md_cache_call() {
@@ -2659,25 +2702,301 @@ fn diff_rendered_build_aligns_blocks_once_per_ensure_md_cache_call() {
     );
     assert_eq!(
         open_calls, 1,
-        "open_git_diff(apply_diff_view 自身のフラッシュ判定)は1回だけ align するはず"
+        "open_git_diff(kick された block-diff の同期フォールバック)は1回だけ align するはず"
     );
 
+    // The first build re-parses `Doc`s from the already-landed `ops` — no new align.
     let (_, build_calls) = crate::test_support::count_diff_align_calls(|| {
         let _ = s.app.md_layout(80);
     });
     assert_eq!(
-        build_calls, 1,
-        "ensure_md_cache の1回の構築で align は1回だけのはず(以前は最大3回)"
+        build_calls, 0,
+        "ensure_md_cache は landed 済みの ops を再利用するはず(align は 0 回)"
     );
 
-    // A later rebuild (e.g. a resize) with no new "open" must also align exactly once, not
-    // re-derive it once for the decision and again for the render.
+    // A later rebuild (e.g. a resize) with no new "open" must also align zero times — it still
+    // reuses the same landed generation, not just "at most once".
     let (_, rebuild_calls) = crate::test_support::count_diff_align_calls(|| {
         let _ = s.app.md_layout(60);
     });
     assert_eq!(
-        rebuild_calls, 1,
-        "幅変更での再構築でも align は1回だけのはず"
+        rebuild_calls, 0,
+        "幅変更での再構築でも align は 0 回のはず(landed ops を再利用)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- Markdown block-diff worker (`docs/STATUS.md` ★未修正 item 4, `src/app/md_diff.rs`) ---------
+//
+// The tests above (`diff_rendered_build_aligns_blocks_once_per_ensure_md_cache_call`,
+// `e2e_md_preview_gutter_*`) run with no channel attached, so `spawn_or_sync_md_diff` falls back
+// to computing synchronously — the same behavior as before this offload existed, which is exactly
+// why they still pass unmodified. The tests below opt into the **real background path**
+// (`with_async_md_diff`) to exercise the asynchronous behavior itself: the "computing…"/no-gutter
+// first frame, staleness on navigation, and the follow-session baseline.
+
+/// The diff's `Rendered` presentation shows a "computing…" placeholder (no marks, keys still live)
+/// on the first frame after opening while the block-diff is still running on the worker thread,
+/// and only shows the real marks once the result lands (`App::apply_md_diff`).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_rendered_shows_computing_placeholder_then_real_marks() {
+    let dir = sandbox("diff_rendered_computing_placeholder");
+    seed_repo_markdown(&dir);
+    // git_gutter off: this scenario is about the `Rendered` presentation's own kick, so keep it
+    // the only block-diff request in flight (with the gutter on, opening doc.md's ordinary
+    // preview via `s.enter()` below would *also* kick a `Gutter` request, and since each kick
+    // spawns its own thread, the two workers' completion order relative to each other is not
+    // guaranteed — `drain_md_diff`'s single `recv` could just as well pick up the unrelated one).
+    let mut cfg = Config::default();
+    cfg.ui.git_gutter = false;
+    let mut s = Sim::with_config(&canon(&dir), cfg).with_async_md_diff();
+    s.select("doc.md");
+    s.enter();
+    let path = s.app.tab.preview_path.clone().expect("プレビュー中のはず");
+
+    s.app.open_git_diff(&path);
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        crate::app::DiffView::Rendered,
+        "Rendered になっているはず(まだ結果は届いていない)"
+    );
+    s.draw();
+    s.see("computing diff");
+    assert!(
+        s.app
+            .diff_rendered_marks_for_test()
+            .unwrap_or_default()
+            .is_empty(),
+        "計算中は印が無いはず"
+    );
+    // The footer/keys must still be the Rendered presentation's own (not degraded) — the
+    // placeholder is a body substitute, not a different Surface.
+    s.see("R:");
+
+    s.drain_md_diff();
+    s.dont_see("computing diff");
+    let marks = s
+        .app
+        .diff_rendered_marks_for_test()
+        .expect("結果適用後は md_cache が構築されているはず");
+    assert!(!marks.is_empty(), "結果適用後は印があるはず: {marks:?}");
+    assert!(
+        marks
+            .iter()
+            .any(|(_, m)| *m == crate::preview::markdown::DiffMark::Added),
+        "New Section は Added のはず: {marks:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The ordinary decorated preview's own change gutter: the first frame (block-diff still in
+/// flight) draws full width with no gutter column at all — not a placeholder body, the real
+/// content, simply without the 1-cell marker column — and the gutter appears only once the
+/// worker's result lands.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_md_preview_gutter_appears_only_after_worker_result_lands() {
+    let dir = sandbox("md_preview_gutter_async");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir)).with_async_md_diff();
+    s.select("doc.md");
+    s.enter();
+    assert!(
+        s.app
+            .md_diff_marks_for_test()
+            .unwrap_or_default()
+            .is_empty(),
+        "計算中は印が無いはず"
+    );
+    assert!(
+        !s.app.md_gutter_active(),
+        "計算中はガター列を予約しない(本文が全幅のまま描画される)"
+    );
+    // The real content (not a placeholder) is already visible.
+    s.see("CHANGED paragraph");
+
+    s.drain_md_diff();
+    let marks = s
+        .app
+        .md_diff_marks_for_test()
+        .expect("結果適用後は md_cache が構築されているはず");
+    assert!(!marks.is_empty(), "結果適用後は印があるはず: {marks:?}");
+    assert!(s.app.md_gutter_active(), "結果適用後はガター列があるはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A block-diff result superseded by a later dispatch for the **same file** (re-opening its diff
+/// again before the first computation lands — the same generation-bump `App::invalidate_diff_caches`
+/// triggers on an FS refresh) is discarded on arrival, and the current generation's own result,
+/// received afterwards, still applies correctly (the run loop's own drain order — several messages
+/// in one `try_recv` loop — doesn't matter: stale ones are simply skipped).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_stale_md_diff_result_is_discarded_when_superseded_before_landing() {
+    let dir = sandbox("md_diff_stale_superseded");
+    seed_repo_markdown(&dir);
+    // git_gutter off — see `e2e_diff_rendered_shows_computing_placeholder_then_real_marks`'s own
+    // comment for why: this scenario needs exactly two `Rendered`-kind messages on the channel,
+    // in dispatch order, not a third `Gutter` one from `s.enter()` racing with them.
+    let mut cfg = Config::default();
+    cfg.ui.git_gutter = false;
+    let mut s = Sim::with_config(&canon(&dir), cfg).with_async_md_diff();
+    s.select("doc.md");
+    s.enter();
+    let path = s.app.tab.preview_path.clone().expect("プレビュー中のはず");
+
+    s.app.open_git_diff(&path);
+    assert_eq!(s.app.diff_view_for_test(), crate::app::DiffView::Rendered);
+    assert!(
+        s.app.md_diff_pending_for_current(),
+        "1回目の計算が進行中のはず"
+    );
+
+    // Before it lands, re-open the identical file's diff — a second dispatch (a fresh `gen`) that
+    // makes the first one's eventual result stale, exactly like an FS-refresh invalidation would.
+    s.app.open_git_diff(&path);
+    assert!(
+        s.app.md_diff_pending_for_current(),
+        "2回目の計算が進行中のはず"
+    );
+
+    // Drain both: since the two kicks each spawned their own worker thread, their completion
+    // order relative to each other is not guaranteed — only that **exactly one** of the two
+    // messages carries the current generation, whichever arrives first.
+    let a = s
+        .md_diff_rx
+        .as_ref()
+        .unwrap()
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("1件目のワーカー結果");
+    let b = s
+        .md_diff_rx
+        .as_ref()
+        .unwrap()
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("2件目のワーカー結果");
+    let a_applied = s.app.apply_md_diff(a);
+    let b_applied = s.app.apply_md_diff(b);
+    assert!(
+        a_applied != b_applied,
+        "2件のうちちょうど1件(現世代)だけが適用されるはず: a={a_applied} b={b_applied}"
+    );
+    s.draw();
+    let marks = s
+        .app
+        .diff_rendered_marks_for_test()
+        .expect("現世代の結果適用後は md_cache が構築されているはず");
+    assert!(!marks.is_empty(), "現世代の印があるはず: {marks:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A follow-session diff (`F` then jump into a changed file) computes its block-diff against the
+/// **follow-session baseline** (snapshot or pinned HEAD, `App::diff_baseline`'s `FollowSnapshot`/
+/// `FollowHead` branches), not the backend's committed blob — on the real background path, so this
+/// also proves the worker resolves a `FollowHead` sha via `git::blob_at` correctly off the UI
+/// thread.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_md_diff_rendered_uses_the_follow_baseline_on_the_worker_thread() {
+    let dir = sandbox("md_diff_follow_baseline_async");
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    run(&["init", "-q", "."]);
+    run(&["config", "user.email", "t@t"]);
+    run(&["config", "user.name", "t"]);
+    std::fs::write(dir.join("doc.md"), "# Title\n\nAAA\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "init"]);
+    // Clean at follow-start (committed as AAA) → the follow baseline is the pinned HEAD blob
+    // (`FollowHead`), fetched by the worker via `git::blob_at`, not a `FollowSnapshot`.
+    let dir = canon(&dir);
+    let mut s = Sim::new(&dir).with_async_md_diff();
+    s.key('F'); // follow on: pins the baseline
+    std::fs::write(dir.join("doc.md"), "# Title\n\nXXX\n").unwrap();
+    s.app.refresh_fs(true).unwrap();
+    s.draw();
+
+    // `follow_target_ok`/`open_git_diff_with` compare against `tab.root`, which is canonicalized
+    // (`App::new`) — passing a non-canonicalized path here would silently no-op `follow_jump`
+    // (the leading `starts_with` check fails) while `tab.diff_view`'s own already-`Rendered`
+    // default would still make the assertion below pass for the wrong reason.
+    s.app.follow_jump(&dir.join("doc.md"));
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        crate::app::DiffView::Rendered,
+        "フォロー由来でも Rendered のはず"
+    );
+    s.draw();
+    s.drain_md_diff();
+    let marks = s
+        .app
+        .diff_rendered_marks_for_test()
+        .expect("結果適用後は md_cache が構築されているはず");
+    assert!(
+        !marks.is_empty(),
+        "AAA→XXX がフォローベースライン(HEAD)との差として印になるはず: {marks:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The block-diff worker works identically under jj: `App::diff_baseline`'s `Vcs` branch resolves
+/// through `vcs::base_contents` regardless of backend, and `vcs::base_contents` itself dispatches
+/// to `jj::base_contents` (a `jj log` + `jj file show` subprocess pair) from **the worker thread**,
+/// not the UI thread — this is the scenario `docs/STATUS.md` ★未修正 item 4 names as the expensive
+/// one (~20-25ms per call) worth offloading in the first place. Skips gracefully if `jj` isn't
+/// installed (the same convention every other jj test in this suite uses).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_jj_diff_rendered_computes_the_block_diff_on_the_worker_thread() {
+    if !crate::vcs::jj::available() {
+        return;
+    }
+    let dir = sandbox("md_diff_jj_async");
+    let jj = |args: &[&str]| {
+        std::process::Command::new("jj")
+            .current_dir(&dir)
+            .env("HOME", &dir) // never touch the running machine's own jj config
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    assert!(jj(&["git", "init", "--no-colocate", "."]), "jj init");
+    std::fs::write(dir.join("doc.md"), "# Title\n\nOriginal.\n").unwrap();
+    assert!(jj(&["commit", "-m", "seed"]), "jj commit");
+    std::fs::write(dir.join("doc.md"), "# Title\n\nCHANGED.\n").unwrap();
+
+    let dir = canon(&dir);
+    let mut s = Sim::new(&dir).with_async_md_diff();
+    let path = dir.join("doc.md");
+    s.app.open_git_diff(&path);
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        crate::app::DiffView::Rendered,
+        "jj でも Rendered になっているはず"
+    );
+    assert!(
+        s.app.md_diff_pending_for_current(),
+        "jj でも別スレッドへ計算を投げているはず"
+    );
+
+    s.drain_md_diff();
+    let marks = s
+        .app
+        .diff_rendered_marks_for_test()
+        .expect("結果適用後は md_cache が構築されているはず");
+    assert!(
+        !marks.is_empty(),
+        "jj の baseline との差が印になるはず: {marks:?}"
     );
     std::fs::remove_dir_all(&dir).ok();
 }

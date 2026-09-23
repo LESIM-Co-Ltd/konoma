@@ -7,10 +7,10 @@ use super::*;
 enum DecoratedSource<'a> {
     /// The file's current on-disk content at `path` (the ordinary, non-diff preview).
     File,
-    /// Both versions' text, already through [`App::preprocess_md_src`] (front matter stripped,
-    /// footnotes/inline HTML already rewritten) — never read from disk inside `build_decorated`
-    /// itself. `App::ensure_md_cache` is the one caller that produces this, from
-    /// `App::diff_rendered_sources`.
+    /// Both versions' text, already through the pre-pass chain (front matter stripped, footnotes/
+    /// inline HTML already rewritten) — never read from disk inside `build_decorated` itself.
+    /// `App::ensure_md_cache` is the one caller that produces this, cloned out of the landed
+    /// `MdDiffOutcome::Ready` a background worker computed (`md_diff.rs`).
     Diff { old_pre: &'a str, new_pre: &'a str },
 }
 
@@ -62,7 +62,7 @@ impl GutterAlign<'_> {
 /// match what was decided, and a change on the file's last line loses the `width - 1` the gutter
 /// needs (`docs/FEATURE-MD-RENDERED-DIFF.md`'s own "ガター 1 セルを後付けすると...wrap して図が
 /// 下線に重なる" class of bug — the same failure mode this closes off a second entry point for).
-fn decorated_file_text(content: &crate::preview::text::TextContent) -> String {
+pub(super) fn decorated_file_text(content: &crate::preview::text::TextContent) -> String {
     let mut s = content.lines.join("\n");
     if content.truncated {
         s.push_str("\n\n— (省略: 表示上限に達しました) —");
@@ -101,26 +101,49 @@ impl App {
             return;
         }
 
-        // Whether the `Rendered` presentation is even readable (size cap, UTF-8) and whether it has
-        // anything to mark has already been validated at the moment `tab.diff_view` was *set* to
-        // `Rendered` (`App::apply_diff_view`, called from `open_git_diff`/`cycle_diff_view`/
-        // `diff_jump_changed`/`follow_jump` — every site that decides the presentation), not here.
-        // This is the render path: `docs/FEATURE-MD-RENDERED-DIFF.md` §5's "描画中に状態を変えて
-        // 表示に頼る設計をやめる" — a flash (or a `tab.diff_view` rewrite) set mid-render was
-        // confirmed, on a real terminal, not to show reliably (the footer for *this* frame may
-        // already be drawn, and nothing repaints again before the next keypress). So this only ever
-        // *reads* `tab.diff_view` and re-resolves the same sources `apply_diff_view` already found
-        // readable (`owned_diff_src` outlives the `DecoratedSource` borrowing it). A `None` here can
-        // only be a narrow race (the file/repo changed between that validation and this draw) —
-        // degrade silently by leaving the previous cache/frame in place rather than touching
-        // `tab.diff_view`/`self.flash` itself.
-        let owned_diff_src: Option<(String, String)> = if want_diff_rendered {
-            let Some(pair) = self.diff_rendered_sources(&path) else {
-                return;
-            };
-            Some(pair)
+        // The block-diff itself (I/O + preprocessing + `diff_align`) now runs on a separate thread
+        // (`docs/STATUS.md` ★未修正 item 4, `md_diff.rs`); this only polls the last landed result
+        // (`App::poll_md_diff`, which also kicks a fresh computation when none is in flight yet).
+        // `None` = not ready for this frame — degrade rather than block (see the two branches
+        // below), matching the render path's long-standing "never block the UI" contract.
+        let want_gutter = self.cfg.ui.git_gutter
+            && matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_)));
+        let outcome: Option<MdDiffOutcome> = if want_diff_rendered {
+            self.poll_md_diff(&path, MdDiffKind::Rendered)
+        } else if want_gutter {
+            self.poll_md_diff(&path, MdDiffKind::Gutter)
         } else {
             None
+        };
+
+        if want_diff_rendered {
+            match &outcome {
+                Some(MdDiffOutcome::Ready { .. }) => {} // fall through to the real render below
+                None => {
+                    // Not ready yet: draw a single centered "computing…" line through the
+                    // ordinary md_layout/md_slice pipeline (§1's "本文中央に1行「差分を計算中…」")
+                    // instead of a parallel render path. `App::apply_md_diff` clears `md_cache`
+                    // once the result lands, so the next frame rebuilds for real.
+                    self.md_cache = Some(Self::md_diff_computing_cache(path, width, self.lang));
+                    return;
+                }
+                Some(MdDiffOutcome::Unavailable) | Some(MdDiffOutcome::NoBaseline) => {
+                    // `App::apply_md_diff` already routes `Unavailable` away from `Rendered` the
+                    // moment it lands (and `Rendered` never actually produces `NoBaseline` —
+                    // `App::compute_md_diff`'s own doc comment). This remains only for the narrow
+                    // window between landing and the next event-loop tick — degrade silently by
+                    // leaving whatever was already on screen (the pre-worker "a None here can
+                    // only be a narrow race" contract).
+                    return;
+                }
+            }
+        }
+
+        let owned_diff_src: Option<(String, String)> = match &outcome {
+            Some(MdDiffOutcome::Ready {
+                old_pre, new_pre, ..
+            }) if want_diff_rendered => Some((old_pre.clone(), new_pre.clone())),
+            _ => None,
         };
         let cache_source = if owned_diff_src.is_some() {
             MdCacheSource::Diff
@@ -132,40 +155,19 @@ impl App {
             None => DecoratedSource::File,
         };
 
-        // The ordinary (non-diff) preview's own change-gutter baseline — fetched **once** for the
-        // whole build, not once for the decision below and again for the actual marks further down
-        // (a second, redundant `vcs::base_contents` call — a subprocess under jj, ~20-25ms each —
-        // used to happen here before `App::compute_gutter_align` threaded this single fetch through
-        // both uses). `None` for `Diff` sources (that branch already has its own `old_pre`/
-        // `new_pre` from `owned_diff_src` above) and — mirroring `compute_gutter_align`'s own
-        // early-return, so this never calls the backend in a case that fn didn't either — whenever
-        // the gutter is off or the preview isn't Markdown.
-        let file_baseline: Option<String> = match &source {
-            DecoratedSource::File
-                if self.cfg.ui.git_gutter
-                    && matches!(self.tab.preview_kind, Some(PreviewKind::Markdown(_))) =>
-            {
-                self.preview_diff_baseline(&path)
-            }
-            _ => None,
-        };
-
-        // The block-level alignment for this build, computed **once** and reused below by both
-        // the pre-render "will the gutter be non-empty" decision and whichever of `build_decorated`
-        // (`Diff`'s own render) / the final marks step (`File`'s own `preview_marks` call) actually
-        // draws from it — `App::compute_gutter_align`'s own doc comment has the full "why" and the
-        // measured duplication this closes.
-        //
-        // Deciding gutter activity **before** any width-dependent rendering matters on its own
-        // terms too (`App::compute_gutter_align`'s doc comment on `gutter_active`'s history — a
-        // real bug, confirmed on a real terminal): rendering the body at the full `width` and only
+        // The block-level alignment for this build: `outcome`'s own `ops` (already computed by
+        // the worker) plus a fresh `Doc::parse` of `old_pre`/`new_pre` — cheap (~1.7ms at 20k
+        // lines) next to the I/O + `block_ops` the worker already paid for. Deciding gutter
+        // activity **before** any width-dependent rendering matters on its own terms too
+        // (`App::compute_gutter_align`'s doc comment on `gutter_active`'s history — a real bug,
+        // confirmed on a real terminal): rendering the body at the full `width` and only
         // prepending the 1-cell gutter afterwards let a full-width line (a heading's own underline
         // rule, a centered mermaid/image placeholder row) overflow by exactly 1 column — wrapping
         // into a spurious extra row, and desynchronizing `row_prefix`/`ImagePlacement.line` from
         // what `md_slice` actually draws (a diagram ending up drawn *over* the heading-rule row
         // below it). Rendering 1 column narrower up front keeps the gutter+body total at exactly
         // `width`, matching what the previous — no-gutter — layout already fit into.
-        let align = self.compute_gutter_align(&path, &source, file_baseline.as_deref());
+        let align = Self::compute_gutter_align(&source, outcome.as_ref());
         let gutter_active = align.is_active();
         let render_width = if gutter_active {
             width.saturating_sub(1)
@@ -300,20 +302,20 @@ impl App {
         // `DecoratedSource::Diff` arm already computed it via `render_markdown_diff_from_parts`.
         //
         // `File`'s own marks are derived straight from `align`'s already-computed `ops` (`preview::
-        // markdown::preview_marks(&ops, block_rows)`) rather than re-preprocessing `file_baseline`
-        // and re-parsing+re-diffing it against `decorated.pre_src` from scratch (what the old,
-        // now-removed `preview_diff_marks` did) — see `App::compute_gutter_align`'s own doc comment
-        // for why this is safe: `align`'s `new_pre` and `decorated.pre_src` are the identical string
-        // (both derived from the same on-disk bytes through the identical `decorated_file_text` +
-        // `preprocess_md_src` chain), so `ops`'s block indices line up with `decorated.extras.
-        // block_rows` exactly as if they'd been computed from `decorated.pre_src` directly.
+        // markdown::preview_marks(&ops, block_rows)`) rather than re-parsing/re-diffing anything
+        // here: `align`'s `new_pre` (the worker's own `MdDiffOutcome::Ready::new_pre`) and
+        // `decorated.pre_src` are the identical string (both derived from the same on-disk bytes
+        // through the identical `decorated_file_text` + preprocessing chain — `App::compute_md_diff`
+        // and `App::build_decorated_file` respectively), so `ops`'s block indices line up with
+        // `decorated.extras.block_rows` exactly as if they'd been computed from `decorated.pre_src`
+        // directly.
         let (diff_marks, preview_gutter_marks) = match cache_source {
             // §5's "front matter だけの変更" degeneration (the block-diff finds nothing because
-            // front matter is stripped before either side ever reaches `Doc::parse`, yet the file
-            // does have a diff) is explained with a flash — but that decision was already made in
-            // `App::apply_diff_view`, at the moment `tab.diff_view` became `Rendered`, not here (see
-            // this function's own doc comment on `owned_diff_src` above for why the render path
-            // itself never writes `self.flash`).
+            // front matter is stripped before either side ever reaches `Doc::parse`, yet the raw
+            // file bytes do differ) is explained with a flash — but that decision was already made
+            // when the result landed (`App::apply_md_diff`, `md_diff.rs`), not here (see this
+            // function's own doc comment on `outcome` above for why the render path itself never
+            // writes `self.flash`).
             MdCacheSource::Diff => (std::mem::take(&mut decorated.diff_marks), Vec::new()),
             MdCacheSource::File => {
                 let pgm = match &align {
@@ -346,162 +348,84 @@ impl App {
             preview_gutter_marks,
             diff_marks,
             source: cache_source,
+            is_diff_computing_placeholder: false,
         });
     }
 
-    /// The block-level alignment (`preview::markdown::diff_align`) computed for `source` — or
-    /// `None` when there is nothing to align (gutter off / non-Markdown / no baseline). Decided
-    /// without rendering anything (this fn's own former name, `gutter_will_be_active`, and
-    /// `ensure_md_cache`'s own doc comment cover why that has to happen *before* the width-
-    /// dependent render).
-    ///
-    /// This **is** the fix for a real, measured duplication: before it existed, the equivalent
-    /// boolean-only decision (`diff_has_any_change`) and the later, separate step that turned the
-    /// identical `(old, new)` pair into either the `Rendered` presentation's actual render
-    /// (`build_decorated`'s `Diff` arm) or the ordinary preview's final marks
-    /// (`preview_diff_marks`) each re-parsed and re-diffed the same two documents from scratch —
-    /// a 20k-line synthetic document measured this as ~3.3ms of `Doc::parse`+`block_ops` paid
-    /// twice for `File` sources and up to three times for `Diff` sources (once here, again in
-    /// `gutter_will_be_active`, again inside `render_markdown_diff_aligned`) per single build/open.
-    /// `GutterAlign` is computed once, here, and threaded through both `build_decorated` (to
-    /// render `Diff` sources from the already-parsed `Doc`s, `preview::markdown::
-    /// render_markdown_diff_from_parts`) and the final marks step (`preview::markdown::
-    /// preview_marks(&ops, block_rows)` directly, for `File` sources) instead.
-    ///
-    /// `Diff` reuses `old_pre`/`new_pre` verbatim (`App::diff_rendered_sources` already resolved
-    /// them) and always aligns (the `Rendered` presentation's own marks are unconditional, not
-    /// gated by `[ui] git_gutter`). `File`'s `[ui] git_gutter`/Markdown-only/"no baseline" rules
-    /// are mirrored via `file_baseline` already being `None` in those cases
-    /// (`ensure_md_cache`'s own guard on that fetch) — this fn doesn't re-check any of them.
-    /// `file_baseline` is `ensure_md_cache`'s own single `preview_diff_baseline` fetch for this
-    /// build, passed in rather than re-fetched here, so this and the earlier baseline fetch read
-    /// the identical string without a second call to the backend.
+    /// The block-level alignment for a build, derived from `outcome` (the landed `MdDiffOutcome`
+    /// `App::poll_md_diff` returned — see `md_diff.rs`) rather than computed here: the worker
+    /// already ran `diff_align`'s `block_ops` half, so this only redoes the `Doc::parse` half (a
+    /// `Doc<'a>` borrows from `old_pre`/`new_pre`, so it cannot itself cross the channel —
+    /// `MdDiffOutcome`'s own doc comment). `None`/`Unavailable`/`NoBaseline` all mean "nothing to
+    /// align, nothing to draw" — `ensure_md_cache`'s own branches already route `want_diff_rendered`
+    /// away from calling this at all in the `Unavailable`/`NoBaseline` cases, so in practice only
+    /// `File` sources reach this match arm with anything other than `Ready`.
     fn compute_gutter_align<'a>(
-        &self,
-        path: &Path,
         source: &DecoratedSource<'a>,
-        file_baseline: Option<&str>,
+        outcome: Option<&MdDiffOutcome>,
     ) -> GutterAlign<'a> {
         match source {
-            DecoratedSource::Diff { old_pre, new_pre } => {
-                let (old, new, ops) = crate::preview::markdown::diff_align(old_pre, new_pre);
-                GutterAlign::Diff { old, new, ops }
-            }
-            DecoratedSource::File => {
-                // `file_baseline` is already `None` here whenever `[ui] git_gutter` is off or the
-                // preview isn't Markdown (`ensure_md_cache`'s own guard on the fetch) — this arm
-                // doesn't need to re-check either.
-                let Some(old_raw) = file_baseline else {
-                    return GutterAlign::None;
-                };
-                let Ok(content) = crate::preview::text::load(path) else {
-                    return GutterAlign::None;
-                };
-                // Must read+join exactly the way `build_decorated_file` itself will (both go
-                // through `decorated_file_text`) — `ordinary_preview_gutter_decision_matches_
-                // render_for_a_truncated_file` (app/tests.rs) pins this: predicting against a
-                // *different* string than the render actually parses is the class of bug that
-                // test exists to catch (a full-width line growing 1 column past what the gutter
-                // decision assumed and wrapping into a spurious extra row).
-                let new_raw = decorated_file_text(&content);
-                let old_pre = self.preprocess_md_src(old_raw);
-                let new_pre = self.preprocess_md_src(&new_raw);
-                let (_, _, ops) = crate::preview::markdown::diff_align(&old_pre, &new_pre);
-                GutterAlign::File { ops }
-            }
+            DecoratedSource::Diff { old_pre, new_pre } => match outcome {
+                Some(MdDiffOutcome::Ready { ops, .. }) => {
+                    let old = crate::preview::markdown::model::Doc::parse(old_pre);
+                    let new = crate::preview::markdown::model::Doc::parse(new_pre);
+                    GutterAlign::Diff {
+                        old,
+                        new,
+                        ops: ops.clone(),
+                    }
+                }
+                _ => GutterAlign::None,
+            },
+            DecoratedSource::File => match outcome {
+                Some(MdDiffOutcome::Ready { ops, .. }) => GutterAlign::File { ops: ops.clone() },
+                // `Unavailable`/`NoBaseline`/not-ready-yet: no baseline to compare — matches the
+                // pre-worker "an untracked file simply has no gutter" contract.
+                _ => GutterAlign::None,
+            },
         }
     }
 
-    /// `diff_rendered_sources_uncached`, memoized by path in `self.diff_rendered_sources_cache`.
-    /// `App::apply_diff_view` (deciding/validating the presentation) and `App::ensure_md_cache`
-    /// (actually building it, moments later in the same open) both need this for the identical
-    /// path — before this cache existed they each independently re-read the file and re-invoked the
-    /// backend (`vcs::base_contents`/`follow_baseline_contents` — a subprocess under jj, ~20-25ms)
-    /// to reach the same answer. Safe to reuse across those two calls because every input this reads
-    /// (the file's own bytes, `diff_follow_scope`, `follow_diff_full`, the baseline) only ever
-    /// changes at a call to `App::invalidate_diff_caches`, which also drops this cache — see that
-    /// fn's own doc comment for the exhaustive list of call sites (a fresh file's diff opened, the
-    /// working tree changed, a follow session (re)started, the `f` scope toggle).
-    fn diff_rendered_sources(&mut self, path: &Path) -> Option<(String, String)> {
-        if let Some((cached_path, v)) = &self.diff_rendered_sources_cache {
-            if cached_path == path {
-                return v.clone();
-            }
+    /// A single centered "computing…" line, shown in place of the diff's `Rendered` presentation
+    /// while its block-diff is still in flight (`docs/STATUS.md` ★未修正 item 4) — built through
+    /// the ordinary `MdCache` shape so `md_layout`/`md_slice` render it with no code of their own.
+    fn md_diff_computing_cache(path: PathBuf, width: u16, lang: crate::i18n::Lang) -> MdCache {
+        MdCache {
+            path,
+            width,
+            lines: vec![Line::from(tr(lang, crate::i18n::Msg::DiffComputing))],
+            items: Vec::new(),
+            images: Vec::new(),
+            src_lines: 0,
+            max_line_cols: 0,
+            row_prefix: Vec::new(),
+            fence_rows: 0,
+            anchors: Vec::new(),
+            details_states: Vec::new(),
+            pre_src: String::new(),
+            pre_origin: crate::preview::markdown::identity_origin(""),
+            preview_gutter_marks: Vec::new(),
+            diff_marks: Vec::new(),
+            source: MdCacheSource::Diff,
+            is_diff_computing_placeholder: true,
         }
-        let v = self.diff_rendered_sources_uncached(path);
-        self.diff_rendered_sources_cache = Some((path.to_path_buf(), v.clone()));
-        v
     }
 
-    /// `old`/`new` text for the diff's `Rendered` presentation, already through the identical
-    /// pre-pass chain the renderer itself parses (`App::preprocess_md_src`). `new` is the file's
-    /// current on-disk bytes; `old` is the committed baseline the diff's `Source` presentation
-    /// already compares against — the follow-session snapshot while `diff_follow_scope` is active
-    /// and not toggled to the full range (`App::follow_baseline_contents`, the same baseline
-    /// `App::compute_gitdiff_lines` selects), the backend's committed blob otherwise
-    /// (`crate::vcs::base_contents`). No committed baseline at all (`None` — an untracked file, or
-    /// one created since follow-start) reads as an empty string, matching §5's "旧版が無い…全ブロック
-    /// Insert" rule — the *same* "missing = empty" contract `follow_baseline_diff` already applies
-    /// to the unified diff. `None` overall only for a genuine read/size/encoding failure on either
-    /// side (`ensure_md_cache`'s own caller then falls back to `Source`).
+    /// Sets `tab.diff_view` to `view` for `path`'s diff. Every site that *decides* the presentation
+    /// calls this instead of assigning `tab.diff_view` directly: `App::open_git_diff` (a fresh
+    /// open), `App::cycle_diff_view` (`R`), `diff_jump_changed`'s own restore (`n`/`N`), and
+    /// `App::follow_jump`'s re-validation after it corrects `diff_follow_scope` (that fn's own doc
+    /// comment explains why it must run again there — `open_git_diff` always resets the scope to
+    /// `false` itself before this runs the first time).
     ///
-    /// `follow_baseline_contents` only exists on a `git`-feature build; on a no-`git` build,
-    /// `diff_follow_scope` can never actually be `true` in practice (`follow_jump`'s own diff-
-    /// opening branch only sets it after a non-empty `compute_gitdiff_lines`, which is always empty
-    /// there — `crate::git::file_diff`'s no-`git` stub), so falling straight through to
-    /// `crate::vcs::base_contents` there is not a behavior change, only what lets this function
-    /// compile without the feature at all.
-    ///
-    /// Uncached — call `diff_rendered_sources` instead unless this is genuinely a fresh answer's
-    /// only source (that fn's own body).
-    fn diff_rendered_sources_uncached(&self, path: &Path) -> Option<(String, String)> {
-        let new_bytes = std::fs::read(path).ok()?;
-        if new_bytes.len() > FOLLOW_BASELINE_FILE_CAP {
-            return None;
-        }
-        let new_raw = String::from_utf8(new_bytes).ok()?;
-
-        #[cfg(feature = "git")]
-        let old_bytes = if self.diff_follow_scope && !self.follow_diff_full {
-            self.follow_baseline_contents(path)
-        } else {
-            crate::vcs::base_contents(&self.tab.root, path)
-        };
-        #[cfg(not(feature = "git"))]
-        let old_bytes = crate::vcs::base_contents(&self.tab.root, path);
-
-        let old_bytes = match old_bytes {
-            Some(b) if b.len() > FOLLOW_BASELINE_FILE_CAP => return None,
-            Some(b) => b,
-            None => Vec::new(),
-        };
-        let old_raw = String::from_utf8(old_bytes).ok()?;
-
-        Some((
-            self.preprocess_md_src(&old_raw),
-            self.preprocess_md_src(&new_raw),
-        ))
-    }
-
-    /// Sets `tab.diff_view` to `view` for `path`'s diff, resolving **now** — not lazily, inside a
-    /// later render — everything the `Rendered` presentation needs to already be true by the time
-    /// it is the one on screen (`docs/FEATURE-MD-RENDERED-DIFF.md` §5's "描画中に状態を変えて表示に
-    /// 頼る設計をやめる"; `App::ensure_md_cache`'s own doc comment has the full "why": a flash set
-    /// mid-render was confirmed, on a real terminal, not to show reliably before the next keypress).
-    /// Every site that *decides* the presentation calls this instead of assigning `tab.diff_view`
-    /// directly: `App::open_git_diff` (a fresh open), `App::cycle_diff_view` (`R`),
-    /// `diff_jump_changed`'s own restore (`n`/`N`), and `App::follow_jump`'s re-validation after it
-    /// corrects `diff_follow_scope` (that fn's own doc comment explains why it must run again there
-    /// — `open_git_diff` always resets the scope to `false` itself before this runs the first time).
-    ///
-    /// Non-`Rendered` values need no validation (`Source`/`Preview` have no block-diff of their own
-    /// to be unreadable or empty) and are set as-is. For `Rendered`: `App::diff_rendered_sources`
-    /// unreadable (over the size cap, not valid UTF-8, ...) rounds down to `Source` with a flash
-    /// (`DiffRenderedUnavailable`); readable but with nothing to mark despite a non-empty raw diff —
-    /// `App::diff_has_any_change`'s own "front matter only changed" degeneration (front matter is
-    /// stripped before either side ever reaches `Doc::parse`) — flashes `DiffRenderedFrontMatterOnly`
-    /// while staying `Rendered` (there is something to look at, just nothing marked; explaining why
-    /// beats leaving the reader to wonder if the feature is broken).
+    /// For `Rendered`, this only **kicks** the block-diff computation (`App::poll_md_diff`) so it is
+    /// already in flight by the time the first frame draws — it no longer validates synchronously.
+    /// Whether the presentation turns out `Unavailable` (rounds down to `Source` with a flash) or
+    /// has nothing to mark but front matter (`DiffRenderedFrontMatterOnly`) is decided once the
+    /// result actually lands (`App::apply_md_diff`, run from the event loop's message-draining
+    /// step), not here and not from the render path (`docs/FEATURE-MD-RENDERED-DIFF.md` §5's "描画
+    /// 中に状態を変えて表示に頼る設計をやめる" — a flash/`tab.diff_view` rewrite set mid-render was
+    /// confirmed, on a real terminal, not to show reliably before the next keypress).
     pub(super) fn apply_diff_view(&mut self, view: DiffView, path: &Path) {
         #[cfg(test)]
         crate::test_support::note_apply_diff_view_call();
@@ -509,60 +433,7 @@ impl App {
         if view != DiffView::Rendered {
             return;
         }
-        match self.diff_rendered_sources(path) {
-            None => {
-                self.tab.diff_view = DiffView::Source;
-                self.flash = Some(tr(self.lang, crate::i18n::Msg::DiffRenderedUnavailable).into());
-            }
-            Some((old_pre, new_pre)) => {
-                if !crate::preview::markdown::diff_has_any_change(&old_pre, &new_pre)
-                    && !self.git_diff_lines().is_empty()
-                {
-                    self.flash =
-                        Some(tr(self.lang, crate::i18n::Msg::DiffRenderedFrontMatterOnly).into());
-                }
-            }
-        }
-    }
-
-    /// The committed baseline for `App::preview_diff_marks`'s own `old_src`: `None` outside a
-    /// repository, for an untracked/newly-added file (nothing committed to compare against — the
-    /// caller treats that the same as "no gutter" rather than drawing every block `Added`, matching
-    /// the code/text gutter's own "no marks at all outside a repo" contract, not the *diff*
-    /// presentations' "empty baseline = all-added" one: this is an ordinary content preview, not a
-    /// diff view, so an untracked file simply has no gutter to show, the same as it has none today),
-    /// or when the bytes aren't valid UTF-8 (binary/mixed encoding — never attempted as Markdown).
-    fn preview_diff_baseline(&self, path: &Path) -> Option<String> {
-        let bytes = crate::vcs::base_contents(&self.tab.root, path)?;
-        String::from_utf8(bytes).ok()
-    }
-
-    /// The exact pre-pass chain `build_decorated` applies to a Markdown file's raw bytes before
-    /// handing the result to the renderer — front matter strip, then footnotes, then inline HTML,
-    /// each gated by its own `[ui] md_*` setting — factored out so `compute_gutter_align`/
-    /// `diff_rendered_sources` can put an arbitrary source string (never read from disk by this
-    /// function, so it has no `LineOrigin` of its own to thread through) through the identical
-    /// chain without a second, hand-copied mirror of it. The `LineOrigin` `build_decorated` itself
-    /// keeps for the *current* file (for the checkbox-toggle write-back path) is discarded here — a
-    /// diff comparison only needs the resulting text, never a line's own provenance.
-    fn preprocess_md_src(&self, src: &str) -> String {
-        let src = if self.cfg.ui.md_frontmatter {
-            crate::preview::markdown::strip_front_matter(src).1
-        } else {
-            src.to_string()
-        };
-        let origin = crate::preview::markdown::identity_origin(&src);
-        let (src, origin) = if self.cfg.ui.md_footnotes {
-            crate::preview::markdown::process_footnotes_traced(&src, &origin)
-        } else {
-            (src, origin)
-        };
-        let (src, _origin) = if self.cfg.ui.md_inline_html {
-            crate::preview::markdown::process_inline_html_traced(&src, &origin)
-        } else {
-            (src, origin)
-        };
-        src
+        self.poll_md_diff(path, MdDiffKind::Rendered);
     }
 
     /// The current decorated Markdown cache's first change-gutter mark, as a **visual** (post-wrap)
@@ -592,6 +463,16 @@ impl App {
         self.md_cache
             .as_ref()
             .is_some_and(|c| !c.diff_marks.is_empty() || !c.preview_gutter_marks.is_empty())
+    }
+
+    /// Whether the current decorated Markdown cache is the `Rendered` presentation's "computing…"
+    /// placeholder (`App::md_diff_computing_cache`) rather than a real render — see
+    /// `MdCache::is_diff_computing_placeholder`'s own doc comment for why `ui/preview.rs` needs to
+    /// ask this before consuming `App::take_diff_scroll_pending`.
+    pub(crate) fn md_diff_is_computing_placeholder(&self) -> bool {
+        self.md_cache
+            .as_ref()
+            .is_some_and(|c| c.is_diff_computing_placeholder)
     }
 
     /// The default open state of a `<details>` block from `ui.md_details` and its `open` attribute

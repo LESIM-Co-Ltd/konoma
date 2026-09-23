@@ -16878,6 +16878,284 @@ fn apply_statuses_with_a_panic_shaped_result_still_clears_pending() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// --- Markdown block-diff worker (`docs/STATUS.md` ★未修正 item 4, `src/app/md_diff.rs`) ---------
+
+/// The ordinary decorated preview's change gutter is computed on a separate thread: the moment
+/// `ensure_md_cache` (via `md_layout`) first builds for a Markdown file with `[ui] git_gutter` on,
+/// it must dispatch to the worker and draw **without** the gutter for that frame (no blocking), not
+/// compute `vcs::base_contents`/`diff_align` inline. Only once the worker's result is applied does
+/// the gutter appear.
+#[cfg(feature = "git")]
+#[test]
+fn md_diff_gutter_is_offloaded_to_a_worker_thread() {
+    let dir = unique_tmp("konoma_md_diff_gutter_async_offload");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nOriginal.\n").unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, "# Title\n\nCHANGED.\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_md_diff_loader(tx);
+
+    let i = app
+        .tab
+        .entries
+        .iter()
+        .position(|e| e.path.file_name().is_some_and(|n| n == "doc.md"))
+        .expect("doc.md がツリーにあるはず");
+    app.tab.selected = i;
+    app.tree_activate().unwrap();
+    // `tree_activate` alone doesn't build the decoration cache — `md_layout` (`ensure_md_cache`,
+    // the render path's own entry point) is the one that polls/kicks the block-diff.
+    let _ = app.md_layout(80);
+
+    // The old (pre-worker) implementation computed the baseline+alignment inline right here, so
+    // the gutter would already be populated. It must not be: a computation was merely dispatched.
+    assert!(
+        app.md_diff_pending_for_current(),
+        "別スレッドへ計算を投げているはず"
+    );
+    assert!(
+        app.md_diff_marks_for_test().unwrap_or_default().is_empty(),
+        "UI スレッドでは block-diff を計算しない(旧実装ならここで印が付いて落ちる)"
+    );
+    assert!(
+        !app.md_gutter_active(),
+        "計算中はガター列を予約しない(本文が全幅のまま描画される)"
+    );
+
+    // It's only reflected once the worker's result is received and applied.
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_md_diff(res), "現世代の結果は適用される");
+    assert!(
+        !app.md_diff_pending_for_current(),
+        "適用で pending が解ける"
+    );
+    // `apply_md_diff` only invalidates `md_cache`; the next `md_layout` rebuilds it for real.
+    let _ = app.md_layout(80);
+    let marks = app
+        .md_diff_marks_for_test()
+        .expect("md_cache が構築されているはず");
+    assert!(!marks.is_empty(), "適用後は印があるはず: {marks:?}");
+    assert!(app.md_gutter_active(), "適用後はガター列があるはず");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The diff's `Rendered` presentation follows the identical offload contract as the ordinary
+/// gutter above: `App::apply_diff_view` only kicks the computation (no synchronous
+/// `vcs::base_contents`/`diff_align` on the UI thread), and the caller sees `None` back from
+/// `App::poll_md_diff` until the worker lands.
+#[cfg(feature = "git")]
+#[test]
+fn md_diff_rendered_is_offloaded_to_a_worker_thread() {
+    let dir = unique_tmp("konoma_md_diff_rendered_async_offload");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nOriginal.\n").unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, "# Title\n\nCHANGED.\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.picker = Some(ratatui_image::picker::Picker::halfblocks());
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_md_diff_loader(tx);
+
+    let (base_calls, align_calls) = {
+        let (align_result, base) = crate::test_support::count_base_contents_calls(|| {
+            crate::test_support::count_diff_align_calls(|| {
+                app.open_git_diff(&doc);
+            })
+        });
+        (base, align_result.1)
+    };
+    assert_eq!(
+        app.diff_view_for_test(),
+        crate::app::DiffView::Rendered,
+        "Rendered になっているはず(まだ結果は届いていない)"
+    );
+    assert_eq!(
+        base_calls, 0,
+        "UI スレッドでは base_contents を呼ばない(ワーカースレッドの別カウンタに乗る)"
+    );
+    assert_eq!(
+        align_calls, 0,
+        "UI スレッドでは diff_align を呼ばない(ワーカースレッドの別カウンタに乗る)"
+    );
+    assert!(
+        app.md_diff_pending_for_current(),
+        "別スレッドへ計算を投げているはず"
+    );
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("ワーカーが結果を返す");
+    assert!(app.apply_md_diff(res), "現世代の結果は適用される");
+    // Sanity: the worker really did run diff_align/base_contents on *its own* thread — the recv
+    // above only returns after it finished, so by now the work provably happened somewhere.
+    let _ = app.md_layout(80);
+    let marks = app
+        .diff_rendered_marks_for_test()
+        .expect("結果適用後は md_cache が構築されているはず");
+    assert!(!marks.is_empty(), "結果適用後は印があるはず: {marks:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A block-diff result whose generation no longer matches (an FS refresh / another open
+/// invalidated it while the worker was still computing) is discarded, exactly like
+/// `apply_statuses`'s own staleness contract — `App::apply_md_diff`'s `gen` check, not a
+/// panic-shaped fallback this time: this pins the *ordinary* staleness path (a second dispatch
+/// superseding the first), matching `md_diff_gen`'s own doc comment on `App::invalidate_md_diff`.
+#[cfg(feature = "git")]
+#[test]
+fn stale_md_diff_result_is_rejected_after_invalidate_diff_caches() {
+    let dir = unique_tmp("konoma_md_diff_stale_rejected");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nOriginal.\n").unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, "# Title\n\nCHANGED.\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_md_diff_loader(tx);
+
+    app.open_git_diff(&doc);
+    assert_eq!(app.diff_view_for_test(), crate::app::DiffView::Rendered);
+    assert!(app.md_diff_pending_for_current(), "計算中のはず");
+
+    // Simulate an FS refresh landing before the worker's result does (the exact call
+    // `refresh_fs_inner` makes on every event).
+    app.invalidate_diff_caches();
+
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("ワーカーが結果を返す");
+    assert!(
+        !app.apply_md_diff(res),
+        "無効化後に届いた古い世代の結果は破棄されるはず"
+    );
+    assert!(
+        app.md_diff_marks_for_test().is_none() || app.md_diff_marks_for_test().unwrap().is_empty(),
+        "破棄された結果は画面に反映されないはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A worker panic (`compute_or_fallback`'s catch) must not latch `md_diff_pending` forever — the
+/// same boundary `apply_statuses_with_a_panic_shaped_result_still_clears_pending` pins for status,
+/// tested the identical way (feeding `apply_md_diff` the fallback *shape* a caught panic sends,
+/// since a real worker panic can't be induced on demand from a test).
+#[test]
+fn apply_md_diff_with_a_panic_shaped_result_still_clears_pending() {
+    let dir = unique_tmp("konoma_apply_md_diff_panic_shaped");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let path = dir.join("doc.md");
+    app.md_diff_gen = 9;
+    app.md_diff_pending = Some((path.clone(), crate::app::MdDiffKind::Gutter));
+
+    let panic_fallback = crate::app::MdDiffResult {
+        gen: 9,
+        path: path.clone(),
+        kind: crate::app::MdDiffKind::Gutter,
+        outcome: crate::app::MdDiffOutcome::Unavailable,
+    };
+    assert!(app.apply_md_diff(panic_fallback), "現世代なので適用される");
+    assert!(
+        app.md_diff_pending.is_none(),
+        "パニックのフォールバック結果でも pending が解ける(スピナーが固着せず\
+         ガター/Rendered も固まらない)"
+    );
+
+    // A stale-generation fallback must still be discarded, and must not clear the *current* pending.
+    app.md_diff_gen = 10;
+    app.md_diff_pending = Some((path.clone(), crate::app::MdDiffKind::Gutter));
+    let stale_panic_fallback = crate::app::MdDiffResult {
+        gen: 9,
+        path,
+        kind: crate::app::MdDiffKind::Gutter,
+        outcome: crate::app::MdDiffOutcome::Unavailable,
+    };
+    assert!(
+        !app.apply_md_diff(stale_panic_fallback),
+        "古い世代のフォールバックは捨てる"
+    );
+    assert!(
+        app.md_diff_pending.is_some(),
+        "stale では pending を残す(現行計算待ちのまま)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The diff's `Rendered` presentation works on a no-`git` build too (not `#[cfg(feature = "git")]`
+/// — deliberately runs under both). `App::diff_baseline`'s `Vcs` branch resolves through
+/// `vcs::base_contents`'s no-git stub (always `None`), so an untracked/no-repository file's block-
+/// diff is §5's "旧版が無い→全ブロック Insert", not a broken/empty feature.
+#[test]
+fn diff_rendered_works_without_the_git_feature() {
+    let dir = unique_tmp("konoma_diff_rendered_no_git_build");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("doc.md"), "# Title\n\nAll new.\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&doc);
+    assert_eq!(app.diff_view_for_test(), crate::app::DiffView::Rendered);
+    let _ = app.md_layout(80);
+    let marks = app
+        .diff_rendered_marks_for_test()
+        .expect("md_cache が構築されているはず(feature 有無に関わらず)");
+    assert!(
+        !marks.is_empty(),
+        "旧版が無いので全ブロック Insert のはず: {marks:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The render path must not re-dispatch a scan on every frame while one is in flight, and must not
 /// re-scan at all once the result has landed (the per-workdir cache = Phase G).
 #[cfg(feature = "git")]

@@ -95,15 +95,16 @@ impl App {
     /// blanket clear here would have silently defeated that (confirmed: broke
     /// `app::tests::preview_reloads_only_for_relevant_fs_changes` when first tried).
     ///
-    /// Also drops `diff_rendered_sources_cache` (`App::diff_rendered_sources`'s own memo) — every
-    /// input that cache reads changes only at one of this fn's own call sites, so it goes stale at
-    /// exactly the same moments the caches above do.
+    /// Also drops the landed/in-flight block-diff (`App::invalidate_md_diff`, `md_diff.rs`) — every
+    /// input that computation reads (`diff_follow_scope`, `follow_diff_full`, the file's own bytes,
+    /// the baseline) changes only at one of this fn's own call sites, so it goes stale at exactly
+    /// the same moments the caches above do.
     pub(super) fn invalidate_diff_caches(&mut self) {
         self.diff_cache = None;
         if matches!(&self.md_cache, Some(c) if c.source == MdCacheSource::Diff) {
             self.md_cache = None;
         }
-        self.diff_rendered_sources_cache = None;
+        self.invalidate_md_diff();
     }
 
     /// How many of the three presentations (`docs/FEATURE-MD-RENDERED-DIFF.md` §1) `path`'s diff

@@ -563,6 +563,11 @@ pub enum Msg {
     /// diff — the only change was to front matter, which is stripped before either side is compared.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     DiffRenderedFrontMatterOnly,
+    /// Placeholder body of the `Rendered` presentation while its block-diff is still being computed
+    /// on a separate thread (`docs/STATUS.md` ★未修正 item 4) — shown centered, in place of the
+    /// decorated lines, until `App::apply_md_diff` lands a result and rebuilds the cache. Keys are
+    /// still live while this is shown (`R`/`n`/`N`/`q`), so this is not a flash.
+    DiffComputing,
     /// `?` help row description for `R` in `Surface::PreviewGitDiff`, when the target has all
     /// three presentations (Markdown).
     DiffViewCycleHelp,
@@ -1184,6 +1189,7 @@ fn en(msg: Msg) -> &'static str {
         HintReturnToDiff => "back to diff",
         DiffRenderedUnavailable => "rendered diff unavailable (falling back to source)",
         DiffRenderedFrontMatterOnly => "only front matter changed (not shown here — press R to see it)",
+        DiffComputing => "computing diff…",
         DiffViewCycleHelp => "cycle diff view (source → rendered → preview)",
         DiffViewCycleHelpPair => "cycle diff view (source ⇄ preview)",
         WkRelative => "relative",
@@ -1688,6 +1694,7 @@ fn jp(msg: Msg) -> &'static str {
         HintReturnToDiff => "diff に戻る",
         DiffRenderedUnavailable => "整形diffを表示できません(ソースへ切替)",
         DiffRenderedFrontMatterOnly => "front matter だけの変更(ここには出ません・R で表示)",
+        DiffComputing => "差分を計算中…",
         DiffViewCycleHelp => "表現を切り替え（ソース → 整形 → プレビュー）",
         DiffViewCycleHelpPair => "表現を切り替え（ソース ⇄ プレビュー）",
         WkRelative => "相対",
@@ -2210,6 +2217,7 @@ mod tests {
         Msg::HintReturnToDiff,
         Msg::DiffRenderedUnavailable,
         Msg::DiffRenderedFrontMatterOnly,
+        Msg::DiffComputing,
         Msg::DiffViewCycleHelp,
         Msg::DiffViewCycleHelpPair,
         Msg::QuitOrCloseTab,

@@ -26,6 +26,7 @@ mod diff_view;
 mod file_actions;
 mod follow;
 mod git_view;
+mod md_diff;
 mod md_items;
 mod md_media;
 mod md_render;
@@ -946,6 +947,101 @@ pub struct StatusResult {
     vcs: crate::vcs::VcsKind,
 }
 
+/// Which of the two Markdown block-diff computations (`docs/STATUS.md` ★未修正 item 4,
+/// `docs/FEATURE-MD-RENDERED-DIFF.md` §2/§3) a [`MdDiffRequest`] is for. Both share the identical
+/// "resolve old/new text, preprocess, `diff_align`" shape (`App::compute_md_diff` is the one
+/// implementation of it) and differ only in *which* text each side reads and what a missing
+/// baseline means — see that fn's own doc comment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MdDiffKind {
+    /// The ordinary decorated preview's change gutter (§3) — old vs the current file.
+    Gutter,
+    /// The diff's `Rendered` presentation (§2) — old vs the current file, both preprocessed.
+    Rendered,
+}
+
+/// Which "old version" bytes a block-diff request should read, resolved on the UI thread
+/// (`App::diff_baseline`) from already-in-memory state (a `HashMap` lookup, no disk/subprocess
+/// I/O) so the worker thread never needs `&App` at all — only this plain-data instruction plus the
+/// backend calls it names (`vcs::base_contents`/`git::blob_at`, which touch the filesystem/git
+/// object store, never `App`).
+///
+/// Every variant but `Vcs` is only ever constructed on a `git`-feature build (`App::diff_baseline`'s
+/// follow-session branch is itself `#[cfg(feature = "git")]`) — `#[allow(dead_code)]` on a no-`git`
+/// build, not unreachable.
+#[derive(Clone)]
+pub(crate) enum DiffBaseline {
+    /// The backend's committed baseline — git HEAD blob / jj `@-` (`vcs::base_contents`).
+    Vcs,
+    /// A follow-session snapshot already held in memory at follow-start — no I/O needed.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FollowSnapshot(Vec<u8>),
+    /// A follow-session baseline that is the pinned HEAD blob — the worker fetches it
+    /// (`git::blob_at`, a subprocess under jj).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FollowHead { sha: String },
+    /// No baseline at all (untracked / no repository / dirty-but-too-large-to-snapshot at
+    /// follow-start).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    Empty,
+}
+
+/// A Markdown block-diff computation request handed to the worker thread (or run synchronously —
+/// `App::spawn_or_sync_md_diff`). Carries everything `App::compute_md_diff` needs as **plain
+/// data**, resolved on the UI thread ahead of time, so that pure function never touches `App`.
+pub(crate) struct MdDiffRequest {
+    gen: u64,
+    path: PathBuf,
+    root: PathBuf,
+    kind: MdDiffKind,
+    baseline: DiffBaseline,
+    md_frontmatter: bool,
+    md_footnotes: bool,
+    md_inline_html: bool,
+}
+
+/// Outcome of a Markdown block-diff computation (`docs/FEATURE-MD-RENDERED-DIFF.md` §5's
+/// degenerate cases). `Doc`s are never sent across the channel (they borrow from `old_pre`/
+/// `new_pre`, which would make this self-referential) — the UI thread re-parses them from these
+/// owned strings when it actually needs to render (`App::ensure_md_cache`), a cheap `Doc::parse`
+/// (~1.7ms at 20k lines) compared to the I/O + preprocessing + `block_ops` this offloads.
+#[derive(Clone, Debug)]
+pub(crate) enum MdDiffOutcome {
+    Ready {
+        old_pre: String,
+        new_pre: String,
+        ops: Vec<crate::preview::markdown::BlockOp>,
+        /// Whether `ops` marks any change at all — `GutterAlign::is_active`'s own `ops_has_any_change`
+        /// re-derives this from `ops` for production use (so it's dead code outside tests), but
+        /// tests read it directly off a landed outcome without needing an `align` to hand.
+        #[cfg_attr(not(test), allow(dead_code))]
+        any_change: bool,
+        /// The block-diff found no change (`!any_change`) even though the raw file bytes differ —
+        /// the only difference is in front matter, which is stripped before either side ever
+        /// reaches `Doc::parse`. Only meaningful for `MdDiffKind::Rendered` (`App::apply_md_diff`
+        /// flashes `DiffRenderedFrontMatterOnly`); `Gutter` never reads it.
+        front_matter_only: bool,
+    },
+    /// The current file is over the size cap, not valid UTF-8, or unreadable. `Rendered` falls
+    /// back to `Source` with a flash (`App::apply_md_diff`); `Gutter` simply shows no gutter.
+    Unavailable,
+    /// No committed baseline exists at all (untracked file / outside a repo). Only ever returned
+    /// for `MdDiffKind::Gutter` — an ordinary preview then has no gutter, matching the pre-worker
+    /// `GutterAlign::None` contract. `MdDiffKind::Rendered` never returns this: a missing baseline
+    /// there is §5's "旧版が無い…全ブロック Insert", which `App::compute_md_diff` already resolves
+    /// into an ordinary `Ready` (comparing against an empty old side) rather than a separate case.
+    NoBaseline,
+}
+
+/// Result of a Markdown block-diff computed on a separate thread, returned via `App::md_diff_tx`.
+/// Staleness is judged by `gen` exactly like [`StatusResult`]/[`IgnoredResult`].
+pub struct MdDiffResult {
+    gen: u64,
+    path: PathBuf,
+    kind: MdDiffKind,
+    outcome: MdDiffOutcome,
+}
+
 /// Which long-running filesystem operation a background job is performing.
 /// The variants differ in the completion message and in whether a failing target aborts the
 /// rest: paste/duplicate continue past a failing target (existing behaviour), while a
@@ -1171,18 +1267,6 @@ pub struct App {
     /// Cache of raw diff lines for the GitDiff preview (per path). Avoids recomputing `git diff` every frame.
     diff_cache: Option<DiffCache>,
     gutter_cache: Option<GutterCache>,
-
-    /// Cached result of `App::diff_rendered_sources` (old/new text, already pre-processed), keyed
-    /// by path only. `App::apply_diff_view`'s validation and `App::ensure_md_cache`'s own build of
-    /// the `Rendered` presentation both need this for the identical path moments apart (deciding the
-    /// presentation, then actually rendering it) — without this they each independently re-read the
-    /// file and re-invoke the backend (`vcs::base_contents` / `follow_baseline_contents`, a
-    /// subprocess under jj) to reach the same answer. Invalidated alongside `diff_cache`/`md_cache`
-    /// wherever `App::invalidate_diff_caches` already runs (a fresh file's diff opened, the working
-    /// tree changed, a follow session (re)started, the `f` scope toggle, ...) — every input this
-    /// reads (`diff_follow_scope`, `follow_diff_full`, the file's own bytes, the baseline) only ever
-    /// changes at one of those points.
-    diff_rendered_sources_cache: Option<(PathBuf, Option<(String, String)>)>,
 
     /// Interactive items in the Markdown preview (links + task checkboxes, collected on each render).
     /// Focus with Tab/⇧Tab; Enter opens a link / toggles a checkbox, Space toggles a checkbox.
@@ -1451,6 +1535,27 @@ pub struct App {
     /// Sender returning results from the worker computing `statuses`+`branch` in the background.
     /// If not attached (tests), `spawn_or_sync_statuses` falls back to computing synchronously.
     status_tx: Option<std::sync::mpsc::Sender<StatusResult>>,
+    /// `(path, kind)` a Markdown block-diff is being computed for on a separate thread (`docs/
+    /// STATUS.md` ★未修正 item 4). `None` = not computing. Keyed like `git_status_pending` (never
+    /// `None` while in flight, so the `pending == target` comparison can't be satisfied by two
+    /// `None`s).
+    md_diff_pending: Option<(PathBuf, MdDiffKind)>,
+    /// Generation of the block-diff computation. Bumped on every dispatch (`App::kick_md_diff`)
+    /// and by `App::invalidate_md_diff` (called from `App::invalidate_diff_caches`/
+    /// `App::reload_preview`); a result is applied only if it still matches (discards a result
+    /// superseded by a newer file/kind, or by a working-tree change).
+    md_diff_gen: u64,
+    /// Sender returning `MdDiffResult`s from the worker computing block-diffs in the background.
+    /// If not attached (tests), `spawn_or_sync_md_diff` falls back to computing synchronously —
+    /// exactly like `status_tx`/`ignored_tx` — so unit tests that don't drive a run loop still
+    /// observe the result immediately.
+    md_diff_tx: Option<std::sync::mpsc::Sender<MdDiffResult>>,
+    /// The last landed block-diff, tagged with the `(path, kind, gen)` it answers. `App::poll_md_diff`
+    /// reads this instead of recomputing inline; a tuple that doesn't match the currently wanted
+    /// `(path, kind)` **and** the current `md_diff_gen` means "not ready yet for this frame" — the
+    /// caller (`App::ensure_md_cache`) degrades (no gutter / a "computing…" placeholder) rather
+    /// than blocking.
+    md_diff_landed: Option<(PathBuf, MdDiffKind, u64, MdDiffOutcome)>,
     /// The **repo workdir** at which `git_ignored` (heavy) was computed. If it is the same, root moves within the same repository
     /// do not rebuild it (avoids the 410ms recomputation when descending into a subdirectory with `l`).
     git_ignored_for: Option<PathBuf>,
@@ -1680,6 +1785,13 @@ struct MdCache {
     /// calls `App::open_git_diff` again, unlike a fresh diff open, and does not itself reset
     /// `md_cache`) can never reuse a stale entry built for the other source.
     source: MdCacheSource,
+    /// `true` only for the `Rendered` presentation's "computing…" placeholder (`docs/STATUS.md`
+    /// ★未修正 item 4, `App::md_diff_computing_cache`) — a single centered line, no real marks.
+    /// `ui/preview.rs::render_decorated_body` reads this to **not** consume
+    /// `App::take_diff_scroll_pending` against it: doing so on the placeholder frame would burn the
+    /// "scroll to first change" request against a cache with no marks at all, silently losing it
+    /// for the *real* frame that lands once the block-diff finishes.
+    is_diff_computing_placeholder: bool,
 }
 
 /// See `MdCache::source`'s own doc comment.
@@ -1702,8 +1814,8 @@ struct DiffCache {
 
 /// Per-file cap for a follow baseline snapshot: a dirty file larger than this is not snapshotted
 /// (recorded as `None`), and its follow diff falls back to the full git diff (honest degradation).
-/// Also the size cap `App::diff_rendered_sources` (`src/app/md_render.rs`) applies to either side
-/// of the diff's `Rendered` presentation — not itself behind `#[cfg(feature = "git")]` (unlike the
+/// Also the size cap `App::compute_md_diff` (`src/app/md_diff.rs`) applies to either side of the
+/// diff's `Rendered` presentation — not itself behind `#[cfg(feature = "git")]` (unlike the
 /// follow-specific constants below it) because that caller compiles on every build.
 const FOLLOW_BASELINE_FILE_CAP: usize = 5 * 1024 * 1024;
 /// Total cap across all snapshotted baseline files: once exceeded, remaining dirty files are recorded
@@ -2713,7 +2825,6 @@ impl App {
             md_cache: None,
             diff_cache: None,
             gutter_cache: None,
-            diff_rendered_sources_cache: None,
             md_items: Vec::new(),
             details_open: std::collections::HashMap::new(),
             table_search_hits: std::collections::HashSet::new(),
@@ -2793,6 +2904,10 @@ impl App {
             git_status_pending: None,
             git_status_gen: 0,
             status_tx: None,
+            md_diff_pending: None,
+            md_diff_gen: 0,
+            md_diff_tx: None,
+            md_diff_landed: None,
             git_ignored_for: None,
             git_ignored_pending: None,
             git_ignored_gen: 0,
@@ -4035,6 +4150,10 @@ impl App {
     pub fn reload_preview(&mut self) {
         self.md_cache = None;
         self.win_cache = None;
+        // The ordinary preview's own change-gutter baseline (`docs/STATUS.md` ★未修正 item 4) is a
+        // function of "current file content" — invalidate it here too, not just `invalidate_diff_caches`
+        // (which deliberately leaves an ordinary `md_cache` alone; see that fn's own doc comment).
+        self.invalidate_md_diff();
         if matches!(self.tab.mode, Mode::Preview) {
             self.setup_windowed();
             self.reload_media_if_changed();
