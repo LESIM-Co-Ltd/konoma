@@ -71,9 +71,9 @@ thread_local! {
     /// so a caller that reaches it more than once per logical "what did the committed version look
     /// like" question is doing real, avoidable work. `App::diff_rendered_sources` (memoized by path
     /// in `diff_rendered_sources_cache`) and the single `preview_diff_baseline` fetch
-    /// `App::ensure_md_cache` now makes per build (threaded into both `gutter_will_be_active` and
-    /// `preview_diff_marks` instead of each calling it themselves) both exist to keep this at
-    /// exactly one call per open/build. Thread-local for the same reason `STAT_CALLS` is.
+    /// `App::ensure_md_cache` now makes per build (threaded into `App::compute_gutter_align`
+    /// instead of being re-fetched independently at each of its call sites) both exist to keep
+    /// this at exactly one call per open/build. Thread-local for the same reason `STAT_CALLS` is.
     static BASE_CONTENTS_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -93,6 +93,43 @@ pub(crate) fn count_base_contents_calls<T>(f: impl FnOnce() -> T) -> (T, usize) 
     (
         out,
         BASE_CONTENTS_CALLS.with(|c| c.get()).saturating_sub(before),
+    )
+}
+
+thread_local! {
+    /// How many times `preview::markdown::diff_align` ran **on this thread** — the call this
+    /// measures is a `Doc::parse` pair + a Myers diff over block keys (`block_ops`), a real,
+    /// measurable CPU cost on a large document (see `diff_align`'s own doc comment: ~3ms on a
+    /// 20k-line document in a release build). Before `App::compute_gutter_align`/`GutterAlign`
+    /// existed, an ordinary preview's gutter build called the equivalent parse+align twice (once
+    /// for the pre-render "will the gutter be active" decision, again for the final marks) and the
+    /// diff's `Rendered` presentation's first build called it up to three times (`App::
+    /// apply_diff_view`'s own flash decision, the pre-render decision, and the render itself) — all
+    /// for the identical `(old_src, new_src)` pair. `App::apply_diff_view`'s own call is the one
+    /// legitimate *separate* alignment left (it runs before `App::ensure_md_cache` even builds
+    /// anything, to decide a flash message) — everything reached through `App::ensure_md_cache`
+    /// itself now aligns exactly once per build. Thread-local for the same reason `STAT_CALLS` is.
+    static DIFF_ALIGN_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `preview::markdown::diff_align` right before it parses either side. Cheap enough to
+/// be unconditional in test builds; compiled out entirely otherwise (the call site is
+/// `#[cfg(test)]`).
+pub(crate) fn note_diff_align_call() {
+    let _ = DIFF_ALIGN_CALLS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times diff_align ran while it did)`. Only ever
+/// called from `#[cfg(feature = "git")]` tests (the two scenarios it pins — the ordinary preview's
+/// gutter and the diff's `Rendered` presentation — both need a real backend to set up) — unused,
+/// not unreachable, on a no-`git` test build.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_diff_align_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = DIFF_ALIGN_CALLS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        DIFF_ALIGN_CALLS.with(|c| c.get()).saturating_sub(before),
     )
 }
 

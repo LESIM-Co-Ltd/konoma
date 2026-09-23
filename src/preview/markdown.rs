@@ -39,7 +39,11 @@ pub(crate) mod render;
 // PreviewMark}` is the one path this file's own diff entry points, `render.rs`'s own test suite,
 // and the App layer all need — keeping which of `diff`/`render` actually defines each type an
 // implementation detail. `BlockOp` is named directly by this file's own `diff_has_any_change`
-// (below) and by `render.rs`'s own `#[cfg(test)]` suite.
+// (below) and by `render.rs`'s own `#[cfg(test)]` suite. `preview_marks` is named directly by
+// `App::ensure_md_cache` (`src/app/md_render.rs`), which — holding an already-computed `ops` from
+// `diff_align` — calls it straight rather than re-parsing/re-aligning `old_src`/`new_src` again
+// just to get there (`diff_align`'s own doc comment).
+pub(crate) use diff::preview_marks;
 pub(crate) use diff::BlockOp;
 pub(crate) use diff::PreviewMark;
 pub(crate) use render::DiffMark;
@@ -663,6 +667,40 @@ pub fn render_markdown_with_images_aligned(
     )
 }
 
+/// Parses both `old_src` and `new_src` and aligns their top-level blocks (`diff::block_ops`) — the
+/// one shared computation every diff-presentation entry point in this file needs, and (until this
+/// function existed) each of them redid independently for the identical `(old_src, new_src)` pair
+/// within a single `App::ensure_md_cache` build: `App::compute_gutter_align`'s pre-render "will the
+/// gutter be non-empty" check, the ordinary preview's final marks, and (for the `Rendered`
+/// presentation) the render itself all need this exact `(old, new, ops)` triple, not three
+/// independently re-parsed, re-diffed copies of it (`docs/FEATURE-MD-RENDERED-DIFF.md`'s own
+/// perf notes — a 20k-line document measurably pays for `Doc::parse`+`block_ops` two or three
+/// times over per single build/open before this existed). Callers that only need one of the
+/// questions this triple answers (`diff_has_any_change`/`render_markdown_diff_aligned`, both below)
+/// still call this once internally — they're kept as their own entry points for callers (and
+/// tests) that only ever need one answer in isolation and have no earlier-computed triple of their
+/// own to reuse; a caller building more than one answer for the same pair within one logical
+/// "build" (`App::ensure_md_cache`) calls this directly instead and threads the result through.
+pub(crate) fn diff_align<'a>(
+    old_src: &'a str,
+    new_src: &'a str,
+) -> (model::Doc<'a>, model::Doc<'a>, Vec<BlockOp>) {
+    #[cfg(test)]
+    crate::test_support::note_diff_align_call();
+    let old = model::Doc::parse(old_src);
+    let new = model::Doc::parse(new_src);
+    let ops = diff::block_ops(&old, &new, old_src, new_src);
+    (old, new, ops)
+}
+
+/// Whether an already-computed [`diff_align`] result marks any change at all — the pure "any
+/// non-`Equal` op" test [`diff_has_any_change`] applies to a freshly-aligned pair; factored out so
+/// a caller holding an `ops` it already computed (rather than raw `old_src`/`new_src`) can ask the
+/// identical question without re-parsing/re-diffing to get there.
+pub(crate) fn ops_has_any_change(ops: &[BlockOp]) -> bool {
+    ops.iter().any(|op| !matches!(op, BlockOp::Equal { .. }))
+}
+
 /// [`render_markdown_with_images_aligned`]'s diff counterpart (`docs/FEATURE-MD-RENDERED-DIFF.md`
 /// §1's `rendered` presentation, stage 1): parses both `old_src` and `new_src`, aligns their top-level
 /// blocks (`diff::block_ops`), and renders the result into one shared decorated document
@@ -674,6 +712,11 @@ pub fn render_markdown_with_images_aligned(
 /// configuration (width/code style/theme/icons/tasks/image & mermaid & math slots/alerts/alignments)
 /// applied uniformly whichever of `old`/`new` a given block is drawn from, the same way a single
 /// preview pane's config never differs between "what the file used to say" and "what it says now".
+///
+/// Parses+aligns via [`diff_align`] itself — a caller that already has that triple in hand (`App::
+/// ensure_md_cache`, which computed it moments earlier for `compute_gutter_align`'s own decision)
+/// calls [`render_markdown_diff_from_parts`] directly instead, to render from it without a second
+/// `Doc::parse`+`block_ops` pass over the identical pair.
 // `render_markdown_diff_aligned` is the App-level entry point for the Markdown `rendered` diff
 // presentation (§1) — wired from `App::ensure_md_diff_cache` (`src/app/md_render.rs`), which exists
 // on a `git`-feature build only (the presentation itself is reachable only through
@@ -702,15 +745,66 @@ pub fn render_markdown_diff_aligned(
     MdRenderExtras,
     Vec<(std::ops::Range<usize>, DiffMark)>,
 ) {
-    let old = model::Doc::parse(old_src);
-    let new = model::Doc::parse(new_src);
-    let ops = diff::block_ops(&old, &new, old_src, new_src);
-    let diff_out = render::render_doc_diff(
+    let (old, new, ops) = diff_align(old_src, new_src);
+    render_markdown_diff_from_parts(
         &old,
         old_src,
         &new,
         new_src,
         &ops,
+        width,
+        code,
+        theme,
+        icons,
+        tasks,
+        slot_of,
+        mermaid_slot,
+        mermaid_caption,
+        alerts,
+        math_slot,
+        math_on,
+        aligns,
+    )
+}
+
+/// [`render_markdown_diff_aligned`]'s own render step, taking an already-parsed-and-aligned
+/// [`diff_align`] triple instead of parsing/aligning `old_src`/`new_src` itself — the seam
+/// `App::ensure_md_cache` uses to render straight from the identical `(old, new, ops)` its own
+/// pre-render `compute_gutter_align` decision already produced (this function's module-level doc
+/// comment on [`diff_align`] has the full "why").
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
+pub(crate) fn render_markdown_diff_from_parts(
+    old: &model::Doc<'_>,
+    old_src: &str,
+    new: &model::Doc<'_>,
+    new_src: &str,
+    ops: &[BlockOp],
+    width: u16,
+    code: CodeStyle,
+    theme: &str,
+    icons: bool,
+    tasks: &[char],
+    slot_of: &dyn Fn(&str, Option<u16>) -> ImageSlot,
+    mermaid_slot: &dyn Fn(&str) -> MermaidSlot,
+    mermaid_caption: &str,
+    alerts: bool,
+    math_slot: &dyn Fn(&str, bool) -> MathSlot,
+    math_on: bool,
+    aligns: BlockAligns,
+) -> (
+    Vec<Line<'static>>,
+    Vec<ImagePlacement>,
+    MdRenderExtras,
+    Vec<(std::ops::Range<usize>, DiffMark)>,
+) {
+    let diff_out = render::render_doc_diff(
+        old,
+        old_src,
+        new,
+        new_src,
+        ops,
         width,
         code,
         theme,
@@ -736,45 +830,26 @@ pub fn render_markdown_diff_aligned(
     )
 }
 
-/// The `preview` diff presentation's own gutter marks (`docs/FEATURE-MD-RENDERED-DIFF.md` §1's
-/// third row): aligns `old_src`'s and `new_src`'s top-level blocks (`diff::block_ops`, the identical
-/// alignment [`render_markdown_diff_aligned`] uses for the `rendered` presentation) and turns that
-/// into per-row marks against `new_block_rows` — `new`'s own already-rendered `MdRenderExtras::
-/// block_rows` from an **ordinary**, non-diff decorated render of `new_src` (see
-/// `diff::preview_marks`'s own doc comment for exactly why no second `render_doc_diff` pass is
-/// needed here: this presentation draws nothing but `new`'s own current content).
-///
-/// Both `old_src`/`new_src` must be the exact strings a caller would pass to [`model::Doc::parse`]
-/// for the two versions being compared — i.e. already through whatever front-matter/footnote/inline-
-/// HTML pre-pass produced `new_block_rows` in the first place, so the two sides classify blocks
-/// against the identical text the renderer itself parsed (`App::build_decorated`'s own `pre_src`).
-pub(crate) fn markdown_preview_marks(
-    old_src: &str,
-    new_src: &str,
-    new_block_rows: &[std::ops::Range<usize>],
-) -> Vec<(std::ops::Range<usize>, PreviewMark)> {
-    let old = model::Doc::parse(old_src);
-    let new = model::Doc::parse(new_src);
-    let ops = diff::block_ops(&old, &new, old_src, new_src);
-    diff::preview_marks(&ops, new_block_rows)
-}
-
 /// Whether aligning `old_src`'s and `new_src`'s top-level blocks (`diff::block_ops`) finds **any**
 /// change at all — i.e. whether a change-gutter column would end up non-empty for this pair,
-/// without rendering anything. `App::ensure_md_cache` calls this *before* deciding what width to
-/// render at (`docs/FEATURE-MD-RENDERED-DIFF.md`'s own "ガターを出すかは描画前に決める"): a gutter
-/// column narrows the body by 1 cell, and that decision has to be made before the width-dependent
-/// render (image/mermaid/math cell sizing, line wrapping) runs at all — discovering the overflow
-/// only after the fact is exactly the real bug (`▔`/mermaid-over-heading-rule/wrapped-gutter-only
-/// rows) this function exists to prevent. Cheap: `Doc::parse` + a Myers diff over block keys, no
-/// actual block rendering (the same pure layer `markdown_preview_marks`/
-/// `render_markdown_diff_aligned` build on, `diff::block_ops` itself).
+/// without rendering anything. `App::compute_gutter_align` answers the identical "will the gutter
+/// be non-empty" question for `App::ensure_md_cache`'s own pre-render decision (`docs/FEATURE-MD-
+/// RENDERED-DIFF.md`'s own "ガターを出すかは描画前に決める": a gutter column narrows the body by
+/// 1 cell, and that decision has to be made before the width-dependent render — image/mermaid/math
+/// cell sizing, line wrapping — runs at all; discovering the overflow only after the fact is
+/// exactly the real bug, `▔`/mermaid-over-heading-rule/wrapped-gutter-only rows, this ordering
+/// exists to prevent) via [`ops_has_any_change`] on its own already-computed [`diff_align`] result,
+/// not via this function — see that function's own doc comment. Cheap either way: `Doc::parse` + a
+/// Myers diff over block keys, no actual block rendering.
+///
+/// Parses+aligns via [`diff_align`] itself, for a caller that only needs this one boolean answer
+/// (`App::apply_diff_view`'s own flash decision, the one call site with no earlier-computed triple
+/// of its own — see that function's own doc comment). A caller that also needs the render or the
+/// marks for the identical pair calls [`diff_align`] once and [`ops_has_any_change`] on the result
+/// instead of this function, to avoid a second parse+align pass.
 pub(crate) fn diff_has_any_change(old_src: &str, new_src: &str) -> bool {
-    let old = model::Doc::parse(old_src);
-    let new = model::Doc::parse(new_src);
-    diff::block_ops(&old, &new, old_src, new_src)
-        .iter()
-        .any(|op| !matches!(op, BlockOp::Equal { .. }))
+    let (_, _, ops) = diff_align(old_src, new_src);
+    ops_has_any_change(&ops)
 }
 
 /// Reserved rows for one math image: `rows` blank lines the image overlays, centered for display math

@@ -2568,11 +2568,10 @@ fn e2e_md_preview_gutter_marks_changed_blocks() {
 
 /// Performance regression: building the ordinary Markdown preview's own change gutter must invoke
 /// the backend's `vcs::base_contents` (a `jj log` + `jj file show` subprocess pair under jj,
-/// ~20-25ms) exactly **once**, not twice. Before `App::ensure_md_cache` threaded one shared
-/// `preview_diff_baseline` fetch into both `App::gutter_will_be_active` (the decision: will the
-/// gutter be non-empty, decided before the width-dependent render) and `App::preview_diff_marks`
-/// (the actual marks, computed moments later in the same build), each of those two independently
-/// called `preview_diff_baseline` → `vcs::base_contents` for the identical path.
+/// ~20-25ms) exactly **once**, not twice. `App::ensure_md_cache` threads one shared
+/// `preview_diff_baseline` fetch into `App::compute_gutter_align`'s single decision — a second,
+/// independent `preview_diff_baseline` call for the identical path (once for the pre-render "will
+/// the gutter be active" decision, again for the final marks) is exactly the duplication this pins.
 #[cfg(feature = "git")]
 #[test]
 fn e2e_md_preview_gutter_build_calls_base_contents_once() {
@@ -2596,6 +2595,89 @@ fn e2e_md_preview_gutter_build_calls_base_contents_once() {
         calls, 1,
         "通常プレビューのガター構築中に base_contents が複数回呼ばれている(判定と実マークで\
          別々に取得している)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Performance regression (performance investigation task, 段2): building the ordinary Markdown
+/// preview's own change gutter must align blocks (`preview::markdown::diff_align` — one
+/// `Doc::parse` pair + `block_ops`, a real CPU cost on a large document) exactly **once** per
+/// build, not twice. Before `App::compute_gutter_align`/`GutterAlign` existed, the pre-render
+/// "will the gutter be active" decision and the final marks step each independently parsed and
+/// aligned the identical `(old, new)` pair — this is the sibling of
+/// `e2e_md_preview_gutter_build_calls_base_contents_once` above, pinning the CPU-side duplication
+/// (parse+diff) rather than that test's I/O-side one (the backend fetch).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_md_preview_gutter_build_aligns_blocks_once() {
+    let dir = sandbox("md_preview_gutter_align_once");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    let (_, calls) = crate::test_support::count_diff_align_calls(|| s.enter());
+    // Sanity: the gutter really did build — a vacuous "0 calls because nothing happened" pass
+    // would prove nothing.
+    let marks = s
+        .app
+        .md_diff_marks_for_test()
+        .expect("md_cache が構築されているはず");
+    assert!(!marks.is_empty(), "変更ブロックの印があるはず: {marks:?}");
+    assert_eq!(
+        calls, 1,
+        "通常プレビューのガター構築中に diff_align が複数回呼ばれている(判定と実マークで\
+         別々に parse+diff している)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Performance regression (performance investigation task, 段2): the diff's `Rendered`
+/// presentation aligns blocks (`preview::markdown::diff_align`) exactly **once** per
+/// `App::ensure_md_cache` build — not up to three times, as it did before `GutterAlign` existed
+/// (once for `App::apply_diff_view`'s own "is there anything to mark" flash decision, again for
+/// `ensure_md_cache`'s pre-render "will the gutter be active" decision, and a third time inside
+/// the render itself). `App::apply_diff_view`'s own alignment (run once, when the presentation is
+/// *chosen* — before `ensure_md_cache` ever builds anything) is the one legitimate call left
+/// outside `ensure_md_cache`'s own single one; this test pins both counts separately, and also
+/// pins that a later rebuild with no new "open" (e.g. a terminal resize) still aligns only once.
+#[cfg(feature = "git")]
+#[test]
+fn diff_rendered_build_aligns_blocks_once_per_ensure_md_cache_call() {
+    let dir = sandbox("diff_rendered_align_once");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.enter();
+    let path = s.app.tab.preview_path.clone().expect("プレビュー中のはず");
+
+    let (_, open_calls) = crate::test_support::count_diff_align_calls(|| {
+        s.app.open_git_diff(&path);
+    });
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        crate::app::DiffView::Rendered,
+        "Rendered になっているはず"
+    );
+    assert_eq!(
+        open_calls, 1,
+        "open_git_diff(apply_diff_view 自身のフラッシュ判定)は1回だけ align するはず"
+    );
+
+    let (_, build_calls) = crate::test_support::count_diff_align_calls(|| {
+        let _ = s.app.md_layout(80);
+    });
+    assert_eq!(
+        build_calls, 1,
+        "ensure_md_cache の1回の構築で align は1回だけのはず(以前は最大3回)"
+    );
+
+    // A later rebuild (e.g. a resize) with no new "open" must also align exactly once, not
+    // re-derive it once for the decision and again for the render.
+    let (_, rebuild_calls) = crate::test_support::count_diff_align_calls(|| {
+        let _ = s.app.md_layout(60);
+    });
+    assert_eq!(
+        rebuild_calls, 1,
+        "幅変更での再構築でも align は1回だけのはず"
     );
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -2638,7 +2720,7 @@ fn e2e_md_preview_gutter_is_empty_for_untracked_file() {
 }
 
 /// Test-hole coverage: the ordinary preview's own change gutter (§3) is Markdown-only
-/// (`App::gutter_will_be_active`'s `File` branch gates on `PreviewKind::Markdown`) — a changed,
+/// (`App::compute_gutter_align`'s `File` branch gates on `PreviewKind::Markdown`) — a changed,
 /// git-tracked standalone `.mmd` file (`PreviewKind::Mermaid`) must never get a gutter column.
 /// Deliberately **without** a picker (`Sim::new`, no `.with_picker()`): with real image support a
 /// standalone `.mmd` renders as an image (`App::is_image_preview`) and never even builds `md_cache`
@@ -2755,7 +2837,7 @@ fn e2e_follow_diff_rendered_compares_against_follow_baseline_not_head() {
 /// heading-underline rule line grew 1 column too wide once gutted, overflowed, and wrapped into a
 /// spurious extra row that the cached row layout never knew about — everything below it (here, a
 /// mermaid diagram, and the plain paragraph after it) then landed 1 row too high on the real
-/// screen, overlapping the rule. `App::gutter_will_be_active` now decides the gutter up front and
+/// screen, overlapping the rule. `App::compute_gutter_align` now decides the gutter up front and
 /// renders 1 column narrower, so the cache's own belief of where a later line lands
 /// (`App::md_visual_span_for_test`) matches where it *actually* lands on the real `Sim` screen
 /// buffer — pinned by comparing the two directly for a marker paragraph placed right after the

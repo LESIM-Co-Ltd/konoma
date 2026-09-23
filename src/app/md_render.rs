@@ -14,9 +14,44 @@ enum DecoratedSource<'a> {
     Diff { old_pre: &'a str, new_pre: &'a str },
 }
 
+/// `App::compute_gutter_align`'s result: the block-level alignment for the current build's
+/// `DecoratedSource`, reused (rather than recomputed) by whichever of `build_decorated`'s `Diff`
+/// arm or the final `File`-preview marks step actually needs it — see `compute_gutter_align`'s own
+/// doc comment for the full "why".
+enum GutterAlign<'a> {
+    /// Gutter off, non-Markdown, or no baseline: nothing to align, nothing to draw.
+    None,
+    /// `File` source: only `ops` survives past the pre-render decision — its later use
+    /// (`preview::markdown::preview_marks`) needs `ops` plus the render's own `block_rows`, never
+    /// the parsed `Doc`s themselves, so those are dropped the moment `ops` is computed.
+    File {
+        ops: Vec<crate::preview::markdown::BlockOp>,
+    },
+    /// `Diff` source: the parsed `Doc`s are kept alive too — the later use is the actual render
+    /// (`preview::markdown::render_markdown_diff_from_parts`), which needs them, not just `ops`.
+    Diff {
+        old: crate::preview::markdown::model::Doc<'a>,
+        new: crate::preview::markdown::model::Doc<'a>,
+        ops: Vec<crate::preview::markdown::BlockOp>,
+    },
+}
+
+impl GutterAlign<'_> {
+    /// Whether this alignment marks any change at all — `ensure_md_cache`'s pre-render "will the
+    /// gutter be non-empty" decision.
+    fn is_active(&self) -> bool {
+        match self {
+            GutterAlign::None => false,
+            GutterAlign::File { ops } | GutterAlign::Diff { ops, .. } => {
+                crate::preview::markdown::ops_has_any_change(ops)
+            }
+        }
+    }
+}
+
 /// The text `DecoratedSource::File` parses — `content.lines` joined, with the same truncation
 /// notice `build_decorated_file` has always appended when the display cap fired. The **one** place
-/// this join+suffix happens: `App::gutter_will_be_active`'s `File` branch used to build this same
+/// this join+suffix happens: `App::compute_gutter_align`'s `File` branch used to build this same
 /// string inline, without the suffix, so its yes/no prediction (made before the width-dependent
 /// render — `App::ensure_md_cache`'s own doc comment on why the decision has to happen first) could
 /// read a *different* string than the render that follows actually parses. The suffix is itself
@@ -99,12 +134,12 @@ impl App {
 
         // The ordinary (non-diff) preview's own change-gutter baseline — fetched **once** for the
         // whole build, not once for the decision below and again for the actual marks further down
-        // (`preview_diff_marks`'s own doc comment on why that used to be a second, redundant
-        // `vcs::base_contents` call — a subprocess under jj, ~20-25ms each). `None` for `Diff`
-        // sources (that branch already has its own `old_pre`/`new_pre` from `owned_diff_src` above)
-        // and — mirroring `gutter_will_be_active`'s own early-return, so this never calls the
-        // backend in a case the old code didn't either — whenever the gutter is off or the preview
-        // isn't Markdown.
+        // (a second, redundant `vcs::base_contents` call — a subprocess under jj, ~20-25ms each —
+        // used to happen here before `App::compute_gutter_align` threaded this single fetch through
+        // both uses). `None` for `Diff` sources (that branch already has its own `old_pre`/
+        // `new_pre` from `owned_diff_src` above) and — mirroring `compute_gutter_align`'s own
+        // early-return, so this never calls the backend in a case that fn didn't either — whenever
+        // the gutter is off or the preview isn't Markdown.
         let file_baseline: Option<String> = match &source {
             DecoratedSource::File
                 if self.cfg.ui.git_gutter
@@ -115,23 +150,30 @@ impl App {
             _ => None,
         };
 
-        // Whether a change-gutter column will end up non-empty — decided **before** any
-        // width-dependent rendering (`App::gutter_will_be_active`'s own doc comment): a real bug
-        // (confirmed on a real terminal) was rendering the body at the full `width` and only
-        // prepending the 1-cell gutter afterwards, which let a full-width line (a heading's own
-        // underline rule, a centered mermaid/image placeholder row) overflow by exactly 1 column —
-        // wrapping into a spurious extra row, and desynchronizing `row_prefix`/`ImagePlacement.line`
-        // from what `md_slice` actually draws (a diagram ending up drawn *over* the heading-rule row
+        // The block-level alignment for this build, computed **once** and reused below by both
+        // the pre-render "will the gutter be non-empty" decision and whichever of `build_decorated`
+        // (`Diff`'s own render) / the final marks step (`File`'s own `preview_marks` call) actually
+        // draws from it — `App::compute_gutter_align`'s own doc comment has the full "why" and the
+        // measured duplication this closes.
+        //
+        // Deciding gutter activity **before** any width-dependent rendering matters on its own
+        // terms too (`App::compute_gutter_align`'s doc comment on `gutter_active`'s history — a
+        // real bug, confirmed on a real terminal): rendering the body at the full `width` and only
+        // prepending the 1-cell gutter afterwards let a full-width line (a heading's own underline
+        // rule, a centered mermaid/image placeholder row) overflow by exactly 1 column — wrapping
+        // into a spurious extra row, and desynchronizing `row_prefix`/`ImagePlacement.line` from
+        // what `md_slice` actually draws (a diagram ending up drawn *over* the heading-rule row
         // below it). Rendering 1 column narrower up front keeps the gutter+body total at exactly
         // `width`, matching what the previous — no-gutter — layout already fit into.
-        let gutter_active = self.gutter_will_be_active(&path, &source, file_baseline.as_deref());
+        let align = self.compute_gutter_align(&path, &source, file_baseline.as_deref());
+        let gutter_active = align.is_active();
         let render_width = if gutter_active {
             width.saturating_sub(1)
         } else {
             width
         };
 
-        let decorated = self.build_decorated(&path, render_width, &source);
+        let decorated = self.build_decorated(&path, render_width, &source, &align);
         // Kick off background downloads for any remote images shown as "loading". Each completes
         // by invalidating md_cache (apply_remote_fetch) so this rebuilds with the cached file.
         // A *synchronous* failure (remote images disabled: `ensure_remote_md_fetch` returns true
@@ -188,7 +230,7 @@ impl App {
             });
         }
         let mut decorated = if resync {
-            self.build_decorated(&path, render_width, &source)
+            self.build_decorated(&path, render_width, &source, &align)
         } else {
             decorated
         };
@@ -253,10 +295,18 @@ impl App {
         }
         // The two kinds of change gutter this cache can carry — never both at once (one `MdCache`
         // is either an ordinary preview or a `Rendered` diff, never both). `preview_gutter_marks`
-        // (§3) is the ordinary decorated Markdown preview's own gutter against its committed state,
-        // computed here from `decorated.pre_src`/`extras.block_rows`; `diff_marks` (§2) is simply
-        // `decorated.diff_marks` — `App::build_decorated`'s `DecoratedSource::Diff` arm already
-        // computed it via `render_markdown_diff_aligned`.
+        // (§3) is the ordinary decorated Markdown preview's own gutter against its committed state;
+        // `diff_marks` (§2) is simply `decorated.diff_marks` — `App::build_decorated`'s
+        // `DecoratedSource::Diff` arm already computed it via `render_markdown_diff_from_parts`.
+        //
+        // `File`'s own marks are derived straight from `align`'s already-computed `ops` (`preview::
+        // markdown::preview_marks(&ops, block_rows)`) rather than re-preprocessing `file_baseline`
+        // and re-parsing+re-diffing it against `decorated.pre_src` from scratch (what the old,
+        // now-removed `preview_diff_marks` did) — see `App::compute_gutter_align`'s own doc comment
+        // for why this is safe: `align`'s `new_pre` and `decorated.pre_src` are the identical string
+        // (both derived from the same on-disk bytes through the identical `decorated_file_text` +
+        // `preprocess_md_src` chain), so `ops`'s block indices line up with `decorated.extras.
+        // block_rows` exactly as if they'd been computed from `decorated.pre_src` directly.
         let (diff_marks, preview_gutter_marks) = match cache_source {
             // §5's "front matter だけの変更" degeneration (the block-diff finds nothing because
             // front matter is stripped before either side ever reaches `Doc::parse`, yet the file
@@ -266,15 +316,16 @@ impl App {
             // itself never writes `self.flash`).
             MdCacheSource::Diff => (std::mem::take(&mut decorated.diff_marks), Vec::new()),
             MdCacheSource::File => {
-                // `file_baseline` is already `None` whenever `[ui] git_gutter` is off or the
-                // preview isn't Markdown (`file_baseline`'s own guard above), which
-                // `preview_diff_marks` treats identically to "no baseline to compare" — so this
-                // doesn't need to re-check either condition itself.
-                let pgm = self.preview_diff_marks(
-                    &decorated.pre_src,
-                    &decorated.extras.block_rows,
-                    file_baseline.as_deref(),
-                );
+                let pgm = match &align {
+                    GutterAlign::File { ops } => {
+                        crate::preview::markdown::preview_marks(ops, &decorated.extras.block_rows)
+                    }
+                    // `GutterAlign::None`: no baseline to compare (gutter off / non-Markdown / no
+                    // committed version) — matches `preview_diff_marks`'s old "no baseline = no
+                    // marks" contract. `GutterAlign::Diff` cannot occur here (`cache_source` is
+                    // `File`, and `compute_gutter_align`'s own match mirrors `source` exactly).
+                    _ => Vec::new(),
+                };
                 (Vec::new(), pgm)
             }
         };
@@ -298,39 +349,65 @@ impl App {
         });
     }
 
-    /// Whether the change gutter (`docs/FEATURE-MD-RENDERED-DIFF.md` §2/§3) will end up non-empty
-    /// for `source` — decided without rendering anything (`ensure_md_cache`'s own doc comment on
-    /// why this has to happen *before* the width-dependent render, not after). `Diff` reuses
-    /// `old_pre`/`new_pre` verbatim (`App::diff_rendered_sources` already resolved them);
-    /// `MdCacheSource::File`'s own "no baseline = no gutter" and "`[ui] git_gutter`/Markdown-only"
-    /// rules are mirrored here exactly (`App::preview_diff_marks`'s own doc comment). `file_baseline`
-    /// is `ensure_md_cache`'s own single `preview_diff_baseline` fetch for this build — passed in,
-    /// not re-fetched here, so the decision and the actual marks (`preview_diff_marks`, further down
-    /// the same build) read the identical baseline without a second call to the backend.
-    fn gutter_will_be_active(
+    /// The block-level alignment (`preview::markdown::diff_align`) computed for `source` — or
+    /// `None` when there is nothing to align (gutter off / non-Markdown / no baseline). Decided
+    /// without rendering anything (this fn's own former name, `gutter_will_be_active`, and
+    /// `ensure_md_cache`'s own doc comment cover why that has to happen *before* the width-
+    /// dependent render).
+    ///
+    /// This **is** the fix for a real, measured duplication: before it existed, the equivalent
+    /// boolean-only decision (`diff_has_any_change`) and the later, separate step that turned the
+    /// identical `(old, new)` pair into either the `Rendered` presentation's actual render
+    /// (`build_decorated`'s `Diff` arm) or the ordinary preview's final marks
+    /// (`preview_diff_marks`) each re-parsed and re-diffed the same two documents from scratch —
+    /// a 20k-line synthetic document measured this as ~3.3ms of `Doc::parse`+`block_ops` paid
+    /// twice for `File` sources and up to three times for `Diff` sources (once here, again in
+    /// `gutter_will_be_active`, again inside `render_markdown_diff_aligned`) per single build/open.
+    /// `GutterAlign` is computed once, here, and threaded through both `build_decorated` (to
+    /// render `Diff` sources from the already-parsed `Doc`s, `preview::markdown::
+    /// render_markdown_diff_from_parts`) and the final marks step (`preview::markdown::
+    /// preview_marks(&ops, block_rows)` directly, for `File` sources) instead.
+    ///
+    /// `Diff` reuses `old_pre`/`new_pre` verbatim (`App::diff_rendered_sources` already resolved
+    /// them) and always aligns (the `Rendered` presentation's own marks are unconditional, not
+    /// gated by `[ui] git_gutter`). `File`'s `[ui] git_gutter`/Markdown-only/"no baseline" rules
+    /// are mirrored via `file_baseline` already being `None` in those cases
+    /// (`ensure_md_cache`'s own guard on that fetch) — this fn doesn't re-check any of them.
+    /// `file_baseline` is `ensure_md_cache`'s own single `preview_diff_baseline` fetch for this
+    /// build, passed in rather than re-fetched here, so this and the earlier baseline fetch read
+    /// the identical string without a second call to the backend.
+    fn compute_gutter_align<'a>(
         &self,
         path: &Path,
-        source: &DecoratedSource<'_>,
+        source: &DecoratedSource<'a>,
         file_baseline: Option<&str>,
-    ) -> bool {
+    ) -> GutterAlign<'a> {
         match source {
             DecoratedSource::Diff { old_pre, new_pre } => {
-                crate::preview::markdown::diff_has_any_change(old_pre, new_pre)
+                let (old, new, ops) = crate::preview::markdown::diff_align(old_pre, new_pre);
+                GutterAlign::Diff { old, new, ops }
             }
             DecoratedSource::File => {
                 // `file_baseline` is already `None` here whenever `[ui] git_gutter` is off or the
                 // preview isn't Markdown (`ensure_md_cache`'s own guard on the fetch) — this arm
                 // doesn't need to re-check either.
                 let Some(old_raw) = file_baseline else {
-                    return false;
+                    return GutterAlign::None;
                 };
                 let Ok(content) = crate::preview::text::load(path) else {
-                    return false;
+                    return GutterAlign::None;
                 };
+                // Must read+join exactly the way `build_decorated_file` itself will (both go
+                // through `decorated_file_text`) — `ordinary_preview_gutter_decision_matches_
+                // render_for_a_truncated_file` (app/tests.rs) pins this: predicting against a
+                // *different* string than the render actually parses is the class of bug that
+                // test exists to catch (a full-width line growing 1 column past what the gutter
+                // decision assumed and wrapping into a spurious extra row).
                 let new_raw = decorated_file_text(&content);
                 let old_pre = self.preprocess_md_src(old_raw);
                 let new_pre = self.preprocess_md_src(&new_raw);
-                crate::preview::markdown::diff_has_any_change(&old_pre, &new_pre)
+                let (_, _, ops) = crate::preview::markdown::diff_align(&old_pre, &new_pre);
+                GutterAlign::File { ops }
             }
         }
     }
@@ -460,36 +537,9 @@ impl App {
         String::from_utf8(bytes).ok()
     }
 
-    /// `docs/FEATURE-MD-RENDERED-DIFF.md` §3's own gutter marks for the **current** decorated
-    /// Markdown preview: `new_pre_src`/`new_block_rows` are this cache build's own `pre_src`/
-    /// `extras.block_rows` (the exact text/row-layout the renderer just produced), and `old_raw` is
-    /// the committed baseline of the same path — `ensure_md_cache`'s own single `preview_diff_baseline`
-    /// fetch for this build, passed in rather than re-fetched here (a second call to the backend,
-    /// `vcs::base_contents`, used to happen here for the identical path `gutter_will_be_active`
-    /// already fetched moments earlier in the same build — a jj subprocess, ~20-25ms, for nothing).
-    /// Put through the identical pre-pass chain (`preprocess_md_src`) so both sides are compared as
-    /// the renderer would actually parse them — front matter stripped, footnotes/inline HTML already
-    /// rewritten, matching `preview::markdown::markdown_preview_marks`'s own doc comment. Empty when
-    /// there is no baseline to compare (`old_raw` is `None`) or the file has genuinely not changed.
-    fn preview_diff_marks(
-        &self,
-        new_pre_src: &str,
-        new_block_rows: &[std::ops::Range<usize>],
-        old_raw: Option<&str>,
-    ) -> Vec<(
-        std::ops::Range<usize>,
-        crate::preview::markdown::PreviewMark,
-    )> {
-        let Some(old_raw) = old_raw else {
-            return Vec::new();
-        };
-        let old_pre_src = self.preprocess_md_src(old_raw);
-        crate::preview::markdown::markdown_preview_marks(&old_pre_src, new_pre_src, new_block_rows)
-    }
-
     /// The exact pre-pass chain `build_decorated` applies to a Markdown file's raw bytes before
     /// handing the result to the renderer — front matter strip, then footnotes, then inline HTML,
-    /// each gated by its own `[ui] md_*` setting — factored out so `preview_diff_marks`/
+    /// each gated by its own `[ui] md_*` setting — factored out so `compute_gutter_align`/
     /// `diff_rendered_sources` can put an arbitrary source string (never read from disk by this
     /// function, so it has no `LineOrigin` of its own to thread through) through the identical
     /// chain without a second, hand-copied mirror of it. The `LineOrigin` `build_decorated` itself
@@ -707,11 +757,20 @@ impl App {
     /// of the diff's two versions a particular block happens to come from — so the `Rendered`
     /// presentation draws real images/diagrams/equations exactly the way an ordinary preview does,
     /// not a text-only fallback of its own.
+    ///
+    /// `align` is `ensure_md_cache`'s own single `compute_gutter_align` result for this build
+    /// (`GutterAlign`'s own doc comment): for a `Diff` source it is always `GutterAlign::Diff`
+    /// (already-parsed `Doc`s + their `block_ops`), rendered from directly
+    /// (`preview::markdown::render_markdown_diff_from_parts`) instead of re-parsing/re-aligning
+    /// `old_pre`/`new_pre` a second time here. `File` sources ignore `align` entirely (their own
+    /// gutter marks are derived afterward, in `ensure_md_cache`, from `align` plus this call's own
+    /// `extras.block_rows` — not from anything `build_decorated` itself does).
     fn build_decorated(
         &self,
         path: &Path,
         width: u16,
         source: &DecoratedSource<'_>,
+        align: &GutterAlign<'_>,
     ) -> DecoratedMarkdown {
         let theme = &self.cfg.ui.theme;
         let code = crate::preview::markdown::CodeStyle {
@@ -856,8 +915,36 @@ impl App {
                 // no `Space`/`Enter` toggle to persist an override for in the first place — `items`
                 // is empty, so a `<details>` summary is never even focusable here).
                 crate::preview::markdown::set_details_open(Vec::new());
-                let (lines, images, _extras, marks) =
-                    crate::preview::markdown::render_markdown_diff_aligned(
+                // `align` is always `GutterAlign::Diff` here (`ensure_md_cache`'s own
+                // `compute_gutter_align` mirrors `source` exactly — a `Diff` source always
+                // produces a `Diff` alignment) — render straight from its already-parsed `Doc`s +
+                // `block_ops` (`render_markdown_diff_from_parts`) instead of re-parsing/re-aligning
+                // `old_pre`/`new_pre` a second time. The `render_markdown_diff_aligned` fallback
+                // (a fresh parse+align) only matters if that invariant is ever broken; it degrades
+                // rather than panics.
+                let (lines, images, _extras, marks) = match align {
+                    GutterAlign::Diff { old, new, ops } => {
+                        crate::preview::markdown::render_markdown_diff_from_parts(
+                            old,
+                            old_pre,
+                            new,
+                            new_pre,
+                            ops,
+                            width,
+                            code,
+                            &theme.code_theme,
+                            self.cfg.ui.icons,
+                            &self.cfg.ui.md_task_state_chars(),
+                            &slot_of,
+                            &mermaid_slot,
+                            tr(self.lang, crate::i18n::Msg::MermaidCaption),
+                            self.cfg.ui.md_alerts,
+                            &math_slot,
+                            math_on,
+                            self.cfg.ui.md_block_aligns(),
+                        )
+                    }
+                    _ => crate::preview::markdown::render_markdown_diff_aligned(
                         old_pre,
                         new_pre,
                         width,
@@ -872,7 +959,8 @@ impl App {
                         &math_slot,
                         math_on,
                         self.cfg.ui.md_block_aligns(),
-                    );
+                    ),
+                };
                 // Collected from **both** versions' text — a diagram/image/equation that only
                 // exists in the old (removed) or new (added) side still needs its own encode
                 // request; `ensure_md_cache`'s resync loop dedups nothing, but re-requesting an

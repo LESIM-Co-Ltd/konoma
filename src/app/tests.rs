@@ -23378,7 +23378,7 @@ fn diff_rendered_reserves_images_from_both_old_and_new_versions() {
 /// cached row position (`ImagePlacement.line` via `md_visual_span`) then pointed 1 row too high
 /// once the real render's extra wrap pushed everything below it down by one — a mermaid diagram
 /// ending up drawn over the heading-rule row right above it. Fixed by deciding whether the gutter
-/// will be non-empty *before* any width-dependent rendering (`App::gutter_will_be_active`) and
+/// will be non-empty *before* any width-dependent rendering (`App::compute_gutter_align`) and
 /// rendering the body 1 column narrower up front when it will be
 /// (`docs/FEATURE-MD-RENDERED-DIFF.md`'s own "ガターを出すかは描画前に決める").
 ///
@@ -23460,21 +23460,21 @@ fn diff_rendered_gutter_never_causes_an_overflow_wrap() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `App::gutter_will_be_active` (the decision, made before any width-dependent render — see
+/// `App::compute_gutter_align` (the decision, made before any width-dependent render — see
 /// `diff_rendered_gutter_never_causes_an_overflow_wrap` above for why that ordering exists at all)
 /// must predict against **exactly** the text `build_decorated_file` (the render itself) goes on to
-/// parse. Before `decorated_file_text` unified them, the `File` branch of `gutter_will_be_active`
-/// joined `content.lines` without `build_decorated_file`'s own truncation-notice suffix
-/// ("— (省略...) —", itself Markdown text) — so for a document long enough to hit the display cap
-/// (`text::MAX_LINES`), the decision could disagree with what the render actually marks.
+/// parse. Before `decorated_file_text` unified them, the `File` branch of the (then differently
+/// named) decision joined `content.lines` without `build_decorated_file`'s own truncation-notice
+/// suffix ("— (省略...) —", itself Markdown text) — so for a document long enough to hit the
+/// display cap (`text::MAX_LINES`), the decision could disagree with what the render actually marks.
 ///
 /// This constructs the scenario where the disagreement is *observable*, not just theoretical: the
 /// committed baseline is made **byte-identical** to the working file's own first-5000-line prefix
 /// (what `text::load` truncates it down to) — so a decision that joins `content.lines` **without**
-/// the suffix sees no difference at all (`diff_has_any_change` = false, gutter predicted inactive,
+/// the suffix sees no difference at all (no change found, gutter predicted inactive,
 /// `build_decorated_file` then called at the *full* `width`), while the real render always did (and
-/// still does) include the suffix — an extra trailing paragraph the baseline doesn't have — so
-/// `preview_diff_marks` (computed from the real, suffixed render) finds it `Added` and the gutter
+/// still does) include the suffix — an extra trailing paragraph the baseline doesn't have — so the
+/// final marks step (computed from the real, suffixed render) finds it `Added` and the gutter
 /// column gets drawn anyway, into a body that was rendered assuming it wouldn't be: a full-width
 /// line grows 1 column too wide and wraps into a spurious extra row — the exact class of bug
 /// `diff_rendered_gutter_never_causes_an_overflow_wrap` (above) already pins for the diff's own
