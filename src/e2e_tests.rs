@@ -3609,6 +3609,198 @@ fn e2e_follow_jump_into_decorated_file_scrolls_to_first_change_below_the_fold() 
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// --- The "scroll to first change" reservation's 5th defense layer (item (16) in the task that
+// added these tests): `ui/preview.rs::render_decorated_body`'s `md_diff_pending_for_current` guard,
+// which defers consuming `App::take_diff_scroll_pending_for` while the block-diff behind the
+// change-gutter/`Rendered` marks is still computing on the worker thread. The two scroll tests
+// above run entirely on the synchronous fallback (no `md_diff_tx` attached), so they never draw a
+// "computing…" frame in between opening and the marks existing — this guard is unexercised by them.
+// The three tests below use `with_async_md_diff` to force exactly that intermediate frame.
+
+/// Async counterpart of `e2e_diff_view_rendered_open_scrolls_to_first_change_below_the_fold`: with
+/// a real worker thread in the loop, opening the diff produces (at least) two draws before the
+/// scroll happens — the "computing…" frame (drawn synchronously inside `s.key('d')`, before the
+/// worker has returned anything) and the real one (`s.drain_md_diff()`, once the marks exist). The
+/// first must leave `preview_scroll` at 0 — consuming the reservation against a mark-less frame
+/// would burn it for good, since `Option::take` never re-arms itself, and the real frame that lands
+/// once the worker finishes would then have nothing left to scroll to.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_rendered_open_async_worker_defers_scroll_until_result_lands() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_rendered_scroll_first_change_async");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    let mut body = String::from("# Title\n\n");
+    for i in 0..80 {
+        body.push_str(&format!(
+            "Filler paragraph number {i} with a few words to take up vertical space.\n\n"
+        ));
+    }
+    body.push_str("ORIGINAL MARKER paragraph.\n\n");
+    std::fs::write(&doc, &body).unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    let changed = body.replace("ORIGINAL MARKER paragraph.", "CHANGED MARKER paragraph.");
+    std::fs::write(&doc, &changed).unwrap();
+
+    let mut s = Sim::new(&canon(&dir)).with_async_md_diff(); // 90x26 — shorter than 80 filler paragraphs
+    s.select("doc.md");
+    s.key('d'); // opens the diff; draws once (the "computing…" frame) before this returns
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    assert_eq!(
+        s.app.tab.preview_scroll, 0,
+        "計算中のフレーム(印がまだ無い)ではスクロール予約を消費してはならない: {}",
+        s.app.tab.preview_scroll
+    );
+
+    s.drain_md_diff(); // applies the result and draws again — only now do marks exist
+    assert!(
+        s.app.tab.preview_scroll > 0,
+        "結果到着後の描画で初めて、最初の変更へスクロールされるはず: {}",
+        s.app.tab.preview_scroll
+    );
+    assert!(
+        s.find_text("CHANGED MARKER").is_some(),
+        "最初の変更行が画面内に入っているはず:\n{}",
+        s.screen()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Async counterpart of `e2e_follow_jump_into_decorated_file_scrolls_to_first_change_below_the_fold`
+/// — same guard, exercised via the ordinary-preview change gutter (`MdDiffKind::Gutter`) instead of
+/// the diff's own `Rendered` presentation (`MdDiffKind::Rendered`), since a follow jump into
+/// `follow_view = "file"` lands on the decorated Markdown preview, not the diff surface.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_jump_into_decorated_file_async_worker_defers_scroll_until_result_lands() {
+    let dir = sandbox("follow_file_scroll_first_change_async");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    let mut body = String::from("# Title\n\n");
+    for i in 0..80 {
+        body.push_str(&format!(
+            "Filler paragraph number {i} with a few words to take up vertical space.\n\n"
+        ));
+    }
+    body.push_str("ORIGINAL MARKER paragraph.\n\n");
+    std::fs::write(&doc, &body).unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+
+    let mut cfg = Config::default();
+    cfg.ui.follow_view = "file".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg).with_async_md_diff();
+    s.key('F');
+    assert!(s.app.follow_enabled(), "F でフォロー ON");
+
+    let changed = body.replace("ORIGINAL MARKER paragraph.", "CHANGED MARKER paragraph.");
+    std::fs::write(&doc, &changed).unwrap();
+    // See `e2e_follow_jump_into_decorated_file_scrolls_to_first_change_below_the_fold`'s own
+    // comment: `follow_target_ok` needs the *canonical* root-joined path.
+    let canonical_doc = s.app.tab.root.join("doc.md");
+    assert!(s.app.follow_note_change(&canonical_doc));
+    s.app.follow_jump(&canonical_doc);
+    s.draw(); // the "computing…" frame: `ensure_md_cache` just kicked the Gutter block-diff
+
+    assert!(
+        !s.app.is_git_diff_preview(),
+        "follow_view=\"file\" は通常プレビューのはず"
+    );
+    assert_eq!(
+        s.app.tab.preview_scroll, 0,
+        "計算中のフレーム(印がまだ無い)ではスクロール予約を消費してはならない: {}",
+        s.app.tab.preview_scroll
+    );
+
+    s.drain_md_diff(); // applies the result and draws again — only now do gutter marks exist
+    assert!(
+        s.app.tab.preview_scroll > 0,
+        "結果到着後の描画で初めて、最初の変更へスクロールされるはず: {}",
+        s.app.tab.preview_scroll
+    );
+    assert!(
+        s.find_text("CHANGED MARKER").is_some(),
+        "最初の変更行が画面内に入っているはず:\n{}",
+        s.screen()
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// An ordinary preview (no diff, no follow) never arms a "scroll to first change" reservation at
+/// all (`App::enter_preview` clears it and nothing re-arms it on this path) — so its own Gutter
+/// block-diff landing, async, must never move `preview_scroll` off 0. Kept alongside the two async
+/// tests above (rather than folded into either) since it is the negative control: it does not, by
+/// itself, distinguish whether the (16) guard exists — a mismatched (or absent) reservation is a
+/// no-op for `take_diff_scroll_pending_for` regardless of when it is checked — but it does pin that
+/// the async worker path this task exercises doesn't have some *other* way of moving the scroll.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_ordinary_preview_async_worker_result_does_not_scroll() {
+    let dir = sandbox("ordinary_preview_no_scroll_async");
+    let sh = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    std::fs::create_dir_all(&dir).unwrap();
+    sh(&["init", "-q", "."]);
+    sh(&["config", "user.email", "t@t"]);
+    sh(&["config", "user.name", "t"]);
+    let doc = dir.join("doc.md");
+    let mut body = String::from("# Title\n\n");
+    for i in 0..80 {
+        body.push_str(&format!(
+            "Filler paragraph number {i} with a few words to take up vertical space.\n\n"
+        ));
+    }
+    body.push_str("ORIGINAL MARKER paragraph.\n\n");
+    std::fs::write(&doc, &body).unwrap();
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    let changed = body.replace("ORIGINAL MARKER paragraph.", "CHANGED MARKER paragraph.");
+    std::fs::write(&doc, &changed).unwrap();
+
+    let mut s = Sim::new(&canon(&dir)).with_async_md_diff();
+    s.select("doc.md");
+    s.enter(); // ordinary preview open — no diff, no follow, no reservation armed
+    assert_eq!(s.app.tab.preview_scroll, 0);
+
+    s.drain_md_diff(); // the ordinary gutter's own Gutter block-diff result lands
+    assert_eq!(
+        s.app.tab.preview_scroll, 0,
+        "通常プレビューは予約を持たないので、結果到着後もスクロールしてはならない: {}",
+        s.app.tab.preview_scroll
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The `Rendered` presentation draws real mermaid diagrams, not a text-only fallback
 /// (`docs/FEATURE-MD-RENDERED-DIFF.md` §2): a fence that only exists in the *old* version and one
 /// that only exists in the *new* version (the old one removed, a different one added) both get

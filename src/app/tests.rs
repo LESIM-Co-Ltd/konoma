@@ -17214,6 +17214,196 @@ fn apply_md_diff_ignores_a_landed_rendered_result_after_leaving_rendered_for_sou
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// --- `diff_scroll_pending`'s defense layers, isolated (the top-level task description calls these
+// (12)/(13)/(14)/(15); the fifth layer, (16) — `ui/preview.rs::render_decorated_body`'s
+// `md_diff_pending_for_current` consumption gate — is only observable through a real async worker
+// round trip and is pinned in `e2e_tests.rs` instead, alongside the two sync-fallback scroll tests
+// it complements). Each test below isolates exactly one layer by driving the state directly
+// (`app.tab.diff_scroll_pending`) rather than through the full key-press flow that always exercises
+// several layers together (`PerTab::diff_scroll_pending`'s own doc comment on `App::app.rs`).
+
+/// (12): `App::enter_preview` drops *any* leftover "scroll to first change" reservation up front,
+/// unconditionally — not just one that happens to match the path being entered. Without this, a
+/// stale reservation left behind by a `Rendered` diff that was never consumed (rounded down to
+/// `Source` before the next render, or simply abandoned mid-flight) would survive to scroll a later,
+/// wholly unrelated Markdown preview opened in the same tab.
+#[test]
+fn enter_preview_clears_any_pending_diff_scroll_reservation() {
+    let dir = unique_tmp("konoma_enter_preview_clears_scroll_pending");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nBody.\n").unwrap();
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // A stale reservation for an unrelated (and non-existent) path — exactly the shape
+    // `enter_preview`'s own doc comment describes as needing to be dropped, not just one that
+    // happens to name `doc.md` itself.
+    app.tab.diff_scroll_pending = Some(dir.join("stale-unrelated.md"));
+    app.enter_preview(&doc);
+    assert!(
+        app.tab.diff_scroll_pending.is_none(),
+        "enter_preview は先頭で古い予約を必ず消すはず(相手パスが一致するかどうかに関係なく)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// (13): `App::open_git_diff_with` drops any leftover reservation up front (mirroring `enter_preview`
+/// above), then arms a *fresh* one of its own only when the presentation it lands on is `Rendered` —
+/// opening into `Source` must leave no reservation behind at all (nothing in `Source`'s own render
+/// path would ever consume it).
+#[cfg(feature = "git")]
+#[test]
+fn open_git_diff_with_clears_stale_pending_and_only_arms_a_fresh_one_for_rendered() {
+    let dir = unique_tmp("konoma_open_git_diff_with_scroll_pending");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.md");
+    std::fs::write(&doc, "# Title\n\nOriginal.\n").unwrap();
+    let sh = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap();
+    };
+    sh(&["add", "-A"]);
+    sh(&["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, "# Title\n\nCHANGED.\n").unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let doc = dir.join("doc.md");
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.tab.diff_scroll_pending = Some(dir.join("stale-unrelated.md"));
+    app.open_git_diff_with(
+        &doc,
+        super::git_view::DiffOpen {
+            view: Some(DiffView::Source),
+            ..Default::default()
+        },
+    );
+    assert_eq!(app.diff_view_for_test(), DiffView::Source);
+    assert!(
+        app.tab.diff_scroll_pending.is_none(),
+        "Source を開いた時は古い予約を消すだけで新しい予約は立てないはず(Source は消費側を持たない)"
+    );
+
+    app.tab.diff_scroll_pending = Some(dir.join("stale-unrelated-2.md"));
+    app.open_git_diff_with(
+        &doc,
+        super::git_view::DiffOpen {
+            view: Some(DiffView::Rendered),
+            ..Default::default()
+        },
+    );
+    assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
+    assert_eq!(
+        app.tab.diff_scroll_pending.as_deref(),
+        Some(doc.as_path()),
+        "Rendered を開いた時は古い予約を消し、今開いた doc.md 宛ての新しい予約を立てるはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// (14): `App::take_diff_scroll_pending_for` only reports `true` for the path it was armed for, but
+/// unconditionally consumes the reservation either way (`Option::take`) — a mismatched check must
+/// not leave a stale reservation sitting around to misfire against whatever the tab shows next.
+#[test]
+fn take_diff_scroll_pending_for_only_matches_its_own_path_and_always_consumes() {
+    let dir = unique_tmp("konoma_take_diff_scroll_pending_for_match");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let a = dir.join("a.md");
+    let b = dir.join("b.md");
+
+    app.tab.diff_scroll_pending = Some(a.clone());
+    assert!(
+        !app.take_diff_scroll_pending_for(&b),
+        "別パス(b.md)宛ての要求には応えないはず"
+    );
+    assert!(
+        app.tab.diff_scroll_pending.is_none(),
+        "不一致でも Option::take で予約自体は必ず消費されるはず(stale reservation を残さない)"
+    );
+
+    app.tab.diff_scroll_pending = Some(a.clone());
+    assert!(
+        app.take_diff_scroll_pending_for(&a),
+        "一致するパス(a.md)には応えるはず"
+    );
+    assert!(
+        app.tab.diff_scroll_pending.is_none(),
+        "消費後は None のはず(二重に応えてはならない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// (15): `App::apply_md_diff`'s `Unavailable` branch drops the "scroll to first change" reservation
+/// for its own path — `Rendered` is no longer reachable, so nothing would ever consume it otherwise
+/// (only `render_decorated_body`'s `Rendered`-drawing path does, and `Unavailable` rounds down to
+/// `Source`, which never calls it).
+#[test]
+fn apply_md_diff_unavailable_clears_the_scroll_reservation_for_its_own_path() {
+    let dir = unique_tmp("konoma_apply_md_diff_unavailable_clears_own_scroll_pending");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let path = dir.join("doc.md");
+    app.tab.preview_path = Some(path.clone());
+    app.tab.diff_view = DiffView::Rendered;
+    app.md_diff_gen = 5;
+    app.tab.diff_scroll_pending = Some(path.clone());
+
+    let res = MdDiffResult {
+        gen: 5,
+        path: path.clone(),
+        kind: MdDiffKind::Rendered,
+        outcome: MdDiffOutcome::Unavailable,
+    };
+    assert!(app.apply_md_diff(res), "現世代なので適用される");
+    assert_eq!(
+        app.diff_view_for_test(),
+        DiffView::Source,
+        "Unavailable は Source へ丸められるはず"
+    );
+    assert!(
+        app.tab.diff_scroll_pending.is_none(),
+        "Rendered が届かなくなったので自分(doc.md)宛ての予約は消すはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// (15), continued: the same `Unavailable` branch must not touch a reservation armed for some
+/// *other* path — only `res.path`'s own reservation is stale, not whatever the tab may have queued
+/// up for a different file in the meantime.
+#[test]
+fn apply_md_diff_unavailable_does_not_clear_a_different_paths_scroll_reservation() {
+    let dir = unique_tmp("konoma_apply_md_diff_unavailable_other_path_scroll_pending");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let path = dir.join("doc.md");
+    let other = dir.join("other.md");
+    app.tab.preview_path = Some(path.clone());
+    app.tab.diff_view = DiffView::Rendered;
+    app.md_diff_gen = 5;
+    app.tab.diff_scroll_pending = Some(other.clone());
+
+    let res = MdDiffResult {
+        gen: 5,
+        path: path.clone(),
+        kind: MdDiffKind::Rendered,
+        outcome: MdDiffOutcome::Unavailable,
+    };
+    assert!(app.apply_md_diff(res), "現世代なので適用される");
+    assert_eq!(
+        app.tab.diff_scroll_pending.as_deref(),
+        Some(other.as_path()),
+        "別ファイル(other.md)宛ての予約を巻き込んではならない"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// M5 (pre-merge review of PR #21): `App::md_diff_landed_for`'s `gen` check. `App::kick_md_diff`
 /// bumps `md_diff_gen` on every kick but never clears `md_diff_landed` itself — only
 /// `App::invalidate_md_diff`/`App::apply_md_diff`'s own overwrite do that — so a landed result can
