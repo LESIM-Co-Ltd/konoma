@@ -576,6 +576,78 @@ pub enum Msg {
     /// delegated command). Never shown for a target with just one (`App::diff_view_help_hint`'s
     /// own gate, [[hint-shown-iff-key-acts]]).
     DiffViewCycleHelpPair,
+    // --- Media diff (`docs/FEATURE-MEDIA-DIFF.md`) — the image/PDF/SVG side-by-side "diff" ---
+    /// GitDiff footer, media side-by-side / binary-summary / computing states: the base set of
+    /// keys that always act (`n/N`, `x`) for a backend that **can** discard. `s`/`J`/`K`/`R` are
+    /// appended dynamically (mirrors how `R:<label>` is appended to the plain-text hints) —
+    /// [[hint-shown-iff-key-acts]].
+    DiffMediaHintDiscard,
+    /// `DiffMediaHintDiscard` without `x:discard`, for a backend that cannot write (jj).
+    DiffMediaHintNoDiscard,
+    /// The `n/N` fragment shared by the media/binary-summary footer's dynamic prefix
+    /// (`ui/status.rs::mode_footer` composes `n/N:<this>` itself, mirroring `hint()`'s own
+    /// `"{keys}:{msg}"` shape) — kept separate from `DiffMediaHintDiscard`/`NoDiscard` so `s`/`J`/
+    /// `K`/`R` can be inserted **between** it and the (`x:discard`/)`q/Esc:back` suffix, matching
+    /// `docs/FEATURE-MEDIA-DIFF.md` §6's key order.
+    HintNextPrevFile,
+    /// `s`'s footer label / flash text when the media diff's layout would cycle to "auto".
+    MediaLayoutAuto,
+    /// `s`'s footer label / flash text when the media diff's layout would cycle to side-by-side.
+    MediaLayoutSide,
+    /// `s`'s footer label / flash text when the media diff's layout would cycle to stacked.
+    MediaLayoutStack,
+    /// `?` help row description for `s` in the media diff (`docs/FEATURE-MEDIA-DIFF.md` §1's
+    /// "自動 → 左右 → 上下 → 自動").
+    MediaLayoutCycleHelp,
+    /// Media diff caption: "Before" (old side). Constructed only by `ui/preview.rs::draw_media_
+    /// caption` (git-gated) — `#[cfg_attr(not(feature = "git"), allow(dead_code))]` on this and
+    /// the handful of caption/placeholder variants below it for the same reason.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    MediaDiffBefore,
+    /// Media diff caption: "After" (new side).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    MediaDiffAfter,
+    /// Media diff caption base name: the backend's committed HEAD (git).
+    MediaBaseHead,
+    /// Media diff caption base name: jj's parent commit (`@-`).
+    MediaBaseJjParent,
+    /// Media diff caption base name: the follow session's own start-of-session snapshot.
+    MediaBaseFollowStart,
+    /// Media diff caption base name for the **new** side, git backend: the working tree.
+    MediaBaseWorkTreeGit,
+    /// Media diff caption base name for the **new** side, jj backend: the working copy (`@`).
+    MediaBaseWorkCopyJj,
+    /// Media diff old-side placeholder: an added/untracked/created-since-follow-start file has no
+    /// old version to show.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    MediaDiffAbsentOld,
+    /// Media diff new-side placeholder: a deleted file has no new version to show.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    MediaDiffAbsentNew,
+    /// Media diff caption suffix when both sides' bytes are identical (a permission-only change,
+    /// say).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    MediaDiffIdentical,
+    /// Media diff side placeholder prefix when a side failed to decode — followed by `: <reason>`
+    /// (the reason itself is not translated, matching `anyhow`'s own English error text
+    /// convention elsewhere in this codebase).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    MediaDiffCannotDisplay,
+    /// Media diff side placeholder: the requested PDF page doesn't exist on this side.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    MediaDiffPageMissing,
+    /// Binary summary line (`docs/FEATURE-MEDIA-DIFF.md` §5) label prefix, e.g. "binary file: 18.3
+    /// KB → 22.3 KB".
+    MediaDiffBinaryFile,
+    /// Binary summary line: a missing side's size, e.g. "(none) → 22.3 KB".
+    MediaDiffNone,
+    /// Binary summary line suffix when both sides' byte lengths are equal but the content isn't
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §5) — the rounded `human_size` alone can't show *any*
+    /// difference for this case, so it's spelled out instead of silently looking unchanged.
+    MediaDiffSameSizeDifferentContent,
+    /// Binary summary line: the unit word for the signed byte-delta suffix, e.g. "+2 B" (en) /
+    /// "+2 バイト" (jp).
+    MediaDiffByteUnit,
     WkRelative,
     WkRename,
     HintSearch,
@@ -1192,6 +1264,29 @@ fn en(msg: Msg) -> &'static str {
         DiffComputing => "computing diff…",
         DiffViewCycleHelp => "cycle diff view (source → rendered → preview)",
         DiffViewCycleHelpPair => "cycle diff view (source ⇄ preview)",
+        DiffMediaHintDiscard => "x:discard  q/Esc:back",
+        DiffMediaHintNoDiscard => "q/Esc:back",
+        HintNextPrevFile => "next/prev file",
+        MediaLayoutAuto => "auto",
+        MediaLayoutSide => "side by side",
+        MediaLayoutStack => "stacked",
+        MediaLayoutCycleHelp => "cycle layout (auto → side by side → stacked → auto)",
+        MediaDiffBefore => "Before",
+        MediaDiffAfter => "After",
+        MediaBaseHead => "HEAD",
+        MediaBaseJjParent => "parent commit (@-)",
+        MediaBaseFollowStart => "follow start",
+        MediaBaseWorkTreeGit => "working tree",
+        MediaBaseWorkCopyJj => "working copy (@)",
+        MediaDiffAbsentOld => "new file (no old version)",
+        MediaDiffAbsentNew => "deleted (no new version)",
+        MediaDiffIdentical => "identical content",
+        MediaDiffCannotDisplay => "cannot display",
+        MediaDiffPageMissing => "this page doesn't exist",
+        MediaDiffBinaryFile => "binary file",
+        MediaDiffNone => "(none)",
+        MediaDiffSameSizeDifferentContent => "same size, content differs",
+        MediaDiffByteUnit => "B",
         WkRelative => "relative",
         WkRename => "rename",
         HintSearch => "search",
@@ -1697,6 +1792,29 @@ fn jp(msg: Msg) -> &'static str {
         DiffComputing => "差分を計算中…",
         DiffViewCycleHelp => "表現を切り替え（ソース → 整形 → プレビュー）",
         DiffViewCycleHelpPair => "表現を切り替え（ソース ⇄ プレビュー）",
+        DiffMediaHintDiscard => "x:破棄  q/Esc:戻る",
+        DiffMediaHintNoDiscard => "q/Esc:戻る",
+        HintNextPrevFile => "次/前の変更",
+        MediaLayoutAuto => "自動",
+        MediaLayoutSide => "左右",
+        MediaLayoutStack => "上下",
+        MediaLayoutCycleHelp => "並べ方を切替（自動→左右→上下→自動）",
+        MediaDiffBefore => "変更前",
+        MediaDiffAfter => "変更後",
+        MediaBaseHead => "HEAD",
+        MediaBaseJjParent => "親コミット (@-)",
+        MediaBaseFollowStart => "フォロー開始時点",
+        MediaBaseWorkTreeGit => "作業ツリー",
+        MediaBaseWorkCopyJj => "作業コピー (@)",
+        MediaDiffAbsentOld => "新規ファイル（変更前はありません）",
+        MediaDiffAbsentNew => "削除されました（変更後はありません）",
+        MediaDiffIdentical => "内容は同一",
+        MediaDiffCannotDisplay => "表示できません",
+        MediaDiffPageMissing => "このページはありません",
+        MediaDiffBinaryFile => "バイナリファイル",
+        MediaDiffNone => "(なし)",
+        MediaDiffSameSizeDifferentContent => "同じサイズ・内容が異なる",
+        MediaDiffByteUnit => "バイト",
         WkRelative => "相対",
         WkRename => "改名",
         HintSearch => "検索",
@@ -2220,6 +2338,29 @@ mod tests {
         Msg::DiffComputing,
         Msg::DiffViewCycleHelp,
         Msg::DiffViewCycleHelpPair,
+        Msg::DiffMediaHintDiscard,
+        Msg::DiffMediaHintNoDiscard,
+        Msg::HintNextPrevFile,
+        Msg::MediaLayoutAuto,
+        Msg::MediaLayoutSide,
+        Msg::MediaLayoutStack,
+        Msg::MediaLayoutCycleHelp,
+        Msg::MediaDiffBefore,
+        Msg::MediaDiffAfter,
+        Msg::MediaBaseHead,
+        Msg::MediaBaseJjParent,
+        Msg::MediaBaseFollowStart,
+        Msg::MediaBaseWorkTreeGit,
+        Msg::MediaBaseWorkCopyJj,
+        Msg::MediaDiffAbsentOld,
+        Msg::MediaDiffAbsentNew,
+        Msg::MediaDiffIdentical,
+        Msg::MediaDiffCannotDisplay,
+        Msg::MediaDiffPageMissing,
+        Msg::MediaDiffBinaryFile,
+        Msg::MediaDiffNone,
+        Msg::MediaDiffSameSizeDifferentContent,
+        Msg::MediaDiffByteUnit,
         Msg::QuitOrCloseTab,
         Msg::WkRelative,
         Msg::WkRename,

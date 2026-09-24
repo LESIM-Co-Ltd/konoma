@@ -24547,3 +24547,385 @@ fn ordinary_preview_gutter_decision_matches_render_for_a_truncated_file() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// =============================================================================
+// Media diff (image/PDF/SVG side-by-side, `docs/FEATURE-MEDIA-DIFF.md`) — phase B
+// =============================================================================
+
+#[cfg(feature = "git")]
+fn media_diff_git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn media_diff_write_png(path: &Path, w: u32, h: u32, px: [u8; 3]) {
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(px)))
+        .save(path)
+        .unwrap();
+}
+
+// ---- App::diff_representations / App::round_diff_view ----------------------------------------
+
+#[test]
+fn diff_representations_markdown_is_source_rendered_preview() {
+    let dir = unique_tmp("konoma_media_diff_reps_md");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("doc.md");
+    std::fs::write(&path, "# hi\n").unwrap();
+    let app = App::new(dir.clone(), Config::default()).unwrap();
+    assert_eq!(
+        app.diff_representations(&path),
+        vec![DiffView::Source, DiffView::Rendered, DiffView::Preview]
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn diff_representations_code_text_mermaid_are_source_preview_only() {
+    let dir = unique_tmp("konoma_media_diff_reps_text");
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = App::new(dir.clone(), Config::default()).unwrap();
+    for name in ["a.rs", "notes.txt", "d.mmd"] {
+        let path = dir.join(name);
+        std::fs::write(&path, "hello\n").unwrap();
+        assert_eq!(
+            app.diff_representations(&path),
+            vec![DiffView::Source, DiffView::Preview],
+            "{name}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn diff_representations_image_and_pdf_have_no_source() {
+    let dir = unique_tmp("konoma_media_diff_reps_image");
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = App::new(dir.clone(), Config::default()).unwrap();
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 2, 2, [1, 2, 3]);
+    assert_eq!(
+        app.diff_representations(&png),
+        vec![DiffView::Rendered, DiffView::Preview],
+        "Image は Rendered が並べて表示なので Source は無いはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn diff_representations_svg_is_source_rendered_preview() {
+    let dir = unique_tmp("konoma_media_diff_reps_svg");
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = App::new(dir.clone(), Config::default()).unwrap();
+    let svg = dir.join("pic.svg");
+    std::fs::write(
+        &svg,
+        "<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'></svg>",
+    )
+    .unwrap();
+    assert_eq!(
+        app.diff_representations(&svg),
+        vec![DiffView::Source, DiffView::Rendered, DiffView::Preview],
+        "SVG は絵でもあり本物のテキストでもあるので3表現のはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn diff_representations_video_archive_unsupported_are_source_only() {
+    let dir = unique_tmp("konoma_media_diff_reps_binary");
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = App::new(dir.clone(), Config::default()).unwrap();
+    for name in ["clip.mp4", "arc.zip", "weird.bin"] {
+        let path = dir.join(name);
+        std::fs::write(&path, b"\x00\x01\x02binary").unwrap();
+        assert_eq!(
+            app.diff_representations(&path),
+            vec![DiffView::Source],
+            "{name}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn diff_representations_deleted_svg_and_pdf_classify_via_glob_without_the_worker() {
+    let dir = unique_tmp("konoma_media_diff_reps_deleted_glob");
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = App::new(dir.clone(), Config::default()).unwrap();
+    // Never written to disk at all = "deleted" for classification purposes (resolve_preview only
+    // looks at the name/extension for a glob rule, never at whether the file exists) — SVG/PDF
+    // classify correctly without ever consulting the media-diff worker, and lose only `Preview`.
+    let svg = dir.join("gone.svg");
+    assert_eq!(
+        app.diff_representations(&svg),
+        vec![DiffView::Source, DiffView::Rendered]
+    );
+    let pdf = dir.join("gone.pdf");
+    assert_eq!(app.diff_representations(&pdf), vec![DiffView::Rendered]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn diff_representations_deleted_ambiguous_file_is_rendered_only_before_landing() {
+    let dir = unique_tmp("konoma_media_diff_reps_deleted_pending");
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = App::new(dir.clone(), Config::default()).unwrap();
+    // No extension rule matches, and the file doesn't exist — `resolve_preview` can't classify it
+    // (`CanNotPreview`), and nothing has polled the worker yet for this path.
+    let path = dir.join("gone_unknown_ext_xyz");
+    assert_eq!(app.diff_representations(&path), vec![DiffView::Rendered]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn diff_representations_deleted_image_classifies_via_worker_byte_sniff_after_landing() {
+    let dir = unique_tmp("konoma_media_diff_reps_deleted_image_real");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let png = dir.join("gone.png"); // no glob rule matches .png — image/* is MIME-only
+    media_diff_write_png(&png, 3, 3, [9, 9, 9]);
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::remove_file(&png).unwrap(); // deleted on disk, still in HEAD
+
+    // Canonicalize before `App::new` (its own `tab.root`) so it matches `png`'s prefix exactly —
+    // otherwise `base_contents`'s relative-path stripping silently finds nothing on a macOS
+    // `/var` → `/private/var` symlink (the same gotcha every other git test in this file avoids).
+    let dir = dir.canonicalize().unwrap();
+    let png = dir.join("gone.png");
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    // Before landing: ambiguous, ONLY Rendered (the "computing" transient state).
+    assert_eq!(app.diff_representations(&png), vec![DiffView::Rendered]);
+    let outcome = app
+        .poll_media_diff(&png, 1, (400, 300))
+        .expect("同期フォールバックで即座に返るはず(tx 未 attach)");
+    assert!(
+        matches!(
+            outcome,
+            MediaDiffOutcome::Ready {
+                kind: MediaDiffKind::Image,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    // After landing: correctly classified as Image; deleted ⟹ still no Preview.
+    assert_eq!(app.diff_representations(&png), vec![DiffView::Rendered]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn round_diff_view_substitutes_rendered_and_source_for_each_other() {
+    let dir = unique_tmp("konoma_media_diff_round_substitute");
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = App::new(dir.clone(), Config::default()).unwrap();
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    // Image has no Source: a Source request rounds to Rendered.
+    assert_eq!(
+        app.round_diff_view(DiffView::Source, &png),
+        DiffView::Rendered
+    );
+    let rs = dir.join("a.rs");
+    std::fs::write(&rs, "fn main(){}\n").unwrap();
+    // Code has no Rendered: a Rendered request rounds to Source.
+    assert_eq!(
+        app.round_diff_view(DiffView::Rendered, &rs),
+        DiffView::Source
+    );
+    let mp4 = dir.join("clip.mp4");
+    std::fs::write(&mp4, b"binary\x00").unwrap();
+    // Video has only Source: Preview (no substitute) rounds to the list's first entry (Source).
+    assert_eq!(
+        app.round_diff_view(DiffView::Preview, &mp4),
+        DiffView::Source
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- App::diff_media_active / App::diff_binary_summary_eligible / App::diff_footer_is_media_or_summary ----
+
+#[cfg(feature = "git")]
+#[test]
+fn diff_media_active_is_true_for_image_rendered_and_false_for_markdown_rendered() {
+    let dir = unique_tmp("konoma_media_diff_active_predicate");
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&png);
+    assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
+    assert!(app.diff_media_active());
+
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "# hi\n\nchanged\n").unwrap();
+    app.open_git_diff(&md);
+    assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
+    assert!(
+        !app.diff_media_active(),
+        "Markdown の Rendered はメディアではない(装飾ブロック)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn diff_binary_summary_eligible_excludes_text_kinds_and_includes_binary_kinds() {
+    let dir = unique_tmp("konoma_media_diff_summary_eligible");
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = App::new(dir.clone(), Config::default()).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "hi\n").unwrap();
+    assert!(!app.diff_binary_summary_eligible(&md));
+    let rs = dir.join("a.rs");
+    std::fs::write(&rs, "fn main(){}\n").unwrap();
+    assert!(!app.diff_binary_summary_eligible(&rs));
+    let mp4 = dir.join("clip.mp4");
+    std::fs::write(&mp4, b"\x00\x01").unwrap();
+    assert!(app.diff_binary_summary_eligible(&mp4));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn diff_footer_is_media_or_summary_covers_media_active_and_binary_summary_kinds() {
+    let dir = unique_tmp("konoma_media_diff_footer_predicate");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    app.open_git_diff(&png);
+    assert!(app.diff_footer_is_media_or_summary());
+
+    let mp4 = dir.join("clip.mp4");
+    std::fs::write(&mp4, b"\x00\x01").unwrap();
+    app.open_git_diff(&mp4);
+    assert!(app.diff_footer_is_media_or_summary());
+
+    let rs = dir.join("a.rs");
+    std::fs::write(&rs, "fn main(){}\n").unwrap();
+    app.open_git_diff(&rs);
+    assert!(!app.diff_footer_is_media_or_summary());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- apply_diff_view must not kick the (unrelated) Markdown block-diff for a media target -----
+
+#[cfg(feature = "git")]
+#[test]
+fn apply_diff_view_does_not_kick_the_markdown_block_diff_for_a_media_target() {
+    let dir = unique_tmp("konoma_media_diff_no_block_diff_flash");
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&png);
+    assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
+    assert!(
+        app.flash.is_none(),
+        "画像の Rendered(=並べて表示) は Markdown ブロック diff と無関係なので flash が立たないはず: {:?}",
+        app.flash
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- App::media_diff_page_turn / App::media_diff_can_page --------------------------------------
+
+#[cfg(feature = "git")]
+#[test]
+fn media_diff_page_turn_moves_both_sides_and_clamps_to_the_larger_page_count() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let bytes = std::fs::read(&pdf).unwrap();
+    let dir = unique_tmp("konoma_media_diff_page_turn");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let doc = dir.join("doc.pdf");
+    std::fs::write(&doc, &bytes).unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&doc);
+    assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
+    let _ = app.poll_media_diff(&doc, app.diff_media_page(), (800, 600));
+    assert!(
+        app.media_diff_can_page(),
+        "3ページの PDF は page 可能なはず"
+    );
+    assert_eq!(app.diff_media_page(), 1);
+    app.media_diff_page_turn(1);
+    assert_eq!(app.diff_media_page(), 2);
+    app.media_diff_page_turn(1);
+    assert_eq!(app.diff_media_page(), 3);
+    app.media_diff_page_turn(1); // clamp at the max (3)
+    assert_eq!(app.diff_media_page(), 3);
+    app.media_diff_page_turn(-1);
+    assert_eq!(app.diff_media_page(), 2);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(feature = "git")]
+#[test]
+fn media_diff_can_page_is_false_for_a_single_page_image() {
+    let dir = unique_tmp("konoma_media_diff_can_page_false");
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&png);
+    let _ = app.poll_media_diff(&png, 1, (400, 300));
+    assert!(!app.media_diff_can_page());
+    app.media_diff_page_turn(1); // no-op
+    assert_eq!(app.diff_media_page(), 1);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- App::cycle_media_diff_layout (the `s` handler while the media diff is active) -------------
+
+#[cfg(feature = "git")]
+#[test]
+fn cycle_media_diff_layout_rotates_auto_side_stack_and_flashes() {
+    let dir = unique_tmp("konoma_media_diff_cycle_layout");
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&png);
+    assert!(app.diff_media_active());
+    assert_eq!(app.media_diff_layout(), MediaDiffLayout::Auto);
+    app.cycle_diff_layout(); // `s` handler — must delegate to the media cycle, not the text one
+    assert_eq!(app.media_diff_layout(), MediaDiffLayout::Side);
+    assert_eq!(
+        app.flash.as_deref(),
+        Some(tr(app.lang, crate::i18n::Msg::MediaLayoutSide))
+    );
+    app.cycle_diff_layout();
+    assert_eq!(app.media_diff_layout(), MediaDiffLayout::Stack);
+    app.cycle_diff_layout();
+    assert_eq!(app.media_diff_layout(), MediaDiffLayout::Auto);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `[git] media_diff` parses the same alias vocabulary `DiffLayout::parse` does for its own
+/// "split"/"unified" values.
+#[test]
+fn media_diff_layout_parse_accepts_aliases_and_falls_back_to_auto() {
+    assert_eq!(MediaDiffLayout::parse("side"), MediaDiffLayout::Side);
+    assert_eq!(MediaDiffLayout::parse("split"), MediaDiffLayout::Side);
+    assert_eq!(MediaDiffLayout::parse("horizontal"), MediaDiffLayout::Side);
+    assert_eq!(MediaDiffLayout::parse("stack"), MediaDiffLayout::Stack);
+    assert_eq!(MediaDiffLayout::parse("vertical"), MediaDiffLayout::Stack);
+    assert_eq!(MediaDiffLayout::parse("unified"), MediaDiffLayout::Stack);
+    assert_eq!(MediaDiffLayout::parse("auto"), MediaDiffLayout::Auto);
+    assert_eq!(MediaDiffLayout::parse("bogus"), MediaDiffLayout::Auto);
+}

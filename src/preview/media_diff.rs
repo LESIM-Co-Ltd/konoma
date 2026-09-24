@@ -4,12 +4,6 @@
 //! layout math and the `media-diff://` cache-key format — the same split `preview::markdown` (pure)
 //! / `app::md_diff` (App-side) already has for the Markdown block-diff.
 //!
-//! `#![allow(dead_code)]`: this whole module is phase A of `docs/FEATURE-MEDIA-DIFF.md` — nothing in
-//! production calls into it yet (phase B wires `layout`/`media_diff_url` into `render_gitdiff`).
-//! Every item here is exercised directly by this module's own tests in the meantime, mirroring the
-//! precedent in `vcs::jj::base_contents`'s doc comment for the identical situation.
-#![allow(dead_code)]
-
 use ratatui::layout::Rect;
 
 /// Which side of a media diff a rect/key describes.
@@ -29,23 +23,67 @@ pub enum MediaDiffLayout {
     Stack,
 }
 
+impl MediaDiffLayout {
+    /// Parse `[git] media_diff` (default `"auto"`) — accepts the same aliases `DiffLayout::parse`
+    /// does for its own "split"/"unified" values, since a user who already knows those from `[git]
+    /// diff` shouldn't have to learn a second vocabulary for this sibling setting. An unrecognized
+    /// value falls back to `Auto` (the default), matching every other mode string in this codebase
+    /// (a typo can't silently change behavior in a surprising direction).
+    pub fn parse(s: &str) -> Self {
+        let n: String = s
+            .chars()
+            .filter(|c| !matches!(c, ' ' | '-' | '_'))
+            .flat_map(|c| c.to_lowercase())
+            .collect();
+        match n.as_str() {
+            "side" | "split" | "horizontal" | "sidebyside" => Self::Side,
+            "stack" | "stacked" | "vertical" | "unified" => Self::Stack,
+            _ => Self::Auto, // "auto" / unrecognized
+        }
+    }
+
+    /// `s`'s cycle: auto → side → stack → auto (`docs/FEATURE-MEDIA-DIFF.md` §1/§6).
+    pub fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::Side,
+            Self::Side => Self::Stack,
+            Self::Stack => Self::Auto,
+        }
+    }
+}
+
 /// The orientation [`layout`] actually resolved to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 pub enum MediaDiffOrientation {
     Side,
     Stack,
 }
 
-/// One side's pane: a one-row caption at the top, and the box the picture is fit and centered in
-/// below it.
+/// One side's pane: a one-row caption at the top, the full area below it (`area`), and the box the
+/// picture is fit and centered *within* that area (`image`).
+///
+/// `image` is zero-sized whenever there is no picture to fit (`layout`'s `old_px`/`new_px` is
+/// `None` — Absent/Failed/PageMissing, `fit_image`'s own contract), but `area` never is (as long
+/// as the pane itself has room) — the renderer needs a real, non-zero rect to center a
+/// placeholder message ("新規ファイル…", "表示できません: …", …) *in*, and `image` alone cannot
+/// serve that purpose. Before this field existed, `ui/preview.rs::draw_media_side` used `image`
+/// for that too, so a zero-sized `image` (every non-Picture side, always) short-circuited an
+/// early `width == 0 || height == 0` guard before ever reaching the placeholder-drawing branch —
+/// Absent/Failed/PageMissing rendered nothing at all (a real, user-reported bug: an untracked
+/// file's old side, a deleted file's new side, and a PDF page beyond one side's own count all
+/// drew a blank pane with only the caption visible).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 pub struct MediaDiffPane {
     pub caption: Rect,
+    pub area: Rect,
     pub image: Rect,
 }
 
 /// The full result of [`layout`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 pub struct MediaDiffGeometry {
     pub orientation: MediaDiffOrientation,
     pub separator: Rect,
@@ -69,6 +107,7 @@ pub struct MediaDiffGeometry {
 /// an unchanged old one instead of both being stretched to fill their own pane independently. The
 /// shared factor never exceeds 1.0 (never enlarge past natural size) and is the tightest fit among
 /// the present sides' own panes.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 pub fn layout(
     old_px: Option<(u32, u32)>,
     new_px: Option<(u32, u32)>,
@@ -88,6 +127,7 @@ pub fn layout(
 /// would produce. A strict `>` (not `>=`) for `Stack` winning is what implements the "同点なら左右"
 /// tie-break — `Side` is also what a totally degenerate `inner` (0-width or 0-height either way)
 /// falls back to, since both scales come out `0.0` in that case.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 fn resolve_auto(
     old_px: Option<(u32, u32)>,
     new_px: Option<(u32, u32)>,
@@ -108,6 +148,7 @@ fn resolve_auto(
     }
 }
 
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 fn build_geometry(
     old_px: Option<(u32, u32)>,
     new_px: Option<(u32, u32)>,
@@ -121,10 +162,12 @@ fn build_geometry(
     let scale = shared_scale(old_image_area, new_image_area, cell_px, old_px, new_px);
     let old = MediaDiffPane {
         caption: caption_row(old_pane_rect),
+        area: old_image_area,
         image: fit_image(old_image_area, cell_px, old_px, scale),
     };
     let new = MediaDiffPane {
         caption: caption_row(new_pane_rect),
+        area: new_image_area,
         image: fit_image(new_image_area, cell_px, new_px, scale),
     };
     MediaDiffGeometry {
@@ -140,6 +183,7 @@ fn build_geometry(
 /// panes (`docs/FEATURE-MEDIA-DIFF.md` §7's "極小の領域"). The two panes always partition `inner`
 /// exactly (their widths/heights plus the separator's sum to `inner`'s), so nothing here can ever
 /// produce a rect outside it.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 fn split(inner: Rect, orientation: MediaDiffOrientation) -> (Rect, Rect, Rect) {
     match orientation {
         MediaDiffOrientation::Side => {
@@ -199,6 +243,7 @@ fn split(inner: Rect, orientation: MediaDiffOrientation) -> (Rect, Rect, Rect) {
 
 /// The top row of a pane, reserved for its caption (`docs/FEATURE-MEDIA-DIFF.md` §1: "各側の上1行が
 /// 見出し"). Zero-height when the pane itself has no rows.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 fn caption_row(pane: Rect) -> Rect {
     Rect {
         x: pane.x,
@@ -209,6 +254,7 @@ fn caption_row(pane: Rect) -> Rect {
 }
 
 /// The rest of a pane below its caption row — where the picture is fit and centered.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 fn image_area(pane: Rect) -> Rect {
     let caption_h = pane.height.min(1);
     Rect {
@@ -222,6 +268,7 @@ fn image_area(pane: Rect) -> Rect {
 /// `min(1.0, min over present sides of min(area_w/nat_w, area_h/nat_h))` — see [`layout`]'s doc
 /// comment. `*_area` are each side's own image area (which can differ by a cell between the two
 /// panes when an odd `inner` splits unevenly), converted to px via `cell_px`.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 fn shared_scale(
     old_area: Rect,
     new_area: Rect,
@@ -242,6 +289,7 @@ fn shared_scale(
 /// How much `nat` (px) would need to shrink (or could grow, uncapped here — the caller clamps to
 /// 1.0) to fit inside `area` (cells, converted to px via `cell_px`). `nat`'s own components are
 /// floored at 1 so a degenerate 0-sized natural size can never divide by zero.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 fn fit_ratio(area: Rect, cell_px: (u32, u32), nat: (u32, u32)) -> f64 {
     let area_w_px = area.width as f64 * cell_px.0.max(1) as f64;
     let area_h_px = area.height as f64 * cell_px.1.max(1) as f64;
@@ -254,6 +302,7 @@ fn fit_ratio(area: Rect, cell_px: (u32, u32), nat: (u32, u32)) -> f64 {
 /// a zero-size `area`) becomes a zero-size rect anchored at `area`'s own origin — still inside
 /// `area`, so this never panics or produces a rect outside `inner`. At least 1×1 whenever a picture
 /// is present and `area` itself has room for it.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
 fn fit_image(area: Rect, cell_px: (u32, u32), nat: Option<(u32, u32)>, scale: f64) -> Rect {
     let (Some((nw, nh)), true) = (nat, area.width > 0 && area.height > 0) else {
         return Rect {
@@ -265,10 +314,17 @@ fn fit_image(area: Rect, cell_px: (u32, u32), nat: Option<(u32, u32)>, scale: f6
     };
     let disp_w_px = nw as f64 * scale;
     let disp_h_px = nh as f64 * scale;
-    let cw = ((disp_w_px / cell_px.0.max(1) as f64).round() as u16)
+    // `.ceil()`, not `.round()`: matches `ratatui_image::Resize`'s own pixel→cell rounding
+    // (`round_pixel_size_to_cells`, always rounds up) exactly — a mismatched rounding convention
+    // here is what left a residual ~1-cell size disagreement between this layout's own `image`
+    // rect and what the encoder (`ratatui_image::Image`'s own `Widget::render`) actually produces,
+    // even after `App::media_side_natural_px` started feeding it the same real pixel dimensions
+    // (`docs/FEATURE-MEDIA-DIFF.md` §1's "共通縮尺" guarantee depends on the two staying in
+    // agreement, not just close).
+    let cw = ((disp_w_px / cell_px.0.max(1) as f64).ceil() as u16)
         .max(1)
         .min(area.width);
-    let ch = ((disp_h_px / cell_px.1.max(1) as f64).round() as u16)
+    let ch = ((disp_h_px / cell_px.1.max(1) as f64).ceil() as u16)
         .max(1)
         .min(area.height);
     Rect {
@@ -444,9 +500,14 @@ mod tests {
     fn common_scale_is_shared_a_half_size_new_image_renders_at_half_the_cells() {
         let inner = rect(0, 0, 200, 100);
         let cell_px = (8, 16);
+        // Both natural sizes divide `cell_px` evenly, so `fit_image`'s `.ceil()` rounding (see its
+        // own doc comment — matches `ratatui_image::Resize`'s identical convention) lands on the
+        // exact same halved cell counts as the un-rounded math, keeping this assertion meaningful
+        // rather than an artifact of two independently-rounded values happening to still divide
+        // evenly (400×200 → 200×100 did *not*, at this `cell_px`, before this fixture changed).
         let g = layout(
-            Some((400, 200)),
-            Some((200, 100)),
+            Some((320, 160)),
+            Some((160, 80)),
             cell_px,
             inner,
             MediaDiffLayout::Side,
@@ -519,6 +580,123 @@ mod tests {
         assert_eq!(g.old.image.width, 0);
         assert_eq!(g.old.image.height, 0);
         assert!(g.new.image.width > 0 && g.new.image.height > 0);
+    }
+
+    /// Regression: a side with **no** picture (`old_px: None` — Absent/Failed/PageMissing) must
+    /// still get a real, non-zero `area` to draw a placeholder message *in*, even though its
+    /// `image` (the picture-fitting rect) is correctly zero-sized. `ui/preview.rs::draw_media_side`
+    /// used to read `image` for this too, so a zero-sized `image` (every non-Picture side, always)
+    /// discarded the placeholder before it ever drew — a real bug (an untracked file's old side, a
+    /// deleted file's new side, and a PDF page beyond one side's own page count all rendered
+    /// nothing but the caption).
+    #[test]
+    fn absent_side_still_gets_a_real_area_for_its_placeholder_message() {
+        let inner = rect(0, 0, 80, 40);
+        let g = layout(
+            None,
+            Some((400, 200)),
+            (8, 16),
+            inner,
+            MediaDiffLayout::Side,
+        );
+        assert_eq!(g.old.image.width, 0, "image はゼロのまま(絵が無い)");
+        assert_eq!(g.old.image.height, 0);
+        assert!(
+            g.old.area.width > 0 && g.old.area.height > 0,
+            "area はプレースホルダを描く実領域を持つはず: {:?}",
+            g.old.area
+        );
+        // area sits directly below the caption, spanning the pane's own width — never zero even
+        // when there is nothing to size a picture around.
+        assert_eq!(g.old.area.y, g.old.caption.y + g.old.caption.height);
+        assert_eq!(g.old.area.width, g.old.caption.width);
+    }
+
+    /// Mutation-proving companion: `area` must be the pane's real region, not silently aliased to
+    /// `image` (which would make the bug above impossible to distinguish from a fix in a test that
+    /// only checked `area.width > 0`, since `image` is non-zero when a picture *is* present).
+    #[test]
+    fn area_is_not_merely_an_alias_of_image_when_a_picture_is_present_and_small() {
+        let inner = rect(0, 0, 200, 100);
+        // A tiny natural size means `image` (fit, centered) ends up much smaller than the pane's
+        // own `area` — if `area` were wrongly aliased to `image`, this would fail.
+        let g = layout(Some((8, 8)), None, (8, 16), inner, MediaDiffLayout::Side);
+        assert!(g.old.image.width < g.old.area.width || g.old.image.height < g.old.area.height);
+    }
+
+    /// The drawn image rect always equals this `layout`'s own assigned `image` rect once it is
+    /// actually handed to the terminal encoder — the "common-scale" guarantee
+    /// `docs/FEATURE-MEDIA-DIFF.md` §1 depends on. Regression for two real bugs, both root-caused
+    /// to the *encoder* (`ratatui_image`'s `Resize::Fit`) independently re-deriving its own
+    /// fit/scale from the picture's raw pixel dimensions instead of trusting the box `layout`
+    /// already assigned: a picture rendered smaller than its own rect (the "GIF drawn smaller than
+    /// the layout rect" report), or, worse, not rendered at all when the disagreement went the
+    /// other way (a PDF page permanently blank — `ratatui_image::Image`'s own `Widget::render`
+    /// silently refuses to draw when the encoded protocol's size exceeds the render area). Talks
+    /// to `ratatui_image` directly (not through `App`/`Sim`) so this is a fast, deterministic unit
+    /// test of the one thing that actually matters: does `layout`'s own rounding (`fit_image`)
+    /// agree with `Resize::Fit`'s (`round_pixel_size_to_cells`, which always rounds *up* — the
+    /// mismatch this test would catch if `fit_image` ever went back to a different convention).
+    #[test]
+    fn image_rect_matches_what_ratatui_image_actually_encodes_to() {
+        // `Picker::halfblocks()`'s own fixed font size — used as `cell_px` too, so `layout`'s
+        // scale math and the real encoder agree on the same pixel-per-cell unit.
+        let cell_px = (10u32, 20u32);
+        // A spread of natural sizes/aspect ratios/inner boxes wide enough to shake out an
+        // off-by-one rounding disagreement if one exists (a single hand-picked case could pass by
+        // coincidence — the reported bugs were size-dependent).
+        for (nat, inner_wh) in [
+            ((1236u32, 1599u32), (88u16, 24u16)), // portrait PDF page, `docs/…` §1's own example
+            ((1600, 1200), (69, 26)),
+            ((480, 360), (60, 30)),
+            ((120, 80), (40, 20)),   // SVG viewBox-sized
+            ((3, 3), (40, 20)),      // tiny — never enlarged past natural size
+            ((4000, 100), (50, 50)), // extreme aspect ratio
+        ] {
+            let inner = rect(0, 0, inner_wh.0, inner_wh.1);
+            let g = layout(Some(nat), None, cell_px, inner, MediaDiffLayout::Side);
+            if g.old.image.width == 0 || g.old.image.height == 0 {
+                continue; // a degenerate case (inner too small) has nothing to encode
+            }
+            let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                nat.0,
+                nat.1,
+                image::Rgb([1, 2, 3]),
+            ));
+            let picker = ratatui_image::picker::Picker::halfblocks();
+            let target = ratatui::layout::Size::new(g.old.image.width, g.old.image.height);
+            let proto = picker
+                .new_protocol(
+                    img,
+                    target,
+                    ratatui_image::Resize::Fit(Some(ratatui_image::FilterType::Lanczos3)),
+                )
+                .expect("halfblocks の new_protocol は失敗しないはず");
+            assert_eq!(
+                proto.size(),
+                ratatui::layout::Size::new(g.old.image.width, g.old.image.height),
+                "nat={nat:?} inner={inner_wh:?}: layout の image rect とエンコード後のサイズが一致するはず"
+            );
+        }
+    }
+
+    /// A direct pin for `fit_image`'s own `.ceil()` (not `.round()`) convention, since
+    /// `image_rect_matches_what_ratatui_image_actually_encodes_to`'s cases above all happen to hit
+    /// exact or `.5`-free divisions where the two conventions agree — this one is hand-picked (via
+    /// exhaustive search of `(nat, inner)` pairs) so the non-binding axis's `disp_px / cell_px`
+    /// lands strictly between `.0` and `.5`, where `.ceil()` and `.round()` diverge by exactly one
+    /// cell. `.round()` would silently draw the image one cell short of its assigned box on that
+    /// axis — the root cause the doc comment on `fit_image` describes.
+    #[test]
+    fn non_binding_axis_rounds_up_not_to_nearest() {
+        let cell_px = (10u32, 20u32);
+        let inner = rect(0, 0, 93, 44);
+        let g = layout(Some((95, 102)), None, cell_px, inner, MediaDiffLayout::Side);
+        assert_eq!(
+            (g.old.image.width, g.old.image.height),
+            (10, 6),
+            "`.ceil()` なら (10,6)・`.round()` に戻すと (10,5) になるはず"
+        );
     }
 
     #[test]

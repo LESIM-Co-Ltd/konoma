@@ -576,6 +576,9 @@ command = ""          # 既定エディタ。空なら $VISUAL→$EDITOR→vim �
 [git]
 tool        = "lazygit"   # 変更ハブの `!` で起動する外部 git ツール(コマンド＋引数・空白区切り)。例: "tig status"
 diff        = "unified"   # diff の初期レイアウト: "unified"(縦) | "split"(横並び) | "auto"(幅で自動)。差分中 `s` で縦→横→Auto を巡回
+media_diff  = "auto"      # 画像/PDF/SVG の並べて表示「diff」の初期レイアウト: "auto"(絵が大きく映る方=左右/上下) |
+                        # "side"(左右) | "stack"(上下)。上の `diff` とは別の設定(意味が違うため)。その表示中 `s` で
+                        # auto→side→stack→auto を巡回。
 # main_branch: 【未実装/予約】基準ブランチ固定グラフ用。
 #              現状はどこからも参照されない=設定しても無効。実装時に有効化する。
 worktree_dir = "../"   # ワークツリー一覧(`n`・[keys.git_worktrees])で新規リンクワークツリーを置く場所: **メイン**

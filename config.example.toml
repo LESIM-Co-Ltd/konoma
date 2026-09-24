@@ -614,6 +614,9 @@ command = ""          # Default editor. Empty falls back to $VISUAL → $EDITOR 
 [git]
 tool        = "lazygit"   # The external git tool launched with `!` in the hub (command + args, space-separated). e.g. "tig status"
 diff        = "unified"   # Initial diff layout: "unified" (vertical) | "split" (side-by-side) | "auto" (by width). `s` cycles vertical→side-by-side→auto in a diff.
+media_diff  = "auto"      # Initial layout for the image/PDF/SVG side-by-side "diff": "auto" (whichever of side-by-
+                        # side/stacked lets the picture render larger) | "side" | "stack". Separate from `diff` above
+                        # (they mean different things). `s` cycles auto→side→stack→auto while that view is showing.
 # main_branch: [unimplemented / reserved] for the pinned-base-branch graph.
 #              Currently referenced nowhere = has no effect. It will be enabled when implemented.
 worktree_dir = "../"   # Where `n` (in the worktree list, [keys.git_worktrees]) places a new linked worktree: resolved

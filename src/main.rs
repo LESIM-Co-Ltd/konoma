@@ -1436,6 +1436,17 @@ fn dispatch_navigate(app: &mut App, sfc: Surface, m: Motion) {
             Motion::LineHome => app.table_col_to(false),
             Motion::LineEnd => app.table_col_to(true),
         },
+        // While the media diff's side-by-side view is active, j/k/g/G/h/l/0/$/half-page are all
+        // inert (there is nothing to scroll — `docs/FEATURE-MEDIA-DIFF.md` §6's "j/k/g/G/h/l/0/$
+        // are inert in media mode") and PageDown/PageUp turn the PDF page instead of the ordinary
+        // text scroll they mean everywhere else (`J`/`K` do the same thing via a dedicated keymap
+        // binding — `App::media_diff_page_turn` itself is the single no-op gate either way).
+        #[cfg(feature = "git")]
+        Surface::PreviewGitDiff if app.diff_media_active() => match m {
+            Motion::PageUp => app.media_diff_page_turn(-1),
+            Motion::PageDown => app.media_diff_page_turn(1),
+            _ => {}
+        },
         #[cfg(feature = "git")]
         Surface::PreviewGitDiff => match m {
             Motion::Up => app.preview_scroll(-1),
@@ -1694,6 +1705,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::PreviewCopySelectionRef => app.preview_copy_selection_ref(),
         Action::PreviewExitVisual => app.preview_exit_visual(),
         Action::ToggleMarkdownRaw => app.toggle_md_raw_or_return_to_diff(),
+        Action::ImageReturnToDiff => app.image_return_to_diff(),
         Action::LinkFocusNext => app.md_focus_move(1),
         Action::LinkFocusPrev => app.md_focus_move(-1),
         Action::LinkOpen => app.md_activate_focused()?,
@@ -1727,6 +1739,10 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::CycleDiffView => app.cycle_diff_view(),
         #[cfg(feature = "git")]
         Action::ToggleFollowDiffScope => app.toggle_follow_diff_scope(),
+        #[cfg(feature = "git")]
+        Action::MediaDiffPageNext => app.media_diff_page_turn(1),
+        #[cfg(feature = "git")]
+        Action::MediaDiffPagePrev => app.media_diff_page_turn(-1),
         #[cfg(feature = "git")]
         Action::GitStage => app.git_view_stage(),
         #[cfg(feature = "git")]

@@ -108,34 +108,83 @@ impl App {
         self.invalidate_media_diff();
     }
 
-    /// How many of the three presentations (`docs/FEATURE-MD-RENDERED-DIFF.md` §1) `path`'s diff
-    /// can actually show: `3` for Markdown (source/rendered/preview), `2` for a windowed-capable
-    /// text kind (source/preview — code, plain text, a `.mmd` file, or a text-mode delegated
-    /// command), `1` for anything else (an image/PDF/video/archive/table/unsupported file, or an
-    /// image-mode delegated command — none of these has a second way to look at its diff at all).
-    /// Judged from `self.cfg.resolve_preview(path)` — the same config-driven rule every other
-    /// preview-kind decision in this codebase goes through (never a hardcoded extension list).
-    pub(super) fn diff_representation_count(&self, path: &Path) -> u8 {
-        match self.cfg.resolve_preview(path) {
-            PreviewKind::Markdown(_) => 3,
-            PreviewKind::Code(_) | PreviewKind::Text(_) | PreviewKind::Mermaid(_) => 2,
-            PreviewKind::Command { render_as, .. } if render_as.as_deref() != Some("image") => 2,
-            _ => 1,
+    /// The ordered list of presentations `path`'s diff can actually show
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §1's table, generalizing `docs/FEATURE-MD-RENDERED-DIFF.md`
+    /// §1's three-way one): `[Source, Rendered, Preview]` for Markdown, `[Source, Preview]` for a
+    /// windowed-capable text kind (code, plain text, `.mmd`, a text-mode delegated command),
+    /// `[Rendered, Preview]` for Image/GIF/PDF (no text `Source` to speak of — `Rendered` **is**
+    /// the side-by-side view there, `App::diff_media_active`), `[Source, Rendered, Preview]` for
+    /// SVG (it is both a picture and real text), and `[Source]` for anything else (video/archive/
+    /// table/unsupported/an image-mode delegated command — the binary-summary-line-only case,
+    /// `App::diff_binary_summary_eligible`).
+    ///
+    /// A **deleted** file (`!path.exists()`) never has `Preview` (nothing left to preview) — pruned
+    /// unconditionally at the end, regardless of which branch above produced the list. Its kind is
+    /// still judged by `resolve_preview` first (a glob rule matches by filename alone, so Markdown/
+    /// Code/Mermaid/SVG/PDF classify correctly even when deleted); only when that comes back
+    /// `CanNotPreview` — the one case a deleted file can't be classified this way, since the
+    /// remaining rules are MIME-based and need bytes to sniff (`docs/FEATURE-MEDIA-DIFF.md` §2) —
+    /// does this defer to the media-diff worker's own byte-sniffed classification
+    /// (`App::media_landed_outcome_for`), which resolves in the same order: `Ready` names a real
+    /// kind, `Summary`/`Unavailable` means "not a picture" (`[Source]`), and `None` (not landed
+    /// yet) is the transitional "before it lands, treat a missing path as `[Rendered]` with the
+    /// computing body" state the design calls for.
+    pub(super) fn diff_representations(&self, path: &Path) -> Vec<DiffView> {
+        use DiffView::{Preview, Rendered, Source};
+        let resolved = self.cfg.resolve_preview(path);
+        let mut reps = match resolved {
+            PreviewKind::Markdown(_) => vec![Source, Rendered, Preview],
+            PreviewKind::Code(_) | PreviewKind::Text(_) | PreviewKind::Mermaid(_) => {
+                vec![Source, Preview]
+            }
+            PreviewKind::Command { ref render_as, .. } if render_as.as_deref() != Some("image") => {
+                vec![Source, Preview]
+            }
+            PreviewKind::Image(_) | PreviewKind::Pdf(_) => vec![Rendered, Preview],
+            PreviewKind::Svg(_) => vec![Source, Rendered, Preview],
+            _ if !path.exists() => match self.media_landed_outcome_for(path) {
+                Some(MediaDiffOutcome::Ready {
+                    kind: MediaDiffKind::Image | MediaDiffKind::Pdf,
+                    ..
+                }) => vec![Rendered],
+                Some(MediaDiffOutcome::Ready {
+                    kind: MediaDiffKind::Svg,
+                    ..
+                }) => vec![Source, Rendered],
+                Some(MediaDiffOutcome::Summary { .. }) | Some(MediaDiffOutcome::Unavailable) => {
+                    vec![Source]
+                }
+                None => vec![Rendered], // not landed yet — the "computing" body either way.
+            },
+            _ => vec![Source],
+        };
+        if !path.exists() {
+            reps.retain(|v| *v != Preview);
         }
+        reps
     }
 
-    /// `view` rounded down to what `path` can actually show (`diff_representation_count`):
-    /// `Rendered` on a file with no block-diff renderer (anything but Markdown) rounds to `Source`
-    /// — "rendered が無いので source として振る舞う" (§1's own table); `Preview` on a file with no
-    /// representable content preview at all (count `1`) rounds to `Source` too, since there is
-    /// nothing else to show it in; `Source` itself never needs rounding.
+    /// `view` rounded to what `path` can actually show (`diff_representations`): the requested
+    /// presentation is used as-is if it's in the list; otherwise `Rendered`/`Source` substitute for
+    /// each other (whichever of the pair *is* in the list); failing that (a `Preview` request with
+    /// no substitute, or a substitute that also isn't in the list), the list's own first entry is
+    /// used (`docs/FEATURE-MEDIA-DIFF.md` §1's rounding rules).
     pub(super) fn round_diff_view(&self, view: DiffView, path: &Path) -> DiffView {
-        let n = self.diff_representation_count(path);
-        match view {
-            DiffView::Rendered if n < 3 => DiffView::Source,
-            DiffView::Preview if n < 2 => DiffView::Source,
-            other => other,
+        let reps = self.diff_representations(path);
+        if reps.contains(&view) {
+            return view;
         }
+        let substitute = match view {
+            DiffView::Rendered => Some(DiffView::Source),
+            DiffView::Source => Some(DiffView::Rendered),
+            DiffView::Preview => None,
+        };
+        if let Some(sub) = substitute {
+            if reps.contains(&sub) {
+                return sub;
+            }
+        }
+        reps.first().copied().unwrap_or(DiffView::Source)
     }
 
     /// `[ui] diff_view`, resolved and rounded for `path` — what `App::open_git_diff` initializes a
@@ -147,26 +196,27 @@ impl App {
         self.round_diff_view(DiffView::parse(&self.cfg.ui.diff_view), path)
     }
 
-    /// `R` in `Surface::PreviewGitDiff`: cycles `Source → Rendered → Preview → Source` for a
-    /// Markdown target, `Source ⇄ Preview` for any other representable text kind, and does nothing
-    /// at all for a target with only one representation (`diff_representation_count == 1`) — the
-    /// footer/help hint (`diff_view_cycle_hint`) is hidden in exactly that last case, so a key that
-    /// would do nothing is never advertised ([[hint-shown-iff-key-acts]]).
+    /// `R` in `Surface::PreviewGitDiff`: cycles through `diff_representations(path)` in list order
+    /// (wrapping), e.g. `Source → Rendered → Preview → Source` for a Markdown target, `Source ⇄
+    /// Preview` for any other windowed-capable text kind, `Rendered ⇄ Preview` for Image/PDF, and
+    /// `Source → Rendered → Preview → Source` for SVG too — and does nothing at all for a target
+    /// with only one representation. The footer/help hint (`diff_view_cycle_hint`) is hidden in
+    /// exactly that last case, so a key that would do nothing is never advertised
+    /// ([[hint-shown-iff-key-acts]]).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn cycle_diff_view(&mut self) {
         let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() else {
             return;
         };
-        let n = self.diff_representation_count(&path);
-        if n < 2 {
+        let reps = self.diff_representations(&path);
+        if reps.len() < 2 {
             return;
         }
-        let next = match self.tab.diff_view {
-            DiffView::Source if n >= 3 => DiffView::Rendered,
-            DiffView::Source => DiffView::Preview,
-            DiffView::Rendered => DiffView::Preview,
-            DiffView::Preview => DiffView::Source,
-        };
+        let idx = reps
+            .iter()
+            .position(|&v| v == self.tab.diff_view)
+            .unwrap_or(0);
+        let next = reps[(idx + 1) % reps.len()];
         if next == DiffView::Preview {
             #[cfg(feature = "git")]
             self.enter_diff_preview_representation(&path);
@@ -237,30 +287,34 @@ impl App {
         let PreviewKind::GitDiff(path) = self.tab.preview_kind.as_ref()? else {
             return None;
         };
-        let n = self.diff_representation_count(path);
-        if n < 2 {
+        let reps = self.diff_representations(path);
+        if reps.len() < 2 {
             return None;
         }
-        Some(match self.tab.diff_view {
-            DiffView::Source if n >= 3 => crate::i18n::Msg::DiffViewRendered,
-            DiffView::Source => crate::i18n::Msg::DiffViewPreview,
-            DiffView::Rendered => crate::i18n::Msg::DiffViewPreview,
-            DiffView::Preview => crate::i18n::Msg::DiffViewSource,
+        let idx = reps
+            .iter()
+            .position(|&v| v == self.tab.diff_view)
+            .unwrap_or(0);
+        Some(match reps[(idx + 1) % reps.len()] {
+            DiffView::Source => crate::i18n::Msg::DiffViewSource,
+            DiffView::Rendered => crate::i18n::Msg::DiffViewRendered,
+            DiffView::Preview => crate::i18n::Msg::DiffViewPreview,
         })
     }
 
     /// `R`'s **description** for the `?` help row in `Surface::PreviewGitDiff` — unlike
     /// `diff_view_cycle_hint` (the footer's "which state R goes to next" label), this names the
-    /// whole cycle `R` walks through, gated by the identical `diff_representation_count` predicate
-    /// so the row disappears in exactly the same case the footer already hides its own hint
+    /// whole cycle `R` walks through, gated by the identical `diff_representations` predicate so
+    /// the row disappears in exactly the same case the footer already hides its own hint
     /// ([[hint-shown-iff-key-acts]]): `None` for a target with only one representation (nothing for
-    /// `R` to do), `DiffViewCycleHelpPair` ("source ⇄ preview") for a target with two, and
-    /// `DiffViewCycleHelp` ("source → rendered → preview") for Markdown's three.
+    /// `R` to do), `DiffViewCycleHelpPair` ("source ⇄ preview") for a target with two (also used
+    /// for Image/PDF's `Rendered ⇄ Preview`), and `DiffViewCycleHelp` ("source → rendered →
+    /// preview") for a target with three (Markdown, and SVG).
     pub fn diff_view_help_hint(&self) -> Option<crate::i18n::Msg> {
         let PreviewKind::GitDiff(path) = self.tab.preview_kind.as_ref()? else {
             return None;
         };
-        match self.diff_representation_count(path) {
+        match self.diff_representations(path).len() {
             0 | 1 => None,
             2 => Some(crate::i18n::Msg::DiffViewCycleHelpPair),
             _ => Some(crate::i18n::Msg::DiffViewCycleHelp),
@@ -281,6 +335,29 @@ impl App {
             return;
         }
         self.toggle_md_raw();
+    }
+
+    /// `R` in `Surface::PreviewImage`: returns to the diff while this image/PDF/SVG preview *is*
+    /// its own `Preview` representation (`PerTab::preview_from_diff`), and is a **no-op** otherwise
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §6) — unlike `toggle_md_raw_or_return_to_diff`, this never
+    /// falls through to `toggle_md_raw()`. That fallthrough is correct for the *text* preview
+    /// surface (an ordinary Markdown/Mermaid preview's own raw/rendered toggle shares the same
+    /// key), but the image surface has no such toggle of its own to fall back to — `toggle_md_raw`
+    /// only ever acts on a *decorated* kind (`is_decorated_kind`), which excludes every image
+    /// preview, so it would have been a no-op regardless *except* for one specific case that made
+    /// it a real bug: a standalone `.mmd`/`.mermaid` file's full-screen image preview (`[ui] mermaid
+    /// = "image"`, `App::is_decorated_kind`'s own inclusion of `Mermaid`) — pressing `R` there,
+    /// though it was never advertised by any hint on that surface, silently flipped `md_raw` and
+    /// changed what a *later* Markdown preview in the same tab would show, entirely outside any
+    /// diff. [[hint-shown-iff-key-acts]]: the key must act *only* when its hint is shown, and the
+    /// image surface's own hint (`App::preview_is_diff_representation`) is never shown outside the
+    /// `preview_from_diff` case — so the handler must not act outside it either.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn image_return_to_diff(&mut self) {
+        #[cfg(feature = "git")]
+        if self.tab.preview_from_diff {
+            self.return_to_diff_from_preview();
+        }
     }
 
     /// `R`'s meaning in `Surface::PreviewText` right now — `Some(HintDiff)` while `preview_from_diff`

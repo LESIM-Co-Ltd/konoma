@@ -431,6 +431,22 @@ impl App {
         if view != DiffView::Rendered {
             return;
         }
+        // `Rendered` means two different things depending on the target
+        // (`docs/FEATURE-MEDIA-DIFF.md` §1): decorated Markdown blocks (this fn's own original
+        // job, below) for a Markdown file, or the image/PDF/SVG side-by-side view
+        // (`ui/preview.rs::render_gitdiff_media`, driven entirely by `App::poll_media_diff` from
+        // the render path, not from here) for a media-capable one — including a deleted file
+        // whose kind isn't classifiable yet (`App::diff_representations`' own "ambiguous, treat as
+        // `[Rendered]` until the worker lands" case). Kicking the *block*-diff computation for the
+        // latter would be pure waste (it can never produce marks for a target with no text to
+        // diff at all) and — worse — lands `MdDiffOutcome::Unavailable` and flashes
+        // `DiffRenderedUnavailable`, which is simply false for a target whose `Rendered` never
+        // meant "decorated blocks" in the first place. `App::diff_media_active` is exactly this
+        // gate: it reads `self.tab.diff_view`, already updated to `Rendered` on the line above, so
+        // it reports the *new* state correctly here, not a stale one.
+        if self.diff_media_active() {
+            return;
+        }
         self.poll_md_diff(path, MdDiffKind::Rendered);
     }
 

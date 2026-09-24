@@ -15,7 +15,10 @@
 use std::path::Path;
 use std::time::Duration;
 
-use image::{AnimationDecoder, DynamicImage};
+use image::{AnimationDecoder, DynamicImage, ImageDecoder};
+
+/// A decoded animated GIF's frames, each paired with its own display time.
+type GifFrames = Vec<(DynamicImage, Duration)>;
 
 /// Decode a still image (PNG/JPG/the first frame of a GIF, etc.). None on failure.
 /// A pure function used both by media loading on a separate thread and by load_image on the UI thread.
@@ -29,13 +32,10 @@ pub fn decode_static(path: &Path) -> Option<DynamicImage> {
 }
 
 /// `decode_static`, from bytes already in memory rather than a path — used by the media-diff worker
-/// (`app/media_diff.rs`, `docs/FEATURE-MEDIA-DIFF.md` §3) to decode a side whose bytes came from git/jj
-/// (the old version) rather than the filesystem. Format is guessed from the content, exactly like the
-/// path version's `with_guessed_format` (never from an extension — there may be none to go by).
-// Not yet called from production code — see `app::media_diff`'s module doc comment for why (a later
-// phase of the same feature wires the consumer in). Exercised directly by this module's and
-// `app::media_diff`'s own tests in the meantime.
-#[allow(dead_code)]
+/// (`app/media_diff.rs::decode_image_side`, `docs/FEATURE-MEDIA-DIFF.md` §3) to decode a side whose
+/// bytes came from git/jj (the old version) rather than the filesystem. Format is guessed from the
+/// content, exactly like the path version's `with_guessed_format` (never from an extension — there
+/// may be none to go by).
 pub fn decode_static_bytes(bytes: &[u8]) -> Option<DynamicImage> {
     image::load_from_memory(bytes).ok()
 }
@@ -67,7 +67,7 @@ const MAX_GIF_BYTES: usize = 128 * 1024 * 1024;
 /// Expand a GIF into all frames (composited RGBA) plus their display times.
 /// Returns None if it is not a GIF / decoding fails / there is only one frame (= treated as a still image),
 /// and the caller falls back to the normal still-image loader (load_image).
-pub fn decode_gif(path: &Path) -> Option<Vec<(DynamicImage, Duration)>> {
+pub fn decode_gif(path: &Path) -> Option<GifFrames> {
     decode_gif_with_budget(path, MAX_GIF_BYTES)
 }
 
@@ -85,7 +85,7 @@ const MAX_GIF_BYTES_INLINE: usize = 32 * 1024 * 1024;
 /// `decode_gif`, budgeted for an inline Markdown image (see `MAX_GIF_BYTES_INLINE`). Same semantics:
 /// None for a non-GIF / undecodable / single-frame GIF — the caller (the inline-image decode worker)
 /// falls back to the normal still-image decode, which already handles those cases.
-pub fn decode_gif_inline(path: &Path) -> Option<Vec<(DynamicImage, Duration)>> {
+pub fn decode_gif_inline(path: &Path) -> Option<GifFrames> {
     decode_gif_with_budget(path, MAX_GIF_BYTES_INLINE)
 }
 
@@ -93,29 +93,37 @@ pub fn decode_gif_inline(path: &Path) -> Option<Vec<(DynamicImage, Duration)>> {
 /// tiny budget). Frames are decoded one at a time; when the running total exceeds the budget the
 /// shrink factor doubles and the already-kept frames are downscaled to the same target, so every
 /// frame ends up with identical dimensions (as the animation cycler expects).
-fn decode_gif_with_budget(path: &Path, budget: usize) -> Option<Vec<(DynamicImage, Duration)>> {
+fn decode_gif_with_budget(path: &Path, budget: usize) -> Option<GifFrames> {
     let file = std::fs::File::open(path).ok()?;
-    decode_gif_from_reader(std::io::BufReader::new(file), budget)
+    decode_gif_from_reader(std::io::BufReader::new(file), budget).map(|(frames, _canvas)| frames)
 }
 
 /// `decode_gif_inline`, from bytes already in memory — used by the media-diff worker
 /// (`app/media_diff.rs`) to animate an old (git/jj) version of a GIF exactly like an inline Markdown
 /// one, without a path to read from. Same semantics as `decode_gif_inline`: None for a non-GIF /
-/// undecodable / single-frame GIF.
-// Not yet called from production code — see `decode_static_bytes`'s own comment above for why.
-#[allow(dead_code)]
-pub fn decode_gif_bytes_inline(bytes: &[u8]) -> Option<Vec<(DynamicImage, Duration)>> {
+/// undecodable / single-frame GIF. Also returns the GIF's own logical-screen size (read from the
+/// header, `GifDecoder::dimensions`) — distinct from any individual frame's own pixel size once the
+/// decode budget has downscaled frames for memory — which `app::media_diff::decode_image_side`
+/// needs as this side's *intrinsic* size (`MediaDiffPictureDecoded::natural_px`'s own doc comment);
+/// `decode_gif`/`decode_gif_inline` above have no such need (an ordinary GIF preview, not part of a
+/// diff, has no other side's size to stay comparable with) and so drop it.
+pub fn decode_gif_bytes_inline(bytes: &[u8]) -> Option<(GifFrames, (u32, u32))> {
     decode_gif_from_reader(std::io::Cursor::new(bytes), MAX_GIF_BYTES_INLINE)
 }
 
 /// The shared body of `decode_gif_with_budget`/`decode_gif_bytes_inline`, generic over the reader so
-/// neither has to duplicate the frame/shrink loop.
+/// neither has to duplicate the frame/shrink loop. The `(u32, u32)` alongside the frames is the
+/// GIF's own logical-screen size, read from the header before any frame is decoded — see
+/// `decode_gif_bytes_inline`'s own doc comment for why that (not a frame's own, possibly
+/// budget-downscaled, pixel size) is the intrinsic size a caller comparing this GIF's size against
+/// something else (`app::media_diff`) needs.
 fn decode_gif_from_reader<R: std::io::Read + std::io::BufRead + std::io::Seek>(
     reader: R,
     budget: usize,
-) -> Option<Vec<(DynamicImage, Duration)>> {
+) -> Option<(GifFrames, (u32, u32))> {
     let decoder = image::codecs::gif::GifDecoder::new(reader).ok()?;
-    let mut out: Vec<(DynamicImage, Duration)> = Vec::new();
+    let header_px = decoder.dimensions(); // before `into_frames()` consumes `decoder` below.
+    let mut out: GifFrames = Vec::new();
     let mut canvas: Option<(u32, u32)> = None; // original canvas dimensions (baseline for the shrink factor)
     let mut shrink = 1u32;
     let mut bytes = 0usize;
@@ -156,7 +164,7 @@ fn decode_gif_from_reader<R: std::io::Read + std::io::BufRead + std::io::Seek>(
     if out.len() < 2 {
         return None; // a single frame = no animation needed. Let the caller treat it as a still image.
     }
-    Some(out)
+    Some((out, header_px))
 }
 
 #[cfg(test)]
@@ -339,7 +347,7 @@ mod tests {
         };
         let bytes = std::fs::read(&p).unwrap();
         let from_path = decode_gif_inline(&p).expect("path 版はアニメとしてデコードできる");
-        let from_bytes =
+        let (from_bytes, header_px) =
             decode_gif_bytes_inline(&bytes).expect("bytes 版もアニメとしてデコードできる");
         assert_eq!(
             from_path.len(),
@@ -350,6 +358,14 @@ mod tests {
             assert_eq!((pi.width(), pi.height()), (bi.width(), bi.height()));
             assert_eq!(pd, bd, "各フレームの表示時間も一致するはず");
         }
+        // The header size must match the (unshrunk, at this small budget) first frame's own size —
+        // this fixture is far below `MAX_GIF_BYTES_INLINE`, so no downscale should have happened.
+        let (fw, fh) = image::GenericImageView::dimensions(&from_bytes[0].0);
+        assert_eq!(
+            header_px,
+            (fw, fh),
+            "予算内なので header サイズ==実デコードサイズのはず"
+        );
     }
 
     #[test]

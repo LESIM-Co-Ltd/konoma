@@ -327,6 +327,7 @@ impl App {
         // set) — otherwise it would silently inherit whichever presentation the tab it was opened
         // from happened to be showing, despite having no diff of its own open at all yet.
         self.tab.diff_view = DiffView::Rendered;
+        self.tab.diff_media_page = 1;
         self.tab.diff_scroll_pending = None;
         self.tab.preview_from_diff = false;
         self.tab.git_log = None;

@@ -18,13 +18,6 @@
 //! `apply_md_image` already insert a mermaid/math render) and the lightweight, pixel-free
 //! `MediaDiffOutcome` is what stays resident in `App::media_diff_landed`.
 //!
-//! `#![allow(dead_code)]`: phase A of `docs/FEATURE-MEDIA-DIFF.md` — `attach_media_diff_loader`/
-//! `apply_media_diff` are already wired into `main.rs`'s startup/run loop, but nothing in production
-//! calls `App::poll_media_diff` (the entry point that actually kicks a request) yet; that's phase
-//! B's job (wiring it into `render_gitdiff`). Every item here is exercised directly by this module's
-//! own tests in the meantime, mirroring the precedent in `vcs::jj::base_contents`'s doc comment.
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 
 use crate::preview::media_diff::MediaDiffSide as KeySide;
@@ -304,12 +297,39 @@ impl App {
                 // already present (its own guard against reviving an evicted entry), so the insert
                 // has to happen here, not inside it.
                 self.md_image_cache.entry(p.cache_key.clone()).or_default();
+                // Flatten transparency against an opaque background on every protocol but kitty
+                // (real bug: `ratatui_image`'s halfblocks encoder converts through `image::
+                // DynamicImage::to_rgb8`, which silently *drops* the alpha channel rather than
+                // compositing it — a PDF/SVG rendered with a transparent background, per
+                // `preview::pdf`'s/`preview::svg`'s own "let the terminal background show through"
+                // design, then loses the one signal ("is this pixel painted or not") that made the
+                // content visible at all: black ink on a transparent background and the fully-
+                // transparent background itself both collapse to the *identical* opaque black once
+                // alpha is gone, so `Halfblocks`'s own `upper == lower → space` rule renders the
+                // entire picture as blank cells — confirmed directly against `samples/sample.pdf`,
+                // whose only non-transparent pixels are pure black text: every opaque pixel in the
+                // whole rendered page is `(0, 0, 0)`. Kitty sends the real RGBA payload straight to
+                // the terminal, which composites it correctly, so this is skipped there — this
+                // flattening step would only ever make a *correctly*-transparent kitty render
+                // worse (a flat color where the terminal's own background used to show through).
+                let (image, frames) = if self.use_kitty {
+                    (p.image, p.frames)
+                } else {
+                    (
+                        flatten_transparent_to_white(p.image),
+                        p.frames.map(|fs| {
+                            fs.into_iter()
+                                .map(|(f, d)| (flatten_transparent_to_white(f), d))
+                                .collect()
+                        }),
+                    )
+                };
                 self.apply_md_image(MdImageResult {
                     path: p.cache_key.clone(),
-                    image: Ok(p.image),
+                    image: Ok(image),
                     svg: p.svg,
                     reraster: false,
-                    frames: p.frames,
+                    frames,
                 });
                 MediaDiffSide::Picture(MediaDiffPicture {
                     natural_px: p.natural_px,
@@ -327,10 +347,263 @@ impl App {
     /// have changed — mirrors `App::invalidate_md_diff`'s own doc comment on why `_pending` is also
     /// cleared here (otherwise `poll_media_diff`'s "already in flight" guard would keep declining to
     /// kick a fresh request, since that guard is keyed on the request identity, not `gen`).
-    pub(super) fn invalidate_media_diff(&mut self) {
+    pub(crate) fn invalidate_media_diff(&mut self) {
         self.media_diff_gen = self.media_diff_gen.wrapping_add(1);
         self.media_diff_landed = None;
         self.media_diff_pending = None;
+    }
+
+    /// `PerTab::diff_media_page`, floored at `1` (a fresh tab/diff starts there; nothing should
+    /// ever observe `0`, but this is the one place every reader goes through so that stays true
+    /// regardless).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(crate) fn diff_media_page(&self) -> u32 {
+        self.tab.diff_media_page.max(1)
+    }
+
+    /// The media diff's current layout (`[git] media_diff`, cycled by `s` —
+    /// `App::cycle_media_diff_layout`) — read by `ui/preview.rs::render_gitdiff_media` to call
+    /// `preview::media_diff::layout`.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(crate) fn media_diff_layout(&self) -> MediaDiffLayout {
+        self.media_diff_layout
+    }
+
+    /// Whether `key` currently has an entry in `md_image_cache` — `ui/preview.rs::render_gitdiff_
+    /// media` uses this to detect a landed `Picture` whose pixels were evicted from underneath it
+    /// and re-kick a fresh computation instead of silently drawing nothing. Confirmed (by direct
+    /// instrumentation, not just reasoning) that this can genuinely happen: `App::enter_preview`'s
+    /// file-switch clear fires whenever the *previous* preview target's path differs from the one
+    /// being entered — which an R→Preview→R round trip on the diff's **own** target does *not*
+    /// trigger (`same_file` is true there, so the cache survives), but any path that lands on a
+    /// *different* file's preview first (`Ctrl-n`/`Ctrl-p` file paging, a Markdown link, a
+    /// bookmark jump, …) while the `media-diff://` keys are still resident does. This accessor,
+    /// and the re-kick it feeds, defend against that broader case — see `evict_md_image_cache_key_
+    /// for_test` for how the test suite reproduces it directly rather than via a specific keypress
+    /// sequence.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(crate) fn md_image_cache_contains(&self, key: &Path) -> bool {
+        self.md_image_cache.contains_key(key)
+    }
+
+    /// Test-only: remove `key` from `md_image_cache` directly, simulating the eviction
+    /// `md_image_cache_contains`'s own doc comment describes (a different file's preview reusing
+    /// the one shared cache) without needing to actually reproduce that specific keypress sequence.
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(crate) fn evict_md_image_cache_key_for_test(&mut self, key: &Path) {
+        self.md_image_cache.remove(key);
+    }
+
+    /// Test-only: every `media-diff://` key currently in `md_image_cache` — lets a test discover
+    /// the *real* cache keys a production render actually landed (which depend on the render
+    /// path's own raster target, not one a test would have to guess/duplicate) rather than
+    /// re-deriving them by calling `poll_media_diff` a second time with a possibly-mismatched
+    /// `raster_px` (a mismatch there would itself trigger a fresh, unrelated poll — silently
+    /// defeating a test that means to isolate the re-kick path specifically).
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(crate) fn md_image_cache_media_diff_keys_for_test(&self) -> Vec<PathBuf> {
+        self.md_image_cache
+            .keys()
+            .filter(|k| crate::preview::media_diff::is_media_diff_url(&k.to_string_lossy()))
+            .cloned()
+            .collect()
+    }
+
+    /// The terminal's font cell size in pixels, or `None` when there is no picker at all (a
+    /// terminal with no graphics protocol, or images disabled) — `ui/preview.rs::render_gitdiff_
+    /// media` degrades to the binary summary line in that case
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §4's "画像を描けない端末・設定").
+    pub(crate) fn picker_cell_px(&self) -> Option<(u32, u32)> {
+        self.picker.as_ref().map(|p| {
+            let f = p.font_size();
+            (f.width as u32, f.height as u32)
+        })
+    }
+
+    /// Whether the diff's `Rendered` presentation is currently the image/PDF/SVG side-by-side view
+    /// (as opposed to decorated Markdown blocks) — `ui/preview.rs::render_gitdiff` reads this to
+    /// pick `render_gitdiff_media` over `render_diff_rendered`.
+    ///
+    /// `Rendered` is only ever *set* (`App::round_diff_view`/`App::apply_diff_view`) on a target
+    /// whose representation list (`App::diff_representations`) actually contains it, and the only
+    /// kinds that do are Markdown (decorated blocks) and the media-capable ones (Image/Svg/Pdf, or
+    /// an ambiguous deleted file that might turn out to be one) — so "not literally classified as
+    /// Markdown" is a safe, self-contained test here: it needs no knowledge of
+    /// `diff_representations`' own worker-outcome fallback (for a deleted file) to be correct,
+    /// since `resolve_preview` on a deleted **Markdown** path still correctly returns `Markdown`
+    /// (glob-matched by filename, not content — unaffected by the file's existence), while every
+    /// other case this fn needs to say "media" for either resolves to something else already, or
+    /// (an ambiguous deleted binary) resolves to `CanNotPreview`, which also isn't `Markdown`.
+    pub(crate) fn diff_media_active(&self) -> bool {
+        if !self.diff_rendered_active() {
+            return false;
+        }
+        let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.as_ref() else {
+            return false;
+        };
+        !matches!(self.cfg.resolve_preview(path), PreviewKind::Markdown(_))
+    }
+
+    /// Whether `path`'s Source-representation diff, if the raw line diff comes back **empty**,
+    /// should be checked against this module's worker instead of being trusted at face value as
+    /// "(no changes)" (`docs/FEATURE-MEDIA-DIFF.md` §5). True for exactly the kinds that have no
+    /// text/decorated representation of their own to fall back on (video/archive/table/unsupported/
+    /// an image-mode delegated command) — these relied on git's raw line diff alone, which comes
+    /// back empty for *any* binary file whether or not it actually changed (`git.rs:902`'s own doc
+    /// comment on why), so an empty diff there was never actually proof of "no changes". Markdown/
+    /// Code/Text/Mermaid/a text-mode command are excluded: an empty diff there is always genuinely
+    /// "no changes" (no worker round-trip needed to say so, and always was correct before this
+    /// feature existed). Image/Svg/Pdf are not excluded, but in practice never reach `Source` at all
+    /// (`App::round_diff_view` always substitutes `Rendered`) — if a test forces the state anyway,
+    /// their own kind resolves to `Some(_)` under `classify_kind`, so they still land on the worker's
+    /// real `Ready` outcome (never `Summary`), which the caller handles correctly either way.
+    pub(crate) fn diff_binary_summary_eligible(&self, path: &Path) -> bool {
+        let resolved = self.cfg.resolve_preview(path);
+        let windowed_text = matches!(
+            resolved,
+            PreviewKind::Markdown(_)
+                | PreviewKind::Code(_)
+                | PreviewKind::Text(_)
+                | PreviewKind::Mermaid(_)
+        ) || matches!(&resolved, PreviewKind::Command { render_as, .. } if render_as.as_deref() != Some("image"));
+        !windowed_text
+    }
+
+    /// The landed media-diff outcome for `path`, ignoring the page/raster it was computed at (kind
+    /// classification and page-count don't depend on either) — used by `App::diff_representations`
+    /// to classify a **deleted** file `resolve_preview` can't (`docs/FEATURE-MEDIA-DIFF.md` §2), and
+    /// by the page-turn/footer helpers below, which are called from contexts (footer/help) that
+    /// don't have a raster target on hand at all.
+    pub(super) fn media_landed_outcome_for(&self, path: &Path) -> Option<&MediaDiffOutcome> {
+        self.media_diff_landed
+            .as_ref()
+            .filter(|(p, ..)| p.as_path() == path)
+            .map(|(_, _, _, _, outcome)| outcome)
+    }
+
+    /// The current GitDiff target's landed `Ready` sides, if any (ignoring page/raster — see
+    /// `media_landed_outcome_for`'s own doc comment).
+    fn media_diff_ready_sides(&self) -> Option<(&MediaDiffSide, &MediaDiffSide)> {
+        let PreviewKind::GitDiff(path) = self.tab.preview_kind.as_ref()? else {
+            return None;
+        };
+        match self.media_landed_outcome_for(path)? {
+            MediaDiffOutcome::Ready { old, new, .. } => Some((old, new)),
+            _ => None,
+        }
+    }
+
+    /// The larger of the two sides' own PDF page counts (`None` for anything not a landed `Ready`
+    /// PDF pair — a non-PDF picture kind reports `page_count: None` per side, which floors to `1`
+    /// here exactly like a single-page PDF would).
+    fn media_diff_max_page_count(&self) -> Option<u32> {
+        let (old, new) = self.media_diff_ready_sides()?;
+        let pc = |s: &MediaDiffSide| match s {
+            MediaDiffSide::Picture(p) => p.page_count,
+            _ => None,
+        };
+        Some(pc(old).unwrap_or(1).max(pc(new).unwrap_or(1)))
+    }
+
+    /// Whether the media diff currently on screen has a PDF side with ≥2 pages on either side —
+    /// gates the `J`/`K` key and its footer/help hint (`docs/FEATURE-MEDIA-DIFF.md` §1/§6).
+    pub(crate) fn media_diff_can_page(&self) -> bool {
+        self.media_diff_max_page_count().is_some_and(|n| n > 1)
+    }
+
+    /// `J`/`K` (and `PageDown`/`PageUp` while the media diff's side-by-side view is active): turn
+    /// both sides' PDF page together (`docs/FEATURE-MEDIA-DIFF.md` §1's "両側を同じページ番号でそろ
+    /// えてめくる"), clamped to the larger of the two sides' own page counts. No-op for anything but
+    /// a multi-page PDF diff — re-derived here rather than trusted from the caller, so a keypress
+    /// queued from a frame where paging *was* available can't wrap past a since-shrunk page count
+    /// (e.g. `n`/`N` landed on a single-page file in between).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(crate) fn media_diff_page_turn(&mut self, dir: i32) {
+        let Some(max_pages) = self.media_diff_max_page_count() else {
+            return;
+        };
+        if max_pages <= 1 {
+            return;
+        }
+        let cur = self.tab.diff_media_page.max(1);
+        let next = if dir >= 0 {
+            (cur + 1).min(max_pages)
+        } else {
+            cur.saturating_sub(1).max(1)
+        };
+        if next != cur {
+            self.tab.diff_media_page = next;
+        }
+    }
+
+    /// `s` while the media diff's side-by-side view is active: auto → side → stack → auto
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §1/§6). Flashes the layout it switched to, mirroring
+    /// `App::cycle_diff_layout`'s own flash for the text diff's `s`.
+    pub(crate) fn cycle_media_diff_layout(&mut self) {
+        self.media_diff_layout = self.media_diff_layout.next();
+        let label = crate::i18n::tr(self.lang, media_layout_msg(self.media_diff_layout));
+        self.flash = Some(label.into());
+    }
+
+    /// The `Msg` naming what `s` would switch the media diff's layout **to** — the footer's dynamic
+    /// `s:<next>` fragment, mirroring `R`'s own `diff_view_cycle_hint`.
+    pub(crate) fn media_diff_layout_next_msg(&self) -> crate::i18n::Msg {
+        media_layout_msg(self.media_diff_layout.next())
+    }
+
+    /// Whether the GitDiff footer (`ui/status.rs::mode_footer`) should show the reduced media/
+    /// binary-summary hint set (`n/N`, `x`(write), `q/Esc` — plus `s`/`J`/`K`/`R` inserted
+    /// dynamically only while the side-by-side view is actually active) instead of the classic
+    /// scrollable-diff hint set (`j/k`/`h/l`/`s:unified/split/auto`). True for the media diff's own
+    /// side-by-side view (`diff_media_active`) and for any binary-summary-eligible kind's `Source`
+    /// representation (`diff_binary_summary_eligible`) — the latter's raw line diff is *always*
+    /// empty (git/jj never line-diff a binary file, `docs/FEATURE-MEDIA-DIFF.md` §5's own
+    /// "git.rs:902" note), so — unlike `diff_rendered_active`'s own gate — this needs no per-frame
+    /// "is the diff actually empty right now" check (which would need `&mut self`, unavailable to
+    /// the footer) to be correct.
+    pub(crate) fn diff_footer_is_media_or_summary(&self) -> bool {
+        if self.diff_media_active() {
+            return true;
+        }
+        let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.as_ref() else {
+            return false;
+        };
+        self.diff_binary_summary_eligible(path)
+    }
+
+    /// The `Msg` naming a media diff's **old**-side base (`MediaBase`, from the landed outcome) —
+    /// the caption label from `docs/FEATURE-MEDIA-DIFF.md` §1's own base-name table.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(crate) fn media_base_msg(base: MediaBase) -> crate::i18n::Msg {
+        match base {
+            MediaBase::Head => crate::i18n::Msg::MediaBaseHead,
+            MediaBase::JjParent => crate::i18n::Msg::MediaBaseJjParent,
+            MediaBase::FollowStart => crate::i18n::Msg::MediaBaseFollowStart,
+        }
+    }
+
+    /// The `Msg` naming a media diff's **new** side — always the live working copy (never a follow
+    /// snapshot, `docs/FEATURE-MEDIA-DIFF.md` §1's base-name table): git's "working tree" or jj's
+    /// "working copy (@)", decided the same way `resolve_old_bytes` decides the *old* side's label.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(crate) fn media_new_side_msg(&self) -> crate::i18n::Msg {
+        if is_jj(&self.tab.root) {
+            crate::i18n::Msg::MediaBaseWorkCopyJj
+        } else {
+            crate::i18n::Msg::MediaBaseWorkTreeGit
+        }
+    }
+}
+
+/// Shared by `App::cycle_media_diff_layout`'s flash and `App::media_diff_layout_next_msg`'s footer
+/// hint, so the two can never name the layout differently.
+fn media_layout_msg(l: MediaDiffLayout) -> crate::i18n::Msg {
+    match l {
+        MediaDiffLayout::Auto => crate::i18n::Msg::MediaLayoutAuto,
+        MediaDiffLayout::Side => crate::i18n::Msg::MediaLayoutSide,
+        MediaDiffLayout::Stack => crate::i18n::Msg::MediaLayoutStack,
     }
 }
 
@@ -437,6 +710,26 @@ fn is_jj(root: &Path) -> bool {
     }
 }
 
+/// Composite `img` onto an opaque white background, discarding its own alpha channel in the
+/// process — `App::materialize_side`'s own doc comment has the full "why" (in short:
+/// `ratatui_image`'s halfblocks/sixel/iterm2 encoders drop alpha via `to_rgb8` without
+/// compositing it against anything, so a transparent-background render is only ever correct on
+/// kitty, which gets real RGBA end to end and is never routed through this function). A no-op
+/// (returns `img` unchanged, no extra allocation) for an image that has no alpha channel at all,
+/// or whose alpha channel is already fully opaque everywhere.
+fn flatten_transparent_to_white(img: image::DynamicImage) -> image::DynamicImage {
+    let Some(rgba) = img.as_rgba8() else {
+        return img; // no alpha channel to begin with (e.g. a plain JPEG) — nothing to flatten.
+    };
+    if rgba.pixels().all(|p| p[3] == 255) {
+        return img; // fully opaque already — compositing would be a no-op, skip the copy.
+    }
+    let (w, h) = (rgba.width(), rgba.height());
+    let mut out = image::RgbaImage::from_pixel(w, h, image::Rgba([255, 255, 255, 255]));
+    image::imageops::overlay(&mut out, rgba, 0, 0);
+    image::DynamicImage::ImageRgba8(out)
+}
+
 /// Decode one side of a picture-capable diff. `None` bytes (the side is absent — a new/untracked
 /// file's old side, or a deleted file's new side) is the only case common to every kind.
 fn decode_side(
@@ -465,17 +758,20 @@ fn decode_side(
 /// resolution, exactly like every other raster-image preview path in konoma.
 fn decode_image_side(bytes: &[u8], hash: u64, page: u32, side: KeySide) -> MediaDiffSideDecoded {
     use image::GenericImageView;
-    if let Some(frames) = crate::preview::image::decode_gif_bytes_inline(bytes) {
+    if let Some((frames, canvas_px)) = crate::preview::image::decode_gif_bytes_inline(bytes) {
         let Some((first, _)) = frames.first() else {
             return MediaDiffSideDecoded::Failed {
                 reason: "empty gif".to_string(),
             };
         };
-        let (w, h) = first.dimensions();
         let first_frame = first.clone();
         let key = crate::preview::media_diff::media_diff_url(side, hash, page, None);
         return MediaDiffSideDecoded::Picture(Box::new(MediaDiffPictureDecoded {
-            natural_px: (w, h),
+            // The GIF's own logical-screen size (`GifDecoder::dimensions`, read from the header
+            // before any frame is decoded) — **not** `first.dimensions()`, the first decoded
+            // frame's own pixel size, which the inline decode budget may have downscaled for
+            // memory (`MediaDiffPictureDecoded::natural_px`'s own doc comment).
+            natural_px: canvas_px,
             bytes: bytes.len() as u64,
             page_count: None,
             image: first_frame,
@@ -591,6 +887,59 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::test_support::unique_tmp;
+
+    // ---- flatten_transparent_to_white ----
+
+    /// Regression: a black-ink-on-transparent-background image (exactly `samples/sample.pdf`'s own
+    /// shape — hayro renders PDF text with `bg_color: TRANSPARENT`) must not render as a uniform
+    /// black rectangle once `ratatui_image`'s halfblocks encoder drops the alpha channel
+    /// (`image::DynamicImage::to_rgb8`, which does not composite). Flattening onto white first
+    /// makes the (now fully opaque) ink readable regardless of what the encoder does with alpha.
+    #[test]
+    fn flatten_makes_transparent_background_opaque_white_not_black() {
+        let mut img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 0])); // all transparent
+        img.put_pixel(1, 1, image::Rgba([0, 0, 0, 255])); // one opaque black "ink" pixel
+        let out = flatten_transparent_to_white(image::DynamicImage::ImageRgba8(img));
+        let out = out.to_rgba8();
+        assert_eq!(
+            *out.get_pixel(0, 0),
+            image::Rgba([255, 255, 255, 255]),
+            "透明だった背景は白地になるはず(黒地だと文字と見分けがつかない)"
+        );
+        assert_eq!(
+            *out.get_pixel(1, 1),
+            image::Rgba([0, 0, 0, 255]),
+            "不透明だった黒インクはそのまま黒のはず"
+        );
+    }
+
+    /// A fully-opaque image (no alpha channel at all, e.g. a plain JPEG-derived `DynamicImage`) is
+    /// returned unchanged — no needless recompute/allocation for the overwhelmingly common case.
+    #[test]
+    fn flatten_is_a_no_op_for_an_already_opaque_image() {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            3,
+            3,
+            image::Rgb([9, 9, 9]),
+        ));
+        let out = flatten_transparent_to_white(img.clone());
+        assert_eq!(out.to_rgba8(), img.to_rgba8());
+    }
+
+    /// Mutation-proving: an image whose alpha channel is present but **uniformly 255** (fully
+    /// opaque) must also short-circuit — pins that the "already opaque" check isn't accidentally
+    /// gated on "has no alpha channel" alone (which `RgbaImage::from_pixel(.., alpha: 255)` would
+    /// still have).
+    #[test]
+    fn flatten_is_a_no_op_for_an_rgba_image_with_full_opacity_everywhere() {
+        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            3,
+            3,
+            image::Rgba([1, 2, 3, 255]),
+        ));
+        let out = flatten_transparent_to_white(img.clone());
+        assert_eq!(out.to_rgba8(), img.to_rgba8());
+    }
 
     fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
         let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

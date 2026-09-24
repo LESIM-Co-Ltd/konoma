@@ -15,6 +15,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
+#[cfg(feature = "git")]
+use crate::app::DiffView;
 use crate::app::{App, Mode};
 use crate::config::Config;
 use crate::test_support::unique_tmp;
@@ -405,6 +407,38 @@ impl Sim {
             }
         }
         out
+    }
+
+    /// The bounding box (width, height, in cells) of every buffer cell whose **background** color
+    /// is exactly `want` — `None` if no cell matches. Used by the media-diff scale tests to measure
+    /// a picture's own drawn extent directly, without reconstructing `preview::media_diff::layout`'s
+    /// pane geometry (border/caption/separator rows): a solid-color picture drawn through
+    /// `with_media()`'s halfblocks encoder always sets `bg` to that color for every one of its
+    /// cells, even where the glyph itself is a blank space (`ratatui_image`'s halfblocks encoder
+    /// picks a space character, not a half-block glyph, whenever a cell's upper and lower source
+    /// pixels are identical — the common case for a flat fill — but `bg` is still set to that
+    /// color). Only `bg` needs checking: for a uniform fill, `upper == lower == want`, so `fg` (set
+    /// to `upper`) matches too.
+    #[cfg(feature = "git")]
+    fn colored_cell_bbox(&self, want: ratatui::style::Color) -> Option<(u16, u16)> {
+        let buf = self.term.backend().buffer();
+        let w = buf.area.width as usize;
+        let mut min_x = usize::MAX;
+        let mut max_x = 0usize;
+        let mut min_y = usize::MAX;
+        let mut max_y = 0usize;
+        let mut any = false;
+        for (i, cell) in buf.content().iter().enumerate() {
+            if cell.bg == want {
+                any = true;
+                let (x, y) = (i % w, i / w);
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+        }
+        any.then(|| ((max_x - min_x + 1) as u16, (max_y - min_y + 1) as u16))
     }
 
     #[track_caller]
@@ -15829,5 +15863,945 @@ fn e2e_ui_two_inline_math_placements_on_one_decorated_line_each_keep_their_own_c
     let (_, reserved1, after1) = slice_by_display_col(line, p1.col, p1.cols);
     assert_eq!(reserved1, " ".repeat(p1.cols as usize), "line: {line:?}");
     assert_eq!(after1, " end", "line: {line:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// =============================================================================
+// Media diff (image/PDF/SVG side-by-side, `docs/FEATURE-MEDIA-DIFF.md`) — phase B
+// =============================================================================
+
+#[cfg(feature = "git")]
+fn media_diff_git_init(dir: &std::path::Path) {
+    let repo = git2::Repository::init(dir).unwrap();
+    let mut cfg = repo.config().unwrap();
+    cfg.set_str("user.name", "Test").unwrap();
+    cfg.set_str("user.email", "test@example.com").unwrap();
+    cfg.set_str("commit.gpgsign", "false").ok();
+}
+
+#[cfg(feature = "git")]
+fn media_diff_git(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// Not `#[cfg(feature = "git")]`: used by `e2e_r_on_plain_image_preview_is_a_no_op` too, which
+// needs no git feature at all (an ordinary image preview, not a diff).
+fn media_diff_write_png(path: &std::path::Path, w: u32, h: u32, px: [u8; 3]) {
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(px)))
+        .save(path)
+        .unwrap();
+}
+
+/// A minimal, valid, single-page PDF (hand-built, same shape as
+/// `media_diff_minimal_one_page_pdf_bytes` above) whose entire page is filled edge-to-edge with one
+/// flat RGB color — no transparent margin anywhere, so the decoded raster has zero transparent
+/// pixels (`App::flatten_transparent_to_white` is a no-op on it) and its drawn cells' background
+/// color (`Sim::colored_cell_bbox`) exactly equals the whole picture's own drawn extent. Used by the
+/// PDF scale-unit regression test: `layout`'s shared scale must be computed from each side's own
+/// page size in **points** (`w_pt`×`h_pt`), not the rasterized pixel dimensions both sides could
+/// otherwise coincide on (`preview::pdf::render_page_bytes` normalizes every page to the same
+/// `PAGE_MAX_PX` longest side, regardless of its point size).
+#[cfg(feature = "git")]
+fn media_diff_solid_pdf_bytes(w_pt: u32, h_pt: u32, rgb: (u8, u8, u8)) -> Vec<u8> {
+    let (r, g, b) = (
+        f32::from(rgb.0) / 255.0,
+        f32::from(rgb.1) / 255.0,
+        f32::from(rgb.2) / 255.0,
+    );
+    let content = format!("{r} {g} {b} rg 0 0 {w_pt} {h_pt} re f");
+    let content_obj = format!(
+        "<< /Length {} >>\nstream\n{content}\nendstream",
+        content.len(),
+    );
+    let objs: [String; 4] = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w_pt} {h_pt}] /Contents 4 0 R /Resources << >> >>"
+        ),
+        content_obj,
+    ];
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n");
+    let mut offsets = vec![0usize];
+    for (i, body) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend_from_slice(body.as_bytes());
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref_offset = out.len();
+    let n = objs.len() + 1;
+    out.extend_from_slice(format!("xref\n0 {n}\n").as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for off in &offsets[1..] {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
+            .as_bytes(),
+    );
+    out
+}
+
+/// A tiny, self-contained SVG whose entire canvas is one flat-color `<rect>` filling the viewBox —
+/// used by the SVG scale-unit regression test: `layout`'s shared scale must be computed from each
+/// side's own **intrinsic** (viewBox) size, not the rasterized pixel dimensions both sides could
+/// otherwise coincide on (`preview::svg::rasterize_bytes` fits every SVG to the same caller-given
+/// `raster_px` box, regardless of its own viewBox).
+#[cfg(feature = "git")]
+fn media_diff_solid_svg_bytes(w: u32, h: u32, rgb: (u8, u8, u8)) -> Vec<u8> {
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}"><rect width="{w}" height="{h}" fill="rgb({},{},{})"/></svg>"#,
+        rgb.0, rgb.1, rgb.2
+    )
+    .into_bytes()
+}
+
+/// A 2-frame, flat-color animated GIF, `canvas_px` square, encoded to in-memory bytes. Used by the
+/// GIF scale-unit regression test: `decode_image_side`'s GIF branch must read the file's own
+/// logical-screen size (`GifDecoder::dimensions`, read from the header) as this side's *intrinsic*
+/// size — not `frames[0]`'s own decoded pixel size, which the inline decode budget
+/// (`preview::image::MAX_GIF_BYTES_INLINE`, 32MB) downscales for memory once the frames are large
+/// enough, as these deliberately are.
+#[cfg(feature = "git")]
+fn media_diff_solid_gif_bytes(canvas_px: u32, rgba: [u8; 4]) -> Vec<u8> {
+    let frame = image::RgbaImage::from_pixel(canvas_px, canvas_px, image::Rgba(rgba));
+    let mut out = Vec::new();
+    {
+        let mut enc = image::codecs::gif::GifEncoder::new(&mut out);
+        for _ in 0..2 {
+            enc.encode_frame(image::Frame::new(frame.clone())).unwrap();
+        }
+    }
+    out
+}
+
+/// Every kitty image id **transmitted** into the screen buffer (`i=<id>,a=T` is the header of a
+/// transmit escape) — mirrors `app::tests::transmitted_kitty_ids` (private to that module; this is
+/// a small enough duplicate that pulling it into a shared crate-visible helper wasn't worth the
+/// churn for this one report).
+#[cfg(feature = "git")]
+fn media_diff_transmitted_kitty_ids(s: &Sim) -> Vec<u32> {
+    let buf = s.term.backend().buffer();
+    let dump: String = buf.content.iter().map(|c| c.symbol()).collect();
+    dump.split("i=")
+        .skip(1)
+        .filter_map(|part| part.split_once(",a=T"))
+        .filter_map(|(id, _)| id.parse::<u32>().ok())
+        .collect()
+}
+
+/// A changed PNG's diff opens straight into the side-by-side view: both captions (base name,
+/// dimensions, size), the separator, and both pictures (two distinct kitty ids transmitted) are on
+/// screen, and the footer advertises none of the inert classic-diff keys
+/// (`docs/FEATURE-MEDIA-DIFF.md` §1/§4/§6).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_png_shows_captions_pictures_and_a_clean_footer() {
+    let dir = sandbox("media_diff_png");
+    media_diff_git_init(&dir);
+    let png = dir.join("logo.png");
+    media_diff_write_png(&png, 400, 400, [10, 20, 30]);
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    media_diff_write_png(&png, 600, 600, [40, 50, 60]); // uncommitted change
+
+    let mut s = Sim::new(&canon(&dir)).with_media_kitty();
+    s.app.open_git_diff(&png);
+    s.draw();
+    assert!(s.app.is_git_diff_preview());
+    assert!(s.app.diff_view_for_test() == DiffView::Rendered);
+
+    // Two pictures (old + new), each its own encode. `KittyImage::render` transmits (`a=T`) only
+    // on its *own* first render (`preview/kitty.rs`'s own "transmit once, placeholder-only after"
+    // contract) — once the old side has transmitted, a later frame redrawing it (while the new
+    // side is still pending) carries no `a=T` for it at all, only a placement. So distinct ids are
+    // accumulated **across** every draw in the drain loop, not read off any single frame.
+    use std::collections::HashSet;
+    let mut ids: HashSet<u32> = media_diff_transmitted_kitty_ids(&s).into_iter().collect();
+    for _ in 0..6 {
+        if ids.len() >= 2 {
+            break;
+        }
+        s.drain_md_encodes();
+        ids.extend(media_diff_transmitted_kitty_ids(&s));
+    }
+    assert_eq!(
+        ids.len(),
+        2,
+        "旧・新それぞれ1枚ずつ描かれるはず: screen=\n{}",
+        s.screen()
+    );
+
+    s.see("diff ⟨side by side⟩");
+    s.see("Before");
+    s.see("After");
+    s.see("HEAD");
+    s.see("400×400");
+    s.see("600×600");
+
+    // The footer must never advertise a key that does nothing in this view.
+    s.dont_see("j/k:scroll");
+    s.dont_see("h/l:hscroll");
+    s.dont_see("s:unified/split/auto");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `s` cycles the media diff's layout auto → side → stack → auto, flashing the state it switched
+/// to each time (`App::cycle_media_diff_layout`).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_s_cycles_the_layout() {
+    let dir = sandbox("media_diff_layout_cycle");
+    media_diff_git_init(&dir);
+    let png = dir.join("logo.png");
+    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    media_diff_write_png(&png, 8, 8, [2, 2, 2]);
+
+    let mut s = Sim::new(&canon(&dir)).with_picker();
+    s.app.open_git_diff(&png);
+    s.draw();
+    assert_eq!(
+        s.app.media_diff_layout(),
+        crate::preview::media_diff::MediaDiffLayout::Auto
+    );
+    s.key('s');
+    assert_eq!(
+        s.app.media_diff_layout(),
+        crate::preview::media_diff::MediaDiffLayout::Side
+    );
+    s.see("side by side");
+    s.key('s');
+    assert_eq!(
+        s.app.media_diff_layout(),
+        crate::preview::media_diff::MediaDiffLayout::Stack
+    );
+    s.see("stacked");
+    s.key('s');
+    assert_eq!(
+        s.app.media_diff_layout(),
+        crate::preview::media_diff::MediaDiffLayout::Auto
+    );
+    s.see("auto");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `R` from the media diff enters the new version's ordinary full-screen preview
+/// (`preview_from_diff`), and a second `R` returns to the diff — where both pictures still draw.
+/// (This particular round trip is a same-file `App::enter_preview` call, which does **not** evict
+/// `md_image_cache` — confirmed by direct instrumentation, not assumed — so it does not by itself
+/// exercise the stale-cache-key re-kick; `media_diff_stale_cache_key_is_re_kicked_not_left_blank`
+/// below constructs that eviction directly instead. This test's own job is the ordinary "the UI
+/// round trip doesn't lose the pictures" behavior.)
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_r_round_trip_redraws_both_pictures() {
+    let dir = sandbox("media_diff_r_roundtrip");
+    media_diff_git_init(&dir);
+    let png = dir.join("logo.png");
+    media_diff_write_png(&png, 400, 400, [1, 1, 1]);
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    media_diff_write_png(&png, 600, 600, [2, 2, 2]);
+
+    let mut s = Sim::new(&canon(&dir)).with_media_kitty();
+    s.app.open_git_diff(&png);
+    s.draw();
+    // See `e2e_media_diff_png_shows_captions_pictures_and_a_clean_footer`'s own comment: ids must
+    // be accumulated across every draw in the drain loop, since `KittyImage::render` transmits
+    // (`a=T`) only on its own first render.
+    use std::collections::HashSet;
+    let mut ids: HashSet<u32> = media_diff_transmitted_kitty_ids(&s).into_iter().collect();
+    for _ in 0..6 {
+        if ids.len() >= 2 {
+            break;
+        }
+        s.drain_md_encodes();
+        ids.extend(media_diff_transmitted_kitty_ids(&s));
+    }
+    assert_eq!(ids.len(), 2, "往復前: 2枚: screen=\n{}", s.screen());
+
+    s.key('R'); // → the diff's own Preview representation (the new version, full screen)
+    assert!(s.app.preview_is_diff_representation());
+    s.key('R'); // → back to the diff (Image has no Source, so this rounds straight to Rendered)
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+
+    // Whether or not this particular round trip actually evicted `md_image_cache` (`App::
+    // enter_preview` only clears it on a *different* file — same path here, so it may not have,
+    // making a *fresh* `a=T` unreliable to wait for: if nothing was evicted, no new encode is ever
+    // requested and `drain_md_encodes`'s blocking wait would time out on a false alarm). Drain
+    // **non-blockingly** for a few frames either way, then assert what actually matters: both
+    // sides' cache entries are present again and a protocol renders for each — proving the stale-
+    // cache-key re-kick works when eviction *does* happen, without assuming it always does here.
+    for _ in 0..10 {
+        if let Some(rx) = s.md_enc_rx.as_ref() {
+            if let Ok(res) = rx.try_recv() {
+                s.app.apply_md_encode(res);
+            }
+        }
+        s.draw();
+    }
+    let outcome = s
+        .app
+        .poll_media_diff(&png, s.app.diff_media_page(), (800, 600))
+        .expect("同期フォールバック、または着地済みのはず");
+    let crate::app::MediaDiffOutcome::Ready { old, new, .. } = outcome else {
+        panic!("Ready のはず: {outcome:?}");
+    };
+    let key_of = |side: crate::app::MediaDiffSide| match side {
+        crate::app::MediaDiffSide::Picture(p) => p.cache_key,
+        other => panic!("Picture のはず: {other:?}"),
+    };
+    let (old_key, new_key) = (key_of(old), key_of(new));
+    assert!(
+        s.app.md_image_cache_contains(&old_key),
+        "旧版が R→preview→R の往復後もキャッシュにあるはず"
+    );
+    assert!(
+        s.app.md_image_cache_contains(&new_key),
+        "新版が R→preview→R の往復後もキャッシュにあるはず"
+    );
+    assert!(
+        s.app
+            .md_image_proto(&old_key.to_string_lossy(), 10, 10, 0, 10)
+            .is_some()
+            || s.app
+                .md_image_proto(&new_key.to_string_lossy(), 10, 10, 0, 10)
+                .is_some(),
+        "少なくとも一方は再エンコード済みのプロトコルを持つはず(サイズ違いでも newest_proto にフォールバックする)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A changed binary that git/jj can never line-diff (a video file here) shows the binary-summary
+/// line, not the previous false "(no changes)" (`docs/FEATURE-MEDIA-DIFF.md` §5 — the bug this
+/// feature exists partly to fix). An identical-bytes change (permission-only, simulated here by
+/// writing the exact same bytes back) still shows the genuine "(no changes)".
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_binary_summary_line_replaces_the_false_no_changes() {
+    let dir = sandbox("media_diff_binary_summary");
+    media_diff_git_init(&dir);
+    let clip = dir.join("clip.mp4");
+    std::fs::write(&clip, b"\x00\x00\x00\x18ftypmp42 old bytes here").unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::write(
+        &clip,
+        b"\x00\x00\x00\x18ftypmp42 completely different new bytes now",
+    )
+    .unwrap();
+
+    let mut s = Sim::new(&canon(&dir)).with_picker();
+    s.app.open_git_diff(&clip);
+    s.draw();
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Source,
+        "動画は Rendered/Preview を持たないので Source のはず"
+    );
+    s.dont_see("(no changes)");
+    s.see("binary file");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The binary-summary line's delta suffix (`docs/FEATURE-MEDIA-DIFF.md` §5): the rounded
+/// `human_size` alone reads a real, confirmed-different (`!same_bytes`) growth/shrink as
+/// "unchanged" whenever both sides round to the same label (a real report: a 2-byte-larger 81.3 KB
+/// file printed "81.3 KB → 81.3 KB"), and reads two byte-identical-*length* files with different
+/// content the same way too — both cases must now say *something* changed.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_binary_summary_delta_suffix() {
+    // Growth: +3 bytes.
+    {
+        let dir = sandbox("media_diff_delta_plus");
+        media_diff_git_init(&dir);
+        let f = dir.join("clip.mp4");
+        std::fs::write(&f, vec![0u8; 100]).unwrap();
+        media_diff_git(&dir, &["add", "-A"]);
+        media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+        std::fs::write(&f, vec![0u8; 103]).unwrap();
+        let mut s = Sim::new(&canon(&dir)).with_picker();
+        s.app.open_git_diff(&f);
+        s.draw();
+        s.see("(+3 B)");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+    // Shrink: -3 bytes.
+    {
+        let dir = sandbox("media_diff_delta_minus");
+        media_diff_git_init(&dir);
+        let f = dir.join("clip.mp4");
+        std::fs::write(&f, vec![0u8; 100]).unwrap();
+        media_diff_git(&dir, &["add", "-A"]);
+        media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+        std::fs::write(&f, vec![0u8; 97]).unwrap();
+        let mut s = Sim::new(&canon(&dir)).with_picker();
+        s.app.open_git_diff(&f);
+        s.draw();
+        s.see("(-3 B)");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+    // Equal length, different content (e.g. `data.bin` in the reported sandbox).
+    {
+        let dir = sandbox("media_diff_delta_same_len");
+        media_diff_git_init(&dir);
+        let f = dir.join("data.bin");
+        std::fs::write(&f, vec![0u8; 100]).unwrap();
+        media_diff_git(&dir, &["add", "-A"]);
+        media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+        // Same length, every byte different — still contains a NUL byte (like the `0u8` fixture
+        // above) so `is_probably_text` classifies it as binary too, not as a plain text diff.
+        let mut different = vec![1u8; 100];
+        different[0] = 0;
+        std::fs::write(&f, different).unwrap();
+        let mut s = Sim::new(&canon(&dir)).with_picker();
+        s.app.open_git_diff(&f);
+        s.draw();
+        s.dont_see("(no changes)");
+        s.see("same size, content differs");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+    // A missing side (added/deleted binary): no delta to take — the bare "(none) → …"/"… → (none)"
+    // already says everything, and must not gain a spurious "(+N B)"/"(-N B)" against a side that
+    // was never there to diff against.
+    {
+        let dir = sandbox("media_diff_delta_absent_side");
+        media_diff_git_init(&dir);
+        std::fs::write(dir.join("seed.txt"), b"seed\n").unwrap();
+        media_diff_git(&dir, &["add", "-A"]);
+        media_diff_git(&dir, &["commit", "-q", "-m", "seed"]);
+        let f = dir.join("clip.mp4"); // untracked = new only, old is Absent
+        std::fs::write(&f, vec![0u8; 100]).unwrap();
+        let mut s = Sim::new(&canon(&dir)).with_picker();
+        s.app.open_git_diff(&f);
+        s.draw();
+        s.see("(none)");
+        s.dont_see("(+");
+        s.dont_see("(-");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// The identical-bytes counterpart of the test above: no content actually changed (only, say, a
+/// permission bit), so the binary-summary path correctly still says "(no changes)" — the worker
+/// consultation must not turn every binary kind's footer into a false positive either.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_identical_binary_still_shows_no_changes() {
+    let dir = sandbox("media_diff_binary_identical");
+    media_diff_git_init(&dir);
+    let clip = dir.join("clip.mp4");
+    let bytes = b"\x00\x00\x00\x18ftypmp42 unchanged bytes".to_vec();
+    std::fs::write(&clip, &bytes).unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    // Rewrite the exact same bytes — content is byte-identical, but this forces a Summary
+    // computation (rather than relying on git reporting literally zero status).
+    std::fs::write(&clip, &bytes).unwrap();
+
+    let mut s = Sim::new(&canon(&dir)).with_picker();
+    s.app.open_git_diff(&clip);
+    s.draw();
+    s.see("(no changes)");
+    s.dont_see("binary file");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PDF paging: `J`/`K` turn both sides' page together, only while the media diff is showing a
+/// multi-page PDF.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_pdf_paging_with_j_k() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let bytes = std::fs::read(&pdf).unwrap();
+    let dir = sandbox("media_diff_pdf_paging");
+    media_diff_git_init(&dir);
+    let doc = dir.join("doc.pdf");
+    std::fs::write(&doc, &bytes).unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    // Uncommitted "change": touch the file so it shows as modified (git diffs it against the
+    // identical committed bytes either way — the page-count/paging behavior doesn't depend on the
+    // two sides actually differing).
+    std::fs::write(&doc, &bytes).unwrap();
+
+    let mut s = Sim::new(&canon(&dir)).with_picker();
+    s.app.open_git_diff(&doc);
+    s.draw();
+    assert_eq!(s.app.diff_media_page(), 1);
+    s.key('J');
+    assert_eq!(s.app.diff_media_page(), 2);
+    s.key('J');
+    assert_eq!(s.app.diff_media_page(), 3);
+    s.key('J'); // clamped at the sample's own page count (3)
+    assert_eq!(s.app.diff_media_page(), 3);
+    s.key('K');
+    assert_eq!(s.app.diff_media_page(), 2);
+    s.see("p. 2/3");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The stale-cache-key re-kick itself, constructed directly (`App::evict_md_image_cache_key_for_
+/// test`) rather than via a specific keypress sequence — `e2e_media_diff_r_round_trip_redraws_
+/// both_pictures`'s own doc comment explains why the R→Preview→R round trip alone doesn't reach
+/// this path. `media_diff_landed` still reports `Ready` (nothing invalidated it) while the pixels
+/// underneath are gone — exactly the "stale but still landed" state `App::md_image_cache_contains`
+/// exists to detect.
+#[cfg(feature = "git")]
+#[test]
+fn media_diff_stale_cache_key_is_re_kicked_not_left_blank() {
+    let dir = sandbox("media_diff_stale_cache_rekick");
+    media_diff_git_init(&dir);
+    let png = dir.join("logo.png");
+    media_diff_write_png(&png, 40, 40, [1, 1, 1]);
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    media_diff_write_png(&png, 60, 60, [2, 2, 2]);
+
+    let mut s = Sim::new(&canon(&dir)).with_picker();
+    s.app.open_git_diff(&png);
+    s.draw(); // production render lands both sides at ITS OWN raster_px (not a test-guessed one)
+
+    let keys_before = s.app.md_image_cache_media_diff_keys_for_test();
+    assert_eq!(
+        keys_before.len(),
+        2,
+        "旧・新それぞれ1エントリのはず: {keys_before:?}"
+    );
+    for k in &keys_before {
+        s.app.evict_md_image_cache_key_for_test(k);
+    }
+    for k in &keys_before {
+        assert!(!s.app.md_image_cache_contains(k));
+    }
+
+    // A redraw must notice the eviction (against the still-landed `Ready` outcome — nothing
+    // invalidated it) and recompute, repopulating both keys, rather than silently drawing nothing
+    // for the rest of the diff's lifetime.
+    s.draw();
+    let keys_after = s.app.md_image_cache_media_diff_keys_for_test();
+    for k in &keys_before {
+        assert!(
+            keys_after.contains(k),
+            "旧・新とも re-kick で同じキーが復元されるはず(内容が変わっていないので同じハッシュ): before={keys_before:?} after={keys_after:?}"
+        );
+        assert!(s.app.md_image_cache_contains(k), "キャッシュにも戻るはず");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Every placeholder kind (`docs/FEATURE-MEDIA-DIFF.md` §1/§7) actually draws its message on
+/// screen — not just in the caption row, which was drawing fine throughout the real bug this pins
+/// (`draw_media_side` used to read the *picture-fitting* rect, always zero-sized for these, instead
+/// of the pane's own real `area`; the caption is drawn by a separate function that was never
+/// affected, which is exactly why the bug was easy to miss).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_placeholders_actually_draw_their_message() {
+    let dir = sandbox("media_diff_placeholders");
+    media_diff_git_init(&dir);
+    // A first commit (establishes HEAD) that does *not* include the GIF at all — added below,
+    // after this commit, so it stays genuinely untracked.
+    std::fs::write(dir.join("seed.txt"), b"seed\n").unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "seed"]);
+
+    // Absent (new side): a committed-then-deleted PNG.
+    let gone = dir.join("gone.png");
+    media_diff_write_png(&gone, 4, 4, [7, 7, 7]);
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "add gone.png"]);
+    std::fs::remove_file(&gone).unwrap();
+
+    // Absent (old side): an untracked GIF has no committed old version — added to the working
+    // tree only *after* every commit above, and never `git add`ed, so it stays untracked.
+    let untracked = dir.join("new.gif");
+    std::fs::copy(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("samples/sample.gif"),
+        &untracked,
+    )
+    .unwrap();
+
+    // Canonicalize *before* constructing paths the app will look up a git blob against — a
+    // macOS `/var` → `/private/var` symlink otherwise makes `base_contents`'s relative-path
+    // stripping silently find nothing (the same gotcha every other git test in this file avoids).
+    let dir = canon(&dir);
+    let gone = dir.join("gone.png");
+    let untracked = dir.join("new.gif");
+
+    let mut s = Sim::new(&dir).with_picker();
+    s.app.open_git_diff(&untracked);
+    s.draw();
+    s.see("new file");
+
+    s.app.open_git_diff(&gone);
+    s.draw();
+    s.see("deleted");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A minimal, valid, single-page PDF (hand-built, no external tool needed) — duplicated from
+/// `preview::pdf::tests::minimal_blank_pdf_bytes` (private to that module) since this needs a real
+/// 1-page PDF to pair against the 3-page `samples/sample.pdf` for `e2e_media_diff_page_missing_
+/// placeholder_draws` below.
+#[cfg(feature = "git")]
+fn media_diff_minimal_one_page_pdf_bytes() -> Vec<u8> {
+    // A filled black rectangle, not an empty content stream: `pixmap_to_dynamic_image`
+    // deliberately treats a fully-transparent (nothing painted) render as `None` — "a technically-
+    // successful-but-empty render", per that fn's own doc comment — so a genuinely blank page
+    // would make `render_page_bytes` report `Failed`, not the `PageMissing` this test means to
+    // exercise for a *different* page.
+    let content = b"0 0 0 rg 0 0 100 100 re f";
+    let content_obj = format!(
+        "<< /Length {} >>\nstream\n{}\nendstream",
+        content.len(),
+        std::str::from_utf8(content).unwrap()
+    );
+    let objs: [&[u8]; 4] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << >> >>",
+        content_obj.as_bytes(),
+    ];
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n");
+    let mut offsets = vec![0usize];
+    for (i, body) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref_offset = out.len();
+    let n = objs.len() + 1;
+    out.extend_from_slice(format!("xref\n0 {n}\n").as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for off in &offsets[1..] {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
+            .as_bytes(),
+    );
+    out
+}
+
+/// PageMissing: the new side's own page count (1) is smaller than the requested page (2) — its
+/// placeholder must draw, independent of the old side (which still has a page 2 and keeps showing
+/// its own picture).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_page_missing_placeholder_draws() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let bytes = std::fs::read(&pdf).unwrap();
+    let dir = sandbox("media_diff_page_missing");
+    media_diff_git_init(&dir);
+    let doc = dir.join("doc.pdf");
+    std::fs::write(&doc, &bytes).unwrap(); // 3 pages, committed
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, media_diff_minimal_one_page_pdf_bytes()).unwrap(); // new version: 1 page
+
+    let mut s = Sim::new(&canon(&dir)).with_media();
+    s.app.open_git_diff(&doc);
+    s.draw();
+    assert_eq!(s.app.diff_media_page(), 1);
+    s.see("p. 1/3"); // old (the new side's own caption may be display-width-truncated first)
+
+    // The old side's own *picture* must actually draw, not just its caption — regression for the
+    // reported "old side of doc.pdf never draws" bug. Root cause was `ratatui_image::Image`'s own
+    // `Widget::render` (like `KittyImage::render`) silently refusing to draw *at all* whenever the
+    // encoded protocol's size exceeds the render area — which a naive fix (feeding the *decoded
+    // raster's* own pixel dimensions into `preview::media_diff::layout`'s scale math, instead of
+    // each side's own **intrinsic** unit — PDF points here) can still trip in the opposite
+    // direction across the two sides of *this* diff (`App::poll_md_encode` always resizes a
+    // media-diff picture with `Resize::Scale`, never `Fit`, precisely so the decoded raster's own
+    // pixel size — which the PDF renderer normalizes to a fixed longest side regardless of a
+    // page's point size, so it is *not* comparable between this 3-page 612×792pt original and the
+    // 1-page 200×200pt replacement — can never again make this refuse to draw).
+    let mut old_side_drew_something = false;
+    for _ in 0..8 {
+        let screen = s.screen();
+        if screen
+            .lines()
+            .skip(3) // row 0 = tab bar, 1 = top border/title, 2 = caption — the picture starts at 3
+            .take(15)
+            .any(|line| line.chars().take(60).any(|c| c != ' ' && c != '│'))
+        {
+            old_side_drew_something = true;
+            break;
+        }
+        s.drain_md_encodes();
+    }
+    assert!(
+        old_side_drew_something,
+        "旧版(左側)に絵が実際に描かれるはず: screen=\n{}",
+        s.screen()
+    );
+
+    s.key('J');
+    assert_eq!(
+        s.app.diff_media_page(),
+        2,
+        "旧版の3ページに合わせて2ページ目まで進めるはず"
+    );
+    s.see("this page doesn't exist");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `R` on `Surface::PreviewImage` is a no-op while this preview is **not** the diff's own
+/// `Preview` representation (`App::image_return_to_diff`) — a real bug had it bound to
+/// `Action::ToggleMarkdownRaw`, whose non-diff fallthrough (`toggle_md_raw`) silently flips
+/// `md_raw` for a standalone `.mmd` file's full-screen image preview (`[ui] mermaid = "image"`),
+/// even though no hint on that surface ever advertised `R` doing anything there
+/// ([[hint-shown-iff-key-acts]]). Checked for both a `.mmd` preview (the kind that actually
+/// exposed the bug) and a plain PNG (the ordinary case, to prove the fix isn't `.mmd`-specific).
+#[test]
+fn e2e_r_on_plain_image_preview_is_a_no_op() {
+    let dir = sandbox("r_on_plain_image_preview");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("d.mmd"), "graph LR\n  A[start] --> B[end]\n").unwrap();
+    media_diff_write_png(&dir.join("pic.png"), 4, 4, [1, 1, 1]);
+
+    for name in ["d.mmd", "pic.png"] {
+        let mut s = Sim::new(&canon(&dir)).with_picker();
+        s.select(name);
+        s.enter();
+        assert!(s.app.is_image_preview(), "{name}: 画像プレビューのはず");
+        assert!(
+            !s.app.preview_is_diff_representation(),
+            "{name}: diff 由来ではないはず"
+        );
+        let md_raw_before = s.app.is_md_raw();
+        let kind_before = format!("{:?}", s.app.tab.preview_kind);
+        s.key('R');
+        assert_eq!(
+            s.app.is_md_raw(),
+            md_raw_before,
+            "{name}: R は md_raw を変えないはず(何も起きないはず)"
+        );
+        assert_eq!(
+            format!("{:?}", s.app.tab.preview_kind),
+            kind_before,
+            "{name}: R はプレビュー種別を変えないはず"
+        );
+        assert!(
+            s.app.is_image_preview(),
+            "{name}: 画像プレビューのままのはず"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The help row for `f` (follow-scope toggle) is shown iff it would actually do something
+/// (`App::toggle_follow_diff_scope`'s own gate: `is_git_diff_preview() && diff_follow_scope`) —
+/// pre-existing bug: the row used to appear unconditionally, for every diff (follow-originated or
+/// not).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_scope_help_row_shown_iff_the_diff_is_follow_originated() {
+    let dir = sandbox("follow_help_row_gate");
+    media_diff_git_init(&dir);
+    let f = dir.join("a.rs");
+    std::fs::write(&f, "fn main() {}\n").unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::write(&f, "fn main() { changed(); }\n").unwrap();
+
+    let mut s = Sim::new(&canon(&dir)).with_picker();
+    // A plain, tree-opened diff (not follow-originated): the `f` row must be absent.
+    s.app.open_git_diff(&f);
+    assert!(s.app.follow_diff_scope_msg().is_none());
+    let rows: Vec<String> = crate::ui::preview::help_sections(&s.app)
+        .into_iter()
+        .flat_map(|sec| sec.rows)
+        .map(|(k, _)| k)
+        .collect();
+    assert!(
+        !rows.iter().any(|k| k == "f"),
+        "follow 由来でない diff には f 行が無いはず: {rows:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PDF's shared scale must be computed from each side's own page size in **points**, not the
+/// rasterized pixel dimensions both sides can otherwise coincide on: `render_page_bytes` normalizes
+/// every page to the same `PAGE_MAX_PX` longest side regardless of its point size, so a 612×792pt
+/// page and a 306×396pt page (exactly half, in each axis) decode to *nearly identical* pixel
+/// dimensions (~1236–1238 × 1600) — using those for `layout`'s scale math draws the smaller page at
+/// (wrongly) the same size as the larger one, or even larger once rounding tips the wrong way (the
+/// real regression report: doc.pdf's *smaller* new page drawn *larger* than its old page). Fixed:
+/// `MediaDiffPictureDecoded::natural_px` is always the intrinsic (points here) size, and
+/// `App::poll_md_encode` always resizes a media-diff picture with `Resize::Scale` (never `Fit`) to
+/// exactly the cell box `layout` already decided, so the decoded raster's own (here, near-identical)
+/// pixel size is never what determines the drawn size either.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_pdf_scale_uses_page_points_not_raster_px() {
+    let dir = sandbox("media_diff_pdf_scale_units");
+    media_diff_git_init(&dir);
+    let doc = dir.join("doc.pdf");
+    std::fs::write(&doc, media_diff_solid_pdf_bytes(612, 792, (255, 0, 0))).unwrap(); // old
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, media_diff_solid_pdf_bytes(306, 396, (0, 0, 255))).unwrap(); // new: exactly half, each axis
+
+    let mut s = Sim::with_config_sized(&canon(&dir), Config::default(), 240, 70).with_media();
+    s.app.open_git_diff(&doc);
+    s.draw();
+    while s.drain_md_encode_if_any() {}
+
+    let old = s
+        .colored_cell_bbox(ratatui::style::Color::Rgb(255, 0, 0))
+        .expect("旧版(赤)が描かれるはず");
+    let new = s
+        .colored_cell_bbox(ratatui::style::Color::Rgb(0, 0, 255))
+        .expect("新版(青)が描かれるはず");
+    assert!(
+        (i32::from(new.0) - i32::from(old.0) / 2).abs() <= 1,
+        "新版の幅は旧版のちょうど半分のはず(pt 単位で計算): old={old:?} new={new:?}"
+    );
+    assert!(
+        (i32::from(new.1) - i32::from(old.1) / 2).abs() <= 1,
+        "新版の高さも旧版のちょうど半分のはず: old={old:?} new={new:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// SVG's shared scale must be computed from each side's own **intrinsic** (viewBox) size, not the
+/// rasterized pixel dimensions both sides can otherwise coincide on: `rasterize_bytes` fits every
+/// SVG to the same caller-given `raster_px` box regardless of its own viewBox, so a 400×300 SVG and
+/// a 200×150 one (exactly half) can decode to near-identical pixel dimensions. Same fix as the PDF
+/// case above (`natural_px` is the viewBox size; the encode step always `Resize::Scale`s to
+/// `layout`'s own box regardless of the decoded raster's actual pixel size).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_svg_scale_uses_viewbox_not_raster_px() {
+    let dir = sandbox("media_diff_svg_scale_units");
+    media_diff_git_init(&dir);
+    let icon = dir.join("icon.svg");
+    std::fs::write(&icon, media_diff_solid_svg_bytes(400, 300, (255, 0, 0))).unwrap(); // old
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::write(&icon, media_diff_solid_svg_bytes(200, 150, (0, 0, 255))).unwrap(); // new: exactly half
+
+    let mut s = Sim::with_config_sized(&canon(&dir), Config::default(), 240, 70).with_media();
+    s.app.open_git_diff(&icon);
+    s.draw();
+    while s.drain_md_encode_if_any() {}
+
+    let old = s
+        .colored_cell_bbox(ratatui::style::Color::Rgb(255, 0, 0))
+        .expect("旧版(赤)が描かれるはず");
+    let new = s
+        .colored_cell_bbox(ratatui::style::Color::Rgb(0, 0, 255))
+        .expect("新版(青)が描かれるはず");
+    assert!(
+        (i32::from(new.0) - i32::from(old.0) / 2).abs() <= 1,
+        "新版の幅は旧版のちょうど半分のはず(viewBox 単位で計算): old={old:?} new={new:?}"
+    );
+    assert!(
+        (i32::from(new.1) - i32::from(old.1) / 2).abs() <= 1,
+        "新版の高さも旧版のちょうど半分のはず: old={old:?} new={new:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A raster image's `natural_px` is always its real (decoded) pixel size — there is no separate
+/// "intrinsic unit" to diverge from, unlike PDF/SVG — so this is the control case: a 400×300 PNG vs
+/// a 200×150 one (exactly half) must draw at exactly half the cells, through the same real draw path
+/// (`TestBackend` + a real `Picker`) as the PDF/SVG regression tests above, not just at
+/// `preview::media_diff::layout`'s own pure-function level
+/// (`common_scale_is_shared_a_half_size_new_image_renders_at_half_the_cells`).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_png_scale_uses_real_pixels() {
+    let dir = sandbox("media_diff_png_scale_units");
+    media_diff_git_init(&dir);
+    let pic = dir.join("pic.png");
+    media_diff_write_png(&pic, 400, 300, [255, 0, 0]); // old
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    media_diff_write_png(&pic, 200, 150, [0, 0, 255]); // new: exactly half
+
+    let mut s = Sim::with_config_sized(&canon(&dir), Config::default(), 240, 70).with_media();
+    s.app.open_git_diff(&pic);
+    s.draw();
+    while s.drain_md_encode_if_any() {}
+
+    let old = s
+        .colored_cell_bbox(ratatui::style::Color::Rgb(255, 0, 0))
+        .expect("旧版(赤)が描かれるはず");
+    let new = s
+        .colored_cell_bbox(ratatui::style::Color::Rgb(0, 0, 255))
+        .expect("新版(青)が描かれるはず");
+    assert!(
+        (i32::from(new.0) - i32::from(old.0) / 2).abs() <= 1,
+        "新版の幅は旧版のちょうど半分のはず: old={old:?} new={new:?}"
+    );
+    assert!(
+        (i32::from(new.1) - i32::from(old.1) / 2).abs() <= 1,
+        "新版の高さも旧版のちょうど半分のはず: old={old:?} new={new:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A GIF's `natural_px` must be the file's own logical-screen size (read from the header,
+/// `GifDecoder::dimensions`), not `frames[0]`'s own decoded pixel size — which the inline decode
+/// budget (`MAX_GIF_BYTES_INLINE`, 32MB) downscales for memory once the frames are large enough.
+/// Paired against a plain PNG of the *shrunk* size (1050×1050 — exactly what the GIF's own frames
+/// actually decode to after the budget halves them) stored at the same path: with the fix, the GIF
+/// (real/header size 2100×2100) draws at roughly **twice** the PNG's cells in each axis, since its
+/// intrinsic size is 2x the PNG's even though the two decode to the *same* raster pixel dimensions;
+/// reading `frames[0]`'s own (post-shrink) size instead would make the two draw at the *same* size.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_gif_scale_uses_header_dims_not_budget_downscaled_frame() {
+    let dir = sandbox("media_diff_gif_scale_units");
+    media_diff_git_init(&dir);
+    let pic = dir.join("pic.gif"); // format is sniffed from content, not the extension, on both sides
+    media_diff_write_png(&pic, 1050, 1050, [255, 0, 0]); // old: real, undownscaled 1050x1050
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::write(&pic, media_diff_solid_gif_bytes(2100, [0, 0, 255, 255])).unwrap(); // new: header 2100x2100, budget-shrunk decode to 1050x1050 (2 frames x 2100^2x4B = 35.28MB > MAX_GIF_BYTES_INLINE 32MB)
+
+    let mut s = Sim::with_config_sized(&canon(&dir), Config::default(), 240, 70).with_media();
+    s.app.open_git_diff(&pic);
+    s.draw();
+    while s.drain_md_encode_if_any() {}
+
+    let old = s
+        .colored_cell_bbox(ratatui::style::Color::Rgb(255, 0, 0))
+        .expect("旧版(赤・PNG)が描かれるはず");
+    let new = s
+        .colored_cell_bbox(ratatui::style::Color::Rgb(0, 0, 255))
+        .expect("新版(青・GIF)が描かれるはず");
+    assert!(
+        (i32::from(new.0) - i32::from(old.0) * 2).abs() <= 1,
+        "新版(GIF)の幅は旧版のちょうど2倍のはず(header サイズで計算): old={old:?} new={new:?}"
+    );
+    assert!(
+        (i32::from(new.1) - i32::from(old.1) * 2).abs() <= 1,
+        "新版(GIF)の高さも旧版のちょうど2倍のはず: old={old:?} new={new:?}"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }

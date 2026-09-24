@@ -94,6 +94,13 @@ pub struct GitConfig {
     /// (Aliases: vertical = unified / horizontal, side-by-side = split.) At runtime, `s` while viewing a diff
     /// cycles vertical -> horizontal -> Auto. Applies to both the GitDiff preview and commit/working-tree details.
     pub diff: String,
+    /// Initial layout for the image/PDF/SVG side-by-side "diff" (`docs/FEATURE-MEDIA-DIFF.md`).
+    /// "auto" (default) = whichever of side-by-side/stacked lets the picture render larger |
+    /// "side" (aliases: split/horizontal/side-by-side) | "stack" (aliases: vertical/stacked/unified).
+    /// A separate setting from `diff` (above) on purpose — sharing one would make "auto" mean two
+    /// different defaults for two unrelated layouts. At runtime, `s` while viewing a media diff
+    /// cycles auto → side → stack → auto.
+    pub media_diff: String,
     /// [Unimplemented/reserved] For the base-branch-pinned graph (post-release; docs/GRAPH-BASE-SPEC.md).
     /// Currently referenced by nothing (parsed only). Wired up when implemented.
     pub main_branch: String,
@@ -134,6 +141,7 @@ impl Default for GitConfig {
         Self {
             tool: "lazygit".into(),
             diff: "unified".into(), // default is vertical. horizontal/Auto via config or runtime `s`.
+            media_diff: "auto".into(),
             main_branch: "".into(),
             worktree_dir: "../".into(),
         }
@@ -986,9 +994,15 @@ impl Config {
     /// judges `sniff` the same way `is_probably_text` judges a file's leading bytes. Same rule order,
     /// same `[external] preview_commands` gate — this shares `resolve_preview`'s one implementation
     /// (`resolve_preview_kind`) rather than a second copy that could drift out of sync with it.
-    // Not yet called from production code — see `app::media_diff`'s module doc comment for why (a
-    // later phase of the same feature wires the consumer in). Exercised directly by
-    // `config::parity_tests` and `app::media_diff`'s own tests in the meantime.
+    // Not called from production code, deliberately: a deleted file's classification is instead
+    // read off the media-diff worker's own landed outcome (`App::diff_representations`, `docs/
+    // FEATURE-MEDIA-DIFF.md` §2). That worker sniffs the old bytes on a background thread via the
+    // free-function form this method itself wraps (`resolve_preview_kind`, called directly by
+    // `App::compute_media_diff` — not through this method, since the worker only has plain
+    // `rules`/`preview_commands` data, not a whole `&Config`), so calling this synchronous, UI-
+    // thread method a second time from anywhere in the render path would just be redundant I/O.
+    // Kept as a public, directly-testable entry point for exactly that sniff behavior — exercised
+    // by `config::parity_tests`.
     #[allow(dead_code)]
     pub fn resolve_preview_with(&self, path: &Path, sniff: &[u8]) -> PreviewKind {
         resolve_preview_kind(

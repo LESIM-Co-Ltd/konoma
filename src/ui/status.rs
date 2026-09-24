@@ -27,8 +27,9 @@ fn chip(lang: Lang, msg: Msg, bg: Color, dark_bg: bool) -> Span<'static> {
 /// Truncates `s` to display width `max` (CJK-aware; appends `…` when cut). The context bar shares
 /// width with the tab bar (`context_width` is used to size it), so labels here — like the linked-
 /// worktree chip's origin repo name — must stay bounded rather than growing unboundedly with an
-/// arbitrary directory name.
-fn truncate_display(s: &str, max: usize) -> String {
+/// arbitrary directory name. `pub(crate)` so `ui/preview.rs::render_gitdiff_media` can reuse it for
+/// a media-diff caption instead of a second copy of this logic.
+pub(crate) fn truncate_display(s: &str, max: usize) -> String {
     if s.width() <= max {
         return s.to_string();
     }
@@ -318,6 +319,19 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
         // `[ui] wrap` is on — unlike `Source` (always horizontal-scrollable, `wrap`-independent),
         // `Rendered` shares the ordinary decorated Markdown preview's own wrap-aware layout, where
         // horizontal scroll is a no-op the moment lines wrap ([[hint-shown-iff-key-acts]]).
+        // The media diff's side-by-side view, and the binary-summary/computing body a non-picture
+        // binary kind's `Source` representation always shows (`docs/FEATURE-MEDIA-DIFF.md` §5/§6),
+        // both use the reduced hint set (`n/N`, `x`(write), `q/Esc` — no `j/k`/`h/l`/`s:unified/
+        // split/auto`, nothing there to scroll or lay out unified/split): `App::diff_footer_is_
+        // media_or_summary` covers both in one gate.
+        InternalMode::GitDiff
+            if !crate::vcs::caps(&app.tab.root).write && app.diff_footer_is_media_or_summary() =>
+        {
+            tr(lang, crate::i18n::Msg::DiffMediaHintNoDiscard)
+        }
+        InternalMode::GitDiff if app.diff_footer_is_media_or_summary() => {
+            tr(lang, crate::i18n::Msg::DiffMediaHintDiscard)
+        }
         InternalMode::GitDiff if !crate::vcs::caps(&app.tab.root).write => {
             if app.diff_rendered_active() {
                 if app.cfg.ui.wrap {
@@ -354,7 +368,30 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
     // with only one presentation, e.g. an image whose diff is shown here.
     let mut s = s.to_string();
     if mode == InternalMode::GitDiff {
-        if let Some(msg) = app.diff_view_cycle_hint() {
+        // The media/binary-summary hint set produced above is only the (`x:discard  `)`q/Esc:back`
+        // suffix — `n/N` and, while the side-by-side view is active, `s`/`J`/`K` are woven in
+        // *before* it here so the key order matches `docs/FEATURE-MEDIA-DIFF.md` §6: `n/N  s  J/K
+        // R  x  q/Esc` (never `n/N  x  q/Esc  s  J/K  R`, which reads as if `s`/`J`/`K` came after
+        // "back").
+        if app.diff_footer_is_media_or_summary() {
+            let mut prefixed = hint(lang, "n/N", crate::i18n::Msg::HintNextPrevFile);
+            if app.diff_media_active() {
+                prefixed.push_str(&format!(
+                    "  {}",
+                    hint(lang, "s", app.media_diff_layout_next_msg())
+                ));
+                if app.media_diff_can_page() {
+                    prefixed.push_str(&format!(
+                        "  {}",
+                        hint(lang, "J/K", crate::i18n::Msg::HintPage)
+                    ));
+                }
+            }
+            if let Some(msg) = app.diff_view_cycle_hint() {
+                prefixed.push_str(&format!("  {}", hint(lang, "R", msg)));
+            }
+            s = format!("{prefixed}  {s}");
+        } else if let Some(msg) = app.diff_view_cycle_hint() {
             s.push_str(&format!("  R:{}", tr(lang, msg)));
         }
     }
@@ -1488,9 +1525,22 @@ mod tests {
             .collect();
         // Unlike the jj case above, this repository has no commits and `a.txt` was never written to
         // disk (`init_test_git_repo` only `git init`s an empty directory) — `resolve_preview` can't
-        // classify a file that doesn't exist, so it degrades to `CanNotPreview` (one representation,
-        // no `R` hint at all: `App::diff_view_cycle_hint`'s own no-op gate).
-        assert_eq!(footer, tr(Lang::En, Msg::DiffScrollDiscardHint));
+        // classify a file that doesn't exist from its name alone (`CanNotPreview`), and this test
+        // never renders (so the media-diff worker never lands a real classification either —
+        // `App::diff_representations`' own "ambiguous, ask the worker" branch,
+        // `docs/FEATURE-MEDIA-DIFF.md` §2): the diff is therefore stuck in the transient "treat a
+        // missing/unclassified path as `[Rendered]` until it lands" state, and the footer shows the
+        // reduced media hint set (no `j/k`/`h/l`, `s` for the not-yet-real side-by-side layout, no
+        // `R` since there is only the one representation so far).
+        assert_eq!(
+            footer,
+            format!(
+                "n/N:{}  s:{}  {}",
+                tr(Lang::En, Msg::HintNextPrevFile),
+                tr(Lang::En, Msg::MediaLayoutSide),
+                tr(Lang::En, Msg::DiffMediaHintDiscard),
+            )
+        );
         assert!(footer.contains("discard"));
         std::fs::remove_dir_all(&git_dir).ok();
     }
