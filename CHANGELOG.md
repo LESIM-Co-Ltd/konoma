@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-09-24
+
 ### Added
 - **The full-screen diff now has 3 presentations you can switch between with `R`.** `source` is
   the classic unified/split diff; `rendered` (the new default, `[ui] diff_view`) draws a Markdown
@@ -24,6 +26,20 @@ All notable changes to konoma are documented in this file. The format is based o
   "computing diff…" placeholder while its own comparison is still in flight. For a file over 5,000
   lines or 1 MiB, `rendered`/`preview` stop at the same position an ordinary preview would; press
   `R` to switch to `source` to see changes past that point.
+
+### Changed
+- **Dependency updates**: `toml` 1.1.6, `ureq` 3.4.2 (with `ureq-proto` 0.6.4: the TLS handshake now
+  completes inside the connect timeout, timeouts no longer restart per phase, the next resolved
+  address is tried when one is unreachable), `trash` 5.2.9 (on Linux, trashing a file on a volume
+  whose root is not writable falls back to the home trash instead of failing) and `ratatui-image`
+  11.1.0 (half-block images on a pane larger than 65,535 cells no longer alias their bottom rows
+  onto the top). `ureq` is only used to fetch remote images in Markdown; konoma's own kitty
+  transfer is unaffected by the `ratatui-image` change.
+
+### Security
+- **`rustls` 0.23.45** fixes RUSTSEC-2026-0285 (TLS 1.3 handshake messages accepted across
+  encryption-level boundaries). `rustls` reaches konoma only through `ureq`, i.e. remote Markdown
+  images.
 
 ## [0.28.6] - 2026-09-14
 
@@ -2501,7 +2517,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.6...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.6...v0.29.0
 [0.28.6]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.5...v0.28.6
 [0.28.5]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.4...v0.28.5
 [0.28.4]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.3...v0.28.4
