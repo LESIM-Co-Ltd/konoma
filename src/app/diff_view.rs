@@ -105,6 +105,7 @@ impl App {
             self.md_cache = None;
         }
         self.invalidate_md_diff();
+        self.invalidate_media_diff();
     }
 
     /// How many of the three presentations (`docs/FEATURE-MD-RENDERED-DIFF.md` §1) `path`'s diff

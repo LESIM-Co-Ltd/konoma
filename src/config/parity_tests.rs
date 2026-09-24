@@ -1667,29 +1667,29 @@ fn cfg_preview_rule_matches_glob_variants() {
         glob: Some("*.md".into()),
         ..Default::default()
     };
-    assert!(rule_matches(&md, Path::new("/x/a.md")));
-    assert!(!rule_matches(&md, Path::new("/x/a.rs")));
-    assert!(rule_matches(&md, Path::new("/deep/nested/note.md")));
+    assert!(rule_matches(&md, Path::new("/x/a.md"), None));
+    assert!(!rule_matches(&md, Path::new("/x/a.rs"), None));
+    assert!(rule_matches(&md, Path::new("/deep/nested/note.md"), None));
     let upper = Rule {
         glob: Some("*.MD".into()),
         ..Default::default()
     };
-    assert!(rule_matches(&upper, Path::new("/x/readme.md")));
+    assert!(rule_matches(&upper, Path::new("/x/readme.md"), None));
     let slashed = Rule {
         glob: Some("docs/*.md".into()),
         ..Default::default()
     };
-    assert!(!rule_matches(&slashed, Path::new("/x/docs/note.md")));
+    assert!(!rule_matches(&slashed, Path::new("/x/docs/note.md"), None));
     let neither = Rule {
         builtin: Some("text".into()),
         ..Default::default()
     };
-    assert!(!rule_matches(&neither, Path::new("/x/a.md")));
+    assert!(!rule_matches(&neither, Path::new("/x/a.md"), None));
     let broken = Rule {
         glob: Some("[".into()),
         ..Default::default()
     };
-    assert!(!rule_matches(&broken, Path::new("/x/a.md")));
+    assert!(!rule_matches(&broken, Path::new("/x/a.md"), None));
 }
 
 #[test]
@@ -1703,12 +1703,132 @@ fn cfg_preview_rule_matches_mime_via_content() {
         mime: Some("video/*".into()),
         ..Default::default()
     };
-    assert!(rule_matches(&img_rule, &png));
-    assert!(!rule_matches(&vid_rule, &png));
+    assert!(rule_matches(&img_rule, &png, None));
+    assert!(!rule_matches(&vid_rule, &png, None));
     std::fs::remove_file(&png).ok();
     let txt = tmp("cfgp_rm.txt", b"hello, not an image\n");
-    assert!(!rule_matches(&img_rule, &txt));
+    assert!(!rule_matches(&img_rule, &txt, None));
     std::fs::remove_file(&txt).ok();
+}
+
+// =============================================================================
+// resolve_preview_with (`docs/FEATURE-MEDIA-DIFF.md` §2): classify from bytes rather than a path,
+// for a file that may not exist on disk at all (a deleted file's old version).
+// =============================================================================
+
+/// Every file bundled under `samples/` (top-level, real files only) classifies identically whether
+/// `resolve_preview` reads the path or `resolve_preview_with` is handed that same file's bytes —
+/// the "share the implementation" requirement in `Config::resolve_preview_with`'s own doc comment.
+/// Compared via `Debug` formatting: both calls are given the identical `path`, so a matching variant
+/// (which embeds `path.to_path_buf()` unchanged) must format identically.
+#[test]
+fn cfg_resolve_preview_with_matches_resolve_preview_across_bundled_samples() {
+    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("samples");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        eprintln!("SKIP: samples/ not found (excluded from the published crate)");
+        return;
+    };
+    let cfg = Config::default();
+    let mut checked = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue; // skip samples/code/ etc.
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let via_path = format!("{:?}", cfg.resolve_preview(&path));
+        let via_bytes = format!("{:?}", cfg.resolve_preview_with(&path, &bytes));
+        assert_eq!(
+            via_path, via_bytes,
+            "{path:?}: resolve_preview_with は resolve_preview と一致するはず"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked > 10,
+        "samples/ から十分な数のファイルを検査したはず: {checked}"
+    );
+}
+
+/// The core motivating case (`docs/FEATURE-MEDIA-DIFF.md` §2's own example): a **deleted** PNG has
+/// no path to sniff a MIME type from at all (`infer::get_from_path` fails outright on a nonexistent
+/// path), so the ordinary `resolve_preview` can never classify it — but `resolve_preview_with`,
+/// handed the same bytes from git/jj, still resolves to `Image`.
+#[test]
+fn cfg_resolve_preview_with_classifies_a_deleted_png_from_its_old_bytes() {
+    let Some(png_sample) = ["sample.png"].into_iter().find_map(|n| {
+        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("samples")
+            .join(n);
+        p.exists().then_some(p)
+    }) else {
+        eprintln!("SKIP: samples/sample.png not found");
+        return;
+    };
+    let bytes = std::fs::read(&png_sample).unwrap();
+    let deleted_path = std::path::Path::new("/nonexistent/dir/was-deleted.png");
+    assert!(!deleted_path.exists(), "前提: このパスは実在しないはず");
+    let cfg = Config::default();
+    // The ordinary path-based resolver can't see it at all: no glob rule matches ".png" by default
+    // through a `mime`-only rule, and the MIME sniff itself fails on a missing path — so it falls
+    // through to the binary/text fallback, which also can't open the file: CanNotPreview.
+    assert!(
+        matches!(
+            cfg.resolve_preview(deleted_path),
+            PreviewKind::CanNotPreview { .. }
+        ),
+        "対照: 実在しないパスでは resolve_preview は判定できないはず"
+    );
+    assert!(
+        matches!(
+            cfg.resolve_preview_with(deleted_path, &bytes),
+            PreviewKind::Image(_)
+        ),
+        "resolve_preview_with は旧バイト列から Image と判定できるはず"
+    );
+}
+
+/// SVG/PDF are matched by **glob** (the file name), not MIME — so they classify correctly for a
+/// deleted file even with an *empty* sniff (no bytes at all), unlike the PNG case above.
+#[test]
+fn cfg_resolve_preview_with_svg_and_pdf_match_by_glob_even_with_empty_sniff() {
+    let cfg = Config::default();
+    let svg = std::path::Path::new("/nonexistent/figure.svg");
+    let pdf = std::path::Path::new("/nonexistent/doc.pdf");
+    assert!(matches!(
+        cfg.resolve_preview_with(svg, &[]),
+        PreviewKind::Svg(_)
+    ));
+    assert!(matches!(
+        cfg.resolve_preview_with(pdf, &[]),
+        PreviewKind::Pdf(_)
+    ));
+}
+
+/// A user rule placed ahead of the builtin defaults still wins for `resolve_preview_with`, exactly
+/// as it does for `resolve_preview` — both go through the identical rule list in the identical
+/// order (`resolve_preview_kind`'s one implementation), so a config-driven override isn't specific
+/// to the path-based entry point.
+#[test]
+fn cfg_resolve_preview_with_a_user_rule_overrides_the_builtin_default() {
+    let mut cfg = Config::default();
+    cfg.preview.rules.insert(
+        0,
+        Rule {
+            glob: Some("*.png".into()),
+            builtin: Some("text".into()),
+            ..Default::default()
+        },
+    );
+    let deleted_path = std::path::Path::new("/nonexistent/was-deleted.png");
+    // Any bytes at all — the user's glob rule matches by filename before the mime rule/fallback is
+    // ever consulted, so the sniff content doesn't matter here.
+    assert!(matches!(
+        cfg.resolve_preview_with(deleted_path, b"\x89PNG\r\n\x1a\n"),
+        PreviewKind::Text(_)
+    ));
 }
 
 #[test]

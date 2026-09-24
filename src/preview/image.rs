@@ -28,6 +28,18 @@ pub fn decode_static(path: &Path) -> Option<DynamicImage> {
         .ok()
 }
 
+/// `decode_static`, from bytes already in memory rather than a path — used by the media-diff worker
+/// (`app/media_diff.rs`, `docs/FEATURE-MEDIA-DIFF.md` §3) to decode a side whose bytes came from git/jj
+/// (the old version) rather than the filesystem. Format is guessed from the content, exactly like the
+/// path version's `with_guessed_format` (never from an extension — there may be none to go by).
+// Not yet called from production code — see `app::media_diff`'s module doc comment for why (a later
+// phase of the same feature wires the consumer in). Exercised directly by this module's and
+// `app::media_diff`'s own tests in the meantime.
+#[allow(dead_code)]
+pub fn decode_static_bytes(bytes: &[u8]) -> Option<DynamicImage> {
+    image::load_from_memory(bytes).ok()
+}
+
 /// Read only the pixel dimensions of an image, sniffing the format from the file's content (not its
 /// extension). Used for inline Markdown images — including fetched remote images cached without an
 /// extension — to reserve layout rows without decoding the whole file. None if it is not an image.
@@ -83,7 +95,26 @@ pub fn decode_gif_inline(path: &Path) -> Option<Vec<(DynamicImage, Duration)>> {
 /// frame ends up with identical dimensions (as the animation cycler expects).
 fn decode_gif_with_budget(path: &Path, budget: usize) -> Option<Vec<(DynamicImage, Duration)>> {
     let file = std::fs::File::open(path).ok()?;
-    let decoder = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(file)).ok()?;
+    decode_gif_from_reader(std::io::BufReader::new(file), budget)
+}
+
+/// `decode_gif_inline`, from bytes already in memory — used by the media-diff worker
+/// (`app/media_diff.rs`) to animate an old (git/jj) version of a GIF exactly like an inline Markdown
+/// one, without a path to read from. Same semantics as `decode_gif_inline`: None for a non-GIF /
+/// undecodable / single-frame GIF.
+// Not yet called from production code — see `decode_static_bytes`'s own comment above for why.
+#[allow(dead_code)]
+pub fn decode_gif_bytes_inline(bytes: &[u8]) -> Option<Vec<(DynamicImage, Duration)>> {
+    decode_gif_from_reader(std::io::Cursor::new(bytes), MAX_GIF_BYTES_INLINE)
+}
+
+/// The shared body of `decode_gif_with_budget`/`decode_gif_bytes_inline`, generic over the reader so
+/// neither has to duplicate the frame/shrink loop.
+fn decode_gif_from_reader<R: std::io::Read + std::io::BufRead + std::io::Seek>(
+    reader: R,
+    budget: usize,
+) -> Option<Vec<(DynamicImage, Duration)>> {
+    let decoder = image::codecs::gif::GifDecoder::new(reader).ok()?;
     let mut out: Vec<(DynamicImage, Duration)> = Vec::new();
     let mut canvas: Option<(u32, u32)> = None; // original canvas dimensions (baseline for the shrink factor)
     let mut shrink = 1u32;
@@ -252,6 +283,89 @@ mod tests {
         assert!(decode_static(&bad).is_none(), "非画像は None");
         // A missing file also returns None.
         assert!(decode_static(&dir.join("missing.png")).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn decode_static_bytes_matches_the_path_version() {
+        let dir = unique_tmp("konoma_decode_static_bytes_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("tiny.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(7, 3, image::Rgb([9, 9, 9])))
+            .save(&png)
+            .unwrap();
+        let bytes = std::fs::read(&png).unwrap();
+        let from_path = decode_static(&png).unwrap();
+        let from_bytes = decode_static_bytes(&bytes).unwrap();
+        assert_eq!(
+            (from_path.width(), from_path.height()),
+            (from_bytes.width(), from_bytes.height())
+        );
+        assert_eq!(
+            from_path.to_rgba8().into_raw(),
+            from_bytes.to_rgba8().into_raw()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn decode_static_bytes_rejects_garbage() {
+        assert!(decode_static_bytes(b"definitely not an image").is_none());
+        assert!(decode_static_bytes(b"").is_none());
+    }
+
+    #[test]
+    fn decode_static_bytes_uses_the_bundled_samples() {
+        for name in ["sample.png", "sample.jpg"] {
+            let Some(p) = sample_path_or_skip(name) else {
+                continue;
+            };
+            let bytes = std::fs::read(&p).unwrap();
+            let from_path = decode_static(&p).expect("path 版はデコードできる");
+            let from_bytes = decode_static_bytes(&bytes).expect("bytes 版もデコードできる");
+            assert_eq!(
+                (from_path.width(), from_path.height()),
+                (from_bytes.width(), from_bytes.height()),
+                "{name}: サイズが path 版と一致するはず"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_gif_bytes_inline_matches_the_path_version() {
+        let Some(p) = sample_path_or_skip("sample.gif") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        let from_path = decode_gif_inline(&p).expect("path 版はアニメとしてデコードできる");
+        let from_bytes =
+            decode_gif_bytes_inline(&bytes).expect("bytes 版もアニメとしてデコードできる");
+        assert_eq!(
+            from_path.len(),
+            from_bytes.len(),
+            "フレーム数が一致するはず"
+        );
+        for ((pi, pd), (bi, bd)) in from_path.iter().zip(from_bytes.iter()) {
+            assert_eq!((pi.width(), pi.height()), (bi.width(), bi.height()));
+            assert_eq!(pd, bd, "各フレームの表示時間も一致するはず");
+        }
+    }
+
+    #[test]
+    fn decode_gif_bytes_inline_rejects_garbage_and_non_gif() {
+        assert!(decode_gif_bytes_inline(b"not a gif at all").is_none());
+        // A real PNG (not a GIF, and not animated) also returns None — falls back to the still-image
+        // decode at the call site, exactly like the path version's own contract.
+        let dir = unique_tmp("konoma_decode_gif_bytes_inline_png_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("tiny.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3])))
+            .save(&png)
+            .unwrap();
+        let bytes = std::fs::read(&png).unwrap();
+        assert!(decode_gif_bytes_inline(&bytes).is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

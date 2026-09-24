@@ -32,6 +32,7 @@ mod md_media;
 mod md_render;
 mod md_tasks;
 mod md_text;
+mod media_diff;
 mod media_load;
 mod outline;
 mod paste_jump;
@@ -1042,6 +1043,182 @@ pub struct MdDiffResult {
     outcome: MdDiffOutcome,
 }
 
+// ---- Media diff (image/PDF/SVG side-by-side, `docs/FEATURE-MEDIA-DIFF.md`) ------------------
+
+/// Which base a media diff's "old" side was actually compared against
+/// (`docs/FEATURE-MEDIA-DIFF.md` §1's "基準の名前" table) — reported alongside the computed outcome
+/// so a caption can name the real baseline even when a follow session degraded to it (a follow
+/// baseline with no usable snapshot for this file falls back to the committed baseline; see
+/// `App::media_diff_baseline`'s own doc comment).
+///
+/// Not yet read from production code — phase A (`docs/FEATURE-MEDIA-DIFF.md`) implements the
+/// worker/cache plumbing only; phase B wires `App::poll_media_diff` into `render_gitdiff`'s caption,
+/// which is what actually reads this. Exercised directly by `app/media_diff.rs`'s own tests in the
+/// meantime. Same story for every other `#[allow(dead_code)]` in this section.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MediaBase {
+    Head,
+    JjParent,
+    FollowStart,
+}
+
+/// The three picture-capable kinds a media diff can pair up side by side
+/// (`docs/FEATURE-MEDIA-DIFF.md` §1's table) — everything else (video/archive/table/unsupported)
+/// degrades to [`MediaDiffOutcome::Summary`]/[`MediaDiffComputed::Summary`] instead.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MediaDiffKind {
+    Image,
+    Svg,
+    Pdf,
+}
+
+/// One side's fully-decoded picture, still carrying its pixel data — only ever lives inside
+/// [`MediaDiffComputed`] on its way from the worker thread to `App::apply_media_diff`, which moves
+/// the pixels into `md_image_cache` (under a `media_diff_url` key) and keeps only a lightweight
+/// [`MediaDiffPicture`] in `App::media_diff_landed` — the same split `MdImageResult`/`MdImgEntry`
+/// already have for mermaid/math renders.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct MediaDiffPictureDecoded {
+    natural_px: (u32, u32),
+    bytes: u64,
+    page_count: Option<u32>,
+    image: image::DynamicImage,
+    frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
+    svg: Option<Arc<Vec<u8>>>,
+    cache_key: PathBuf,
+}
+
+/// One side's outcome, still carrying pixel data where present (`MediaDiffComputed`'s own per-side
+/// shape). Boxes its `Picture` payload so `MediaDiffComputed::Ready`'s two sides don't double the
+/// cost of `MediaDiffPictureDecoded`'s own size (`clippy::large_enum_variant`) — a plain pointer
+/// indirection, not a behavior change.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum MediaDiffSideDecoded {
+    /// The file doesn't exist on this side (new/untracked, or deleted).
+    Absent,
+    /// Bytes were read but could not be decoded as this diff's `kind` (corrupt image, encrypted/
+    /// unparsable PDF, invalid SVG).
+    Failed {
+        reason: String,
+    },
+    /// A PDF page beyond this side's own page count.
+    PageMissing,
+    Picture(Box<MediaDiffPictureDecoded>),
+}
+
+/// The lightweight, stored form of one side's picture — everything a caption/layout needs, with no
+/// pixel data (that already lives in `md_image_cache` under `cache_key`).
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub(crate) struct MediaDiffPicture {
+    pub(crate) natural_px: (u32, u32),
+    pub(crate) bytes: u64,
+    pub(crate) page_count: Option<u32>,
+    pub(crate) cache_key: PathBuf,
+}
+
+/// The stored (landed) form of one side's outcome — the `MediaDiffSideDecoded` counterpart with no
+/// pixel data.
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub(crate) enum MediaDiffSide {
+    Absent,
+    Failed { reason: String },
+    PageMissing,
+    Picture(MediaDiffPicture),
+}
+
+/// The pure computation's raw result (`App::compute_media_diff`) — still carrying pixel data where a
+/// side decoded into a picture. Travels from the worker thread to the run loop inside
+/// [`MediaDiffResult`]; `App::apply_media_diff` turns it into a stored [`MediaDiffOutcome`].
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum MediaDiffComputed {
+    /// Both sides were resolved against a picture-capable `kind` (their own decode may still have
+    /// individually failed/been absent — see [`MediaDiffSideDecoded`]).
+    Ready {
+        kind: MediaDiffKind,
+        base: MediaBase,
+        same_bytes: bool,
+        old: MediaDiffSideDecoded,
+        new: MediaDiffSideDecoded,
+    },
+    /// Not a picture-capable kind, or a side is over the byte cap: sizes only, no decode
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §5).
+    Summary {
+        base: MediaBase,
+        same_bytes: bool,
+        old_len: Option<u64>,
+        new_len: Option<u64>,
+    },
+    /// The worker panicked, or the request could not be resolved at all (`compute_or_fallback`'s
+    /// fallback value).
+    Unavailable,
+}
+
+/// The stored (landed) form of [`MediaDiffComputed`] — the `Ready`/`Summary`/`Unavailable` shapes are
+/// identical, only the per-side payload loses its pixel data (see [`MediaDiffSide`]).
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub(crate) enum MediaDiffOutcome {
+    Ready {
+        kind: MediaDiffKind,
+        base: MediaBase,
+        same_bytes: bool,
+        old: MediaDiffSide,
+        new: MediaDiffSide,
+    },
+    Summary {
+        base: MediaBase,
+        same_bytes: bool,
+        old_len: Option<u64>,
+        new_len: Option<u64>,
+    },
+    Unavailable,
+}
+
+/// A media-diff computation request handed to the worker thread (or run synchronously —
+/// `App::spawn_or_sync_media_diff`). Carries everything `App::compute_media_diff` needs as plain
+/// data, resolved on the UI thread ahead of time (mirrors [`MdDiffRequest`]'s own doc comment on why
+/// `preview_rules`/`preview_commands` ride along here instead of `&Config`: the worker thread has no
+/// access to `App`/`Config` at all).
+#[allow(dead_code)]
+pub(crate) struct MediaDiffRequest {
+    gen: u64,
+    path: PathBuf,
+    root: PathBuf,
+    baseline: DiffBaseline,
+    /// 1-based PDF page (ignored for every other kind).
+    page: u32,
+    /// Target pixel box an SVG/PDF side is rasterized to fit (the pane's own image area in px —
+    /// `preview::media_diff::layout`'s output converted to px by the caller). Ignored for a raw
+    /// raster image, whose decode doesn't depend on the display box at all.
+    raster_px: (u32, u32),
+    preview_rules: Vec<crate::config::Rule>,
+    preview_commands: bool,
+}
+
+/// Result of a media-diff computation, returned via `App::media_diff_tx`. Staleness is judged by
+/// `gen` exactly like [`MdDiffResult`].
+pub struct MediaDiffResult {
+    gen: u64,
+    path: PathBuf,
+    /// The 1-based PDF page this result answers for (mirrors `MediaDiffRequest::page`).
+    page: u32,
+    /// The raster target this result was decoded at (mirrors `MediaDiffRequest::raster_px`).
+    raster_px: (u32, u32),
+    computed: MediaDiffComputed,
+}
+
+/// `App::media_diff_landed`'s key: `(path, page, raster_px, gen)` it answers for, plus the outcome
+/// itself. A named alias only to keep the field declaration under `clippy::type_complexity`'s
+/// threshold — see `App::media_diff_landed`'s own doc comment for what each element means.
+type MediaDiffLandedKey = (PathBuf, u32, (u32, u32), u64, MediaDiffOutcome);
+
 /// Which long-running filesystem operation a background job is performing.
 /// The variants differ in the completion message and in whether a failing target aborts the
 /// rest: paste/duplicate continue past a failing target (existing behaviour), while a
@@ -1556,6 +1733,21 @@ pub struct App {
     /// caller (`App::ensure_md_cache`) degrades (no gutter / a "computing…" placeholder) rather
     /// than blocking.
     md_diff_landed: Option<(PathBuf, MdDiffKind, u64, MdDiffOutcome)>,
+    /// `(path, page, raster_px)` a media diff (`docs/FEATURE-MEDIA-DIFF.md`) is being computed for
+    /// on a separate thread. Mirrors `md_diff_pending`'s own shape/doc comment, keyed on the fuller
+    /// request identity since a page turn or a resize (which changes `raster_px`) is itself a new
+    /// request for the same `path`.
+    media_diff_pending: Option<(PathBuf, u32, (u32, u32))>,
+    /// Generation of the media-diff computation. Mirrors `md_diff_gen`'s own doc comment
+    /// (`App::invalidate_media_diff`, called from `App::invalidate_diff_caches`, bumps this).
+    media_diff_gen: u64,
+    /// Sender returning `MediaDiffResult`s from the worker computing media diffs in the background.
+    /// Mirrors `md_diff_tx`'s own doc comment (no Sender attached = tests fall back to synchronous
+    /// computation).
+    media_diff_tx: Option<std::sync::mpsc::Sender<MediaDiffResult>>,
+    /// The last landed media diff, tagged with the `(path, page, raster_px, gen)` it answers. Mirrors
+    /// `md_diff_landed`'s own doc comment.
+    media_diff_landed: Option<MediaDiffLandedKey>,
     /// The **repo workdir** at which `git_ignored` (heavy) was computed. If it is the same, root moves within the same repository
     /// do not rebuild it (avoids the 410ms recomputation when descending into a subdirectory with `l`).
     git_ignored_for: Option<PathBuf>,
@@ -2913,6 +3105,10 @@ impl App {
             md_diff_gen: 0,
             md_diff_tx: None,
             md_diff_landed: None,
+            media_diff_pending: None,
+            media_diff_gen: 0,
+            media_diff_tx: None,
+            media_diff_landed: None,
             git_ignored_for: None,
             git_ignored_pending: None,
             git_ignored_gen: 0,

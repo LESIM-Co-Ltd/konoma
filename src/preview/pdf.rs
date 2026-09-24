@@ -101,11 +101,56 @@ fn render_page_native(path: &Path, page: u32) -> Option<DynamicImage> {
     crate::preview::markdown::catch_silent(|| render_page_native_inner(path, page)).flatten()
 }
 
+/// Rasterize page `page` (1-based) of an **in-memory** PDF — `hayro` only, no external-tool fallback
+/// at all (see `render_page_native_inner_bytes`'s own doc comment for why). Used by the media-diff
+/// worker (`app/media_diff.rs`) for both sides of a PDF diff: the old side never has a path (it comes
+/// from git/jj), and the new side is read into memory anyway to check the size cap and compare bytes
+/// (`docs/FEATURE-MEDIA-DIFF.md` §3), so there is nothing to gain from a second, path-based render for
+/// consistency between the two sides. Same panic net as `render_page_native`.
+// Not yet called from production code — see `app::media_diff`'s module doc comment for why (a later
+// phase of the same feature wires the consumer in). Exercised directly by `preview::pdf`'s and
+// `app::media_diff`'s own tests in the meantime.
+#[allow(dead_code)]
+pub fn render_page_bytes(bytes: &[u8], page: u32) -> Option<DynamicImage> {
+    crate::preview::markdown::catch_silent(|| render_page_native_inner_bytes(bytes, page)).flatten()
+}
+
+/// Page dimensions in PDF points (`page_ref.render_dimensions()` — the same domain
+/// `render_page_native_inner_bytes`'s own scale math already treats as "1 unit ≈ 1px"), 1-based
+/// `page`. Used to report a media-diff PDF side's *natural* size
+/// (`docs/FEATURE-MEDIA-DIFF.md` §1: "PDF はページの pt") without paying for a full render. `None`
+/// for an unreadable/corrupt PDF, a caught panic, or a page number out of range.
+// Not yet called from production code — see `render_page_bytes`'s own comment above for why.
+#[allow(dead_code)]
+pub fn page_dimensions_bytes(bytes: &[u8], page: u32) -> Option<(f32, f32)> {
+    crate::preview::markdown::catch_silent(|| page_dimensions_bytes_inner(bytes, page)).flatten()
+}
+
+#[allow(dead_code)] // only called from `page_dimensions_bytes` above, itself not yet live.
+fn page_dimensions_bytes_inner(bytes: &[u8], page: u32) -> Option<(f32, f32)> {
+    let pdf = hayro::hayro_syntax::Pdf::new(bytes.to_vec()).ok()?;
+    let pages: Vec<_> = pdf.pages().iter().collect();
+    let idx = usize::try_from(page).ok()?.checked_sub(1)?;
+    let page_ref = *pages.get(idx)?;
+    let (w, h) = page_ref.render_dimensions();
+    (w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0).then_some((w, h))
+}
+
 fn render_page_native_inner(path: &Path, page: u32) -> Option<DynamicImage> {
     let bytes = std::fs::read(path).ok()?;
+    render_page_native_inner_bytes(&bytes, page)
+}
+
+/// The bytes-based core `render_page_native_inner` delegates to (path just reads the file first).
+/// Also called directly by the media-diff worker (`app/media_diff.rs`,
+/// `docs/FEATURE-MEDIA-DIFF.md` §3) for a side whose bytes came from git/jj rather than a path on
+/// disk — there is deliberately no macOS `qlmanage`/`sips` fallback here (that chain needs a real
+/// file path, and a media diff's old side often has none), so an old-side PDF that `hayro` can't
+/// render simply reports as failed rather than ever spawning Quick Look.
+fn render_page_native_inner_bytes(bytes: &[u8], page: u32) -> Option<DynamicImage> {
     // Err = encrypted (no password supplied — konoma never prompts for one) or malformed. Either way
     // this just becomes `None` here; render_page falls back to the external tool chain.
-    let pdf = hayro::hayro_syntax::Pdf::new(bytes).ok()?;
+    let pdf = hayro::hayro_syntax::Pdf::new(bytes.to_vec()).ok()?;
     let pages: Vec<_> = pdf.pages().iter().collect();
     let idx = usize::try_from(page).ok()?.checked_sub(1)?;
     let page_ref = *pages.get(idx)?;
@@ -533,7 +578,11 @@ pub fn page_count(path: &Path) -> Option<u32> {
 /// case for this synchronous call bounded. The caller already has a graceful degrade for "page
 /// count unknown" (documented on `page_count` below: unknown total ⟹ single-page treatment,
 /// navigation disabled) — that's exactly the intended behavior here too, matching principle #3.
-const PAGE_COUNT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// `pub(crate)` (not private) so the media-diff worker (`app/media_diff.rs`,
+/// `docs/FEATURE-MEDIA-DIFF.md` §3's "1 側 64 MiB 超") can reuse this exact cap for its own
+/// per-side byte limit, rather than a second `64 * 1024 * 1024` literal that could drift out of sync
+/// with this one.
+pub(crate) const PAGE_COUNT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// `page_count`'s real body, parameterized on the size cap purely for testability — production
 /// (`page_count` above) always passes `PAGE_COUNT_MAX_BYTES`; tests pass an artificially small cap
@@ -549,8 +598,26 @@ fn page_count_impl(path: &Path, max_bytes: u64) -> Option<u32> {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
+    page_count_bytes_impl(&bytes)
+}
+
+/// `page_count`, from bytes already in memory rather than a path — used by the media-diff worker
+/// (`app/media_diff.rs`) for a side with no path (the old version, read from git/jj) as well as the
+/// new side (already read into memory for the size-cap/`same_bytes` check anyway). Same
+/// `PAGE_COUNT_MAX_BYTES` cap as the path version, checked against the byte slice's own length
+/// rather than a `stat` (there is no file to stat).
+// Not yet called from production code — see `render_page_bytes`'s own comment for why.
+#[allow(dead_code)]
+pub fn page_count_bytes(bytes: &[u8]) -> Option<u32> {
+    if bytes.len() as u64 > PAGE_COUNT_MAX_BYTES {
+        return None;
+    }
+    page_count_bytes_impl(bytes)
+}
+
+fn page_count_bytes_impl(bytes: &[u8]) -> Option<u32> {
     crate::preview::markdown::catch_silent(|| {
-        let pdf = hayro_syntax::Pdf::new(bytes).ok()?;
+        let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).ok()?;
         let n = u32::try_from(pdf.pages().len()).ok()?;
         (n >= 1).then_some(n)
     })
@@ -1034,5 +1101,116 @@ mod tests {
             elapsed < std::time::Duration::from_secs(10),
             "タイムアウトが機能せずブロックし続けた: elapsed={elapsed:?}"
         );
+    }
+
+    // ---- bytes-based variants (`docs/FEATURE-MEDIA-DIFF.md` §3) ----
+
+    #[test]
+    fn render_page_bytes_matches_the_path_version() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        let from_path = render_page_native_inner(&p, 1).expect("path 版は hayro でレンダできる");
+        let from_bytes = render_page_bytes(&bytes, 1).expect("bytes 版もレンダできる");
+        assert_eq!(
+            (from_path.width(), from_path.height()),
+            (from_bytes.width(), from_bytes.height())
+        );
+        assert_eq!(
+            from_path.to_rgba8().into_raw(),
+            from_bytes.to_rgba8().into_raw(),
+            "ピクセルも一致するはず"
+        );
+    }
+
+    #[test]
+    fn render_page_bytes_out_of_range_page_is_none() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        assert!(
+            render_page_bytes(&bytes, 999).is_none(),
+            "3ページの文書で999ページ目は None のはず"
+        );
+    }
+
+    #[test]
+    fn render_page_bytes_rejects_garbage() {
+        assert!(render_page_bytes(b"not a pdf at all", 1).is_none());
+        assert!(render_page_bytes(b"", 1).is_none());
+    }
+
+    #[test]
+    fn page_count_bytes_matches_the_path_version() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        assert_eq!(page_count(&p), page_count_bytes(&bytes));
+        assert_eq!(page_count_bytes(&bytes), Some(3));
+    }
+
+    #[test]
+    fn page_count_bytes_handles_bad_input_without_panicking() {
+        assert_eq!(page_count_bytes(b""), None, "空バイト列は None");
+        assert_eq!(
+            page_count_bytes(b"hello, this is not a PDF file at all\n"),
+            None,
+            "PDF でない中身は None"
+        );
+    }
+
+    /// Mirrors `page_count_treats_oversized_files_as_unknown_rather_than_reading_them` for the bytes
+    /// entry point: over the cap ⇒ `None`, without ever attempting to parse it.
+    #[test]
+    fn page_count_bytes_treats_oversized_input_as_unknown() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        assert_eq!(
+            page_count_bytes(&bytes),
+            Some(3),
+            "前提: 実サイズでは読めるはず"
+        );
+        // A byte slice reported longer than PAGE_COUNT_MAX_BYTES by construction: pad well past it.
+        let mut padded = bytes.clone();
+        padded.resize((PAGE_COUNT_MAX_BYTES as usize) + 1, 0);
+        assert_eq!(
+            page_count_bytes(&padded),
+            None,
+            "上限を超えたバイト列は中身に関わらず None のはず"
+        );
+    }
+
+    #[test]
+    fn page_dimensions_bytes_reports_a_positive_size_matching_the_render_aspect() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        let (pw, ph) = page_dimensions_bytes(&bytes, 1).expect("1ページ目の寸法が取れるはず");
+        assert!(pw > 0.0 && ph > 0.0, "寸法は正のはず: {pw}x{ph}");
+        let img = render_page_bytes(&bytes, 1).expect("レンダできる");
+        // `render_page_bytes` scales page pt -> px preserving aspect (PAGE_MAX_PX / max(w,h)); the
+        // rendered raster's own aspect ratio should therefore match the page's pt dimensions'.
+        let pt_aspect = pw as f64 / ph as f64;
+        let px_aspect = img.width() as f64 / img.height() as f64;
+        assert!(
+            (pt_aspect - px_aspect).abs() < 0.01,
+            "pt の縦横比とラスタの縦横比が一致するはず: pt={pt_aspect} px={px_aspect}"
+        );
+    }
+
+    #[test]
+    fn page_dimensions_bytes_out_of_range_and_garbage_are_none() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        assert!(page_dimensions_bytes(&bytes, 999).is_none());
+        assert!(page_dimensions_bytes(b"not a pdf", 1).is_none());
     }
 }
