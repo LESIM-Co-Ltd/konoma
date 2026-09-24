@@ -209,12 +209,20 @@ impl App {
         }
         // By default (`ui.follow_view="diff"`) this opens as a **full-screen diff** so what changed is
         // visible hunk-by-hunk (the same presentation as hunk/livediff/diffpane). Untracked files (all
-        // lines new) that can't produce a diff, files outside the repository, and binary media fall
-        // back to the file preview (+ scroll to the first changed hunk).
-        if self.cfg.ui.follow_view != "file" && !self.follow_is_media(path) {
+        // lines new) that can't produce a diff and files outside the repository fall back to the file
+        // preview (+ scroll to the first changed hunk) — and so does video, which has no side-by-side
+        // view of its own (`follow_previews_instead_of_diff`). Image/SVG/PDF do **not** fall back even
+        // though git's raw line diff for them is always empty (binary) — their `Rendered` presentation
+        // is the side-by-side view (`App::diff_media_active`), whose own worker resolves added/
+        // deleted/identical, so `media_side_by_side` below bypasses the empty-diff check for them.
+        let media_side_by_side = matches!(
+            self.cfg.resolve_preview(path),
+            PreviewKind::Image(_) | PreviewKind::Svg(_) | PreviewKind::Pdf(_)
+        );
+        if self.cfg.ui.follow_view != "file" && !self.follow_previews_instead_of_diff(path) {
             // Follow-originated → baseline diff since start (or the conventional full diff if follow_diff_full).
             let diff = self.compute_gitdiff_lines(path, true);
-            if !diff.is_empty() {
+            if !diff.is_empty() || media_side_by_side {
                 // `follow_scope: true` and the seeded cache are both already final before
                 // `open_git_diff_with` ever validates the presentation, so a Markdown target's
                 // `Rendered` readability/mark check reads the right baseline (the follow-session
@@ -298,16 +306,16 @@ impl App {
         true
     }
 
-    /// Whether `path` previews as media (image/SVG/video/PDF) — its git diff would be a useless
-    /// "binary files differ" line, so follow shows the content preview instead.
-    pub(super) fn follow_is_media(&self, path: &Path) -> bool {
-        matches!(
-            self.cfg.resolve_preview(path),
-            PreviewKind::Image(_)
-                | PreviewKind::Svg(_)
-                | PreviewKind::Video(_)
-                | PreviewKind::Pdf(_)
-        )
+    /// Whether follow should show `path`'s ordinary content preview instead of the diff — now true
+    /// only for video. Its git diff would be a useless "binary files differ" line, and unlike image/
+    /// SVG/PDF it has no side-by-side `Rendered` presentation of its own (`App::diff_media_active`)
+    /// for the diff view to fall back on, so the diff is skipped entirely rather than opened and
+    /// immediately rounded down. Image/SVG/PDF used to be included here too (their raw line diff is
+    /// also always empty), until the side-by-side media diff gave them a `Rendered` presentation
+    /// worth opening — see `follow_jump`'s `media_side_by_side` for how the empty-diff check is
+    /// bypassed for them instead.
+    pub(super) fn follow_previews_instead_of_diff(&self, path: &Path) -> bool {
+        matches!(self.cfg.resolve_preview(path), PreviewKind::Video(_))
     }
 
     /// After a follow jump, scroll the (windowed) preview to the **first changed hunk** instead of the

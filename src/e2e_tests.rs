@@ -16805,3 +16805,311 @@ fn e2e_media_diff_gif_scale_uses_header_dims_not_budget_downscaled_frame() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// =============================================================================
+// Media diff × follow (phase C, `docs/FEATURE-MEDIA-DIFF.md` §9-2): a changed image/SVG/PDF now
+// goes to the side-by-side diff like any other changed file; video still opens the ordinary
+// preview (`App::follow_previews_instead_of_diff`, formerly `follow_is_media`).
+// =============================================================================
+
+/// A PNG that was already dirty (but well under `FOLLOW_BASELINE_FILE_CAP`) when `F` was pressed:
+/// follow jumps into the side-by-side diff (not the ordinary preview), and the old side's caption
+/// base is "follow start" — the follow-session snapshot, not HEAD.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_jump_into_changed_png_opens_side_by_side_diff_with_follow_start_base() {
+    let dir = sandbox("follow_media_png_side_by_side");
+    media_diff_git_init(&dir);
+    media_diff_write_png(&dir.join("logo.png"), 10, 10, [1, 1, 1]);
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    // Dirty *before* F — goes into the follow-session's own snapshot (`FollowSnapshot`), well
+    // under the cap, so the session actually has bytes to offer.
+    media_diff_write_png(&dir.join("logo.png"), 10, 10, [2, 2, 2]);
+
+    let mut s = Sim::new(&canon(&dir));
+    // Follow's own path checks (`follow_target_ok`) require the same (canonicalized) root the
+    // `Sim` was built with — build the file path from it, not from the pre-canonicalize `dir`.
+    let png = s.app.tab.root.join("logo.png");
+    s.key('F');
+    assert!(s.app.follow_enabled());
+
+    // The edit `follow_jump` reacts to (after F).
+    media_diff_write_png(&png, 10, 10, [3, 3, 3]);
+    assert!(
+        s.app.follow_note_change(&png),
+        "変更ファイルは有効な追尾対象"
+    );
+    s.app.follow_jump(&png);
+    s.draw();
+
+    assert!(
+        s.app.is_git_diff_preview(),
+        "画像は動画と違い diff(並べて表示)へ入るはず"
+    );
+    assert!(
+        s.app.diff_media_active(),
+        "Rendered は並べて表示(media diff)のはず"
+    );
+    let outcome = s
+        .app
+        .poll_media_diff(&png, 1, (400, 300))
+        .expect("同期フォールバック、または着地済みのはず");
+    match outcome {
+        crate::app::MediaDiffOutcome::Ready { base, .. } => {
+            assert_eq!(
+                base,
+                crate::app::MediaBase::FollowStart,
+                "follow セッションのスナップショットがあるので follow-start 基準のはず"
+            );
+        }
+        other => panic!("Ready のはず: {other:?}"),
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The over-cap counterpart: a PNG already dirty at follow-start but larger than
+/// `FOLLOW_BASELINE_FILE_CAP` (5 MiB) is not snapshotted (`capture_follow_baseline`'s size
+/// pre-check — `follow.rs::follow_baseline_contents_is_none_for_a_dirty_file_over_the_snapshot_cap`
+/// pins the same rule for text), so the media diff's old side falls back to the committed baseline
+/// and the caption honestly reports `HEAD`, not a follow-start snapshot that never existed.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_jump_into_changed_png_over_snapshot_cap_reports_head_base() {
+    let dir = sandbox("follow_media_png_over_cap");
+    media_diff_git_init(&dir);
+    media_diff_write_png(&dir.join("logo.png"), 4, 4, [1, 1, 1]);
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    // Dirty before F, and over FOLLOW_BASELINE_FILE_CAP (5 MiB) — `capture_follow_baseline` records
+    // `None` for it. Trailing zero padding after a real (small) PNG's own IEND chunk, not opaque
+    // garbage from byte 0 — `resolve_preview` classifies this kind by MIME-sniffing the file's own
+    // header (`mime: "image/*"` — see `config/mod.rs`'s default rules), so the signature has to
+    // actually be there for the diff to still resolve as `PreviewKind::Image` at this size; the
+    // *decode* is separately allowed to fail (or not) past that, which is not what this test checks.
+    let mut big = std::fs::read(dir.join("logo.png")).unwrap();
+    big.resize(5 * 1024 * 1024 + 1, 0u8);
+    std::fs::write(dir.join("logo.png"), &big).unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    let png = s.app.tab.root.join("logo.png");
+    s.key('F');
+    assert!(s.app.follow_enabled());
+
+    // Edit it again after F — this is what `follow_jump` reacts to; the snapshot decision was
+    // already made (and already missed the cap) at follow-start regardless of this second edit.
+    // Flip a byte in the zero padding, well past the PNG signature/header, so the file is still
+    // MIME-sniffable as `image/*`.
+    let mut big2 = big.clone();
+    *big2.last_mut().unwrap() = 9;
+    std::fs::write(&png, &big2).unwrap();
+    assert!(s.app.follow_note_change(&png));
+    s.app.follow_jump(&png);
+    s.draw();
+
+    assert!(s.app.is_git_diff_preview());
+    assert!(s.app.diff_media_active());
+    let outcome = s
+        .app
+        .poll_media_diff(&png, 1, (400, 300))
+        .expect("同期フォールバック、または着地済みのはず");
+    match outcome {
+        crate::app::MediaDiffOutcome::Ready { base, .. } => {
+            assert_eq!(
+                base,
+                crate::app::MediaBase::Head,
+                "5 MiB 超はスナップショット無し → HEAD へフォールバックするはず"
+            );
+        }
+        other => panic!("Ready のはず: {other:?}"),
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// An SVG behaves the same way a PNG does now (it used to be excluded from the diff entirely,
+/// alongside image/video/PDF) — follow jumps into its side-by-side `Rendered` presentation.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_jump_into_changed_svg_opens_side_by_side_diff() {
+    let dir = sandbox("follow_media_svg_side_by_side");
+    media_diff_git_init(&dir);
+    std::fs::write(
+        dir.join("icon.svg"),
+        media_diff_solid_svg_bytes(100, 100, (255, 0, 0)),
+    )
+    .unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+
+    let mut s = Sim::new(&canon(&dir));
+    let svg = s.app.tab.root.join("icon.svg");
+    s.key('F');
+    std::fs::write(&svg, media_diff_solid_svg_bytes(100, 100, (0, 0, 255))).unwrap();
+    assert!(s.app.follow_note_change(&svg));
+    s.app.follow_jump(&svg);
+    s.draw();
+
+    assert!(
+        s.app.is_git_diff_preview(),
+        "SVG も diff(並べて表示)へ入るはず"
+    );
+    assert!(
+        s.app.diff_media_active(),
+        "SVG の Rendered は並べて表示のはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A PDF, likewise.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_jump_into_changed_pdf_opens_side_by_side_diff() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let bytes = std::fs::read(&pdf).unwrap();
+    let dir = sandbox("follow_media_pdf_side_by_side");
+    media_diff_git_init(&dir);
+    std::fs::write(dir.join("doc.pdf"), &bytes).unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+
+    let mut s = Sim::new(&canon(&dir));
+    let doc = s.app.tab.root.join("doc.pdf");
+    s.key('F');
+    // Rewrite (uncommitted "change" — see `e2e_media_diff_pdf_paging_with_j_k`'s own comment on
+    // why identical bytes are enough to exercise the paging/opening behavior).
+    std::fs::write(&doc, &bytes).unwrap();
+    assert!(s.app.follow_note_change(&doc));
+    s.app.follow_jump(&doc);
+    s.draw();
+
+    assert!(
+        s.app.is_git_diff_preview(),
+        "PDF も diff(並べて表示)へ入るはず"
+    );
+    assert!(
+        s.app.diff_media_active(),
+        "PDF の Rendered は並べて表示のはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Video is the one kind that still falls back to the ordinary preview — it has no side-by-side
+/// `Rendered` presentation of its own (`App::follow_previews_instead_of_diff`).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_jump_into_changed_video_still_opens_ordinary_preview() {
+    let dir = sandbox("follow_media_video_ordinary_preview");
+    media_diff_git_init(&dir);
+    std::fs::write(
+        dir.join("clip.mp4"),
+        b"\x00\x00\x00\x18ftypmp42 old bytes here",
+    )
+    .unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+
+    let mut s = Sim::new(&canon(&dir));
+    let clip = s.app.tab.root.join("clip.mp4");
+    s.key('F');
+    std::fs::write(
+        &clip,
+        b"\x00\x00\x00\x18ftypmp42 completely different new bytes now",
+    )
+    .unwrap();
+    assert!(s.app.follow_note_change(&clip));
+    s.app.follow_jump(&clip);
+    s.draw();
+
+    assert!(
+        !s.app.is_git_diff_preview(),
+        "動画は今までどおり通常プレビューへ(diff は開かない)"
+    );
+    assert!(
+        matches!(
+            s.app.tab.preview_kind,
+            Some(crate::preview::PreviewKind::Video(_))
+        ),
+        "通常のビデオプレビューのはず: {:?}",
+        s.app.tab.preview_kind
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `n`/`N` inside a follow-originated diff now cycle through image/SVG/PDF too (they used to be
+/// pruned from `follow_session_paths`), while video is still excluded from the cycle (it never
+/// opens as a diff at all, so cycling into it would be meaningless).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_diff_cycle_includes_image_excludes_video() {
+    let dir = sandbox("follow_media_cycle_scope");
+    media_diff_git_init(&dir);
+    media_diff_write_png(&dir.join("logo.png"), 4, 4, [1, 1, 1]);
+    std::fs::write(
+        dir.join("clip.mp4"),
+        b"\x00\x00\x00\x18ftypmp42 old bytes here",
+    )
+    .unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+
+    let mut s = Sim::new(&canon(&dir));
+    let png = s.app.tab.root.join("logo.png");
+    let clip = s.app.tab.root.join("clip.mp4");
+    s.key('F');
+    media_diff_write_png(&png, 4, 4, [2, 2, 2]);
+    std::fs::write(
+        &clip,
+        b"\x00\x00\x00\x18ftypmp42 completely different new bytes now",
+    )
+    .unwrap();
+    // Record both — png first, then the video (which never becomes a valid follow-diff target).
+    assert!(s.app.follow_note_change(&png));
+    assert!(s.app.follow_note_change(&clip));
+    s.app.follow_jump(&png);
+    s.draw();
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(
+        s.app.diff_change_position(),
+        Some((1, 1)),
+        "セッションの diff 対象は画像1件のみ(動画は除外)のはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `[ui] follow_view = "file"` keeps meaning "always the ordinary preview" for every kind,
+/// including the newly-diff-routed image/SVG/PDF — unchanged by this phase.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_view_file_still_opens_ordinary_preview_for_image() {
+    let dir = sandbox("follow_media_view_file");
+    media_diff_git_init(&dir);
+    media_diff_write_png(&dir.join("logo.png"), 4, 4, [1, 1, 1]);
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+
+    let mut cfg = Config::default();
+    cfg.ui.follow_view = "file".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    let png = s.app.tab.root.join("logo.png");
+    s.key('F');
+    media_diff_write_png(&png, 4, 4, [2, 2, 2]);
+    assert!(s.app.follow_note_change(&png));
+    s.app.follow_jump(&png);
+    s.draw();
+
+    assert!(
+        !s.app.is_git_diff_preview(),
+        "follow_view=\"file\" は画像でも常に通常プレビューのはず"
+    );
+    assert!(
+        matches!(
+            s.app.tab.preview_kind,
+            Some(crate::preview::PreviewKind::Image(_))
+        ),
+        "通常の画像プレビューのはず: {:?}",
+        s.app.tab.preview_kind
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}

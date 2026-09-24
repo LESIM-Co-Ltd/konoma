@@ -536,6 +536,8 @@ builtin = "pdf"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
 #                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
 #                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "cycle_diff_view" "git_diff_discard"
+#                  "media_diff_page_next" "media_diff_page_prev" (J/K on an image/PDF/SVG diff: turn
+#                    a multi-page PDF's page on both sides together; no-op everywhere else)
 #                  "jj_sync" (R, in the hub: let jj snapshot the working copy — konoma's only
 #                    write to a jj repository, and only after a confirmation. Does nothing in a
 #                    git repository.)

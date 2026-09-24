@@ -37,17 +37,27 @@ Details that make it comfortable:
   follow-start** (default) and the **full git diff** for that file — the
   title shows which one you're looking at (`· since follow start` /
   `· full diff`).
-- Untracked (new) files show as an all-added diff. Files with no diff and
-  media files (images, PDFs, …) open as a normal preview instead, scrolled to
-  the first change.
+- Untracked (new) files show as an all-added diff. Files with no diff at all
+  (nothing under version control to compare against) open as a normal preview
+  instead, scrolled to the first change.
+- **An agent that edits an image, GIF, SVG, or PDF shows up the same way** —
+  konoma opens the side-by-side before/after view described in
+  [The git suite](../git/#media-diffs),
+  with the caption naming the follow-session snapshot as the base (or `HEAD`,
+  honestly, if that file was too large to snapshot). **Video is the one
+  exception**: it has no side-by-side view of its own, so it still opens as a
+  normal preview.
 - Rapid multi-file edits are rate-limited to about one view-switch per second
   (the latest change wins), so bursts don't thrash the screen.
 - While a diff is on screen, `n` / `N` cycle **through the files changed in
   this follow session** — the title shows your position like `(2/5)`. Files
-  that were already dirty before you pressed `F` don't clutter the loop.
+  that were already dirty before you pressed `F` don't clutter the loop, and
+  neither does a changed video (it never became a diff to cycle to in the
+  first place); a changed image/SVG/PDF is included like any other file.
 - `.git` internals, gitignored and hidden files are never followed.
 - `ui.follow_view = "file"` switches the default presentation from diff to a
-  normal preview with the git gutter, scrolled to the first changed hunk.
+  normal preview with the git gutter, scrolled to the first changed hunk —
+  for every kind, including image/SVG/PDF.
 - For a Markdown file, the diff itself has 3 presentations — `source`,
   `rendered` (decorated blocks, the default — see
   [The git suite](../git/#diffs)), and `preview` — cycled independently with
