@@ -444,6 +444,49 @@ mod tests {
         assert_eq!(g.orientation, MediaDiffOrientation::Side);
     }
 
+    /// A genuinely different tie mechanism from `auto_ties_to_side` above: that test's tie comes
+    /// from a symmetric split (a square inner + square cells + square images, so Side and Stack
+    /// produce literally the same numeric fit ratio). Here the pane shapes are deliberately
+    /// asymmetric (a wide, non-square `inner`) — the tie instead comes from `shared_scale`'s own
+    /// "never enlarge past natural size" clamp: a 1×1 natural size fits with room to spare in either
+    /// orientation, so **both** clamp to exactly `1.0` regardless of how differently shaped their
+    /// panes are. `Side` still wins the tie-break either way.
+    #[test]
+    fn auto_ties_to_side_when_both_orientations_clamp_to_natural_size() {
+        let inner = rect(0, 0, 200, 40); // wide, non-square inner — Side and Stack panes differ a lot.
+        let cell_px = (8, 16);
+        let g = layout(
+            Some((1, 1)),
+            Some((1, 1)),
+            cell_px,
+            inner,
+            MediaDiffLayout::Auto,
+        );
+        assert_eq!(
+            g.orientation,
+            MediaDiffOrientation::Side,
+            "同点は左右のはず"
+        );
+    }
+
+    /// `Auto` with exactly one side present (the old side absent — an untracked/new file, say) still
+    /// picks whichever orientation lets that one picture render larger, exactly as it would with
+    /// both sides present — `shared_scale` simply skips the missing side's own clamp
+    /// (`if let Some(nat) = old_px`), it doesn't fall back to some different rule.
+    #[test]
+    fn auto_picks_stack_when_only_the_new_side_is_present_and_wide() {
+        let inner = rect(0, 0, 80, 40);
+        let cell_px = (8, 16);
+        let g = layout(
+            None,
+            Some((2000, 200)),
+            cell_px,
+            inner,
+            MediaDiffLayout::Auto,
+        );
+        assert_eq!(g.orientation, MediaDiffOrientation::Stack);
+    }
+
     #[test]
     fn requested_side_and_stack_are_honored_regardless_of_fit() {
         // Even when a wide image would make Auto pick Stack, an explicit request is honored as-is.
@@ -789,6 +832,36 @@ mod tests {
         assert_eq!(old_pane.height + sep.height + new_pane.height, inner.height);
         assert_eq!(sep.y, old_pane.y + old_pane.height);
         assert_eq!(new_pane.y, sep.y + sep.height);
+    }
+
+    /// The separator's `avail >= 3` threshold, pinned right at its own boundary: `avail == 2` (too
+    /// narrow for a 1-cell separator between two non-empty panes) omits it, `avail == 3` (just
+    /// enough room) draws it — a mutation to `> 3` or `>= 2` would flip one side of this boundary.
+    #[test]
+    fn separator_threshold_boundary_side() {
+        let (old2, sep2, new2) = split(rect(0, 0, 2, 10), MediaDiffOrientation::Side);
+        assert_eq!(sep2.width, 0, "avail==2 では区切りを出さないはず");
+        assert_eq!(
+            old2.width + new2.width,
+            2,
+            "区切りが無い分、両ペインで全幅を分けるはず"
+        );
+
+        let (old3, sep3, new3) = split(rect(0, 0, 3, 10), MediaDiffOrientation::Side);
+        assert_eq!(sep3.width, 1, "avail==3 では区切りを出すはず");
+        assert_eq!(old3.width + sep3.width + new3.width, 3);
+    }
+
+    /// The `Stack` orientation's identical boundary, on the height axis.
+    #[test]
+    fn separator_threshold_boundary_stack() {
+        let (old2, sep2, new2) = split(rect(0, 0, 10, 2), MediaDiffOrientation::Stack);
+        assert_eq!(sep2.height, 0, "avail==2 では区切りを出さないはず");
+        assert_eq!(old2.height + new2.height, 2);
+
+        let (old3, sep3, new3) = split(rect(0, 0, 10, 3), MediaDiffOrientation::Stack);
+        assert_eq!(sep3.height, 1, "avail==3 では区切りを出すはず");
+        assert_eq!(old3.height + sep3.height + new3.height, 3);
     }
 
     /// Property-style sweep: for a range of `inner` sizes and images, every rect `layout` produces

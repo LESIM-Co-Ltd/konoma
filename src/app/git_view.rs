@@ -695,19 +695,24 @@ impl App {
         self.diff_layout.is_split(width)
     }
     /// Cycle the diff layout unified→split→Auto (`s`). Called from both the GitDiff preview and the
-    /// detail view. While the media diff's side-by-side view is active (`diff_media_active`),
-    /// delegates to `cycle_media_diff_layout` instead — `s` there cycles auto/side/stack, a wholly
-    /// different (and separately configured) layout state than this one (`App::media_diff_layout`'s
-    /// own doc comment). Otherwise a no-op while the `Rendered` presentation is on screen at all
+    /// detail view. While the media diff's side-by-side view is actually **showing pictures**
+    /// (`media_diff_showing_pictures` — not merely targeted; a still-computing or binary-summary
+    /// body has nothing to lay out, `docs/FEATURE-MEDIA-DIFF.md` §6's "並べて表示中"), delegates to
+    /// `cycle_media_diff_layout` instead — `s` there cycles auto/side/stack, a wholly different (and
+    /// separately configured) layout state than this one (`App::media_diff_layout`'s own doc
+    /// comment). Otherwise a no-op while the `Rendered` presentation is on screen at all
     /// (`diff_rendered_active`) — for Markdown that means decorated blocks, not the unified/split
-    /// raw-line layout this key cycles, so there is nothing here for it to change. The footer
-    /// already hides the `s:...` hint in exactly that case ([[hint-shown-iff-key-acts]],
-    /// `ui/status.rs::mode_footer`'s own `diff_rendered_active` check) — this is the key-handler
-    /// half of the same gate, so pressing `s` there doesn't flash a layout label for a layout that
-    /// isn't actually showing.
+    /// raw-line layout this key cycles, so there is nothing here for it to change (this same
+    /// fallthrough is also what makes a *still-computing/summary* media diff a no-op: its own
+    /// `diff_media_active` — hence `diff_rendered_active` — is already `true`, so it lands here
+    /// rather than in the unified/split branch below). The footer already hides the `s:...` hint in
+    /// exactly that case ([[hint-shown-iff-key-acts]], `ui/status.rs::mode_footer`'s own
+    /// `media_diff_showing_pictures`/`diff_rendered_active` checks) — this is the key-handler half
+    /// of the same gate, so pressing `s` there doesn't flash a layout label for a layout that isn't
+    /// actually showing.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn cycle_diff_layout(&mut self) {
-        if self.diff_media_active() {
+        if self.media_diff_showing_pictures() {
             self.cycle_media_diff_layout();
             return;
         }

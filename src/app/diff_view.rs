@@ -106,6 +106,22 @@ impl App {
         }
         self.invalidate_md_diff();
         self.invalidate_media_diff();
+        // Refresh (or clear) `diff_target_kind_cache` for whatever `tab.preview_kind` names right
+        // now — see that fn's own doc comment for why this one call site covers both a genuine
+        // retarget (`App::open_git_diff_with` always sets `tab.preview_kind` before calling this)
+        // and an invalidation-only refresh of the still-current target.
+        self.refresh_diff_target_kind_cache();
+        // A retarget to a non-media-capable path (Markdown/code/text/…) will never land a fresh
+        // `Ready` picture of its own, so `App::apply_media_diff`'s own landing-triggered prune never
+        // runs again for whatever media diff was open *before* this retarget — prune its now-orphaned
+        // `media-diff://` cache entries right here instead (`App::prune_media_diff_picture_cache`'s
+        // own doc comment). A target that *is* media-capable is left alone: its own landing (once it
+        // arrives) prunes correctly via `live_cache_keys`, and pruning pre-emptively here would just
+        // flash the picture away and immediately redraw it.
+        let still_media = matches!(&self.tab.preview_kind, Some(PreviewKind::GitDiff(p)) if self.diff_media_capable(p));
+        if !still_media {
+            self.prune_media_diff_picture_cache();
+        }
     }
 
     /// The ordered list of presentations `path`'s diff can actually show
@@ -131,7 +147,7 @@ impl App {
     /// computing body" state the design calls for.
     pub(super) fn diff_representations(&self, path: &Path) -> Vec<DiffView> {
         use DiffView::{Preview, Rendered, Source};
-        let resolved = self.cfg.resolve_preview(path);
+        let resolved = self.diff_target_kind(path);
         let mut reps = match resolved {
             PreviewKind::Markdown(_) => vec![Source, Rendered, Preview],
             PreviewKind::Code(_) | PreviewKind::Text(_) | PreviewKind::Mermaid(_) => {

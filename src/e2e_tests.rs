@@ -16358,6 +16358,85 @@ fn e2e_media_diff_pdf_paging_with_j_k() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The real `KeyCode::PageDown`/`PageUp` (not just the `J`/`K` letters the test above covers) turn
+/// the media diff's PDF page too — dispatched through the exact same `Motion::PageDown`/`PageUp`
+/// keymap binding every other preview surface already uses for physical paging
+/// (`keymap.rs`'s `pgit.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown))`). Sent
+/// through `handle_key` (`Sim::press`), not `dispatch_navigate` directly, so this also proves the
+/// keymap resolution itself reaches `App::media_diff_page_turn` for real key codes, not only chars.
+/// On a **non-media** (text) diff, the same physical keys still perform the ordinary preview page
+/// scroll (`App::preview_page`) — `Surface::PreviewGitDiff if app.diff_media_active()`'s branch in
+/// `dispatch_navigate` must not swallow PageDown/PageUp for a target it doesn't apply to.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_media_diff_pdf_paging_with_real_pagedown_pageup_keys_and_text_diff_still_scrolls() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let bytes = std::fs::read(&pdf).unwrap();
+    let dir = sandbox("media_diff_pdf_paging_real_keys");
+    media_diff_git_init(&dir);
+    let doc = dir.join("doc.pdf");
+    std::fs::write(&doc, &bytes).unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::write(&doc, &bytes).unwrap(); // uncommitted "change" (see the J/K test above)
+
+    let mut s = Sim::new(&canon(&dir)).with_picker();
+    s.app.open_git_diff(&doc);
+    s.draw();
+    assert_eq!(s.app.diff_media_page(), 1);
+    s.press(KeyCode::PageDown, KeyModifiers::NONE);
+    assert_eq!(
+        s.app.diff_media_page(),
+        2,
+        "実 KeyCode::PageDown で PDF のページが進むはず"
+    );
+    s.press(KeyCode::PageDown, KeyModifiers::NONE);
+    assert_eq!(s.app.diff_media_page(), 3);
+    s.press(KeyCode::PageUp, KeyModifiers::NONE);
+    assert_eq!(
+        s.app.diff_media_page(),
+        2,
+        "実 KeyCode::PageUp で PDF のページが戻るはず"
+    );
+    s.see("p. 2/3");
+
+    // A non-media (text) diff: the identical physical keys must still scroll the ordinary preview,
+    // not be silently swallowed by the media-diff paging branch. Every line differs from the
+    // committed version (not just one appended line) so the unified diff itself — not merely the
+    // file — is long enough to overflow the terminal's 26-row viewport; a small context-only hunk
+    // around a single appended line would fit on screen with nothing left to page through.
+    let rs = dir.join("a.rs");
+    let old_text: String = (1..=200).map(|i| format!("old line {i}\n")).collect();
+    let new_text: String = (1..=200).map(|i| format!("new line {i}\n")).collect();
+    std::fs::write(&rs, &old_text).unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "add a.rs"]);
+    std::fs::write(&rs, &new_text).unwrap();
+
+    s.app.open_git_diff(&rs);
+    s.draw();
+    assert!(
+        !s.app.diff_media_active(),
+        "前提: テキストファイルは media ではない"
+    );
+    let before = s.app.tab.preview_scroll;
+    s.press(KeyCode::PageDown, KeyModifiers::NONE);
+    assert!(
+        s.app.tab.preview_scroll > before,
+        "非メディア diff では PageDown が通常のスクロールをするはず: before={before} after={}",
+        s.app.tab.preview_scroll
+    );
+    let mid = s.app.tab.preview_scroll;
+    s.press(KeyCode::PageUp, KeyModifiers::NONE);
+    assert!(
+        s.app.tab.preview_scroll < mid,
+        "PageUp も通常どおりスクロールを戻すはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The stale-cache-key re-kick itself, constructed directly (`App::evict_md_image_cache_key_for_
 /// test`) rather than via a specific keypress sequence — `e2e_media_diff_r_round_trip_redraws_
 /// both_pictures`'s own doc comment explains why the R→Preview→R round trip alone doesn't reach
@@ -16404,6 +16483,55 @@ fn media_diff_stale_cache_key_is_re_kicked_not_left_blank() {
         );
         assert!(s.app.md_image_cache_contains(k), "キャッシュにも戻るはず");
     }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Mutation-proving companion to the test above: the re-kick check is `stale(old) || stale(new)` —
+/// **either** side missing must trigger a re-kick of **both**, not just the evicted one. Evicting
+/// only one side's key (the test above evicts both, which a `||`→`&&` mutant would still pass, since
+/// both operands are then true either way) is what actually discriminates the two: a `&&` mutant
+/// would require *both* sides to be individually missing before ever re-kicking, so with only one
+/// key evicted it would leave that side blank forever instead of repopulating it.
+#[cfg(feature = "git")]
+#[test]
+fn media_diff_stale_cache_key_re_kicks_both_sides_even_when_only_one_side_was_evicted() {
+    let dir = sandbox("media_diff_stale_cache_rekick_one_side");
+    media_diff_git_init(&dir);
+    let png = dir.join("logo.png");
+    media_diff_write_png(&png, 40, 40, [1, 1, 1]);
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    media_diff_write_png(&png, 60, 60, [2, 2, 2]);
+
+    let mut s = Sim::new(&canon(&dir)).with_picker();
+    s.app.open_git_diff(&png);
+    s.draw();
+
+    let keys_before = s.app.md_image_cache_media_diff_keys_for_test();
+    assert_eq!(
+        keys_before.len(),
+        2,
+        "旧・新それぞれ1エントリのはず: {keys_before:?}"
+    );
+    // Evict only the FIRST key — the other side's entry is left resident and never re-derived from
+    // scratch, isolating this test from the "both happen to be missing" case above.
+    let evicted = keys_before[0].clone();
+    let untouched = keys_before[1].clone();
+    s.app.evict_md_image_cache_key_for_test(&evicted);
+    assert!(!s.app.md_image_cache_contains(&evicted));
+    assert!(
+        s.app.md_image_cache_contains(&untouched),
+        "前提: もう一方はまだキャッシュに残っているはず"
+    );
+
+    s.draw();
+    let keys_after = s.app.md_image_cache_media_diff_keys_for_test();
+    assert!(
+        keys_after.contains(&evicted),
+        "片方だけの欠落でも re-kick で両方復元されるはず(&& mutant はここで失敗する): before={keys_before:?} after={keys_after:?}"
+    );
+    assert!(keys_after.contains(&untouched));
+    assert!(s.app.md_image_cache_contains(&evicted));
     std::fs::remove_dir_all(&dir).ok();
 }
 

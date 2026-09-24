@@ -375,7 +375,7 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
         // "back").
         if app.diff_footer_is_media_or_summary() {
             let mut prefixed = hint(lang, "n/N", crate::i18n::Msg::HintNextPrevFile);
-            if app.diff_media_active() {
+            if app.media_diff_showing_pictures() {
                 prefixed.push_str(&format!(
                     "  {}",
                     hint(lang, "s", app.media_diff_layout_next_msg())
@@ -1530,14 +1530,15 @@ mod tests {
         // `App::diff_representations`' own "ambiguous, ask the worker" branch,
         // `docs/FEATURE-MEDIA-DIFF.md` §2): the diff is therefore stuck in the transient "treat a
         // missing/unclassified path as `[Rendered]` until it lands" state, and the footer shows the
-        // reduced media hint set (no `j/k`/`h/l`, `s` for the not-yet-real side-by-side layout, no
-        // `R` since there is only the one representation so far).
+        // reduced media hint set — but **not** `s` (`App::media_diff_showing_pictures` requires a
+        // landed `Ready` outcome with an actual picture, [[hint-shown-iff-key-acts]]: there is no
+        // side-by-side layout to cycle yet), and no `R` since there is only the one representation so
+        // far.
         assert_eq!(
             footer,
             format!(
-                "n/N:{}  s:{}  {}",
+                "n/N:{}  {}",
                 tr(Lang::En, Msg::HintNextPrevFile),
-                tr(Lang::En, Msg::MediaLayoutSide),
                 tr(Lang::En, Msg::DiffMediaHintDiscard),
             )
         );

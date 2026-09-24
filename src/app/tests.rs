@@ -24656,6 +24656,33 @@ fn diff_representations_video_archive_unsupported_are_source_only() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `App::diff_view_cycle_hint` (the `R` footer hint) is `None` for a target with only one
+/// representation — video/unknown-binary land on `[Source]` alone (the test above), so there is
+/// nothing for `R` to cycle to and the hint must not be shown ([[hint-shown-iff-key-acts]]).
+#[cfg(feature = "git")]
+#[test]
+fn diff_view_cycle_hint_is_none_for_a_single_representation_target() {
+    let dir = unique_tmp("konoma_media_diff_cycle_hint_single_rep");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    for name in ["clip.mp4", "weird.bin"] {
+        let path = dir.join(name);
+        std::fs::write(&path, b"\x00\x01\x02binary").unwrap();
+        app.open_git_diff(&path);
+        assert_eq!(
+            app.diff_representations(&path),
+            vec![DiffView::Source],
+            "前提: {name} は表現が1つだけのはず"
+        );
+        assert_eq!(
+            app.diff_view_cycle_hint(),
+            None,
+            "{name}: 表現が1つしか無いので R ヒントは出ないはず"
+        );
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn diff_representations_deleted_svg_and_pdf_classify_via_glob_without_the_worker() {
     let dir = unique_tmp("konoma_media_diff_reps_deleted_glob");
@@ -24753,6 +24780,34 @@ fn round_diff_view_substitutes_rendered_and_source_for_each_other() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `round_diff_view`'s "no substitute, fall back to the list's first entry" arm, on a target with
+/// **two** representations — distinct from `round_diff_view_substitutes_rendered_and_source_for_
+/// each_other`'s own video/`Preview` case above, whose list has only *one* entry (`[Source]`), so
+/// "first of the list" and "the only entry" are indistinguishable there. A deleted SVG (glob-
+/// classified without the worker, `diff_representations_deleted_svg_and_pdf_classify_via_glob_
+/// without_the_worker`) has `[Source, Rendered]` — no `Preview` at all (nothing left to preview) —
+/// so a `Preview` request has no substitute (`Preview`'s own match arm is `None`) and must round all
+/// the way down to `reps.first()`, genuinely exercising that fallback rather than a single-entry list.
+#[test]
+fn round_diff_view_preview_request_on_a_deleted_file_with_two_reps_falls_back_to_the_lists_first_entry(
+) {
+    let dir = unique_tmp("konoma_media_diff_round_preview_deleted_two_reps");
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = App::new(dir.clone(), Config::default()).unwrap();
+    let svg = dir.join("gone.svg"); // never written — deleted-for-classification, glob-matched.
+    assert_eq!(
+        app.diff_representations(&svg),
+        vec![DiffView::Source, DiffView::Rendered],
+        "前提: 削除された SVG は Source/Rendered の2表現のはず"
+    );
+    assert_eq!(
+        app.round_diff_view(DiffView::Preview, &svg),
+        DiffView::Source,
+        "Preview に置換候補は無い(削除ファイルなので Preview 自体を持たない)ので一覧の先頭(Source)に丸められるはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 // ---- App::diff_media_active / App::diff_binary_summary_eligible / App::diff_footer_is_media_or_summary ----
 
 #[cfg(feature = "git")]
@@ -24815,6 +24870,248 @@ fn diff_footer_is_media_or_summary_covers_media_active_and_binary_summary_kinds(
     std::fs::write(&rs, "fn main(){}\n").unwrap();
     app.open_git_diff(&rs);
     assert!(!app.diff_footer_is_media_or_summary());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- App::media_diff_showing_pictures: s/J-K hints only while actually showing a landed picture --
+
+/// `App::media_diff_showing_pictures` is `false` the instant a media diff opens (`diff_media_active`
+/// alone is already `true` there — the target's *kind*, known immediately from its path — but
+/// nothing has landed yet) and only becomes `true` once a `poll_media_diff` actually lands a `Ready`
+/// outcome with a picture. This is the gap the old `diff_media_active`-only gate on `s`/`J`/`K`
+/// missed: while still "computing…", there is nothing to lay out side by side yet.
+#[cfg(feature = "git")]
+#[test]
+fn media_diff_showing_pictures_is_false_before_anything_lands_true_once_ready() {
+    let dir = unique_tmp("konoma_media_diff_showing_pictures_pending");
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&png);
+    assert!(app.diff_media_active(), "前提: 種別は media");
+    assert!(
+        !app.media_diff_showing_pictures(),
+        "まだ何も着地していないので false のはず(computing 中)"
+    );
+    let _ = app.poll_media_diff(&png, app.diff_media_page(), (400, 300));
+    assert!(
+        app.media_diff_showing_pictures(),
+        "着地したら true になるはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The `s`/`J`/`K` hints — footer and `?` help both — are absent while the media diff is still
+/// computing (nothing landed yet), and appear only once a picture has actually landed
+/// (`[[hint-shown-iff-key-acts]]`).
+#[cfg(feature = "git")]
+#[test]
+fn footer_and_help_omit_s_hint_while_the_media_diff_is_still_computing() {
+    let dir = unique_tmp("konoma_media_diff_hint_pending");
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&png);
+
+    let footer = |app: &App| -> String {
+        crate::ui::status::footer_spans(app, 200)
+            .iter()
+            .map(|sp| sp.content.to_string())
+            .collect::<String>()
+    };
+    let help_rows = |app: &App| -> Vec<String> {
+        crate::ui::preview::help_sections(app)
+            .into_iter()
+            .flat_map(|sec| sec.rows)
+            .map(|(k, _)| k)
+            .collect()
+    };
+
+    assert!(
+        !footer(&app).contains("s:"),
+        "computing 中は footer に s ヒントを出してはいけない: {:?}",
+        footer(&app)
+    );
+    assert!(
+        !help_rows(&app).contains(&"s".to_string()),
+        "computing 中は ? ヘルプにも s 行が無いはず: {:?}",
+        help_rows(&app)
+    );
+
+    let _ = app.poll_media_diff(&png, app.diff_media_page(), (400, 300));
+    assert!(
+        footer(&app).contains("s:"),
+        "着地後は footer に s ヒントが出るはず: {:?}",
+        footer(&app)
+    );
+    assert!(
+        help_rows(&app).contains(&"s".to_string()),
+        "着地後は ? ヘルプにも s 行があるはず: {:?}",
+        help_rows(&app)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- `?` help's `x` (discard) row is gated on write capability, like the footer -----------------
+
+/// A writable backend (git) shows the `x` row in `?` help.
+#[cfg(feature = "git")]
+#[test]
+fn help_x_row_is_shown_on_a_writable_backend() {
+    let dir = unique_tmp("konoma_media_diff_help_x_git");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    media_diff_write_png(&png, 4, 4, [2, 2, 2]);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&png);
+    assert!(crate::vcs::caps(&app.tab.root).write, "前提: git は書ける");
+    let rows: Vec<String> = crate::ui::preview::help_sections(&app)
+        .into_iter()
+        .flat_map(|sec| sec.rows)
+        .map(|(k, _)| k)
+        .collect();
+    assert!(
+        rows.contains(&"x".to_string()),
+        "書ける backend では x 行があるはず: {rows:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A read-only backend (jj) never shows `x` in `?` help — this used to be unconditional (a
+/// pre-existing bug of the same class `f`'s row had: [[hint-shown-iff-key-acts]]), even though the
+/// footer already correctly dropped it for jj.
+#[cfg(feature = "git")]
+#[test]
+fn help_x_row_is_hidden_on_a_read_only_backend() {
+    let Some(dir) = jj_scratch("konoma_media_diff_help_x_jj") else {
+        return;
+    };
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    let jj = |args: &[&str]| {
+        std::process::Command::new("jj")
+            .current_dir(&dir)
+            .env("HOME", &dir)
+            .env("JJ_USER", "konoma test")
+            .env("JJ_EMAIL", "test@example.invalid")
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    assert!(jj(&["commit", "-m", "add png"]));
+    media_diff_write_png(&png, 4, 4, [2, 2, 2]); // uncommitted change
+
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&png);
+    assert!(
+        !crate::vcs::caps(&app.tab.root).write,
+        "前提: jj は読み取り専用"
+    );
+    let rows: Vec<String> = crate::ui::preview::help_sections(&app)
+        .into_iter()
+        .flat_map(|sec| sec.rows)
+        .map(|(k, _)| k)
+        .collect();
+    assert!(
+        !rows.contains(&"x".to_string()),
+        "jj では x 行が無いはず: {rows:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- diff-surface predicates memoize resolve_preview instead of re-resolving every frame -------
+
+/// `App::diff_media_active`/`diff_footer_is_media_or_summary`/`diff_representations` (and the `R`
+/// footer/help hints derived from them) used to call `Config::resolve_preview` fresh on **every**
+/// call — for a PNG/JPEG that's real I/O (`infer::get_from_path` opens and reads the file), up to
+/// 4× per frame while a media diff was on screen. `App::diff_target_kind_cache`
+/// (`app/media_diff.rs`) memoizes it once per (re)target/invalidation instead — this simulates 20
+/// "frames" worth of footer/help/render predicate reads after a single `open_git_diff` retarget and
+/// proves `resolve_preview_kind` (the underlying free function every path funnels through) runs at
+/// most once across all of them.
+#[cfg(feature = "git")]
+#[test]
+fn diff_surface_predicates_resolve_preview_kind_at_most_once_per_retarget_not_per_frame() {
+    let dir = unique_tmp("konoma_media_diff_resolve_cache");
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&png); // one retarget — allowed to resolve here, outside the measured window
+
+    let (_, calls) = crate::test_support::count_resolve_preview_calls(|| {
+        for _ in 0..20 {
+            let _ = app.diff_media_active();
+            let _ = app.diff_footer_is_media_or_summary();
+            let _ = app.diff_representations(&png);
+            let _ = app.diff_view_cycle_hint();
+            let _ = app.diff_view_help_hint();
+        }
+    });
+    assert!(
+        calls <= 1,
+        "毎フレーム再解決している(resolve_preview_kind が {calls} 回呼ばれた・キャッシュが効いていない)"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- media-diff:// cache pruning: leaving the diff / retargeting away from media -----------------
+
+/// Closing the media diff (q/Esc back to the tree — `App::close_git_diff` → `App::back_to_tree`)
+/// prunes its `media-diff://` `md_image_cache` entries — before this, nothing left showing a media
+/// diff ever ran again would land a fresh `Ready` picture to piggyback `App::apply_media_diff`'s own
+/// landing-triggered prune on, so the last-viewed diff's decoded rasters sat resident forever.
+#[cfg(feature = "git")]
+#[test]
+fn closing_the_media_diff_prunes_its_media_diff_cache_keys() {
+    let dir = unique_tmp("konoma_media_diff_prune_on_close");
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&png);
+    let _ = app.poll_media_diff(&png, app.diff_media_page(), (400, 300));
+    assert!(
+        !app.md_image_cache_media_diff_keys_for_test().is_empty(),
+        "前提: media-diff:// キーが着地しているはず"
+    );
+    app.close_git_diff();
+    assert!(
+        app.md_image_cache_media_diff_keys_for_test().is_empty(),
+        "diff を閉じたら media-diff:// キーは prune されるはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Retargeting the diff to a non-media (text/Markdown) file also prunes the *previous* target's
+/// `media-diff://` keys — that new target will never itself land a `Ready` picture, so
+/// `apply_media_diff`'s own prune never gets another chance to run for them either.
+#[cfg(feature = "git")]
+#[test]
+fn retargeting_to_a_non_media_file_prunes_the_previous_media_diff_cache_keys() {
+    let dir = unique_tmp("konoma_media_diff_prune_on_retarget");
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("pic.png");
+    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "# hi\n\nchanged\n").unwrap();
+    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    app.open_git_diff(&png);
+    let _ = app.poll_media_diff(&png, app.diff_media_page(), (400, 300));
+    assert!(!app.md_image_cache_media_diff_keys_for_test().is_empty());
+
+    app.open_git_diff(&md); // text-only diff — never lands a Ready picture of its own
+    assert!(
+        app.md_image_cache_media_diff_keys_for_test().is_empty(),
+        "非メディアへ retarget したら前のターゲットの media-diff:// キーは prune されるはず"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -24902,6 +25199,10 @@ fn cycle_media_diff_layout_rotates_auto_side_stack_and_flashes() {
     let mut app = App::new(dir.clone(), Config::default()).unwrap();
     app.open_git_diff(&png);
     assert!(app.diff_media_active());
+    // `s` only acts once a picture has actually landed (`media_diff_showing_pictures` —
+    // [[hint-shown-iff-key-acts]]); `diff_media_active` alone (just checked above) is the broader,
+    // "targeted but maybe still computing" condition.
+    let _ = app.poll_media_diff(&png, app.diff_media_page(), (400, 300));
     assert_eq!(app.media_diff_layout(), MediaDiffLayout::Auto);
     app.cycle_diff_layout(); // `s` handler — must delegate to the media cycle, not the text one
     assert_eq!(app.media_diff_layout(), MediaDiffLayout::Side);

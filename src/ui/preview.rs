@@ -53,7 +53,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
                 .row("j / k / ↑ ↓", l(crate::i18n::Msg::Scroll))
                 .row("g / G", l(crate::i18n::Msg::TopBottom));
         }
-        if app.diff_media_active() {
+        if app.media_diff_showing_pictures() {
             sec = sec.row("s", l(crate::i18n::Msg::MediaLayoutCycleHelp));
             if app.media_diff_can_page() {
                 sec = sec.row("J / K  ·  PageDown / PageUp", l(crate::i18n::Msg::HintPage));
@@ -76,9 +76,15 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         if !media_or_summary {
             sec = sec.row(crate::ui::status::page_help(app), "");
         }
-        return vec![sec
-            .row("x", l(crate::i18n::Msg::DiscardWholeFile))
-            .row("q / Esc", l(crate::i18n::Msg::BackToGitView))];
+        // `x` (discard) only *acts* on a backend that can write (`App::git_diff_start_discard`'s own
+        // gate is `crate::vcs::caps(&self.tab.root).write`, flashing `VcsReadOnly` otherwise) — the
+        // footer already drops it for a read-only backend (jj) via the very same predicate
+        // (`ui/status.rs::mode_footer`'s `DiffMediaHintNoDiscard`/`DiffScrollNoDiscardHint*` arms);
+        // this row used to show unconditionally here ([[hint-shown-iff-key-acts]]).
+        if crate::vcs::caps(&app.tab.root).write {
+            sec = sec.row("x", l(crate::i18n::Msg::DiscardWholeFile));
+        }
+        return vec![sec.row("q / Esc", l(crate::i18n::Msg::BackToGitView))];
     }
     if app.is_table_preview() {
         return vec![HelpSection::new(l(crate::i18n::Msg::PreviewTable))

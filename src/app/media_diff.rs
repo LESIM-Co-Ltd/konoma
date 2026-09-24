@@ -63,31 +63,93 @@ impl App {
     /// (`kick_media_diff`) if neither a matching landed result nor an in-flight request already
     /// covers this exact key. `None` means not ready yet — the caller shows a "computing…" state for
     /// this frame rather than blocking (mirrors `App::poll_md_diff`).
+    ///
+    /// `raster_px` is normalized first (`normalize_raster_px`) so a caller-supplied box that the
+    /// decode doesn't actually depend on (a raw raster image — PNG/JPG/GIF — always decodes at its
+    /// own native resolution) never causes a spurious re-decode: a terminal resize changes the pane's
+    /// pixel box on every frame it's still settling, and only SVG/PDF's rasterization genuinely needs
+    /// to redo any work for that (`docs/FEATURE-MEDIA-DIFF.md`'s own perf note).
     pub(crate) fn poll_media_diff(
         &mut self,
         path: &Path,
         page: u32,
         raster_px: (u32, u32),
     ) -> Option<MediaDiffOutcome> {
+        let raster_px = self.normalize_raster_px(path, raster_px);
         if let Some(outcome) = self.media_diff_landed_for(path, page, raster_px) {
             return Some(outcome);
         }
-        let already_pending = self
-            .media_diff_pending
-            .as_ref()
-            .is_some_and(|(p, pg, rp)| p.as_path() == path && *pg == page && *rp == raster_px);
-        if !already_pending {
+        let wants = |slot: &Option<(PathBuf, u32, (u32, u32))>| {
+            slot.as_ref()
+                .is_some_and(|(p, pg, rp)| p.as_path() == path && *pg == page && *rp == raster_px)
+        };
+        // Already covered by either the in-flight request (`media_diff_pending`) or the one
+        // request-slot coalesced behind it (`media_diff_queued`, `kick_media_diff`'s own doc
+        // comment) — either way there is nothing new to ask for.
+        if !wants(&self.media_diff_pending) && !wants(&self.media_diff_queued) {
             self.kick_media_diff(path.to_path_buf(), page, raster_px);
         }
         self.media_diff_landed_for(path, page, raster_px)
     }
 
-    /// Dispatch a fresh media-diff request for `(path, page, raster_px)`, discarding any earlier one
-    /// (a bumped `gen` makes a stale in-flight result fail `apply_media_diff`'s staleness check on
-    /// arrival — exactly `kick_md_diff`'s own shape).
+    /// `raster_px`, normalized to a fixed canonical value `(0, 0)` for every kind whose decode
+    /// doesn't actually depend on it — only [`MediaDiffKind::Svg`]/[`MediaDiffKind::Pdf`] rasterize
+    /// to a caller-chosen pixel box; [`MediaDiffKind::Image`] (and anything not classified as
+    /// picture-capable at all, which degrades to [`MediaDiffComputed::Summary`] regardless of
+    /// `raster_px`) always decodes at its own native resolution (`decode_image_side`'s own doc
+    /// comment: "raster_px doesn't apply").
+    ///
+    /// Prefers the worker's own landed classification (`media_landed_outcome_for`) over the cheaper
+    /// `diff_target_kind` when one is on hand, since a **deleted** file whose extension isn't
+    /// glob-recognized can only be classified by the worker's byte-sniff (`docs/FEATURE-MEDIA-DIFF.md`
+    /// §2 — `diff_target_kind`'s own `Config::resolve_preview` fallback can't see that at all for a
+    /// path that doesn't exist). Before that first landing, such a path normalizes to `(0, 0)` same
+    /// as "not picture-capable" would — if it then turns out to be a `Svg`/`Pdf` after all, that
+    /// first request rasterizes tiny (`decode_svg_side`/`decode_pdf_side` floor `raster_px` at 1px)
+    /// and self-corrects the moment the *next* poll sees the now-landed real kind and asks again with
+    /// the real box — a one-frame transient, not a lasting bug, and no worse than the "computing…"
+    /// placeholder every other not-yet-landed path already shows for a frame or two.
+    fn normalize_raster_px(&self, path: &Path, raster_px: (u32, u32)) -> (u32, u32) {
+        let kind = match self.media_landed_outcome_for(path) {
+            Some(MediaDiffOutcome::Ready { kind, .. }) => Some(*kind),
+            _ => classify_kind(&self.diff_target_kind(path)),
+        };
+        match kind {
+            Some(MediaDiffKind::Svg) | Some(MediaDiffKind::Pdf) => raster_px,
+            _ => (0, 0),
+        }
+    }
+
+    /// Want a fresh media-diff request for `(path, page, raster_px)`. **At most one worker is ever
+    /// in flight at a time** (`docs/FEATURE-MEDIA-DIFF.md`'s "latest wins" perf note): if no worker
+    /// is currently running (`!media_diff_worker_busy`), this dispatches immediately
+    /// (`dispatch_media_diff`); otherwise this instead **coalesces** into the single
+    /// `media_diff_queued` slot — overwriting whatever want, if any, was already waiting there — and
+    /// `apply_media_diff` dispatches it the moment the busy worker's result lands (accepted *or*
+    /// stale — `media_diff_worker_busy`'s own doc comment on why staleness doesn't free the slot any
+    /// earlier). An AI rewriting an image repeatedly (each retarget/invalidate calling this again
+    /// before the previous decode finishes) therefore never piles up concurrent decodes; only the
+    /// newest want survives the wait.
     fn kick_media_diff(&mut self, path: PathBuf, page: u32, raster_px: (u32, u32)) {
+        let want = (path, page, raster_px);
+        if self.media_diff_worker_busy {
+            self.media_diff_queued = Some(want);
+            return;
+        }
+        self.dispatch_media_diff(want);
+    }
+
+    /// Actually dispatches `want` onto the worker (or the synchronous fallback) — the single place
+    /// that bumps `media_diff_gen` (discarding any earlier in-flight result on arrival, exactly
+    /// `kick_md_diff`'s own shape) and marks the one worker slot occupied
+    /// (`media_diff_worker_busy`/`media_diff_pending`).
+    fn dispatch_media_diff(&mut self, want: (PathBuf, u32, (u32, u32))) {
+        #[cfg(test)]
+        crate::test_support::note_media_diff_dispatch_call();
+        let (path, page, raster_px) = want;
         self.media_diff_gen = self.media_diff_gen.wrapping_add(1);
         self.media_diff_pending = Some((path.clone(), page, raster_px));
+        self.media_diff_worker_busy = true;
         let gen = self.media_diff_gen;
         let baseline = self.media_diff_baseline(&path);
         let req = MediaDiffRequest {
@@ -159,15 +221,54 @@ impl App {
     /// identical `max_bytes` seam, for the identical reason: exercising the cap without needing to
     /// actually construct/store a real 64 MiB fixture file).
     fn compute_media_diff_with_cap(req: &MediaDiffRequest, cap: u64) -> MediaDiffComputed {
+        // The old side has no size-only API to check first — `resolve_old_bytes` (git/jj/follow-
+        // snapshot, `Vcs::base_contents`) always hands back the full blob or nothing at all, so its
+        // length is only ever known *after* reading it. The **new** side, by contrast, is a plain
+        // file on disk: `fs::metadata` gets its size for free, so a file already over `cap` from that
+        // alone is never read into memory at all — the read below is skipped outright, not merely
+        // discarded afterward (`docs/FEATURE-MEDIA-DIFF.md`'s "1 側 64 MiB 超" perf note: reading a
+        // multi-hundred-MB file just to immediately throw it away was real, avoidable I/O on this
+        // worker thread).
         let (old_bytes, base) = resolve_old_bytes(&req.baseline, &req.root, &req.path);
-        let new_bytes = std::fs::read(&req.path).ok();
         let old_len = old_bytes.as_ref().map(|b| b.len() as u64);
-        let new_len = new_bytes.as_ref().map(|b| b.len() as u64);
-        let same_bytes = matches!((&old_bytes, &new_bytes), (Some(o), Some(n)) if o == n);
+        let old_over_cap = old_len.is_some_and(|n| n > cap);
 
-        let over_cap = old_len.is_some_and(|n| n > cap) || new_len.is_some_and(|n| n > cap);
+        let new_meta_len = std::fs::metadata(&req.path).ok().map(|m| m.len());
+        // Existence, independent of whether the bytes end up read at all (over-cap skips the read
+        // below but the file still exists) — used just below to decide which classification rule
+        // this reaches for (`Config::resolve_preview`'s own path-based rules for an existing file,
+        // vs. sniffing the *old* bytes for one that's gone, `docs/FEATURE-MEDIA-DIFF.md` §2). Using
+        // `new_bytes.is_some()` for that instead (as this used to) would misclassify a still-existing
+        // over-cap file as if it had been deleted, once its own read is skipped below.
+        let new_exists = new_meta_len.is_some();
+        let new_over_cap = new_meta_len.is_some_and(|n| n > cap);
+        let new_bytes = if new_over_cap {
+            None // known too large from metadata alone — never read.
+        } else {
+            std::fs::read(&req.path).ok()
+        };
+        // `new_len`: the metadata-derived size when the file was never read (over cap — there is no
+        // `new_bytes` to measure); otherwise the actual bytes' own length (an already-successful read
+        // measured directly, no second `stat`). Both agree when the file didn't change size out from
+        // under this call, which is the overwhelmingly common case; on the rare mid-write race where
+        // it did, the bytes' own length (when read) is the more honest of the two, since it's what
+        // was actually decoded (or not).
+        let new_len = if new_over_cap {
+            new_meta_len
+        } else {
+            new_bytes.as_ref().map(|b| b.len() as u64)
+        };
+        let over_cap = old_over_cap || new_over_cap;
+        // Lengths differing is conclusive ("not the same") without a byte-for-byte compare; only two
+        // sides that were both actually read (never true for an over-cap side, which never got a
+        // `new_bytes`/full `old_bytes` populated for that side, and never true for an absent side
+        // either) and whose lengths already match are compared further at all.
+        let same_bytes = match (&old_bytes, &new_bytes) {
+            (Some(o), Some(n)) => o.len() == n.len() && o == n,
+            _ => false,
+        };
 
-        let preview_kind = if new_bytes.is_some() {
+        let preview_kind = if new_exists {
             crate::config::resolve_preview_kind(
                 &req.preview_rules,
                 req.preview_commands,
@@ -225,8 +326,17 @@ impl App {
         }
     }
 
-    /// Apply a media-diff result from the worker thread (or the synchronous fallback). Discards a
-    /// stale generation (mirrors `App::apply_md_diff`). Otherwise:
+    /// Apply a media-diff result from the worker thread (or the synchronous fallback).
+    ///
+    /// **Always** frees the one worker slot first (`media_diff_worker_busy = false`) and, if a want
+    /// coalesced behind it while it ran (`media_diff_queued`), immediately dispatches that one next —
+    /// this runs whether or not `res` itself turns out to be stale, since either way the worker slot
+    /// really is free now and `docs/FEATURE-MEDIA-DIFF.md`'s "at most one worker in flight, latest
+    /// wins" has to keep making forward progress on whatever was actually asked for most recently
+    /// (`kick_media_diff`'s own doc comment).
+    ///
+    /// Discards a stale generation (mirrors `App::apply_md_diff`) — a newer request/invalidation
+    /// superseded this one, so `res.computed` itself is simply dropped. Otherwise:
     ///
     /// 1. Moves every decoded side's pixel data into `md_image_cache` under its `media_diff_url` key
     ///    — the same pre-insert-then-`apply_md_image` shape `ensure_mermaid_fence_render` already
@@ -239,18 +349,24 @@ impl App {
     ///    touches a mermaid/math key (`is_media_diff_url` alone gates the predicate).
     /// 3. Stores the lightweight (pixel-free) outcome in `media_diff_landed`.
     pub fn apply_media_diff(&mut self, res: MediaDiffResult) -> bool {
-        if res.gen != self.media_diff_gen {
-            return false; // stale: a newer request/invalidation superseded this one.
-        }
+        self.media_diff_worker_busy = false;
         self.media_diff_pending = None;
-        let outcome = self.materialize_media_diff(res.computed);
-        let live = live_cache_keys(&outcome);
-        self.md_image_cache.retain(|k, _| {
-            let s = k.to_string_lossy();
-            !crate::preview::media_diff::is_media_diff_url(&s) || live.contains(k)
-        });
-        self.media_diff_landed = Some((res.path, res.page, res.raster_px, res.gen, outcome));
-        true
+        let applied = if res.gen != self.media_diff_gen {
+            false // stale: a newer request/invalidation superseded this one.
+        } else {
+            let outcome = self.materialize_media_diff(res.computed);
+            let live = live_cache_keys(&outcome);
+            self.md_image_cache.retain(|k, _| {
+                let s = k.to_string_lossy();
+                !crate::preview::media_diff::is_media_diff_url(&s) || live.contains(k)
+            });
+            self.media_diff_landed = Some((res.path, res.page, res.raster_px, res.gen, outcome));
+            true
+        };
+        if let Some(next) = self.media_diff_queued.take() {
+            self.dispatch_media_diff(next);
+        }
+        applied
     }
 
     /// Move a computed outcome's pixel data into `md_image_cache`, returning the pixel-free stored
@@ -345,12 +461,44 @@ impl App {
     /// discarded on arrival (`App::apply_media_diff`'s gen check). Called from
     /// `App::invalidate_diff_caches` wherever the working tree/baseline being compared against may
     /// have changed — mirrors `App::invalidate_md_diff`'s own doc comment on why `_pending` is also
-    /// cleared here (otherwise `poll_media_diff`'s "already in flight" guard would keep declining to
-    /// kick a fresh request, since that guard is keyed on the request identity, not `gen`).
+    /// cleared here (otherwise `poll_media_diff`'s dedup check would keep declining to kick a fresh
+    /// request for the identical `(path, page, raster_px)`, since that check is keyed on the request
+    /// identity, not `gen` — a poll for the very same want right after a baseline change must still
+    /// produce a *fresh* dispatch, not be mistaken for "already covered" by a now-stale one).
+    ///
+    /// Deliberately does **not** touch `media_diff_worker_busy`/`media_diff_queued`: a worker thread
+    /// already dispatched before this runs is still physically executing against the *old* baseline
+    /// and cannot be recalled, so the one worker slot stays occupied until it actually reports back
+    /// (`App::apply_media_diff` frees it and dispatches whatever coalesced behind it in the
+    /// meantime) — `media_diff_worker_busy`'s own doc comment has the full reasoning.
     pub(crate) fn invalidate_media_diff(&mut self) {
         self.media_diff_gen = self.media_diff_gen.wrapping_add(1);
         self.media_diff_landed = None;
         self.media_diff_pending = None;
+    }
+
+    /// Removes every `media-diff://` entry from `md_image_cache` unconditionally — never touches a
+    /// mermaid/math key (`is_media_diff_url` alone gates the predicate, mirroring `App::apply_media_
+    /// diff`'s own `retain`). Called wherever the diff surface stops being able to ever repopulate
+    /// them itself, which `App::apply_media_diff`'s own landing-triggered prune (`live_cache_keys`)
+    /// cannot cover because there is no further landing to piggyback on:
+    ///
+    /// - `App::back_to_tree` (q/Esc closing the diff back to the tree, or to the Git hub via
+    ///   `App::close_git_diff`'s own call into it) — the diff surface is left altogether, so nothing
+    ///   will ever poll/land a media diff again until some *unrelated* one is opened later, which
+    ///   could be a long time (or never, for the rest of the session).
+    /// - `App::invalidate_diff_caches`, when the freshly (re)targeted path isn't media-diff-capable
+    ///   at all (retargeting from an image/PDF/SVG diff to, say, a Markdown/code file) — that target
+    ///   will never land a fresh `Ready` picture of its own, so `apply_media_diff`'s prune never runs
+    ///   again for the previous target's now-orphaned keys either.
+    ///
+    /// Before this existed, either case left the last-viewed media diff's decoded rasters resident in
+    /// `md_image_cache` forever (`docs/FEATURE-MEDIA-DIFF.md` §4's "対象を変えたら media-diff:// の
+    /// キーを消す" — the design called for this on every retarget, not only the ones that happen to
+    /// land a new picture).
+    pub(crate) fn prune_media_diff_picture_cache(&mut self) {
+        self.md_image_cache
+            .retain(|k, _| !crate::preview::media_diff::is_media_diff_url(&k.to_string_lossy()));
     }
 
     /// `PerTab::diff_media_page`, floored at `1` (a fresh tab/diff starts there; nothing should
@@ -443,7 +591,50 @@ impl App {
         let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.as_ref() else {
             return false;
         };
-        !matches!(self.cfg.resolve_preview(path), PreviewKind::Markdown(_))
+        !matches!(self.diff_target_kind(path), PreviewKind::Markdown(_))
+    }
+
+    /// `Config::resolve_preview(path)`, memoized in `diff_target_kind_cache` — the single read side
+    /// of that cache (`App::refresh_diff_target_kind_cache` is the single write side). A cache hit
+    /// (`path` matches whatever the diff surface is currently targeting) is the hot, per-frame path
+    /// and costs nothing beyond a `PathBuf` comparison and a `Clone` of an already-resolved
+    /// `PreviewKind`; a miss (a test, or any other caller asking about a path that isn't the diff's
+    /// own current target) falls back to a direct, uncached resolve, so this is always *correct*,
+    /// just not always free — exactly like `App::media_diff_baseline`'s reuse of `App::diff_baseline`
+    /// is correct regardless of what's cached elsewhere.
+    pub(super) fn diff_target_kind(&self, path: &Path) -> PreviewKind {
+        match &self.diff_target_kind_cache {
+            Some((p, k)) if p.as_path() == path => k.clone(),
+            _ => self.cfg.resolve_preview(path),
+        }
+    }
+
+    /// Refreshes `diff_target_kind_cache` for whatever the diff surface is currently targeting
+    /// (`self.tab.preview_kind`'s `GitDiff` path, if any) — called from `App::invalidate_diff_caches`,
+    /// which runs both on a genuine retarget (`App::open_git_diff_with`, always called *after* it has
+    /// already updated `tab.preview_kind` to the new path) and on an invalidation-only refresh (a
+    /// working-tree/follow-session change against the still-current target) — one call site covers
+    /// both, per `docs/FEATURE-MEDIA-DIFF.md`'s perf note ("resolve once when the diff is (re)targeted
+    /// … and again only when invalidate_diff_caches runs"). Clears the cache outright when the diff
+    /// surface isn't showing a `GitDiff` at all, so a stale entry can never outlive the target it was
+    /// resolved for.
+    pub(super) fn refresh_diff_target_kind_cache(&mut self) {
+        self.diff_target_kind_cache = match self.tab.preview_kind.clone() {
+            Some(PreviewKind::GitDiff(path)) => {
+                let kind = self.cfg.resolve_preview(&path);
+                Some((path, kind))
+            }
+            _ => None,
+        };
+    }
+
+    /// Whether `path` resolves to a media-diff-capable kind (Image/Svg/Pdf) — the one predicate
+    /// `classify_kind` and `App::follow_jump`'s own `media_side_by_side` check both defer to, so the
+    /// two can never drift apart on which kinds get the side-by-side treatment
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §6 decision 2). Goes through the same memoized `diff_target_kind`
+    /// as every other diff-surface predicate in this module.
+    pub(crate) fn diff_media_capable(&self, path: &Path) -> bool {
+        classify_kind(&self.diff_target_kind(path)).is_some()
     }
 
     /// Whether `path`'s Source-representation diff, if the raw line diff comes back **empty**,
@@ -460,7 +651,7 @@ impl App {
     /// their own kind resolves to `Some(_)` under `classify_kind`, so they still land on the worker's
     /// real `Ready` outcome (never `Summary`), which the caller handles correctly either way.
     pub(crate) fn diff_binary_summary_eligible(&self, path: &Path) -> bool {
-        let resolved = self.cfg.resolve_preview(path);
+        let resolved = self.diff_target_kind(path);
         let windowed_text = matches!(
             resolved,
             PreviewKind::Markdown(_)
@@ -511,6 +702,23 @@ impl App {
     /// gates the `J`/`K` key and its footer/help hint (`docs/FEATURE-MEDIA-DIFF.md` §1/§6).
     pub(crate) fn media_diff_can_page(&self) -> bool {
         self.media_diff_max_page_count().is_some_and(|n| n > 1)
+    }
+
+    /// Whether the media diff's side-by-side view isn't just *targeted* (`diff_media_active` — the
+    /// target's own kind, true the instant the diff opens, before anything has landed) but is
+    /// actually **showing at least one picture side by side right now**: the landed outcome is
+    /// `Ready` and at least one side is a `Picture`. Gates the `s` key and its footer/help hint
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §6's "並べて表示中" — [[hint-shown-iff-key-acts]]): while the
+    /// worker is still computing ("計算中"), or the outcome degraded to the one-line binary summary
+    /// (`Summary`/`Unavailable`), or both sides landed as `Absent`/`Failed`/`PageMissing` (nothing to
+    /// arrange), there is no layout for `s` to cycle between. `media_diff_can_page` already derives
+    /// its own narrower gate from the same `media_diff_ready_sides` — this is that fn's sibling for
+    /// `s`, which (unlike paging) only needs *a* picture, not a multi-page one.
+    pub(crate) fn media_diff_showing_pictures(&self) -> bool {
+        self.diff_media_active()
+            && self.media_diff_ready_sides().is_some_and(|(old, new)| {
+                matches!(old, MediaDiffSide::Picture(_)) || matches!(new, MediaDiffSide::Picture(_))
+            })
     }
 
     /// `J`/`K` (and `PageDown`/`PageUp` while the media diff's side-by-side view is active): turn
@@ -1162,6 +1370,189 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    // ---- decode_svg_side: rasterizes to the LARGER axis of raster_px ----
+
+    /// `decode_svg_side`'s `max_px = raster_px.0.max(raster_px.1)` — the rasterized picture's own
+    /// pixel size must actually reflect the **larger** of the two `raster_px` components, not the
+    /// smaller one and not, say, the width component alone. A deliberately non-square, asymmetric
+    /// `raster_px` (100×50) against a small (40×20, 2:1) SVG — small enough that any target here is
+    /// an upscale, never `rasterize_bytes`'s own "shrink to fit `HARD_MAX_PX`" branch — makes the
+    /// three candidate target values (100, 50, and "width alone" = 100 too, so also cross-checked
+    /// against a second, width-larger fixture below) produce three genuinely different pixel sizes,
+    /// discriminating a `.max` from a `.min` or an accidental "just use one axis" mutant.
+    #[test]
+    fn decode_svg_side_rasterizes_to_the_larger_axis_of_raster_px() {
+        let dir = unique_tmp("konoma_media_diff_svg_raster_axis");
+        std::fs::create_dir_all(&dir).unwrap();
+        let svg = dir.join("icon.svg");
+        // A 40x20 (2:1) viewBox — small enough that `rasterize_bytes` always upscales for any
+        // `raster_px` used below (never shrinks below 1:1 scale under `HARD_MAX_PX`).
+        std::fs::write(
+            &svg,
+            "<svg xmlns='http://www.w3.org/2000/svg' width='40' height='20' viewBox='0 0 40 20'></svg>",
+        )
+        .unwrap();
+        let r = MediaDiffRequest {
+            gen: 1,
+            path: svg.clone(),
+            root: dir.clone(),
+            baseline: DiffBaseline::Empty,
+            page: 1,
+            raster_px: (100, 50), // height (50) is the *smaller* component — must not be used alone.
+            preview_rules: Config::default().preview.rules,
+            preview_commands: true,
+        };
+        match App::compute_media_diff(&r) {
+            MediaDiffComputed::Ready { new, .. } => match new {
+                MediaDiffSideDecoded::Picture(p) => {
+                    // scale = max(100,50) / max(40,20) = 100/40 = 2.5 -> (40*2.5, 20*2.5) = (100, 50).
+                    assert_eq!(
+                        (p.image.width(), p.image.height()),
+                        (100, 50),
+                        "raster_px の大きい方(100)が長辺のターゲットになるはず"
+                    );
+                }
+                other => panic!("SVG はデコードされるはず: {other:?}"),
+            },
+            other => panic!("Ready のはず: {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The mirror of the test above with the **width** as the larger component instead of the
+    /// height — together the two pin that it is genuinely `max(w, h)`, not "whichever axis happens
+    /// to be listed first" or a hardcoded preference for one axis.
+    #[test]
+    fn decode_svg_side_rasterizes_to_the_larger_axis_of_raster_px_when_width_is_larger() {
+        let dir = unique_tmp("konoma_media_diff_svg_raster_axis_w");
+        std::fs::create_dir_all(&dir).unwrap();
+        let svg = dir.join("icon.svg");
+        std::fs::write(
+            &svg,
+            "<svg xmlns='http://www.w3.org/2000/svg' width='20' height='40' viewBox='0 0 20 40'></svg>",
+        )
+        .unwrap();
+        let r = MediaDiffRequest {
+            gen: 1,
+            path: svg.clone(),
+            root: dir.clone(),
+            baseline: DiffBaseline::Empty,
+            page: 1,
+            raster_px: (50, 100), // width (50) is the *smaller* component this time.
+            preview_rules: Config::default().preview.rules,
+            preview_commands: true,
+        };
+        match App::compute_media_diff(&r) {
+            MediaDiffComputed::Ready { new, .. } => match new {
+                MediaDiffSideDecoded::Picture(p) => {
+                    // scale = max(50,100) / max(20,40) = 100/40 = 2.5 -> (20*2.5, 40*2.5) = (50, 100).
+                    assert_eq!(
+                        (p.image.width(), p.image.height()),
+                        (50, 100),
+                        "raster_px の大きい方(100)が長辺のターゲットになるはず"
+                    );
+                }
+                other => panic!("SVG はデコードされるはず: {other:?}"),
+            },
+            other => panic!("Ready のはず: {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- compute_media_diff_with_cap: cap-before-reading (over cap, `||` not `&&`) ----
+
+    /// The new side alone over cap (the old side is entirely absent — an untracked/new file) still
+    /// degrades to `Summary`, proving `over_cap = old_over_cap || new_over_cap` — a mutation to `&&`
+    /// would require *both* sides over cap, and this fixture's old side isn't even present to be
+    /// "over" anything, so a `&&` mutant would wrongly reach the `Ready`/decode path instead.
+    #[test]
+    fn new_side_over_cap_alone_degrades_to_summary() {
+        let dir = unique_tmp("konoma_media_diff_cap_new_over");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("big.png");
+        // Content is irrelevant — once metadata alone says it's over cap, the bytes are never read
+        // at all (`compute_media_diff_with_cap`'s own doc comment on the new side).
+        std::fs::write(&png, vec![0u8; 100]).unwrap();
+        let r = req(png, dir.clone(), DiffBaseline::Empty);
+        match App::compute_media_diff_with_cap(&r, 50) {
+            MediaDiffComputed::Summary {
+                old_len, new_len, ..
+            } => {
+                assert_eq!(old_len, None, "旧版は無い(新規/未追跡)");
+                assert_eq!(
+                    new_len,
+                    Some(100),
+                    "新版のサイズは metadata から取れているはず(読まずに)"
+                );
+            }
+            other => panic!("cap 超過は Summary のはず: {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The **old** side alone over cap, while the new side is tiny — the mirror of the test above,
+    /// completing the `||` pin (a `&&` mutant would also fail to degrade here, since only one side
+    /// is over cap).
+    #[test]
+    fn old_side_over_cap_alone_degrades_to_summary_even_when_new_is_tiny() {
+        let dir = unique_tmp("konoma_media_diff_cap_old_over");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("small.png");
+        std::fs::write(&png, vec![1u8; 10]).unwrap();
+        // No size-only API for the old side (`resolve_old_bytes`'s own doc comment) — a follow
+        // snapshot is always fully in hand once resolved, so its length is only known this way.
+        let r = req(
+            png,
+            dir.clone(),
+            DiffBaseline::FollowSnapshot(vec![2u8; 100]),
+        );
+        match App::compute_media_diff_with_cap(&r, 50) {
+            MediaDiffComputed::Summary {
+                old_len, new_len, ..
+            } => {
+                assert_eq!(old_len, Some(100));
+                assert_eq!(
+                    new_len,
+                    Some(10),
+                    "新版は cap 未満なので実際に読まれているはず"
+                );
+            }
+            other => {
+                panic!("cap 超過(旧版のみ)は Summary のはず(|| であって && ではない): {other:?}")
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `n == cap` is **not** over cap (the comparison is `>`, not `>=`) — the new side decodes for
+    /// real at exactly the cap's own byte count.
+    #[test]
+    fn exact_cap_size_boundary_is_not_over_cap() {
+        let dir = unique_tmp("konoma_media_diff_cap_boundary");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("exact.png");
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([1, 2, 3])))
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        std::fs::write(&png, &bytes).unwrap();
+        let cap = bytes.len() as u64; // n == cap, exactly.
+        let r = req(png, dir.clone(), DiffBaseline::Empty);
+        match App::compute_media_diff_with_cap(&r, cap) {
+            MediaDiffComputed::Ready { new, .. } => {
+                assert!(
+                    matches!(new, MediaDiffSideDecoded::Picture(_)),
+                    "n == cap は over cap ではないので実際にデコードされるはず"
+                );
+            }
+            other => panic!("境界(n==cap)で Summary に落ちてはいけない: {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Mutation-proving: if `classify_kind` degenerated into "always picture-capable", this would
     /// come back `Ready` instead — pins the actual branch fires.
     #[test]
@@ -1407,6 +1798,77 @@ mod tests {
                 assert!(
                     matches!(old, MediaDiffSideDecoded::Absent),
                     "follow 開始時点に存在しないファイルは Absent のはず(0 バイトの Failed ではない): {old:?}"
+                );
+            }
+            other => panic!("Ready のはず: {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `FollowHead` for a file created *after* the pinned follow-start sha, same as the test above —
+    /// but this time it has **since been committed** (unlike that test's still-untracked fixture).
+    /// `blob_at(root, sha, path)` still returns `None` (the path genuinely isn't in the pinned
+    /// commit), so this falls back to `base_contents` exactly as before — but `base_contents` reads
+    /// against the **current** HEAD, not the pinned sha, and the file *is* there now: the old side
+    /// must be the real committed bytes (`Head`, matching `Some`), not `Absent`. A version of
+    /// `resolve_old_bytes` that conflated "not in the pinned commit" with "not in the repo at all"
+    /// (e.g. by short-circuiting straight to `Absent` on a `blob_at` miss, instead of actually
+    /// falling through to `base_contents`) would still pass the sibling test above — both fixtures
+    /// hit the identical `blob_at → None` branch — but only this one has a real committed blob on
+    /// the other side of that fallback to notice going missing.
+    #[cfg(feature = "git")]
+    #[test]
+    fn follow_head_for_a_file_created_after_follow_start_and_since_committed_reads_head_not_absent()
+    {
+        let dir = unique_tmp("konoma_media_diff_follow_head_created_then_committed");
+        std::fs::create_dir_all(&dir).unwrap();
+        init_git_repo(&dir);
+        std::fs::write(dir.join("placeholder.txt"), b"seed\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "seed"]);
+        let sha = crate::git::head_commit_id(&dir).expect("HEAD sha が取れるはず"); // follow-start pin
+
+        // Created after follow-start (not in `sha` at all)...
+        let png = dir.join("new-since-follow.png");
+        let committed_bytes = {
+            let mut b = Vec::new();
+            image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                5,
+                5,
+                image::Rgb([3, 3, 3]),
+            ))
+            .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png)
+            .unwrap();
+            b
+        };
+        std::fs::write(&png, &committed_bytes).unwrap();
+        // ...but, unlike the sibling test, it IS committed since (advancing HEAD past `sha`).
+        git(&dir, &["add", "-A"]);
+        git(
+            &dir,
+            &["commit", "-q", "-m", "add the png after follow-start"],
+        );
+
+        let (old_bytes, base) =
+            resolve_old_bytes(&DiffBaseline::FollowHead { sha: sha.clone() }, &dir, &png);
+        assert_eq!(
+            old_bytes,
+            Some(committed_bytes.clone()),
+            "follow 開始後に作成されても、以後コミットされていれば旧版は現在の HEAD の実バイト列のはず(Absent ではない)"
+        );
+        assert_eq!(
+            base,
+            MediaBase::Head,
+            "blob_at は None(follow 開始時点には無い)だが、現在の HEAD にはあるので Head 扱い"
+        );
+
+        let r = req(png, dir.clone(), DiffBaseline::FollowHead { sha });
+        match App::compute_media_diff(&r) {
+            MediaDiffComputed::Ready { base, old, .. } => {
+                assert_eq!(base, MediaBase::Head);
+                assert!(
+                    matches!(old, MediaDiffSideDecoded::Picture(_)),
+                    "以後コミットされているので旧版はデコードされた絵のはず(Absent ではない): {old:?}"
                 );
             }
             other => panic!("Ready のはず: {other:?}"),
@@ -1815,6 +2277,226 @@ mod tests {
         assert!(
             app.md_image_cache.contains_key(&mermaid_key),
             "mermaid キーは media-diff の prune に巻き込まれないはず"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // ---- worker dispatch: dedup / coalescing / stale-gen (real channel, `attach_media_diff_loader`) ----
+    //
+    // Every test above either calls `App::compute_media_diff[_with_cap]` directly (no dispatch
+    // machinery involved at all) or drives `poll_media_diff`/`apply_media_diff` through the
+    // synchronous no-`Sender` fallback (`spawn_or_sync_media_diff`'s own doc comment) — which
+    // bypasses `App::kick_media_diff`'s dedup/coalesce branch and `App::dispatch_media_diff`'s real
+    // thread spawn entirely, since the sync path never leaves a request "in flight" for a second
+    // call to observe. These tests attach a **real** `mpsc::channel` (`App::attach_media_diff_loader`,
+    // the exact production wiring `main.rs` uses) so a request genuinely stays in flight between two
+    // calls, and use `test_support::count_media_diff_dispatch_calls` to observe how many worker
+    // threads were actually spawned — the only way to exercise `kick_media_diff`'s dedup-vs-coalesce
+    // branch and `apply_media_diff`'s "dispatch the coalesced want" step at all.
+
+    /// Two `poll_media_diff` calls for the identical `(path, page, raster_px)`, before anything has
+    /// landed, dispatch only **one** worker — `media_diff_pending`'s own dedup check in
+    /// `poll_media_diff`.
+    #[test]
+    fn poll_media_diff_dedups_two_identical_polls_into_one_dispatch() {
+        let dir = unique_tmp("konoma_media_diff_dedup");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("pic.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3])))
+            .save(&png)
+            .unwrap();
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.attach_media_diff_loader(tx);
+
+        let (_, dispatches) = crate::test_support::count_media_diff_dispatch_calls(|| {
+            let _ = app.poll_media_diff(&png, 1, (400, 300));
+            let _ = app.poll_media_diff(&png, 1, (400, 300));
+        });
+        assert_eq!(
+            dispatches, 1,
+            "同一 want を2回 poll しても dispatch は1回のはず"
+        );
+
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker が結果を返す");
+        assert!(app.apply_media_diff(res), "現世代の結果は適用されるはず");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A raw raster image (PNG) doesn't depend on `raster_px` at all (`normalize_raster_px`'s own
+    /// doc comment) — two polls for the same `(path, page)` but two different `raster_px` boxes
+    /// (standing in for a terminal resize) still dispatch only **one** worker, and both requested
+    /// boxes are answered by the single landed result once it arrives.
+    #[test]
+    fn two_polls_with_different_raster_px_for_a_png_dispatch_only_once() {
+        let dir = unique_tmp("konoma_media_diff_raster_normalize");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("pic.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3])))
+            .save(&png)
+            .unwrap();
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.attach_media_diff_loader(tx);
+
+        let (_, dispatches) = crate::test_support::count_media_diff_dispatch_calls(|| {
+            let _ = app.poll_media_diff(&png, 1, (100, 100));
+            let _ = app.poll_media_diff(&png, 1, (900, 700));
+        });
+        assert_eq!(
+            dispatches, 1,
+            "ラスタ画像は raster_px に依存しないので、異なる箱を求めても再 dispatch しないはず"
+        );
+
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker が結果を返す");
+        assert!(app.apply_media_diff(res));
+        assert!(
+            app.poll_media_diff(&png, 1, (100, 100)).is_some(),
+            "どちらの raster_px でも同じ(正規化された)着地を引けるはず"
+        );
+        assert!(app.poll_media_diff(&png, 1, (900, 700)).is_some());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A burst of (invalidate + poll) cycles while a worker is already busy — an AI rewriting the
+    /// same file repeatedly, or a rapid string of page turns — coalesces into the single
+    /// `media_diff_queued` slot instead of piling up concurrent decodes: no extra dispatch happens
+    /// until the busy worker's result lands, and then exactly **one** follow-up dispatch fires, for
+    /// the *newest* want only (earlier coalesced wants are overwritten, never accumulated). The busy
+    /// worker's own result, once it does land, is itself stale by then (three invalidations bumped
+    /// `media_diff_gen` out from under it) — `apply_media_diff` returns `false` for it, proving the
+    /// stale-gen discard still holds even while this coalescing machinery is what freed the slot.
+    #[cfg(feature = "git")]
+    #[test]
+    fn coalesces_a_burst_of_invalidate_and_poll_into_one_follow_up_dispatch_for_the_newest_want() {
+        let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&pdf).unwrap();
+        let dir = unique_tmp("konoma_media_diff_coalesce");
+        std::fs::create_dir_all(&dir).unwrap();
+        init_git_repo(&dir);
+        let doc = dir.join("doc.pdf");
+        std::fs::write(&doc, &bytes).unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "init"]);
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.attach_media_diff_loader(tx);
+
+        let (_, dispatches) = crate::test_support::count_media_diff_dispatch_calls(|| {
+            // The first poll dispatches — the one worker slot is now busy.
+            let _ = app.poll_media_diff(&doc, 1, (800, 600));
+            // Three (invalidate + poll) bursts while that worker is still busy, each wanting a
+            // different page — PDF pages, unlike a raster image, genuinely depend on the request
+            // identity (`normalize_raster_px` leaves `Pdf`/`Svg` alone).
+            for pg in [2u32, 3, 2] {
+                app.invalidate_media_diff();
+                let _ = app.poll_media_diff(&doc, pg, (800, 600));
+            }
+        });
+        assert_eq!(
+            dispatches, 1,
+            "busy な間の invalidate+poll バーストは新規 dispatch を増やさないはず"
+        );
+        assert_eq!(
+            app.media_diff_queued,
+            Some((doc.clone(), 2, (800, 600))),
+            "coalesce された want は最新のものだけ(上書き、蓄積ではない)のはず"
+        );
+
+        // The busy worker's own result lands — its generation was superseded by the three
+        // invalidations above, so it's discarded...
+        let stale_res = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("busy だったワーカーが結果を返す");
+        let (applied, dispatches) = crate::test_support::count_media_diff_dispatch_calls(|| {
+            app.apply_media_diff(stale_res)
+        });
+        assert!(
+            !applied,
+            "3回 invalidate 済みなので gen が古く、この結果自体は捨てられるはず"
+        );
+        // ...but the slot is freed and the coalesced want (page 2) is dispatched immediately, in the
+        // very same call.
+        assert_eq!(
+            dispatches, 1,
+            "着地の瞬間に coalesce されていた want が1回だけ dispatch されるはず"
+        );
+        assert!(
+            app.media_diff_queued.is_none(),
+            "dispatch 後は queued スロットが空になるはず"
+        );
+
+        let res2 = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("coalesce された want のワーカーが結果を返す");
+        assert!(app.apply_media_diff(res2), "最新世代の結果は適用されるはず");
+        let outcome = app.poll_media_diff(&doc, 2, (800, 600));
+        assert!(
+            matches!(outcome, Some(MediaDiffOutcome::Ready { .. })),
+            "最新の want(page 2) の結果が着地しているはず: {outcome:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `media_diff_landed_for` must reject an old-generation landing: switching from A to B and
+    /// back to A, with A having **changed on disk** while B was on screen, must re-kick a fresh
+    /// computation for A rather than silently serving the stale (pre-change) landed result — the
+    /// same `(path, page, raster_px)` key would otherwise still "match" if generation weren't part
+    /// of the check.
+    #[test]
+    fn switching_a_to_b_to_a_with_a_changed_on_disk_re_kicks_rather_than_serving_stale_a() {
+        let dir = unique_tmp("konoma_media_diff_a_b_a_stale");
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.png");
+        let b = dir.join("b.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([1, 1, 1])))
+            .save(&a)
+            .unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(6, 6, image::Rgb([2, 2, 2])))
+            .save(&b)
+            .unwrap();
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+        let outcome_a1 = app.poll_media_diff(&a, 1, (400, 300)).unwrap();
+        let key_a1 = match outcome_a1 {
+            MediaDiffOutcome::Ready {
+                new: MediaDiffSide::Picture(p),
+                ..
+            } => p.cache_key,
+            other => panic!("A(1回目): Ready のはず: {other:?}"),
+        };
+
+        app.invalidate_media_diff();
+        let _ = app.poll_media_diff(&b, 1, (400, 300)).unwrap();
+
+        // A changes on disk while B is on screen (e.g. an AI rewriting the file).
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([9, 9, 9])))
+            .save(&a)
+            .unwrap();
+
+        app.invalidate_media_diff();
+        let outcome_a2 = app.poll_media_diff(&a, 1, (400, 300)).unwrap();
+        let (key_a2, natural_a2) = match outcome_a2 {
+            MediaDiffOutcome::Ready {
+                new: MediaDiffSide::Picture(p),
+                ..
+            } => (p.cache_key, p.natural_px),
+            other => panic!("A(2回目): Ready のはず: {other:?}"),
+        };
+        assert_ne!(
+            key_a1, key_a2,
+            "内容が変わったのでキーも変わるはず(古い A の着地を使い回していない)"
+        );
+        assert_eq!(
+            natural_a2,
+            (8, 8),
+            "変更後の A の実寸が反映されているはず(re-kick された証拠)"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

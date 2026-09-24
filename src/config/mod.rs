@@ -1027,6 +1027,8 @@ pub(crate) fn resolve_preview_kind(
     path: &Path,
     sniff: Option<&[u8]>,
 ) -> PreviewKind {
+    #[cfg(test)]
+    crate::test_support::note_resolve_preview_call();
     for rule in rules {
         if rule_matches(rule, path, sniff) {
             let kind = PreviewKind::from_rule(rule, path);

@@ -103,30 +103,23 @@ fn render_page_native(path: &Path, page: u32) -> Option<DynamicImage> {
 
 /// Rasterize page `page` (1-based) of an **in-memory** PDF — `hayro` only, no external-tool fallback
 /// at all (see `render_page_native_inner_bytes`'s own doc comment for why). Used by the media-diff
-/// worker (`app/media_diff.rs`) for both sides of a PDF diff: the old side never has a path (it comes
-/// from git/jj), and the new side is read into memory anyway to check the size cap and compare bytes
-/// (`docs/FEATURE-MEDIA-DIFF.md` §3), so there is nothing to gain from a second, path-based render for
-/// consistency between the two sides. Same panic net as `render_page_native`.
-// Not yet called from production code — see `app::media_diff`'s module doc comment for why (a later
-// phase of the same feature wires the consumer in). Exercised directly by `preview::pdf`'s and
-// `app::media_diff`'s own tests in the meantime.
-#[allow(dead_code)]
+/// worker (`app/media_diff.rs::decode_pdf_side`) for both sides of a PDF diff: the old side never has
+/// a path (it comes from git/jj), and the new side is read into memory anyway to check the size cap
+/// and compare bytes (`docs/FEATURE-MEDIA-DIFF.md` §3), so there is nothing to gain from a second,
+/// path-based render for consistency between the two sides. Same panic net as `render_page_native`.
 pub fn render_page_bytes(bytes: &[u8], page: u32) -> Option<DynamicImage> {
     crate::preview::markdown::catch_silent(|| render_page_native_inner_bytes(bytes, page)).flatten()
 }
 
 /// Page dimensions in PDF points (`page_ref.render_dimensions()` — the same domain
 /// `render_page_native_inner_bytes`'s own scale math already treats as "1 unit ≈ 1px"), 1-based
-/// `page`. Used to report a media-diff PDF side's *natural* size
-/// (`docs/FEATURE-MEDIA-DIFF.md` §1: "PDF はページの pt") without paying for a full render. `None`
-/// for an unreadable/corrupt PDF, a caught panic, or a page number out of range.
-// Not yet called from production code — see `render_page_bytes`'s own comment above for why.
-#[allow(dead_code)]
+/// `page`. Used by the media-diff worker (`app/media_diff.rs::decode_pdf_side`) to report a PDF
+/// side's *natural* size (`docs/FEATURE-MEDIA-DIFF.md` §1: "PDF はページの pt") without paying for a
+/// full render. `None` for an unreadable/corrupt PDF, a caught panic, or a page number out of range.
 pub fn page_dimensions_bytes(bytes: &[u8], page: u32) -> Option<(f32, f32)> {
     crate::preview::markdown::catch_silent(|| page_dimensions_bytes_inner(bytes, page)).flatten()
 }
 
-#[allow(dead_code)] // only called from `page_dimensions_bytes` above, itself not yet live.
 fn page_dimensions_bytes_inner(bytes: &[u8], page: u32) -> Option<(f32, f32)> {
     let pdf = hayro::hayro_syntax::Pdf::new(bytes.to_vec()).ok()?;
     let pages: Vec<_> = pdf.pages().iter().collect();
@@ -602,12 +595,10 @@ fn page_count_impl(path: &Path, max_bytes: u64) -> Option<u32> {
 }
 
 /// `page_count`, from bytes already in memory rather than a path — used by the media-diff worker
-/// (`app/media_diff.rs`) for a side with no path (the old version, read from git/jj) as well as the
-/// new side (already read into memory for the size-cap/`same_bytes` check anyway). Same
-/// `PAGE_COUNT_MAX_BYTES` cap as the path version, checked against the byte slice's own length
+/// (`app/media_diff.rs::decode_pdf_side`) for a side with no path (the old version, read from git/jj)
+/// as well as the new side (already read into memory for the size-cap/`same_bytes` check anyway).
+/// Same `PAGE_COUNT_MAX_BYTES` cap as the path version, checked against the byte slice's own length
 /// rather than a `stat` (there is no file to stat).
-// Not yet called from production code — see `render_page_bytes`'s own comment for why.
-#[allow(dead_code)]
 pub fn page_count_bytes(bytes: &[u8]) -> Option<u32> {
     if bytes.len() as u64 > PAGE_COUNT_MAX_BYTES {
         return None;

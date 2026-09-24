@@ -215,10 +215,7 @@ impl App {
         // though git's raw line diff for them is always empty (binary) — their `Rendered` presentation
         // is the side-by-side view (`App::diff_media_active`), whose own worker resolves added/
         // deleted/identical, so `media_side_by_side` below bypasses the empty-diff check for them.
-        let media_side_by_side = matches!(
-            self.cfg.resolve_preview(path),
-            PreviewKind::Image(_) | PreviewKind::Svg(_) | PreviewKind::Pdf(_)
-        );
+        let media_side_by_side = self.diff_media_capable(path);
         if self.cfg.ui.follow_view != "file" && !self.follow_previews_instead_of_diff(path) {
             // Follow-originated → baseline diff since start (or the conventional full diff if follow_diff_full).
             let diff = self.compute_gitdiff_lines(path, true);

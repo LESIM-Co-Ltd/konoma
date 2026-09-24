@@ -1763,10 +1763,30 @@ pub struct App {
     /// than blocking.
     md_diff_landed: Option<(PathBuf, MdDiffKind, u64, MdDiffOutcome)>,
     /// `(path, page, raster_px)` a media diff (`docs/FEATURE-MEDIA-DIFF.md`) is being computed for
-    /// on a separate thread. Mirrors `md_diff_pending`'s own shape/doc comment, keyed on the fuller
-    /// request identity since a page turn or a resize (which changes `raster_px`) is itself a new
-    /// request for the same `path`.
+    /// on a separate thread, **for the current generation** — cleared by `App::invalidate_media_diff`
+    /// (a bumped `media_diff_gen` makes this identity stale even though the underlying worker thread
+    /// is still physically running) as well as by `App::apply_media_diff` once that thread's result
+    /// lands. `App::poll_media_diff` dedupes an exact repeat want against this (and against
+    /// `media_diff_queued`) so it never asks twice for the identical thing; it is deliberately
+    /// **not** what gates direct-dispatch-vs-coalesce (`media_diff_worker_busy` does that) — those
+    /// are different questions ("is this exact want already accounted for, under the current
+    /// baseline" vs. "is a thread physically occupying the one worker slot right now").
     media_diff_pending: Option<(PathBuf, u32, (u32, u32))>,
+    /// Whether a media-diff worker thread is currently running, from the moment it's dispatched
+    /// (`App::dispatch_media_diff`) until its result — accepted or stale — lands
+    /// (`App::apply_media_diff`). **Not** cleared by `App::invalidate_media_diff`: the real thread
+    /// doesn't stop just because the baseline it was computing against went stale, so this has to
+    /// stay `true` until that thread actually reports back. `App::kick_media_diff` reads this to
+    /// decide direct-dispatch vs. coalesce (`media_diff_queued`) — enforcing "at most one worker in
+    /// flight at a time" (`docs/FEATURE-MEDIA-DIFF.md`'s perf note) even across a burst of
+    /// invalidations from an AI repeatedly rewriting the same image.
+    media_diff_worker_busy: bool,
+    /// The one request coalesced behind an in-flight worker (`App::kick_media_diff`) — overwritten,
+    /// never accumulated, by every further want that arrives while `media_diff_worker_busy` is still
+    /// `true`, so only the *newest* one is ever dispatched next. `App::apply_media_diff` takes and
+    /// dispatches this the moment the busy worker's result lands, whether or not that result was
+    /// itself stale.
+    media_diff_queued: Option<(PathBuf, u32, (u32, u32))>,
     /// Generation of the media-diff computation. Mirrors `md_diff_gen`'s own doc comment
     /// (`App::invalidate_media_diff`, called from `App::invalidate_diff_caches`, bumps this).
     media_diff_gen: u64,
@@ -1777,6 +1797,18 @@ pub struct App {
     /// The last landed media diff, tagged with the `(path, page, raster_px, gen)` it answers. Mirrors
     /// `md_diff_landed`'s own doc comment.
     media_diff_landed: Option<MediaDiffLandedKey>,
+    /// `(path, Config::resolve_preview(path))`, memoized for whatever `path` the diff surface is
+    /// currently (re)targeted at — `App::diff_target_kind` is the sole reader/writer contract
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §6's perf note). `resolve_preview` is real I/O for an
+    /// extension-less/MIME-sniffed rule (`infer::get_from_path` opens and reads the file), and
+    /// `diff_media_active`/`diff_binary_summary_eligible`/`diff_representations` (and everything the
+    /// footer/help/render path derives from them) used to call it fresh every single frame — up to
+    /// 4× per frame while a media diff was on screen, measured at ~81µs each for a PNG. Refreshed by
+    /// `App::refresh_diff_target_kind_cache`, called from `App::invalidate_diff_caches` — which
+    /// `App::open_git_diff_with` always calls after already updating `tab.preview_kind` to the new
+    /// target, so a (re)target and an invalidation-only refresh (a working-tree/follow-session
+    /// change against the *same* still-open target) both go through the one place.
+    diff_target_kind_cache: Option<(PathBuf, PreviewKind)>,
     /// The **repo workdir** at which `git_ignored` (heavy) was computed. If it is the same, root moves within the same repository
     /// do not rebuild it (avoids the 410ms recomputation when descending into a subdirectory with `l`).
     git_ignored_for: Option<PathBuf>,
@@ -3174,9 +3206,12 @@ impl App {
             md_diff_tx: None,
             md_diff_landed: None,
             media_diff_pending: None,
+            media_diff_worker_busy: false,
+            media_diff_queued: None,
             media_diff_gen: 0,
             media_diff_tx: None,
             media_diff_landed: None,
+            diff_target_kind_cache: None,
             git_ignored_for: None,
             git_ignored_pending: None,
             git_ignored_gen: 0,
@@ -4675,6 +4710,12 @@ impl App {
         self.tab.preview_kind = None;
         self.clear_command_out(); // release any delegated-command temp output
         self.clear_image(); // release the graphics state
+                            // Leaving the diff surface altogether (q/Esc back to the tree, or through `close_git_diff`
+                            // on the way to the Git hub) — nothing will ever poll/land a media diff again until some
+                            // unrelated one is opened later, so its last-viewed `media-diff://` rasters would otherwise
+                            // sit in `md_image_cache` orphaned forever (`App::prune_media_diff_picture_cache`'s own doc
+                            // comment). A no-op (cheap `retain` over an empty match) whenever there wasn't one.
+        self.prune_media_diff_picture_cache();
         self.md_cache = None;
         self.tab.md_raw = false;
         self.preview_win = None;
