@@ -233,14 +233,26 @@ impl App {
         let old_len = old_bytes.as_ref().map(|b| b.len() as u64);
         let old_over_cap = old_len.is_some_and(|n| n > cap);
 
-        let new_meta_len = std::fs::metadata(&req.path).ok().map(|m| m.len());
+        let new_meta = std::fs::metadata(&req.path).ok();
+        let new_meta_len = new_meta.as_ref().map(|m| m.len());
         // Existence, independent of whether the bytes end up read at all (over-cap skips the read
         // below but the file still exists) — used just below to decide which classification rule
         // this reaches for (`Config::resolve_preview`'s own path-based rules for an existing file,
         // vs. sniffing the *old* bytes for one that's gone, `docs/FEATURE-MEDIA-DIFF.md` §2). Using
         // `new_bytes.is_some()` for that instead (as this used to) would misclassify a still-existing
         // over-cap file as if it had been deleted, once its own read is skipped below.
-        let new_exists = new_meta_len.is_some();
+        //
+        // **Requires `is_file()`, not just "metadata answers at all"**: a directory now sitting where
+        // the new side's path used to be a regular file (a rename/rewrite race, or an agent replacing
+        // a file with a folder) still has metadata (a directory has a size and mtime too), but is
+        // never something this side can meaningfully read/classify — treating it as "exists" would
+        // route classification through `Config::resolve_preview`'s own path rules, whose mime match
+        // needs to actually read the path's bytes (`infer::get_from_path`) and fails outright on a
+        // directory, so the whole diff would degrade to the binary-summary line even when the *old*
+        // side is a perfectly good, classifiable picture. Treating it as absent instead routes
+        // classification through the old bytes' own sniff (same as a genuinely deleted new side), so
+        // a still-valid old picture is shown alongside an `Absent` new side rather than neither.
+        let new_exists = new_meta.is_some_and(|m| m.is_file());
         let new_over_cap = new_meta_len.is_some_and(|n| n > cap);
         let new_bytes = if new_over_cap {
             None // known too large from metadata alone — never read.
@@ -481,16 +493,33 @@ impl App {
     /// mermaid/math key (`is_media_diff_url` alone gates the predicate, mirroring `App::apply_media_
     /// diff`'s own `retain`). Called wherever the diff surface stops being able to ever repopulate
     /// them itself, which `App::apply_media_diff`'s own landing-triggered prune (`live_cache_keys`)
-    /// cannot cover because there is no further landing to piggyback on:
+    /// cannot cover because there is no further landing to piggyback on.
+    ///
+    /// **The actual rule, unconditionally**: `media-diff://` pictures are dropped the moment the
+    /// *active tab's own view* is no longer a media diff — whether that's because the diff was
+    /// closed, retargeted to a non-media file, **or the active tab was switched to a different
+    /// one** (`App::invalidate_diff_caches` runs on every tab switch via `load_active` →
+    /// `refresh_fs_after_tab_switch`, not only on a genuine retarget of the *same* tab's target).
+    /// `media_diff_landed`/`media_diff_pending`/`md_image_cache` are all `App`-level, not per-tab,
+    /// so this is true even for a tab that never itself changed what it's diffing — switching away
+    /// from it to *any* other tab (even a plain Tree one) frees its still-open media diff's pixels
+    /// exactly the same way `back_to_tree` does, and switching back re-kicks a fresh computation
+    /// (`switching_to_another_tab_and_back_redraws_both_pictures` pins the re-kick half of this).
+    /// This is deliberate memory-vs-recompute behavior, not a bug: at most one tab's media-diff
+    /// pixels are ever resident at a time.
+    ///
+    /// Concretely, called from:
     ///
     /// - `App::back_to_tree` (q/Esc closing the diff back to the tree, or to the Git hub via
     ///   `App::close_git_diff`'s own call into it) — the diff surface is left altogether, so nothing
     ///   will ever poll/land a media diff again until some *unrelated* one is opened later, which
     ///   could be a long time (or never, for the rest of the session).
-    /// - `App::invalidate_diff_caches`, when the freshly (re)targeted path isn't media-diff-capable
-    ///   at all (retargeting from an image/PDF/SVG diff to, say, a Markdown/code file) — that target
-    ///   will never land a fresh `Ready` picture of its own, so `apply_media_diff`'s prune never runs
-    ///   again for the previous target's now-orphaned keys either.
+    /// - `App::invalidate_diff_caches`, whenever the tab's currently-active view isn't a
+    ///   media-diff-capable `GitDiff` target — that covers both an in-place retarget (an image/PDF/
+    ///   SVG diff switching to, say, a Markdown/code file) *and* a tab switch landing on any tab
+    ///   whose own target isn't itself a media diff (see above) — either way that view will never
+    ///   land a fresh `Ready` picture of its own, so `apply_media_diff`'s prune never runs again for
+    ///   the previous target's now-orphaned keys either.
     ///
     /// Before this existed, either case left the last-viewed media diff's decoded rasters resident in
     /// `md_image_cache` forever (`docs/FEATURE-MEDIA-DIFF.md` §4's "対象を変えたら media-diff:// の
@@ -1553,6 +1582,39 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Unlike `new_side_over_cap_alone_degrades_to_summary` above (whose garbage-bytes fixture
+    /// fails `classify_kind` regardless of the cap check — `rule_matches`' mime branch sniffs the
+    /// *real* file at `path` via `infer::get_from_path` even when `sniff` is `None`, so invalid
+    /// magic bytes alone already forces `Summary`, independent of `over_cap` — this uses a **real,
+    /// decodable** PNG whose actual byte length exceeds `cap`: genuinely discriminating, since a
+    /// mutant that skips the metadata-based skip-the-read step would classify it as `Image` and
+    /// actually decode it (`Ready`), not degrade to `Summary`.
+    #[test]
+    fn new_side_real_decodable_png_over_cap_still_degrades_to_summary() {
+        let dir = unique_tmp("konoma_media_diff_cap_new_over_real_png");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("big.png");
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(20, 20, image::Rgb([9, 9, 9])))
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        std::fs::write(&png, &bytes).unwrap();
+        let cap = (bytes.len() as u64) - 1; // strictly under the file's real size.
+        let r = req(png, dir.clone(), DiffBaseline::Empty);
+        match App::compute_media_diff_with_cap(&r, cap) {
+            MediaDiffComputed::Summary { new_len, .. } => {
+                assert_eq!(new_len, Some(bytes.len() as u64));
+            }
+            other => panic!(
+                "実在する有効な PNG でも cap 超過なら Summary のはず(実際にデコードされてはいけない): {other:?}"
+            ),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Mutation-proving: if `classify_kind` degenerated into "always picture-capable", this would
     /// come back `Ready` instead — pins the actual branch fires.
     #[test]
@@ -2394,7 +2456,7 @@ mod tests {
             // Three (invalidate + poll) bursts while that worker is still busy, each wanting a
             // different page — PDF pages, unlike a raster image, genuinely depend on the request
             // identity (`normalize_raster_px` leaves `Pdf`/`Svg` alone).
-            for pg in [2u32, 3, 2] {
+            for pg in [3u32, 4, 2] {
                 app.invalidate_media_diff();
                 let _ = app.poll_media_diff(&doc, pg, (800, 600));
             }
@@ -2498,6 +2560,176 @@ mod tests {
             (8, 8),
             "変更後の A の実寸が反映されているはず(re-kick された証拠)"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A stale landing (its `gen` superseded) with **nothing** coalesced behind it
+    /// (`media_diff_queued` empty at that moment) must still free the one worker slot —
+    /// otherwise `media_diff_worker_busy` is stuck `true` forever (no queued want to dispatch, and
+    /// no future worker is ever spawned to eventually call `apply_media_diff` again), and every
+    /// later `poll_media_diff` for anything at all just silently coalesces into `media_diff_queued`
+    /// without ever dispatching. `apply_media_diff`'s own doc comment says this is unconditional
+    /// ("Always frees the one worker slot first") — this pins it against a mutant that only frees
+    /// the slot inside the non-stale branch.
+    #[test]
+    fn a_stale_landing_with_nothing_queued_still_frees_the_worker_slot() {
+        let dir = unique_tmp("konoma_media_diff_stale_no_queue_frees_slot");
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.png");
+        let b = dir.join("b.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([1, 1, 1])))
+            .save(&a)
+            .unwrap();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(6, 6, image::Rgb([2, 2, 2])))
+            .save(&b)
+            .unwrap();
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.attach_media_diff_loader(tx);
+
+        // Dispatch for A — the one worker slot is now busy.
+        let _ = app.poll_media_diff(&a, 1, (400, 300));
+        // Invalidate (no further poll yet) — bumps gen, does NOT touch worker_busy/queued. The
+        // in-flight A worker's eventual result is now stale, and nothing is queued behind it.
+        app.invalidate_media_diff();
+        assert!(
+            app.media_diff_queued.is_none(),
+            "前提: この時点で何も queue されていない"
+        );
+
+        // The busy (now-stale) worker's own result lands.
+        let stale_res = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("A のワーカーが結果を返す");
+        assert!(
+            !app.apply_media_diff(stale_res),
+            "gen が古いので適用されないはず"
+        );
+
+        // A brand new want (B) must actually dispatch a fresh worker now — the slot must have been
+        // freed by the stale landing above, even though nothing was queued to piggyback on.
+        let (_, dispatches) = crate::test_support::count_media_diff_dispatch_calls(|| {
+            let _ = app.poll_media_diff(&b, 1, (400, 300));
+        });
+        assert_eq!(
+            dispatches, 1,
+            "stale landing (キューなし) の後は worker slot が解放され、新規 want は即 dispatch されるはず \
+             (解放されないと診断が永久に止まる)"
+        );
+        let res_b = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("B のワーカーが結果を返す");
+        assert!(
+            app.apply_media_diff(res_b),
+            "最新世代の B の結果は適用されるはず"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// PROBE (rereview, cross-tab): switching away from a tab showing a landed media diff to a
+    /// non-media tab, and back, still shows both pictures — the picture cache is pruned on the
+    /// switch-away (see `App::prune_media_diff_picture_cache`'s doc comment: any moment the active
+    /// tab's view stops being a media diff frees the pixels), but the switch-back correctly
+    /// re-kicks a fresh computation rather than leaving a stale placeholder.
+    #[cfg(feature = "git")]
+    #[test]
+    fn switching_to_another_tab_and_back_redraws_both_pictures() {
+        let dir = unique_tmp("konoma_media_diff_tab_switch_redraw");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("pic.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([1, 1, 1])))
+            .save(&png)
+            .unwrap();
+        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+
+        // Tab 0: open a media diff and let it land.
+        app.open_git_diff(&png);
+        let outcome = app
+            .poll_media_diff(&png, app.diff_media_page(), (400, 300))
+            .unwrap();
+        let key = match outcome {
+            MediaDiffOutcome::Ready {
+                new: MediaDiffSide::Picture(p),
+                ..
+            } => p.cache_key,
+            other => panic!("Ready のはず: {other:?}"),
+        };
+        assert!(
+            app.md_image_cache_contains(&key),
+            "前提: 着地して cache に乗る"
+        );
+
+        // Tab 1: a fresh Tree tab, then switch away and back — a genuine load_active round trip
+        // against a non-media target and then back to the still-open media diff.
+        app.tab_new().unwrap();
+        app.tab_goto(0);
+        app.tab_goto(1);
+        assert!(
+            !app.md_image_cache_contains(&key),
+            "非 media タブへ切り替えたら picture は破棄されるはず(メモリは解放される)"
+        );
+
+        app.tab_goto(0);
+        let outcome2 = app
+            .poll_media_diff(&png, app.diff_media_page(), (400, 300))
+            .unwrap();
+        assert!(
+            matches!(
+                outcome2,
+                MediaDiffOutcome::Ready {
+                    new: MediaDiffSide::Picture(_),
+                    ..
+                }
+            ),
+            "タブへ戻ったら re-kick されて絵が再着地するはず: {outcome2:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A path that's become a **directory** (not a regular file) is treated the same as a deleted
+    /// new side, not as an existing-but-unreadable file — `new_exists` means "a regular file is
+    /// there", not merely "something answers `fs::metadata`". Classification for the new side falls
+    /// back to sniffing the old bytes (as it would for a genuinely deleted path), and the new side
+    /// itself lands `Absent`, not a spurious `Failed { "image decode failed" }`.
+    #[test]
+    fn a_directory_at_the_new_path_is_treated_as_absent_not_an_existing_unreadable_file() {
+        let dir = unique_tmp("konoma_media_diff_new_side_is_directory");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("was_a_file.png");
+        // The old side has real committed bytes (a valid PNG); the new "file" is actually a
+        // directory now — e.g. a rename/rewrite race, or an agent replacing a file with a folder.
+        let mut old_bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(3, 3, image::Rgb([7, 7, 7])))
+            .write_to(
+                &mut std::io::Cursor::new(&mut old_bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        std::fs::create_dir_all(&png).unwrap(); // `png` is now a directory, not a file.
+
+        let r = MediaDiffRequest {
+            gen: 1,
+            path: png,
+            root: dir.clone(),
+            baseline: DiffBaseline::FollowSnapshot(old_bytes.clone()),
+            page: 1,
+            raster_px: (400, 300),
+            preview_rules: Config::default().preview.rules,
+            preview_commands: true,
+        };
+        match App::compute_media_diff(&r) {
+            MediaDiffComputed::Ready { old, new, .. } => {
+                assert!(
+                    matches!(old, MediaDiffSideDecoded::Picture(_)),
+                    "旧版は実バイト列からデコードされるはず: {old:?}"
+                );
+                assert!(
+                    matches!(new, MediaDiffSideDecoded::Absent),
+                    "新版はディレクトリなので Absent のはず(Failed ではない): {new:?}"
+                );
+            }
+            other => panic!("旧版が PNG として分類されるので Ready のはず: {other:?}"),
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }

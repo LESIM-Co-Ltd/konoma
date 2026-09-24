@@ -99,6 +99,15 @@ impl App {
     /// input that computation reads (`diff_follow_scope`, `follow_diff_full`, the file's own bytes,
     /// the baseline) changes only at one of this fn's own call sites, so it goes stale at exactly
     /// the same moments the caches above do.
+    ///
+    /// **Also runs on every tab switch and every FS-watch refresh**, not only the explicit retarget
+    /// call sites listed above — `bookmark_actions.rs::refresh_fs_inner` calls this unconditionally,
+    /// and both `load_active` (tab switch) and the fs-watcher path (`refresh_fs_changed`/
+    /// `refresh_fs_watched`) go through it. That matters for the media-diff picture cache below:
+    /// switching the *active* tab to one whose own target isn't a media diff prunes the (App-level,
+    /// not per-tab) `media-diff://` cache exactly as if the diff had been closed, even for a
+    /// different, still-backgrounded tab that never itself retargeted
+    /// (`App::prune_media_diff_picture_cache`'s own doc comment has the full rule).
     pub(super) fn invalidate_diff_caches(&mut self) {
         self.diff_cache = None;
         if matches!(&self.md_cache, Some(c) if c.source == MdCacheSource::Diff) {
@@ -111,13 +120,16 @@ impl App {
         // retarget (`App::open_git_diff_with` always sets `tab.preview_kind` before calling this)
         // and an invalidation-only refresh of the still-current target.
         self.refresh_diff_target_kind_cache();
-        // A retarget to a non-media-capable path (Markdown/code/text/…) will never land a fresh
-        // `Ready` picture of its own, so `App::apply_media_diff`'s own landing-triggered prune never
-        // runs again for whatever media diff was open *before* this retarget — prune its now-orphaned
-        // `media-diff://` cache entries right here instead (`App::prune_media_diff_picture_cache`'s
-        // own doc comment). A target that *is* media-capable is left alone: its own landing (once it
-        // arrives) prunes correctly via `live_cache_keys`, and pruning pre-emptively here would just
-        // flash the picture away and immediately redraw it.
+        // Whenever the active tab's own current view isn't itself a media-capable GitDiff target —
+        // an in-place retarget to a non-media path (Markdown/code/text/…), or simply a tab switch
+        // landing on a tab whose view isn't a media diff at all (this fn runs on every tab switch,
+        // see its own doc comment) — that view will never land a fresh `Ready` picture of its own,
+        // so `App::apply_media_diff`'s own landing-triggered prune never runs again for whatever
+        // media diff was open *before* this — prune its now-orphaned `media-diff://` cache entries
+        // right here instead (`App::prune_media_diff_picture_cache`'s own doc comment: this is the
+        // real rule, not just "on retarget"). A target that *is* media-capable is left alone: its
+        // own landing (once it arrives) prunes correctly via `live_cache_keys`, and pruning
+        // pre-emptively here would just flash the picture away and immediately redraw it.
         let still_media = matches!(&self.tab.preview_kind, Some(PreviewKind::GitDiff(p)) if self.diff_media_capable(p));
         if !still_media {
             self.prune_media_diff_picture_cache();
