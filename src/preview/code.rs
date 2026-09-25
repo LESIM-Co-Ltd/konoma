@@ -717,7 +717,7 @@ mod tests {
             "lua の文法が解決できない(テスト前提が崩れている)"
         );
 
-        warm_dir(dir.clone());
+        warm_dir(dir.to_path_buf());
         let alloc = crate::mem_tests::allocated_by(|| {
             let lines = highlight(src, &f, "TwoDark");
             assert!(!lines.is_empty());

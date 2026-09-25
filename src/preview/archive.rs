@@ -418,7 +418,7 @@ mod tests {
         );
     }
 
-    fn tmp_dir(name: &str) -> std::path::PathBuf {
+    fn tmp_dir(name: &str) -> crate::test_support::TmpDir {
         let dir = unique_tmp(&format!("konoma_archive_test_{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

@@ -641,7 +641,7 @@ mod tests {
     // directory" fixture really does resolve to `workdir(..) == None`.
 
     #[cfg(feature = "git")]
-    fn detect_with_empty_dir(prefix: &str) -> PathBuf {
+    fn detect_with_empty_dir(prefix: &str) -> crate::test_support::TmpDir {
         let dir = crate::test_support::unique_tmp(prefix);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -650,7 +650,7 @@ mod tests {
     /// A directory with only `.git` — a real (tiny) repository, via the same `git2::Repository::init`
     /// pattern `git::tests::init_repo` uses.
     #[cfg(feature = "git")]
-    fn detect_with_git_only_dir() -> PathBuf {
+    fn detect_with_git_only_dir() -> crate::test_support::TmpDir {
         let dir = detect_with_empty_dir("konoma_vcs_detect_git_only");
         git2::Repository::init(&dir).unwrap();
         dir
@@ -660,7 +660,7 @@ mod tests {
     /// filesystem walk for the nearest ancestor holding `.jj` (see its own doc comment) — jj is
     /// never actually launched to build this fixture.
     #[cfg(feature = "git")]
-    fn detect_with_jj_only_dir() -> PathBuf {
+    fn detect_with_jj_only_dir() -> crate::test_support::TmpDir {
         let dir = detect_with_empty_dir("konoma_vcs_detect_jj_only");
         std::fs::create_dir_all(dir.join(".jj")).unwrap();
         dir
@@ -669,7 +669,7 @@ mod tests {
     /// Colocated: `.git` and `.jj` side by side — the shape `jj git init --colocate` produces, and
     /// the one real-world onboarding path this repository had zero fixtures for before this.
     #[cfg(feature = "git")]
-    fn detect_with_colocated_dir() -> PathBuf {
+    fn detect_with_colocated_dir() -> crate::test_support::TmpDir {
         let dir = detect_with_empty_dir("konoma_vcs_detect_colocated");
         git2::Repository::init(&dir).unwrap();
         std::fs::create_dir_all(dir.join(".jj")).unwrap();
@@ -678,7 +678,7 @@ mod tests {
 
     /// Neither — a plain directory with no VCS marker at all.
     #[cfg(feature = "git")]
-    fn detect_with_neither_dir() -> PathBuf {
+    fn detect_with_neither_dir() -> crate::test_support::TmpDir {
         detect_with_empty_dir("konoma_vcs_detect_neither")
     }
 

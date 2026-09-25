@@ -355,9 +355,8 @@ mod tests {
     use super::*;
     use crate::test_support::unique_tmp;
     use std::io::Write;
-    use std::path::PathBuf;
 
-    fn tmp(name: &str, bytes: &[u8]) -> PathBuf {
+    fn tmp(name: &str, bytes: &[u8]) -> crate::test_support::TmpDir {
         let p = unique_tmp(&format!("konoma_window_{name}"));
         let mut f = File::create(&p).unwrap();
         f.write_all(bytes).unwrap();

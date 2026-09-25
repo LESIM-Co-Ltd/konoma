@@ -82,7 +82,7 @@ fn mem_calibration() {
 
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let mut app = crate::app::App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = crate::app::App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.selected = app
         .tab
         .entries
@@ -112,7 +112,7 @@ fn mem_calibration() {
         }
         let f = dir.join(format!("huge_{lines}.txt"));
         std::fs::write(&f, &body).unwrap();
-        let mut a = crate::app::App::new(dir.clone(), Config::default()).unwrap();
+        let mut a = crate::app::App::new(dir.to_path_buf(), Config::default()).unwrap();
         a.tab.selected = a.tab.entries.iter().position(|e| e.path == f).unwrap();
         let mut t2 = Terminal::new(TestBackend::new(80, 30)).unwrap();
         let alloc = allocated_by(|| {
@@ -176,7 +176,7 @@ fn md_scroll_reuses_cache_not_redecorate() {
     use crate::config::Config;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let mut app = crate::app::App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = crate::app::App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.selected = app
         .tab
         .entries
