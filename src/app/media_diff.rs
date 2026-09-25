@@ -1142,7 +1142,7 @@ mod tests {
     /// (konoma falls back to git there, so the suite must stay green without it; mirrors
     /// `app::tests::jj_scratch`, duplicated locally since that one is private to its own module).
     #[cfg(feature = "git")]
-    fn jj_scratch(name: &str) -> Option<PathBuf> {
+    fn jj_scratch(name: &str) -> Option<crate::test_support::TmpDir> {
         if !crate::vcs::jj::available() {
             return None;
         }
@@ -1175,7 +1175,7 @@ mod tests {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3])))
             .save(&png)
             .unwrap();
-        let r = req(png, dir.clone(), DiffBaseline::Empty);
+        let r = req(png, dir.to_path_buf(), DiffBaseline::Empty);
         match App::compute_media_diff(&r) {
             MediaDiffComputed::Ready { kind, old, new, .. } => {
                 assert_eq!(kind, MediaDiffKind::Image);
@@ -1205,7 +1205,7 @@ mod tests {
                 image::ImageFormat::Png,
             )
             .unwrap();
-        let r = req(png, dir.clone(), DiffBaseline::FollowSnapshot(bytes));
+        let r = req(png, dir.to_path_buf(), DiffBaseline::FollowSnapshot(bytes));
         match App::compute_media_diff(&r) {
             MediaDiffComputed::Ready { kind, old, new, .. } => {
                 assert_eq!(
@@ -1234,7 +1234,7 @@ mod tests {
             )
             .unwrap();
         std::fs::write(&png, &bytes).unwrap();
-        let r = req(png, dir.clone(), DiffBaseline::FollowSnapshot(bytes));
+        let r = req(png, dir.to_path_buf(), DiffBaseline::FollowSnapshot(bytes));
         match App::compute_media_diff(&r) {
             MediaDiffComputed::Ready { same_bytes, .. } => {
                 assert!(same_bytes, "同一バイト列なら same_bytes のはず");
@@ -1267,7 +1267,11 @@ mod tests {
             .unwrap();
             b
         };
-        let r = req(png, dir.clone(), DiffBaseline::FollowSnapshot(good_old));
+        let r = req(
+            png,
+            dir.to_path_buf(),
+            DiffBaseline::FollowSnapshot(good_old),
+        );
         match App::compute_media_diff(&r) {
             MediaDiffComputed::Ready { old, new, .. } => {
                 assert!(
@@ -1294,7 +1298,7 @@ mod tests {
         std::fs::write(&mp4, b"0123456789").unwrap();
         let r = req(
             mp4,
-            dir.clone(),
+            dir.to_path_buf(),
             DiffBaseline::FollowSnapshot(b"01234".to_vec()),
         );
         match App::compute_media_diff(&r) {
@@ -1334,7 +1338,7 @@ mod tests {
         let r = MediaDiffRequest {
             gen: 1,
             path: svg.clone(),
-            root: dir.clone(),
+            root: dir.to_path_buf(),
             baseline: DiffBaseline::Empty,
             page: 1,
             raster_px: (100, 50), // height (50) is the *smaller* component — must not be used alone.
@@ -1374,7 +1378,7 @@ mod tests {
         let r = MediaDiffRequest {
             gen: 1,
             path: svg.clone(),
-            root: dir.clone(),
+            root: dir.to_path_buf(),
             baseline: DiffBaseline::Empty,
             page: 1,
             raster_px: (50, 100), // width (50) is the *smaller* component this time.
@@ -1412,7 +1416,7 @@ mod tests {
         // Content is irrelevant — once metadata alone says it's over cap, the bytes are never read
         // at all (`compute_media_diff_with_cap`'s own doc comment on the new side).
         std::fs::write(&png, vec![0u8; 100]).unwrap();
-        let r = req(png, dir.clone(), DiffBaseline::Empty);
+        let r = req(png, dir.to_path_buf(), DiffBaseline::Empty);
         match App::compute_media_diff_with_cap(&r, 50) {
             MediaDiffComputed::Summary {
                 old_len, new_len, ..
@@ -1442,7 +1446,7 @@ mod tests {
         // snapshot is always fully in hand once resolved, so its length is only known this way.
         let r = req(
             png,
-            dir.clone(),
+            dir.to_path_buf(),
             DiffBaseline::FollowSnapshot(vec![2u8; 100]),
         );
         match App::compute_media_diff_with_cap(&r, 50) {
@@ -1479,7 +1483,7 @@ mod tests {
             .unwrap();
         std::fs::write(&png, &bytes).unwrap();
         let cap = bytes.len() as u64; // n == cap, exactly.
-        let r = req(png, dir.clone(), DiffBaseline::Empty);
+        let r = req(png, dir.to_path_buf(), DiffBaseline::Empty);
         match App::compute_media_diff_with_cap(&r, cap) {
             MediaDiffComputed::Ready { new, .. } => {
                 assert!(
@@ -1513,7 +1517,7 @@ mod tests {
             .unwrap();
         std::fs::write(&png, &bytes).unwrap();
         let cap = (bytes.len() as u64) - 1; // strictly under the file's real size.
-        let r = req(png, dir.clone(), DiffBaseline::Empty);
+        let r = req(png, dir.to_path_buf(), DiffBaseline::Empty);
         match App::compute_media_diff_with_cap(&r, cap) {
             MediaDiffComputed::Summary { new_len, .. } => {
                 assert_eq!(new_len, Some(bytes.len() as u64));
@@ -1547,7 +1551,7 @@ mod tests {
         std::fs::write(&png, vec![0u8; 100]).unwrap(); // "big" only relative to the tiny test cap below
         let r = req(
             png,
-            dir.clone(),
+            dir.to_path_buf(),
             DiffBaseline::FollowSnapshot(vec![0u8; 100]),
         );
         // Sanity: under a real-sized cap this would be a Ready (Image, by content sniff/extension).
@@ -1578,7 +1582,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let pdf = dir.join("doc.pdf");
         std::fs::write(&pdf, &bytes).unwrap(); // sample.pdf is a known 3-page document
-        let mut r = req(pdf, dir.clone(), DiffBaseline::FollowSnapshot(bytes));
+        let mut r = req(pdf, dir.to_path_buf(), DiffBaseline::FollowSnapshot(bytes));
         r.page = 999;
         match App::compute_media_diff(&r) {
             MediaDiffComputed::Ready { old, new, .. } => {
@@ -1627,7 +1631,7 @@ mod tests {
         };
         std::fs::write(&png, &new_bytes).unwrap();
 
-        let r = req(png, dir.clone(), DiffBaseline::Vcs);
+        let r = req(png, dir.to_path_buf(), DiffBaseline::Vcs);
         match App::compute_media_diff(&r) {
             MediaDiffComputed::Ready { base, old, .. } => {
                 assert_eq!(base, MediaBase::Head);
@@ -1659,7 +1663,7 @@ mod tests {
             b
         };
         std::fs::write(&png, &bytes).unwrap();
-        let r = req(png, dir.clone(), DiffBaseline::FollowSnapshot(bytes));
+        let r = req(png, dir.to_path_buf(), DiffBaseline::FollowSnapshot(bytes));
         match App::compute_media_diff(&r) {
             MediaDiffComputed::Ready { base, .. } => assert_eq!(base, MediaBase::FollowStart),
             other => panic!("Ready のはず: {other:?}"),
@@ -1694,7 +1698,7 @@ mod tests {
         git(&dir, &["add", "-A"]);
         git(&dir, &["commit", "-q", "-m", "init"]);
 
-        let r = req(png, dir.clone(), DiffBaseline::Empty);
+        let r = req(png, dir.to_path_buf(), DiffBaseline::Empty);
         match App::compute_media_diff(&r) {
             MediaDiffComputed::Ready { base, old, .. } => {
                 assert_eq!(
@@ -1763,7 +1767,7 @@ mod tests {
 
         // Integration-level check: the full computation must therefore treat the old side as
         // genuinely absent, not as a corrupt/undecodable 0-byte image.
-        let r = req(png, dir.clone(), DiffBaseline::FollowHead { sha });
+        let r = req(png, dir.to_path_buf(), DiffBaseline::FollowHead { sha });
         match App::compute_media_diff(&r) {
             MediaDiffComputed::Ready { base, old, .. } => {
                 assert_eq!(base, MediaBase::Head);
@@ -1834,7 +1838,7 @@ mod tests {
             "blob_at は None(follow 開始時点には無い)だが、現在の HEAD にはあるので Head 扱い"
         );
 
-        let r = req(png, dir.clone(), DiffBaseline::FollowHead { sha });
+        let r = req(png, dir.to_path_buf(), DiffBaseline::FollowHead { sha });
         match App::compute_media_diff(&r) {
             MediaDiffComputed::Ready { base, old, .. } => {
                 assert_eq!(base, MediaBase::Head);
@@ -1888,7 +1892,7 @@ mod tests {
         };
         std::fs::write(&png, &new_bytes).unwrap();
 
-        let r = req(png, dir.clone(), DiffBaseline::FollowHead { sha });
+        let r = req(png, dir.to_path_buf(), DiffBaseline::FollowHead { sha });
         match App::compute_media_diff(&r) {
             MediaDiffComputed::Ready { base, old, .. } => {
                 assert_eq!(
@@ -1959,7 +1963,7 @@ mod tests {
         };
         std::fs::write(&png, &new_bytes).unwrap();
 
-        let r = req(png, dir.clone(), DiffBaseline::Vcs);
+        let r = req(png, dir.to_path_buf(), DiffBaseline::Vcs);
         match App::compute_media_diff(&r) {
             MediaDiffComputed::Ready { base, .. } => assert_eq!(base, MediaBase::JjParent),
             other => panic!("Ready のはず: {other:?}"),
@@ -1994,7 +1998,7 @@ mod tests {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([5, 5, 5])))
             .save(&png)
             .unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let outcome = app.poll_media_diff(&png, 1, (400, 300));
         assert!(
             outcome.is_some(),
@@ -2011,7 +2015,7 @@ mod tests {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([1, 1, 1])))
             .save(&png)
             .unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         // Kick once for real (bumps media_diff_gen to 1 and lands a result via the sync fallback).
         let first = app.poll_media_diff(&png, 1, (400, 300));
         assert!(first.is_some());
@@ -2037,7 +2041,7 @@ mod tests {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([7, 7, 7])))
             .save(&png)
             .unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let outcome = app
             .poll_media_diff(&png, 1, (400, 300))
             .expect("同期で返るはず");
@@ -2101,7 +2105,7 @@ mod tests {
             1,
             None,
         ));
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         // Open the document first (`enter_preview` clears the *whole* `md_image_cache` on a file
         // switch — a different, already-expected mechanism from the rebuild-time prune this test
         // means to isolate), then insert the media-diff key and force a second `ensure_md_cache`
@@ -2129,7 +2133,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let png = dir.join("corrupt.png");
         std::fs::write(&png, b"\x89PNG\r\n\x1a\ngarbage, not a real PNG stream").unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let outcome = app
             .poll_media_diff(&png, 1, (400, 300))
             .expect("同期で返るはず");
@@ -2154,7 +2158,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mp4 = dir.join("clip.mp4");
         std::fs::write(&mp4, b"0123456789").unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let outcome = app
             .poll_media_diff(&mp4, 1, (400, 300))
             .expect("同期で返るはず");
@@ -2187,7 +2191,7 @@ mod tests {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(6, 6, image::Rgb([2, 2, 2])))
             .save(&b)
             .unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
         let outcome_a = app.poll_media_diff(&a, 1, (400, 300)).unwrap();
         let key_a = match outcome_a {
@@ -2235,7 +2239,7 @@ mod tests {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(6, 6, image::Rgb([2, 2, 2])))
             .save(&b)
             .unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let mermaid_key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(
             "graph LR\nA-->B",
         ));
@@ -2277,7 +2281,7 @@ mod tests {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3])))
             .save(&png)
             .unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         app.attach_media_diff_loader(tx);
 
@@ -2309,7 +2313,7 @@ mod tests {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3])))
             .save(&png)
             .unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         app.attach_media_diff_loader(tx);
 
@@ -2356,7 +2360,7 @@ mod tests {
         std::fs::write(&doc, &bytes).unwrap();
         git(&dir, &["add", "-A"]);
         git(&dir, &["commit", "-q", "-m", "init"]);
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         app.attach_media_diff_loader(tx);
 
@@ -2433,7 +2437,7 @@ mod tests {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(6, 6, image::Rgb([2, 2, 2])))
             .save(&b)
             .unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
         let outcome_a1 = app.poll_media_diff(&a, 1, (400, 300)).unwrap();
         let key_a1 = match outcome_a1 {
@@ -2493,7 +2497,7 @@ mod tests {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(6, 6, image::Rgb([2, 2, 2])))
             .save(&b)
             .unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         app.attach_media_diff_loader(tx);
 
@@ -2550,7 +2554,7 @@ mod tests {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([1, 1, 1])))
             .save(&png)
             .unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
         // Tab 0: open a media diff and let it land.
         app.open_git_diff(&png);
@@ -2620,7 +2624,7 @@ mod tests {
         let r = MediaDiffRequest {
             gen: 1,
             path: png,
-            root: dir.clone(),
+            root: dir.to_path_buf(),
             baseline: DiffBaseline::FollowSnapshot(old_bytes.clone()),
             page: 1,
             raster_px: (400, 300),
