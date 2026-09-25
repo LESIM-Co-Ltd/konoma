@@ -523,7 +523,7 @@ mod tests {
     // ---- run_capture (unix-only: relies on `cat`/`true`/`false`/`yes`, no `sh -c`) ------------
 
     #[cfg(unix)]
-    fn tmp(name: &str) -> PathBuf {
+    fn tmp(name: &str) -> crate::test_support::TmpDir {
         unique_tmp(&format!("konoma_command_test_{name}"))
     }
 
@@ -697,7 +697,14 @@ mod tests {
         // start with the same characters without the "." separator ("...-20.png" starts_with
         // "...-2" but is NOT "...-2" + "." + anything).
         let out = {
-            let mut s = unique_tmp("konoma_command_test_suffix_dot").into_os_string();
+            // `unique_tmp` here only donates a unique *basename* to derive `-2`/`-20.png` siblings
+            // from — this exact base path is never created on disk (the derived `out`/`decoy`
+            // paths are what get written, and `decoy` is cleaned up manually below), so letting
+            // the guard drop at the end of this block (a no-op remove of a path that never
+            // existed) is correct.
+            let mut s = unique_tmp("konoma_command_test_suffix_dot")
+                .to_path_buf()
+                .into_os_string();
             s.push("-2");
             PathBuf::from(s)
         };

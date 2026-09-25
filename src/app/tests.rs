@@ -42,7 +42,7 @@ fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
 fn path_styles_format_as_expected() {
     let open = unique_tmp("konoma_app_test_open");
     std::fs::create_dir_all(&open).unwrap();
-    let mut app = App::new(open.clone(), Config::default()).unwrap();
+    let mut app = App::new(open.to_path_buf(), Config::default()).unwrap();
     let file = open.join("src").join("main.rs");
 
     app.path_style = PathStyle::Full;
@@ -100,7 +100,7 @@ fn dialog_create_rename_and_delete_is_gated() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     // Cursor is on a.txt (a file). The creation target is its parent = dir.
     assert_eq!(app.tab.entries[app.tab.selected].path, dir.join("a.txt"));
@@ -195,7 +195,7 @@ fn dialog_input_cursor_moves_and_edits_midstring() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let buf = |app: &App| app.dialog_view().map(|v| v.2.to_string()).unwrap();
 
@@ -234,7 +234,7 @@ fn single_toggle_picks_scattered_items() {
     for n in ["a.txt", "b.txt", "c.txt"] {
         std::fs::write(dir.join(n), b"x").unwrap();
     }
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
 
     // V: toggle one item (a) and move down. a is selected, cursor=b.
@@ -265,7 +265,7 @@ fn visual_range_selects_and_batch_deletes() {
     for n in ["a.txt", "b.txt", "c.txt", "d.txt"] {
         std::fs::write(dir.join(n), b"x").unwrap();
     }
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     assert_eq!(app.tab.entries.len(), 4);
 
@@ -302,7 +302,7 @@ fn visual_scope_a_selects_same_dir_level_only() {
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
     std::fs::write(dir.join("b.txt"), b"x").unwrap();
     std::fs::write(dir.join("sub").join("inner.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     // Expand sub to reveal inner (to verify same-level detection).
     let sub_idx = app
@@ -357,7 +357,7 @@ fn batch_rename_numbers_in_sort_order_and_keeps_ext() {
     std::fs::write(dir.join("zebra.txt"), b"z").unwrap();
     std::fs::write(dir.join("apple.md"), b"a").unwrap();
     std::fs::write(dir.join("mango.rs"), b"m").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     app.visual_select_scope(true);
     assert_eq!(app.marked_count(), 3);
@@ -395,7 +395,7 @@ fn batch_rename_collision_reopens_input() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"a").unwrap();
     std::fs::write(dir.join("b.txt"), b"b").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     app.visual_select_scope(true);
 
@@ -464,7 +464,7 @@ fn batch_rename_case_insensitive_destination_collision_does_not_lose_data() {
     std::fs::write(dir.join("a.txt"), b"AAA").unwrap();
     std::fs::write(dir.join("b.TXT"), b"BBB").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     app.visual_select_scope(true);
     assert_eq!(app.marked_count(), 2, "両方選択されている前提");
@@ -577,7 +577,7 @@ fn drop_paste_opens_dialog_then_copy_and_move() {
     std::fs::write(&src1, b"a").unwrap();
     std::fs::write(&src2, b"b").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     // The only entry, "sub" (a dir), has the cursor → the drop destination = sub.
     assert!(
@@ -621,7 +621,7 @@ fn paste_into_filter_inserts_text_not_drop() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     app.start_filter();
     assert!(app.is_filtering());
@@ -1152,7 +1152,7 @@ fn copy_cut_paste_flow() {
     std::fs::create_dir_all(dir.join("dst")).unwrap();
     std::fs::write(dir.join("a.txt"), b"A").unwrap();
     std::fs::write(dir.join("b.txt"), b"B").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let idx =
         |app: &App, p: &std::path::Path| app.tab.entries.iter().position(|e| e.path == p).unwrap();
@@ -1189,7 +1189,7 @@ fn dialog_delete_permanent_removes_immediately() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("gone.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let i = app
         .tab
@@ -1218,7 +1218,7 @@ fn dialog_delete_permanent_removes_immediately() {
 fn tree_page_clamps_within_bounds() {
     let dir = unique_tmp("konoma_tree_page_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // Replace with a known count (100 entries).
     app.tab.entries = (0..100)
         .map(|i| Entry {
@@ -1270,7 +1270,7 @@ fn clamp_cursor_no_overflow_at_extremes() {
 fn tree_move_extremes_no_panic() {
     let dir = unique_tmp("konoma_tree_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.entries = (0..50)
         .map(|i| Entry {
             path: dir.join(format!("f{i}")),
@@ -1293,7 +1293,7 @@ fn tree_move_extremes_no_panic() {
 fn git_branch_move_extremes_no_panic() {
     let dir = unique_tmp("konoma_branch_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.git_branches = Some(
         (0..6)
             .map(|i| crate::git::BranchInfo {
@@ -1314,7 +1314,7 @@ fn git_branch_move_extremes_no_panic() {
 fn git_graph_move_extremes_no_panic() {
     let dir = unique_tmp("konoma_graph_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let commit = |id: &str| crate::git::GraphRow {
         graph: Vec::new(),
         node: Some(crate::git::NodeKind::Normal),
@@ -1359,7 +1359,7 @@ fn git_graph_move_extremes_no_panic() {
 fn git_log_move_extremes_no_panic() {
     let dir = unique_tmp("konoma_log_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.git_log = Some(
         (0..5)
             .map(|i| crate::git::CommitInfo {
@@ -1383,7 +1383,7 @@ fn git_log_move_extremes_no_panic() {
 fn git_view_move_extremes_no_panic() {
     let dir = unique_tmp("konoma_view_move_extremes_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.git_view_entries = (0..4)
         .map(|i| crate::git::ChangeEntry {
             path: dir.join(format!("f{i}")),
@@ -1428,10 +1428,10 @@ fn centered_fit_centers_and_downscales() {
 
 /// A test App with image state. Provides a source image (400x300=4:3), the image kind, a halfblocks picker
 /// (font 10x20, no terminal needed), and a dummy tx so that prepare_image can run.
-fn app_with_image() -> App {
+fn app_with_image() -> (App, crate::test_support::TmpDir) {
     let dir = unique_tmp("konoma_img_state_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir, Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(400, 300)));
     app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
     app.picker = Some(ratatui_image::picker::Picker::halfblocks());
@@ -1439,7 +1439,7 @@ fn app_with_image() -> App {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(rx));
     app.img_tx = Some(tx);
-    app
+    (app, dir)
 }
 
 fn inner(w: u16, h: u16) -> Rect {
@@ -1453,10 +1453,10 @@ fn inner(w: u16, h: u16) -> Rect {
 
 /// An App with a Picker forced to kitty graphics (no terminal needed). Used to verify, via the TestBackend buffer,
 /// that the GIF synchronous-encode render path actually emits image-transfer sequences.
-fn app_with_kitty() -> App {
+fn app_with_kitty() -> (App, crate::test_support::TmpDir) {
     let dir = unique_tmp("konoma_gif_kitty_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir, Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // Force kitty onto the halfblocks picker (no terminal needed) to verify generation of the
     // kitty transfer sequence.
     let mut picker = ratatui_image::picker::Picker::halfblocks();
@@ -1465,7 +1465,7 @@ fn app_with_kitty() -> App {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(rx));
     app.img_tx = Some(tx);
-    app
+    (app, dir)
 }
 
 /// Off-thread media loading: on start loading=true, nothing is read synchronously, and the result is applied when it arrives.
@@ -1474,7 +1474,7 @@ fn media_load_is_async_then_applied() {
     let Some(p) = sample_path_or_skip("sample.svg") else {
         return;
     };
-    let mut app = app_with_kitty();
+    let (mut app, _dir) = app_with_kitty();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
     let kind = PreviewKind::Svg(p.clone());
@@ -1500,7 +1500,7 @@ fn media_loading_renders_shared_spinner() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    let mut app = app_with_kitty(); // has a picker
+    let (mut app, _dir) = app_with_kitty(); // has a picker
     let (tx, rx) = std::sync::mpsc::channel();
     Box::leak(Box::new(rx)); // don't drain the result → stays loading
     app.attach_media_loader(tx);
@@ -1540,7 +1540,7 @@ fn media_loading_renders_shared_spinner() {
 fn pdf_page_navigation_clamps_and_indicates() {
     let dir = unique_tmp("konoma_pdf_nav_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir, Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.preview_kind = Some(PreviewKind::Pdf(PathBuf::from("/x/doc.pdf")));
     app.tab.mode = Mode::Preview;
 
@@ -1599,7 +1599,7 @@ fn pdf_next_page_renders_off_thread() {
     if pages < 2 {
         return;
     }
-    let mut app = app_with_kitty();
+    let (mut app, _dir) = app_with_kitty();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_loader(tx);
     let kind = PreviewKind::Pdf(p.clone());
@@ -1631,7 +1631,7 @@ fn pdf_next_page_renders_off_thread() {
 /// A stale media result (the previous file's result arriving after moving to a different file) is discarded.
 #[test]
 fn stale_media_result_is_ignored() {
-    let mut app = app_with_kitty();
+    let (mut app, _dir) = app_with_kitty();
     app.tab.preview_kind = Some(PreviewKind::Svg(PathBuf::from("x.svg")));
     // Build a result that doesn't match the current generation (a stale generation).
     let img =
@@ -1653,7 +1653,7 @@ fn gif_emits_kitty_image_data_per_frame() {
     use ratatui::widgets::Widget;
     use ratatui_image::Image;
 
-    let mut app = app_with_kitty();
+    let (mut app, _dir) = app_with_kitty();
     app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
     // Set two different frames (solid red/green) directly, verifying only the render path
     // without going through decode.
@@ -1708,7 +1708,7 @@ fn gif_emits_kitty_image_data_per_frame() {
 
 #[test]
 fn zoom_clamps_between_1_and_16() {
-    let mut app = app_with_image();
+    let (mut app, _dir) = app_with_image();
     assert_eq!(app.tab.image_zoom, 1.0);
     app.image_zoom_by(0.5); // never goes below 1.0
     assert_eq!(app.tab.image_zoom, 1.0);
@@ -1725,7 +1725,7 @@ fn zoom_clamps_between_1_and_16() {
 fn fit_is_natural_size_and_centered_at_z1() {
     // z=1: a small image (400x300, font10x20=40x15 cells) is smaller than the viewport,
     // so it's shown centered at its natural size (40x15) without upscaling (doesn't fill the screen).
-    let mut app = app_with_image();
+    let (mut app, _dir) = app_with_image();
     let r = app.prepare_image(inner(200, 40)).unwrap();
     assert_eq!((r.width, r.height), (40, 15), "z=1 は natural サイズ");
     // Centered (equal margins left/right and top/bottom).
@@ -1737,7 +1737,7 @@ fn fit_is_natural_size_and_centered_at_z1() {
 
 #[test]
 fn zoom_grows_then_clips_and_enables_pan() {
-    let mut app = app_with_image();
+    let (mut app, _dir) = app_with_image();
     let inner = inner(200, 40);
     // z=2: 80x30 cells, still within the viewport (200x40) → shown in full, centered, no panning.
     app.tab.image_zoom = 2.0;
@@ -1758,7 +1758,7 @@ fn zoom_grows_then_clips_and_enables_pan() {
 
 #[test]
 fn pan_noop_when_not_clipped_and_moves_when_clipped() {
-    let mut app = app_with_image();
+    let (mut app, _dir) = app_with_image();
     let inner = inner(200, 40);
     // z=1: no clipping → even after panning, prepare resets the center back to 0.5.
     app.image_pan(1.0, 1.0);
@@ -1785,7 +1785,7 @@ fn tabbar_appears_with_multiple_tabs() {
     let dir = unique_tmp("konoma_tabbar_test");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("f.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // Expected label is derived from `dir`'s own basename, not a literal — `dir` is a
     // `unique_tmp` fixture, so its basename carries a pid/counter suffix.
     let label = dir.file_name().unwrap().to_string_lossy().to_string();
@@ -2272,7 +2272,7 @@ fn ui_info_popup_renders_variants() {
     std::fs::create_dir_all(&sub).unwrap();
     std::fs::write(sub.join("a.txt"), "a").unwrap();
     std::fs::write(sub.join("b.txt"), "b").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.lang = Lang::En;
 
     // A regular file: Type=file.
@@ -2327,7 +2327,7 @@ fn ui_info_popup_renders_symlink_target() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("real.txt"), "x").unwrap();
     std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link")).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.lang = Lang::En;
     app.tab.selected = app
         .tab
@@ -2690,7 +2690,7 @@ fn markdown_preview_footer_mermaid_fence_full_screen_and_pan_gate() {
     }
     std::fs::write(&md, src).unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
@@ -2873,7 +2873,7 @@ fn autolink_bare_urls_links_plain_text_not_code_and_keeps_order() {
 fn bare_url_becomes_a_focusable_md_item() {
     let dir = unique_tmp("konoma_autolink_item_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // A plain paragraph line with a bare URL (as konoma's own renderer emits: one raw span).
     let lines = vec![Line::from(Span::raw(
         "visit https://konoma.example for docs",
@@ -2893,7 +2893,7 @@ fn md_autolink_false_leaves_bare_urls_plain() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut cfg = Config::default();
     cfg.ui.md_autolink = false;
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
     let lines = vec![Line::from(Span::raw("visit https://konoma.example"))];
     let _ = app.decorate_md_items(lines);
     assert!(app.md_items.is_empty(), "autolink off = no link item");
@@ -2978,7 +2978,7 @@ fn md_emoji_false_leaves_shortcodes() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut cfg = Config::default();
     cfg.ui.md_emoji = false;
-    let app = App::new(dir.clone(), cfg).unwrap();
+    let app = App::new(dir.to_path_buf(), cfg).unwrap();
     let (lines, _) = app.postprocess_md(vec![Line::from(Span::raw("hi :rocket:"))]);
     let joined: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
     assert!(joined.contains(":rocket:"), "emoji off keeps the shortcode");
@@ -3028,7 +3028,7 @@ fn decorate_links_highlights_focused() {
     use ratatui::style::{Color, Modifier, Style};
     let dir = unique_tmp("konoma_links_hl_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let link = |t: &str| {
         Span::styled(
             t.to_string(),
@@ -3562,7 +3562,7 @@ fn tabs_create_switch_close_preserve_state() {
     std::fs::create_dir_all(dir.join("a")).unwrap();
     std::fs::create_dir_all(dir.join("b")).unwrap();
     std::fs::write(dir.join("f.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert_eq!(app.tab_count(), 1);
 
     // In tab 1, move the selection down by one.
@@ -3609,7 +3609,7 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
         std::fs::write(dir.join(n), b"x").unwrap();
     }
     std::fs::write(dir.join("sub").join("x.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
     let idx = |app: &App, p: std::path::PathBuf| {
         app.tab.entries.iter().position(|e| e.path == p).unwrap()
@@ -3693,7 +3693,7 @@ fn refresh_rereads_directory_listing() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let before = app.tab.entries.len();
     std::fs::write(dir.join("b.txt"), b"y").unwrap(); // add a file externally
     app.refresh().unwrap();
@@ -3716,7 +3716,7 @@ fn refresh_prunes_deleted_paths_from_selection() {
     for n in ["a.txt", "b.txt", "c.txt"] {
         std::fs::write(dir.join(n), b"x").unwrap();
     }
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // Select all 3 items.
     for n in ["a.txt", "b.txt", "c.txt"] {
         app.tab.selection.insert(dir.join(n));
@@ -3744,7 +3744,7 @@ fn refresh_reloads_active_preview() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("doc.md"), b"# v1\n").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let idx = app
         .tab
         .entries
@@ -4144,7 +4144,7 @@ fn media_preview_reloads_only_when_file_changes() {
     std::fs::create_dir_all(&dir).unwrap();
     let pic = dir.join("pic.png");
     RgbImage::new(2, 2).save(&pic).unwrap(); // a valid PNG (resolves to Image by either extension or mime)
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let idx = app
         .tab
         .entries
@@ -4197,7 +4197,7 @@ fn sort_menu_changes_order_by_key_reverse_and_dirs_first() {
     std::fs::write(dir.join("a.md"), vec![0u8; 30]).unwrap(); // 30B
     std::fs::write(dir.join("b.txt"), vec![0u8; 10]).unwrap(); // 10B (smallest)
     std::fs::write(dir.join("c.log"), vec![0u8; 50]).unwrap(); // 50B (largest)
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
     let names = |a: &App| {
         a.tab
@@ -4250,7 +4250,7 @@ fn sort_config_sets_initial_order() {
     let mut cfg = Config::default();
     cfg.ui.sort.key = "size".into();
     cfg.ui.sort.dirs_first = false;
-    let app = App::new(dir.clone(), cfg).unwrap();
+    let app = App::new(dir.to_path_buf(), cfg).unwrap();
 
     // The config is reflected in App.sort.
     assert_eq!(app.sort.key, SortKey::Size);
@@ -4279,9 +4279,9 @@ fn bookmark_set_and_jump_via_marks() {
     let _ = std::fs::remove_dir_all(&proj);
     std::fs::create_dir_all(proj.join("sub")).unwrap();
     std::fs::write(proj.join("f.txt"), b"hello").unwrap();
-    let mut app = App::new(proj.clone(), Config::default()).unwrap();
+    let mut app = App::new(proj.to_path_buf(), Config::default()).unwrap();
     // Swap in a test base so the real ~/.config isn't polluted.
-    app.bookmarks = crate::bookmarks::Bookmarks::with_base(base.clone(), &app.tab.open_dir);
+    app.bookmarks = crate::bookmarks::Bookmarks::with_base(base.to_path_buf(), &app.tab.open_dir);
 
     let sub_idx = app
         .tab
@@ -4322,7 +4322,7 @@ fn bookmark_set_and_jump_via_marks() {
     assert_eq!(app.tab.mode, Mode::Tree);
 
     // Set root back to proj, then ' b: a file → opens in preview (tree stays unchanged).
-    app.tab.root = proj.clone();
+    app.tab.root = proj.to_path_buf();
     let _ = app.rebuild_tree();
     let root_before = app.tab.root.clone();
     app.open_bookmark_list();
@@ -4381,7 +4381,7 @@ fn tree_descend_sets_root_to_selected_dir() {
     let dir = unique_tmp("konoma_descend_test");
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("sub").join("f.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // Select the "sub" directory's entry.
     let i = app
         .tab
@@ -4415,7 +4415,7 @@ fn ascend_puts_the_cursor_on_the_directory_just_left() {
     std::fs::create_dir_all(dir.join("alpha")).unwrap();
     std::fs::create_dir_all(dir.join("beta")).unwrap();
     std::fs::create_dir_all(dir.join("gamma")).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let i = app
         .tab
         .entries
@@ -4455,7 +4455,7 @@ fn ascend_with_tree_cursor_top_goes_back_to_the_first_row() {
     std::fs::create_dir_all(dir.join("beta")).unwrap();
     let mut cfg = Config::default();
     cfg.ui.tree_cursor = "top".into();
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
     let i = app
         .tab
         .entries
@@ -4478,7 +4478,7 @@ fn ascend_falls_back_to_the_top_when_the_directory_it_left_is_not_listed() {
     let dir = unique_tmp("konoma_ascend_hidden_fallback_test");
     std::fs::create_dir_all(dir.join(".secret")).unwrap();
     std::fs::create_dir_all(dir.join("visible")).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // Reveal the hidden directory just long enough to descend into it.
     app.tab.show_hidden = true;
     app.rebuild_tree().unwrap();
@@ -4513,7 +4513,7 @@ fn descend_still_starts_at_the_top_of_the_new_directory() {
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("sub").join("a_first.txt"), b"x").unwrap();
     std::fs::write(dir.join("sub").join("z_last.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let i = app
         .tab
         .entries
@@ -4536,7 +4536,7 @@ fn ascend_treats_an_unknown_tree_cursor_value_as_origin() {
     std::fs::create_dir_all(dir.join("beta")).unwrap();
     let mut cfg = Config::default();
     cfg.ui.tree_cursor = "bogus".into();
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
     let i = app
         .tab
         .entries
@@ -4569,7 +4569,7 @@ fn jump_to_dir_clears_selection_on_root_change() {
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("subB")).unwrap();
     std::fs::write(base.join("a.txt"), b"x").unwrap();
-    let mut app = App::new(base.clone(), Config::default()).unwrap();
+    let mut app = App::new(base.to_path_buf(), Config::default()).unwrap();
     // Select a.txt in base.
     let i = app
         .tab
@@ -4646,7 +4646,7 @@ fn copy_relative_matches_title_display() {
     for p in [
         a.join("x.rs"),                // under it
         work.join("B").join("aaa.md"), // a sibling
-        work.clone(),                  // an ancestor
+        work.to_path_buf(),            // an ancestor
     ] {
         assert_eq!(
             copy_text(&p, &app.tab.open_dir, CopyKind::Relative),
@@ -4660,9 +4660,9 @@ fn copy_relative_matches_title_display() {
 
 #[test]
 fn is_image_preview_requires_src_and_kind() {
-    let app = app_with_image();
+    let (app, _dir) = app_with_image();
     assert!(app.is_image_preview());
-    let mut app2 = app_with_image();
+    let (mut app2, _dir2) = app_with_image();
     app2.image_src = None;
     assert!(!app2.is_image_preview());
 }
@@ -4679,7 +4679,7 @@ fn image_preview_draws_no_scroll_indicator() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    let mut app = app_with_image();
+    let (mut app, _dir) = app_with_image();
     app.tab.preview_path = Some(PathBuf::from("x.png"));
     app.tab.mode = Mode::Preview;
     assert!(app.is_image_preview(), "画像ビューに入っている");
@@ -4712,7 +4712,7 @@ fn image_preview_draws_no_scroll_indicator() {
 fn help_in_image_mode_shows_only_image_section() {
     // ? during an image preview shows only the image section. Tree/Git/text-only sections
     // are not shown (per-mode optimization).
-    let mut app = app_with_image();
+    let (mut app, _dir) = app_with_image();
     app.tab.mode = Mode::Preview;
     let s: String = crate::ui::help::help_lines(&app)
         .iter()
@@ -4736,7 +4736,7 @@ fn help_in_image_mode_shows_only_image_section() {
 fn status_shows_image_zoom_factor() {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    let mut app = app_with_image();
+    let (mut app, _dir) = app_with_image();
     app.tab.mode = Mode::Preview;
     let text = |app: &App| -> String {
         let mut term = Terminal::new(TestBackend::new(80, 1)).unwrap();
@@ -4820,7 +4820,7 @@ fn warm_grammar_opens_without_pending_and_colored() {
 fn loading_mode_follows_config() {
     let dir = unique_tmp("konoma_loading_mode_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(app.loading_is_indicator(), "既定は indicator");
     app.cfg.ui.preview_loading = "progressive".into();
     assert!(!app.loading_is_indicator(), "progressive 指定で素表示");
@@ -4896,7 +4896,7 @@ fn request_edit_targets_preview_file() {
 fn spinner_cycles_and_has_no_emoji() {
     let dir = unique_tmp("konoma_spinner_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // Advancing the frame gives a different glyph, and it cycles back after 10 frames (= spins).
     let g0 = app.spinner_glyph(); // frame 0
     app.tick_spinner();
@@ -5574,7 +5574,7 @@ fn busy_indicator_reflects_background_jobs() {
     // config off = hidden, multiple jobs = "+n" notation.
     let dir = unique_tmp("konoma_busy_indicator_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.lang = crate::i18n::Lang::En;
     assert!(app.busy_jobs().is_empty(), "アイドルではジョブ無し");
     assert!(!app.busy_indicator_active());
@@ -5623,13 +5623,13 @@ fn busy_indicator_tracks_ignored_scan() {
     // generation is applied.
     let dir = unique_tmp("konoma_busy_gitscan_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.git_ignored_gen = 7;
-    app.git_ignored_pending = Some(dir.clone());
+    app.git_ignored_pending = Some(dir.to_path_buf());
     assert!(app.busy_jobs().contains(&crate::i18n::Msg::BusyGitScan));
     let cur = IgnoredResult {
         gen: 7,
-        workdir: dir.clone(),
+        workdir: dir.to_path_buf(),
         set: Default::default(),
     };
     assert!(app.apply_ignored(cur));
@@ -5645,14 +5645,14 @@ fn apply_ignored_reflects_current_gen_and_discards_stale() {
     let dir = unique_tmp("konoma_apply_ignored_gen");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.git_ignored_gen = 5;
-    app.git_ignored_pending = Some(dir.clone());
+    app.git_ignored_pending = Some(dir.to_path_buf());
 
     // A result from an old generation (4): not applied, and pending is not cleared either.
     let stale = IgnoredResult {
         gen: 4,
-        workdir: dir.clone(),
+        workdir: dir.to_path_buf(),
         set: [dir.join("x")].into_iter().collect(),
     };
     assert!(!app.apply_ignored(stale), "stale 世代は反映しない");
@@ -5665,7 +5665,7 @@ fn apply_ignored_reflects_current_gen_and_discards_stale() {
     // A result from the current generation (5): applies it, sets git_ignored_for, and clears pending.
     let cur = IgnoredResult {
         gen: 5,
-        workdir: dir.clone(),
+        workdir: dir.to_path_buf(),
         set: [dir.join("y")].into_iter().collect(),
     };
     assert!(app.apply_ignored(cur), "現世代は反映する");
@@ -5695,9 +5695,9 @@ fn apply_ignored_with_a_panic_shaped_result_still_clears_pending() {
     let dir = unique_tmp("konoma_apply_ignored_panic_shaped");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.git_ignored_gen = 3;
-    app.git_ignored_pending = Some(dir.clone());
+    app.git_ignored_pending = Some(dir.to_path_buf());
     // Something was already shown from a previous (successful) scan — the failure result
     // legitimately replaces it, since the panic means "we don't actually know the ignore set now."
     app.git_ignored.insert(dir.join("stale-entry"));
@@ -5706,7 +5706,7 @@ fn apply_ignored_with_a_panic_shaped_result_still_clears_pending() {
     // clears pending, same as a real successful scan would.
     let panic_fallback = IgnoredResult {
         gen: 3,
-        workdir: dir.clone(),
+        workdir: dir.to_path_buf(),
         set: Default::default(),
     };
     assert!(app.apply_ignored(panic_fallback), "現世代なので適用される");
@@ -5719,10 +5719,10 @@ fn apply_ignored_with_a_panic_shaped_result_still_clears_pending() {
     // A stale-generation fallback (the panic was caught for a request that's since been superseded)
     // must still be discarded — the unconditional send doesn't bypass the generation guard.
     app.git_ignored_gen = 4;
-    app.git_ignored_pending = Some(dir.clone());
+    app.git_ignored_pending = Some(dir.to_path_buf());
     let stale_panic_fallback = IgnoredResult {
         gen: 3,
-        workdir: dir.clone(),
+        workdir: dir.to_path_buf(),
         set: Default::default(),
     };
     assert!(
@@ -6598,7 +6598,7 @@ fn path_style_next_cycles_and_cycle_path_style_advances() {
     let dir = unique_tmp("konoma_cycle_pathstyle_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let s0 = app.path_style;
     app.cycle_path_style();
     assert_eq!(app.path_style, s0.next(), "cycle は next() を適用する");
@@ -6612,7 +6612,7 @@ fn toggle_hidden_reveals_and_hides_dotfiles() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("visible.txt"), b"x").unwrap();
     std::fs::write(dir.join(".secret"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let has_dot = |a: &App| a.tab.entries.iter().any(|e| e.path.ends_with(".secret"));
     assert!(
@@ -6634,7 +6634,7 @@ fn sort_menu_open_and_close_toggles_flag() {
     let dir = unique_tmp("konoma_sortmenu_close_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(!app.is_sort_menu());
     app.open_sort_menu();
     assert!(app.is_sort_menu());
@@ -6676,7 +6676,7 @@ fn keymap_report_none_default_and_formats_conflicts_and_warnings() {
     let dir = unique_tmp("konoma_keymap_report_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // The default keymap has no conflicts → None.
     assert!(app.keymap_report().is_none(), "既定では報告なし");
 
@@ -6710,7 +6710,7 @@ fn take_warm_job_returns_once_then_none() {
     let dir = unique_tmp("konoma_take_warm_job_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // Build a state that's highlight-pending with a preview target.
     app.tab.preview_path = Some(dir.join("main.rs"));
     app.hl_pending = true;
@@ -6728,7 +6728,7 @@ fn launch_git_tool_sets_pending_flag_and_take_clears_it() {
     let dir = unique_tmp("konoma_launch_git_tool_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(!app.take_launch_git_tool(), "初期は要求なし");
     app.launch_git_tool(); // doesn't launch a process, just sets the flag
     assert!(app.take_launch_git_tool(), "要求が立つ");
@@ -6741,7 +6741,7 @@ fn preview_scroll_paging_and_to_top_non_windowed() {
     let dir = unique_tmp("konoma_preview_scroll_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.preview_viewport = 20;
     // Non-windowed: operates preview_scroll directly.
     app.preview_scroll(5);
@@ -7043,7 +7043,7 @@ fn preview_hscroll_moves_and_home_end() {
     let dir = unique_tmp("konoma_preview_hscroll_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.preview_hscroll(8);
     assert_eq!(app.tab.preview_hscroll, 8);
     app.preview_hscroll(-100);
@@ -7069,7 +7069,7 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
         content.push_str(&format!("line {i}\n"));
     }
     std::fs::write(dir.join("big.txt"), content.as_bytes()).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let i = app
         .tab
@@ -7143,7 +7143,7 @@ fn request_edit_opens_at_windowed_caret_line() {
     }
     std::fs::write(dir.join("big.txt"), content.as_bytes()).unwrap();
     std::fs::write(dir.join("doc.md"), "# Title\n\nsome text\n").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
 
     // (1) Editing from the tree: no line.
@@ -7204,7 +7204,7 @@ fn preview_visual_selection_copies_logical_lines() {
         .collect::<Vec<_>>()
         .join("\n");
     std::fs::write(dir.join("code.txt"), content.as_bytes()).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let i = app
         .tab
@@ -7277,7 +7277,7 @@ fn preview_charwise_selection_copies_character_range() {
         .collect::<Vec<_>>()
         .join("\n");
     std::fs::write(dir.join("code.txt"), content.as_bytes()).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let i = app
         .tab
@@ -7353,7 +7353,7 @@ fn markdown_raw_toggle_enables_windowed_selection() {
         b"# Title\n\nSome **bold** text.\n\n- item one\n- item two\n",
     )
     .unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let i = app
         .tab
@@ -7399,7 +7399,7 @@ fn dialog_cursor_right_and_end_clamp() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     app.start_create();
     for c in "abc".chars() {
@@ -7437,7 +7437,7 @@ fn dialog_cursor_right_and_end_clamp() {
 
 #[test]
 fn set_gif_frames_and_advance_when_due() {
-    let mut app = app_with_image();
+    let (mut app, _dir) = app_with_image();
     let frame = |c: [u8; 3]| {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb(c)))
     };
@@ -7466,7 +7466,7 @@ fn set_gif_frames_and_advance_when_due() {
 #[test]
 fn gif_poll_timeout_none_without_anim_some_when_playing() {
     use std::time::Duration;
-    let mut app = app_with_image();
+    let (mut app, _dir) = app_with_image();
     assert!(app.gif_poll_timeout().is_none(), "アニメでなければ None");
     let frame =
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([0; 3])));
@@ -7488,7 +7488,7 @@ fn gif_poll_timeout_none_without_anim_some_when_playing() {
 fn advance_md_gifs_single_frame_entry_does_not_advance() {
     let dir = unique_tmp("konoma_md_gif_single_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
     let key = PathBuf::from("/tmp/one.gif");
     let frame = Arc::new(image::DynamicImage::new_rgba8(4, 4));
@@ -7521,7 +7521,7 @@ fn advance_md_gifs_single_frame_entry_does_not_advance() {
 fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_keys() {
     let dir = unique_tmp("konoma_md_gif_advance_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // These exercise the advance/poll mechanism itself, which only runs while a preview is up:
     // `md_gif_poll_timeout`/`advance_md_gifs_if_due` return early outside `Mode::Preview` so that
     // leaving a preview stops the animation (and the wakeups it needs) instead of driving redraws
@@ -7629,7 +7629,7 @@ fn md_gif_poll_timeout_none_without_anim_some_when_playing() {
     use std::time::Duration;
     let dir = unique_tmp("konoma_md_gif_poll_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // These exercise the advance/poll mechanism itself, which only runs while a preview is up:
     // `md_gif_poll_timeout`/`advance_md_gifs_if_due` return early outside `Mode::Preview` so that
     // leaving a preview stops the animation (and the wakeups it needs) instead of driving redraws
@@ -7696,7 +7696,7 @@ fn inline_gif_app(
     App,
     String,
     std::sync::mpsc::Receiver<MdEncodeResult>,
-    PathBuf,
+    crate::test_support::TmpDir,
 ) {
     let dir = unique_tmp(name);
     let _ = std::fs::remove_dir_all(&dir);
@@ -7707,7 +7707,7 @@ fn inline_gif_app(
     let file = dir.join("anim.gif");
     std::fs::write(&file, b"GIF89a").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(resize_rx));
     app.attach_image_backend(kitty_picker(), resize_tx);
@@ -8225,7 +8225,7 @@ fn inline_images_on_a_non_kitty_terminal_keep_the_ratatui_image_path() {
     let file = dir.join("pic.png");
     std::fs::write(&file, b"not really a png").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let (resize_tx, resize_rx) = tokio::sync::mpsc::unbounded_channel();
     Box::leak(Box::new(resize_rx));
     app.attach_image_backend(test_picker(), resize_tx); // halfblocks
@@ -8254,7 +8254,7 @@ fn inline_images_on_a_non_kitty_terminal_keep_the_ratatui_image_path() {
 #[test]
 fn apply_image_resize_err_is_ignored() {
     // An encode failure (Err) doesn't crash and returns false (state is unchanged too).
-    let mut app = app_with_image();
+    let (mut app, _dir) = app_with_image();
     let r = app.apply_image_resize(Err(ratatui_image::errors::Errors::NoCap));
     assert!(!r, "Err は反映しない");
 }
@@ -8264,7 +8264,7 @@ fn attach_and_detach_image_backend_set_and_clear_state() {
     let dir = unique_tmp("konoma_attach_detach_img_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(app.picker.is_none() && app.img_tx.is_none());
     let picker = ratatui_image::picker::Picker::halfblocks();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ratatui_image::thread::ResizeRequest>();
@@ -8290,12 +8290,12 @@ fn load_image_decodes_with_backend_and_noops_without() {
     write_png(&png, 20, 10);
 
     // No backend: nothing is loaded (the render side falls back to text).
-    let mut bare = App::new(dir.clone(), Config::default()).unwrap();
+    let mut bare = App::new(dir.to_path_buf(), Config::default()).unwrap();
     bare.load_image(&png);
     assert!(bare.image_src.is_none(), "picker/tx 無しでは load しない");
 
     // With a backend: decode_static → loaded into image_src (size matches).
-    let mut app = app_with_image();
+    let (mut app, _dir) = app_with_image();
     app.image_src = None; // first clear app_with_image's dummy
     app.load_image(&png);
     let img = app.image_src.as_ref().expect("PNG をデコードして載せる");
@@ -8380,7 +8380,7 @@ fn copy_target_follows_mode() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     let i = app
         .tab
@@ -8823,7 +8823,7 @@ fn mark_set_state_and_cancel() {
     let dir = unique_tmp("konoma_mark_state_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(!app.is_marking());
     app.start_mark_set();
     assert!(app.is_marking(), "m=登録待ち");
@@ -9103,7 +9103,7 @@ fn attach_git_loader_stores_channel() {
     let dir = unique_tmp("konoma_attach_git_loader_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(app.ignored_tx.is_none(), "初期はチャネル未装着");
     let (tx, rx) = std::sync::mpsc::channel::<IgnoredResult>();
     Box::leak(Box::new(rx));
@@ -9153,7 +9153,7 @@ fn op_base_dir_for_file_dir_and_empty() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("a.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     // Select a directory → inside it.
     let si = app
@@ -9393,7 +9393,7 @@ fn describe_error_translates_file_op_errors_to_the_ui_language() {
     let dir = unique_tmp("konoma_describe_error_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
     let p = dir.join("some name.txt");
     // (variant, its Msg, whether the wording carries the path)
@@ -9488,7 +9488,7 @@ fn describe_error_keeps_the_rollback_context_around_the_reason() {
     let dir = unique_tmp("konoma_rollback_describe_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
     let failed_at = dir.join("b.txt");
     let left_a = dir.join(".konoma-rename-tmp-0");
@@ -9931,7 +9931,7 @@ fn returning_to_the_originating_tab_prunes_its_stale_selection() {
 /// A repo with one commit plus one uncommitted modification, and an `App` already in its Git view
 /// (so `git_view_entries` has the row the stage/discard tests act on). Returns the canonical root.
 #[cfg(feature = "git")]
-fn git_repo_with_one_change(prefix: &str) -> (std::path::PathBuf, App) {
+fn git_repo_with_one_change(prefix: &str) -> (crate::test_support::TmpDir, App) {
     let dir = unique_tmp(prefix);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -9943,8 +9943,11 @@ fn git_repo_with_one_change(prefix: &str) -> (std::path::PathBuf, App) {
     // Modify the tracked file so there is exactly one changed entry to act on.
     std::fs::write(&f, b"two\n").unwrap();
 
-    let canon = dir.canonicalize().unwrap();
-    let mut app = App::new(canon.clone(), Config::default()).unwrap();
+    // `.into_canonical()` transfers cleanup responsibility onto the returned guard (see its own
+    // doc comment) instead of leaving it on `dir`, which would otherwise drop (and rm -rf the
+    // fixture) the moment this function returns — before any caller ever touches it.
+    let canon = dir.into_canonical().unwrap();
+    let mut app = App::new(canon.to_path_buf(), Config::default()).unwrap();
     app.open_git_view();
     assert!(app.is_git_view(), "{prefix}: Git ビューが開く");
     assert_eq!(app.git_view_entries().len(), 1, "{prefix}: 変更1件");
@@ -10373,7 +10376,7 @@ fn failed_commit_does_not_clobber_a_dialog_opened_meanwhile() {
 fn git_status_is_revalidated_after_a_git_write() {
     let (dir, mut app) = git_repo_with_one_change("konoma_gitop_revalidate");
     // Pretend the status cache is fresh for this root.
-    app.git_status_for = Some(dir.clone());
+    app.git_status_for = Some(dir.to_path_buf());
     app.git_status_dirty = false;
 
     app.git_view_stage(); // synchronous fallback: completes inline
@@ -11259,7 +11262,7 @@ fn dialog_preview_scroll_clamps_within_lines() {
     for n in ["a.txt", "b.txt", "c.txt"] {
         std::fs::write(dir.join(n), b"x").unwrap();
     }
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     app.visual_select_scope(true); // select all
                                    // Enter the batch-rename preview (a multi-line preview).
@@ -11294,7 +11297,7 @@ fn ui_preview_renders_image_via_kitty_path() {
     // A GIF (2 frames) encodes synchronously, so render_image's image path emits real pixels
     // (the kitty transfer sequence _G) even with a workerless TestBackend. A still image is
     // asynchronous (app.image arrives later).
-    let mut app = app_with_kitty();
+    let (mut app, _dir) = app_with_kitty();
     app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.gif")));
     let frame = |c: [u8; 3]| {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(40, 30, image::Rgb(c)))
@@ -11326,7 +11329,7 @@ fn ui_preview_image_falls_back_when_not_yet_encoded() {
     use ratatui::Terminal;
     // A still image, but app.image (the already-encoded protocol) hasn't arrived → falls back
     // to ImageUnsupported. Exercises render_image's still-image fallback branch.
-    let mut app = app_with_kitty();
+    let (mut app, _dir) = app_with_kitty();
     app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("x.png")));
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(20, 10)));
     app.tab.mode = Mode::Preview;
@@ -11350,7 +11353,7 @@ fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
     let dir = unique_tmp("konoma_ui_preview_fallback_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(dir.join("thing.bin"));
 
@@ -11558,7 +11561,7 @@ fn media_job_command_failure_returns_command_failed_payload() {
     let argv = vec!["konoma-definitely-nonexistent-command-xyz123".to_string()];
     let job = MediaJob::Command {
         argv,
-        out,
+        out: out.to_path_buf(),
         uses_out: false,
         as_image: false,
     };
@@ -11586,7 +11589,7 @@ fn detached_command_spawns_once_per_preview_entry_not_per_redraw_or_tab_switch()
     let src = dir.join("note.detach");
     std::fs::write(&src, "x").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.cfg.preview.rules = vec![crate::config::Rule {
         glob: Some("*.detach".into()),
         command: Some("true".into()), // a real, instantly-exiting POSIX no-op
@@ -11633,7 +11636,7 @@ fn text_command_becomes_windowed_with_original_title_and_cleans_up_on_leaving() 
     let other = dir.join("plain.txt");
     std::fs::write(&other, "just text").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.cfg.preview.rules = vec![crate::config::Rule {
         glob: Some("*.custom".into()),
         command: Some("echo hello-from-command".into()),
@@ -11824,7 +11827,7 @@ fn md_decode_image_decodes_raster_and_rasterizes_svg() {
 fn apply_remote_fetch_marks_failed_and_invalidates_cache() {
     let dir = unique_tmp("konoma_apply_remote_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let url = "https://example.com/x.png".to_string();
     app.md_remote_inflight.insert(url.clone());
     // Failure: remembered as failed, removed from in-flight, decoration cache dropped.
@@ -11869,8 +11872,8 @@ fn refresh_retries_a_previously_failed_remote_image() {
     // thread (see its `#[cfg(test)]` guard) — point `cache_root()` at a sandboxed directory first
     // so it writes there, never under the developer's real `~/.cache/konoma/remote-images`.
     let cache_root = unique_tmp("konoma_remote_retry_cache_root_test");
-    crate::test_support::set_test_cache_root(cache_root.clone());
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    crate::test_support::set_test_cache_root(cache_root.to_path_buf());
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
     let url = "http://".to_string(); // malformed (no host) — see the doc comment above
     let (tx, rx) = std::sync::mpsc::channel();
@@ -11923,7 +11926,7 @@ fn refresh_retries_a_previously_failed_remote_image() {
 fn refresh_fs_watched_does_not_retry_a_previously_failed_remote_image() {
     let dir = unique_tmp("konoma_remote_no_retry_fswatch_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
     let url = "http://".to_string();
     app.md_remote_inflight.insert(url.clone());
@@ -11971,7 +11974,7 @@ fn an_fs_event_drops_only_the_changed_local_inline_image_entry() {
     let doc = dir.join("d.md");
     std::fs::write(&doc, "![c](chart.png)\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(doc.clone());
     let fence = PathBuf::from(crate::preview::markdown::mermaid_fence_url(
@@ -12310,7 +12313,7 @@ fn preview_survives_target_file_overwrite_and_delete() {
     // --- Image preview ---
     let pic = dir.join("plot.png");
     RgbImage::new(4, 3).save(&pic).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let idx = app
         .tab
         .entries
@@ -12335,7 +12338,7 @@ fn preview_survives_target_file_overwrite_and_delete() {
     // --- Markdown/text preview ---
     let doc = dir.join("doc.md");
     std::fs::write(&doc, b"# hello\n\nbody\n").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let idx = app
         .tab
         .entries
@@ -12443,22 +12446,25 @@ fn git_gutter_prepends_marker_only_when_changed() {
 }
 
 /// Open a CSV as a table preview and set the cell cursor. 3 cols × 2 data rows.
-fn app_with_table() -> (App, std::path::PathBuf) {
+fn app_with_table() -> (App, crate::test_support::TmpDir) {
     let dir = unique_tmp("konoma_table_app_test");
     std::fs::create_dir_all(&dir).unwrap();
     let csv = dir.join("t.csv");
     std::fs::write(&csv, "h1,h2,h3\na,b,c\nd,e,f\n").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
     app.tab.preview_path = Some(csv.clone());
     app.tab.mode = Mode::Preview;
     app.load_table();
-    (app, csv)
+    // Return the sandbox guard, not just the derived `csv` path: several callers re-parse the
+    // table from disk later (`tab_cycle` re-loading the previous tab, a resize, ...), so the
+    // directory must outlive this function, not just the initial parse done above.
+    (app, dir)
 }
 
 #[test]
 fn csv_resolves_to_table_preview() {
-    let (app, _) = app_with_table();
+    let (app, _dir) = app_with_table();
     assert!(
         matches!(
             app.tab.preview_kind,
@@ -12475,7 +12481,7 @@ fn csv_resolves_to_table_preview() {
 }
 
 /// Open a zip archive as a table preview (mirrors `app_with_table` but for `PreviewKind::Archive`).
-fn app_with_archive_zip() -> (App, std::path::PathBuf) {
+fn app_with_archive_zip() -> (App, crate::test_support::TmpDir) {
     use std::io::Write as _;
     let dir = unique_tmp("konoma_archive_app_test");
     std::fs::create_dir_all(&dir).unwrap();
@@ -12490,17 +12496,19 @@ fn app_with_archive_zip() -> (App, std::path::PathBuf) {
     zw.write_all(b"world!!").unwrap();
     zw.finish().unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.preview_kind = Some(app.cfg.resolve_preview(&zpath));
     app.tab.preview_path = Some(zpath.clone());
     app.tab.mode = Mode::Preview;
     app.load_table();
-    (app, zpath)
+    // Same reasoning as `app_with_table`: return the sandbox guard so a re-parse (tab roundtrip,
+    // resize, ...) later in the test still finds the archive on disk.
+    (app, dir)
 }
 
 #[test]
 fn zip_resolves_to_archive_table_preview() {
-    let (app, _) = app_with_archive_zip();
+    let (app, _dir) = app_with_archive_zip();
     assert!(
         matches!(
             app.tab.preview_kind,
@@ -12525,7 +12533,7 @@ fn corrupt_zip_degrades_to_no_table_data() {
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("bad.zip");
     std::fs::write(&p, b"not a zip file at all").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.preview_kind = Some(app.cfg.resolve_preview(&p));
     app.tab.preview_path = Some(p.clone());
     app.tab.mode = Mode::Preview;
@@ -12539,7 +12547,7 @@ fn corrupt_zip_degrades_to_no_table_data() {
 
 #[test]
 fn table_cursor_moves_and_clamps() {
-    let (mut app, _) = app_with_table();
+    let (mut app, _dir) = app_with_table();
     assert_eq!(app.table_cursor(), (0, 0));
     // Moving far out of range still clamps at the end (row 1, col 2).
     app.table_cursor_move(9, 9);
@@ -12558,7 +12566,7 @@ fn table_cursor_moves_and_clamps() {
 
 #[test]
 fn table_copy_text_cell_row_column() {
-    let (mut app, _) = app_with_table();
+    let (mut app, _dir) = app_with_table();
     // Put the cursor at (row 1, col 1) = "e".
     app.table_cursor_move(1, 1);
     assert_eq!(
@@ -12590,7 +12598,7 @@ fn table_page_and_half_page_move_by_viewport() {
         body.push_str(&format!("r{i}a,r{i}b,r{i}c\n"));
     }
     std::fs::write(&csv, body).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
     app.tab.preview_path = Some(csv.clone());
     app.tab.mode = Mode::Preview;
@@ -12620,7 +12628,7 @@ fn table_page_and_half_page_move_by_viewport() {
 #[test]
 fn table_cursor_survives_tab_roundtrip() {
     // The cell cursor is kept and the table is re-parsed across tab save/restore.
-    let (mut app, _) = app_with_table();
+    let (mut app, _dir) = app_with_table();
     app.table_cursor_move(1, 2);
     app.tab_new().unwrap(); // saves the current tab and moves to a new one
     app.tab_cycle(-1); // back to the original tab (load_active re-parses the table + restores the cursor)
@@ -12649,7 +12657,7 @@ fn table_cell_view_returns_untruncated_long_and_cjk_text() {
     let cjk = "あいうえおかきくけこ".repeat(5); // 50 full-width chars = width 100 (also over 40).
     let csv = dir.join("t.csv");
     std::fs::write(&csv, format!("h1,h2\n{long},{cjk}\n")).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
     app.tab.preview_path = Some(csv.clone());
     app.tab.mode = Mode::Preview;
@@ -12680,7 +12688,7 @@ fn table_cell_view_preserves_embedded_newlines() {
     std::fs::create_dir_all(&dir).unwrap();
     let csv = dir.join("t.csv");
     std::fs::write(&csv, "name,address\nDoe,\"123 Main St\nSuite 4\nCity\"\n").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
     app.tab.preview_path = Some(csv.clone());
     app.tab.mode = Mode::Preview;
@@ -12707,7 +12715,7 @@ fn table_cell_view_handles_replacement_chars_without_panic() {
     let mut bytes = b"h1,h2\n".to_vec();
     bytes.extend_from_slice(b"a\xff\xfeb,c\n"); // one row containing invalid bytes.
     std::fs::write(&csv, bytes).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
     app.tab.preview_path = Some(csv.clone());
     app.tab.mode = Mode::Preview;
@@ -12726,7 +12734,7 @@ fn table_cell_view_handles_replacement_chars_without_panic() {
 /// and pressing it again closes it.
 #[test]
 fn toggle_table_cell_view_opens_resets_scroll_and_closes() {
-    let (mut app, _) = app_with_table();
+    let (mut app, _dir) = app_with_table();
     assert!(!app.is_table_cell_open());
     assert_eq!(app.internal_mode(), None);
 
@@ -12750,7 +12758,7 @@ fn toggle_table_cell_view_flashes_on_empty_table() {
     std::fs::create_dir_all(&dir).unwrap();
     let csv = dir.join("empty.csv");
     std::fs::write(&csv, "").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.preview_kind = Some(app.cfg.resolve_preview(&csv));
     app.tab.preview_path = Some(csv.clone());
     app.tab.mode = Mode::Preview;
@@ -12768,7 +12776,7 @@ fn toggle_table_cell_view_flashes_on_empty_table() {
 /// the viewport width last written back by the renderer as one page.
 #[test]
 fn table_cell_scroll_by_to_and_page_move_and_clamp_floor() {
-    let (mut app, _) = app_with_table();
+    let (mut app, _dir) = app_with_table();
     app.toggle_table_cell_view();
     assert_eq!(app.table_cell_scroll(), 0);
 
@@ -12802,7 +12810,7 @@ fn table_cell_scroll_by_to_and_page_move_and_clamp_floor() {
 /// The archive listing goes through the same `TableData`, so the cell popup works automatically (verify).
 #[test]
 fn table_cell_view_works_for_archive_listing() {
-    let (mut app, _) = app_with_archive_zip();
+    let (mut app, _dir) = app_with_archive_zip();
     let view = app.table_cell_view().expect("table_cell_view");
     assert_eq!(view.header, "Name");
     assert_eq!(view.text, "one.txt");
@@ -12820,7 +12828,7 @@ fn table_cell_view_works_for_archive_listing() {
 /// The popup doesn't carry over across a tab switch/new tab (same App-global overlay convention as Outline).
 #[test]
 fn table_cell_popup_does_not_survive_tab_switch_or_new_tab() {
-    let (mut app, _) = app_with_table();
+    let (mut app, _dir) = app_with_table();
     app.toggle_table_cell_view();
     assert!(app.is_table_cell_open());
 
@@ -12831,7 +12839,7 @@ fn table_cell_popup_does_not_survive_tab_switch_or_new_tab() {
     );
 
     // A separate session: leaving it open, switching away, and coming back must not leave it open.
-    let (mut app2, _) = app_with_table();
+    let (mut app2, _dir2) = app_with_table();
     app2.toggle_table_cell_view();
     assert!(app2.is_table_cell_open());
     app2.tab_new().unwrap();
@@ -12867,7 +12875,7 @@ fn preview_selection_ref_formats_caret_and_ranges() {
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("notes.txt");
     std::fs::write(&file, b"l1\nl2\nl3\nl4\nl5\n").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.enter_preview(&file);
     assert!(app.is_windowed(), "テキストは windowed");
 
@@ -12994,7 +13002,7 @@ fn follow_jump_reveals_and_previews_only_valid_targets() {
     let outside = unique_tmp("konoma_follow_outside.txt");
     std::fs::write(&outside, b"x\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // Does nothing while OFF.
     app.follow_jump(&dir.join("a.txt"));
     assert!(matches!(app.tab.mode, Mode::Tree));
@@ -13676,7 +13684,7 @@ fn md_row_prefix_matches_full_document_reflow() {
     }
     md.push_str("| a | b |\n|---|---|\n| 1 | 2 |\n\n- [ ] task\n\n```rust\nfn f() {}\n```\n");
     std::fs::write(dir.join("doc.md"), md.as_bytes()).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(app.cfg.ui.wrap, "既定は wrap=on の前提");
     let idx = app
         .tab
@@ -13720,7 +13728,7 @@ fn md_slice_render_matches_full_document_render() {
         ));
     }
     std::fs::write(dir.join("doc.md"), md.as_bytes()).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let idx = app
         .tab
         .entries
@@ -13798,7 +13806,7 @@ fn standalone_mermaid_renders_as_image_with_vector_source() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("d.mmd"), "graph LR\n  A[start] --> B[end]\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     let _ = app.reveal_path_deep(&dir.join("d.mmd"));
     app.enter_preview(&dir.join("d.mmd"));
@@ -13826,7 +13834,7 @@ fn mermaid_text_mode_keeps_legacy_rendering() {
 
     let mut cfg = Config::default();
     cfg.ui.mermaid = "text".into();
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&dir.join("d.mmd"));
     assert!(app.image_src.is_none(), "text モードはラスタ化しない");
@@ -14069,7 +14077,7 @@ fn vector_zoom_rerasters_sharper_without_moving_geometry() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("d.mmd"), "graph TD\n  A --> B\n  B --> C\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&dir.join("d.mmd"));
     let before = app.image_src.as_ref().unwrap().dimensions();
@@ -14103,7 +14111,7 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
     )
     .unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     // Build the decoration cache (synchronous fallback = the fence renders immediately too).
@@ -14257,7 +14265,7 @@ fn broken_fence_degrades_to_text_diagram() {
     let md = dir.join("doc.md");
     std::fs::write(&md, "```mermaid\nthis is not a diagram at all\n```\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     app.ensure_md_cache(80);
@@ -14299,7 +14307,7 @@ fn fence_focus_inverts_caption_span_only() {
     let md = dir.join("doc.md");
     std::fs::write(&md, "# t\n\n```mermaid\ngraph LR\n  A --> B\n```\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
@@ -14366,7 +14374,7 @@ fn fence_focus_scrolls_block_and_draws_border() {
     src.push_str("```mermaid\ngraph LR\n  A --> B\n```\n");
     std::fs::write(&md, src).unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
@@ -14498,7 +14506,7 @@ fn mermaid_initial_size_fits_viewport_and_refits_on_change() {
     let plain = dir.join("plain.md");
     std::fs::write(&plain, "# title\n\njust text\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     app.ensure_md_cache(80);
@@ -14566,7 +14574,7 @@ fn fence_overlay_aligns_with_wrapped_text_layer() {
     )
     .unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(app.cfg.ui.wrap, "前提: 既定 wrap=on");
     app.picker = Some(test_picker());
     app.enter_preview(&md);
@@ -14630,7 +14638,7 @@ fn fence_inplace_zoom_pans_and_keeps_layout() {
     )
     .unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     app.ensure_md_cache(80);
@@ -14809,7 +14817,7 @@ fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
     // Load with rows=10 configured.
     let mut cfg = Config::default();
     cfg.ui.mermaid_rows = 10;
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     app.ensure_md_cache(80);
@@ -14819,7 +14827,7 @@ fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
 
     // With the default (24, an upper limit this diagram's natural size doesn't reach) it's bigger
     // than the rows=10 case above, where the cap of 10 *does* clip the natural size down.
-    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app2.picker = Some(test_picker());
     app2.enter_preview(&md);
     app2.ensure_md_cache(80);
@@ -14833,7 +14841,7 @@ fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
     // 0 (invalid) falls back to the default.
     let mut cfg0 = Config::default();
     cfg0.ui.mermaid_rows = 0;
-    let mut app3 = App::new(dir.clone(), cfg0).unwrap();
+    let mut app3 = App::new(dir.to_path_buf(), cfg0).unwrap();
     app3.picker = Some(test_picker());
     app3.enter_preview(&md);
     app3.ensure_md_cache(80);
@@ -14936,7 +14944,7 @@ fn mermaid_rows_is_an_upper_limit_not_a_fill_target() {
     std::fs::write(&md, "```mermaid\ngraph TD\n  A --> B\n```\n").unwrap();
     let mut cfg = Config::default();
     cfg.ui.svg_max_px = 40; // forces a tiny base raster = guarantees a density shortfall on zoom
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     app.ensure_md_cache(120);
@@ -14988,14 +14996,14 @@ fn mermaid_rows_large_target_does_not_upscale_past_natural_size() {
 
     let mut cfg = Config::default();
     cfg.ui.mermaid_rows = 100;
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     app.ensure_md_cache(148);
     app.ensure_md_cache(148);
     let p = app.md_images()[0].clone();
 
-    let mut app_default = App::new(dir.clone(), Config::default()).unwrap(); // mermaid_rows=24
+    let mut app_default = App::new(dir.to_path_buf(), Config::default()).unwrap(); // mermaid_rows=24
     app_default.picker = Some(test_picker());
     app_default.enter_preview(&md);
     app_default.ensure_md_cache(148);
@@ -15033,7 +15041,7 @@ fn md_overlay_move_detection_requests_full_redraw() {
     src.push_str("```mermaid\ngraph LR\n  A --> B\n```\n");
     std::fs::write(&md, src).unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
@@ -15112,7 +15120,7 @@ fn git_graph_decoration_state_is_per_tab() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.txt"), "x").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // Simulate tab 0's graph decoration state (set the derived fields directly, without building
     // a real graph).
     app.tab.git_graph_base = Some("release/1.0".into());
@@ -15164,7 +15172,7 @@ fn tab_switch_restores_mermaid_image_preview() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("d.mmd"), "graph LR\n  A --> B\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&dir.join("d.mmd"));
     assert!(app.image_src.is_some(), "前提: 画像モードでラスタ化される");
@@ -15191,7 +15199,7 @@ fn tab_switch_restores_fullscreen_fence_view() {
     let md = dir.join("doc.md");
     std::fs::write(&md, "intro\n\n```mermaid\ngraph LR\n  A --> B\n```\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     app.ensure_md_cache(100);
@@ -15236,7 +15244,7 @@ fn fence_ordinal_survives_failed_upstream_fence() {
     )
     .unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     app.ensure_md_cache(100);
@@ -15287,7 +15295,7 @@ fn stale_fence_cache_entries_are_pruned_on_rebuild() {
     let v1 = "```mermaid\ngraph LR\n  A --> B\n```\n";
     std::fs::write(&md, v1).unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     app.ensure_md_cache(100);
@@ -15329,7 +15337,7 @@ fn fence_focus_and_zoom_are_per_tab() {
     std::fs::write(&a, "```mermaid\ngraph LR\n  A --> B\n```\n").unwrap();
     std::fs::write(&b, "```mermaid\ngraph TD\n  C --> D\n```\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&a);
     app.ensure_md_cache(100);
@@ -15376,7 +15384,7 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
     let src = "intro\n\n```mermaid\ngraph LR\n  A --> B\n```\n";
     std::fs::write(&md, src).unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     app.ensure_md_cache(100);
@@ -15424,7 +15432,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
     let dir = unique_tmp("konoma_encode_fail_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
     // Full failure, no protocol held -> degrades to failed and busy clears.
     let key = std::path::PathBuf::from("mermaid-fence://feedfeedfeedfeed");
@@ -15521,7 +15529,7 @@ fn math_inline_image_requests_encode_via_synthetic_key() {
     let dir = unique_tmp("konoma_math_encode_test");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
     // Wire up the encode worker's receiving end (ensure_md_image queues an MdEncodeRequest here).
     let (tx, rx) = std::sync::mpsc::channel();
@@ -15562,7 +15570,7 @@ fn vector_reraster_inflight_guard_blocks_duplicate_jobs() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("d.mmd"), "graph TD\n  A --> B\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&dir.join("d.mmd"));
     let before = app.image_src.as_ref().unwrap().dimensions();
@@ -15601,7 +15609,7 @@ fn empty_mermaid_fence_does_not_stick_on_loading() {
     )
     .unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     app.ensure_md_cache(100);
@@ -15652,7 +15660,7 @@ fn zoomed_fence_offscreen_does_not_eat_motion_keys() {
     }
     std::fs::write(&md, src).unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     let mut term = Terminal::new(TestBackend::new(100, 24)).unwrap();
@@ -15695,7 +15703,7 @@ fn stale_md_image_result_is_dropped() {
     let md = dir.join("doc.md");
     std::fs::write(&md, "# title\n\nplain text\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
     app.ensure_md_cache(100);
@@ -15736,7 +15744,7 @@ fn apply_md_image_with_a_panic_shaped_reraster_failure_clears_inflight_without_d
     let dir = unique_tmp("konoma_apply_md_image_panic_shaped");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
 
     let key = std::path::PathBuf::from("mermaid-fence://deadbeefdeadbeef");
     let existing = std::sync::Arc::new(image::DynamicImage::new_rgba8(120, 48));
@@ -16056,7 +16064,7 @@ fn decorated_markdown_search_scrolls_to_matches() {
 fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
     let dir = unique_tmp("konoma_kitty_resize_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir, Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // A source **larger** than the viewport (4000x3000px = 400x150 cells @ font 10x20). It gets
     // scaled down to fit the viewport, so a terminal resize = a display-size change = the hole
     // surfaces (a small image is unchanged at its natural size).
@@ -16118,7 +16126,7 @@ fn kitty_image_rebuilds_on_terminal_resize_at_fit() {
 /// image (ThreadProtocol) path is used instead.
 #[test]
 fn non_kitty_terminal_keeps_ratatui_image_path() {
-    let mut app = app_with_image(); // halfblocks
+    let (mut app, _dir) = app_with_image(); // halfblocks
     app.attach_image_backend(
         ratatui_image::picker::Picker::halfblocks(),
         app.img_tx.clone().unwrap(),
@@ -16193,7 +16201,7 @@ fn table_search_hits_do_not_leak_across_tabs() {
 fn kitty_zoom_builds_async_and_latest_wins() {
     let dir = unique_tmp("konoma_kitty_async_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
@@ -16258,7 +16266,7 @@ fn kitty_zoom_builds_async_and_latest_wins() {
 fn kitty_rebuilds_on_same_size_image_swap() {
     let dir = unique_tmp("konoma_kitty_swap_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(800, 600)));
     app.tab.preview_kind = Some(PreviewKind::Image(PathBuf::from("doc.pdf")));
     let (itx, irx) = tokio::sync::mpsc::unbounded_channel();
@@ -16298,7 +16306,7 @@ fn kitty_rebuilds_on_same_size_image_swap() {
 fn kitty_failed_build_clears_pending() {
     let dir = unique_tmp("konoma_kitty_fail_test");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
@@ -16448,7 +16456,7 @@ fn descend_into_nested_different_repo_recomputes_status() {
 fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
     let dir = unique_tmp("konoma_kitty_switch_race");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.image_src = Some(std::sync::Arc::new(image::DynamicImage::new_rgb8(
         4000, 3000,
     )));
@@ -16540,7 +16548,7 @@ fn git_dir_watch_targets_worktrees_git_dir_for_linked_worktree_root() {
         .arg("-q")
         .arg("-b")
         .arg("konoma-wt-test-branch")
-        .arg(&wt_dir)
+        .arg(&*wt_dir)
         .current_dir(&main_root)
         .output()
         .unwrap();
@@ -17107,7 +17115,7 @@ fn open_git_diff_with_seeded_diff_avoids_recomputing_it_on_first_read() {
 fn apply_md_diff_ignores_a_landed_result_for_a_path_no_longer_on_screen() {
     let dir = unique_tmp("konoma_apply_md_diff_off_screen");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let doc = dir.join("doc.md");
     let other = dir.join("other.md"); // whatever is actually on screen now
     app.tab.preview_path = Some(other.clone());
@@ -17148,7 +17156,7 @@ fn apply_md_diff_ignores_a_landed_result_for_a_path_no_longer_on_screen() {
 fn apply_md_diff_ignores_a_landed_gutter_result_while_rendered_is_showing() {
     let dir = unique_tmp("konoma_apply_md_diff_kind_mismatch");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let doc = dir.join("doc.md");
     app.tab.preview_path = Some(doc.clone());
     app.tab.diff_view = DiffView::Rendered;
@@ -17182,7 +17190,7 @@ fn apply_md_diff_ignores_a_landed_gutter_result_while_rendered_is_showing() {
 fn apply_md_diff_ignores_a_landed_rendered_result_after_leaving_rendered_for_source() {
     let dir = unique_tmp("konoma_apply_md_diff_diff_view_mismatch");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let doc = dir.join("doc.md");
     app.tab.preview_path = Some(doc.clone());
     app.tab.diff_view = DiffView::Source; // already left Rendered by the time this result lands
@@ -17235,7 +17243,7 @@ fn enter_preview_clears_any_pending_diff_scroll_reservation() {
     let doc = dir.join("doc.md");
     std::fs::write(&doc, "# Title\n\nBody.\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // A stale reservation for an unrelated (and non-existent) path — exactly the shape
     // `enter_preview`'s own doc comment describes as needing to be dropped, not just one that
     // happens to name `doc.md` itself.
@@ -17314,7 +17322,7 @@ fn take_diff_scroll_pending_for_only_matches_its_own_path_and_always_consumes() 
     let dir = unique_tmp("konoma_take_diff_scroll_pending_for_match");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let a = dir.join("a.md");
     let b = dir.join("b.md");
 
@@ -17348,7 +17356,7 @@ fn take_diff_scroll_pending_for_only_matches_its_own_path_and_always_consumes() 
 fn apply_md_diff_unavailable_clears_the_scroll_reservation_for_its_own_path() {
     let dir = unique_tmp("konoma_apply_md_diff_unavailable_clears_own_scroll_pending");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let path = dir.join("doc.md");
     app.tab.preview_path = Some(path.clone());
     app.tab.diff_view = DiffView::Rendered;
@@ -17381,7 +17389,7 @@ fn apply_md_diff_unavailable_clears_the_scroll_reservation_for_its_own_path() {
 fn apply_md_diff_unavailable_does_not_clear_a_different_paths_scroll_reservation() {
     let dir = unique_tmp("konoma_apply_md_diff_unavailable_other_path_scroll_pending");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let path = dir.join("doc.md");
     let other = dir.join("other.md");
     app.tab.preview_path = Some(path.clone());
@@ -17418,7 +17426,7 @@ fn poll_md_diff_does_not_reuse_a_landed_result_whose_gen_no_longer_matches() {
     std::fs::create_dir_all(&dir).unwrap();
     let doc = dir.join("doc.md");
     std::fs::write(&doc, "# Title\n\nHello.\n").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // A landed `Ready` result under an old generation.
     app.md_diff_landed = Some((
         doc.clone(),
@@ -17456,7 +17464,7 @@ fn poll_md_diff_does_not_reuse_a_landed_gutter_result_for_a_rendered_request() {
     std::fs::create_dir_all(&dir).unwrap();
     let doc = dir.join("doc.md");
     std::fs::write(&doc, "# Title\n\nHello.\n").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.md_diff_gen = 5;
     app.md_diff_landed = Some((
         doc.clone(),
@@ -17494,7 +17502,7 @@ fn poll_md_diff_does_not_reuse_a_landed_gutter_result_for_a_rendered_request() {
 fn md_diff_pending_for_current_is_false_when_the_pending_computation_is_for_a_different_path() {
     let dir = unique_tmp("konoma_md_diff_pending_for_current_path_mismatch");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let a = dir.join("a.md");
     let b = dir.join("b.md");
     app.tab.preview_path = Some(a);
@@ -18394,7 +18402,7 @@ fn tab_switch_parses_a_table_preview_only_once() {
     std::fs::write(dir.join("data.csv"), &csv).unwrap();
     std::fs::write(dir.join("other.txt"), b"plain\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // Tab 1 = preview of data.csv, tab 2 = tree.
     app.tab.selected = app
         .tab
@@ -18437,7 +18445,7 @@ fn returning_to_a_media_tab_reuses_the_decoded_image() {
     std::fs::write(&img, b"not-a-real-png").unwrap(); // content is unused (the decoded result is set directly below)
     std::fs::write(dir.join("note.txt"), b"x").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // Build a state equivalent to an image preview (a decoded state can be reproduced even without a picker).
     app.tab.selected = app
         .tab
@@ -18490,7 +18498,7 @@ fn oversized_media_is_not_cached() {
     std::fs::write(&img, b"x").unwrap();
     std::fs::write(dir.join("note.txt"), b"x").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
     app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
@@ -18528,7 +18536,7 @@ fn media_cache_distinguishes_mermaid_fences_of_one_document() {
     )
     .unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(doc.clone());
     app.preview_media_mtime = crate::app::file_mtime(&doc);
@@ -18568,7 +18576,7 @@ fn closing_a_media_tab_releases_its_cached_image() {
     let img = dir.join("pic.png");
     std::fs::write(&img, b"x").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
     app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
@@ -18598,7 +18606,7 @@ fn media_cache_misses_when_size_changes_under_the_same_mtime() {
     let img = dir.join("pic.png");
     std::fs::write(&img, b"original").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(img.clone());
     app.tab.preview_kind = Some(PreviewKind::Image(img.clone()));
@@ -19487,7 +19495,7 @@ fn external_git_disabled_flashes_distinct_message_and_tree_renders() {
 
     let mut cfg = Config::default();
     cfg.external.git = false;
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
 
     app.open_git_view();
     assert!(!app.is_git_view(), "git=false: the Git view does not open");
@@ -19502,7 +19510,7 @@ fn external_git_disabled_flashes_distinct_message_and_tree_renders() {
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
 
     // Sanity: with git enabled (default), `o` really does open on the same repo.
-    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app2.open_git_view();
     assert!(
         app2.is_git_view(),
@@ -19580,7 +19588,7 @@ fn open_git_view_reports_a_missing_git_binary_distinctly() {
     std::fs::write(dir.join("a.txt"), b"changed\n").unwrap();
 
     crate::git::set_git_binary_available_for_test(Some(false));
-    let mut app = App::new(dir.clone(), Config::default()).unwrap(); // external.git = true (default)
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap(); // external.git = true (default)
     app.open_git_view();
     assert!(
         !app.is_git_view(),
@@ -19594,7 +19602,7 @@ fn open_git_view_reports_a_missing_git_binary_distinctly() {
 
     // Unchanged when the binary IS available: the same repo opens the view as before.
     crate::git::set_git_binary_available_for_test(None);
-    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app2.open_git_view();
     assert!(
         app2.is_git_view(),
@@ -19618,7 +19626,7 @@ fn tree_renders_without_a_git_binary() {
     std::fs::write(dir.join("a.txt"), b"hi\n").unwrap(); // would normally show a `U` marker
 
     crate::git::set_git_binary_available_for_test(Some(false));
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
     assert!(app.git_branch().is_none(), "no branch name without git");
@@ -19635,7 +19643,7 @@ fn launch_git_tool_respects_external_flag() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut cfg = Config::default();
     cfg.external.git_tool = false;
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
 
     app.launch_git_tool();
     assert!(
@@ -19648,7 +19656,7 @@ fn launch_git_tool_respects_external_flag() {
     );
 
     // Sanity: enabled (default) does queue the request.
-    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app2.launch_git_tool();
     assert!(
         app2.take_launch_git_tool(),
@@ -19666,7 +19674,7 @@ fn open_link_target_respects_external_open_links_flag() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut cfg = Config::default();
     cfg.external.open_links = false;
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
 
     app.open_link_target("https://example.com/page").unwrap();
     assert_eq!(
@@ -19687,7 +19695,7 @@ fn remote_image_fetch_skipped_and_marked_failed_when_disabled() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut cfg = Config::default();
     cfg.external.remote_images = false;
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
 
     let url = "https://example.invalid/does-not-matter.png";
     app.ensure_remote_md_fetch(url);
@@ -19724,7 +19732,7 @@ fn remote_image_disabled_does_not_stick_on_loading_forever() {
     .unwrap();
     let mut cfg = Config::default();
     cfg.external.remote_images = false;
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&md);
 
@@ -19780,7 +19788,7 @@ fn pdf_page_count_and_native_render_work_even_with_external_pdf_disabled() {
 
     let mut cfg = Config::default();
     cfg.external.pdf = false;
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
     app.enter_preview(&p);
     assert_eq!(
         app.tab.pdf_pages,
@@ -19789,7 +19797,7 @@ fn pdf_page_count_and_native_render_work_even_with_external_pdf_disabled() {
     );
 
     // Same with the flag enabled (default) — external.pdf must not change what pdf_pages resolves to.
-    let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app2.enter_preview(&p);
     assert_eq!(
         app2.tab.pdf_pages,
@@ -19824,7 +19832,7 @@ fn video_thumbnail_is_native_even_when_external_video_disabled() {
         };
         let mut cfg = Config::default();
         cfg.external.video = false;
-        let mut app = App::new(dir.clone(), cfg).unwrap();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
         app.picker = Some(test_picker());
         app.enter_preview(&p);
         assert!(
@@ -19868,7 +19876,7 @@ fn video_thumbnail_falls_back_to_external_tools_only_when_allowed() {
 
     let mut cfg = Config::default();
     cfg.external.video = false;
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
     app.picker = Some(test_picker());
     app.enter_preview(&p);
     assert!(
@@ -19899,7 +19907,7 @@ fn video_thumbnail_falls_back_to_external_tools_only_when_allowed() {
     if !has_ffmpeg {
         eprintln!("SKIP sanity: ffmpeg not on PATH");
     } else {
-        let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app2.picker = Some(test_picker());
         app2.enter_preview(&p);
         assert!(
@@ -20163,7 +20171,7 @@ fn md_task_toggle_refuses_the_documented_corruption_shape() {
 // "0" the meaningful number here.
 
 /// Fixture: `n` plain files in one directory. Returns the directory.
-fn stat_fixture_flat(prefix: &str, n: usize) -> PathBuf {
+fn stat_fixture_flat(prefix: &str, n: usize) -> crate::test_support::TmpDir {
     let dir = unique_tmp(prefix);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -20534,7 +20542,7 @@ struct LayerCase {
 /// Puts a fresh App into the state a case describes.
 type LayerSetup = fn(&mut App);
 
-fn layer_fixture() -> PathBuf {
+fn layer_fixture() -> crate::test_support::TmpDir {
     let dir = unique_tmp("konoma_layer_cascade");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -21704,7 +21712,7 @@ fn the_walk_visits_the_layers_in_their_declaration_order() {
 
 /// Fixture: a nested tree — several directories, each with files — so a walk has more than one
 /// directory to pop and can therefore be split at a boundary.
-fn nested_fixture(prefix: &str, dirs: usize, files_per_dir: usize) -> PathBuf {
+fn nested_fixture(prefix: &str, dirs: usize, files_per_dir: usize) -> crate::test_support::TmpDir {
     let dir = unique_tmp(prefix);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -21749,7 +21757,7 @@ fn collect_scan_split_at_every_boundary_matches_one_uninterrupted_walk() {
     assert_eq!(whole.len(), 6 + 6 * 4, "土台: 全部で 30 エントリ");
 
     let mut pieces: Vec<Entry> = Vec::new();
-    let mut stack = vec![dir.clone()];
+    let mut stack = vec![dir.to_path_buf()];
     let mut calls = 0;
     while !stack.is_empty() {
         let (part, rest) = collect_scan(
@@ -21789,7 +21797,7 @@ fn collect_scan_without_a_deadline_finishes_in_one_call() {
     // The worker's own contract: handed a stack and no deadline, it must run the walk to the end
     // (an empty leftover stack) — otherwise the hand-off would drop entries on the floor.
     let dir = nested_fixture("konoma_scan_nodeadline", 4, 3);
-    let (out, rest) = collect_scan(vec![dir.clone()], false, COLLECT_CAP, None);
+    let (out, rest) = collect_scan(vec![dir.to_path_buf()], false, COLLECT_CAP, None);
     assert!(rest.is_empty(), "期限なしなら歩き残しは無い");
     assert_eq!(out.len(), 4 + 4 * 3);
     assert!(
@@ -21805,7 +21813,7 @@ fn collect_scan_treats_the_cap_as_complete_not_as_an_interruption() {
     // deliberate stop, and reporting it as "unfinished" would have the worker walk the rest of a
     // huge tree only to have it thrown away past the cap.
     let dir = nested_fixture("konoma_scan_cap", 5, 5);
-    let (out, rest) = collect_scan(vec![dir.clone()], false, 7, None);
+    let (out, rest) = collect_scan(vec![dir.to_path_buf()], false, 7, None);
     assert_eq!(out.len(), 7, "cap ちょうどで打ち切る");
     assert!(rest.is_empty(), "cap 到達は「完了」= 続きを渡さない");
     std::fs::remove_dir_all(&dir).ok();
@@ -21826,7 +21834,7 @@ fn start_filter_within_budget_fills_the_pool_before_returning() {
     // first frame after `/` already has everything; nothing arrives later.
     let _g = BudgetGuard::always_sync();
     let dir = nested_fixture("konoma_pool_sync", 4, 3);
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let rx = with_pool_channel(&mut app);
 
     app.start_filter();
@@ -21880,7 +21888,7 @@ fn collect_scan_carries_the_cap_across_a_split() {
     let dir = nested_fixture("konoma_scan_cap_split", 6, 4);
     const CAP: usize = 11;
     let mut got: Vec<Entry> = Vec::new();
-    let mut stack = vec![dir.clone()];
+    let mut stack = vec![dir.to_path_buf()];
     while !stack.is_empty() && got.len() < CAP {
         let (part, rest) = collect_scan(
             std::mem::take(&mut stack),
@@ -21907,7 +21915,7 @@ fn start_filter_over_budget_hands_off_and_the_pool_completes_on_arrival() {
     let _g = BudgetGuard::always_async();
     let dir = nested_fixture("konoma_pool_async", 6, 4);
     let full = collect_all(&dir, false);
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let rx = with_pool_channel(&mut app);
 
     app.start_filter();
@@ -21978,7 +21986,7 @@ fn a_scan_that_lands_after_the_root_changed_is_discarded() {
     let _g = BudgetGuard::always_async();
     let a = nested_fixture("konoma_pool_stale_a", 3, 3);
     let b = nested_fixture("konoma_pool_stale_b", 3, 3);
-    let mut app = App::new(a.clone(), Config::default()).unwrap();
+    let mut app = App::new(a.to_path_buf(), Config::default()).unwrap();
     let rx = with_pool_channel(&mut app);
     app.start_filter();
     let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
@@ -21986,7 +21994,7 @@ fn a_scan_that_lands_after_the_root_changed_is_discarded() {
     assert_eq!(res.root, a, "土台: この結果は a の走査");
 
     // The root moves under the running scan, with the filter still active.
-    app.tab.root = b.clone();
+    app.tab.root = b.to_path_buf();
     app.tab.filter_pool.clear();
 
     assert!(
@@ -21999,11 +22007,11 @@ fn a_scan_that_lands_after_the_root_changed_is_discarded() {
     );
 
     // And the realistic sequence (move away, filter there) rejects it too — belt and braces.
-    let mut app = App::new(a.clone(), Config::default()).unwrap();
+    let mut app = App::new(a.to_path_buf(), Config::default()).unwrap();
     let rx = with_pool_channel(&mut app);
     app.start_filter();
     let old = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
-    app.jump_to_dir(b.clone());
+    app.jump_to_dir(b.to_path_buf());
     app.start_filter();
     let _ = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
     let before: Vec<_> = app.tab.filter_pool.iter().map(|e| e.path.clone()).collect();
@@ -22023,7 +22031,7 @@ fn a_scan_that_lands_after_leaving_the_filter_is_discarded() {
     // Staleness by mode: `Esc` cleared the filter, so there is no pool for the result to belong to.
     let _g = BudgetGuard::always_async();
     let dir = nested_fixture("konoma_pool_left", 3, 3);
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let rx = with_pool_channel(&mut app);
     app.start_filter();
     let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
@@ -22054,7 +22062,7 @@ fn a_scan_that_lands_after_a_tab_switch_is_discarded() {
     // not — so tab 1's result landing in tab 2 is directly visible as tab 2's dotfiles vanishing.
     let dir = nested_fixture("konoma_pool_tab", 3, 3);
     std::fs::write(dir.join(".dotfile.txt"), b"x").unwrap();
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let rx = with_pool_channel(&mut app);
     {
         let _g = BudgetGuard::always_sync();
@@ -22111,7 +22119,7 @@ fn concurrent_fs_events_coalesce_into_a_single_rescan() {
     // Counted by how many results reach the channel, which is exactly "how many scans ran".
     let _g = BudgetGuard::always_async();
     let dir = nested_fixture("konoma_pool_coalesce", 4, 3);
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let rx = with_pool_channel(&mut app);
     app.start_filter();
     let first = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
@@ -22145,7 +22153,7 @@ fn an_fs_refresh_keeps_showing_the_current_pool_until_the_new_one_lands() {
     // every refresh, so the filter is re-applied immediately from the pool already in hand.
     let _g = BudgetGuard::always_async();
     let dir = nested_fixture("konoma_pool_keep", 4, 3);
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let rx = with_pool_channel(&mut app);
     app.start_filter();
     let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
@@ -22179,7 +22187,7 @@ fn an_fs_refresh_picks_up_files_created_while_filtering() {
     // a file that appears while `/` is open has to show up in the results.
     let _g = BudgetGuard::always_async();
     let dir = nested_fixture("konoma_pool_newfile", 3, 2);
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let rx = with_pool_channel(&mut app);
     app.start_filter();
     let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
@@ -22212,7 +22220,7 @@ fn the_async_and_synchronous_paths_produce_the_same_pool() {
 
     let sync_pool = {
         let _g = BudgetGuard::always_sync();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.start_filter();
         app.tab
             .filter_pool
@@ -22222,7 +22230,7 @@ fn the_async_and_synchronous_paths_produce_the_same_pool() {
     };
     let async_pool = {
         let _g = BudgetGuard::always_async();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let rx = with_pool_channel(&mut app);
         app.start_filter();
         let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
@@ -22252,7 +22260,7 @@ fn without_a_channel_every_scan_still_completes_synchronously() {
     // drives a run loop sees the same complete pool it always did.
     let _g = BudgetGuard::always_async();
     let dir = nested_fixture("konoma_pool_nochannel", 4, 3);
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     // deliberately no attach_filter_pool_loader
 
     app.start_filter();
@@ -22274,7 +22282,7 @@ fn a_panicking_scan_releases_the_slot_without_wiping_the_pool() {
     // indicator forever and swallow the coalesced re-scan request.
     let _g = BudgetGuard::always_sync();
     let dir = nested_fixture("konoma_pool_panic", 3, 3);
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.start_filter();
     app.filter_input_push('f');
     let pool = app.tab.filter_pool.len();
@@ -22282,10 +22290,10 @@ fn a_panicking_scan_releases_the_slot_without_wiping_the_pool() {
     assert!(pool > 0 && shown > 0, "土台: プールも表示も埋まっている");
 
     // What the worker sends when `catch_silent` caught a panic.
-    app.filter_pool_pending = Some((app.filter_pool_gen, dir.clone()));
+    app.filter_pool_pending = Some((app.filter_pool_gen, dir.to_path_buf()));
     let failed = crate::app::FilterPoolResult {
         gen: app.filter_pool_gen,
-        root: dir.clone(),
+        root: dir.to_path_buf(),
         entries: None,
         append: false,
     };
@@ -22313,7 +22321,7 @@ fn a_panicking_scan_releases_the_slot_without_wiping_the_pool() {
 /// Fixture built so the fuzzy ranking is *guaranteed* to reshuffle when the pool grows: `abcd.txt`
 /// is a far better match for "abc" than `x_a_b_c_N.txt`, so once it arrives it sorts to the front
 /// and pushes everything already on screen down by one.
-fn reorder_fixture(prefix: &str) -> PathBuf {
+fn reorder_fixture(prefix: &str) -> crate::test_support::TmpDir {
     let dir = unique_tmp(prefix);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -22340,7 +22348,7 @@ fn filter_cursor_follows_its_file_when_a_late_scan_reorders_the_results() {
     // the list under the cursor, the next key acts on a file the user never looked at.
     let _g = BudgetGuard::always_sync();
     let dir = reorder_fixture("konoma_filter_reorder");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.start_filter();
     for c in "abc".chars() {
         app.filter_input_push(c);
@@ -22384,7 +22392,7 @@ fn filter_cursor_falls_back_to_clamping_when_its_file_is_no_longer_a_match() {
     // there is nothing to follow and the old positional clamp is exactly right.
     let _g = BudgetGuard::always_sync();
     let dir = reorder_fixture("konoma_filter_gone");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.start_filter();
     for c in "abc".chars() {
         app.filter_input_push(c);
@@ -22425,7 +22433,7 @@ fn filter_cursor_falls_back_to_clamping_when_its_file_is_no_longer_a_match() {
 ///                                                        ^                    ^
 ///                                             read at index 6            cursor at 6
 /// ```
-fn rebuild_reorder_fixture(prefix: &str) -> PathBuf {
+fn rebuild_reorder_fixture(prefix: &str) -> crate::test_support::TmpDir {
     let dir = unique_tmp(prefix);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -22447,7 +22455,7 @@ fn an_fs_driven_rescan_keeps_the_cursor_on_the_same_file() {
     // re-filter directly cannot see it. An agent writing a burst of files is the live case.
     let _g = BudgetGuard::always_sync();
     let dir = rebuild_reorder_fixture("konoma_filter_fsreorder");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.start_filter();
     for c in "abc".chars() {
         app.filter_input_push(c);
@@ -22497,7 +22505,7 @@ fn toggling_hidden_while_filtering_keeps_the_cursor_on_the_same_file() {
     for i in 0..5 {
         std::fs::write(dir.join(format!(".abc_hidden_{i}.txt")), b"strong").unwrap();
     }
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.start_filter();
     for c in "abc".chars() {
         app.filter_input_push(c);
@@ -22605,13 +22613,13 @@ fn a_tab_switch_to_a_different_root_still_dispatches_its_own_scan() {
     let _g = BudgetGuard::always_async();
     let a = nested_fixture("konoma_pool_roota", 4, 3);
     let b = nested_fixture("konoma_pool_rootb", 4, 3);
-    let mut app = App::new(a.clone(), Config::default()).unwrap();
+    let mut app = App::new(a.to_path_buf(), Config::default()).unwrap();
     let rx = with_pool_channel(&mut app);
     app.start_filter();
     app.filter_input_push('f');
     settle_pool(&mut app, &rx);
     app.tab_new().unwrap();
-    app.jump_to_dir(b.clone());
+    app.jump_to_dir(b.to_path_buf());
     app.start_filter();
     app.filter_input_push('f');
     settle_pool(&mut app, &rx);
@@ -22678,7 +22686,7 @@ fn a_superseded_result_does_not_free_a_newer_scans_slot() {
     // FS event would then stack a second whole-tree walk on top of one still running.
     let _g = BudgetGuard::always_async();
     let dir = nested_fixture("konoma_pool_twowalks", 4, 3);
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let rx = with_pool_channel(&mut app);
     app.start_filter();
     app.filter_input_push('f');
@@ -22687,7 +22695,7 @@ fn a_superseded_result_does_not_free_a_newer_scans_slot() {
 
     // Move to a different root and back, so the next kick dispatches rather than coalescing.
     let other = nested_fixture("konoma_pool_twowalks_other", 2, 1);
-    app.jump_to_dir(other.clone());
+    app.jump_to_dir(other.to_path_buf());
     app.start_filter();
     app.filter_input_push('f');
     let newer = app.filter_pool_pending.clone().expect("新しい走査が在る");
@@ -22696,7 +22704,7 @@ fn a_superseded_result_does_not_free_a_newer_scans_slot() {
     // The first root's walk lands late.
     let stale = crate::app::FilterPoolResult {
         gen: old_gen,
-        root: dir.clone(),
+        root: dir.to_path_buf(),
         entries: Some(Vec::new()),
         append: false,
     };
@@ -22720,7 +22728,7 @@ fn a_new_tab_does_not_inherit_the_previous_tabs_scan() {
     // generation, and no root either, since `t` opens at the same root.
     let _g = BudgetGuard::always_async();
     let dir = nested_fixture("konoma_pool_newtab", 4, 3);
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let rx = with_pool_channel(&mut app);
     app.start_filter();
     app.filter_input_push('f');
@@ -22768,7 +22776,7 @@ fn toggling_hidden_while_filtering_keeps_the_filter_and_re_collects_the_pool() {
     std::fs::write(dir.join(".hidden_target.txt"), b"x").unwrap();
     std::fs::write(dir.join("unrelated.md"), b"x").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.start_filter();
     for c in "target".chars() {
         app.filter_input_push(c);
@@ -22834,7 +22842,7 @@ fn a_panicking_walk_on_the_ui_thread_degrades_instead_of_taking_the_tui_down() {
     // fallback (which every test and any run without a loader attached goes through).
     let _g = BudgetGuard::always_sync();
     let dir = nested_fixture("konoma_pool_syncpanic", 3, 3);
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     {
         let _p = ScanPanicGuard::armed();
         app.start_filter(); // must return, not unwind
@@ -22893,7 +22901,7 @@ fn a_panicking_walk_on_the_ui_thread_degrades_instead_of_taking_the_tui_down() {
 /// - The one the cursor parks on (`m_two.txt`) sorts **last**, so `aaa_new.txt` arriving in front of
 ///   it shifts it; without that shift the tests assert nothing.
 #[cfg(feature = "git")]
-fn changed_cursor_repo(prefix: &str) -> PathBuf {
+fn changed_cursor_repo(prefix: &str) -> crate::test_support::TmpDir {
     let dir = unique_tmp(prefix);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -22914,7 +22922,10 @@ fn changed_cursor_repo(prefix: &str) -> PathBuf {
     for n in ["m_one.txt", "m_two.txt", "m_three.txt"] {
         std::fs::write(dir.join("sub").join(n), b"x\n").unwrap();
     }
-    dir.canonicalize().unwrap()
+    // `.into_canonical()` transfers cleanup responsibility onto the returned guard (see its own
+    // doc comment) instead of leaving it on `dir`, which would otherwise drop (and rm -rf the
+    // fixture) the moment this function returns — before any caller ever touches it.
+    dir.into_canonical().unwrap()
 }
 
 /// A new change that sorts to the **front** of the list, the way an agent adding a file does.
@@ -22943,7 +22954,7 @@ fn park_on_last_change(app: &mut App) -> PathBuf {
 #[test]
 fn changed_cursor_follows_its_file_when_a_new_change_sorts_above_it() {
     let dir = changed_cursor_repo("konoma_changed_cursor_sync");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.toggle_changed_filter();
     let target = park_on_last_change(&mut app);
 
@@ -22975,7 +22986,7 @@ fn changed_cursor_follows_its_file_when_a_new_change_sorts_above_it() {
 #[test]
 fn changed_cursor_survives_a_rebuild_deferred_to_the_async_scan() {
     let dir = changed_cursor_repo("konoma_changed_cursor_async");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
     app.toggle_changed_filter(); // `C` has a synchronous contract, so the list is up right here
@@ -23030,7 +23041,7 @@ fn changed_cursor_survives_a_rebuild_deferred_to_the_async_scan() {
 #[test]
 fn changed_cursor_falls_back_to_clamping_when_its_file_leaves_the_list() {
     let dir = changed_cursor_repo("konoma_changed_cursor_gone");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.toggle_changed_filter();
     let target = park_on_last_change(&mut app);
 
@@ -23066,7 +23077,7 @@ fn changed_cursor_survives_toggling_hidden_files() {
     for n in ["m_four.txt", "m_five.txt"] {
         std::fs::write(dir.join("sub").join(n), b"x\n").unwrap();
     }
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.toggle_changed_filter();
     assert_eq!(app.tab.entries.len(), 5, "土台: 変更5件");
     app.tab.selected = 4;
@@ -23101,7 +23112,7 @@ fn changed_cursor_survives_toggling_hidden_files() {
 #[test]
 fn a_deferred_changed_anchor_is_not_inherited_by_the_next_tab() {
     let dir = changed_cursor_repo("konoma_changed_cursor_tabs");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let (tx, _rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
     app.toggle_changed_filter();
@@ -23153,7 +23164,7 @@ fn a_deferred_changed_anchor_is_not_inherited_by_the_next_tab() {
 #[test]
 fn a_deferred_changed_rebuild_survives_a_tab_switch_and_back() {
     let dir = changed_cursor_repo("konoma_changed_defer_tabswitch");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
     app.toggle_changed_filter();
@@ -23221,7 +23232,7 @@ fn a_deferred_changed_rebuild_survives_a_tab_switch_and_back() {
 #[test]
 fn changed_cursor_anchoring_does_not_block_deliberate_moves() {
     let dir = changed_cursor_repo("konoma_changed_cursor_moves");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.toggle_changed_filter();
     let first = app.tab.entries[0].path.clone();
     app.jump_changed(1);
@@ -23261,7 +23272,7 @@ fn changed_cursor_anchoring_does_not_block_deliberate_moves() {
 #[test]
 fn changed_cursor_survives_two_refreshes_deferred_to_the_same_scan() {
     let dir = changed_cursor_repo("konoma_changed_cursor_async_x2");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
     app.toggle_changed_filter();
@@ -23319,7 +23330,7 @@ fn changed_cursor_survives_two_refreshes_deferred_to_the_same_scan() {
 fn toggle_hidden_does_not_falsely_disable_changed_filter_during_a_pending_scan() {
     let dir_a = changed_cursor_repo("konoma_changed_hidden_race_a");
     let dir_b = changed_cursor_repo("konoma_changed_hidden_race_b");
-    let mut app = App::new(dir_a.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir_a.to_path_buf(), Config::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_status_loader(tx);
 
@@ -23329,7 +23340,7 @@ fn toggle_hidden_does_not_falsely_disable_changed_filter_during_a_pending_scan()
     // Visit repo B's tab and actually land its status, so `git_status_workdir` genuinely becomes
     // B's (not just B's root sitting unrefreshed).
     app.tab_new().unwrap();
-    app.jump_to_dir(dir_b.clone());
+    app.jump_to_dir(dir_b.to_path_buf());
     app.refresh_git_if_needed();
     let res_b = rx
         .recv_timeout(std::time::Duration::from_secs(30))
@@ -23394,7 +23405,7 @@ fn toggle_hidden_does_not_falsely_disable_changed_filter_during_a_pending_scan()
 #[test]
 fn sort_menu_key_keeps_the_changed_filter_active() {
     let dir = changed_cursor_repo("konoma_changed_sort_test");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.toggle_changed_filter();
     let changed_before: Vec<PathBuf> = app.tab.entries.iter().map(|e| e.path.clone()).collect();
     assert_eq!(changed_before.len(), 3, "土台: 変更3件");
@@ -23428,7 +23439,7 @@ fn sort_menu_key_keeps_the_changed_filter_active() {
 #[test]
 fn start_filter_turns_off_the_changed_filter() {
     let dir = changed_cursor_repo("konoma_changed_slash_test");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.toggle_changed_filter();
     assert!(app.changed_filter(), "土台: C が ON");
     assert_eq!(app.tab.entries.len(), 3, "土台: 変更3件が見えている");
@@ -23480,7 +23491,7 @@ fn start_filter_turns_off_the_changed_filter() {
 #[test]
 fn creating_a_file_keeps_the_changed_filter_active() {
     let dir = changed_cursor_repo("konoma_reveal_create_changed");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.toggle_changed_filter();
     park_on_last_change(&mut app); // cursor on sub/m_two.txt (a file, so op_base_dir = sub/)
 
@@ -23515,7 +23526,7 @@ fn creating_a_file_keeps_the_changed_filter_active() {
 #[test]
 fn renaming_a_file_keeps_the_changed_filter_active() {
     let dir = changed_cursor_repo("konoma_reveal_rename_changed");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.toggle_changed_filter();
     let target = park_on_last_change(&mut app); // sub/m_two.txt
 
@@ -23559,7 +23570,7 @@ fn renaming_a_file_keeps_the_changed_filter_active() {
 #[test]
 fn duplicating_a_file_keeps_the_changed_filter_active() {
     let dir = changed_cursor_repo("konoma_reveal_dup_changed");
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.rebuild_tree().unwrap();
     app.toggle_changed_filter();
     let target = park_on_last_change(&mut app); // sub/m_two.txt
@@ -23571,7 +23582,7 @@ fn duplicating_a_file_keeps_the_changed_filter_active() {
     assert!(app.apply_file_op(FileOpResult {
         gen: 101,
         kind: FileOpKind::Duplicate,
-        root: dir.clone(),
+        root: dir.to_path_buf(),
         ok: 1,
         last: Some(duplicated.clone()),
         err: None,
@@ -23702,7 +23713,7 @@ fn entering_preview_on_a_fifo_does_not_hang_and_degrades_safely() {
         .expect("mkfifo コマンドを起動できない");
     assert!(status.success(), "mkfifo に失敗");
 
-    let app = App::new(dir.clone(), Config::default()).unwrap();
+    let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let target = fifo.clone();
     let app = run_with_hang_guard(app, std::time::Duration::from_secs(5), move |a| {
         a.enter_preview(&target);
@@ -23738,7 +23749,7 @@ fn entering_preview_on_a_directory_degrades_safely() {
     let sub = dir.join("sub");
     std::fs::create_dir_all(&sub).unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.enter_preview(&sub);
     assert!(
         matches!(
@@ -23761,7 +23772,7 @@ fn entering_preview_on_a_regular_file_still_works() {
     let file = dir.join("note.txt");
     std::fs::write(&file, b"hello world\n").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.enter_preview(&file);
     assert!(
         matches!(app.tab.preview_kind, Some(PreviewKind::Text(_))),
@@ -23786,7 +23797,7 @@ fn entering_preview_on_a_symlink_to_a_regular_file_still_works() {
     let link = dir.join("link.txt");
     std::os::unix::fs::symlink(&real, &link).unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.enter_preview(&link);
     assert!(
         matches!(app.tab.preview_kind, Some(PreviewKind::Text(_))),
@@ -23809,7 +23820,7 @@ fn tree_descend_still_descends_into_directories() {
     std::fs::create_dir_all(&sub).unwrap();
     std::fs::write(sub.join("inner.txt"), b"x").unwrap();
 
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.tab.selected = app
         .tab
         .entries
@@ -23830,7 +23841,7 @@ fn tree_descend_still_descends_into_directories() {
 /// Builds a throwaway jj workspace with no colocated `.git`. None when this machine has no jj —
 /// konoma falls back to git there, so the suite has to stay green without it.
 #[cfg(feature = "git")]
-fn jj_scratch(name: &str) -> Option<PathBuf> {
+fn jj_scratch(name: &str) -> Option<crate::test_support::TmpDir> {
     if !crate::vcs::jj::available() {
         return None;
     }
@@ -23839,7 +23850,7 @@ fn jj_scratch(name: &str) -> Option<PathBuf> {
     let jj = |args: &[&str]| {
         std::process::Command::new("jj")
             .current_dir(&dir)
-            .env("HOME", &dir) // never touch the running machine's own jj config
+            .env("HOME", &*dir) // never touch the running machine's own jj config
             .env("JJ_USER", "konoma test")
             .env("JJ_EMAIL", "test@example.invalid")
             .args(args)
@@ -23873,7 +23884,7 @@ fn ui_confirm_jj_sync_gates_the_only_write() {
         "the setting that guards konoma's only write must default to asking"
     );
     on.ui.confirm_jj_sync = true;
-    let mut app = App::new(dir.clone(), on).unwrap();
+    let mut app = App::new(dir.to_path_buf(), on).unwrap();
     app.jj_start_sync();
     assert!(
         app.dialog.is_some(),
@@ -23882,7 +23893,7 @@ fn ui_confirm_jj_sync_gates_the_only_write() {
 
     let mut off = Config::default();
     off.ui.confirm_jj_sync = false;
-    let mut app = App::new(dir.clone(), off).unwrap();
+    let mut app = App::new(dir.to_path_buf(), off).unwrap();
     app.jj_start_sync();
     assert!(
         app.dialog.is_none(),
@@ -23909,7 +23920,7 @@ fn jj_hub_opens_even_when_the_git_binary_is_missing() {
         return;
     };
     crate::git::set_git_binary_available_for_test(Some(false));
-    let mut app = App::new(dir.clone(), Config::default()).unwrap(); // external.git = true (default)
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap(); // external.git = true (default)
     assert_eq!(
         crate::vcs::detect(&app.tab.root),
         crate::vcs::VcsKind::Jj,
@@ -23944,7 +23955,7 @@ fn jj_hub_opens_even_when_the_git_integration_is_switched_off() {
     };
     let mut cfg = Config::default();
     cfg.external.git = false;
-    let mut app = App::new(dir.clone(), cfg).unwrap();
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
     assert_eq!(
         crate::vcs::detect(&app.tab.root),
         crate::vcs::VcsKind::Jj,
@@ -24074,7 +24085,7 @@ fn worktree_create_is_gated_even_if_the_normally_unreachable_surface_is_forced_o
     let Some(dir) = jj_scratch("konoma_worktree_create_gate") else {
         return;
     };
-    let mut app = App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     assert!(
         !crate::vcs::caps(&app.tab.root).write,
         "sanity: the fixture must resolve to the read-only jj backend, or this test proves nothing"

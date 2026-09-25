@@ -221,7 +221,7 @@ mod tests {
     use std::fs;
 
     /// Temp project (a.txt / b.txt / sub/c.txt) + temp session base.
-    fn setup(name: &str) -> (PathBuf, PathBuf) {
+    fn setup(name: &str) -> (crate::test_support::TmpDir, crate::test_support::TmpDir) {
         let dir = unique_tmp(name);
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("sub")).unwrap();
@@ -239,8 +239,8 @@ mod tests {
     #[test]
     fn session_tab_new_after_persists_new_on_screen_order() {
         let (dir, base) = setup("konoma_sess_tab_new_after_test");
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
-        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         let a = dir.join("a.txt");
         let b = dir.join("b.txt");
         let c = dir.join("sub/c.txt");
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(app.tab_count(), 4);
         assert_eq!(app.active_tab_index(), 1, "挿入した新規タブがアクティブ");
 
-        let saved = SessionStore::with_base(base.clone(), &dir)
+        let saved = SessionStore::with_base(base.to_path_buf(), &dir)
             .read()
             .expect("tab_new_after が保存済み");
         assert_eq!(saved.active, 1, "アクティブは挿入位置");
@@ -296,8 +296,8 @@ mod tests {
     fn session_restore_rebuilds_tabs_cursor_and_preview() {
         let (dir, base) = setup("konoma_sess_restore_test");
         // Session 1: tab 1 = a.txt left in preview / tab 2 (active) = tree with the cursor on b.txt.
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
-        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         let a = dir.join("a.txt");
         let b = dir.join("b.txt");
         let _ = app.reveal_path_deep(&a);
@@ -308,8 +308,8 @@ mod tests {
         drop(app);
 
         // Session 2: restore in the same startup dir.
-        let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
-        app2.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        app2.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         app2.restore_session();
         assert_eq!(app2.tab_count(), 2, "タブ数を復元");
         assert_eq!(app2.active_tab_index(), 1, "アクティブタブも復元");
@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn session_restore_skips_stale_roots_and_previews() {
         let (dir, base) = setup("konoma_sess_stale_test");
-        let store = SessionStore::with_base(base.clone(), &dir);
+        let store = SessionStore::with_base(base.to_path_buf(), &dir);
         store
             .write(SavedSession {
                 dir: String::new(),
@@ -354,7 +354,7 @@ mod tests {
             })
             .unwrap();
 
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.attach_session_store(store);
         app.restore_session();
         assert_eq!(app.tab_count(), 1, "存在しない root のタブは捨てる");
@@ -376,14 +376,14 @@ mod tests {
         cfg.ui.restore_tabs = false;
 
         // When OFF, it saves nothing (no file appears even after tab operations).
-        let mut app = App::new(dir.clone(), cfg.clone()).unwrap();
-        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app = App::new(dir.to_path_buf(), cfg.clone()).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         app.tab_new().unwrap();
         app.save_session();
         assert!(!base.exists(), "restore_tabs=false は書き込みもしない");
 
         // Even if a file exists, it isn't read when OFF.
-        SessionStore::with_base(base.clone(), &dir)
+        SessionStore::with_base(base.to_path_buf(), &dir)
             .write(SavedSession {
                 dir: String::new(),
                 active: 0,
@@ -403,8 +403,8 @@ mod tests {
                 ],
             })
             .unwrap();
-        let mut app2 = App::new(dir.clone(), cfg).unwrap();
-        app2.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app2 = App::new(dir.to_path_buf(), cfg).unwrap();
+        app2.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         app2.restore_session();
         assert_eq!(app2.tab_count(), 1, "restore_tabs=false は復元しない");
 
@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn session_restore_remaps_active_index_past_dropped_tabs() {
         let (dir, base) = setup("konoma_sess_remap_test");
-        let store = SessionStore::with_base(base.clone(), &dir);
+        let store = SessionStore::with_base(base.to_path_buf(), &dir);
         // 3 tabs: [A(root=gone), B(=dir, active), C(root=dir/sub)]. Dropping A makes B the new index 0.
         store
             .write(SavedSession {
@@ -441,7 +441,7 @@ mod tests {
             })
             .unwrap();
 
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.attach_session_store(store);
         app.restore_session();
         assert_eq!(app.tab_count(), 2, "生き残りは B と C");
@@ -469,7 +469,7 @@ mod tests {
         fs::create_dir_all(dir.join("sub")).unwrap();
 
         // tab0: root=dir/sub (descended). tab1: root=dir, hidden on, cursor on .secret, open_dir=dir.
-        let store = SessionStore::with_base(base.clone(), &dir);
+        let store = SessionStore::with_base(base.to_path_buf(), &dir);
         store
             .write(SavedSession {
                 dir: String::new(),
@@ -490,7 +490,7 @@ mod tests {
             })
             .unwrap();
 
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.attach_session_store(store);
         app.restore_session();
         assert_eq!(app.active_tab_index(), 1);
@@ -518,7 +518,7 @@ mod tests {
         // config on, saved off → restored tab should be off.
         {
             let (dir, base) = setup("konoma_sess_hidden_cfg_on_saved_off");
-            let store = SessionStore::with_base(base.clone(), &dir);
+            let store = SessionStore::with_base(base.to_path_buf(), &dir);
             store
                 .write(SavedSession {
                     dir: String::new(),
@@ -533,7 +533,7 @@ mod tests {
 
             let mut cfg = Config::default();
             cfg.ui.show_hidden = true;
-            let mut app = App::new(dir.clone(), cfg).unwrap();
+            let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
             assert!(app.tab.show_hidden, "App::new 直後は config の既定(on)");
             app.attach_session_store(store);
             app.restore_session();
@@ -549,7 +549,7 @@ mod tests {
         // config off (default), saved on → restored tab should be on.
         {
             let (dir, base) = setup("konoma_sess_hidden_cfg_off_saved_on");
-            let store = SessionStore::with_base(base.clone(), &dir);
+            let store = SessionStore::with_base(base.to_path_buf(), &dir);
             store
                 .write(SavedSession {
                     dir: String::new(),
@@ -562,7 +562,7 @@ mod tests {
                 })
                 .unwrap();
 
-            let mut app = App::new(dir.clone(), Config::default()).unwrap();
+            let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
             assert!(!app.tab.show_hidden, "App::new 直後は config の既定(off)");
             app.attach_session_store(store);
             app.restore_session();
@@ -581,8 +581,8 @@ mod tests {
     #[test]
     fn save_session_suppressed_while_restoring() {
         let (dir, base) = setup("konoma_sess_guard_test");
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
-        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         app.session_restoring = true;
         app.save_session();
         assert!(
@@ -592,7 +592,9 @@ mod tests {
         app.session_restoring = false;
         app.save_session();
         assert!(
-            SessionStore::with_base(base.clone(), &dir).read().is_some(),
+            SessionStore::with_base(base.to_path_buf(), &dir)
+                .read()
+                .is_some(),
             "抑止解除後は保存される"
         );
 
@@ -609,7 +611,7 @@ mod tests {
         let (dir, base) = setup("konoma_sess_unreadable_test");
         let bad = dir.join("locked");
         fs::create_dir_all(&bad).unwrap();
-        let store = SessionStore::with_base(base.clone(), &dir);
+        let store = SessionStore::with_base(base.to_path_buf(), &dir);
         store
             .write(SavedSession {
                 active: 0,
@@ -624,7 +626,7 @@ mod tests {
         fs::set_permissions(&bad, fs::Permissions::from_mode(0o000)).unwrap();
         let readable_as_root = fs::read_dir(&bad).is_ok(); // running as root can read it anyway → skip verification
 
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.attach_session_store(store);
         app.restore_session();
         if !readable_as_root {
@@ -651,11 +653,11 @@ mod tests {
         let (dir, base) = setup("konoma_sess_single_off_delete_test");
         let mut cfg = Config::default();
         cfg.ui.restore_single_tab = false;
-        let mut app = App::new(dir.clone(), cfg).unwrap();
-        let store = SessionStore::with_base(base.clone(), &dir);
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        let store = SessionStore::with_base(base.to_path_buf(), &dir);
         app.attach_session_store(store);
         // Start from a state where a previous session exists (to confirm the leftover file is actually deleted).
-        SessionStore::with_base(base.clone(), &dir)
+        SessionStore::with_base(base.to_path_buf(), &dir)
             .write(SavedSession {
                 dir: String::new(),
                 active: 0,
@@ -668,7 +670,9 @@ mod tests {
         assert!(app.tabs.len() <= 1, "前提: 起動直後はタブ1枚");
         app.save_session();
         assert!(
-            SessionStore::with_base(base.clone(), &dir).read().is_none(),
+            SessionStore::with_base(base.to_path_buf(), &dir)
+                .read()
+                .is_none(),
             "restore_single_tab=false のタブ1枚は保存せず既存ファイルも削除する"
         );
 
@@ -682,12 +686,12 @@ mod tests {
         let (dir, base) = setup("konoma_sess_single_off_multi_test");
         let mut cfg = Config::default();
         cfg.ui.restore_single_tab = false;
-        let mut app = App::new(dir.clone(), cfg).unwrap();
-        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         app.tab_new().unwrap();
         assert_eq!(app.tabs.len(), 2, "前提: タブ2枚");
         app.save_session();
-        let saved = SessionStore::with_base(base.clone(), &dir).read();
+        let saved = SessionStore::with_base(base.to_path_buf(), &dir).read();
         assert!(
             saved.is_some(),
             "restore_single_tab=false でも2タブ以上は保存する"
@@ -704,11 +708,11 @@ mod tests {
         let (dir, base) = setup("konoma_sess_single_on_test");
         let cfg = Config::default();
         assert!(cfg.ui.restore_single_tab, "既定は true");
-        let mut app = App::new(dir.clone(), cfg).unwrap();
-        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         assert!(app.tabs.len() <= 1, "前提: タブ1枚");
         app.save_session();
-        let saved = SessionStore::with_base(base.clone(), &dir).read();
+        let saved = SessionStore::with_base(base.to_path_buf(), &dir).read();
         assert!(
             saved.is_some(),
             "restore_single_tab=true(既定)はタブ1枚でも保存する"
@@ -723,7 +727,7 @@ mod tests {
     #[test]
     fn restore_single_tab_false_skips_and_deletes_stale_single_tab_file() {
         let (dir, base) = setup("konoma_sess_single_off_restore_test");
-        let store = SessionStore::with_base(base.clone(), &dir);
+        let store = SessionStore::with_base(base.to_path_buf(), &dir);
         store
             .write(SavedSession {
                 dir: String::new(),
@@ -738,8 +742,8 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.ui.restore_single_tab = false;
-        let mut app = App::new(dir.clone(), cfg).unwrap();
-        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         app.restore_session();
         assert_eq!(
             app.tab_count(),
@@ -751,7 +755,9 @@ mod tests {
             "保存済みカーソルへは動かない(復元しなかった)"
         );
         assert!(
-            SessionStore::with_base(base.clone(), &dir).read().is_none(),
+            SessionStore::with_base(base.to_path_buf(), &dir)
+                .read()
+                .is_none(),
             "残骸の1タブ・セッションファイルは削除される"
         );
 
@@ -780,8 +786,8 @@ mod tests {
         fs::write(dir.join("a.txt"), "alpha\nCHANGED\n").unwrap();
 
         // session1: open a.txt as a git diff, save.
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
-        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         let a = dir.join("a.txt");
         let _ = app.reveal_path_deep(&a);
         app.open_git_diff(&a);
@@ -790,8 +796,8 @@ mod tests {
         drop(app);
 
         // session2: restore → still a git diff, not a plain preview.
-        let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
-        app2.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        app2.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         app2.restore_session();
         assert!(matches!(app2.tab.mode, Mode::Preview));
         assert!(
@@ -845,8 +851,8 @@ mod tests {
         fs::write(dir.join("a.txt"), "alpha\nCHANGED\n").unwrap();
 
         // session1: open a.txt as a (jj-backed) diff, save.
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
-        app.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        app.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         let a = dir.join("a.txt");
         let _ = app.reveal_path_deep(&a);
         assert!(
@@ -859,8 +865,8 @@ mod tests {
         drop(app);
 
         // session2: restore → still a diff (jj-backed), not a plain preview.
-        let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
-        app2.attach_session_store(SessionStore::with_base(base.clone(), &dir));
+        let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        app2.attach_session_store(SessionStore::with_base(base.to_path_buf(), &dir));
         app2.restore_session();
         assert!(matches!(app2.tab.mode, Mode::Preview));
         assert!(

@@ -417,11 +417,11 @@ mod tests {
     /// open (mirrors `Sim`'s `select` + `enter` + `enter` in `e2e_tests.rs`, but self-contained
     /// here — that harness is private to another module). Drives the real `tree_activate`/
     /// `toggle_table_cell_view` App methods rather than poking private fields directly.
-    fn app_with_open_cell_popup() -> App {
+    fn app_with_open_cell_popup() -> (App, crate::test_support::TmpDir) {
         let dir = crate::test_support::unique_tmp("konoma_table_popup_panic_test");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("t.csv"), "h1,h2\na,b\n").unwrap();
-        let mut app = App::new(dir.clone(), crate::config::Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), crate::config::Config::default()).unwrap();
         let idx = app
             .tab
             .entries
@@ -439,7 +439,7 @@ mod tests {
             app.is_table_cell_open(),
             "setup precondition: the full-cell popup should be open"
         );
-        app
+        (app, dir)
     }
 
     /// Draw just the cell popup (the same call `ui::render` makes: `area` = the whole frame) into
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn cell_popup_survives_width_20() {
         // area.width.saturating_sub(2) = 18 < 20 → used to be clamp(20, 18), which panicked.
-        let mut app = app_with_open_cell_popup();
+        let (mut app, _dir) = app_with_open_cell_popup();
         draw_cell_popup(&mut app, 20, 30);
     }
 
@@ -482,7 +482,7 @@ mod tests {
         // area.width.saturating_sub(2) = 19 < 20 → used to be clamp(20, 19), which panicked. This
         // is the exact boundary: one column narrower than the first size that survived even
         // before the fix.
-        let mut app = app_with_open_cell_popup();
+        let (mut app, _dir) = app_with_open_cell_popup();
         draw_cell_popup(&mut app, 21, 30);
     }
 
@@ -490,7 +490,7 @@ mod tests {
     fn cell_popup_survives_width_22() {
         // area.width.saturating_sub(2) = 20 → used to be clamp(20, 20), which was valid even
         // before the fix (min == max is allowed). Non-regression control.
-        let mut app = app_with_open_cell_popup();
+        let (mut app, _dir) = app_with_open_cell_popup();
         draw_cell_popup(&mut app, 22, 30);
     }
 
@@ -498,14 +498,14 @@ mod tests {
     fn cell_popup_survives_height_6() {
         // area.height.saturating_sub(2) = 4 < 6 → used to be clamp(6, 4), which panicked. Width is
         // 80, comfortably above the width floor, so only the height side is under test here.
-        let mut app = app_with_open_cell_popup();
+        let (mut app, _dir) = app_with_open_cell_popup();
         draw_cell_popup(&mut app, 80, 6);
     }
 
     #[test]
     fn cell_popup_survives_height_7_boundary() {
         // area.height.saturating_sub(2) = 5 < 6 → used to be clamp(6, 5), which panicked.
-        let mut app = app_with_open_cell_popup();
+        let (mut app, _dir) = app_with_open_cell_popup();
         draw_cell_popup(&mut app, 80, 7);
     }
 
@@ -513,7 +513,7 @@ mod tests {
     fn cell_popup_survives_height_8() {
         // area.height.saturating_sub(2) = 6 → used to be clamp(6, 6), which was valid even before
         // the fix. Non-regression control.
-        let mut app = app_with_open_cell_popup();
+        let (mut app, _dir) = app_with_open_cell_popup();
         draw_cell_popup(&mut app, 80, 8);
     }
 
@@ -521,7 +521,7 @@ mod tests {
     fn cell_popup_survives_at_normal_terminal_size() {
         // Non-regression control at an ordinary terminal size (matches `Sim`'s default 90×26 in
         // `e2e_tests.rs`): must not panic, before or after the fix.
-        let mut app = app_with_open_cell_popup();
+        let (mut app, _dir) = app_with_open_cell_popup();
         draw_cell_popup(&mut app, 90, 26);
     }
 
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn cell_popup_survives_width_1_height_1() {
-        let mut app = app_with_open_cell_popup();
+        let (mut app, _dir) = app_with_open_cell_popup();
         let buf = draw_cell_popup(&mut app, 1, 1);
         assert_eq!(buf.area.width, 1);
         assert_eq!(buf.area.height, 1);
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn cell_popup_survives_width_2_height_1() {
-        let mut app = app_with_open_cell_popup();
+        let (mut app, _dir) = app_with_open_cell_popup();
         let buf = draw_cell_popup(&mut app, 2, 1);
         assert_eq!(buf.area.width, 2);
         assert_eq!(buf.area.height, 1);
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn cell_popup_survives_width_1_height_30() {
-        let mut app = app_with_open_cell_popup();
+        let (mut app, _dir) = app_with_open_cell_popup();
         let buf = draw_cell_popup(&mut app, 1, 30);
         assert_eq!(buf.area.width, 1);
         assert_eq!(buf.area.height, 30);
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn cell_popup_survives_width_30_height_1() {
-        let mut app = app_with_open_cell_popup();
+        let (mut app, _dir) = app_with_open_cell_popup();
         let buf = draw_cell_popup(&mut app, 30, 1);
         assert_eq!(buf.area.width, 30);
         assert_eq!(buf.area.height, 1);
