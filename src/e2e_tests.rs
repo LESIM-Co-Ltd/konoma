@@ -15904,8 +15904,9 @@ fn media_diff_write_png(path: &std::path::Path, w: u32, h: u32, px: [u8; 3]) {
 /// A minimal, valid, single-page PDF (hand-built, same shape as
 /// `media_diff_minimal_one_page_pdf_bytes` above) whose entire page is filled edge-to-edge with one
 /// flat RGB color — no transparent margin anywhere, so the decoded raster has zero transparent
-/// pixels (`App::flatten_transparent_to_white` is a no-op on it) and its drawn cells' background
-/// color (`Sim::colored_cell_bbox`) exactly equals the whole picture's own drawn extent. Used by the
+/// pixels (`preview::pdf::composite_onto_white` is a no-op on every pixel here) and its drawn
+/// cells' background color (`Sim::colored_cell_bbox`) exactly equals the whole picture's own drawn
+/// extent. Used by the
 /// PDF scale-unit regression test: `layout`'s shared scale must be computed from each side's own
 /// page size in **points** (`w_pt`×`h_pt`), not the rasterized pixel dimensions both sides could
 /// otherwise coincide on (`preview::pdf::render_page_bytes` normalizes every page to the same
@@ -16319,6 +16320,66 @@ fn e2e_media_diff_identical_binary_still_shows_no_changes() {
     s.draw();
     s.see("(no changes)");
     s.dont_see("binary file");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// PDF pages are now drawn on opaque white paper (`preview::pdf::pixmap_to_dynamic_image`'s
+/// compositing step) instead of a transparent background. The bug this fixes: `ratatui_image`'s
+/// non-kitty encoders (halfblocks included) drop the alpha channel via `to_rgb8` without
+/// compositing it against anything, so black ink on a transparent background and the fully
+/// transparent background itself collapsed to the identical opaque black — and the halfblocks
+/// encoder's own "upper == lower → space" rule then painted the *entire* page as blank cells, i.e.
+/// nothing drew at all. This drives the real **ordinary (non-diff)** full-screen PDF preview end to
+/// end (tree → `l`/Enter → `MediaJob::Pdf` on a real decode thread → a real `resize_worker`, the
+/// same technique the mermaid full-screen tests above use, since `ThreadProtocol` paints nothing
+/// until one actually answers) and checks that the drawn halfblocks cells are **not a single
+/// uniform color** — proof of real content (white paper *and* dark ink both reaching the screen),
+/// not a blank/uniform field. Confirmed to fail (empty screen, or all cells the identical black)
+/// by temporarily reverting `composite_onto_white`'s call in `pixmap_to_dynamic_image`.
+#[test]
+fn e2e_pdf_preview_paints_non_uniform_halfblocks_cells_not_a_blank_field() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let dir = sandbox("pdf_preview_halfblocks_non_uniform");
+    std::fs::copy(&pdf, dir.join("doc.pdf")).unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    // `with_media()`'s own `attach_image_backend` forgets the resize receiver ("the kitty zoom/pan
+    // resize path isn't exercised here") — fine for the inline-fence pipeline, but a full-screen
+    // still-image raster goes through `App::prepare_image`'s `ratatui_image::thread::
+    // ThreadProtocol`, which renders a blank placeholder until a real resize worker answers over
+    // that exact channel (`main.rs`'s own `resize_worker`) — so this needs a real one wired up too
+    // (same technique the standalone-`.mmd`/fence full-screen mermaid tests above use).
+    let (req_tx, req_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (resp_tx, resp_rx) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || crate::resize_worker(req_rx, resp_tx));
+    s.app
+        .attach_image_backend(ratatui_image::picker::Picker::halfblocks(), req_tx);
+
+    s.select("doc.pdf");
+    s.enter(); // kicks off a real decode thread (MediaJob::Pdf -> preview::pdf::render_page)
+    s.drain_media();
+    s.draw(); // first pass: builds the ThreadProtocol and requests a resize
+    let mut resp_rx = resp_rx;
+    let resp = resp_rx
+        .blocking_recv()
+        .expect("the resize worker must answer");
+    assert!(s.app.apply_image_resize(resp));
+    s.draw(); // second pass: the resized raster actually paints
+
+    let fgs = drawn_rgb_fgs(&s.term);
+    assert!(
+        !fgs.is_empty(),
+        "実ピクセルが描かれるはず(プレースホルダのままではない)"
+    );
+    let distinct: std::collections::HashSet<_> = fgs.iter().copied().collect();
+    assert!(
+        distinct.len() > 1,
+        "白地と黒インクが両方描かれるはずなので、描画セルの色は一色だけではないはず: {distinct:?}"
+    );
+
     std::fs::remove_dir_all(&dir).ok();
 }
 

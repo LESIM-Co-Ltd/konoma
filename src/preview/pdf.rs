@@ -156,9 +156,13 @@ fn render_page_native_inner_bytes(bytes: &[u8], page: u32) -> Option<DynamicImag
     let render_settings = hayro::RenderSettings {
         x_scale: scale,
         y_scale: scale,
-        // Transparent, same treatment as the mermaid/math SVGs (`preview::svg`/`preview::math`):
-        // only the page's own painted content stays opaque, so unpainted margins let the terminal
-        // background show through instead of forcing a white background regardless of theme.
+        // Transparent here is an **internal signal, not the final pixel format**: it is what lets
+        // `pixmap_to_dynamic_image` tell "the page genuinely painted nothing at all" apart from
+        // "the page painted an opaque background color" (its own doc comment has the full
+        // reasoning). That function composites the result onto opaque white before returning it —
+        // unlike the mermaid/math SVGs (`preview::svg`/`preview::math`), which really do stay
+        // transparent all the way to the screen, a PDF page is a document printed on paper, not a
+        // themed diagram, so it should look like one regardless of the terminal's own background.
         bg_color: TRANSPARENT,
         ..Default::default()
     };
@@ -195,6 +199,24 @@ fn render_page_native_inner_bytes(bytes: &[u8], page: u32) -> Option<DynamicImag
 /// poppler from the chain (module doc comment) did not reproduce that: of the 24 documents out of
 /// 1,628 that reached the fallback, 18 hit exactly this all-transparent signature and poppler
 /// rendered them as a perfectly uniform image too — i.e. they were genuinely blank.
+///
+/// **Once a page clears that blank check, it is composited onto opaque white paper** before this
+/// returns — a PDF page is a document laid out on white paper, unlike the mermaid/math SVGs that
+/// share this module's `TRANSPARENT` render background (`render_page_native_inner_bytes`'s own
+/// doc comment); it should look like one regardless of the terminal's theme. Verified on real
+/// pixels: rendered transparent, `samples/sample.pdf` showed as barely-readable dark-gray text on
+/// a dark kitty background, and as *nothing at all* under `ratatui_image`'s non-kitty encoders
+/// (halfblocks/sixel/iterm2), whose `to_rgb8` conversion drops the alpha channel outright without
+/// compositing it against anything — black ink on a transparent background and the fully
+/// transparent background itself both collapse to the identical opaque black once alpha is gone,
+/// so the halfblocks encoder's own `upper == lower → space` rule painted the entire page as blank
+/// cells. Compositing here, once, is what used to be done ad hoc in `app/media_diff.rs`'s own
+/// `flatten_transparent_to_white` (removed) for the media diff alone — every PDF raster in the app
+/// flows through this one function (`render_page`'s path-based call and `render_page_bytes`'s
+/// bytes-based one both bottom out in `render_page_native_inner_bytes` above), so fixing it here
+/// fixes the ordinary full-screen preview and the side-by-side diff identically, and kitty (which
+/// gets the real RGBA payload and composites it correctly itself) draws the same opaque white
+/// paper too, rather than a special transparent case just for that one protocol.
 fn pixmap_to_dynamic_image(pixmap: Pixmap) -> Option<DynamicImage> {
     let (w, h) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
     if w == 0 || h == 0 {
@@ -213,8 +235,31 @@ fn pixmap_to_dynamic_image(pixmap: Pixmap) -> Option<DynamicImage> {
     if rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 0) {
         return None;
     }
+    composite_onto_white(&mut rgba);
     let buf = image::RgbaImage::from_raw(w, h, rgba)?;
     Some(DynamicImage::ImageRgba8(buf))
+}
+
+/// Composite straight-alpha RGBA pixels (in place) onto an opaque white background — the standard
+/// "source over white" formula (`out = fg·a + 255·(1-a)`, integer division rounds down, same as
+/// every other 8-bit alpha blend in this codebase) — and force every pixel's alpha to 255. Called
+/// only after [`pixmap_to_dynamic_image`]'s all-transparent blank-page check, so this never runs on
+/// a page that check would have turned into `None` instead; an already-opaque pixel (`a == 255`,
+/// the overwhelming majority of a normal page's margin-free ink and, after the first page trains
+/// the branch predictor, most pixels overall) is left untouched rather than recomputed to the same
+/// value, which also sidesteps any rounding drift on values that need none.
+fn composite_onto_white(rgba: &mut [u8]) {
+    let (chunks, _) = rgba.as_chunks_mut::<4>();
+    for px in chunks {
+        let a = u32::from(px[3]);
+        if a == 255 {
+            continue;
+        }
+        for c in &mut px[..3] {
+            *c = ((u32::from(*c) * a + 255 * (255 - a)) / 255) as u8;
+        }
+        px[3] = 255;
+    }
 }
 
 /// `InterpreterSettings` with a `font_resolver` that rescues non-embedded CJK CID fonts (e.g. a
@@ -685,23 +730,36 @@ mod tests {
         );
     }
 
-    /// The rendered page has actual opaque ink (not just an all-transparent blank canvas) and its
-    /// unpainted margins are transparent (background = `TRANSPARENT`, same treatment as the
-    /// mermaid/math SVGs — the terminal background should show through, not force white).
+    /// The rendered page is drawn on opaque white paper: its unpainted corner/margin is opaque
+    /// white (not the transparent-background-shows-through treatment `render_page_has_transparent_
+    /// margins_and_opaque_ink` pinned before this fix — renamed/rewritten here, same test slot),
+    /// its text area has visible dark ink, and every pixel — margin and ink alike — is fully
+    /// opaque (alpha 255), which is what actually fixes the bug: `ratatui_image`'s non-kitty
+    /// encoders (halfblocks/sixel/iterm2) drop the alpha channel via `to_rgb8` without compositing
+    /// it against anything, so a page that still had any transparency here would keep rendering as
+    /// a uniform field on every terminal but kitty (`e2e_pdf_preview_paints_non_uniform_halfblocks_
+    /// cells_not_a_blank_field`, `src/e2e_tests.rs`, proves that end-to-end).
     #[test]
-    fn render_page_has_transparent_margins_and_opaque_ink() {
+    fn render_page_has_opaque_white_margins_and_dark_ink() {
         let Some(p) = sample_path_or_skip("sample.pdf") else {
             return;
         };
         let img = render_page(&p, 1, false).expect("renders");
         let rgba = img.to_rgba8();
-        assert_eq!(
-            rgba.get_pixel(0, 0)[3],
-            0,
-            "unpainted corner is fully transparent (terminal bg would show through)"
+        assert!(
+            rgba.pixels().all(|p| p[3] == 255),
+            "PDF は不透明な白地に合成されるので、全ピクセルの alpha が 255 のはず"
         );
-        let opaque = rgba.pixels().filter(|p| p[3] > 200).count();
-        assert!(opaque > 50, "page has visible opaque ink (opaque={opaque})");
+        assert_eq!(
+            *rgba.get_pixel(0, 0),
+            image::Rgba([255, 255, 255, 255]),
+            "unpainted corner is opaque white paper, not the terminal background showing through"
+        );
+        let dark = rgba
+            .pixels()
+            .filter(|p| p[0] < 80 && p[1] < 80 && p[2] < 80)
+            .count();
+        assert!(dark > 50, "page has visible dark ink (dark={dark})");
     }
 
     /// `page_count` is pure Rust (`hayro-syntax`) and needs no external tool at all — unlike the
@@ -1091,6 +1149,33 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_secs(10),
             "タイムアウトが機能せずブロックし続けた: elapsed={elapsed:?}"
+        );
+    }
+
+    // ---- composite_onto_white ----
+
+    /// Pure-function pin of the "source over white" blend, independent of any actual PDF render:
+    /// fully transparent becomes solid white, fully opaque is left byte-for-byte untouched (the
+    /// `a == 255` short-circuit), and a partial alpha blends toward white by exactly the expected
+    /// integer-division amount — and every case forces alpha to 255, which is the actual fix (a
+    /// pixel that stayed even slightly transparent would still collapse to a uniform field once
+    /// `ratatui_image`'s non-kitty encoders drop the alpha channel).
+    #[test]
+    fn composite_onto_white_blends_partial_alpha_and_leaves_opaque_untouched() {
+        let mut transparent = [10u8, 20, 30, 0];
+        composite_onto_white(&mut transparent);
+        assert_eq!(transparent, [255, 255, 255, 255], "透明は白地になるはず");
+
+        let mut opaque = [10u8, 20, 30, 255];
+        composite_onto_white(&mut opaque);
+        assert_eq!(opaque, [10, 20, 30, 255], "不透明はそのまま(再計算しない)");
+
+        let mut half = [0u8, 0, 0, 128];
+        composite_onto_white(&mut half);
+        assert_eq!(
+            half,
+            [127, 127, 127, 255],
+            "半透明は白地とブレンドされ alpha は 255 になるはず"
         );
     }
 

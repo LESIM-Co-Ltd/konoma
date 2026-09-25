@@ -22,6 +22,8 @@ All notable changes to konoma are documented in this file. The format is based o
   instead.
 
 ### Fixed
+- PDF pages are now drawn on white paper — they were transparent, so on a dark terminal the text
+  was barely readable, and on terminals without kitty graphics the page came out blank.
 - A changed binary file (image, PDF, video, archive, …) no longer shows the false "(no changes)"
   — git/jj's line diff is always empty for binary content, which used to be read at face value.
 - Footer and help no longer advertise keys that would do nothing on a binary diff (`j`/`k`, `h`/`l`,

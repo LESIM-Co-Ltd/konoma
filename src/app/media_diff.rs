@@ -425,39 +425,22 @@ impl App {
                 // already present (its own guard against reviving an evicted entry), so the insert
                 // has to happen here, not inside it.
                 self.md_image_cache.entry(p.cache_key.clone()).or_default();
-                // Flatten transparency against an opaque background on every protocol but kitty
-                // (real bug: `ratatui_image`'s halfblocks encoder converts through `image::
-                // DynamicImage::to_rgb8`, which silently *drops* the alpha channel rather than
-                // compositing it — a PDF/SVG rendered with a transparent background, per
-                // `preview::pdf`'s/`preview::svg`'s own "let the terminal background show through"
-                // design, then loses the one signal ("is this pixel painted or not") that made the
-                // content visible at all: black ink on a transparent background and the fully-
-                // transparent background itself both collapse to the *identical* opaque black once
-                // alpha is gone, so `Halfblocks`'s own `upper == lower → space` rule renders the
-                // entire picture as blank cells — confirmed directly against `samples/sample.pdf`,
-                // whose only non-transparent pixels are pure black text: every opaque pixel in the
-                // whole rendered page is `(0, 0, 0)`. Kitty sends the real RGBA payload straight to
-                // the terminal, which composites it correctly, so this is skipped there — this
-                // flattening step would only ever make a *correctly*-transparent kitty render
-                // worse (a flat color where the terminal's own background used to show through).
-                let (image, frames) = if self.use_kitty {
-                    (p.image, p.frames)
-                } else {
-                    (
-                        flatten_transparent_to_white(p.image),
-                        p.frames.map(|fs| {
-                            fs.into_iter()
-                                .map(|(f, d)| (flatten_transparent_to_white(f), d))
-                                .collect()
-                        }),
-                    )
-                };
+                // No transparency handling here anymore: each side is drawn with exactly the same
+                // pixels the ordinary preview would draw for that kind (`decode_side`/`preview::
+                // pdf`/`preview::svg`) — a PDF's own renderer now composites its pages onto opaque
+                // white before this ever sees them (`preview::pdf::pixmap_to_dynamic_image`'s own
+                // doc comment has the "why"), and SVG stays exactly as transparent as the ordinary
+                // preview renders it, on every protocol including kitty. There used to be a
+                // diff-only `flatten_transparent_to_white` step here (skipped on kitty) working
+                // around the PDF half of that; fixing it once at the render source (rather than
+                // patching it up again here) means this diff never special-cases a picture kind
+                // differently from how the ordinary preview already draws it.
                 self.apply_md_image(MdImageResult {
                     path: p.cache_key.clone(),
-                    image: Ok(image),
+                    image: Ok(p.image),
                     svg: p.svg,
                     reraster: false,
-                    frames,
+                    frames: p.frames,
                 });
                 MediaDiffSide::Picture(MediaDiffPicture {
                     natural_px: p.natural_px,
@@ -947,26 +930,6 @@ fn is_jj(root: &Path) -> bool {
     }
 }
 
-/// Composite `img` onto an opaque white background, discarding its own alpha channel in the
-/// process — `App::materialize_side`'s own doc comment has the full "why" (in short:
-/// `ratatui_image`'s halfblocks/sixel/iterm2 encoders drop alpha via `to_rgb8` without
-/// compositing it against anything, so a transparent-background render is only ever correct on
-/// kitty, which gets real RGBA end to end and is never routed through this function). A no-op
-/// (returns `img` unchanged, no extra allocation) for an image that has no alpha channel at all,
-/// or whose alpha channel is already fully opaque everywhere.
-fn flatten_transparent_to_white(img: image::DynamicImage) -> image::DynamicImage {
-    let Some(rgba) = img.as_rgba8() else {
-        return img; // no alpha channel to begin with (e.g. a plain JPEG) — nothing to flatten.
-    };
-    if rgba.pixels().all(|p| p[3] == 255) {
-        return img; // fully opaque already — compositing would be a no-op, skip the copy.
-    }
-    let (w, h) = (rgba.width(), rgba.height());
-    let mut out = image::RgbaImage::from_pixel(w, h, image::Rgba([255, 255, 255, 255]));
-    image::imageops::overlay(&mut out, rgba, 0, 0);
-    image::DynamicImage::ImageRgba8(out)
-}
-
 /// Decode one side of a picture-capable diff. `None` bytes (the side is absent — a new/untracked
 /// file's old side, or a deleted file's new side) is the only case common to every kind.
 fn decode_side(
@@ -1124,59 +1087,6 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::test_support::unique_tmp;
-
-    // ---- flatten_transparent_to_white ----
-
-    /// Regression: a black-ink-on-transparent-background image (exactly `samples/sample.pdf`'s own
-    /// shape — hayro renders PDF text with `bg_color: TRANSPARENT`) must not render as a uniform
-    /// black rectangle once `ratatui_image`'s halfblocks encoder drops the alpha channel
-    /// (`image::DynamicImage::to_rgb8`, which does not composite). Flattening onto white first
-    /// makes the (now fully opaque) ink readable regardless of what the encoder does with alpha.
-    #[test]
-    fn flatten_makes_transparent_background_opaque_white_not_black() {
-        let mut img = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 0])); // all transparent
-        img.put_pixel(1, 1, image::Rgba([0, 0, 0, 255])); // one opaque black "ink" pixel
-        let out = flatten_transparent_to_white(image::DynamicImage::ImageRgba8(img));
-        let out = out.to_rgba8();
-        assert_eq!(
-            *out.get_pixel(0, 0),
-            image::Rgba([255, 255, 255, 255]),
-            "透明だった背景は白地になるはず(黒地だと文字と見分けがつかない)"
-        );
-        assert_eq!(
-            *out.get_pixel(1, 1),
-            image::Rgba([0, 0, 0, 255]),
-            "不透明だった黒インクはそのまま黒のはず"
-        );
-    }
-
-    /// A fully-opaque image (no alpha channel at all, e.g. a plain JPEG-derived `DynamicImage`) is
-    /// returned unchanged — no needless recompute/allocation for the overwhelmingly common case.
-    #[test]
-    fn flatten_is_a_no_op_for_an_already_opaque_image() {
-        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
-            3,
-            3,
-            image::Rgb([9, 9, 9]),
-        ));
-        let out = flatten_transparent_to_white(img.clone());
-        assert_eq!(out.to_rgba8(), img.to_rgba8());
-    }
-
-    /// Mutation-proving: an image whose alpha channel is present but **uniformly 255** (fully
-    /// opaque) must also short-circuit — pins that the "already opaque" check isn't accidentally
-    /// gated on "has no alpha channel" alone (which `RgbaImage::from_pixel(.., alpha: 255)` would
-    /// still have).
-    #[test]
-    fn flatten_is_a_no_op_for_an_rgba_image_with_full_opacity_everywhere() {
-        let img = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
-            3,
-            3,
-            image::Rgba([1, 2, 3, 255]),
-        ));
-        let out = flatten_transparent_to_white(img.clone());
-        assert_eq!(out.to_rgba8(), img.to_rgba8());
-    }
 
     fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
         let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
