@@ -28,21 +28,57 @@ presentations, cycled with `R` (`[ui] diff_view`, default `rendered`):
 
 - **`rendered`** — a Markdown file's diff drawn as decorated blocks: removed content in red/dim,
   added in green, changed-to in amber — so an edit's *deletions* stay visible, not only its final
-  result. Falls back to `source` for a non-Markdown file, which has no block-diff renderer.
-- **`source`** — the classic unified/split diff.
-- **`preview`** — the file's ordinary preview, with a change gutter on the current content; `R`
-  there returns to the diff instead of toggling raw source.
+  result. Falls back to `source` for a non-Markdown file, which has no block-diff renderer. **For a
+  changed image or PDF, `rendered` is the side-by-side old/new picture** (see "Media diffs" below);
+  those two kinds have no plain-text `source` to fall back to.
+- **`source`** — the classic unified/split diff (an SVG's raw markup diff, for the one kind that is
+  both a picture and real text).
+- **`preview`** — the file's ordinary preview, with a change gutter on the current content (for an
+  image/PDF, just the new version, no overlay); `R` there returns to the diff instead of toggling
+  raw source.
 
-`R` cycles between whichever presentations the file being diffed actually has: all 3 for Markdown,
-`source ⇄ preview` for any other text file, none for a non-text file (no hint is shown for those).
-For a file over 5,000 lines or 1 MiB, `rendered`/`preview` stop at the same position an ordinary
-preview would — switch to `source` (`R`) to see changes past that point.
+`R` cycles between whichever presentations the file being diffed actually has: all 3 for Markdown
+and SVG, `source ⇄ preview` for any other text file, `rendered ⇄ preview` for an image/PDF, none
+for a summary-only binary (no hint is shown for those — see the media section below). For a file
+over 5,000 lines or 1 MiB, `rendered`/`preview` stop at the same position an ordinary preview
+would — switch to `source` (`R`) to see changes past that point.
 
-- `s` cycles the `source` layout: unified (vertical) → split (side by side) → auto.
+- `s` cycles the `source` layout: unified (vertical) → split (side by side) → auto. On a media
+  diff, `s` instead cycles *that* view's own layout (below).
 - `n` / `N` jump straight to the next/previous changed file's diff without
   leaving the view — the title shows `(2/5)`. Reviewing a whole change set is
   one keystroke per file; the current presentation is kept as you move between files.
 - `x` discards the whole file's changes (confirmed).
+
+## Media diffs
+
+A changed image, GIF, SVG, or PDF page shows its old and new versions **next to each other**
+instead of a useless "binary files differ" line — no pixel diffing or highlighting, just the two
+pictures at one shared scale, so a resize stays visible and nothing is ever enlarged past its
+natural size.
+
+- **Layout**: `[git] media_diff` picks the initial layout — `"auto"` (default) lays the pair
+  side by side or stacked, whichever lets the picture draw larger; `"side"` always left/right,
+  `"stack"` always top/bottom. `s` cycles auto → side → stack → auto at runtime.
+- **Captions**: each pane names the base it's actually comparing against — `HEAD` / jj's `@-` / (in
+  a follow-opened diff) the follow-session snapshot taken when `F` was pressed — plus dimensions,
+  file size, and the PDF page. A follow session with no usable snapshot for that file (over the
+  5 MiB per-file cap) falls back to the committed base and the caption says so honestly, rather
+  than claiming "since follow-start" for a comparison it didn't actually make.
+- **PDF paging**: `J` / `K` (also `PageDown` / `PageUp`) turn both sides' page together — only
+  while a multi-page PDF diff is showing.
+- **New / deleted / identical / undecodable**: a brand-new file shows only its new side (old pane:
+  "new file"); a deleted one shows only its old side; byte-identical content says so plainly; a
+  side that fails to decode (corrupt image, encrypted/unparsable PDF) shows "cannot display: …" in
+  its own pane while the other side still draws.
+- **Everything else** — video, archives, other binaries, or either side over the 64 MiB cap — has
+  no picture to draw, so `rendered` degrades to a **one-line summary**: sizes and the byte delta
+  (`(+3 B)` / `(-3 B)` / "same size, content differs"), or the honest "(no changes)" when the bytes
+  really are identical. This replaced a real bug: git/jj always return an *empty* line diff for
+  binary content, which konoma used to read at face value as "no changes" even when the file had
+  in fact changed.
+- `R`, `n`/`N`, and the presentation-cycling rules above all apply the same way to a media diff as
+  to a text one.
 
 ## Log — `l`
 

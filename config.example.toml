@@ -536,6 +536,8 @@ builtin = "pdf"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
 #                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
 #                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "cycle_diff_view" "git_diff_discard"
+#                  "media_diff_page_next" "media_diff_page_prev" (J/K on an image/PDF/SVG diff: turn
+#                    a multi-page PDF's page on both sides together; no-op everywhere else)
 #                  "jj_sync" (R, in the hub: let jj snapshot the working copy — konoma's only
 #                    write to a jj repository, and only after a confirmation. Does nothing in a
 #                    git repository.)
@@ -614,6 +616,9 @@ command = ""          # Default editor. Empty falls back to $VISUAL → $EDITOR 
 [git]
 tool        = "lazygit"   # The external git tool launched with `!` in the hub (command + args, space-separated). e.g. "tig status"
 diff        = "unified"   # Initial diff layout: "unified" (vertical) | "split" (side-by-side) | "auto" (by width). `s` cycles vertical→side-by-side→auto in a diff.
+media_diff  = "auto"      # Initial layout for the image/PDF/SVG side-by-side "diff": "auto" (whichever of side-by-
+                        # side/stacked lets the picture render larger) | "side" | "stack". Separate from `diff` above
+                        # (they mean different things). `s` cycles auto→side→stack→auto while that view is showing.
 # main_branch: [unimplemented / reserved] for the pinned-base-branch graph.
 #              Currently referenced nowhere = has no effect. It will be enabled when implemented.
 worktree_dir = "../"   # Where `n` (in the worktree list, [keys.git_worktrees]) places a new linked worktree: resolved

@@ -32,6 +32,16 @@ pub fn is_probably_text(path: &Path) -> bool {
     let Ok(n) = f.read(&mut buf) else {
         return false;
     };
+    is_probably_text_bytes(&buf[..n])
+}
+
+/// The same judgment as [`is_probably_text`], on bytes already in memory — used by
+/// `Config::resolve_preview_with` (`docs/FEATURE-MEDIA-DIFF.md` §2) to classify a **deleted** file
+/// from its old (baseline) bytes, which have no path to open. Only ever looks at the first
+/// `SNIFF_BYTES` of `buf`, same as the path-based version's own single `read` call — a caller
+/// handing in more than that pays no extra cost here.
+pub fn is_probably_text_bytes(buf: &[u8]) -> bool {
+    let n = buf.len().min(SNIFF_BYTES);
     if n == 0 {
         return true; // treat an empty file as text
     }
@@ -128,6 +138,32 @@ mod tests {
         let p = tmp("blob.bin", &[0x89, 0x50, 0x00, 0x01, 0x02]);
         assert!(!is_probably_text(&p));
         std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn is_probably_text_bytes_matches_the_path_version() {
+        let p = tmp("parity.txt", b"hello\nworld\n");
+        assert_eq!(
+            is_probably_text(&p),
+            is_probably_text_bytes(b"hello\nworld\n")
+        );
+        std::fs::remove_file(&p).ok();
+        let p = tmp("parity.bin", &[0x89, 0x50, 0x00, 0x01, 0x02]);
+        assert_eq!(
+            is_probably_text(&p),
+            is_probably_text_bytes(&[0x89, 0x50, 0x00, 0x01, 0x02])
+        );
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn is_probably_text_bytes_empty_is_text() {
+        assert!(is_probably_text_bytes(b""));
+    }
+
+    #[test]
+    fn is_probably_text_bytes_nul_byte_is_binary() {
+        assert!(!is_probably_text_bytes(b"hello\0world"));
     }
 
     #[test]

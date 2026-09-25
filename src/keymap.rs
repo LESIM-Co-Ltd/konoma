@@ -138,6 +138,10 @@ pub enum Action {
     PreviewExitVisual,
     /// `R`: toggle a Markdown/Mermaid preview between its decorated render and raw source (selectable).
     ToggleMarkdownRaw,
+    /// `R` in `Surface::PreviewImage`: returns to the diff while this image/PDF/SVG preview *is*
+    /// its own `Preview` representation, and is a no-op otherwise — `App::image_return_to_diff`'s
+    /// own doc comment on why this is a separate action from `ToggleMarkdownRaw`.
+    ImageReturnToDiff,
     /// Tab/BackTab/Enter (triggered as fixed keys; not listed in the keymap).
     LinkFocusNext,
     LinkFocusPrev,
@@ -181,6 +185,14 @@ pub enum Action {
     /// In a follow-opened diff: toggle between the diff since follow-start and the full git diff.
     #[cfg(feature = "git")]
     ToggleFollowDiffScope,
+    /// `J`/`PageDown` while the media diff's side-by-side view is active
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §1/§6): turn both sides' PDF page forward together. No-op for
+    /// anything but a multi-page PDF diff (`App::media_diff_can_page`).
+    #[cfg(feature = "git")]
+    MediaDiffPageNext,
+    /// `K`/`PageUp`'s counterpart to `MediaDiffPageNext`.
+    #[cfg(feature = "git")]
+    MediaDiffPagePrev,
 
     // --- Git changes hub (o) ---
     #[cfg(feature = "git")]
@@ -861,6 +873,12 @@ impl KeyMap {
         // --- Preview: image ---
         let mut pimg: ContextMap = HashMap::new();
         pimg.insert(KeyPress::ch('q'), run(Action::PreviewBack));
+        // R: while this image/PDF/SVG preview *is* the diff's own `Preview` representation
+        // (`PerTab::preview_from_diff`), returns to the diff; a no-op otherwise
+        // (`App::image_return_to_diff`'s own doc comment — **not** `Action::ToggleMarkdownRaw`,
+        // whose non-diff fallthrough (`toggle_md_raw`) is a real, if unadvertised, bug on this
+        // surface for a standalone `.mmd` image preview, `docs/FEATURE-MEDIA-DIFF.md` §6).
+        pimg.insert(KeyPress::ch('R'), run(Action::ImageReturnToDiff));
         pimg.insert(KeyPress::ch('+'), run(Action::ImageZoomIn));
         pimg.insert(KeyPress::ch('-'), run(Action::ImageZoomOut));
         pimg.insert(KeyPress::ch('0'), run(Action::ImageZoomReset));
@@ -927,6 +945,13 @@ impl KeyMap {
             // f = toggle the range of a follow-opened diff (since follow-start ⇄ full). No-op for
             // a non-follow diff.
             pgit.insert(KeyPress::ch('f'), run(Action::ToggleFollowDiffScope));
+            // J/K: turn a media diff's PDF page (both sides at once). No-op outside a multi-page
+            // PDF side-by-side view (`App::media_diff_page_turn`'s own gate) — PageDown/PageUp are
+            // *not* rebound here: `dispatch_navigate`'s `PreviewGitDiff` arm reroutes them to the
+            // same handler only while the media diff is active, and keeps their ordinary scroll
+            // meaning otherwise (`docs/FEATURE-MEDIA-DIFF.md` §6).
+            pgit.insert(KeyPress::ch('J'), run(Action::MediaDiffPageNext));
+            pgit.insert(KeyPress::ch('K'), run(Action::MediaDiffPagePrev));
             pgit.insert(KeyPress::ch('j'), nav(Motion::Down));
             pgit.insert(KeyPress::ch('k'), nav(Motion::Up));
             pgit.insert(KeyPress::ch('l'), nav(Motion::Right));
@@ -1903,6 +1928,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "preview_copy_selection_ref" => Action::PreviewCopySelectionRef,
         "preview_exit_visual" => Action::PreviewExitVisual,
         "toggle_markdown_raw" => Action::ToggleMarkdownRaw,
+        "image_return_to_diff" => Action::ImageReturnToDiff,
         "link_focus_next" => Action::LinkFocusNext,
         "link_focus_prev" => Action::LinkFocusPrev,
         "link_open" => Action::LinkOpen,
@@ -1948,6 +1974,10 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "cycle_diff_view" => Action::CycleDiffView,
         #[cfg(feature = "git")]
         "toggle_follow_diff_scope" => Action::ToggleFollowDiffScope,
+        #[cfg(feature = "git")]
+        "media_diff_page_next" => Action::MediaDiffPageNext,
+        #[cfg(feature = "git")]
+        "media_diff_page_prev" => Action::MediaDiffPagePrev,
         #[cfg(feature = "git")]
         "git_stage" => Action::GitStage,
         #[cfg(feature = "git")]
@@ -2102,6 +2132,7 @@ pub fn action_name(a: Action) -> String {
         Action::PreviewCopySelectionRef => "preview_copy_selection_ref",
         Action::PreviewExitVisual => "preview_exit_visual",
         Action::ToggleMarkdownRaw => "toggle_markdown_raw",
+        Action::ImageReturnToDiff => "image_return_to_diff",
         Action::LinkFocusNext => "link_focus_next",
         Action::LinkFocusPrev => "link_focus_prev",
         Action::LinkOpen => "link_open",
@@ -2140,6 +2171,10 @@ pub fn action_name(a: Action) -> String {
         Action::CycleDiffView => "cycle_diff_view",
         #[cfg(feature = "git")]
         Action::ToggleFollowDiffScope => "toggle_follow_diff_scope",
+        #[cfg(feature = "git")]
+        Action::MediaDiffPageNext => "media_diff_page_next",
+        #[cfg(feature = "git")]
+        Action::MediaDiffPagePrev => "media_diff_page_prev",
         #[cfg(feature = "git")]
         Action::GitStage => "git_stage",
         #[cfg(feature = "git")]
@@ -2624,6 +2659,7 @@ mod tests {
             Action::SortSet(SortKey::Size),
             Action::SortToggleReverse,
             Action::InfoClose,
+            Action::ImageReturnToDiff,
         ];
         #[cfg(feature = "git")]
         {
@@ -2631,6 +2667,8 @@ mod tests {
             samples.push(Action::GitOpenGraph);
             samples.push(Action::CycleDiffLayout);
             samples.push(Action::CycleDiffView);
+            samples.push(Action::MediaDiffPageNext);
+            samples.push(Action::MediaDiffPagePrev);
             samples.push(Action::BranchDelete);
             samples.push(Action::GitClose);
         }

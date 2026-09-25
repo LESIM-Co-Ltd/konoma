@@ -503,6 +503,8 @@ builtin = "pdf"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
 #                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
 #                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "cycle_diff_view" "git_diff_discard"
+#                  "media_diff_page_next" "media_diff_page_prev"(画像/PDF/SVG の diff での J/K: 複数
+#                    ページの PDF なら両側同時にページ送り。それ以外では何もしない)
 #                  "jj_sync"(R= ハブで jj に作業コピーを取り込ませる。konoma が jj リポジトリに
 #                    書き込む唯一の操作で、確認ダイアログが先に出る。git リポジトリでは何もしない)
 #   Git グラフ   : "git_graph_toggle_all"(a= バックエンドの既定範囲でなく全リビジョンを表示。
@@ -576,6 +578,9 @@ command = ""          # 既定エディタ。空なら $VISUAL→$EDITOR→vim �
 [git]
 tool        = "lazygit"   # 変更ハブの `!` で起動する外部 git ツール(コマンド＋引数・空白区切り)。例: "tig status"
 diff        = "unified"   # diff の初期レイアウト: "unified"(縦) | "split"(横並び) | "auto"(幅で自動)。差分中 `s` で縦→横→Auto を巡回
+media_diff  = "auto"      # 画像/PDF/SVG の並べて表示「diff」の初期レイアウト: "auto"(絵が大きく映る方=左右/上下) |
+                        # "side"(左右) | "stack"(上下)。上の `diff` とは別の設定(意味が違うため)。その表示中 `s` で
+                        # auto→side→stack→auto を巡回。
 # main_branch: 【未実装/予約】基準ブランチ固定グラフ用。
 #              現状はどこからも参照されない=設定しても無効。実装時に有効化する。
 worktree_dir = "../"   # ワークツリー一覧(`n`・[keys.git_worktrees])で新規リンクワークツリーを置く場所: **メイン**

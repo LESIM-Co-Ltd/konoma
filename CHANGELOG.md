@@ -6,6 +6,33 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **A changed image, GIF, SVG, or PDF now shows a side-by-side "diff"** — the old and new versions
+  drawn next to each other at one shared scale (`[ui] diff_view = "rendered"` on one of those
+  kinds), instead of the misleading "(no changes)" it used to show (git/jj always return an empty
+  line diff for binary content). `[git] media_diff` (default `"auto"`) picks side-by-side vs.
+  stacked, whichever renders the picture larger; `s` cycles auto → side → stack while it's shown.
+  Captions name the base actually compared (`HEAD` / jj's `@-` / a follow session's own snapshot),
+  dimensions, file size, and the PDF page. A multi-page PDF turns both sides together with
+  `J`/`K`/`PageDown`/`PageUp`. New/deleted/identical/undecodable sides and a missing PDF page each
+  get their own placeholder. Follow mode (`F`) now opens a changed image/SVG/PDF this same way too
+  (previously it fell back to the ordinary preview); video is the one kind that still does, since
+  it has no side-by-side view of its own. Anything that can't be drawn side by side at all (video,
+  archives, other binaries, or either side over 64 MiB) gets a one-line size/byte-delta summary
+  instead.
+
+### Fixed
+- PDF pages are now drawn on white paper — they were transparent, so on a dark terminal the text
+  was barely readable, and on terminals without kitty graphics the page came out blank.
+- A changed binary file (image, PDF, video, archive, …) no longer shows the false "(no changes)"
+  — git/jj's line diff is always empty for binary content, which used to be read at face value.
+- Footer and help no longer advertise keys that would do nothing on a binary diff (`j`/`k`, `h`/`l`,
+  the text-diff layout `s`), and the diff help lists `f` (since follow-start ⇄ full) only for a
+  follow-opened diff, where it actually acts.
+- A follow-originated diff no longer mislabels a binary comparison as "since follow-start" when the
+  follow session actually had no usable snapshot for that file (over the 5 MiB per-file cap) — the
+  caption now honestly names `HEAD` instead.
+
 ## [0.29.0] - 2026-09-24
 
 ### Added

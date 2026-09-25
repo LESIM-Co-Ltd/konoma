@@ -160,6 +160,71 @@ pub(crate) fn count_diff_align_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
     )
 }
 
+thread_local! {
+    /// How many times `config::resolve_preview_kind` ran **on this thread** — the call both
+    /// `Config::resolve_preview`/`resolve_preview_with` and the media-diff worker's own request-time
+    /// classification (`App::compute_media_diff`) funnel through. For an extension-less or
+    /// MIME-sniffed rule this is real I/O (`infer::get_from_path` opens and reads the file), and
+    /// several diff-surface predicates (`App::diff_media_active`/`diff_binary_summary_eligible`/
+    /// `diff_representations`) used to call it fresh on **every frame** a media diff was on screen —
+    /// `App::diff_target_kind_cache` (`app/media_diff.rs`) exists to collapse that back down to one
+    /// resolve per (re)target/invalidation, which is exactly what this counter proves. Thread-local
+    /// for the same reason `STAT_CALLS` is.
+    static RESOLVE_PREVIEW_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `config::resolve_preview_kind` right before it walks the rule list. Cheap enough to be
+/// unconditional in test builds; compiled out entirely otherwise (the call site is `#[cfg(test)]`).
+pub(crate) fn note_resolve_preview_call() {
+    let _ = RESOLVE_PREVIEW_CALLS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times resolve_preview_kind ran while it did)`. Only
+/// ever called from `#[cfg(feature = "git")]` tests (the one caller, `App::diff_target_kind_cache`'s
+/// own perf test, needs `App::open_git_diff` to set up a real diff target) — unused, not
+/// unreachable, on a no-`git` test build.
+#[cfg_attr(not(feature = "git"), allow(dead_code))]
+pub(crate) fn count_resolve_preview_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = RESOLVE_PREVIEW_CALLS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        RESOLVE_PREVIEW_CALLS
+            .with(|c| c.get())
+            .saturating_sub(before),
+    )
+}
+
+thread_local! {
+    /// How many times `App::dispatch_media_diff` actually dispatched a media-diff request (spawned a
+    /// worker thread, or ran the synchronous no-`Sender` fallback) **on this thread** —
+    /// `App::kick_media_diff`/`App::apply_media_diff`'s own "at most one worker in flight, latest
+    /// wins" coalescing (`docs/FEATURE-MEDIA-DIFF.md`) is exactly what this counter proves: a burst
+    /// of `App::poll_media_diff`/invalidation calls while a worker is already busy must coalesce into
+    /// the single `media_diff_queued` slot rather than each spawning its own concurrent decode.
+    /// Thread-local for the same reason `STAT_CALLS` is.
+    static MEDIA_DIFF_DISPATCH_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Called by `App::dispatch_media_diff` right before it builds the request. Cheap enough to be
+/// unconditional in test builds; compiled out entirely otherwise (the call site is `#[cfg(test)]`).
+pub(crate) fn note_media_diff_dispatch_call() {
+    let _ = MEDIA_DIFF_DISPATCH_CALLS.try_with(|c| c.set(c.get() + 1));
+}
+
+/// Runs `f` and returns `(its value, how many times dispatch_media_diff actually dispatched while
+/// it did)`.
+pub(crate) fn count_media_diff_dispatch_calls<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = MEDIA_DIFF_DISPATCH_CALLS.with(|c| c.get());
+    let out = f();
+    (
+        out,
+        MEDIA_DIFF_DISPATCH_CALLS
+            .with(|c| c.get())
+            .saturating_sub(before),
+    )
+}
+
 /// A unique temp directory *path* per call (pid + a process-global counter). Tests that build a
 /// fixture under `std::env::temp_dir()` must never use a fixed name: two `cargo test` binaries
 /// (git-feature and no-git-feature builds, or two concurrent CI/dev runs) sharing one machine's

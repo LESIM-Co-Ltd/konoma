@@ -3261,7 +3261,9 @@ pub fn is_math_url(url: &str) -> bool {
 /// resolution (which would fail for a `mermaid-fence://`/`math://` scheme and leave the reserved rows
 /// blank). Every real inline image (local path / `http(s)://` / `data:`) is *not* synthetic.
 pub fn is_synthetic_md_url(url: &str) -> bool {
-    is_mermaid_fence_url(url) || is_math_url(url)
+    is_mermaid_fence_url(url)
+        || is_math_url(url)
+        || crate::preview::media_diff::is_media_diff_url(url)
 }
 
 /// All math expressions in `src`, in document order, as (latex, display). Mirrors the render path

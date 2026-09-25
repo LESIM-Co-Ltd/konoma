@@ -10,6 +10,8 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui_image::errors::Errors;
 use ratatui_image::picker::Picker;
+
+use crate::preview::media_diff::MediaDiffLayout;
 use ratatui_image::protocol::Protocol;
 use ratatui_image::thread::{ResizeRequest, ResizeResponse, ThreadProtocol};
 use ratatui_image::{FilterType, Resize};
@@ -32,6 +34,7 @@ mod md_media;
 mod md_render;
 mod md_tasks;
 mod md_text;
+mod media_diff;
 mod media_load;
 mod outline;
 mod paste_jump;
@@ -1042,6 +1045,209 @@ pub struct MdDiffResult {
     outcome: MdDiffOutcome,
 }
 
+// ---- Media diff (image/PDF/SVG side-by-side, `docs/FEATURE-MEDIA-DIFF.md`) ------------------
+
+/// Which base a media diff's "old" side was actually compared against
+/// (`docs/FEATURE-MEDIA-DIFF.md` §1's "基準の名前" table) — reported alongside the computed outcome
+/// so a caption can name the real baseline even when a follow session degraded to it (a follow
+/// baseline with no usable snapshot for this file falls back to the committed baseline; see
+/// `App::media_diff_baseline`'s own doc comment). Read by `ui/preview.rs::render_gitdiff_media`'s
+/// caption (`App::media_base_msg`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MediaBase {
+    Head,
+    JjParent,
+    FollowStart,
+}
+
+/// The three picture-capable kinds a media diff can pair up side by side
+/// (`docs/FEATURE-MEDIA-DIFF.md` §1's table) — everything else (video/archive/table/unsupported)
+/// degrades to [`MediaDiffOutcome::Summary`]/[`MediaDiffComputed::Summary`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MediaDiffKind {
+    Image,
+    Svg,
+    Pdf,
+}
+
+/// One side's fully-decoded picture, still carrying its pixel data — only ever lives inside
+/// [`MediaDiffComputed`] on its way from the worker thread to `App::apply_media_diff`, which moves
+/// the pixels into `md_image_cache` (under a `media_diff_url` key) and keeps only a lightweight
+/// [`MediaDiffPicture`] in `App::media_diff_landed` — the same split `MdImageResult`/`MdImgEntry`
+/// already have for mermaid/math renders.
+#[derive(Debug)]
+pub(crate) struct MediaDiffPictureDecoded {
+    /// This side's **intrinsic** size, in the kind's own natural unit — a raster image's real
+    /// (file-header, never decode-budget-downscaled) pixel dimensions, an SVG's **viewBox** size,
+    /// or a PDF page's size in **points** (`docs/FEATURE-MEDIA-DIFF.md` §1's own caption rule).
+    /// **Not** `image.dimensions()`/`frames[0].dimensions()` (the decoded raster's own pixel size)
+    /// — those depend on kind-specific rendering choices that are *not* comparable across the two
+    /// sides of one diff: a PDF page is rasterized to a fixed longest side (`PAGE_MAX_PX`)
+    /// regardless of its point size, an SVG is rasterized to fit the caller's `raster_px` box
+    /// regardless of its viewBox, and an animated GIF's frames may be downscaled by the inline
+    /// decode budget — so two *different* intrinsic sizes on the two sides can decode to *similar*
+    /// or even *identical* raster pixel dimensions, which would make `preview::media_diff::layout`'s
+    /// shared-scale math (`docs/FEATURE-MEDIA-DIFF.md` §1: "縮尺は両側で同じ…サイズの変更を見えるまま
+    /// 残すため") compare apples to oranges and size a real change as unchanged, or worse (a real
+    /// regression: a physically *smaller* PDF page rendered visibly *larger* than the original,
+    /// because both rasterize to the same ~1600px longest side). `layout`'s own fit math must be
+    /// driven by *this* field. The terminal encoder is never let re-derive its own fit from the
+    /// decoded raster's pixel dimensions instead — `App::poll_md_encode` always passes media-diff
+    /// pictures through `Resize::Scale` (never `Fit`), which resizes the decoded raster to exactly
+    /// the cell box `layout` already decided, whatever the raster's own pixel size actually is; that
+    /// is what keeps a decoded-vs-intrinsic mismatch (the norm, not the exception, per the above)
+    /// from ever making `Widget::render` refuse to draw (protocol larger than the render area) or
+    /// draw at the wrong size.
+    natural_px: (u32, u32),
+    bytes: u64,
+    page_count: Option<u32>,
+    image: image::DynamicImage,
+    frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
+    svg: Option<Arc<Vec<u8>>>,
+    cache_key: PathBuf,
+}
+
+/// One side's outcome, still carrying pixel data where present (`MediaDiffComputed`'s own per-side
+/// shape). Boxes its `Picture` payload so `MediaDiffComputed::Ready`'s two sides don't double the
+/// cost of `MediaDiffPictureDecoded`'s own size (`clippy::large_enum_variant`) — a plain pointer
+/// indirection, not a behavior change.
+#[derive(Debug)]
+pub(crate) enum MediaDiffSideDecoded {
+    /// The file doesn't exist on this side (new/untracked, or deleted).
+    Absent,
+    /// Bytes were read but could not be decoded as this diff's `kind` (corrupt image, encrypted/
+    /// unparsable PDF, invalid SVG).
+    Failed {
+        reason: String,
+    },
+    /// A PDF page beyond this side's own page count.
+    PageMissing,
+    Picture(Box<MediaDiffPictureDecoded>),
+}
+
+/// The lightweight, stored form of one side's picture — everything a caption/layout needs, with no
+/// pixel data (that already lives in `md_image_cache` under `cache_key`).
+#[derive(Clone, Debug)]
+pub(crate) struct MediaDiffPicture {
+    // Read by `ui/preview.rs::draw_media_caption` (git-gated) for the caption's "WxH", and by
+    // `ui/preview.rs::media_side_natural_px` (git-gated) as `preview::media_diff::layout`'s own
+    // sizing input — dead on `--no-default-features`. See `MediaDiffPictureDecoded::natural_px`'s
+    // own doc comment for why the *intrinsic* size (not the decoded raster's) is what sizing math
+    // must use.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub(crate) natural_px: (u32, u32),
+    pub(crate) bytes: u64,
+    pub(crate) page_count: Option<u32>,
+    pub(crate) cache_key: PathBuf,
+}
+
+/// The stored (landed) form of one side's outcome — the `MediaDiffSideDecoded` counterpart with no
+/// pixel data.
+#[derive(Clone, Debug)]
+pub(crate) enum MediaDiffSide {
+    Absent,
+    Failed {
+        // Read by `ui/preview.rs::draw_media_side`'s "cannot display: <reason>" placeholder
+        // (git-gated) — dead on `--no-default-features`.
+        #[cfg_attr(not(feature = "git"), allow(dead_code))]
+        reason: String,
+    },
+    PageMissing,
+    Picture(MediaDiffPicture),
+}
+
+/// The pure computation's raw result (`App::compute_media_diff`) — still carrying pixel data where a
+/// side decoded into a picture. Travels from the worker thread to the run loop inside
+/// [`MediaDiffResult`]; `App::apply_media_diff` turns it into a stored [`MediaDiffOutcome`].
+#[derive(Debug)]
+pub(crate) enum MediaDiffComputed {
+    /// Both sides were resolved against a picture-capable `kind` (their own decode may still have
+    /// individually failed/been absent — see [`MediaDiffSideDecoded`]).
+    Ready {
+        kind: MediaDiffKind,
+        base: MediaBase,
+        same_bytes: bool,
+        old: MediaDiffSideDecoded,
+        new: MediaDiffSideDecoded,
+    },
+    /// Not a picture-capable kind, or a side is over the byte cap: sizes only, no decode
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §5).
+    Summary {
+        base: MediaBase,
+        same_bytes: bool,
+        old_len: Option<u64>,
+        new_len: Option<u64>,
+    },
+    /// The worker panicked, or the request could not be resolved at all (`compute_or_fallback`'s
+    /// fallback value).
+    Unavailable,
+}
+
+/// The stored (landed) form of [`MediaDiffComputed`] — the `Ready`/`Summary`/`Unavailable` shapes are
+/// identical, only the per-side payload loses its pixel data (see [`MediaDiffSide`]).
+#[derive(Clone, Debug)]
+pub(crate) enum MediaDiffOutcome {
+    Ready {
+        kind: MediaDiffKind,
+        // Read by `ui/preview.rs::draw_media_caption` (git-gated: the side-by-side view is only
+        // ever drawn there) for the old-side caption's base label — dead on a `--no-default-
+        // features` build, where that whole render path is compiled out.
+        #[cfg_attr(not(feature = "git"), allow(dead_code))]
+        base: MediaBase,
+        same_bytes: bool,
+        old: MediaDiffSide,
+        new: MediaDiffSide,
+    },
+    Summary {
+        // Carried through for symmetry with `Ready` and because a future consumer (or a test)
+        // may want it, but the binary-summary line itself (`docs/FEATURE-MEDIA-DIFF.md` §5) never
+        // names a base — only sizes — so nothing in production reads this field today.
+        #[allow(dead_code)]
+        base: MediaBase,
+        same_bytes: bool,
+        old_len: Option<u64>,
+        new_len: Option<u64>,
+    },
+    Unavailable,
+}
+
+/// A media-diff computation request handed to the worker thread (or run synchronously —
+/// `App::spawn_or_sync_media_diff`). Carries everything `App::compute_media_diff` needs as plain
+/// data, resolved on the UI thread ahead of time (mirrors [`MdDiffRequest`]'s own doc comment on why
+/// `preview_rules`/`preview_commands` ride along here instead of `&Config`: the worker thread has no
+/// access to `App`/`Config` at all).
+pub(crate) struct MediaDiffRequest {
+    gen: u64,
+    path: PathBuf,
+    root: PathBuf,
+    baseline: DiffBaseline,
+    /// 1-based PDF page (ignored for every other kind).
+    page: u32,
+    /// Target pixel box an SVG/PDF side is rasterized to fit (the pane's own image area in px —
+    /// `preview::media_diff::layout`'s output converted to px by the caller). Ignored for a raw
+    /// raster image, whose decode doesn't depend on the display box at all.
+    raster_px: (u32, u32),
+    preview_rules: Vec<crate::config::Rule>,
+    preview_commands: bool,
+}
+
+/// Result of a media-diff computation, returned via `App::media_diff_tx`. Staleness is judged by
+/// `gen` exactly like [`MdDiffResult`].
+pub struct MediaDiffResult {
+    gen: u64,
+    path: PathBuf,
+    /// The 1-based PDF page this result answers for (mirrors `MediaDiffRequest::page`).
+    page: u32,
+    /// The raster target this result was decoded at (mirrors `MediaDiffRequest::raster_px`).
+    raster_px: (u32, u32),
+    computed: MediaDiffComputed,
+}
+
+/// `App::media_diff_landed`'s key: `(path, page, raster_px, gen)` it answers for, plus the outcome
+/// itself. A named alias only to keep the field declaration under `clippy::type_complexity`'s
+/// threshold — see `App::media_diff_landed`'s own doc comment for what each element means.
+type MediaDiffLandedKey = (PathBuf, u32, (u32, u32), u64, MediaDiffOutcome);
+
 /// Which long-running filesystem operation a background job is performing.
 /// The variants differ in the completion message and in whether a failing target aborts the
 /// rest: paste/duplicate continue past a failing target (existing behaviour), while a
@@ -1556,6 +1762,53 @@ pub struct App {
     /// caller (`App::ensure_md_cache`) degrades (no gutter / a "computing…" placeholder) rather
     /// than blocking.
     md_diff_landed: Option<(PathBuf, MdDiffKind, u64, MdDiffOutcome)>,
+    /// `(path, page, raster_px)` a media diff (`docs/FEATURE-MEDIA-DIFF.md`) is being computed for
+    /// on a separate thread, **for the current generation** — cleared by `App::invalidate_media_diff`
+    /// (a bumped `media_diff_gen` makes this identity stale even though the underlying worker thread
+    /// is still physically running) as well as by `App::apply_media_diff` once that thread's result
+    /// lands. `App::poll_media_diff` dedupes an exact repeat want against this (and against
+    /// `media_diff_queued`) so it never asks twice for the identical thing; it is deliberately
+    /// **not** what gates direct-dispatch-vs-coalesce (`media_diff_worker_busy` does that) — those
+    /// are different questions ("is this exact want already accounted for, under the current
+    /// baseline" vs. "is a thread physically occupying the one worker slot right now").
+    media_diff_pending: Option<(PathBuf, u32, (u32, u32))>,
+    /// Whether a media-diff worker thread is currently running, from the moment it's dispatched
+    /// (`App::dispatch_media_diff`) until its result — accepted or stale — lands
+    /// (`App::apply_media_diff`). **Not** cleared by `App::invalidate_media_diff`: the real thread
+    /// doesn't stop just because the baseline it was computing against went stale, so this has to
+    /// stay `true` until that thread actually reports back. `App::kick_media_diff` reads this to
+    /// decide direct-dispatch vs. coalesce (`media_diff_queued`) — enforcing "at most one worker in
+    /// flight at a time" (`docs/FEATURE-MEDIA-DIFF.md`'s perf note) even across a burst of
+    /// invalidations from an AI repeatedly rewriting the same image.
+    media_diff_worker_busy: bool,
+    /// The one request coalesced behind an in-flight worker (`App::kick_media_diff`) — overwritten,
+    /// never accumulated, by every further want that arrives while `media_diff_worker_busy` is still
+    /// `true`, so only the *newest* one is ever dispatched next. `App::apply_media_diff` takes and
+    /// dispatches this the moment the busy worker's result lands, whether or not that result was
+    /// itself stale.
+    media_diff_queued: Option<(PathBuf, u32, (u32, u32))>,
+    /// Generation of the media-diff computation. Mirrors `md_diff_gen`'s own doc comment
+    /// (`App::invalidate_media_diff`, called from `App::invalidate_diff_caches`, bumps this).
+    media_diff_gen: u64,
+    /// Sender returning `MediaDiffResult`s from the worker computing media diffs in the background.
+    /// Mirrors `md_diff_tx`'s own doc comment (no Sender attached = tests fall back to synchronous
+    /// computation).
+    media_diff_tx: Option<std::sync::mpsc::Sender<MediaDiffResult>>,
+    /// The last landed media diff, tagged with the `(path, page, raster_px, gen)` it answers. Mirrors
+    /// `md_diff_landed`'s own doc comment.
+    media_diff_landed: Option<MediaDiffLandedKey>,
+    /// `(path, Config::resolve_preview(path))`, memoized for whatever `path` the diff surface is
+    /// currently (re)targeted at — `App::diff_target_kind` is the sole reader/writer contract
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §6's perf note). `resolve_preview` is real I/O for an
+    /// extension-less/MIME-sniffed rule (`infer::get_from_path` opens and reads the file), and
+    /// `diff_media_active`/`diff_binary_summary_eligible`/`diff_representations` (and everything the
+    /// footer/help/render path derives from them) used to call it fresh every single frame — up to
+    /// 4× per frame while a media diff was on screen, measured at ~81µs each for a PNG. Refreshed by
+    /// `App::refresh_diff_target_kind_cache`, called from `App::invalidate_diff_caches` — which
+    /// `App::open_git_diff_with` always calls after already updating `tab.preview_kind` to the new
+    /// target, so a (re)target and an invalidation-only refresh (a working-tree/follow-session
+    /// change against the *same* still-open target) both go through the one place.
+    diff_target_kind_cache: Option<(PathBuf, PreviewKind)>,
     /// The **repo workdir** at which `git_ignored` (heavy) was computed. If it is the same, root moves within the same repository
     /// do not rebuild it (avoids the 410ms recomputation when descending into a subdirectory with `l`).
     git_ignored_for: Option<PathBuf>,
@@ -1596,6 +1849,13 @@ pub struct App {
     /// git diff layout (vertical/horizontal/Auto). Initialized from the `git.diff` setting and cycled with `s`. Used by both the GitDiff preview
     /// and the commit/working-tree detail.
     diff_layout: DiffLayout,
+    /// The image/PDF/SVG side-by-side "diff"'s layout (auto/side/stack — `docs/FEATURE-MEDIA-
+    /// DIFF.md` §1/§6). Initialized from `[git] media_diff` and cycled with `s` while that view is
+    /// active (`App::cycle_media_diff_layout`). App-level (not per-tab), like `diff_layout` — kept
+    /// across `n`/`N` — but a **separate** field from `diff_layout` on purpose: sharing one would
+    /// make "auto" mean two different defaults for two unrelated layouts (side/stack orientation
+    /// vs. unified/split), and cycling one would silently move the other.
+    media_diff_layout: MediaDiffLayout,
     /// The current branch name (fetched at the same time as git status). None if not a repo.
     git_branch: Option<String>,
     /// Which backend produced `git_branch`/`git_status`. Settled at the same points as
@@ -2339,8 +2599,29 @@ pub fn md_encode_worker(
             // even if the raster is small, it fills the area instead of leaving a top-left-packed
             // margin band — sharpness is handled by density-following re-rasterization instead.
             // A photo keeps the previous Fit behavior (never scaled up past its natural size = never blurred).
+            //
+            // A media-diff picture (`docs/FEATURE-MEDIA-DIFF.md` §1/§4) is **also** `Scale`, for a
+            // different reason than the mermaid case: `preview::media_diff::layout`'s own "shared
+            // scale" math already computed the *exact* target cell box (`req.cols`/`req.rows`) —
+            // clamped to never exceed the natural size itself, so this can never upscale past that
+            // — and that computation used PDF-page **points** (not raster pixels) as the "natural"
+            // unit for a PDF side, or a GIF frame that the decode budget may have downscaled for a
+            // GIF side, either of which differs from this image's own *actual* pixel dimensions.
+            // Letting `Fit` independently re-derive a fit from those actual pixel dimensions and
+            // `size` therefore does not reliably reproduce the same box: it can come out either
+            // smaller (a real bug — a larger picture rendered visibly smaller than its own already-
+            // decided layout rect) or larger (silently blocked entirely: `ratatui_image::Image`'s
+            // own `Widget::render` refuses to draw *at all* when the encoded protocol's size
+            // exceeds the render area on either axis, and `KittyImage::render`, just above, has the
+            // identical refusal). `Scale` sidesteps both failure modes by always resizing to
+            // exactly `size`, matching what the caller (`ui/preview.rs::draw_media_side`) then
+            // renders into — never larger, never smaller.
+            let is_media_diff_picture =
+                crate::preview::media_diff::is_media_diff_url(&req.path.to_string_lossy());
             let resize =
-                if crate::preview::markdown::is_mermaid_fence_url(&req.path.to_string_lossy()) {
+                if crate::preview::markdown::is_mermaid_fence_url(&req.path.to_string_lossy())
+                    || is_media_diff_picture
+                {
                     Resize::Scale(Some(FilterType::Lanczos3))
                 } else {
                     Resize::Fit(Some(FilterType::Lanczos3))
@@ -2557,6 +2838,14 @@ pub(crate) struct PerTab {
     /// restore it around their own `open_git_diff` call so cycling files never resets it — see
     /// [`DiffView`]'s own doc comment.
     diff_view: DiffView,
+    /// The 1-based PDF page the media diff's side-by-side view (`docs/FEATURE-MEDIA-DIFF.md`
+    /// §1/§6) is showing on **both** sides at once. Reset to `1` whenever a diff is (re)targeted
+    /// through `App::open_git_diff_with` — a fresh file, or `n`/`N` moving to another one — so
+    /// paging on one file never carries over to the next; changed in place by `J`/`K`
+    /// (`App::media_diff_page_turn`). Per-tab (unlike `App::media_diff_layout`, which is
+    /// deliberately App-level): the page position belongs to *this* diff, not to the layout
+    /// preference a second tab reviewing a different file would want to keep.
+    diff_media_page: u32,
     /// The target of a pending "scroll to the first change" request, if any — `Some(path)` set by
     /// `App::open_git_diff_with`/`App::cycle_diff_view` whenever the `Rendered` presentation
     /// (re)appears for `path` (a fresh file, or `R` cycling into it), or by `follow.rs`'s own
@@ -2715,6 +3004,7 @@ impl Default for PerTab {
             // from config the moment one is. `Rendered` (not e.g. `Source`) simply so a fresh
             // `PerTab` never claims a presentation it never actually resolved.
             diff_view: DiffView::Rendered,
+            diff_media_page: 1,
             diff_scroll_pending: None,
             preview_from_diff: false,
             git_log: None,
@@ -2788,6 +3078,8 @@ impl App {
         let show_hidden = cfg.ui.show_hidden;
         // The diff layout's initial value (config git.diff). At runtime, `s` cycles vertical → horizontal → Auto.
         let diff_layout = DiffLayout::parse(&cfg.git.diff);
+        // The media diff's initial layout (config git.media_diff). At runtime, `s` cycles auto → side → stack → auto.
+        let media_diff_layout = MediaDiffLayout::parse(&cfg.git.media_diff);
         // Run2 keymap: merge the defaults + config (`[keys.<surface>]` + the old copy_* alias) and
         // validate for conflicts. The page/half profile follows ui.keys (vim/less). Stage 2 is
         // construction only (dispatch is not yet wired up).
@@ -2913,6 +3205,13 @@ impl App {
             md_diff_gen: 0,
             md_diff_tx: None,
             md_diff_landed: None,
+            media_diff_pending: None,
+            media_diff_worker_busy: false,
+            media_diff_queued: None,
+            media_diff_gen: 0,
+            media_diff_tx: None,
+            media_diff_landed: None,
+            diff_target_kind_cache: None,
             git_ignored_for: None,
             git_ignored_pending: None,
             git_ignored_gen: 0,
@@ -2923,6 +3222,7 @@ impl App {
             filter_pool_dirty: false,
             pool_tx: None,
             diff_layout,
+            media_diff_layout,
             git_branch: None,
             git_worktree_origin: None,
             git_graph_picker: false,
@@ -4410,6 +4710,12 @@ impl App {
         self.tab.preview_kind = None;
         self.clear_command_out(); // release any delegated-command temp output
         self.clear_image(); // release the graphics state
+                            // Leaving the diff surface altogether (q/Esc back to the tree, or through `close_git_diff`
+                            // on the way to the Git hub) — nothing will ever poll/land a media diff again until some
+                            // unrelated one is opened later, so its last-viewed `media-diff://` rasters would otherwise
+                            // sit in `md_image_cache` orphaned forever (`App::prune_media_diff_picture_cache`'s own doc
+                            // comment). A no-op (cheap `retain` over an empty match) whenever there wasn't one.
+        self.prune_media_diff_picture_cache();
         self.md_cache = None;
         self.tab.md_raw = false;
         self.preview_win = None;

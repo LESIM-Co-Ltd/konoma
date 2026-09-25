@@ -29,8 +29,12 @@ impl App {
     /// read, no I/O) and leaves the actual blob fetch (`git::blob_at`, a subprocess under jj) to the
     /// worker. `Gutter` never follows a session (the ordinary preview's own gutter always compares
     /// against the backend's committed baseline, matching the pre-worker `preview_diff_baseline`).
+    /// `pub(super)` (not private) so `App::media_diff_baseline` (`app/media_diff.rs`) can reuse this
+    /// exact resolution too — the media diff's baseline selection is identical to `Rendered`'s own
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §3 deliberately shares it rather than re-deriving the
+    /// follow-session branching a second time).
     #[cfg_attr(not(feature = "git"), allow(unused_variables))]
-    fn diff_baseline(&self, path: &Path, kind: MdDiffKind) -> DiffBaseline {
+    pub(super) fn diff_baseline(&self, path: &Path, kind: MdDiffKind) -> DiffBaseline {
         if kind == MdDiffKind::Gutter {
             return DiffBaseline::Vcs;
         }

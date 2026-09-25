@@ -94,6 +94,13 @@ pub struct GitConfig {
     /// (Aliases: vertical = unified / horizontal, side-by-side = split.) At runtime, `s` while viewing a diff
     /// cycles vertical -> horizontal -> Auto. Applies to both the GitDiff preview and commit/working-tree details.
     pub diff: String,
+    /// Initial layout for the image/PDF/SVG side-by-side "diff" (`docs/FEATURE-MEDIA-DIFF.md`).
+    /// "auto" (default) = whichever of side-by-side/stacked lets the picture render larger |
+    /// "side" (aliases: split/horizontal/side-by-side) | "stack" (aliases: vertical/stacked/unified).
+    /// A separate setting from `diff` (above) on purpose — sharing one would make "auto" mean two
+    /// different defaults for two unrelated layouts. At runtime, `s` while viewing a media diff
+    /// cycles auto → side → stack → auto.
+    pub media_diff: String,
     /// [Unimplemented/reserved] For the base-branch-pinned graph (post-release; docs/GRAPH-BASE-SPEC.md).
     /// Currently referenced by nothing (parsed only). Wired up when implemented.
     pub main_branch: String,
@@ -134,6 +141,7 @@ impl Default for GitConfig {
         Self {
             tool: "lazygit".into(),
             diff: "unified".into(), // default is vertical. horizontal/Auto via config or runtime `s`.
+            media_diff: "auto".into(),
             main_branch: "".into(),
             worktree_dir: "../".into(),
         }
@@ -968,27 +976,83 @@ impl Config {
     /// the built-in text display for text, or safely to CanNotPreview for binary
     /// (design principle 3 "unsupported is handled safely"; picks up extensionless README/LICENSE/Makefile, etc.).
     pub fn resolve_preview(&self, path: &Path) -> PreviewKind {
-        for rule in &self.preview.rules {
-            if rule_matches(rule, path) {
-                let kind = PreviewKind::from_rule(rule, path);
-                // `[external] preview_commands = false`: a matching `command = "..."` rule behaves as
-                // if it hadn't matched at all (falls through to the safe CanNotPreview below), rather
-                // than launching the external tool. Builtin renderers are unaffected.
-                if matches!(kind, PreviewKind::Command { .. }) && !self.external.preview_commands {
-                    return PreviewKind::can_not_preview(path);
-                }
-                return kind;
-            }
-        }
-        if crate::preview::text::is_probably_text(path) {
-            PreviewKind::Text(path.to_path_buf())
-        } else {
-            PreviewKind::can_not_preview(path)
-        }
+        resolve_preview_kind(
+            &self.preview.rules,
+            self.external.preview_commands,
+            path,
+            None,
+        )
+    }
+
+    /// `resolve_preview`, but classifying a file that may not exist on disk from `sniff` (its
+    /// content) instead of reading `path`. Used for a **deleted** file
+    /// (`docs/FEATURE-MEDIA-DIFF.md` §2): the ordinary path-based MIME sniff
+    /// (`infer::get_from_path`) fails outright once the file is gone, so a rule like
+    /// `mime = "image/*"` could never match a deleted PNG even though its old bytes (from git/jj)
+    /// are right there. Glob rules are unaffected (they only ever look at the file *name*, which
+    /// `path` still has even when the file itself doesn't exist), and the final text/binary fallback
+    /// judges `sniff` the same way `is_probably_text` judges a file's leading bytes. Same rule order,
+    /// same `[external] preview_commands` gate — this shares `resolve_preview`'s one implementation
+    /// (`resolve_preview_kind`) rather than a second copy that could drift out of sync with it.
+    // Not called from production code, deliberately: a deleted file's classification is instead
+    // read off the media-diff worker's own landed outcome (`App::diff_representations`, `docs/
+    // FEATURE-MEDIA-DIFF.md` §2). That worker sniffs the old bytes on a background thread via the
+    // free-function form this method itself wraps (`resolve_preview_kind`, called directly by
+    // `App::compute_media_diff` — not through this method, since the worker only has plain
+    // `rules`/`preview_commands` data, not a whole `&Config`), so calling this synchronous, UI-
+    // thread method a second time from anywhere in the render path would just be redundant I/O.
+    // Kept as a public, directly-testable entry point for exactly that sniff behavior — exercised
+    // by `config::parity_tests`.
+    #[allow(dead_code)]
+    pub fn resolve_preview_with(&self, path: &Path, sniff: &[u8]) -> PreviewKind {
+        resolve_preview_kind(
+            &self.preview.rules,
+            self.external.preview_commands,
+            path,
+            Some(sniff),
+        )
     }
 }
 
-fn rule_matches(rule: &Rule, path: &Path) -> bool {
+/// The one implementation `Config::resolve_preview`/`resolve_preview_with` both call — see the
+/// latter's doc comment for why a deleted file needs this to be parameterized on an optional content
+/// sniff rather than always reading `path` itself. `rules`/`preview_commands` are passed as plain
+/// data (not `&Config`) so the media-diff worker (`app/media_diff.rs`) can call this from a thread
+/// with only a cloned snapshot of the two config fields it actually needs, mirroring how
+/// `MdDiffRequest` carries plain `md_frontmatter`/`md_footnotes`/`md_inline_html` booleans instead of
+/// a whole `&Config` (`app/md_diff.rs`'s module doc comment).
+pub(crate) fn resolve_preview_kind(
+    rules: &[Rule],
+    preview_commands: bool,
+    path: &Path,
+    sniff: Option<&[u8]>,
+) -> PreviewKind {
+    #[cfg(test)]
+    crate::test_support::note_resolve_preview_call();
+    for rule in rules {
+        if rule_matches(rule, path, sniff) {
+            let kind = PreviewKind::from_rule(rule, path);
+            // `[external] preview_commands = false`: a matching `command = "..."` rule behaves as
+            // if it hadn't matched at all (falls through to the safe CanNotPreview below), rather
+            // than launching the external tool. Builtin renderers are unaffected.
+            if matches!(kind, PreviewKind::Command { .. }) && !preview_commands {
+                return PreviewKind::can_not_preview(path);
+            }
+            return kind;
+        }
+    }
+    let is_text = match sniff {
+        Some(bytes) => crate::preview::text::is_probably_text_bytes(bytes),
+        None => crate::preview::text::is_probably_text(path),
+    };
+    if is_text {
+        PreviewKind::Text(path.to_path_buf())
+    } else {
+        PreviewKind::can_not_preview(path)
+    }
+}
+
+fn rule_matches(rule: &Rule, path: &Path, sniff: Option<&[u8]>) -> bool {
     if let Some(glob) = &rule.glob {
         // Match case-insensitively so uppercase extensions (README.MD / *.RS etc.) aren't missed.
         // A lowercase pattern already matches lowercase names, so existing behavior is unchanged.
@@ -1004,7 +1068,14 @@ fn rule_matches(rule: &Rule, path: &Path) -> bool {
         }
     }
     if let Some(mime_pat) = &rule.mime {
-        if let Some(kind) = infer::get_from_path(path).ok().flatten() {
+        // `sniff` in means the file may not exist on disk at all (a deleted file's old bytes,
+        // `resolve_preview_with`) — sniff the given bytes with `infer::get` instead of asking
+        // `infer::get_from_path` to open a path that could fail to exist.
+        let kind = match sniff {
+            Some(bytes) => infer::get(bytes),
+            None => infer::get_from_path(path).ok().flatten(),
+        };
+        if let Some(kind) = kind {
             let mime = kind.mime_type();
             if mime_glob_match(mime_pat, mime) {
                 return true;

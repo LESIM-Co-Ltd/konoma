@@ -101,11 +101,49 @@ fn render_page_native(path: &Path, page: u32) -> Option<DynamicImage> {
     crate::preview::markdown::catch_silent(|| render_page_native_inner(path, page)).flatten()
 }
 
+/// Rasterize page `page` (1-based) of an **in-memory** PDF — `hayro` only, no external-tool fallback
+/// at all (see `render_page_native_inner_bytes`'s own doc comment for why). Used by the media-diff
+/// worker (`app/media_diff.rs::decode_pdf_side`) for both sides of a PDF diff: the old side never has
+/// a path (it comes from git/jj), and the new side is read into memory anyway to check the size cap
+/// and compare bytes (`docs/FEATURE-MEDIA-DIFF.md` §3), so there is nothing to gain from a second,
+/// path-based render for consistency between the two sides. Same panic net as `render_page_native`.
+pub fn render_page_bytes(bytes: &[u8], page: u32) -> Option<DynamicImage> {
+    crate::preview::markdown::catch_silent(|| render_page_native_inner_bytes(bytes, page)).flatten()
+}
+
+/// Page dimensions in PDF points (`page_ref.render_dimensions()` — the same domain
+/// `render_page_native_inner_bytes`'s own scale math already treats as "1 unit ≈ 1px"), 1-based
+/// `page`. Used by the media-diff worker (`app/media_diff.rs::decode_pdf_side`) to report a PDF
+/// side's *natural* size (`docs/FEATURE-MEDIA-DIFF.md` §1: "PDF はページの pt") without paying for a
+/// full render. `None` for an unreadable/corrupt PDF, a caught panic, or a page number out of range.
+pub fn page_dimensions_bytes(bytes: &[u8], page: u32) -> Option<(f32, f32)> {
+    crate::preview::markdown::catch_silent(|| page_dimensions_bytes_inner(bytes, page)).flatten()
+}
+
+fn page_dimensions_bytes_inner(bytes: &[u8], page: u32) -> Option<(f32, f32)> {
+    let pdf = hayro::hayro_syntax::Pdf::new(bytes.to_vec()).ok()?;
+    let pages: Vec<_> = pdf.pages().iter().collect();
+    let idx = usize::try_from(page).ok()?.checked_sub(1)?;
+    let page_ref = *pages.get(idx)?;
+    let (w, h) = page_ref.render_dimensions();
+    (w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0).then_some((w, h))
+}
+
 fn render_page_native_inner(path: &Path, page: u32) -> Option<DynamicImage> {
     let bytes = std::fs::read(path).ok()?;
+    render_page_native_inner_bytes(&bytes, page)
+}
+
+/// The bytes-based core `render_page_native_inner` delegates to (path just reads the file first).
+/// Also called directly by the media-diff worker (`app/media_diff.rs`,
+/// `docs/FEATURE-MEDIA-DIFF.md` §3) for a side whose bytes came from git/jj rather than a path on
+/// disk — there is deliberately no macOS `qlmanage`/`sips` fallback here (that chain needs a real
+/// file path, and a media diff's old side often has none), so an old-side PDF that `hayro` can't
+/// render simply reports as failed rather than ever spawning Quick Look.
+fn render_page_native_inner_bytes(bytes: &[u8], page: u32) -> Option<DynamicImage> {
     // Err = encrypted (no password supplied — konoma never prompts for one) or malformed. Either way
     // this just becomes `None` here; render_page falls back to the external tool chain.
-    let pdf = hayro::hayro_syntax::Pdf::new(bytes).ok()?;
+    let pdf = hayro::hayro_syntax::Pdf::new(bytes.to_vec()).ok()?;
     let pages: Vec<_> = pdf.pages().iter().collect();
     let idx = usize::try_from(page).ok()?.checked_sub(1)?;
     let page_ref = *pages.get(idx)?;
@@ -118,9 +156,13 @@ fn render_page_native_inner(path: &Path, page: u32) -> Option<DynamicImage> {
     let render_settings = hayro::RenderSettings {
         x_scale: scale,
         y_scale: scale,
-        // Transparent, same treatment as the mermaid/math SVGs (`preview::svg`/`preview::math`):
-        // only the page's own painted content stays opaque, so unpainted margins let the terminal
-        // background show through instead of forcing a white background regardless of theme.
+        // Transparent here is an **internal signal, not the final pixel format**: it is what lets
+        // `pixmap_to_dynamic_image` tell "the page genuinely painted nothing at all" apart from
+        // "the page painted an opaque background color" (its own doc comment has the full
+        // reasoning). That function composites the result onto opaque white before returning it —
+        // unlike the mermaid/math SVGs (`preview::svg`/`preview::math`), which really do stay
+        // transparent all the way to the screen, a PDF page is a document printed on paper, not a
+        // themed diagram, so it should look like one regardless of the terminal's own background.
         bg_color: TRANSPARENT,
         ..Default::default()
     };
@@ -157,6 +199,24 @@ fn render_page_native_inner(path: &Path, page: u32) -> Option<DynamicImage> {
 /// poppler from the chain (module doc comment) did not reproduce that: of the 24 documents out of
 /// 1,628 that reached the fallback, 18 hit exactly this all-transparent signature and poppler
 /// rendered them as a perfectly uniform image too — i.e. they were genuinely blank.
+///
+/// **Once a page clears that blank check, it is composited onto opaque white paper** before this
+/// returns — a PDF page is a document laid out on white paper, unlike the mermaid/math SVGs that
+/// share this module's `TRANSPARENT` render background (`render_page_native_inner_bytes`'s own
+/// doc comment); it should look like one regardless of the terminal's theme. Verified on real
+/// pixels: rendered transparent, `samples/sample.pdf` showed as barely-readable dark-gray text on
+/// a dark kitty background, and as *nothing at all* under `ratatui_image`'s non-kitty encoders
+/// (halfblocks/sixel/iterm2), whose `to_rgb8` conversion drops the alpha channel outright without
+/// compositing it against anything — black ink on a transparent background and the fully
+/// transparent background itself both collapse to the identical opaque black once alpha is gone,
+/// so the halfblocks encoder's own `upper == lower → space` rule painted the entire page as blank
+/// cells. Compositing here, once, is what used to be done ad hoc in `app/media_diff.rs`'s own
+/// `flatten_transparent_to_white` (removed) for the media diff alone — every PDF raster in the app
+/// flows through this one function (`render_page`'s path-based call and `render_page_bytes`'s
+/// bytes-based one both bottom out in `render_page_native_inner_bytes` above), so fixing it here
+/// fixes the ordinary full-screen preview and the side-by-side diff identically, and kitty (which
+/// gets the real RGBA payload and composites it correctly itself) draws the same opaque white
+/// paper too, rather than a special transparent case just for that one protocol.
 fn pixmap_to_dynamic_image(pixmap: Pixmap) -> Option<DynamicImage> {
     let (w, h) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
     if w == 0 || h == 0 {
@@ -175,8 +235,31 @@ fn pixmap_to_dynamic_image(pixmap: Pixmap) -> Option<DynamicImage> {
     if rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 0) {
         return None;
     }
+    composite_onto_white(&mut rgba);
     let buf = image::RgbaImage::from_raw(w, h, rgba)?;
     Some(DynamicImage::ImageRgba8(buf))
+}
+
+/// Composite straight-alpha RGBA pixels (in place) onto an opaque white background — the standard
+/// "source over white" formula (`out = fg·a + 255·(1-a)`, integer division rounds down, same as
+/// every other 8-bit alpha blend in this codebase) — and force every pixel's alpha to 255. Called
+/// only after [`pixmap_to_dynamic_image`]'s all-transparent blank-page check, so this never runs on
+/// a page that check would have turned into `None` instead; an already-opaque pixel (`a == 255`,
+/// the overwhelming majority of a normal page's margin-free ink and, after the first page trains
+/// the branch predictor, most pixels overall) is left untouched rather than recomputed to the same
+/// value, which also sidesteps any rounding drift on values that need none.
+fn composite_onto_white(rgba: &mut [u8]) {
+    let (chunks, _) = rgba.as_chunks_mut::<4>();
+    for px in chunks {
+        let a = u32::from(px[3]);
+        if a == 255 {
+            continue;
+        }
+        for c in &mut px[..3] {
+            *c = ((u32::from(*c) * a + 255 * (255 - a)) / 255) as u8;
+        }
+        px[3] = 255;
+    }
 }
 
 /// `InterpreterSettings` with a `font_resolver` that rescues non-embedded CJK CID fonts (e.g. a
@@ -533,7 +616,11 @@ pub fn page_count(path: &Path) -> Option<u32> {
 /// case for this synchronous call bounded. The caller already has a graceful degrade for "page
 /// count unknown" (documented on `page_count` below: unknown total ⟹ single-page treatment,
 /// navigation disabled) — that's exactly the intended behavior here too, matching principle #3.
-const PAGE_COUNT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// `pub(crate)` (not private) so the media-diff worker (`app/media_diff.rs`,
+/// `docs/FEATURE-MEDIA-DIFF.md` §3's "1 側 64 MiB 超") can reuse this exact cap for its own
+/// per-side byte limit, rather than a second `64 * 1024 * 1024` literal that could drift out of sync
+/// with this one.
+pub(crate) const PAGE_COUNT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// `page_count`'s real body, parameterized on the size cap purely for testability — production
 /// (`page_count` above) always passes `PAGE_COUNT_MAX_BYTES`; tests pass an artificially small cap
@@ -549,8 +636,24 @@ fn page_count_impl(path: &Path, max_bytes: u64) -> Option<u32> {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
+    page_count_bytes_impl(&bytes)
+}
+
+/// `page_count`, from bytes already in memory rather than a path — used by the media-diff worker
+/// (`app/media_diff.rs::decode_pdf_side`) for a side with no path (the old version, read from git/jj)
+/// as well as the new side (already read into memory for the size-cap/`same_bytes` check anyway).
+/// Same `PAGE_COUNT_MAX_BYTES` cap as the path version, checked against the byte slice's own length
+/// rather than a `stat` (there is no file to stat).
+pub fn page_count_bytes(bytes: &[u8]) -> Option<u32> {
+    if bytes.len() as u64 > PAGE_COUNT_MAX_BYTES {
+        return None;
+    }
+    page_count_bytes_impl(bytes)
+}
+
+fn page_count_bytes_impl(bytes: &[u8]) -> Option<u32> {
     crate::preview::markdown::catch_silent(|| {
-        let pdf = hayro_syntax::Pdf::new(bytes).ok()?;
+        let pdf = hayro_syntax::Pdf::new(bytes.to_vec()).ok()?;
         let n = u32::try_from(pdf.pages().len()).ok()?;
         (n >= 1).then_some(n)
     })
@@ -627,23 +730,36 @@ mod tests {
         );
     }
 
-    /// The rendered page has actual opaque ink (not just an all-transparent blank canvas) and its
-    /// unpainted margins are transparent (background = `TRANSPARENT`, same treatment as the
-    /// mermaid/math SVGs — the terminal background should show through, not force white).
+    /// The rendered page is drawn on opaque white paper: its unpainted corner/margin is opaque
+    /// white (not the transparent-background-shows-through treatment `render_page_has_transparent_
+    /// margins_and_opaque_ink` pinned before this fix — renamed/rewritten here, same test slot),
+    /// its text area has visible dark ink, and every pixel — margin and ink alike — is fully
+    /// opaque (alpha 255), which is what actually fixes the bug: `ratatui_image`'s non-kitty
+    /// encoders (halfblocks/sixel/iterm2) drop the alpha channel via `to_rgb8` without compositing
+    /// it against anything, so a page that still had any transparency here would keep rendering as
+    /// a uniform field on every terminal but kitty (`e2e_pdf_preview_paints_non_uniform_halfblocks_
+    /// cells_not_a_blank_field`, `src/e2e_tests.rs`, proves that end-to-end).
     #[test]
-    fn render_page_has_transparent_margins_and_opaque_ink() {
+    fn render_page_has_opaque_white_margins_and_dark_ink() {
         let Some(p) = sample_path_or_skip("sample.pdf") else {
             return;
         };
         let img = render_page(&p, 1, false).expect("renders");
         let rgba = img.to_rgba8();
-        assert_eq!(
-            rgba.get_pixel(0, 0)[3],
-            0,
-            "unpainted corner is fully transparent (terminal bg would show through)"
+        assert!(
+            rgba.pixels().all(|p| p[3] == 255),
+            "PDF は不透明な白地に合成されるので、全ピクセルの alpha が 255 のはず"
         );
-        let opaque = rgba.pixels().filter(|p| p[3] > 200).count();
-        assert!(opaque > 50, "page has visible opaque ink (opaque={opaque})");
+        assert_eq!(
+            *rgba.get_pixel(0, 0),
+            image::Rgba([255, 255, 255, 255]),
+            "unpainted corner is opaque white paper, not the terminal background showing through"
+        );
+        let dark = rgba
+            .pixels()
+            .filter(|p| p[0] < 80 && p[1] < 80 && p[2] < 80)
+            .count();
+        assert!(dark > 50, "page has visible dark ink (dark={dark})");
     }
 
     /// `page_count` is pure Rust (`hayro-syntax`) and needs no external tool at all — unlike the
@@ -1034,5 +1150,143 @@ mod tests {
             elapsed < std::time::Duration::from_secs(10),
             "タイムアウトが機能せずブロックし続けた: elapsed={elapsed:?}"
         );
+    }
+
+    // ---- composite_onto_white ----
+
+    /// Pure-function pin of the "source over white" blend, independent of any actual PDF render:
+    /// fully transparent becomes solid white, fully opaque is left byte-for-byte untouched (the
+    /// `a == 255` short-circuit), and a partial alpha blends toward white by exactly the expected
+    /// integer-division amount — and every case forces alpha to 255, which is the actual fix (a
+    /// pixel that stayed even slightly transparent would still collapse to a uniform field once
+    /// `ratatui_image`'s non-kitty encoders drop the alpha channel).
+    #[test]
+    fn composite_onto_white_blends_partial_alpha_and_leaves_opaque_untouched() {
+        let mut transparent = [10u8, 20, 30, 0];
+        composite_onto_white(&mut transparent);
+        assert_eq!(transparent, [255, 255, 255, 255], "透明は白地になるはず");
+
+        let mut opaque = [10u8, 20, 30, 255];
+        composite_onto_white(&mut opaque);
+        assert_eq!(opaque, [10, 20, 30, 255], "不透明はそのまま(再計算しない)");
+
+        let mut half = [0u8, 0, 0, 128];
+        composite_onto_white(&mut half);
+        assert_eq!(
+            half,
+            [127, 127, 127, 255],
+            "半透明は白地とブレンドされ alpha は 255 になるはず"
+        );
+    }
+
+    // ---- bytes-based variants (`docs/FEATURE-MEDIA-DIFF.md` §3) ----
+
+    #[test]
+    fn render_page_bytes_matches_the_path_version() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        let from_path = render_page_native_inner(&p, 1).expect("path 版は hayro でレンダできる");
+        let from_bytes = render_page_bytes(&bytes, 1).expect("bytes 版もレンダできる");
+        assert_eq!(
+            (from_path.width(), from_path.height()),
+            (from_bytes.width(), from_bytes.height())
+        );
+        assert_eq!(
+            from_path.to_rgba8().into_raw(),
+            from_bytes.to_rgba8().into_raw(),
+            "ピクセルも一致するはず"
+        );
+    }
+
+    #[test]
+    fn render_page_bytes_out_of_range_page_is_none() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        assert!(
+            render_page_bytes(&bytes, 999).is_none(),
+            "3ページの文書で999ページ目は None のはず"
+        );
+    }
+
+    #[test]
+    fn render_page_bytes_rejects_garbage() {
+        assert!(render_page_bytes(b"not a pdf at all", 1).is_none());
+        assert!(render_page_bytes(b"", 1).is_none());
+    }
+
+    #[test]
+    fn page_count_bytes_matches_the_path_version() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        assert_eq!(page_count(&p), page_count_bytes(&bytes));
+        assert_eq!(page_count_bytes(&bytes), Some(3));
+    }
+
+    #[test]
+    fn page_count_bytes_handles_bad_input_without_panicking() {
+        assert_eq!(page_count_bytes(b""), None, "空バイト列は None");
+        assert_eq!(
+            page_count_bytes(b"hello, this is not a PDF file at all\n"),
+            None,
+            "PDF でない中身は None"
+        );
+    }
+
+    /// Mirrors `page_count_treats_oversized_files_as_unknown_rather_than_reading_them` for the bytes
+    /// entry point: over the cap ⇒ `None`, without ever attempting to parse it.
+    #[test]
+    fn page_count_bytes_treats_oversized_input_as_unknown() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        assert_eq!(
+            page_count_bytes(&bytes),
+            Some(3),
+            "前提: 実サイズでは読めるはず"
+        );
+        // A byte slice reported longer than PAGE_COUNT_MAX_BYTES by construction: pad well past it.
+        let mut padded = bytes.clone();
+        padded.resize((PAGE_COUNT_MAX_BYTES as usize) + 1, 0);
+        assert_eq!(
+            page_count_bytes(&padded),
+            None,
+            "上限を超えたバイト列は中身に関わらず None のはず"
+        );
+    }
+
+    #[test]
+    fn page_dimensions_bytes_reports_a_positive_size_matching_the_render_aspect() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        let (pw, ph) = page_dimensions_bytes(&bytes, 1).expect("1ページ目の寸法が取れるはず");
+        assert!(pw > 0.0 && ph > 0.0, "寸法は正のはず: {pw}x{ph}");
+        let img = render_page_bytes(&bytes, 1).expect("レンダできる");
+        // `render_page_bytes` scales page pt -> px preserving aspect (PAGE_MAX_PX / max(w,h)); the
+        // rendered raster's own aspect ratio should therefore match the page's pt dimensions'.
+        let pt_aspect = pw as f64 / ph as f64;
+        let px_aspect = img.width() as f64 / img.height() as f64;
+        assert!(
+            (pt_aspect - px_aspect).abs() < 0.01,
+            "pt の縦横比とラスタの縦横比が一致するはず: pt={pt_aspect} px={px_aspect}"
+        );
+    }
+
+    #[test]
+    fn page_dimensions_bytes_out_of_range_and_garbage_are_none() {
+        let Some(p) = sample_path_or_skip("sample.pdf") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        assert!(page_dimensions_bytes(&bytes, 999).is_none());
+        assert!(page_dimensions_bytes(b"not a pdf", 1).is_none());
     }
 }

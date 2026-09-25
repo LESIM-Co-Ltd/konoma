@@ -15,7 +15,10 @@
 use std::path::Path;
 use std::time::Duration;
 
-use image::{AnimationDecoder, DynamicImage};
+use image::{AnimationDecoder, DynamicImage, ImageDecoder};
+
+/// A decoded animated GIF's frames, each paired with its own display time.
+type GifFrames = Vec<(DynamicImage, Duration)>;
 
 /// Decode a still image (PNG/JPG/the first frame of a GIF, etc.). None on failure.
 /// A pure function used both by media loading on a separate thread and by load_image on the UI thread.
@@ -26,6 +29,15 @@ pub fn decode_static(path: &Path) -> Option<DynamicImage> {
         .ok()?
         .decode()
         .ok()
+}
+
+/// `decode_static`, from bytes already in memory rather than a path — used by the media-diff worker
+/// (`app/media_diff.rs::decode_image_side`, `docs/FEATURE-MEDIA-DIFF.md` §3) to decode a side whose
+/// bytes came from git/jj (the old version) rather than the filesystem. Format is guessed from the
+/// content, exactly like the path version's `with_guessed_format` (never from an extension — there
+/// may be none to go by).
+pub fn decode_static_bytes(bytes: &[u8]) -> Option<DynamicImage> {
+    image::load_from_memory(bytes).ok()
 }
 
 /// Read only the pixel dimensions of an image, sniffing the format from the file's content (not its
@@ -55,7 +67,7 @@ const MAX_GIF_BYTES: usize = 128 * 1024 * 1024;
 /// Expand a GIF into all frames (composited RGBA) plus their display times.
 /// Returns None if it is not a GIF / decoding fails / there is only one frame (= treated as a still image),
 /// and the caller falls back to the normal still-image loader (load_image).
-pub fn decode_gif(path: &Path) -> Option<Vec<(DynamicImage, Duration)>> {
+pub fn decode_gif(path: &Path) -> Option<GifFrames> {
     decode_gif_with_budget(path, MAX_GIF_BYTES)
 }
 
@@ -73,7 +85,7 @@ const MAX_GIF_BYTES_INLINE: usize = 32 * 1024 * 1024;
 /// `decode_gif`, budgeted for an inline Markdown image (see `MAX_GIF_BYTES_INLINE`). Same semantics:
 /// None for a non-GIF / undecodable / single-frame GIF — the caller (the inline-image decode worker)
 /// falls back to the normal still-image decode, which already handles those cases.
-pub fn decode_gif_inline(path: &Path) -> Option<Vec<(DynamicImage, Duration)>> {
+pub fn decode_gif_inline(path: &Path) -> Option<GifFrames> {
     decode_gif_with_budget(path, MAX_GIF_BYTES_INLINE)
 }
 
@@ -81,10 +93,37 @@ pub fn decode_gif_inline(path: &Path) -> Option<Vec<(DynamicImage, Duration)>> {
 /// tiny budget). Frames are decoded one at a time; when the running total exceeds the budget the
 /// shrink factor doubles and the already-kept frames are downscaled to the same target, so every
 /// frame ends up with identical dimensions (as the animation cycler expects).
-fn decode_gif_with_budget(path: &Path, budget: usize) -> Option<Vec<(DynamicImage, Duration)>> {
+fn decode_gif_with_budget(path: &Path, budget: usize) -> Option<GifFrames> {
     let file = std::fs::File::open(path).ok()?;
-    let decoder = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(file)).ok()?;
-    let mut out: Vec<(DynamicImage, Duration)> = Vec::new();
+    decode_gif_from_reader(std::io::BufReader::new(file), budget).map(|(frames, _canvas)| frames)
+}
+
+/// `decode_gif_inline`, from bytes already in memory — used by the media-diff worker
+/// (`app/media_diff.rs`) to animate an old (git/jj) version of a GIF exactly like an inline Markdown
+/// one, without a path to read from. Same semantics as `decode_gif_inline`: None for a non-GIF /
+/// undecodable / single-frame GIF. Also returns the GIF's own logical-screen size (read from the
+/// header, `GifDecoder::dimensions`) — distinct from any individual frame's own pixel size once the
+/// decode budget has downscaled frames for memory — which `app::media_diff::decode_image_side`
+/// needs as this side's *intrinsic* size (`MediaDiffPictureDecoded::natural_px`'s own doc comment);
+/// `decode_gif`/`decode_gif_inline` above have no such need (an ordinary GIF preview, not part of a
+/// diff, has no other side's size to stay comparable with) and so drop it.
+pub fn decode_gif_bytes_inline(bytes: &[u8]) -> Option<(GifFrames, (u32, u32))> {
+    decode_gif_from_reader(std::io::Cursor::new(bytes), MAX_GIF_BYTES_INLINE)
+}
+
+/// The shared body of `decode_gif_with_budget`/`decode_gif_bytes_inline`, generic over the reader so
+/// neither has to duplicate the frame/shrink loop. The `(u32, u32)` alongside the frames is the
+/// GIF's own logical-screen size, read from the header before any frame is decoded — see
+/// `decode_gif_bytes_inline`'s own doc comment for why that (not a frame's own, possibly
+/// budget-downscaled, pixel size) is the intrinsic size a caller comparing this GIF's size against
+/// something else (`app::media_diff`) needs.
+fn decode_gif_from_reader<R: std::io::Read + std::io::BufRead + std::io::Seek>(
+    reader: R,
+    budget: usize,
+) -> Option<(GifFrames, (u32, u32))> {
+    let decoder = image::codecs::gif::GifDecoder::new(reader).ok()?;
+    let header_px = decoder.dimensions(); // before `into_frames()` consumes `decoder` below.
+    let mut out: GifFrames = Vec::new();
     let mut canvas: Option<(u32, u32)> = None; // original canvas dimensions (baseline for the shrink factor)
     let mut shrink = 1u32;
     let mut bytes = 0usize;
@@ -125,7 +164,7 @@ fn decode_gif_with_budget(path: &Path, budget: usize) -> Option<Vec<(DynamicImag
     if out.len() < 2 {
         return None; // a single frame = no animation needed. Let the caller treat it as a still image.
     }
-    Some(out)
+    Some((out, header_px))
 }
 
 #[cfg(test)]
@@ -252,6 +291,97 @@ mod tests {
         assert!(decode_static(&bad).is_none(), "非画像は None");
         // A missing file also returns None.
         assert!(decode_static(&dir.join("missing.png")).is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn decode_static_bytes_matches_the_path_version() {
+        let dir = unique_tmp("konoma_decode_static_bytes_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("tiny.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(7, 3, image::Rgb([9, 9, 9])))
+            .save(&png)
+            .unwrap();
+        let bytes = std::fs::read(&png).unwrap();
+        let from_path = decode_static(&png).unwrap();
+        let from_bytes = decode_static_bytes(&bytes).unwrap();
+        assert_eq!(
+            (from_path.width(), from_path.height()),
+            (from_bytes.width(), from_bytes.height())
+        );
+        assert_eq!(
+            from_path.to_rgba8().into_raw(),
+            from_bytes.to_rgba8().into_raw()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn decode_static_bytes_rejects_garbage() {
+        assert!(decode_static_bytes(b"definitely not an image").is_none());
+        assert!(decode_static_bytes(b"").is_none());
+    }
+
+    #[test]
+    fn decode_static_bytes_uses_the_bundled_samples() {
+        for name in ["sample.png", "sample.jpg"] {
+            let Some(p) = sample_path_or_skip(name) else {
+                continue;
+            };
+            let bytes = std::fs::read(&p).unwrap();
+            let from_path = decode_static(&p).expect("path 版はデコードできる");
+            let from_bytes = decode_static_bytes(&bytes).expect("bytes 版もデコードできる");
+            assert_eq!(
+                (from_path.width(), from_path.height()),
+                (from_bytes.width(), from_bytes.height()),
+                "{name}: サイズが path 版と一致するはず"
+            );
+        }
+    }
+
+    #[test]
+    fn decode_gif_bytes_inline_matches_the_path_version() {
+        let Some(p) = sample_path_or_skip("sample.gif") else {
+            return;
+        };
+        let bytes = std::fs::read(&p).unwrap();
+        let from_path = decode_gif_inline(&p).expect("path 版はアニメとしてデコードできる");
+        let (from_bytes, header_px) =
+            decode_gif_bytes_inline(&bytes).expect("bytes 版もアニメとしてデコードできる");
+        assert_eq!(
+            from_path.len(),
+            from_bytes.len(),
+            "フレーム数が一致するはず"
+        );
+        for ((pi, pd), (bi, bd)) in from_path.iter().zip(from_bytes.iter()) {
+            assert_eq!((pi.width(), pi.height()), (bi.width(), bi.height()));
+            assert_eq!(pd, bd, "各フレームの表示時間も一致するはず");
+        }
+        // The header size must match the (unshrunk, at this small budget) first frame's own size —
+        // this fixture is far below `MAX_GIF_BYTES_INLINE`, so no downscale should have happened.
+        let (fw, fh) = image::GenericImageView::dimensions(&from_bytes[0].0);
+        assert_eq!(
+            header_px,
+            (fw, fh),
+            "予算内なので header サイズ==実デコードサイズのはず"
+        );
+    }
+
+    #[test]
+    fn decode_gif_bytes_inline_rejects_garbage_and_non_gif() {
+        assert!(decode_gif_bytes_inline(b"not a gif at all").is_none());
+        // A real PNG (not a GIF, and not animated) also returns None — falls back to the still-image
+        // decode at the call site, exactly like the path version's own contract.
+        let dir = unique_tmp("konoma_decode_gif_bytes_inline_png_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("tiny.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([1, 2, 3])))
+            .save(&png)
+            .unwrap();
+        let bytes = std::fs::read(&png).unwrap();
+        assert!(decode_gif_bytes_inline(&bytes).is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 }
