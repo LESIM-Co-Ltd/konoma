@@ -320,10 +320,9 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
         // `Rendered` shares the ordinary decorated Markdown preview's own wrap-aware layout, where
         // horizontal scroll is a no-op the moment lines wrap ([[hint-shown-iff-key-acts]]).
         // The media diff's side-by-side view, and the binary-summary/computing body a non-picture
-        // binary kind's `Source` representation always shows (`docs/FEATURE-MEDIA-DIFF.md` §5/§6),
-        // both use the reduced hint set (`n/N`, `x`(write), `q/Esc` — no `j/k`/`h/l`/`s:unified/
-        // split/auto`, nothing there to scroll or lay out unified/split): `App::diff_footer_is_
-        // media_or_summary` covers both in one gate.
+        // binary kind's `Source` representation always shows, both use the reduced hint set (`n/N`,
+        // `x`(write), `q/Esc` — no `j/k`/`h/l`/`s:unified/split/auto`, nothing there to scroll or lay
+        // out unified/split): `App::diff_footer_is_media_or_summary` covers both in one gate.
         InternalMode::GitDiff
             if !crate::vcs::caps(&app.tab.root).write && app.diff_footer_is_media_or_summary() =>
         {
@@ -370,9 +369,8 @@ fn mode_footer(app: &App) -> Option<Vec<Span<'static>>> {
     if mode == InternalMode::GitDiff {
         // The media/binary-summary hint set produced above is only the (`x:discard  `)`q/Esc:back`
         // suffix — `n/N` and, while the side-by-side view is active, `s`/`J`/`K` are woven in
-        // *before* it here so the key order matches `docs/FEATURE-MEDIA-DIFF.md` §6: `n/N  s  J/K
-        // R  x  q/Esc` (never `n/N  x  q/Esc  s  J/K  R`, which reads as if `s`/`J`/`K` came after
-        // "back").
+        // *before* it here so the key order reads `n/N  s  J/K  R  x  q/Esc` (never `n/N  x  q/Esc
+        // s  J/K  R`, which reads as if `s`/`J`/`K` came after "back").
         if app.diff_footer_is_media_or_summary() {
             let mut prefixed = hint(lang, "n/N", crate::i18n::Msg::HintNextPrevFile);
             if app.media_diff_showing_pictures() {
@@ -1430,12 +1428,11 @@ mod tests {
         // disk (`init_test_git_repo` only `git init`s an empty directory) — `resolve_preview` can't
         // classify a file that doesn't exist from its name alone (`CanNotPreview`), and this test
         // never renders (so the media-diff worker never lands a real classification either —
-        // `App::diff_representations`' own "ambiguous, ask the worker" branch,
-        // `docs/FEATURE-MEDIA-DIFF.md` §2): the diff is therefore stuck in the transient "treat a
-        // missing/unclassified path as `[Rendered]` until it lands" state, and the footer shows the
-        // reduced media hint set — but **not** `s` (`App::media_diff_showing_pictures` requires a
-        // landed `Ready` outcome with an actual picture, [[hint-shown-iff-key-acts]]: there is no
-        // side-by-side layout to cycle yet), and no `R` since there is only the one representation so
+        // `App::diff_representations`' own "ambiguous, ask the worker" branch): the diff is therefore
+        // stuck in the transient "treat a missing/unclassified path as `[Rendered]` until it lands"
+        // state, and the footer shows the reduced media hint set — but **not** `s`
+        // (`App::media_diff_showing_pictures` requires a landed `Ready` outcome with an actual
+        // picture, [[hint-shown-iff-key-acts]]), and no `R` since there is only one representation so
         // far.
         assert_eq!(
             footer,

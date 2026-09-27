@@ -130,43 +130,36 @@ impl App {
         // retarget (`App::open_git_diff_with` always sets `tab.preview_kind` before calling this)
         // and an invalidation-only refresh of the still-current target.
         self.refresh_diff_target_kind_cache();
-        // Whenever the active tab's own current view isn't itself a media-capable GitDiff target —
-        // an in-place retarget to a non-media path (Markdown/code/text/…), or simply a tab switch
-        // landing on a tab whose view isn't a media diff at all (this fn runs on every tab switch,
-        // see its own doc comment) — that view will never land a fresh `Ready` picture of its own,
-        // so `App::apply_media_diff`'s own landing-triggered prune never runs again for whatever
-        // media diff was open *before* this — prune its now-orphaned `media-diff://` cache entries
-        // right here instead (`App::prune_media_diff_picture_cache`'s own doc comment: this is the
-        // real rule, not just "on retarget"). A target that *is* media-capable is left alone: its
-        // own landing (once it arrives) prunes correctly via `live_cache_keys`, and pruning
-        // pre-emptively here would just flash the picture away and immediately redraw it.
+        // Whenever the active tab's current view isn't itself a media-capable GitDiff target, that
+        // view will never land a fresh `Ready` picture of its own, so `App::apply_media_diff`'s
+        // landing-triggered prune never runs again for whatever media diff was open before this —
+        // prune its now-orphaned `media-diff://` entries right here instead (see
+        // `App::prune_media_diff_picture_cache`'s own doc comment for the full rule, including why
+        // this fires on every tab switch too). A target that *is* media-capable is left alone: its
+        // own landing prunes correctly via `live_cache_keys`, and pruning pre-emptively here would
+        // just flash the picture away and immediately redraw it.
         let still_media = matches!(&self.tab.preview_kind, Some(PreviewKind::GitDiff(p)) if self.diff_media_capable(p));
         if !still_media {
             self.prune_media_diff_picture_cache();
         }
     }
 
-    /// The ordered list of presentations `path`'s diff can actually show
-    /// (`docs/FEATURE-MEDIA-DIFF.md` §1's table, generalizing `docs/FEATURE-MD-RENDERED-DIFF.md`
-    /// §1's three-way one): `[Source, Rendered, Preview]` for Markdown, `[Source, Preview]` for a
-    /// windowed-capable text kind (code, plain text, `.mmd`, a text-mode delegated command),
-    /// `[Rendered, Preview]` for Image/GIF/PDF (no text `Source` to speak of — `Rendered` **is**
-    /// the side-by-side view there, `App::diff_media_active`), `[Source, Rendered, Preview]` for
-    /// SVG (it is both a picture and real text), and `[Source]` for anything else (video/archive/
-    /// table/unsupported/an image-mode delegated command — the binary-summary-line-only case,
-    /// `App::diff_binary_summary_eligible`).
+    /// The ordered list of presentations `path`'s diff can actually show: `[Source, Rendered,
+    /// Preview]` for Markdown, `[Source, Preview]` for a windowed-capable text kind (code, plain
+    /// text, `.mmd`, a text-mode delegated command), `[Rendered, Preview]` for Image/GIF/PDF (no text
+    /// `Source` to speak of — `Rendered` **is** the side-by-side view there, `App::diff_media_
+    /// active`), `[Source, Rendered, Preview]` for SVG (it is both a picture and real text), and
+    /// `[Source]` for anything else (video/archive/table/unsupported/an image-mode delegated command
+    /// — the binary-summary-line-only case, `App::diff_binary_summary_eligible`).
     ///
-    /// A **deleted** file (`!path.exists()`) never has `Preview` (nothing left to preview) — pruned
-    /// unconditionally at the end, regardless of which branch above produced the list. Its kind is
-    /// still judged by `resolve_preview` first (a glob rule matches by filename alone, so Markdown/
-    /// Code/Mermaid/SVG/PDF classify correctly even when deleted); only when that comes back
-    /// `CanNotPreview` — the one case a deleted file can't be classified this way, since the
-    /// remaining rules are MIME-based and need bytes to sniff (`docs/FEATURE-MEDIA-DIFF.md` §2) —
-    /// does this defer to the media-diff worker's own byte-sniffed classification
-    /// (`App::media_landed_outcome_for`), which resolves in the same order: `Ready` names a real
-    /// kind, `Summary`/`Unavailable` means "not a picture" (`[Source]`), and `None` (not landed
-    /// yet) is the transitional "before it lands, treat a missing path as `[Rendered]` with the
-    /// computing body" state the design calls for.
+    /// A **deleted** file (`!path.exists()`) never has `Preview` — pruned unconditionally at the end.
+    /// Its kind is still judged by `resolve_preview` first (a glob rule matches by filename alone, so
+    /// Markdown/Code/Mermaid/SVG/PDF classify correctly even when deleted); only when that comes back
+    /// `CanNotPreview` (the remaining rules are MIME-based and need bytes to sniff) does this defer to
+    /// the media-diff worker's own byte-sniffed classification (`App::media_landed_outcome_for`),
+    /// which resolves in the same order: `Ready` names a real kind, `Summary`/`Unavailable` means
+    /// "not a picture" (`[Source]`), and `None` (not landed yet) treats a missing path as `[Rendered]`
+    /// with the computing body in the meantime.
     pub(super) fn diff_representations(&self, path: &Path) -> Vec<DiffView> {
         use DiffView::{Preview, Rendered, Source};
         let resolved = self.diff_target_kind(path);
@@ -206,7 +199,7 @@ impl App {
     /// presentation is used as-is if it's in the list; otherwise `Rendered`/`Source` substitute for
     /// each other (whichever of the pair *is* in the list); failing that (a `Preview` request with
     /// no substitute, or a substitute that also isn't in the list), the list's own first entry is
-    /// used (`docs/FEATURE-MEDIA-DIFF.md` §1's rounding rules).
+    /// used.
     pub(super) fn round_diff_view(&self, view: DiffView, path: &Path) -> DiffView {
         let reps = self.diff_representations(path);
         if reps.contains(&view) {
@@ -372,21 +365,19 @@ impl App {
         self.toggle_md_raw();
     }
 
-    /// `R` in `Surface::PreviewImage`: returns to the diff while this image/PDF/SVG preview *is*
-    /// its own `Preview` representation (`PerTab::preview_from_diff`), and is a **no-op** otherwise
-    /// (`docs/FEATURE-MEDIA-DIFF.md` §6) — unlike `toggle_md_raw_or_return_to_diff`, this never
-    /// falls through to `toggle_md_raw()`. That fallthrough is correct for the *text* preview
-    /// surface (an ordinary Markdown/Mermaid preview's own raw/rendered toggle shares the same
-    /// key), but the image surface has no such toggle of its own to fall back to — `toggle_md_raw`
-    /// only ever acts on a *decorated* kind (`is_decorated_kind`), which excludes every image
-    /// preview, so it would have been a no-op regardless *except* for one specific case that made
-    /// it a real bug: a standalone `.mmd`/`.mermaid` file's full-screen image preview (`[ui] mermaid
-    /// = "image"`, `App::is_decorated_kind`'s own inclusion of `Mermaid`) — pressing `R` there,
-    /// though it was never advertised by any hint on that surface, silently flipped `md_raw` and
-    /// changed what a *later* Markdown preview in the same tab would show, entirely outside any
-    /// diff. [[hint-shown-iff-key-acts]]: the key must act *only* when its hint is shown, and the
-    /// image surface's own hint (`App::preview_is_diff_representation`) is never shown outside the
-    /// `preview_from_diff` case — so the handler must not act outside it either.
+    /// `R` in `Surface::PreviewImage`: returns to the diff while this image/PDF/SVG preview *is* its
+    /// own `Preview` representation (`PerTab::preview_from_diff`), and is a **no-op** otherwise —
+    /// unlike `toggle_md_raw_or_return_to_diff`, this never falls through to `toggle_md_raw()`. That
+    /// fallthrough is correct for the text preview surface (an ordinary Markdown/Mermaid preview's own
+    /// raw/rendered toggle shares the same key), but the image surface has no such toggle to fall back
+    /// to — `toggle_md_raw` only acts on a *decorated* kind, excluding every image preview, so
+    /// falling through would have been a no-op regardless *except* for a standalone `.mmd`/`.mermaid`
+    /// file's full-screen image preview (`[ui] mermaid = "image"`, still `is_decorated_kind`): pressing
+    /// `R` there, never advertised by any hint on that surface, silently flipped `md_raw` and changed
+    /// what a *later* Markdown preview in the same tab would show, entirely outside any diff.
+    /// [[hint-shown-iff-key-acts]]: the key must act *only* when its hint is shown, and the image
+    /// surface's own hint is never shown outside the `preview_from_diff` case — so the handler must
+    /// not act outside it either.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn image_return_to_diff(&mut self) {
         #[cfg(feature = "git")]

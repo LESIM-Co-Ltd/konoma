@@ -105,8 +105,8 @@ fn render_page_native(path: &Path, page: u32) -> Option<DynamicImage> {
 /// at all (see `render_page_native_inner_bytes`'s own doc comment for why). Used by the media-diff
 /// worker (`app/media_diff.rs::decode_pdf_side`) for both sides of a PDF diff: the old side never has
 /// a path (it comes from git/jj), and the new side is read into memory anyway to check the size cap
-/// and compare bytes (`docs/FEATURE-MEDIA-DIFF.md` §3), so there is nothing to gain from a second,
-/// path-based render for consistency between the two sides. Same panic net as `render_page_native`.
+/// and compare bytes, so there is nothing to gain from a second, path-based render for consistency
+/// between the two sides. Same panic net as `render_page_native`.
 pub fn render_page_bytes(bytes: &[u8], page: u32) -> Option<DynamicImage> {
     crate::preview::markdown::catch_silent(|| render_page_native_inner_bytes(bytes, page)).flatten()
 }
@@ -114,8 +114,8 @@ pub fn render_page_bytes(bytes: &[u8], page: u32) -> Option<DynamicImage> {
 /// Page dimensions in PDF points (`page_ref.render_dimensions()` — the same domain
 /// `render_page_native_inner_bytes`'s own scale math already treats as "1 unit ≈ 1px"), 1-based
 /// `page`. Used by the media-diff worker (`app/media_diff.rs::decode_pdf_side`) to report a PDF
-/// side's *natural* size (`docs/FEATURE-MEDIA-DIFF.md` §1: "PDF はページの pt") without paying for a
-/// full render. `None` for an unreadable/corrupt PDF, a caught panic, or a page number out of range.
+/// side's *natural* size without paying for a full render. `None` for an unreadable/corrupt PDF, a
+/// caught panic, or a page number out of range.
 pub fn page_dimensions_bytes(bytes: &[u8], page: u32) -> Option<(f32, f32)> {
     crate::preview::markdown::catch_silent(|| page_dimensions_bytes_inner(bytes, page)).flatten()
 }
@@ -135,10 +135,9 @@ fn render_page_native_inner(path: &Path, page: u32) -> Option<DynamicImage> {
 }
 
 /// The bytes-based core `render_page_native_inner` delegates to (path just reads the file first).
-/// Also called directly by the media-diff worker (`app/media_diff.rs`,
-/// `docs/FEATURE-MEDIA-DIFF.md` §3) for a side whose bytes came from git/jj rather than a path on
-/// disk — there is deliberately no macOS `qlmanage`/`sips` fallback here (that chain needs a real
-/// file path, and a media diff's old side often has none), so an old-side PDF that `hayro` can't
+/// Also called directly by the media-diff worker for a side whose bytes came from git/jj rather than
+/// a path on disk — there is deliberately no macOS `qlmanage`/`sips` fallback here (that chain needs a
+/// real file path, and a media diff's old side often has none), so an old-side PDF that `hayro` can't
 /// render simply reports as failed rather than ever spawning Quick Look.
 fn render_page_native_inner_bytes(bytes: &[u8], page: u32) -> Option<DynamicImage> {
     // Err = encrypted (no password supplied — konoma never prompts for one) or malformed. Either way
@@ -184,39 +183,30 @@ fn render_page_native_inner_bytes(bytes: &[u8], page: u32) -> Option<DynamicImag
 /// (same reason `preview::svg::rasterize_bytes` demultiplies tiny-skia's output).
 ///
 /// **Also the point where a technically-successful-but-empty render is caught.** `hayro::render`
-/// returns a `Pixmap`, never a `Result` — there is no separate "I actually failed" signal from
-/// this call. A page whose content stream draws nothing (a genuinely blank page, or — measured
-/// separately — a truncated/corrupted stream that hayro didn't notice was broken) produces a
-/// `Pixmap` that is valid in every structural sense but **fully transparent everywhere**, since
-/// the render background is `TRANSPARENT` (see the caller) and nothing painted over it. Treating
-/// that the same as every other hayro failure (`None`, not `Some(blank image)`) buys two things:
-/// on macOS `render_page` can still fall through to Quick Look for page 1, and everywhere else the
-/// user gets an honest `[can not preview]` instead of an empty rectangle that looks like a
-/// successful render of a document that isn't actually empty.
-///
-/// Historical note: this used to be justified by a damage-location sweep showing poppler could
-/// recover content a damaged stream hid from hayro. The larger corpus measurement that removed
-/// poppler from the chain (module doc comment) did not reproduce that: of the 24 documents out of
-/// 1,628 that reached the fallback, 18 hit exactly this all-transparent signature and poppler
-/// rendered them as a perfectly uniform image too — i.e. they were genuinely blank.
+/// returns a `Pixmap`, never a `Result` — there is no separate "I actually failed" signal from this
+/// call. A page whose content stream draws nothing (a genuinely blank page, or a truncated/corrupted
+/// stream that hayro didn't notice was broken) produces a `Pixmap` that is valid in every structural
+/// sense but **fully transparent everywhere**, since the render background is `TRANSPARENT` (see the
+/// caller) and nothing painted over it. Treating that the same as every other hayro failure (`None`,
+/// not `Some(blank image)`) buys two things: on macOS `render_page` can still fall through to Quick
+/// Look for page 1, and everywhere else the user gets an honest `[can not preview]` instead of an
+/// empty rectangle that looks like a successful render of a document that isn't actually empty.
 ///
 /// **Once a page clears that blank check, it is composited onto opaque white paper** before this
 /// returns — a PDF page is a document laid out on white paper, unlike the mermaid/math SVGs that
-/// share this module's `TRANSPARENT` render background (`render_page_native_inner_bytes`'s own
-/// doc comment); it should look like one regardless of the terminal's theme. Verified on real
-/// pixels: rendered transparent, `samples/sample.pdf` showed as barely-readable dark-gray text on
-/// a dark kitty background, and as *nothing at all* under `ratatui_image`'s non-kitty encoders
-/// (halfblocks/sixel/iterm2), whose `to_rgb8` conversion drops the alpha channel outright without
-/// compositing it against anything — black ink on a transparent background and the fully
-/// transparent background itself both collapse to the identical opaque black once alpha is gone,
-/// so the halfblocks encoder's own `upper == lower → space` rule painted the entire page as blank
-/// cells. Compositing here, once, is what used to be done ad hoc in `app/media_diff.rs`'s own
-/// `flatten_transparent_to_white` (removed) for the media diff alone — every PDF raster in the app
-/// flows through this one function (`render_page`'s path-based call and `render_page_bytes`'s
-/// bytes-based one both bottom out in `render_page_native_inner_bytes` above), so fixing it here
-/// fixes the ordinary full-screen preview and the side-by-side diff identically, and kitty (which
-/// gets the real RGBA payload and composites it correctly itself) draws the same opaque white
-/// paper too, rather than a special transparent case just for that one protocol.
+/// share this module's `TRANSPARENT` render background; it should look like one regardless of the
+/// terminal's theme. Verified on real pixels: rendered transparent, `samples/sample.pdf` showed as
+/// barely-readable dark-gray text on a dark kitty background, and as *nothing at all* under
+/// `ratatui_image`'s non-kitty encoders (halfblocks/sixel/iterm2), whose `to_rgb8` conversion drops
+/// the alpha channel outright without compositing it against anything — black ink on a transparent
+/// background and the fully transparent background itself both collapse to the identical opaque
+/// black once alpha is gone, so the halfblocks encoder's own `upper == lower → space` rule painted the
+/// entire page as blank cells. Every PDF raster in the app flows through this one function
+/// (`render_page`'s path-based call and `render_page_bytes`'s bytes-based one both bottom out in
+/// `render_page_native_inner_bytes` above), so fixing it here fixes the ordinary full-screen preview
+/// and the side-by-side diff identically, and kitty (which gets the real RGBA payload and composites
+/// it correctly itself) draws the same opaque white paper too, rather than a special transparent case
+/// just for that one protocol.
 fn pixmap_to_dynamic_image(pixmap: Pixmap) -> Option<DynamicImage> {
     let (w, h) = (u32::from(pixmap.width()), u32::from(pixmap.height()));
     if w == 0 || h == 0 {
@@ -243,11 +233,10 @@ fn pixmap_to_dynamic_image(pixmap: Pixmap) -> Option<DynamicImage> {
 /// Composite straight-alpha RGBA pixels (in place) onto an opaque white background — the standard
 /// "source over white" formula (`out = fg·a + 255·(1-a)`, integer division rounds down, same as
 /// every other 8-bit alpha blend in this codebase) — and force every pixel's alpha to 255. Called
-/// only after [`pixmap_to_dynamic_image`]'s all-transparent blank-page check, so this never runs on
-/// a page that check would have turned into `None` instead; an already-opaque pixel (`a == 255`,
-/// the overwhelming majority of a normal page's margin-free ink and, after the first page trains
-/// the branch predictor, most pixels overall) is left untouched rather than recomputed to the same
-/// value, which also sidesteps any rounding drift on values that need none.
+/// only after [`pixmap_to_dynamic_image`]'s all-transparent blank-page check, so this never runs on a
+/// page that check would have turned into `None` instead; an already-opaque pixel (`a == 255`, the
+/// overwhelming majority of a normal page's margin-free ink) is left untouched rather than
+/// recomputed to the same value.
 fn composite_onto_white(rgba: &mut [u8]) {
     let (chunks, _) = rgba.as_chunks_mut::<4>();
     for px in chunks {
@@ -616,10 +605,9 @@ pub fn page_count(path: &Path) -> Option<u32> {
 /// case for this synchronous call bounded. The caller already has a graceful degrade for "page
 /// count unknown" (documented on `page_count` below: unknown total ⟹ single-page treatment,
 /// navigation disabled) — that's exactly the intended behavior here too, matching principle #3.
-/// `pub(crate)` (not private) so the media-diff worker (`app/media_diff.rs`,
-/// `docs/FEATURE-MEDIA-DIFF.md` §3's "1 側 64 MiB 超") can reuse this exact cap for its own
-/// per-side byte limit, rather than a second `64 * 1024 * 1024` literal that could drift out of sync
-/// with this one.
+/// `pub(crate)` (not private) so the media-diff worker (`app/media_diff.rs`) can reuse this exact cap
+/// for its own per-side byte limit, rather than a second `64 * 1024 * 1024` literal that could drift
+/// out of sync with this one.
 pub(crate) const PAGE_COUNT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// `page_count`'s real body, parameterized on the size cap purely for testability — production
@@ -639,11 +627,11 @@ fn page_count_impl(path: &Path, max_bytes: u64) -> Option<u32> {
     page_count_bytes_impl(&bytes)
 }
 
-/// `page_count`, from bytes already in memory rather than a path — used by the media-diff worker
-/// (`app/media_diff.rs::decode_pdf_side`) for a side with no path (the old version, read from git/jj)
-/// as well as the new side (already read into memory for the size-cap/`same_bytes` check anyway).
-/// Same `PAGE_COUNT_MAX_BYTES` cap as the path version, checked against the byte slice's own length
-/// rather than a `stat` (there is no file to stat).
+/// `page_count`, from bytes already in memory rather than a path — used by the media-diff worker for
+/// a side with no path (the old version, read from git/jj) as well as the new side (already read into
+/// memory for the size-cap/`same_bytes` check anyway). Same `PAGE_COUNT_MAX_BYTES` cap as the path
+/// version, checked against the byte slice's own length rather than a `stat` (there is no file to
+/// stat).
 pub fn page_count_bytes(bytes: &[u8]) -> Option<u32> {
     if bytes.len() as u64 > PAGE_COUNT_MAX_BYTES {
         return None;

@@ -32,10 +32,9 @@ pub fn decode_static(path: &Path) -> Option<DynamicImage> {
 }
 
 /// `decode_static`, from bytes already in memory rather than a path — used by the media-diff worker
-/// (`app/media_diff.rs::decode_image_side`, `docs/FEATURE-MEDIA-DIFF.md` §3) to decode a side whose
-/// bytes came from git/jj (the old version) rather than the filesystem. Format is guessed from the
-/// content, exactly like the path version's `with_guessed_format` (never from an extension — there
-/// may be none to go by).
+/// (`app/media_diff.rs::decode_image_side`) to decode a side whose bytes came from git/jj rather than
+/// the filesystem. Format is guessed from the content, exactly like the path version's
+/// `with_guessed_format` (never from an extension — there may be none to go by).
 pub fn decode_static_bytes(bytes: &[u8]) -> Option<DynamicImage> {
     image::load_from_memory(bytes).ok()
 }
@@ -98,25 +97,22 @@ fn decode_gif_with_budget(path: &Path, budget: usize) -> Option<GifFrames> {
     decode_gif_from_reader(std::io::BufReader::new(file), budget).map(|(frames, _canvas)| frames)
 }
 
-/// `decode_gif_inline`, from bytes already in memory — used by the media-diff worker
-/// (`app/media_diff.rs`) to animate an old (git/jj) version of a GIF exactly like an inline Markdown
-/// one, without a path to read from. Same semantics as `decode_gif_inline`: None for a non-GIF /
+/// `decode_gif_inline`, from bytes already in memory — used by the media-diff worker to animate an
+/// old (git/jj) version of a GIF, without a path to read from. Same semantics: None for a non-GIF /
 /// undecodable / single-frame GIF. Also returns the GIF's own logical-screen size (read from the
-/// header, `GifDecoder::dimensions`) — distinct from any individual frame's own pixel size once the
-/// decode budget has downscaled frames for memory — which `app::media_diff::decode_image_side`
-/// needs as this side's *intrinsic* size (`MediaDiffPictureDecoded::natural_px`'s own doc comment);
-/// `decode_gif`/`decode_gif_inline` above have no such need (an ordinary GIF preview, not part of a
-/// diff, has no other side's size to stay comparable with) and so drop it.
+/// header) — distinct from any frame's own pixel size once the decode budget has downscaled frames
+/// for memory — which `app::media_diff::decode_image_side` needs as this side's *intrinsic* size
+/// (see `MediaDiffPictureDecoded::natural_px`); `decode_gif`/`decode_gif_inline` have no such need
+/// (no other side's size to stay comparable with) and so drop it.
 pub fn decode_gif_bytes_inline(bytes: &[u8]) -> Option<(GifFrames, (u32, u32))> {
     decode_gif_from_reader(std::io::Cursor::new(bytes), MAX_GIF_BYTES_INLINE)
 }
 
 /// The shared body of `decode_gif_with_budget`/`decode_gif_bytes_inline`, generic over the reader so
-/// neither has to duplicate the frame/shrink loop. The `(u32, u32)` alongside the frames is the
-/// GIF's own logical-screen size, read from the header before any frame is decoded — see
-/// `decode_gif_bytes_inline`'s own doc comment for why that (not a frame's own, possibly
-/// budget-downscaled, pixel size) is the intrinsic size a caller comparing this GIF's size against
-/// something else (`app::media_diff`) needs.
+/// neither has to duplicate the frame/shrink loop. The `(u32, u32)` alongside the frames is the GIF's
+/// own logical-screen size, read from the header before any frame is decoded — see
+/// `decode_gif_bytes_inline`'s own doc comment for why that's the intrinsic size a caller comparing
+/// this GIF's size against something else needs.
 fn decode_gif_from_reader<R: std::io::Read + std::io::BufRead + std::io::Seek>(
     reader: R,
     budget: usize,

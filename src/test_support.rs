@@ -199,10 +199,10 @@ thread_local! {
     /// How many times `App::dispatch_media_diff` actually dispatched a media-diff request (spawned a
     /// worker thread, or ran the synchronous no-`Sender` fallback) **on this thread** —
     /// `App::kick_media_diff`/`App::apply_media_diff`'s own "at most one worker in flight, latest
-    /// wins" coalescing (`docs/FEATURE-MEDIA-DIFF.md`) is exactly what this counter proves: a burst
-    /// of `App::poll_media_diff`/invalidation calls while a worker is already busy must coalesce into
-    /// the single `media_diff_queued` slot rather than each spawning its own concurrent decode.
-    /// Thread-local for the same reason `STAT_CALLS` is.
+    /// wins" coalescing is exactly what this counter proves: a burst of `App::poll_media_diff`/
+    /// invalidation calls while a worker is already busy must coalesce into the single
+    /// `media_diff_queued` slot rather than each spawning its own concurrent decode. Thread-local for
+    /// the same reason `STAT_CALLS` is.
     static MEDIA_DIFF_DISPATCH_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -225,17 +225,13 @@ pub(crate) fn count_media_diff_dispatch_calls<T>(f: impl FnOnce() -> T) -> (T, u
     )
 }
 
-/// Owning guard for a path returned by [`unique_tmp`]: removes it (recursively, if it turned out
-/// to be a directory; as a single file otherwise) when dropped.
-///
-/// Before this type existed, `unique_tmp` returned a bare `PathBuf` and nothing ever cleaned the
-/// fixture up — every `cargo test` run left its directories behind under `std::env::temp_dir()`
-/// forever (2026-09-24: ~72k directories / 12.5 GB accumulated on one machine). `TmpDir` derefs to
-/// `Path`, so the overwhelming majority of call sites (`.join(...)`, `&dir`, `dir.exists()`,
-/// handing `&dir` to a function expecting `impl AsRef<Path>`, ...) need no change at all: the
-/// fixture simply lives exactly as long as the guard stays in scope, which for a `#[test]` fn that
-/// binds it with `let dir = unique_tmp(...)` and uses `dir` for the rest of the function is
-/// already "until the test returns" — correct with zero extra code.
+/// Owning guard for a path returned by [`unique_tmp`]: removes it (recursively, if it turned out to
+/// be a directory; as a single file otherwise) when dropped, so a fixture can never outlive the test
+/// that created it. Derefs to `Path`, so the overwhelming majority of call sites (`.join(...)`,
+/// `&dir`, `dir.exists()`, handing `&dir` to a function expecting `impl AsRef<Path>`, ...) need no
+/// change at all: the fixture simply lives exactly as long as the guard stays in scope, which for a
+/// `#[test]` fn that binds it with `let dir = unique_tmp(...)` and uses `dir` for the rest of the
+/// function is already "until the test returns" — correct with zero extra code.
 ///
 /// **The one thing this type deliberately does not provide is a way to detach the path from the
 /// guard by value** — no `Into<PathBuf>`, no `From<TmpDir> for PathBuf`. A helper that builds a
@@ -251,21 +247,19 @@ pub(crate) struct TmpDir {
 }
 
 impl TmpDir {
-    /// Mirrors `PathBuf::as_path` so call sites that called `.as_path()` on the `PathBuf`
-    /// `unique_tmp` used to return keep compiling unchanged (`Path` itself has no `as_path`
-    /// method — without this, method resolution falls off the end of the `Deref` chain and
-    /// rustc's "did you mean" fallback lands on an unrelated, nightly-gated `as_str`, producing a
-    /// confusing `E0658` instead of a straightforward "no method" error).
+    /// Mirrors `PathBuf::as_path` (`Path` itself has no `as_path` method — without this, method
+    /// resolution falls off the end of the `Deref` chain and rustc's "did you mean" fallback lands on
+    /// an unrelated, nightly-gated `as_str`, producing a confusing `E0658` instead of a straightforward
+    /// "no method" error).
     pub(crate) fn as_path(&self) -> &std::path::Path {
         &self.path
     }
 
-    /// A new guard for `self`'s path with a different extension (mirrors `Path::with_extension`,
-    /// but returns an owned, cleanup-guarded path rather than a bare `PathBuf`). Exists for
-    /// fixtures that reserve a unique base name via `unique_tmp` and then need a specific
-    /// extension (for extension-based preview-rule matching) before creating anything on disk —
-    /// the un-extended path `self` held is never created in those call sites, so `self`'s own
-    /// `Drop`, which still runs normally when it is dropped or reassigned, is a harmless no-op.
+    /// A new guard for `self`'s path with a different extension (mirrors `Path::with_extension`, but
+    /// returns an owned, cleanup-guarded path rather than a bare `PathBuf`). Exists for fixtures that
+    /// reserve a unique base name via `unique_tmp` and then need a specific extension (for
+    /// extension-based preview-rule matching) before creating anything on disk — the un-extended path
+    /// `self` held is never created in those call sites, so `self`'s own `Drop` is a harmless no-op.
     pub(crate) fn with_extension(&self, ext: impl AsRef<std::ffi::OsStr>) -> TmpDir {
         TmpDir {
             path: self.path.with_extension(ext),
@@ -274,15 +268,12 @@ impl TmpDir {
 
     /// Resolves this guard's path through `Path::canonicalize` (e.g. macOS's `/var` ->
     /// `/private/var` symlink) and returns a *new* guard for the resolved path — consuming `self`
-    /// **without** running its `Drop` (`std::mem::forget`). The canonical path names the exact
-    /// same directory on disk as `self` did, so responsibility for eventually removing it simply
-    /// transfers to the returned guard: running both `Drop` impls would either remove the same
-    /// directory twice (harmless on its own, but racy against anything else touching it in
-    /// between) or, worse, delete it out from under the caller if `self` were a temporary that
-    /// dropped before the canonical guard was ever used — exactly the class of bug this type
-    /// exists to prevent. Used by fixtures that need the canonical form of their root (to compare
-    /// against `App::new`'s own canonicalized `tab.root`, or to pass to `git`/`jj`) while still
-    /// keeping cleanup tied to a single, still-live guard.
+    /// **without** running its `Drop` (`std::mem::forget`). The canonical path names the exact same
+    /// directory on disk as `self` did, so responsibility for removing it transfers to the returned
+    /// guard: running both `Drop` impls would either remove the same directory twice (racy against
+    /// anything else touching it in between) or delete it out from under the caller if `self` were a
+    /// temporary that dropped first. Used by fixtures that need the canonical form of their root (to
+    /// compare against `App::new`'s own canonicalized `tab.root`, or to pass to `git`/`jj`).
     ///
     /// Deliberately **not** named `canonicalize`: `Path` already has that method (reachable
     /// through `Deref`, borrowing `&self` and returning a bare `PathBuf`), and giving this one the

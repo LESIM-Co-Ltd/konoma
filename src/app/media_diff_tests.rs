@@ -1316,11 +1316,11 @@ fn a_stale_landing_with_nothing_queued_still_frees_the_worker_slot() {
     );
 }
 
-/// PROBE (rereview, cross-tab): switching away from a tab showing a landed media diff to a
-/// non-media tab, and back, still shows both pictures — the picture cache is pruned on the
-/// switch-away (see `App::prune_media_diff_picture_cache`'s doc comment: any moment the active
-/// tab's view stops being a media diff frees the pixels), but the switch-back correctly
-/// re-kicks a fresh computation rather than leaving a stale placeholder.
+/// Switching away from a tab showing a landed media diff to a non-media tab, and back, still shows
+/// both pictures — the picture cache is pruned on the switch-away (see `App::prune_media_diff_
+/// picture_cache`'s doc comment: any moment the active tab's view stops being a media diff frees the
+/// pixels), but the switch-back correctly re-kicks a fresh computation rather than leaving a stale
+/// placeholder.
 #[cfg(feature = "git")]
 #[test]
 fn switching_to_another_tab_and_back_redraws_both_pictures() {

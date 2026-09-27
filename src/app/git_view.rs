@@ -593,9 +593,8 @@ impl App {
         // the bottom of this fn, whether to arm a new one for `path` — mirrors `App::enter_preview`'s
         // own up-front clear (`diff_scroll_pending`'s own doc comment).
         self.tab.diff_scroll_pending = None;
-        // A fresh diff target: the media diff's page position belongs to *this* file, not
-        // whatever page a previously-open PDF diff happened to be on (`PerTab::diff_media_page`'s
-        // own doc comment).
+        // A fresh diff target: the media diff's page position belongs to *this* file, not whatever
+        // page a previously-open PDF diff happened to be on.
         self.tab.diff_media_page = 1;
         self.preview_win = None;
         self.win_cache = None;
@@ -703,20 +702,15 @@ impl App {
     }
     /// Cycle the diff layout unified→split→Auto (`s`). Called from both the GitDiff preview and the
     /// detail view. While the media diff's side-by-side view is actually **showing pictures**
-    /// (`media_diff_showing_pictures` — not merely targeted; a still-computing or binary-summary
-    /// body has nothing to lay out, `docs/FEATURE-MEDIA-DIFF.md` §6's "並べて表示中"), delegates to
-    /// `cycle_media_diff_layout` instead — `s` there cycles auto/side/stack, a wholly different (and
-    /// separately configured) layout state than this one (`App::media_diff_layout`'s own doc
-    /// comment). Otherwise a no-op while the `Rendered` presentation is on screen at all
-    /// (`diff_rendered_active`) — for Markdown that means decorated blocks, not the unified/split
-    /// raw-line layout this key cycles, so there is nothing here for it to change (this same
-    /// fallthrough is also what makes a *still-computing/summary* media diff a no-op: its own
-    /// `diff_media_active` — hence `diff_rendered_active` — is already `true`, so it lands here
-    /// rather than in the unified/split branch below). The footer already hides the `s:...` hint in
-    /// exactly that case ([[hint-shown-iff-key-acts]], `ui/status.rs::mode_footer`'s own
-    /// `media_diff_showing_pictures`/`diff_rendered_active` checks) — this is the key-handler half
-    /// of the same gate, so pressing `s` there doesn't flash a layout label for a layout that isn't
-    /// actually showing.
+    /// (`media_diff_showing_pictures` — not merely targeted; a still-computing or binary-summary body
+    /// has nothing to lay out), delegates to `cycle_media_diff_layout` instead — `s` there cycles
+    /// auto/side/stack, a wholly different (and separately configured) layout state than this one.
+    /// Otherwise a no-op while the `Rendered` presentation is on screen at all (`diff_rendered_
+    /// active`) — for Markdown that's decorated blocks, not the unified/split raw-line layout this
+    /// key cycles, so there's nothing here to change (the same fallthrough also makes a
+    /// still-computing/summary media diff a no-op, since its `diff_media_active` is already `true`).
+    /// The footer already hides the `s:...` hint in exactly that case
+    /// ([[hint-shown-iff-key-acts]]) — this is the key-handler half of the same gate.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn cycle_diff_layout(&mut self) {
         if self.media_diff_showing_pictures() {
