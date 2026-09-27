@@ -155,10 +155,6 @@ mod tests {
         assert!(SessionStore::with_base(base.to_path_buf(), &proj2)
             .read()
             .is_none());
-
-        std::fs::remove_dir_all(&base).ok();
-        std::fs::remove_dir_all(&proj).ok();
-        std::fs::remove_dir_all(&proj2).ok();
     }
 
     #[test]
@@ -175,9 +171,6 @@ mod tests {
         std::fs::create_dir_all(store.path.parent().unwrap()).unwrap();
         std::fs::write(&store.path, "this is [not toml").unwrap();
         assert!(store.read().is_none(), "壊れたファイルはクラッシュせず無視");
-
-        std::fs::remove_dir_all(&base).ok();
-        std::fs::remove_dir_all(&proj).ok();
     }
 
     #[test]
@@ -212,8 +205,5 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
             .count();
         assert_eq!(leftovers, 0, "temp ファイルを残さない");
-
-        std::fs::remove_dir_all(&base).ok();
-        std::fs::remove_dir_all(&proj).ok();
     }
 }

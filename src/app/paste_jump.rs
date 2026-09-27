@@ -572,6 +572,5 @@ mod tests {
             canonical_existing(&dir.join("nope.txt")).is_none(),
             "不在 → None"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

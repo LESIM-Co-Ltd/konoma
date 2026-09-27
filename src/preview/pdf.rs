@@ -772,8 +772,6 @@ mod tests {
         let corrupt = dir.join("corrupt.pdf");
         std::fs::write(&corrupt, &corrupt_bytes).unwrap();
         let _ = page_count(&corrupt); // either result is fine — only confirming it doesn't panic
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `hayro` renders **any** page natively — every page of the bundled multi-page sample
@@ -964,8 +962,6 @@ mod tests {
             render_page_native_inner(&p, 1).is_none(),
             "hayro が何も描かなかった Pixmap は None を返し、外部ツールへ降格すべき"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `[external] pdf = false` never shows a blank page as if it were confirmed real content: a
@@ -998,8 +994,6 @@ mod tests {
             render_page(&p, 1, true).is_none(),
             "macOS 以外では外部フォールバックが存在しないので allow_external=true でも None"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The fallback tools are first-page-only, so `render_page_external` must decline anything past

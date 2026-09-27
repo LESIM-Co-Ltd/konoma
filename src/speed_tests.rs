@@ -185,7 +185,6 @@ fn warm_then_highlight_is_fast() {
         hot_dt < Duration::from_secs(2),
         "ウォーム後のハイライトが遅すぎる: {hot_dt:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `n` heading+body+link blocks of Markdown, plus a Rust fence sized proportionally to `n` (heading
@@ -407,7 +406,6 @@ fn tree_build_and_visible_range_many_entries_is_bounded() {
         draw_dt < Duration::from_secs(1),
         "可視範囲を含む1描画が遅すぎる: {draw_dt:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // GUARDS: preview::image::decode_gif on the bundled sample GIF stays bounded (full-frame expand).
@@ -496,7 +494,6 @@ fn same_repo_navigation_does_not_rescan_git_status() {
         0,
         "同一 repo の 40 往復で git status を再スキャンした(workdir キャッシュ喪失)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// GUARD: the linked-worktree chip's origin repo name (`App::worktree_origin`, shown by
@@ -583,8 +580,6 @@ fn worktree_chip_is_not_recomputed_on_every_render() {
         app.worktree_origin().is_some(),
         "50回の描画後も表示は保たれているはず"
     );
-    std::fs::remove_dir_all(&linked).ok();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Generate a large, GFM-feature-complete Markdown document (headings, tables, alerts, footnotes,
@@ -663,7 +658,6 @@ fn preview_large_markdown_is_bounded() {
         one_scroll_alloc.saturating_mul(20) < build_alloc,
         "装飾 md の1スクロールがキャッシュを再利用していない(スクロール {one_scroll_alloc} が初回装飾 {build_alloc} に近い=毎フレーム再装飾?)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // GUARDS: previewing a large CSV (parse + aligned-grid render with cursor moves) stays responsive.
@@ -702,7 +696,6 @@ fn preview_large_csv_is_bounded() {
         nav_dt < Duration::from_secs(2),
         "CSV のセル移動 80 描画が遅すぎる: {nav_dt:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // GUARDS: windowed preview of a large text file (open + page down/up many times) reads only the
@@ -752,7 +745,6 @@ fn preview_large_file_windowing_is_bounded() {
         find_dt < Duration::from_secs(3),
         "20000 行の検索が遅すぎる: {find_dt:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // GUARDS: konoma's own kitty transmit (crop → resize_exact → zlib-compress) on a large image stays
@@ -906,7 +898,6 @@ fn git_views_and_large_diff_render_is_bounded() {
         views_alloc < 60_000_000, // measured ~23MB (5 real git-view opens/closes + a 1005-line diff); ~2.6x headroom
         "git ビュー群+大きな diff の描画の確保バイト数が上限を超えた(回帰?): {views_alloc}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // GUARDS: cycling through tabs (save_active + load_active + preview rebuild + render) stays bounded,
@@ -1031,7 +1022,6 @@ fn tab_switch_reloads_are_bounded() {
         "20 回のタブ切替の確保バイト数がツリー再構築だけの20倍換算の2.0倍を超えた(回帰: 想定外の大きな確保が追加された?): cycle={cycle_alloc} rebuild_x40={}",
         rebuild_alloc.saturating_mul(40)
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // GUARDS: main.rs's `BurstPaths` (the fs-watcher burst de-duplicator) stays fast for a burst of tens

@@ -661,7 +661,6 @@ mod tests {
         );
         assert!(toks.iter().any(|t| t == "/:search"), "/:{md}");
         assert!(toks.iter().any(|t| t == "F:FOLLOW"), "F:{md}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Plain text preview is unaffected by the decorated-Markdown rework (regression guard for the
@@ -680,7 +679,6 @@ mod tests {
             "テキストに Markdown 操作が出ている: {txt}"
         );
         assert!(txt.contains("hl:"), "テキストは横移動ヒントを出す: {txt}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Cases (b)/(c)/(d): `↵`'s (and `C-t`'s) label follows the focused link's class exactly —
@@ -728,7 +726,6 @@ mod tests {
             !toks.iter().any(|t| t.starts_with("C-t:")),
             "外部リンクで C-t が出ている: {toks:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Case (e): `Space` shows only while a task checkbox or a `<details>` summary is focused —
@@ -770,7 +767,6 @@ mod tests {
         assert_eq!(app.md_focused_kind(), Some(crate::app::MdFocus::Details));
         let toks = hint_tokens(&app);
         assert!(toks.iter().any(|t| t == "Space/↵:toggle"), "{toks:?}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Case (f): a focused code block has no Enter action (only `y c` copies it) — no `↵:` hint.
@@ -795,7 +791,6 @@ mod tests {
             !toks.iter().any(|t| t.starts_with("↵:")),
             "コードブロックに ↵ が出ている: {toks:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Case (g) (mermaid fence footer hints) lives in `app::tests` instead of here: it needs the
@@ -843,7 +838,6 @@ mod tests {
                 "{lang:?}: ヘルプ用の長文 {long:?} がフッターに出ている: {footer}"
             );
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The counterpart to the test above: the long explanatory wording must stay in the `?` help
@@ -883,7 +877,6 @@ mod tests {
                 "{lang:?}: ヘルプ画面から説明文 {long:?} が消えている: {help}"
             );
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Same-shaped hole, closed by type rather than one case at a time: sweep both footers (Tree and
@@ -935,7 +928,6 @@ mod tests {
             }
             app.back_to_tree();
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1005,7 +997,6 @@ mod tests {
             f.contains("hello flash") && !f.contains('▸'),
             "flash 優先: {f}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The "WT <origin>" chip appears **only** while inside a linked worktree (`git worktree add`),
@@ -1102,8 +1093,6 @@ mod tests {
             wt_text.contains(&expected_origin),
             "元の repo 名 ({expected_origin}) が出ていない: {wt_text}"
         );
-
-        std::fs::remove_dir_all(&base).ok();
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1179,7 +1168,6 @@ mod tests {
                 "git フッターに jj 専用語 {word:?} が出ている: {footer}"
             );
         }
-        std::fs::remove_dir_all(&git_dir).ok();
     }
 
     /// (status.rs item 2, graph) The jj graph footer (`Msg::JjGraphNavHint`): `a:all revisions`/
@@ -1224,7 +1212,6 @@ mod tests {
             !footer.contains("all revisions"),
             "git のグラフフッターに jj 専用語が出ている: {footer}"
         );
-        std::fs::remove_dir_all(&git_dir).ok();
     }
 
     /// (status.rs item 2, bookmarks) The jj bookmark-list footer (`Msg::BookmarksNavHint`):
@@ -1272,7 +1259,6 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(footer, tr(Lang::En, Msg::BranchesNavHint));
-        std::fs::remove_dir_all(&git_dir).ok();
     }
 
     /// The diff's `Rendered` presentation shares the ordinary decorated Markdown preview's own
@@ -1336,8 +1322,6 @@ mod tests {
             footer_nowrap.contains("h/l"),
             "wrap=false では h/l:hscroll が出るはず: {footer_nowrap}"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Test-hole coverage, jj side: `diff_footer_hscroll_hint_matches_wrap_setting_for_rendered`
@@ -1395,8 +1379,6 @@ mod tests {
             footer_nowrap.contains("h/l"),
             "wrap=false では h/l:hscroll が出るはず: {footer_nowrap}"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// (status.rs item 2, diff) The GitDiff footer hides the discard key for a read-only backend
@@ -1512,7 +1494,6 @@ mod tests {
         let chip = display_chip(&git_app);
         assert_eq!(chip.content.as_ref().trim(), tr(Lang::En, Msg::StGit));
         assert_ne!(chip.content.as_ref().trim(), tr(Lang::En, Msg::StJj));
-        std::fs::remove_dir_all(&git_dir).ok();
     }
 
     /// (status.rs item 4) The `BOOKMARK` chip (`Msg::StBookmark`) shows for jj's bookmark list;
@@ -1558,7 +1539,6 @@ mod tests {
         assert!(git_app.is_git_branches());
         let chip = internal_chip(&git_app).expect("Branch の内部チップが無い");
         assert_eq!(chip.content.as_ref().trim(), tr(Lang::En, Msg::StBranch));
-        std::fs::remove_dir_all(&git_dir).ok();
     }
 
     /// (status.rs item 5) The copy menu's read-back: jj shows `WkChangeId` ("change id") where
@@ -1616,6 +1596,5 @@ mod tests {
             .collect();
         assert!(menu.contains(tr(Lang::En, Msg::WkShortHash)));
         assert!(!menu.contains(tr(Lang::En, Msg::WkChangeId)));
-        std::fs::remove_dir_all(&git_dir).ok();
     }
 }

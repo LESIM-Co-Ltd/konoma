@@ -1068,7 +1068,6 @@ fn golden_items_match_the_live_app_across_the_corpus() {
         "コーパスのコードブロック({bodies})/チェックボックス({states})が激減している\
          — この番人が検査するものが無くなっている"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The count on a `-- SECTION (n) --` header line of one case's dump.

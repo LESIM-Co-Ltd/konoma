@@ -493,7 +493,6 @@ mod tests {
             }
             other => panic!("Ready のはず: {other:?}"),
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -523,7 +522,6 @@ mod tests {
             }
             other => panic!("Ready のはず: {other:?}"),
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -556,7 +554,6 @@ mod tests {
             }
             other => panic!("Ready のはず: {other:?}"),
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -570,7 +567,6 @@ mod tests {
             matches!(App::compute_md_diff(&r), MdDiffOutcome::NoBaseline),
             "Gutter はベースライン無しでは NoBaseline のはず(全追加にはしない)"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -593,7 +589,6 @@ mod tests {
             }
             other => panic!("Ready のはず: {other:?}"),
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -609,7 +604,6 @@ mod tests {
             matches!(App::compute_md_diff(&r), MdDiffOutcome::Unavailable),
             "上限超の新版は Unavailable のはず"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// M11 (pre-merge review of PR #21): the *baseline's own* `FOLLOW_BASELINE_FILE_CAP` check
@@ -651,7 +645,6 @@ mod tests {
             MdDiffOutcome::Ready { .. } => {} // Gutter has no file-size gate on the old side.
             other => panic!("Gutter は旧版の上限を見ないので Ready のはず: {other:?}"),
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -671,7 +664,6 @@ mod tests {
             matches!(App::compute_md_diff(&r), MdDiffOutcome::Unavailable),
             "新版が読めない場合は Unavailable のはず"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The regression this whole group pins: `Rendered` used to read/render a document's *entire*
@@ -722,7 +714,6 @@ mod tests {
             "上限を超えた末尾はもう描かれないはず: {}",
             &new_pre[new_pre.len().saturating_sub(200)..]
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The mirror of the above for the **old** (baseline) side: a baseline past `MAX_LINES` is
@@ -763,7 +754,6 @@ mod tests {
             old_pre, expected,
             "Rendered の old_pre(baseline) も同じ上限で切り詰められるはず"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A document *under* both caps is unaffected byte for byte — `cap_for_display` must be
@@ -785,7 +775,6 @@ mod tests {
             new_pre, body,
             "上限未満では切り詰めもサフィックスも入らないはず"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A second, adjacent bug found while pinning the above: `Gutter`'s own baseline (`old_raw`) used
@@ -822,6 +811,5 @@ mod tests {
             }
             other => panic!("Ready のはず: {other:?}"),
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

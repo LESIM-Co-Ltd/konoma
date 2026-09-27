@@ -2415,7 +2415,5 @@ mod tests {
             app.diff_layout, layout_before,
             "Source では s が通常どおり効く"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

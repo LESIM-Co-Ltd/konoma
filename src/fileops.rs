@@ -812,8 +812,6 @@ mod tests {
         // move_into goes through the same guard too (the rename-fails → copy_dir_all path). But
         // in an environment where rename succeeds it would just move, so this test only targets
         // the copy path.
-
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -850,8 +848,6 @@ mod tests {
         // Renaming to an existing name errors (does not overwrite).
         create_file(&dir, "c.txt").unwrap();
         assert!(rename(&renamed, "c.txt").is_err());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -871,8 +867,6 @@ mod tests {
         assert!(!sub.exists(), "ディレクトリが中身ごと完全削除される");
         // A nonexistent path errors.
         assert!(delete_permanently(std::slice::from_ref(&f)).is_err());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -914,8 +908,6 @@ mod tests {
         assert!(!b.exists(), "b は無くなる");
         assert_eq!(std::fs::read(dir.join("c.txt")).unwrap(), b"AAA", "c=元 a");
         assert_eq!(std::fs::read(&a).unwrap(), b"BBB", "a=元 b");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -958,8 +950,6 @@ mod tests {
             orphans.is_empty(),
             "孤立した一時ファイルが残らない: {orphans:?}"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1007,8 +997,6 @@ mod tests {
             orphans.is_empty(),
             "孤立した一時ファイルが残らない: {orphans:?}"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// When the rollback itself cannot finish, the leftovers have to be *reported*, not just
@@ -1073,8 +1061,6 @@ mod tests {
         assert!(stuck_tmp.is_file(), "戻せなかった一時ファイルは実在する");
         assert_eq!(std::fs::read(&ok_src).unwrap(), b"BBB", "b.txt は原状復帰");
         assert!(!ok_tmp.exists(), "戻せた方の一時ファイルは残らない");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Probe for the sibling test below: whether this process is actually stopped by a read-only
@@ -1142,7 +1128,6 @@ mod tests {
         );
 
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A rollback that fully succeeds must not claim anything was left behind (the pair to the test
@@ -1167,8 +1152,6 @@ mod tests {
             "巻き戻しが成功したなら残骸を主張しない: {err:#}"
         );
         assert_eq!(std::fs::read(&a).unwrap(), b"AAA", "a は原状復帰");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1196,8 +1179,6 @@ mod tests {
         std::fs::write(tree.join("inner").join("x.txt"), b"x").unwrap();
         copy_into(&sub, &tree).unwrap();
         assert!(sub.join("tree").join("inner").join("x.txt").is_file());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1217,8 +1198,6 @@ mod tests {
         let back = move_into(&sub, &sub.join("a.txt")).unwrap();
         assert_eq!(back, sub.join("a.txt"));
         assert!(sub.join("a.txt").is_file());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1276,8 +1255,6 @@ mod tests {
                 .is_symlink(),
             "再帰コピー内の symlink も保たれる"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1329,8 +1306,6 @@ mod tests {
         assert_eq!(detail_cell("type", &dir, &dm).as_deref(), Some("dir"));
         assert_eq!(detail_cell("items", &dir, &dm).as_deref(), Some("1")); // the one entry, a.txt
         assert_eq!(detail_cell("bogus", &dir, &dm), None);
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `move_to_trash` is routed through the `#[cfg(test)]` seam in a `cargo test` binary (see its
@@ -1355,7 +1330,6 @@ mod tests {
             vec![f.clone()],
             "テスト用シームが対象を記録するはず(実ゴミ箱を呼んでいない証拠)"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The sibling live-Trash test, restored to normal (non-`#[ignore]`d, no longer macOS-only —
@@ -1373,7 +1347,6 @@ mod tests {
         move_to_trash(std::slice::from_ref(&f)).unwrap();
         assert!(!f.exists(), "ゴミ箱送りで元の場所から消える");
         assert_eq!(crate::test_support::get_trashed(), vec![f.clone()]);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1389,7 +1362,6 @@ mod tests {
             err.to_string().contains("create parent directory"),
             "親作成エラー: {err}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1409,7 +1381,6 @@ mod tests {
             move_into(&dst, &missing).is_err(),
             "存在しない src の移動は Err"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1449,8 +1420,6 @@ mod tests {
         for path in &paths {
             assert!(!path.exists(), "対象が消えている: {}", path.display());
         }
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `trash_partial_outcome` is the pure fs-observation step `App::run_file_op`'s `Trash` arm
@@ -1486,8 +1455,6 @@ mod tests {
         let (ok3, remaining3) = trash_partial_outcome(&all_gone);
         assert_eq!(ok3, 1, "全部消えていれば全数");
         assert_eq!(remaining3, None, "残っている対象が無ければ None");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Mirrors `write_denied_by_permissions` in `src/app/tests.rs` (same idea, duplicated rather
@@ -1558,8 +1525,6 @@ mod tests {
             dir.join("c.txt").exists(),
             "blocked で ? 早期returnしたので c.txt は未着手のまま残っている"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1587,8 +1552,6 @@ mod tests {
             3,
             "3枚の末端ファイルぶん進む(ディレクトリは数えない)"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `create_file`/`create_dir`/`rename` report a name collision as `FileOpError::AlreadyExists`
@@ -1629,8 +1592,6 @@ mod tests {
             ),
             "rename: {e3:?}"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A source whose `file_name()` is unavailable (e.g. `/`) fails the copy/move with a typed
@@ -1650,8 +1611,6 @@ mod tests {
             ),
             "{err:?}"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `batch_rename` itself re-checks the destination for a collision (defense in depth beyond
@@ -1677,7 +1636,5 @@ mod tests {
             ),
             "{err:?}"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

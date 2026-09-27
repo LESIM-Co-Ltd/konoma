@@ -686,7 +686,6 @@ mod tests {
         for (_, p) in &order {
             assert!(p.exists(), "代表ファイルが無い: {p:?}");
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // GUARDS: after `warm_dir` scans a directory and pre-compiles its languages' grammars, a
@@ -726,7 +725,6 @@ mod tests {
             alloc < 2_000_000, // measured ~82KB warm vs ~26.5MB cold (an unwarmed "nim" highlight) — ~24x/~13x headroom
             "warm_dir 後の初回ハイライトの確保バイト数が多すぎる(warm_dir が効いていない?): {alloc}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Display string of a Line (all spans concatenated).
@@ -839,7 +837,6 @@ mod tests {
         assert_eq!(all, "0123456789ABCDEF");
         // A nonexistent file returns Err.
         assert!(read_head(&dir.join("nope.txt"), 10).is_err());
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -857,7 +854,6 @@ mod tests {
         std::fs::write(&weird, b"x").unwrap();
         warm_file("konoma_zzqq", &weird);
         assert!(is_ext_warm("konoma_zzqq"), "文法なしでも warm 済み扱い");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // ---- D1: syntect panic safety net -------------------------------------------

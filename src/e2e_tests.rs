@@ -648,7 +648,6 @@ fn e2e_tree_navigation_and_ends() {
     assert_eq!(s.app.tab.selected, s.app.tab.entries.len() - 1, "G で末尾");
     s.key('g');
     assert_eq!(s.app.tab.selected, 0, "g で先頭");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -666,7 +665,6 @@ fn e2e_tree_filter_narrows_and_esc_clears() {
     s.see("data.csv");
     s.esc(); // clear
     assert_eq!(s.app.tab.entries.len(), all, "Esc で全件に戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -713,7 +711,6 @@ fn e2e_filter_over_budget_stays_usable_and_fills_in_from_the_worker() {
     s.esc();
     s.see("readme.md");
     crate::app::set_filter_scan_budget(None);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -822,7 +819,6 @@ fn e2e_filter_cursor_keeps_its_file_when_the_worker_result_reorders_the_list() {
     );
 
     crate::app::set_filter_scan_budget(None);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -835,7 +831,6 @@ fn e2e_tree_hidden_toggle() {
     s.see(".hidden.txt");
     s.key('.');
     s.dont_see(".hidden.txt");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -853,7 +848,6 @@ fn e2e_tree_descend_and_parent() {
     s.see("lib.rs");
     s.key('h');
     assert_eq!(s.app.tab.root, root, "h で親へ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -866,7 +860,6 @@ fn e2e_sort_menu_switches_order() {
     s.key('s'); // by size
                 // The menu closes and the order has changed (directories still stay first).
     assert!(!s.app.is_sort_menu());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -901,7 +894,6 @@ fn e2e_file_create_via_dialog() {
         dir.join("src/inner.txt").exists(),
         "ディレクトリ選択時はその中に作成される"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Creating a file that already exists must flash in whichever language the UI is configured for
@@ -947,9 +939,6 @@ fn e2e_file_create_existing_name_flashes_in_ui_language() {
         flash_jp.contains("既に存在します: "),
         "日本語 UI では日本語で: {flash_jp:?}"
     );
-
-    std::fs::remove_dir_all(&dir_en).ok();
-    std::fs::remove_dir_all(&dir_jp).ok();
 }
 
 #[test]
@@ -971,7 +960,6 @@ fn e2e_file_duplicate_in_place() {
         "複製の内容が元と同一"
     );
     s.see("notes copy.txt"); // it appears in the tree (refresh+reveal), selected
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -990,7 +978,6 @@ fn e2e_file_rename_via_dialog() {
     s.enter();
     assert!(dir.join("renamed.txt").exists(), "新名で存在");
     assert!(!dir.join("notes.txt").exists(), "旧名は消える");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1009,7 +996,6 @@ fn e2e_file_delete_cancel_and_permanent() {
     s.key('d');
     s.key('!');
     assert!(!dir.join("notes.txt").exists(), "完全削除で消える");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -1028,7 +1014,6 @@ fn e2e_preview_text_roundtrip() {
     s.see("alpha");
     s.key('q');
     assert_eq!(s.app.tab.mode, Mode::Tree, "q でツリーへ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // A file with (almost) no newlines — minified JS, a one-line JSON log — must behave like any other
@@ -1106,7 +1091,6 @@ fn e2e_preview_one_huge_line_file_stays_responsive() {
     s.see("xxxxxxxx");
     s.key('q');
     assert_eq!(s.app.tab.mode, Mode::Tree, "q でツリーへ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1128,7 +1112,6 @@ fn e2e_markdown_link_follow_and_back() {
             .is_some_and(|p| p.ends_with("notes.txt")),
         "リンク先へ遷移"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1146,7 +1129,6 @@ fn e2e_markdown_checkbox_space_toggles_file() {
         src.contains("- [x] task one"),
         "Space でファイルに書き戻る: {src}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1164,7 +1146,6 @@ fn e2e_csv_table_cell_navigation() {
     assert_ne!(r0, r1, "hjkl でセルカーソルが動く");
     s.key('q');
     assert_eq!(s.app.tab.mode, Mode::Tree);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1191,7 +1172,6 @@ fn e2e_zip_archive_opens_as_table() {
     assert!(s.app.is_table_preview());
     s.key('q');
     assert_eq!(s.app.tab.mode, Mode::Tree);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `Enter`'s full-text popup: the grid truncates at column width (40), but the popup shows the raw
@@ -1223,7 +1203,6 @@ fn e2e_table_cell_popup_shows_full_text_not_truncated() {
         Mode::Preview,
         "q はポップアップだけ閉じる(テーブルへ留まる・ツリーへは戻らない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A newline inside CSV quotes (e.g. a multi-line address field) stays intact (as a real newline) in
@@ -1251,7 +1230,6 @@ fn e2e_table_cell_popup_shows_multiline_cell_and_esc_closes() {
     s.esc();
     s.dont_see("CELL");
     assert_eq!(s.app.tab.mode, Mode::Preview, "Esc もツリーへは戻らない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The archive listing also goes through the same `TableData`, so the cell popup works via real keystrokes too.
@@ -1280,7 +1258,6 @@ fn e2e_zip_archive_cell_popup_shows_full_name_via_enter() {
     assert_eq!(view.text, long_name, "長いエントリ名も切り詰め無しで取れる");
     s.key('q');
     s.see("TABLE");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Route decorated Markdown search **through key input**. While staying in decorated display (not
@@ -1319,7 +1296,6 @@ fn e2e_decorated_markdown_search() {
 
     s.key('q');
     assert_eq!(s.app.tab.mode, Mode::Tree);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Route table search **through key input** too (`/` → query → Enter → n/N). Unit tests hit App's
@@ -1357,7 +1333,6 @@ fn e2e_table_search_jumps_to_matching_cell() {
     assert_eq!(s.app.tab.mode, Mode::Preview, "1回目の Esc では表に留まる");
     s.esc();
     assert_eq!(s.app.tab.mode, Mode::Tree, "2回目の Esc でツリーへ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1384,7 +1359,6 @@ fn e2e_preview_search_moves_between_matches() {
     s.see("needle line 100");
     s.key('N'); // back to the previous
     s.see("needle line 0");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -1421,7 +1395,6 @@ fn e2e_tabs_full_lifecycle() {
     // The tree's q closes the tab.
     s.key('q');
     assert_eq!(s.app.tab_count(), 1, "tree の q でタブが閉じる");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1453,7 +1426,6 @@ fn e2e_ctrl_t_opens_selected_in_new_tab() {
     s.ctrl('t');
     assert_eq!(s.app.tab_count(), 3);
     s.see("inside.txt"); // the new tab shows sub's contents
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1495,7 +1467,6 @@ fn e2e_shift_i_inserts_tab_right_of_current_and_shifts_the_rest() {
         "c.txt",
         "元 tab2 (c.txt) は 1 個右へずれて index3"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1509,7 +1480,6 @@ fn e2e_plain_t_still_appends_from_the_first_tab() {
     s.key('t');
     assert_eq!(s.app.tab_count(), 2);
     assert_eq!(s.app.active_tab_index(), 1, "t は末尾に追加");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1528,7 +1498,6 @@ fn e2e_shift_i_on_the_last_tab_appends_like_t() {
         2,
         "最後のタブからの I は末尾に追加(t と同じ)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1556,7 +1525,6 @@ fn e2e_shift_i_works_from_preview_and_preserves_the_original_tab() {
     s.see("HELLO_FROM_I");
     s.key(']');
     assert_eq!(s.app.active_tab_index(), 1);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -1603,7 +1571,6 @@ fn e2e_bookmarks_set_list_jump() {
     s.ctrl('d');
     let after = s.app.bookmarks.get('b').is_some() as u8 + s.app.bookmarks.get('z').is_some() as u8;
     assert_eq!(after, 1, "Ctrl-d で選択中の1件が削除される");
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -1656,7 +1623,6 @@ fn e2e_bookmark_overwrite_prompts_confirm_then_applies() {
             .is_some_and(|p| p.ends_with("data.csv")),
         "y で data.csv へ上書き"
     );
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -1684,7 +1650,6 @@ fn e2e_bookmark_overwrite_off_applies_silently() {
             .is_some_and(|p| p.ends_with("data.csv")),
         "confirm オフは即上書き"
     );
-    std::fs::remove_dir_all(&root).ok();
 }
 
 // =============================================================================
@@ -1753,7 +1718,6 @@ fn e2e_git_hub_stage_and_diff() {
     assert!(s.app.is_git_view(), "diff の q でハブへ戻る");
     s.key('q');
     assert_eq!(s.app.tab.mode, Mode::Tree);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -1772,7 +1736,6 @@ fn e2e_git_diff_from_tree_and_cycle_files() {
     assert_ne!(before, s.screen(), "n で別ファイルの diff へ");
     s.key('q');
     assert_eq!(s.app.tab.mode, Mode::Tree);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -1855,7 +1818,6 @@ fn e2e_diff_view_default_is_rendered_for_markdown() {
         marks.iter().any(|(_, m)| *m == DiffMark::Added),
         "New Section は Added のはず: {marks:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Performance regression: opening a Markdown diff straight into the `Rendered` presentation must
@@ -1882,7 +1844,6 @@ fn e2e_diff_view_rendered_open_calls_base_contents_once() {
         "diff を Rendered で開く間に base_contents が複数回呼ばれている(検証と実際の構築で\
          別々に取得している)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `[ui] diff_view = "source"` keeps the classic unified diff as the default — the config default
@@ -1900,7 +1861,6 @@ fn e2e_ui_diff_view_source_config_keeps_classic_diff() {
     s.key('d');
     assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
     s.dont_see("⟨rendered⟩");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// An unrecognized `[ui] diff_view` value falls back to `"rendered"` (the same "unknown = default"
@@ -1917,7 +1877,6 @@ fn e2e_diff_view_unknown_config_value_falls_back_to_rendered() {
     s.select("doc.md");
     s.key('d');
     assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `R` cycles a Markdown diff `Source → Rendered → Preview → Source` — starting from the default
@@ -1957,7 +1916,6 @@ fn e2e_diff_view_r_cycles_through_all_three_for_markdown() {
 
     s.key('R');
     assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A plain-text file's diff has no `Rendered` presentation at all — `R` cycles `Source ⇄ Preview`
@@ -1983,7 +1941,6 @@ fn e2e_diff_view_text_file_cycles_source_preview_only() {
     s.key('R');
     assert!(s.app.is_git_diff_preview());
     assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// An untracked Markdown file's `Rendered` diff marks every block `Added` (no committed baseline
@@ -2006,7 +1963,6 @@ fn e2e_diff_view_untracked_markdown_is_all_added() {
         marks.iter().all(|(_, m)| *m == DiffMark::Added),
         "未追跡ファイルは全ブロック Added のはず: {marks:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `n`/`N` moving to the next changed file preserves the current presentation when the new target
@@ -2049,7 +2005,6 @@ fn e2e_diff_view_n_next_file_preserves_presentation() {
         DiffView::Source,
         "rendered を持たないファイルへ移ったら source に丸める"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -2140,7 +2095,6 @@ fn e2e_diff_view_choice_survives_code_and_text_detours() {
         DiffView::Rendered,
         "プレーンテキストを経由しても markdown では rendered に戻るはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The same bug, its `[Source]`-only shape (an unclassified binary — no Markdown/Code/Text/Image/
@@ -2192,7 +2146,6 @@ fn e2e_diff_view_choice_survives_binary_source_only_detour_into_svg() {
         "SVG は3表現持つので choice どおり並べて表示になるはず(報告されたバグの実例)"
     );
     assert!(s.app.diff_media_active(), "SVG の Rendered は並べて表示");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Cycling `R` all the way to `Preview` and back — `Rendered → Preview` (enters the diff's own
@@ -2267,7 +2220,6 @@ fn e2e_diff_view_choice_source_via_r_cycle_survives_image_and_code_detours() {
         DiffView::Source,
         "画像とコードファイルを経由しても Source の選択が保たれるはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A `Rendered → Source` fallback forced by the async block-diff worker landing `Unavailable` (a
@@ -2309,7 +2261,6 @@ fn e2e_diff_view_choice_unaffected_by_rendered_unavailable_fallback() {
         DiffView::Rendered,
         "前のファイルのサイズ超過フォールバックに引きずられず rendered になるはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The same choice-preservation for a **follow-scoped** `n`/`N` cycle (`docs/FEATURE-MD-RENDERED-
@@ -2366,7 +2317,6 @@ fn e2e_diff_view_choice_follow_scoped_n_preserves_presentation() {
         DiffView::Rendered,
         "follow スコープの n でも choice は code ファイルを跨いで維持されるはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `PerTab::diff_view_choice` lives on the tab, not on `App`: two tabs reviewing the same repo keep
@@ -2417,7 +2367,6 @@ fn e2e_diff_view_choice_independent_per_tab() {
         DiffView::Rendered,
         "tab2 の選択も独立して保たれるはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A **fresh** open (`d` from the tree) is not a carry-over: it must start from `[ui] diff_view`
@@ -2447,7 +2396,6 @@ fn e2e_diff_view_fresh_open_resets_choice_to_config_default() {
         "新規に開いた diff は config 既定から始まるはず(前回の選択を引き継がない)"
     );
     assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Rendered);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `q` from the diff's `Preview` representation returns wherever `q` would have returned from the
@@ -2469,7 +2417,6 @@ fn e2e_diff_view_preview_representation_q_returns_to_tree() {
         Mode::Tree,
         "ツリーから開いた diff の Preview 表現は q でツリーへ"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The hub-opened counterpart of the test above: `q` from the `Preview` representation returns to
@@ -2491,7 +2438,6 @@ fn e2e_diff_view_preview_representation_q_returns_to_hub() {
         s.app.is_git_view(),
         "ハブから開いた diff の Preview 表現は q でハブへ"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Regression test for a real bug (rust-konoma-reviewer): `PerTab::preview_from_diff` was never
@@ -2566,7 +2512,6 @@ fn e2e_diff_view_preview_representation_link_to_another_file_clears_the_flag() {
         Mode::Tree,
         "q は通常どおりツリーへ戻るはず(古い diff/ハブへ飛んではいけない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The `Ctrl-n` (file-paging) counterpart of the test above: paging to a *different* file from the
@@ -2622,7 +2567,6 @@ fn e2e_diff_view_preview_representation_file_paging_clears_the_flag() {
     s.key('R');
     s.key('q');
     assert_eq!(s.app.tab.mode, Mode::Tree, "q は通常どおりツリーへ戻るはず");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A diff whose current content exceeds `FOLLOW_BASELINE_FILE_CAP` falls back to `Source` with a
@@ -2672,7 +2616,6 @@ fn e2e_diff_view_rendered_falls_back_to_source_for_oversized_file() {
     // (the render path) the way it used to. So the flash text itself, not only `app.flash`'s raw
     // state, must already be on the **screen buffer** after this single key press.
     s.see("unavailable");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Regression test for the real bug this round fixes (reported from the installed binary + tmux —
@@ -2725,7 +2668,6 @@ fn e2e_diff_view_rendered_front_matter_only_change_flashes_on_the_first_draw() {
         "front matter は block-diff の対象外なので印は付かないはず: {marks:?}"
     );
     s.see("only front matter changed");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The same front-matter-only degeneration as the test above, but entering `Rendered` via `R`
@@ -2766,7 +2708,6 @@ fn e2e_diff_view_rendered_front_matter_only_change_flashes_when_entered_via_r_cy
     s.key('R'); // Source -> Rendered
     assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
     s.see("only front matter changed");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Regression test pinning that the render path — `App::ensure_md_cache` (and, transitively,
@@ -2828,7 +2769,6 @@ fn e2e_diff_view_rendered_render_path_never_writes_flash_or_diff_view() {
     s.draw();
     assert_eq!(s.app.flash, None);
     assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A follow-originated jump (`App::follow_jump`) that opens `doc.md`'s diff also has to run
@@ -2916,7 +2856,6 @@ fn e2e_follow_diff_rendered_front_matter_only_flash_uses_follow_baseline_not_hea
         "follow ベースライン基準の front-matter-only フラッシュが出るはず: {:?}",
         s.app.flash
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Test-hole coverage: `f` (`toggle_follow_diff_scope`) inside a follow-opened `Rendered` diff must
@@ -2983,8 +2922,6 @@ fn e2e_follow_diff_rendered_f_toggle_switches_marks_between_scopes() {
         full_marks.len() > since_marks.len(),
         "f で全範囲に切り替えると AAA→XXX も変更として増えるはず: since={since_marks:?} full={full_marks:?}"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The ordinary decorated Markdown preview's own change gutter (§3): opening `doc.md` normally
@@ -3012,7 +2949,6 @@ fn e2e_md_preview_gutter_marks_changed_blocks() {
         marks.iter().any(|(_, m)| *m == PreviewMark::Added),
         "New Section は Added のはず: {marks:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Performance regression: building the ordinary Markdown preview's own change gutter must invoke
@@ -3045,7 +2981,6 @@ fn e2e_md_preview_gutter_build_calls_base_contents_once() {
         "通常プレビューのガター構築中に base_contents が複数回呼ばれている(判定と実マークで\
          別々に取得している)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Performance regression (performance investigation task, 段2): building the ordinary Markdown
@@ -3076,7 +3011,6 @@ fn e2e_md_preview_gutter_build_aligns_blocks_once() {
         "通常プレビューのガター構築中に diff_align が複数回呼ばれている(判定と実マークで\
          別々に parse+diff している)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Performance regression (`docs/STATUS.md` ★未修正 item 4): the diff's `Rendered` presentation
@@ -3131,7 +3065,6 @@ fn diff_rendered_build_aligns_blocks_once_per_ensure_md_cache_call() {
         rebuild_calls, 0,
         "幅変更での再構築でも align は 0 回のはず(landed ops を再利用)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // --- Markdown block-diff worker (`docs/STATUS.md` ★未修正 item 4, `src/app/md_diff.rs`) ---------
@@ -3195,7 +3128,6 @@ fn e2e_diff_rendered_shows_computing_placeholder_then_real_marks() {
             .any(|(_, m)| *m == crate::preview::markdown::DiffMark::Added),
         "New Section は Added のはず: {marks:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The ordinary decorated preview's own change gutter: the first frame (block-diff still in
@@ -3231,7 +3163,6 @@ fn e2e_md_preview_gutter_appears_only_after_worker_result_lands() {
         .expect("結果適用後は md_cache が構築されているはず");
     assert!(!marks.is_empty(), "結果適用後は印があるはず: {marks:?}");
     assert!(s.app.md_gutter_active(), "結果適用後はガター列があるはず");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A block-diff result superseded by a later dispatch for the **same file** (re-opening its diff
@@ -3296,7 +3227,6 @@ fn e2e_stale_md_diff_result_is_discarded_when_superseded_before_landing() {
         .diff_rendered_marks_for_test()
         .expect("現世代の結果適用後は md_cache が構築されているはず");
     assert!(!marks.is_empty(), "現世代の印があるはず: {marks:?}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// M8 (pre-merge review of PR #21): `App::kick_md_diff`'s own `md_diff_gen` bump, isolated from
@@ -3371,7 +3301,6 @@ fn e2e_stale_md_diff_result_is_discarded_when_a_later_kick_never_went_through_in
     s.draw();
     let marks = s.app.md_diff_marks_for_test().unwrap_or_default();
     assert!(!marks.is_empty(), "現世代(Gutter)の印があるはず: {marks:?}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A follow-session diff (`F` then jump into a changed file) computes its block-diff against the
@@ -3498,7 +3427,6 @@ fn e2e_md_preview_gutter_marks_are_empty_when_disabled() {
     s.enter();
     let marks = s.app.md_diff_marks_for_test().unwrap_or_default();
     assert!(marks.is_empty(), "git_gutter オフでは印を付けない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Real-bug regression (pre-merge review of PR #21): a "scroll to the first change" reservation
@@ -3691,7 +3619,6 @@ fn e2e_md_preview_gutter_is_empty_for_untracked_file() {
         marks.is_empty(),
         "未追跡ファイルの通常プレビューには印を付けない: {marks:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Test-hole coverage: the ordinary preview's own change gutter (§3) is Markdown-only
@@ -3741,7 +3668,6 @@ fn e2e_standalone_mmd_preview_never_gets_a_gutter() {
         marks.is_empty(),
         "単体 .mmd の通常プレビューには印が付いてはいけない: {marks:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A follow-opened diff's `Rendered` presentation compares against the **follow-start baseline**,
@@ -3804,7 +3730,6 @@ fn e2e_follow_diff_rendered_compares_against_follow_baseline_not_head() {
         "follow ベースライン(F 時点の dirty 内容)との比較なら Midway Section の削除が見えるはず: {marks:?}"
     );
     assert!(marks.iter().any(|(_, m)| *m == DiffMark::Removed));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Regression test for a real bug found on a real terminal (tmux, 100 columns): the change gutter
@@ -3885,8 +3810,6 @@ fn e2e_diff_view_rendered_row_after_mermaid_lands_where_the_cache_says() {
         actual_screen_row as usize, expected_screen_row,
         "キャッシュの想定行と実描画行が一致するはず(はみ出しラップで 1 行ズレていないか)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Test-hole coverage: swapping `md_first_diff_mark_row`'s source lookup (`MdCacheSource::Diff` →
@@ -3941,7 +3864,6 @@ fn e2e_diff_view_rendered_open_scrolls_to_first_change_below_the_fold() {
         "最初の変更行が画面内に入っているはず:\n{}",
         s.screen()
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Test-hole coverage, sibling of the diff-open test above: following into a decorated Markdown
@@ -4014,7 +3936,6 @@ fn e2e_follow_jump_into_decorated_file_scrolls_to_first_change_below_the_fold() 
         "最初の変更行が画面内に入っているはず:\n{}",
         s.screen()
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // --- The "scroll to first change" reservation's 5th defense layer (item (16) in the task that
@@ -4084,7 +4005,6 @@ fn e2e_diff_view_rendered_open_async_worker_defers_scroll_until_result_lands() {
         "最初の変更行が画面内に入っているはず:\n{}",
         s.screen()
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Async counterpart of `e2e_follow_jump_into_decorated_file_scrolls_to_first_change_below_the_fold`
@@ -4155,7 +4075,6 @@ fn e2e_follow_jump_into_decorated_file_async_worker_defers_scroll_until_result_l
         "最初の変更行が画面内に入っているはず:\n{}",
         s.screen()
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// An ordinary preview (no diff, no follow) never arms a "scroll to first change" reservation at
@@ -4206,7 +4125,6 @@ fn e2e_ordinary_preview_async_worker_result_does_not_scroll() {
         "通常プレビューは予約を持たないので、結果到着後もスクロールしてはならない: {}",
         s.app.tab.preview_scroll
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The `Rendered` presentation draws real mermaid diagrams, not a text-only fallback
@@ -4276,8 +4194,6 @@ fn e2e_diff_view_rendered_reserves_mermaid_fences_from_both_versions_and_survive
         3,
         "外部編集後は新しい内容(旧フェンス1つ+新フェンス2つ)で再構築されるはず"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -4294,7 +4210,6 @@ fn e2e_changed_filter_and_jumps() {
     s.see("new.txt");
     s.key('C');
     assert!(!s.app.changed_filter(), "C 再押下で解除");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -4314,7 +4229,6 @@ fn e2e_follow_mode_chip_toggles() {
     s.key('F');
     assert!(!s.app.follow_enabled(), "F の再押下で解除");
     s.dont_see("FOLLOW");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -4330,7 +4244,6 @@ fn e2e_help_open_close() {
     assert!(s.app.show_help);
     s.key('q');
     assert!(!s.app.show_help, "q でヘルプを閉じる");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4345,7 +4258,6 @@ fn e2e_quit_confirm_flow() {
     s.key('Q');
     s.key('y');
     assert!(s.quit, "y で終了");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4359,7 +4271,6 @@ fn e2e_info_popup() {
     s.see("notes.txt");
     s.key('q');
     assert!(!s.app.is_info());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -4400,7 +4311,6 @@ fn e2e_markdown_task_cycles_custom_states() {
         "3回目: [x]→[ ] へ巡回: {}",
         read()
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4424,7 +4334,6 @@ fn e2e_markdown_focus_forward_then_back() {
         first,
         "Shift-Tab で前のアイテムへ戻る"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4438,7 +4347,6 @@ fn e2e_last_tab_q_quits_when_confirm_off() {
     assert_eq!(s.app.tab_count(), 1);
     s.key('q');
     assert!(s.quit, "最後のタブでの q は終了する");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4452,7 +4360,6 @@ fn e2e_last_tab_q_confirms_when_confirm_on() {
     assert!(s.app.is_dialog(), "終了確認ダイアログが開く");
     s.key('q'); // qq confirms quitting
     assert!(s.quit, "qq で終了");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4477,7 +4384,6 @@ fn e2e_global_bookmark_shows_absolute_path() {
         disp.starts_with('/') || disp.starts_with('~'),
         "グローバルは絶対パス表示: {disp}"
     );
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -4505,7 +4411,6 @@ fn e2e_preview_visual_selection_and_cancel() {
         s.app.is_preview_visual() && s.app.preview_visual_linewise(),
         "V は linewise"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4523,7 +4428,6 @@ fn e2e_copy_leader_opens_and_cancels() {
     );
     s.esc();
     assert_eq!(s.app.pending_leader, None, "Esc でリーダー解除");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4543,7 +4447,6 @@ fn e2e_sort_reverse_flips_order() {
     assert_ne!(before, after, "反転で並びが変わる");
     s.esc(); // close the menu
     assert!(!s.app.is_sort_menu(), "Esc でメニューが閉じる");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4566,7 +4469,6 @@ fn e2e_anchor_reanchor_and_reset() {
         s.app.tab.root.ends_with("src"),
         "アンカーは root を動かさない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -4588,7 +4490,6 @@ fn e2e_git_hub_to_log_shows_commit_subject() {
     s.see("init"); // the commit subject (summary)
     s.key('q'); // log's q returns to the hub
     assert!(s.app.is_git_view(), "log の q でハブへ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -4605,7 +4506,6 @@ fn e2e_git_graph_shows_commit_nodes() {
     s.see("●"); // the commit/working-tree node glyph
     s.key('q');
     assert!(s.app.is_git_view(), "グラフの q でハブへ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -4623,7 +4523,6 @@ fn e2e_git_graph_set_and_clear_base() {
     s.see("⌖ base:"); // base appended in the title
     s.key('x'); // clear the base
     s.dont_see("⌖ base:");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -4641,7 +4540,6 @@ fn e2e_git_branches_view_lists_branches() {
     s.see("*"); // the current-branch marker
     s.key('q');
     assert!(s.app.is_git_view(), "branches の q でハブへ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -4697,7 +4595,6 @@ fn e2e_git_worktrees_view_lists_and_enter_switches_root() {
     assert!(matches!(s.app.tab.mode, Mode::Tree), "切替後は Tree 表示");
 
     std::fs::remove_dir_all(&linked).ok();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -4746,7 +4643,6 @@ fn e2e_git_worktrees_ctrl_t_opens_in_new_tab_leaving_current_tab_untouched() {
     );
 
     std::fs::remove_dir_all(&linked).ok();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `o` `w` `n`: type a branch name into the input dialog, submit → `git worktree add` creates it
@@ -4795,7 +4691,6 @@ fn e2e_git_worktree_create_switches_into_it() {
     );
 
     std::fs::remove_dir_all(&expected).ok();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -4819,7 +4714,6 @@ fn e2e_git_worktrees_enter_on_current_worktree_flashes_and_returns_to_hub() {
         "ハブへ戻る（root は動かないので Tree ではない）"
     );
     assert_eq!(s.app.tab.root, root, "root は不変");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -4912,7 +4806,6 @@ fn e2e_git_worktrees_refuses_bare_and_prunable_targets() {
     s.see("missing");
 
     std::fs::remove_dir_all(&wt).ok();
-    std::fs::remove_dir_all(&bare).ok();
     std::fs::remove_dir_all(&src).ok();
 }
 
@@ -4998,7 +4891,6 @@ fn e2e_git_worktree_show_changes_opens_detail_with_title_and_returns_to_list() {
     assert!(!s.app.is_git_view());
 
     std::fs::remove_dir_all(&linked).ok();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -5033,7 +4925,6 @@ fn e2e_git_worktree_show_changes_works_on_the_currently_active_worktree() {
 
     s.key('q');
     assert!(s.app.is_git_worktrees(), "一覧へ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -5092,7 +4983,6 @@ fn e2e_git_worktree_show_changes_refuses_bare_worktree() {
     s.see("bare repository");
 
     std::fs::remove_dir_all(&wt).ok();
-    std::fs::remove_dir_all(&bare).ok();
     std::fs::remove_dir_all(&src).ok();
 }
 
@@ -5111,7 +5001,6 @@ fn e2e_git_commit_detail_shows_full_message() {
     s.see("Second body paragraph."); // body paragraph 2
     s.key('q'); // detail's q returns to the log behind it (the log isn't closed)
     assert!(s.app.is_git_log(), "詳細の q で log へ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -5129,7 +5018,6 @@ fn e2e_git_graph_branch_picker_toggles() {
     s.key('q'); // cancel (git_graph_picker_cancel)
     assert!(!s.app.is_git_graph_picker(), "q でパネルを閉じる");
     assert!(s.app.is_git_graph(), "パネルを閉じるとグラフへ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -5319,8 +5207,6 @@ fn e2e_jj_write_actions_are_gated_by_the_read_only_backend() {
         s.app.is_git_diff_preview(),
         "a refused GitDiffDiscard must not leave the diff view"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Pins `[external] vcs = "jj"` for **this thread only**.
@@ -5426,8 +5312,6 @@ fn e2e_jj_write_gate_holds_in_a_colocated_repository_pinned_to_jj() {
         before, after,
         "the read-only gate must leave the real .git untouched, byte for byte"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `R` (`jj_start_sync`) on a repository that is not jj — this needs no jj binary at all: the check
@@ -5451,7 +5335,6 @@ fn e2e_jj_sync_key_on_a_git_repo_flashes_and_opens_nothing() {
         !s.app.is_dialog(),
         "R on a non-jj repository must not open the sync confirmation"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The full `R` round trip on an actual jj repository: ask (`confirm_jj_sync` defaults on) → `y`
@@ -5481,7 +5364,6 @@ fn e2e_jj_sync_full_round_trip_confirms_and_reports_completion() {
         "the confirmed sync must report completion or failure, got {:?}",
         s.app.flash
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `w` (worktree list) in a jj repository: konoma does not list jj workspaces yet, and a colocated
@@ -5512,7 +5394,6 @@ fn e2e_jj_worktrees_key_flashes_instead_of_opening_the_git_list() {
         !s.app.is_git_worktrees(),
         "the git worktree list must not open for a jj repository"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `a` (`GitGraphToggleAll`) means different things per backend: git's graph is already every
@@ -5572,7 +5453,6 @@ fn e2e_git_graph_toggle_all_differs_between_git_and_jj() {
         "pressing a again must narrow back to the default range, got {:?}",
         sj.app.flash
     );
-    std::fs::remove_dir_all(&jj_dir).ok();
 }
 
 // =============================================================================
@@ -5699,8 +5579,6 @@ fn e2e_tab_switch_between_git_and_jj_settles_the_backend_each_time() {
         crate::vcs::VcsKind::Git,
         "2周目のタブ切替でも git_vcs は正しく戻る"
     );
-
-    std::fs::remove_dir_all(&parent).ok();
 }
 
 /// The jj-backed sibling of `e2e_follow_opens_full_screen_diff`: same scenario, but the repository
@@ -5735,7 +5613,6 @@ fn e2e_jj_follow_opens_full_screen_diff() {
         Some((1, 1)),
         "セッションに 1 ファイル → (1/1)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The full-screen diff's `Rendered` presentation on the jj backend (`docs/FEATURE-MD-RENDERED-DIFF.md`
@@ -5826,8 +5703,6 @@ fn e2e_jj_diff_view_rendered_marks_and_r_cycle_no_discard_hint() {
     s.key('R'); // Source -> Rendered
     assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
     assert!(!footer_has_discard(&s));
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A jj workspace like `jj_seed_repo`, but with **three tracked files** so a test can leave one
@@ -5930,8 +5805,6 @@ fn e2e_jj_changed_filter_narrows_and_n_jumps_between_changed_files() {
     s.key('C');
     assert!(!s.app.changed_filter(), "C 再押下で解除");
     assert_eq!(s.app.tab.entries.len(), all, "解除で全件(3枚)に戻る");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The jj-backed sibling of `e2e_ui_git_gutter_toggle_shows_or_hides_change_marker`: same scenario,
@@ -6018,7 +5891,6 @@ fn e2e_copy_path_strings_from_tree() {
     assert_eq!(s.app.pending_leader, Some(crate::keymap::LeaderId::Copy));
     s.key('@');
     assert_eq!(s.app.pending_leader, None, "y→@ でリーダーが消費される");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6040,7 +5912,6 @@ fn e2e_copy_atref_is_open_dir_relative_when_descended() {
         Some("@src/lib.rs"),
         "@ 参照は起動位置からの厳密相対(現在の root ではない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6077,7 +5948,6 @@ fn e2e_preview_at_ref_line_reference() {
     // Y copies the reference and exits the selection (the value goes through the clipboard = environment-dependent, so only confirm that it exited).
     s.key('Y');
     assert!(!s.app.is_preview_visual(), "Y で参照コピー後に選択解除");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -6116,7 +5986,6 @@ fn e2e_git_commit_copy_values() {
     );
     s.key('t');
     assert_eq!(s.app.pending_leader, None, "y→t でリーダー消費");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -6157,7 +6026,6 @@ fn e2e_follow_opens_full_screen_diff() {
         Some((1, 1)),
         "セッションに 1 ファイル → (1/1)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -6205,7 +6073,6 @@ fn e2e_follow_diff_cycles_session_files() {
         Some((1, 2)),
         "N で 1 番目へ戻る"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -6248,7 +6115,6 @@ fn e2e_f_toggles_follow_diff_scope_without_breaking_follow() {
         Some(crate::i18n::Msg::FollowShowSince),
         "2 回目の f で範囲が開始以降へ戻る"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -6282,7 +6148,6 @@ fn e2e_follow_survives_scroll_and_cycle_breaks_only_on_q() {
     );
     s.key('q');
     assert!(!s.app.follow_enabled(), "q(diff を出る)でだけフォロー解除");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -6337,7 +6202,6 @@ fn e2e_md_table_renders_box_and_aligns_cjk() {
     assert!(head.len() >= 4, "外枠+列区切りの │ が並ぶ: {head:?}");
     assert_eq!(head, d1, "ヘッダとデータ行1で列が揃う(CJK 桁): {scr}");
     assert_eq!(head, d2, "ヘッダとデータ行2で列が揃う(CJK 桁): {scr}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6373,7 +6237,6 @@ fn e2e_md_table_cell_link_shows_label_hides_url() {
         "表内リンクの Enter で ./notes.txt を開く"
     );
     s.see("alpha"); // notes.txt's content
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6402,7 +6265,6 @@ fn e2e_md_html_details_collapse_and_toggle() {
                                // Toggling again collapses it.
     s.enter();
     s.dont_see("hidden body line");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6433,7 +6295,6 @@ fn e2e_md_thematic_break_becomes_rule_and_fenced_dashes_kept() {
     assert!(has_rule, "--- が全幅 ─ 罫線になる:\n{}", s.screen());
     // --- inside a fence stays literal (since extras run after the code path, there's no false trigger).
     s.see("raw --- text");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -6530,13 +6391,12 @@ fn e2e_markdown_alert_all_five_types_and_aliases() {
         "> [!CAUTION]\n> c\n\n",
         "> [!danger] Aliased\n> d\n",
     );
-    let (s, dir) = md_preview(Config::default(), "alert_types", body);
+    let (s, _dir) = md_preview(Config::default(), "alert_types", body);
     for label in ["Note", "Tip", "Important", "Warning", "Caution"] {
         s.see(label);
     }
     s.see("Caution — Aliased"); // danger alias → Caution, with its inline title
     s.dont_see("[!");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6550,35 +6410,32 @@ fn e2e_markdown_autolink_emoji_alerts_toggle_off() {
     cfg.ui.md_autolink = false;
     cfg.ui.md_emoji = false;
     cfg.ui.md_alerts = false;
-    let (s, dir) = md_preview(cfg, "md_toggles_off", body);
+    let (s, _dir) = md_preview(cfg, "md_toggles_off", body);
     assert!(s.app.md_link_targets().is_empty(), "autolink off: no links");
     s.see(":rocket:"); // emoji off: literal
     s.see("https://x.example"); // not a link
     s.see("[!WARNING]"); // alerts off: raw marker kept
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_markdown_inline_html_renders() {
     let body = "Press <kbd>Ctrl</kbd>. H<sub>2</sub>O. <del>old</del> new.\n";
-    let (s, dir) = md_preview(Config::default(), "inline_html", body);
+    let (s, _dir) = md_preview(Config::default(), "inline_html", body);
     s.see("Ctrl"); // <kbd> content, rendered as an inline-code keycap
     s.see("H₂O"); // <sub> → Unicode subscript
     s.see("new"); // surrounding text intact
     s.dont_see("<kbd>"); // raw tags gone
     s.dont_see("<sub>");
     s.dont_see("<del>");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_markdown_footnotes_render_superscript_and_section() {
     let body = "A claim.[^src] More text.\n\n[^src]: The evidence.\n";
-    let (s, dir) = md_preview(Config::default(), "footnotes", body);
+    let (s, _dir) = md_preview(Config::default(), "footnotes", body);
     s.see("¹"); // superscript reference marker
     s.dont_see("[^src]"); // raw reference and definition are gone
     s.see("The evidence."); // definition text in the footnotes section
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Documentation *of* a syntax must survive the preview. Both preprocessing passes run in the app
@@ -6598,7 +6455,7 @@ fn e2e_markdown_code_span_examples_are_not_rewritten() {
         "A line break tag is `<br>`.\n\n",
         "[^1]: The note.\n",
     );
-    let (s, dir) = md_preview(cfg_code_bg_none(), "code_span_examples", body);
+    let (s, _dir) = md_preview(cfg_code_bg_none(), "code_span_examples", body);
     // The examples survive verbatim…
     s.see("<kbd>Ctrl</kbd>");
     s.see("[^1]");
@@ -6609,7 +6466,6 @@ fn e2e_markdown_code_span_examples_are_not_rewritten() {
     s.see("¹"); // the reference outside the span became a superscript
     s.see("The note."); // and its definition moved into the footnotes section
     s.see("Ctrl"); // the <kbd> outside the span became a keycap
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The same invariant as the test above, but for CommonMark's *other* kind of code block — a
@@ -6628,7 +6484,7 @@ fn e2e_markdown_indented_and_fenced_code_blocks_protect_the_same_notations() {
         "Outside: real[^1] and <kbd>Ctrl</kbd>, and another[^2].\n\n",
         "[^1]: The note.\n[^2]: The other note.\n",
     );
-    let (s, dir) = md_preview(cfg_code_bg_none(), "fence_and_indent_protect", body);
+    let (s, _dir) = md_preview(cfg_code_bg_none(), "fence_and_indent_protect", body);
     // Both blocks' examples survive verbatim — neither the reference nor the tag was converted.
     s.see("[^1] <kbd>K</kbd>"); // fenced block
     s.see("[^2] <kbd>J</kbd>"); // indented block
@@ -6638,7 +6494,6 @@ fn e2e_markdown_indented_and_fenced_code_blocks_protect_the_same_notations() {
     s.see("²"); // another[^2] outside → superscript 2
     s.see("The note.");
     s.see("The other note.");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `<br>` inside either kind of code block used to inject a real newline *into* the block, splitting
@@ -6655,7 +6510,7 @@ fn e2e_markdown_br_inside_a_code_block_does_not_split_it() {
         "    leftind<br>rightind\n\n",
         "Outside: before<br>after.\n",
     );
-    let (s, dir) = md_preview(cfg_code_bg_none(), "br_code_block_integrity", body);
+    let (s, _dir) = md_preview(cfg_code_bg_none(), "br_code_block_integrity", body);
     // Inside either block, the tag and both halves of the line stay together — one screen row.
     s.see("left<br>right");
     s.see("leftind<br>rightind");
@@ -6668,7 +6523,6 @@ fn e2e_markdown_br_inside_a_code_block_does_not_split_it() {
          after_row={after_row}\n{}",
         s.screen()
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Root cause (2026-08): rewriting `<br>` unconditionally into `"  \n"` injects a line that carries
@@ -6696,7 +6550,7 @@ fn e2e_markdown_br_in_an_alert_keeps_the_callout_and_its_fence_whole() {
         "> ```\n",
         "\nAfter the note.\n",
     );
-    let (mut s, dir) = md_preview(cfg_code_bg_none(), "br_alert_callout", body);
+    let (mut s, _dir) = md_preview(cfg_code_bg_none(), "br_alert_callout", body);
 
     // The row holding each piece of the body also carries the callout's own bar — i.e. the text is
     // still *inside* the box, not text that escaped it.
@@ -6753,7 +6607,6 @@ fn e2e_markdown_br_in_an_alert_keeps_the_callout_and_its_fence_whole() {
     );
     // The document continues normally below the callout.
     s.see("After the note.");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `$…$` inside an indented code block must not be lifted out onto its own image row — the same
@@ -6781,7 +6634,6 @@ fn e2e_markdown_math_inside_an_indented_code_block_is_not_lifted_as_an_image() {
          lifted out as a second one"
     );
     s.see("literal $x$ stays text"); // the indented block's dollar sign stays literal, on screen
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The one case in `literal_code_mask`'s own doc comment where `fence_mask`, not `code_block_mask`,
@@ -6801,12 +6653,11 @@ fn e2e_markdown_details_summary_then_a_fence_with_no_blank_line_stays_literal() 
         "Outside: real[^1] and <kbd>Ctrl</kbd>.\n\n",
         "[^1]: The note.\n",
     );
-    let (s, dir) = md_preview(cfg, "details_fence_no_blank_e2e", body);
+    let (s, _dir) = md_preview(cfg, "details_fence_no_blank_e2e", body);
     s.see("[^1] <kbd>K</kbd>"); // the fence right after <summary>, no blank line, stays literal
     s.dont_see("<kbd>Ctrl</kbd>"); // the identical tag outside the details block still converts
     s.see("¹");
     s.see("The note.");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6814,9 +6665,8 @@ fn e2e_markdown_footnotes_off_stays_literal() {
     let body = "A claim.[^src]\n\n[^src]: The evidence.\n";
     let mut cfg = Config::default();
     cfg.ui.md_footnotes = false;
-    let (s, dir) = md_preview(cfg, "footnotes_off", body);
+    let (s, _dir) = md_preview(cfg, "footnotes_off", body);
     s.see("[^src]"); // literal, unprocessed
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Shared by the on/off front-matter pair below so the two configs render **the same source** —
@@ -6836,7 +6686,7 @@ const FRONT_MATTER_BODY: &str = concat!(
 fn e2e_markdown_front_matter_renders_as_metadata() {
     // Leading `---`…`---` is shown as a metadata block; the body (and its heading anchors) render
     // normally after it. Anchor jump on a heading defined below the front matter still resolves.
-    let (mut s, dir) = md_preview(Config::default(), "frontmatter", FRONT_MATTER_BODY);
+    let (mut s, _dir) = md_preview(Config::default(), "frontmatter", FRONT_MATTER_BODY);
     s.see("title"); // metadata key
     s.see("My Doc"); // metadata value
     s.see("author");
@@ -6870,7 +6720,6 @@ fn e2e_markdown_front_matter_renders_as_metadata() {
         s.app.flash.is_none(),
         "anchor resolves (no 'not found' flash)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6879,7 +6728,7 @@ fn e2e_markdown_front_matter_off_leaves_body_intact() {
     // in what follows is attributable to `md_frontmatter` and nothing else.
     let mut cfg = Config::default();
     cfg.ui.md_frontmatter = false;
-    let (s, dir) = md_preview(cfg, "frontmatter_off", FRONT_MATTER_BODY);
+    let (s, _dir) = md_preview(cfg, "frontmatter_off", FRONT_MATTER_BODY);
     // Recognition off: the title line and body both still render (no crash, old behavior). This much
     // is true in *both* configs (see the comment on the `on` test), so on its own it does not prove
     // recognition is off.
@@ -6899,7 +6748,6 @@ fn e2e_markdown_front_matter_off_leaves_body_intact() {
          tui-markdown が描いていた挙動を再現したもの) — konoma 側の\
          Cyan+DIM key 色にはならない(pre-pass が走っていない証拠)",
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6910,7 +6758,7 @@ fn e2e_outline_lists_headings_and_jumps() {
         body.push_str(&format!("filler line {i}\n\n"));
     }
     body.push_str("## Deep Section\n\ndeep body text\n");
-    let (mut s, dir) = md_preview(Config::default(), "outline_jump", &body);
+    let (mut s, _dir) = md_preview(Config::default(), "outline_jump", &body);
     assert_eq!(s.app.tab.preview_scroll, 0);
     s.key('o');
     assert!(s.app.is_outline(), "o opens the outline");
@@ -6927,12 +6775,11 @@ fn e2e_outline_lists_headings_and_jumps() {
         "jumped down to the deep heading"
     );
     s.see("Deep Section");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_outline_toggle_and_esc_close() {
-    let (mut s, dir) = md_preview(
+    let (mut s, _dir) = md_preview(
         Config::default(),
         "outline_toggle",
         "# A\n\nx\n\n## B\n\ny\n",
@@ -6945,14 +6792,13 @@ fn e2e_outline_toggle_and_esc_close() {
     assert!(s.app.is_outline());
     s.esc(); // Esc also closes
     assert!(!s.app.is_outline());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_outline_closes_on_new_tab() {
     // The outline overlay is app-global; opening a new tab (`t`, inherited from global while the
     // overlay is up) must close it, or an empty overlay would linger over the fresh tab.
-    let (mut s, dir) = md_preview(
+    let (mut s, _dir) = md_preview(
         Config::default(),
         "outline_newtab",
         "# A\n\nx\n\n## B\n\ny\n",
@@ -6962,7 +6808,6 @@ fn e2e_outline_closes_on_new_tab() {
     s.key('t'); // global new tab
     assert!(!s.app.is_outline(), "a new tab closes the outline overlay");
     assert_eq!(s.app.tab.mode, Mode::Tree, "the new tab is a fresh tree");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6979,7 +6824,6 @@ fn e2e_outline_empty_flashes_on_plain_text() {
         "no overlay opens for a non-Markdown preview"
     );
     assert!(s.app.flash.is_some(), "a 'no headings' flash is shown");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6991,7 +6835,7 @@ fn e2e_markdown_anchor_jump_scrolls_to_heading() {
         body.push_str(&format!("line {i}\n\n"));
     }
     body.push_str("## The Target\n\ndestination text\n");
-    let (mut s, dir) = md_preview(Config::default(), "anchor_jump", &body);
+    let (mut s, _dir) = md_preview(Config::default(), "anchor_jump", &body);
     assert_eq!(s.app.tab.preview_scroll, 0, "starts at the top");
     s.tab(); // focus the anchor link
     assert_eq!(s.app.focused_item(), Some(0));
@@ -7002,13 +6846,12 @@ fn e2e_markdown_anchor_jump_scrolls_to_heading() {
         s.app.tab.preview_scroll
     );
     s.see("The Target");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_markdown_anchor_jump_unknown_slug_flashes() {
     let body = "[bad](#nope)\n\n# Real Heading\n\nbody\n";
-    let (mut s, dir) = md_preview(Config::default(), "anchor_bad", body);
+    let (mut s, _dir) = md_preview(Config::default(), "anchor_bad", body);
     s.tab();
     s.enter();
     // Unknown anchor: a "no heading" flash, and no scroll.
@@ -7020,14 +6863,13 @@ fn e2e_markdown_anchor_jump_unknown_slug_flashes() {
         s.app.tab.preview_scroll, 0,
         "no scroll for a missing anchor"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn e2e_markdown_autolink_cjk_and_trailing_punctuation() {
     // Byte-boundary safety: a bare URL right after CJK, and trailing sentence punctuation trimmed.
     let body = "見るhttps://cjk.example、と (https://paren.example) を確認。\n";
-    let (s, dir) = md_preview(cfg_code_bg_none(), "autolink_cjk", body);
+    let (s, _dir) = md_preview(cfg_code_bg_none(), "autolink_cjk", body);
     assert_eq!(
         s.app.md_link_targets(),
         vec![
@@ -7036,7 +6878,6 @@ fn e2e_markdown_autolink_cjk_and_trailing_punctuation() {
         ],
         "CJK boundary + paren-wrapped URL both link, punctuation trimmed"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7064,7 +6905,6 @@ fn e2e_md_task_markers_render_ascii_or_nf_by_icons() {
     s2.see(&crate::ui::icons::task_icon(true).to_string()); //  '\u{f046}'
     s2.dont_see("[ ]");
     s2.dont_see("[x]");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7090,7 +6930,6 @@ fn e2e_md_raw_source_toggle() {
     s.key('R');
     assert!(!s.app.is_raw_source(), "R で装飾表示へ戻る");
     s.dont_see("· raw source");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7133,7 +6972,6 @@ fn e2e_markdown_edit_opens_near_scroll_position() {
         deep > 10,
         "スクロール後は後方のソース行(>10)を指すべき: {deep}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7184,7 +7022,6 @@ fn e2e_markdown_edit_content_anchor_hits_exact_line() {
         Some(heading_line),
         "content-anchor は見出しの正確なソース行 {heading_line} に着地すべき"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7230,8 +7067,6 @@ fn e2e_markdown_edit_lands_on_tab_focused_item() {
         Some(link_line),
         "Tab フォーカスのリンク行 {link_line}"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7276,7 +7111,6 @@ fn e2e_md_code_block_tab_focus_and_copy() {
     assert!(s.app.flash.is_some(), "y c でコピー通知が出る");
     s.tab(); // the task
     assert!(!s.app.md_focused_code());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Root cause (indented code blocks, 2026-08): a document containing a 4+-column indented code
@@ -7322,8 +7156,6 @@ fn e2e_md_indented_code_block_tab_focus_and_copy() {
     s.key('y');
     s.key('c');
     assert!(s.app.flash.is_some(), "字下げ側のコピー通知が出る");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Root cause (the document-level code mask, 2026-08 — reported by a user): an indented code block
@@ -7421,7 +7253,7 @@ fn e2e_md_centered_banner_draws_no_code_gutter() {
         "</p>\n",
         "\nOrdinary prose after the banner.\n",
     );
-    let (s, dir) = md_preview(cfg_code_bg_none(), "banner_no_gutter", body);
+    let (s, _dir) = md_preview(cfg_code_bg_none(), "banner_no_gutter", body);
     // No code block anywhere on screen, and no raw markup leaked into one.
     s.dont_see("▎");
     s.dont_see("</a>");
@@ -7430,7 +7262,6 @@ fn e2e_md_centered_banner_draws_no_code_gutter() {
     s.see("crates.io badge");
     s.see("MIT badge");
     s.see("Ordinary prose after the banner.");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The same banner **one container deep**, through the app pipeline.
@@ -7556,8 +7387,6 @@ fn e2e_md_code_block_in_a_list_item_is_copyable() {
         Some("fn top_level() {}"),
         "ライセンス文体の字下げ段落をコードと数えず、序数がずれない"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The same class of bug, but proven the other way around: an indented block that comes *before*
@@ -7581,8 +7410,6 @@ fn e2e_md_indented_code_block_before_fences_keeps_ordinals_correct() {
     assert_eq!(s.app.focused_code_text().as_deref(), Some("second fenced"));
     s.tab(); // 3rd: fenced
     assert_eq!(s.app.focused_code_text().as_deref(), Some("third fenced"));
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Root cause (heading/thematic-break/setext gate, 2026-08): an indented code block right after a
@@ -7630,8 +7457,6 @@ fn e2e_md_indented_code_after_heading_no_blank_keeps_fence_copyable() {
     s.key('y');
     s.key('c');
     assert!(s.app.flash.is_some(), "フェンス側のコピー通知も出る");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Root cause (container-closed fences, 2026-08): a fence is closed by a delimiter line **or** by the
@@ -7686,8 +7511,6 @@ fn e2e_md_fence_closed_by_its_list_item_still_renders_the_table_below() {
     s.key('y');
     s.key('c');
     assert!(s.app.flash.is_some(), "コピーが拒否されない");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The other axis the same gate was blind to: an **indented** code block (4+ columns), whose contents
@@ -7696,7 +7519,7 @@ fn e2e_md_fence_closed_by_its_list_item_still_renders_the_table_below() {
 /// `code_bg = "none"`, where a code block is only identifiable by its `▎` gutter.
 #[test]
 fn e2e_md_indented_code_block_keeps_table_and_alert_literal() {
-    let (s, dir) = md_preview(
+    let (s, _dir) = md_preview(
         cfg_code_bg_none(),
         "md_indented_literal",
         "Example table markup:\n\n    | a | b |\n    |---|---|\n    | 1 | 2 |\n\nExample alert markup:\n\n    > [!NOTE]\n    > body\n",
@@ -7709,7 +7532,6 @@ fn e2e_md_indented_code_block_keeps_table_and_alert_literal() {
     s.dont_see("┬");
     s.dont_see("▌");
     s.see("▎");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7755,7 +7577,6 @@ fn e2e_md_wrapped_focus_follows_offscreen_item() {
         "非折返しは追従スクロール不要(scroll 0 のまま)"
     );
     off.see("ZZLINK");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -7900,7 +7721,6 @@ fn e2e_tree_visual_selection_grows_then_commits() {
     assert!(!s.app.is_visual(), "v で範囲確定して visual を抜ける");
     assert!(s.app.has_selection(), "確定した集合が残る");
     assert_eq!(s.app.marked_count(), 2, "確定後は選択2件");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -8028,7 +7848,6 @@ fn e2e_path_style_cycles() {
     s.see("path:abs");
     s.key('p');
     assert_eq!(s.app.path_style, PathStyle::Relative, "巡回して先頭へ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8059,7 +7878,6 @@ fn e2e_csv_table_renders_and_navigates_without_rainbow() {
     assert_eq!(s.app.table_cursor(), (0, 0), "0 で先頭列");
     s.key('$'); // to the last column
     assert_eq!(s.app.table_cursor(), (0, 1), "$ で末列");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8079,7 +7897,6 @@ fn e2e_tabbar_overflow_markers_keep_active_visible() {
     s.see("›"); // right overflow marker (e<n)
     let label = s.app.tab_label(4);
     s.see(&format!("5:{label}")); // the active tab's chip stays visible
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8409,7 +8226,6 @@ fn e2e_paste_jump_github_url_switches_root() {
         s.app.tab.preview_path
     );
     s.see("GUIDE_MARKER");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8692,7 +8508,6 @@ fn e2e_preview_file_paging_ctrl_n_p() {
     assert!(s.app.tab.entries[s.app.tab.selected]
         .path
         .ends_with("z.txt"));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `[ui] restore_tabs`: the tab session is saved per launch directory, and on "restart" the tab
@@ -8744,9 +8559,6 @@ fn e2e_session_restore_reopens_previous_tabs() {
     s2.key('[');
     assert!(matches!(s2.app.tab.mode, Mode::Preview));
     s2.see("alpha body");
-
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::remove_dir_all(&base).ok();
 }
 
 // =============================================================================
@@ -8791,7 +8603,6 @@ fn e2e_search_opens_input_shows_prompt_and_query() {
     assert!(!s.app.is_searching());
     assert_eq!(s.app.preview_search_query(), Some("needle"));
     assert_eq!(s.app.search_status(), Some((1, 1)));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8810,7 +8621,6 @@ fn e2e_search_backspace_edits_query() {
     assert_eq!(s.app.search_input(), Some("needle"));
     s.esc();
     assert!(!s.app.is_searching());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8828,7 +8638,6 @@ fn e2e_search_esc_during_input_cancels_no_search() {
     assert_eq!(s.app.preview_search_query(), None);
     assert_eq!(s.app.search_status(), None);
     assert_eq!(s.app.tab.mode, Mode::Preview);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8846,7 +8655,6 @@ fn e2e_search_commit_populates_status_and_jumps_to_first() {
     assert_eq!(s.app.preview_search_query(), Some("MARK"));
     assert_eq!(s.app.search_status(), Some((1, 3)));
     s.see("x MARK a");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8871,7 +8679,6 @@ fn e2e_search_next_prev_cycle_with_wrap() {
     assert_eq!(s.app.search_status(), Some((3, 3)));
     s.key('N');
     assert_eq!(s.app.search_status(), Some((2, 3)));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8901,7 +8708,6 @@ fn e2e_search_scroll_follows_current_match() {
     s.see("MARK line 290");
     s.key('n');
     s.see("MARK line 10");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8920,7 +8726,6 @@ fn e2e_search_case_insensitive_matches() {
     s.enter();
     assert_eq!(s.app.search_status(), Some((1, 1)));
     s.see("WORLD marker here");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8947,7 +8752,6 @@ fn e2e_search_no_match_flash_and_empty_status() {
     s.esc();
     assert_eq!(s.app.preview_search_query(), None);
     assert_eq!(s.app.tab.mode, Mode::Preview);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8966,7 +8770,6 @@ fn e2e_search_esc_clears_then_second_esc_returns_to_tree() {
     assert_eq!(s.app.tab.mode, Mode::Preview);
     s.esc();
     assert_eq!(s.app.tab.mode, Mode::Tree);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8989,7 +8792,6 @@ fn e2e_search_counts_multiple_occurrences_per_line() {
     s.see("one TARGET two TARGET end");
     s.key('n');
     assert_eq!(s.app.search_status(), Some((3, 3)));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -9014,14 +8816,13 @@ fn e2e_search_works_in_code_preview() {
     s.enter();
     assert_eq!(s.app.search_status(), Some((1, 2)));
     s.see("fn alpha()");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `/` works on decorated Markdown too (it used to be rejected as "code/text only").
 /// Since the search target is the decorated lines, matches can be highlighted without switching to `R`'s raw source.
 #[test]
 fn e2e_search_works_on_decorated_markdown_preview() {
-    let (mut s, dir) = md_preview(
+    let (mut s, _dir) = md_preview(
         Config::default(),
         "doc",
         "# Title\n\nsome needle text here\n",
@@ -9034,7 +8835,6 @@ fn e2e_search_works_on_decorated_markdown_preview() {
     assert_eq!(s.app.preview_search_query(), Some("needle"));
     assert_eq!(s.app.search_status(), Some((1, 1)));
     assert!(!s.app.is_raw_source(), "raw ソースに切替わらない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A surface without a search model (images, etc.) still rejects it and notifies via flash, as before.
@@ -9052,7 +8852,6 @@ fn e2e_search_rejected_on_media_preview() {
     assert!(!s.app.is_searching(), "画像プレビューでは検索に入らない");
     assert_eq!(s.app.preview_search_query(), None);
     assert!(s.app.flash.is_some(), "拒否理由を flash で知らせる");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -9069,7 +8868,6 @@ fn e2e_search_empty_query_enter_is_noop() {
     assert_eq!(s.app.preview_search_query(), None);
     assert_eq!(s.app.search_status(), None);
     assert_eq!(s.app.tab.mode, Mode::Preview);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -9093,7 +8891,6 @@ fn e2e_search_cjk_query_matches_without_crash() {
     assert_eq!(s.app.search_status(), Some((1, 2)));
     s.key('n');
     assert_eq!(s.app.search_status(), Some((2, 2)));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -9119,7 +8916,6 @@ fn e2e_search_second_query_replaces_first() {
     assert_eq!(s.app.preview_search_query(), Some("SPOT"));
     assert_eq!(s.app.search_status(), Some((1, 1)));
     s.see("SPOT ccc");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- Windowed page/half-page scroll: real keystrokes (both key schemes) ----
@@ -9823,7 +9619,6 @@ fn e2e_git_stage_then_commit_appears_in_log() {
     assert!(s.app.is_git_log());
     s.see("ZZCOMMITSUBJECT");
     s.see("init");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // --- Background git writes through real key input (design principle #4) -----------------------
@@ -9899,7 +9694,6 @@ fn e2e_git_stage_and_commit_through_the_background_runner() {
     s.key('l');
     assert!(s.app.is_git_log());
     s.see("ASYNCCOMMITSUBJECT");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// **The point of D3, verified structurally rather than by a clock.** While `git commit` is parked
@@ -9975,7 +9769,6 @@ fn e2e_ui_keeps_responding_while_a_git_commit_is_blocked() {
             .map(|c| c.summary.clone())
             .collect::<Vec<_>>()
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `Q` while a git write is in flight must warn before quitting, even with `confirm_quit = false`:
@@ -10012,7 +9805,6 @@ fn e2e_quit_during_a_git_write_asks_for_confirmation() {
     assert!(s.quit, "y なら終了できる(引き止めない)");
 
     std::fs::remove_file(root.join(".git").join("BLOCK")).ok();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10027,7 +9819,6 @@ fn e2e_git_stage_unstage_roundtrip() {
     assert_eq!(staged_of(&s.app, "a.rs"), Some(true));
     s.key('u');
     assert_eq!(staged_of(&s.app, "a.rs"), Some(false));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10043,7 +9834,6 @@ fn e2e_git_stage_all_then_unstage_all() {
     assert!(s.app.git_view_entries().iter().all(|e| e.staged));
     s.key('U');
     assert!(s.app.git_view_entries().iter().all(|e| !e.staged));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10066,7 +9856,6 @@ fn e2e_git_diff_layout_toggle_cycles_in_preview() {
     s.key('s');
     s.see("diff: unified");
     assert!(!s.app.diff_is_split(200));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -10159,8 +9948,6 @@ fn e2e_gitdiff_unified_render_highlights_only_the_visible_rows() {
         calls_at_bottom > 0 && calls_at_bottom <= vh * 3,
         "末尾(G)へスクロールしても画面オーダーのはず(全{total_rows}行中{calls_at_bottom}回)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10207,8 +9994,6 @@ fn e2e_gitdiff_side_by_side_render_highlights_only_the_visible_rows() {
         calls_at_bottom > 0 && calls_at_bottom <= vh * 6,
         "side-by-side で末尾(G)へスクロールしても画面オーダーのはず(全{total_rows}行中{calls_at_bottom}回)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10228,7 +10013,6 @@ fn e2e_git_worktree_diff_toggle_layout_and_back() {
     s.key('q');
     assert!(!s.app.is_git_detail());
     assert!(s.app.is_git_view());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10265,7 +10049,6 @@ fn e2e_git_log_navigate_open_detail_and_back() {
     s.see(&second_subj); // `l` also opens the same commit's detail
     s.key('q');
     assert!(s.app.is_git_log());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10301,7 +10084,6 @@ fn e2e_git_graph_navigates_commit_rows() {
         after_j.is_some() && after_j.as_deref() != Some(top.as_str()),
         "j: {after_j:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10332,7 +10114,6 @@ fn e2e_git_graph_set_base_keeps_selection_then_clear() {
     s.key('x');
     s.dont_see("⌖ base:");
     assert!(s.app.git_graph_base_label().is_none());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10359,7 +10140,6 @@ fn e2e_git_graph_picker_current_only_then_all() {
     s.key('q');
     assert!(!s.app.is_git_graph_picker());
     assert!(s.app.is_git_graph());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10382,7 +10162,6 @@ fn e2e_git_branches_filter_narrows_and_clears() {
     s.esc();
     assert!(!s.app.git_branch_filtering());
     assert_eq!(s.app.git_branch_view().len(), 2);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10402,7 +10181,6 @@ fn e2e_git_branch_create_switches_to_it() {
     assert!(created.is_some());
     assert!(created.unwrap().is_current);
     assert!(s.app.is_git_view());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10429,7 +10207,6 @@ fn e2e_git_branch_delete_removes_feature_branch() {
         .git_branch_view()
         .iter()
         .any(|b| b.name == "feature-x"));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10460,7 +10237,6 @@ fn e2e_git_copy_leader_all_subkeys_consume_from_log() {
         s.key(sub);
         assert_eq!(s.app.pending_leader, None, "y->{sub}");
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10483,7 +10259,6 @@ fn e2e_git_copy_leader_opens_in_graph_and_detail() {
     assert_eq!(s.app.pending_leader, Some(crate::keymap::LeaderId::GitCopy));
     s.esc();
     assert_eq!(s.app.pending_leader, None);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -10510,7 +10285,6 @@ fn e2e_git_changed_filter_n_jumps_between_changed_files() {
         .ends_with("new.txt"));
     s.key('C');
     assert!(!s.app.changed_filter());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- Tree sort (size/modified/ext) + filtering edge cases ----
@@ -10541,7 +10315,6 @@ fn e2e_sort_by_size_orders_ascending() {
         .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
         .collect();
     assert_eq!(names, vec!["bbb.txt", "ccc.txt", "aaa.txt"]);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -10568,7 +10341,6 @@ fn e2e_sort_by_modified_orders_ascending() {
         .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
         .collect();
     assert_eq!(names, vec!["m_b.txt", "m_c.txt", "m_a.txt"]);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -10597,7 +10369,6 @@ fn e2e_sort_by_ext_orders_ascending() {
         .map(|e| e.path.file_name().and_then(|n| n.to_str()).unwrap_or(""))
         .collect();
     assert_eq!(names, vec!["zzz.aaa", "mmm.mmm", "aaa.zzz"]);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -10615,7 +10386,6 @@ fn e2e_tree_filter_no_matches_shows_empty_list() {
     assert!(s.app.tab.entries.is_empty());
     s.esc();
     assert_eq!(s.app.tab.entries.len(), all);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -10650,7 +10420,6 @@ fn e2e_tree_filter_is_case_insensitive() {
         .entries
         .iter()
         .any(|e| e.path.ends_with("UPPER.TXT")));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- CSV/table copy (y→c/r/C/f) ----
@@ -10677,7 +10446,6 @@ fn e2e_table_copy_leader_sub_keys_consume_and_flash() {
         assert_eq!(s.app.pending_leader, None, "sub={sub}");
         assert!(s.app.flash.is_some(), "sub={sub}");
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -10700,7 +10468,6 @@ fn e2e_table_copy_full_path_value() {
     );
     s.key('f');
     assert_eq!(s.app.pending_leader, None);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- Bookmarking from the preview (m / ') ----
@@ -10745,7 +10512,6 @@ fn e2e_bookmark_set_from_preview_targets_shown_file() {
         .bookmarks
         .get('x')
         .is_some_and(|p| p.ends_with("readme.md")));
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -10782,7 +10548,6 @@ fn e2e_bookmark_list_enter_jumps_to_file() {
         s.app.tab.preview_path
     );
     s.see("ALPHA_BODY");
-    std::fs::remove_dir_all(&root).ok();
 }
 
 // ---- Paste-jump (P) edge cases ----
@@ -10909,7 +10674,6 @@ fn e2e_fileop_delete_trash_removes_file() {
     s.key('y');
     assert!(!dir.join("notes.txt").exists());
     assert!(!s.app.is_dialog());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -10939,7 +10703,6 @@ fn e2e_fileop_rename_to_existing_name_fails() {
         "既に存在するので AlreadyExists の flash が出るはず: {:?}",
         s.app.flash
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -11011,7 +10774,6 @@ fn e2e_task_toggle_works_in_a_document_containing_an_alert() {
         out.contains("# Checklist") && out.contains("> [!NOTE]"),
         "{out}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Custom `ui.md_task_states` must cycle inside an alert too — the state char is written back through
@@ -11031,7 +10793,6 @@ fn e2e_task_custom_states_cycle_inside_an_alert() {
         s.key(' ');
         assert!(read().contains(want), "期待 {want}: {}", read());
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A collapsed `<details>` hides its checkboxes, so Space on the visible ones must still work: the
@@ -11084,7 +10845,6 @@ fn e2e_task_toggle_works_with_a_collapsed_details_block() {
         "隠れたタスクは変化しない: {out}"
     );
     s.dont_see("couldn't toggle checkbox");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Link spans and their targets are produced by two passes — `collapse_links` rewrites the rendered
@@ -11184,7 +10944,7 @@ fn e2e_tab_scrolls_whole_block_into_view() {
     }
     body.push_str("```\n\nafter\n");
 
-    let (mut s, dir) = md_preview(cfg_code_bg_none(), "blocks", &body);
+    let (mut s, _dir) = md_preview(cfg_code_bg_none(), "blocks", &body);
     let vh = s.app.preview_viewport_for_test().max(1) as usize;
     s.tab(); // the sole Tab target = the code block
     let scroll = s.app.tab.preview_scroll as usize;
@@ -11207,7 +10967,6 @@ fn e2e_tab_scrolls_whole_block_into_view() {
         block_bottom <= scroll + vh,
         "ブロック末尾が下に見切れている: bottom={block_bottom} scroll={scroll} viewport={vh}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The same guarantee for an **open** `<details>`: focusing its summary must reveal the body under it.
@@ -11223,7 +10982,7 @@ fn e2e_tab_scrolls_open_details_body_into_view() {
     }
     body.push_str("\n</details>\n");
 
-    let (mut s, dir) = md_preview(cfg_code_bg_none(), "detblocks", &body);
+    let (mut s, _dir) = md_preview(cfg_code_bg_none(), "detblocks", &body);
     let vh = s.app.preview_viewport_for_test().max(1) as usize;
     s.tab();
     let focused = s.app.focused_item().expect("details にフォーカス");
@@ -11240,7 +10999,6 @@ fn e2e_tab_scrolls_open_details_body_into_view() {
         "details 本文の末尾が見切れている: bottom={} scroll={scroll} viewport={vh}",
         btop + bh
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -11282,7 +11040,6 @@ fn e2e_delegated_command_text_preview_shows_captured_output() {
     s.see("line two");
     // The title still names the original file — the generated temp path never leaks into the UI.
     s.see("app.log");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -11409,7 +11166,7 @@ fn e2e_ui_keys_unknown_value_falls_back_to_vim_scheme() {
 fn e2e_markdown_tab_focus_reverses_only_the_focused_marker_style() {
     let mut cfg = Config::default();
     cfg.ui.icons = false; // plain "[ ]" checkbox / no link-icon prefix glyph to worry about
-    let (mut s, dir) = md_preview(
+    let (mut s, _dir) = md_preview(
         cfg,
         "focus_styles",
         "Read the [guide](https://example.com/guide) first.\n\n\
@@ -11511,8 +11268,6 @@ fn e2e_markdown_tab_focus_reverses_only_the_focused_marker_style() {
     // Confirmed by hand: opening a mermaid-only doc through this same harness, `focused_item()`
     // stays `None` through every `Tab` press (there is nothing to cycle to), so there is no
     // reachable "focused mermaid caption" state to assert on here.
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `distinct_fg_in_row`: a CSV/TSV preview's rainbow column coloring (`ui.csv_rainbow`, default on)
@@ -11531,7 +11286,6 @@ fn e2e_csv_rainbow_columns_use_distinct_foreground_colors() {
         "4列のヘッダ行は3色以上の前景色が混在するはず(レインボー)"
     );
     s.key('q');
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -11967,7 +11721,6 @@ fn e2e_ui_show_hidden_config_starts_with_dotfiles_visible() {
     cfg.ui.show_hidden = true;
     let s_on = Sim::with_config(&root, cfg);
     s_on.see(".hidden.txt"); // visible from the very first draw, no `.` key needed
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A fresh tab (`t` → `tab_new`) starts hidden-file visibility from `[ui] show_hidden` again — it
@@ -12001,7 +11754,6 @@ fn e2e_ui_show_hidden_new_tab_resets_to_config_default() {
     s_off.see(".hidden.txt");
     s_off.key('t'); // new tab
     s_off.dont_see(".hidden.txt"); // config default (off), not tab0's toggled-on state
-    std::fs::remove_dir_all(&dir_off).ok();
 }
 
 /// The `.` toggle flips correctly from both possible starting points (config on and config off) —
@@ -12031,7 +11783,6 @@ fn e2e_ui_show_hidden_dot_key_toggles_from_either_config_default() {
     s_off.see(".hidden.txt");
     s_off.key('.'); // toggle back
     s_off.dont_see(".hidden.txt");
-    std::fs::remove_dir_all(&dir_off).ok();
 }
 
 #[test]
@@ -12058,7 +11809,6 @@ fn e2e_ui_filter_mode_fuzzy_vs_substring_noncontiguous_query() {
         0,
         "substring は非連続クエリに一致しないはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12076,7 +11826,6 @@ fn e2e_ui_tabbar_always_vs_auto_with_a_single_tab() {
     cfg.ui.tabbar = "always".into();
     let s_always = Sim::with_config(&root, cfg);
     s_always.see(&chip); // shown even with a single tab
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12096,7 +11845,6 @@ fn e2e_ui_line_numbers_toggle_shows_gutter() {
     s_on.select("f.txt");
     s_on.enter();
     s_on.see("  1 alpha");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -12142,7 +11890,6 @@ fn e2e_ui_tab_width_changes_expansion_columns() {
     s8.enter();
     s8.see("→       X");
     s8.dont_see("→   X");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `tab_width`, inside a MARKDOWN FENCED CODE BLOCK specifically — the test just above only ever
@@ -12188,7 +11935,6 @@ fn e2e_ui_tab_width_changes_expansion_in_markdown_code_block() {
     s_huge.select("d.md");
     s_huge.enter();
     s_huge.see("→   X"); // clamped to the default, not a huge allocation
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12220,7 +11966,6 @@ fn e2e_ui_syntax_highlight_toggle_changes_color_diversity() {
         variety_on > variety_off,
         "既定はハイライトで複数色/off は単色のはず: on={variety_on} off={variety_off}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12263,7 +12008,6 @@ fn e2e_ui_preview_loading_indicator_vs_progressive_for_cold_language() {
     assert!(s_prog.app.is_highlight_pending());
     s_prog.see("UNIQUEBODYTEXT123");
     s_prog.dont_see("loading");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12281,7 +12025,6 @@ fn e2e_ui_path_style_config_sets_initial_style() {
         "config で起動時から full のはず(既定は relative — e2e_path_style_cycles参照)"
     );
     s.see("path:abs");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12300,7 +12043,6 @@ fn e2e_ui_lang_toggle_switches_footer_translation() {
     let s_jp = Sim::with_config(&root, cfg_jp);
     s_jp.dont_see("quit");
     s_jp.see("終"); // "終了" (quit)
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12323,7 +12065,6 @@ fn e2e_ui_statusbar_layout_split_vs_bottom_moves_context_row() {
         row_bottom, 0,
         "bottom: 上段は消え最終行にまとめて表示されるはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12388,7 +12129,6 @@ fn e2e_ui_image_render_scale_shrinks_display_rect() {
         target_small.width < target_default.width && target_small.height < target_default.height,
         "image_render_scale=0.3 は既定1.0より小さい表示矩形になるはず: small={target_small:?} default={target_default:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `svg_max_px`: a lower rasterization cap produces a raster with fewer pixels, which
@@ -12426,7 +12166,6 @@ fn e2e_ui_svg_max_px_changes_apparent_display_size() {
         target_small.width < target_default.width || target_small.height < target_default.height,
         "svg_max_px=40 は既定800より小さい見かけサイズになるはず: small={target_small:?} default={target_default:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12461,7 +12200,6 @@ fn e2e_ui_sort_config_sets_initial_order_without_pressing_s() {
         !s_cfg.app.is_sort_menu(),
         "メニューを開かず既に反映済みのはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -12517,7 +12255,6 @@ fn e2e_ui_graph_base_branches_config_auto_selects_base() {
     s_cfg.key('o');
     s_cfg.key('g');
     s_cfg.see("⌖ base:"); // auto-pinned without pressing `s`
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -12586,7 +12323,6 @@ fn e2e_ui_follow_view_file_shows_content_preview_not_diff() {
         "follow_view=\"file\" は diff でなく通常プレビューのはず(既定は diff — e2e_follow_opens_full_screen_diff参照)"
     );
     assert_eq!(s.app.tab.mode, Mode::Preview);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12598,10 +12334,9 @@ fn e2e_ui_md_inline_html_off_keeps_raw_tags() {
     let body = "H<sub>2</sub>O\n";
     let mut cfg = Config::default();
     cfg.ui.md_inline_html = false;
-    let (s, dir) = md_preview(cfg, "ui_inline_html_off", body);
+    let (s, _dir) = md_preview(cfg, "ui_inline_html_off", body);
     s.see("H2O"); // literal "2" — not converted to a Unicode subscript
     s.dont_see("H₂O");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12627,7 +12362,6 @@ fn e2e_ui_md_details_config_forces_open_despite_missing_attribute() {
     s_open.select("d.md");
     s_open.enter();
     s_open.see("BODYMARKER");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `math`: with a picker attached (only needed for `picker.font_size()` — decode itself is
@@ -12660,7 +12394,6 @@ fn e2e_ui_math_image_mode_lifts_expression_text_mode_keeps_it_inline() {
         "text モードは画像プレースメント無しのはず"
     );
     s_text.see("$E=mc^2$");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `math_color`: drives the real `md_encode_worker` (the same worker `main` spawns) so the
@@ -12718,7 +12451,6 @@ fn e2e_ui_math_color_changes_rendered_pixel_hue() {
         rgbs_red.iter().any(|&(r, g, b)| r > 20 && g == 0 && b == 0),
         "math_color=#ff0000 は赤チャンネルのみのはず: {rgbs_red:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `mermaid`: same reasoning as `math` above — a picker unlocks classification/sizing without
@@ -12748,7 +12480,6 @@ fn e2e_ui_mermaid_image_mode_shows_caption_text_mode_does_not() {
     s_text.enter();
     s_text.dont_see("◇ mermaid");
     assert!(s_text.app.md_images().is_empty());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `mermaid_theme`: same driven-encode-worker technique as `math_color`. "dark" paints near-black
@@ -12817,7 +12548,6 @@ fn e2e_ui_mermaid_theme_changes_rendered_pixel_brightness() {
         avg_dark < avg_neutral,
         "dark は neutral より暗い(低RGB)はず: dark_avg={avg_dark:.1} neutral_avg={avg_neutral:.1}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `mermaid_curve`: a flowchart whose one long edge bends around the direct column (`A --> E`
@@ -12881,8 +12611,6 @@ fn e2e_ui_mermaid_curve_changes_rendered_pixels() {
         fg_basis, fg_step,
         "basis と step では辺の描画ピクセル列が異なるはず(スプライン vs 直角)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `mermaid_routing`: a flowchart with a decision node (`C{cond}`) draws a diamond under
@@ -12947,8 +12675,6 @@ fn e2e_ui_mermaid_routing_changes_rendered_pixels() {
         fg_splines, fg_ortho,
         "splines と konoma-orthogonal では描画ピクセル列が異なるはず(菱形 vs 面取り矩形+直角配線)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Test-sufficiency audit finding 3 (high, 2026-09-01): `mermaid_routing` reaches the screen
@@ -13019,8 +12745,6 @@ fn e2e_ui_mermaid_routing_changes_rendered_pixels_standalone_mmd_fullscreen() {
         fg_splines, fg_ortho,
         "単体 .mmd の全画面プレビューでも splines と konoma-orthogonal では描画ピクセル列が異なるはず"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Finding 3's remaining path: a fence opened full-screen (Tab focuses the decoded fence item,
@@ -13097,8 +12821,6 @@ fn e2e_ui_mermaid_routing_changes_rendered_pixels_fence_fullscreen() {
         fg_splines, fg_ortho,
         "フェンスの全画面表示でも splines と konoma-orthogonal では描画ピクセル列が異なるはず"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `mermaid_rows`: an upper limit on the reserved cell box (`ImagePlacement.rows`), not a fill
@@ -13132,7 +12854,6 @@ fn e2e_ui_mermaid_rows_changes_reserved_diagram_height() {
         rows_small < rows_default,
         "mermaid_rows=4 は既定24より小さい高さになるはず: small={rows_small} default={rows_default}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The table box drawn on screen: `(column of its own `┌`, its display width)`. Located by `┬`,
@@ -13210,7 +12931,6 @@ fn e2e_ui_md_table_align_moves_the_box_and_keeps_cell_images_inside_it() {
     let rel = |b: (usize, usize, u16, u16)| b.2 as usize - (b.0 - 1);
     assert_eq!(rel(l), rel(c), "center で箱と画像がずれた");
     assert_eq!(rel(l), rel(r), "right で箱と画像がずれた");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `md_image_align`: a block image and a mermaid diagram both follow it, and the diagram's caption
@@ -13288,7 +13008,6 @@ fn e2e_ui_md_image_align_moves_block_images_and_mermaid_together_with_their_capt
         fence_cols[0] < fence_cols[1] && fence_cols[1] < fence_cols[2],
         "mermaid が left < center < right にならない: {fence_cols:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -13321,7 +13040,6 @@ fn e2e_ui_busy_indicator_shows_while_media_loads_hides_when_disabled() {
     s_off.enter();
     assert!(s_off.app.is_media_loading());
     s_off.dont_see("loading media");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -13424,7 +13142,6 @@ fn e2e_ui_inline_local_image_decodes_and_encodes_through_real_worker_threads() {
         "実ピクセル(緑)が描画バッファに届いているはず: {:?}",
         drawn_rgb_fgs(&s.term)
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -13496,7 +13213,6 @@ fn e2e_ui_rewritten_inline_image_relays_out_at_its_new_size() {
         "差し替え後の実ピクセル(赤)が届くはず"
     );
     assert!(!drawn_has_green(&s.term), "古い(緑)ピクセルは残らないはず");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The same rewrite at **identical dimensions** — nothing about the layout changes, only the bytes.
@@ -13538,7 +13254,6 @@ fn e2e_ui_rewritten_inline_image_of_the_same_size_is_still_redecoded() {
         "新しい実ピクセル(赤)に入れ替わるはず"
     );
     assert!(!drawn_has_green(&s.term), "古い(緑)ピクセルは残らないはず");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Only the entry that actually changed is dropped. Clearing the whole cache would "work" for the
@@ -13584,7 +13299,6 @@ fn e2e_ui_rewriting_one_inline_image_leaves_the_other_ones_cache_alone() {
         proto(&s.app, &sized[1]),
         "触っていない方のキャッシュは残るはず(全消ししない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A picture inside a **table cell** is reached through a different sizing path (the cell's column
@@ -13624,7 +13338,6 @@ fn e2e_ui_rewritten_image_inside_a_table_cell_follows_the_change() {
         "セル内も新しい実ピクセル(赤)になるはず"
     );
     assert!(!drawn_has_green(&s.term), "古い(緑)ピクセルは残らないはず");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The picture is **deleted** rather than rewritten. The reserved box has to collapse back to the
@@ -13660,7 +13373,6 @@ fn e2e_ui_deleted_inline_image_degrades_to_its_alt_label() {
         !drawn_has_green(&s.term),
         "消えた画像のピクセルは残らないはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// An image the document references but has **not drawn yet** — it sits below the fold, so
@@ -13697,7 +13409,6 @@ fn e2e_ui_rewritten_offscreen_inline_image_still_relays_out() {
         (cols0, rows0),
         "画面外の画像でもレイアウトは新しい寸法に追随するはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Every kitty image id **transmitted** into the drawn terminal buffer (`i=<id>,a=T` heads a
@@ -13810,7 +13521,6 @@ fn e2e_ui_animated_inline_gif_reuses_one_kitty_image_id_across_laps() {
         1,
         "何周させても端末に載る画像 ID は1つのまま(= 画像ストレージが埋まらない): {ids:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Sibling of the GIF test above, for the *other* way konoma used to hand a kitty terminal an
@@ -13859,7 +13569,6 @@ fn e2e_ui_reopening_a_document_reuses_its_inline_kitty_image_ids() {
         1,
         "同じ絵を何度開き直しても端末に載る画像 ID は1つのまま: {ids:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The same invariant **across tabs**: `md_image_cache` is an `App`-level cache that tab switching
@@ -13894,7 +13603,6 @@ fn e2e_ui_the_same_image_opened_in_a_second_tab_keeps_one_kitty_image_id() {
         1,
         "別タブで同じ絵を開いても ID は増えない: {ids:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A document with **several** pictures: the count of resident images must track the number of
@@ -13931,7 +13639,6 @@ fn e2e_ui_reopening_a_two_image_document_stays_at_two_kitty_image_ids() {
         s.enter();
         s.key('q');
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// One picture, two table cells of **different column widths** — so the same file is on screen at
@@ -14025,7 +13732,6 @@ fn e2e_ui_one_picture_at_two_cell_widths_stops_re_encoding() {
 
     let n = settle_md_encodes(&mut s, 10);
     assert!(n >= 2, "2つの幅ぶんのエンコードは実際に起きる: {n}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The control for the test above: the very same picture in a **single** table converges after one
@@ -14047,7 +13753,6 @@ fn e2e_ui_one_picture_at_one_cell_width_converges_after_a_single_encode() {
         1,
         "対照: 1回のエンコードで収束する"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Converging is only half the fix: **both** placements have to end up with a picture of their own
@@ -14079,7 +13784,6 @@ fn e2e_ui_one_picture_at_two_cell_widths_draws_each_at_its_own_size() {
             "その配置に合わせた寸法で描かれる(他方の寸法を借りていない)"
         );
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// **More simultaneous sizes than `MD_PROTO_SLOTS`.** The cap is a soft floor, not a ceiling: a slot
@@ -14113,7 +13817,6 @@ fn e2e_ui_one_picture_beyond_the_slot_cap_still_converges_and_draws_every_size()
             .unwrap_or_else(|| panic!("{cols}x{rows} の配置に絵が無い"));
         assert_eq!(img.cell_size(), (cols, rows));
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The same document at a whole range of terminal widths. Each width shaves the table columns
@@ -14148,7 +13851,6 @@ fn e2e_ui_one_picture_converges_at_every_terminal_width() {
             }
         }
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The **clip** family has the identical shape of bug and gets the identical fix: scroll so the
@@ -14184,7 +13886,6 @@ fn e2e_ui_a_partially_scrolled_picture_at_two_widths_stops_re_encoding() {
         clipped_frames > 0,
         "前提: 2つの配置が同時にクリップされる位置を実際に通っている"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The terminal-side half of the same fix, and the guard on its cost. Two widths of one picture are
@@ -14226,7 +13927,6 @@ fn e2e_ui_one_picture_at_two_widths_keeps_two_kitty_ids_across_reopens() {
         s.enter();
         s.key('q');
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Two ```mermaid fences, both rendered on real background threads: Tab-focuses the caption line
@@ -14333,7 +14033,6 @@ fn e2e_ui_mermaid_fence_tab_enter_opens_correct_ordinal_fullscreen_q_returns() {
         .app
         .prepare_image(ratatui::layout::Rect::new(0, 0, 80, 20))
         .is_some());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A math expression, decoded and encoded through the real background threads — exactly the path
@@ -14397,7 +14096,6 @@ fn e2e_ui_math_expression_decodes_through_real_worker_and_reserves_image_row() {
         "純黒(不可視)でない実インクが描かれるはず: {:?}",
         drawn_rgb_fgs(&s.term)
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// End-to-end confirmation of the inline-math-placement feature itself, through the **real**
@@ -14447,7 +14145,6 @@ fn e2e_ui_inline_math_that_fits_stays_on_the_same_decorated_line() {
         "\"before … after\" は 1 行のまま(自前の行に持ち上がらない): {:?}",
         lines.iter().map(|l| l.to_string()).collect::<Vec<_>>()
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Failure path (design principle #3): when the real background render fails — a mermaid fence
@@ -14487,7 +14184,6 @@ fn e2e_ui_mermaid_and_math_render_failure_degrades_safely_to_raw_source() {
     s.see("definitely not a diagram");
     // math: RaTeX fails on unbalanced LaTeX, degrading to the raw `$...$` text.
     s.see("\\frac{");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// An animated GIF embedded inline in Markdown, decoded through the real background decode thread
@@ -14569,7 +14265,6 @@ fn e2e_ui_inline_gif_animates_through_real_decode_worker() {
         "2コマ目(青)へ切り替わった実ピクセルが描かれるはず: {:?}",
         drawn_rgb_fgs(&s.term)
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// RAII guard: pins `NO_PROXY` to `*` for its lifetime and restores whatever the ambient
@@ -14650,8 +14345,6 @@ fn e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder() {
         s.app.md_images().is_empty(),
         "失敗した画像はプレースメントを持たないはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::remove_dir_all(&cache_root).ok();
 }
 
 /// The reported bug, end to end through real key input: a document shaped like `rand_chacha`'s
@@ -14665,7 +14358,7 @@ fn e2e_yc_copies_code_in_a_document_with_a_multiline_footnote() {
     let doc = format!(
         "Intro[^1] text.\n\n```sh\n{payload}\n```\n\n[^1]: [label](\n      https://example.com/x)\n"
     );
-    let (mut s, dir) = md_preview(cfg_code_bg_none(), "fnote", &doc);
+    let (mut s, _dir) = md_preview(cfg_code_bg_none(), "fnote", &doc);
 
     // Tab to the code block (the only focusable code item in the document).
     let mut found = false;
@@ -14706,7 +14399,6 @@ fn e2e_yc_copies_code_in_a_document_with_a_multiline_footnote() {
         Some(payload),
         "クリップボード(テスト用シンク)にペイロードそのものが入っている"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The other half of the same bug: the phantom code block itself. A wrapped footnote definition used
@@ -14716,7 +14408,7 @@ fn e2e_yc_copies_code_in_a_document_with_a_multiline_footnote() {
 #[test]
 fn e2e_multiline_footnote_leaves_no_phantom_code_block() {
     let doc = "Intro[^1] text.\n\n[^1]: [label](\n      https://example.com/x)\n";
-    let (s, dir) = md_preview(cfg_code_bg_none(), "phantom", doc);
+    let (s, _dir) = md_preview(cfg_code_bg_none(), "phantom", doc);
     let screen = s.screen();
     assert!(
         !screen.contains('▎'),
@@ -14745,7 +14437,6 @@ fn e2e_multiline_footnote_leaves_no_phantom_code_block() {
             s.screen()
         );
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `y c` must keep working on a document the pre-passes give a code block the *file* does not have.
@@ -14756,7 +14447,7 @@ fn e2e_multiline_footnote_leaves_no_phantom_code_block() {
 #[test]
 fn e2e_yc_copies_when_preprocessing_creates_the_code_block() {
     let doc = "before\n\n<del></del>\n\nafter\n";
-    let (mut s, dir) = md_preview(cfg_code_bg_none(), "delfence", doc);
+    let (mut s, _dir) = md_preview(cfg_code_bg_none(), "delfence", doc);
     let mut found = false;
     for _ in 0..6 {
         s.tab();
@@ -14774,7 +14465,6 @@ fn e2e_yc_copies_when_preprocessing_creates_the_code_block() {
         s.app.focused_code_text().is_some(),
         "`y c` が拒否されない(生ファイルを読むと 0 個に見えて全拒否になる)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Report 1: an inline animated GIF keeps ticking forever after leaving Preview. `md_image_cache` is
@@ -14830,7 +14520,6 @@ fn e2e_ui_inline_gif_stops_polling_after_leaving_preview() {
         !s.app.advance_md_gifs_if_due(),
         "ツリー表示中はコマ送りも起きないはず(報告1)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Report 1, tab-switch companion: switching to a *different* file within the same tab already goes
@@ -14876,7 +14565,6 @@ fn e2e_ui_inline_gif_stops_polling_after_opening_a_different_file() {
         s.app.md_gif_poll_timeout().is_none(),
         "別ファイルを開けば GIF ポーリングは止まるはず(既存挙動の非退行)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Report 2: every math expression in a document spawns its own OS thread the instant it's first
@@ -14906,7 +14594,6 @@ fn e2e_ui_math_render_requests_are_bounded_not_all_at_once() {
         inserted < 80,
         "80個の式が一度に全部スレッド起動されてはいけない(報告2): 挿入数={inserted}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Report 2, convergence companion: capping concurrency must not silently strand the expressions
@@ -14943,7 +14630,6 @@ fn e2e_ui_math_render_cap_eventually_renders_every_expression() {
         n,
         "上限を設けても、いずれ全ての式がレンダリングされ切るはず(報告2の修正が新しいスタックを生まない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -14997,7 +14683,6 @@ fn e2e_ui_theme_code_theme_changes_markdown_code_block_highlight_colors() {
         "code_theme を変えると Markdown コードブロック内のキーワード色が変わるはず: \
          TwoDark={fg_default:?} Dracula={fg_dracula:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `theme.code_label_align`: the language badge (`" rust "`) at the top of a fenced code block is
@@ -15032,7 +14717,6 @@ fn e2e_ui_theme_code_label_align_left_vs_right_moves_badge_in_markdown() {
         col_right > col_left + 20,
         "right は left より十分右に描かれるはず: right={col_right} left={col_left}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `theme.code_label_bg`: `"auto"` (default) gives the language badge a brightened background; an
@@ -15086,7 +14770,6 @@ fn e2e_ui_theme_code_label_bg_configurable_in_markdown() {
         !matches!(bg_none, Some(ratatui::style::Color::Rgb(..))),
         "code_label_bg=none かつ code_bg=none はバッジに明示的な Rgb 背景が無いはず: {bg_none:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `theme.bg`: paints the WHOLE frame's background (`ui::render`'s own base coat, applied before any
@@ -15120,7 +14803,6 @@ fn e2e_ui_theme_bg_paints_the_whole_frame_background() {
         Some(ratatui::style::Color::Rgb(0x12, 0x34, 0x56)),
         "theme.bg は画面全体の背景として塗られるはず: {bg_painted:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `mermaid_rows` is an **upper limit**, not a fill target (see `mermaid_cells`'s doc comment):
@@ -15175,7 +14857,6 @@ fn e2e_ui_mermaid_rows_large_value_grows_diagram_up_to_its_natural_size() {
         "上限は「必ずそこまで埋める」目標ではない: 自然サイズで頭打ちになり、\
          設定値そのものには到達しないはず: large={rows_large}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `md_details = "closed"`: forces a `<details>` block collapsed even when its `open` attribute
@@ -15204,7 +14885,6 @@ fn e2e_ui_md_details_closed_config_forces_collapse_despite_open_attribute() {
     s_closed.select("d.md");
     s_closed.enter();
     s_closed.dont_see("BODYMARKER");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `icons`: a GitHub alert's header carries a Nerd Font icon before the label when `icons=true`
@@ -15237,7 +14917,6 @@ fn e2e_ui_icons_alert_header_glyph_shifts_label_column() {
         col_on > col_off,
         "icons=true は Nerd Font アイコン分だけラベルが右にずれるはず: on={col_on} off={col_off}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `y c` inside a PLAIN blockquote (no `[!TYPE]` header — a genuine `Quote`, not an alert). Every
@@ -15270,7 +14949,6 @@ fn e2e_md_code_block_inside_plain_blockquote_is_focusable_and_copyable() {
     s.key('y');
     s.key('c');
     assert!(s.app.flash.is_some(), "y c でコピー通知が出るはず");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `y c` inside an OPEN `<details>` block — Tab must land on the summary first, then the nested code
@@ -15308,7 +14986,6 @@ fn e2e_md_code_block_inside_open_details_is_focusable_and_copyable() {
     s.key('y');
     s.key('c');
     assert!(s.app.flash.is_some(), "y c でコピー通知が出るはず");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A LOOSE list (a blank line between items) of task checkboxes — the shape that used to panic
@@ -15345,7 +15022,6 @@ fn e2e_task_toggle_works_in_a_loose_list() {
     s.key(' ');
     assert!(read().contains("- [x] three"), "3番目: {}", read());
     s.dont_see("couldn't toggle checkbox");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Checkbox toggling on a checkbox that's actually visible inside an OPEN `<details>` block — the
@@ -15380,7 +15056,6 @@ fn e2e_task_toggle_works_on_checkbox_inside_an_open_details_block() {
         read()
     );
     s.dont_see("couldn't toggle checkbox");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A checkbox inside a plain block quote (`> - [ ] x`, no `[!TYPE]` header). It used to be drawn as
@@ -15408,7 +15083,6 @@ fn e2e_task_toggle_works_inside_a_plain_blockquote() {
         "引用内のタスクがトグルされるはず: {}",
         read()
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Regression: an **ordered**-list task item (`"1. [ ] x"`) used to be pushed into
@@ -15473,7 +15147,6 @@ fn e2e_ordered_list_ghost_task_does_not_steal_the_visible_checkboxs_toggle() {
         "2行目(不可視の順序付きタスク)は変化しないはず: {src}"
     );
     s.dont_see("couldn't toggle checkbox");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The `Details` analog of the ordered-list-task regression above: two independent, sibling
@@ -15516,7 +15189,6 @@ fn e2e_two_sibling_details_blocks_toggle_independently() {
     s.key(' '); // open ordinal 1
     s.see("BODY-ONE"); // unaffected by opening the second block
     s.see("BODY-TWO");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Manual scroll keys (`j`/`k`/`g`/`G` — `Motion::Down/Up/Top/Bottom` on `Surface::PreviewText`,
@@ -15620,7 +15292,6 @@ fn e2e_md_state_preserved_across_tab_switch() {
         s.app.is_raw_source(),
         "raw 表示モードがタブ切替後も保持されるはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Every Markdown decoration toggle off at once, on one document that exercises all of them —
@@ -15671,7 +15342,6 @@ fn e2e_md_all_toggles_off_renders_without_crashing() {
     s.see("[ ] task one"); // icons=false: ASCII checkbox
     s.see("$E=mc^2$"); // math left as raw LaTeX text
     s.dont_see("can not preview"); // no crash-fallback banner anywhere
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -15797,7 +15467,6 @@ fn e2e_ui_mermaid_focus_frame_follows_md_image_align_not_md_table_align() {
             );
         }
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Write a solid-color PNG of the given pixel size.
@@ -15876,7 +15545,6 @@ fn e2e_ui_inline_image_is_drawn_at_exactly_the_rect_its_placement_reserved() {
             "矩形がペインの右端を越えている: {rows:?}"
         );
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Scrolled so the picture's top rows are above the viewport, only the **visible band** is drawn:
@@ -15932,7 +15600,6 @@ fn e2e_ui_a_partly_scrolled_inline_image_is_clipped_to_the_viewport() {
     for (x, _, cols) in &rows {
         assert_eq!((*x, *cols), (inner_x + p.col, p.cols as usize), "{rows:?}");
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A pane with no room for even one column of picture draws **nothing** — and asks the decoder for
@@ -15967,7 +15634,6 @@ fn e2e_ui_a_pane_with_no_room_for_a_column_draws_no_inline_image() {
         kitty_placeholder_rows(&s.term).is_empty(),
         "1桁も入らないペインに placeholder を描いている"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- Inline math `col` survives post-decoration width changes (coordinator-reported, reproduced on
@@ -16241,7 +15907,6 @@ fn e2e_ui_two_inline_math_placements_on_one_decorated_line_each_keep_their_own_c
     let (_, reserved1, after1) = slice_by_display_col(line, p1.col, p1.cols);
     assert_eq!(reserved1, " ".repeat(p1.cols as usize), "line: {line:?}");
     assert_eq!(after1, " end", "line: {line:?}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -16370,7 +16035,6 @@ fn e2e_media_diff_png_shows_captions_pictures_and_a_clean_footer() {
     s.dont_see("j/k:scroll");
     s.dont_see("h/l:hscroll");
     s.dont_see("s:unified/split/auto");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `s` cycles the media diff's layout auto → side → stack → auto, flashing the state it switched
@@ -16411,7 +16075,6 @@ fn e2e_media_diff_s_cycles_the_layout() {
         crate::preview::media_diff::MediaDiffLayout::Auto
     );
     s.see("auto");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `R` from the media diff enters the new version's ordinary full-screen preview
@@ -16499,7 +16162,6 @@ fn e2e_media_diff_r_round_trip_redraws_both_pictures() {
                 .is_some(),
         "少なくとも一方は再エンコード済みのプロトコルを持つはず(サイズ違いでも newest_proto にフォールバックする)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A changed binary that git/jj can never line-diff (a video file here) shows the binary-summary
@@ -16531,7 +16193,6 @@ fn e2e_media_diff_binary_summary_line_replaces_the_false_no_changes() {
     );
     s.dont_see("(no changes)");
     s.see("binary file");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The binary-summary line's delta suffix (`docs/FEATURE-MEDIA-DIFF.md` §5): the rounded
@@ -16635,7 +16296,6 @@ fn e2e_media_diff_identical_binary_still_shows_no_changes() {
     s.draw();
     s.see("(no changes)");
     s.dont_see("binary file");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// PDF pages are now drawn on opaque white paper (`preview::pdf::pixmap_to_dynamic_image`'s
@@ -16694,8 +16354,6 @@ fn e2e_pdf_preview_paints_non_uniform_halfblocks_cells_not_a_blank_field() {
         distinct.len() > 1,
         "白地と黒インクが両方描かれるはずなので、描画セルの色は一色だけではないはず: {distinct:?}"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// PDF paging: `J`/`K` turn both sides' page together, only while the media diff is showing a
@@ -16731,7 +16389,6 @@ fn e2e_media_diff_pdf_paging_with_j_k() {
     s.key('K');
     assert_eq!(s.app.diff_media_page(), 2);
     s.see("p. 2/3");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The real `KeyCode::PageDown`/`PageUp` (not just the `J`/`K` letters the test above covers) turn
@@ -16810,7 +16467,6 @@ fn e2e_media_diff_pdf_paging_with_real_pagedown_pageup_keys_and_text_diff_still_
         s.app.tab.preview_scroll < mid,
         "PageUp も通常どおりスクロールを戻すはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The stale-cache-key re-kick itself, constructed directly (`App::evict_md_image_cache_key_for_
@@ -16859,7 +16515,6 @@ fn media_diff_stale_cache_key_is_re_kicked_not_left_blank() {
         );
         assert!(s.app.md_image_cache_contains(k), "キャッシュにも戻るはず");
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Mutation-proving companion to the test above: the re-kick check is `stale(old) || stale(new)` —
@@ -16908,7 +16563,6 @@ fn media_diff_stale_cache_key_re_kicks_both_sides_even_when_only_one_side_was_ev
     );
     assert!(keys_after.contains(&untouched));
     assert!(s.app.md_image_cache_contains(&evicted));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Every placeholder kind (`docs/FEATURE-MEDIA-DIFF.md` §1/§7) actually draws its message on
@@ -17037,7 +16691,6 @@ fn e2e_media_diff_page_missing_placeholder_draws() {
         "旧版の3ページに合わせて2ページ目まで進めるはず"
     );
     s.see("this page doesn't exist");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `R` on `Surface::PreviewImage` is a no-op while this preview is **not** the diff's own
@@ -17081,7 +16734,6 @@ fn e2e_r_on_plain_image_preview_is_a_no_op() {
             "{name}: 画像プレビューのままのはず"
         );
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The help row for `f` (follow-scope toggle) is shown iff it would actually do something
@@ -17112,7 +16764,6 @@ fn e2e_follow_scope_help_row_shown_iff_the_diff_is_follow_originated() {
         !rows.iter().any(|k| k == "f"),
         "follow 由来でない diff には f 行が無いはず: {rows:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// PDF's shared scale must be computed from each side's own page size in **points**, not the
@@ -17156,7 +16807,6 @@ fn e2e_media_diff_pdf_scale_uses_page_points_not_raster_px() {
         (i32::from(new.1) - i32::from(old.1) / 2).abs() <= 1,
         "新版の高さも旧版のちょうど半分のはず: old={old:?} new={new:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// SVG's shared scale must be computed from each side's own **intrinsic** (viewBox) size, not the
@@ -17195,7 +16845,6 @@ fn e2e_media_diff_svg_scale_uses_viewbox_not_raster_px() {
         (i32::from(new.1) - i32::from(old.1) / 2).abs() <= 1,
         "新版の高さも旧版のちょうど半分のはず: old={old:?} new={new:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A raster image's `natural_px` is always its real (decoded) pixel size — there is no separate
@@ -17234,7 +16883,6 @@ fn e2e_media_diff_png_scale_uses_real_pixels() {
         (i32::from(new.1) - i32::from(old.1) / 2).abs() <= 1,
         "新版の高さも旧版のちょうど半分のはず: old={old:?} new={new:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A GIF's `natural_px` must be the file's own logical-screen size (read from the header,
@@ -17275,7 +16923,6 @@ fn e2e_media_diff_gif_scale_uses_header_dims_not_budget_downscaled_frame() {
         (i32::from(new.1) - i32::from(old.1) * 2).abs() <= 1,
         "新版(GIF)の高さも旧版のちょうど2倍のはず: old={old:?} new={new:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -17337,7 +16984,6 @@ fn e2e_follow_jump_into_changed_png_opens_side_by_side_diff_with_follow_start_ba
         }
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The over-cap counterpart: a PNG already dirty at follow-start but larger than
@@ -17395,7 +17041,6 @@ fn e2e_follow_jump_into_changed_png_over_snapshot_cap_reports_head_base() {
         }
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// An SVG behaves the same way a PNG does now (it used to be excluded from the diff entirely,
@@ -17429,7 +17074,6 @@ fn e2e_follow_jump_into_changed_svg_opens_side_by_side_diff() {
         s.app.diff_media_active(),
         "SVG の Rendered は並べて表示のはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A PDF, likewise.
@@ -17464,7 +17108,6 @@ fn e2e_follow_jump_into_changed_pdf_opens_side_by_side_diff() {
         s.app.diff_media_active(),
         "PDF の Rendered は並べて表示のはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Video is the one kind that still falls back to the ordinary preview — it has no side-by-side
@@ -17506,7 +17149,6 @@ fn e2e_follow_jump_into_changed_video_still_opens_ordinary_preview() {
         "通常のビデオプレビューのはず: {:?}",
         s.app.tab.preview_kind
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `n`/`N` inside a follow-originated diff now cycle through image/SVG/PDF too (they used to be
@@ -17547,7 +17189,6 @@ fn e2e_follow_diff_cycle_includes_image_excludes_video() {
         Some((1, 1)),
         "セッションの diff 対象は画像1件のみ(動画は除外)のはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `[ui] follow_view = "file"` keeps meaning "always the ordinary preview" for every kind,
@@ -17583,5 +17224,4 @@ fn e2e_follow_view_file_still_opens_ordinary_preview_for_image() {
         "通常の画像プレビューのはず: {:?}",
         s.app.tab.preview_kind
     );
-    std::fs::remove_dir_all(&dir).ok();
 }

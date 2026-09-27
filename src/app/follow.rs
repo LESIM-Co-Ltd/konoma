@@ -443,8 +443,6 @@ mod tests {
                 assert_eq!(e.text, a.text, "{name}: text");
             }
         }
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `follow_baseline_contents` refuses (None) for the same reason `follow_baseline_diff` always
@@ -478,9 +476,6 @@ mod tests {
                 .is_none(),
             "スコープが無効な間は安い判定だけで None"
         );
-
-        std::fs::remove_dir_all(&dir_a).ok();
-        std::fs::remove_dir_all(&dir_b).ok();
     }
 
     /// A file already dirty at follow-start but larger than the snapshot cap is recorded as `None`
@@ -511,8 +506,6 @@ mod tests {
             app.follow_baseline_diff(&root.join("big.txt")).is_none(),
             "follow_baseline_diff も同じ理由で None"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// **The bug `App::open_git_diff_with` exists to fix** (that fn's own doc comment). A
@@ -569,7 +562,5 @@ mod tests {
             "1 回目の(誤った scope=false での)判定が立てた stale フラッシュが残っている: {:?}",
             app.flash
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

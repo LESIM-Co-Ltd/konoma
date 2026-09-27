@@ -246,7 +246,6 @@ mod tests {
         // With the default budget, a small GIF is left untouched (not shrunk).
         let frames = decode_gif(&p).expect("既定予算でもデコードできる");
         assert_eq!((frames[0].0.width(), frames[0].0.height()), (64, 64));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -267,7 +266,6 @@ mod tests {
         assert!(decode_static(&bad).is_none(), "非画像は None");
         // A missing file also returns None.
         assert!(decode_static(&dir.join("missing.png")).is_none());
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -290,7 +288,6 @@ mod tests {
             from_path.to_rgba8().into_raw(),
             from_bytes.to_rgba8().into_raw()
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -358,6 +355,5 @@ mod tests {
             .unwrap();
         let bytes = std::fs::read(&png).unwrap();
         assert!(decode_gif_bytes_inline(&bytes).is_none());
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

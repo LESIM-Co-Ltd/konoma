@@ -2084,7 +2084,6 @@ mod scroll_indicator_tests {
             "末尾のラベルは Bot:\n{}",
             rows(&term).join("\n")
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }
 
@@ -2152,7 +2151,6 @@ mod help_tests {
             crate::i18n::tr(app.lang, crate::i18n::Msg::AtRefHelp),
             "ソース表示の Y はキャレット/選択対応の文言"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }
 
@@ -2229,7 +2227,6 @@ mod gitdiff_tests {
             "末尾では thumb がトラック下端に接する"
         );
         assert!(screen(&term).contains("[Bot]"), "末尾のラベルは Bot");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Render the GitDiff preview of a modified file and verify (1) changed rows have red/green background cells,
@@ -2301,7 +2298,6 @@ mod gitdiff_tests {
             s.contains("no changes") || s.contains("変更なし"),
             "クリーン表示が出ない: {s:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The `?` help's `R` row in `Surface::PreviewGitDiff` must be gated by the same
@@ -2380,7 +2376,5 @@ mod gitdiff_tests {
             crate::i18n::tr(app.lang, crate::i18n::Msg::DiffViewCycleHelp),
             "3 表現の R 行は source → rendered → preview のはず"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

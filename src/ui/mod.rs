@@ -270,8 +270,6 @@ mod tests {
             headers >= 2,
             "作業ツリー diff が複数ファイル: headers={headers}"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -315,8 +313,6 @@ mod tests {
             sh.contains("START") && !sh.contains("END"),
             "0 で行頭へ戻らない"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -341,7 +337,6 @@ mod tests {
             hit * 5 >= total * 4,
             "全体背景が塗られていない: {hit}/{total} セルのみ"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn row_text(app: &mut App, w: u16, h: u16, row: u16) -> String {
@@ -366,7 +361,6 @@ mod tests {
         let bottom = row_text(&mut app, w, h, h - 1);
         assert!(bottom.contains("jk:move"), "下にヒント: {bottom}");
         assert!(!bottom.contains("TREE"), "下にモードは出さない: {bottom}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -383,7 +377,6 @@ mod tests {
         assert!(bottom.contains("jk:move"), "下にヒント: {bottom}");
         // The top row shows no context (there's no tab bar either, since it's 1 tab).
         assert!(!row_text(&mut app, w, h, 0).contains("TREE"));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -414,7 +407,6 @@ mod tests {
             !s.contains("TREE") && !s.contains("jk:move"),
             "英語が残る: {s}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -435,7 +427,6 @@ mod tests {
             .iter()
             .any(|c| c.symbol() == "U" && c.fg == ratatui::style::Color::LightGreen);
         assert!(found, "未追跡 'U' マーカーが無い");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -481,7 +472,6 @@ mod tests {
             !s.contains("aaa_first"),
             "先頭行は画面外のはずなのに描画された(スクロールが効いていない)"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -505,7 +495,6 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(s.contains('⎇'), "タイトルにブランチ記号が無い");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -540,7 +529,6 @@ mod tests {
             s.contains("Tabs") && s.contains("Copy"),
             "ヘルプのセクションが無い"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -570,7 +558,6 @@ mod tests {
             s.contains("[n]ame") || s.contains("名前"),
             "ソートメニューが出ない"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -605,9 +592,6 @@ mod tests {
             s.contains("Local") || s.contains("ローカル"),
             "ローカル見出しが無い"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
@@ -644,8 +628,6 @@ mod tests {
             s.contains("Delete permanently"),
             "完全削除の選択肢が出ない: {s:?}"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -677,8 +659,6 @@ mod tests {
         assert!(s.contains('→'), "旧→新 の矢印が出ない");
         assert!(s.contains("img_1"), "新名のプレビューが出ない");
         assert!(s.contains("y = apply"), "適用ヒントが出ない: {s:?}");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -710,8 +690,6 @@ mod tests {
             s.contains("sel") || s.contains('選'),
             "選択件数が出ない: {s:?}"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -749,7 +727,6 @@ mod tests {
         assert!(s.contains("11 B"), "サイズ");
         assert!(s.contains("rw-r--r--"), "権限");
         assert!(s.contains("UTC"), "更新日時");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -786,7 +763,6 @@ mod tests {
         let col_main = main_row.find("12.3 KB").unwrap() + "12.3 KB".len();
         let col_readme = readme_row.find("1.2 KB").unwrap() + "1.2 KB".len();
         assert_eq!(col_main, col_readme, "サイズ列が右揃いで縦に揃う");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -813,7 +789,6 @@ mod tests {
             chip_bg(&mut app, Color::White),
             "外側 TREE チップが消えている"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -841,7 +816,6 @@ mod tests {
             f.contains("y:Trash") && f.contains("!:"),
             "削除フッター: {f}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Regression test for bug 1: since `?` help is a centered popup that doesn't cover the
@@ -892,7 +866,6 @@ mod tests {
             help_footer.contains("scroll") && help_footer.contains("close"),
             "ヘルプ表示中はヘルプ自身のスクロール/閉じるヒントを出す: {help_footer}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -925,6 +898,5 @@ mod tests {
             reset * 100 >= total * 85,
             "全体下地が塗られている: {reset}/{total}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

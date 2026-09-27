@@ -46,7 +46,6 @@ fn a_new_untracked_image_is_ready_with_old_absent() {
         }
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -74,7 +73,6 @@ fn a_deleted_image_is_ready_with_new_absent_and_old_a_picture() {
         }
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -97,7 +95,6 @@ fn identical_bytes_report_same_bytes_true() {
         }
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -139,7 +136,6 @@ fn a_corrupt_image_fails_that_side_without_taking_the_other_down() {
             panic!("Ready のはず(kind は new が .png 拡張子なので Image に解決される): {other:?}")
         }
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -162,7 +158,6 @@ fn a_non_picture_kind_degrades_to_summary_with_sizes() {
         }
         other => panic!("動画は Summary のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- decode_svg_side: rasterizes to the LARGER axis of raster_px ----
@@ -211,7 +206,6 @@ fn decode_svg_side_rasterizes_to_the_larger_axis_of_raster_px() {
         },
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The mirror of the test above with the **width** as the larger component instead of the
@@ -251,7 +245,6 @@ fn decode_svg_side_rasterizes_to_the_larger_axis_of_raster_px_when_width_is_larg
         },
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- compute_media_diff_with_cap: cap-before-reading (over cap, `||` not `&&`) ----
@@ -282,7 +275,6 @@ fn new_side_over_cap_alone_degrades_to_summary() {
         }
         other => panic!("cap 超過は Summary のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The **old** side alone over cap, while the new side is tiny — the mirror of the test above,
@@ -316,7 +308,6 @@ fn old_side_over_cap_alone_degrades_to_summary_even_when_new_is_tiny() {
             panic!("cap 超過(旧版のみ)は Summary のはず(|| であって && ではない): {other:?}")
         }
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `n == cap` is **not** over cap (the comparison is `>`, not `>=`) — the new side decodes for
@@ -345,7 +336,6 @@ fn exact_cap_size_boundary_is_not_over_cap() {
         }
         other => panic!("境界(n==cap)で Summary に落ちてはいけない: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Unlike `new_side_over_cap_alone_degrades_to_summary` above (whose garbage-bytes fixture
@@ -378,7 +368,6 @@ fn new_side_real_decodable_png_over_cap_still_degrades_to_summary() {
             "実在する有効な PNG でも cap 超過なら Summary のはず(実際にデコードされてはいけない): {other:?}"
         ),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Mutation-proving: if `classify_kind` degenerated into "always picture-capable", this would
@@ -421,7 +410,6 @@ fn over_the_cap_degrades_to_summary_via_the_test_seam() {
         }
         other => panic!("上限超は Summary のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -443,7 +431,6 @@ fn pdf_page_beyond_that_sides_own_count_is_page_missing() {
         }
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- baseline / base selection ----
@@ -486,7 +473,6 @@ fn git_baseline_reports_head_and_reads_the_committed_blob() {
         }
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -508,7 +494,6 @@ fn follow_snapshot_baseline_reports_follow_start() {
         MediaDiffComputed::Ready { base, .. } => assert_eq!(base, MediaBase::FollowStart),
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A follow session with **no** usable snapshot for this file (`DiffBaseline::Empty` — dirty at
@@ -549,7 +534,6 @@ fn follow_without_a_snapshot_falls_back_to_head_and_reports_head() {
         }
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `FollowHead` (clean at follow-start, pinned to the HEAD sha) for a file that did **not exist**
@@ -610,7 +594,6 @@ fn follow_head_for_a_file_created_after_follow_start_falls_back_to_head_and_is_a
         }
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `FollowHead` for a file created *after* the pinned follow-start sha, same as the test above —
@@ -676,7 +659,6 @@ fn follow_head_for_a_file_created_after_follow_start_and_since_committed_reads_h
         }
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `FollowHead` for a file that **did** exist at the pinned sha (clean at follow-start) and was
@@ -732,7 +714,6 @@ fn follow_head_for_a_file_modified_since_follow_start_reads_the_committed_blob()
         }
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -779,7 +760,6 @@ fn jj_baseline_reports_jj_parent() {
         MediaDiffComputed::Ready { base, .. } => assert_eq!(base, MediaBase::JjParent),
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Mutation-proving: `is_jj` must actually consult the real backend, not hardcode `false` — a
@@ -795,8 +775,6 @@ fn is_jj_actually_detects_a_jj_only_workspace() {
     std::fs::create_dir_all(&git_dir).unwrap();
     init_git_repo(&git_dir);
     assert!(!is_jj(&git_dir), "git リポジトリは jj と判定されないはず");
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::remove_dir_all(&git_dir).ok();
 }
 
 // ---- App-level: poll/apply, cache insertion, staleness, eviction ----
@@ -815,7 +793,6 @@ fn poll_media_diff_sync_fallback_returns_ready_on_first_call() {
         outcome.is_some(),
         "tx 未 attach = 同期フォールバックで初回から結果が返るはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -893,7 +870,6 @@ fn applied_pictures_land_in_md_image_cache_under_media_diff_keys() {
         }
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `App::ensure_md_cache`'s own Markdown-doc prune (`md_render.rs`'s `md_image_cache.retain`,
@@ -931,7 +907,6 @@ fn markdown_prune_on_rebuild_leaves_a_media_diff_key_alone() {
         app.md_image_cache.contains_key(&media_key),
         "media-diff:// キーは Markdown の mermaid/math prune に巻き込まれないはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The landed (App-level) `MediaDiffSide::Failed` — not just `compute_media_diff`'s own
@@ -957,7 +932,6 @@ fn a_failed_side_keeps_its_reason_through_to_the_landed_outcome() {
         },
         other => panic!("Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The landed `MediaDiffOutcome::Summary` (not just `MediaDiffComputed::Summary`) carries its
@@ -987,7 +961,6 @@ fn a_non_picture_kind_lands_as_summary_with_its_fields_intact() {
         }
         other => panic!("動画は Summary のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1031,7 +1004,6 @@ fn switching_target_drops_the_old_media_diff_keys() {
         "旧ターゲットのキーは prune されるはず"
     );
     assert!(app.md_image_cache.contains_key(&key_b));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Mutation-proving: if the eviction predicate in `apply_media_diff` degenerated into a no-op
@@ -1065,7 +1037,6 @@ fn eviction_never_touches_a_mermaid_key() {
         app.md_image_cache.contains_key(&mermaid_key),
         "mermaid キーは media-diff の prune に巻き込まれないはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- worker dispatch: dedup / coalescing / stale-gen (real channel, `attach_media_diff_loader`) ----
@@ -1109,7 +1080,6 @@ fn poll_media_diff_dedups_two_identical_polls_into_one_dispatch() {
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("worker が結果を返す");
     assert!(app.apply_media_diff(res), "現世代の結果は適用されるはず");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A raw raster image (PNG) doesn't depend on `raster_px` at all (`normalize_raster_px`'s own
@@ -1146,7 +1116,6 @@ fn two_polls_with_different_raster_px_for_a_png_dispatch_only_once() {
         "どちらの raster_px でも同じ(正規化された)着地を引けるはず"
     );
     assert!(app.poll_media_diff(&png, 1, (900, 700)).is_some());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A burst of (invalidate + poll) cycles while a worker is already busy — an AI rewriting the
@@ -1227,7 +1196,6 @@ fn coalesces_a_burst_of_invalidate_and_poll_into_one_follow_up_dispatch_for_the_
         matches!(outcome, Some(MediaDiffOutcome::Ready { .. })),
         "最新の want(page 2) の結果が着地しているはず: {outcome:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `media_diff_landed_for` must reject an old-generation landing: switching from A to B and
@@ -1284,7 +1252,6 @@ fn switching_a_to_b_to_a_with_a_changed_on_disk_re_kicks_rather_than_serving_sta
         (8, 8),
         "変更後の A の実寸が反映されているはず(re-kick された証拠)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A stale landing (its `gen` superseded) with **nothing** coalesced behind it
@@ -1347,7 +1314,6 @@ fn a_stale_landing_with_nothing_queued_still_frees_the_worker_slot() {
         app.apply_media_diff(res_b),
         "最新世代の B の結果は適用されるはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// PROBE (rereview, cross-tab): switching away from a tab showing a landed media diff to a
@@ -1407,7 +1373,6 @@ fn switching_to_another_tab_and_back_redraws_both_pictures() {
         ),
         "タブへ戻ったら re-kick されて絵が再着地するはず: {outcome2:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A path that's become a **directory** (not a regular file) is treated the same as a deleted
@@ -1454,5 +1419,4 @@ fn a_directory_at_the_new_path_is_treated_as_absent_not_an_existing_unreadable_f
         }
         other => panic!("旧版が PNG として分類されるので Ready のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }

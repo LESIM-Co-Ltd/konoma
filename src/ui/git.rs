@@ -939,7 +939,6 @@ mod tests {
         assert!(s.contains("Git"), "タイトルが無い: {s}");
         assert!(s.contains('U'), "状態マーカーが無い: {s}");
         assert!(s.contains("foo.txt"), "ファイル名が無い: {s}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -970,7 +969,6 @@ mod tests {
             s.contains("hello world commit"),
             "コミット summary が無い: {s}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1036,7 +1034,6 @@ mod tests {
         assert!(s.contains("branches"), "タイトルが無い: {s}");
         assert!(s.contains("feature"), "feature ブランチが無い: {s}");
         assert!(s.contains('*'), "現在ブランチの * マーカーが無い: {s}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1065,7 +1062,6 @@ mod tests {
             .collect();
         // The added file content ("alpha") shows up in the detail diff.
         assert!(s.contains("alpha"), "diff 本文が出ていない: {s}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Regression: even a huge diff over 65535 lines can reach the tail without the cap wrapping in u16.
@@ -1167,7 +1163,6 @@ mod tests {
         );
         assert!(s.contains("trunk"), "HEAD ブランチが無い: {s}");
         assert!(s.contains("feature-x"), "もう一方のブランチが無い: {s}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // --- ⎇/⌖ gated by ui.icons, never glued directly to the next glyph ----------------------
@@ -1301,7 +1296,6 @@ mod tests {
             s4.contains("br:"),
             "icons=false で log の ASCII 代替(br:)が無い: {s4}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1368,7 +1362,6 @@ mod tests {
             "icons=false で base: が重複/欠落している: {s2}"
         );
         assert!(s2.contains("trunk"), "基準ブランチ名が出ない: {s2}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1462,7 +1455,6 @@ mod tests {
             s2.contains("base: ●"),
             "icons=false で base の ASCII 代替(base:)/空白が無い: {s2}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1544,7 +1536,6 @@ mod tests {
             s_off.contains("* "),
             "icons=false で ASCII 代替(* )が無い: {s_off}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1622,7 +1613,6 @@ mod tests {
             !ghelp.contains(tr(crate::i18n::Lang::En, crate::i18n::Msg::JjChangesLabel)),
             "git ヘルプに jj 節見出しが出ている: {ghelp}"
         );
-        std::fs::remove_dir_all(&git_dir).ok();
     }
 
     /// (git.rs item 8) The `?` help's graph section shows `JjGraphLabel` ("jj graph (g)") and
@@ -1693,7 +1683,6 @@ mod tests {
             !ghelp.contains(tr(crate::i18n::Lang::En, crate::i18n::Msg::JjGraphAllRow)),
             "git のグラフヘルプに jj 専用行が出ている: {ghelp}"
         );
-        std::fs::remove_dir_all(&git_dir).ok();
     }
 
     /// (git.rs item 9) `render_branches` on a jj repository: the title reads "jj bookmarks" (not
@@ -1737,6 +1726,5 @@ mod tests {
             !s.contains('*'),
             "jj のブックマーク一覧に現在ブランチマーカー * が出てはいけない: {s}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

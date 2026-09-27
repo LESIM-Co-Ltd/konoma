@@ -3375,7 +3375,6 @@ mod tests {
             "内容同一なので clean 判定は正しく出る: {st:?}"
         );
         assert!(ig.is_empty());
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `[external] git = false` (via `set_external_git_enabled(false)`): every read returns the same
@@ -3471,8 +3470,6 @@ mod tests {
             base_contents(&dir, &file).is_some(),
             "base_contents works again once re-enabled"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `git worktree list --porcelain -z` parsing: main worktree first (`is_main`), the current
@@ -3579,8 +3576,6 @@ mod tests {
             .current_dir(&main_root)
             .args(["worktree", "unlock", linked.to_str().unwrap()])
             .output();
-        std::fs::remove_dir_all(&linked).ok();
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `worktree_add` against a branch another worktree already has checked out: the error message
@@ -3619,9 +3614,6 @@ mod tests {
             !msg.contains("worktree add"),
             "実行したコマンド文字列は含まない(理由を押し出すため): {msg:?}"
         );
-
-        std::fs::remove_dir_all(&first).ok();
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A bare main worktree (`git clone --bare` + `git worktree add`) has no `HEAD`/`branch` of its
@@ -3722,10 +3714,6 @@ mod tests {
         assert!(gone.prunable, "実体が無ければ prunable: {gone:?}");
         let still_here = list2.iter().find(|w| w.path == wt1_abs).unwrap();
         assert!(!still_here.prunable, "無事な方は prunable にならない");
-
-        std::fs::remove_dir_all(&wt1).ok();
-        std::fs::remove_dir_all(&bare).ok();
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `worktree_origin`: `None` for the main working tree (including from a subdirectory reached
@@ -3792,9 +3780,6 @@ mod tests {
             Some(expected_origin),
             "リンクワークツリーのサブディレクトリでも同じ値"
         );
-
-        std::fs::remove_dir_all(&linked).ok();
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `worktree_origin` in a **bare** layout (`git clone --bare` + `git worktree add`): there is no
@@ -3860,10 +3845,6 @@ mod tests {
             Some(expected_origin),
             "bare レイアウトでは commondir 自身の名前から `.git` を落とした名前"
         );
-
-        std::fs::remove_dir_all(&wt).ok();
-        std::fs::remove_dir_all(&bare).ok();
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The whole point of `diff_since` over `worktree_diff`: it must show **both** what the
@@ -3957,7 +3938,6 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&linked).ok();
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A `base` that doesn't exist in the repo → empty Vec, so the caller's fallback path
@@ -3978,8 +3958,6 @@ mod tests {
             diff_since(&dir, "this-branch-does-not-exist").is_empty(),
             "存在しない base は空 Vec（フォールバック経路が動く）"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -4255,7 +4233,6 @@ mod tests {
         );
         // It also rolls up into the parent directory.
         assert_eq!(map.get(&canon.join("sub")), Some(&FileStatus::Untracked));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Pin down that a rename still shows as "Renamed on the new path" after CLI delegation
@@ -4289,7 +4266,6 @@ mod tests {
             !map.contains_key(&canon.join("old.txt")),
             "旧パスはツリーに出ないので map に入らないはず"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // ── Repository discovery ────────────────────────────────────────────────────────────────
@@ -4336,7 +4312,6 @@ mod tests {
             None,
             "どこにも .git が無ければ「repo ではない」と即断する"
         );
-        std::fs::remove_dir_all(&base).ok();
     }
 
     /// **Performance contract**: an ordinary (non-repository) directory must not launch a single
@@ -4388,7 +4363,6 @@ mod tests {
             calls, 0,
             "repo でないディレクトリで発見用の子プロセスを起動してはいけない"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Creates a **reftable** repository (git 2.45+) at `dir` with one commit, returning `false`
@@ -4521,7 +4495,6 @@ mod tests {
                 "発見結果はキャッシュ済み — fs イベント毎に rev-parse を起動してはいけない"
             );
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The other half of the reftable story: the reads that go through libgit2's **object
@@ -4705,8 +4678,6 @@ mod tests {
         let t = merge_base_time(&dir, "sidebranch").expect("merge_base_time");
         assert_eq!(t, entries[1].time_epoch, "merge-base は分岐元のコミット");
         assert!(merge_base_time(&dir, "no-such-branch").is_none());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// **Performance contract**, the read counterpart of
@@ -4748,7 +4719,6 @@ mod tests {
             calls, 0,
             "libgit2 が開ける repo でフォールバックの子プロセスを起動してはいけない"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `cat_file_batch` answers every spec from one child process, in order, and keeps its framing
@@ -4820,8 +4790,6 @@ mod tests {
             Some(&b"inner\n"[..]),
             "tree を読み飛ばしても次のスロットがずれない"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The deadlock guard. Writing every spec before reading anything wedges once *both* pipes
@@ -4868,8 +4836,6 @@ mod tests {
                 .all(|(_, b)| b.as_deref() == Some(&body[..])),
             "全スロットが正しい中身で埋まる (途中で打ち切られていない)"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// **Performance contract.** A multi-file diff must not grow a process per file: whatever the
@@ -4929,8 +4895,6 @@ mod tests {
             "listing 2 (diff --name-only + ls-files --others) + cat-file 1 — \
              変更 12 ファイルでもこれ以上増えない"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The two implementations must describe the same repository. Run in an **ordinary** repository
@@ -5107,7 +5071,6 @@ mod tests {
             .and_then(|s| s.parse::<i64>().ok()),
             "merge_base_time"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Binary content must not be fed to the line differ: libgit2 emits no line callbacks for a
@@ -5215,7 +5178,6 @@ mod tests {
             map.contains_key(&nfd_path),
             "ツリー側の NFD パスで status が引ける必要がある: {map:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Non-regression: an ASCII-named and a precomposed(NFC)-named file next to the NFD one above
@@ -5253,7 +5215,6 @@ mod tests {
             Some(&FileStatus::Modified),
             "NFC 名は非退行: {map:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A deleted file's `abs` path no longer exists on disk, so `canonicalize()` inside
@@ -5286,7 +5247,6 @@ mod tests {
             Some(&FileStatus::Deleted),
             "canonicalize 失敗時は元の(NFC)パスにフォールバックし、Deleted のまま残る必要がある: {map:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5339,7 +5299,6 @@ mod tests {
             !set.contains(&canon.join(".gitignore")),
             ".gitignore 自身は無視でない"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5357,7 +5316,6 @@ mod tests {
             diff.iter().all(|l| l.kind == DiffLineKind::Added),
             "未追跡は全行 Added のはず: {diff:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5393,7 +5351,6 @@ mod tests {
             diff.iter().any(|l| l.kind == DiffLineKind::Removed),
             "Removed 行が無い: {diff:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// macOS-only regression (`precomposed_pathspec`): calling `file_diff` with the tree's on-disk
@@ -5427,7 +5384,6 @@ mod tests {
             diff.iter().any(|l| l.kind == DiffLineKind::Removed),
             "Removed 行が無い(NFD パスの diff が空): {diff:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // =========================================================================================
@@ -5484,7 +5440,6 @@ mod tests {
             diff_line_tuples(&via_file_diff),
             "base_contents 起点の diff と file_diff が同じ DiffLine 列になる"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5506,7 +5461,6 @@ mod tests {
             base_contents(&dir, &fresh).is_none(),
             "HEAD に無いファイルは None(untracked)"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5524,7 +5478,6 @@ mod tests {
             base_contents(&dir, &file).is_none(),
             "コミットが一つも無い repo は None"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A change already staged (in the index) must still read as HEAD's content, not the index's —
@@ -5549,7 +5502,6 @@ mod tests {
             Some(b"one\n".to_vec()),
             "ステージ済みでも基準は HEAD(index ではない)"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5562,7 +5514,6 @@ mod tests {
         std::fs::write(&file, b"hello\n").unwrap();
 
         assert!(base_contents(&dir, &file).is_none(), "リポジトリ外は None");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A `root` that is a subdirectory of the repository, addressed with an absolute path to the
@@ -5587,7 +5538,6 @@ mod tests {
             Some(b"alpha\n".to_vec()),
             "サブディレクトリ root からでも repo 全体の HEAD を基準にする"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// macOS-only regression companion to `file_diff_finds_changes_for_an_nfd_named_file`:
@@ -5615,7 +5565,6 @@ mod tests {
             Some(b"alpha\nbeta\n".to_vec()),
             "NFD パスでも HEAD の中身が引ける"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// git2 vs the CLI fallback must describe the same repository — same shape as
@@ -5652,7 +5601,6 @@ mod tests {
             None,
             "CLI フォールバックも untracked は None"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5678,7 +5626,6 @@ mod tests {
         assert_eq!(after.len(), 1);
         assert!(after[0].staged, "add 後は staged=true のはず");
         assert!(after[0].path.ends_with("a.txt"));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The doc contract: `changed_files`'s result is "sorted by path" — not "happens to be", which
@@ -5725,7 +5672,6 @@ mod tests {
             "changed_files must be sorted by path, not grouped by tracked/untracked (git's own \
              report order here is delta, mango, alpha, kappa, zulu): {names:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5751,7 +5697,6 @@ mod tests {
             cd.iter().any(|l| l.kind == DiffLineKind::Added),
             "Added 行が無い: {cd:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5778,7 +5723,6 @@ mod tests {
         discard(&dir, &f).unwrap();
         assert!(changed_files(&dir).is_empty(), "discard 後はクリーンのはず");
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "v1\n");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // SPEED GUARD: lay_out_lanes is a pure function that assigns lanes from a DAG (a parent-ID
