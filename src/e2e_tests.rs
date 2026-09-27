@@ -19,7 +19,9 @@ use ratatui::Terminal;
 use crate::app::DiffView;
 use crate::app::{App, Mode};
 use crate::config::Config;
-use crate::test_support::unique_tmp;
+#[cfg(feature = "git")]
+use crate::test_support::{build_minimal_one_page_pdf, init_git_repo, run_git};
+use crate::test_support::{sample_path_or_skip, unique_tmp, write_solid_png};
 use crate::{handle_key, ui};
 
 /// One simulated konoma session: an App plus a terminal, with a draw after every key
@@ -601,32 +603,6 @@ fn seed_files(dir: &std::path::Path) {
 
 fn canon(dir: &std::path::Path) -> std::path::PathBuf {
     dir.canonicalize().unwrap()
-}
-
-/// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
-/// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path. A bare
-/// `"samples/…"` resolves against the test binary's **cwd**, which is only the crate root by
-/// convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test --manifest-path …`, is
-/// a real, supported invocation) — the tests that used to build one directly (`std::fs::copy`
-/// straight off a bare relative path, with no existence check at all) would then hard-fail with an
-/// IO error from a cwd that has nothing to do with whether the fixture is actually missing.
-/// Tolerant of the one case where the fixture is legitimately absent — `samples/` is excluded from
-/// the published crate (`Cargo.toml`'s `exclude`) — by returning `None` so the caller can skip,
-/// same as the rest of this codebase's samples-gated tests, but saying so loudly (`eprintln!`,
-/// visible with `--nocapture` or in the captured-output dump whenever the process later exits
-/// non-zero for any reason) instead of silently passing zero assertions.
-fn sample_path_or_skip(name: &str) -> Option<std::path::PathBuf> {
-    let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("samples")
-        .join(name);
-    if p.exists() {
-        Some(p)
-    } else {
-        eprintln!(
-            "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
-        );
-        None
-    }
 }
 
 /// A config with `code_bg = "none"` — the real setting that broke the first bg-based code
@@ -2093,13 +2069,13 @@ fn e2e_diff_view_n_next_file_preserves_presentation() {
 fn e2e_diff_view_choice_survives_code_and_text_detours() {
     use crate::app::DiffView;
     let dir = sandbox("diff_view_choice_code_text_detour");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     std::fs::write(dir.join("a_doc.md"), "# A\n\nOriginal.\n").unwrap();
     std::fs::write(dir.join("b_code.rs"), "fn a() {}\n").unwrap();
     std::fs::write(dir.join("c_doc2.md"), "# C\n\nOriginal.\n").unwrap();
     std::fs::write(dir.join("d_plain.txt"), "line one\n").unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::write(dir.join("a_doc.md"), "# A\n\nCHANGED.\n").unwrap();
     std::fs::write(dir.join("b_code.rs"), "fn a() { 1 }\n").unwrap();
     std::fs::write(dir.join("c_doc2.md"), "# C\n\nCHANGED.\n").unwrap();
@@ -2176,15 +2152,15 @@ fn e2e_diff_view_choice_survives_code_and_text_detours() {
 fn e2e_diff_view_choice_survives_binary_source_only_detour_into_svg() {
     use crate::app::DiffView;
     let dir = sandbox("diff_view_choice_binary_svg_detour");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     std::fs::write(dir.join("a_bin.dat"), [0u8, 1, 2, 3, 0, 255, 254, 253]).unwrap();
     std::fs::write(
         dir.join("b_icon.svg"),
         media_diff_solid_svg_bytes(8, 8, (10, 20, 30)),
     )
     .unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::write(dir.join("a_bin.dat"), [9u8, 9, 9, 9, 9, 9, 9, 9]).unwrap();
     std::fs::write(
         dir.join("b_icon.svg"),
@@ -2229,16 +2205,16 @@ fn e2e_diff_view_choice_survives_binary_source_only_detour_into_svg() {
 fn e2e_diff_view_choice_source_via_r_cycle_survives_image_and_code_detours() {
     use crate::app::DiffView;
     let dir = sandbox("diff_view_choice_r_source_detour");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     std::fs::write(dir.join("a_doc.md"), "# A\n\nOriginal.\n").unwrap();
     let png = dir.join("b_pic.png");
-    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    write_solid_png(&png, 4, 4, [1, 1, 1]);
     std::fs::write(dir.join("c_code.rs"), "fn a() {}\n").unwrap();
     std::fs::write(dir.join("d_doc2.md"), "# D\n\nOriginal.\n").unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::write(dir.join("a_doc.md"), "# A\n\nCHANGED.\n").unwrap();
-    media_diff_write_png(&png, 4, 4, [2, 2, 2]);
+    write_solid_png(&png, 4, 4, [2, 2, 2]);
     std::fs::write(dir.join("c_code.rs"), "fn a() { 1 }\n").unwrap();
     std::fs::write(dir.join("d_doc2.md"), "# D\n\nCHANGED.\n").unwrap();
 
@@ -2302,11 +2278,11 @@ fn e2e_diff_view_choice_source_via_r_cycle_survives_image_and_code_detours() {
 fn e2e_diff_view_choice_unaffected_by_rendered_unavailable_fallback() {
     use crate::app::DiffView;
     let dir = sandbox("diff_view_choice_unavailable_fallback");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     std::fs::write(dir.join("a_big.md"), "# Big\n\noriginal\n").unwrap();
     std::fs::write(dir.join("b_doc.md"), "# B\n\nOriginal.\n").unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     let big = "x".repeat(5 * 1024 * 1024 + 1);
     std::fs::write(dir.join("a_big.md"), &big).unwrap();
     std::fs::write(dir.join("b_doc.md"), "# B\n\nCHANGED.\n").unwrap();
@@ -2344,12 +2320,12 @@ fn e2e_diff_view_choice_unaffected_by_rendered_unavailable_fallback() {
 fn e2e_diff_view_choice_follow_scoped_n_preserves_presentation() {
     use crate::app::DiffView;
     let dir = sandbox("diff_view_choice_follow_scope");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     std::fs::write(dir.join("doc.md"), "# Doc\n\nOriginal.\n").unwrap();
     std::fs::write(dir.join("code.rs"), "fn a() {}\n").unwrap();
     std::fs::write(dir.join("doc2.md"), "# Doc2\n\nOriginal.\n").unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
 
     let mut s = Sim::new(&canon(&dir));
     s.key('F');
@@ -2400,11 +2376,11 @@ fn e2e_diff_view_choice_follow_scoped_n_preserves_presentation() {
 fn e2e_diff_view_choice_independent_per_tab() {
     use crate::app::DiffView;
     let dir = sandbox("diff_view_choice_per_tab");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     std::fs::write(dir.join("doc1.md"), "# One\n\nOriginal.\n").unwrap();
     std::fs::write(dir.join("doc2.md"), "# Two\n\nOriginal.\n").unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::write(dir.join("doc1.md"), "# One\n\nCHANGED.\n").unwrap();
     std::fs::write(dir.join("doc2.md"), "# Two\n\nCHANGED.\n").unwrap();
 
@@ -13459,13 +13435,6 @@ fn e2e_ui_inline_local_image_decodes_and_encodes_through_real_worker_threads() {
 // changed and drops that one entry, the old pixels stay on screen forever.
 // =============================================================================
 
-/// Write a solid-color image of an exact pixel size (what regenerating a chart looks like on disk).
-fn write_solid_png(path: &std::path::Path, w: u32, h: u32, rgb: [u8; 3]) {
-    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(rgb)))
-        .save(path)
-        .unwrap();
-}
-
 /// Whether a strongly green pixel reached the drawn buffer (the "first" picture in these tests).
 fn drawn_has_green(term: &Terminal<TestBackend>) -> bool {
     drawn_rgb_fgs(term)
@@ -16279,37 +16248,6 @@ fn e2e_ui_two_inline_math_placements_on_one_decorated_line_each_keep_their_own_c
 // Media diff (image/PDF/SVG side-by-side, `docs/FEATURE-MEDIA-DIFF.md`) — phase B
 // =============================================================================
 
-#[cfg(feature = "git")]
-fn media_diff_git_init(dir: &std::path::Path) {
-    let repo = git2::Repository::init(dir).unwrap();
-    let mut cfg = repo.config().unwrap();
-    cfg.set_str("user.name", "Test").unwrap();
-    cfg.set_str("user.email", "test@example.com").unwrap();
-    cfg.set_str("commit.gpgsign", "false").ok();
-}
-
-#[cfg(feature = "git")]
-fn media_diff_git(dir: &std::path::Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-// Not `#[cfg(feature = "git")]`: used by `e2e_r_on_plain_image_preview_is_a_no_op` too, which
-// needs no git feature at all (an ordinary image preview, not a diff).
-fn media_diff_write_png(path: &std::path::Path, w: u32, h: u32, px: [u8; 3]) {
-    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(px)))
-        .save(path)
-        .unwrap();
-}
-
 /// A minimal, valid, single-page PDF (hand-built, same shape as
 /// `media_diff_minimal_one_page_pdf_bytes` above) whose entire page is filled edge-to-edge with one
 /// flat RGB color — no transparent margin anywhere, so the decoded raster has zero transparent
@@ -16328,39 +16266,7 @@ fn media_diff_solid_pdf_bytes(w_pt: u32, h_pt: u32, rgb: (u8, u8, u8)) -> Vec<u8
         f32::from(rgb.2) / 255.0,
     );
     let content = format!("{r} {g} {b} rg 0 0 {w_pt} {h_pt} re f");
-    let content_obj = format!(
-        "<< /Length {} >>\nstream\n{content}\nendstream",
-        content.len(),
-    );
-    let objs: [String; 4] = [
-        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
-        format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w_pt} {h_pt}] /Contents 4 0 R /Resources << >> >>"
-        ),
-        content_obj,
-    ];
-    let mut out = Vec::new();
-    out.extend_from_slice(b"%PDF-1.4\n");
-    let mut offsets = vec![0usize];
-    for (i, body) in objs.iter().enumerate() {
-        offsets.push(out.len());
-        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
-        out.extend_from_slice(body.as_bytes());
-        out.extend_from_slice(b"\nendobj\n");
-    }
-    let xref_offset = out.len();
-    let n = objs.len() + 1;
-    out.extend_from_slice(format!("xref\n0 {n}\n").as_bytes());
-    out.extend_from_slice(b"0000000000 65535 f \n");
-    for off in &offsets[1..] {
-        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
-    }
-    out.extend_from_slice(
-        format!("trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
-            .as_bytes(),
-    );
-    out
+    build_minimal_one_page_pdf(w_pt, h_pt, content.as_bytes())
 }
 
 /// A tiny, self-contained SVG whose entire canvas is one flat-color `<rect>` filling the viewBox —
@@ -16419,12 +16325,12 @@ fn media_diff_transmitted_kitty_ids(s: &Sim) -> Vec<u32> {
 #[test]
 fn e2e_media_diff_png_shows_captions_pictures_and_a_clean_footer() {
     let dir = sandbox("media_diff_png");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let png = dir.join("logo.png");
-    media_diff_write_png(&png, 400, 400, [10, 20, 30]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
-    media_diff_write_png(&png, 600, 600, [40, 50, 60]); // uncommitted change
+    write_solid_png(&png, 400, 400, [10, 20, 30]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
+    write_solid_png(&png, 600, 600, [40, 50, 60]); // uncommitted change
 
     let mut s = Sim::new(&canon(&dir)).with_media_kitty();
     s.app.open_git_diff(&png);
@@ -16473,12 +16379,12 @@ fn e2e_media_diff_png_shows_captions_pictures_and_a_clean_footer() {
 #[test]
 fn e2e_media_diff_s_cycles_the_layout() {
     let dir = sandbox("media_diff_layout_cycle");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let png = dir.join("logo.png");
-    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
-    media_diff_write_png(&png, 8, 8, [2, 2, 2]);
+    write_solid_png(&png, 4, 4, [1, 1, 1]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
+    write_solid_png(&png, 8, 8, [2, 2, 2]);
 
     let mut s = Sim::new(&canon(&dir)).with_picker();
     s.app.open_git_diff(&png);
@@ -16519,12 +16425,12 @@ fn e2e_media_diff_s_cycles_the_layout() {
 #[test]
 fn e2e_media_diff_r_round_trip_redraws_both_pictures() {
     let dir = sandbox("media_diff_r_roundtrip");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let png = dir.join("logo.png");
-    media_diff_write_png(&png, 400, 400, [1, 1, 1]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
-    media_diff_write_png(&png, 600, 600, [2, 2, 2]);
+    write_solid_png(&png, 400, 400, [1, 1, 1]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
+    write_solid_png(&png, 600, 600, [2, 2, 2]);
 
     let mut s = Sim::new(&canon(&dir)).with_media_kitty();
     s.app.open_git_diff(&png);
@@ -16604,11 +16510,11 @@ fn e2e_media_diff_r_round_trip_redraws_both_pictures() {
 #[test]
 fn e2e_media_diff_binary_summary_line_replaces_the_false_no_changes() {
     let dir = sandbox("media_diff_binary_summary");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let clip = dir.join("clip.mp4");
     std::fs::write(&clip, b"\x00\x00\x00\x18ftypmp42 old bytes here").unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::write(
         &clip,
         b"\x00\x00\x00\x18ftypmp42 completely different new bytes now",
@@ -16639,11 +16545,11 @@ fn e2e_media_diff_binary_summary_delta_suffix() {
     // Growth: +3 bytes.
     {
         let dir = sandbox("media_diff_delta_plus");
-        media_diff_git_init(&dir);
+        init_git_repo(&dir);
         let f = dir.join("clip.mp4");
         std::fs::write(&f, vec![0u8; 100]).unwrap();
-        media_diff_git(&dir, &["add", "-A"]);
-        media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
         std::fs::write(&f, vec![0u8; 103]).unwrap();
         let mut s = Sim::new(&canon(&dir)).with_picker();
         s.app.open_git_diff(&f);
@@ -16654,11 +16560,11 @@ fn e2e_media_diff_binary_summary_delta_suffix() {
     // Shrink: -3 bytes.
     {
         let dir = sandbox("media_diff_delta_minus");
-        media_diff_git_init(&dir);
+        init_git_repo(&dir);
         let f = dir.join("clip.mp4");
         std::fs::write(&f, vec![0u8; 100]).unwrap();
-        media_diff_git(&dir, &["add", "-A"]);
-        media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
         std::fs::write(&f, vec![0u8; 97]).unwrap();
         let mut s = Sim::new(&canon(&dir)).with_picker();
         s.app.open_git_diff(&f);
@@ -16669,11 +16575,11 @@ fn e2e_media_diff_binary_summary_delta_suffix() {
     // Equal length, different content (e.g. `data.bin` in the reported sandbox).
     {
         let dir = sandbox("media_diff_delta_same_len");
-        media_diff_git_init(&dir);
+        init_git_repo(&dir);
         let f = dir.join("data.bin");
         std::fs::write(&f, vec![0u8; 100]).unwrap();
-        media_diff_git(&dir, &["add", "-A"]);
-        media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
         // Same length, every byte different — still contains a NUL byte (like the `0u8` fixture
         // above) so `is_probably_text` classifies it as binary too, not as a plain text diff.
         let mut different = vec![1u8; 100];
@@ -16691,10 +16597,10 @@ fn e2e_media_diff_binary_summary_delta_suffix() {
     // was never there to diff against.
     {
         let dir = sandbox("media_diff_delta_absent_side");
-        media_diff_git_init(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("seed.txt"), b"seed\n").unwrap();
-        media_diff_git(&dir, &["add", "-A"]);
-        media_diff_git(&dir, &["commit", "-q", "-m", "seed"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "seed"]);
         let f = dir.join("clip.mp4"); // untracked = new only, old is Absent
         std::fs::write(&f, vec![0u8; 100]).unwrap();
         let mut s = Sim::new(&canon(&dir)).with_picker();
@@ -16714,12 +16620,12 @@ fn e2e_media_diff_binary_summary_delta_suffix() {
 #[test]
 fn e2e_media_diff_identical_binary_still_shows_no_changes() {
     let dir = sandbox("media_diff_binary_identical");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let clip = dir.join("clip.mp4");
     let bytes = b"\x00\x00\x00\x18ftypmp42 unchanged bytes".to_vec();
     std::fs::write(&clip, &bytes).unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     // Rewrite the exact same bytes — content is byte-identical, but this forces a Summary
     // computation (rather than relying on git reporting literally zero status).
     std::fs::write(&clip, &bytes).unwrap();
@@ -16802,11 +16708,11 @@ fn e2e_media_diff_pdf_paging_with_j_k() {
     };
     let bytes = std::fs::read(&pdf).unwrap();
     let dir = sandbox("media_diff_pdf_paging");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let doc = dir.join("doc.pdf");
     std::fs::write(&doc, &bytes).unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     // Uncommitted "change": touch the file so it shows as modified (git diffs it against the
     // identical committed bytes either way — the page-count/paging behavior doesn't depend on the
     // two sides actually differing).
@@ -16845,11 +16751,11 @@ fn e2e_media_diff_pdf_paging_with_real_pagedown_pageup_keys_and_text_diff_still_
     };
     let bytes = std::fs::read(&pdf).unwrap();
     let dir = sandbox("media_diff_pdf_paging_real_keys");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let doc = dir.join("doc.pdf");
     std::fs::write(&doc, &bytes).unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::write(&doc, &bytes).unwrap(); // uncommitted "change" (see the J/K test above)
 
     let mut s = Sim::new(&canon(&dir)).with_picker();
@@ -16881,8 +16787,8 @@ fn e2e_media_diff_pdf_paging_with_real_pagedown_pageup_keys_and_text_diff_still_
     let old_text: String = (1..=200).map(|i| format!("old line {i}\n")).collect();
     let new_text: String = (1..=200).map(|i| format!("new line {i}\n")).collect();
     std::fs::write(&rs, &old_text).unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "add a.rs"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "add a.rs"]);
     std::fs::write(&rs, &new_text).unwrap();
 
     s.app.open_git_diff(&rs);
@@ -16917,12 +16823,12 @@ fn e2e_media_diff_pdf_paging_with_real_pagedown_pageup_keys_and_text_diff_still_
 #[test]
 fn media_diff_stale_cache_key_is_re_kicked_not_left_blank() {
     let dir = sandbox("media_diff_stale_cache_rekick");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let png = dir.join("logo.png");
-    media_diff_write_png(&png, 40, 40, [1, 1, 1]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
-    media_diff_write_png(&png, 60, 60, [2, 2, 2]);
+    write_solid_png(&png, 40, 40, [1, 1, 1]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
+    write_solid_png(&png, 60, 60, [2, 2, 2]);
 
     let mut s = Sim::new(&canon(&dir)).with_picker();
     s.app.open_git_diff(&png);
@@ -16966,12 +16872,12 @@ fn media_diff_stale_cache_key_is_re_kicked_not_left_blank() {
 #[test]
 fn media_diff_stale_cache_key_re_kicks_both_sides_even_when_only_one_side_was_evicted() {
     let dir = sandbox("media_diff_stale_cache_rekick_one_side");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let png = dir.join("logo.png");
-    media_diff_write_png(&png, 40, 40, [1, 1, 1]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
-    media_diff_write_png(&png, 60, 60, [2, 2, 2]);
+    write_solid_png(&png, 40, 40, [1, 1, 1]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
+    write_solid_png(&png, 60, 60, [2, 2, 2]);
 
     let mut s = Sim::new(&canon(&dir)).with_picker();
     s.app.open_git_diff(&png);
@@ -17014,18 +16920,18 @@ fn media_diff_stale_cache_key_re_kicks_both_sides_even_when_only_one_side_was_ev
 #[test]
 fn e2e_media_diff_placeholders_actually_draw_their_message() {
     let dir = sandbox("media_diff_placeholders");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     // A first commit (establishes HEAD) that does *not* include the GIF at all — added below,
     // after this commit, so it stays genuinely untracked.
     std::fs::write(dir.join("seed.txt"), b"seed\n").unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "seed"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "seed"]);
 
     // Absent (new side): a committed-then-deleted PNG.
     let gone = dir.join("gone.png");
-    media_diff_write_png(&gone, 4, 4, [7, 7, 7]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "add gone.png"]);
+    write_solid_png(&gone, 4, 4, [7, 7, 7]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "add gone.png"]);
     std::fs::remove_file(&gone).unwrap();
 
     // Absent (old side): an untracked GIF has no committed old version — added to the working
@@ -17066,39 +16972,7 @@ fn media_diff_minimal_one_page_pdf_bytes() -> Vec<u8> {
     // successful-but-empty render", per that fn's own doc comment — so a genuinely blank page
     // would make `render_page_bytes` report `Failed`, not the `PageMissing` this test means to
     // exercise for a *different* page.
-    let content = b"0 0 0 rg 0 0 100 100 re f";
-    let content_obj = format!(
-        "<< /Length {} >>\nstream\n{}\nendstream",
-        content.len(),
-        std::str::from_utf8(content).unwrap()
-    );
-    let objs: [&[u8]; 4] = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << >> >>",
-        content_obj.as_bytes(),
-    ];
-    let mut out = Vec::new();
-    out.extend_from_slice(b"%PDF-1.4\n");
-    let mut offsets = vec![0usize];
-    for (i, body) in objs.iter().enumerate() {
-        offsets.push(out.len());
-        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
-        out.extend_from_slice(body);
-        out.extend_from_slice(b"\nendobj\n");
-    }
-    let xref_offset = out.len();
-    let n = objs.len() + 1;
-    out.extend_from_slice(format!("xref\n0 {n}\n").as_bytes());
-    out.extend_from_slice(b"0000000000 65535 f \n");
-    for off in &offsets[1..] {
-        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
-    }
-    out.extend_from_slice(
-        format!("trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
-            .as_bytes(),
-    );
-    out
+    build_minimal_one_page_pdf(200, 200, b"0 0 0 rg 0 0 100 100 re f")
 }
 
 /// PageMissing: the new side's own page count (1) is smaller than the requested page (2) — its
@@ -17112,11 +16986,11 @@ fn e2e_media_diff_page_missing_placeholder_draws() {
     };
     let bytes = std::fs::read(&pdf).unwrap();
     let dir = sandbox("media_diff_page_missing");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let doc = dir.join("doc.pdf");
     std::fs::write(&doc, &bytes).unwrap(); // 3 pages, committed
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::write(&doc, media_diff_minimal_one_page_pdf_bytes()).unwrap(); // new version: 1 page
 
     let mut s = Sim::new(&canon(&dir)).with_media();
@@ -17178,7 +17052,7 @@ fn e2e_r_on_plain_image_preview_is_a_no_op() {
     let dir = sandbox("r_on_plain_image_preview");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("d.mmd"), "graph LR\n  A[start] --> B[end]\n").unwrap();
-    media_diff_write_png(&dir.join("pic.png"), 4, 4, [1, 1, 1]);
+    write_solid_png(&dir.join("pic.png"), 4, 4, [1, 1, 1]);
 
     for name in ["d.mmd", "pic.png"] {
         let mut s = Sim::new(&canon(&dir)).with_picker();
@@ -17218,11 +17092,11 @@ fn e2e_r_on_plain_image_preview_is_a_no_op() {
 #[test]
 fn e2e_follow_scope_help_row_shown_iff_the_diff_is_follow_originated() {
     let dir = sandbox("follow_help_row_gate");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let f = dir.join("a.rs");
     std::fs::write(&f, "fn main() {}\n").unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::write(&f, "fn main() { changed(); }\n").unwrap();
 
     let mut s = Sim::new(&canon(&dir)).with_picker();
@@ -17256,11 +17130,11 @@ fn e2e_follow_scope_help_row_shown_iff_the_diff_is_follow_originated() {
 #[test]
 fn e2e_media_diff_pdf_scale_uses_page_points_not_raster_px() {
     let dir = sandbox("media_diff_pdf_scale_units");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let doc = dir.join("doc.pdf");
     std::fs::write(&doc, media_diff_solid_pdf_bytes(612, 792, (255, 0, 0))).unwrap(); // old
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::write(&doc, media_diff_solid_pdf_bytes(306, 396, (0, 0, 255))).unwrap(); // new: exactly half, each axis
 
     let mut s = Sim::with_config_sized(&canon(&dir), Config::default(), 240, 70).with_media();
@@ -17295,11 +17169,11 @@ fn e2e_media_diff_pdf_scale_uses_page_points_not_raster_px() {
 #[test]
 fn e2e_media_diff_svg_scale_uses_viewbox_not_raster_px() {
     let dir = sandbox("media_diff_svg_scale_units");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let icon = dir.join("icon.svg");
     std::fs::write(&icon, media_diff_solid_svg_bytes(400, 300, (255, 0, 0))).unwrap(); // old
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::write(&icon, media_diff_solid_svg_bytes(200, 150, (0, 0, 255))).unwrap(); // new: exactly half
 
     let mut s = Sim::with_config_sized(&canon(&dir), Config::default(), 240, 70).with_media();
@@ -17334,12 +17208,12 @@ fn e2e_media_diff_svg_scale_uses_viewbox_not_raster_px() {
 #[test]
 fn e2e_media_diff_png_scale_uses_real_pixels() {
     let dir = sandbox("media_diff_png_scale_units");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let pic = dir.join("pic.png");
-    media_diff_write_png(&pic, 400, 300, [255, 0, 0]); // old
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
-    media_diff_write_png(&pic, 200, 150, [0, 0, 255]); // new: exactly half
+    write_solid_png(&pic, 400, 300, [255, 0, 0]); // old
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
+    write_solid_png(&pic, 200, 150, [0, 0, 255]); // new: exactly half
 
     let mut s = Sim::with_config_sized(&canon(&dir), Config::default(), 240, 70).with_media();
     s.app.open_git_diff(&pic);
@@ -17375,11 +17249,11 @@ fn e2e_media_diff_png_scale_uses_real_pixels() {
 #[test]
 fn e2e_media_diff_gif_scale_uses_header_dims_not_budget_downscaled_frame() {
     let dir = sandbox("media_diff_gif_scale_units");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     let pic = dir.join("pic.gif"); // format is sniffed from content, not the extension, on both sides
-    media_diff_write_png(&pic, 1050, 1050, [255, 0, 0]); // old: real, undownscaled 1050x1050
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    write_solid_png(&pic, 1050, 1050, [255, 0, 0]); // old: real, undownscaled 1050x1050
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::write(&pic, media_diff_solid_gif_bytes(2100, [0, 0, 255, 255])).unwrap(); // new: header 2100x2100, budget-shrunk decode to 1050x1050 (2 frames x 2100^2x4B = 35.28MB > MAX_GIF_BYTES_INLINE 32MB)
 
     let mut s = Sim::with_config_sized(&canon(&dir), Config::default(), 240, 70).with_media();
@@ -17417,13 +17291,13 @@ fn e2e_media_diff_gif_scale_uses_header_dims_not_budget_downscaled_frame() {
 #[test]
 fn e2e_follow_jump_into_changed_png_opens_side_by_side_diff_with_follow_start_base() {
     let dir = sandbox("follow_media_png_side_by_side");
-    media_diff_git_init(&dir);
-    media_diff_write_png(&dir.join("logo.png"), 10, 10, [1, 1, 1]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    init_git_repo(&dir);
+    write_solid_png(&dir.join("logo.png"), 10, 10, [1, 1, 1]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     // Dirty *before* F — goes into the follow-session's own snapshot (`FollowSnapshot`), well
     // under the cap, so the session actually has bytes to offer.
-    media_diff_write_png(&dir.join("logo.png"), 10, 10, [2, 2, 2]);
+    write_solid_png(&dir.join("logo.png"), 10, 10, [2, 2, 2]);
 
     let mut s = Sim::new(&canon(&dir));
     // Follow's own path checks (`follow_target_ok`) require the same (canonicalized) root the
@@ -17433,7 +17307,7 @@ fn e2e_follow_jump_into_changed_png_opens_side_by_side_diff_with_follow_start_ba
     assert!(s.app.follow_enabled());
 
     // The edit `follow_jump` reacts to (after F).
-    media_diff_write_png(&png, 10, 10, [3, 3, 3]);
+    write_solid_png(&png, 10, 10, [3, 3, 3]);
     assert!(
         s.app.follow_note_change(&png),
         "変更ファイルは有効な追尾対象"
@@ -17475,10 +17349,10 @@ fn e2e_follow_jump_into_changed_png_opens_side_by_side_diff_with_follow_start_ba
 #[test]
 fn e2e_follow_jump_into_changed_png_over_snapshot_cap_reports_head_base() {
     let dir = sandbox("follow_media_png_over_cap");
-    media_diff_git_init(&dir);
-    media_diff_write_png(&dir.join("logo.png"), 4, 4, [1, 1, 1]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    init_git_repo(&dir);
+    write_solid_png(&dir.join("logo.png"), 4, 4, [1, 1, 1]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     // Dirty before F, and over FOLLOW_BASELINE_FILE_CAP (5 MiB) — `capture_follow_baseline` records
     // `None` for it. Trailing zero padding after a real (small) PNG's own IEND chunk, not opaque
     // garbage from byte 0 — `resolve_preview` classifies this kind by MIME-sniffing the file's own
@@ -17530,14 +17404,14 @@ fn e2e_follow_jump_into_changed_png_over_snapshot_cap_reports_head_base() {
 #[test]
 fn e2e_follow_jump_into_changed_svg_opens_side_by_side_diff() {
     let dir = sandbox("follow_media_svg_side_by_side");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     std::fs::write(
         dir.join("icon.svg"),
         media_diff_solid_svg_bytes(100, 100, (255, 0, 0)),
     )
     .unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
 
     let mut s = Sim::new(&canon(&dir));
     let svg = s.app.tab.root.join("icon.svg");
@@ -17567,10 +17441,10 @@ fn e2e_follow_jump_into_changed_pdf_opens_side_by_side_diff() {
     };
     let bytes = std::fs::read(&pdf).unwrap();
     let dir = sandbox("follow_media_pdf_side_by_side");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     std::fs::write(dir.join("doc.pdf"), &bytes).unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
 
     let mut s = Sim::new(&canon(&dir));
     let doc = s.app.tab.root.join("doc.pdf");
@@ -17599,14 +17473,14 @@ fn e2e_follow_jump_into_changed_pdf_opens_side_by_side_diff() {
 #[test]
 fn e2e_follow_jump_into_changed_video_still_opens_ordinary_preview() {
     let dir = sandbox("follow_media_video_ordinary_preview");
-    media_diff_git_init(&dir);
+    init_git_repo(&dir);
     std::fs::write(
         dir.join("clip.mp4"),
         b"\x00\x00\x00\x18ftypmp42 old bytes here",
     )
     .unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
 
     let mut s = Sim::new(&canon(&dir));
     let clip = s.app.tab.root.join("clip.mp4");
@@ -17642,21 +17516,21 @@ fn e2e_follow_jump_into_changed_video_still_opens_ordinary_preview() {
 #[test]
 fn e2e_follow_diff_cycle_includes_image_excludes_video() {
     let dir = sandbox("follow_media_cycle_scope");
-    media_diff_git_init(&dir);
-    media_diff_write_png(&dir.join("logo.png"), 4, 4, [1, 1, 1]);
+    init_git_repo(&dir);
+    write_solid_png(&dir.join("logo.png"), 4, 4, [1, 1, 1]);
     std::fs::write(
         dir.join("clip.mp4"),
         b"\x00\x00\x00\x18ftypmp42 old bytes here",
     )
     .unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
 
     let mut s = Sim::new(&canon(&dir));
     let png = s.app.tab.root.join("logo.png");
     let clip = s.app.tab.root.join("clip.mp4");
     s.key('F');
-    media_diff_write_png(&png, 4, 4, [2, 2, 2]);
+    write_solid_png(&png, 4, 4, [2, 2, 2]);
     std::fs::write(
         &clip,
         b"\x00\x00\x00\x18ftypmp42 completely different new bytes now",
@@ -17682,17 +17556,17 @@ fn e2e_follow_diff_cycle_includes_image_excludes_video() {
 #[test]
 fn e2e_follow_view_file_still_opens_ordinary_preview_for_image() {
     let dir = sandbox("follow_media_view_file");
-    media_diff_git_init(&dir);
-    media_diff_write_png(&dir.join("logo.png"), 4, 4, [1, 1, 1]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    init_git_repo(&dir);
+    write_solid_png(&dir.join("logo.png"), 4, 4, [1, 1, 1]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
 
     let mut cfg = Config::default();
     cfg.ui.follow_view = "file".into();
     let mut s = Sim::with_config(&canon(&dir), cfg);
     let png = s.app.tab.root.join("logo.png");
     s.key('F');
-    media_diff_write_png(&png, 4, 4, [2, 2, 2]);
+    write_solid_png(&png, 4, 4, [2, 2, 2]);
     assert!(s.app.follow_note_change(&png));
     s.app.follow_jump(&png);
     s.draw();

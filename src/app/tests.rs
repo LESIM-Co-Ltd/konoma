@@ -1,7 +1,9 @@
 use super::bookmark_actions::fuzzy_filter_pool;
 use super::*;
 use crate::config::Config;
-use crate::test_support::unique_tmp;
+#[cfg(feature = "git")]
+use crate::test_support::{init_git_repo, jj_scratch_seeded, run_git};
+use crate::test_support::{sample_path_or_skip, unique_tmp, write_solid_png};
 
 /// Test helper: the link target of an `MdItem` (panics if the item is a checkbox).
 fn item_target(it: &MdItem) -> &str {
@@ -11,30 +13,6 @@ fn item_target(it: &MdItem) -> &str {
         MdItemKind::CodeBlock { .. } => panic!("expected a link item"),
         MdItemKind::MermaidFence { .. } => panic!("expected a link item"),
         MdItemKind::Details { .. } => panic!("expected a link item"),
-    }
-}
-
-/// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
-/// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
-/// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate
-/// root by convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test
-/// --manifest-path …`, is a real, supported invocation), so it silently missed the fixture and
-/// silently skipped every assertion in every test that used it. Tolerant of the one case where the
-/// fixture is legitimately absent — `samples/` is excluded from the published crate (`Cargo.toml`'s
-/// `exclude`) — by returning `None` (same early-return as before) but saying so loudly
-/// (`eprintln!`, visible with `--nocapture` or in the captured-output dump whenever the process
-/// later exits non-zero for any reason) instead of silently passing zero assertions.
-fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("samples")
-        .join(name);
-    if p.exists() {
-        Some(p)
-    } else {
-        eprintln!(
-            "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
-        );
-        None
     }
 }
 
@@ -5115,14 +5093,6 @@ fn highlight_query_current_match_survives_tab_expansion() {
 }
 
 // --- Git view (the changes hub) -------------------------------------------------
-#[cfg(feature = "git")]
-fn init_git_repo(dir: &Path) {
-    let repo = git2::Repository::init(dir).unwrap();
-    let mut cfg = repo.config().unwrap();
-    cfg.set_str("user.name", "Test").unwrap();
-    cfg.set_str("user.email", "test@example.com").unwrap();
-    cfg.set_str("commit.gpgsign", "false").ok();
-}
 
 // --- Follow baseline diff (anchored at the moment F is pressed; shows only changes since) ------------------
 #[cfg(feature = "git")]
@@ -23838,43 +23808,12 @@ fn tree_descend_still_descends_into_directories() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Builds a throwaway jj workspace with no colocated `.git`. None when this machine has no jj —
-/// konoma falls back to git there, so the suite has to stay green without it.
-#[cfg(feature = "git")]
-fn jj_scratch(name: &str) -> Option<crate::test_support::TmpDir> {
-    if !crate::vcs::jj::available() {
-        return None;
-    }
-    let dir = unique_tmp(name);
-    std::fs::create_dir_all(&dir).ok()?;
-    let jj = |args: &[&str]| {
-        std::process::Command::new("jj")
-            .current_dir(&dir)
-            .env("HOME", &*dir) // never touch the running machine's own jj config
-            .env("JJ_USER", "konoma test")
-            .env("JJ_EMAIL", "test@example.invalid")
-            .args(args)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    };
-    if !jj(&["git", "init", "--no-colocate", "."]) {
-        return None;
-    }
-    std::fs::write(dir.join("a.txt"), b"one\n").ok()?;
-    if !jj(&["commit", "-m", "seed"]) {
-        return None;
-    }
-    std::fs::write(dir.join("a.txt"), b"two\n").ok()?;
-    Some(dir)
-}
-
 /// `[ui] confirm_jj_sync` decides whether `R` asks first. konoma writes to a jj repository only
 /// here, so the default has to be the one that asks.
 #[cfg(feature = "git")]
 #[test]
 fn ui_confirm_jj_sync_gates_the_only_write() {
-    let Some(dir) = jj_scratch("konoma_confirm_jj_sync") else {
+    let Some(dir) = jj_scratch_seeded("konoma_confirm_jj_sync") else {
         return;
     };
 
@@ -23916,7 +23855,7 @@ fn ui_confirm_jj_sync_gates_the_only_write() {
 #[cfg(feature = "git")]
 #[test]
 fn jj_hub_opens_even_when_the_git_binary_is_missing() {
-    let Some(dir) = jj_scratch("konoma_jj_hub_no_git_binary") else {
+    let Some(dir) = jj_scratch_seeded("konoma_jj_hub_no_git_binary") else {
         return;
     };
     crate::git::set_git_binary_available_for_test(Some(false));
@@ -23950,7 +23889,7 @@ fn jj_hub_opens_even_when_the_git_binary_is_missing() {
 #[cfg(feature = "git")]
 #[test]
 fn jj_hub_opens_even_when_the_git_integration_is_switched_off() {
-    let Some(dir) = jj_scratch("konoma_jj_hub_git_disabled") else {
+    let Some(dir) = jj_scratch_seeded("konoma_jj_hub_git_disabled") else {
         return;
     };
     let mut cfg = Config::default();
@@ -24031,7 +23970,7 @@ fn moving_to_another_repository_settles_the_backend_before_the_scan_lands() {
 #[cfg(feature = "git")]
 #[test]
 fn arriving_in_a_jj_workspace_reads_as_jj_before_the_scan_lands() {
-    let Some(jj_dir) = jj_scratch("konoma_git_vcs_to_jj") else {
+    let Some(jj_dir) = jj_scratch_seeded("konoma_git_vcs_to_jj") else {
         return;
     };
     let git_dir = unique_tmp("konoma_git_vcs_to_jj_git");
@@ -24082,7 +24021,7 @@ fn arriving_in_a_jj_workspace_reads_as_jj_before_the_scan_lands() {
 #[cfg(feature = "git")]
 #[test]
 fn worktree_create_is_gated_even_if_the_normally_unreachable_surface_is_forced_open() {
-    let Some(dir) = jj_scratch("konoma_worktree_create_gate") else {
+    let Some(dir) = jj_scratch_seeded("konoma_worktree_create_gate") else {
         return;
     };
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
@@ -24563,26 +24502,6 @@ fn ordinary_preview_gutter_decision_matches_render_for_a_truncated_file() {
 // Media diff (image/PDF/SVG side-by-side, `docs/FEATURE-MEDIA-DIFF.md`) — phase B
 // =============================================================================
 
-#[cfg(feature = "git")]
-fn media_diff_git(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn media_diff_write_png(path: &Path, w: u32, h: u32, px: [u8; 3]) {
-    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(px)))
-        .save(path)
-        .unwrap();
-}
-
 // ---- App::diff_representations / App::round_diff_view ----------------------------------------
 
 #[test]
@@ -24622,7 +24541,7 @@ fn diff_representations_image_and_pdf_have_no_source() {
     std::fs::create_dir_all(&dir).unwrap();
     let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 2, 3]);
+    write_solid_png(&png, 2, 2, [1, 2, 3]);
     assert_eq!(
         app.diff_representations(&png),
         vec![DiffView::Rendered, DiffView::Preview],
@@ -24731,9 +24650,9 @@ fn diff_representations_deleted_image_classifies_via_worker_byte_sniff_after_lan
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
     let png = dir.join("gone.png"); // no glob rule matches .png — image/* is MIME-only
-    media_diff_write_png(&png, 3, 3, [9, 9, 9]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    write_solid_png(&png, 3, 3, [9, 9, 9]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::remove_file(&png).unwrap(); // deleted on disk, still in HEAD
 
     // Canonicalize before `App::new` (its own `tab.root`) so it matches `png`'s prefix exactly —
@@ -24768,7 +24687,7 @@ fn round_diff_view_substitutes_rendered_and_source_for_each_other() {
     std::fs::create_dir_all(&dir).unwrap();
     let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     // Image has no Source: a Source request rounds to Rendered.
     assert_eq!(
         app.round_diff_view(DiffView::Source, &png),
@@ -24827,7 +24746,7 @@ fn diff_media_active_is_true_for_image_rendered_and_false_for_markdown_rendered(
     let dir = unique_tmp("konoma_media_diff_active_predicate");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
@@ -24868,7 +24787,7 @@ fn diff_footer_is_media_or_summary_covers_media_active_and_binary_summary_kinds(
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     app.open_git_diff(&png);
     assert!(app.diff_footer_is_media_or_summary());
 
@@ -24897,7 +24816,7 @@ fn media_diff_showing_pictures_is_false_before_anything_lands_true_once_ready() 
     let dir = unique_tmp("konoma_media_diff_showing_pictures_pending");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    write_solid_png(&png, 4, 4, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     assert!(app.diff_media_active(), "前提: 種別は media");
@@ -24922,7 +24841,7 @@ fn footer_and_help_omit_s_hint_while_the_media_diff_is_still_computing() {
     let dir = unique_tmp("konoma_media_diff_hint_pending");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    write_solid_png(&png, 4, 4, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
 
@@ -24975,10 +24894,10 @@ fn help_x_row_is_shown_on_a_writable_backend() {
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
-    media_diff_write_png(&png, 4, 4, [2, 2, 2]);
+    write_solid_png(&png, 4, 4, [1, 1, 1]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
+    write_solid_png(&png, 4, 4, [2, 2, 2]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     assert!(crate::vcs::caps(&app.tab.root).write, "前提: git は書ける");
@@ -25000,11 +24919,11 @@ fn help_x_row_is_shown_on_a_writable_backend() {
 #[cfg(feature = "git")]
 #[test]
 fn help_x_row_is_hidden_on_a_read_only_backend() {
-    let Some(dir) = jj_scratch("konoma_media_diff_help_x_jj") else {
+    let Some(dir) = jj_scratch_seeded("konoma_media_diff_help_x_jj") else {
         return;
     };
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    write_solid_png(&png, 4, 4, [1, 1, 1]);
     let jj = |args: &[&str]| {
         std::process::Command::new("jj")
             .current_dir(&dir)
@@ -25017,7 +24936,7 @@ fn help_x_row_is_hidden_on_a_read_only_backend() {
             .unwrap_or(false)
     };
     assert!(jj(&["commit", "-m", "add png"]));
-    media_diff_write_png(&png, 4, 4, [2, 2, 2]); // uncommitted change
+    write_solid_png(&png, 4, 4, [2, 2, 2]); // uncommitted change
 
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
@@ -25053,7 +24972,7 @@ fn diff_surface_predicates_resolve_preview_kind_at_most_once_per_retarget_not_pe
     let dir = unique_tmp("konoma_media_diff_resolve_cache");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png); // one retarget — allowed to resolve here, outside the measured window
 
@@ -25085,7 +25004,7 @@ fn closing_the_media_diff_prunes_its_media_diff_cache_keys() {
     let dir = unique_tmp("konoma_media_diff_prune_on_close");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     let _ = app.poll_media_diff(&png, app.diff_media_page(), (400, 300));
@@ -25110,7 +25029,7 @@ fn retargeting_to_a_non_media_file_prunes_the_previous_media_diff_cache_keys() {
     let dir = unique_tmp("konoma_media_diff_prune_on_retarget");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let md = dir.join("doc.md");
     std::fs::write(&md, "# hi\n\nchanged\n").unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
@@ -25134,7 +25053,7 @@ fn apply_diff_view_does_not_kick_the_markdown_block_diff_for_a_media_target() {
     let dir = unique_tmp("konoma_media_diff_no_block_diff_flash");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
@@ -25160,8 +25079,8 @@ fn media_diff_page_turn_moves_both_sides_and_clamps_to_the_larger_page_count() {
     init_git_repo(&dir);
     let doc = dir.join("doc.pdf");
     std::fs::write(&doc, &bytes).unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&doc);
     assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
@@ -25188,7 +25107,7 @@ fn media_diff_can_page_is_false_for_a_single_page_image() {
     let dir = unique_tmp("konoma_media_diff_can_page_false");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     let _ = app.poll_media_diff(&png, 1, (400, 300));
@@ -25206,7 +25125,7 @@ fn cycle_media_diff_layout_rotates_auto_side_stack_and_flashes() {
     let dir = unique_tmp("konoma_media_diff_cycle_layout");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     assert!(app.diff_media_active());

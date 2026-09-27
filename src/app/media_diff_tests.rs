@@ -4,21 +4,9 @@
 
 use super::*;
 use crate::config::Config;
-use crate::test_support::unique_tmp;
-
-fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("samples")
-        .join(name);
-    if p.exists() {
-        Some(p)
-    } else {
-        eprintln!(
-            "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
-        );
-        None
-    }
-}
+#[cfg(feature = "git")]
+use crate::test_support::{init_git_repo, jj_scratch_bare, run_git};
+use crate::test_support::{sample_path_or_skip, unique_tmp};
 
 fn req(path: PathBuf, root: PathBuf, baseline: DiffBaseline) -> MediaDiffRequest {
     MediaDiffRequest {
@@ -31,56 +19,6 @@ fn req(path: PathBuf, root: PathBuf, baseline: DiffBaseline) -> MediaDiffRequest
         preview_rules: Config::default().preview.rules,
         preview_commands: true,
     }
-}
-
-#[cfg(feature = "git")]
-fn init_git_repo(dir: &Path) {
-    let repo = git2::Repository::init(dir).unwrap();
-    let mut cfg = repo.config().unwrap();
-    cfg.set_str("user.name", "Test").unwrap();
-    cfg.set_str("user.email", "test@example.com").unwrap();
-    cfg.set_str("commit.gpgsign", "false").ok();
-}
-
-#[cfg(feature = "git")]
-fn git(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// A throwaway jj workspace (no colocated `.git`) — `None` when this machine has no `jj`
-/// (konoma falls back to git there, so the suite must stay green without it; mirrors
-/// `app::tests::jj_scratch`, duplicated locally since that one is private to its own module).
-#[cfg(feature = "git")]
-fn jj_scratch(name: &str) -> Option<crate::test_support::TmpDir> {
-    if !crate::vcs::jj::available() {
-        return None;
-    }
-    let dir = unique_tmp(name);
-    std::fs::create_dir_all(&dir).ok()?;
-    let jj = |args: &[&str]| {
-        std::process::Command::new("jj")
-            .current_dir(&dir)
-            .env("HOME", &dir)
-            .env("JJ_USER", "konoma test")
-            .env("JJ_EMAIL", "test@example.invalid")
-            .args(args)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    };
-    if !jj(&["git", "init", "--no-colocate", "."]) {
-        return None;
-    }
-    Some(dir)
 }
 
 // ---- kind classification / summary vs. ready ----
@@ -525,8 +463,8 @@ fn git_baseline_reports_head_and_reads_the_committed_blob() {
         b
     };
     std::fs::write(&png, &old_bytes).unwrap();
-    git(&dir, &["add", "-A"]);
-    git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     // Modify on disk without committing.
     let new_bytes = {
         let mut b = Vec::new();
@@ -593,8 +531,8 @@ fn follow_without_a_snapshot_falls_back_to_head_and_reports_head() {
         b
     };
     std::fs::write(&png, &bytes).unwrap();
-    git(&dir, &["add", "-A"]);
-    git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
 
     let r = req(png, dir.to_path_buf(), DiffBaseline::Empty);
     match App::compute_media_diff(&r) {
@@ -629,8 +567,8 @@ fn follow_head_for_a_file_created_after_follow_start_falls_back_to_head_and_is_a
     init_git_repo(&dir);
     // A first commit that does NOT include the image at all — this is the sha follow-start pins.
     std::fs::write(dir.join("placeholder.txt"), b"seed\n").unwrap();
-    git(&dir, &["add", "-A"]);
-    git(&dir, &["commit", "-q", "-m", "seed"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "seed"]);
     let sha = crate::git::head_commit_id(&dir).expect("HEAD sha が取れるはず");
 
     // The image is created only *after* that commit (untracked at follow-start).
@@ -693,8 +631,8 @@ fn follow_head_for_a_file_created_after_follow_start_and_since_committed_reads_h
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
     std::fs::write(dir.join("placeholder.txt"), b"seed\n").unwrap();
-    git(&dir, &["add", "-A"]);
-    git(&dir, &["commit", "-q", "-m", "seed"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "seed"]);
     let sha = crate::git::head_commit_id(&dir).expect("HEAD sha が取れるはず"); // follow-start pin
 
     // Created after follow-start (not in `sha` at all)...
@@ -708,8 +646,8 @@ fn follow_head_for_a_file_created_after_follow_start_and_since_committed_reads_h
     };
     std::fs::write(&png, &committed_bytes).unwrap();
     // ...but, unlike the sibling test, it IS committed since (advancing HEAD past `sha`).
-    git(&dir, &["add", "-A"]);
-    git(
+    run_git(&dir, &["add", "-A"]);
+    run_git(
         &dir,
         &["commit", "-q", "-m", "add the png after follow-start"],
     );
@@ -759,8 +697,8 @@ fn follow_head_for_a_file_modified_since_follow_start_reads_the_committed_blob()
         b
     };
     std::fs::write(&png, &old_bytes).unwrap();
-    git(&dir, &["add", "-A"]);
-    git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     let sha = crate::git::head_commit_id(&dir).expect("HEAD sha が取れるはず");
 
     // Modified on disk after the pinned sha (still clean/committed at follow-start itself).
@@ -800,7 +738,7 @@ fn follow_head_for_a_file_modified_since_follow_start_reads_the_committed_blob()
 #[cfg(feature = "git")]
 #[test]
 fn jj_baseline_reports_jj_parent() {
-    let Some(dir) = jj_scratch("konoma_media_diff_jj_parent") else {
+    let Some(dir) = jj_scratch_bare("konoma_media_diff_jj_parent") else {
         return;
     };
     let png = dir.join("pic.png");
@@ -849,7 +787,7 @@ fn jj_baseline_reports_jj_parent() {
 #[cfg(feature = "git")]
 #[test]
 fn is_jj_actually_detects_a_jj_only_workspace() {
-    let Some(dir) = jj_scratch("konoma_media_diff_is_jj") else {
+    let Some(dir) = jj_scratch_bare("konoma_media_diff_is_jj") else {
         return;
     };
     assert!(is_jj(&dir), "jj のみのワークスペースは jj と判定されるはず");
@@ -1231,8 +1169,8 @@ fn coalesces_a_burst_of_invalidate_and_poll_into_one_follow_up_dispatch_for_the_
     init_git_repo(&dir);
     let doc = dir.join("doc.pdf");
     std::fs::write(&doc, &bytes).unwrap();
-    git(&dir, &["add", "-A"]);
-    git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_media_diff_loader(tx);

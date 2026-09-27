@@ -1073,33 +1073,7 @@ mod tests {
     /// level, as opposed to a corrupted/truncated file. Hand-built (not via an external tool) so
     /// this test needs nothing beyond the Rust toolchain.
     fn minimal_blank_pdf_bytes() -> Vec<u8> {
-        let objs: [&[u8]; 4] = [
-            b"<< /Type /Catalog /Pages 2 0 R >>",
-            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Resources << >> >>",
-            b"<< /Length 0 >>\nstream\n\nendstream",
-        ];
-        let mut out = Vec::new();
-        out.extend_from_slice(b"%PDF-1.4\n");
-        let mut offsets = vec![0usize];
-        for (i, body) in objs.iter().enumerate() {
-            offsets.push(out.len());
-            out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
-            out.extend_from_slice(body);
-            out.extend_from_slice(b"\nendobj\n");
-        }
-        let xref_offset = out.len();
-        let n = objs.len() + 1;
-        out.extend_from_slice(format!("xref\n0 {n}\n").as_bytes());
-        out.extend_from_slice(b"0000000000 65535 f \n");
-        for off in &offsets[1..] {
-            out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
-        }
-        out.extend_from_slice(
-            format!("trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
-                .as_bytes(),
-        );
-        out
+        crate::test_support::build_minimal_one_page_pdf(200, 200, b"")
     }
 
     /// Root cause: `run_qlmanage`/`run_sips` (and the poppler runners that used to sit above them)

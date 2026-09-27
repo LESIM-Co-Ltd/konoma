@@ -386,6 +386,163 @@ pub(crate) fn unique_tmp(prefix: &str) -> TmpDir {
     }
 }
 
+/// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
+/// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
+/// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate
+/// root by convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test --manifest-path
+/// …`, is a real, supported invocation), so a bare relative path would silently miss the fixture
+/// and silently skip every assertion in every test that used it.
+///
+/// Returns `None` when the fixture is legitimately absent: `samples/` is excluded from the
+/// published crate (`Cargo.toml`'s `exclude`), so `cargo test` against the packaged tarball (not a
+/// git checkout) has nothing to read. Says so loudly (visible with `--nocapture`, or in the
+/// captured-output dump whenever the process later exits non-zero for any reason) instead of
+/// quietly passing zero assertions with no trace anywhere in the test output.
+pub(crate) fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("samples")
+        .join(name);
+    if p.exists() {
+        Some(p)
+    } else {
+        eprintln!(
+            "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
+        );
+        None
+    }
+}
+
+/// Initializes a bare git repository at `dir` via `git2` (no commits) with a fixed, sandboxed
+/// identity (`user.name`/`user.email`) and `commit.gpgsign` forced off, so a test-machine's real
+/// gpg-signing configuration (or lack of one) never affects a commit a test makes. `dir` must
+/// already exist. Distinct from `app::follow::tests::init_git_repo`, a shell (`git init` +
+/// `git config`) variant that fixture also needs — kept separate rather than folded in here (see
+/// that module for why).
+#[cfg(feature = "git")]
+pub(crate) fn init_git_repo(dir: &std::path::Path) {
+    let repo = git2::Repository::init(dir).unwrap();
+    let mut cfg = repo.config().unwrap();
+    cfg.set_str("user.name", "Test").unwrap();
+    cfg.set_str("user.email", "test@example.com").unwrap();
+    cfg.set_str("commit.gpgsign", "false").ok();
+}
+
+/// Runs the `git` CLI in `dir` and asserts it succeeded (panicking with `git`'s own stderr
+/// otherwise) — for the handful of operations (`add`, `commit`, ...) that are simplest done via the
+/// real CLI once [`init_git_repo`] has already set up the repository and identity through `git2`.
+#[cfg(feature = "git")]
+pub(crate) fn run_git(dir: &std::path::Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Writes a solid `w`×`h` RGB PNG to `path` — the smallest fixture an image-preview/media-diff test
+/// needs (what regenerating a chart on disk looks like, for the Agent Watch scenarios; a plain
+/// filled picture for media-diff fixtures). Deliberately not `#[cfg(feature = "git")]`-gated: some
+/// callers (an ordinary image preview with no diff involved at all) need it without the `git`
+/// feature enabled.
+pub(crate) fn write_solid_png(path: &std::path::Path, w: u32, h: u32, px: [u8; 3]) {
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(px)))
+        .save(path)
+        .unwrap();
+}
+
+/// Serializes a minimal, valid, single-page PDF (hand-built, no external tool needed) from its bare
+/// essentials — a page size in points and a raw content-stream body — factoring out the
+/// object/xref/trailer plumbing shared by every hand-built PDF fixture in this crate (a Catalog, a
+/// one-page Pages tree, and a single Content stream holding `content` verbatim, with `/Length` set
+/// to its exact byte length). Passing `content: b""` produces a genuinely blank page (`/Length 0`,
+/// no operators) — the PDF-syntax-level blank a page needs to look like, as opposed to a
+/// corrupted/truncated file.
+pub(crate) fn build_minimal_one_page_pdf(w_pt: u32, h_pt: u32, content: &[u8]) -> Vec<u8> {
+    let mut content_obj = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+    content_obj.extend_from_slice(content);
+    content_obj.extend_from_slice(b"\nendstream");
+    let objs: [Vec<u8>; 4] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w_pt} {h_pt}] /Contents 4 0 R /Resources << >> >>"
+        )
+        .into_bytes(),
+        content_obj,
+    ];
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n");
+    let mut offsets = vec![0usize];
+    for (i, body) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref_offset = out.len();
+    let n = objs.len() + 1;
+    out.extend_from_slice(format!("xref\n0 {n}\n").as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for off in &offsets[1..] {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
+            .as_bytes(),
+    );
+    out
+}
+
+/// Runs `jj` inside `dir`, isolated from the running machine's real jj configuration (`HOME`
+/// pointed at the scratch dir itself; user identity set via env vars) — returns whether it exited
+/// successfully.
+#[cfg(feature = "git")]
+fn run_jj(dir: &std::path::Path, args: &[&str]) -> bool {
+    std::process::Command::new("jj")
+        .current_dir(dir)
+        .env("HOME", dir) // never touch the running machine's own jj config
+        .env("JJ_USER", "konoma test")
+        .env("JJ_EMAIL", "test@example.invalid")
+        .args(args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// A throwaway jj workspace (no colocated `.git`), freshly `jj git init`'d and otherwise empty —
+/// `None` when this machine has no `jj` binary or setup failed (konoma falls back to git there, so
+/// a jj-specific test must skip, not fail, without one).
+#[cfg(feature = "git")]
+pub(crate) fn jj_scratch_bare(name: &str) -> Option<TmpDir> {
+    if !crate::vcs::jj::available() {
+        return None;
+    }
+    let dir = unique_tmp(name);
+    std::fs::create_dir_all(&dir).ok()?;
+    if !run_jj(&dir, &["git", "init", "--no-colocate", "."]) {
+        return None;
+    }
+    Some(dir)
+}
+
+/// [`jj_scratch_bare`], plus a seed commit (`a.txt` = `"one\n"`) and an uncommitted working-copy
+/// change on top (`a.txt` rewritten to `"two\n"`) — the shape a jj diff/status test needs.
+#[cfg(feature = "git")]
+pub(crate) fn jj_scratch_seeded(name: &str) -> Option<TmpDir> {
+    let dir = jj_scratch_bare(name)?;
+    std::fs::write(dir.join("a.txt"), b"one\n").ok()?;
+    if !run_jj(&dir, &["commit", "-m", "seed"]) {
+        return None;
+    }
+    std::fs::write(dir.join("a.txt"), b"two\n").ok()?;
+    Some(dir)
+}
+
 thread_local! {
     /// Test-only stand-in for the OS clipboard (see `app::set_clipboard` / `paste_jump::read_clipboard`).
     ///

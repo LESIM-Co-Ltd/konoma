@@ -31,7 +31,7 @@
 //! that a regression in any of these — a lost cache, an O(n²), re-parsing every frame — trips a guard.
 
 use crate::config::Config;
-use crate::test_support::unique_tmp;
+use crate::test_support::{sample_path_or_skip, unique_tmp};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -52,36 +52,6 @@ fn preview_app(dir: &Path, name: &str) -> crate::app::App {
     let mut term = Terminal::new(TestBackend::new(80, 30)).unwrap();
     term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
     app
-}
-
-/// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
-/// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
-/// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate
-/// root by convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test
-/// --manifest-path …`, is a real, supported invocation), so it silently missed the fixture and
-/// silently skipped every assertion in every test that used it.
-fn sample_path(name: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("samples")
-        .join(name)
-}
-
-/// `sample_path`, tolerant of the one case where the fixture is legitimately absent: `samples/` is
-/// excluded from the published crate (`Cargo.toml`'s `exclude`), so `cargo test` against the
-/// packaged tarball (not a git checkout) has nothing to read. Returns `None` in that case so the
-/// caller can early-return as before, but says so loudly (visible with `--nocapture`, or in the
-/// captured-output dump whenever the process later exits non-zero for any reason) instead of
-/// quietly passing zero assertions with no trace anywhere in the test output.
-fn sample_path_or_skip(name: &str) -> Option<std::path::PathBuf> {
-    let p = sample_path(name);
-    if p.exists() {
-        Some(p)
-    } else {
-        eprintln!(
-            "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
-        );
-        None
-    }
 }
 
 /// Generate `n` lines of plausible Rust source (for highlight/markdown timing).
