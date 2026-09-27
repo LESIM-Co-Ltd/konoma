@@ -663,36 +663,7 @@ fn page_count_bytes_impl(bytes: &[u8]) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::unique_tmp;
-
-    /// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
-    /// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
-    /// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate
-    /// root by convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test
-    /// --manifest-path …`, or a built test binary invoked directly from a different cwd, is a real,
-    /// supported invocation — measured: running this crate's built test binary directly with
-    /// cwd=`/tmp` turned every `samples/sample.pdf`-gated test here into a silent, instant "0.00s,
-    /// N passed" that verified nothing), so it silently missed the fixture and silently skipped
-    /// every assertion in every test that used it. Tolerant of the one case where the fixture is
-    /// legitimately absent — `samples/` is excluded from the published crate (`Cargo.toml`'s
-    /// `exclude`) — by returning `None` (same early-return as before) but saying so loudly
-    /// (`eprintln!`, visible with `--nocapture` or in the captured-output dump whenever the process
-    /// later exits non-zero for any reason) instead of silently passing zero assertions. Mirrors
-    /// `preview/archive.rs`/`preview/image.rs`/`e2e_tests.rs`/`app/tests.rs`'s identical helper
-    /// (all four already fixed by `8087219`; this module was the one left behind).
-    fn sample_path_or_skip(name: &str) -> Option<std::path::PathBuf> {
-        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("samples")
-            .join(name);
-        if p.exists() {
-            Some(p)
-        } else {
-            eprintln!(
-                "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
-            );
-            None
-        }
-    }
+    use crate::test_support::{sample_path_or_skip, unique_tmp};
 
     /// Returns None for a missing/non-PDF file (does not crash; safe fallback), regardless of
     /// `allow_external`. page_count too.

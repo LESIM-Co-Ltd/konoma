@@ -1605,27 +1605,7 @@ fn temp_png_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::unique_tmp;
-
-    /// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
-    /// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
-    /// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate
-    /// root by convention. Tolerant of the one case where the fixture is legitimately absent
-    /// (`samples/` is excluded from the published crate) by returning `None`, but saying so loudly
-    /// instead of silently passing zero assertions. Mirrors `preview/pdf.rs`'s identical helper.
-    fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("samples")
-            .join(name);
-        if p.exists() {
-            Some(p)
-        } else {
-            eprintln!(
-                "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
-            );
-            None
-        }
-    }
+    use crate::test_support::{sample_path_or_skip, unique_tmp};
 
     /// The inverse of [`BitReader`], for building synthetic parameter sets. Shared by the H.264 and
     /// H.265 builders below so the exp-Golomb encoding exists in exactly one place — two copies

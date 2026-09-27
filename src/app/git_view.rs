@@ -2143,26 +2143,7 @@ mod tests {
     #[cfg(feature = "git")]
     use crate::config::Config;
     #[cfg(feature = "git")]
-    use crate::test_support::unique_tmp;
-
-    #[cfg(feature = "git")]
-    fn init_repo(dir: &std::path::Path) {
-        let repo = git2::Repository::init(dir).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "Test").unwrap();
-        cfg.set_str("user.email", "test@example.com").unwrap();
-        cfg.set_str("commit.gpgsign", "false").ok();
-    }
-
-    #[cfg(feature = "git")]
-    fn sh(cwd: &std::path::Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .current_dir(cwd)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {out:?}");
-    }
+    use crate::test_support::{init_git_repo, run_git, unique_tmp};
 
     /// `git commit` with an explicit, well-separated author/committer date (`GIT_AUTHOR_DATE` /
     /// `GIT_COMMITTER_DATE`, accepted as `@<unix-epoch> +0000`) so tests that assert "the newer
@@ -2194,10 +2175,10 @@ mod tests {
         let dir = unique_tmp(name);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-q", "-m", "init"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
         // `.canonicalize()` here transfers cleanup responsibility onto the returned guard (see its
         // own doc comment) rather than leaving it on `dir`/`linked`, which would otherwise drop
         // (and rm -rf the fixture) the moment this function returns.
@@ -2205,7 +2186,7 @@ mod tests {
         let base = crate::git::branch(&root).expect("sanity: has a branch after the commit");
         let linked = unique_tmp(&format!("{name}_linked"));
         let _ = std::fs::remove_dir_all(&linked);
-        sh(
+        run_git(
             &root,
             &[
                 "worktree",
@@ -2317,22 +2298,22 @@ mod tests {
         let dir = unique_tmp("konoma_gitview_diffbase_recency");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("main.txt"), b"main\n").unwrap();
-        sh(&dir, &["add", "-A"]);
+        run_git(&dir, &["add", "-A"]);
         commit_at(&dir, "on main", 1_700_000_000); // deterministic: 20 days apart from develop's commit
-        sh(&dir, &["branch", "-m", "main"]); // name the initial branch deterministically
+        run_git(&dir, &["branch", "-m", "main"]); // name the initial branch deterministically
 
-        sh(&dir, &["checkout", "-q", "-b", "develop"]);
+        run_git(&dir, &["checkout", "-q", "-b", "develop"]);
         std::fs::write(dir.join("develop.txt"), b"develop\n").unwrap();
-        sh(&dir, &["add", "-A"]);
+        run_git(&dir, &["add", "-A"]);
         commit_at(&dir, "on develop", 1_720_000_000); // newer than main's commit — develop's tip
                                                       // is now the merge-base any worktree branched off it will have with `develop`.
 
         let root = dir.canonicalize().unwrap();
         let linked = unique_tmp("konoma_gitview_diffbase_recency_linked");
         let _ = std::fs::remove_dir_all(&linked);
-        sh(
+        run_git(
             &root, // root is currently checked out on `develop`, so the worktree branches off its tip
             &[
                 "worktree",
@@ -2345,7 +2326,7 @@ mod tests {
         );
         let linked = linked.canonicalize().unwrap();
         std::fs::write(linked.join("agent.txt"), b"agent\n").unwrap();
-        sh(&linked, &["add", "-A"]);
+        run_git(&linked, &["add", "-A"]);
         commit_at(&linked, "agent work", 1_730_000_000);
 
         let mut cfg = Config::default();
@@ -2397,10 +2378,10 @@ mod tests {
         let dir = unique_tmp("konoma_cycle_diff_layout_rendered_noop_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.md"), "# t\n\nbody\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-q", "-m", "init"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
         std::fs::write(dir.join("a.md"), "# t\n\nCHANGED\n").unwrap();
 
         let canon = dir.canonicalize().unwrap();

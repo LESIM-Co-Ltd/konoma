@@ -2161,28 +2161,10 @@ mod gitdiff_tests {
     use super::help_sections;
     use crate::app::App;
     use crate::config::Config;
-    use crate::test_support::unique_tmp;
+    use crate::test_support::{init_git_repo, run_git, unique_tmp};
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
     use ratatui::Terminal;
-    use std::path::Path;
-
-    fn init_repo(dir: &Path) {
-        let repo = git2::Repository::init(dir).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "Test").unwrap();
-        cfg.set_str("user.email", "test@example.com").unwrap();
-        cfg.set_str("commit.gpgsign", "false").ok();
-    }
-
-    fn run_git(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?} 失敗");
-    }
 
     /// The git diff is the third scrolling preview, so it reports position like the other two: a
     /// diff taller than the screen starts at `Top` with the thumb at the top of the track, and `G`
@@ -2192,7 +2174,7 @@ mod gitdiff_tests {
         let dir = unique_tmp("konoma_ui_gitdiff_scroll");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let f = dir.join("a.rs");
         std::fs::write(&f, b"seed\n").unwrap();
         run_git(&dir, &["add", "-A"]);
@@ -2257,7 +2239,7 @@ mod gitdiff_tests {
         let dir = unique_tmp("konoma_ui_gitdiff_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let f = dir.join("a.rs");
         std::fs::write(&f, b"alpha\nbeta\ngamma_keep\n").unwrap();
         run_git(&dir, &["add", "-A"]);
@@ -2297,7 +2279,7 @@ mod gitdiff_tests {
         let dir = unique_tmp("konoma_ui_gitdiff_clean");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let f = dir.join("a.rs");
         std::fs::write(&f, b"alpha\n").unwrap();
         run_git(&dir, &["add", "-A"]);
@@ -2334,7 +2316,7 @@ mod gitdiff_tests {
         let dir = unique_tmp("konoma_ui_gitdiff_help_r_row");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         // A NUL byte forces `is_probably_text` to classify this as binary (`resolve_preview`
         // degrades to `CanNotPreview`) — an extension with no matching rule alone still resolves to
         // ordinary `Text` for text content (two representations), which is not what this row wants

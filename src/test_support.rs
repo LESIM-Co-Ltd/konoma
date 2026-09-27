@@ -500,9 +500,12 @@ pub(crate) fn build_minimal_one_page_pdf(w_pt: u32, h_pt: u32, content: &[u8]) -
 
 /// Runs `jj` inside `dir`, isolated from the running machine's real jj configuration (`HOME`
 /// pointed at the scratch dir itself; user identity set via env vars) — returns whether it exited
-/// successfully.
+/// successfully. `pub(crate)` (not just used internally by [`jj_scratch_seeded`]): a fixture whose
+/// seed content genuinely differs from `jj_scratch_seeded`'s (e.g. a Markdown file instead of
+/// `a.txt`) builds on [`jj_scratch_bare`] and calls this directly for its own commit, rather than
+/// re-implementing the jj-invocation boilerplate.
 #[cfg(feature = "git")]
-fn run_jj(dir: &std::path::Path, args: &[&str]) -> bool {
+pub(crate) fn run_jj(dir: &std::path::Path, args: &[&str]) -> bool {
     std::process::Command::new("jj")
         .current_dir(dir)
         .env("HOME", dir) // never touch the running machine's own jj config

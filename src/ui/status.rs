@@ -609,6 +609,8 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::test_support::unique_tmp;
+    #[cfg(feature = "git")]
+    use crate::test_support::{init_git_repo, jj_scratch_seeded, run_git, run_jj};
 
     /// Helper: preview `name` in `dir` (found by exact filename suffix), triggering a real render
     /// pass so `md_items`/`md_cache` are populated (the same route `tree_activate` + a draw takes
@@ -1113,73 +1115,6 @@ mod tests {
     // both backends is caught either way.
     // -----------------------------------------------------------------------------------------
 
-    /// Same recipe as `App::tests::jj_scratch` (`src/app/tests.rs`), duplicated here per-file as
-    /// instructed rather than shared. Returns `None` (every caller must silently skip) when `jj`
-    /// isn't installed.
-    #[cfg(feature = "git")]
-    fn jj_scratch(name: &str) -> Option<crate::test_support::TmpDir> {
-        if !crate::vcs::jj::available() {
-            return None;
-        }
-        let dir = unique_tmp(name);
-        std::fs::create_dir_all(&dir).ok()?;
-        let jj = |args: &[&str]| {
-            std::process::Command::new("jj")
-                .current_dir(&dir)
-                .env("HOME", &*dir) // never touch the running machine's own jj config
-                .env("JJ_USER", "konoma test")
-                .env("JJ_EMAIL", "test@example.invalid")
-                .args(args)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
-        if !jj(&["git", "init", "--no-colocate", "."]) {
-            return None;
-        }
-        std::fs::write(dir.join("a.txt"), b"one\n").ok()?;
-        if !jj(&["commit", "-m", "seed"]) {
-            return None;
-        }
-        std::fs::write(dir.join("a.txt"), b"two\n").ok()?;
-        Some(dir)
-    }
-
-    /// Runs one `jj` subcommand against a `jj_scratch` workspace (same env as the fixture above).
-    /// Used to create a bookmark — `jj_scratch` deliberately leaves none, since most tests don't
-    /// need one.
-    #[cfg(feature = "git")]
-    fn jj_cmd(dir: &std::path::Path, args: &[&str]) -> bool {
-        std::process::Command::new("jj")
-            .current_dir(dir)
-            .env("HOME", dir)
-            .env("JJ_USER", "konoma test")
-            .env("JJ_EMAIL", "test@example.invalid")
-            .args(args)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
-
-    /// The "git" half of each pair below. Mirrors `ui::git`'s own `init_repo` test helper.
-    #[cfg(feature = "git")]
-    fn init_test_git_repo(dir: &std::path::Path) {
-        let repo = git2::Repository::init(dir).unwrap();
-        let mut c = repo.config().unwrap();
-        c.set_str("user.name", "T").unwrap();
-        c.set_str("user.email", "t@t").unwrap();
-        c.set_str("commit.gpgsign", "false").ok();
-    }
-    #[cfg(feature = "git")]
-    fn git_sh(dir: &std::path::Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?} 失敗");
-    }
-
     /// (status.rs item 1) The jj changes-hub footer (`Msg::StJjHubKeys`): `R:sync`/`b:bookmarks`/
     /// `!:tool`, never git's write words (`stage`/`unstage`/`commit`/`worktree`). Checked in both
     /// languages (jp coverage #1). Paired with a git repository's hub, which must show the
@@ -1189,7 +1124,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn jj_changes_hub_footer_uses_jj_words_never_git_write_words() {
-        let Some(jj_dir) = jj_scratch("konoma_status_jj_hub_footer") else {
+        let Some(jj_dir) = jj_scratch_seeded("konoma_status_jj_hub_footer") else {
             return;
         };
         let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
@@ -1220,10 +1155,10 @@ mod tests {
         let git_dir = unique_tmp("konoma_status_git_hub_footer");
         let _ = std::fs::remove_dir_all(&git_dir);
         std::fs::create_dir_all(&git_dir).unwrap();
-        init_test_git_repo(&git_dir);
+        init_git_repo(&git_dir);
         std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        git_sh(&git_dir, &["add", "-A"]);
-        git_sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        run_git(&git_dir, &["add", "-A"]);
+        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
         let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
         git_app.open_git_view();
         assert!(git_app.is_git_view(), "git でも changes ハブが開くはず");
@@ -1253,7 +1188,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn jj_graph_footer_shows_jj_hint_not_git_base_pin_hint() {
-        let Some(jj_dir) = jj_scratch("konoma_status_jj_graph_footer") else {
+        let Some(jj_dir) = jj_scratch_seeded("konoma_status_jj_graph_footer") else {
             return;
         };
         let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
@@ -1273,10 +1208,10 @@ mod tests {
         let git_dir = unique_tmp("konoma_status_git_graph_footer");
         let _ = std::fs::remove_dir_all(&git_dir);
         std::fs::create_dir_all(&git_dir).unwrap();
-        init_test_git_repo(&git_dir);
+        init_git_repo(&git_dir);
         std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        git_sh(&git_dir, &["add", "-A"]);
-        git_sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        run_git(&git_dir, &["add", "-A"]);
+        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
         let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
         git_app.open_git_graph();
         assert!(git_app.is_git_graph());
@@ -1298,11 +1233,11 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn jj_bookmarks_footer_shows_search_only_hint_not_git_branch_ops() {
-        let Some(jj_dir) = jj_scratch("konoma_status_jj_bookmarks_footer") else {
+        let Some(jj_dir) = jj_scratch_seeded("konoma_status_jj_bookmarks_footer") else {
             return;
         };
         assert!(
-            jj_cmd(&jj_dir, &["bookmark", "create", "-r", "@", "main"]),
+            run_jj(&jj_dir, &["bookmark", "create", "-r", "@", "main"]),
             "jj bookmark create に失敗"
         );
         let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
@@ -1324,11 +1259,11 @@ mod tests {
         let git_dir = unique_tmp("konoma_status_git_branches_footer");
         let _ = std::fs::remove_dir_all(&git_dir);
         std::fs::create_dir_all(&git_dir).unwrap();
-        init_test_git_repo(&git_dir);
+        init_git_repo(&git_dir);
         std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        git_sh(&git_dir, &["add", "-A"]);
-        git_sh(&git_dir, &["commit", "-q", "-m", "init"]);
-        git_sh(&git_dir, &["branch", "feature"]);
+        run_git(&git_dir, &["add", "-A"]);
+        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
+        run_git(&git_dir, &["branch", "feature"]);
         let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
         git_app.open_git_branches();
         assert!(git_app.is_git_branches());
@@ -1413,28 +1348,14 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn diff_footer_hscroll_hint_matches_wrap_setting_for_rendered_under_jj() {
+        // Same shape as `jj_scratch_seeded`, but seeded with a Markdown file (`doc.md`) instead of
+        // `a.txt`, since this test needs `App::open_git_diff` to route through the Rendered
+        // presentation. Built on `jj_scratch_bare` + the shared `run_jj` rather than
+        // re-implementing the jj-invocation boilerplate.
         fn jj_scratch_md(name: &str) -> Option<crate::test_support::TmpDir> {
-            if !crate::vcs::jj::available() {
-                return None;
-            }
-            let dir = unique_tmp(name);
-            std::fs::create_dir_all(&dir).ok()?;
-            let jj = |args: &[&str]| {
-                std::process::Command::new("jj")
-                    .current_dir(&dir)
-                    .env("HOME", &*dir) // never touch the running machine's own jj config
-                    .env("JJ_USER", "konoma test")
-                    .env("JJ_EMAIL", "test@example.invalid")
-                    .args(args)
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false)
-            };
-            if !jj(&["git", "init", "--no-colocate", "."]) {
-                return None;
-            }
+            let dir = crate::test_support::jj_scratch_bare(name)?;
             std::fs::write(dir.join("doc.md"), b"# Title\n\noriginal\n").ok()?;
-            if !jj(&["commit", "-m", "seed"]) {
+            if !crate::test_support::run_jj(&dir, &["commit", "-m", "seed"]) {
                 return None;
             }
             std::fs::write(dir.join("doc.md"), b"# Title\n\nchanged\n").ok()?;
@@ -1485,7 +1406,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn diff_footer_hides_discard_for_read_only_backend_shows_for_git() {
-        let Some(jj_dir) = jj_scratch("konoma_status_jj_diff_footer") else {
+        let Some(jj_dir) = jj_scratch_seeded("konoma_status_jj_diff_footer") else {
             return;
         };
         let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
@@ -1514,7 +1435,7 @@ mod tests {
         let git_dir = unique_tmp("konoma_status_git_diff_footer");
         let _ = std::fs::remove_dir_all(&git_dir);
         std::fs::create_dir_all(&git_dir).unwrap();
-        init_test_git_repo(&git_dir);
+        init_git_repo(&git_dir);
         let git_dir = git_dir.canonicalize().unwrap();
         let mut git_app = App::new(git_dir.clone(), Config::default()).unwrap();
         git_app.open_git_diff(&git_dir.join("a.txt"));
@@ -1553,7 +1474,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn jj_chip_shows_in_git_view_for_jj_not_for_git() {
-        let Some(jj_dir) = jj_scratch("konoma_status_jj_chip") else {
+        let Some(jj_dir) = jj_scratch_seeded("konoma_status_jj_chip") else {
             return;
         };
         let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
@@ -1579,10 +1500,10 @@ mod tests {
         let git_dir = unique_tmp("konoma_status_git_chip");
         let _ = std::fs::remove_dir_all(&git_dir);
         std::fs::create_dir_all(&git_dir).unwrap();
-        init_test_git_repo(&git_dir);
+        init_git_repo(&git_dir);
         std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        git_sh(&git_dir, &["add", "-A"]);
-        git_sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        run_git(&git_dir, &["add", "-A"]);
+        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
         let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
         git_app.refresh_git_if_needed();
         assert_eq!(git_app.git_vcs, crate::vcs::VcsKind::Git);
@@ -1602,11 +1523,11 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn bookmark_chip_shows_for_jj_list_branch_chip_for_git_list() {
-        let Some(jj_dir) = jj_scratch("konoma_status_bookmark_chip") else {
+        let Some(jj_dir) = jj_scratch_seeded("konoma_status_bookmark_chip") else {
             return;
         };
         assert!(
-            jj_cmd(&jj_dir, &["bookmark", "create", "-r", "@", "main"]),
+            run_jj(&jj_dir, &["bookmark", "create", "-r", "@", "main"]),
             "jj bookmark create に失敗"
         );
         let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
@@ -1627,10 +1548,10 @@ mod tests {
         let git_dir = unique_tmp("konoma_status_branch_chip");
         let _ = std::fs::remove_dir_all(&git_dir);
         std::fs::create_dir_all(&git_dir).unwrap();
-        init_test_git_repo(&git_dir);
+        init_git_repo(&git_dir);
         std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        git_sh(&git_dir, &["add", "-A"]);
-        git_sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        run_git(&git_dir, &["add", "-A"]);
+        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
         let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
         git_app.refresh_git_if_needed();
         git_app.open_git_branches();
@@ -1649,7 +1570,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn copy_menu_relabels_short_hash_to_change_id_for_jj_not_git() {
-        let Some(jj_dir) = jj_scratch("konoma_status_relabel_jj") else {
+        let Some(jj_dir) = jj_scratch_seeded("konoma_status_relabel_jj") else {
             return;
         };
         let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
@@ -1677,10 +1598,10 @@ mod tests {
         let git_dir = unique_tmp("konoma_status_relabel_git");
         let _ = std::fs::remove_dir_all(&git_dir);
         std::fs::create_dir_all(&git_dir).unwrap();
-        init_test_git_repo(&git_dir);
+        init_git_repo(&git_dir);
         std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        git_sh(&git_dir, &["add", "-A"]);
-        git_sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        run_git(&git_dir, &["add", "-A"]);
+        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
         let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
         git_app.refresh_git_if_needed();
         assert_eq!(git_app.git_vcs, crate::vcs::VcsKind::Git);
