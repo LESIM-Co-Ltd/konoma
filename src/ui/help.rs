@@ -195,17 +195,17 @@ mod tests {
             .join("\n")
     }
 
-    fn app() -> App {
+    fn app() -> (App, crate::test_support::TmpDir) {
         let dir = unique_tmp("konoma_help_lines_test");
         std::fs::create_dir_all(&dir).unwrap();
-        App::new(dir, Config::default()).unwrap()
+        (App::new(dir.to_path_buf(), Config::default()).unwrap(), dir)
     }
 
     #[test]
     fn help_is_mode_specific() {
         // Tree: shows tree operations and the git marker section; does not show preview-only
         // sections.
-        let mut a = app();
+        let (mut a, _dir) = app();
         let tree = text(&a);
         assert!(tree.contains("Tree"), "Tree 節");
         assert!(tree.contains("Git status"), "Git 節");

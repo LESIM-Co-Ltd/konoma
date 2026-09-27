@@ -1158,7 +1158,7 @@ mod tests {
     use crate::test_support::unique_tmp;
     use std::io::Write;
 
-    fn tmp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+    fn tmp(name: &str, bytes: &[u8]) -> crate::test_support::TmpDir {
         // Preserve `name`'s extension (many of these tests exercise extension-based preview-rule
         // matching, including uppercase/mixed-case extensions) — putting the uniqueness suffix
         // straight after the whole `name` would swallow it (`"pic.svg"` → `"pic.svg_1234_5"`, no

@@ -285,7 +285,7 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.ui.wrap = false; // enable horizontal scroll
-        let mut app = App::new(dir.clone(), cfg).unwrap();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
         app.rebuild_tree().unwrap();
         app.tree_descend().unwrap(); // a.txt is selected → into Preview
         assert!(
@@ -327,7 +327,7 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.ui.theme.bg = "#102030".into();
-        let mut app = App::new(dir.clone(), cfg).unwrap();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
 
         let mut term = Terminal::new(TestBackend::new(24, 8)).unwrap();
         term.draw(|f| render(f, &mut app)).unwrap();
@@ -358,7 +358,7 @@ mod tests {
         let dir = unique_tmp("konoma_chrome_split_test");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap(); // default = split
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap(); // default = split
         let (w, h) = (70, 6);
         // Context (TREE/path) on top, key hints on the bottom.
         assert!(row_text(&mut app, w, h, 0).contains("TREE"), "上にモード");
@@ -376,7 +376,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         let mut cfg = Config::default();
         cfg.ui.statusbar = "bottom".into();
-        let mut app = App::new(dir.clone(), cfg).unwrap();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
         let (w, h) = (70, 6);
         let bottom = row_text(&mut app, w, h, h - 1);
         assert!(bottom.contains("TREE"), "下にモード: {bottom}");
@@ -393,7 +393,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.ui.lang = "jp".into();
         cfg.ui.statusbar = "bottom".into(); // consolidate onto the bottom row, easier to inspect
-        let mut app = App::new(dir.clone(), cfg).unwrap();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
         let buf = |app: &mut App| -> String {
             let mut term = Terminal::new(TestBackend::new(72, 26)).unwrap();
             term.draw(|f| render(f, app)).unwrap();
@@ -512,7 +512,7 @@ mod tests {
     fn help_overlay_renders_when_shown() {
         let dir = unique_tmp("konoma_help_render_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let buf_text = |app: &mut App| -> String {
             // Verify at a height where every help section fits without wrapping (so a section
             // being added doesn't push it off-screen; on a real small terminal, scrolling (j/k) to
@@ -547,7 +547,7 @@ mod tests {
     fn sort_indicator_and_menu_render() {
         let dir = unique_tmp("konoma_sort_render_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let buf_text = |app: &mut App| -> String {
             let mut term = Terminal::new(TestBackend::new(80, 12)).unwrap();
             term.draw(|f| render(f, app)).unwrap();
@@ -580,9 +580,10 @@ mod tests {
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         let base = unique_tmp("konoma_bm_render_base");
         let _ = std::fs::remove_dir_all(&base);
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         // Swap in a test-only base so the real ~/.config isn't touched, and register local `a`.
-        app.bookmarks = crate::bookmarks::Bookmarks::with_base(base.clone(), &app.tab.open_dir);
+        app.bookmarks =
+            crate::bookmarks::Bookmarks::with_base(base.to_path_buf(), &app.tab.open_dir);
         app.bookmarks.set('a', dir.join("sub")).unwrap();
         let buf_text = |app: &mut App| -> String {
             let mut term = Terminal::new(TestBackend::new(80, 16)).unwrap();
@@ -615,7 +616,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let buf_text = |app: &mut App| -> String {
             let mut term = Terminal::new(TestBackend::new(72, 24)).unwrap();
             term.draw(|f| render(f, app)).unwrap();
@@ -654,7 +655,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         std::fs::write(dir.join("b.txt"), b"x").unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.rebuild_tree().unwrap();
         app.visual_select_scope(true);
         app.start_batch_rename();
@@ -686,7 +687,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.rebuild_tree().unwrap();
         let buf_text = |app: &mut App| -> String {
             let mut term = Terminal::new(TestBackend::new(72, 24)).unwrap();
@@ -719,7 +720,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("hello.txt"), b"hello world").unwrap(); // 11 bytes
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.rebuild_tree().unwrap();
         app.tab.selected = app
             .tab
@@ -760,7 +761,7 @@ mod tests {
         std::fs::write(dir.join("README.md"), vec![0u8; 1200]).unwrap();
         let mut cfg = Config::default();
         cfg.ui.details = vec!["size".into(), "modified".into()];
-        let mut app = App::new(dir.clone(), cfg).unwrap();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
         app.rebuild_tree().unwrap();
         let rows = |app: &mut App| -> Vec<String> {
             let mut term = Terminal::new(TestBackend::new(60, 10)).unwrap();
@@ -794,7 +795,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         // Check the top row's (row 0) chip background color.
         let chip_bg = |app: &mut App, color: Color| -> bool {
             let mut term = Terminal::new(TestBackend::new(72, 24)).unwrap();
@@ -821,7 +822,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let footer = |app: &mut App| row_text(app, 72, 24, 23);
         // Normally: the tree's key hints.
         assert!(footer(&mut app).contains("jk:move"), "通常フッター");
@@ -853,7 +854,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let (w, h) = (80, 24);
 
         // Normally: the TREE chip on top, the tree's key hints (l:enter, etc.) on the bottom.
@@ -903,7 +904,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"hi").unwrap();
 
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let mut term = Terminal::new(TestBackend::new(24, 8)).unwrap();
         term.draw(|f| render(f, &mut app)).unwrap();
 

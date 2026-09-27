@@ -557,7 +557,7 @@ mod tests {
         let dir = unique_tmp("konoma_help_sections_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let app = App::new(dir.clone(), crate::config::Config::default()).unwrap();
+        let app = App::new(dir.to_path_buf(), crate::config::Config::default()).unwrap();
         let secs = help_sections(&app);
         assert!(
             secs.len() >= 3,

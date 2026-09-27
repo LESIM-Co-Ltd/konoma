@@ -1753,7 +1753,7 @@ mod tests {
     /// A one-file temp project (`alpha.txt`), the smallest tree that still lets `start_filter`'s
     /// budgeted walk finish synchronously and land the pool inline (no thread — `pool_tx` is never
     /// attached in tests, see `spawn_or_sync_pool`'s doc comment).
-    fn setup(name: &str) -> PathBuf {
+    fn setup(name: &str) -> crate::test_support::TmpDir {
         let dir = unique_tmp(name);
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -1792,7 +1792,7 @@ mod tests {
     #[test]
     fn start_clears_a_stale_pending_mark_left_by_an_earlier_session() {
         let dir = setup("konoma_filter_pool_start_clears_stale_pending_test");
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.start_filter(); // first `/`
         assert_eq!(pool_names(&app), vec!["alpha.txt".to_string()]);
 
@@ -1839,7 +1839,7 @@ mod tests {
     #[test]
     fn tab_cycle_burst_does_not_dispatch_a_walk_per_switch() {
         let dir = setup("konoma_filter_pool_burst_regression_test");
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         app.attach_filter_pool_loader(tx);
 

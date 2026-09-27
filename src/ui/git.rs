@@ -1573,7 +1573,7 @@ mod tests {
 
     /// Same recipe as `App::tests::jj_scratch` (`src/app/tests.rs`), duplicated here per-file as
     /// instructed. Returns `None` (every caller must silently skip) when `jj` isn't installed.
-    fn jj_scratch(name: &str) -> Option<std::path::PathBuf> {
+    fn jj_scratch(name: &str) -> Option<crate::test_support::TmpDir> {
         if !crate::vcs::jj::available() {
             return None;
         }
@@ -1582,7 +1582,7 @@ mod tests {
         let jj = |args: &[&str]| {
             std::process::Command::new("jj")
                 .current_dir(&dir)
-                .env("HOME", &dir) // never touch the running machine's own jj config
+                .env("HOME", &*dir) // never touch the running machine's own jj config
                 .env("JJ_USER", "konoma test")
                 .env("JJ_EMAIL", "test@example.invalid")
                 .args(args)
@@ -1626,7 +1626,7 @@ mod tests {
         let Some(dir) = jj_scratch("konoma_git_help_jj_changes") else {
             return;
         };
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.open_git_view();
         assert!(app.is_git_view(), "jj でも changes ハブが開くはず");
 
@@ -1695,7 +1695,7 @@ mod tests {
         let Some(dir) = jj_scratch("konoma_git_help_jj_graph") else {
             return;
         };
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.open_git_graph();
         assert!(app.is_git_graph(), "jj でもグラフが開くはず");
 

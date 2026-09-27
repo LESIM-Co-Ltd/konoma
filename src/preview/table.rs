@@ -112,18 +112,20 @@ mod tests {
     use crate::test_support::unique_tmp;
     use std::io::Write;
 
-    fn write_temp(name: &str, content: &str) -> std::path::PathBuf {
+    /// Returns the sandbox guard alongside the file path — the directory must outlive the
+    /// `parse(&p, ...)` call every caller makes right after, not just this function's own return.
+    fn write_temp(name: &str, content: &str) -> (crate::test_support::TmpDir, std::path::PathBuf) {
         let dir = unique_tmp("konoma_table_tests");
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
         let mut f = std::fs::File::create(&p).unwrap();
         f.write_all(content.as_bytes()).unwrap();
-        p
+        (dir, p)
     }
 
     #[test]
     fn parses_headers_and_rows() {
-        let p = write_temp("basic.csv", "a,b,c\n1,2,3\n4,5,6\n");
+        let (_dir, p) = write_temp("basic.csv", "a,b,c\n1,2,3\n4,5,6\n");
         let t = parse(&p, b',').unwrap();
         assert_eq!(t.headers, vec!["a", "b", "c"]);
         assert_eq!(t.nrows(), 2);
@@ -137,7 +139,7 @@ mod tests {
     #[test]
     fn quoted_comma_stays_one_cell() {
         // A comma inside quotes stays one cell (a naive split would break on it).
-        let p = write_temp("quoted.csv", "name,note\n\"Doe, John\",hi\n");
+        let (_dir, p) = write_temp("quoted.csv", "name,note\n\"Doe, John\",hi\n");
         let t = parse(&p, b',').unwrap();
         assert_eq!(t.cell(0, 0), "Doe, John");
         assert_eq!(t.cell(0, 1), "hi");
@@ -145,7 +147,7 @@ mod tests {
 
     #[test]
     fn tab_delimiter_for_tsv() {
-        let p = write_temp("basic.tsv", "x\ty\n10\t20\n");
+        let (_dir, p) = write_temp("basic.tsv", "x\ty\n10\t20\n");
         let t = parse(&p, b'\t').unwrap();
         assert_eq!(t.headers, vec!["x", "y"]);
         assert_eq!(t.cell(0, 1), "20");
@@ -154,7 +156,7 @@ mod tests {
     #[test]
     fn ragged_rows_report_max_columns() {
         // A varying column count per row doesn't crash; ncols = the max. Short rows get empty cells.
-        let p = write_temp("ragged.csv", "a,b,c\n1\n4,5,6,7\n");
+        let (_dir, p) = write_temp("ragged.csv", "a,b,c\n1\n4,5,6,7\n");
         let t = parse(&p, b',').unwrap();
         assert_eq!(t.ncols, 4);
         assert_eq!(t.cell(0, 2), ""); // row 0 has only 1 cell
@@ -163,7 +165,7 @@ mod tests {
 
     #[test]
     fn empty_file_is_empty_table() {
-        let p = write_temp("empty.csv", "");
+        let (_dir, p) = write_temp("empty.csv", "");
         let t = parse(&p, b',').unwrap();
         assert!(t.headers.is_empty());
         assert_eq!(t.nrows(), 0);

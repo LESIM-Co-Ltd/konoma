@@ -977,7 +977,7 @@ mod tests {
         let dir = unique_tmp("konoma_whichkey_footer_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         // No leader pressed yet: which-key does not show (the footer shows normal hints).
         assert!(whichkey_spans(&app).is_none(), "未押下では None");
 
@@ -1117,7 +1117,7 @@ mod tests {
     /// instructed rather than shared. Returns `None` (every caller must silently skip) when `jj`
     /// isn't installed.
     #[cfg(feature = "git")]
-    fn jj_scratch(name: &str) -> Option<std::path::PathBuf> {
+    fn jj_scratch(name: &str) -> Option<crate::test_support::TmpDir> {
         if !crate::vcs::jj::available() {
             return None;
         }
@@ -1126,7 +1126,7 @@ mod tests {
         let jj = |args: &[&str]| {
             std::process::Command::new("jj")
                 .current_dir(&dir)
-                .env("HOME", &dir) // never touch the running machine's own jj config
+                .env("HOME", &*dir) // never touch the running machine's own jj config
                 .env("JJ_USER", "konoma test")
                 .env("JJ_EMAIL", "test@example.invalid")
                 .args(args)
@@ -1192,7 +1192,7 @@ mod tests {
         let Some(jj_dir) = jj_scratch("konoma_status_jj_hub_footer") else {
             return;
         };
-        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
         app.open_git_view();
         assert!(app.is_git_view(), "jj でも changes ハブが開くはず");
 
@@ -1256,7 +1256,7 @@ mod tests {
         let Some(jj_dir) = jj_scratch("konoma_status_jj_graph_footer") else {
             return;
         };
-        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
         app.open_git_graph();
         assert!(app.is_git_graph(), "jj でもグラフが開くはず");
         let footer: String = footer_spans(&app, 200)
@@ -1305,7 +1305,7 @@ mod tests {
             jj_cmd(&jj_dir, &["bookmark", "create", "-r", "@", "main"]),
             "jj bookmark create に失敗"
         );
-        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
         app.open_git_branches();
         assert!(app.is_git_branches(), "jj のブックマーク一覧が開かない");
         let footer: String = footer_spans(&app, 200)
@@ -1413,7 +1413,7 @@ mod tests {
     #[cfg(feature = "git")]
     #[test]
     fn diff_footer_hscroll_hint_matches_wrap_setting_for_rendered_under_jj() {
-        fn jj_scratch_md(name: &str) -> Option<std::path::PathBuf> {
+        fn jj_scratch_md(name: &str) -> Option<crate::test_support::TmpDir> {
             if !crate::vcs::jj::available() {
                 return None;
             }
@@ -1422,7 +1422,7 @@ mod tests {
             let jj = |args: &[&str]| {
                 std::process::Command::new("jj")
                     .current_dir(&dir)
-                    .env("HOME", &dir) // never touch the running machine's own jj config
+                    .env("HOME", &*dir) // never touch the running machine's own jj config
                     .env("JJ_USER", "konoma test")
                     .env("JJ_EMAIL", "test@example.invalid")
                     .args(args)
@@ -1445,7 +1445,7 @@ mod tests {
         };
 
         // `[ui] wrap = true` (default): no `h/l` hint at all in the Rendered footer.
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.open_git_diff(&dir.join("doc.md"));
         assert_eq!(app.diff_view_for_test(), crate::app::DiffView::Rendered);
         let footer: String = footer_spans(&app, 200)
@@ -1460,7 +1460,7 @@ mod tests {
         // `[ui] wrap = false`: horizontal scroll is meaningful again, so the hint returns.
         let mut cfg = Config::default();
         cfg.ui.wrap = false;
-        let mut app_nowrap = App::new(dir.clone(), cfg).unwrap();
+        let mut app_nowrap = App::new(dir.to_path_buf(), cfg).unwrap();
         app_nowrap.open_git_diff(&dir.join("doc.md"));
         assert_eq!(
             app_nowrap.diff_view_for_test(),
@@ -1488,7 +1488,7 @@ mod tests {
         let Some(jj_dir) = jj_scratch("konoma_status_jj_diff_footer") else {
             return;
         };
-        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
         app.open_git_diff(&jj_dir.join("a.txt"));
         assert!(app.is_git_diff_preview());
         let footer: String = footer_spans(&app, 200)
@@ -1556,7 +1556,7 @@ mod tests {
         let Some(jj_dir) = jj_scratch("konoma_status_jj_chip") else {
             return;
         };
-        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
         app.refresh_git_if_needed();
         assert_eq!(
             app.git_vcs,
@@ -1609,7 +1609,7 @@ mod tests {
             jj_cmd(&jj_dir, &["bookmark", "create", "-r", "@", "main"]),
             "jj bookmark create に失敗"
         );
-        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
         app.refresh_git_if_needed();
         app.open_git_branches();
         assert!(app.is_git_branches(), "jj のブックマーク一覧が開かない");
@@ -1652,7 +1652,7 @@ mod tests {
         let Some(jj_dir) = jj_scratch("konoma_status_relabel_jj") else {
             return;
         };
-        let mut app = App::new(jj_dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(jj_dir.to_path_buf(), Config::default()).unwrap();
         app.refresh_git_if_needed();
         assert_eq!(app.git_vcs, crate::vcs::VcsKind::Jj);
         assert_eq!(relabel_for_backend(&app, Msg::WkShortHash), Msg::WkChangeId);

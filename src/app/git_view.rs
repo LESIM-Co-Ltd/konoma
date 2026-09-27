@@ -2177,7 +2177,13 @@ mod tests {
     /// A main repo (one commit) with a linked worktree branched off it. Returns
     /// `(main_root, base_branch_name, linked_worktree_path)`.
     #[cfg(feature = "git")]
-    fn sandbox_with_worktree(name: &str) -> (PathBuf, String, PathBuf) {
+    fn sandbox_with_worktree(
+        name: &str,
+    ) -> (
+        crate::test_support::TmpDir,
+        String,
+        crate::test_support::TmpDir,
+    ) {
         let dir = unique_tmp(name);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2185,7 +2191,10 @@ mod tests {
         std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
         sh(&dir, &["add", "-A"]);
         sh(&dir, &["commit", "-q", "-m", "init"]);
-        let root = dir.canonicalize().unwrap();
+        // `.canonicalize()` here transfers cleanup responsibility onto the returned guard (see its
+        // own doc comment) rather than leaving it on `dir`/`linked`, which would otherwise drop
+        // (and rm -rf the fixture) the moment this function returns.
+        let root = dir.into_canonical().unwrap();
         let base = crate::git::branch(&root).expect("sanity: has a branch after the commit");
         let linked = unique_tmp(&format!("{name}_linked"));
         let _ = std::fs::remove_dir_all(&linked);
@@ -2200,7 +2209,7 @@ mod tests {
                 linked.to_str().unwrap(),
             ],
         );
-        let linked = linked.canonicalize().unwrap();
+        let linked = linked.into_canonical().unwrap();
         (root, base, linked)
     }
 
@@ -2238,7 +2247,7 @@ mod tests {
             base.clone(),
             "konoma-also-missing".to_string(),
         ];
-        let mut app = App::new(root.clone(), cfg).unwrap();
+        let mut app = App::new(root.to_path_buf(), cfg).unwrap();
         app.open_git_worktrees(); // populates `tab.git_worktrees` (the fallback path's source)
         let target = linked_worktree_row(&app, "feature-x");
         assert_eq!(
@@ -2257,7 +2266,7 @@ mod tests {
         let (root, base, _linked) = sandbox_with_worktree("konoma_gitview_diffbase_fallback");
         let cfg = Config::default(); // graph_base_branches defaults to []
         assert!(cfg.ui.graph_base_branches.is_empty(), "前提: 既定は []");
-        let mut app = App::new(root.clone(), cfg).unwrap();
+        let mut app = App::new(root.to_path_buf(), cfg).unwrap();
         app.open_git_worktrees();
         let target = linked_worktree_row(&app, "feature-x");
         assert_eq!(
@@ -2277,7 +2286,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.ui.graph_base_branches =
             vec!["konoma-nope".to_string(), "konoma-also-nope".to_string()];
-        let mut app = App::new(root.clone(), cfg).unwrap();
+        let mut app = App::new(root.to_path_buf(), cfg).unwrap();
         app.open_git_worktrees();
         let target = linked_worktree_row(&app, "feature-x");
         assert_eq!(
@@ -2355,7 +2364,7 @@ mod tests {
     fn worktree_diff_base_is_none_when_only_candidate_is_the_targets_own_branch() {
         let (root, _base, _linked) = sandbox_with_worktree("konoma_gitview_diffbase_self_excluded");
         let cfg = Config::default(); // graph_base_branches defaults to []
-        let mut app = App::new(root.clone(), cfg).unwrap();
+        let mut app = App::new(root.to_path_buf(), cfg).unwrap();
         app.open_git_worktrees();
         let main_row = app
             .git_worktree_selected()

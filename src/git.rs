@@ -4358,7 +4358,7 @@ mod tests {
 
         let (_, calls) = count_discovery_cli_calls(|| {
             // Every entry point that asks "where is the repo?", including from a subdirectory.
-            for probe in [dir.clone(), dir.join("sub")] {
+            for probe in [dir.to_path_buf(), dir.join("sub")] {
                 assert!(workdir(&probe).is_none());
                 assert!(git_dir(&probe).is_none());
                 assert!(branch(&probe).is_none());

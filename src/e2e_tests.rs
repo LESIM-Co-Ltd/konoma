@@ -578,7 +578,7 @@ impl Sim {
 /// `anim.gif` as missing mid-recreation-by-the-other-process, so `ensure_md_image` silently
 /// returned without ever queuing the second encode request, and `drain_md_encodes()` then waited
 /// on a message nobody had sent.
-fn sandbox(name: &str) -> std::path::PathBuf {
+fn sandbox(name: &str) -> crate::test_support::TmpDir {
     let dir = crate::test_support::unique_tmp(&format!("konoma_e2e_{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -643,7 +643,7 @@ fn cfg_code_bg_none() -> Config {
 /// and return the Sim (at the Markdown preview) plus the sandbox dir. Runs the full render pipeline,
 /// so `md_link_targets()` and the drawn screen reflect autolink/emoji/alerts exactly as live.
 #[cfg(test)]
-fn md_preview(cfg: Config, name: &str, body: &str) -> (Sim, std::path::PathBuf) {
+fn md_preview(cfg: Config, name: &str, body: &str) -> (Sim, crate::test_support::TmpDir) {
     let dir = sandbox(name);
     std::fs::write(dir.join(format!("{name}.md")), body).unwrap();
     let root = canon(&dir);
@@ -4773,7 +4773,7 @@ fn e2e_git_graph_branch_picker_toggles() {
 /// list, the diff view, and the working-copy status are non-empty). None when this machine has no
 /// jj, mirroring `app/tests.rs`'s `jj_scratch` — the suite must stay green without it.
 #[cfg(feature = "git")]
-fn jj_seed_repo(name: &str) -> Option<std::path::PathBuf> {
+fn jj_seed_repo(name: &str) -> Option<crate::test_support::TmpDir> {
     if !crate::vcs::jj::available() {
         return None;
     }
@@ -4812,7 +4812,7 @@ fn jj_seed_repo(name: &str) -> Option<std::path::PathBuf> {
 /// inside it); verified working in a scratch directory before use here. None when this machine has
 /// no jj.
 #[cfg(feature = "git")]
-fn jj_colocated_seed_repo(name: &str) -> Option<std::path::PathBuf> {
+fn jj_colocated_seed_repo(name: &str) -> Option<crate::test_support::TmpDir> {
     if !crate::vcs::jj::available() {
         return None;
     }
@@ -5471,7 +5471,7 @@ fn e2e_jj_diff_view_rendered_marks_and_r_cycle_no_discard_hint() {
 /// land strictly after `jj commit` returns, so `newer_than` is unambiguously true for them regardless
 /// of same-second timing.
 #[cfg(feature = "git")]
-fn jj_seed_repo_multi(name: &str) -> Option<std::path::PathBuf> {
+fn jj_seed_repo_multi(name: &str) -> Option<crate::test_support::TmpDir> {
     if !crate::vcs::jj::available() {
         return None;
     }
@@ -8334,7 +8334,10 @@ fn e2e_session_restore_reopens_previous_tabs() {
     // Session 1: preview a.txt → t for a new tab (tree) → cursor on b.txt.
     let mut s = Sim::new(&dir);
     s.app
-        .attach_session_store(crate::session::SessionStore::with_base(base.clone(), &dir));
+        .attach_session_store(crate::session::SessionStore::with_base(
+            base.to_path_buf(),
+            &dir,
+        ));
     s.select("a.txt");
     s.press(KeyCode::Enter, KeyModifiers::NONE);
     assert!(matches!(s.app.tab.mode, Mode::Preview));
@@ -8347,7 +8350,10 @@ fn e2e_session_restore_reopens_previous_tabs() {
     let mut s2 = Sim::new(&dir);
     assert_eq!(s2.app.tab_count(), 1, "復元前は素の1タブ");
     s2.app
-        .attach_session_store(crate::session::SessionStore::with_base(base.clone(), &dir));
+        .attach_session_store(crate::session::SessionStore::with_base(
+            base.to_path_buf(),
+            &dir,
+        ));
     s2.app.restore_session();
     s2.draw();
     assert_eq!(s2.app.tab_count(), 2, "タブ数を復元");
@@ -8376,7 +8382,12 @@ fn e2e_session_restore_reopens_previous_tabs() {
 
 /// Write `file` with `body` in a fresh sandbox `dir_name`, open it (tree → preview) under `cfg`,
 /// and return the Sim plus the sandbox dir. Like `md_preview` but for any single file.
-fn text_preview(cfg: Config, dir_name: &str, file: &str, body: &str) -> (Sim, std::path::PathBuf) {
+fn text_preview(
+    cfg: Config,
+    dir_name: &str,
+    file: &str,
+    body: &str,
+) -> (Sim, crate::test_support::TmpDir) {
     let dir = sandbox(dir_name);
     std::fs::write(dir.join(file), body).unwrap();
     let root = canon(&dir);
@@ -14256,7 +14267,7 @@ fn e2e_ui_remote_image_fetch_failure_without_network_degrades_to_placeholder() {
     // (which runs before the connection-refused failure) lands there, never under the developer's
     // real `~/.cache/konoma/remote-images`.
     let cache_root = unique_tmp("konoma_e2e_remote_cache_root_test");
-    crate::test_support::set_test_cache_root(cache_root.clone());
+    crate::test_support::set_test_cache_root(cache_root.to_path_buf());
 
     let mut s = Sim::new(&root).with_media();
     s.select("d.md");

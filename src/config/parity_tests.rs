@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io::Write as _;
 
 /// Local copy of the `mod tests` temp-file helper (that one is private to the other module).
-fn tmp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+fn tmp(name: &str, bytes: &[u8]) -> crate::test_support::TmpDir {
     // Preserve `name`'s extension — see the identical comment on `config::tests::tmp`: these tests
     // exercise extension-based preview-rule matching, so the uniqueness suffix must land before the
     // extension, not swallow it.

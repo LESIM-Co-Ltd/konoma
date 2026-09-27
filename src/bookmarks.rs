@@ -397,7 +397,7 @@ mod tests {
         let proj = unique_tmp("konoma_bm_test_proj");
         std::fs::create_dir_all(&proj).unwrap();
 
-        let mut bm = Bookmarks::with_base(base.clone(), &proj);
+        let mut bm = Bookmarks::with_base(base.to_path_buf(), &proj);
         // lowercase = local / uppercase = global.
         assert!(bm.set('a', PathBuf::from("/tmp/local_a")).unwrap());
         assert!(bm.set('A', PathBuf::from("/tmp/global_A")).unwrap());
@@ -410,14 +410,14 @@ mod tests {
         assert_eq!(bm.get('b'), None);
 
         // Reading it back with a separate instance restores it per scope too (persisted).
-        let bm2 = Bookmarks::with_base(base.clone(), &proj);
+        let bm2 = Bookmarks::with_base(base.to_path_buf(), &proj);
         assert_eq!(bm2.get('a'), Some(PathBuf::from("/tmp/local_a")));
         assert_eq!(bm2.get('A'), Some(PathBuf::from("/tmp/global_A")));
 
         // From a different start dir, `a` (local) is invisible but `A` (global) is shared.
         let proj2 = unique_tmp("konoma_bm_test_proj2");
         std::fs::create_dir_all(&proj2).unwrap();
-        let bm3 = Bookmarks::with_base(base.clone(), &proj2);
+        let bm3 = Bookmarks::with_base(base.to_path_buf(), &proj2);
         assert_eq!(bm3.get('a'), None, "ローカルは起動dir 別");
         assert_eq!(
             bm3.get('A'),
@@ -426,9 +426,9 @@ mod tests {
         );
 
         // Removal is persisted too.
-        let mut bm4 = Bookmarks::with_base(base.clone(), &proj);
+        let mut bm4 = Bookmarks::with_base(base.to_path_buf(), &proj);
         bm4.remove('a').unwrap();
-        let bm5 = Bookmarks::with_base(base.clone(), &proj);
+        let bm5 = Bookmarks::with_base(base.to_path_buf(), &proj);
         assert_eq!(bm5.get('a'), None);
         assert_eq!(bm5.get('A'), Some(PathBuf::from("/tmp/global_A")));
 
@@ -557,7 +557,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let proj = unique_tmp("konoma_bm_list_test_proj");
         std::fs::create_dir_all(&proj).unwrap();
-        let mut bm = Bookmarks::with_base(base.clone(), &proj);
+        let mut bm = Bookmarks::with_base(base.to_path_buf(), &proj);
         bm.set('b', PathBuf::from("/tmp/b")).unwrap();
         bm.set('a', PathBuf::from("/tmp/a")).unwrap();
         bm.set('B', PathBuf::from("/tmp/B")).unwrap();

@@ -121,7 +121,7 @@ mod tests {
         let proj = unique_tmp("konoma_session_store_test_proj");
         std::fs::create_dir_all(&proj).unwrap();
 
-        let store = SessionStore::with_base(base.clone(), &proj);
+        let store = SessionStore::with_base(base.to_path_buf(), &proj);
         let sess = SavedSession {
             dir: String::new(), // filled in by write
             active: 1,
@@ -142,7 +142,9 @@ mod tests {
         };
         store.write(sess.clone()).unwrap();
 
-        let got = SessionStore::with_base(base.clone(), &proj).read().unwrap();
+        let got = SessionStore::with_base(base.to_path_buf(), &proj)
+            .read()
+            .unwrap();
         assert_eq!(got.dir, proj.to_string_lossy(), "起動 dir を記録する");
         assert_eq!(got.active, 1);
         assert_eq!(got.tabs, sess.tabs);
@@ -150,7 +152,7 @@ mod tests {
         // Invisible from a different start dir's store (one file per directory).
         let proj2 = unique_tmp("konoma_session_store_test_proj2");
         std::fs::create_dir_all(&proj2).unwrap();
-        assert!(SessionStore::with_base(base.clone(), &proj2)
+        assert!(SessionStore::with_base(base.to_path_buf(), &proj2)
             .read()
             .is_none());
 
@@ -166,7 +168,7 @@ mod tests {
         let proj = unique_tmp("konoma_session_corrupt_test_proj");
         std::fs::create_dir_all(&proj).unwrap();
 
-        let store = SessionStore::with_base(base.clone(), &proj);
+        let store = SessionStore::with_base(base.to_path_buf(), &proj);
         assert!(store.read().is_none(), "ファイル無し = セッション無し");
 
         // A corrupt TOML file safely degrades to None (= a fresh start).
@@ -184,7 +186,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         let proj = unique_tmp("konoma_session_atomic_test_proj");
         std::fs::create_dir_all(&proj).unwrap();
-        let store = SessionStore::with_base(base.clone(), &proj);
+        let store = SessionStore::with_base(base.to_path_buf(), &proj);
 
         let mk = |root: &str| SavedSession {
             active: 0,

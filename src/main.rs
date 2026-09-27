@@ -2918,7 +2918,7 @@ mod tests {
         let mut failures = 0;
         for _tick in 0..5 {
             if watch_target_changed(attempted.as_deref(), Some(bad_root.as_path())) {
-                attempted = Some(bad_root.clone());
+                attempted = Some(bad_root.to_path_buf());
                 attempts += 1;
                 if rewatch(watcher.as_mut(), &mut watched, &bad_root) == WatchOutcome::Failed {
                     failures += 1;
@@ -2942,13 +2942,13 @@ mod tests {
             attempted.as_deref(),
             Some(dir2.as_path())
         ));
-        attempted = Some(dir2.clone());
+        attempted = Some(dir2.to_path_buf());
         assert_eq!(
             rewatch(watcher.as_mut(), &mut watched, &dir2),
             WatchOutcome::Watching,
             "root がウォッチ可能な値に変われば再試行して成功する"
         );
-        assert_eq!(watched, Some(dir2.clone()));
+        assert_eq!(watched, Some(dir2.to_path_buf()));
         assert_eq!(attempted.as_deref(), Some(dir2.as_path()));
 
         drop(watcher);
@@ -2968,7 +2968,7 @@ mod tests {
             set_extra_watch(watcher.as_mut(), &mut watched, Some(dir.as_path())),
             WatchOutcome::Watching
         );
-        assert_eq!(watched, Some(dir.clone()));
+        assert_eq!(watched, Some(dir.to_path_buf()));
 
         // Switching to `None` (the file being shown returns inside root / to the tree) removes it.
         assert_eq!(
@@ -2997,7 +2997,7 @@ mod tests {
         // e2e_follow_survives_scroll_and_cycle_breaks_only_on_q).
         let dir = unique_tmp("konoma_follow_break_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('F'), KeyModifiers::NONE),
@@ -3105,7 +3105,7 @@ mod tests {
         // not help/copy/tab.
         let dir = unique_tmp("konoma_filter_input_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         handle_key(&mut app, key('/')).unwrap(); // start filtering
         assert!(app.is_filtering());
         // `c` (normally copy-code) and `?` (normally help) are captured as characters.
@@ -3201,7 +3201,7 @@ mod tests {
         use keymap::LeaderId;
         let dir = unique_tmp("konoma_chord_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir, Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         // `y` starts the copy leader → pending_leader.
         handle_key(&mut app, key('y')).unwrap();
         assert_eq!(app.pending_leader, Some(LeaderId::Copy));
@@ -3215,7 +3215,7 @@ mod tests {
         use keymap::LeaderId;
         let dir = unique_tmp("konoma_fileleader_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir, Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         // The default `c` is no longer a leader (the old copy prefix is gone).
         handle_key(&mut app, key('c')).unwrap();
         assert_eq!(app.pending_leader, None);
@@ -3230,7 +3230,7 @@ mod tests {
         let dir = unique_tmp("konoma_space_create_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         handle_key(&mut app, key(' ')).unwrap();
         handle_key(&mut app, key('n')).unwrap();
         assert_eq!(app.pending_leader, None, "リーダーは確定で消える");
@@ -3271,7 +3271,7 @@ mod tests {
         let dir = unique_tmp("konoma_quit_confirm_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let exit = handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT),
@@ -3293,7 +3293,7 @@ mod tests {
         let dir = unique_tmp("konoma_quit_cancel_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         handle_key(&mut app, key('q')).unwrap(); // Tree's q = Quit → the confirmation dialog
         assert!(app.is_dialog() && app.confirm_is_quit());
         let exit = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
@@ -3310,7 +3310,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut cfg = Config::default();
         cfg.ui.confirm_quit = false;
-        let mut app = App::new(dir.clone(), cfg).unwrap();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
         let exit = handle_key(
             &mut app,
             KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT),
@@ -3328,7 +3328,7 @@ mod tests {
         let dir = unique_tmp("konoma_quit_filter_literal_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         handle_key(&mut app, key('/')).unwrap();
         let exit = handle_key(
             &mut app,
@@ -3382,7 +3382,7 @@ mod tests {
             "入力ダイアログは文字として取り込むため通す"
         );
         // Don't let it interrupt while help (an overlay) is shown.
-        let mut app2 = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app2 = App::new(dir.to_path_buf(), Config::default()).unwrap();
         handle_key(&mut app2, key('?')).unwrap();
         assert!(app2.show_help);
         assert!(
@@ -3396,7 +3396,7 @@ mod tests {
     fn help_toggles_and_swallows_keys() {
         let dir = unique_tmp("konoma_help_key_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir, Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         assert!(!app.show_help);
         // Opens with ?.
         handle_key(&mut app, key('?')).unwrap();
@@ -3415,7 +3415,7 @@ mod tests {
         // (Tree/Preview) is preserved. Switching doesn't drop it to Tree, and returning restores Preview.
         let dir = unique_tmp("konoma_tab_in_preview_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir, Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         // Put tab 0 into previewing.
         app.tab.mode = Mode::Preview;
         // t opens a new tab (works even while previewing). The new tab starts from Tree.
@@ -3437,7 +3437,7 @@ mod tests {
     fn flash_is_cleared_on_next_key() {
         let dir = unique_tmp("konoma_flash_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir, Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         app.flash = Some("x".into());
         handle_key(&mut app, key('j')).unwrap();
         assert_eq!(app.flash, None, "次のキーで flash が消える");
@@ -3450,7 +3450,7 @@ mod tests {
         // error is shown to the user via flash rather than swallowed.
         let dir = unique_tmp("konoma_recoverable_err_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let quit = resolve_key_result(&mut app, Err(anyhow::anyhow!("boom: refresh 失敗")));
         assert!(!quit, "回復可能な Err でループは終了しない");
         let flash = app
@@ -3471,7 +3471,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut cfg = Config::default();
         cfg.ui.confirm_quit = false; // judge the last tab by quitting immediately (no dialog in between)
-        let mut app = App::new(dir.clone(), cfg).unwrap();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
 
         // 2 tabs → q just closes the tab (quit=false).
         app.tab_new().unwrap();
@@ -3492,7 +3492,7 @@ mod tests {
         // straight through, and doesn't touch flash either.
         let dir = unique_tmp("konoma_resolve_passthrough_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         assert!(
             resolve_key_result(&mut app, Ok(true)),
             "Ok(true) は終了要求を通す"
@@ -3516,7 +3516,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/f.txt"), b"x").unwrap();
-        let mut app = App::new(dir.clone(), Config::default()).unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
         let idle = poll_timeout(&app);
         assert!(
             idle > Duration::from_millis(16),

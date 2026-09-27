@@ -1809,7 +1809,6 @@ mod scroll_indicator_tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    use std::path::PathBuf;
 
     fn press(app: &mut App, code: KeyCode) {
         crate::handle_key(app, KeyEvent::new(code, KeyModifiers::NONE)).unwrap();
@@ -1821,7 +1820,12 @@ mod scroll_indicator_tests {
 
     /// Write `body` as `doc.txt` in a fresh sandbox, open its full-screen preview through the real
     /// key path (Enter on the tree cursor), and draw once.
-    fn preview_of(name: &str, body: &str, w: u16, h: u16) -> (App, Terminal<TestBackend>, PathBuf) {
+    fn preview_of(
+        name: &str,
+        body: &str,
+        w: u16,
+        h: u16,
+    ) -> (App, Terminal<TestBackend>, crate::test_support::TmpDir) {
         let dir = unique_tmp(name);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

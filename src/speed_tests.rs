@@ -415,7 +415,7 @@ fn tree_build_and_visible_range_many_entries_is_bounded() {
     for i in 0..1000 {
         std::fs::write(dir.join(format!("file_{i:04}.txt")), b"x").unwrap();
     }
-    let mut app = crate::app::App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = crate::app::App::new(dir.to_path_buf(), Config::default()).unwrap();
 
     // Confirm the tree rebuild (1000 entries) is fast.
     let t = Instant::now();
@@ -999,7 +999,7 @@ fn tab_switch_reloads_are_bounded() {
     // `preview_large_markdown_is_bounded`'s doc comment for the concrete flake this caused there).
     let _ = crate::preview::code::highlight_lang(&rust_source(1), "rust", "TwoDark");
 
-    let mut app = crate::app::App::new(dir.clone(), Config::default()).unwrap();
+    let mut app = crate::app::App::new(dir.to_path_buf(), Config::default()).unwrap();
 
     // Reference: the allocation of a from-scratch `rebuild_tree()` on this same 3000-entry directory
     // — the "real work" every switch must pay regardless of take-vs-clone correctness.
