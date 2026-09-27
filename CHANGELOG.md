@@ -21,6 +21,12 @@ All notable changes to konoma are documented in this file. The format is based o
   archives, other binaries, or either side over 64 MiB) gets a one-line size/byte-delta summary
   instead.
 
+### Changed
+- Follow mode now keeps the diff presentation chosen with `R` (source / rendered / side by side /
+  preview) when it jumps to the next changed file, the same way `n`/`N` already did — a Markdown
+  diff picked as `source` stays `source` on the next follow jump instead of resetting to
+  `[ui] diff_view`. A jump from the tree or an ordinary preview still starts from `[ui] diff_view`.
+
 ### Fixed
 - PDF pages are now drawn on white paper — they were transparent, so on a dark terminal the text
   was barely readable, and on terminals without kitty graphics the page came out blank.
@@ -32,6 +38,9 @@ All notable changes to konoma are documented in this file. The format is based o
 - A follow-originated diff no longer mislabels a binary comparison as "since follow-start" when the
   follow session actually had no usable snapshot for that file (over the 5 MiB per-file cap) — the
   caption now honestly names `HEAD` instead.
+- With `[ui] diff_view = "preview"`, a freshly opened diff now opens in its preview presentation. It
+  used to stay on the diff screen and draw the source diff, with the footer offering `R:source`.
+  (Present since v0.29.0.)
 - Cycling files with `n`/`N` in the full-screen diff no longer loses the chosen presentation after
   passing a file that can show only one of the three — a Markdown file after a code file opened as
   source instead of rendered, an SVG after a binary opened as text instead of side by side. The bug

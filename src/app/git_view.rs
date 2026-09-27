@@ -645,6 +645,19 @@ impl App {
         // the diff surface, not a continuation of that preview.
         self.tab.preview_from_diff = false;
         self.tab.mode = Mode::Preview;
+        // A resolved `Preview` presentation means "leave `Surface::PreviewGitDiff` altogether for
+        // `path`'s own ordinary preview" (`docs/FEATURE-MD-RENDERED-DIFF.md` §1) — the same
+        // transition `R` (`App::cycle_diff_view`) makes when it cycles into `Preview` from an
+        // already-open diff. Reused here (`App::enter_diff_preview_representation`) so it also
+        // fires for the other two ways a diff open can resolve to `Preview`: a fresh
+        // `[ui] diff_view = "preview"` open (previously left `tab.diff_view == Preview` stranded
+        // on the `Source` draw path above, since nothing else ever recognized it), and
+        // `App::follow_jump` carrying an already-chosen `Preview` presentation into the next
+        // changed file.
+        #[cfg(feature = "git")]
+        if view == DiffView::Preview {
+            self.enter_diff_preview_representation(path);
+        }
     }
 
     /// Whether a GitDiff preview is currently showing (for render/key branching).

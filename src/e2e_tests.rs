@@ -17225,3 +17225,267 @@ fn e2e_follow_view_file_still_opens_ordinary_preview_for_image() {
         s.app.tab.preview_kind
     );
 }
+
+// =============================================================================
+// Follow jump keeps the diff presentation chosen with `R` (source / rendered / preview) when it
+// jumps to the next changed file — the same rule `n`/`N` already follows
+// (`App::diff_jump_changed`'s own doc comment) — but only while the tab is *currently* showing
+// that earlier diff (its own surface, or its `Preview` representation); a jump from the tree or an
+// ordinary preview still starts fresh from `[ui] diff_view`.
+// =============================================================================
+
+/// Picking `Source` (via `R`, `Rendered -> Preview -> Source` — the same cycle order
+/// `e2e_diff_view_choice_source_via_r_cycle_survives_image_and_code_detours` exercises from the
+/// tree) on the first follow-opened Markdown diff must carry into the *next* follow jump's
+/// Markdown diff too, not reset to `[ui] diff_view`'s own default (`Rendered`).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_jump_carries_source_choice_to_the_next_markdown_diff() {
+    let dir = sandbox("follow_carries_source_markdown");
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.md"), "# A\n\nOriginal.\n").unwrap();
+    std::fs::write(dir.join("b.md"), "# B\n\nOriginal.\n").unwrap();
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
+
+    let mut s = Sim::new(&canon(&dir));
+    let a = s.app.tab.root.join("a.md");
+    let b = s.app.tab.root.join("b.md");
+    s.key('F');
+    assert!(s.app.follow_enabled());
+
+    std::fs::write(&a, "# A\n\nCHANGED.\n").unwrap();
+    assert!(s.app.follow_note_change(&a));
+    s.app.follow_jump(&a);
+    s.draw();
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "最初の follow jump は config 既定(rendered)で開くはず"
+    );
+
+    s.key('R'); // Rendered -> Preview
+    assert!(s.app.preview_is_diff_representation());
+    s.key('R'); // Preview -> Source (return_to_diff_from_preview)
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Source);
+
+    std::fs::write(&b, "# B\n\nCHANGED.\n").unwrap();
+    assert!(s.app.follow_note_change(&b));
+    s.app.follow_jump(&b);
+    s.draw();
+
+    assert!(s.app.is_git_diff_preview());
+    assert!(
+        s.app
+            .tab
+            .preview_path
+            .as_deref()
+            .is_some_and(|p| p.ends_with("b.md")),
+        "b.md へ追尾しているはず: {:?}",
+        s.app.tab.preview_path
+    );
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Source,
+        "diff 表示中の follow jump は R で選んだ表現(source)を次のファイルへ引き継ぐはず"
+    );
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Source);
+}
+
+/// The carried choice still rounds per file exactly like `n`/`N` (`App::round_diff_view`) —
+/// `Source` (an image has no `Source` representation) rounds to `Rendered` (the image's own
+/// side-by-side view) for one follow-jumped file, while the underlying *choice* stays `Source`
+/// throughout (`PerTab::diff_view_choice` is never overwritten by rounding), reasserting itself as
+/// `Source` again on the very next Markdown file.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_jump_carries_source_choice_through_an_image_detour() {
+    let dir = sandbox("follow_carries_source_image_detour");
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.md"), "# A\n\nOriginal.\n").unwrap();
+    write_solid_png(&dir.join("b.png"), 4, 4, [1, 1, 1]);
+    std::fs::write(dir.join("c.md"), "# C\n\nOriginal.\n").unwrap();
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
+
+    let mut s = Sim::new(&canon(&dir));
+    let a = s.app.tab.root.join("a.md");
+    let b = s.app.tab.root.join("b.png");
+    let c = s.app.tab.root.join("c.md");
+    s.key('F');
+
+    std::fs::write(&a, "# A\n\nCHANGED.\n").unwrap();
+    assert!(s.app.follow_note_change(&a));
+    s.app.follow_jump(&a);
+    s.draw();
+    s.key('R'); // Rendered -> Preview
+    s.key('R'); // Preview -> Source
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Source);
+
+    write_solid_png(&b, 4, 4, [2, 2, 2]);
+    assert!(s.app.follow_note_change(&b));
+    s.app.follow_jump(&b);
+    s.draw();
+    assert!(s.app.is_git_diff_preview());
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("b.png")));
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "画像に Source は無いので Rendered(並べて表示)へ丸めるはず"
+    );
+    assert_eq!(
+        s.app.diff_view_choice_for_test(),
+        DiffView::Source,
+        "丸めは effective な diff_view だけを変え、選択(choice)自体は変えないはず"
+    );
+
+    std::fs::write(&c, "# C\n\nCHANGED.\n").unwrap();
+    assert!(s.app.follow_note_change(&c));
+    s.app.follow_jump(&c);
+    s.draw();
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("c.md")));
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Source,
+        "Markdown に戻れば選択どおり Source に戻るはず"
+    );
+}
+
+/// A choice picked all the way into the diff's own `Preview` representation (`R` past `Rendered`)
+/// carries into the *next* follow-jumped file's own `Preview` representation too — the one path
+/// `App::open_git_diff_with` did not support before this change (a fresh diff open resolving to
+/// `Preview` used to leave `tab.diff_view == Preview` stranded on the unified/split `Source` draw
+/// path; only `R`, cycling from an already-open diff, actually left `Surface::PreviewGitDiff` for
+/// it — `App::enter_diff_preview_representation`'s own doc comment).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_jump_carries_preview_choice_into_the_next_file() {
+    let dir = sandbox("follow_carries_preview_choice");
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.md"), "# A\n\nOriginal.\n").unwrap();
+    std::fs::write(dir.join("b.md"), "# B\n\nOriginal.\n").unwrap();
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
+
+    let mut s = Sim::new(&canon(&dir));
+    let a = s.app.tab.root.join("a.md");
+    let b = s.app.tab.root.join("b.md");
+    s.key('F');
+
+    std::fs::write(&a, "# A\n\nCHANGED.\n").unwrap();
+    assert!(s.app.follow_note_change(&a));
+    s.app.follow_jump(&a);
+    s.draw();
+    s.key('R'); // Rendered -> Preview
+    assert!(s.app.preview_is_diff_representation());
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Preview);
+
+    std::fs::write(&b, "# B\n\nCHANGED.\n").unwrap();
+    assert!(s.app.follow_note_change(&b));
+    s.app.follow_jump(&b);
+    s.draw();
+
+    assert!(
+        s.app
+            .tab
+            .preview_path
+            .as_deref()
+            .is_some_and(|p| p.ends_with("b.md")),
+        "b.md へ追尾しているはず: {:?}",
+        s.app.tab.preview_path
+    );
+    assert!(
+        s.app.preview_is_diff_representation(),
+        "選択(Preview)を引き継いで b.md も diff の Preview 表現に入るはず"
+    );
+    assert!(
+        !s.app.is_git_diff_preview(),
+        "Preview 表現は GitDiff サーフェスを離れているはず"
+    );
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Preview);
+}
+
+/// A follow jump taken while the tab shows the tree — or an ordinary, non-diff preview — starts
+/// fresh from `[ui] diff_view` even though an *earlier* diff in the same tab had a different
+/// choice: the carry (the three tests above) only applies while the tab is *currently* showing
+/// that earlier diff.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_follow_jump_from_tree_or_plain_preview_does_not_carry_an_earlier_choice() {
+    let dir = sandbox("follow_no_carry_from_tree");
+    init_git_repo(&dir);
+    std::fs::write(dir.join("a.md"), "# A\n\nOriginal.\n").unwrap();
+    std::fs::write(dir.join("b.md"), "# B\n\nOriginal.\n").unwrap();
+    std::fs::write(dir.join("plain.txt"), "hello\n").unwrap();
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
+
+    let mut s = Sim::new(&canon(&dir));
+    let a = s.app.tab.root.join("a.md");
+    let b = s.app.tab.root.join("b.md");
+    s.key('F');
+
+    std::fs::write(&a, "# A\n\nCHANGED.\n").unwrap();
+    assert!(s.app.follow_note_change(&a));
+    s.app.follow_jump(&a);
+    s.draw();
+    s.key('R'); // Rendered -> Preview
+    s.key('R'); // Preview -> Source: a.md's diff now has the choice Source.
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Source);
+
+    // Leave the diff for the tree — without `q` (which would also call `follow_break`; that gate
+    // is a separate, already-tested concern, not what this rule is about). `close_git_diff` is the
+    // same state transition `q` itself dispatches to (`Action::PreviewBack`), called directly so
+    // follow stays on and only the "which surface is showing" input changes.
+    s.app.close_git_diff();
+    assert!(
+        s.app.follow_enabled(),
+        "close_git_diff 自体は follow を切らない"
+    );
+    assert_eq!(s.app.tab.mode, Mode::Tree);
+
+    std::fs::write(&b, "# B\n\nCHANGED.\n").unwrap();
+    assert!(s.app.follow_note_change(&b));
+    s.app.follow_jump(&b);
+    s.draw();
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "ツリーからの follow jump は選択を引き継がず config 既定(rendered)から始まるはず"
+    );
+
+    // Reset to Source again, then leave for an *ordinary* (non-diff) preview instead of the tree.
+    s.key('R');
+    s.key('R');
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Source);
+    s.app.close_git_diff();
+    s.select("plain.txt");
+    s.enter();
+    assert_eq!(s.app.tab.mode, Mode::Preview);
+    assert!(!s.app.is_git_diff_preview());
+    assert!(!s.app.preview_is_diff_representation());
+
+    std::fs::write(&a, "# A\n\nCHANGED AGAIN.\n").unwrap();
+    assert!(s.app.follow_note_change(&a));
+    s.app.follow_jump(&a);
+    s.draw();
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "通常プレビューからの follow jump も選択を引き継がないはず"
+    );
+}
