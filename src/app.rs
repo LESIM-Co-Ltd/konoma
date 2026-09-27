@@ -2838,6 +2838,23 @@ pub(crate) struct PerTab {
     /// restore it around their own `open_git_diff` call so cycling files never resets it — see
     /// [`DiffView`]'s own doc comment.
     diff_view: DiffView,
+    /// The presentation the user actually asked for — `[ui] diff_view` (if never overridden this
+    /// diff) or whichever presentation `R` (`App::cycle_diff_view`) last cycled to, *including*
+    /// `Preview`. Deliberately separate from `diff_view` (the *effective*, per-file-rounded
+    /// presentation `App::apply_diff_view` writes): rounding the choice down for one file that
+    /// can't show it — a code file opened as `Source` when the choice is `Rendered`, a binary/
+    /// video file that only ever has `Source` — must not permanently replace the choice itself,
+    /// or the next file `n`/`N` moves to (which *can* show it) would wrongly stay rounded too
+    /// (the bug this field fixes: cycling past a `Source`-only or `Rendered`-only file used to
+    /// silently downgrade every later file's presentation). `App::diff_jump_changed` (`n`/`N`)
+    /// carries *this* field forward, not `diff_view`, so it survives such a detour. Written at the
+    /// two places a presentation is actually *decided* — `App::open_git_diff_with` (a fresh open
+    /// resolves it from `[ui] diff_view`; a carried-over one from the caller's already-chosen
+    /// value) and `App::cycle_diff_view` (`R`, including the step into `Preview`) — and nowhere
+    /// else: neither `App::apply_diff_view` nor the async `Rendered → Source` fallback
+    /// (`App::apply_md_diff`) ever touch it, since both only ever adjust the *effective*
+    /// presentation for whatever file happens to be on screen right now.
+    diff_view_choice: DiffView,
     /// The 1-based PDF page the media diff's side-by-side view (`docs/FEATURE-MEDIA-DIFF.md`
     /// §1/§6) is showing on **both** sides at once. Reset to `1` whenever a diff is (re)targeted
     /// through `App::open_git_diff_with` — a fresh file, or `n`/`N` moving to another one — so
@@ -3004,6 +3021,8 @@ impl Default for PerTab {
             // from config the moment one is. `Rendered` (not e.g. `Source`) simply so a fresh
             // `PerTab` never claims a presentation it never actually resolved.
             diff_view: DiffView::Rendered,
+            // Same sentinel/rationale as `diff_view` right above — no diff opened yet.
+            diff_view_choice: DiffView::Rendered,
             diff_media_page: 1,
             diff_scroll_pending: None,
             preview_from_diff: false,

@@ -32,6 +32,10 @@ All notable changes to konoma are documented in this file. The format is based o
 - A follow-originated diff no longer mislabels a binary comparison as "since follow-start" when the
   follow session actually had no usable snapshot for that file (over the 5 MiB per-file cap) — the
   caption now honestly names `HEAD` instead.
+- Cycling files with `n`/`N` in the full-screen diff no longer loses the chosen presentation after
+  passing a file that can show only one of the three — a Markdown file after a code file opened as
+  source instead of rendered, an SVG after a binary opened as text instead of side by side. The bug
+  exists since v0.29.0.
 
 ## [0.29.0] - 2026-09-24
 
