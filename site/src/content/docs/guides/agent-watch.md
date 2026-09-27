@@ -61,7 +61,9 @@ Details that make it comfortable:
 - For a Markdown file, the diff itself has 3 presentations — `source`,
   `rendered` (decorated blocks, the default — see
   [The git suite](../git/#diffs)), and `preview` — cycled independently with
-  `R`, regardless of `follow_view`.
+  `R`, regardless of `follow_view`. Once you pick one, the next follow jump
+  keeps it (just like `n`/`N`) as long as the diff is still on screen; jumping
+  in from the tree or a normal preview starts fresh from `follow_view` again.
 
 ## Changed-files view — `C`
 

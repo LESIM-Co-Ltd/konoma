@@ -225,6 +225,18 @@ impl App {
                 // `Rendered` readability/mark check reads the right baseline (the follow-session
                 // snapshot, not the backend's committed blob) on the only pass — see that fn's own
                 // doc comment for why this replaced a fresh `open_git_diff` + save/restore + re-run.
+                //
+                // The presentation: if the tab is *currently* showing a diff — either the diff
+                // surface itself (`is_git_diff_preview`) or that diff's own `Preview`
+                // representation (`R` having left `Surface::PreviewGitDiff` for an ordinary
+                // preview tagged `preview_from_diff`) — carry the presentation the user actually
+                // chose (`PerTab::diff_view_choice`, not the current file's already-rounded
+                // `diff_view` — same reasoning as `diff_jump_changed`'s own doc comment) into the
+                // next file, exactly like `n`/`N`. A jump from anywhere else (the tree, an
+                // ordinary non-diff preview) has no chosen presentation to carry, so it starts
+                // fresh from `[ui] diff_view` instead (`view: None`).
+                let carried_view = (self.is_git_diff_preview() || self.tab.preview_from_diff)
+                    .then_some(self.tab.diff_view_choice);
                 self.open_git_diff_with(
                     path,
                     DiffOpen {
@@ -233,6 +245,7 @@ impl App {
                             path: path.to_path_buf(),
                             lines: diff,
                         }),
+                        view: carried_view,
                         ..Default::default()
                     },
                 );

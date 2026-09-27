@@ -404,8 +404,17 @@ impl App {
     /// directly: the `preview` presentation's own gutter, wired in `md_render.rs`/`app.rs`'s
     /// `windowed_lines`, is exactly the same change-gutter machinery a follow-opened file preview
     /// already scrolls to the first mark of).
+    ///
+    /// `pub(super)`, not private: `App::open_git_diff_with` (`git_view.rs`) also calls this — the
+    /// one place that transitions into `Preview` for *any* caller that can resolve a diff open to
+    /// it (a fresh `[ui] diff_view = "preview"` open, or `App::follow_jump` carrying an
+    /// already-chosen `Preview` presentation into the next changed file) — rather than each caller
+    /// leaving `tab.diff_view == Preview` stranded on the unified/split `Source` draw path
+    /// (`ui/preview.rs::render_gitdiff` only special-cases `Rendered`; nothing there recognizes
+    /// `Preview` at all, since reaching it used to be possible only via `R`, from *inside* an
+    /// already-open diff).
     #[cfg(feature = "git")]
-    fn enter_diff_preview_representation(&mut self, path: &Path) {
+    pub(super) fn enter_diff_preview_representation(&mut self, path: &Path) {
         let came_from_git_view = self.tab.came_from_git_view;
         let diff_follow_scope = self.diff_follow_scope;
         self.enter_preview(path);
