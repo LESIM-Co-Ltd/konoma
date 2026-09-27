@@ -211,106 +211,8 @@ impl App {
     /// identical `max_bytes` seam, for the identical reason: exercising the cap without needing to
     /// actually construct/store a real 64 MiB fixture file).
     fn compute_media_diff_with_cap(req: &MediaDiffRequest, cap: u64) -> MediaDiffComputed {
-        // The old side has no size-only API to check first — `resolve_old_bytes` always hands back
-        // the full blob or nothing, so its length is only known *after* reading it. The new side is a
-        // plain file on disk, so `fs::metadata` gets its size for free: a file already over `cap` is
-        // never read into memory at all (skipping a multi-hundred-MB read that would be thrown away
-        // immediately).
-        let (old_bytes, base) = resolve_old_bytes(&req.baseline, &req.root, &req.path);
-        let old_len = old_bytes.as_ref().map(|b| b.len() as u64);
-        let old_over_cap = old_len.is_some_and(|n| n > cap);
-
-        let new_meta = std::fs::metadata(&req.path).ok();
-        let new_meta_len = new_meta.as_ref().map(|m| m.len());
-        // Existence, independent of whether the bytes get read (an over-cap file still exists, its
-        // read is just skipped below) — decides which classification rule applies just below
-        // (`Config::resolve_preview`'s path rules for an existing file, vs. sniffing the *old* bytes
-        // for one that's gone). Requires `is_file()`, not just "metadata answers at all": a directory
-        // now sitting where a regular file used to be (a rename/rewrite race) still has metadata but
-        // can't be read/classified as a picture — treating it as "exists" would route through
-        // `resolve_preview`'s path rules, whose mime sniff fails outright on a directory and degrades
-        // the whole diff to the binary summary even when the *old* side is a perfectly good picture.
-        // Treating it as absent instead sniffs the old bytes, same as a genuinely deleted file.
-        let new_exists = new_meta.is_some_and(|m| m.is_file());
-        let new_over_cap = new_meta_len.is_some_and(|n| n > cap);
-        let new_bytes = if new_over_cap {
-            None // known too large from metadata alone — never read.
-        } else {
-            std::fs::read(&req.path).ok()
-        };
-        // The metadata-derived size when the file was never read (over cap); otherwise the actual
-        // bytes' own length. Both agree except on a rare mid-write race, where the bytes' length is
-        // the more honest of the two since it's what was actually decoded.
-        let new_len = if new_over_cap {
-            new_meta_len
-        } else {
-            new_bytes.as_ref().map(|b| b.len() as u64)
-        };
-        let over_cap = old_over_cap || new_over_cap;
-        // Differing lengths are conclusive without a byte-for-byte compare; only two sides that were
-        // both actually read (never true for an over-cap or absent side) and already length-match are
-        // compared further.
-        let same_bytes = match (&old_bytes, &new_bytes) {
-            (Some(o), Some(n)) => o.len() == n.len() && o == n,
-            _ => false,
-        };
-
-        let preview_kind = if new_exists {
-            crate::config::resolve_preview_kind(
-                &req.preview_rules,
-                req.preview_commands,
-                &req.path,
-                None,
-            )
-        } else {
-            crate::config::resolve_preview_kind(
-                &req.preview_rules,
-                req.preview_commands,
-                &req.path,
-                old_bytes.as_deref(),
-            )
-        };
-
-        let Some(kind) = classify_kind(&preview_kind) else {
-            return MediaDiffComputed::Summary {
-                base,
-                same_bytes,
-                old_len,
-                new_len,
-            };
-        };
-        if over_cap {
-            return MediaDiffComputed::Summary {
-                base,
-                same_bytes,
-                old_len,
-                new_len,
-            };
-        }
-
-        let old = decode_side(
-            kind,
-            old_bytes.as_deref(),
-            &req.path,
-            req.page,
-            req.raster_px,
-            KeySide::Old,
-        );
-        let new = decode_side(
-            kind,
-            new_bytes.as_deref(),
-            &req.path,
-            req.page,
-            req.raster_px,
-            KeySide::New,
-        );
-        MediaDiffComputed::Ready {
-            kind,
-            base,
-            same_bytes,
-            old,
-            new,
-        }
+        let bytes = resolve_media_diff_bytes(req, cap);
+        classify_and_decode_media_diff(req, bytes)
     }
 
     /// Apply a media-diff result from the worker thread (or the synchronous fallback).
@@ -522,12 +424,12 @@ impl App {
     /// (as opposed to decorated Markdown blocks) — `ui/preview.rs::render_gitdiff` reads this to pick
     /// `render_gitdiff_media` over `render_diff_rendered`.
     ///
-    /// `Rendered` is only ever *set* on a target whose representation list actually contains it, and
-    /// the only kinds that do are Markdown and the media-capable ones (or an ambiguous deleted file
-    /// that might turn out to be one) — so "not literally classified as Markdown" is a safe,
-    /// self-contained test: `resolve_preview` on a deleted **Markdown** path still correctly returns
-    /// `Markdown` (glob-matched by filename, not content), while every other "media" case either
-    /// resolves to something else already or, for an ambiguous deleted binary, to `CanNotPreview`.
+    /// `Rendered` is reachable only for Markdown and the media kinds (pinned by
+    /// `app::tests::diff_media_active_agrees_with_the_single_not_markdown_check_across_every_
+    /// reachable_kind`), so "not Markdown" identifies the side-by-side view. `diff_media_capable` is
+    /// deliberately *not* used here: a deleted, content-sniffed (no glob) image classifies as
+    /// `CanNotPreview` until the worker lands, which `diff_media_capable` would wrongly read as "not
+    /// media".
     pub(crate) fn diff_media_active(&self) -> bool {
         if !self.diff_rendered_active() {
             return false;
@@ -817,6 +719,160 @@ fn resolve_old_bytes(
             }
         }
         DiffBaseline::Empty => (crate::vcs::base_contents(root, path), vcs_base),
+    }
+}
+
+/// `compute_media_diff_with_cap`'s byte/cap/base half: both sides' bytes (or why each is missing),
+/// their lengths, whether the new side exists as a regular file, whether either side is over `cap`,
+/// whether the two sides are byte-identical, and which base the old side was actually read against.
+/// No classification, no decoding — see `classify_and_decode_media_diff` for the other half.
+struct MediaDiffByteResolution {
+    old_bytes: Option<Vec<u8>>,
+    new_bytes: Option<Vec<u8>>,
+    new_exists: bool,
+    over_cap: bool,
+    same_bytes: bool,
+    old_len: Option<u64>,
+    new_len: Option<u64>,
+    base: MediaBase,
+}
+
+/// Resolves everything `compute_media_diff_with_cap` needs to know before it can even ask what kind
+/// of picture this is: both sides' bytes, sizes, existence, and the cap check. Pure extraction of
+/// that half of the original function — same order of operations, same I/O, nothing moved earlier or
+/// later.
+fn resolve_media_diff_bytes(req: &MediaDiffRequest, cap: u64) -> MediaDiffByteResolution {
+    // The old side has no size-only API to check first — `resolve_old_bytes` always hands back
+    // the full blob or nothing, so its length is only known *after* reading it. The new side is a
+    // plain file on disk, so `fs::metadata` gets its size for free: a file already over `cap` is
+    // never read into memory at all (skipping a multi-hundred-MB read that would be thrown away
+    // immediately).
+    let (old_bytes, base) = resolve_old_bytes(&req.baseline, &req.root, &req.path);
+    let old_len = old_bytes.as_ref().map(|b| b.len() as u64);
+    let old_over_cap = old_len.is_some_and(|n| n > cap);
+
+    let new_meta = std::fs::metadata(&req.path).ok();
+    let new_meta_len = new_meta.as_ref().map(|m| m.len());
+    // Existence, independent of whether the bytes get read (an over-cap file still exists, its
+    // read is just skipped below) — decides which classification rule applies just below
+    // (`Config::resolve_preview`'s path rules for an existing file, vs. sniffing the *old* bytes
+    // for one that's gone). Requires `is_file()`, not just "metadata answers at all": a directory
+    // now sitting where a regular file used to be (a rename/rewrite race) still has metadata but
+    // can't be read/classified as a picture — treating it as "exists" would route through
+    // `resolve_preview`'s path rules, whose mime sniff fails outright on a directory and degrades
+    // the whole diff to the binary summary even when the *old* side is a perfectly good picture.
+    // Treating it as absent instead sniffs the old bytes, same as a genuinely deleted file.
+    let new_exists = new_meta.is_some_and(|m| m.is_file());
+    let new_over_cap = new_meta_len.is_some_and(|n| n > cap);
+    let new_bytes = if new_over_cap {
+        None // known too large from metadata alone — never read.
+    } else {
+        std::fs::read(&req.path).ok()
+    };
+    // The metadata-derived size when the file was never read (over cap); otherwise the actual
+    // bytes' own length. Both agree except on a rare mid-write race, where the bytes' length is
+    // the more honest of the two since it's what was actually decoded.
+    let new_len = if new_over_cap {
+        new_meta_len
+    } else {
+        new_bytes.as_ref().map(|b| b.len() as u64)
+    };
+    let over_cap = old_over_cap || new_over_cap;
+    // Differing lengths are conclusive without a byte-for-byte compare; only two sides that were
+    // both actually read (never true for an over-cap or absent side) and already length-match are
+    // compared further.
+    let same_bytes = match (&old_bytes, &new_bytes) {
+        (Some(o), Some(n)) => o.len() == n.len() && o == n,
+        _ => false,
+    };
+
+    MediaDiffByteResolution {
+        old_bytes,
+        new_bytes,
+        new_exists,
+        over_cap,
+        same_bytes,
+        old_len,
+        new_len,
+        base,
+    }
+}
+
+/// `compute_media_diff_with_cap`'s classify+decode half: resolves the picture kind (from the new
+/// file when it exists, or by sniffing the old bytes when it doesn't), degrades to
+/// [`MediaDiffComputed::Summary`] for a non-picture kind or an over-cap side, and otherwise decodes
+/// both sides independently. Pure extraction of that half of the original function — same order of
+/// operations, same I/O, nothing moved earlier or later.
+fn classify_and_decode_media_diff(
+    req: &MediaDiffRequest,
+    bytes: MediaDiffByteResolution,
+) -> MediaDiffComputed {
+    let MediaDiffByteResolution {
+        old_bytes,
+        new_bytes,
+        new_exists,
+        over_cap,
+        same_bytes,
+        old_len,
+        new_len,
+        base,
+    } = bytes;
+
+    let preview_kind = if new_exists {
+        crate::config::resolve_preview_kind(
+            &req.preview_rules,
+            req.preview_commands,
+            &req.path,
+            None,
+        )
+    } else {
+        crate::config::resolve_preview_kind(
+            &req.preview_rules,
+            req.preview_commands,
+            &req.path,
+            old_bytes.as_deref(),
+        )
+    };
+
+    let Some(kind) = classify_kind(&preview_kind) else {
+        return MediaDiffComputed::Summary {
+            base,
+            same_bytes,
+            old_len,
+            new_len,
+        };
+    };
+    if over_cap {
+        return MediaDiffComputed::Summary {
+            base,
+            same_bytes,
+            old_len,
+            new_len,
+        };
+    }
+
+    let old = decode_side(
+        kind,
+        old_bytes.as_deref(),
+        &req.path,
+        req.page,
+        req.raster_px,
+        KeySide::Old,
+    );
+    let new = decode_side(
+        kind,
+        new_bytes.as_deref(),
+        &req.path,
+        req.page,
+        req.raster_px,
+        KeySide::New,
+    );
+    MediaDiffComputed::Ready {
+        kind,
+        base,
+        same_bytes,
+        old,
+        new,
     }
 }
 

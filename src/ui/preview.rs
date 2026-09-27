@@ -703,61 +703,16 @@ fn render_gitdiff_media(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
 
-    // No picker at all (a terminal with no graphics protocol, or images disabled): the summary line,
-    // computed from the worker exactly like `empty_diff_body_text`'s own binary-summary case (any
-    // raster target works here, since no picture will ever actually be decoded to screen size;
-    // `(64, 64)` is a harmless placeholder).
-    let Some(cell_px) = app.picker_cell_px() else {
-        let text = match app.poll_media_diff(&path, app.diff_media_page(), (64, 64)) {
-            None => tr(app.lang, crate::i18n::Msg::DiffComputing).to_string(),
-            Some(outcome) => media_summary_line(app.lang, &outcome)
-                .unwrap_or_else(|| tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string()),
-        };
-        draw_media_centered(frame, inner, text);
-        return;
-    };
-    let raster_px =
-        media_diff_raster_px(app, inner).unwrap_or_else(|| (cell_px.0 * 40, cell_px.1 * 20));
-    let page = app.diff_media_page();
-    let mut outcome = app.poll_media_diff(&path, page, raster_px);
-    // A landed `Ready` whose `Picture` cache_key no longer has an entry in `md_image_cache` (e.g.
-    // evicted by `App::enter_preview`'s file-switch clear when some *other* preview target was
-    // visited in between — see `App::md_image_cache_contains`'s own doc comment) is re-kicked rather
-    // than silently drawn as nothing.
-    if let Some(crate::app::MediaDiffOutcome::Ready {
-        ref old, ref new, ..
-    }) = outcome
-    {
-        let stale = |s: &crate::app::MediaDiffSide| matches!(s, crate::app::MediaDiffSide::Picture(p) if !app.md_image_cache_contains(&p.cache_key));
-        if stale(old) || stale(new) {
-            app.invalidate_media_diff();
-            outcome = app.poll_media_diff(&path, page, raster_px);
-        }
-    }
-
-    match outcome {
-        None => draw_media_centered(
-            frame,
-            inner,
-            tr(app.lang, crate::i18n::Msg::DiffComputing).to_string(),
-        ),
-        Some(crate::app::MediaDiffOutcome::Unavailable) => draw_media_centered(
-            frame,
-            inner,
-            tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string(),
-        ),
-        Some(ref outcome @ crate::app::MediaDiffOutcome::Summary { .. }) => {
-            let text = media_summary_line(app.lang, outcome)
-                .unwrap_or_else(|| tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string());
-            draw_media_centered(frame, inner, text);
-        }
-        Some(crate::app::MediaDiffOutcome::Ready {
-            kind: _,
+    match resolve_media_diff_render_state(app, &path, inner) {
+        MediaDiffRenderState::Centered(text) => draw_media_centered(frame, inner, text),
+        MediaDiffRenderState::Ready {
+            page,
+            cell_px,
             base,
             same_bytes,
             old,
             new,
-        }) => {
+        } => {
             let old_px = media_side_natural_px(&old);
             let new_px = media_side_natural_px(&new);
             let geom = crate::preview::media_diff::layout(
@@ -795,6 +750,92 @@ fn render_gitdiff_media(frame: &mut Frame, app: &mut App, area: Rect) {
             draw_media_side(frame, app, &geom.old, &old, true);
             draw_media_side(frame, app, &geom.new, &new, false);
         }
+    }
+}
+
+/// What `render_gitdiff_media`'s drawing half needs: either a single centered line (no picker, still
+/// computing, "no changes", or a non-picture kind's binary summary), or everything the `Ready` case
+/// needs to lay out and draw both sides.
+#[cfg(feature = "git")]
+enum MediaDiffRenderState {
+    Centered(String),
+    Ready {
+        page: u32,
+        cell_px: (u32, u32),
+        base: crate::app::MediaBase,
+        same_bytes: bool,
+        old: crate::app::MediaDiffSide,
+        new: crate::app::MediaDiffSide,
+    },
+}
+
+/// `render_gitdiff_media`'s state-resolution half: the picker check, `raster_px` computation, the
+/// worker poll, and the stale-cache-key re-kick — everything that decides *what* the drawing half
+/// should show, with none of the drawing itself. Pure extraction — same order of operations, same
+/// I/O.
+#[cfg(feature = "git")]
+fn resolve_media_diff_render_state(
+    app: &mut App,
+    path: &Path,
+    inner: Rect,
+) -> MediaDiffRenderState {
+    // No picker at all (a terminal with no graphics protocol, or images disabled): the summary line,
+    // computed from the worker exactly like `empty_diff_body_text`'s own binary-summary case (any
+    // raster target works here, since no picture will ever actually be decoded to screen size;
+    // `(64, 64)` is a harmless placeholder).
+    let Some(cell_px) = app.picker_cell_px() else {
+        let text = match app.poll_media_diff(path, app.diff_media_page(), (64, 64)) {
+            None => tr(app.lang, crate::i18n::Msg::DiffComputing).to_string(),
+            Some(outcome) => media_summary_line(app.lang, &outcome)
+                .unwrap_or_else(|| tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string()),
+        };
+        return MediaDiffRenderState::Centered(text);
+    };
+    let raster_px =
+        media_diff_raster_px(app, inner).unwrap_or_else(|| (cell_px.0 * 40, cell_px.1 * 20));
+    let page = app.diff_media_page();
+    let mut outcome = app.poll_media_diff(path, page, raster_px);
+    // A landed `Ready` whose `Picture` cache_key no longer has an entry in `md_image_cache` (e.g.
+    // evicted by `App::enter_preview`'s file-switch clear when some *other* preview target was
+    // visited in between — see `App::md_image_cache_contains`'s own doc comment) is re-kicked rather
+    // than silently drawn as nothing.
+    if let Some(crate::app::MediaDiffOutcome::Ready {
+        ref old, ref new, ..
+    }) = outcome
+    {
+        let stale = |s: &crate::app::MediaDiffSide| matches!(s, crate::app::MediaDiffSide::Picture(p) if !app.md_image_cache_contains(&p.cache_key));
+        if stale(old) || stale(new) {
+            app.invalidate_media_diff();
+            outcome = app.poll_media_diff(path, page, raster_px);
+        }
+    }
+
+    match outcome {
+        None => MediaDiffRenderState::Centered(
+            tr(app.lang, crate::i18n::Msg::DiffComputing).to_string(),
+        ),
+        Some(crate::app::MediaDiffOutcome::Unavailable) => {
+            MediaDiffRenderState::Centered(tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string())
+        }
+        Some(ref outcome @ crate::app::MediaDiffOutcome::Summary { .. }) => {
+            let text = media_summary_line(app.lang, outcome)
+                .unwrap_or_else(|| tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string());
+            MediaDiffRenderState::Centered(text)
+        }
+        Some(crate::app::MediaDiffOutcome::Ready {
+            kind: _,
+            base,
+            same_bytes,
+            old,
+            new,
+        }) => MediaDiffRenderState::Ready {
+            page,
+            cell_px,
+            base,
+            same_bytes,
+            old,
+            new,
+        },
     }
 }
 

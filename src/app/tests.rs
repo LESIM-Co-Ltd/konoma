@@ -24621,3 +24621,142 @@ fn media_diff_layout_parse_accepts_aliases_and_falls_back_to_auto() {
     assert_eq!(MediaDiffLayout::parse("auto"), MediaDiffLayout::Auto);
     assert_eq!(MediaDiffLayout::parse("bogus"), MediaDiffLayout::Auto);
 }
+
+/// Pins why `App::diff_media_active` keeps its own single `!matches!(kind, Markdown)` check instead
+/// of calling `App::diff_media_capable` (`classify_kind(&self.diff_target_kind(path)).is_some()`):
+/// **the two only ever answer differently for one reachable state**, a deleted file whose
+/// classification depends on content (`mime = "image/*"`, no glob) rather than its name —
+/// `diff_target_kind` degrades to `CanNotPreview` once there are no bytes left to sniff, even though
+/// `diff_representations`'s own "ask the worker" fallback may still be showing `Rendered` for it
+/// (`media_landed_outcome_for` returning `None` ⟹ "not landed yet" ⟹ show the computing body as
+/// `Rendered`). `diff_media_capable` says `false` there (correctly, on its own narrower question);
+/// `diff_media_active` must still say `true` (a different question: "route to the media/side-by-side
+/// renderer, which knows how to show a computing placeholder or degrade to the binary summary once
+/// the worker actually lands"). For every other kind `diff_representations` can ever hand `Rendered`
+/// to (Markdown, Image, Pdf, Svg), the two predicates agree.
+#[cfg(feature = "git")]
+#[test]
+fn diff_media_active_agrees_with_the_single_not_markdown_check_across_every_reachable_kind() {
+    let dir = unique_tmp("konoma_diff_media_active_equivalence");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+
+    // A helper: open `path`'s diff, then assert `diff_media_active()` equals both (a) the single
+    // "not Markdown" check this test is pinning as the ground truth, and (b) `diff_media_capable`
+    // when `expect_diverges_from_capable` is `false` (the common case).
+    fn check(
+        app: &mut App,
+        path: &std::path::Path,
+        expect_diverges_from_capable: bool,
+        label: &str,
+    ) {
+        app.open_git_diff(path);
+        let kind = app.diff_target_kind(path);
+        let ground_truth = !matches!(kind, PreviewKind::Markdown(_));
+        assert_eq!(
+            app.diff_media_active(),
+            ground_truth,
+            "{label}: diff_media_active must equal !matches!(kind, Markdown) (kind={kind:?})"
+        );
+        let capable = app.diff_media_capable(path);
+        if expect_diverges_from_capable {
+            assert_ne!(
+                capable, ground_truth,
+                "{label}: this is the one state expected to diverge from diff_media_capable \
+                 (kind={kind:?}) — if it no longer diverges, the exception this test documents may \
+                 have been fixed/removed elsewhere and the fallback can likely be dropped"
+            );
+        } else {
+            assert_eq!(
+                capable, ground_truth,
+                "{label}: diff_media_capable must already agree here (kind={kind:?})"
+            );
+        }
+    }
+
+    // Markdown: Rendered is reachable, kind is Markdown — both predicates say "not media".
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "# hi\n\nchanged\n").unwrap();
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "md"]);
+    std::fs::write(&md, "# hi\n\nchanged again\n").unwrap();
+    check(
+        &mut App::new(dir.to_path_buf(), Config::default()).unwrap(),
+        &md,
+        false,
+        "markdown",
+    );
+
+    // Image: Rendered is reachable, kind is Image — both predicates say "media".
+    let png = dir.join("pic.png");
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
+    check(
+        &mut App::new(dir.to_path_buf(), Config::default()).unwrap(),
+        &png,
+        false,
+        "image",
+    );
+
+    // SVG: Rendered is reachable (Svg is also real text), kind is Svg — both predicates say "media".
+    let svg = dir.join("pic.svg");
+    std::fs::write(
+        &svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2"/></svg>"#,
+    )
+    .unwrap();
+    check(
+        &mut App::new(dir.to_path_buf(), Config::default()).unwrap(),
+        &svg,
+        false,
+        "svg",
+    );
+
+    // The one divergent state: an extension-less file (classified only by `mime = "image/*"`, no
+    // glob) that has since been *deleted* — `diff_target_kind` degrades to `CanNotPreview` (nothing
+    // left to sniff), while `diff_representations`'s own "ask the worker" fallback still hands back
+    // `Rendered` (nothing has polled yet, so `media_landed_outcome_for` is `None` ⟹ "not landed
+    // yet"). `diff_media_active` (old check) says `true`; `diff_media_capable` says `false`.
+    let photo = dir.join("photo");
+    {
+        let mut b = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([9, 9, 9])))
+            .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(&photo, &b).unwrap();
+    }
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "photo"]);
+    std::fs::remove_file(&photo).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    assert!(
+        matches!(
+            app.cfg.resolve_preview(&photo),
+            PreviewKind::CanNotPreview { .. }
+        ),
+        "前提: 拡張子なしの削除ファイルは CanNotPreview のはず(sniff できない): {:?}",
+        app.cfg.resolve_preview(&photo)
+    );
+    check(&mut app, &photo, true, "deleted extensionless (ex-image)");
+
+    // A deleted *code* file (`.rs`, glob-matched by extension, no MIME dependency): the extension
+    // alone still resolves it correctly even though it's gone — this never reaches the "ask the
+    // worker" fallback, and `Code`'s own representations (`[Source, Preview]`) never include
+    // `Rendered` regardless of existence, so `diff_rendered_active()` is unreachable here — confirmed
+    // directly rather than asserted through `check` (which assumes `Rendered` was actually reached).
+    let rs = dir.join("a.rs");
+    std::fs::write(&rs, "fn main() {}\n").unwrap();
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "rs"]);
+    std::fs::remove_file(&rs).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.open_git_diff(&rs);
+    assert_eq!(
+        app.diff_view_for_test(),
+        DiffView::Source,
+        "前提: 削除された .rs は Rendered に丸まらないはず(Code の表現一覧に Rendered が無い)"
+    );
+    assert!(
+        !app.diff_media_active(),
+        "Rendered ではないので diff_media_active は false のはず"
+    );
+}
