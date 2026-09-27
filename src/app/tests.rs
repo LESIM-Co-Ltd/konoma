@@ -1,7 +1,9 @@
 use super::bookmark_actions::fuzzy_filter_pool;
 use super::*;
 use crate::config::Config;
-use crate::test_support::unique_tmp;
+#[cfg(feature = "git")]
+use crate::test_support::{init_git_repo, jj_scratch_seeded, run_git};
+use crate::test_support::{sample_path_or_skip, unique_tmp, write_solid_png};
 
 /// Test helper: the link target of an `MdItem` (panics if the item is a checkbox).
 fn item_target(it: &MdItem) -> &str {
@@ -11,30 +13,6 @@ fn item_target(it: &MdItem) -> &str {
         MdItemKind::CodeBlock { .. } => panic!("expected a link item"),
         MdItemKind::MermaidFence { .. } => panic!("expected a link item"),
         MdItemKind::Details { .. } => panic!("expected a link item"),
-    }
-}
-
-/// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
-/// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
-/// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate
-/// root by convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test
-/// --manifest-path …`, is a real, supported invocation), so it silently missed the fixture and
-/// silently skipped every assertion in every test that used it. Tolerant of the one case where the
-/// fixture is legitimately absent — `samples/` is excluded from the published crate (`Cargo.toml`'s
-/// `exclude`) — by returning `None` (same early-return as before) but saying so loudly
-/// (`eprintln!`, visible with `--nocapture` or in the captured-output dump whenever the process
-/// later exits non-zero for any reason) instead of silently passing zero assertions.
-fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
-    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("samples")
-        .join(name);
-    if p.exists() {
-        Some(p)
-    } else {
-        eprintln!(
-            "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
-        );
-        None
     }
 }
 
@@ -63,8 +41,6 @@ fn path_styles_format_as_expected() {
         app.path_style = PathStyle::Home;
         assert_eq!(app.format_path(&p), "~/work/konoma".to_string());
     }
-
-    std::fs::remove_dir_all(&open).ok();
 }
 
 #[test]
@@ -90,8 +66,6 @@ fn format_path_relative_uses_dotdot_outside_open_dir() {
         "兄弟ディレクトリは ../ を付ける"
     );
     assert_eq!(app.format_path(&work), "..", "上位は ..");
-
-    std::fs::remove_dir_all(&work).ok();
 }
 
 #[test]
@@ -185,8 +159,6 @@ fn dialog_create_rename_and_delete_is_gated() {
     app.dialog_submit().unwrap();
     assert!(!app.is_dialog());
     assert!(app.flash.is_some(), "衝突は失敗として通知される");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -222,8 +194,6 @@ fn dialog_input_cursor_moves_and_edits_midstring() {
     app.dialog_input_push('x');
     assert_eq!(buf(&app), "xあ", "マルチバイトでも中間挿入できる");
     app.dialog_cancel();
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -253,8 +223,6 @@ fn single_toggle_picks_scattered_items() {
     app.toggle_select();
     assert!(!app.is_selected(&dir.join("a.txt")));
     assert_eq!(app.marked_count(), 1);
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -290,8 +258,6 @@ fn visual_range_selects_and_batch_deletes() {
     app.dialog_delete_permanent().unwrap();
     assert!(dir.join("d.txt").exists() && !dir.join("a.txt").exists());
     assert!(!app.has_selection(), "一括操作後は選択クリア");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -344,8 +310,6 @@ fn visual_scope_a_selects_same_dir_level_only() {
         app.is_selected(&dir.join("sub").join("inner.txt")),
         "A は入れ子も"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -384,8 +348,6 @@ fn batch_rename_numbers_in_sort_order_and_keeps_ext() {
     assert!(dir.join("img_3.txt").is_file());
     assert!(!dir.join("apple.md").exists());
     assert!(!app.has_selection(), "適用後は選択クリア");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -419,8 +381,6 @@ fn batch_rename_collision_reopens_input() {
     assert!(app.flash.is_some(), "衝突は失敗として通知");
     // The files are unchanged.
     assert!(dir.join("a.txt").exists() && dir.join("b.txt").exists());
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `build_rename_plan`'s pre-validation (`src/app.rs`) has a real gap: its duplicate-name check is a
@@ -535,8 +495,6 @@ fn batch_rename_case_insensitive_destination_collision_does_not_lose_data() {
             "大小区別fs: 内容も保持されているはず"
         );
     }
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -560,7 +518,6 @@ fn parse_dropped_paths_unescapes_splits_and_filters() {
     assert!(got.contains(&a) && got.contains(&c));
     // Rejects text that isn't a real path (= safely ignores a plain paste).
     assert!(parse_dropped_paths("just some pasted text, not a path").is_empty());
-    std::fs::remove_dir_all(&tmp).ok();
 }
 
 #[test]
@@ -609,9 +566,6 @@ fn drop_paste_opens_dialog_then_copy_and_move() {
     // Pasting text that isn't a real path does not open the dialog.
     app.handle_paste("not a real path".to_string());
     assert!(!app.is_dialog(), "テキストペーストでは開かない");
-
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::remove_dir_all(&ext).ok();
 }
 
 #[test]
@@ -632,7 +586,6 @@ fn paste_into_filter_inserts_text_not_drop() {
         "ペーストが絞り込みへ挿入される"
     );
     assert!(!app.is_dialog(), "ドロップダイアログは開かない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -675,7 +628,6 @@ fn reanchor_root_sets_current_position_as_anchor() {
     // Already at the root (open_dir==root); `:` again → does nothing (just a flash).
     app.reanchor_root();
     assert_eq!(app.tab.open_dir, base_c.join("sub"), "変化なし");
-    std::fs::remove_dir_all(&base).ok();
 }
 
 #[cfg(feature = "git")]
@@ -740,7 +692,6 @@ fn gitignored_entries_detected_and_dimmed() {
         Some(false),
         "tracked は暗くない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// C13 (minor carryover): if an fs-event burst consists entirely of gitignored paths **whose
@@ -815,8 +766,6 @@ fn fs_burst_build_churn_skips_only_all_ignored_paths() {
         !app.fs_burst_is_build_churn(std::slice::from_ref(&out_o), structural),
         "ignored でも作成/削除/リネームを含む → churn=false でリフレッシュ(行の有無が変わる)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The reported bug, end to end on the decision the run loop makes: a file deleted **inside a
@@ -880,8 +829,6 @@ fn deleting_a_file_inside_an_ignored_directory_updates_the_tree() {
         app.tab.entries.iter().any(|e| e.path == keep),
         "残っているファイルは巻き添えで消えない"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A row whose metadata can't be read shows **blank** detail cells, never invented ones. The old
@@ -1024,8 +971,6 @@ fn diff_from_tree_and_worktree_detail_and_cycle() {
     );
     app.cycle_diff_layout();
     assert!(!app.diff_is_split(200), "→ unified に戻る");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// macOS-only end-to-end regression for the NFC/NFD status-key mismatch (see `git.rs`'s
@@ -1083,8 +1028,6 @@ fn nfd_named_file_status_and_diff_are_reachable_from_the_tree_path() {
         "d は「変更なし」で拒否されず diff が開く必要がある(tree_open_git_diff)"
     );
     assert!(!app.git_diff_lines().is_empty(), "diff 行がある");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -1142,7 +1085,6 @@ fn diff_horizontal_scroll_reveals_long_line() {
     app.preview_hscroll_home();
     let sh = dump(&mut app);
     assert!(sh.contains("START") && !sh.contains("END"), "0 で行頭へ");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1179,8 +1121,6 @@ fn copy_cut_paste_flow() {
     assert!(dir.join("dst").join("b.txt").is_file(), "カット先に出来る");
     assert!(!dir.join("b.txt").exists(), "カット元は消える(移動)");
     assert!(app.clipboard_label().is_none(), "カットは貼ると消費される");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1210,8 +1150,6 @@ fn dialog_delete_permanent_removes_immediately() {
         !dir.join("gone.txt").exists(),
         "完全削除でファイルが消える(ゴミ箱を経由しない)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1246,8 +1184,6 @@ fn tree_page_clamps_within_bounds() {
     app.tree_first();
     app.tree_page(-1);
     assert_eq!(app.tab.selected, 0);
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // --- Integer overflow regression (#7/#8): even when the cursor is not at the start, `g`/`G`/Home/End
@@ -1286,7 +1222,6 @@ fn tree_move_extremes_no_panic() {
     assert_eq!(app.tab.selected, 49, "末尾へ");
     app.tree_move(i32::MIN);
     assert_eq!(app.tab.selected, 0, "先頭へ");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1307,7 +1242,6 @@ fn git_branch_move_extremes_no_panic() {
     assert_eq!(app.tab.git_branch_sel, 5, "末尾へ");
     app.git_branch_move(i32::MIN);
     assert_eq!(app.tab.git_branch_sel, 0, "先頭へ");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1352,7 +1286,6 @@ fn git_graph_move_extremes_no_panic() {
     assert_eq!(app.tab.git_graph_sel, 4, "末尾コミット行へ");
     app.git_graph_move(i32::MIN);
     assert_eq!(app.tab.git_graph_sel, 0, "先頭コミット行へ");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1376,7 +1309,6 @@ fn git_log_move_extremes_no_panic() {
     assert_eq!(app.tab.git_log_sel, 4, "末尾へ");
     app.git_log_move(i32::MIN);
     assert_eq!(app.tab.git_log_sel, 0, "先頭へ");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1398,7 +1330,6 @@ fn git_view_move_extremes_no_panic() {
     assert_eq!(app.tab.git_view_sel, 3, "末尾へ");
     app.git_view_move(i32::MIN);
     assert_eq!(app.tab.git_view_sel, 0, "先頭へ");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1811,7 +1742,6 @@ fn tabbar_appears_with_multiple_tabs() {
     let s = render(&mut app);
     assert!(s.contains(&format!("1:{label}")), "タブ1が無い: {s:?}");
     assert!(s.contains(&format!("2:{label}")), "タブ2が無い: {s:?}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1854,7 +1784,6 @@ fn markdown_links_collected_and_local_link_opens_in_konoma() {
         "ローカルリンクで target.md に遷移していない: {:?}",
         app.tab.preview_path
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1909,7 +1838,6 @@ fn md_focus_follows_offscreen_items_when_wrapped() {
     // Going back the other way (equivalent to Shift-Tab) cycles to the same item = scroll is
     // kept; since there's no earlier item here, upward-follow is covered by a separate document
     // (the upward branch is symmetric with the same formula).
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -1953,7 +1881,6 @@ fn md_task_toggle_cycles_and_writes_file() {
     app.md_toggle_focused_task();
     let s = std::fs::read_to_string(&f).unwrap();
     assert!(s.contains("- [ ] 済み"), "{s}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Checkboxes in `*` and `+` bullet lists can be toggled too (the source scanner used to only
@@ -2007,7 +1934,6 @@ fn md_task_toggle_star_and_plus_bullets() {
         s.contains("+ [x] plus task"),
         "plus タスクもトグルできる: {s}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -2038,7 +1964,6 @@ fn md_task_toggle_custom_states_cycle() {
     assert_eq!(cycle(&mut app, &mut term), "- [/] a\n");
     assert_eq!(cycle(&mut app, &mut term), "- [x] a\n");
     assert_eq!(cycle(&mut app, &mut term), "- [ ] a\n");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -2099,7 +2024,6 @@ fn md_task_toggle_aborts_when_file_changed_externally() {
         "フォーカス中の行自体が変わっていれば依然として書かない"
     );
     assert!(app.flash.is_some());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -2140,7 +2064,6 @@ fn md_task_toggle_noop_in_raw_source_and_preserves_crlf() {
         std::fs::read_to_string(&f).unwrap(),
         "- [x] a\r\n\r\ntail\r\n"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Safety guards for toggling: (1) if no checkbox is focused, it's a no-op (nothing is written);
@@ -2176,7 +2099,6 @@ fn md_task_toggle_noop_without_focus_and_flashes_on_read_error() {
     app.md_toggle_focused_task();
     assert!(app.flash.is_some(), "読取エラーは flash で通知");
     assert!(!f.exists(), "書き直さない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Probes whether this process is actually denied write access to a 0o444 file.
@@ -2239,7 +2161,6 @@ fn md_task_toggle_flashes_on_write_error() {
         "- [ ] a\n",
         "拒否されたら壊さない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Rendering the file-info popup (`i`): checks, against a real render buffer, the branches for a
@@ -2312,8 +2233,6 @@ fn ui_info_popup_renders_variants() {
         !s.contains(tr(Lang::En, Msg::InfoFile)),
         "対象なしは描画しない"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// File info for a symlink: draws Type=symlink plus a Target line pointing to the link target.
@@ -2349,7 +2268,6 @@ fn ui_info_popup_renders_symlink_target() {
     }
     assert!(s.contains(tr(Lang::En, Msg::Symlink)), "symlink 種別: {s}");
     assert!(s.contains(tr(Lang::En, Msg::InfoTarget)), "リンク先を表示");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// paste-jump's navigation branches: (1) absolute path resolution; (2) a GitHub URL whose tail
@@ -2486,7 +2404,6 @@ fn md_items_mix_links_and_tasks_in_document_order() {
     assert!(!app.md_focused_task());
     app.md_focus_move(1);
     assert_eq!(app.tab.focused_item, Some(0), "巡回で先頭へ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -2567,7 +2484,6 @@ fn md_code_block_is_tab_focusable_and_copies_source() {
     app.md_focus_move(1); // the task
     assert!(!app.md_focused_code());
     assert!(app.focused_code_text().is_none());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `Ctrl-t` (`md_open_focused_link_new_tab`) on a focused `#anchor` link must NOT open a new tab
@@ -2627,7 +2543,6 @@ fn ctrl_t_on_anchor_link_scrolls_in_place_not_a_new_tab() {
         app.tab.preview_scroll, scroll_before,
         "無フォーカスでは何もしない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `Ctrl-t` on a focused external (URL/mailto/tel) link hands it to the OS opener exactly like
@@ -2665,7 +2580,6 @@ fn ctrl_t_on_external_link_opens_externally_not_a_new_tab() {
         "open_external 経路を通った(タブは作らない): {:?}",
         app.flash
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Case (g) of the decorated Markdown footer's focus-dependent hints (the rest live in
@@ -2729,7 +2643,6 @@ fn markdown_preview_footer_mermaid_fence_full_screen_and_pan_gate() {
         toks.iter().any(|t| t == "↵:full screen"),
         "画面外でも full screen 自体は出る: {toks:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -2884,7 +2797,6 @@ fn bare_url_becomes_a_focusable_md_item() {
         MdItemKind::Link { target } => assert_eq!(target, "https://konoma.example"),
         _ => panic!("expected a link item"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -2897,7 +2809,6 @@ fn md_autolink_false_leaves_bare_urls_plain() {
     let lines = vec![Line::from(Span::raw("visit https://konoma.example"))];
     let _ = app.decorate_md_items(lines);
     assert!(app.md_items.is_empty(), "autolink off = no link item");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -2982,7 +2893,6 @@ fn md_emoji_false_leaves_shortcodes() {
     let (lines, _) = app.postprocess_md(vec![Line::from(Span::raw("hi :rocket:"))]);
     let joined: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
     assert!(joined.contains(":rocket:"), "emoji off keeps the shortcode");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // Regression: with `code_bg = "none"` (a supported theme setting) inline code has NO background —
@@ -3052,7 +2962,6 @@ fn decorate_links_highlights_focused() {
     };
     assert!(!rev(&out[0]), "未フォーカスのリンクは反転しない");
     assert!(rev(&out[1]), "フォーカス中リンクが反転していない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3079,7 +2988,6 @@ fn code_file_decorates_with_colored_syntax() {
         .flat_map(|l| l.spans.iter())
         .any(|s| matches!(s.style.fg, Some(Color::Rgb(_, _, _))));
     assert!(colored, "シンタックスハイライトの前景色が付いていない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3124,7 +3032,6 @@ fn tree_filter_finds_recursively_then_clears() {
     app.filter_clear();
     assert!(app.filter_query().is_none());
     assert_eq!(app.tab.entries.len(), normal_count, "通常ツリーに復帰");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Helper: an `Entry` wrapping a bare file name (as if it were the sole path component), for
@@ -3293,7 +3200,6 @@ fn filter_substring_mode_excludes_scattered_query_but_keeps_legacy_behavior() {
     }
     assert_eq!(app.tab.entries.len(), 1, "{:?}", app.tab.entries);
     assert!(app.tab.entries[0].path.ends_with("README.md"));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3350,7 +3256,6 @@ fn text_filter_survives_fs_refresh() {
             .all(|e| e.path.extension().and_then(|s| s.to_str()) == Some("txt")),
         "refresh 後に .rs が混入してはいけない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3369,7 +3274,6 @@ fn small_code_file_is_also_windowed() {
         app.is_windowed(),
         "小さい Code ファイルも windowed であるべき"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3433,7 +3337,6 @@ fn line_numbers_gutter_tracks_position() {
         !first.trim().starts_with('1'),
         "OFF なのに行番号ガター: {first:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3488,7 +3391,6 @@ fn large_code_file_uses_windowed_reading() {
         .flat_map(|l| l.spans.iter())
         .any(|s| matches!(s.style.fg, Some(Color::Rgb(_, _, _))));
     assert!(colored, "windowed の着色が無い");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3519,7 +3421,6 @@ fn tab_label_reflects_tree_root_or_preview_file() {
         "doc.md",
         "非アクティブの Preview タブはファイル名"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3552,7 +3453,6 @@ fn tab_switch_preserves_and_restores_preview() {
         app.tab.preview_path, previewed,
         "プレビュー対象も復元される"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3595,7 +3495,6 @@ fn tabs_create_switch_close_preserve_state() {
     // The last remaining tab cannot be closed.
     app.tab_close();
     assert_eq!(app.tab_count(), 1);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3682,8 +3581,6 @@ fn tab_selection_is_per_tab_root_change_clears_clipboard_is_global() {
     );
     app.tab_cycle(-1);
     assert!(app.clipboard_label().is_some(), "戻っても clipboard 保持");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3702,7 +3599,6 @@ fn refresh_rereads_directory_listing() {
         "新規ファイルが一覧に反映されない"
     );
     assert!(app.tab.entries.iter().any(|e| e.path.ends_with("b.txt")));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3732,7 +3628,6 @@ fn refresh_prunes_deleted_paths_from_selection() {
         "消えた b は剪定される"
     );
     assert_eq!(app.op_targets().len(), 2, "一括対象は実在2件のみ");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3762,7 +3657,6 @@ fn refresh_reloads_active_preview() {
         app.md_cache.is_none(),
         "refresh で装飾キャッシュが無効化され再読込される"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -3806,8 +3700,6 @@ fn out_of_root_watch_dir_targets_files_outside_the_root() {
     // Going back to the tree gives None (watching is dropped).
     app.tab.mode = Mode::Tree;
     assert_eq!(app.out_of_root_watch_dir(), None);
-
-    std::fs::remove_dir_all(&base).ok();
 }
 
 #[test]
@@ -3848,7 +3740,6 @@ fn refresh_fs_reloads_preview_even_when_tree_rebuild_fails() {
         app.md_cache.is_none(),
         "rebuild_tree 失敗でもプレビュー再読込は走る(md_cache 無効化)"
     );
-    std::fs::remove_dir_all(&base).ok();
 }
 
 /// Regression: a tree rebuild that fails on the **fs-watch driven refresh** used to be dropped with
@@ -3919,8 +3810,6 @@ fn fs_watch_refresh_failure_is_announced_once_per_outage() {
     app.refresh_fs_watched(false, &[]);
     let second = app.flash.clone().expect("再発は改めて伝わる");
     assert!(second.contains(stale), "再発時も同じ文言: {second:?}");
-
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// The other path that cannot propagate a rebuild failure: **switching to a tab** whose root became
@@ -3983,8 +3872,6 @@ fn tab_switch_announces_a_failed_rebuild() {
         app.flash.is_some(),
         "壊れたタブを開き直したら改めて伝える(ユーザー操作 1 回につき 1 回)"
     );
-
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// The staleness level is maintained by `rebuild_tree` itself (the one choke point), not by the
@@ -4016,8 +3903,6 @@ fn stale_listing_flag_is_cleared_by_any_successful_rebuild() {
     app.flash = None;
     app.refresh_fs_watched(false, &[]);
     assert!(app.flash.is_some(), "2回目の障害も改めて伝わる");
-
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// The persistent chip is wired for both languages and — paired with that — appears **only** while
@@ -4077,8 +3962,6 @@ fn stale_listing_chip_is_localized_and_only_shown_when_stale() {
         assert!(!text.contains("STALE"), "復旧後は消える: {text}");
         assert!(!text.contains("古い一覧"), "復旧後は消える: {text}");
     }
-
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 /// The Git full-screen views bypass `ui/tree.rs` entirely, so an indicator that only reached the
@@ -4127,8 +4010,6 @@ fn stale_listing_chip_shows_in_the_git_view() {
         text.contains("STALE"),
         "Git ビューでもチップが出る:\n{text}"
     );
-
-    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]
@@ -4184,8 +4065,6 @@ fn media_preview_reloads_only_when_file_changes() {
         app.preview_media_mtime.is_some(),
         "再ロードで基準 mtime を更新"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4232,8 +4111,6 @@ fn sort_menu_changes_order_by_key_reverse_and_dirs_first() {
     app.open_sort_menu();
     app.sort_menu_key('e').unwrap();
     assert_eq!(names(&app), vec!["zdir", "c.log", "a.md", "b.txt"]);
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4267,8 +4144,6 @@ fn sort_config_sets_initial_order() {
     let pos = |n: &str| names.iter().position(|x| x == n).unwrap();
     assert!(pos("b.txt") < pos("a.md"), "size 昇順: b(10) < a(30)");
     assert!(pos("a.md") < pos("c.log"), "size 昇順: a(30) < c(50)");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4371,9 +4246,6 @@ fn bookmark_set_and_jump_via_marks() {
         Some(f.as_path()),
         "一覧の e でファイルが編集対象になる"
     );
-
-    std::fs::remove_dir_all(&base).ok();
-    std::fs::remove_dir_all(&proj).ok();
 }
 
 #[test]
@@ -4402,7 +4274,6 @@ fn tree_descend_sets_root_to_selected_dir() {
         app.tab.entries.iter().any(|e| e.path.ends_with("f.txt")),
         "sub の中身が表示される"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `ui.tree_cursor` default (`"origin"`): ascending (`h`) out of a directory that was not the
@@ -4443,7 +4314,6 @@ fn ascend_puts_the_cursor_on_the_directory_just_left() {
         "カーソルは出てきた beta の行に乗る"
     );
     assert_ne!(app.tab.selected, 0, "先頭(alpha)に飛んではいけない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `ui.tree_cursor = "top"` restores the legacy behavior: `h` always lands on row 0 regardless of
@@ -4467,7 +4337,6 @@ fn ascend_with_tree_cursor_top_goes_back_to_the_first_row() {
     app.tree_leave().unwrap();
     assert_eq!(app.tab.root, dir, "root は親に戻る");
     assert_eq!(app.tab.selected, 0, "tree_cursor=\"top\" は常に先頭に戻す");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// When the directory just left is not present in the parent's rebuilt listing (here: it is
@@ -4502,7 +4371,6 @@ fn ascend_falls_back_to_the_top_when_the_directory_it_left_is_not_listed() {
         app.tab.selected, 0,
         "戻り先の一覧に無ければ先頭にフォールバック"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Regression: descending (`l`) is untouched by `ui.tree_cursor` — it always starts at the top of
@@ -4524,7 +4392,6 @@ fn descend_still_starts_at_the_top_of_the_new_directory() {
     app.tree_descend().unwrap();
     assert_eq!(app.tab.root, dir.join("sub"));
     assert_eq!(app.tab.selected, 0, "l は常に先頭から始まる");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// An unrecognized `tree_cursor` value (a typo) must not silently disable the new behavior —
@@ -4557,7 +4424,6 @@ fn ascend_treats_an_unknown_tree_cursor_value_as_origin() {
         "未知の値は origin として扱われる"
     );
     assert_ne!(app.tab.selected, 0);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4589,7 +4455,6 @@ fn jump_to_dir_clears_selection_on_root_change() {
         !app.op_targets().iter().any(|p| p.ends_with("a.txt")),
         "op_targets が旧 root の a.txt を返さない"
     );
-    std::fs::remove_dir_all(&base).ok();
 }
 
 #[test]
@@ -4655,7 +4520,6 @@ fn copy_relative_matches_title_display() {
             p.display()
         );
     }
-    std::fs::remove_dir_all(&work).ok();
 }
 
 #[test]
@@ -4795,7 +4659,6 @@ fn syntax_highlight_off_is_plain_and_not_pending() {
     );
     let lines = app.windowed_lines(5, 80);
     assert!(!has_rgb_fg(&lines), "off は素テキスト(着色なし)");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4813,7 +4676,6 @@ fn warm_grammar_opens_without_pending_and_colored() {
     );
     let lines = app.windowed_lines(5, 80);
     assert!(has_rgb_fg(&lines), "温まった Code は着色される");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4863,7 +4725,6 @@ fn request_edit_targets_selected_file_or_warns_on_dir() {
         "ディレクトリは編集対象外"
     );
     assert!(app.flash.is_some(), "拒否メッセージを出す");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4889,7 +4750,6 @@ fn request_edit_targets_preview_file() {
             .unwrap_or(false),
         "プレビュー中ファイルが編集対象: {got:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4930,7 +4790,6 @@ fn progressive_pending_renders_plain_text() {
         !has_rgb_fg(&lines),
         "progressive 待ち中は素テキスト(着色は完了後に差し替え)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -4989,8 +4848,6 @@ fn preview_search_finds_highlights_and_navigates() {
     assert!(app.preview_search_query().is_none());
     assert_eq!(app.search_status(), None);
     assert!(app.tab.search_matches.is_empty());
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -5115,14 +4972,6 @@ fn highlight_query_current_match_survives_tab_expansion() {
 }
 
 // --- Git view (the changes hub) -------------------------------------------------
-#[cfg(feature = "git")]
-fn init_git_repo(dir: &Path) {
-    let repo = git2::Repository::init(dir).unwrap();
-    let mut cfg = repo.config().unwrap();
-    cfg.set_str("user.name", "Test").unwrap();
-    cfg.set_str("user.email", "test@example.com").unwrap();
-    cfg.set_str("commit.gpgsign", "false").ok();
-}
 
 // --- Follow baseline diff (anchored at the moment F is pressed; shows only changes since) ------------------
 #[cfg(feature = "git")]
@@ -5405,8 +5254,6 @@ fn graph_config_base_branches_drive_base_order_and_picker_reorder() {
         Some("main"),
         "並び替えで先頭になった main が基準に再導出される"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // Phase G: the heavy ignored (ignore set) is cached per repo (workdir), and descending with `l`
@@ -5460,7 +5307,6 @@ fn descend_into_same_repo_subdir_reuses_ignored_set() {
         Some(app.tab.root.as_path()),
         "statuses は root 変更のたびに取り直す"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // Fix A (2026-07-13): even if an external agent commits via git during a preview and its fs
@@ -5519,7 +5365,6 @@ fn returning_to_tree_re_syncs_stale_git_status() {
         app.git_status_of(&note).is_none(),
         "ツリー復帰で再検証 → コミット済みなので M が消える(陳腐化解消)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -5560,7 +5405,6 @@ fn descend_into_nested_different_repo_recomputes_ignored_set() {
         !app.git_ignored.contains(&sentinel),
         "別 repo へ移ると ignored を作り直す(番兵が消える)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // fix③: the heavy ignored computation runs on another thread → applied via `apply_ignored`.
@@ -5614,7 +5458,6 @@ fn busy_indicator_reflects_background_jobs() {
     app.md_remote_inflight.clear();
     assert!(app.busy_jobs().is_empty());
     assert!(!app.busy_indicator_active());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -5637,7 +5480,6 @@ fn busy_indicator_tracks_ignored_scan() {
         !app.busy_jobs().contains(&crate::i18n::Msg::BusyGitScan),
         "適用でスキャン中表示が消える"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -5679,7 +5521,6 @@ fn apply_ignored_reflects_current_gen_and_discards_stale() {
         app.git_ignored_pending.is_none(),
         "現世代の反映で pending を消す"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// D2 (2026-08-05): `spawn_or_sync_ignored`'s worker now sends a fallback `IgnoredResult` (an empty
@@ -5733,7 +5574,6 @@ fn apply_ignored_with_a_panic_shaped_result_still_clears_pending() {
         app.git_ignored_pending.is_some(),
         "stale では pending を残す(現行計算待ちのまま)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -5807,8 +5647,6 @@ fn graph_legend_caps_branches_head_first_and_picker_toggles() {
     assert!(!app.is_git_graph_picker(), "適用でパネルが閉じる");
     assert_eq!(app.git_graph_hidden_count(), 0, "全表示で非表示0");
     assert_eq!(app.git_graph_legend().len(), 6, "全6ブランチが凡例に出る");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -5860,7 +5698,6 @@ fn open_git_view_lists_changes_and_stage_reloads() {
 
     app.close_git_view();
     assert!(!app.is_git_view(), "閉じる");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -5898,7 +5735,6 @@ fn refresh_in_git_view_refetches_entries() {
         2,
         "refresh で git_view_entries が再取得され untracked が増える"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -5942,8 +5778,6 @@ fn git_view_stage_all_then_unstage_all() {
         app.git_view_entries().iter().all(|e| !e.staged),
         "全アンステージ後は全未ステージ"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -5991,7 +5825,6 @@ fn git_diff_opens_from_view_and_esc_returns_to_view() {
     app.close_git_diff();
     assert!(app.is_git_view(), "Esc で Git ビューへ戻る");
     assert!(!app.is_git_diff_preview());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -6032,7 +5865,6 @@ fn git_diff_discard_confirm_reverts_and_returns_to_view() {
         app.git_view_entries().is_empty(),
         "破棄後はクリーン(変更0件)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -6046,7 +5878,6 @@ fn open_git_view_noop_when_not_a_repo() {
     app.open_git_view();
     assert!(!app.is_git_view(), "repo でなければ開かない");
     assert!(app.flash.is_some(), "flash で知らせる");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -6136,8 +5967,6 @@ fn git_branches_list_checkout_and_create() {
         !app.git_branch_view().iter().any(|b| b.name == "feature"),
         "feature が削除された"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `worktree_create_target`'s directory-name rule: every `/` in the branch name becomes `-` (git
@@ -6185,8 +6014,6 @@ fn worktree_create_target_replaces_slash_with_dash_for_the_directory_name() {
         Some("feat-nested"),
         "入れ子ディレクトリが作られてはいけない: {target:?}"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `worktree_create_target` resolves against the **main** worktree's own path, not `self.tab.root`,
@@ -6233,9 +6060,6 @@ fn worktree_create_target_respects_worktree_dir_config() {
         custom_base.canonicalize().unwrap(),
         "worktree_dir を変えると置き場所が変わる: {custom_target:?}"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::remove_dir_all(&custom_base).ok();
 }
 
 /// Full `n` flow: type a brand-new branch name, submit → `git worktree add -b` creates the branch
@@ -6292,9 +6116,6 @@ fn worktree_create_flow_creates_a_new_branch_and_switches_into_it() {
         crate::git::branch_tip(&root, "feat-fresh").is_some(),
         "新規ブランチが作られる"
     );
-
-    std::fs::remove_dir_all(&base).ok();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Full `n` flow on an **existing** branch (not checked out anywhere): no `-b`, checked out as-is,
@@ -6355,9 +6176,6 @@ fn worktree_create_flow_checks_out_an_existing_branch_without_creating_a_duplica
         .find(|w| w.path == new_root)
         .expect("git worktree list に出る");
     assert_eq!(created.branch.as_deref(), Some("already-there"));
-
-    std::fs::remove_dir_all(&base).ok();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A branch already checked out by another worktree: `git worktree add` refuses, `dialog_submit`
@@ -6425,9 +6243,6 @@ fn worktree_create_flow_fails_with_gits_message_when_branch_is_already_checked_o
         !flash.contains("worktree add"),
         "実行したコマンド文字列は含まない: {flash}"
     );
-
-    std::fs::remove_dir_all(&base).ok();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -6465,7 +6280,6 @@ fn git_commit_flow_creates_commit_with_message() {
     let entries = crate::git::log(&canon, 10);
     assert_eq!(entries.len(), 1, "コミット1件のはず");
     assert_eq!(entries[0].summary, "feat: add a");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -6496,7 +6310,6 @@ fn git_commit_empty_message_is_rejected() {
         crate::git::log(&canon, 10).is_empty(),
         "空メッセージではコミットされない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // --- git log + commit detail ---------------------------------------------
@@ -6559,7 +6372,6 @@ fn git_log_lists_commits_and_detail_has_diff_lines() {
     app.close_git_log();
     assert!(!app.is_git_log());
     assert!(app.is_git_view(), "log を閉じると Git ビューへ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -6573,7 +6385,6 @@ fn open_git_log_noop_when_no_commits() {
     let mut app = App::new(canon, Config::default()).unwrap();
     app.open_git_log();
     assert!(!app.is_git_log(), "コミットが無ければ log は開かない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ============================================================================
@@ -6602,7 +6413,6 @@ fn path_style_next_cycles_and_cycle_path_style_advances() {
     let s0 = app.path_style;
     app.cycle_path_style();
     assert_eq!(app.path_style, s0.next(), "cycle は next() を適用する");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6626,7 +6436,6 @@ fn toggle_hidden_reveals_and_hides_dotfiles() {
     );
     app.toggle_hidden().unwrap();
     assert!(!app.tab.show_hidden && !has_dot(&app), "もう一度で隠れる");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6640,7 +6449,6 @@ fn sort_menu_open_and_close_toggles_flag() {
     assert!(app.is_sort_menu());
     app.close_sort_menu();
     assert!(!app.is_sort_menu(), "close_sort_menu でフラグが下りる");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6667,7 +6475,6 @@ fn looks_like_gif_uses_magic_not_extension() {
         !App::looks_like_gif(&dir.join("nope")),
         "存在しないファイルは false"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6702,7 +6509,6 @@ fn keymap_report_none_default_and_formats_conflicts_and_warnings() {
     let jp = app.keymap_report().expect("Some");
     assert!(jp.contains("キー衝突1件"), "日本語の衝突件数: {jp}");
     assert!(jp.contains("無効な設定1件"), "日本語の無効設定件数: {jp}");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6720,7 +6526,6 @@ fn take_warm_job_returns_once_then_none() {
     assert_eq!(job.1, dir.join("main.rs"));
     // The second time it's warming, so None (prevents a double launch).
     assert!(app.take_warm_job().is_none(), "二重起動しない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6733,7 +6538,6 @@ fn launch_git_tool_sets_pending_flag_and_take_clears_it() {
     app.launch_git_tool(); // doesn't launch a process, just sets the flag
     assert!(app.take_launch_git_tool(), "要求が立つ");
     assert!(!app.take_launch_git_tool(), "take で消費される");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6756,7 +6560,6 @@ fn preview_scroll_paging_and_to_top_non_windowed() {
     assert_eq!(app.tab.preview_scroll, 10);
     app.preview_to_top();
     assert_eq!(app.tab.preview_scroll, 0, "to_top で先頭へ");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Opens a fresh windowed (Code/Text) text preview: creates `name` with `n` lines
@@ -6808,7 +6611,6 @@ fn windowed_page_down_then_up_returns_to_the_same_position() {
         app.tab.preview_cursor_line, cur0,
         "キャレットも元の行に戻らない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6833,7 +6635,6 @@ fn windowed_first_page_up_after_paging_down_moves_the_window() {
         "下ページ送りの直後、最初の上ページ送りで窓が動かない(バグの再現)"
     );
     assert_eq!(app.tab.preview_top_line, 38, "1 ページ分だけ戻るはず");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6856,7 +6657,6 @@ fn windowed_first_half_page_up_after_half_paging_down_moves_the_window() {
         "下半ページ送りの直後、最初の上半ページ送りで窓が動かない(バグの再現)"
     );
     assert_eq!(app.tab.preview_top_line, 10, "半ページ分だけ戻るはず");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6879,7 +6679,6 @@ fn windowed_page_scroll_preserves_the_caret_on_screen_row() {
     assert_eq!(row(&app), 5, "2 回目のページ送りでも保たれない");
     app.preview_half_page(-1);
     assert_eq!(row(&app), 5, "半ページ送りでも保たれない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6901,7 +6700,6 @@ fn windowed_page_up_at_top_is_a_noop_and_does_not_panic() {
         (app.tab.preview_top_line, app.tab.preview_cursor_line),
         (0, 0)
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6928,7 +6726,6 @@ fn windowed_page_down_at_bottom_does_not_pass_the_last_page() {
     app.preview_half_page(1);
     assert_eq!(app.tab.preview_top_line, top_at_bottom);
     assert_eq!(app.tab.preview_cursor_line, 399);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -6952,7 +6749,6 @@ fn windowed_single_step_scroll_is_unaffected_by_the_page_scroll_fix() {
         app.tab.preview_top_line, 1,
         "下端超えでようやく窓が1行だけ追従"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7000,7 +6796,6 @@ fn windowed_page_scroll_extends_an_active_visual_selection() {
         "選択中でも、下ページ送り直後の最初の上ページ送りで窓が動かない(バグの再現)"
     );
     assert_eq!(app.tab.preview_top_line, 38, "窓も 1 ページ分だけ戻るはず");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7035,7 +6830,6 @@ fn preview_page_non_windowed_decorated_markdown_is_unaffected() {
         app.tab.preview_scroll, 0,
         "非 windowed は preview_scroll に委譲されたまま"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7056,7 +6850,6 @@ fn preview_hscroll_moves_and_home_end() {
     );
     app.preview_hscroll_home();
     assert_eq!(app.tab.preview_hscroll, 0, "0 で行頭");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7127,7 +6920,6 @@ fn windowed_text_preview_reads_window_and_scrolls_lines() {
     // To the end: the cursor goes to the last line (199), and the window shows the last page.
     app.preview_to_bottom();
     assert_eq!(app.tab.preview_cursor_line, 199, "to_bottom で最終行へ");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7190,8 +6982,6 @@ fn request_edit_opens_at_windowed_caret_line() {
     let (p, line) = app.take_pending_edit().expect("edit requested");
     assert!(p.ends_with("doc.md"));
     assert_eq!(line, None, "描画前(cache 未構築)は行なし=先頭");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7263,7 +7053,6 @@ fn preview_visual_selection_copies_logical_lines() {
     // Equivalent to Esc (exit) clears it.
     app.preview_exit_visual();
     assert!(!app.is_preview_visual());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7340,7 +7129,6 @@ fn preview_charwise_selection_copies_character_range() {
             end: (3, 1)
         }
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7390,7 +7178,6 @@ fn markdown_raw_toggle_enables_windowed_selection() {
     app.toggle_md_raw();
     assert!(!app.is_raw_source(), "装飾表示へ戻る");
     assert!(!app.is_windowed());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7432,7 +7219,6 @@ fn dialog_cursor_right_and_end_clamp() {
         Some("aXbcZ!".into())
     );
     app.dialog_cancel();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -7508,8 +7294,6 @@ fn advance_md_gifs_single_frame_entry_does_not_advance() {
     let e = &app.md_image_cache[&key];
     assert_eq!(e.idx, 0);
     assert!(e.shown_at.is_none(), "アニメ対象外なので計時も始めない");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A multi-frame entry: doesn't advance before the deadline (the first tick only starts the
@@ -7619,8 +7403,6 @@ fn advance_md_gifs_advances_on_deadline_and_keeps_protocol_while_invalidating_ke
         app.md_image_cache[&key].idx, 0,
         "2フレームを一周して先頭へ戻る"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// None with no animation target; Some, bounded by the frames' delay (clamped to 10-100ms), otherwise.
@@ -7660,8 +7442,6 @@ fn md_gif_poll_timeout_none_without_anim_some_when_playing() {
         t >= Duration::from_millis(10) && t <= Duration::from_millis(100),
         "10〜100ms にクランプ: {t:?}"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- Inline images on a kitty terminal: fixed ids + compressed transmit -----------------------
@@ -8247,8 +8027,6 @@ fn inline_images_on_a_non_kitty_terminal_keep_the_ratatui_image_path() {
     assert!(req.kitty.is_none(), "非 kitty 端末では固定 ID を渡さない");
     // ...and no id was burned for a picture whose slots will never use one.
     assert!(!app.md_kitty_ids.contains_key(&file));
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8278,7 +8056,6 @@ fn attach_and_detach_image_backend_set_and_clear_state() {
     app.detach_image_backend();
     assert!(app.img_tx.is_none(), "detach で tx を落とす(ワーカー終了)");
     assert!(app.image_src.is_none(), "detach で画像状態も解放");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8305,7 +8082,6 @@ fn load_image_decodes_with_backend_and_noops_without() {
     std::fs::write(dir.join("notimg.png"), b"this is not a png").unwrap();
     app.load_image(&dir.join("notimg.png"));
     assert!(app.image_src.is_none(), "デコード失敗時は載せない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8395,7 +8171,6 @@ fn copy_target_follows_mode() {
     app.tab.mode = Mode::Preview;
     app.tab.preview_path = Some(dir.join("p.txt"));
     assert_eq!(app.copy_target(), Some(dir.join("p.txt")));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8484,7 +8259,6 @@ fn current_commit_meta_resolves_per_surface_and_none_in_tree() {
         dmeta.message.contains("body line"),
         "完全メッセージ(本文)も含む"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -8522,7 +8296,6 @@ fn git_copy_message_and_branch_name_set_flash() {
         Some(no_target),
         "ブランチ未選択は no-target"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -8546,7 +8319,6 @@ fn git_copy_branch_name_copies_current_branch() {
         "選択ブランチがあるので no-target ではない: {f:?}"
     );
     assert!(!branch.is_empty(), "現在ブランチ名が取れる");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -8590,7 +8362,6 @@ fn git_view_unstage_single_file_reloads() {
             .staged,
         "unstage で staged=false に戻る"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -8626,7 +8397,6 @@ fn git_view_start_discard_opens_confirm_without_destroying() {
         "確認段階では破棄しない"
     );
     app.dialog_cancel();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -8668,7 +8438,6 @@ fn git_branch_filter_commit_and_backspace() {
     app.git_branch_filter_commit();
     assert!(!app.git_branch_filtering(), "Enter で入力モードを抜ける");
     assert_eq!(app.git_branch_query(), "f", "クエリは保持される");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -8717,7 +8486,6 @@ fn graph_base_set_clear_and_detail_scroll_hscroll() {
     assert_eq!(app.git_detail_hscroll(), u16::MAX);
     app.clamp_git_detail_hscroll(12);
     assert_eq!(app.git_detail_hscroll(), 12, "描画側の最大幅でクランプ");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -8794,7 +8562,6 @@ fn graph_picker_move_jump_toggle_current_only_and_cancel() {
     // cancel closes it without changing the visible set.
     app.git_graph_picker_cancel();
     assert!(!app.is_git_graph_picker(), "cancel でパネルが閉じる");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -8811,7 +8578,6 @@ fn close_git_graph_returns_to_git_view() {
     app.close_git_graph();
     assert!(!app.is_git_graph(), "グラフは閉じる");
     assert!(app.is_git_view(), "閉じると変更ハブへ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // --- bookmark_actions / file_actions coverage ---------------------------
@@ -8833,7 +8599,6 @@ fn mark_set_state_and_cancel() {
     app.flash = None;
     app.mark_input('a');
     assert!(app.flash.is_none());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -8871,7 +8636,6 @@ fn bookmark_from_preview_registers_previewed_file() {
     app.start_mark_set();
     app.mark_input('q');
     assert_eq!(app.bookmarks.get('q'), Some(proj.join("a.txt")));
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -8899,7 +8663,6 @@ fn global_bookmark_display_is_absolute() {
         "/opt/other/place",
         "HOME 外はフル絶対のまま"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -9052,7 +8815,6 @@ fn tab_list_switch_close_and_guards() {
     app.tab_list_close_selected();
     assert_eq!(app.tab_count(), 1);
     assert!(app.flash.is_some(), "最後の1枚は拒否して flash");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -9095,7 +8857,6 @@ fn bookmark_list_jump_delete_and_close() {
     assert!(app.bookmark_list_sel < app.bookmark_list_items().len().max(1));
     app.close_bookmark_list();
     assert!(!app.is_bookmark_list(), "close で閉じる");
-    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -9112,7 +8873,6 @@ fn attach_git_loader_stores_channel() {
         app.ignored_tx.is_some(),
         "attach_git_loader で Sender を保持"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -9144,7 +8904,6 @@ fn refresh_git_status_only_updates_statuses_without_recompute() {
         app.git_status_of(&canon.join("a.txt")).is_some(),
         "a.txt に status が付く"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -9176,7 +8935,6 @@ fn op_base_dir_for_file_dir_and_empty() {
     // No entry (out of selection range) → root.
     app.tab.entries.clear();
     assert_eq!(app.op_base_dir(), app.tab.root, "エントリ無しは root");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -9236,8 +8994,6 @@ fn duplicate_selection_copies_file_and_dir_in_place() {
         root.join("sub copy").join("inner.txt").exists(),
         "ディレクトリの中身も再帰複製される"
     );
-
-    std::fs::remove_dir_all(&base).ok();
 }
 
 /// A background file-op runner is attached → `paste()` must return immediately (before the copy
@@ -9469,8 +9225,6 @@ fn describe_error_translates_file_op_errors_to_the_ui_language() {
         app.lang = lang;
         assert_eq!(app.describe_error(&other), "boom, not a fileops error");
     }
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Regression: when a batch rename failed **and could not undo itself**, the user was shown only
@@ -9559,8 +9313,6 @@ fn describe_error_keeps_the_rollback_context_around_the_reason() {
             "巻き戻しが成功した場合は従来どおりの文言({lang:?})"
         );
     }
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // The regression in `copy_into_with_progress`'s leaf-file counter is verified on the
@@ -10023,8 +9775,6 @@ fn git_op_runs_in_background_when_runner_attached() {
         "flash にステージ結果が出る: {:?}",
         app.flash
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// With **no** runner attached (unit tests / no run loop), the write must still complete inline and
@@ -10048,7 +9798,6 @@ fn git_op_falls_back_to_synchronous_without_a_runner() {
         crate::git::changed_files(&dir).iter().any(|e| e.staged),
         "index に実際にステージされている"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// While one git write is in flight, a second must be rejected (flash `GitOpBusy`, generation
@@ -10075,7 +9824,6 @@ fn second_git_op_is_rejected_while_one_is_in_flight() {
         !crate::git::changed_files(&dir).iter().any(|e| e.staged),
         "拒否された操作は git を一度も呼ばない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `apply_git_op` must ignore a result whose generation doesn't match the current one (superseded)
@@ -10187,7 +9935,6 @@ fn git_op_result_does_not_disturb_another_tab() {
         "別タブに着地しても git status の再検証は要求される"
     );
 
-    std::fs::remove_dir_all(&a).ok();
     std::fs::remove_dir_all(&b).ok();
 }
 
@@ -10235,8 +9982,6 @@ fn failed_git_op_keeps_gits_fatal_line_first_and_reopens_the_dialog() {
         Some(current.clone()),
         "打った名前が保持されている(打ち直させない)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A failed write must never restore its own dialog **over** one the user opened in the meantime —
@@ -10280,8 +10025,6 @@ fn failed_git_op_does_not_clobber_a_dialog_opened_meanwhile() {
         "失敗自体は flash で伝える: {:?}",
         app.flash
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A failed **commit** must bring its own dialog back carrying the message, so it can be retried
@@ -10325,7 +10068,6 @@ fn failed_commit_reopens_the_dialog_with_the_message() {
         crate::git::log(&dir, 10).len() == 1,
         "コミットは作られていない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// …but it must not restore that commit box **over** a dialog the user opened while the commit was
@@ -10335,7 +10077,7 @@ fn failed_commit_reopens_the_dialog_with_the_message() {
 #[cfg(feature = "git")]
 #[test]
 fn failed_commit_does_not_clobber_a_dialog_opened_meanwhile() {
-    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_commit_no_clobber");
+    let (_dir, mut app) = git_repo_with_one_change("konoma_gitop_commit_no_clobber");
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_gitop_runner(tx);
 
@@ -10366,7 +10108,6 @@ fn failed_commit_does_not_clobber_a_dialog_opened_meanwhile() {
         Some("newfile.txt".to_string()),
         "入力中の内容がそのまま残る"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A completed write changed the repository, so the cached `git status` must be re-validated —
@@ -10388,7 +10129,6 @@ fn git_status_is_revalidated_after_a_git_write() {
         app.git_status_for.is_none(),
         "ツリーの status キャッシュも無効化される"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A refused dispatch (one git write at a time) must not eat what the user typed. `dialog_submit`
@@ -10398,7 +10138,7 @@ fn git_status_is_revalidated_after_a_git_write() {
 #[cfg(feature = "git")]
 #[test]
 fn refused_git_op_puts_the_typed_text_back() {
-    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_refused_keeps_text");
+    let (_dir, mut app) = git_repo_with_one_change("konoma_gitop_refused_keeps_text");
     // Build the in-flight state directly, without launching a worker.
     app.gitop_gen = app.gitop_gen.wrapping_add(1);
     app.gitop_pending = Some(crate::app::GitOpKind::Stage);
@@ -10430,7 +10170,6 @@ fn refused_git_op_puts_the_typed_text_back() {
         Some(crate::i18n::tr(app.lang, crate::i18n::Msg::GitOpBusy)),
         "なぜ起きなかったかは flash が説明する"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The retry dialog must not pop up over input the user has already started. `/` (tree filter),
@@ -10440,7 +10179,7 @@ fn refused_git_op_puts_the_typed_text_back() {
 #[cfg(feature = "git")]
 #[test]
 fn failed_git_op_does_not_restore_over_an_active_filter() {
-    let (dir, mut app) = git_repo_with_one_change("konoma_gitop_no_filter_hijack");
+    let (_dir, mut app) = git_repo_with_one_change("konoma_gitop_no_filter_hijack");
     let (tx, rx) = std::sync::mpsc::channel();
     app.attach_gitop_runner(tx);
 
@@ -10473,7 +10212,6 @@ fn failed_git_op_does_not_restore_over_an_active_filter() {
         app.flash.as_deref().is_some_and(|s| !s.is_empty()),
         "失敗自体は flash で伝える"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// **Root equality is not tab identity.** `t` (`tab_new`) opens the new tab *at the current root*,
@@ -10575,7 +10313,6 @@ fn same_root_tab_is_refreshed_even_though_it_is_not_the_origin() {
         Some(true),
         "同じ repo を映すタブは、頼んでいなくても最新の変更一覧に追従する"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Quitting mid-write orphans a `git` still holding `.git/index.lock`, so the confirmation is shown
@@ -11285,7 +11022,6 @@ fn dialog_preview_scroll_clamps_within_lines() {
     app.dialog_preview_scroll(-1000);
     assert_eq!(app.dialog_preview_view().unwrap().2, 0, "先頭でクランプ");
     app.dialog_cancel();
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // --- ui::preview::render's dispatch branches (TestBackend golden) -------------
@@ -11427,7 +11163,6 @@ fn ui_preview_renders_text_fallbacks_for_unsupported_kinds() {
         !failed_body.contains("render_as") && !failed_body.contains("detached="),
         "Debug 書式が画面に漏れている: {failed_body}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- External command delegation (`preview::command` wired into `MediaJob`/`App`) ----
@@ -11457,7 +11192,6 @@ fn media_job_command_text_mode_returns_command_text_payload() {
         Some(_) => panic!("CommandText を期待したが別の payload だった"),
         None => panic!("CommandText を期待したが None (失敗) だった"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Image mode (`as_image=true`) decodes the produced artifact into `MediaPayload::Static` and
@@ -11501,7 +11235,6 @@ fn media_job_command_image_mode_decodes_and_cleans_up_artifact() {
         "画像モード成功後に成果物ファイルが残っている: {}",
         out.display()
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Same as above, but the template writes to a **suffixed** artifact (`<out>.png`) rather than the
@@ -11548,7 +11281,6 @@ fn media_job_command_image_mode_cleans_up_a_suffixed_artifact() {
         suffixed.display()
     );
     assert!(!out.exists(), "リテラル out は元々書かれていないはず");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A failing command (missing binary) returns `MediaPayload::CommandFailed` with a non-empty
@@ -11618,7 +11350,6 @@ fn detached_command_spawns_once_per_preview_entry_not_per_redraw_or_tab_switch()
         1,
         "detached コマンドが enter_preview 以外のタイミングでも起動された"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A text-mode delegated command becomes windowed (2D caret / search / `v`/`V` selection all just
@@ -11687,8 +11418,6 @@ fn text_command_becomes_windowed_with_original_title_and_cleans_up_on_leaving() 
         "別プレビューに移っても一時ファイルが残っている"
     );
     assert!(app.tab.command_out.is_none());
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- inline Markdown images: remote fetch + raster/SVG helpers (non-network) ----
@@ -11733,7 +11462,6 @@ fn fetch_remote_image_malformed_url_fails_without_touching_the_network() {
     assert!(!fetch_remote_image("not a url at all", &dest));
     assert!(!dest.exists());
     assert!(!dest.with_extension("part").exists());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Once the remote-image disk cache exceeds its cap, the oldest entries are deleted first
@@ -11765,8 +11493,6 @@ fn prune_remote_cache_keeps_newest_and_skips_part() {
         "新しい 2 個は残る"
     );
     assert!(dir.join("busy.part").exists(), ".part は対象外で残る");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Set a file's mtime deterministically (test helper). `File::set_modified` is stable since 1.75
@@ -11798,7 +11524,6 @@ fn md_image_dims_reads_raster_and_svg() {
     let bad = dir.join("bad");
     std::fs::write(&bad, b"not an image").unwrap();
     assert!(md_image_dims(&bad).is_none(), "非画像は None");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -11820,7 +11545,6 @@ fn md_decode_image_decodes_raster_and_rasterizes_svg() {
     let img = md_decode_image(&svg, 800).expect("SVG をラスタライズ");
     assert_eq!((img.width(), img.height()), (800, 400), "最大辺 800 に拡大");
     assert!(md_decode_image(&dir.join("missing"), 800).is_none());
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -11838,7 +11562,6 @@ fn apply_remote_fetch_marks_failed_and_invalidates_cache() {
     assert!(!app.md_remote_inflight.contains(&url), "in-flight から除去");
     assert!(app.md_remote_failed.contains(&url), "失敗を記録");
     assert!(app.md_cache.is_none(), "装飾キャッシュを無効化");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Regression: once a remote Markdown image's download failed, `md_remote_failed` remembered it for
@@ -11911,9 +11634,6 @@ fn refresh_retries_a_previously_failed_remote_image() {
         .expect("refresh() の後は再試行が走り結果が返ってくるはず");
     assert_eq!(res.url, url);
     assert!(!res.ok, "ホストのない URL は失敗するはず");
-
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::remove_dir_all(&cache_root).ok();
 }
 
 /// The sibling non-regression: the **FS-watch** entry point (`refresh_fs_watched` — what `main`'s run
@@ -11943,8 +11663,6 @@ fn refresh_fs_watched_does_not_retry_a_previously_failed_remote_image() {
         app.md_remote_failed.contains(&url),
         "refresh_fs_watched（FS イベント経路）は失敗記録をクリアしてはいけない"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The FS-driven eviction of inline-image cache entries is scoped to **local files named by the
@@ -12016,8 +11734,6 @@ fn an_fs_event_drops_only_the_changed_local_inline_image_entry() {
         4,
         "パス不明のバーストでは1件も落とさない"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- inline Markdown images: remote fetch — real HTTP round trips over a loopback socket ----
@@ -12264,7 +11980,6 @@ fn fetch_remote_image_capped_rejects_a_200_html_error_page() {
         !dest.with_extension("part").exists(),
         ".part も残らないはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The positive counterpart, full round trip: a real 200 PNG response is fetched, validated (accepted
@@ -12297,7 +12012,6 @@ fn fetch_remote_image_capped_accepts_a_real_200_png() {
         !dest.with_extension("part").exists(),
         "コミット後は .part が残らないはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12352,8 +12066,6 @@ fn preview_survives_target_file_overwrite_and_delete() {
     let _ = app.refresh();
     // Rendering the now-missing file must not panic (degrades to a safe "can not preview" line).
     let _ = app.decorated_lines(80);
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12622,7 +12334,6 @@ fn table_page_and_half_page_move_by_viewport() {
         app.table_page(-1);
     }
     assert_eq!(app.table_cursor().0, 0, "先頭でクランプ");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -12676,7 +12387,6 @@ fn table_cell_view_returns_untruncated_long_and_cjk_text() {
     assert_eq!(view.header, "h2");
     assert_eq!(view.col, 2);
     assert_eq!(view.text, cjk, "CJK セルも全文がそのまま取れる");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// CSV can hold real newlines inside quotes (e.g. a multi-line address field). The popup's body
@@ -12702,7 +12412,6 @@ fn table_cell_view_preserves_embedded_newlines() {
         3,
         "実改行3行がそのまま数えられる"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Non-UTF-8 byte sequences are already replaced with U+FFFD by the csv crate's lossy decoding
@@ -12727,7 +12436,6 @@ fn table_cell_view_handles_replacement_chars_without_panic() {
         "不正バイトは置換文字になっている: {:?}",
         view.text
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `Enter` (toggle): opening resets the scroll to the top, `is_table_cell_open` reflects it,
@@ -12768,7 +12476,6 @@ fn toggle_table_cell_view_flashes_on_empty_table() {
     app.toggle_table_cell_view();
     assert!(!app.is_table_cell_open(), "表示するセルが無いので開かない");
     assert!(app.flash.is_some(), "no-cell flash が出る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Pure scroll movement/clamping: clamps to 0 at the top, `scroll_to` goes to the start/end
@@ -12865,7 +12572,6 @@ fn at_ref_is_strictly_relative_to_open_dir() {
     );
     // Outside it (a sibling): relative with `..`.
     assert_eq!(at_ref_text(&a, &work.join("B").join("x.md")), "@../B/x.md");
-    std::fs::remove_dir_all(&work).ok();
 }
 
 #[test]
@@ -12903,7 +12609,6 @@ fn preview_selection_ref_formats_caret_and_ranges() {
         app.preview_selection_ref_text().as_deref(),
         Some("@notes.txt#L2-4")
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -12952,7 +12657,6 @@ fn changed_filter_lists_changed_files_flat_and_toggles_back() {
         app.tab.entries.iter().any(|e| e.is_dir),
         "通常ツリーに戻る(ディレクトリ行が復活)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -12987,7 +12691,6 @@ fn jump_changed_reveals_collapsed_targets_and_wraps() {
         canon.join("sub").join("b.txt"),
         "N は逆順"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -13090,7 +12793,6 @@ fn follow_jump_scrolls_to_first_changed_hunk() {
     app.follow_jump(&plain);
     assert_eq!(app.tab.preview_path.as_deref(), Some(plain.as_path()));
     assert_eq!(app.tab.preview_top_line, 0);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -13165,7 +12867,6 @@ fn follow_jump_opens_diff_view_by_default_and_falls_back() {
         app.tab.preview_path.as_deref(),
         Some(canon.join("keep.txt").as_path())
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -13220,7 +12921,6 @@ fn diff_view_n_switches_changed_files_and_keeps_return_target() {
     assert!(app.tab.came_from_git_view, "戻り先(ハブ)が回遊で失われない");
     app.close_git_diff();
     assert!(app.is_git_view(), "q でハブへ戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -13368,8 +13068,6 @@ fn diff_jump_changed_into_big_markdown_does_not_flash_stale_unavailable() {
         "誤った scope での中間判定が立てた stale フラッシュが残っている: {:?}",
         app.flash
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
@@ -13443,9 +13141,6 @@ fn follow_session_and_diff_denominator_do_not_leak_across_tabs_with_different_ro
         Some((1, 1)),
         "X の a.txt が母集合に混ざらず、Y 単独で 1/1(修正前は分母が 2 になる)"
     );
-
-    std::fs::remove_dir_all(&dir_x).ok();
-    std::fs::remove_dir_all(&dir_y).ok();
 }
 
 #[cfg(feature = "git")]
@@ -13502,9 +13197,6 @@ fn follow_baseline_diff_is_none_after_switching_to_a_linked_worktree_in_the_same
         app.follow_baseline_diff(&root_w.join("a.txt")).is_none(),
         "worktree 切替直後は別 root の基準を静かに使い回さない"
     );
-
-    std::fs::remove_dir_all(&dir_w).ok();
-    std::fs::remove_dir_all(&dir_m).ok();
 }
 
 #[cfg(feature = "git")]
@@ -13556,9 +13248,6 @@ fn follow_note_change_recaptures_baseline_and_session_when_the_scope_root_change
         app.follow_baseline_diff(&root_y.join("a.txt")).is_some(),
         "再取得後は新 root の基準で diff が引ける"
     );
-
-    std::fs::remove_dir_all(&dir_x).ok();
-    std::fs::remove_dir_all(&dir_y).ok();
 }
 
 #[cfg(feature = "git")]
@@ -13612,9 +13301,6 @@ fn render_path_never_recaptures_the_follow_baseline_after_a_root_change() {
         !app.follow_scope_valid(),
         "描画経路だけではスコープも有効化されない(再取得は event-drain 側の follow_note_change だけの責務)"
     );
-
-    std::fs::remove_dir_all(&dir_x).ok();
-    std::fs::remove_dir_all(&dir_y).ok();
 }
 
 #[test]
@@ -13702,7 +13388,6 @@ fn md_row_prefix_matches_full_document_reflow() {
         .line_count(width);
     let (total, _) = app.md_layout(width);
     assert_eq!(total, full, "prefix 総和が全文書 reflow と一致しない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -13789,7 +13474,6 @@ fn md_slice_render_matches_full_document_render() {
             }
         }
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- mermaid image rendering (v0.15 feature) --------------------------------
@@ -13821,8 +13505,6 @@ fn standalone_mermaid_renders_as_image_with_vector_source() {
     );
     assert!(app.image_logical.is_some(), "論理サイズ=初回ラスタ寸法");
     assert!(app.is_image_preview(), "IMAGE 面(ズーム/パンのキーが効く)");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -13839,8 +13521,6 @@ fn mermaid_text_mode_keeps_legacy_rendering() {
     app.enter_preview(&dir.join("d.mmd"));
     assert!(app.image_src.is_none(), "text モードはラスタ化しない");
     assert!(!app.is_image_preview(), "従来どおり装飾テキスト面");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Coverage audit follow-up (2026-08-29), item 3: in text mode (`[ui] mermaid = "text"`), the
@@ -13922,8 +13602,6 @@ fn text_mode_never_reaches_mermaid_curve_resolution() {
         load_image_mode(&dir, &mmd, "step"),
         "sanity: in image mode these two curves really do draw this source differently"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Coverage audit follow-up (2026-08-29), item 1 (`mermaid_rows` half): `[ui] mermaid_curve` and
@@ -14001,8 +13679,6 @@ fn mermaid_curve_and_mermaid_rows_are_independent_axes() {
         rows_10, rows_50,
         "sanity: mermaid_rows must still change the display rows"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Coverage audit follow-up (2026-08-29), item 1 (`svg_max_px` half): `[ui] mermaid_curve` and
@@ -14065,8 +13741,6 @@ fn mermaid_curve_and_svg_max_px_are_independent_axes() {
         dims_small, dims_large,
         "sanity: svg_max_px must still change the raster's pixel density"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -14095,8 +13769,6 @@ fn vector_zoom_rerasters_sharper_without_moving_geometry() {
     );
     assert_eq!(app.image_logical.unwrap(), logical, "論理サイズは不変");
     assert!(app.tab.image_zoom > 1.9, "ユーザー向けズーム値は保たれる");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -14153,8 +13825,6 @@ fn md_fence_becomes_inline_diagram_and_opens_full_screen() {
     assert!(matches!(app.tab.mode, Mode::Preview));
     assert_eq!(app.tab.preview_scroll, 3, "スクロール位置を復元");
     assert_eq!(app.tab.focused_item, Some(idx), "フォーカスを復元");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Coverage audit (2026-08-29), checklist F28: `[ui] mermaid_curve` must reach a **standalone**
@@ -14196,8 +13866,6 @@ fn standalone_mmd_full_screen_honors_mermaid_curve_config() {
         svg_basis, svg_step,
         "a standalone .mmd full screen must draw differently under two different mermaid_curve configs"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Coverage audit (2026-08-29), checklist F29: `[ui] mermaid_curve` must reach a fenced diagram's
@@ -14253,8 +13921,6 @@ fn mermaid_fence_full_screen_honors_mermaid_curve_config() {
         svg_basis, svg_step,
         "a fenced diagram's full-screen view must draw differently under two different mermaid_curve configs"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -14288,8 +13954,6 @@ fn broken_fence_degrades_to_text_diagram() {
         joined.contains("not a diagram"),
         "テキスト降格で内容が残る: {joined}"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A fence diagram's focus "inverts only the caption span": inverting even the centering
@@ -14351,8 +14015,6 @@ fn fence_focus_inverts_caption_span_only() {
         !buf[(w - 3, y)].modifier.contains(Modifier::REVERSED),
         "行全体が反転している(白バー回帰)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Focusing a fence diagram scrolls **the entire diagram block** into the visible area, and a
@@ -14430,8 +14092,6 @@ fn fence_focus_scrolls_block_and_draws_border() {
         all.contains("mermaid — Enter"),
         "枠タイトルにキャプションが載る"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A fence diagram's encoding uses Resize::Scale = it **upscales too**, up to the reserved grid
@@ -14547,8 +14207,6 @@ fn mermaid_initial_size_fits_viewport_and_refits_on_change() {
         ptr0,
         "図なし文書は vp 変化で再構築しない"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// With wrap enabled, the overlay (image/focus border) doesn't drift from the text layer even
@@ -14617,8 +14275,6 @@ fn fence_overlay_aligns_with_wrapped_text_layer() {
         vec![caption_row],
         "フォーカス枠タイトルがテキスト層キャプションと同じ行(折返し分ズレない)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// In-place zoom for an inline mermaid diagram: +/- (image_zoom_by's dual role) affects the
@@ -14692,8 +14348,6 @@ fn fence_inplace_zoom_pans_and_keeps_layout() {
     // + while focused on the link is a no-op (the diagram isn't focused).
     app.image_zoom_by(2.0);
     assert!((app.fence_zoom_level() - 1.0).abs() < 1e-9);
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// fence_crop: pure-function verification of the visible fraction and clamping (ratio-based =
@@ -14865,8 +14519,6 @@ fn fence_zero_fits_and_mermaid_rows_config_sizes_diagram() {
         !app2.fence_pan_motion(Motion::LineHome),
         "等倍の 0 は消費しない(行頭のまま)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `mermaid_rows` (`[ui] mermaid_rows`) is an **upper limit**, never a fill target: `mermaid_cells`
@@ -14973,8 +14625,6 @@ fn mermaid_rows_is_an_upper_limit_not_a_fill_target() {
     app.ensure_md_cache(120);
     let p2 = &app.md_images()[0];
     assert_eq!((p2.cols, p2.rows), (p.cols, p.rows), "セル数不変");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Even with a huge target like `mermaid_rows=100`, a diagram whose natural size is far smaller
@@ -15016,7 +14666,6 @@ fn mermaid_rows_large_target_does_not_upscale_past_natural_size() {
         "この図の自然サイズは 24 行未満なので、上限を 100 に上げても表示は変わらないはず: \
          rows100={p:?} default={p_default:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Cleaning up kitty placeholder leftovers: a "full redraw requested" flag is raised only on
@@ -15100,8 +14749,6 @@ fn md_overlay_move_detection_requests_full_redraw() {
     app.back_to_tree();
     term.draw(|fr| crate::ui::render(fr, &mut app)).unwrap();
     assert!(app.take_md_overlay_moved(), "図が画面から消えたら掃除");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// When switching tabs, a .mmd (image mode) is restored still as an image. Regression 2026-07-18:
@@ -15159,8 +14806,6 @@ fn git_graph_decoration_state_is_per_tab() {
         app.tab.git_graph_visible.contains("main") && app.tab.git_graph_visible.contains("dev"),
         "タブ0の表示ブランチが復元される"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// It had been silently degrading (a non-deterministic behavior that happened to recover only
@@ -15185,8 +14830,6 @@ fn tab_switch_restores_mermaid_image_preview() {
         "タブ復帰で .mmd が画像として再ロードされる"
     );
     assert!(app.is_image_preview(), "IMAGE 面のまま");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Even leaving and returning to a tab while a full-screen fence view is showing, the diagram is
@@ -15223,8 +14866,6 @@ fn tab_switch_restores_fullscreen_fence_view() {
         "タブ復帰でも全画面フェンスのまま"
     );
     assert!(app.image_src.is_some(), "図が画像として再ロードされる");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Even if there's an earlier fence that can't be turned into an image (degraded to text),
@@ -15278,8 +14919,6 @@ fn fence_ordinal_survives_failed_upstream_fence() {
         "序数 1 の再抽出は有効な図のソース"
     );
     assert!(app.image_src.is_some(), "全画面の図がラスタ化される");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The old cache entry for a fence whose content changed via an edit is reclaimed on the next
@@ -15321,8 +14960,6 @@ fn stale_fence_cache_entries_are_pruned_on_rebuild() {
         !app.md_image_cache.contains_key(&key1),
         "旧内容のエントリは prune される(単調成長しない)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Tab focus and the inline diagram's zoom/pan are duplicated per tab: they don't leak into other
@@ -15367,8 +15004,6 @@ fn fence_focus_and_zoom_are_per_tab() {
         "タブ1のフォーカスが復元される"
     );
     assert!(app.tab.fence_zoom > 1.9, "タブ1のズームが復元される");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Returning with `q` from a full-screen fence keeps the inline image cache (re-entering the same
@@ -15418,8 +15053,6 @@ fn fence_fullscreen_return_keeps_diagram_cache() {
         "同じラスタを温存(再レンダしていない)"
     );
     assert_eq!(app.tab.focused_item, Some(idx), "フォーカスも復元される");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Even for an encode failure result (protocol=None), enc_inflight is cleared and the key is
@@ -15505,8 +15138,6 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
             crop
         }
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The math inline image `math://...` used to render as **blank**, only the reserved row (user
@@ -15554,8 +15185,6 @@ fn math_inline_image_requests_encode_via_synthetic_key() {
         .expect("数式はエンコードを要求する(math:// を合成キーとして解決)");
     assert_eq!(req.path, key, "math:// を実ファイルでなく合成キーで解決");
     assert!(matches!(req.key, MdEncodeKey::Full { cols: 12, rows: 2 }));
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Sharp re-rasterization of a full-screen vector is limited to 1 at a time (inflight guard).
@@ -15589,8 +15218,6 @@ fn vector_reraster_inflight_guard_blocks_duplicate_jobs() {
         after.0 > before.0 || after.1 > before.1,
         "解除後は最新ズームへ収束: {before:?} -> {after:?}"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// An empty ```mermaid fence (mid-typing) falls back to the text path instead of sticking on a
@@ -15636,8 +15263,6 @@ fn empty_mermaid_fence_does_not_stick_on_loading() {
     let placements = app.md_images();
     assert_eq!(placements.len(), 1);
     assert_eq!(placements[0].fence_ord, Some(1), "序数はソース順");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Even while zoomed, pan must not steal keys if the diagram is **offscreen**. Regression
@@ -15688,8 +15313,6 @@ fn zoomed_fence_offscreen_does_not_eat_motion_keys() {
         "0 も奪わない(通常の行頭へ)"
     );
     assert!(app.tab.fence_zoom > 1.9, "ズーム状態自体は保持(戻れば再開)");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A decode result for a key not in the cache (a stale result arriving late after a file switch /
@@ -15726,8 +15349,6 @@ fn stale_md_image_result_is_dropped() {
         app.md_cache.is_some(),
         "無関係な現文書の装飾キャッシュを壊さない"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// D2 (2026-08-05): `fence_sharpen_if_needed`'s worker thread called `rasterize_bytes` (resvg — the
@@ -15784,8 +15405,6 @@ fn apply_md_image_with_a_panic_shaped_reraster_failure_clears_inflight_without_d
         !entry.failed,
         "初回失敗用の text フォールバックへは降格しないはず(既に表示できていたので)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// When a file is externally **shrunk**, the windowed preview's scroll position must not stay past
@@ -15837,7 +15456,6 @@ fn windowed_preview_clamps_scroll_when_file_shrinks_externally() {
         text.contains('a') && text.contains('c'),
         "縮小後の中身が描かれていない: {text:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A preview reload on a FS event must happen **according to the changed paths**.
@@ -15902,8 +15520,6 @@ fn preview_reloads_only_for_relevant_fs_changes() {
         app.md_cache.is_none(),
         "変更パス不明(.git のみ等)は安全側で再読込すべき"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// In-table search: `/` jumps the cursor to a matching cell, and `n`/`N` cycle in reading order
@@ -15958,8 +15574,6 @@ fn table_search_moves_cursor_through_matching_cells() {
     app.search_clear();
     assert!(!app.table_cell_is_hit(0, 0), "解除で一致ハイライトが消える");
     assert_eq!(app.search_status(), None);
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// When there's no match, show a flash and don't move the cursor (don't lose the user's place in the table).
@@ -16053,8 +15667,6 @@ fn decorated_markdown_search_scrolls_to_matches() {
     app.search_commit();
     assert_eq!(app.tab.preview_scroll, before, "一致なしでスクロールしない");
     assert_eq!(app.search_status(), None);
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// On a kitty terminal, prepare_image must rebuild the KittyImage even for **a terminal resize
@@ -16190,8 +15802,6 @@ fn table_search_hits_do_not_leak_across_tabs() {
         !app.table_cell_is_hit(0, 0),
         "タブ1 へ切替で前タブの一致が漏れない(load_active が再構築)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The async path for a kitty build: the first time (the moment it's opened) it's synchronous and
@@ -16254,8 +15864,6 @@ fn kitty_zoom_builds_async_and_latest_wins() {
     let applied = u32::from(app.apply_kitty(a)) + u32::from(app.apply_kitty(b));
     assert_eq!(applied, 1, "2つの結果のうち最新世代の1つだけが適用される");
     assert!(!app.kitty_build_pending());
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// PDF page navigation / video re-thumbnail regression: `set_static_image` swaps in a raster of the
@@ -16295,8 +15903,6 @@ fn kitty_rebuilds_on_same_size_image_swap() {
         render_syms(&app).contains("o=z"),
         "同寸法の差し替えでも kitty 画像が再ビルドされる(前ページが居残らない)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Even when an async kitty build fails (worker panic -> None), `kitty_build_pending` must not stay
@@ -16336,8 +15942,6 @@ fn kitty_failed_build_clears_pending() {
         !app.kitty_build_pending(),
         "失敗しても pending は解消(16ms ビジーポーリング防止)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The main cause of `h`/`l` being heavy in a large repo: `git status` (a whole-worktree scan) was
@@ -16400,8 +16004,6 @@ fn same_repo_navigation_reuses_status_without_recompute() {
         app.git_status_of(&root.join("a.txt")).is_some(),
         "再計算後も a.txt の変更は見える"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The per-workdir status cache must **re-fetch when moving to a different repo** (must not reuse
@@ -16446,7 +16048,6 @@ fn descend_into_nested_different_repo_recomputes_status() {
         app.git_status_of(&sentinel).is_none(),
         "別 repo へ移ると status を作り直す(親 repo の status を流用しない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// If an async build (gen=N) is kicked off by zooming image A, and it is then **switched to a
@@ -16487,8 +16088,6 @@ fn kitty_stale_build_from_previous_file_is_discarded_on_switch() {
         app.kitty_image_ref().is_none(),
         "破棄されたので画像は入らない(clear_image で None のまま)"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `git_dir_watch`: when root is a subdirectory of a repo, returns the parent `.git` as the watch
@@ -16521,9 +16120,6 @@ fn git_dir_watch_targets_dot_git_only_for_subdir_root() {
     std::fs::create_dir_all(&plain).unwrap();
     let app_plain = App::new(plain.canonicalize().unwrap(), Config::default()).unwrap();
     assert_eq!(app_plain.git_dir_watch(), None, "非 repo は監視不要");
-
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::remove_dir_all(&plain).ok();
 }
 
 /// `git_dir_watch` for a **linked worktree** (`git worktree add`): that worktree's own `HEAD`/`index`
@@ -16605,8 +16201,6 @@ fn git_dir_watch_targets_worktrees_git_dir_for_linked_worktree_root() {
         .current_dir(&main_root)
         .output()
         .ok();
-    std::fs::remove_dir_all(&wt_dir).ok();
-    std::fs::remove_dir_all(&main_dir).ok();
 }
 
 /// A tab switch (load_active) is a checkpoint for re-validating git status: it sets dirty so that
@@ -16670,7 +16264,6 @@ fn tab_switch_re_verifies_git_status() {
         app.git_status_of(&sentinel).is_none(),
         "タブ切替で status を再検証(センチネル消失=キャッシュ流用しない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The whole-worktree `git status` scan must run on a **worker thread**, never on the UI thread.
@@ -17142,7 +16735,6 @@ fn apply_md_diff_ignores_a_landed_result_for_a_path_no_longer_on_screen() {
         "画面上のファイルと無関係な結果でフラッシュを出してはならない: {:?}",
         app.flash
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// M17: a landed `Gutter`-kind result for the exact path/gen currently showing as `Rendered` must
@@ -17179,7 +16771,6 @@ fn apply_md_diff_ignores_a_landed_gutter_result_while_rendered_is_showing() {
         "Gutter 種別の結果で Rendered 用のフラッシュを出してはならない: {:?}",
         app.flash
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// M18: a landed `Rendered` result for the exact path/gen, arriving *after* the user already left
@@ -17219,7 +16810,6 @@ fn apply_md_diff_ignores_a_landed_rendered_result_after_leaving_rendered_for_sou
         "Source 表示中は front-matter-only フラッシュを出してはならない: {:?}",
         app.flash
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // --- `diff_scroll_pending`'s defense layers, isolated (the top-level task description calls these
@@ -17253,7 +16843,6 @@ fn enter_preview_clears_any_pending_diff_scroll_reservation() {
         app.tab.diff_scroll_pending.is_none(),
         "enter_preview は先頭で古い予約を必ず消すはず(相手パスが一致するかどうかに関係なく)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// (13): `App::open_git_diff_with` drops any leftover reservation up front (mirroring `enter_preview`
@@ -17345,7 +16934,6 @@ fn take_diff_scroll_pending_for_only_matches_its_own_path_and_always_consumes() 
         app.tab.diff_scroll_pending.is_none(),
         "消費後は None のはず(二重に応えてはならない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// (15): `App::apply_md_diff`'s `Unavailable` branch drops the "scroll to first change" reservation
@@ -17379,7 +16967,6 @@ fn apply_md_diff_unavailable_clears_the_scroll_reservation_for_its_own_path() {
         app.tab.diff_scroll_pending.is_none(),
         "Rendered が届かなくなったので自分(doc.md)宛ての予約は消すはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// (15), continued: the same `Unavailable` branch must not touch a reservation armed for some
@@ -17409,7 +16996,6 @@ fn apply_md_diff_unavailable_does_not_clear_a_different_paths_scroll_reservation
         Some(other.as_path()),
         "別ファイル(other.md)宛ての予約を巻き込んではならない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// M5 (pre-merge review of PR #21): `App::md_diff_landed_for`'s `gen` check. `App::kick_md_diff`
@@ -17452,7 +17038,6 @@ fn poll_md_diff_does_not_reuse_a_landed_result_whose_gen_no_longer_matches() {
         matches!(outcome, Some(MdDiffOutcome::NoBaseline)),
         "gen 不一致の landed 結果を再利用せず、再計算(NoBaseline)されるはず: {outcome:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// M6 (pre-merge review of PR #21): `App::md_diff_landed_for`'s `kind` check. A landed `Gutter`
@@ -17492,7 +17077,6 @@ fn poll_md_diff_does_not_reuse_a_landed_gutter_result_for_a_rendered_request() {
         ),
         other => panic!("Rendered は §5 により Ready(全 Insert) のはず: {other:?}"),
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// M21 (pre-merge review of PR #21): `App::md_diff_pending_for_current`'s path comparison. A
@@ -17511,7 +17095,6 @@ fn md_diff_pending_for_current_is_false_when_the_pending_computation_is_for_a_di
         !app.md_diff_pending_for_current(),
         "別ファイル(b.md)の計算中は a.md 自身の消費を止めてはならない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// M2 (pre-merge review of PR #21): `App::diff_baseline`'s `follow_scope_valid()` check. If the
@@ -18097,9 +17680,6 @@ fn git_view_branch_re_verifies_when_switching_to_a_different_repo() {
             .any(|e| e.path.ends_with("fileA.txt")),
         "変更ファイル一覧は repoA のものであるべき"
     );
-
-    std::fs::remove_dir_all(&repo_a).ok();
-    std::fs::remove_dir_all(&repo_b).ok();
 }
 
 /// The persistent `WT <origin>` chip (linked-worktree indicator) must likewise re-verify across a
@@ -18223,8 +17803,6 @@ fn worktree_chip_re_verifies_across_tab_switch_into_preview() {
         text.contains("WT") && text.contains(&expected_origin),
         "linked worktree のタブへ戻ったら WT チップが復活するはず: {text}"
     );
-
-    std::fs::remove_dir_all(&base).ok();
 }
 
 /// Performance invariant for the new call site: `ui::render` now calls `refresh_git_if_needed`
@@ -18430,7 +18008,6 @@ fn tab_switch_parses_a_table_preview_only_once() {
         "タブ切替での CSV 全行パースは1回だけ(旧実装は load_active と reload_preview で2回)"
     );
     assert!(app.table_data.is_some(), "表の中身は復元されている");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Returning to a media tab must reuse the decoded image instead of redoing the work that produced it
@@ -18483,7 +18060,6 @@ fn returning_to_a_media_tab_reuses_the_decoded_image() {
             || !std::sync::Arc::ptr_eq(app.image_src.as_ref().unwrap(), &decoded),
         "mtime が変わったら退避分を使い回さない(外部編集に追従)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The one-slot media cache must not turn into a hidden hundreds-of-megabytes resident buffer. The cap
@@ -18518,7 +18094,6 @@ fn oversized_media_is_not_cached() {
         app.media_cache.is_none(),
         "バイト上限超えの画像は退避しない(画素数だけの判定では素通りしていた)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A full-screen mermaid fence keeps `preview_path` pointing at the Markdown file, so the media cache
@@ -18563,7 +18138,6 @@ fn media_cache_distinguishes_mermaid_fences_of_one_document() {
         app.image_src.as_ref().unwrap(),
         &fence1
     ));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Closing a tab must release its cached image — otherwise the one slot keeps an image that no tab can
@@ -18593,7 +18167,6 @@ fn closing_a_media_tab_releases_its_cached_image() {
         app.media_cache.is_none(),
         "閉じたタブの画像は手放す(誰も再利用できない常駐を残さない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `cp -p` / `rsync -a` / archive extraction **preserve the mtime**, so the cache must also compare the
@@ -18633,7 +18206,6 @@ fn media_cache_misses_when_size_changes_under_the_same_mtime() {
         !app.restore_media_cache(&img, 1),
         "mtime が同じでもサイズが違えば使い回さない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Switching back to a tab that has the changed-only filter (`C`) on, from a tab in a **different**
@@ -18697,7 +18269,6 @@ fn changed_filter_survives_returning_from_another_repo() {
             .any(|e| e.path.ends_with("changed.txt")),
         "到着した status で一覧が作り直される"
     );
-    std::fs::remove_dir_all(&base).ok();
 }
 
 /// Drive the real preview pipeline over **every** golden-snapshot corpus and toggle **every**
@@ -18890,7 +18461,6 @@ fn md_task_toggle_is_byte_exact_across_the_corpus() {
         "トグルの拒否が多すぎる({}/{checked}) — 書き戻し位置の解決が壊れていないか: {refused:?}",
         refused.len()
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The `y c` analog of `md_task_toggle_is_byte_exact_across_the_corpus`: drive the real preview
@@ -18994,7 +18564,6 @@ fn md_code_block_copy_is_byte_exact_across_the_corpus() {
         copied_blocks > 100,
         "コーパスのコードブロックが {copied_blocks} 件しかない — この網羅テストが空回りしている"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The general form of the regression fixed live (2026-08) — an **ordered**-list task item
@@ -19173,7 +18742,6 @@ fn md_task_toggle_skips_pseudo_tasks_inside_front_matter() {
         after, "---\ntitle: t\ntags:\n  - [ ] draft\n---\n\n- [x] real\n",
         "front matter 内の疑似タスクは無傷のまま、本文のチェックボックスだけが変わるはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Root cause (b), the line-count-cap case: `preview::text::load` shows only the first `MAX_LINES` (5000)
@@ -19248,7 +18816,6 @@ fn md_task_toggle_works_beyond_the_preview_line_cap() {
         after.len(),
         "書込みでファイル長が変わってはいけない(切り詰め接頭辞でなく全文を保存している証拠)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The `y c` analog of the previous test: `focused_code_source` must scan the same capped prefix
@@ -19303,7 +18870,6 @@ fn md_code_block_copy_works_beyond_the_preview_line_cap() {
         Some("visible code"),
         "画面に見えている先頭のコードブロックがコピーできるはず(copied={copied:?})"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Moving the root out of a repository must drop that repository's ignore set. The "already computing"
@@ -19346,7 +18912,6 @@ fn leaving_a_repo_for_a_plain_directory_drops_the_ignore_set() {
         !app.is_ignored(&repo.join("ignored.txt")),
         "前の repo の無視セットが残っていない"
     );
-    std::fs::remove_dir_all(&base).ok();
 }
 
 /// Build an App previewing `name.md` (body) with wrap on, rendered once into a `w`x`h` TestBackend so
@@ -19516,8 +19081,6 @@ fn external_git_disabled_flashes_distinct_message_and_tree_renders() {
         app2.is_git_view(),
         "sanity: default config opens the Git view on a real repo"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A machine without a `git` executable, with `[external] git = true` (the default): every read
@@ -19563,7 +19126,6 @@ fn git_integration_is_off_when_the_binary_is_missing() {
     assert!(crate::git::workdir(&dir).is_none(), "workdir");
 
     crate::git::set_git_binary_available_for_test(None);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A machine without a `git` executable: `o` refuses with `GitNotInstalled` — not `NotAGitRepo`
@@ -19608,8 +19170,6 @@ fn open_git_view_reports_a_missing_git_binary_distinctly() {
         app2.is_git_view(),
         "sanity: with git installed the Git view opens on a real repo"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A machine without a `git` executable still renders: the tree draws (no markers, no branch name)
@@ -19632,7 +19192,6 @@ fn tree_renders_without_a_git_binary() {
     assert!(app.git_branch().is_none(), "no branch name without git");
 
     crate::git::set_git_binary_available_for_test(None);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `[external] git_tool = false`: `O` never queues a launch (the run loop's `take_launch_git_tool`
@@ -19662,8 +19221,6 @@ fn launch_git_tool_respects_external_flag() {
         app2.take_launch_git_tool(),
         "sanity: default queues the launch"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `[external] open_links = false`: an external link is refused via flash *before* ever spawning
@@ -19682,8 +19239,6 @@ fn open_link_target_respects_external_open_links_flag() {
         Some(tr(app.lang, crate::i18n::Msg::ExternalOpenLinksDisabled)),
         "opening is refused instead of spawning `open`/`xdg-open`"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `[external] remote_images = false`: the Markdown-inline `curl` fetch is never kicked off — the
@@ -19707,8 +19262,6 @@ fn remote_image_fetch_skipped_and_marked_failed_when_disabled() {
         app.md_remote_failed.contains(url),
         "marked failed immediately so the renderer shows the text placeholder, not a stuck Loading"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Regression: `[external] remote_images = false` used to leave a Markdown-inline remote image
@@ -19768,8 +19321,6 @@ fn remote_image_disabled_does_not_stick_on_loading_forever() {
         !text.contains("loading…"),
         "still not stuck after a second frame: {text:?}"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `[external] pdf = false` means "never spawn macOS's bundled qlmanage/sips" — it does **not**
@@ -19804,8 +19355,6 @@ fn pdf_page_count_and_native_render_work_even_with_external_pdf_disabled() {
         Some(3),
         "external.pdf doesn't change the resolved page count"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `[external] video = false` must **not** disable video thumbnails as such — only the external
@@ -19848,8 +19397,6 @@ fn video_thumbnail_is_native_even_when_external_video_disabled() {
             "{name}: no job left pending either"
         );
     }
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The other half of the flag's meaning: for a video the **built-in decoder declines**, `[external]
@@ -19915,8 +19462,6 @@ fn video_thumbnail_falls_back_to_external_tools_only_when_allowed() {
             "sanity: with the flag enabled and ffmpeg available, a thumbnail IS produced"
         );
     }
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The preprocessing corpus driven through the real preview pipeline, toggling **every** checkbox in
@@ -20092,7 +19637,6 @@ fn md_task_toggle_never_writes_to_the_wrong_checkbox_across_the_preprocess_corpu
          (「拒否は正当」を口実に文書全体/コーパス全体を黙って拒否しても緑になっていた抜け穴 — \
          v0.18.1/v0.23.5/v0.23.6 で3回出荷した症状そのもの。このアサート自体が守っているもの)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The document that made the released build corrupt a file, kept as its own regression case so the
@@ -20150,7 +19694,6 @@ fn md_task_toggle_refuses_the_documented_corruption_shape() {
     if after == src {
         assert!(app.flash.is_some(), "書かないなら黙らずに通知する");
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================================
@@ -20206,9 +19749,6 @@ fn collect_all_costs_no_stat_syscall_for_ordinary_entries() {
         stats_large, 0,
         "エントリ数が 10 倍でも stat は 0 回のまま(件数に比例して増えてはいけない)"
     );
-
-    std::fs::remove_dir_all(&small).ok();
-    std::fs::remove_dir_all(&large).ok();
 }
 
 #[cfg(unix)]
@@ -20265,8 +19805,6 @@ fn collect_all_stats_only_symlinks_and_keeps_link_following_is_dir() {
         1,
         "symlink されたディレクトリには潜らない(ループ防止): inner.txt は real_dir 経由の1件のみ"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(unix)]
@@ -20291,7 +19829,6 @@ fn collect_all_does_not_loop_on_a_symlink_cycle() {
         v.iter().any(|e| e.path.file_name().unwrap() == "loop"),
         "リンク自体は結果に現れる(辿らないだけ)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -20327,7 +19864,6 @@ fn collect_all_honors_show_hidden_both_ways() {
         names.contains(&"deep.txt".to_string()),
         "show_hidden なら隠しディレクトリの中まで辿る"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -20341,8 +19877,6 @@ fn collect_all_truncates_at_the_cap() {
     assert_eq!(capped.len(), 10, "cap ちょうどで打ち切る");
     let uncapped = collect_all_capped(&dir, false, 1_000);
     assert_eq!(uncapped.len(), 25, "cap 以下なら全部返る");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -20374,7 +19908,6 @@ fn collect_all_returns_ascending_path_order() {
         v.iter().all(|e| e.depth == 0 && !e.expanded),
         "フラット(depth=0/expanded=false)で返る"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(unix)]
@@ -20418,7 +19951,6 @@ fn collect_all_and_build_dir_agree_on_is_dir() {
         pick(&built),
         "collect_all と build_dir の is_dir 判定が一致すること(二重実装のドリフト防止)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -20440,9 +19972,6 @@ fn collect_all_allocation_scales_linearly() {
         a_large < a_small.saturating_mul(3),
         "2倍の件数で確保バイト数が3倍を超えた(回帰: O(n^2)?): small={a_small} large={a_large}"
     );
-
-    std::fs::remove_dir_all(&small).ok();
-    std::fs::remove_dir_all(&large).ok();
 }
 
 /// Extract one `fn NAME` item's source text from `src/app.rs` (up to the closing brace in column 0).
@@ -21568,7 +21097,6 @@ fn help_wins_over_whatever_screen_is_behind_it() {
             "help over {name}: the chip/footer must be help's"
         );
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The branch/worktree list `/` filter is deliberately **not** symmetric across the three consumers,
@@ -21628,7 +21156,6 @@ fn a_list_filter_switches_the_keymap_and_the_footer_but_not_the_chip() {
             "{name}: the footer must show the /query prompt: {footer_after:?}"
         );
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The priority order is written down once — as the order of `UiLayer`'s variants, which
@@ -21691,7 +21218,6 @@ fn the_walk_visits_the_layers_in_their_declaration_order() {
         seen.len() >= 12,
         "expected the walk to pass through many layers, got {seen:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================================
@@ -21789,7 +21315,6 @@ fn collect_scan_split_at_every_boundary_matches_one_uninterrupted_walk() {
     for (a, b) in pieces.iter().zip(whole.iter()) {
         assert_eq!(a.is_dir, b.is_dir, "is_dir も一致する: {:?}", a.path);
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -21804,7 +21329,6 @@ fn collect_scan_without_a_deadline_finishes_in_one_call() {
         out.windows(2).all(|w| w[0].path <= w[1].path),
         "各回の返り値はソート済み(呼び出し側の sort_by がラン結合で済む前提)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -21816,7 +21340,6 @@ fn collect_scan_treats_the_cap_as_complete_not_as_an_interruption() {
     let (out, rest) = collect_scan(vec![dir.to_path_buf()], false, 7, None);
     assert_eq!(out.len(), 7, "cap ちょうどで打ち切る");
     assert!(rest.is_empty(), "cap 到達は「完了」= 続きを渡さない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Attach a filter-pool channel and return the receiving end (the run loop's role, in a test).
@@ -21856,7 +21379,6 @@ fn start_filter_within_budget_fills_the_pool_before_returning() {
         !app.busy_jobs().contains(&crate::i18n::Msg::BusyFilterScan),
         "走査中インジケータも出ない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -21904,7 +21426,6 @@ fn collect_scan_carries_the_cap_across_a_split() {
         CAP,
         "分割しても打ち切りは cap ちょうど(残量を引き継いでいる)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -21969,7 +21490,6 @@ fn start_filter_over_budget_hands_off_and_the_pool_completes_on_arrival() {
             .all(|e| e.path.to_string_lossy().contains("f0")),
         "再適用は現在の絞り込み条件で行われる(空クエリに戻したりしない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -22022,8 +21542,6 @@ fn a_scan_that_lands_after_the_root_changed_is_discarded() {
         !after.iter().any(|p| p.starts_with(&a)),
         "前の root のパスが混ざらない"
     );
-    std::fs::remove_dir_all(&a).ok();
-    std::fs::remove_dir_all(&b).ok();
 }
 
 #[test]
@@ -22046,7 +21564,6 @@ fn a_scan_that_lands_after_leaving_the_filter_is_discarded() {
         "捨てたプールが復活してはいけない"
     );
     assert!(app.tab.tree_filter.is_none());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -22106,7 +21623,6 @@ fn a_scan_that_lands_after_a_tab_switch_is_discarded() {
         "タブ1の走査結果がタブ2のプールを上書きしていない"
     );
     while rx.try_recv().is_ok() {} // drain whatever the switches themselves kicked off
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -22143,7 +21659,6 @@ fn concurrent_fs_events_coalesce_into_a_single_rescan() {
     );
     assert!(!app.filter_pool_dirty, "保留は解消済み");
     assert!(app.filter_pool_pending.is_none());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -22178,7 +21693,6 @@ fn an_fs_refresh_keeps_showing_the_current_pool_until_the_new_one_lands() {
     let res = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
     assert!(app.apply_filter_pool(res));
     assert_eq!(app.tab.filter_pool.len(), pool_before, "件数は変わらない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -22208,7 +21722,6 @@ fn an_fs_refresh_picks_up_files_created_while_filtering() {
             .any(|e| e.path.ends_with("zzz_agent.txt")),
         "走査中に増えたファイルが、今の入力のまま結果に現れる"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -22250,7 +21763,6 @@ fn the_async_and_synchronous_paths_produce_the_same_pool() {
         async_pool.windows(2).all(|w| w[0] <= w[1]),
         "連結後もソート順は保たれる(fuzzy_filter_pool は順序を前提にしている)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -22271,7 +21783,6 @@ fn without_a_channel_every_scan_still_completes_synchronously() {
         "チャネル未接続なら同期で完走する"
     );
     assert!(app.filter_pool_pending.is_none());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -22306,7 +21817,6 @@ fn a_panicking_scan_releases_the_slot_without_wiping_the_pool() {
         "走査中フラグは解ける(スピナーが回りっぱなしにならない)"
     );
     assert!(!app.busy_jobs().contains(&crate::i18n::Msg::BusyFilterScan));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -22382,7 +21892,6 @@ fn filter_cursor_follows_its_file_when_a_late_scan_reorders_the_results() {
         app.tab.entries[app.tab.selected].path, target,
         "カーソルは同じファイルを指し続ける(index ではなくファイルを追う)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -22416,7 +21925,6 @@ fn filter_cursor_falls_back_to_clamping_when_its_file_is_no_longer_a_match() {
     }
     assert!(app.tab.entries.is_empty(), "土台: 一致なし");
     assert_eq!(app.tab.selected, 0, "空でも範囲外にならない");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Fixture for the **FS-event / rebuild** path, where the trap is a different one: `rebuild_tree`
@@ -22490,7 +21998,6 @@ fn an_fs_driven_rescan_keeps_the_cursor_on_the_same_file() {
         app.tab.entries[app.tab.selected].path, target,
         "2回目のイベントでもカーソル下のファイルがすり替わらない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -22524,7 +22031,6 @@ fn toggling_hidden_while_filtering_keeps_the_cursor_on_the_same_file() {
         app.tab.entries[app.tab.selected].path, target,
         "`.` でカーソル下のファイルがすり替わらない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -22603,7 +22109,6 @@ fn repeated_tab_switches_coalesce_into_a_single_filter_pool_scan() {
         app.filter_pool_pending.is_none(),
         "走査中フラグは latch しない(スピナーが回りっぱなしにならない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -22635,8 +22140,6 @@ fn a_tab_switch_to_a_different_root_still_dispatches_its_own_scan() {
         app.tab.filter_pool.iter().all(|e| e.path.starts_with(&a)),
         "着地したのは移った先の root の内容"
     );
-    std::fs::remove_dir_all(&a).ok();
-    std::fs::remove_dir_all(&b).ok();
 }
 
 #[test]
@@ -22676,7 +22179,6 @@ fn a_superseded_scan_releases_the_slot_and_honours_the_coalesced_request() {
         "陳腐化した結果でも走査中フラグは解ける(latch しない)"
     );
     assert!(!app.filter_pool_dirty);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -22715,8 +22217,6 @@ fn a_superseded_result_does_not_free_a_newer_scans_slot() {
         "まだ走っている新しい走査の枠を横取りしない"
     );
     while rx.try_recv().is_ok() {}
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::remove_dir_all(&other).ok();
 }
 
 #[test]
@@ -22755,7 +22255,6 @@ fn a_new_tab_does_not_inherit_the_previous_tabs_scan() {
         app.filter_pool_pending.is_none(),
         "走査中フラグは latch しない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -22813,7 +22312,6 @@ fn toggling_hidden_while_filtering_keeps_the_filter_and_re_collects_the_pool() {
     app.toggle_hidden().unwrap();
     let shown = names(&app);
     assert_eq!(shown, vec!["visible_target.txt"], "もう一度で元に戻る");
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -22876,7 +22374,6 @@ fn a_panicking_walk_on_the_ui_thread_degrades_instead_of_taking_the_tui_down() {
     }
     assert_eq!(app.tab.filter_pool.len(), pool, "失敗でプールは消されない");
     assert!(app.filter_pool_pending.is_none());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -22976,7 +22473,6 @@ fn changed_cursor_follows_its_file_when_a_new_change_sorts_above_it() {
         app.tab.entries[app.tab.selected].path, target,
         "カーソルは同じファイルを指し続ける(index ではなくファイルを追う)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The asynchronous half — **the path the real app takes**. `refresh_fs` only *kicks* the scan, so
@@ -23031,7 +22527,6 @@ fn changed_cursor_survives_a_rebuild_deferred_to_the_async_scan() {
         app.tab.entries[app.tab.selected].path, target,
         "先送りされた作り直しでもカーソルは同じファイルに残る"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The other half of the contract: "follow the file" must not turn into "refuse to move". When the
@@ -23059,7 +22554,6 @@ fn changed_cursor_falls_back_to_clamping_when_its_file_leaves_the_list() {
         app.tab.selected < app.tab.entries.len(),
         "追えない時は従来どおり範囲内にクランプされる(選択が範囲外で固まらない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `.` (toggle_hidden) while the `C` view is up rebuilds the tree and then re-derives the list. The
@@ -23091,7 +22585,6 @@ fn changed_cursor_survives_toggling_hidden_files() {
         app.tab.entries[app.tab.selected].path, target,
         "`.` を挟んでもカーソルは同じファイルに残る"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A deferred anchor is a **path** carried by `PerTab` for a scan that has not landed yet, so it
@@ -23147,7 +22640,6 @@ fn a_deferred_changed_anchor_is_not_inherited_by_the_next_tab() {
         app.tab.changed_anchor_pending.is_none(),
         "タブ切替でも先送りアンカーは引き継がれない"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// **Residual bug (2026-08-08), same shape as Bug 1-4 above**: `changed_anchor_pending` used to live
@@ -23223,7 +22715,6 @@ fn a_deferred_changed_rebuild_survives_a_tab_switch_and_back() {
         app.tab.entries[app.tab.selected].path, target,
         "タブ切替を挟んでもカーソルは同じファイルに残る(先送りアンカーが引き継がれている)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Non-regression: following the file must not pin the cursor against the moves that are *supposed*
@@ -23251,7 +22742,6 @@ fn changed_cursor_anchoring_does_not_block_deliberate_moves() {
         app.tab.selected, 0,
         "入り直しは先頭から(カーソルは固定されない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -23316,7 +22806,6 @@ fn changed_cursor_survives_two_refreshes_deferred_to_the_same_scan() {
         app.tab.entries[app.tab.selected].path, target,
         "2回連続の先送りでもカーソルは同じファイルに残る"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// **Bug 2**: `toggle_hidden`'s reapply of `C` (via `refilter_after_visibility_change`) rebuilt the
@@ -23392,8 +22881,6 @@ fn toggle_hidden_does_not_falsely_disable_changed_filter_during_a_pending_scan()
         app.tab.entries[app.tab.selected].path, target,
         "着地後カーソルは同じファイルに残る"
     );
-    std::fs::remove_dir_all(&dir_a).ok();
-    std::fs::remove_dir_all(&dir_b).ok();
 }
 
 /// **Bug 3**: `sort_menu_key` rebuilt the tree on `n`/`s`/`m`/`e`/`r`/`.` without ever reapplying
@@ -23426,8 +22913,6 @@ fn sort_menu_key_keeps_the_changed_filter_active() {
         app.tab.entries.iter().all(|e| !e.is_dir),
         "一覧に通常ツリーのディレクトリ(sub 等)が混ざっていない"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// **Bug 4**: `start_filter` (`/`) didn't clear `changed_filter`, so pressing `/` while `C` was
@@ -23469,8 +22954,6 @@ fn start_filter_turns_off_the_changed_filter() {
         app.tab.tree_filter.is_some(),
         "`/` セッション自体は継続している"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -23518,7 +23001,6 @@ fn creating_a_file_keeps_the_changed_filter_active() {
         app.tab.entries[app.tab.selected].path, created,
         "カーソルは新規作成したファイル上にある"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The `dialog_submit` `Rename` path.
@@ -23559,7 +23041,6 @@ fn renaming_a_file_keeps_the_changed_filter_active() {
         app.tab.entries[app.tab.selected].path, renamed,
         "カーソルはリネーム後のファイル上にある"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The `apply_file_op` path (paste/duplicate/trash/delete all funnel through the same
@@ -23604,7 +23085,6 @@ fn duplicating_a_file_keeps_the_changed_filter_active() {
         app.tab.entries[app.tab.selected].path, duplicated,
         "カーソルは複製後のファイル上にある"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The `/` (name filter) side of the same bug — `reveal_and_select` is not `C`-specific, so the
@@ -23733,8 +23213,6 @@ fn entering_preview_on_a_fifo_does_not_hang_and_degrades_safely() {
         "モード遷移自体は既存の unsupported extension と同じく Preview のまま"
     );
     assert_eq!(app.tab.preview_path.as_deref(), Some(fifo.as_path()));
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A FIFO reached via a *directory* path also degrades safely (no crash), even though production
@@ -23759,8 +23237,6 @@ fn entering_preview_on_a_directory_degrades_safely() {
         "ディレクトリを直接渡しても CanNotPreview へ安全降格: {:?}",
         app.tab.preview_kind
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Non-regression: an ordinary regular file previews exactly as before (guard doesn't reject it).
@@ -23780,8 +23256,6 @@ fn entering_preview_on_a_regular_file_still_works() {
         app.tab.preview_kind
     );
     assert_eq!(app.tab.mode, Mode::Preview);
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Non-regression: a symlink to a regular file still previews the link target's content, exactly
@@ -23804,8 +23278,6 @@ fn entering_preview_on_a_symlink_to_a_regular_file_still_works() {
         "通常ファイルへのシンボリックリンクは従来どおり Text として開ける: {:?}",
         app.tab.preview_kind
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Non-regression: `tree_descend` (`l`) still descends into a directory rather than trying to
@@ -23834,39 +23306,6 @@ fn tree_descend_still_descends_into_directories() {
         "ディレクトリはツリーの新しい root として潜行する(プレビューは開かない)"
     );
     assert_eq!(app.tab.mode, Mode::Tree, "モードは Tree のまま");
-
-    std::fs::remove_dir_all(&dir).ok();
-}
-
-/// Builds a throwaway jj workspace with no colocated `.git`. None when this machine has no jj —
-/// konoma falls back to git there, so the suite has to stay green without it.
-#[cfg(feature = "git")]
-fn jj_scratch(name: &str) -> Option<crate::test_support::TmpDir> {
-    if !crate::vcs::jj::available() {
-        return None;
-    }
-    let dir = unique_tmp(name);
-    std::fs::create_dir_all(&dir).ok()?;
-    let jj = |args: &[&str]| {
-        std::process::Command::new("jj")
-            .current_dir(&dir)
-            .env("HOME", &*dir) // never touch the running machine's own jj config
-            .env("JJ_USER", "konoma test")
-            .env("JJ_EMAIL", "test@example.invalid")
-            .args(args)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    };
-    if !jj(&["git", "init", "--no-colocate", "."]) {
-        return None;
-    }
-    std::fs::write(dir.join("a.txt"), b"one\n").ok()?;
-    if !jj(&["commit", "-m", "seed"]) {
-        return None;
-    }
-    std::fs::write(dir.join("a.txt"), b"two\n").ok()?;
-    Some(dir)
 }
 
 /// `[ui] confirm_jj_sync` decides whether `R` asks first. konoma writes to a jj repository only
@@ -23874,7 +23313,7 @@ fn jj_scratch(name: &str) -> Option<crate::test_support::TmpDir> {
 #[cfg(feature = "git")]
 #[test]
 fn ui_confirm_jj_sync_gates_the_only_write() {
-    let Some(dir) = jj_scratch("konoma_confirm_jj_sync") else {
+    let Some(dir) = jj_scratch_seeded("konoma_confirm_jj_sync") else {
         return;
     };
 
@@ -23903,8 +23342,6 @@ fn ui_confirm_jj_sync_gates_the_only_write() {
         app.flash.is_some(),
         "acting without asking still has to report what happened"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The jj backend never shells out to `git` — `src/vcs/jj.rs` only ever runs the `jj` executable —
@@ -23916,7 +23353,7 @@ fn ui_confirm_jj_sync_gates_the_only_write() {
 #[cfg(feature = "git")]
 #[test]
 fn jj_hub_opens_even_when_the_git_binary_is_missing() {
-    let Some(dir) = jj_scratch("konoma_jj_hub_no_git_binary") else {
+    let Some(dir) = jj_scratch_seeded("konoma_jj_hub_no_git_binary") else {
         return;
     };
     crate::git::set_git_binary_available_for_test(Some(false));
@@ -23939,7 +23376,6 @@ fn jj_hub_opens_even_when_the_git_binary_is_missing() {
     );
 
     crate::git::set_git_binary_available_for_test(None);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The matching case for `[external] git = false`: turning git integration off must not close the jj
@@ -23950,7 +23386,7 @@ fn jj_hub_opens_even_when_the_git_binary_is_missing() {
 #[cfg(feature = "git")]
 #[test]
 fn jj_hub_opens_even_when_the_git_integration_is_switched_off() {
-    let Some(dir) = jj_scratch("konoma_jj_hub_git_disabled") else {
+    let Some(dir) = jj_scratch_seeded("konoma_jj_hub_git_disabled") else {
         return;
     };
     let mut cfg = Config::default();
@@ -23979,8 +23415,6 @@ fn jj_hub_opens_even_when_the_git_integration_is_switched_off() {
         Some(tr(app.lang, crate::i18n::Msg::ExternalGitDisabled)),
         "jj never asks [external] git, so this reason must never fire for it"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Moving to a different repository has to settle **which backend answers** right away, not when
@@ -24022,8 +23456,6 @@ fn moving_to_another_repository_settles_the_backend_before_the_scan_lands() {
         crate::vcs::VcsKind::Git,
         "a git repository must not keep answering as jj until the scan lands"
     );
-
-    std::fs::remove_dir_all(&root).ok();
 }
 
 /// The same window, the other way round: arriving in a jj workspace has to read as jj immediately,
@@ -24031,7 +23463,7 @@ fn moving_to_another_repository_settles_the_backend_before_the_scan_lands() {
 #[cfg(feature = "git")]
 #[test]
 fn arriving_in_a_jj_workspace_reads_as_jj_before_the_scan_lands() {
-    let Some(jj_dir) = jj_scratch("konoma_git_vcs_to_jj") else {
+    let Some(jj_dir) = jj_scratch_seeded("konoma_git_vcs_to_jj") else {
         return;
     };
     let git_dir = unique_tmp("konoma_git_vcs_to_jj_git");
@@ -24082,7 +23514,7 @@ fn arriving_in_a_jj_workspace_reads_as_jj_before_the_scan_lands() {
 #[cfg(feature = "git")]
 #[test]
 fn worktree_create_is_gated_even_if_the_normally_unreachable_surface_is_forced_open() {
-    let Some(dir) = jj_scratch("konoma_worktree_create_gate") else {
+    let Some(dir) = jj_scratch_seeded("konoma_worktree_create_gate") else {
         return;
     };
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
@@ -24120,8 +23552,6 @@ fn worktree_create_is_gated_even_if_the_normally_unreachable_surface_is_forced_o
         !app.is_dialog(),
         "n must not have opened the new-worktree input dialog"
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The read-only gate in `dispatch_action` only protects a write if it is reached through an
@@ -24340,8 +23770,6 @@ fn diff_rendered_reserves_images_from_both_old_and_new_versions() {
         "新版だけにある画像も予約されるはず: {urls:?}"
     );
     assert_eq!(placements.len(), 2, "旧・新の画像それぞれ1つずつ: {urls:?}");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Regression test for a real bug (confirmed on a real terminal, tmux 100 cols): the change gutter
@@ -24430,8 +23858,6 @@ fn diff_rendered_gutter_never_causes_an_overflow_wrap() {
         "ガター込みの行幅が width を超えてはいけない: {:?}",
         lines.iter().map(|l| l.width()).collect::<Vec<_>>()
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `App::compute_gutter_align` (the decision, made before any width-dependent render — see
@@ -24555,33 +23981,11 @@ fn ordinary_preview_gutter_decision_matches_render_for_a_truncated_file() {
         "ガター込みの行幅が width を超えてはいけない: {:?}",
         lines.iter().map(|l| l.width()).collect::<Vec<_>>()
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // =============================================================================
 // Media diff (image/PDF/SVG side-by-side, `docs/FEATURE-MEDIA-DIFF.md`) — phase B
 // =============================================================================
-
-#[cfg(feature = "git")]
-fn media_diff_git(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn media_diff_write_png(path: &Path, w: u32, h: u32, px: [u8; 3]) {
-    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(px)))
-        .save(path)
-        .unwrap();
-}
 
 // ---- App::diff_representations / App::round_diff_view ----------------------------------------
 
@@ -24596,7 +24000,6 @@ fn diff_representations_markdown_is_source_rendered_preview() {
         app.diff_representations(&path),
         vec![DiffView::Source, DiffView::Rendered, DiffView::Preview]
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -24613,7 +24016,6 @@ fn diff_representations_code_text_mermaid_are_source_preview_only() {
             "{name}"
         );
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -24622,13 +24024,12 @@ fn diff_representations_image_and_pdf_have_no_source() {
     std::fs::create_dir_all(&dir).unwrap();
     let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 2, 3]);
+    write_solid_png(&png, 2, 2, [1, 2, 3]);
     assert_eq!(
         app.diff_representations(&png),
         vec![DiffView::Rendered, DiffView::Preview],
         "Image は Rendered が並べて表示なので Source は無いはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -24647,7 +24048,6 @@ fn diff_representations_svg_is_source_rendered_preview() {
         vec![DiffView::Source, DiffView::Rendered, DiffView::Preview],
         "SVG は絵でもあり本物のテキストでもあるので3表現のはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -24664,7 +24064,6 @@ fn diff_representations_video_archive_unsupported_are_source_only() {
             "{name}"
         );
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `App::diff_view_cycle_hint` (the `R` footer hint) is `None` for a target with only one
@@ -24691,7 +24090,6 @@ fn diff_view_cycle_hint_is_none_for_a_single_representation_target() {
             "{name}: 表現が1つしか無いので R ヒントは出ないはず"
         );
     }
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -24709,7 +24107,6 @@ fn diff_representations_deleted_svg_and_pdf_classify_via_glob_without_the_worker
     );
     let pdf = dir.join("gone.pdf");
     assert_eq!(app.diff_representations(&pdf), vec![DiffView::Rendered]);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -24721,7 +24118,6 @@ fn diff_representations_deleted_ambiguous_file_is_rendered_only_before_landing()
     // (`CanNotPreview`), and nothing has polled the worker yet for this path.
     let path = dir.join("gone_unknown_ext_xyz");
     assert_eq!(app.diff_representations(&path), vec![DiffView::Rendered]);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -24731,9 +24127,9 @@ fn diff_representations_deleted_image_classifies_via_worker_byte_sniff_after_lan
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
     let png = dir.join("gone.png"); // no glob rule matches .png — image/* is MIME-only
-    media_diff_write_png(&png, 3, 3, [9, 9, 9]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    write_solid_png(&png, 3, 3, [9, 9, 9]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     std::fs::remove_file(&png).unwrap(); // deleted on disk, still in HEAD
 
     // Canonicalize before `App::new` (its own `tab.root`) so it matches `png`'s prefix exactly —
@@ -24768,7 +24164,7 @@ fn round_diff_view_substitutes_rendered_and_source_for_each_other() {
     std::fs::create_dir_all(&dir).unwrap();
     let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     // Image has no Source: a Source request rounds to Rendered.
     assert_eq!(
         app.round_diff_view(DiffView::Source, &png),
@@ -24788,7 +24184,6 @@ fn round_diff_view_substitutes_rendered_and_source_for_each_other() {
         app.round_diff_view(DiffView::Preview, &mp4),
         DiffView::Source
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `round_diff_view`'s "no substitute, fall back to the list's first entry" arm, on a target with
@@ -24816,7 +24211,6 @@ fn round_diff_view_preview_request_on_a_deleted_file_with_two_reps_falls_back_to
         DiffView::Source,
         "Preview に置換候補は無い(削除ファイルなので Preview 自体を持たない)ので一覧の先頭(Source)に丸められるはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- App::diff_media_active / App::diff_binary_summary_eligible / App::diff_footer_is_media_or_summary ----
@@ -24827,7 +24221,7 @@ fn diff_media_active_is_true_for_image_rendered_and_false_for_markdown_rendered(
     let dir = unique_tmp("konoma_media_diff_active_predicate");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
@@ -24841,7 +24235,6 @@ fn diff_media_active_is_true_for_image_rendered_and_false_for_markdown_rendered(
         !app.diff_media_active(),
         "Markdown の Rendered はメディアではない(装飾ブロック)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -24858,7 +24251,6 @@ fn diff_binary_summary_eligible_excludes_text_kinds_and_includes_binary_kinds() 
     let mp4 = dir.join("clip.mp4");
     std::fs::write(&mp4, b"\x00\x01").unwrap();
     assert!(app.diff_binary_summary_eligible(&mp4));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -24868,7 +24260,7 @@ fn diff_footer_is_media_or_summary_covers_media_active_and_binary_summary_kinds(
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     app.open_git_diff(&png);
     assert!(app.diff_footer_is_media_or_summary());
 
@@ -24881,7 +24273,6 @@ fn diff_footer_is_media_or_summary_covers_media_active_and_binary_summary_kinds(
     std::fs::write(&rs, "fn main(){}\n").unwrap();
     app.open_git_diff(&rs);
     assert!(!app.diff_footer_is_media_or_summary());
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- App::media_diff_showing_pictures: s/J-K hints only while actually showing a landed picture --
@@ -24897,7 +24288,7 @@ fn media_diff_showing_pictures_is_false_before_anything_lands_true_once_ready() 
     let dir = unique_tmp("konoma_media_diff_showing_pictures_pending");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    write_solid_png(&png, 4, 4, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     assert!(app.diff_media_active(), "前提: 種別は media");
@@ -24910,7 +24301,6 @@ fn media_diff_showing_pictures_is_false_before_anything_lands_true_once_ready() 
         app.media_diff_showing_pictures(),
         "着地したら true になるはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The `s`/`J`/`K` hints — footer and `?` help both — are absent while the media diff is still
@@ -24922,7 +24312,7 @@ fn footer_and_help_omit_s_hint_while_the_media_diff_is_still_computing() {
     let dir = unique_tmp("konoma_media_diff_hint_pending");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    write_solid_png(&png, 4, 4, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
 
@@ -24962,7 +24352,6 @@ fn footer_and_help_omit_s_hint_while_the_media_diff_is_still_computing() {
         "着地後は ? ヘルプにも s 行があるはず: {:?}",
         help_rows(&app)
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- `?` help's `x` (discard) row is gated on write capability, like the footer -----------------
@@ -24975,10 +24364,10 @@ fn help_x_row_is_shown_on_a_writable_backend() {
     std::fs::create_dir_all(&dir).unwrap();
     init_git_repo(&dir);
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
-    media_diff_write_png(&png, 4, 4, [2, 2, 2]);
+    write_solid_png(&png, 4, 4, [1, 1, 1]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
+    write_solid_png(&png, 4, 4, [2, 2, 2]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     assert!(crate::vcs::caps(&app.tab.root).write, "前提: git は書ける");
@@ -24991,7 +24380,6 @@ fn help_x_row_is_shown_on_a_writable_backend() {
         rows.contains(&"x".to_string()),
         "書ける backend では x 行があるはず: {rows:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A read-only backend (jj) never shows `x` in `?` help — this used to be unconditional (a
@@ -25000,11 +24388,11 @@ fn help_x_row_is_shown_on_a_writable_backend() {
 #[cfg(feature = "git")]
 #[test]
 fn help_x_row_is_hidden_on_a_read_only_backend() {
-    let Some(dir) = jj_scratch("konoma_media_diff_help_x_jj") else {
+    let Some(dir) = jj_scratch_seeded("konoma_media_diff_help_x_jj") else {
         return;
     };
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    write_solid_png(&png, 4, 4, [1, 1, 1]);
     let jj = |args: &[&str]| {
         std::process::Command::new("jj")
             .current_dir(&dir)
@@ -25017,7 +24405,7 @@ fn help_x_row_is_hidden_on_a_read_only_backend() {
             .unwrap_or(false)
     };
     assert!(jj(&["commit", "-m", "add png"]));
-    media_diff_write_png(&png, 4, 4, [2, 2, 2]); // uncommitted change
+    write_solid_png(&png, 4, 4, [2, 2, 2]); // uncommitted change
 
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
@@ -25034,7 +24422,6 @@ fn help_x_row_is_hidden_on_a_read_only_backend() {
         !rows.contains(&"x".to_string()),
         "jj では x 行が無いはず: {rows:?}"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- diff-surface predicates memoize resolve_preview instead of re-resolving every frame -------
@@ -25053,7 +24440,7 @@ fn diff_surface_predicates_resolve_preview_kind_at_most_once_per_retarget_not_pe
     let dir = unique_tmp("konoma_media_diff_resolve_cache");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png); // one retarget — allowed to resolve here, outside the measured window
 
@@ -25070,7 +24457,6 @@ fn diff_surface_predicates_resolve_preview_kind_at_most_once_per_retarget_not_pe
         calls <= 1,
         "毎フレーム再解決している(resolve_preview_kind が {calls} 回呼ばれた・キャッシュが効いていない)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- media-diff:// cache pruning: leaving the diff / retargeting away from media -----------------
@@ -25085,7 +24471,7 @@ fn closing_the_media_diff_prunes_its_media_diff_cache_keys() {
     let dir = unique_tmp("konoma_media_diff_prune_on_close");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     let _ = app.poll_media_diff(&png, app.diff_media_page(), (400, 300));
@@ -25098,7 +24484,6 @@ fn closing_the_media_diff_prunes_its_media_diff_cache_keys() {
         app.md_image_cache_media_diff_keys_for_test().is_empty(),
         "diff を閉じたら media-diff:// キーは prune されるはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Retargeting the diff to a non-media (text/Markdown) file also prunes the *previous* target's
@@ -25110,7 +24495,7 @@ fn retargeting_to_a_non_media_file_prunes_the_previous_media_diff_cache_keys() {
     let dir = unique_tmp("konoma_media_diff_prune_on_retarget");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let md = dir.join("doc.md");
     std::fs::write(&md, "# hi\n\nchanged\n").unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
@@ -25123,7 +24508,6 @@ fn retargeting_to_a_non_media_file_prunes_the_previous_media_diff_cache_keys() {
         app.md_image_cache_media_diff_keys_for_test().is_empty(),
         "非メディアへ retarget したら前のターゲットの media-diff:// キーは prune されるはず"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- apply_diff_view must not kick the (unrelated) Markdown block-diff for a media target -----
@@ -25134,7 +24518,7 @@ fn apply_diff_view_does_not_kick_the_markdown_block_diff_for_a_media_target() {
     let dir = unique_tmp("konoma_media_diff_no_block_diff_flash");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
@@ -25143,7 +24527,6 @@ fn apply_diff_view_does_not_kick_the_markdown_block_diff_for_a_media_target() {
         "画像の Rendered(=並べて表示) は Markdown ブロック diff と無関係なので flash が立たないはず: {:?}",
         app.flash
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- App::media_diff_page_turn / App::media_diff_can_page --------------------------------------
@@ -25160,8 +24543,8 @@ fn media_diff_page_turn_moves_both_sides_and_clamps_to_the_larger_page_count() {
     init_git_repo(&dir);
     let doc = dir.join("doc.pdf");
     std::fs::write(&doc, &bytes).unwrap();
-    media_diff_git(&dir, &["add", "-A"]);
-    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "init"]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&doc);
     assert_eq!(app.diff_view_for_test(), DiffView::Rendered);
@@ -25179,7 +24562,6 @@ fn media_diff_page_turn_moves_both_sides_and_clamps_to_the_larger_page_count() {
     assert_eq!(app.diff_media_page(), 3);
     app.media_diff_page_turn(-1);
     assert_eq!(app.diff_media_page(), 2);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[cfg(feature = "git")]
@@ -25188,14 +24570,13 @@ fn media_diff_can_page_is_false_for_a_single_page_image() {
     let dir = unique_tmp("konoma_media_diff_can_page_false");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     let _ = app.poll_media_diff(&png, 1, (400, 300));
     assert!(!app.media_diff_can_page());
     app.media_diff_page_turn(1); // no-op
     assert_eq!(app.diff_media_page(), 1);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // ---- App::cycle_media_diff_layout (the `s` handler while the media diff is active) -------------
@@ -25206,7 +24587,7 @@ fn cycle_media_diff_layout_rotates_auto_side_stack_and_flashes() {
     let dir = unique_tmp("konoma_media_diff_cycle_layout");
     std::fs::create_dir_all(&dir).unwrap();
     let png = dir.join("pic.png");
-    media_diff_write_png(&png, 2, 2, [1, 1, 1]);
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
     app.open_git_diff(&png);
     assert!(app.diff_media_active());
@@ -25225,7 +24606,6 @@ fn cycle_media_diff_layout_rotates_auto_side_stack_and_flashes() {
     assert_eq!(app.media_diff_layout(), MediaDiffLayout::Stack);
     app.cycle_diff_layout();
     assert_eq!(app.media_diff_layout(), MediaDiffLayout::Auto);
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// `[git] media_diff` parses the same alias vocabulary `DiffLayout::parse` does for its own
@@ -25240,4 +24620,143 @@ fn media_diff_layout_parse_accepts_aliases_and_falls_back_to_auto() {
     assert_eq!(MediaDiffLayout::parse("unified"), MediaDiffLayout::Stack);
     assert_eq!(MediaDiffLayout::parse("auto"), MediaDiffLayout::Auto);
     assert_eq!(MediaDiffLayout::parse("bogus"), MediaDiffLayout::Auto);
+}
+
+/// Pins why `App::diff_media_active` keeps its own single `!matches!(kind, Markdown)` check instead
+/// of calling `App::diff_media_capable` (`classify_kind(&self.diff_target_kind(path)).is_some()`):
+/// **the two only ever answer differently for one reachable state**, a deleted file whose
+/// classification depends on content (`mime = "image/*"`, no glob) rather than its name —
+/// `diff_target_kind` degrades to `CanNotPreview` once there are no bytes left to sniff, even though
+/// `diff_representations`'s own "ask the worker" fallback may still be showing `Rendered` for it
+/// (`media_landed_outcome_for` returning `None` ⟹ "not landed yet" ⟹ show the computing body as
+/// `Rendered`). `diff_media_capable` says `false` there (correctly, on its own narrower question);
+/// `diff_media_active` must still say `true` (a different question: "route to the media/side-by-side
+/// renderer, which knows how to show a computing placeholder or degrade to the binary summary once
+/// the worker actually lands"). For every other kind `diff_representations` can ever hand `Rendered`
+/// to (Markdown, Image, Pdf, Svg), the two predicates agree.
+#[cfg(feature = "git")]
+#[test]
+fn diff_media_active_agrees_with_the_single_not_markdown_check_across_every_reachable_kind() {
+    let dir = unique_tmp("konoma_diff_media_active_equivalence");
+    std::fs::create_dir_all(&dir).unwrap();
+    init_git_repo(&dir);
+
+    // A helper: open `path`'s diff, then assert `diff_media_active()` equals both (a) the single
+    // "not Markdown" check this test is pinning as the ground truth, and (b) `diff_media_capable`
+    // when `expect_diverges_from_capable` is `false` (the common case).
+    fn check(
+        app: &mut App,
+        path: &std::path::Path,
+        expect_diverges_from_capable: bool,
+        label: &str,
+    ) {
+        app.open_git_diff(path);
+        let kind = app.diff_target_kind(path);
+        let ground_truth = !matches!(kind, PreviewKind::Markdown(_));
+        assert_eq!(
+            app.diff_media_active(),
+            ground_truth,
+            "{label}: diff_media_active must equal !matches!(kind, Markdown) (kind={kind:?})"
+        );
+        let capable = app.diff_media_capable(path);
+        if expect_diverges_from_capable {
+            assert_ne!(
+                capable, ground_truth,
+                "{label}: this is the one state expected to diverge from diff_media_capable \
+                 (kind={kind:?}) — if it no longer diverges, the exception this test documents may \
+                 have been fixed/removed elsewhere and the fallback can likely be dropped"
+            );
+        } else {
+            assert_eq!(
+                capable, ground_truth,
+                "{label}: diff_media_capable must already agree here (kind={kind:?})"
+            );
+        }
+    }
+
+    // Markdown: Rendered is reachable, kind is Markdown — both predicates say "not media".
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "# hi\n\nchanged\n").unwrap();
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "md"]);
+    std::fs::write(&md, "# hi\n\nchanged again\n").unwrap();
+    check(
+        &mut App::new(dir.to_path_buf(), Config::default()).unwrap(),
+        &md,
+        false,
+        "markdown",
+    );
+
+    // Image: Rendered is reachable, kind is Image — both predicates say "media".
+    let png = dir.join("pic.png");
+    write_solid_png(&png, 2, 2, [1, 1, 1]);
+    check(
+        &mut App::new(dir.to_path_buf(), Config::default()).unwrap(),
+        &png,
+        false,
+        "image",
+    );
+
+    // SVG: Rendered is reachable (Svg is also real text), kind is Svg — both predicates say "media".
+    let svg = dir.join("pic.svg");
+    std::fs::write(
+        &svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2"/></svg>"#,
+    )
+    .unwrap();
+    check(
+        &mut App::new(dir.to_path_buf(), Config::default()).unwrap(),
+        &svg,
+        false,
+        "svg",
+    );
+
+    // The one divergent state: an extension-less file (classified only by `mime = "image/*"`, no
+    // glob) that has since been *deleted* — `diff_target_kind` degrades to `CanNotPreview` (nothing
+    // left to sniff), while `diff_representations`'s own "ask the worker" fallback still hands back
+    // `Rendered` (nothing has polled yet, so `media_landed_outcome_for` is `None` ⟹ "not landed
+    // yet"). `diff_media_active` (old check) says `true`; `diff_media_capable` says `false`.
+    let photo = dir.join("photo");
+    {
+        let mut b = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 4, image::Rgb([9, 9, 9])))
+            .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(&photo, &b).unwrap();
+    }
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "photo"]);
+    std::fs::remove_file(&photo).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    assert!(
+        matches!(
+            app.cfg.resolve_preview(&photo),
+            PreviewKind::CanNotPreview { .. }
+        ),
+        "前提: 拡張子なしの削除ファイルは CanNotPreview のはず(sniff できない): {:?}",
+        app.cfg.resolve_preview(&photo)
+    );
+    check(&mut app, &photo, true, "deleted extensionless (ex-image)");
+
+    // A deleted *code* file (`.rs`, glob-matched by extension, no MIME dependency): the extension
+    // alone still resolves it correctly even though it's gone — this never reaches the "ask the
+    // worker" fallback, and `Code`'s own representations (`[Source, Preview]`) never include
+    // `Rendered` regardless of existence, so `diff_rendered_active()` is unreachable here — confirmed
+    // directly rather than asserted through `check` (which assumes `Rendered` was actually reached).
+    let rs = dir.join("a.rs");
+    std::fs::write(&rs, "fn main() {}\n").unwrap();
+    run_git(&dir, &["add", "-A"]);
+    run_git(&dir, &["commit", "-q", "-m", "rs"]);
+    std::fs::remove_file(&rs).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.open_git_diff(&rs);
+    assert_eq!(
+        app.diff_view_for_test(),
+        DiffView::Source,
+        "前提: 削除された .rs は Rendered に丸まらないはず(Code の表現一覧に Rendered が無い)"
+    );
+    assert!(
+        !app.diff_media_active(),
+        "Rendered ではないので diff_media_active は false のはず"
+    );
 }

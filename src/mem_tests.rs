@@ -129,7 +129,6 @@ fn mem_calibration() {
         al2 as f64 / al1 as f64,
         sz2 as f64 / sz1 as f64
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Build an App previewing `name` in `dir`, rendered once (caches built), returning the App + Terminal.
@@ -196,7 +195,6 @@ fn md_scroll_reuses_cache_not_redecorate() {
         one_scroll.saturating_mul(20) < first_draw,
         "スクロールが装飾キャッシュを再利用していない(1スクロール {one_scroll} が初回装飾 {first_draw} に近い=毎フレーム再装飾?)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // GUARDS: a windowed text preview reads only the visible window — a 16x-larger file does NOT allocate
@@ -231,7 +229,6 @@ fn windowed_preview_does_not_scale_with_file_size() {
         large_alloc < small_alloc.saturating_mul(3),
         "windowed プレビューがファイルサイズに比例している(16x のファイルで alloc {large_alloc} が小 {small_alloc} の 3x 超=全文読み込み?)"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // GUARDS: a windowed read is bounded **per line**, not just per window. A file with no newlines
@@ -294,7 +291,6 @@ fn windowed_read_is_bounded_per_line() {
         fs_large < fs_small.saturating_mul(2),
         "find_all_matches の確保が行の長さに比例している({fs_large} vs {fs_small})"
     );
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 // GUARDS: cloned-per-tab / core structs stay small. PerTab is cloned on every tab snapshot/restore,
@@ -331,5 +327,4 @@ fn table_rows_are_capped() {
         td.nrows()
     );
     assert!(td.truncated, "上限超過は truncated=true で通知");
-    std::fs::remove_dir_all(&dir).ok();
 }

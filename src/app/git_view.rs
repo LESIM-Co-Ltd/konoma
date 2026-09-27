@@ -593,9 +593,8 @@ impl App {
         // the bottom of this fn, whether to arm a new one for `path` — mirrors `App::enter_preview`'s
         // own up-front clear (`diff_scroll_pending`'s own doc comment).
         self.tab.diff_scroll_pending = None;
-        // A fresh diff target: the media diff's page position belongs to *this* file, not
-        // whatever page a previously-open PDF diff happened to be on (`PerTab::diff_media_page`'s
-        // own doc comment).
+        // A fresh diff target: the media diff's page position belongs to *this* file, not whatever
+        // page a previously-open PDF diff happened to be on.
         self.tab.diff_media_page = 1;
         self.preview_win = None;
         self.win_cache = None;
@@ -703,20 +702,15 @@ impl App {
     }
     /// Cycle the diff layout unified→split→Auto (`s`). Called from both the GitDiff preview and the
     /// detail view. While the media diff's side-by-side view is actually **showing pictures**
-    /// (`media_diff_showing_pictures` — not merely targeted; a still-computing or binary-summary
-    /// body has nothing to lay out, `docs/FEATURE-MEDIA-DIFF.md` §6's "並べて表示中"), delegates to
-    /// `cycle_media_diff_layout` instead — `s` there cycles auto/side/stack, a wholly different (and
-    /// separately configured) layout state than this one (`App::media_diff_layout`'s own doc
-    /// comment). Otherwise a no-op while the `Rendered` presentation is on screen at all
-    /// (`diff_rendered_active`) — for Markdown that means decorated blocks, not the unified/split
-    /// raw-line layout this key cycles, so there is nothing here for it to change (this same
-    /// fallthrough is also what makes a *still-computing/summary* media diff a no-op: its own
-    /// `diff_media_active` — hence `diff_rendered_active` — is already `true`, so it lands here
-    /// rather than in the unified/split branch below). The footer already hides the `s:...` hint in
-    /// exactly that case ([[hint-shown-iff-key-acts]], `ui/status.rs::mode_footer`'s own
-    /// `media_diff_showing_pictures`/`diff_rendered_active` checks) — this is the key-handler half
-    /// of the same gate, so pressing `s` there doesn't flash a layout label for a layout that isn't
-    /// actually showing.
+    /// (`media_diff_showing_pictures` — not merely targeted; a still-computing or binary-summary body
+    /// has nothing to lay out), delegates to `cycle_media_diff_layout` instead — `s` there cycles
+    /// auto/side/stack, a wholly different (and separately configured) layout state than this one.
+    /// Otherwise a no-op while the `Rendered` presentation is on screen at all (`diff_rendered_
+    /// active`) — for Markdown that's decorated blocks, not the unified/split raw-line layout this
+    /// key cycles, so there's nothing here to change (the same fallthrough also makes a
+    /// still-computing/summary media diff a no-op, since its `diff_media_active` is already `true`).
+    /// The footer already hides the `s:...` hint in exactly that case
+    /// ([[hint-shown-iff-key-acts]]) — this is the key-handler half of the same gate.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn cycle_diff_layout(&mut self) {
         if self.media_diff_showing_pictures() {
@@ -2143,26 +2137,7 @@ mod tests {
     #[cfg(feature = "git")]
     use crate::config::Config;
     #[cfg(feature = "git")]
-    use crate::test_support::unique_tmp;
-
-    #[cfg(feature = "git")]
-    fn init_repo(dir: &std::path::Path) {
-        let repo = git2::Repository::init(dir).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "Test").unwrap();
-        cfg.set_str("user.email", "test@example.com").unwrap();
-        cfg.set_str("commit.gpgsign", "false").ok();
-    }
-
-    #[cfg(feature = "git")]
-    fn sh(cwd: &std::path::Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .current_dir(cwd)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?}: {out:?}");
-    }
+    use crate::test_support::{init_git_repo, run_git, unique_tmp};
 
     /// `git commit` with an explicit, well-separated author/committer date (`GIT_AUTHOR_DATE` /
     /// `GIT_COMMITTER_DATE`, accepted as `@<unix-epoch> +0000`) so tests that assert "the newer
@@ -2194,10 +2169,10 @@ mod tests {
         let dir = unique_tmp(name);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-q", "-m", "init"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
         // `.canonicalize()` here transfers cleanup responsibility onto the returned guard (see its
         // own doc comment) rather than leaving it on `dir`/`linked`, which would otherwise drop
         // (and rm -rf the fixture) the moment this function returns.
@@ -2205,7 +2180,7 @@ mod tests {
         let base = crate::git::branch(&root).expect("sanity: has a branch after the commit");
         let linked = unique_tmp(&format!("{name}_linked"));
         let _ = std::fs::remove_dir_all(&linked);
-        sh(
+        run_git(
             &root,
             &[
                 "worktree",
@@ -2317,22 +2292,22 @@ mod tests {
         let dir = unique_tmp("konoma_gitview_diffbase_recency");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("main.txt"), b"main\n").unwrap();
-        sh(&dir, &["add", "-A"]);
+        run_git(&dir, &["add", "-A"]);
         commit_at(&dir, "on main", 1_700_000_000); // deterministic: 20 days apart from develop's commit
-        sh(&dir, &["branch", "-m", "main"]); // name the initial branch deterministically
+        run_git(&dir, &["branch", "-m", "main"]); // name the initial branch deterministically
 
-        sh(&dir, &["checkout", "-q", "-b", "develop"]);
+        run_git(&dir, &["checkout", "-q", "-b", "develop"]);
         std::fs::write(dir.join("develop.txt"), b"develop\n").unwrap();
-        sh(&dir, &["add", "-A"]);
+        run_git(&dir, &["add", "-A"]);
         commit_at(&dir, "on develop", 1_720_000_000); // newer than main's commit — develop's tip
                                                       // is now the merge-base any worktree branched off it will have with `develop`.
 
         let root = dir.canonicalize().unwrap();
         let linked = unique_tmp("konoma_gitview_diffbase_recency_linked");
         let _ = std::fs::remove_dir_all(&linked);
-        sh(
+        run_git(
             &root, // root is currently checked out on `develop`, so the worktree branches off its tip
             &[
                 "worktree",
@@ -2345,7 +2320,7 @@ mod tests {
         );
         let linked = linked.canonicalize().unwrap();
         std::fs::write(linked.join("agent.txt"), b"agent\n").unwrap();
-        sh(&linked, &["add", "-A"]);
+        run_git(&linked, &["add", "-A"]);
         commit_at(&linked, "agent work", 1_730_000_000);
 
         let mut cfg = Config::default();
@@ -2397,10 +2372,10 @@ mod tests {
         let dir = unique_tmp("konoma_cycle_diff_layout_rendered_noop_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.md"), "# t\n\nbody\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-q", "-m", "init"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
         std::fs::write(dir.join("a.md"), "# t\n\nCHANGED\n").unwrap();
 
         let canon = dir.canonicalize().unwrap();
@@ -2434,7 +2409,5 @@ mod tests {
             app.diff_layout, layout_before,
             "Source では s が通常どおり効く"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

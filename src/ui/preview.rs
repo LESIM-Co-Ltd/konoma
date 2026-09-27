@@ -42,10 +42,9 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     let l = |m| tr(lang, m);
     if app.is_git_diff_preview() {
         // The file-diff preview opened via Enter from the Git changes hub (`o`). The media diff's
-        // side-by-side view and the binary-summary/computing body (`docs/FEATURE-MEDIA-DIFF.md`
-        // §5/§6) both have nothing to scroll — `j/k`/`g/G`/the page-step row are all omitted for
-        // either, mirroring the footer's own `App::diff_footer_is_media_or_summary` gate
-        // ([[hint-shown-iff-key-acts]]).
+        // side-by-side view and the binary-summary/computing body both have nothing to scroll —
+        // `j/k`/`g/G`/the page-step row are all omitted for either, mirroring the footer's own
+        // `App::diff_footer_is_media_or_summary` gate ([[hint-shown-iff-key-acts]]).
         let media_or_summary = app.diff_footer_is_media_or_summary();
         let mut sec = HelpSection::new(l(crate::i18n::Msg::PreviewGitDiff));
         if !media_or_summary {
@@ -673,14 +672,13 @@ fn render_diff_rendered(frame: &mut Frame, app: &mut App, area: Rect) {
     });
 }
 
-/// The image/PDF/SVG side-by-side "diff" (`docs/FEATURE-MEDIA-DIFF.md` §1/§4/§6) — the `Rendered`
-/// presentation's own body for a media-capable target (`App::diff_media_active`). Polls the media-
-/// diff worker (`App::poll_media_diff`), lays the two sides out with `preview::media_diff::layout`,
-/// and draws each side's caption + picture through the same inline-image machinery
-/// `overlay_inline_images` uses for a Markdown document (`App::ensure_md_image`/`App::
-/// md_image_proto`) — the pictures themselves already live in `md_image_cache` under their own
+/// The image/PDF/SVG side-by-side "diff" — the `Rendered` presentation's own body for a
+/// media-capable target (`App::diff_media_active`). Polls the media-diff worker (`App::poll_media_
+/// diff`), lays the two sides out with `preview::media_diff::layout`, and draws each side's caption +
+/// picture through the same inline-image machinery `overlay_inline_images` uses for a Markdown
+/// document — the pictures themselves already live in `md_image_cache` under their own
 /// `media-diff://` keys by the time this runs (`App::apply_media_diff`). Degrades to the binary
-/// summary line (§5) when there is no picker (images disabled/unsupported terminal).
+/// summary line when there is no picker (images disabled/unsupported terminal).
 #[cfg(feature = "git")]
 fn render_gitdiff_media(frame: &mut Frame, app: &mut App, area: Rect) {
     let pos = app
@@ -705,62 +703,16 @@ fn render_gitdiff_media(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
 
-    // No picker at all (a terminal with no graphics protocol, or images disabled): §4's "画像を描
-    // けない端末・設定" — the summary line, computed from the worker exactly like
-    // `empty_diff_body_text`'s own binary-summary case (any raster target works here, since no
-    // picture will ever actually be decoded to screen size; `(64, 64)` is a harmless placeholder).
-    let Some(cell_px) = app.picker_cell_px() else {
-        let text = match app.poll_media_diff(&path, app.diff_media_page(), (64, 64)) {
-            None => tr(app.lang, crate::i18n::Msg::DiffComputing).to_string(),
-            Some(outcome) => media_summary_line(app.lang, &outcome)
-                .unwrap_or_else(|| tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string()),
-        };
-        draw_media_centered(frame, inner, text);
-        return;
-    };
-    let raster_px =
-        media_diff_raster_px(app, inner).unwrap_or_else(|| (cell_px.0 * 40, cell_px.1 * 20));
-    let page = app.diff_media_page();
-    let mut outcome = app.poll_media_diff(&path, page, raster_px);
-    // A landed `Ready` whose `Picture` cache_key no longer has an entry in `md_image_cache` (e.g.
-    // evicted by `App::enter_preview`'s file-switch clear when some *other* preview target was
-    // visited in between — `App::md_image_cache_contains`'s own doc comment has the detail on
-    // which paths do/don't trigger this, `docs/FEATURE-MEDIA-DIFF.md` §4) is re-kicked rather than
-    // silently drawn as nothing.
-    if let Some(crate::app::MediaDiffOutcome::Ready {
-        ref old, ref new, ..
-    }) = outcome
-    {
-        let stale = |s: &crate::app::MediaDiffSide| matches!(s, crate::app::MediaDiffSide::Picture(p) if !app.md_image_cache_contains(&p.cache_key));
-        if stale(old) || stale(new) {
-            app.invalidate_media_diff();
-            outcome = app.poll_media_diff(&path, page, raster_px);
-        }
-    }
-
-    match outcome {
-        None => draw_media_centered(
-            frame,
-            inner,
-            tr(app.lang, crate::i18n::Msg::DiffComputing).to_string(),
-        ),
-        Some(crate::app::MediaDiffOutcome::Unavailable) => draw_media_centered(
-            frame,
-            inner,
-            tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string(),
-        ),
-        Some(ref outcome @ crate::app::MediaDiffOutcome::Summary { .. }) => {
-            let text = media_summary_line(app.lang, outcome)
-                .unwrap_or_else(|| tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string());
-            draw_media_centered(frame, inner, text);
-        }
-        Some(crate::app::MediaDiffOutcome::Ready {
-            kind: _,
+    match resolve_media_diff_render_state(app, &path, inner) {
+        MediaDiffRenderState::Centered(text) => draw_media_centered(frame, inner, text),
+        MediaDiffRenderState::Ready {
+            page,
+            cell_px,
             base,
             same_bytes,
             old,
             new,
-        }) => {
+        } => {
             let old_px = media_side_natural_px(&old);
             let new_px = media_side_natural_px(&new);
             let geom = crate::preview::media_diff::layout(
@@ -801,6 +753,92 @@ fn render_gitdiff_media(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// What `render_gitdiff_media`'s drawing half needs: either a single centered line (no picker, still
+/// computing, "no changes", or a non-picture kind's binary summary), or everything the `Ready` case
+/// needs to lay out and draw both sides.
+#[cfg(feature = "git")]
+enum MediaDiffRenderState {
+    Centered(String),
+    Ready {
+        page: u32,
+        cell_px: (u32, u32),
+        base: crate::app::MediaBase,
+        same_bytes: bool,
+        old: crate::app::MediaDiffSide,
+        new: crate::app::MediaDiffSide,
+    },
+}
+
+/// `render_gitdiff_media`'s state-resolution half: the picker check, `raster_px` computation, the
+/// worker poll, and the stale-cache-key re-kick — everything that decides *what* the drawing half
+/// should show, with none of the drawing itself. Pure extraction — same order of operations, same
+/// I/O.
+#[cfg(feature = "git")]
+fn resolve_media_diff_render_state(
+    app: &mut App,
+    path: &Path,
+    inner: Rect,
+) -> MediaDiffRenderState {
+    // No picker at all (a terminal with no graphics protocol, or images disabled): the summary line,
+    // computed from the worker exactly like `empty_diff_body_text`'s own binary-summary case (any
+    // raster target works here, since no picture will ever actually be decoded to screen size;
+    // `(64, 64)` is a harmless placeholder).
+    let Some(cell_px) = app.picker_cell_px() else {
+        let text = match app.poll_media_diff(path, app.diff_media_page(), (64, 64)) {
+            None => tr(app.lang, crate::i18n::Msg::DiffComputing).to_string(),
+            Some(outcome) => media_summary_line(app.lang, &outcome)
+                .unwrap_or_else(|| tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string()),
+        };
+        return MediaDiffRenderState::Centered(text);
+    };
+    let raster_px =
+        media_diff_raster_px(app, inner).unwrap_or_else(|| (cell_px.0 * 40, cell_px.1 * 20));
+    let page = app.diff_media_page();
+    let mut outcome = app.poll_media_diff(path, page, raster_px);
+    // A landed `Ready` whose `Picture` cache_key no longer has an entry in `md_image_cache` (e.g.
+    // evicted by `App::enter_preview`'s file-switch clear when some *other* preview target was
+    // visited in between — see `App::md_image_cache_contains`'s own doc comment) is re-kicked rather
+    // than silently drawn as nothing.
+    if let Some(crate::app::MediaDiffOutcome::Ready {
+        ref old, ref new, ..
+    }) = outcome
+    {
+        let stale = |s: &crate::app::MediaDiffSide| matches!(s, crate::app::MediaDiffSide::Picture(p) if !app.md_image_cache_contains(&p.cache_key));
+        if stale(old) || stale(new) {
+            app.invalidate_media_diff();
+            outcome = app.poll_media_diff(path, page, raster_px);
+        }
+    }
+
+    match outcome {
+        None => MediaDiffRenderState::Centered(
+            tr(app.lang, crate::i18n::Msg::DiffComputing).to_string(),
+        ),
+        Some(crate::app::MediaDiffOutcome::Unavailable) => {
+            MediaDiffRenderState::Centered(tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string())
+        }
+        Some(ref outcome @ crate::app::MediaDiffOutcome::Summary { .. }) => {
+            let text = media_summary_line(app.lang, outcome)
+                .unwrap_or_else(|| tr(app.lang, crate::i18n::Msg::GitNoChanges).to_string());
+            MediaDiffRenderState::Centered(text)
+        }
+        Some(crate::app::MediaDiffOutcome::Ready {
+            kind: _,
+            base,
+            same_bytes,
+            old,
+            new,
+        }) => MediaDiffRenderState::Ready {
+            page,
+            cell_px,
+            base,
+            same_bytes,
+            old,
+            new,
+        },
+    }
+}
+
 /// A single centered line of text, for `render_gitdiff_media`'s non-`Ready` bodies (computing/
 /// summary/unavailable) — mirrors `render_gitdiff_source`'s own empty-diff placement.
 #[cfg(feature = "git")]
@@ -819,19 +857,9 @@ fn draw_media_centered(frame: &mut Frame, inner: Rect, text: String) {
 }
 
 /// A pane's own pixel size for `preview::media_diff::layout`'s sizing — `None` for anything but a
-/// landed `Picture` (nothing to size a pane around).
-///
-/// `p.natural_px` — the picture's **intrinsic** size in the kind's own unit (raster image: real
-/// header pixel dimensions; SVG: viewBox; PDF: page points) — never the decoded raster's own pixel
-/// dimensions (`MediaDiffPictureDecoded::natural_px`'s own doc comment has the detail: a PDF page is
-/// rasterized to a fixed longest side regardless of its point size, an SVG to fit the caller's
-/// `raster_px` box regardless of its viewBox, and a GIF's frames may be decode-budget-downscaled —
-/// none of those decoded pixel sizes are comparable across the two sides of one diff, which is
-/// exactly what `layout`'s "shared scale" (`docs/FEATURE-MEDIA-DIFF.md` §1) depends on). The decoded
-/// raster's own pixel size is never fed back into this layout step; instead, `App::poll_md_encode`
-/// always resizes media-diff pictures with `Resize::Scale` (never `Fit`) to exactly the cell box
-/// this layout decided, so a decoded-vs-intrinsic mismatch (the norm here, not the exception) can
-/// never make `Widget::render` refuse to draw or draw at the wrong size.
+/// landed `Picture` (nothing to size a pane around). Returns `p.natural_px`, the picture's
+/// **intrinsic** size, never the decoded raster's own pixel dimensions — see
+/// `MediaDiffPictureDecoded::natural_px`'s own doc comment for why that distinction matters.
 #[cfg(feature = "git")]
 fn media_side_natural_px(side: &crate::app::MediaDiffSide) -> Option<(u32, u32)> {
     match side {
@@ -882,10 +910,10 @@ struct MediaCaptionCtx {
     page: u32,
 }
 
-/// One side's caption row: "Before/After · base · WxH · size[ · p. N/M][ · identical]"
-/// (`docs/FEATURE-MEDIA-DIFF.md` §1) — or, for a side with no picture, "Before/After · base" alone
-/// (the placeholder message itself is drawn centered in the picture area by `draw_media_side`, not
-/// squeezed into this one row). Truncated to the pane's own width by display width (CJK-safe).
+/// One side's caption row: "Before/After · base · WxH · size[ · p. N/M][ · identical]" — or, for a
+/// side with no picture, "Before/After · base" alone (the placeholder message itself is drawn
+/// centered in the picture area by `draw_media_side`, not squeezed into this one row). Truncated to
+/// the pane's own width by display width (CJK-safe).
 #[cfg(feature = "git")]
 fn draw_media_caption(
     frame: &mut Frame,
@@ -928,8 +956,7 @@ fn draw_media_caption(
     frame.render_widget(Paragraph::new(text).dim(), rect);
 }
 
-/// The 1-cell separator between the two panes — `│` for side-by-side, `─` for stacked
-/// (`docs/FEATURE-MEDIA-DIFF.md` §1).
+/// The 1-cell separator between the two panes — `│` for side-by-side, `─` for stacked.
 #[cfg(feature = "git")]
 fn draw_media_separator(frame: &mut Frame, geom: &crate::preview::media_diff::MediaDiffGeometry) {
     use crate::preview::media_diff::MediaDiffOrientation;
@@ -954,16 +981,14 @@ fn draw_media_separator(frame: &mut Frame, geom: &crate::preview::media_diff::Me
 }
 
 /// One side's picture area: draws the decoded picture (via the Markdown inline-image machinery,
-/// keyed on the landed `media-diff://` cache key) into `pane.image` when there is one, or a
-/// centered placeholder message for `Absent`/`Failed`/`PageMissing` into `pane.area`
-/// (`docs/FEATURE-MEDIA-DIFF.md` §1/§7).
+/// keyed on the landed `media-diff://` cache key) into `pane.image` when there is one, or a centered
+/// placeholder message for `Absent`/`Failed`/`PageMissing` into `pane.area`.
 ///
 /// The placeholder is centered in `pane.area` — the whole area below the caption — **not**
 /// `pane.image`: `image` is always zero-sized for these three variants (`layout`'s own contract,
-/// `MediaDiffPane`'s doc comment), so using it here (as an earlier version did) meant the
-/// placeholder's own zero-size guard discarded it before ever drawing — a real bug (an untracked
-/// file's old side, a deleted file's new side, and a page beyond one side's own PDF page count all
-/// silently rendered nothing but the caption).
+/// `MediaDiffPane`'s doc comment), and drawing into a zero-sized rect is silently discarded before
+/// ever rendering — an untracked file's old side, a deleted file's new side, and a page beyond one
+/// side's own PDF page count must all still show their placeholder message, not just the caption.
 #[cfg(feature = "git")]
 fn draw_media_side(
     frame: &mut Frame,
@@ -1046,10 +1071,8 @@ fn render_decorated_body(
     // both shapes that takes (its own doc comment has the detail): the `Rendered` presentation's
     // "computing…" placeholder body only ever exists exactly when this is `true` for the on-screen
     // path, and an ordinary preview's still-computing gutter has no placeholder at all, so this is
-    // the only signal for it. A second, narrower placeholder-only check used to sit alongside this
-    // one; pre-merge review of PR #21 found it could never be `true` without this one also being
-    // `true`, so it was dropped as redundant. Consuming the request while either kind is still
-    // computing would lose it for the *real* frame that lands once the worker finishes.
+    // the only signal for it. Consuming the request while either kind is still computing would lose
+    // it for the *real* frame that lands once the worker finishes.
     if !app.md_diff_pending_for_current()
         && app
             .tab
@@ -1451,13 +1474,11 @@ fn quantize_px(px: u32, step: u32) -> u32 {
 
 /// The pixel box `render_gitdiff_media` asks the media-diff worker to rasterize an SVG/PDF side
 /// into — the whole diff body's own box (`inner`), not each pane's smaller one: which orientation
-/// (and therefore how big each pane actually is) the sides end up laid out in depends on their own
-/// natural size, which isn't known until *after* they're decoded, so this deliberately over-asks
-/// using the full body as an upper bound rather than guessing the eventual split first (the same
-/// "never enlarge, only ever shrink to fit" contract `preview::media_diff::layout` gives the result
-/// means over-asking here costs a slightly bigger raster, never a wrong-looking one). `None` when
-/// there is no picker at all (`App::picker_cell_px`) — `docs/FEATURE-MEDIA-DIFF.md` §4's "画像を描
-/// けない端末・設定" degrades to the binary summary line before this is ever called.
+/// (and therefore how big each pane actually is) depends on the sides' own natural size, not known
+/// until *after* they're decoded, so this deliberately over-asks using the full body as an upper
+/// bound (`layout`'s "never enlarge, only shrink to fit" contract means over-asking costs a slightly
+/// bigger raster, never a wrong-looking one). `None` when there is no picker at all
+/// (`App::picker_cell_px`) — degrades to the binary summary line before this is ever called.
 fn media_diff_raster_px(app: &App, inner: Rect) -> Option<(u32, u32)> {
     let (cw, ch) = app.picker_cell_px()?;
     let w = quantize_px((inner.width as u32).max(1) * cw.max(1), 64);
@@ -1465,10 +1486,10 @@ fn media_diff_raster_px(app: &App, inner: Rect) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
-/// The binary-summary-line text (`docs/FEATURE-MEDIA-DIFF.md` §5) for a landed media-diff outcome —
-/// `None` when the outcome doesn't call for one at all: a genuine "(no changes)" (either shape with
-/// `same_bytes`), or `Unavailable` (the worker panicked/gave up — the caller keeps its own existing
-/// "(no changes)" text rather than claiming a binary change it can't actually back up with sizes).
+/// The binary-summary-line text for a landed media-diff outcome — `None` when the outcome doesn't
+/// call for one at all: a genuine "(no changes)" (either shape with `same_bytes`), or `Unavailable`
+/// (the worker panicked/gave up — the caller keeps its own existing "(no changes)" text rather than
+/// claiming a binary change it can't actually back up with sizes).
 fn media_summary_line(
     lang: crate::i18n::Lang,
     outcome: &crate::app::MediaDiffOutcome,
@@ -1550,13 +1571,13 @@ fn thousands_separated(n: u64) -> String {
     out.chars().rev().collect()
 }
 
-/// The centered body text for `render_gitdiff_source`'s empty-diff branch
-/// (`docs/FEATURE-MEDIA-DIFF.md` §5) — the plain "(no changes)" for every ordinary text kind (an
-/// empty line diff there always was genuine — `App::diff_binary_summary_eligible`'s own gate), and
-/// for the narrower set of kinds that gate covers (video/archive/table/unsupported/an image-mode
-/// command), consults the media-diff worker instead of trusting the empty line diff at face value:
-/// a real binary change renders as the summary line, a landed "identical bytes" or a still-pending
-/// result render as "(no changes)"/"computing…" respectively.
+/// The centered body text for `render_gitdiff_source`'s empty-diff branch — the plain "(no changes)"
+/// for every ordinary text kind (an empty line diff there always was genuine —
+/// `App::diff_binary_summary_eligible`'s own gate), and for the narrower set of kinds that gate
+/// covers (video/archive/table/unsupported/an image-mode command), consults the media-diff worker
+/// instead of trusting the empty line diff at face value: a real binary change renders as the summary
+/// line, a landed "identical bytes" or a still-pending result render as "(no changes)"/"computing…"
+/// respectively.
 fn empty_diff_body_text(app: &mut App, inner: Rect) -> String {
     let lang = app.lang;
     let no_changes = tr(lang, crate::i18n::Msg::GitNoChanges).to_string();
@@ -2084,7 +2105,6 @@ mod scroll_indicator_tests {
             "末尾のラベルは Bot:\n{}",
             rows(&term).join("\n")
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }
 
@@ -2152,7 +2172,6 @@ mod help_tests {
             crate::i18n::tr(app.lang, crate::i18n::Msg::AtRefHelp),
             "ソース表示の Y はキャレット/選択対応の文言"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }
 
@@ -2161,28 +2180,10 @@ mod gitdiff_tests {
     use super::help_sections;
     use crate::app::App;
     use crate::config::Config;
-    use crate::test_support::unique_tmp;
+    use crate::test_support::{init_git_repo, run_git, unique_tmp};
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
     use ratatui::Terminal;
-    use std::path::Path;
-
-    fn init_repo(dir: &Path) {
-        let repo = git2::Repository::init(dir).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "Test").unwrap();
-        cfg.set_str("user.email", "test@example.com").unwrap();
-        cfg.set_str("commit.gpgsign", "false").ok();
-    }
-
-    fn run_git(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?} 失敗");
-    }
 
     /// The git diff is the third scrolling preview, so it reports position like the other two: a
     /// diff taller than the screen starts at `Top` with the thumb at the top of the track, and `G`
@@ -2192,7 +2193,7 @@ mod gitdiff_tests {
         let dir = unique_tmp("konoma_ui_gitdiff_scroll");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let f = dir.join("a.rs");
         std::fs::write(&f, b"seed\n").unwrap();
         run_git(&dir, &["add", "-A"]);
@@ -2247,7 +2248,6 @@ mod gitdiff_tests {
             "末尾では thumb がトラック下端に接する"
         );
         assert!(screen(&term).contains("[Bot]"), "末尾のラベルは Bot");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Render the GitDiff preview of a modified file and verify (1) changed rows have red/green background cells,
@@ -2257,7 +2257,7 @@ mod gitdiff_tests {
         let dir = unique_tmp("konoma_ui_gitdiff_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let f = dir.join("a.rs");
         std::fs::write(&f, b"alpha\nbeta\ngamma_keep\n").unwrap();
         run_git(&dir, &["add", "-A"]);
@@ -2297,7 +2297,7 @@ mod gitdiff_tests {
         let dir = unique_tmp("konoma_ui_gitdiff_clean");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let f = dir.join("a.rs");
         std::fs::write(&f, b"alpha\n").unwrap();
         run_git(&dir, &["add", "-A"]);
@@ -2319,7 +2319,6 @@ mod gitdiff_tests {
             s.contains("no changes") || s.contains("変更なし"),
             "クリーン表示が出ない: {s:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The `?` help's `R` row in `Surface::PreviewGitDiff` must be gated by the same
@@ -2334,7 +2333,7 @@ mod gitdiff_tests {
         let dir = unique_tmp("konoma_ui_gitdiff_help_r_row");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         // A NUL byte forces `is_probably_text` to classify this as binary (`resolve_preview`
         // degrades to `CanNotPreview`) — an extension with no matching rule alone still resolves to
         // ordinary `Text` for text content (two representations), which is not what this row wants
@@ -2398,7 +2397,5 @@ mod gitdiff_tests {
             crate::i18n::tr(app.lang, crate::i18n::Msg::DiffViewCycleHelp),
             "3 表現の R 行は source → rendered → preview のはず"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

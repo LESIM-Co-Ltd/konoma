@@ -734,11 +734,6 @@ mod tests {
                 "pref={pref:?} form={form} jj_available={jj_available}"
             );
         }
-
-        std::fs::remove_dir_all(&git_only).ok();
-        std::fs::remove_dir_all(&jj_only).ok();
-        std::fs::remove_dir_all(&colocated).ok();
-        std::fs::remove_dir_all(&neither).ok();
     }
 
     /// The single most important promise in this file: upgrading konoma must never change what an
@@ -750,7 +745,6 @@ mod tests {
         let dir = detect_with_colocated_dir();
         assert_eq!(detect_with(Preference::Auto, &dir, true), VcsKind::Git);
         assert_eq!(detect_with(Preference::Auto, &dir, false), VcsKind::Git);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The matching promise on the other side: `[external] vcs = "jj"` pins a colocated repository
@@ -760,7 +754,6 @@ mod tests {
     fn detect_with_colocated_under_explicit_jj_pref_becomes_jj() {
         let dir = detect_with_colocated_dir();
         assert_eq!(detect_with(Preference::Jj, &dir, true), VcsKind::Jj);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `vcs = "git"` always wins, even in a `.jj`-only directory that has no git repository to fall
@@ -771,7 +764,6 @@ mod tests {
     fn detect_with_jj_only_under_explicit_git_pref_stays_git() {
         let dir = detect_with_jj_only_dir();
         assert_eq!(detect_with(Preference::Git, &dir, true), VcsKind::Git);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Without a working `jj` binary, `auto` must fall back to git rather than choosing a backend it
@@ -781,7 +773,6 @@ mod tests {
     fn detect_with_jj_only_under_auto_without_jj_binary_stays_git() {
         let dir = detect_with_jj_only_dir();
         assert_eq!(detect_with(Preference::Auto, &dir, false), VcsKind::Git);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // --- [external] git = false's effect on detect_with's `auto` gap-filling ----------------------
@@ -823,7 +814,6 @@ mod tests {
             "sanity: re-enabling restores the usual colocated-stays-git answer, proving the flag \
              is not stuck off"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The matching guardrail on the other side: an explicit `[external] vcs = "git"` preference
@@ -841,7 +831,6 @@ mod tests {
             "an explicit git preference must not be swayed by [external] git"
         );
         crate::git::set_external_git_enabled(true);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // --- backend_for's routing, not just detect's answer -----------------------------------------
@@ -887,6 +876,5 @@ mod tests {
             "a .jj-only directory's backend must be read-only"
         );
         set_preference_for_test(None);
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

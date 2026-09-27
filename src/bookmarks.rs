@@ -431,10 +431,6 @@ mod tests {
         let bm5 = Bookmarks::with_base(base.to_path_buf(), &proj);
         assert_eq!(bm5.get('a'), None);
         assert_eq!(bm5.get('A'), Some(PathBuf::from("/tmp/global_A")));
-
-        std::fs::remove_dir_all(&base).ok();
-        std::fs::remove_dir_all(&proj).ok();
-        std::fs::remove_dir_all(&proj2).ok();
     }
 
     #[test]
@@ -472,7 +468,6 @@ mod tests {
         assert_eq!(got.get(&'Z'), Some(&PathBuf::from("/tmp/global_z")));
         assert!(!got.contains_key(&'c'), "空値は無視");
         assert_eq!(got.len(), 2, "有効キーのみ復元(複数文字キー/空値は除外)");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Regression test for the non-atomic-write data-loss bug: `write_marks` used to call
@@ -519,8 +514,6 @@ mod tests {
         );
         let got = read_marks(&target);
         assert_eq!(got.get(&'a'), Some(&PathBuf::from("/tmp/new")));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Companion to the symlink test above, mirroring `session::tests::write_replaces_in_place_and_leaves_no_temp`:
@@ -547,8 +540,6 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
             .count();
         assert_eq!(leftovers, 0, "temp ファイルを残さない");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -578,7 +569,5 @@ mod tests {
                 ('B', PathBuf::from("/tmp/B"))
             ]
         );
-        std::fs::remove_dir_all(&base).ok();
-        std::fs::remove_dir_all(&proj).ok();
     }
 }

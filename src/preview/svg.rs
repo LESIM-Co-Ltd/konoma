@@ -288,7 +288,6 @@ mod tests {
         let bad = dir.join("not.svg");
         std::fs::write(&bad, b"not an svg at all").unwrap();
         assert!(intrinsic_size(&bad).is_none(), "非 SVG は None");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Draws `svg` against `db` through the same `resvg::render` call the previewer makes, and

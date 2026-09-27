@@ -1605,27 +1605,7 @@ fn temp_png_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::unique_tmp;
-
-    /// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
-    /// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
-    /// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate
-    /// root by convention. Tolerant of the one case where the fixture is legitimately absent
-    /// (`samples/` is excluded from the published crate) by returning `None`, but saying so loudly
-    /// instead of silently passing zero assertions. Mirrors `preview/pdf.rs`'s identical helper.
-    fn sample_path_or_skip(name: &str) -> Option<PathBuf> {
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("samples")
-            .join(name);
-        if p.exists() {
-            Some(p)
-        } else {
-            eprintln!(
-                "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
-            );
-            None
-        }
-    }
+    use crate::test_support::{sample_path_or_skip, unique_tmp};
 
     /// The inverse of [`BitReader`], for building synthetic parameter sets. Shared by the H.264 and
     /// H.265 builders below so the exp-Golomb encoding exists in exactly one place — two copies
@@ -1908,8 +1888,6 @@ mod tests {
                 "SPS が profile {bad} と言うならデコード前に拒否する(ビットストリームが実際にはデコードできても)"
             );
         }
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The knobs [`hevc_sps_is_decodable`] gates on, as a struct rather than seven positional
@@ -2352,8 +2330,6 @@ mod tests {
                 "SPS が profile {bad} と言うならデコード前に拒否する(ビットストリームが実際にはデコードできても)"
             );
         }
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The HEVC half of the point of this module: an ordinary HEVC mp4 — the family an iPhone
@@ -2454,8 +2430,6 @@ mod tests {
             thumbnail_native(&p).is_none(),
             "途中で切れた HEVC mp4 は None(panic しない)"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Emulation prevention must be undone before a parameter set is read, and only where the spec
@@ -2693,7 +2667,6 @@ mod tests {
                 "{name}: 拡張子と中身が食い違うファイルは安全に None(別コンテナの reader が絵を作ってしまわない)"
             );
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The Matroska half of the point of this module: an ordinary `.mkv` becomes a real picture with
@@ -3052,8 +3025,6 @@ mod tests {
             thumbnail_native(&shredded).is_none(),
             "サンプルデータが壊れた mkv は None(panic しない)"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The Matroska counterpart of `guard_reads_the_bitstream_not_the_container`, and the reason the
@@ -3137,8 +3108,6 @@ mod tests {
                 "SPS が profile {bad} と言うならデコード前に拒否する(mp4 と同じガードが mkv でも効く)"
             );
         }
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The whole point of this batch: a plain H.264 mp4 becomes a real picture with **no external
@@ -3224,8 +3193,6 @@ mod tests {
                 "サンプルデータが壊れた mp4 は None(panic しない)"
             );
         }
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Keyframe selection: the ~10% mark (matching `ffmpegthumbnailer`'s default, so switching
@@ -3294,7 +3261,6 @@ mod tests {
             thumbnail(&not_a_video, true).is_none(),
             ".mp4 という名前だけの非動画ファイルは None(ffmpeg があれば実際に起動して拒否したことを検査する)"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// If ffmpeg is on PATH, verify that a thumbnail can actually be extracted from a generated tiny video, down to **the extracted frame's
@@ -3455,8 +3421,6 @@ mod tests {
             "run_ffmpeg が親プロセスの stdin を子に継承している(sentinel を読めてしまった): {:?}",
             String::from_utf8_lossy(&captured_ffmpeg)
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Root cause: `temp_png_path` built its path directly under `std::env::temp_dir()`, which is

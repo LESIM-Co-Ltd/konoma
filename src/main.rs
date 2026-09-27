@@ -2316,7 +2316,6 @@ mod tests {
             msg.contains("not a directory"),
             "「ディレクトリでない」旨が含まれる: {msg}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2324,7 +2323,6 @@ mod tests {
         let dir = unique_tmp("konoma_validate_root_ok_test");
         std::fs::create_dir_all(&dir).unwrap();
         assert!(validate_root(&dir).is_ok(), "実在し読めるディレクトリは Ok");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A directory that exists and passes a plain `is_dir()` check but can't actually be listed
@@ -2354,7 +2352,6 @@ mod tests {
             );
         }
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // --- resolve_startup (composition, still no terminal touched) -------------------------
@@ -2390,7 +2387,6 @@ mod tests {
             Startup::Open(got) => assert_eq!(got, std::fs::canonicalize(&dir).unwrap()),
             other => panic!("Open を期待したが: {other:?}"),
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // --- --version / --help text -----------------------------------------------------------
@@ -2802,7 +2798,6 @@ mod tests {
         );
 
         drop(watcher);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2878,7 +2873,6 @@ mod tests {
         );
 
         drop(watcher);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2952,7 +2946,6 @@ mod tests {
         assert_eq!(attempted.as_deref(), Some(dir2.as_path()));
 
         drop(watcher);
-        let _ = std::fs::remove_dir_all(&dir2);
     }
 
     #[test]
@@ -2985,7 +2978,6 @@ mod tests {
         assert_eq!(watched, None);
 
         drop(watcher);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3039,7 +3031,6 @@ mod tests {
             !app.follow_enabled(),
             "テキスト入力面に居る間のキーでフォロー解除"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3096,7 +3087,6 @@ mod tests {
         handle_key(&mut app, key('a')).unwrap();
         assert_eq!(app.tab.root, proj.join("sub"));
         assert!(!app.is_bookmark_list());
-        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -3117,7 +3107,6 @@ mod tests {
         // Cleared by Esc.
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
         assert!(!app.is_filtering() && app.filter_query().is_none());
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -3155,7 +3144,6 @@ mod tests {
         // `?` while help is shown closes it.
         handle_key(&mut app, key('?')).unwrap();
         assert!(!app.show_help, "? で閉じる");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -3192,8 +3180,6 @@ mod tests {
         // tab and come back).
         handle_key(&mut app, key('1')).unwrap(); // to tab 0
         assert!(app.is_git_view(), "タブを戻ると git モードのまま");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3235,7 +3221,6 @@ mod tests {
         handle_key(&mut app, key('n')).unwrap();
         assert_eq!(app.pending_leader, None, "リーダーは確定で消える");
         assert!(app.is_dialog(), "Space→n で作成ダイアログが開く");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3261,7 +3246,6 @@ mod tests {
             fa2.contains("start") || fa2.contains("起動"),
             "A の flash: {fa2}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3285,7 +3269,6 @@ mod tests {
         assert_eq!(app.surface(), Surface::DialogConfirmQuit);
         let exit2 = handle_key(&mut app, key('q')).unwrap();
         assert!(exit2, "qq の2打鍵目で終了");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3299,7 +3282,6 @@ mod tests {
         let exit = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
         assert!(!exit, "Esc では終了しない");
         assert!(!app.is_dialog(), "Esc で確認ダイアログが閉じる");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3318,7 +3300,6 @@ mod tests {
         .unwrap();
         assert!(exit, "confirm_quit=false なら Q で即終了");
         assert!(!app.is_dialog(), "ダイアログは開かない");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3338,7 +3319,6 @@ mod tests {
         assert!(!exit, "絞り込み中の Q では終了しない");
         assert!(!app.is_dialog(), "終了確認も出ない");
         assert_eq!(app.filter_query(), Some("Q"), "Q は文字として入力される");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3359,7 +3339,6 @@ mod tests {
         handle_key(&mut app, key('d')).unwrap();
         assert!(!app.is_visual(), "Space→d で範囲を確定しビジュアルを抜ける");
         assert!(app.is_dialog(), "削除確認ダイアログが開く");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3389,7 +3368,6 @@ mod tests {
             !paste_accepted(app2.surface()),
             "ヘルプ表示中はドロップを無視する"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3461,7 +3439,6 @@ mod tests {
             flash.contains("boom"),
             "原因メッセージが flash に出る: {flash}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3483,7 +3460,6 @@ mod tests {
         // The last tab → q requests quitting (confirm_quit=false, so immediately Ok(true)).
         let quit = dispatch_action(&mut app, Action::CloseTabOrQuit, Surface::Tree).unwrap();
         assert!(quit, "最後の1枚では終了する");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -3500,7 +3476,6 @@ mod tests {
         assert_eq!(app.flash, None, "終了要求では flash を立てない");
         assert!(!resolve_key_result(&mut app, Ok(false)), "Ok(false) は継続");
         assert_eq!(app.flash, None, "継続では flash を立てない");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// F: a filter-pool walk running on another thread must shorten the loop's wait, like every
@@ -3540,7 +3515,6 @@ mod tests {
         assert!(!app.filter_pool_scan_in_flight());
         assert_eq!(poll_timeout(&app), idle, "着地したら元の待ちに戻る");
         app::set_filter_scan_budget(None);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // --- tool_command (the `!` tool-selection logic pulled out of run_git_tool) ------------

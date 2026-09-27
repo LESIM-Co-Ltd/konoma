@@ -912,24 +912,16 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::test_support::unique_tmp;
+    use crate::test_support::{init_git_repo, jj_scratch_seeded, run_git, run_jj, unique_tmp};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-
-    fn init_repo(dir: &std::path::Path) {
-        let repo = git2::Repository::init(dir).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "Test").unwrap();
-        cfg.set_str("user.email", "test@example.com").unwrap();
-        cfg.set_str("commit.gpgsign", "false").ok();
-    }
 
     #[test]
     fn git_view_renders_marker_and_filename() {
         let dir = unique_tmp("konoma_git_view_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("foo.txt"), b"hi\n").unwrap(); // untracked → 'U'
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
         app.open_git_view();
@@ -947,16 +939,6 @@ mod tests {
         assert!(s.contains("Git"), "タイトルが無い: {s}");
         assert!(s.contains('U'), "状態マーカーが無い: {s}");
         assert!(s.contains("foo.txt"), "ファイル名が無い: {s}");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    fn sh(dir: &std::path::Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "git {args:?} 失敗");
     }
 
     #[test]
@@ -964,10 +946,10 @@ mod tests {
         let dir = unique_tmp("konoma_git_log_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-m", "hello world commit"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-m", "hello world commit"]);
 
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
         app.open_git_log();
@@ -987,7 +969,6 @@ mod tests {
             s.contains("hello world commit"),
             "コミット summary が無い: {s}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1031,11 +1012,11 @@ mod tests {
         let dir = unique_tmp("konoma_git_branches_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-m", "init"]);
-        sh(&dir, &["branch", "feature"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-m", "init"]);
+        run_git(&dir, &["branch", "feature"]);
 
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
         app.open_git_branches();
@@ -1053,7 +1034,6 @@ mod tests {
         assert!(s.contains("branches"), "タイトルが無い: {s}");
         assert!(s.contains("feature"), "feature ブランチが無い: {s}");
         assert!(s.contains('*'), "現在ブランチの * マーカーが無い: {s}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1061,10 +1041,10 @@ mod tests {
         let dir = unique_tmp("konoma_git_detail_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"alpha\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-m", "init"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-m", "init"]);
 
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
         app.open_git_log();
@@ -1082,7 +1062,6 @@ mod tests {
             .collect();
         // The added file content ("alpha") shows up in the detail diff.
         assert!(s.contains("alpha"), "diff 本文が出ていない: {s}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Regression: even a huge diff over 65535 lines can reach the tail without the cap wrapping in u16.
@@ -1155,12 +1134,12 @@ mod tests {
         let dir = unique_tmp("konoma_graph_picker_render");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"a\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-q", "-m", "init"]);
-        sh(&dir, &["branch", "-M", "trunk"]);
-        sh(&dir, &["branch", "feature-x"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
+        run_git(&dir, &["branch", "-M", "trunk"]);
+        run_git(&dir, &["branch", "feature-x"]);
 
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
         app.open_git_graph();
@@ -1184,7 +1163,6 @@ mod tests {
         );
         assert!(s.contains("trunk"), "HEAD ブランチが無い: {s}");
         assert!(s.contains("feature-x"), "もう一方のブランチが無い: {s}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // --- ⎇/⌖ gated by ui.icons, never glued directly to the next glyph ----------------------
@@ -1233,11 +1211,11 @@ mod tests {
         let dir = unique_tmp("konoma_git_titles_branch_marker_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-q", "-m", "init"]);
-        sh(&dir, &["branch", "-M", "trunk"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
+        run_git(&dir, &["branch", "-M", "trunk"]);
 
         // icons=true (default): the branch glyph appears next to the branch name in both titles.
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
@@ -1318,7 +1296,6 @@ mod tests {
             s4.contains("br:"),
             "icons=false で log の ASCII 代替(br:)が無い: {s4}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1326,11 +1303,11 @@ mod tests {
         let dir = unique_tmp("konoma_graph_title_base_marker_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-q", "-m", "init"]);
-        sh(&dir, &["branch", "-M", "trunk"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
+        run_git(&dir, &["branch", "-M", "trunk"]);
 
         // icons=true: the base glyph appears exactly once, and the (already-English) "base:"
         // word right after it is not duplicated.
@@ -1385,7 +1362,6 @@ mod tests {
             "icons=false で base: が重複/欠落している: {s2}"
         );
         assert!(s2.contains("trunk"), "基準ブランチ名が出ない: {s2}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1393,15 +1369,15 @@ mod tests {
         let dir = unique_tmp("konoma_graph_legend_marker_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-q", "-m", "base commit"]);
-        sh(&dir, &["branch", "-M", "trunk"]);
-        sh(&dir, &["checkout", "-q", "-b", "feature"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "base commit"]);
+        run_git(&dir, &["branch", "-M", "trunk"]);
+        run_git(&dir, &["checkout", "-q", "-b", "feature"]);
         std::fs::write(dir.join("b.txt"), b"two\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-q", "-m", "feature commit"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "feature commit"]);
 
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
         app.open_git_graph();
@@ -1479,7 +1455,6 @@ mod tests {
             s2.contains("base: ●"),
             "icons=false で base の ASCII 代替(base:)/空白が無い: {s2}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1487,12 +1462,12 @@ mod tests {
         let dir = unique_tmp("konoma_graph_picker_marker_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"a\n").unwrap();
-        sh(&dir, &["add", "-A"]);
-        sh(&dir, &["commit", "-q", "-m", "init"]);
-        sh(&dir, &["branch", "-M", "trunk"]);
-        sh(&dir, &["branch", "feature-x"]);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
+        run_git(&dir, &["branch", "-M", "trunk"]);
+        run_git(&dir, &["branch", "feature-x"]);
 
         let run = |icons: bool| -> Terminal<TestBackend> {
             let mut cfg = Config::default();
@@ -1561,7 +1536,6 @@ mod tests {
             s_off.contains("* "),
             "icons=false で ASCII 代替(* )が無い: {s_off}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1570,49 +1544,6 @@ mod tests {
     // tested, but nothing checked that jj's own `?`-help wording and `jj bookmarks` render
     // actually reach the screen instead of git's. Every test below is paired with git.
     // -----------------------------------------------------------------------------------------
-
-    /// Same recipe as `App::tests::jj_scratch` (`src/app/tests.rs`), duplicated here per-file as
-    /// instructed. Returns `None` (every caller must silently skip) when `jj` isn't installed.
-    fn jj_scratch(name: &str) -> Option<crate::test_support::TmpDir> {
-        if !crate::vcs::jj::available() {
-            return None;
-        }
-        let dir = unique_tmp(name);
-        std::fs::create_dir_all(&dir).ok()?;
-        let jj = |args: &[&str]| {
-            std::process::Command::new("jj")
-                .current_dir(&dir)
-                .env("HOME", &*dir) // never touch the running machine's own jj config
-                .env("JJ_USER", "konoma test")
-                .env("JJ_EMAIL", "test@example.invalid")
-                .args(args)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
-        if !jj(&["git", "init", "--no-colocate", "."]) {
-            return None;
-        }
-        std::fs::write(dir.join("a.txt"), b"one\n").ok()?;
-        if !jj(&["commit", "-m", "seed"]) {
-            return None;
-        }
-        std::fs::write(dir.join("a.txt"), b"two\n").ok()?;
-        Some(dir)
-    }
-
-    /// Runs one `jj` subcommand against a `jj_scratch` workspace (same env as the fixture above).
-    fn jj_cmd(dir: &std::path::Path, args: &[&str]) -> bool {
-        std::process::Command::new("jj")
-            .current_dir(dir)
-            .env("HOME", dir)
-            .env("JJ_USER", "konoma test")
-            .env("JJ_EMAIL", "test@example.invalid")
-            .args(args)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
 
     /// (git.rs item 7) The `?` help's changes-hub section shows jj's rows (`JjChangesLabel`/
     /// `JjCloseView`/`JjDiffAll`/`JjBookmarksRow`/`JjExternalTool`/`JjSyncRow`) and none of git's
@@ -1623,7 +1554,7 @@ mod tests {
     /// actually broke. Paired with a git repository's changes-hub help.
     #[test]
     fn changes_hub_help_shows_jj_section_and_hides_git_write_keys() {
-        let Some(dir) = jj_scratch("konoma_git_help_jj_changes") else {
+        let Some(dir) = jj_scratch_seeded("konoma_git_help_jj_changes") else {
             return;
         };
         let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
@@ -1659,10 +1590,10 @@ mod tests {
         let git_dir = unique_tmp("konoma_git_help_git_changes");
         let _ = std::fs::remove_dir_all(&git_dir);
         std::fs::create_dir_all(&git_dir).unwrap();
-        init_repo(&git_dir);
+        init_git_repo(&git_dir);
         std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        sh(&git_dir, &["add", "-A"]);
-        sh(&git_dir, &["commit", "-q", "-m", "init"]);
+        run_git(&git_dir, &["add", "-A"]);
+        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
         let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
         git_app.open_git_view();
         assert!(git_app.is_git_view(), "git でも changes ハブが開くはず");
@@ -1682,7 +1613,6 @@ mod tests {
             !ghelp.contains(tr(crate::i18n::Lang::En, crate::i18n::Msg::JjChangesLabel)),
             "git ヘルプに jj 節見出しが出ている: {ghelp}"
         );
-        std::fs::remove_dir_all(&git_dir).ok();
     }
 
     /// (git.rs item 8) The `?` help's graph section shows `JjGraphLabel` ("jj graph (g)") and
@@ -1692,7 +1622,7 @@ mod tests {
     /// the pairing has to compare the full label text, not just presence of "(g)".
     #[test]
     fn graph_help_shows_jj_section_and_all_revisions_row() {
-        let Some(dir) = jj_scratch("konoma_git_help_jj_graph") else {
+        let Some(dir) = jj_scratch_seeded("konoma_git_help_jj_graph") else {
             return;
         };
         let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
@@ -1730,11 +1660,11 @@ mod tests {
         let git_dir = unique_tmp("konoma_git_help_git_graph");
         let _ = std::fs::remove_dir_all(&git_dir);
         std::fs::create_dir_all(&git_dir).unwrap();
-        init_repo(&git_dir);
+        init_git_repo(&git_dir);
         std::fs::write(git_dir.join("a.txt"), b"hi\n").unwrap();
-        sh(&git_dir, &["add", "-A"]);
-        sh(&git_dir, &["commit", "-q", "-m", "init"]);
-        sh(&git_dir, &["branch", "-M", "trunk"]);
+        run_git(&git_dir, &["add", "-A"]);
+        run_git(&git_dir, &["commit", "-q", "-m", "init"]);
+        run_git(&git_dir, &["branch", "-M", "trunk"]);
         let mut git_app = App::new(git_dir.canonicalize().unwrap(), Config::default()).unwrap();
         git_app.open_git_graph();
         assert!(git_app.is_git_graph());
@@ -1753,7 +1683,6 @@ mod tests {
             !ghelp.contains(tr(crate::i18n::Lang::En, crate::i18n::Msg::JjGraphAllRow)),
             "git のグラフヘルプに jj 専用行が出ている: {ghelp}"
         );
-        std::fs::remove_dir_all(&git_dir).ok();
     }
 
     /// (git.rs item 9) `render_branches` on a jj repository: the title reads "jj bookmarks" (not
@@ -1763,11 +1692,11 @@ mod tests {
     /// branch follows HEAD), so this pins that property at the render layer, not just the data layer.
     #[test]
     fn jj_bookmarks_render_shows_bookmarks_title_and_never_a_current_marker() {
-        let Some(dir) = jj_scratch("konoma_git_bookmarks_render") else {
+        let Some(dir) = jj_scratch_seeded("konoma_git_bookmarks_render") else {
             return;
         };
         assert!(
-            jj_cmd(&dir, &["bookmark", "create", "-r", "@", "main"]),
+            run_jj(&dir, &["bookmark", "create", "-r", "@", "main"]),
             "jj bookmark create に失敗"
         );
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
@@ -1797,6 +1726,5 @@ mod tests {
             !s.contains('*'),
             "jj のブックマーク一覧に現在ブランチマーカー * が出てはいけない: {s}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

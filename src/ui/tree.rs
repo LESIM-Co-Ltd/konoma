@@ -497,7 +497,6 @@ mod tests {
             "icons=false で ASCII 代替(br:)が出ない: {s2}"
         );
         assert!(s2.contains("trunk"), "ブランチ名が出ない: {s2}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -580,6 +579,5 @@ mod tests {
             secs.iter().all(|s| !s.title.is_empty()),
             "空タイトルのセクションがある"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

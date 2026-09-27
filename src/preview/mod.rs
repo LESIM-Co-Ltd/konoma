@@ -192,8 +192,6 @@ mod tests {
                 "通常ファイルへのシンボリックリンクは追従して true (既存の挙動を壊さない)"
             );
         }
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -207,7 +205,6 @@ mod tests {
             !is_previewable(&dir.join("does_not_exist")),
             "存在しないパスは false"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A FIFO is not a regular file, so this must return `false` — and it must do so
@@ -238,7 +235,5 @@ mod tests {
             !is_previewable(&link),
             "FIFO へのシンボリックリンクも追従した先の種別で false"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

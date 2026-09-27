@@ -3287,7 +3287,7 @@ mod tests {
     // import too, or a `--no-default-features` build warns (and fails `-D warnings`) on it being
     // unused.
     #[cfg(feature = "git")]
-    use crate::test_support::unique_tmp;
+    use crate::test_support::{init_git_repo, unique_tmp};
 
     /// `diff_contents` (the diff engine for the follow baseline diff) emits only the changed hunks
     /// with correct line numbers (not the whole file); text never contains a newline; identical
@@ -3375,7 +3375,6 @@ mod tests {
             "内容同一なので clean 判定は正しく出る: {st:?}"
         );
         assert!(ig.is_empty());
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `[external] git = false` (via `set_external_git_enabled(false)`): every read returns the same
@@ -3390,7 +3389,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_external_disabled_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let file = dir.join("a.txt");
         std::fs::write(&file, b"one\n").unwrap();
         // Baseline sanity check while still enabled (default): the repo really is a repo.
@@ -3471,8 +3470,6 @@ mod tests {
             base_contents(&dir, &file).is_some(),
             "base_contents works again once re-enabled"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `git worktree list --porcelain -z` parsing: main worktree first (`is_main`), the current
@@ -3485,7 +3482,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_worktrees_parse_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
         stage(&dir, &dir.join("a.txt")).unwrap();
         commit(&dir, "init").unwrap();
@@ -3579,8 +3576,6 @@ mod tests {
             .current_dir(&main_root)
             .args(["worktree", "unlock", linked.to_str().unwrap()])
             .output();
-        std::fs::remove_dir_all(&linked).ok();
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `worktree_add` against a branch another worktree already has checked out: the error message
@@ -3596,7 +3591,7 @@ mod tests {
     fn worktree_add_error_leads_with_gits_fatal_line_not_the_command() {
         let dir = unique_tmp("konoma_git_worktree_add_err_msg");
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
         stage(&dir, &dir.join("a.txt")).unwrap();
         commit(&dir, "init").unwrap();
@@ -3619,9 +3614,6 @@ mod tests {
             !msg.contains("worktree add"),
             "実行したコマンド文字列は含まない(理由を押し出すため): {msg:?}"
         );
-
-        std::fs::remove_dir_all(&first).ok();
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A bare main worktree (`git clone --bare` + `git worktree add`) has no `HEAD`/`branch` of its
@@ -3640,7 +3632,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&wt1);
         let _ = std::fs::remove_dir_all(&wt2);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
         stage(&dir, &dir.join("a.txt")).unwrap();
         commit(&dir, "init").unwrap();
@@ -3722,10 +3714,6 @@ mod tests {
         assert!(gone.prunable, "実体が無ければ prunable: {gone:?}");
         let still_here = list2.iter().find(|w| w.path == wt1_abs).unwrap();
         assert!(!still_here.prunable, "無事な方は prunable にならない");
-
-        std::fs::remove_dir_all(&wt1).ok();
-        std::fs::remove_dir_all(&bare).ok();
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `worktree_origin`: `None` for the main working tree (including from a subdirectory reached
@@ -3740,7 +3728,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&linked);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
         stage(&dir, &dir.join("a.txt")).unwrap();
         commit(&dir, "init").unwrap();
@@ -3792,9 +3780,6 @@ mod tests {
             Some(expected_origin),
             "リンクワークツリーのサブディレクトリでも同じ値"
         );
-
-        std::fs::remove_dir_all(&linked).ok();
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `worktree_origin` in a **bare** layout (`git clone --bare` + `git worktree add`): there is no
@@ -3810,7 +3795,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&bare);
         let _ = std::fs::remove_dir_all(&wt);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
         stage(&dir, &dir.join("a.txt")).unwrap();
         commit(&dir, "init").unwrap();
@@ -3860,10 +3845,6 @@ mod tests {
             Some(expected_origin),
             "bare レイアウトでは commondir 自身の名前から `.git` を落とした名前"
         );
-
-        std::fs::remove_dir_all(&wt).ok();
-        std::fs::remove_dir_all(&bare).ok();
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The whole point of `diff_since` over `worktree_diff`: it must show **both** what the
@@ -3880,7 +3861,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_diff_since_both_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("base.txt"), b"base content\n").unwrap();
         stage(&dir, &dir.join("base.txt")).unwrap();
         commit(&dir, "base commit").unwrap();
@@ -3957,7 +3938,6 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&linked).ok();
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A `base` that doesn't exist in the repo → empty Vec, so the caller's fallback path
@@ -3968,7 +3948,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_diff_since_missing_base_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"one\n").unwrap();
         stage(&dir, &dir.join("a.txt")).unwrap();
         commit(&dir, "init").unwrap();
@@ -3978,8 +3958,6 @@ mod tests {
             diff_since(&dir, "this-branch-does-not-exist").is_empty(),
             "存在しない base は空 Vec（フォールバック経路が動く）"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -4255,7 +4233,6 @@ mod tests {
         );
         // It also rolls up into the parent directory.
         assert_eq!(map.get(&canon.join("sub")), Some(&FileStatus::Untracked));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Pin down that a rename still shows as "Renamed on the new path" after CLI delegation
@@ -4266,7 +4243,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_status_rename");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("old.txt"), b"content here\n").unwrap();
         stage(&dir, &dir.join("old.txt")).unwrap();
         commit(&dir, "init").unwrap();
@@ -4289,7 +4266,6 @@ mod tests {
             !map.contains_key(&canon.join("old.txt")),
             "旧パスはツリーに出ないので map に入らないはず"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // ── Repository discovery ────────────────────────────────────────────────────────────────
@@ -4336,7 +4312,6 @@ mod tests {
             None,
             "どこにも .git が無ければ「repo ではない」と即断する"
         );
-        std::fs::remove_dir_all(&base).ok();
     }
 
     /// **Performance contract**: an ordinary (non-repository) directory must not launch a single
@@ -4388,7 +4363,6 @@ mod tests {
             calls, 0,
             "repo でないディレクトリで発見用の子プロセスを起動してはいけない"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Creates a **reftable** repository (git 2.45+) at `dir` with one commit, returning `false`
@@ -4521,7 +4495,6 @@ mod tests {
                 "発見結果はキャッシュ済み — fs イベント毎に rev-parse を起動してはいけない"
             );
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The other half of the reftable story: the reads that go through libgit2's **object
@@ -4705,8 +4678,6 @@ mod tests {
         let t = merge_base_time(&dir, "sidebranch").expect("merge_base_time");
         assert_eq!(t, entries[1].time_epoch, "merge-base は分岐元のコミット");
         assert!(merge_base_time(&dir, "no-such-branch").is_none());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// **Performance contract**, the read counterpart of
@@ -4719,7 +4690,7 @@ mod tests {
         let dir = unique_tmp("konoma_no_read_fallback_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
         std::fs::write(canon.join("a.txt"), b"one\n").unwrap();
         commit_all(&dir, "init");
@@ -4748,7 +4719,6 @@ mod tests {
             calls, 0,
             "libgit2 が開ける repo でフォールバックの子プロセスを起動してはいけない"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// `cat_file_batch` answers every spec from one child process, in order, and keeps its framing
@@ -4761,7 +4731,7 @@ mod tests {
         let dir = unique_tmp("konoma_cat_file_batch_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
 
         let text = b"first\nsecond\nthird\n".to_vec();
@@ -4820,8 +4790,6 @@ mod tests {
             Some(&b"inner\n"[..]),
             "tree を読み飛ばしても次のスロットがずれない"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The deadlock guard. Writing every spec before reading anything wedges once *both* pipes
@@ -4839,7 +4807,7 @@ mod tests {
         let dir = unique_tmp("konoma_cat_file_batch_pipe_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
 
         // A long name so the input stream (spec + `\n` per line) crosses the pipe buffer quickly.
@@ -4868,8 +4836,6 @@ mod tests {
                 .all(|(_, b)| b.as_deref() == Some(&body[..])),
             "全スロットが正しい中身で埋まる (途中で打ち切られていない)"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// **Performance contract.** A multi-file diff must not grow a process per file: whatever the
@@ -4882,7 +4848,7 @@ mod tests {
         let dir = unique_tmp("konoma_batch_spawn_count_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
 
         let write_n = |n: usize, tag: &str| {
@@ -4929,8 +4895,6 @@ mod tests {
             "listing 2 (diff --name-only + ls-files --others) + cat-file 1 — \
              変更 12 ファイルでもこれ以上増えない"
         );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The two implementations must describe the same repository. Run in an **ordinary** repository
@@ -4947,7 +4911,7 @@ mod tests {
         let dir = unique_tmp("konoma_fallback_parity_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
         // Enough shape that a naive implementation would drift: several files, an untouched middle
         // that both must treat as context, and an added file.
@@ -5107,7 +5071,6 @@ mod tests {
             .and_then(|s| s.parse::<i64>().ok()),
             "merge_base_time"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Binary content must not be fed to the line differ: libgit2 emits no line callbacks for a
@@ -5154,15 +5117,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "git")]
-    fn init_repo(dir: &Path) {
-        let repo = git2::Repository::init(dir).unwrap();
-        let mut cfg = repo.config().unwrap();
-        cfg.set_str("user.name", "Test").unwrap();
-        cfg.set_str("user.email", "test@example.com").unwrap();
-        cfg.set_str("commit.gpgsign", "false").ok();
-    }
-
     /// Stages everything and commits, through this module's own write helpers (which are CLI-backed
     /// either way, so the fixture is identical for both repository formats).
     #[cfg(feature = "git")]
@@ -5186,7 +5140,7 @@ mod tests {
         let dir = unique_tmp("konoma_nfd_status_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
 
         // NFD spelling: か (U+304B) + the combining voiced sound mark (U+3099) — a decomposed が.
         let nfd_name = "\u{304B}\u{3099}_nfd.txt";
@@ -5224,7 +5178,6 @@ mod tests {
             map.contains_key(&nfd_path),
             "ツリー側の NFD パスで status が引ける必要がある: {map:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Non-regression: an ASCII-named and a precomposed(NFC)-named file next to the NFD one above
@@ -5236,7 +5189,7 @@ mod tests {
         let dir = unique_tmp("konoma_nfd_status_siblings_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
 
         let ascii_path = canon.join("ascii.txt");
@@ -5262,7 +5215,6 @@ mod tests {
             Some(&FileStatus::Modified),
             "NFC 名は非退行: {map:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A deleted file's `abs` path no longer exists on disk, so `canonicalize()` inside
@@ -5276,7 +5228,7 @@ mod tests {
         let dir = unique_tmp("konoma_nfd_status_deleted_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
 
         let nfd_name = "\u{304B}\u{3099}_nfd.txt";
@@ -5295,7 +5247,6 @@ mod tests {
             Some(&FileStatus::Deleted),
             "canonicalize 失敗時は元の(NFC)パスにフォールバックし、Deleted のまま残る必要がある: {map:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5304,7 +5255,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_ignored_set");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join(".gitignore"), b"target/\nnode_modules/\n*.log\n").unwrap();
         std::fs::create_dir_all(dir.join("target/deep")).unwrap();
         std::fs::create_dir_all(dir.join("node_modules/pkg")).unwrap();
@@ -5348,7 +5299,6 @@ mod tests {
             !set.contains(&canon.join(".gitignore")),
             ".gitignore 自身は無視でない"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5357,7 +5307,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_filediff_untracked");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let f = dir.join("a.txt");
         std::fs::write(&f, b"line1\nline2\n").unwrap();
         let diff = file_diff(&dir, &f);
@@ -5366,7 +5316,6 @@ mod tests {
             diff.iter().all(|l| l.kind == DiffLineKind::Added),
             "未追跡は全行 Added のはず: {diff:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5375,7 +5324,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_filediff_modified");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let f = dir.join("a.txt");
         std::fs::write(&f, b"alpha\nbeta\n").unwrap();
         // The initial commit.
@@ -5402,7 +5351,6 @@ mod tests {
             diff.iter().any(|l| l.kind == DiffLineKind::Removed),
             "Removed 行が無い: {diff:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// macOS-only regression (`precomposed_pathspec`): calling `file_diff` with the tree's on-disk
@@ -5418,7 +5366,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_filediff_nfd");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
         // NFD spelling: か (U+304B) + the combining voiced sound mark (U+3099) — decomposed が.
         let nfd_path = canon.join("\u{304B}\u{3099}_nfd.txt");
@@ -5436,7 +5384,6 @@ mod tests {
             diff.iter().any(|l| l.kind == DiffLineKind::Removed),
             "Removed 行が無い(NFD パスの diff が空): {diff:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // =========================================================================================
@@ -5465,7 +5412,7 @@ mod tests {
         let dir = unique_tmp("konoma_base_contents_head_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
         let file = canon.join("a.txt");
         let before_text = "one\ntwo\nthree\n";
@@ -5493,7 +5440,6 @@ mod tests {
             diff_line_tuples(&via_file_diff),
             "base_contents 起点の diff と file_diff が同じ DiffLine 列になる"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5502,7 +5448,7 @@ mod tests {
         let dir = unique_tmp("konoma_base_contents_untracked_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
         // A repository needs at least one commit so `repo.head()` resolves at all — otherwise this
         // would exercise the unborn-repo case (also None) rather than the untracked-file case.
@@ -5515,7 +5461,6 @@ mod tests {
             base_contents(&dir, &fresh).is_none(),
             "HEAD に無いファイルは None(untracked)"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5524,7 +5469,7 @@ mod tests {
         let dir = unique_tmp("konoma_base_contents_unborn_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
         let file = canon.join("a.txt");
         std::fs::write(&file, b"never committed\n").unwrap();
@@ -5533,7 +5478,6 @@ mod tests {
             base_contents(&dir, &file).is_none(),
             "コミットが一つも無い repo は None"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A change already staged (in the index) must still read as HEAD's content, not the index's —
@@ -5545,7 +5489,7 @@ mod tests {
         let dir = unique_tmp("konoma_base_contents_staged_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
         let file = canon.join("a.txt");
         std::fs::write(&file, b"one\n").unwrap();
@@ -5558,7 +5502,6 @@ mod tests {
             Some(b"one\n".to_vec()),
             "ステージ済みでも基準は HEAD(index ではない)"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5571,7 +5514,6 @@ mod tests {
         std::fs::write(&file, b"hello\n").unwrap();
 
         assert!(base_contents(&dir, &file).is_none(), "リポジトリ外は None");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A `root` that is a subdirectory of the repository, addressed with an absolute path to the
@@ -5583,7 +5525,7 @@ mod tests {
         let dir = unique_tmp("konoma_base_contents_subdir_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
         std::fs::create_dir_all(canon.join("sub")).unwrap();
         let file = canon.join("sub/nested.txt");
@@ -5596,7 +5538,6 @@ mod tests {
             Some(b"alpha\n".to_vec()),
             "サブディレクトリ root からでも repo 全体の HEAD を基準にする"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// macOS-only regression companion to `file_diff_finds_changes_for_an_nfd_named_file`:
@@ -5610,7 +5551,7 @@ mod tests {
         let dir = unique_tmp("konoma_base_contents_nfd_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
         // NFD spelling: か (U+304B) + the combining voiced sound mark (U+3099) — decomposed が.
         let nfd_path = canon.join("\u{304B}\u{3099}_nfd.txt");
@@ -5624,7 +5565,6 @@ mod tests {
             Some(b"alpha\nbeta\n".to_vec()),
             "NFD パスでも HEAD の中身が引ける"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// git2 vs the CLI fallback must describe the same repository — same shape as
@@ -5636,7 +5576,7 @@ mod tests {
         let dir = unique_tmp("konoma_base_contents_cli_parity_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let canon = dir.canonicalize().unwrap();
         let file = canon.join("a.txt");
         std::fs::write(&file, b"one\ntwo\nthree\n").unwrap();
@@ -5661,7 +5601,6 @@ mod tests {
             None,
             "CLI フォールバックも untracked は None"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5670,7 +5609,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_changed_files");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         std::fs::write(dir.join("a.txt"), b"hi\n").unwrap();
         // Before staging: untracked, staged=false.
         let before = changed_files(&dir);
@@ -5687,7 +5626,6 @@ mod tests {
         assert_eq!(after.len(), 1);
         assert!(after[0].staged, "add 後は staged=true のはず");
         assert!(after[0].path.ends_with("a.txt"));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The doc contract: `changed_files`'s result is "sorted by path" — not "happens to be", which
@@ -5704,7 +5642,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_changed_files_sorted");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         for name in ["mango.txt", "delta.txt"] {
             std::fs::write(dir.join(name), b"one\n").unwrap();
         }
@@ -5734,7 +5672,6 @@ mod tests {
             "changed_files must be sorted by path, not grouped by tracked/untracked (git's own \
              report order here is delta, mango, alpha, kappa, zulu): {names:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5743,7 +5680,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_stage_commit_log");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let f = dir.join("a.txt");
         std::fs::write(&f, b"hello\n").unwrap();
         // Stage via the public API → commit.
@@ -5760,7 +5697,6 @@ mod tests {
             cd.iter().any(|l| l.kind == DiffLineKind::Added),
             "Added 行が無い: {cd:?}"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[cfg(feature = "git")]
@@ -5769,7 +5705,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_unstage_discard");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        init_repo(&dir);
+        init_git_repo(&dir);
         let f = dir.join("a.txt");
         std::fs::write(&f, b"v1\n").unwrap();
         stage(&dir, &f).unwrap();
@@ -5787,7 +5723,6 @@ mod tests {
         discard(&dir, &f).unwrap();
         assert!(changed_files(&dir).is_empty(), "discard 後はクリーンのはず");
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "v1\n");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // SPEED GUARD: lay_out_lanes is a pure function that assigns lanes from a DAG (a parent-ID

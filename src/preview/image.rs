@@ -32,10 +32,9 @@ pub fn decode_static(path: &Path) -> Option<DynamicImage> {
 }
 
 /// `decode_static`, from bytes already in memory rather than a path — used by the media-diff worker
-/// (`app/media_diff.rs::decode_image_side`, `docs/FEATURE-MEDIA-DIFF.md` §3) to decode a side whose
-/// bytes came from git/jj (the old version) rather than the filesystem. Format is guessed from the
-/// content, exactly like the path version's `with_guessed_format` (never from an extension — there
-/// may be none to go by).
+/// (`app/media_diff.rs::decode_image_side`) to decode a side whose bytes came from git/jj rather than
+/// the filesystem. Format is guessed from the content, exactly like the path version's
+/// `with_guessed_format` (never from an extension — there may be none to go by).
 pub fn decode_static_bytes(bytes: &[u8]) -> Option<DynamicImage> {
     image::load_from_memory(bytes).ok()
 }
@@ -98,25 +97,22 @@ fn decode_gif_with_budget(path: &Path, budget: usize) -> Option<GifFrames> {
     decode_gif_from_reader(std::io::BufReader::new(file), budget).map(|(frames, _canvas)| frames)
 }
 
-/// `decode_gif_inline`, from bytes already in memory — used by the media-diff worker
-/// (`app/media_diff.rs`) to animate an old (git/jj) version of a GIF exactly like an inline Markdown
-/// one, without a path to read from. Same semantics as `decode_gif_inline`: None for a non-GIF /
+/// `decode_gif_inline`, from bytes already in memory — used by the media-diff worker to animate an
+/// old (git/jj) version of a GIF, without a path to read from. Same semantics: None for a non-GIF /
 /// undecodable / single-frame GIF. Also returns the GIF's own logical-screen size (read from the
-/// header, `GifDecoder::dimensions`) — distinct from any individual frame's own pixel size once the
-/// decode budget has downscaled frames for memory — which `app::media_diff::decode_image_side`
-/// needs as this side's *intrinsic* size (`MediaDiffPictureDecoded::natural_px`'s own doc comment);
-/// `decode_gif`/`decode_gif_inline` above have no such need (an ordinary GIF preview, not part of a
-/// diff, has no other side's size to stay comparable with) and so drop it.
+/// header) — distinct from any frame's own pixel size once the decode budget has downscaled frames
+/// for memory — which `app::media_diff::decode_image_side` needs as this side's *intrinsic* size
+/// (see `MediaDiffPictureDecoded::natural_px`); `decode_gif`/`decode_gif_inline` have no such need
+/// (no other side's size to stay comparable with) and so drop it.
 pub fn decode_gif_bytes_inline(bytes: &[u8]) -> Option<(GifFrames, (u32, u32))> {
     decode_gif_from_reader(std::io::Cursor::new(bytes), MAX_GIF_BYTES_INLINE)
 }
 
 /// The shared body of `decode_gif_with_budget`/`decode_gif_bytes_inline`, generic over the reader so
-/// neither has to duplicate the frame/shrink loop. The `(u32, u32)` alongside the frames is the
-/// GIF's own logical-screen size, read from the header before any frame is decoded — see
-/// `decode_gif_bytes_inline`'s own doc comment for why that (not a frame's own, possibly
-/// budget-downscaled, pixel size) is the intrinsic size a caller comparing this GIF's size against
-/// something else (`app::media_diff`) needs.
+/// neither has to duplicate the frame/shrink loop. The `(u32, u32)` alongside the frames is the GIF's
+/// own logical-screen size, read from the header before any frame is decoded — see
+/// `decode_gif_bytes_inline`'s own doc comment for why that's the intrinsic size a caller comparing
+/// this GIF's size against something else needs.
 fn decode_gif_from_reader<R: std::io::Read + std::io::BufRead + std::io::Seek>(
     reader: R,
     budget: usize,
@@ -170,31 +166,7 @@ fn decode_gif_from_reader<R: std::io::Read + std::io::BufRead + std::io::Seek>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::unique_tmp;
-
-    /// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
-    /// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
-    /// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the
-    /// crate root by convention (`cargo test` run from elsewhere, e.g. `cd /tmp && cargo test
-    /// --manifest-path …`, is a real, supported invocation), so it silently missed the fixture and
-    /// silently skipped every assertion in every test that used it. Tolerant of the one case where
-    /// the fixture is legitimately absent — `samples/` is excluded from the published crate
-    /// (`Cargo.toml`'s `exclude`) — by returning `None` (same early-return as before) but saying so
-    /// loudly (`eprintln!`, visible with `--nocapture` or in the captured-output dump whenever the
-    /// process later exits non-zero for any reason) instead of silently passing zero assertions.
-    fn sample_path_or_skip(name: &str) -> Option<std::path::PathBuf> {
-        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("samples")
-            .join(name);
-        if p.exists() {
-            Some(p)
-        } else {
-            eprintln!(
-                "SKIP: samples/{name} not found (excluded from the published crate) — this test verifies nothing this run"
-            );
-            None
-        }
-    }
+    use crate::test_support::{sample_path_or_skip, unique_tmp};
 
     #[test]
     fn decode_gif_real_sample_has_multiple_frames() {
@@ -270,7 +242,6 @@ mod tests {
         // With the default budget, a small GIF is left untouched (not shrunk).
         let frames = decode_gif(&p).expect("既定予算でもデコードできる");
         assert_eq!((frames[0].0.width(), frames[0].0.height()), (64, 64));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -291,7 +262,6 @@ mod tests {
         assert!(decode_static(&bad).is_none(), "非画像は None");
         // A missing file also returns None.
         assert!(decode_static(&dir.join("missing.png")).is_none());
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -314,7 +284,6 @@ mod tests {
             from_path.to_rgba8().into_raw(),
             from_bytes.to_rgba8().into_raw()
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -382,6 +351,5 @@ mod tests {
             .unwrap();
         let bytes = std::fs::read(&png).unwrap();
         assert!(decode_gif_bytes_inline(&bytes).is_none());
-        std::fs::remove_dir_all(&dir).ok();
     }
 }
