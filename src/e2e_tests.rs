@@ -2076,6 +2076,404 @@ fn e2e_diff_view_n_next_file_preserves_presentation() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// =============================================================================
+// `PerTab::diff_view_choice` (the fix for `n`/`N` losing the *chosen* presentation after passing a
+// file that can only show one of the three) — `docs/FEATURE-MD-RENDERED-DIFF.md` §4.
+// =============================================================================
+
+/// The bug this round fixes: `n`/`N` used to carry the *effective*, already-rounded `diff_view`
+/// forward instead of what the user actually asked for, so passing through a file that can only
+/// show `Source` (a code file) or only `Source`/`Preview` (plain text) permanently downgraded every
+/// *later* file's presentation too — even a later Markdown file that could perfectly well show
+/// `Rendered`. Cycles Markdown → code → Markdown → plain text → (wrap) Markdown and checks both
+/// Markdown stops are still `Rendered`, not stuck on `Source` the way the old carry-over would have
+/// left them.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_choice_survives_code_and_text_detours() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_choice_code_text_detour");
+    media_diff_git_init(&dir);
+    std::fs::write(dir.join("a_doc.md"), "# A\n\nOriginal.\n").unwrap();
+    std::fs::write(dir.join("b_code.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(dir.join("c_doc2.md"), "# C\n\nOriginal.\n").unwrap();
+    std::fs::write(dir.join("d_plain.txt"), "line one\n").unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::write(dir.join("a_doc.md"), "# A\n\nCHANGED.\n").unwrap();
+    std::fs::write(dir.join("b_code.rs"), "fn a() { 1 }\n").unwrap();
+    std::fs::write(dir.join("c_doc2.md"), "# C\n\nCHANGED.\n").unwrap();
+    std::fs::write(dir.join("d_plain.txt"), "line ONE\n").unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("a_doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Rendered);
+
+    s.key('n'); // sorted change set: a_doc.md -> b_code.rs -> c_doc2.md -> d_plain.txt
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("b_code.rs")));
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Source,
+        "code ファイルは source しか持たない"
+    );
+    assert_eq!(
+        s.app.diff_view_choice_for_test(),
+        DiffView::Rendered,
+        "選んだ表現(choice)は code ファイルで丸められても消えないはず"
+    );
+
+    s.key('n'); // -> c_doc2.md, markdown again
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("c_doc2.md")));
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "code ファイルを経由しても次の markdown では rendered に戻るはず(このバグの中核)"
+    );
+
+    s.key('n'); // -> d_plain.txt, source/preview only
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("d_plain.txt")));
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Rendered);
+
+    s.key('n'); // wraps back to a_doc.md
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("a_doc.md")));
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "プレーンテキストを経由しても markdown では rendered に戻るはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The same bug, its `[Source]`-only shape (an unclassified binary — no Markdown/Code/Text/Image/
+/// Svg rule matches it at all): `n` from it into an SVG (which has all three representations) must
+/// land on `Rendered` (side by side), not stay stuck on `Source` the way the old carry-over would
+/// have left it — this is the exact `data.bin` → `icon.svg` shape from the bug report.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_choice_survives_binary_source_only_detour_into_svg() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_choice_binary_svg_detour");
+    media_diff_git_init(&dir);
+    std::fs::write(dir.join("a_bin.dat"), [0u8, 1, 2, 3, 0, 255, 254, 253]).unwrap();
+    std::fs::write(
+        dir.join("b_icon.svg"),
+        media_diff_solid_svg_bytes(8, 8, (10, 20, 30)),
+    )
+    .unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::write(dir.join("a_bin.dat"), [9u8, 9, 9, 9, 9, 9, 9, 9]).unwrap();
+    std::fs::write(
+        dir.join("b_icon.svg"),
+        media_diff_solid_svg_bytes(8, 8, (40, 50, 60)),
+    )
+    .unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("a_bin.dat");
+    s.key('d');
+    // No representation but `Source` for an unclassified binary.
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
+    assert_eq!(
+        s.app.diff_view_choice_for_test(),
+        DiffView::Rendered,
+        "実際に選んだ表現は config の既定(rendered)のまま — この1ファイルが source しか出せなかっただけ"
+    );
+
+    s.key('n'); // -> b_icon.svg
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("b_icon.svg")));
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "SVG は3表現持つので choice どおり並べて表示になるはず(報告されたバグの実例)"
+    );
+    assert!(s.app.diff_media_active(), "SVG の Rendered は並べて表示");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Cycling `R` all the way to `Preview` and back — `Rendered → Preview` (enters the diff's own
+/// `Preview` representation), then `R` again from inside it (`return_to_diff_from_preview`, which
+/// always targets `Source`) — is itself the user *choosing* `Source`: the resulting choice survives
+/// `n` through an image (no `Source` of its own) and a code file, and is still in force back on a
+/// later Markdown file.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_choice_source_via_r_cycle_survives_image_and_code_detours() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_choice_r_source_detour");
+    media_diff_git_init(&dir);
+    std::fs::write(dir.join("a_doc.md"), "# A\n\nOriginal.\n").unwrap();
+    let png = dir.join("b_pic.png");
+    media_diff_write_png(&png, 4, 4, [1, 1, 1]);
+    std::fs::write(dir.join("c_code.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(dir.join("d_doc2.md"), "# D\n\nOriginal.\n").unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::write(dir.join("a_doc.md"), "# A\n\nCHANGED.\n").unwrap();
+    media_diff_write_png(&png, 4, 4, [2, 2, 2]);
+    std::fs::write(dir.join("c_code.rs"), "fn a() { 1 }\n").unwrap();
+    std::fs::write(dir.join("d_doc2.md"), "# D\n\nCHANGED.\n").unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("a_doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+
+    s.key('R'); // Rendered -> Preview (enters the diff's own Preview representation)
+    assert!(s.app.preview_is_diff_representation());
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Preview);
+
+    s.key('R'); // from Preview, back to the diff's own Source
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
+    assert_eq!(
+        s.app.diff_view_choice_for_test(),
+        DiffView::Source,
+        "R でのプレビュー往復も選択(choice)を更新するはず"
+    );
+
+    s.key('n'); // -> b_pic.png, no Source of its own
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("b_pic.png")));
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Source);
+
+    s.key('n'); // -> c_code.rs
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("c_code.rs")));
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
+
+    s.key('n'); // -> d_doc2.md, back to markdown
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("d_doc2.md")));
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Source,
+        "画像とコードファイルを経由しても Source の選択が保たれるはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A `Rendered → Source` fallback forced by the async block-diff worker landing `Unavailable` (a
+/// file over the size cap) must not overwrite the *choice* — only the effective `diff_view` for
+/// that one file. The next file `n` moves to (well under the cap) still opens `Rendered`.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_choice_unaffected_by_rendered_unavailable_fallback() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_choice_unavailable_fallback");
+    media_diff_git_init(&dir);
+    std::fs::write(dir.join("a_big.md"), "# Big\n\noriginal\n").unwrap();
+    std::fs::write(dir.join("b_doc.md"), "# B\n\nOriginal.\n").unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    let big = "x".repeat(5 * 1024 * 1024 + 1);
+    std::fs::write(dir.join("a_big.md"), &big).unwrap();
+    std::fs::write(dir.join("b_doc.md"), "# B\n\nCHANGED.\n").unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("a_big.md");
+    s.key('d'); // Rendered rounds down to Source (5MB 超), synchronously (no worker thread attached)
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
+    assert_eq!(
+        s.app.diff_view_choice_for_test(),
+        DiffView::Rendered,
+        "サイズ超過による丸めは choice を書き換えてはいけない"
+    );
+
+    s.key('n'); // -> b_doc.md, well under the cap
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("b_doc.md")));
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "前のファイルのサイズ超過フォールバックに引きずられず rendered になるはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The same choice-preservation for a **follow-scoped** `n`/`N` cycle (`docs/FEATURE-MD-RENDERED-
+/// DIFF.md` §4's follow-originated case): the session's own changed-file list (insertion order),
+/// not the full change set, but the same `diff_view_choice` carry-over applies.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_choice_follow_scoped_n_preserves_presentation() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_choice_follow_scope");
+    media_diff_git_init(&dir);
+    std::fs::write(dir.join("doc.md"), "# Doc\n\nOriginal.\n").unwrap();
+    std::fs::write(dir.join("code.rs"), "fn a() {}\n").unwrap();
+    std::fs::write(dir.join("doc2.md"), "# Doc2\n\nOriginal.\n").unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+
+    let mut s = Sim::new(&canon(&dir));
+    s.key('F');
+    assert!(s.app.follow_enabled());
+
+    let doc = s.app.tab.root.join("doc.md");
+    let code = s.app.tab.root.join("code.rs");
+    let doc2 = s.app.tab.root.join("doc2.md");
+    std::fs::write(&doc, "# Doc\n\nCHANGED.\n").unwrap();
+    std::fs::write(&code, "fn a() { 1 }\n").unwrap();
+    std::fs::write(&doc2, "# Doc2\n\nCHANGED.\n").unwrap();
+    assert!(s.app.follow_note_change(&doc));
+    assert!(s.app.follow_note_change(&code));
+    assert!(s.app.follow_note_change(&doc2));
+    s.app.follow_jump(&doc); // fresh, follow-originated open: config default (Rendered)
+    s.draw();
+    assert!(s.app.is_git_diff_preview());
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+
+    s.key('n'); // follow session order: doc.md -> code.rs
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("code.rs")));
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Source);
+
+    s.key('n'); // -> doc2.md
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .as_deref()
+        .is_some_and(|p| p.ends_with("doc2.md")));
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "follow スコープの n でも choice は code ファイルを跨いで維持されるはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// `PerTab::diff_view_choice` lives on the tab, not on `App`: two tabs reviewing the same repo keep
+/// independent choices, and switching between them never leaks one into the other.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_choice_independent_per_tab() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_choice_per_tab");
+    media_diff_git_init(&dir);
+    std::fs::write(dir.join("doc1.md"), "# One\n\nOriginal.\n").unwrap();
+    std::fs::write(dir.join("doc2.md"), "# Two\n\nOriginal.\n").unwrap();
+    media_diff_git(&dir, &["add", "-A"]);
+    media_diff_git(&dir, &["commit", "-q", "-m", "init"]);
+    std::fs::write(dir.join("doc1.md"), "# One\n\nCHANGED.\n").unwrap();
+    std::fs::write(dir.join("doc2.md"), "# Two\n\nCHANGED.\n").unwrap();
+
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc1.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    s.key('R'); // -> Preview
+    s.key('R'); // -> back to Source
+    assert_eq!(
+        s.app.diff_view_choice_for_test(),
+        DiffView::Source,
+        "tab1 は Source を選んだ"
+    );
+
+    s.key('t'); // a fresh tab at the same root
+    s.select("doc2.md");
+    s.key('d');
+    assert_eq!(
+        s.app.diff_view_choice_for_test(),
+        DiffView::Rendered,
+        "新しいタブで開いた diff は config 既定(rendered)から始まるはず"
+    );
+
+    s.key('['); // back to tab1
+    assert_eq!(
+        s.app.diff_view_choice_for_test(),
+        DiffView::Source,
+        "tab1 の選択は tab2 の操作の影響を受けないはず"
+    );
+    s.key(']'); // back to tab2
+    assert_eq!(
+        s.app.diff_view_choice_for_test(),
+        DiffView::Rendered,
+        "tab2 の選択も独立して保たれるはず"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A **fresh** open (`d` from the tree) is not a carry-over: it must start from `[ui] diff_view`
+/// regardless of whatever presentation was last chosen for a diff previously closed in this same
+/// tab.
+#[cfg(feature = "git")]
+#[test]
+fn e2e_diff_view_fresh_open_resets_choice_to_config_default() {
+    use crate::app::DiffView;
+    let dir = sandbox("diff_view_fresh_open_resets_choice");
+    seed_repo_markdown(&dir);
+    let mut s = Sim::new(&canon(&dir));
+    s.select("doc.md");
+    s.key('d');
+    assert_eq!(s.app.diff_view_for_test(), DiffView::Rendered);
+    s.key('R'); // -> Preview
+    s.key('R'); // -> back to Source
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Source);
+
+    s.key('q'); // leave the diff, back to the tree (opened via `d` from the tree)
+    assert!(!s.app.is_git_diff_preview());
+
+    s.key('d'); // fresh open of the same file
+    assert_eq!(
+        s.app.diff_view_for_test(),
+        DiffView::Rendered,
+        "新規に開いた diff は config 既定から始まるはず(前回の選択を引き継がない)"
+    );
+    assert_eq!(s.app.diff_view_choice_for_test(), DiffView::Rendered);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// `q` from the diff's `Preview` representation returns wherever `q` would have returned from the
 /// diff itself: the tree, when the diff was opened straight from it (`d`).
 #[cfg(feature = "git")]

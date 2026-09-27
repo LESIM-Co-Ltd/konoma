@@ -1019,18 +1019,23 @@ impl App {
         // instead (so cycling from a hub-opened diff still returns to the hub with `q`, a
         // follow-scoped cycle keeps going, and the presentation — source/rendered/preview — is never
         // reset by simply moving to the next changed file: `docs/FEATURE-MD-RENDERED-DIFF.md` §4's
-        // "n/N で次のファイルの diff へ移っても表現は維持"). `Preview` never reaches this point at all
-        // (n/N is bound only in `Surface::PreviewGitDiff`, which the `Preview` representation has
-        // already left), so the carried-over presentation is always `Source`/`Rendered` —
-        // `open_git_diff_with` still rounds it down to `Source` in case the new target can't show
-        // `Rendered` (a Markdown diff cycling to a plain-text one, say), and validates it against the
-        // *target*'s own readability in the one `apply_diff_view` call this now makes (see that fn's
-        // own doc comment for why a save/restore + re-run used to sit here).
+        // "n/N で次のファイルの diff へ移っても表現は維持"). Carries `diff_view_choice` — the
+        // presentation actually *chosen* — not the current file's already-rounded `diff_view`: a
+        // file that could only show `Source`/`Rendered` on its own would otherwise permanently
+        // replace the choice, so the *next* changed file (which might well be able to show what the
+        // user actually picked) stayed stuck on the rounded-down value too (this is the bug this
+        // field exists to fix — see `PerTab::diff_view_choice`'s own doc comment). `Preview` never
+        // reaches this point at all (n/N is bound only in `Surface::PreviewGitDiff`, which the
+        // `Preview` representation has already left), so the carried-over choice is always
+        // `Source`/`Rendered` — `open_git_diff_with` still rounds it down to `Source` in case the new
+        // target can't show `Rendered` (a Markdown diff cycling to a plain-text one, say), and
+        // validates it against the *target*'s own readability in the one `apply_diff_view` call this
+        // now makes (see that fn's own doc comment for why a save/restore + re-run used to sit here).
         self.open_git_diff_with(
             &target,
             DiffOpen {
                 follow_scope: self.diff_follow_scope,
-                view: Some(self.tab.diff_view),
+                view: Some(self.tab.diff_view_choice),
                 came_from_git_view: Some(self.tab.came_from_git_view),
                 ..Default::default()
             },

@@ -23,6 +23,16 @@ impl App {
         self.tab.diff_view
     }
 
+    /// Test-only view of `PerTab::diff_view_choice` — the presentation the user actually chose,
+    /// distinct from `diff_view_for_test`'s effective, per-file-rounded value. See `diff_view_for_
+    /// test`'s own doc comment for why this is `allow(dead_code)`, not `cfg(feature = "git")`, on a
+    /// no-`git` test build.
+    #[cfg(test)]
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    pub fn diff_view_choice_for_test(&self) -> DiffView {
+        self.tab.diff_view_choice
+    }
+
     /// Test-only view of `PerTab::preview_from_diff`. See `diff_view_for_test`'s own doc comment
     /// for why this is `allow(dead_code)`, not `cfg(feature = "git")`, on a no-`git` test build.
     #[cfg(test)]
@@ -215,15 +225,6 @@ impl App {
         reps.first().copied().unwrap_or(DiffView::Source)
     }
 
-    /// `[ui] diff_view`, resolved and rounded for `path` — what `App::open_git_diff` initializes a
-    /// **freshly opened** diff to. `n`/`N` (`diff_jump_changed`) deliberately do *not* call this:
-    /// they save/restore the tab's current `diff_view` around their own `open_git_diff` call so
-    /// cycling files never resets the presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §4's "`n`/
-    /// `N` で次のファイルの diff へ移っても表現は維持").
-    pub(super) fn default_diff_view_for(&self, path: &Path) -> DiffView {
-        self.round_diff_view(DiffView::parse(&self.cfg.ui.diff_view), path)
-    }
-
     /// `R` in `Surface::PreviewGitDiff`: cycles through `diff_representations(path)` in list order
     /// (wrapping), e.g. `Source → Rendered → Preview → Source` for a Markdown target, `Source ⇄
     /// Preview` for any other windowed-capable text kind, `Rendered ⇄ Preview` for Image/PDF, and
@@ -231,6 +232,11 @@ impl App {
     /// with only one representation. The footer/help hint (`diff_view_cycle_hint`) is hidden in
     /// exactly that last case, so a key that would do nothing is never advertised
     /// ([[hint-shown-iff-key-acts]]).
+    ///
+    /// This is the user *choosing* a presentation, so `next` becomes `PerTab::diff_view_choice` —
+    /// including when `next == Preview` — not just the effective `diff_view` (see that field's own
+    /// doc comment): `n`/`N` restoring the choice after a detour through a file that can't show
+    /// `Preview`'s neighbor should still land back on whatever `R` was last cycled to here.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn cycle_diff_view(&mut self) {
         let Some(PreviewKind::GitDiff(path)) = self.tab.preview_kind.clone() else {
@@ -245,6 +251,7 @@ impl App {
             .position(|&v| v == self.tab.diff_view)
             .unwrap_or(0);
         let next = reps[(idx + 1) % reps.len()];
+        self.tab.diff_view_choice = next;
         if next == DiffView::Preview {
             #[cfg(feature = "git")]
             self.enter_diff_preview_representation(&path);

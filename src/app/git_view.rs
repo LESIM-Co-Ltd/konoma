@@ -14,11 +14,11 @@ pub(super) struct DiffOpen {
     /// rather than the backend's committed blob (`App::diff_baseline`, `md_diff.rs`). Defaults to
     /// `false` (the full uncommitted change set, the backend's committed blob).
     pub follow_scope: bool,
-    /// The presentation to open into, rounded to what the *target* path can actually show
-    /// (`App::round_diff_view`) either way. `None` (the default) resolves fresh from `[ui] diff_view`
-    /// (`App::default_diff_view_for`) — a brand new diff surface. `Some(v)` carries an
-    /// already-chosen presentation over instead, so moving to another file (`n`/`N`) or returning
-    /// from the `Preview` representation doesn't reset it.
+    /// The presentation to open into — recorded as the tab's new `diff_view_choice` and then
+    /// rounded to what the *target* path can actually show (`App::round_diff_view`) either way.
+    /// `None` (the default) resolves fresh from `[ui] diff_view` — a brand new diff surface.
+    /// `Some(v)` carries an already-chosen presentation over instead, so moving to another file
+    /// (`n`/`N`) or returning from the `Preview` representation doesn't reset it.
     pub view: Option<DiffView>,
     /// `Some(b)` preserves a `came_from_git_view` value the caller already has, instead of the
     /// ordinary "opened straight from wherever the tab's Git view currently is" rule
@@ -615,22 +615,29 @@ impl App {
         self.tab.came_from_git_view = open.came_from_git_view.unwrap_or(self.tab.git_view);
         self.tab.git_view = false;
         self.diff_follow_scope = open.follow_scope;
-        // The presentation: a fresh open (`open.view == None`) starts from `[ui] diff_view` rounded
-        // to what `path` can actually show (`default_diff_view_for`); a carried-over one (`n`/`N`,
-        // the `Preview` return) is rounded the same way instead of trusting the caller already did
-        // it against the *new* target. `apply_diff_view` (not a direct assignment) is used, not
-        // because it validates anything itself — for `Rendered` it only **kicks** the block-diff
-        // computation (`App::poll_md_diff`) so it's already in flight by the time the first frame
-        // draws — but so every `Rendered` open goes through the one place that does that kick. The
-        // actual rounding-down to `Source` (if the result lands `Unavailable`) or the "nothing to
-        // mark but front matter" flash happens later, once the worker's result actually lands
+        // The presentation: a fresh open (`open.view == None`) wants `[ui] diff_view` unrounded; a
+        // carried-over one (`n`/`N`, the `Preview` return) wants whatever the caller already chose
+        // (`PerTab::diff_view_choice`, not the target it's carried *from*'s rounded `diff_view` —
+        // see that field's own doc comment for why the two must stay separate). Either way, that
+        // wanted presentation *is* the choice — recorded here, before rounding, so a file that can't
+        // show it never overwrites what the user actually asked for. It's then rounded to what
+        // `path` can actually show (`round_diff_view`) instead of trusting the caller already did it
+        // against the *new* target. `apply_diff_view` (not a direct assignment) is used, not because
+        // it validates anything itself — for `Rendered` it only **kicks** the block-diff computation
+        // (`App::poll_md_diff`) so it's already in flight by the time the first frame draws — but so
+        // every `Rendered` open goes through the one place that does that kick. The actual
+        // rounding-down to `Source` (if the result lands `Unavailable`) or the "nothing to mark but
+        // front matter" flash happens later, once the worker's result actually lands
         // (`App::apply_md_diff`, run from the event loop, never from here or the render path) — by
         // which point every input `apply_diff_view` reads here (`diff_follow_scope` above, the seeded
-        // cache above) is already stale history, not something this fn needs to wait on.
-        let view = match open.view {
-            Some(v) => self.round_diff_view(v, path),
-            None => self.default_diff_view_for(path),
-        };
+        // cache above) is already stale history, not something this fn needs to wait on. That async
+        // fallback only ever rewrites the *effective* `diff_view`, never `diff_view_choice`, so it
+        // can't leak into whatever file is opened next either.
+        let wanted = open
+            .view
+            .unwrap_or_else(|| DiffView::parse(&self.cfg.ui.diff_view));
+        self.tab.diff_view_choice = wanted;
+        let view = self.round_diff_view(wanted, path);
         self.apply_diff_view(view, path);
         self.tab.diff_scroll_pending =
             (self.tab.diff_view == DiffView::Rendered).then(|| path.to_path_buf());
