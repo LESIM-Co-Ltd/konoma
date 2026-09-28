@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-09-28
+
 ### Added
 - **A changed image, GIF, SVG, or PDF now shows a side-by-side "diff"** — the old and new versions
   drawn next to each other at one shared scale (`[ui] diff_view = "rendered"` on one of those
@@ -2557,7 +2559,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.6...v0.29.0
 [0.28.6]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.5...v0.28.6
 [0.28.5]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.4...v0.28.5
