@@ -1716,6 +1716,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::ImageZoomReset => app.image_zoom_reset(),
         Action::PdfNextPage => app.pdf_next_page(),
         Action::PdfPrevPage => app.pdf_prev_page(),
+        Action::SheetNext => app.sheet_next(),
+        Action::SheetPrev => app.sheet_prev(),
         Action::PreviewFileNext => app.preview_jump_file(1),
         Action::PreviewFilePrev => app.preview_jump_file(-1),
         Action::TableCopy(kind) => app.table_copy(kind),

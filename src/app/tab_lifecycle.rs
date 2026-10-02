@@ -50,6 +50,11 @@ impl App {
         // the whole bundle at the end — hoist this tab's own saved value first so that happens
         // against the *target* tab's leftover output, not whatever tab was live a moment ago.
         self.tab.command_out = t.command_out.clone();
+        // The parsed spreadsheet is App-level (too big to clone into every tab snapshot): drop the
+        // previous tab's and let the media block below re-read this tab's on the worker. The sheet
+        // number and cursor come back with `self.tab = t` and are clamped when the workbook lands.
+        self.workbook = None;
+        self.workbook_error = None;
         // root/open_dir/entries/selected/show_hidden/tree_viewport/mode/preview_scroll/
         // preview_hscroll/preview_viewport/preview_byte_top/preview_top_line/selection/visual_anchor/
         // tree_filter/filter_input/filter_pool/changed_filter/preview_search/search_input/search_idx:
@@ -79,7 +84,11 @@ impl App {
         // them by mistake.
         self.table_search_hits = if matches!(
             self.tab.preview_kind,
-            Some(PreviewKind::Table { .. }) | Some(PreviewKind::Archive { .. })
+            Some(
+                PreviewKind::Table { .. }
+                    | PreviewKind::Archive { .. }
+                    | PreviewKind::Spreadsheet(_)
+            )
         ) {
             t.search_matches.iter().map(|&(_, r, c)| (r, c)).collect()
         } else {
@@ -323,6 +332,11 @@ impl App {
         self.tab.git_view_sel = 0;
         self.tab.git_view_entries.clear();
         self.tab.came_from_git_view = false;
+        // A new tab shows no spreadsheet (the source tab's was snapshotted by save_active; its
+        // workbook is re-read on the worker when that tab is activated again).
+        self.workbook = None;
+        self.workbook_error = None;
+        self.tab.sheet_idx = 0;
         // A new tab also starts the diff-view state from scratch (part of the PerTab duplication
         // set) — otherwise it would silently inherit whichever presentation the tab it was opened
         // from happened to be showing, despite having no diff of its own open at all yet.

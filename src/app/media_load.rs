@@ -106,6 +106,19 @@ impl App {
                 self.tab.pdf_page,
                 self.cfg.external.pdf,
             )),
+            // A spreadsheet: parsed on the worker (no graphics backend needed — the table is drawn
+            // with ordinary text). The display language picks the locale that decides what
+            // locale-dependent built-in number formats look like.
+            PreviewKind::Spreadsheet(_) => {
+                let locale = match self.lang {
+                    crate::i18n::Lang::Jp => crate::preview::office::Locale::Ja,
+                    crate::i18n::Lang::En => crate::preview::office::Locale::En,
+                };
+                self.spawn_or_sync_media_gated(
+                    MediaJob::Workbook(path.to_path_buf(), locale),
+                    false,
+                );
+            }
             // A standalone .mmd/.mermaid: in image mode, convert to SVG in pure Rust → rasterize
             // (on a separate thread). In text mode / with no backend, do nothing — the decorated
             // text path draws it instead (principle #3).
@@ -305,6 +318,22 @@ impl App {
             }
             MediaPayload::CommandFailed(msg) => {
                 self.command_err = Some(msg);
+            }
+            // A late result for a preview that has since been replaced by something else (the
+            // generation only guards against a *newer media job*, and a non-media preview starts
+            // none) must not be adopted by the new preview.
+            MediaPayload::Workbook(wb) => {
+                if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) {
+                    self.workbook_error = None;
+                    self.workbook = Some(wb);
+                    self.clamp_table_cursor();
+                }
+            }
+            MediaPayload::WorkbookFailed(e) => {
+                if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) {
+                    self.workbook = None;
+                    self.workbook_error = Some(e);
+                }
             }
         }
     }

@@ -745,6 +745,12 @@ pub enum MediaPayload {
     /// `apply_payload` turns it into `App::command_err` for the render side's `[can not preview]`
     /// fallback (`ui/preview.rs`).
     CommandFailed(String),
+    /// A parsed spreadsheet (`PreviewKind::Spreadsheet`) → goes to `App::workbook`.
+    Workbook(Box<crate::preview::office::Workbook>),
+    /// A spreadsheet that could not be loaded; the reason is mapped to a translated message by the
+    /// render side. Carried as a payload (not the plain `None` failure) so the *reason* travels
+    /// through the same generation-checked channel as success.
+    WorkbookFailed(crate::preview::office::OfficeError),
 }
 
 /// Result of media loading from another thread. Matched by generation via `gen`; results made stale by navigation are discarded.
@@ -788,6 +794,9 @@ enum MediaJob {
     /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom). The path is only
     /// the base for relative resources inside the SVG (mermaid output has none).
     SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32),
+    /// Parse a spreadsheet (path, the display locale that decides locale-dependent built-in
+    /// formats). Always yields a payload: a workbook, or the reason it could not be loaded.
+    Workbook(PathBuf, crate::preview::office::Locale),
     /// Run a non-detached `PreviewKind::Command` delegation (`preview::command::run_capture`).
     /// `as_image` (the resolved `render_as == Some("image")`) decides whether the produced artifact
     /// is decoded as an image (`MediaPayload::Static`) or shown as text (`MediaPayload::CommandText`).
@@ -842,6 +851,21 @@ impl MediaJob {
             MediaJob::SvgReraster(svg, p, max_px) => {
                 let img = crate::preview::svg::rasterize_bytes(&svg, &p, max_px)?;
                 Some(MediaPayload::Vector { img, svg })
+            }
+            MediaJob::Workbook(p, locale) => {
+                use crate::preview::office::{load_workbook, LoadOptions, OfficeError};
+                let opts = LoadOptions {
+                    locale,
+                    ..LoadOptions::default()
+                };
+                // The readers sit on third-party parsers: a panic on a pathological file becomes a
+                // "corrupt" reason instead of killing the thread (principle #3).
+                let loaded = crate::preview::markdown::catch_silent(|| load_workbook(&p, &opts))
+                    .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
+                Some(match loaded {
+                    Ok(wb) => MediaPayload::Workbook(Box::new(wb)),
+                    Err(e) => MediaPayload::WorkbookFailed(e),
+                })
             }
             MediaJob::Command {
                 argv,
@@ -1556,6 +1580,14 @@ pub struct App {
     /// Parsed CSV/TSV table (Some while a table preview is active and parsing succeeded).
     /// None while not a table, or when parsing failed (then the preview degrades to raw text).
     table_data: Option<crate::preview::table::TableData>,
+    /// The parsed spreadsheet while a `PreviewKind::Spreadsheet` preview is active and its worker
+    /// finished successfully. Lives on `App` (like `table_data`), not on `PerTab`: it can hold up to
+    /// 4M cells, so cloning it into every tab snapshot is not an option — a tab switch re-reads it
+    /// on the worker instead (the sheet number and cursor are `PerTab` state and survive).
+    workbook: Option<Box<crate::preview::office::Workbook>>,
+    /// Why the last spreadsheet load failed (`Some` only while `workbook` is `None`). Drives the
+    /// reason shown on the "can not preview" screen.
+    workbook_error: Option<crate::preview::office::OfficeError>,
     /// Per-tab bundle — see `PerTab` (root/mode/preview target/scroll, table cursor/scroll, git-view
     /// overlay, windowed-preview scroll/caret, image/PDF pan-page, Markdown raw/focus/fence-zoom,
     /// selection/filter/search). `pub(crate)` because ui/main read the 13 fields that used to be
@@ -2806,6 +2838,9 @@ pub(crate) struct PerTab {
     table_cur_col: usize,
     table_top_row: usize,
     table_left_col: usize,
+    /// Which visible sheet (0-based) a spreadsheet preview shows. Clamped to the workbook's sheet
+    /// count whenever a (re)load lands.
+    sheet_idx: usize,
     // The git overlay is also kept per tab (still in git mode after viewing a doc in another tab and coming back).
     git_view: bool,
     git_view_sel: usize,
@@ -2992,6 +3027,7 @@ impl Default for PerTab {
             table_cur_col: 0,
             table_top_row: 0,
             table_left_col: 0,
+            sheet_idx: 0,
             git_view: false,
             git_view_sel: 0,
             git_view_entries: Vec::new(),
@@ -3146,6 +3182,8 @@ impl App {
             command_err: None,
             media_cache: None,
             table_data: None,
+            workbook: None,
+            workbook_error: None,
             tab: PerTab {
                 id: 1,
                 root: root.clone(),
@@ -3915,6 +3953,8 @@ impl App {
         self.tab.visual_anchor = None;
         self.clear_filter_state();
         self.search_clear();
+        // A spreadsheet's sheet number belongs to the file shown under the old root.
+        self.tab.sheet_idx = 0;
     }
 
     /// Move to the parent directory (raise the root). For `h`. While filtering, first clear the filter (the normal tree of the current root).
@@ -4067,6 +4107,12 @@ impl App {
         self.tab.diff_scroll_pending = None;
         // Reset image state every time. SVG/GIF start loading on a separate thread (doesn't block the UI).
         self.clear_image();
+        // A new preview target: the previous spreadsheet (if any) and its sheet number are done
+        // for. Must precede `start_media_load` below, whose synchronous fallback can land the new
+        // workbook right away.
+        self.workbook = None;
+        self.workbook_error = None;
+        self.tab.sheet_idx = 0;
         // For a PDF, get the page count first (hayro-syntax, pure Rust, no external process, ~a
         // few ms). Now that `hayro` is the first-choice renderer, it can draw any page without an
         // external tool, so "can count ⟹ can draw" holds almost universally (there is no
@@ -4730,6 +4776,9 @@ impl App {
         self.tab.search_idx = 0;
         self.tab.came_from_git_view = false;
         self.table_data = None;
+        self.workbook = None;
+        self.workbook_error = None;
+        self.tab.sheet_idx = 0;
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
@@ -4845,6 +4894,9 @@ impl App {
                 | PreviewKind::Svg(_)
                 | PreviewKind::Video(_)
                 | PreviewKind::Pdf(_)
+                // A spreadsheet is parsed on the media worker: a tab switch / mtime-changed
+                // reload must re-read it exactly like the image kinds.
+                | PreviewKind::Spreadsheet(_)
         ) || (matches!(kind, PreviewKind::Mermaid(_) | PreviewKind::MermaidFence(_))
             && self.mermaid_image_mode())
             // A non-detached delegated command (image or text render_as): its output is a

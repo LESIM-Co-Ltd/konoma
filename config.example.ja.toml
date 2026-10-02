@@ -362,7 +362,7 @@ code_theme = "TwoDark"
 
 # プレビュールールは上から評価し、最初にマッチしたものを使う。
 # builtin: 内蔵レンダラ ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "csv" | "tsv" |
-#          "archive" | "code" | "text")
+#          "archive" | "spreadsheet" | "code" | "text")
 #   markdown=konoma 自前のレンダラで装飾(コードは syntect ハイライト)。md内の ```mermaid は図に合成。
 #   mermaid =.mmd/.mermaid 単体を図として表示。既定は画像(mermaid-rs-renderer→resvg・純Rust・
 #            全画面ズーム/パン)。[ui] mermaid="text" で Unicode 罫線図(mermaid-text)に切替。
@@ -381,6 +381,9 @@ code_theme = "TwoDark"
 #   tsv    =タブ区切り。表示・操作は csv と同じ(区切り文字だけタブ)。色は [ui] csv_rainbow で切替。
 #   archive=.zip/.tar/.tar.gz/.tgz を同じテーブルレンダラで一覧表示(エントリ名 / サイズ / 更新日時)。
 #          メタデータのみで展開は一切しない。hjkl / y→ のキーは csv と同じ。
+#   spreadsheet=.xlsx/.xlsm/.xltx/.xltm/.xlsb/.xls/.ods を、各セルを Excel の表示書式どおり(日付・通貨・%など)に
+#          した表で表示。列は A,B,C… と行番号つき。J/K で次/前のシート。hjkl / y→ は csv と同じ。
+#          数式は計算せず、マクロも実行しない。
 # command: 外部コマンド委譲。{path}=対象ファイル, {out}=出力先(一時パス)
 # render_as: command 出力の扱い ("image" でPNG等を全画面画像表示。それ以外(未指定/"text"/未知の値)は
 #            出力をキャプチャして通常の windowed リーダーでテキスト表示)
@@ -411,6 +414,10 @@ builtin = "csv"
 [[preview.rules]]
 glob = "*.tsv"             # タブ区切り版
 builtin = "tsv"
+
+[[preview.rules]]
+glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # 表計算を表で表示(セルは Excel の表示書式どおり)。J/K=シート切替
+builtin = "spreadsheet"
 
 [[preview.rules]]
 glob = "*.{zip,tar,tgz}"   # アーカイブの中身一覧(名前/サイズ/更新日)。展開はしない

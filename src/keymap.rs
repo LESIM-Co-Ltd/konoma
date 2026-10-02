@@ -161,6 +161,9 @@ pub enum Action {
     ImageZoomReset,
     /// PDF: next/previous page (inert for non-PDF image previews; the handler gates on the kind).
     PdfNextPage,
+    /// Spreadsheet preview: next / previous sheet (`J` / `K` on the table surface).
+    SheetNext,
+    SheetPrev,
     PdfPrevPage,
 
     // --- Preview: file paging (shared across text/image/table) ---
@@ -919,6 +922,10 @@ impl KeyMap {
         ptbl.insert(KeyPress::key(KeyCode::PageDown), nav(Motion::PageDown));
         ptbl.insert(KeyPress::key(KeyCode::PageUp), nav(Motion::PageUp));
         apply_scheme_paging(&mut ptbl, scheme);
+        // J/K = next/previous sheet of a spreadsheet (the same keys as the PDF page turn; the
+        // handler no-ops unless the workbook has 2+ visible sheets, so CSV/archive tables ignore them).
+        ptbl.insert(KeyPress::ch('J'), run(Action::SheetNext));
+        ptbl.insert(KeyPress::ch('K'), run(Action::SheetPrev));
         ptbl.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         ptbl.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         // Ctrl-n/Ctrl-p = file paging (same keys as text/image).
@@ -1938,6 +1945,8 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "image_zoom_in" => Action::ImageZoomIn,
         "image_zoom_out" => Action::ImageZoomOut,
         "image_zoom_reset" => Action::ImageZoomReset,
+        "sheet_next" => Action::SheetNext,
+        "sheet_prev" => Action::SheetPrev,
         "pdf_next_page" => Action::PdfNextPage,
         "preview_next_file" => Action::PreviewFileNext,
         "preview_prev_file" => Action::PreviewFilePrev,
@@ -2141,6 +2150,8 @@ pub fn action_name(a: Action) -> String {
         Action::ImageZoomIn => "image_zoom_in",
         Action::ImageZoomOut => "image_zoom_out",
         Action::ImageZoomReset => "image_zoom_reset",
+        Action::SheetNext => "sheet_next",
+        Action::SheetPrev => "sheet_prev",
         Action::PdfNextPage => "pdf_next_page",
         Action::PreviewFileNext => "preview_next_file",
         Action::PreviewFilePrev => "preview_prev_file",
@@ -2333,6 +2344,57 @@ mod tests {
         assert_eq!(
             m.resolve(Surface::Tree, None, KeyPress::ch('Q')),
             Resolution::Action(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn sheet_switch_is_j_k_on_the_table_surface_only_and_config_roundtrips() {
+        // J/K (the PDF page-turn keys) switch sheets on the table surface.
+        let m = KeyMap::defaults(KeyScheme::Vim);
+        assert_eq!(
+            m.resolve(Surface::PreviewTable, None, KeyPress::ch('J')),
+            Resolution::Action(Action::SheetNext)
+        );
+        assert_eq!(
+            m.resolve(Surface::PreviewTable, None, KeyPress::ch('K')),
+            Resolution::Action(Action::SheetPrev)
+        );
+        // Neither the text nor the image surface gets the sheet actions (the image surface keeps
+        // J/K = PDF pages).
+        assert_ne!(
+            m.resolve(Surface::PreviewText, None, KeyPress::ch('J')),
+            Resolution::Action(Action::SheetNext)
+        );
+        assert_eq!(
+            m.resolve(Surface::PreviewImage, None, KeyPress::ch('J')),
+            Resolution::Action(Action::PdfNextPage)
+        );
+        // config-string two-way mapping.
+        assert_eq!(action_from_str("sheet_next"), Some(Action::SheetNext));
+        assert_eq!(action_from_str("sheet_prev"), Some(Action::SheetPrev));
+        assert_eq!(action_name(Action::SheetNext), "sheet_next");
+        assert_eq!(action_name(Action::SheetPrev), "sheet_prev");
+    }
+
+    #[test]
+    fn sheet_switch_can_be_rebound_and_disabled_from_config() {
+        let cfg = cfg_with(
+            "preview_table",
+            &[("L", "sheet_next"), ("H", "sheet_prev"), ("J", "noop")],
+        );
+        let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
+        assert!(m.warnings.is_empty(), "{:?}", m.warnings);
+        assert_eq!(
+            m.resolve(Surface::PreviewTable, None, KeyPress::ch('L')),
+            Resolution::Action(Action::SheetNext)
+        );
+        assert_eq!(
+            m.resolve(Surface::PreviewTable, None, KeyPress::ch('H')),
+            Resolution::Action(Action::SheetPrev)
+        );
+        assert_eq!(
+            m.resolve(Surface::PreviewTable, None, KeyPress::ch('J')),
+            Resolution::Unbound
         );
     }
 

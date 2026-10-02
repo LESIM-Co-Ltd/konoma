@@ -31,7 +31,7 @@ impl App {
         if self.preview_win.is_some() {
             // Code/Text and the raw Markdown from `R` (the window moves via byte offset).
             SearchTarget::Windowed
-        } else if self.table_data.is_some() {
+        } else if self.grid().is_some() {
             SearchTarget::Table
         } else if self.md_cache.is_some() {
             // Decorated Markdown / Mermaid. The search target is **the decorated lines shown on

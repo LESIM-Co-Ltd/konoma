@@ -17489,3 +17489,927 @@ fn e2e_follow_jump_from_tree_or_plain_preview_does_not_carry_an_earlier_choice()
         "通常プレビューからの follow jump も選択を引き継がないはず"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Spreadsheet preview (xlsx / xlsm / xltx / xltm / xlsb / xls / ods through the table grid)
+// ---------------------------------------------------------------------------------------------
+
+/// Write a minimal xlsx: `(name, state, <sheetData> rows, extra xml after sheetData)` per sheet.
+fn build_xlsx(path: &std::path::Path, sheets: &[(&str, &str, &str, &str)]) {
+    use std::io::Write as _;
+    const NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    const RNS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let mut wb = format!(r#"<?xml version="1.0"?><workbook xmlns="{NS}" xmlns:r="{RNS}"><sheets>"#);
+    let mut rels = String::from(
+        r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+    );
+    for (i, (name, state, _, _)) in sheets.iter().enumerate() {
+        let n = i + 1;
+        wb += &format!(r#"<sheet name="{name}" sheetId="{n}" state="{state}" r:id="rId{n}"/>"#);
+        rels += &format!(
+            r#"<Relationship Id="rId{n}" Type="x/worksheet" Target="worksheets/sheet{n}.xml"/>"#
+        );
+    }
+    wb += "</sheets></workbook>";
+    rels += "</Relationships>";
+    let root_rels = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#;
+    let f = std::fs::File::create(path).unwrap();
+    let mut zw = zip::ZipWriter::new(f);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut put = |name: &str, body: &str| {
+        zw.start_file(name, opts).unwrap();
+        zw.write_all(body.as_bytes()).unwrap();
+    };
+    put("_rels/.rels", root_rels);
+    put("xl/workbook.xml", &wb);
+    put("xl/_rels/workbook.xml.rels", &rels);
+    for (i, (_, _, rows, after)) in sheets.iter().enumerate() {
+        put(
+            &format!("xl/worksheets/sheet{}.xml", i + 1),
+            &format!(
+                r#"<?xml version="1.0"?><worksheet xmlns="{NS}"><sheetData>{rows}</sheetData>{after}</worksheet>"#
+            ),
+        );
+    }
+    zw.finish().unwrap();
+}
+
+/// An inline-string cell.
+fn x_str(r: &str, text: &str) -> String {
+    format!(r#"<c r="{r}" t="inlineStr"><is><t>{text}</t></is></c>"#)
+}
+
+/// A sandbox holding `book.<ext>` copied from `samples/sample.<ext>` (None = sample missing, skip).
+fn sheet_sandbox(
+    name: &str,
+    ext: &str,
+) -> Option<(crate::test_support::TmpDir, std::path::PathBuf)> {
+    let src = sample_path_or_skip(&format!("sample.{ext}"))?;
+    let dir = sandbox(name);
+    std::fs::copy(&src, dir.join(format!("book.{ext}"))).unwrap();
+    let root = canon(&dir);
+    Some((dir, root))
+}
+
+/// Open `book.<ext>` from the sandbox in an English-UI sim and return it on the table screen.
+fn open_book(name: &str, ext: &str) -> Option<(Sim, crate::test_support::TmpDir)> {
+    let (dir, root) = sheet_sandbox(name, ext)?;
+    let mut s = Sim::with_config(&root, cfg_en());
+    s.select(&format!("book.{ext}"));
+    s.enter();
+    Some((s, dir))
+}
+
+/// Redraw from scratch. A wide (CJK) glyph written over cells that held other text leaves the old
+/// text in its continuation cell of the `TestBackend` buffer (a harness artifact — a real terminal
+/// overwrites both cells), so assertions on CJK text clear the buffer first.
+fn clean(s: &mut Sim) {
+    s.term.clear().unwrap();
+    s.draw();
+}
+
+/// Assert `needle` is on screen, ignoring whitespace: a wide glyph occupies two buffer cells, so the
+/// flattened screen text has a blank after every CJK character. Redraws from scratch first.
+#[track_caller]
+fn see_cjk(s: &mut Sim, needle: &str) {
+    clean(s);
+    let squash = |t: &str| t.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    assert!(
+        squash(&s.screen()).contains(&squash(needle)),
+        "画面に「{needle}」が見えるはず:\n{}",
+        s.screen()
+    );
+}
+
+/// The screen row (border stripped, trimmed) at `y`.
+fn screen_row(s: &Sim, y: usize) -> String {
+    s.screen()
+        .lines()
+        .nth(y)
+        .unwrap_or("")
+        .trim_matches('│')
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn e2e_sheet_xlsx_opens_as_a_table_with_excel_formatted_cells() {
+    let Some((mut s, _dir)) = open_book("sheet_open", "xlsx") else {
+        return;
+    };
+    assert!(s.app.is_table_preview(), "xlsx は表ビューで開く");
+    assert!(s.app.is_sheet_preview());
+    s.see("TABLE");
+    // Displayed text = what Excel shows (number formats applied), never the raw value.
+    for want in [
+        "1,234,567.89",
+        "¥1,500",
+        "25.6%",
+        "2026-10-02",
+        "13:05:09",
+        "#DIV/0!",
+        "Quarterly report 四半期報告",
+    ] {
+        see_cjk(&mut s, want);
+    }
+    s.dont_see("0.256"); // the raw value of 25.6%
+    s.dont_see("46297");
+    // Title: sheet name + position, hidden count, the cursor's address.
+    s.see("Sales (1/2) +1 hidden  A1");
+}
+
+#[test]
+fn e2e_sheet_has_column_letters_and_a_row_number_gutter() {
+    let Some((s, _dir)) = open_book("sheet_gutter", "xlsx") else {
+        return;
+    };
+    // The header row is the column letters (the sample sheet is 6 columns wide).
+    let header: Vec<String> = screen_row(&s, 2)
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(header, ["A", "B", "C", "D", "E", "F"], "{}", s.screen());
+    // Row numbers sit to the left of the cells, 1-based.
+    assert!(
+        screen_row(&s, 4).starts_with("1 Quarterly"),
+        "{}",
+        s.screen()
+    );
+    assert!(screen_row(&s, 5).starts_with("2 Item"));
+    assert!(screen_row(&s, 8).starts_with("5 Total"));
+}
+
+#[test]
+fn e2e_sheet_row_numbers_and_column_letters_are_not_data() {
+    // The gutter and the letters are chrome: copying and searching must never see them.
+    let dir = sandbox("sheet_chrome");
+    build_xlsx(
+        &dir.join("c.xlsx"),
+        &[(
+            "S",
+            "visible",
+            &format!(
+                r#"<row r="1">{}{}</row><row r="2">{}</row>"#,
+                x_str("A1", "xx"),
+                x_str("B1", "yy"),
+                x_str("A2", "zz")
+            ),
+            "",
+        )],
+    );
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("c.xlsx");
+    s.enter();
+    s.see("TABLE");
+    // "1"/"2" are row numbers and "b"/"a" are column letters — none of them is a cell's text.
+    for q in ["1", "2", "b"] {
+        s.key('/');
+        s.keys(q);
+        s.enter();
+        assert!(
+            s.app.search_status().is_none(),
+            "{q:?} は行番号/列文字＝一致しない"
+        );
+        s.esc();
+    }
+    s.key('/');
+    s.keys("zz");
+    s.enter();
+    assert_eq!(s.app.search_status(), Some((1, 1)));
+    assert_eq!(s.app.table_cursor(), (1, 0), "zz は A2");
+    crate::test_support::clear_test_clipboard();
+    s.keys("yr");
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some("zz"),
+        "行コピーに行番号は入らない・末尾の空セルも付けない"
+    );
+}
+
+#[test]
+fn e2e_sheet_j_and_k_switch_sheets_and_stop_at_the_ends() {
+    let Some((mut s, _dir)) = open_book("sheet_jk", "xlsx") else {
+        return;
+    };
+    s.see("Sales (1/2)");
+    s.key('K'); // already on the first sheet: stops (no wrap)
+    s.see("Sales (1/2)");
+    // Move the cursor, then switch: a different sheet starts at A1.
+    s.keys("jjl");
+    assert_eq!(s.app.table_cursor(), (2, 1));
+    s.key('J');
+    see_cjk(&mut s, "売上 (2/2) +1 hidden  A1");
+    see_cjk(&mut s, "令和8年10月2日");
+    see_cjk(&mut s, "平成1年1月8日");
+    assert_eq!(
+        s.app.table_cursor(),
+        (0, 0),
+        "シートを替えたらカーソルは A1"
+    );
+    s.dont_see("Quarterly");
+    s.key('J'); // last sheet: stops
+    see_cjk(&mut s, "売上 (2/2)");
+    s.key('K');
+    s.see("Sales (1/2)");
+    s.see("Quarterly");
+}
+
+#[test]
+fn e2e_sheet_switch_reruns_an_active_search_on_the_new_sheet() {
+    let Some((mut s, _dir)) = open_book("sheet_search_switch", "xlsx") else {
+        return;
+    };
+    s.key('/');
+    s.keys("りんご");
+    s.enter();
+    assert_eq!(s.app.search_status(), Some((1, 1)));
+    assert_eq!(s.app.table_cursor(), (2, 0));
+    s.key('J'); // sheet 2 has no match: the old sheet's hits must not linger
+    assert!(s.app.search_status().is_none());
+    assert!(!s.app.table_cell_is_hit(2, 0));
+    s.key('K'); // back: the search applies to this sheet again
+    assert_eq!(s.app.search_status(), Some((1, 1)));
+    assert!(s.app.table_cell_is_hit(2, 0));
+}
+
+#[test]
+fn e2e_sheet_search_matches_the_displayed_text_not_the_raw_value() {
+    let Some((mut s, _dir)) = open_book("sheet_search", "xlsx") else {
+        return;
+    };
+    s.key('/');
+    s.keys("5.0%");
+    s.enter();
+    assert_eq!(s.app.table_cursor(), (3, 3), "5.0% は D4");
+    s.esc();
+    // The raw value 0.256 is displayed as 25.6%: searching it finds nothing.
+    s.key('/');
+    s.keys("0.256");
+    s.enter();
+    assert!(s.app.search_status().is_none());
+}
+
+#[test]
+fn e2e_sheet_enter_shows_address_display_raw_type_formula_and_format() {
+    let Some((mut s, _dir)) = open_book("sheet_detail", "xlsx") else {
+        return;
+    };
+    // D3 = 25.6% (a number stored as 0.256 with the format 0.0%)
+    s.keys("jjlll");
+    assert_eq!(s.app.table_cursor(), (2, 3));
+    s.enter();
+    assert!(s.app.is_table_cell_open());
+    s.see("Cell: D3");
+    s.see("Displayed: 25.6%");
+    s.see("Raw value: 0.256");
+    s.see("Type: number");
+    s.see("Number format: 0.0%");
+    s.esc();
+    assert!(!s.app.is_table_cell_open());
+    // D5 = the error cell, which has a formula in every sample format.
+    let p = sample_path_or_skip("sample.xlsx").unwrap();
+    let wb = crate::preview::office::load_workbook(&p, &Default::default()).unwrap();
+    let formula = wb.sheets[0]
+        .formula(4, 3)
+        .expect("D5 has a formula")
+        .to_string();
+    s.keys("jj");
+    s.enter();
+    s.see("Cell: D5");
+    s.see("Displayed: #DIV/0!");
+    s.see("Type: error");
+    s.see(&format!("Formula: ={formula}"));
+    // A General-format text cell has no "Number format" line and no formula line.
+    s.esc();
+    s.keys("kk");
+    s.key('0'); // A3 "Apple りんご"
+    s.enter();
+    see_cjk(&mut s, "Displayed: Apple りんご");
+    s.see("Type: text");
+    s.dont_see("Number format:");
+    s.dont_see("Formula:");
+}
+
+#[test]
+fn e2e_sheet_cell_detail_in_japanese() {
+    let Some((dir, root)) = sheet_sandbox("sheet_detail_ja", "xlsx") else {
+        return;
+    };
+    let _keep = dir;
+    let mut cfg = Config::default();
+    cfg.ui.lang = "ja".into();
+    let mut s = Sim::with_config(&root, cfg);
+    s.select("book.xlsx");
+    s.enter();
+    see_cjk(&mut s, "+1 非表示");
+    s.keys("jjlll");
+    s.enter();
+    see_cjk(&mut s, "セル: D3");
+    see_cjk(&mut s, "表示: 25.6%");
+    see_cjk(&mut s, "生の値: 0.256");
+    see_cjk(&mut s, "型: 数値");
+    see_cjk(&mut s, "表示書式: 0.0%");
+}
+
+#[test]
+fn e2e_sheet_copy_cell_row_and_column_are_displayed_text() {
+    let Some((mut s, _dir)) = open_book("sheet_copy", "xlsx") else {
+        return;
+    };
+    s.keys("jjlll"); // D3
+    crate::test_support::clear_test_clipboard();
+    s.keys("yc");
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some("25.6%")
+    );
+    crate::test_support::clear_test_clipboard();
+    s.keys("yr");
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some("Apple りんご\t1,234,567.89\t¥1,500\t25.6%\t2026-10-02\t13:05:09"),
+        "行は表示文字列のタブ区切り・行番号は含まない"
+    );
+    crate::test_support::clear_test_clipboard();
+    s.keys("yC");
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some("\nRate\n25.6%\n5.0%\n#DIV/0!"),
+        "列は表示文字列を改行区切り（列文字は含まない）"
+    );
+    // The row copy stops at the last non-empty cell: the title row is just A1.
+    s.keys("kk");
+    crate::test_support::clear_test_clipboard();
+    s.keys("yr");
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some("Quarterly report 四半期報告")
+    );
+}
+
+#[test]
+fn e2e_sheet_ods_and_xls_show_the_same_as_xlsx() {
+    for ext in ["ods", "xls"] {
+        let Some((mut s, _dir)) = open_book(&format!("sheet_same_{ext}"), ext) else {
+            continue;
+        };
+        assert!(s.app.is_sheet_preview(), "{ext}");
+        for want in [
+            "¥1,500",
+            "25.6%",
+            "2026-10-02",
+            "1,234,567.89",
+            "Sales (1/2)",
+        ] {
+            see_cjk(&mut s, want);
+        }
+        s.key('J');
+        see_cjk(&mut s, "令和8年10月2日");
+        see_cjk(&mut s, "売上 (2/2)");
+    }
+}
+
+#[test]
+fn e2e_sheet_macro_template_and_binary_extensions_use_the_same_viewer() {
+    // The default rule is one glob over every spreadsheet extension.
+    let Some(src) = sample_path_or_skip("sample.xlsx") else {
+        return;
+    };
+    let dir = sandbox("sheet_exts");
+    // (distinct stems: a case-insensitive filesystem would merge `b.xlsx` and `b.XLSX`)
+    let exts = ["xlsx", "xlsm", "xltx", "xltm", "XLSX"];
+    for (i, ext) in exts.iter().enumerate() {
+        std::fs::copy(&src, dir.join(format!("f{i}.{ext}"))).unwrap();
+    }
+    let root = canon(&dir);
+    for (i, ext) in exts.iter().enumerate() {
+        let mut s = Sim::with_config(&root, cfg_en());
+        s.select(&format!("f{i}.{ext}"));
+        s.enter();
+        // (a copy of an xlsx under another extension is read as what the container is)
+        assert!(s.app.is_sheet_preview(), "{ext}\n{}", s.screen());
+    }
+}
+
+#[test]
+fn e2e_sheet_ctrl_n_and_ctrl_p_page_through_files_including_workbooks() {
+    let Some(src) = sample_path_or_skip("sample.xlsx") else {
+        return;
+    };
+    let dir = sandbox("sheet_paging");
+    std::fs::write(dir.join("a.csv"), "h1,h2\nv1,v2\n").unwrap();
+    std::fs::copy(&src, dir.join("b.xlsx")).unwrap();
+    std::fs::write(dir.join("c.txt"), "plain text\n").unwrap();
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("a.csv");
+    s.enter();
+    s.see("v1");
+    s.ctrl('n');
+    assert!(s.app.is_sheet_preview(), "{}", s.screen());
+    see_cjk(&mut s, "¥1,500");
+    s.key('J');
+    see_cjk(&mut s, "売上 (2/2)");
+    s.ctrl('n');
+    s.see("plain text");
+    s.ctrl('p'); // back onto the workbook: a fresh open starts at the first sheet, A1
+    assert!(s.app.is_sheet_preview());
+    s.see("Sales (1/2)");
+    assert_eq!(s.app.table_cursor(), (0, 0));
+    s.ctrl('p');
+    s.see("v1");
+    assert!(!s.app.is_sheet_preview());
+    assert!(s.app.table_data().is_some());
+}
+
+#[test]
+fn e2e_sheet_keeps_sheet_and_cursor_across_a_tab_switch() {
+    let Some((mut s, _dir)) = open_book("sheet_tabs", "xlsx") else {
+        return;
+    };
+    s.key('J');
+    s.keys("jl");
+    assert_eq!(s.app.table_cursor(), (1, 1));
+    s.key('t'); // a second tab
+    assert_eq!(s.app.tab_count(), 2);
+    s.key('['); // back: the workbook is re-read, and sheet + cursor are restored
+    assert!(s.app.is_sheet_preview(), "{}", s.screen());
+    see_cjk(&mut s, "売上 (2/2)");
+    assert_eq!(s.app.table_cursor(), (1, 1));
+    see_cjk(&mut s, "令和8年10月2日");
+}
+
+#[test]
+fn e2e_sheet_tab_switch_through_the_worker_restores_sheet_and_cursor() {
+    let Some((dir, root)) = sheet_sandbox("sheet_tabs_async", "xlsx") else {
+        return;
+    };
+    let _keep = dir;
+    let mut s = Sim::with_config(&root, cfg_en()).with_media();
+    s.select("book.xlsx");
+    s.enter();
+    s.drain_media();
+    s.key('J');
+    s.keys("jl");
+    s.key('t');
+    s.key('[');
+    // While the worker re-reads it, nothing is showing yet…
+    assert!(s.app.is_sheet_loading());
+    s.drain_media();
+    // …and then the saved sheet and cursor are applied (not clamped back to A1 in the meantime).
+    see_cjk(&mut s, "売上 (2/2)");
+    assert_eq!(s.app.table_cursor(), (1, 1));
+}
+
+#[test]
+fn e2e_sheet_rewriting_the_file_reloads_it_and_clamps_the_sheet() {
+    let dir = sandbox("sheet_reload");
+    let book = canon(&dir).join("r.xlsx");
+    let three = |tag: &str| {
+        build_xlsx(
+            &book,
+            &[
+                (
+                    "One",
+                    "visible",
+                    &format!(
+                        r#"<row r="1">{}</row>"#,
+                        x_str("A1", &format!("first {tag}"))
+                    ),
+                    "",
+                ),
+                (
+                    "Two",
+                    "visible",
+                    &format!(
+                        r#"<row r="1">{}</row>"#,
+                        x_str("A1", &format!("second {tag}"))
+                    ),
+                    "",
+                ),
+                (
+                    "Three",
+                    "visible",
+                    &format!(
+                        r#"<row r="1">{}</row>"#,
+                        x_str("A1", &format!("third {tag}"))
+                    ),
+                    "",
+                ),
+            ],
+        );
+    };
+    three("v1");
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("r.xlsx");
+    s.enter();
+    s.keys("JJ");
+    s.see("Three (3/3)");
+    s.see("third v1");
+    // An agent rewrites the workbook (new mtime): same shape, new text — sheet number is kept.
+    let bump = |secs: u64| {
+        let f = std::fs::OpenOptions::new().write(true).open(&book).unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+            .unwrap();
+    };
+    three("v2");
+    bump(1_900_000_000);
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&book));
+    s.draw();
+    s.see("Three (3/3)");
+    s.see("third v2");
+    // Now it shrinks to two sheets: the sheet number clamps, no panic.
+    build_xlsx(
+        &book,
+        &[
+            (
+                "One",
+                "visible",
+                &format!(r#"<row r="1">{}</row>"#, x_str("A1", "only one")),
+                "",
+            ),
+            (
+                "Two",
+                "visible",
+                &format!(r#"<row r="1">{}</row>"#, x_str("A1", "only two")),
+                "",
+            ),
+        ],
+    );
+    bump(1_900_000_100);
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&book));
+    s.draw();
+    s.see("Two (2/2)");
+    s.see("only two");
+}
+
+#[test]
+fn e2e_sheet_reload_through_the_worker_keeps_the_old_sheet_until_the_new_one_lands() {
+    let dir = sandbox("sheet_reload_async");
+    let book = canon(&dir).join("r.xlsx");
+    let one = |text: &str| {
+        build_xlsx(
+            &book,
+            &[(
+                "S",
+                "visible",
+                &format!(r#"<row r="1">{}</row>"#, x_str("A1", text)),
+                "",
+            )],
+        );
+    };
+    one("before");
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("r.xlsx");
+    s.enter();
+    s.drain_media();
+    s.see("before");
+    one("after");
+    let f = std::fs::OpenOptions::new().write(true).open(&book).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_900_000_000))
+        .unwrap();
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&book));
+    s.draw();
+    s.see("before"); // not blanked while the worker re-reads
+    assert!(!s.app.is_sheet_loading());
+    s.drain_media();
+    s.see("after");
+    s.dont_see("before");
+}
+
+#[test]
+fn e2e_sheet_hints_follow_the_sheet_count_and_never_show_for_csv() {
+    // 2+ sheets: footer and help both advertise J/K.
+    let Some((mut s, _dir)) = open_book("sheet_hint_two", "xlsx") else {
+        return;
+    };
+    s.see("J/K:sheet");
+    s.key('?');
+    s.see("next / previous sheet");
+    s.esc();
+
+    // One sheet: the key does nothing, so neither hint is shown.
+    let dir = sandbox("sheet_hint_one");
+    build_xlsx(
+        &dir.join("one.xlsx"),
+        &[(
+            "Only",
+            "visible",
+            &format!(r#"<row r="1">{}</row>"#, x_str("A1", "hello")),
+            "",
+        )],
+    );
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("one.xlsx");
+    s.enter();
+    s.see("Only (1/1)");
+    s.dont_see("J/K:sheet");
+    s.key('J');
+    s.see("Only (1/1)");
+    assert!(!s.app.sheet_can_switch());
+    s.key('?');
+    s.dont_see("next / previous sheet");
+    s.esc();
+
+    // Hidden sheets are not switchable: 1 visible + 1 hidden still has no J/K.
+    let dir = sandbox("sheet_hint_hidden");
+    build_xlsx(
+        &dir.join("h.xlsx"),
+        &[
+            (
+                "Shown",
+                "visible",
+                &format!(r#"<row r="1">{}</row>"#, x_str("A1", "a")),
+                "",
+            ),
+            (
+                "Secret",
+                "hidden",
+                &format!(r#"<row r="1">{}</row>"#, x_str("A1", "b")),
+                "",
+            ),
+        ],
+    );
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("h.xlsx");
+    s.enter();
+    s.see("Shown (1/1) +1 hidden");
+    s.dont_see("J/K:sheet");
+
+    // CSV: J/K are inert and unadvertised.
+    let dir = sandbox("sheet_hint_csv");
+    std::fs::write(dir.join("t.csv"), "a,b\n1,2\n").unwrap();
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("t.csv");
+    s.enter();
+    s.keys("jl");
+    let cur = s.app.table_cursor();
+    s.key('J');
+    s.key('K');
+    assert_eq!(s.app.table_cursor(), cur);
+    assert_eq!(s.app.flash, None);
+    s.dont_see("J/K:sheet");
+    s.key('?');
+    s.dont_see("next / previous sheet");
+}
+
+#[test]
+fn e2e_sheet_archive_listing_ignores_j_and_k_too() {
+    let dir = sandbox("sheet_hint_zip");
+    {
+        use std::io::Write as _;
+        let mut zw = zip::ZipWriter::new(std::fs::File::create(dir.join("z.zip")).unwrap());
+        let o = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file("one.txt", o).unwrap();
+        zw.write_all(b"1").unwrap();
+        zw.finish().unwrap();
+    }
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("z.zip");
+    s.enter();
+    s.see("one.txt");
+    s.dont_see("J/K:sheet");
+    s.key('J');
+    s.see("one.txt");
+    assert!(!s.app.is_sheet_preview());
+}
+
+#[test]
+fn e2e_sheet_merged_cells_show_the_value_at_the_top_left_only() {
+    let dir = sandbox("sheet_merge");
+    build_xlsx(
+        &dir.join("m.xlsx"),
+        &[(
+            "S",
+            "visible",
+            &format!(
+                r#"<row r="1">{}</row><row r="2">{}{}</row>"#,
+                x_str("A1", "merged"),
+                x_str("A2", "below"),
+                x_str("C2", "tail")
+            ),
+            r#"<mergeCells count="1"><mergeCell ref="A1:C1"/></mergeCells>"#,
+        )],
+    );
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("m.xlsx");
+    s.enter();
+    s.see("merged");
+    s.keys("l");
+    crate::test_support::clear_test_clipboard();
+    s.keys("yc");
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some(""),
+        "B1 は空（値は左上のみ）"
+    );
+}
+
+#[test]
+fn e2e_sheet_empty_sheet_shows_a_placeholder_and_does_not_crash() {
+    let dir = sandbox("sheet_empty");
+    build_xlsx(
+        &dir.join("e.xlsx"),
+        &[
+            ("Blank", "visible", "", ""),
+            (
+                "Full",
+                "visible",
+                &format!(r#"<row r="1">{}</row>"#, x_str("A1", "x")),
+                "",
+            ),
+        ],
+    );
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("e.xlsx");
+    s.enter();
+    s.see("Blank (1/2)");
+    s.see("(empty)");
+    for k in ['j', 'k', 'l', 'h', 'g', 'G', '0', '$'] {
+        s.key(k);
+    }
+    s.enter(); // nothing to show: flashes, no popup
+    assert!(!s.app.is_table_cell_open());
+    crate::test_support::clear_test_clipboard();
+    s.keys("yc");
+    s.key('J');
+    s.see("Full (2/2)");
+    s.see("x");
+}
+
+#[test]
+fn e2e_sheet_wide_sheet_scrolls_sideways_and_keeps_the_gutter() {
+    let dir = sandbox("sheet_wide");
+    let mut cells = String::new();
+    for c in 0..40usize {
+        let col = crate::preview::table::column_letters(c);
+        cells += &x_str(&format!("{col}1"), &format!("value-{c:02}-long-text"));
+    }
+    build_xlsx(
+        &dir.join("w.xlsx"),
+        &[("W", "visible", &format!(r#"<row r="1">{cells}</row>"#), "")],
+    );
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("w.xlsx");
+    s.enter();
+    s.see("value-00");
+    s.key('$');
+    assert_eq!(s.app.table_cursor(), (0, 39));
+    s.see("value-39");
+    s.dont_see("value-00");
+    s.see("AN"); // 40th column letters
+    s.see("W (1/1)  AN1"); // address of the cursor
+                           // The row number gutter stays put while the columns scroll.
+    assert!(screen_row(&s, 4).starts_with("1 "), "{}", s.screen());
+}
+
+#[test]
+fn e2e_sheet_errors_are_explained_and_never_crash() {
+    // Encrypted (a CFB container holding EncryptedPackage).
+    let dir = sandbox("sheet_err");
+    {
+        let mut cf = cfb::create(dir.join("enc.xlsx")).unwrap();
+        use std::io::Write as _;
+        cf.create_stream("/EncryptionInfo")
+            .unwrap()
+            .write_all(b"\x04\x00\x04\x00info")
+            .unwrap();
+        cf.create_stream("/EncryptedPackage")
+            .unwrap()
+            .write_all(b"\x10\x00\x00\x00\x00\x00\x00\x00data")
+            .unwrap();
+        cf.flush().unwrap();
+    }
+    // Garbage with a spreadsheet extension.
+    std::fs::write(dir.join("junk.xlsx"), b"this is not a workbook at all").unwrap();
+    std::fs::write(dir.join("junk.xls"), b"nor this").unwrap();
+    // A valid zip that is not a spreadsheet.
+    {
+        use std::io::Write as _;
+        let mut zw = zip::ZipWriter::new(std::fs::File::create(dir.join("other.xlsx")).unwrap());
+        zw.start_file("hello.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zw.write_all(b"hi").unwrap();
+        zw.finish().unwrap();
+    }
+    // Over the 256 MiB file limit (sparse: no disk is used).
+    std::fs::File::create(dir.join("huge.xlsx"))
+        .unwrap()
+        .set_len(300 << 20)
+        .unwrap();
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    for (file, msg) in [
+        ("enc.xlsx", "password-protected"),
+        ("junk.xlsx", "damaged"),
+        ("junk.xls", "damaged"),
+        ("other.xlsx", "not a spreadsheet format"),
+        ("huge.xlsx", "256 MiB"),
+    ] {
+        s.select(file);
+        s.enter();
+        assert!(!s.app.is_table_preview(), "{file}");
+        assert!(
+            s.screen().contains(msg),
+            "{file}: 「{msg}」の理由が出るはず\n{}",
+            s.screen()
+        );
+        s.see(file); // names the file too
+        s.key('q');
+        assert_eq!(s.app.tab.mode, Mode::Tree, "{file}");
+    }
+}
+
+#[test]
+fn e2e_sheet_errors_in_japanese() {
+    let dir = sandbox("sheet_err_ja");
+    std::fs::write(dir.join("junk.xlsx"), b"not a workbook").unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.lang = "ja".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("junk.xlsx");
+    s.enter();
+    see_cjk(&mut s, "ファイルが壊れているか");
+}
+
+#[test]
+fn e2e_sheet_error_through_the_worker_shows_the_reason() {
+    let dir = sandbox("sheet_err_async");
+    std::fs::write(dir.join("junk.xlsx"), b"not a workbook").unwrap();
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("junk.xlsx");
+    s.enter();
+    assert!(s.app.is_sheet_loading(), "worker 待ちの間は読み込み中");
+    s.see("loading");
+    s.drain_media();
+    assert!(!s.app.is_sheet_loading());
+    s.see("damaged");
+}
+
+#[test]
+fn e2e_sheet_worker_result_lands_in_the_table() {
+    // The production path: the job runs on a worker thread and its result is applied from the run
+    // loop. (Every other test here goes through the synchronous fallback.)
+    let Some((dir, root)) = sheet_sandbox("sheet_worker", "xlsx") else {
+        return;
+    };
+    let _keep = dir;
+    let mut s = Sim::with_config(&root, cfg_en()).with_media();
+    s.select("book.xlsx");
+    s.enter();
+    assert!(s.app.is_media_loading());
+    assert!(s.app.is_sheet_loading());
+    assert!(!s.app.is_table_preview());
+    s.see("loading");
+    s.drain_media();
+    assert!(!s.app.is_media_loading());
+    assert!(s.app.is_table_preview());
+    see_cjk(&mut s, "¥1,500");
+    s.see("Sales (1/2)");
+    s.key('J');
+    see_cjk(&mut s, "令和8年10月2日");
+}
+
+#[test]
+fn e2e_sheet_a_late_workbook_result_is_not_adopted_by_another_preview() {
+    // Open a workbook, leave before the worker answers, open a CSV: the (still current-generation)
+    // workbook result must not turn the CSV preview into a sheet.
+    let Some((dir, root)) = sheet_sandbox("sheet_late", "xlsx") else {
+        return;
+    };
+    std::fs::write(dir.join("t.csv"), "a,b\nrow-one,2\n").unwrap();
+    let mut s = Sim::with_config(&root, cfg_en()).with_media();
+    s.select("book.xlsx");
+    s.enter();
+    s.key('q');
+    s.select("t.csv");
+    s.enter();
+    s.see("row-one");
+    // The workbook result arrives now (a newer preview has superseded it, so it may be dropped by
+    // generation — and if it is not, the kind check must still refuse it).
+    let res = s
+        .media_rx
+        .as_ref()
+        .unwrap()
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("media loader が結果を返す");
+    s.app.apply_media(res);
+    s.draw();
+    s.see("row-one");
+    s.dont_see("¥1,500");
+    assert!(!s.app.is_sheet_preview());
+    assert!(s.app.table_data().is_some());
+}
+
+#[test]
+fn e2e_sheet_bookmarks_and_path_style_keys_still_work_in_a_sheet() {
+    let Some((mut s, _dir)) = open_book("sheet_misc", "xlsx") else {
+        return;
+    };
+    let before = s.screen();
+    s.key('p'); // cycle the path style: the title changes, the grid stays
+    assert_ne!(before.lines().nth(1), s.screen().lines().nth(1));
+    see_cjk(&mut s, "¥1,500");
+    s.key('q');
+    assert_eq!(s.app.tab.mode, Mode::Tree);
+}

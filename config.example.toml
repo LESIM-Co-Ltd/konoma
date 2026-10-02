@@ -390,7 +390,7 @@ code_theme = "TwoDark"
 
 # Preview rules are evaluated top to bottom; the first match wins.
 # builtin: a built-in renderer ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "csv" | "tsv" |
-#          "archive" | "code" | "text")
+#          "archive" | "spreadsheet" | "code" | "text")
 #   markdown = decorated by konoma's own renderer (code is syntect-highlighted). ```mermaid inside md is composited as a diagram.
 #   mermaid  = a standalone .mmd/.mermaid shown as a diagram. Default is an image (mermaid-rs-renderer → resvg,
 #              pure Rust, full-screen zoom/pan). Set [ui] mermaid="text" for the Unicode box-drawing (mermaid-text).
@@ -410,6 +410,9 @@ code_theme = "TwoDark"
 #   tsv      = tab-separated. Same display/keys as csv (only the delimiter is a tab). Color via [ui] csv_rainbow.
 #   archive  = .zip/.tar/.tar.gz/.tgz listed in the same table renderer (entry name / size / modified date).
 #              Metadata only — nothing is ever extracted. Same hjkl / y→ keys as csv.
+#   spreadsheet = .xlsx/.xlsm/.xltx/.xltm/.xlsb/.xls/.ods shown as a table with each cell in its Excel number
+#              format (dates, currency, percent, ...). Column letters + row numbers; J/K = next/previous sheet.
+#              Same hjkl / y→ keys as csv. Formulas are never evaluated and macros never run.
 # command:  delegate to an external command. {path}=the target file, {out}=an output path (temp file).
 #           An empty (or whitespace-only) command means "no command to delegate to" — the rule
 #           degrades to `[can not preview: <ext>]`, exactly like an unmatched rule. It never falls
@@ -444,6 +447,10 @@ builtin = "csv"
 [[preview.rules]]
 glob = "*.tsv"             # Tab-separated variant.
 builtin = "tsv"
+
+[[preview.rules]]
+glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # Spreadsheet as a table (cells in their Excel formats). J/K = sheet.
+builtin = "spreadsheet"
 
 [[preview.rules]]
 glob = "*.{zip,tar,tgz}"   # Archive listing (name/size/modified) — never extracts anything.

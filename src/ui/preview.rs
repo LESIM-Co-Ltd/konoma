@@ -86,10 +86,15 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         return vec![sec.row("q / Esc", l(crate::i18n::Msg::BackToGitView))];
     }
     if app.is_table_preview() {
-        return vec![HelpSection::new(l(crate::i18n::Msg::PreviewTable))
+        let mut sec = HelpSection::new(l(crate::i18n::Msg::PreviewTable))
             .row("h j k l / arrows", l(crate::i18n::Msg::TableMoveHelp))
             .row("g / G", l(crate::i18n::Msg::TopBottom))
-            .row("0 / $", l(crate::i18n::Msg::TableColsHelp))
+            .row("0 / $", l(crate::i18n::Msg::TableColsHelp));
+        // Same predicate the `J`/`K` handler gates on ([[hint-shown-iff-key-acts]]).
+        if app.sheet_can_switch() {
+            sec = sec.row("J / K", l(crate::i18n::Msg::SheetSwitchHelp));
+        }
+        return vec![sec
             .row("/  n / N", l(crate::i18n::Msg::TableSearchHelp))
             .row("Enter", l(crate::i18n::Msg::TableCellViewHelp))
             .row("y → c / r / C", l(crate::i18n::Msg::CopyHint))
@@ -164,9 +169,15 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
 pub fn footer_hints(app: &App) -> Vec<String> {
     let lang = app.lang;
     if app.is_table_preview() {
-        return vec![
+        let mut v = vec![
             hint(lang, "hjkl", crate::i18n::Msg::HintCell),
             hint(lang, "↵", crate::i18n::Msg::HintViewCell),
+        ];
+        // `J/K` only acts on a workbook with 2+ visible sheets — the same predicate as the handler.
+        if app.sheet_can_switch() {
+            v.push(hint(lang, "J/K", crate::i18n::Msg::HintSheet));
+        }
+        v.extend([
             hint(lang, "/", crate::i18n::Msg::HintSearch),
             hint(lang, "y", crate::i18n::Msg::CopyHint),
             hint(lang, "g/G", crate::i18n::Msg::HintEnds),
@@ -176,7 +187,8 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "e", crate::i18n::Msg::HintEdit),
             hint(lang, "[/]", crate::i18n::Msg::HintTab),
             hint(lang, "p", crate::i18n::Msg::HintPath),
-        ];
+        ]);
+        return v;
     }
     if app.is_image_preview() {
         let mut v = vec![
@@ -422,6 +434,12 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // A `detached` command never sets media_loading (it's a synchronous spawn-and-forget, not a
     // worker job — see `App::start_media_load`), so it never hits this branch; it's handled by the
     // final kind-summary match below instead.
+    // A spreadsheet parsing on the worker shows the same spinner (a *re*load keeps the previous
+    // sheet on screen instead — `is_sheet_loading` is only true while nothing is showing yet).
+    if app.is_sheet_loading() {
+        render_media_loading(frame, app, area);
+        return;
+    }
     if app.is_media_loading()
         && !app.is_image_preview()
         && matches!(
@@ -571,6 +589,16 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         // Tables are already drawn via the dedicated path above. Reaching here means the parse
         // failed = show the raw CSV/TSV as text (safe degradation).
         Some(PreviewKind::Table { path, .. }) => (load_body(path, app.lang), true),
+        // A spreadsheet that did not load: say why (encrypted / too large / corrupt / unsupported),
+        // with the file name. Principle #3: never a crash, never raw bytes.
+        Some(PreviewKind::Spreadsheet(path)) => (
+            format!(
+                "{}\n{}",
+                tr(app.lang, sheet_error_msg(app.sheet_error())),
+                path.display()
+            ),
+            false,
+        ),
         // Archives are also already drawn via the dedicated path (is_table_preview) above. Reaching
         // here means listing failed (a corrupted file/unsupported format). Rather than dumping the
         // raw zip/tar byte stream as text, shows the target file + a hint (principle #3).
@@ -1722,6 +1750,28 @@ fn render_spinner_line(frame: &mut Frame, inner: Rect, spinner: &str, msg: &str)
 }
 
 /// Display shown while loading SVG/GIF on a separate thread (frame + centered spinner + "loading…").
+/// The translated reason for a spreadsheet that could not be shown. `None` (a workbook that loaded
+/// but has no visible sheet — every sheet hidden) gets its own message.
+fn sheet_error_msg(err: Option<&crate::preview::office::OfficeError>) -> crate::i18n::Msg {
+    use crate::i18n::Msg;
+    use crate::preview::office::OfficeError;
+    match err {
+        None => Msg::SheetNoVisibleSheets,
+        Some(OfficeError::Encrypted) => Msg::SheetErrEncrypted,
+        Some(OfficeError::TooLarge { what }) => match *what {
+            "file" => Msg::SheetErrTooLargeFile,
+            "entries" => Msg::SheetErrTooLargeEntries,
+            "entry" => Msg::SheetErrTooLargeEntry,
+            "package" => Msg::SheetErrTooLargePackage,
+            "sheet area" | "sheet cells" => Msg::SheetErrTooLargeArea,
+            _ => Msg::SheetErrTooLargeOther,
+        },
+        Some(OfficeError::Corrupt(_)) => Msg::SheetErrCorrupt,
+        Some(OfficeError::Unsupported) => Msg::SheetErrUnsupported,
+        Some(OfficeError::Io(_)) => Msg::SheetErrIo,
+    }
+}
+
 fn render_media_loading(frame: &mut Frame, app: &App, area: Rect) {
     let title = app
         .tab
