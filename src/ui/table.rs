@@ -89,20 +89,13 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     if cur_col < left {
         left = cur_col;
     }
-    let (cols, _) = loop {
-        let fitted = fit_columns(
-            t,
-            left,
-            row_end.saturating_sub(top).max(1),
-            top,
-            inner.width.saturating_sub(gutter_w as u16),
-        );
-        let last = fitted.last().map(|(c, _)| *c).unwrap_or(left);
-        if cur_col <= last || left >= cur_col {
-            break (fitted, last);
-        }
-        left += 1;
-    };
+    let data_rows = row_end.saturating_sub(top).max(1);
+    let avail = inner.width.saturating_sub(gutter_w as u16);
+    // The smallest `left` (not before the current one) from which the cursor column still fits:
+    // count the columns that fit leftwards from the cursor. (Stepping `left` forward one column
+    // at a time and re-fitting every time cost 400 ms at the last of 16,384 columns.)
+    left = leftmost_visible(t, cur_col, left, data_rows, top, avail);
+    let cols = fit_columns(t, left, data_rows, top, avail);
 
     // --- Assembling rows (all owned String = 'static) ---
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible_rows + 2);
@@ -319,6 +312,41 @@ fn column_color(app: &App, col: usize) -> Color {
     }
 }
 
+/// The smallest `left >= min_left` such that the columns `left..=cur_col` fit in `width` (or
+/// `cur_col` itself when even that column alone does not). Same answer as advancing `left` one
+/// column at a time until `fit_columns` shows `cur_col`, in time proportional to the columns that
+/// fit rather than to the distance scrolled.
+fn leftmost_visible(
+    t: Grid<'_>,
+    cur_col: usize,
+    min_left: usize,
+    visible_rows: usize,
+    top: usize,
+    width: u16,
+) -> usize {
+    let avail = width as usize;
+    let mut used = col_width(t, cur_col, visible_rows, top);
+    let mut left = cur_col;
+    while left > min_left {
+        let w = col_width(t, left - 1, visible_rows, top);
+        if used + COL_GAP + w > avail {
+            break;
+        }
+        used += COL_GAP + w;
+        left -= 1;
+    }
+    left
+}
+
+/// A column's display width: the widest of its header and the visible cells, clamped.
+fn col_width(t: Grid<'_>, col: usize, visible_rows: usize, top: usize) -> usize {
+    let mut w = t.header(col).width();
+    for r in top..(top + visible_rows).min(t.nrows()) {
+        w = w.max(flat_width(t.cell(r, col)));
+    }
+    w.clamp(MIN_COL_W, MAX_COL_W)
+}
+
 /// Which columns (starting at `left`) fit in `width`, and each column's display width.
 /// Column width = max(header, visible cells), clamped to [MIN_COL_W, MAX_COL_W]. Always yields at
 /// least one column (even if it overflows) so something is always drawn.
@@ -333,11 +361,7 @@ fn fit_columns(
     let mut used = 0usize;
     let avail = width as usize;
     for col in left..t.ncols() {
-        let mut w = t.header(col).width();
-        for r in top..(top + visible_rows).min(t.nrows()) {
-            w = w.max(flat_width(t.cell(r, col)));
-        }
-        let w = w.clamp(MIN_COL_W, MAX_COL_W);
+        let w = col_width(t, col, visible_rows, top);
         let gap = if out.is_empty() { 0 } else { COL_GAP };
         if !out.is_empty() && used + gap + w > avail {
             break;
@@ -433,6 +457,60 @@ mod tests {
         assert_eq!(fit_to_width("あい", 4).width(), 4);
         // Truncated to width 3: 1 full-width char (width 2) + … (width 1) = 3.
         assert_eq!(fit_to_width("あい", 3).width(), 3);
+    }
+
+    /// The old way: step `left` forward until `fit_columns` shows the cursor column.
+    fn leftmost_by_stepping(
+        t: Grid<'_>,
+        cur_col: usize,
+        mut left: usize,
+        rows: usize,
+        top: usize,
+        width: u16,
+    ) -> usize {
+        loop {
+            let fitted = fit_columns(t, left, rows, top, width);
+            let last = fitted.last().map(|(c, _)| *c).unwrap_or(left);
+            if cur_col <= last || left >= cur_col {
+                return left;
+            }
+            left += 1;
+        }
+    }
+
+    #[test]
+    fn leftmost_visible_matches_stepping_left_forward() {
+        // Columns of many different widths (header and cell widths from 1 to 60, so some are
+        // clamped), several rows.
+        let ncols = 90;
+        let headers: Vec<String> = (0..ncols).map(|c| "h".repeat(1 + (c * 7) % 23)).collect();
+        let rows: Vec<Vec<String>> = (0..4)
+            .map(|r| {
+                (0..ncols)
+                    .map(|c| "x".repeat(((c * 13 + r * 5) % 61).max(1)))
+                    .collect()
+            })
+            .collect();
+        let t = crate::preview::table::TableData {
+            headers,
+            rows,
+            ncols,
+            truncated: false,
+        };
+        let g = Grid::Csv(&t);
+        let mut checked = 0;
+        for width in [1u16, 5, 20, 40, 80, 200, 1000] {
+            for cur in (0..ncols).step_by(3).chain([ncols - 1]) {
+                // The caller has already moved `left` back to the cursor when it was past it.
+                for min_left in [0, 1.min(cur), cur / 2, cur.saturating_sub(1), cur] {
+                    let want = leftmost_by_stepping(g, cur, min_left, 4, 0, width);
+                    let got = leftmost_visible(g, cur, min_left, 4, 0, width);
+                    assert_eq!(got, want, "width {width} cur {cur} min_left {min_left}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 500);
     }
 
     #[test]

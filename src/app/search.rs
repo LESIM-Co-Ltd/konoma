@@ -120,7 +120,6 @@ impl App {
         if q.is_empty() {
             self.tab.preview_search = None;
             self.tab.search_matches.clear();
-            self.table_search_hits.clear();
             return;
         }
         const CAP: usize = 5000;
@@ -128,11 +127,9 @@ impl App {
         match target {
             SearchTarget::Table => self.table_search_scan(&q),
             SearchTarget::Markdown => {
-                self.table_search_hits.clear();
                 self.md_search_scan(&q);
             }
             _ => {
-                self.table_search_hits.clear();
                 self.tab.search_matches = self
                     .preview_win
                     .as_mut()
@@ -195,7 +192,6 @@ impl App {
         self.tab.preview_search = None;
         self.tab.search_input = None;
         self.tab.search_matches.clear();
-        self.table_search_hits.clear();
         self.tab.search_idx = 0;
     }
 

@@ -40,8 +40,10 @@ pub struct Limits {
     pub max_part_bytes: u64,
     /// Largest total expanded size over all entries (a zip bomb with many medium parts).
     pub max_total_bytes: u64,
-    /// Budget for cells kept in the grid (`rows x columns`); rows beyond it are cut off. 4M cells
-    /// keeps the finished grid around 150-250 MB worst case.
+    /// Budget for cells kept in the grid (`rows x columns`) over the **whole workbook** (handed
+    /// out to the sheets in order; rows beyond it are cut off). Measured cost of a loaded cell is
+    /// about 105-115 bytes (the kept cell plus the reader's dense copy of the sheet being built),
+    /// so 4M cells is roughly 450 MB worst case, plus the text budget below.
     pub max_grid_cells: u64,
     /// Rows kept per sheet. Same cap as the CSV table (`table::MAX_ROWS`) so both table previews
     /// truncate alike.
@@ -53,6 +55,14 @@ pub struct Limits {
     /// values only at A1 and XFD1048576 would ask for ~550 GB and abort the process (an OOM abort
     /// is not a catchable panic). 16M cells is ~512 MB worst case.
     pub max_dense_cells: u64,
+    /// Budget for text held in memory, counted per *reference*: a shared string used by a million
+    /// cells is copied into each of them by the reader and again by us, so 10 KB x 50,000 cells
+    /// is 500 MB from a 100 KB file. Counted before `calamine` runs, over the whole workbook:
+    /// the shared-string table itself (each string plus a fixed per-string overhead), every cell
+    /// that refers to a shared string (its length again), inline and formula strings, and ods
+    /// text times its repeat counts. 256 MiB of text is about 1 GB peak once copied by the reader
+    /// and by us, well above any real workbook (a 4M-cell sheet of 30-byte strings is 120 MB).
+    pub max_text_bytes: u64,
 }
 
 impl Default for Limits {
@@ -67,6 +77,7 @@ impl Default for Limits {
             max_rows: crate::preview::table::MAX_ROWS,
             max_cols: 16_384,
             max_dense_cells: 16_000_000,
+            max_text_bytes: 256 * MIB,
         }
     }
 }

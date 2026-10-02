@@ -65,19 +65,76 @@ pub struct Options {
     pub locale: Locale,
 }
 
+/// Excel's own limit on the length of a format code. A longer code is not valid in Excel and is
+/// shown as General here, so a crafted code cannot make every cell carry a huge string.
+pub const MAX_CODE_CHARS: usize = 255;
+/// Excel's own limit on decimal places. Placeholders after the decimal point beyond it are
+/// dropped when a code is compiled.
+pub const MAX_DECIMALS: usize = 30;
+
+/// A format code parsed once. Parsing a code is the expensive part of formatting a cell, and a
+/// workbook has a handful of distinct codes for millions of cells, so a caller formats many cells
+/// with one `Compiled` (see [`compile`]).
+#[derive(Debug, Clone)]
+pub struct Compiled {
+    /// `None`: an empty, over-long or broken code, shown as General.
+    secs: Option<Vec<Section>>,
+}
+
+/// Parses `code` once. Never panics: a broken, empty or over-long (more than
+/// [`MAX_CODE_CHARS`] characters) code compiles to General.
+pub fn compile(code: &str) -> Compiled {
+    let secs = if code.is_empty() || code.chars().count() > MAX_CODE_CHARS {
+        None
+    } else {
+        parse_code(code).map(|mut secs| {
+            cap_decimals(&mut secs);
+            secs
+        })
+    };
+    Compiled { secs }
+}
+
+/// Drops the decimal placeholders past [`MAX_DECIMALS`] (the exponent / fraction part of a code
+/// is left alone).
+fn cap_decimals(secs: &mut [Section]) {
+    for sec in secs.iter_mut().filter(|s| !s.date) {
+        let Some(point) = sec.toks.iter().position(|t| matches!(t, Tok::Point)) else {
+            continue;
+        };
+        let mut kept = 0;
+        let mut k = point + 1;
+        while k < sec.toks.len() {
+            match sec.toks[k] {
+                Tok::Digit(_) if kept >= MAX_DECIMALS => {
+                    sec.toks.remove(k);
+                    continue;
+                }
+                Tok::Digit(_) => kept += 1,
+                Tok::Exp { .. } | Tok::Slash => break,
+                _ => {}
+            }
+            k += 1;
+        }
+    }
+}
+
 /// Formats `value` with the Excel format `code`. Never panics: a broken or unsupported code
-/// falls back to General.
+/// falls back to General. (For many cells with the same code use [`compile`]; this one-shot form
+/// is what the tests use.)
+#[cfg(test)]
 pub fn format_value(code: &str, value: Value<'_>, opts: &Options) -> String {
+    format_compiled(&compile(code), value, opts)
+}
+
+/// Formats `value` with an already compiled code; same result as [`format_value`].
+pub fn format_compiled(code: &Compiled, value: Value<'_>, opts: &Options) -> String {
     match value {
         Value::Bool(b) => return if b { "TRUE" } else { "FALSE" }.to_string(),
         Value::Error(e) => return e.to_string(),
         _ => {}
     }
-    let secs = if code.is_empty() {
-        None
-    } else {
-        parse_code(code)
-    };
+    let secs = code.secs.as_deref();
     let Some(secs) = secs else {
         return match value {
             Value::Number(n) => general_signed(n),
@@ -86,7 +143,7 @@ pub fn format_value(code: &str, value: Value<'_>, opts: &Options) -> String {
         };
     };
     match value {
-        Value::Text(t) => match text_section_idx(&secs) {
+        Value::Text(t) => match text_section_idx(secs) {
             Some(i) => render_text(&secs[i], t),
             None => t.to_string(),
         },
@@ -94,12 +151,12 @@ pub fn format_value(code: &str, value: Value<'_>, opts: &Options) -> String {
             if !x.is_finite() {
                 return "#NUM!".to_string();
             }
-            let cnt = numeric_section_count(&secs);
+            let cnt = numeric_section_count(secs);
             if cnt == 0 {
                 // Only a text section (e.g. `@` or `@" kg"`): show the number as General.
                 return render_with_general(&secs[0], x);
             }
-            let (idx, use_abs) = select_section(&secs, cnt, x);
+            let (idx, use_abs) = select_section(secs, cnt, x);
             render_number_section(&secs[idx], x, use_abs, opts)
         }
         _ => String::new(),
@@ -2780,6 +2837,147 @@ mod tests {
         ] {
             let _ = iso_datetime_to_serial(s);
             let _ = iso_duration_to_serial(s);
+        }
+    }
+    // -----------------------------------------------------------------------------------
+    // limits on crafted codes, and the compiled form
+    // -----------------------------------------------------------------------------------
+
+    #[test]
+    fn a_code_over_255_characters_is_general_and_255_is_not() {
+        let ok = format!("0.{}", "0".repeat(MAX_CODE_CHARS - 2));
+        assert_eq!(ok.chars().count(), MAX_CODE_CHARS);
+        assert_ne!(f(&ok, 1.5), f("General", 1.5));
+        let long = format!("0.{}", "0".repeat(MAX_CODE_CHARS - 1));
+        assert_eq!(long.chars().count(), MAX_CODE_CHARS + 1);
+        assert_eq!(f(&long, 1.5), f("General", 1.5));
+        // A million digits: no giant string, just General.
+        let huge = format!("0.{}", "0".repeat(1_000_000));
+        assert_eq!(f(&huge, 1.5), "1.5");
+        assert_eq!(f(&huge, -2.0), "-2");
+        // Characters, not bytes: 255 two-byte characters are within the limit.
+        let wide = format!("\"{}\"0", "é".repeat(MAX_CODE_CHARS - 4));
+        assert_eq!(wide.chars().count(), MAX_CODE_CHARS - 1);
+        assert!(f(&wide, 1.0).ends_with('1'));
+    }
+
+    #[test]
+    fn decimals_are_capped_at_30() {
+        let code = format!("0.{}", "0".repeat(100));
+        let out = f(&code, 1.0);
+        assert_eq!(out, format!("1.{}", "0".repeat(MAX_DECIMALS)));
+        // `#` and `?` placeholders count the same.
+        let q = f(&format!("0.{}", "?".repeat(100)), 0.5);
+        assert!(q.len() <= 2 + MAX_DECIMALS, "{q:?}");
+        // The exponent digits of a scientific code are not decimals and survive the cap.
+        let sci = format!("0.{}E+00", "0".repeat(100));
+        let out = f(&sci, 12345.0);
+        assert!(out.ends_with("E+04"), "{out}");
+        assert_eq!(
+            out.split_once('.')
+                .unwrap()
+                .1
+                .split_once('E')
+                .unwrap()
+                .0
+                .len(),
+            MAX_DECIMALS
+        );
+        // 30 decimals themselves are still honoured.
+        let thirty = format!("0.{}", "0".repeat(MAX_DECIMALS));
+        assert_eq!(
+            f(&thirty, 0.5),
+            format!("0.5{}", "0".repeat(MAX_DECIMALS - 1))
+        );
+    }
+
+    #[test]
+    fn output_length_is_bounded_by_the_code_length() {
+        // Whatever the code, a cell's text stays proportional to the (<= 255 char) code.
+        let long_lit = format!("\"{}\"", "x".repeat(MAX_CODE_CHARS - 2));
+        let codes = [
+            "0".repeat(MAX_CODE_CHARS),
+            format!("0.{}", "0".repeat(MAX_CODE_CHARS - 2)),
+            format!("#,##0.{}", "0".repeat(MAX_CODE_CHARS - 6)),
+            "?".repeat(MAX_CODE_CHARS),
+            long_lit,
+            "yyyy-mm-dd ".repeat(23),
+            format!("0.{}E+00", "0".repeat(MAX_CODE_CHARS - 6)),
+            format!("{}%", "0".repeat(MAX_CODE_CHARS - 1)),
+        ];
+        for code in codes {
+            for v in [
+                0.0,
+                1.0,
+                -1.5,
+                123_456_789.987_654_33,
+                1e300,
+                1e-300,
+                45000.5,
+            ] {
+                let out = f(&code, v);
+                assert!(
+                    out.chars().count() <= 4 * MAX_CODE_CHARS + 400,
+                    "{} chars for a {}-char code at {v}",
+                    out.chars().count(),
+                    code.chars().count()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_compiled_code_formats_exactly_like_format_value() {
+        let codes = [
+            "",
+            "General",
+            "0",
+            "0.00",
+            "#,##0.00",
+            "0%",
+            "0.00E+00",
+            "# ?/?",
+            "yyyy-mm-dd",
+            "h:mm AM/PM",
+            "[h]:mm:ss",
+            "[>=100]0.0;[<0]\"neg\"0;0",
+            "@",
+            "0;-0;;@",
+            "[Red]0.0",
+            "\"a\"0\"b\"",
+            "ggge\"年\"m\"月\"d\"日\"",
+            "[$¥-411]#,##0",
+            "bad[code",
+            "0.0.0",
+        ];
+        let values = [
+            Value::Number(0.0),
+            Value::Number(1234.5678),
+            Value::Number(-0.25),
+            Value::Number(45292.75),
+            Value::Number(1e21),
+            Value::Number(f64::NAN),
+            Value::Text("text"),
+            Value::Bool(true),
+            Value::Error("#N/A"),
+        ];
+        for code in codes {
+            let c = compile(code);
+            for opts in [
+                Options::default(),
+                Options {
+                    date1904: true,
+                    locale: Locale::Ja,
+                },
+            ] {
+                for v in values {
+                    assert_eq!(
+                        format_compiled(&c, v, &opts),
+                        format_value(code, v, &opts),
+                        "{code:?} {v:?}"
+                    );
+                }
+            }
         }
     }
 }

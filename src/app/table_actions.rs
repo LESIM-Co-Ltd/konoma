@@ -17,6 +17,57 @@ fn grid_of<'a>(
     table.as_ref().map(Grid::Csv)
 }
 
+/// A search query for table cells: case-insensitive "contains", without allocating per cell.
+/// (`cell.to_lowercase().contains(..)` allocated a string for every cell: 60-100 ms on a
+/// maximum-size sheet, on the UI thread.)
+struct Needle {
+    /// The query lower-cased, as characters.
+    chars: Vec<char>,
+    /// The same as bytes when it is all ASCII (the common case: a byte search, no decoding).
+    ascii: Option<Vec<u8>>,
+}
+
+impl Needle {
+    fn new(q: &str) -> Needle {
+        let lower = q.to_lowercase();
+        let ascii = lower.is_ascii().then(|| lower.clone().into_bytes());
+        Needle {
+            chars: lower.chars().collect(),
+            ascii,
+        }
+    }
+
+    /// Whether `hay` contains the query, ignoring case. An all-ASCII haystack is searched as
+    /// bytes; otherwise characters are lower-cased one at a time (full Unicode lower-casing, so
+    /// `É` matches `é` and the Kelvin sign matches `k`).
+    fn found_in(&self, hay: &str) -> bool {
+        if self.chars.is_empty() {
+            return true;
+        }
+        if hay.is_ascii() {
+            // A non-ASCII query cannot match an ASCII-only text.
+            let Some(n) = self.ascii.as_deref() else {
+                return false;
+            };
+            let h = hay.as_bytes();
+            let first = n[0];
+            if h.len() < n.len() {
+                return false;
+            }
+            return (0..=h.len() - n.len()).any(|i| {
+                h[i].to_ascii_lowercase() == first && h[i..i + n.len()].eq_ignore_ascii_case(n)
+            });
+        }
+        hay.char_indices().any(|(i, _)| self.starts_at(&hay[i..]))
+    }
+
+    /// Whether the lower-cased characters of `s` begin with the query.
+    fn starts_at(&self, s: &str) -> bool {
+        let mut lowered = s.chars().flat_map(char::to_lowercase);
+        self.chars.iter().all(|&n| lowered.next() == Some(n))
+    }
+}
+
 impl App {
     // ---- CSV/TSV table preview ------------------------------------------
 
@@ -82,11 +133,33 @@ impl App {
         ) && self.grid().is_some()
     }
 
-    /// The field-separator byte of the active table (`,` by default; a tab for a spreadsheet row).
+    /// Sets what the preview shows. **The one place a preview kind is assigned**: the parsed
+    /// spreadsheet is App-level state that can hold hundreds of MB, so whenever the preview is
+    /// not a spreadsheet (a git diff, the tree, a diagram, another file) it is released here.
+    /// This keeps the invariant "`workbook` is `Some` only while the kind is `Spreadsheet`"
+    /// (`App::workbook_matches_preview`) true after every operation, instead of each caller
+    /// remembering to reset it.
+    pub(super) fn set_preview_kind(&mut self, kind: Option<PreviewKind>) {
+        if !matches!(kind, Some(PreviewKind::Spreadsheet(_))) {
+            self.workbook = None;
+            self.workbook_error = None;
+        }
+        self.tab.preview_kind = kind;
+    }
+
+    /// The invariant [`App::set_preview_kind`] keeps: a loaded workbook (or its error) exists only
+    /// while the preview is a spreadsheet.
+    #[cfg(test)]
+    pub(crate) fn workbook_matches_preview(&self) -> bool {
+        matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_)))
+            || (self.workbook.is_none() && self.workbook_error.is_none())
+    }
+
+    /// The field-separator byte of the active table (`,` by default). A spreadsheet never gets
+    /// here: its copy is built from the cells (tab-joined) in `table_copy_text`.
     fn table_delimiter(&self) -> u8 {
         match self.tab.preview_kind {
             Some(PreviewKind::Table { delimiter, .. }) => delimiter,
-            Some(PreviewKind::Spreadsheet(_)) => b'\t',
             _ => b',',
         }
     }
@@ -171,7 +244,6 @@ impl App {
         self.tab.table_left_col = 0;
         self.table_cell_open = false;
         // The old sheet's match cells mean nothing here: re-run an active search on the new sheet.
-        self.table_search_hits.clear();
         self.tab.search_matches.clear();
         self.tab.search_idx = 0;
         if let Some(q) = self.tab.preview_search.clone() {
@@ -315,9 +387,8 @@ impl App {
     /// Only data cells are searched: the cell cursor addresses data rows, so a header-only hit
     /// would have nowhere to jump to.
     pub(super) fn table_search_scan(&mut self, q: &str) {
-        self.table_search_hits.clear();
         self.tab.search_matches.clear();
-        let needle = q.to_lowercase();
+        let needle = Needle::new(q);
         let Some(g) = grid_of(&self.table_data, &self.workbook, self.tab.sheet_idx) else {
             return;
         };
@@ -328,9 +399,8 @@ impl App {
                 for r in 0..sheet.nrows {
                     for (c, cell) in sheet.row_cells(r) {
                         let shown = cell.display();
-                        if !shown.is_empty() && shown.to_lowercase().contains(&needle) {
+                        if !shown.is_empty() && needle.found_in(shown) {
                             self.tab.search_matches.push((0, r, *c as usize));
-                            self.table_search_hits.insert((r, *c as usize));
                         }
                     }
                 }
@@ -338,9 +408,8 @@ impl App {
             Grid::Csv(t) => {
                 for r in 0..t.nrows() {
                     for c in 0..t.ncols {
-                        if t.cell(r, c).to_lowercase().contains(&needle) {
+                        if needle.found_in(t.cell(r, c)) {
                             self.tab.search_matches.push((0, r, c));
-                            self.table_search_hits.insert((r, c));
                         }
                     }
                 }
@@ -348,9 +417,23 @@ impl App {
         }
     }
 
-    /// Whether this data cell matched the active search (renderer lookup — O(1) per cell).
+    /// Whether this data cell matched the active search (renderer lookup). The matches of a table
+    /// are recorded in reading order (row-major), so this is a binary search of `search_matches`
+    /// itself: no second copy of a (possibly multi-million) result set to build, and nothing that
+    /// could outlive a tab switch (`search_matches` is per tab).
     pub fn table_cell_is_hit(&self, row: usize, col: usize) -> bool {
-        self.table_search_hits.contains(&(row, col))
+        matches!(
+            self.tab.preview_kind,
+            Some(
+                PreviewKind::Table { .. }
+                    | PreviewKind::Archive { .. }
+                    | PreviewKind::Spreadsheet(_)
+            )
+        ) && self
+            .tab
+            .search_matches
+            .binary_search(&(0, row, col))
+            .is_ok()
     }
 
     // ---- Table cell full-text popup (`Enter` in a table preview) --------------
@@ -441,7 +524,6 @@ impl App {
                 cell.raw_text()
             ));
             let ty = match cell.cell_type() {
-                CellType::Empty => Msg::SheetTypeEmpty,
                 CellType::Number => Msg::SheetTypeNumber,
                 CellType::Text => Msg::SheetTypeText,
                 CellType::Bool => Msg::SheetTypeBool,
@@ -526,4 +608,100 @@ pub struct TableCellView {
     pub nrows: usize,
     pub ncols: usize,
     pub text: String,
+}
+
+#[cfg(test)]
+mod needle_tests {
+    use super::Needle;
+
+    /// What the search used to do (allocating per cell).
+    fn old(hay: &str, q: &str) -> bool {
+        hay.to_lowercase().contains(&q.to_lowercase())
+    }
+
+    #[test]
+    fn needle_matches_exactly_what_to_lowercase_contains_did() {
+        // (A word-final `Σ` is the one place where `str::to_lowercase` looks at context (`ς`);
+        // lower-casing one character at a time gives `σ`. Not in the corpus on purpose.)
+        let hays = [
+            "",
+            "a",
+            "Hello World",
+            "HELLO",
+            "hello",
+            "x-Ray 123",
+            "ÉCOLE",
+            "école",
+            "Straße",
+            "STRASSE",
+            "Kelvin \u{212A}",
+            "İstanbul",
+            "日本語テキスト",
+            "ＡＢＣ ａｂｃ",
+            "Ωmega ω",
+            "mixed ÀÉÎ and abc",
+            "tab\tnew\nline",
+            "😀 smile",
+            "ǅ title",
+        ];
+        let needles = [
+            "",
+            "a",
+            "A",
+            "hello",
+            "WORLD",
+            "o w",
+            "ray",
+            "123",
+            "é",
+            "É",
+            "ecole",
+            "école",
+            "ß",
+            "ss",
+            "k",
+            "K",
+            "i",
+            "i\u{307}",
+            "istanbul",
+            "語",
+            "テキ",
+            "ａｂｃ",
+            "ＡＢＣ",
+            "ω",
+            "Ω",
+            "àéî",
+            "AND",
+            "\t",
+            "\n",
+            "😀",
+            "ǆ",
+            "Ǆ",
+            "zzzz",
+            "hello world and more",
+        ];
+        for h in hays {
+            for q in needles {
+                assert_eq!(
+                    Needle::new(q).found_in(h),
+                    old(h, q),
+                    "hay {h:?} needle {q:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn needle_handles_edges() {
+        let n = Needle::new("ab");
+        assert!(!n.found_in("a"));
+        assert!(n.found_in("ab"));
+        assert!(n.found_in("xxAB"));
+        assert!(n.found_in("ABxx"));
+        assert!(!n.found_in("aXb"));
+        // A non-ASCII query never matches ASCII text; the empty query matches everything.
+        assert!(!Needle::new("é").found_in("e"));
+        assert!(Needle::new("").found_in("anything"));
+        assert!(Needle::new("").found_in(""));
+    }
 }

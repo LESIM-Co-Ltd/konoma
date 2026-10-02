@@ -15752,13 +15752,12 @@ fn non_kitty_terminal_keeps_ratatui_image_path() {
     assert!(app.image.is_some(), "従来の ThreadProtocol 経路を使う");
 }
 
-/// A tab switch must not leak table search match highlighting into another tab. `table_search_hits`
-/// is a rendering-side set derived from `search_matches`, but it's not in PerTab, so unless
-/// load_active restores it, the previous tab's coordinates linger and the table renderer (which
-/// references `table_cell_is_hit` unconditionally) wrongly highlights another tab's cells (a
-/// missing-duplication finding from review).
+/// A tab switch must not leak table search match highlighting into another tab. The highlight is
+/// read straight from the (per-tab) `search_matches`, so it can only show the active tab's own
+/// matches; this pins that (a missing-duplication finding from review, from when it was a separate
+/// App-level set that `load_active` had to rebuild).
 #[test]
-fn table_search_hits_do_not_leak_across_tabs() {
+fn table_search_highlight_does_not_leak_across_tabs() {
     let dir = unique_tmp("konoma_tab_table_search");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.csv"), "h1,h2\nfoo,bar\nfoo,baz\n").unwrap();
@@ -24759,4 +24758,54 @@ fn diff_media_active_agrees_with_the_single_not_markdown_check_across_every_reac
         !app.diff_media_active(),
         "Rendered ではないので diff_media_active は false のはず"
     );
+}
+
+/// The table highlight is a binary search of `search_matches`: it relies on the matches being in
+/// reading order. Compare it with a brute-force check of every cell, for a CSV with ragged,
+/// repeated and CJK cells, searching text that matches many of them.
+#[test]
+fn table_search_highlight_is_exactly_the_matching_cells() {
+    let dir = unique_tmp("konoma_table_hit_exact");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut csv = String::from("h1,h2,h3,h4\n");
+    for r in 0..60 {
+        csv += &format!(
+            "{},Abc{},{},{}\n",
+            r,
+            r % 7,
+            if r % 3 == 0 { "ａｂｃ ABC" } else { "xyz" },
+            if r % 5 == 0 { "日本語abc" } else { "" }
+        );
+    }
+    std::fs::write(dir.join("t.csv"), csv).unwrap();
+    let root = dir.canonicalize().unwrap();
+    let mut app = App::new(root.clone(), Config::default()).unwrap();
+    let p = root.join("t.csv");
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&p));
+    app.tab.preview_path = Some(p);
+    app.tab.mode = Mode::Preview;
+    app.load_table();
+    for q in ["abc", "ABC", "1", "日本", "zzz", "x"] {
+        app.start_search();
+        for c in q.chars() {
+            app.search_input_push(c);
+        }
+        app.search_commit();
+        let t = app.table_data().unwrap();
+        let mut expected = 0;
+        for r in 0..t.nrows() {
+            for c in 0..t.ncols {
+                let want = t.cell(r, c).to_lowercase().contains(&q.to_lowercase());
+                assert_eq!(
+                    app.table_cell_is_hit(r, c),
+                    want,
+                    "query {q:?} cell ({r},{c})"
+                );
+                expected += usize::from(want);
+            }
+        }
+        assert_eq!(app.tab.search_matches.len(), expected, "query {q:?}");
+        app.search_clear();
+        assert!(!app.table_cell_is_hit(0, 0), "cleared");
+    }
 }

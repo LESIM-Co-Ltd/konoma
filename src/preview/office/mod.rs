@@ -19,11 +19,10 @@ pub mod workbook;
 use std::fmt;
 use std::path::Path;
 
-pub use container::Limits;
-pub use workbook::{
-    display_text, load_workbook, Cell, CellType, CellValue, DisplayCtx, LoadOptions, MergeRange,
-    NumFmtRef, Sheet, Workbook,
-};
+pub use workbook::{load_workbook, CellType, LoadOptions, NumFmtRef, Sheet, Workbook};
+// What the tests of this module (`use super::*`) name directly.
+#[cfg(test)]
+pub use workbook::{display_text, Cell, CellValue, DisplayCtx, MergeRange};
 
 /// The spreadsheet kinds konoma previews, by file extension (case-insensitive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +77,7 @@ pub enum OfficeError {
     /// Password-protected / encrypted.
     Encrypted,
     /// A safety limit was exceeded; `what` names the limit (`"file"`, `"entries"`, `"entry"`,
-    /// `"package"`, `"sheet area"`, `"sheet cells"`).
+    /// `"package"`, `"sheet area"`, `"sheet cells"`, `"text"`).
     TooLarge {
         /// Which limit.
         what: &'static str,

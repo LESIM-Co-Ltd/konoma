@@ -18582,3 +18582,124 @@ fn e2e_office_saved_workbook_is_re_read_by_the_watcher_path() {
     s.see("after");
     s.dont_see("before");
 }
+
+/// The parsed workbook can hold hundreds of MB; it must be released whenever the preview stops
+/// being a spreadsheet — a git diff of the same file, the tree, a plain file, another tab — not
+/// only on the paths that happened to reset it. The invariant is checked after every step.
+#[test]
+fn e2e_sheet_workbook_is_released_whenever_the_preview_stops_being_a_sheet() {
+    let dir = sandbox("sheet_release");
+    build_xlsx(
+        &dir.join("book.xlsx"),
+        &[(
+            "S",
+            "visible",
+            &format!(r#"<row r="1">{}</row>"#, x_str("A1", "kept")),
+            "",
+        )],
+    );
+    std::fs::write(dir.join("a.txt"), "plain\n").unwrap();
+    let root = canon(&dir);
+    let mut s = Sim::with_config(&root, cfg_en()).with_media();
+    let open_sheet = |s: &mut Sim| {
+        s.select("book.xlsx");
+        s.enter();
+        s.drain_media();
+        assert!(s.app.is_sheet_preview(), "{}", s.screen());
+    };
+    open_sheet(&mut s);
+    assert!(s.app.workbook_matches_preview());
+
+    // A git diff of the same file (a non-repo sandbox still enters the diff surface).
+    s.app.open_git_diff(&root.join("book.xlsx"));
+    assert!(!s.app.is_sheet_preview());
+    assert!(s.app.workbook_matches_preview(), "after open_git_diff");
+
+    // Back to the tree, and a sheet again.
+    s.key('q');
+    assert!(s.app.workbook_matches_preview(), "after q");
+    open_sheet(&mut s);
+
+    // Leaving through the tree and opening a plain file.
+    s.key('q');
+    s.select("a.txt");
+    s.enter();
+    assert!(s.app.workbook_matches_preview(), "after opening a.txt");
+    s.key('q');
+    open_sheet(&mut s);
+
+    // Another tab (the new tab starts in the tree), and back.
+    s.key('t');
+    assert!(s.app.workbook_matches_preview(), "after t");
+    s.key('[');
+    s.drain_media();
+    assert!(s.app.workbook_matches_preview(), "after [");
+    assert!(s.app.is_sheet_preview(), "{}", s.screen());
+}
+
+/// `?` lists `e` only as what it does *now* ([[hint-shown-iff-key-acts]]): "open in an Office
+/// app" on a workbook, the editor wording elsewhere or when `[editor] ext` claims the extension,
+/// and no row at all while `office_apps = false` (the key then only explains why nothing opens).
+#[test]
+fn e2e_office_help_row_for_e_matches_what_e_does() {
+    let mk = |name: &str, cfg: Config, open: bool| {
+        let dir = sandbox(name);
+        build_xlsx(
+            &dir.join("b.xlsx"),
+            &[(
+                "S",
+                "visible",
+                &format!(r#"<row r="1">{}</row>"#, x_str("A1", "cell")),
+                "",
+            )],
+        );
+        std::fs::write(dir.join("c.csv"), "a,b\n1,2\n").unwrap();
+        let root = canon(&dir);
+        let mut s = Sim::with_config(&root, cfg);
+        s.select(if open { "b.xlsx" } else { "c.csv" });
+        if open {
+            s.enter();
+        }
+        (s, dir)
+    };
+
+    // A workbook, in the preview and in the tree.
+    let (mut s, _d) = mk("office_help_on", cfg_en(), true);
+    s.key('?');
+    s.see("open in an Office app");
+    s.see("CSV / TSV / spreadsheet / archive");
+    s.dont_see("edit in external editor");
+    s.esc();
+    s.key('q');
+    s.key('?');
+    s.see("open in an Office app");
+    s.dont_see("edit in external editor");
+
+    // A CSV: the editor.
+    let (mut s, _d) = mk("office_help_csv", cfg_en(), false);
+    s.enter();
+    s.key('?');
+    s.see("edit in external editor");
+    s.dont_see("open in an Office app");
+
+    // `[editor] ext` claims the extension: `e` opens the editor.
+    let mut cfg = cfg_en();
+    cfg.editor.ext.insert("xlsx".into(), "myeditor".into());
+    let (mut s, _d) = mk("office_help_ext", cfg, true);
+    s.key('?');
+    s.see("edit in external editor");
+    s.dont_see("open in an Office app");
+
+    // Switched off: no `e` row to promise anything, in the preview or in the tree.
+    let mut cfg = cfg_en();
+    cfg.external.office_apps = false;
+    let (mut s, _d) = mk("office_help_off", cfg, true);
+    s.key('?');
+    s.dont_see("edit in external editor");
+    s.dont_see("open in an Office app");
+    s.esc();
+    s.key('q');
+    s.key('?');
+    s.dont_see("edit in external editor");
+    s.dont_see("open in an Office app");
+}

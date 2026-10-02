@@ -1151,3 +1151,131 @@ fn every_data_style_kind_end_to_end() {
         assert_eq!(s.display(0, i), *want, "{label}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// memory: formula-only cells and the text budget
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_formula_only_cell_in_a_far_corner_is_refused_like_a_value_cell() {
+    let far = format!(
+        r#"{}<table:table-row table:number-rows-repeated="1048570"/><table:table-row><table:table-cell table:number-columns-repeated="16383"/><table:table-cell table:formula="of:=1"/></table:table-row>"#,
+        row(r#"<table:table-cell table:formula="of:=1"/>"#)
+    );
+    let dir = tmp("ods_formula_far");
+    let p = write(
+        &dir,
+        "f.ods",
+        &ods_bytes(&content_xml("", &table("S", &far)), None, None),
+    );
+    let t = std::time::Instant::now();
+    assert!(matches!(load(&p), Err(OfficeError::TooLarge { .. })));
+    assert!(t.elapsed().as_secs() < 5);
+    // The pass itself reports the box (formula-only cells included).
+    let one = ods_bytes(
+        &content_xml(
+            "",
+            &table("S", &row(r#"<table:table-cell table:formula="of:=1"/>"#)),
+        ),
+        None,
+        None,
+    );
+    let p = write(&dir, "one.ods", &one);
+    let fm = fmt_ods::read(&p, &Limits::default()).unwrap();
+    assert_eq!(fm.sheets["S"].value_cells, 1);
+}
+
+#[test]
+fn a_repeated_long_string_is_refused_by_the_text_budget() {
+    // One 10 KB string repeated across 200 cells: 2 MB of text from a ~12 KB file (the budget
+    // is 1 MiB here).
+    let big = "t".repeat(10_000);
+    let cell = |reps: u32| {
+        format!(
+            r#"<table:table-cell office:value-type="string" table:number-columns-repeated="{reps}"><text:p>{big}</text:p></table:table-cell>"#
+        )
+    };
+    let limits = Limits {
+        max_cols: 1000,
+        max_rows: 1000,
+        max_grid_cells: 100_000,
+        ..small_limits()
+    };
+    let dir = tmp("ods_amplify");
+    let p = write(
+        &dir,
+        "a.ods",
+        &ods_bytes(&content_xml("", &table("S", &row(&cell(200)))), None, None),
+    );
+    assert_eq!(
+        load_with(&p, limits).unwrap_err(),
+        OfficeError::TooLarge { what: "text" }
+    );
+    // Rows repeated count too.
+    let rows = format!(
+        r#"<table:table-row table:number-rows-repeated="200">{}</table:table-row>"#,
+        cell(1)
+    );
+    let p = write(
+        &dir,
+        "r.ods",
+        &ods_bytes(&content_xml("", &table("S", &rows)), None, None),
+    );
+    assert_eq!(
+        load_with(&p, limits).unwrap_err(),
+        OfficeError::TooLarge { what: "text" }
+    );
+    // A smaller repeat loads.
+    let p = write(
+        &dir,
+        "ok.ods",
+        &ods_bytes(&content_xml("", &table("S", &row(&cell(50)))), None, None),
+    );
+    let wb = load_with(&p, limits).unwrap();
+    assert_eq!(wb.sheets[0].display(0, 49).len(), 10_000);
+}
+
+#[test]
+fn string_value_attributes_and_formula_text_count_and_numbers_do_not() {
+    let limits = Limits {
+        max_text_bytes: 5_000,
+        ..small_limits()
+    };
+    let dir = tmp("ods_text_kinds");
+    // `office:string-value` of 100 bytes x 100 repeats = 10 KB > 5 KB.
+    let sv = format!(
+        r#"<table:table-cell office:value-type="string" office:string-value="{}" table:number-columns-repeated="100"/>"#,
+        "s".repeat(100)
+    );
+    let p = write(
+        &dir,
+        "s.ods",
+        &ods_bytes(&content_xml("", &table("S", &row(&sv))), None, None),
+    );
+    assert_eq!(
+        load_with(
+            &p,
+            Limits {
+                max_cols: 1000,
+                ..limits
+            }
+        )
+        .unwrap_err(),
+        OfficeError::TooLarge { what: "text" }
+    );
+    // 5,000 repeated numeric cells (with their `<text:p>` display text) are not text.
+    let n = r#"<table:table-cell office:value-type="float" office:value="1" table:number-columns-repeated="500"><text:p>1</text:p></table:table-cell>"#;
+    let p = write(
+        &dir,
+        "n.ods",
+        &ods_bytes(&content_xml("", &table("S", &row(n))), None, None),
+    );
+    assert!(load_with(
+        &p,
+        Limits {
+            max_cols: 1000,
+            ..limits
+        }
+    )
+    .is_ok());
+}

@@ -184,7 +184,7 @@ impl App {
         self.rebuild_tree_notify();
         self.tab.mode = Mode::Tree;
         self.tab.preview_path = None;
-        self.tab.preview_kind = None;
+        self.set_preview_kind(None);
     }
 
     /// `:`=make the current location the "anchored root" (**no text input**). Re-anchors the current tree root,

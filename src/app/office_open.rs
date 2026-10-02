@@ -32,6 +32,17 @@ pub(crate) fn office_kind(path: &Path) -> Option<OfficeKind> {
     }
 }
 
+/// What `e` does for a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditTarget {
+    /// The external editor (`$EDITOR` / `[editor]`).
+    Editor,
+    /// An Office app of this kind (the platform chain in [`plan`]).
+    OfficeApp(OfficeKind),
+    /// An Office document while `[external] office_apps = false`: `e` only flashes why.
+    OfficeDisabled,
+}
+
 /// Which platform's chain to build. A parameter (not `cfg!`) so both chains are testable anywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OfficeOs {
@@ -133,6 +144,20 @@ pub(crate) fn run_chain(
     Err(last)
 }
 
+/// The exit code of a process that has finished. One killed by a signal has no code
+/// (`ExitStatus::code` is `None`); that is a failed launch, not a program that is "still running",
+/// so it maps to a non-zero code (the shell convention, 128 + the signal) and the chain goes on to
+/// the next application.
+pub(crate) fn status_code(status: std::process::ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    match (status.code(), status.signal()) {
+        (Some(code), _) => code,
+        (None, Some(sig)) => 128 + sig,
+        // Stopped / unknown: still not a success.
+        (None, None) => -1,
+    }
+}
+
 /// The production runner: starts the process with all stdio detached (a TUI must not be scribbled
 /// on), waits up to 3 s for an exit code (`open -b <missing app>` fails fast), and if it is still
 /// running treats it as launched and hands the child to a reaper thread so no zombie is left.
@@ -150,7 +175,7 @@ pub(crate) fn real_runner() -> Runner {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match child.try_wait() {
-                Ok(Some(status)) => return Ok(status.code()),
+                Ok(Some(status)) => return Ok(Some(status_code(status))),
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -199,19 +224,18 @@ impl App {
         self.office_runner = r;
     }
 
-    /// Where `e` goes: an Office document without an explicit `[editor] ext` entry is opened in a GUI
-    /// app (returns `true` = handled here); everything else returns `false` and takes the `$EDITOR`
-    /// path unchanged.
-    pub(super) fn try_open_in_office(&mut self, path: &Path) -> bool {
+    /// What `e` does for `path`. The one decision `try_open_in_office` acts on and the `?` help
+    /// row is worded from ([[hint-shown-iff-key-acts]]): an explicit per-extension `[editor] ext`
+    /// entry always wins (the user asked for it), then the Office-app switch.
+    pub(crate) fn edit_target(&self, path: &Path) -> EditTarget {
         let Some(kind) = office_kind(path) else {
-            return false;
+            return EditTarget::Editor;
         };
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        // An explicit per-extension editor always wins (the user asked for it).
         if self
             .cfg
             .editor
@@ -219,12 +243,47 @@ impl App {
             .get(&ext)
             .is_some_and(|c| !c.trim().is_empty())
         {
-            return false;
+            return EditTarget::Editor;
         }
         if !self.cfg.external.office_apps {
-            self.flash = Some(tr(self.lang, Msg::OfficeAppsDisabled).into());
-            return true;
+            return EditTarget::OfficeDisabled;
         }
+        EditTarget::OfficeApp(kind)
+    }
+
+    /// The help row for `e` as it acts *now*: the label to show (`editor_label` when it opens an
+    /// editor), or `None` when the key only explains that opening Office documents is switched off
+    /// (a row would promise something it does not do). The target is the selected file in the
+    /// tree, the shown file in a preview.
+    pub fn edit_help_label(&self, editor_label: Msg) -> Option<Msg> {
+        let path = match self.tab.mode {
+            crate::app::Mode::Tree => self
+                .tab
+                .entries
+                .get(self.tab.selected)
+                .filter(|e| !e.is_dir)
+                .map(|e| e.path.clone()),
+            crate::app::Mode::Preview => self.tab.preview_path.clone(),
+        };
+        match path.map(|p| self.edit_target(&p)) {
+            Some(EditTarget::OfficeApp(_)) => Some(Msg::EditInOfficeApp),
+            Some(EditTarget::OfficeDisabled) => None,
+            Some(EditTarget::Editor) | None => Some(editor_label),
+        }
+    }
+
+    /// Where `e` goes: an Office document without an explicit `[editor] ext` entry is opened in a GUI
+    /// app (returns `true` = handled here); everything else returns `false` and takes the `$EDITOR`
+    /// path unchanged.
+    pub(super) fn try_open_in_office(&mut self, path: &Path) -> bool {
+        let kind = match self.edit_target(path) {
+            EditTarget::Editor => return false,
+            EditTarget::OfficeDisabled => {
+                self.flash = Some(tr(self.lang, Msg::OfficeAppsDisabled).into());
+                return true;
+            }
+            EditTarget::OfficeApp(kind) => kind,
+        };
         let abs: PathBuf = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
         let attempts = plan(OfficeOs::current(), kind, &abs);
         let runner = self.office_runner.clone();
@@ -442,6 +501,33 @@ mod tests {
     fn empty_chain_is_an_error_not_a_panic() {
         let (r, _) = fake(|_| Ok(Some(0)));
         assert!(run_chain(&[], &*r).is_err());
+    }
+
+    #[test]
+    fn a_child_killed_by_a_signal_is_a_failure_not_a_launch() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+        // Raw wait statuses (no process is started): exit(0), exit(3), SIGKILL, SIGSEGV.
+        assert_eq!(status_code(ExitStatus::from_raw(0)), 0);
+        assert_eq!(status_code(ExitStatus::from_raw(3 << 8)), 3);
+        assert_eq!(status_code(ExitStatus::from_raw(9)), 137);
+        assert_eq!(status_code(ExitStatus::from_raw(11)), 139);
+        // And the chain treats it as a failure and moves on to the next application.
+        let attempts = mac_chain();
+        let calls = std::sync::Mutex::new(0usize);
+        let runner = |_: &Attempt| -> io::Result<Option<i32>> {
+            let mut n = calls.lock().unwrap();
+            *n += 1;
+            let st = if *n == 1 {
+                ExitStatus::from_raw(9) // killed
+            } else {
+                ExitStatus::from_raw(0)
+            };
+            Ok(Some(status_code(st)))
+        };
+        let opener = run_chain(&attempts, &runner).unwrap();
+        assert_eq!(opener, attempts[1].opener);
+        assert_eq!(*calls.lock().unwrap(), 2);
     }
 
     #[test]

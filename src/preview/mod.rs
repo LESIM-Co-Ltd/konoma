@@ -13,9 +13,6 @@ pub mod markdown;
 pub mod math;
 pub mod media_diff;
 pub mod mermaid;
-// The spreadsheet reading side (stage 1 of the Office preview); it is wired into the app in a later
-// stage, so until then nothing outside its own tests calls it.
-#[allow(dead_code, unused_imports)]
 pub mod office;
 pub mod pdf;
 pub mod svg;

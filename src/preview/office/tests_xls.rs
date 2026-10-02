@@ -783,3 +783,154 @@ fn the_real_sample_goes_through_the_pass() {
     // calamine builds the hidden sheet too: it is in the map.
     assert!(fm.sheets.contains_key("Hidden"));
 }
+
+// ---------------------------------------------------------------------------------------------
+// memory: the formula STRING record and the text budget
+// ---------------------------------------------------------------------------------------------
+
+/// A formula's text result (`STRING`, 0x0207): it has no position; `calamine` puts it at the last
+/// FORMULA's cell, or at A1 when no FORMULA came before.
+fn formula_string(s: &str) -> Vec<u8> {
+    rec(0x0207, &xl_string(s, false))
+}
+
+#[test]
+fn a_formula_string_with_no_formula_lands_at_a1_and_widens_the_box() {
+    // One number at (60000, 60000): a 1-cell box. A STRING record before any FORMULA is put at
+    // A1 by calamine, so its matrix would span 3.6 billion cells.
+    let book = Book {
+        globals: globals(&[], &[]),
+        sheets: vec![sheet(
+            "S",
+            vec![number(60_000, 60_000, 0, 1.0), formula_string("x")],
+        )],
+    };
+    let dir = tmp("xls_string_a1");
+    let p = book.write(&dir, "s.xls");
+    let sf = fmt_xls::read(&p, &Limits::default()).unwrap_err();
+    assert_eq!(sf, OfficeError::TooLarge { what: "sheet area" });
+    // Without the STRING record the same sheet is fine (one cell).
+    let book = Book {
+        globals: globals(&[], &[]),
+        sheets: vec![sheet("S", vec![number(60_000, 60_000, 0, 1.0)])],
+    };
+    let p = book.write(&dir, "n.xls");
+    assert_eq!(
+        fmt_xls::read(&p, &Limits::default()).unwrap().sheets["S"].value_cells,
+        1
+    );
+}
+
+#[test]
+fn a_formula_string_follows_the_last_formula_cell() {
+    let book = Book {
+        globals: globals(&[], &[]),
+        sheets: vec![sheet(
+            "S",
+            vec![
+                number(0, 0, 0, 1.0),
+                formula_num(60_000, 60_000, 0, 1.0),
+                formula_string("x"),
+            ],
+        )],
+    };
+    let dir = tmp("xls_string_after_formula");
+    let p = book.write(&dir, "s.xls");
+    // The FORMULA alone already spans the box; both are counted (3 cells booked).
+    assert_eq!(
+        load(&p).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+}
+
+#[test]
+fn sst_lengths_follow_continue_records_and_their_flag_bytes() {
+    let mut body = vec![0u8; 8];
+    // "abcdef": 6 chars, 8-bit flags; "abc" here, "def" as 16-bit in the CONTINUE.
+    body.extend(6u16.to_le_bytes());
+    body.push(0);
+    body.extend(b"abc");
+    let mut cont = vec![1u8]; // the continuation's own flags byte: 16-bit
+    for u in "def".encode_utf16() {
+        cont.extend(u.to_le_bytes());
+    }
+    // "xy" narrow, then a rich string (1 char, 2 runs) and a string with a 5-byte extension.
+    cont.extend(2u16.to_le_bytes());
+    cont.push(0);
+    cont.extend(b"xy");
+    cont.extend(1u16.to_le_bytes());
+    cont.push(0x08);
+    cont.extend(2u16.to_le_bytes());
+    cont.push(b'r');
+    cont.extend([0u8; 8]);
+    cont.extend(1u16.to_le_bytes());
+    cont.push(0x04);
+    cont.extend(5u32.to_le_bytes());
+    cont.push(b'e');
+    cont.extend([0u8; 5]);
+    let (lens, total) = fmt_xls::sst_lengths(&[&body, &cont], &Limits::default()).unwrap();
+    assert_eq!(lens, vec![3 + 6, 2, 1, 1]);
+    assert_eq!(total, 9 + 2 + 1 + 1 + 4 * 32);
+    // A table cut in the middle of a string is corrupt, not a panic.
+    let cut = &cont[..4];
+    assert!(matches!(
+        fmt_xls::sst_lengths(&[&body, cut], &Limits::default()),
+        Err(OfficeError::Corrupt(_))
+    ));
+}
+
+#[test]
+fn one_long_shared_string_used_by_many_cells_is_refused_by_the_text_budget() {
+    // 1,000 characters x 150 LABELSST references = 150 KB against a 100 KB budget, from a ~3 KB
+    // stream (small enough for calamine's mini-stream path in the control case).
+    let cells = |n: u16| (0..n).map(|r| labelsst(r, 0, 0, 0)).collect::<Vec<_>>();
+    let mk = |n: u16| Book {
+        globals: {
+            let mut g = globals(&[], &[]);
+            g.push(sst(&[&"s".repeat(1000)]));
+            g
+        },
+        sheets: vec![sheet("S", cells(n))],
+    };
+    let dir = tmp("xls_amplify");
+    let limits = Limits {
+        max_rows: 1000,
+        max_grid_cells: 100_000,
+        max_text_bytes: 100_000,
+        ..small_limits()
+    };
+    let p = mk(150).write(&dir, "a.xls");
+    assert_eq!(
+        load_with(&p, limits).unwrap_err(),
+        OfficeError::TooLarge { what: "text" }
+    );
+    let p = mk(50).write(&dir, "b.xls");
+    let wb = load_with(&p, limits).unwrap();
+    assert_eq!(wb.sheets[0].display(49, 0).len(), 1000);
+}
+
+#[test]
+fn label_and_rstring_text_count_against_the_text_budget() {
+    let limits = Limits {
+        max_text_bytes: 100_000,
+        ..small_limits()
+    };
+    let label = |r: u16, typ: u16| {
+        let mut d = pos(r, 0, 0);
+        d.extend(xl_string(&"l".repeat(3000), false));
+        rec(typ, &d)
+    };
+    let dir = tmp("xls_labels");
+    for typ in [0x0204u16, 0x00D6] {
+        let book = Book {
+            globals: globals(&[], &[]),
+            sheets: vec![sheet("S", (0..50).map(|r| label(r, typ)).collect())],
+        };
+        let p = book.write(&dir, "l.xls");
+        assert_eq!(
+            load_with(&p, limits).unwrap_err(),
+            OfficeError::TooLarge { what: "text" },
+            "{typ:#x}"
+        );
+    }
+}

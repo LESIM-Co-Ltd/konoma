@@ -12,12 +12,16 @@
 //!   8- or 16-bit characters). A format that is split by a `CONTINUE` is cut at the record end.
 //! - `XF` (0x00E0): `ifmt` at bytes 2..4. *Every* XF record counts (style XFs included): a cell's
 //!   `ixfe` indexes the whole list.
+//! - `SST` (0x00FC) with its `CONTINUE`s (0x003C): only the length of each string, for the text
+//!   budget (a string that many `LABELSST` cells refer to is copied into each of them).
 //! - `BOUNDSHEET8` (0x0085): `lbPlyPos: u32` (where the sheet's substream starts in the stream)
 //!   and the name (`ShortXLUnicodeString`).
 //!
 //! Each sheet substream, up to its first `EOF` (as `calamine` reads it): `NUMBER` 0x0203,
 //! `LABEL` 0x0204, `RSTRING` 0x00D6, `BOOLERR` 0x0205, `LABELSST` 0x00FD, `RK` 0x027E and
-//! `FORMULA` 0x0006 all start `row: u16, col: u16, ixfe: u16`; `MULRK` 0x00BD is `row, colFirst`,
+//! `FORMULA` 0x0006 all start `row: u16, col: u16, ixfe: u16`; `STRING` 0x0207 (the text result of
+//! the formula just before it) has no position of its own and `calamine` puts it at the last
+//! `FORMULA`'s (at A1 if there was none), so it is a cell like any other here; `MULRK` 0x00BD is `row, colFirst`,
 //! then `(ixfe: u16, rk: u32)` per column, then `colLast`. `DIMENSIONS` (0x0200) is only used for
 //! the memory check. `CONTINUE` records (0x003C) are skipped as records of their own.
 //!
@@ -31,7 +35,7 @@ use std::collections::HashMap;
 use std::io::Read;
 
 use super::container::Limits;
-use super::fmt_xlsx::{styles_from, SheetFormats, XlsxFormats};
+use super::fmt_xlsx::{styles_from, SheetFormats, XlsxFormats, STRING_OVERHEAD};
 use super::OfficeError;
 
 const BOF: u16 = 0x0809;
@@ -43,6 +47,13 @@ const XF: u16 = 0x00E0;
 const BOUNDSHEET: u16 = 0x0085;
 const DIMENSIONS: u16 = 0x0200;
 const MULRK: u16 = 0x00BD;
+const SST: u16 = 0x00FC;
+const CONTINUE: u16 = 0x003C;
+const FORMULA: u16 = 0x0006;
+const FORMULA_STRING: u16 = 0x0207;
+const LABEL: u16 = 0x0204;
+const RSTRING: u16 = 0x00D6;
+const LABELSST: u16 = 0x00FD;
 /// NUMBER, LABEL, RSTRING, BOOLERR, LABELSST, RK, FORMULA: `row, col, ixfe` first.
 const SIMPLE_CELLS: [u16; 7] = [0x0203, 0x0204, 0x00D6, 0x0205, 0x00FD, 0x027E, 0x0006];
 /// Most XF records kept (Excel allows 64,000 cell XFs plus the style XFs).
@@ -161,16 +172,151 @@ fn bound_sheet(data: &[u8], biff8: bool) -> Option<(usize, String)> {
     Some((pos, name))
 }
 
+/// A cursor over the segments of an SST (the `SST` body and each `CONTINUE` body after it).
+struct SstCursor<'a> {
+    parts: &'a [&'a [u8]],
+    seg: usize,
+    pos: usize,
+}
+
+impl<'a> SstCursor<'a> {
+    /// Moves to the next byte, across empty segments; `false` at the end.
+    fn more(&mut self) -> bool {
+        while self.seg < self.parts.len() && self.pos >= self.parts[self.seg].len() {
+            self.seg += 1;
+            self.pos = 0;
+        }
+        self.seg < self.parts.len()
+    }
+
+    fn byte(&mut self) -> Option<u8> {
+        if !self.more() {
+            return None;
+        }
+        let b = self.parts[self.seg][self.pos];
+        self.pos += 1;
+        Some(b)
+    }
+
+    fn avail(&self) -> usize {
+        self.parts.get(self.seg).map_or(0, |p| p.len() - self.pos)
+    }
+
+    /// Skips `n` bytes (across segments).
+    fn skip(&mut self, mut n: u64) -> Option<()> {
+        while n > 0 {
+            if !self.more() {
+                return None;
+            }
+            let k = (self.avail() as u64).min(n);
+            self.pos += k as usize;
+            n -= k;
+        }
+        Some(())
+    }
+}
+
+/// The length of every string of an SST in bytes (a wide character counts 2) and the budget cost
+/// of the whole table. Mirrors how `calamine` reads it: a header of 8 bytes, then strings
+/// (`cch: u16`, flags, optional run count / extension size, the characters, the runs, the
+/// extension); where a string's characters continue in a `CONTINUE` record that record starts
+/// with a fresh flags byte (its own 8/16-bit choice). A malformed table is an error, as it is for
+/// `calamine`.
+pub(crate) fn sst_lengths(
+    parts: &[&[u8]],
+    limits: &Limits,
+) -> Result<(Vec<u32>, u64), OfficeError> {
+    let bad = || OfficeError::Corrupt("malformed xls SST".into());
+    let mut cur = SstCursor {
+        parts,
+        seg: 0,
+        pos: 0,
+    };
+    cur.skip(8).ok_or_else(bad)?;
+    let mut lens = Vec::new();
+    let mut total: u64 = 0;
+    while cur.more() {
+        let cch = u64::from(u16::from_le_bytes([
+            cur.byte().ok_or_else(bad)?,
+            cur.byte().ok_or_else(bad)?,
+        ]));
+        let flags = cur.byte().ok_or_else(bad)?;
+        let crun = if flags & 0x08 != 0 {
+            u64::from(u16::from_le_bytes([
+                cur.byte().ok_or_else(bad)?,
+                cur.byte().ok_or_else(bad)?,
+            ]))
+        } else {
+            0
+        };
+        let cb_ext = if flags & 0x04 != 0 {
+            let mut b = [0u8; 4];
+            for x in &mut b {
+                *x = cur.byte().ok_or_else(bad)?;
+            }
+            u64::from(u32::from_le_bytes(b))
+        } else {
+            0
+        };
+        let mut wide = flags & 0x01 != 0;
+        let mut need = cch;
+        let mut bytes: u64 = 0;
+        while need > 0 {
+            if !cur.more() {
+                return Err(bad());
+            }
+            let width = if wide { 2 } else { 1 };
+            let here = ((cur.avail() / width) as u64).min(need);
+            if here == 0 {
+                // One stray byte of a 16-bit character at the end of a segment.
+                cur.skip(cur.avail() as u64).ok_or_else(bad)?;
+                continue;
+            }
+            cur.pos += here as usize * width;
+            need -= here;
+            bytes += here * width as u64;
+            if need > 0 {
+                // The rest continues in the next record, after its flags byte.
+                cur.skip(cur.avail() as u64).ok_or_else(bad)?;
+                let f = cur.byte().ok_or_else(bad)?;
+                wide = f & 0x01 != 0;
+            }
+        }
+        cur.skip(4 * crun + cb_ext).ok_or_else(bad)?;
+        lens.push(u32::try_from(bytes).unwrap_or(u32::MAX));
+        total = total.saturating_add(bytes + STRING_OVERHEAD);
+        if total > limits.max_text_bytes {
+            return Err(OfficeError::TooLarge { what: "text" });
+        }
+    }
+    Ok((lens, total))
+}
+
 pub(crate) fn parse_stream(stream: &[u8], limits: &Limits) -> Result<XlsxFormats, OfficeError> {
     let mut date1904 = false;
     let mut biff8 = true;
     let mut custom: HashMap<u32, String> = HashMap::new();
     let mut xf_ids: Vec<u32> = Vec::new();
     let mut sheets: Vec<(usize, String)> = Vec::new();
+    // The SST body and the CONTINUE bodies after it.
+    let mut sst_parts: Vec<&[u8]> = Vec::new();
+    let mut in_sst = false;
 
     for rec in (Records { stream }) {
         let r = rec?;
+        if in_sst {
+            if r.typ == CONTINUE {
+                sst_parts.push(r.data);
+                continue;
+            }
+            in_sst = false;
+        }
         match r.typ {
+            SST => {
+                sst_parts.clear();
+                sst_parts.push(r.data);
+                in_sst = true;
+            }
             BOF => biff8 = u16_at(r.data, 0) == Some(0x0600),
             FILEPASS if u16_at(r.data, 0).is_some_and(|t| t != 0) => {
                 return Err(OfficeError::Encrypted)
@@ -194,6 +340,11 @@ pub(crate) fn parse_stream(stream: &[u8], limits: &Limits) -> Result<XlsxFormats
         }
     }
 
+    let (sst_lens, mut text_total) = if sst_parts.is_empty() {
+        (Vec::new(), 0)
+    } else {
+        sst_lengths(&sst_parts, limits)?
+    };
     let styles = styles_from(&xf_ids, &custom);
     let mut out = XlsxFormats {
         date1904,
@@ -204,7 +355,11 @@ pub(crate) fn parse_stream(stream: &[u8], limits: &Limits) -> Result<XlsxFormats
         let sub = stream
             .get(pos..)
             .ok_or_else(|| OfficeError::Corrupt("sheet position past the stream".into()))?;
-        let sf = parse_sheet(sub, &styles.xf_to_format, limits)?;
+        let sf = parse_sheet(sub, &styles.xf_to_format, &sst_lens, limits)?;
+        text_total = text_total.saturating_add(sf.text_bytes);
+        if text_total > limits.max_text_bytes {
+            return Err(OfficeError::TooLarge { what: "text" });
+        }
         // `calamine` builds every sheet's matrix while opening, hidden ones included.
         if sf.dense_cost() > limits.max_dense_cells {
             return Err(OfficeError::TooLarge { what: "sheet area" });
@@ -242,17 +397,33 @@ fn declared_area(data: &[u8]) -> Result<u64, OfficeError> {
     }
 }
 
+/// The bytes of a `LABEL` / `RSTRING` / formula `STRING` text of `cch` characters at `at`: what
+/// the record can hold at most (a declared length that runs past the record is a lie the reader
+/// stops at), 2 bytes per character when the string is 16-bit.
+fn string_cost(data: &[u8], cch_at: usize, flags_at: usize, biff8: bool) -> u64 {
+    let cch = usize::from(u16_at(data, cch_at).unwrap_or(0));
+    let wide = biff8 && data.get(flags_at).is_some_and(|f| f & 1 != 0);
+    let width = if wide { 2 } else { 1 };
+    let room = data.len().saturating_sub(flags_at + 1) / width;
+    (cch.min(room) * width) as u64 + STRING_OVERHEAD
+}
+
 pub(crate) fn parse_sheet(
     stream: &[u8],
     xf_to_format: &[u16],
+    sst_lens: &[u32],
     limits: &Limits,
 ) -> Result<SheetFormats, OfficeError> {
     let mut out = SheetFormats::default();
+    // Where `calamine` puts a formula's `STRING` result: the last FORMULA's cell, A1 before any.
+    let mut formula_pos = (0u32, 0u32);
+    let mut biff8 = true;
     let fmt_of = |ixfe: u16| xf_to_format.get(usize::from(ixfe)).copied().unwrap_or(0);
     let short = || OfficeError::Corrupt("xls cell record too short".into());
     for rec in (Records { stream }) {
         let r = rec?;
         match r.typ {
+            BOF => biff8 = u16_at(r.data, 0) == Some(0x0600),
             EOF => break,
             DIMENSIONS => {
                 if declared_area(r.data)? > limits.max_dense_cells {
@@ -265,7 +436,23 @@ pub(crate) fn parse_sheet(
                 else {
                     return Err(short());
                 };
+                if r.typ == FORMULA {
+                    formula_pos = (u32::from(row), u32::from(col));
+                }
+                let cost = match r.typ {
+                    LABELSST => {
+                        let i = u32_at(r.data, 6).map_or(0, |i| i as usize);
+                        sst_lens.get(i).map_or(0, |&l| u64::from(l)) + STRING_OVERHEAD
+                    }
+                    LABEL | RSTRING => string_cost(r.data, 6, 8, biff8),
+                    _ => 0,
+                };
+                out.add_text(cost, limits)?;
                 out.note_value(u32::from(row), u32::from(col), fmt_of(ixfe), limits)?;
+            }
+            FORMULA_STRING => {
+                out.add_text(string_cost(r.data, 0, 2, biff8), limits)?;
+                out.note_value(formula_pos.0, formula_pos.1, 0, limits)?;
             }
             MULRK => {
                 let (Some(row), Some(first)) = (u16_at(r.data, 0), u16_at(r.data, 2)) else {

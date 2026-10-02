@@ -3,14 +3,17 @@
 //! **What the UI uses**: a grid of *display strings* ([`Sheet::display`]) and, for the cell under
 //! the cursor, the *detail* ([`Cell`]: raw value, type, formula, number-format reference).
 //!
-//! **Memory design** (the cell budget in [`Limits::max_grid_cells`] bounds rows x columns):
+//! **Memory design** (the cell budget in [`Limits::max_grid_cells`] bounds rows x columns over
+//! the *whole workbook*, handed out to the sheets in order):
 //! - Rows are sparse: `rows[r]` holds only the non-empty cells as `(col, Cell)` sorted by column,
 //!   so an empty cell costs nothing and a mostly-empty wide sheet stays small.
 //! - A [`Cell`] is `CellValue` (24 bytes: the tag plus an `f64` / `Box<str>` / `&'static str`),
 //!   an optional display string (16 bytes; `None` when it is the same as a text cell's own text,
 //!   which is the common case for strings) and a `u16` index into the workbook's deduplicated
-//!   format table: ~48 bytes per non-empty cell plus its string heap. 4M non-empty cells is
-//!   therefore ~200 MB plus strings — the worst case the budget allows.
+//!   format table: ~48 bytes per non-empty cell plus its string heap. Measured (a 4M-cell sheet
+//!   of numbers, release build) the whole load costs about 105-115 bytes per non-empty cell
+//!   (this model, plus the reader's own dense copy that is alive while a sheet is built), so
+//!   4M cells is roughly 450 MB — the worst case the budget allows.
 //! - The raw value is *not* stored as a second string: [`Cell::raw_text`] derives it on demand.
 //! - Formulas are rare per cell and live in a per-sheet map, not in every `Cell`.
 //! - Number formats are not stored per cell as strings: a cell carries an index into
@@ -51,8 +54,6 @@ pub type CellError = &'static str;
 /// The raw value of a cell as the file stores it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CellValue {
-    /// No value (never stored in a row; returned for absent cells).
-    Empty,
     /// An integer.
     Int(i64),
     /// A floating-point number.
@@ -78,8 +79,6 @@ pub enum CellValue {
 /// The type shown in the cell detail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellType {
-    /// No value.
-    Empty,
     /// Integer or floating-point number.
     Number,
     /// String.
@@ -116,7 +115,6 @@ impl Cell {
     /// The type of the value.
     pub fn cell_type(&self) -> CellType {
         match self.value {
-            CellValue::Empty => CellType::Empty,
             CellValue::Int(_) | CellValue::Number(_) => CellType::Number,
             CellValue::Text(_) => CellType::Text,
             CellValue::Bool(_) => CellType::Bool,
@@ -128,7 +126,6 @@ impl Cell {
     /// The raw value as text, independent of any number format (`0.1`, `45292`, `TRUE`, ...).
     pub fn raw_text(&self) -> String {
         match &self.value {
-            CellValue::Empty => String::new(),
             CellValue::Int(i) => i.to_string(),
             CellValue::Number(n) => number_text(*n),
             CellValue::Text(t) => t.to_string(),
@@ -199,15 +196,6 @@ impl Sheet {
     pub fn row_cells(&self, row: usize) -> &[(u32, Cell)] {
         self.rows.get(row).map(Vec::as_slice).unwrap_or(&[])
     }
-
-    /// The merged range containing `(row, col)`, if any.
-    pub fn merge_at(&self, row: usize, col: usize) -> Option<MergeRange> {
-        let (row, col) = (u32::try_from(row).ok()?, u32::try_from(col).ok()?);
-        self.merges
-            .iter()
-            .copied()
-            .find(|m| row >= m.row0 && row <= m.row1 && col >= m.col0 && col <= m.col1)
-    }
 }
 
 /// A loaded workbook.
@@ -263,27 +251,38 @@ pub struct DisplayCtx {
 ///
 /// A built-in id that has no code (23..=26, 59+) falls back to `General`. An ISO date/duration
 /// that cannot be converted to a serial is shown as the file wrote it.
+#[cfg(test)]
 pub fn display_text(value: &CellValue, fmt: &NumFmtRef, ctx: &DisplayCtx) -> String {
-    use numfmt::Value;
+    display_compiled(value, &compile_fmt(fmt, ctx.locale), ctx)
+}
+
+/// The format code of a reference, parsed once.
+fn compile_fmt(fmt: &NumFmtRef, locale: Locale) -> numfmt::Compiled {
     let code: &str = match fmt {
         NumFmtRef::General => "General",
         NumFmtRef::Builtin(id) => {
-            numfmt::builtin_format_code(u32::from(*id), ctx.locale).unwrap_or("General")
+            numfmt::builtin_format_code(u32::from(*id), locale).unwrap_or("General")
         }
         NumFmtRef::Custom(c) => c,
     };
+    numfmt::compile(code)
+}
+
+/// [`display_text`] with the format already compiled: the loader formats millions of cells with
+/// a few dozen distinct formats, and parsing the format code dominated the load time.
+fn display_compiled(value: &CellValue, code: &numfmt::Compiled, ctx: &DisplayCtx) -> String {
+    use numfmt::Value;
     let opts = numfmt::Options {
         date1904: ctx.date1904,
         locale: ctx.locale,
     };
-    let num = |n: f64| numfmt::format_value(code, Value::Number(n), &opts);
+    let num = |n: f64| numfmt::format_compiled(code, Value::Number(n), &opts);
     match value {
-        CellValue::Empty => String::new(),
         CellValue::Int(i) => num(*i as f64),
         CellValue::Number(n) => num(*n),
-        CellValue::Text(t) => numfmt::format_value(code, Value::Text(t), &opts),
-        CellValue::Bool(b) => numfmt::format_value(code, Value::Bool(*b), &opts),
-        CellValue::Error(e) => numfmt::format_value(code, Value::Error(e), &opts),
+        CellValue::Text(t) => numfmt::format_compiled(code, Value::Text(t), &opts),
+        CellValue::Bool(b) => numfmt::format_compiled(code, Value::Bool(*b), &opts),
+        CellValue::Error(e) => numfmt::format_compiled(code, Value::Error(e), &opts),
         CellValue::DateTime { serial, .. } => num(*serial),
         CellValue::DateTimeIso(s) => {
             match numfmt::iso_datetime_to_serial(s).or_else(|| numfmt::iso_duration_to_serial(s)) {
@@ -354,11 +353,7 @@ fn load_xlsx(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
     let fm = fmt_xlsx::read(path, limits)?;
     let mut wb: calamine::Xlsx<_> = calamine::Xlsx::new(open_reader(path)?).map_err(map_xlsx)?;
     let metas = sheet_metas(&wb);
-    let ctx = Ctx {
-        date1904: fm.date1904,
-        formats: fm.formats.clone(),
-        opts: *opts,
-    };
+    let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
     assemble(&ctx, metas, |name| {
         let sf = fm.sheets.get(name);
         if let Some(sf) = sf {
@@ -385,11 +380,7 @@ fn load_xlsb(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
     let fm = fmt_xlsb::read(path, limits)?;
     let mut wb: calamine::Xlsb<_> = calamine::Xlsb::new(open_reader(path)?).map_err(map_xlsb)?;
     let metas = sheet_metas(&wb);
-    let ctx = Ctx {
-        date1904: fm.date1904,
-        formats: fm.formats.clone(),
-        opts: *opts,
-    };
+    let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
     assemble(&ctx, metas, |name| {
         let sf = fm.sheets.get(name);
         if sf.is_some_and(|sf| sf.dense_cost() > limits.max_dense_cells) {
@@ -410,11 +401,7 @@ fn load_ods(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
     let fm = fmt_ods::read(path, &opts.limits)?;
     let mut wb: calamine::Ods<_> = calamine::Ods::new(open_reader(path)?).map_err(map_ods)?;
     let metas = sheet_metas(&wb);
-    let ctx = Ctx {
-        date1904: fm.date1904,
-        formats: fm.formats.clone(),
-        opts: *opts,
-    };
+    let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
     assemble(&ctx, metas, |name| {
         Ok(Fetched {
             data: wb.worksheet_range(name).map_err(map_ods)?,
@@ -431,11 +418,7 @@ fn load_xls(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
     let fm = fmt_xls::read(path, &opts.limits)?;
     let mut wb: calamine::Xls<_> = calamine::Xls::new(open_reader(path)?).map_err(map_xls)?;
     let metas = sheet_metas(&wb);
-    let ctx = Ctx {
-        date1904: fm.date1904,
-        formats: fm.formats.clone(),
-        opts: *opts,
-    };
+    let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
     assemble(&ctx, metas, |name| {
         Ok(Fetched {
             data: wb.worksheet_range(name).map_err(map_xls)?,
@@ -477,7 +460,27 @@ fn map_xls(e: calamine::XlsError) -> OfficeError {
 struct Ctx {
     date1904: bool,
     formats: Vec<NumFmtRef>,
+    /// `formats`, each parsed once (same indices).
+    compiled: Vec<numfmt::Compiled>,
+    /// For a format index the table does not have.
+    general: numfmt::Compiled,
     opts: LoadOptions,
+}
+
+impl Ctx {
+    fn new(date1904: bool, formats: Vec<NumFmtRef>, opts: LoadOptions) -> Ctx {
+        let compiled = formats
+            .iter()
+            .map(|f| compile_fmt(f, opts.locale))
+            .collect();
+        Ctx {
+            date1904,
+            formats,
+            compiled,
+            general: compile_fmt(&NumFmtRef::General, opts.locale),
+            opts,
+        }
+    }
 }
 
 struct Meta {
@@ -521,6 +524,9 @@ fn assemble<'a>(
         date1904: ctx.date1904,
         formats: ctx.formats.clone(),
     };
+    // One grid-cell budget for the whole workbook, handed out in sheet order: ten sheets of the
+    // per-sheet maximum would otherwise cost ten times the memory the limit promises.
+    let mut cells_left = ctx.opts.limits.max_grid_cells;
     for m in metas {
         if m.typ != SheetType::WorkSheet {
             continue;
@@ -530,12 +536,13 @@ fn assemble<'a>(
             continue;
         }
         let f = fetch(&m.name)?;
-        out.sheets.push(build_sheet(ctx, m.name, f));
+        out.sheets
+            .push(build_sheet(ctx, m.name, f, &mut cells_left));
     }
     Ok(out)
 }
 
-fn build_sheet(ctx: &Ctx, name: String, f: Fetched<'_>) -> Sheet {
+fn build_sheet(ctx: &Ctx, name: String, f: Fetched<'_>, cells_left: &mut u64) -> Sheet {
     let limits = &ctx.opts.limits;
     let dctx = DisplayCtx {
         date1904: ctx.date1904,
@@ -564,12 +571,18 @@ fn build_sheet(ctx: &Ctx, name: String, f: Fetched<'_>) -> Sheet {
     let abs_cols = u64::from(c1) + 1;
     let ncols = abs_cols.min(limits.max_cols as u64) as usize;
     sheet.cols_truncated = abs_cols > limits.max_cols as u64;
-    let budget_rows = (limits.max_grid_cells / ncols.max(1) as u64).max(1);
+    // Rows this sheet may take from what is left of the workbook's budget. A sheet always gets
+    // one row while any budget is left; once it is gone later sheets are empty (and flagged).
+    let budget_rows = match *cells_left {
+        0 => 0,
+        left => (left / ncols.max(1) as u64).max(1),
+    };
     let row_cap = (limits.max_rows as u64).min(budget_rows);
     let nrows = abs_rows.min(row_cap) as usize;
     sheet.rows_truncated = abs_rows > row_cap;
     sheet.ncols = ncols;
     sheet.nrows = nrows;
+    *cells_left = cells_left.saturating_sub(nrows as u64 * ncols as u64);
     sheet.rows = vec![Vec::new(); nrows];
 
     for (i, row) in f.data.rows().enumerate() {
@@ -597,11 +610,8 @@ fn build_sheet(ctx: &Ctx, name: String, f: Fetched<'_>) -> Sheet {
                 .fmts
                 .map(|s| s.format_at(abs_row as u32, abs_col as u32))
                 .unwrap_or(0);
-            let fref = ctx
-                .formats
-                .get(usize::from(fmt))
-                .unwrap_or(&NumFmtRef::General);
-            let shown = display_text(&value, fref, &dctx);
+            let code = ctx.compiled.get(usize::from(fmt)).unwrap_or(&ctx.general);
+            let shown = display_compiled(&value, code, &dctx);
             let display = match &value {
                 CellValue::Text(t) if **t == *shown => None,
                 _ => Some(shown.into_boxed_str()),

@@ -1498,10 +1498,6 @@ pub struct App {
     /// Absent = the default (from the `open` attribute + `ui.md_details`). Reset on file/tab change.
     details_open: std::collections::HashMap<usize, bool>,
 
-    /// The matching table cells as a set, for O(1) lookup while rendering (mirrors `tab.search_matches`).
-    /// Kept separate so a large result set does not turn cell drawing into a linear scan.
-    table_search_hits: std::collections::HashSet<(usize, usize)>,
-
     /// Image backend (M2). None if the terminal is unsupported or uninitialized, in which case images fall back to text.
     /// For rendering, ui::preview passes `image` by &mut to StatefulImage. Resize/encode is
     /// offloaded to a separate thread via `img_tx`, and the result is applied in apply_image_resize.
@@ -3164,7 +3160,6 @@ impl App {
             gutter_cache: None,
             md_items: Vec::new(),
             details_open: std::collections::HashMap::new(),
-            table_search_hits: std::collections::HashSet::new(),
             picker: None,
             img_tx: None,
             image: None,
@@ -4139,7 +4134,7 @@ impl App {
         // that call, and a text-mode `PreviewKind::Command`'s `apply_payload` handler calls
         // `setup_windowed`, which decides whether to open the windowed reader by reading
         // `self.tab.preview_kind` — it must already be the new kind, not whatever was showing before.
-        self.tab.preview_kind = Some(kind.clone());
+        self.set_preview_kind(Some(kind.clone()));
         self.start_media_load(&kind, path);
         self.tab.fence_return = None; // A normal preview transition means the fence-return info is no longer needed
         self.tab.fence_zoom = 1.0;
@@ -4166,7 +4161,6 @@ impl App {
         self.tab.preview_search = None;
         self.tab.search_input = None;
         self.tab.search_matches.clear();
-        self.table_search_hits.clear();
         self.tab.search_idx = 0;
         self.setup_windowed(); // Switches to less-style windowed reading for a large Code/Text
                                // Reset the windowed preview's 2D caret/selection to the start.
@@ -4760,7 +4754,7 @@ impl App {
         self.git_status_for = None;
         self.git_status_dirty = true;
         self.tab.preview_path = None;
-        self.tab.preview_kind = None;
+        self.set_preview_kind(None);
         self.clear_command_out(); // release any delegated-command temp output
         self.clear_image(); // release the graphics state
                             // Leaving the diff surface altogether: nothing will ever poll/land a media diff again until
@@ -4781,7 +4775,6 @@ impl App {
         self.tab.preview_search = None;
         self.tab.search_input = None;
         self.tab.search_matches.clear();
-        self.table_search_hits.clear();
         self.tab.search_idx = 0;
         self.tab.came_from_git_view = false;
         self.table_data = None;

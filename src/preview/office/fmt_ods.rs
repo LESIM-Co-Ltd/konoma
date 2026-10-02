@@ -58,7 +58,7 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
 use super::container::{self, Limits};
-use super::fmt_xlsx::{SheetFormats, XlsxFormats};
+use super::fmt_xlsx::{SheetFormats, XlsxFormats, STRING_OVERHEAD};
 use super::workbook::{CellError, NumFmtRef};
 use super::OfficeError;
 
@@ -101,6 +101,11 @@ pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, Offi
             .ok_or_else(|| OfficeError::Corrupt("missing content.xml".into()))?;
         parse_body(std::io::BufReader::new(r), &styles, &mut table, limits)?
     };
+    // The text budget is for the whole workbook (`calamine` reads every table).
+    let text: u64 = sheets.values().map(|s| s.text_bytes).sum();
+    if text > limits.max_text_bytes {
+        return Err(OfficeError::TooLarge { what: "text" });
+    }
     Ok(XlsxFormats {
         date1904: false,
         formats: table.formats,
@@ -779,6 +784,9 @@ struct CellState {
     nonempty: bool,
     is_error: bool,
     text: String,
+    /// Bytes of text the cell holds (its `string-value`, its paragraphs, its formula), for the
+    /// text budget: a repeated cell holds them once per repetition.
+    text_len: u64,
 }
 
 fn parse_body(
@@ -859,7 +867,11 @@ fn parse_body(
                         .iter()
                         .any(|k| has_attr(e, k))
                             || value_type == "string";
-                        let has_formula = qattr(e, b"table:formula").is_some_and(|f| !f.is_empty());
+                        let formula_len = qattr(e, b"table:formula").map_or(0, |f| f.len() as u64);
+                        let has_formula = formula_len > 0;
+                        let value_type_is_text = matches!(value_type.as_str(), "string" | "");
+                        let string_len =
+                            qattr(e, b"office:string-value").map_or(0, |v| v.len() as u64);
                         t.cell = Some(CellState {
                             reps,
                             start_col,
@@ -869,6 +881,9 @@ fn parse_body(
                             nonempty: (has_value || has_formula) && reps > 0,
                             is_error: qattr(e, b"calcext:value-type").is_some_and(|v| v == "error"),
                             text: String::new(),
+                            // Only strings keep their text (numbers and dates are read from
+                            // attributes); every cell keeps its formula.
+                            text_len: formula_len + if value_type_is_text { string_len } else { 0 },
                         });
                     }
                     _ => {}
@@ -877,6 +892,12 @@ fn parse_body(
             Event::Text(_) | Event::GeneralRef(_) => {
                 if nested == 0 {
                     if let Some(c) = cur.as_mut().and_then(|t| t.cell.as_mut()) {
+                        if matches!(c.value_type.as_str(), "string" | "") {
+                            c.text_len += match &ev {
+                                Event::Text(t) => t.len() as u64,
+                                _ => 1,
+                            };
+                        }
                         if c.is_error && c.text.len() < 256 {
                             push_text(&ev, &mut c.text);
                         }
@@ -909,7 +930,7 @@ fn parse_body(
                                 table,
                                 memo: std::mem::take(&mut resolver_memo),
                             };
-                            let r = finish_cell(t, c, &mut res, max);
+                            let r = finish_cell(t, c, &mut res, limits);
                             resolver_memo = res.memo;
                             r?;
                         }
@@ -946,8 +967,9 @@ fn finish_cell(
     t: &mut TableState,
     c: CellState,
     res: &mut StyleResolver<'_>,
-    max: u64,
+    limits: &Limits,
 ) -> Result<(), OfficeError> {
+    let max = limits.max_dense_cells;
     if !c.nonempty {
         return Ok(());
     }
@@ -960,6 +982,11 @@ fn finish_cell(
     }
 
     let count = rows.saturating_mul(c.reps);
+    if c.text_len > 0 {
+        // Every repetition is a copy of the text in the reader and again in the loader.
+        let cost = (c.text_len + STRING_OVERHEAD).saturating_mul(count);
+        t.out.add_text(cost, limits)?;
+    }
     t.out.value_cells = t.out.value_cells.saturating_add(count);
     if t.out.value_cells > max {
         return Err(OfficeError::TooLarge {

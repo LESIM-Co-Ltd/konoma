@@ -75,25 +75,6 @@ impl App {
         self.table_cell_open = false;
         // The <details> open/closed state is also per-document = not carried across tabs.
         self.details_open.clear();
-        // `table_search_hits` is a display-only set derived from `search_matches`. It isn't held in
-        // PerTab (to avoid dual bookkeeping); rebuild it from the restored `search_matches` (still
-        // sitting on `t`) (`self.tab` itself keeps the previous tab's values until `self.tab = t`
-        // at the end, so read `t` directly here — a borrow only, `t` isn't consumed). Empty it for
-        // anything but a table — otherwise another tab's matched-cell coordinates would linger and
-        // the table renderer (which refers to `table_cell_is_hit` unconditionally) would highlight
-        // them by mistake.
-        self.table_search_hits = if matches!(
-            self.tab.preview_kind,
-            Some(
-                PreviewKind::Table { .. }
-                    | PreviewKind::Archive { .. }
-                    | PreviewKind::Spreadsheet(_)
-            )
-        ) {
-            t.search_matches.iter().map(|&(_, r, c)| (r, c)).collect()
-        } else {
-            std::collections::HashSet::new()
-        };
         // The decoration cache isn't carried over (decorated_lines regenerates it).
         self.md_cache = None;
         // A filter-pool scan started by the tab we are leaving must not land in this one:
@@ -306,7 +287,7 @@ impl App {
         self.tab.mode = Mode::Tree;
         self.clear_image();
         self.tab.preview_path = None;
-        self.tab.preview_kind = None;
+        self.set_preview_kind(None);
         self.tab.preview_scroll = 0;
         self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;

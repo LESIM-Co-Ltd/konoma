@@ -11,7 +11,10 @@
 //!    `iFmt` at bytes 2..4). `cellStyleXFs` also holds `BrtXF`s and is not counted.
 //! 4. each sheet part, from `BrtBeginSheetData` (0x0091): `BrtRowHdr` (0x0000) gives the row; the
 //!    value-bearing cell records (0x0002..=0x000A: RK, error, bool, real, string, shared string and
-//!    the four formula kinds) start with `col: u32` and `iStyleRef: u24` — the cell's xf.
+//!    the four formula kinds, and 0x000B, a formula that evaluates to an error: `calamine` puts
+//!    those in the range of formulas) start with `col: u32` and `iStyleRef: u24` — the cell's xf.
+//! 5. `xl/sharedStrings.bin`: `BrtSSTItem` (0x0013) lengths only, for the text budget (a shared
+//!    string used by many cells is copied into each).
 //!
 //! A record is `id` (1-2 bytes, 7 bits each), `size` (1-4 bytes, 7 bits each) and the body. Bodies
 //! are never trusted: only the first [`MAX_BODY`] bytes are read (the rest is skipped), so a
@@ -22,7 +25,7 @@ use std::collections::HashMap;
 use std::io::{self, BufReader, Read};
 
 use super::container::{self, Limits};
-use super::fmt_xlsx::{parse_rels, styles_from, SheetFormats, XlsxFormats};
+use super::fmt_xlsx::{parse_rels, styles_from, SheetFormats, XlsxFormats, STRING_OVERHEAD};
 use super::OfficeError;
 
 /// Most bytes of one record body that are read (the longest field we need is a format code).
@@ -40,6 +43,16 @@ const BRT_END_SHEET_DATA: u16 = 0x0092;
 const BRT_WB_PROP: u16 = 0x0099;
 const BRT_BUNDLE_SH: u16 = 0x009C;
 const BRT_END_BUNDLE_SHS: u16 = 0x0090;
+const BRT_BEGIN_SST: u16 = 0x009F;
+const BRT_SST_ITEM: u16 = 0x0013;
+const BRT_CELL_ST: u16 = 0x0006;
+const BRT_CELL_ISST: u16 = 0x0007;
+const BRT_FMLA_STRING: u16 = 0x0008;
+/// The last cell record `calamine` reads (`BrtFmlaError`, formulas only).
+const BRT_LAST_CELL: u16 = 0x000B;
+/// Longest string a cell can hold (Excel: 32,767 characters); a longer declared length is a lie
+/// the reader would reject, and is charged at this size.
+const MAX_CELL_CHARS: u32 = 32_767;
 const BRT_BEGIN_CELL_XFS: u16 = 0x0269;
 const BRT_END_CELL_XFS: u16 = 0x026A;
 
@@ -62,6 +75,12 @@ pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, Offi
         None => super::fmt_xlsx::styles_from(&[], &HashMap::new()),
     };
 
+    let (shared_lens, mut text_total) =
+        match container::part_reader(&mut zip, "xl/sharedStrings.bin", cap)? {
+            Some(r) => parse_shared_strings(BufReader::new(r), limits)?,
+            None => (Vec::new(), 0),
+        };
+
     let mut out = XlsxFormats {
         date1904,
         formats: styles.formats,
@@ -72,7 +91,16 @@ pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, Offi
         let Some(r) = container::part_reader(&mut zip, part, cap)? else {
             continue;
         };
-        let sf = parse_sheet(BufReader::new(r), &styles.xf_to_format, limits)?;
+        let sf = parse_sheet(
+            BufReader::new(r),
+            &styles.xf_to_format,
+            &shared_lens,
+            limits,
+        )?;
+        text_total = text_total.saturating_add(sf.text_bytes);
+        if text_total > limits.max_text_bytes {
+            return Err(OfficeError::TooLarge { what: "text" });
+        }
         out.sheets.insert(name, sf);
     }
     Ok(out)
@@ -234,12 +262,58 @@ pub(crate) fn parse_styles<R: Read>(src: R) -> Result<super::fmt_xlsx::Styles, O
 }
 
 // ---------------------------------------------------------------------------------------------
+// sharedStrings.bin
+// ---------------------------------------------------------------------------------------------
+
+/// Budget bytes of a wide string of `cch` characters (UTF-16 in the file; the loader keeps UTF-8,
+/// so this is between the character count and 3x it).
+fn wide_cost(cch: u32) -> u64 {
+    u64::from(cch.min(MAX_CELL_CHARS)) * 2
+}
+
+/// `BrtSSTItem` lengths in order (as `calamine` indexes them) and the budget cost of the table.
+pub(crate) fn parse_shared_strings<R: Read>(
+    src: R,
+    limits: &Limits,
+) -> Result<(Vec<u32>, u64), OfficeError> {
+    let too_large = || OfficeError::TooLarge { what: "text" };
+    let mut rd = Records::new(src);
+    let mut buf = Vec::new();
+    let mut lens: Vec<u32> = Vec::new();
+    let mut total: u64 = 0;
+    while let Some(id) = rd.next(&mut buf)? {
+        match id {
+            BRT_BEGIN_SST => {
+                // cstTotal u32, cstUnique u32.
+                let unique = u64::from(u32_at(&buf, 4).unwrap_or(0));
+                if unique.saturating_mul(STRING_OVERHEAD) > limits.max_text_bytes {
+                    return Err(too_large());
+                }
+            }
+            BRT_SST_ITEM => {
+                // A flags byte, then an XLWideString.
+                let cch = u32_at(&buf, 1).unwrap_or(0);
+                let cost = wide_cost(cch);
+                lens.push(u32::try_from(cost).unwrap_or(u32::MAX));
+                total = total.saturating_add(cost + STRING_OVERHEAD);
+                if total > limits.max_text_bytes {
+                    return Err(too_large());
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok((lens, total))
+}
+
+// ---------------------------------------------------------------------------------------------
 // sheet part
 // ---------------------------------------------------------------------------------------------
 
 pub(crate) fn parse_sheet<R: Read>(
     src: R,
     xf_to_format: &[u16],
+    shared_lens: &[u32],
     limits: &Limits,
 ) -> Result<SheetFormats, OfficeError> {
     let mut rd = Records::new(src);
@@ -257,13 +331,26 @@ pub(crate) fn parse_sheet<R: Read>(
                     break;
                 }
             }
-            0x0002..=0x000A if in_data => {
+            0x0002..=BRT_LAST_CELL if in_data => {
                 // col: u32, then iStyleRef: u24 + flags (the xf of the cell).
                 let (Some(col), Some(xf)) = (u32_at(&buf, 0), u32_at(&buf, 4)) else {
                     return Err(OfficeError::Corrupt("xlsb cell record too short".into()));
                 };
                 let xf = (xf & 0x00FF_FFFF) as usize;
                 let fmt = xf_to_format.get(xf).copied().unwrap_or(0);
+                // Text the reader copies into this cell: a shared string again for every cell
+                // that uses it, an inline string at its own length.
+                let cost = match id {
+                    BRT_CELL_ISST => {
+                        let i = u32_at(&buf, 8).map_or(0, |i| i as usize);
+                        shared_lens.get(i).map_or(0, |&l| u64::from(l)) + STRING_OVERHEAD
+                    }
+                    BRT_CELL_ST | BRT_FMLA_STRING => {
+                        wide_cost(u32_at(&buf, 8).unwrap_or(0)) + STRING_OVERHEAD
+                    }
+                    _ => 0,
+                };
+                out.add_text(cost, limits)?;
                 out.note_value(row, col, fmt, limits)?;
             }
             _ => {}

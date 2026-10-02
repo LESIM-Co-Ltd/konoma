@@ -94,15 +94,19 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         if app.sheet_can_switch() {
             sec = sec.row("J / K", l(crate::i18n::Msg::SheetSwitchHelp));
         }
-        return vec![sec
+        sec = sec
             .row("/  n / N", l(crate::i18n::Msg::TableSearchHelp))
             .row("Enter", l(crate::i18n::Msg::TableCellViewHelp))
             .row("y → c / r / C", l(crate::i18n::Msg::CopyHint))
             .row("y → f", l(crate::i18n::Msg::WkFull))
             .row("Ctrl-n / Ctrl-p", l(crate::i18n::Msg::PreviewFileJumpHelp))
-            .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint))
-            .row("e", l(crate::i18n::Msg::EditExternal))
-            .row("q / Esc", l(crate::i18n::Msg::BackToTree))];
+            .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint));
+        // [[hint-shown-iff-key-acts]]: a workbook opens in an Office app, not an editor
+        // (`App::edit_target`, the predicate `e` itself uses).
+        if let Some(msg) = app.edit_help_label(crate::i18n::Msg::EditExternal) {
+            sec = sec.row("e", l(msg));
+        }
+        return vec![sec.row("q / Esc", l(crate::i18n::Msg::BackToTree))];
     }
     if app.is_image_preview() {
         let mut sec = HelpSection::new(l(crate::i18n::Msg::PreviewImage))
@@ -148,7 +152,7 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     } else {
         l(crate::i18n::Msg::MdRawToggleHelp)
     };
-    vec![sec
+    sec = sec
         .row("R", r_help)
         .row("o", l(crate::i18n::Msg::HintOutline))
         .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
@@ -158,8 +162,12 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("Space", l(crate::i18n::Msg::MdTaskToggleHelp))
         .row("Space / ↵", l(crate::i18n::Msg::HintDetailsToggle))
         .row("Ctrl-n / Ctrl-p", l(crate::i18n::Msg::PreviewFileJumpHelp))
-        .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint))
-        .row("e", l(crate::i18n::Msg::EditExternalEnv))
+        .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint));
+    // An Office document that has no preview (docx, pptx, ...) still opens in an Office app on `e`.
+    if let Some(msg) = app.edit_help_label(crate::i18n::Msg::EditExternalEnv) {
+        sec = sec.row("e", l(msg));
+    }
+    vec![sec
         .row(crate::ui::status::page_help(app), "")
         .row("q / Esc", l(crate::i18n::Msg::BackToTree))]
 }
@@ -1764,6 +1772,7 @@ fn sheet_error_msg(err: Option<&crate::preview::office::OfficeError>) -> crate::
             "entry" => Msg::SheetErrTooLargeEntry,
             "package" => Msg::SheetErrTooLargePackage,
             "sheet area" | "sheet cells" => Msg::SheetErrTooLargeArea,
+            "text" => Msg::SheetErrTooLargeText,
             _ => Msg::SheetErrTooLargeOther,
         },
         Some(OfficeError::Corrupt(_)) => Msg::SheetErrCorrupt,
