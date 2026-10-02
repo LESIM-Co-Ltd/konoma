@@ -222,12 +222,26 @@ csv = "1"
 # 読む(preview/archive.rs のモジュール doc に安全境界の詳細)。zip の既定 feature は任意の展開コーデック
 # (bzip2 等・C ライブラリを引きうる)を有効化するが、`by_index_raw` はエントリの圧縮方式に関わらず
 # 非展開の生リーダーでメタデータを返すため default-features=false で足りる(実機検証済)。
-zip = { version = "8", default-features = false }
+zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 # default-features=false で既定 feature の xattr(展開時の拡張属性復元。unpack 専用)を落とす。
 # エントリ列挙(`Archive::entries`)はこれを使わない。>=0.4.45 は過去の展開時シンボリックリンク/
 # パストラバーサル勧告(RUSTSEC-2018-0002 / 2021-0080 / 2026-0067 / 2026-0068)の修正版だが、
 # このモジュールはそもそも unpack を一切呼ばない(詳細は preview/archive.rs)。
 tar = { version = "0.4.45", default-features = false }
+
+# Spreadsheet preview (xlsx/xlsm/xltx/xltm/xlsb/xls/ods): pure-Rust reader. Values, sheet list, visibility,
+# merged ranges and formulas come from calamine; per-cell number formats (which calamine does not
+# expose) are read by konoma's own "format pass" (preview/office/). No optional features (chrono is
+# not needed: date arithmetic lives in konoma's own numfmt).
+calamine = { version = "0.36", default-features = false }
+# Compound File Binary reader: used to detect a password-protected OOXML package (an
+# `/EncryptedPackage` stream inside a CFB container) and, in later stages, by the xls format pass.
+# Already in the graph through `infer`; named here because konoma reads it directly.
+cfb = "0.14"
+# XML reader for the xlsx format pass. quick-xml never expands DTD-defined entities (a `<!ENTITY>`
+# declaration arrives as an ignored DocType event; an undefined `&x;` is an error), so there is no
+# billion-laughs path. Same 0.41 line calamine uses (one copy in the graph).
+quick-xml = "0.41"
 
 # git (任意機能。MVP は git2 を試す。コマンド委譲でも可)
 git2 = { version = "0.21", optional = true }

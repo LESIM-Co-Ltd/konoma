@@ -1,0 +1,110 @@
+//! Spreadsheet preview (xlsx / xlsm / xltx / xltm / xlsb / xls / ods): the reading side.
+//!
+//! Values, sheet list, visibility, merged ranges and formulas come from `calamine`; the number
+//! format of each cell (which `calamine` does not expose) is read by konoma's own per-format
+//! "format pass" (`fmt_*.rs`). Every file passes through [`container`] first: size limits,
+//! decompression accounting and encryption detection happen *before* any reader runs.
+//!
+//! This module has no UI, `App` or i18n dependency: [`OfficeError`] carries no user-facing text
+//! (the caller maps each variant to a translated message).
+
+pub mod container;
+pub mod fmt_xlsx;
+pub mod workbook;
+
+use std::fmt;
+use std::path::Path;
+
+pub use container::Limits;
+pub use workbook::{
+    display_text, load_workbook, Cell, CellType, CellValue, DisplayCtx, LoadOptions, MergeRange,
+    NumFmtRef, Sheet, Workbook,
+};
+
+/// The spreadsheet kinds konoma previews, by file extension (case-insensitive).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SheetKind {
+    /// `.xlsx`
+    Xlsx,
+    /// `.xlsm` (macro-enabled; macros are never executed)
+    Xlsm,
+    /// `.xltx` (template)
+    Xltx,
+    /// `.xltm` (macro-enabled template)
+    Xltm,
+    /// `.xlsb` (binary)
+    Xlsb,
+    /// `.xls` (BIFF8)
+    Xls,
+    /// `.ods` (OpenDocument)
+    Ods,
+}
+
+impl SheetKind {
+    /// The kind for an extension without the dot (`"XLSX"` works).
+    pub fn from_ext(ext: &str) -> Option<SheetKind> {
+        Some(match ext.to_ascii_lowercase().as_str() {
+            "xlsx" => SheetKind::Xlsx,
+            "xlsm" => SheetKind::Xlsm,
+            "xltx" => SheetKind::Xltx,
+            "xltm" => SheetKind::Xltm,
+            "xlsb" => SheetKind::Xlsb,
+            "xls" => SheetKind::Xls,
+            "ods" => SheetKind::Ods,
+            _ => return None,
+        })
+    }
+
+    /// The kind for a path, from its extension.
+    pub fn from_path(path: &Path) -> Option<SheetKind> {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .and_then(SheetKind::from_ext)
+    }
+}
+
+/// The locale that decides what a locale-dependent built-in format looks like (e.g. built-in
+/// number 14 is `m/d/yy` in English and `yyyy/m/d` in Japanese).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Locale {
+    /// English (en-US).
+    En,
+    /// Japanese (ja-JP).
+    Ja,
+}
+
+/// Why a workbook could not be loaded. No user-facing text here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OfficeError {
+    /// Password-protected / encrypted.
+    Encrypted,
+    /// A safety limit was exceeded; `what` names the limit (`"file"`, `"entries"`, `"entry"`,
+    /// `"package"`, `"sheet area"`, `"sheet cells"`).
+    TooLarge {
+        /// Which limit.
+        what: &'static str,
+    },
+    /// Damaged, truncated or not a spreadsheet container at all; the string is for logs.
+    Corrupt(String),
+    /// A valid file that is not a spreadsheet we read (docx, doc, unknown extension, ...).
+    Unsupported,
+    /// The file could not be opened or read from disk; the string is for logs.
+    Io(String),
+}
+
+impl fmt::Display for OfficeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OfficeError::Encrypted => write!(f, "encrypted workbook"),
+            OfficeError::TooLarge { what } => write!(f, "workbook too large ({what})"),
+            OfficeError::Corrupt(m) => write!(f, "corrupt workbook: {m}"),
+            OfficeError::Unsupported => write!(f, "unsupported file"),
+            OfficeError::Io(m) => write!(f, "io error: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for OfficeError {}
+
+#[cfg(test)]
+mod tests;
