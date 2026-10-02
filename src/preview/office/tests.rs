@@ -2286,3 +2286,416 @@ fn raw_values_stay_available_next_to_the_formatted_text() {
     assert_eq!(s.cell(2, 1).unwrap().raw_text(), "1234567.891");
     assert_eq!(s.cell(2, 3).unwrap().raw_text(), "0.256");
 }
+
+// ---------------------------------------------------------------------------------------------
+// mutation survivors: container, xlsx styles and budgets
+// ---------------------------------------------------------------------------------------------
+
+/// Sets bit 0 of the general-purpose flag of every entry (local headers and central directory):
+/// "the file is encrypted" (ZIP APPNOTE 4.4.4).
+fn set_encrypted_flag(mut z: Vec<u8>) -> Vec<u8> {
+    let mut i = 0;
+    while i + 30 < z.len() {
+        if z[i..i + 4] == [0x50, 0x4b, 0x03, 0x04] {
+            z[i + 6] |= 1;
+            i += 4;
+        } else if z[i..i + 4] == [0x50, 0x4b, 0x01, 0x02] {
+            z[i + 8] |= 1;
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    z
+}
+
+#[test]
+fn the_package_total_limit_is_exact() {
+    let dir = tmp("totalexact");
+    // 11 + 100 expanded bytes.
+    let p = write(
+        &dir,
+        "t.xlsx",
+        &deflated(&[("xl/workbook.xml", b"<workbook/>"), ("a.bin", &[7u8; 100])]),
+    );
+    let at = |total: u64| {
+        container::inspect(
+            &p,
+            &Limits {
+                max_total_bytes: total,
+                ..small_limits()
+            },
+        )
+    };
+    assert_eq!(at(111), Ok(Detected::Xlsx));
+    assert_eq!(at(110), Err(OfficeError::TooLarge { what: "package" }));
+    assert_eq!(at(1000), Ok(Detected::Xlsx));
+}
+
+#[test]
+fn an_entry_with_the_encrypted_flag_is_encrypted_even_when_it_is_also_too_large() {
+    // The flag is checked before the size, so a password-protected part is reported as such and
+    // not as "too large".
+    let dir = tmp("zipflag");
+    let z = set_encrypted_flag(deflated(&[("xl/workbook.xml", &[b'x'; 4096])]));
+    let p = write(&dir, "e.xlsx", &z);
+    let tiny = Limits {
+        max_part_bytes: 1000,
+        ..small_limits()
+    };
+    assert_eq!(
+        container::inspect(&p, &tiny).unwrap_err(),
+        OfficeError::Encrypted
+    );
+    assert_eq!(load(&p).unwrap_err(), OfficeError::Encrypted);
+    // Without the flag the same package is just too large for the tiny limit.
+    let plain = write(
+        &dir,
+        "p.xlsx",
+        &deflated(&[("xl/workbook.xml", &[b'x'; 4096])]),
+    );
+    assert_eq!(
+        container::inspect(&plain, &tiny).unwrap_err(),
+        OfficeError::TooLarge { what: "entry" }
+    );
+}
+
+#[test]
+fn zip_errors_map_to_office_errors() {
+    use zip::result::ZipError as Z;
+    let enc = OfficeError::Encrypted;
+    assert_eq!(container::zip_err(Z::InvalidPassword), enc);
+    assert_eq!(
+        container::zip_err(Z::UnsupportedArchive(Z::PASSWORD_REQUIRED)),
+        enc
+    );
+    // The match on the message ignores case.
+    assert_eq!(
+        container::zip_err(Z::UnsupportedArchive("PASSWORD needed")),
+        enc
+    );
+    // Any other unsupported feature is "not ours", not "encrypted".
+    assert_eq!(
+        container::zip_err(Z::UnsupportedArchive("multi-disk archive")),
+        OfficeError::Unsupported
+    );
+    assert_eq!(
+        container::zip_err(Z::UnsupportedArchive("x")),
+        OfficeError::Unsupported
+    );
+    // Damage is corruption.
+    assert!(matches!(
+        container::zip_err(Z::FileNotFound),
+        OfficeError::Corrupt(_)
+    ));
+    assert!(matches!(
+        container::zip_err(Z::InvalidArchive("bad".into())),
+        OfficeError::Corrupt(_)
+    ));
+    assert!(matches!(
+        container::zip_err(Z::Io(std::io::Error::other("boom"))),
+        OfficeError::Corrupt(_)
+    ));
+    assert!(matches!(
+        container::io_err(std::io::Error::other("boom")),
+        OfficeError::Io(_)
+    ));
+}
+
+#[test]
+fn a_zip_is_detected_by_its_marker_parts() {
+    let dir = tmp("detect");
+    let case = |name: &str, entries: &[(&str, &[u8])]| {
+        let p = write(&dir, name, &deflated(entries));
+        container::inspect(&p, &Limits::default())
+    };
+    assert_eq!(
+        case("a.zip", &[("xl/workbook.xml", b"x")]),
+        Ok(Detected::Xlsx)
+    );
+    assert_eq!(
+        case("b.zip", &[("xl/workbook.bin", b"x")]),
+        Ok(Detected::Xlsb)
+    );
+    // OpenDocument needs both the `mimetype` entry and `content.xml`.
+    assert_eq!(
+        case("c.zip", &[("mimetype", b"x"), ("content.xml", b"x")]),
+        Ok(Detected::Ods)
+    );
+    assert_eq!(
+        case("d.zip", &[("content.xml", b"x")]),
+        Err(OfficeError::Unsupported)
+    );
+    assert_eq!(
+        case("e.zip", &[("mimetype", b"x")]),
+        Err(OfficeError::Unsupported)
+    );
+    assert_eq!(
+        case("f.zip", &[("other", b"x")]),
+        Err(OfficeError::Unsupported)
+    );
+    // The xlsx marker wins over ods ones.
+    assert_eq!(
+        case(
+            "g.zip",
+            &[
+                ("xl/workbook.xml", b"x"),
+                ("mimetype", b"x"),
+                ("content.xml", b"x")
+            ]
+        ),
+        Ok(Detected::Xlsx)
+    );
+}
+
+#[test]
+fn a_chartsheet_in_an_xlsx_is_neither_listed_nor_counted_as_hidden() {
+    // The sheet kind comes from the relationship type (`.../chartsheet`); a chart sheet has no
+    // cells and must not reach the grid.
+    let dir = tmp("chartsheet");
+    let wb = workbook_xml(
+        false,
+        &[
+            ("Data", "visible", "rId1"),
+            ("Chart1", "visible", "rId2"),
+            ("More", "visible", "rId3"),
+            ("HiddenChart", "hidden", "rId4"),
+        ],
+    );
+    let rel = |id: &str, ty: &str, target: &str| {
+        format!(
+            r#"<Relationship Id="{id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/{ty}" Target="{target}"/>"#
+        )
+    };
+    let rels = format!(
+        r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{}{}{}{}</Relationships>"#,
+        rel("rId1", "worksheet", "worksheets/sheet1.xml"),
+        rel("rId2", "chartsheet", "chartsheets/sheet1.xml"),
+        rel("rId3", "worksheet", "worksheets/sheet2.xml"),
+        rel("rId4", "chartsheet", "chartsheets/sheet2.xml"),
+    );
+    let root_rels = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#;
+    let one = |t: &str| sheet_xml(&format!(r#"<row r="1">{}</row>"#, istr("A1", None, t)), "");
+    let chart = format!(r#"<?xml version="1.0"?><chartsheet xmlns="{NS}"/>"#);
+    let z = deflated(&[
+        ("_rels/.rels", root_rels.as_bytes()),
+        ("xl/workbook.xml", wb.as_bytes()),
+        ("xl/_rels/workbook.xml.rels", rels.as_bytes()),
+        ("xl/worksheets/sheet1.xml", one("first").as_bytes()),
+        ("xl/worksheets/sheet2.xml", one("second").as_bytes()),
+        ("xl/chartsheets/sheet1.xml", chart.as_bytes()),
+        ("xl/chartsheets/sheet2.xml", chart.as_bytes()),
+    ]);
+    let p = write(&dir, "chart.xlsx", &z);
+    let wb = load(&p).unwrap();
+    let names: Vec<&str> = wb.sheets.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Data", "More"]);
+    assert_eq!(
+        wb.hidden_sheets, 0,
+        "a chart sheet is not a hidden worksheet"
+    );
+    assert_eq!(wb.sheets[1].display(0, 0), "second");
+}
+
+#[test]
+fn the_dense_box_limit_is_exact() {
+    // Two values at A1 and C3: a 3 x 3 bounding box, nine cells for the reader's dense matrix.
+    let dir = tmp("denseexact");
+    let rows = format!(
+        r#"<row r="1">{}</row><row r="3">{}</row>"#,
+        num("A1", None, "1"),
+        num("C3", None, "2")
+    );
+    let p = Pkg::new()
+        .sheet("S", "visible", sheet_xml(&rows, ""))
+        .write(&dir, "d.xlsx");
+    let at = |n: u64| {
+        load_with(
+            &p,
+            Limits {
+                max_dense_cells: n,
+                ..small_limits()
+            },
+        )
+    };
+    let wb = at(9).unwrap();
+    assert_eq!((wb.sheets[0].nrows, wb.sheets[0].ncols), (3, 3));
+    assert_eq!(
+        at(8).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+}
+
+#[test]
+fn the_value_cell_limit_is_exact() {
+    let rows: String = (1..=10)
+        .map(|r| format!(r#"<row r="{r}">{}</row>"#, num(&format!("A{r}"), None, "1")))
+        .collect();
+    let xml = sheet_xml(&rows, "");
+    let at = |n: u64| {
+        fmt_xlsx::parse_sheet(
+            xml.as_bytes(),
+            &[0],
+            &[],
+            &Limits {
+                max_dense_cells: n,
+                ..Limits::default()
+            },
+        )
+    };
+    assert_eq!(at(10).unwrap().value_cells, 10);
+    assert_eq!(
+        at(9),
+        Err(OfficeError::TooLarge {
+            what: "sheet cells"
+        })
+    );
+}
+
+#[test]
+fn note_value_of_the_binary_formats_has_exact_limits() {
+    // Columns: only those inside max_cols keep their format (the cell is still in the box).
+    let limits = Limits {
+        max_cols: 4,
+        max_dense_cells: 3,
+        ..Limits::default()
+    };
+    let mut sf = SheetFormats::default();
+    sf.note_value(0, 3, 7, &limits).unwrap(); // last shown column
+    sf.note_value(0, 4, 7, &limits).unwrap(); // first column past the maximum
+    sf.note_value(1, 0, 0, &limits).unwrap(); // General is never recorded
+    assert_eq!(sf.cells, vec![(0, 3, 7)]);
+    assert_eq!(sf.bbox, Some((0, 0, 1, 4)));
+    assert_eq!(sf.value_cells, 3);
+    // The 4th value cell is one over a budget of 3.
+    assert_eq!(
+        sf.note_value(2, 0, 0, &limits),
+        Err(OfficeError::TooLarge {
+            what: "sheet cells"
+        })
+    );
+}
+
+#[test]
+fn the_last_builtin_number_format_id_is_163() {
+    // ECMA-376 18.8.30: ids below 164 are built in, custom formats start at 164.
+    let xml = styles_xml(&[], &[162, 163, 164, 165]);
+    let st = fmt_xlsx::parse_styles(xml.as_bytes()).unwrap();
+    let fmt = |xf: usize| st.formats[st.xf_to_format[xf] as usize].clone();
+    assert_eq!(fmt(0), NumFmtRef::Builtin(162));
+    assert_eq!(fmt(1), NumFmtRef::Builtin(163));
+    assert_eq!(fmt(2), NumFmtRef::General, "undefined 164 is General");
+    assert_eq!(fmt(3), NumFmtRef::General);
+}
+
+#[test]
+fn a_custom_general_code_is_general_whatever_its_spacing_or_case() {
+    // LibreOffice writes `General` as a custom code; padding and case do not matter.
+    for code in ["General", "GENERAL", "general", " General ", "\tgeneral\n"] {
+        let xml = styles_xml(&[(164, code)], &[164]);
+        let st = fmt_xlsx::parse_styles(xml.as_bytes()).unwrap();
+        assert_eq!(
+            st.formats[st.xf_to_format[0] as usize],
+            NumFmtRef::General,
+            "{code:?}"
+        );
+    }
+    // But a code that merely contains the word is a code.
+    let xml = styles_xml(&[(164, "General\\ 0")], &[164]);
+    let st = fmt_xlsx::parse_styles(xml.as_bytes()).unwrap();
+    assert!(matches!(
+        st.formats[st.xf_to_format[0] as usize],
+        NumFmtRef::Custom(_)
+    ));
+}
+
+#[test]
+fn when_a_numfmt_id_is_defined_twice_the_later_definition_wins() {
+    // Not specified by ECMA-376 (ids are meant to be unique); this engine keeps the last one it
+    // read, as a map insert does, and the choice is pinned here so it cannot change silently.
+    let xml = styles_xml(&[(164, "0.0"), (164, "0.000")], &[164]);
+    let st = fmt_xlsx::parse_styles(xml.as_bytes()).unwrap();
+    assert_eq!(
+        st.formats[st.xf_to_format[0] as usize],
+        NumFmtRef::Custom("0.000".into())
+    );
+}
+
+#[test]
+fn the_last_column_of_the_cap_keeps_its_format_and_the_first_past_it_does_not() {
+    // Columns A..D with a cap of 4: D (index 3) is shown, E (index 4) is past the cap.
+    let rows = r#"<row r="1"><c r="D1" s="1"><v>1</v></c><c r="E1" s="1"><v>1</v></c></row>"#;
+    let xml = sheet_xml(rows, "");
+    let limits = Limits {
+        max_cols: 4,
+        ..Limits::default()
+    };
+    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &[], &limits).unwrap();
+    assert_eq!(sf.cells, vec![(0, 3, 1)]);
+    assert_eq!(sf.bbox, Some((0, 3, 0, 4)));
+}
+
+#[test]
+fn a_grid_exactly_max_cols_wide_is_not_truncated() {
+    let dir = tmp("colexact");
+    let cells: String = (0..5u32)
+        .map(|c| num(&format!("{}1", (b'A' + c as u8) as char), None, "1"))
+        .collect();
+    let p = Pkg::new()
+        .sheet(
+            "S",
+            "visible",
+            sheet_xml(&format!(r#"<row r="1">{cells}</row>"#), ""),
+        )
+        .write(&dir, "c.xlsx");
+    let at = |cols: usize| {
+        load_with(
+            &p,
+            Limits {
+                max_cols: cols,
+                ..small_limits()
+            },
+        )
+        .unwrap()
+    };
+    let s = &at(5).sheets[0];
+    assert_eq!(s.ncols, 5);
+    assert!(!s.cols_truncated, "exactly at the cap is not truncated");
+    let s = &at(4).sheets[0];
+    assert_eq!(s.ncols, 4);
+    assert!(s.cols_truncated);
+}
+
+#[test]
+fn formulas_outside_the_cut_grid_are_dropped() {
+    // A 3 x 3 sheet where every cell has a formula, cut to 2 x 2: the formula of a row or column
+    // that is cut off is not kept (the first column / row past the grid included).
+    let dir = tmp("formulacut");
+    let rows: String = (1..=3)
+        .map(|r| {
+            let cells: String = ["A", "B", "C"]
+                .iter()
+                .map(|c| format!(r#"<c r="{c}{r}"><f>{c}{r}+1</f><v>1</v></c>"#))
+                .collect();
+            format!(r#"<row r="{r}">{cells}</row>"#)
+        })
+        .collect();
+    let p = Pkg::new()
+        .sheet("S", "visible", sheet_xml(&rows, ""))
+        .write(&dir, "f.xlsx");
+    let limits = Limits {
+        max_rows: 2,
+        max_cols: 2,
+        ..small_limits()
+    };
+    let s = &load_with(&p, limits).unwrap().sheets[0];
+    assert_eq!((s.nrows, s.ncols), (2, 2));
+    assert_eq!(s.formula(1, 1), Some("B2+1"));
+    assert_eq!(s.formula(0, 2), None, "first column past the cap");
+    assert_eq!(s.formula(2, 0), None, "first row past the cap");
+    assert_eq!(s.formula(2, 2), None);
+    assert_eq!(s.formula(5, 5), None);
+    // Uncut, all nine are there.
+    let s = &load_with(&p, small_limits()).unwrap().sheets[0];
+    assert_eq!(s.formula(2, 2), Some("C3+1"));
+}

@@ -680,3 +680,226 @@ fn error_code(e: &calamine::CellErrorType) -> CellError {
         E::GettingData => "#DATA!",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests of the loader's own logic, below the readers: grids are built from calamine
+    //! ranges directly, so each rule (sheet kinds, caps, formula cut, display text sharing, error
+    //! codes) is pinned without a file.
+    use super::*;
+    use calamine::{Cell as RCell, CellErrorType};
+
+    fn limits(max_rows: usize, max_cols: usize) -> Limits {
+        Limits {
+            max_rows,
+            max_cols,
+            ..Limits::default()
+        }
+    }
+
+    fn ctx(limits: Limits) -> Ctx {
+        Ctx::new(
+            false,
+            vec![NumFmtRef::General],
+            LoadOptions {
+                locale: Locale::En,
+                limits,
+            },
+        )
+    }
+
+    fn range<T: calamine::CellType>(cells: Vec<(u32, u32, T)>) -> Range<T> {
+        Range::from_sparse(
+            cells
+                .into_iter()
+                .map(|(r, c, v)| RCell::new((r, c), v))
+                .collect(),
+        )
+    }
+
+    fn fetched(data: Range<Data>, formulas: Range<String>) -> Fetched<'static> {
+        Fetched {
+            data,
+            formulas,
+            merges: Vec::new(),
+            fmts: None,
+        }
+    }
+
+    fn build(limits: Limits, f: Fetched<'static>) -> Sheet {
+        let mut left = limits.max_grid_cells;
+        build_sheet(&ctx(limits), "S".into(), f, &mut left)
+    }
+
+    /// An `r x c` grid of integers.
+    fn ints(r: u32, c: u32) -> Range<Data> {
+        range(
+            (0..r)
+                .flat_map(|i| (0..c).map(move |j| (i, j, Data::Int(i64::from(i * 10 + j)))))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn only_worksheets_are_listed_and_only_hidden_worksheets_are_counted() {
+        let meta = |name: &str, typ: SheetType, visible: SheetVisible| Meta {
+            name: name.into(),
+            visible,
+            typ,
+        };
+        let metas = vec![
+            meta("A", SheetType::WorkSheet, SheetVisible::Visible),
+            meta("Chart", SheetType::ChartSheet, SheetVisible::Visible),
+            meta("Dialog", SheetType::DialogSheet, SheetVisible::Visible),
+            meta("Macro", SheetType::MacroSheet, SheetVisible::Visible),
+            meta("Vba", SheetType::Vba, SheetVisible::Visible),
+            meta("HiddenChart", SheetType::ChartSheet, SheetVisible::Hidden),
+            meta("Hidden", SheetType::WorkSheet, SheetVisible::Hidden),
+            meta("VeryHidden", SheetType::WorkSheet, SheetVisible::VeryHidden),
+            meta("B", SheetType::WorkSheet, SheetVisible::Visible),
+        ];
+        let mut fetched_names = Vec::new();
+        let wb = assemble(&ctx(Limits::default()), metas, |name| {
+            fetched_names.push(name.to_string());
+            Ok(fetched(ints(1, 1), Range::empty()))
+        })
+        .unwrap();
+        let names: Vec<&str> = wb.sheets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["A", "B"]);
+        assert_eq!(
+            wb.hidden_sheets, 2,
+            "chart / dialog / macro sheets are not hidden worksheets"
+        );
+        // The reader is never asked for a sheet that is not a visible worksheet.
+        assert_eq!(fetched_names, ["A", "B"]);
+    }
+
+    #[test]
+    fn columns_are_truncated_only_past_the_cap() {
+        let at =
+            |cols: u32, cap: usize| build(limits(100, cap), fetched(ints(2, cols), Range::empty()));
+        let s = at(4, 4);
+        assert_eq!(s.ncols, 4);
+        assert!(!s.cols_truncated, "exactly at the cap");
+        let s = at(5, 4);
+        assert_eq!(s.ncols, 4);
+        assert!(s.cols_truncated);
+        let s = at(3, 4);
+        assert_eq!(s.ncols, 3);
+        assert!(!s.cols_truncated);
+        assert!(s.cell(0, 3).is_none());
+        // Rows behave the same way.
+        let s = build(limits(2, 100), fetched(ints(2, 2), Range::empty()));
+        assert_eq!(s.nrows, 2);
+        assert!(!s.rows_truncated, "exactly at the row cap");
+        let s = build(limits(2, 100), fetched(ints(3, 2), Range::empty()));
+        assert_eq!(s.nrows, 2);
+        assert!(s.rows_truncated);
+    }
+
+    #[test]
+    fn formulas_past_the_grid_are_not_kept() {
+        let formulas: Range<String> = range(
+            (0..3u32)
+                .flat_map(|r| (0..3u32).map(move |c| (r, c, format!("F{r}{c}"))))
+                .collect(),
+        );
+        let s = build(limits(2, 2), fetched(ints(3, 3), formulas));
+        assert_eq!((s.nrows, s.ncols), (2, 2));
+        assert_eq!(s.formula(1, 1), Some("F11"));
+        assert_eq!(s.formula(1, 2), None, "first column past the grid");
+        assert_eq!(s.formula(2, 1), None, "first row past the grid");
+        assert_eq!(s.formulas.len(), 4);
+    }
+
+    #[test]
+    fn a_text_cell_shares_its_text_and_other_cells_store_their_display() {
+        let data = range(vec![
+            (0, 0, Data::String("hello".into())),
+            (0, 1, Data::String("123".into())),
+            (0, 2, Data::Float(1.5)),
+            (0, 3, Data::Bool(true)),
+            (0, 4, Data::Int(7)),
+        ]);
+        let s = build(Limits::default(), fetched(data, Range::empty()));
+        // A text cell shown exactly as written keeps no second copy (the memory budget relies on it).
+        assert!(s.cell(0, 0).unwrap().display.is_none());
+        assert!(s.cell(0, 1).unwrap().display.is_none());
+        assert_eq!(s.display(0, 0), "hello");
+        assert_eq!(s.display(0, 1), "123");
+        // Everything else keeps what the format made of it.
+        assert_eq!(s.cell(0, 2).unwrap().display.as_deref(), Some("1.5"));
+        assert_eq!(s.cell(0, 3).unwrap().display.as_deref(), Some("TRUE"));
+        assert_eq!(s.cell(0, 4).unwrap().display.as_deref(), Some("7"));
+    }
+
+    #[test]
+    fn every_error_value_has_its_excel_code() {
+        use CellErrorType as E;
+        let all = [
+            (E::Div0, "#DIV/0!"),
+            (E::NA, "#N/A"),
+            (E::Name, "#NAME?"),
+            (E::Null, "#NULL!"),
+            (E::Num, "#NUM!"),
+            (E::Ref, "#REF!"),
+            (E::Value, "#VALUE!"),
+            // "#GETTING_DATA" in Excel's own list; the engine shows its short form.
+            (E::GettingData, "#DATA!"),
+        ];
+        for (e, code) in all {
+            assert_eq!(
+                to_value(&Data::Error(e.clone())),
+                Some(CellValue::Error(code))
+            );
+            assert_eq!(error_code(&e), code);
+        }
+        assert_eq!(to_value(&Data::Empty), None);
+    }
+
+    #[test]
+    fn raw_text_is_the_unformatted_value() {
+        let t = |v: CellValue| {
+            Cell {
+                value: v,
+                display: None,
+                fmt: 0,
+            }
+            .raw_text()
+        };
+        assert_eq!(t(CellValue::Bool(true)), "TRUE");
+        assert_eq!(t(CellValue::Bool(false)), "FALSE");
+        assert_eq!(t(CellValue::Int(-4)), "-4");
+        assert_eq!(t(CellValue::Number(0.25)), "0.25");
+        assert_eq!(t(CellValue::Text("a b".into())), "a b");
+        assert_eq!(t(CellValue::Error("#N/A")), "#N/A");
+        assert_eq!(
+            t(CellValue::DateTime {
+                serial: 45292.5,
+                duration: false
+            }),
+            "45292.5"
+        );
+        assert_eq!(t(CellValue::DateTimeIso("2024-01-01".into())), "2024-01-01");
+    }
+
+    #[test]
+    fn number_text_switches_to_exponent_form_at_1e_minus_7_and_1e21() {
+        // Plain decimal from 1e-7 (inclusive) up to 1e21 (exclusive), exponent form outside.
+        assert_eq!(number_text(1e-6), "0.000001");
+        assert_eq!(number_text(5e-7), "0.0000005");
+        assert_eq!(number_text(1e-7), "0.0000001");
+        assert_eq!(number_text(9.9e-8), "9.9e-8");
+        assert_eq!(number_text(-5e-7), "-0.0000005");
+        assert_eq!(number_text(-9.9e-8), "-9.9e-8");
+        assert_eq!(number_text(1e21), "1e21");
+        assert_eq!(number_text(1.5e21), "1.5e21");
+        assert_eq!(
+            number_text(123456789012345680000.0),
+            "123456789012345680000"
+        );
+        // Whole numbers below 1e15 print as integers.
+        assert_eq!(number_text(999_999_999_999_999.0), "999999999999999");
+        assert_eq!(number_text(-0.0), "0");
+    }
+}

@@ -934,3 +934,136 @@ fn label_and_rstring_text_count_against_the_text_budget() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// mutation survivors: DIMENSIONS area, MULRK length, the XF cap
+// ---------------------------------------------------------------------------------------------
+
+/// A BIFF5-style DIMENSIONS record: four u16 (`rwMic`, `rwMac`, `colMic`, `colMac`) and a
+/// reserved word.
+fn dimensions_short(r0: u16, r1: u16, c0: u16, c1: u16) -> Vec<u8> {
+    let mut d = Vec::new();
+    for v in [r0, r1, c0, c1, 0] {
+        d.extend(v.to_le_bytes());
+    }
+    rec(0x0200, &d)
+}
+
+/// Parses a book that has only a DIMENSIONS record under the given cell budget.
+fn parse_with_dimensions(dim: Vec<u8>, max_dense_cells: u64) -> Result<(), OfficeError> {
+    let book = Book {
+        globals: globals(&[], &[]),
+        sheets: vec![sheet("S", vec![dim])],
+    };
+    let limits = Limits {
+        max_dense_cells,
+        ..Limits::default()
+    };
+    fmt_xls::parse_stream(&book.stream(), &limits).map(|_| ())
+}
+
+#[test]
+fn the_declared_area_is_rows_times_columns_and_the_limit_is_exact() {
+    // MS-XLS 2.4.90 Dimensions: rwMic/colMic are the first row/column, rwMac/colMac are one past
+    // the last, so the area is (rwMac - rwMic) x (colMac - colMic).
+    let too_large = Err(OfficeError::TooLarge { what: "sheet area" });
+    // Rows 0..10, columns 2..5: 10 x 3 = 30 (not 10 x 5 = 50).
+    assert_eq!(parse_with_dimensions(dimensions(0, 10, 2, 5), 30), Ok(()));
+    assert_eq!(
+        parse_with_dimensions(dimensions(0, 10, 2, 5), 29),
+        too_large
+    );
+    // The first row counts too: rows 4..14 are 10 rows.
+    assert_eq!(parse_with_dimensions(dimensions(4, 14, 0, 3), 30), Ok(()));
+    assert_eq!(
+        parse_with_dimensions(dimensions(4, 14, 0, 3), 29),
+        too_large
+    );
+    // The same shapes in the 10-byte (BIFF5/7) record.
+    assert_eq!(
+        parse_with_dimensions(dimensions_short(0, 10, 2, 5), 30),
+        Ok(())
+    );
+    assert_eq!(
+        parse_with_dimensions(dimensions_short(0, 10, 2, 5), 29),
+        too_large
+    );
+}
+
+#[test]
+fn a_dimensions_record_with_nonsense_columns_falls_back_to_the_full_width() {
+    // colMac < colMic (a damaged or hand-made file): the first column is taken as 0, so the area
+    // is rows x colMac, and nothing underflows.
+    let too_large = Err(OfficeError::TooLarge { what: "sheet area" });
+    assert_eq!(parse_with_dimensions(dimensions(0, 10, 5, 2), 20), Ok(()));
+    assert_eq!(
+        parse_with_dimensions(dimensions(0, 10, 5, 2), 19),
+        too_large
+    );
+    // colMic past column 255 (the BIFF8 maximum) is treated the same way.
+    assert_eq!(
+        parse_with_dimensions(dimensions(0, 10, 300, 400), 4000),
+        Ok(())
+    );
+    assert_eq!(
+        parse_with_dimensions(dimensions(0, 10, 300, 400), 3999),
+        too_large
+    );
+    // No rows or no columns declared: one cell (a sheet is never "empty" to the reader).
+    assert_eq!(parse_with_dimensions(dimensions(0, 0, 0, 5), 1), Ok(()));
+    assert_eq!(parse_with_dimensions(dimensions(0, 5, 0, 0), 1), Ok(()));
+}
+
+#[test]
+fn a_mulrk_whose_body_is_longer_than_its_declared_span_is_corrupt() {
+    // Two RK cells (columns 0 and 1) but `colLast` says 0: the declared span (1 column) does not
+    // match the body (2 cells). The body being too short is corrupt as well; only an exact match
+    // is a MULRK.
+    let corrupt = |data: Vec<u8>| {
+        let book = Book {
+            globals: globals(&[], &[]),
+            sheets: vec![sheet("S", vec![data])],
+        };
+        fmt_xls::parse_stream(&book.stream(), &Limits::default())
+    };
+    let mut longer = mulrk(0, 0, &[(0, 1), (0, 2)]);
+    let n = longer.len();
+    longer[n - 2..].copy_from_slice(&0u16.to_le_bytes());
+    assert!(
+        matches!(corrupt(longer), Err(OfficeError::Corrupt(_))),
+        "body longer than the span"
+    );
+    let mut shorter = mulrk(0, 0, &[(0, 1)]);
+    let n = shorter.len();
+    shorter[n - 2..].copy_from_slice(&1u16.to_le_bytes());
+    assert!(
+        matches!(corrupt(shorter), Err(OfficeError::Corrupt(_))),
+        "body shorter than the span"
+    );
+    // The exact match is accepted.
+    assert!(corrupt(mulrk(0, 3, &[(0, 1), (0, 2), (0, 3)])).is_ok());
+}
+
+#[test]
+fn only_the_first_200_000_xf_records_are_kept() {
+    // The 200,000th XF is kept, the 200,001st is dropped. An XF's format shows up in the format
+    // table only if the record was kept (a cell can reference at most xf 65,535, so the table is
+    // what shows the cap).
+    let xf_bytes = |n: usize, last_ifmt: u16| {
+        let mut v = bof(0x0600, 0x0005);
+        for _ in 0..n - 1 {
+            v.extend(xf_rec(0));
+        }
+        v.extend(xf_rec(last_ifmt));
+        v.extend(eof());
+        v
+    };
+    let kept = fmt_xls::parse_stream(&xf_bytes(200_000, 14), &Limits::default()).unwrap();
+    assert!(
+        kept.formats.contains(&NumFmtRef::Builtin(14)),
+        "{:?}",
+        kept.formats
+    );
+    let dropped = fmt_xls::parse_stream(&xf_bytes(200_001, 14), &Limits::default()).unwrap();
+    assert_eq!(dropped.formats, vec![NumFmtRef::General]);
+}

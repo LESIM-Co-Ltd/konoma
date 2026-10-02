@@ -968,3 +968,87 @@ fn a_forged_unique_count_in_the_xlsb_table_is_refused() {
         OfficeError::TooLarge { what: "text" }
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// mutation survivors: record id range, 24-bit style refs past 65,535, row limit, XF cap
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn exactly_the_value_cell_records_2_to_0b_are_read() {
+    // MS-XLSB: 0x0001 is a blank cell (no value: not read), 0x0002..=0x000A are the value cells
+    // and 0x000B is a formula that evaluates to an error (`calamine` keeps it in the range of
+    // formulas); 0x000C and up are other records.
+    let mut ids_read = Vec::new();
+    for id in 0x0000u16..=0x000E {
+        // A body long enough for the longest layout (col, style, then 12 bytes).
+        let mut body = cell_head(3, 1);
+        body.extend([0u8; 12]);
+        let mut bin = rec(0x0091, &[]); // BrtBeginSheetData
+        bin.extend(row_hdr(0));
+        if id != 0 {
+            bin.extend(rec(id, &body));
+        }
+        bin.extend(rec(0x0092, &[]));
+        let sf = fmt_xlsb::parse_sheet(&bin[..], &[0, 1], &[], &Limits::default()).unwrap();
+        if sf.value_cells == 1 {
+            ids_read.push(id);
+            assert_eq!(sf.cells, vec![(0, 3, 1)], "id {id:#x} keeps its format");
+        } else {
+            assert_eq!(sf.value_cells, 0, "id {id:#x}");
+        }
+    }
+    let want: Vec<u16> = (0x0002..=0x000B).collect();
+    assert_eq!(ids_read, want);
+}
+
+#[test]
+fn a_style_ref_above_65535_is_not_truncated_to_16_bits() {
+    // 70,000 cell XFs, only xf 66,000 has a (date) format. A 16-bit mask would send a cell that
+    // uses xf 66,000 to xf 464, which is General.
+    let n = 70_000usize;
+    let mut ifmts = vec![0u16; n];
+    ifmts[66_000] = 14;
+    let styles = styles_bin(&[], &ifmts);
+    let st = fmt_xlsb::parse_styles(&styles[..]).unwrap();
+    assert_eq!(st.xf_to_format.len(), n);
+    let date = st.xf_to_format[66_000];
+    assert_ne!(date, 0);
+    assert_eq!(st.formats[usize::from(date)], NumFmtRef::Builtin(14));
+    let bin = sheet_bin(&[(0, vec![real(0, 66_000, 45292.0), real(1, 464, 45292.0)])]);
+    let sf = fmt_xlsb::parse_sheet(&bin[..], &st.xf_to_format, &[], &Limits::default()).unwrap();
+    assert_eq!(sf.format_at(0, 0), date);
+    assert_eq!(sf.format_at(0, 1), 0, "xf 464 is General");
+    // And the 4th byte of the word is a flag byte, never part of the index.
+    let bin = sheet_bin(&[(0, vec![real(0, 0x7F00_0000 | 66_000, 1.0)])]);
+    let sf = fmt_xlsb::parse_sheet(&bin[..], &st.xf_to_format, &[], &Limits::default()).unwrap();
+    assert_eq!(sf.format_at(0, 0), date);
+}
+
+#[test]
+fn the_row_limit_is_exact() {
+    // A row header of 0x100000 is still read; one above it ends the sheet (as in calamine).
+    let at = |row: u32| {
+        let bin = sheet_bin(&[(row, vec![real(0, 0, 1.0)])]);
+        fmt_xlsb::parse_sheet(&bin[..], &[], &[], &Limits::default()).unwrap()
+    };
+    let sf = at(0x0010_0000);
+    assert_eq!(sf.value_cells, 1);
+    assert_eq!(sf.bbox, Some((0x0010_0000, 0, 0x0010_0000, 0)));
+    assert_eq!(at(0x000F_FFFF).value_cells, 1);
+    assert_eq!(at(0x0010_0001).value_cells, 0);
+}
+
+#[test]
+fn only_the_first_100_000_cell_xfs_are_kept() {
+    let styles = |n: usize, last_ifmt: u16| {
+        let mut ifmts = vec![0u16; n - 1];
+        ifmts.push(last_ifmt);
+        styles_bin(&[], &ifmts)
+    };
+    let kept = fmt_xlsb::parse_styles(&styles(100_000, 14)[..]).unwrap();
+    assert_eq!(kept.xf_to_format.len(), 100_000);
+    assert!(kept.formats.contains(&NumFmtRef::Builtin(14)));
+    let dropped = fmt_xlsb::parse_styles(&styles(100_001, 14)[..]).unwrap();
+    assert_eq!(dropped.xf_to_format.len(), 100_000);
+    assert_eq!(dropped.formats, vec![NumFmtRef::General]);
+}

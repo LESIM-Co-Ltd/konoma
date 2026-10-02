@@ -1057,3 +1057,34 @@ fn error_code(text: &str) -> CellError {
         _ => "#VALUE!",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn data_style_with_maps(n: usize) -> Styles {
+        let maps: String = (0..n)
+            .map(|i| {
+                format!(
+                    r#"<style:map style:condition="value()&gt;{i}" style:apply-style-name="X"/>"#
+                )
+            })
+            .collect();
+        let xml = format!(
+            r#"<r xmlns:number="urn:n" xmlns:style="urn:s"><number:number-style style:name="N">{maps}</number:number-style></r>"#
+        );
+        let mut st = Styles::default();
+        parse_styles(xml.as_bytes(), &mut st, false).unwrap();
+        st
+    }
+
+    #[test]
+    fn a_data_style_keeps_at_most_eight_maps() {
+        // The code only ever uses two, so the cap is about memory: a hostile style cannot grow
+        // without bound.
+        assert_eq!(data_style_with_maps(3).data["N"].maps.len(), 3);
+        assert_eq!(data_style_with_maps(8).data["N"].maps.len(), 8);
+        assert_eq!(data_style_with_maps(9).data["N"].maps.len(), 8);
+        assert_eq!(data_style_with_maps(500).data["N"].maps.len(), 8);
+    }
+}

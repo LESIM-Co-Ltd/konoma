@@ -1279,3 +1279,259 @@ fn string_value_attributes_and_formula_text_count_and_numbers_do_not() {
     )
     .is_ok());
 }
+
+// ---------------------------------------------------------------------------------------------
+// mutation survivors: translation details and exact budget boundaries
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn elapsed_time_units_are_bracketed_and_the_seconds_decimals_have_a_cap() {
+    // ODF 1.2 19.363 `number:truncate-on-overflow="false"`: the unit is an elapsed total.
+    let t = |body: &str| code("time-style", body);
+    for (el, short, long) in [
+        ("hours", "[h]", "[hh]"),
+        ("minutes", "[m]", "[mm]"),
+        ("seconds", "[s]", "[ss]"),
+    ] {
+        assert_eq!(
+            t(&format!(
+                r#"<number:{el} number:truncate-on-overflow="false"/>"#
+            )),
+            short
+        );
+        assert_eq!(
+            t(&format!(
+                r#"<number:{el} number:style="long" number:truncate-on-overflow="false"/>"#
+            )),
+            long
+        );
+        // Truncating (the default) is the plain unit.
+        assert_eq!(
+            t(&format!(r#"<number:{el}/>"#)),
+            short.trim_matches(['[', ']'])
+        );
+    }
+    assert_eq!(render("[m]", 0.5), "720");
+    assert_eq!(render("[mm]", 5.0 / 1440.0), "05");
+    // Seconds decimals: that many zeros, at most 6.
+    let s = |d: &str| t(&format!(r#"<number:seconds number:decimal-places="{d}"/>"#));
+    assert_eq!(s("0"), "s");
+    assert_eq!(s("1"), "s.0");
+    assert_eq!(s("3"), "s.000");
+    assert_eq!(s("4"), "s.0000");
+    assert_eq!(s("6"), "s.000000");
+    assert_eq!(s("7"), "s.000000");
+    assert_eq!(s("99999"), "s.000000");
+}
+
+#[test]
+fn scientific_style_defaults_and_clamps() {
+    let sci = |attrs: &str| {
+        code(
+            "number-style",
+            &format!("<number:scientific-number {attrs}/>"),
+        )
+    };
+    // No attribute at all: 2 decimals, 1 integer digit, 2 exponent digits (the shape of 1.23E+04).
+    assert_eq!(sci(""), "0.00E+00");
+    assert_eq!(render(&sci(""), 12345.0), "1.23E+04");
+    // Each default is independent of the others.
+    assert_eq!(sci(r#"number:decimal-places="0""#), "0E+00");
+    assert_eq!(sci(r#"number:min-integer-digits="3""#), "000.00E+00");
+    assert_eq!(sci(r#"number:min-exponent-digits="3""#), "0.00E+000");
+    // Clamps: integer digits 1..=30, exponent digits 1..=5, decimals at most 30.
+    assert_eq!(sci(r#"number:min-integer-digits="0""#), "0.00E+00");
+    assert_eq!(sci(r#"number:min-exponent-digits="0""#), "0.00E+0");
+    assert_eq!(sci(r#"number:min-exponent-digits="99""#), "0.00E+00000");
+    assert_eq!(
+        sci(r#"number:min-integer-digits="99""#),
+        format!("{}.00E+00", "0".repeat(30))
+    );
+    assert_eq!(
+        sci(r#"number:decimal-places="99""#),
+        format!("0.{}E+00", "0".repeat(30))
+    );
+}
+
+#[test]
+fn number_style_decimals_and_integer_digits_are_capped_at_30() {
+    let n = |attrs: &str| code("number-style", &format!("<number:number {attrs}/>"));
+    assert_eq!(
+        n(r#"number:decimal-places="30" number:min-integer-digits="1""#),
+        format!("0.{}", "0".repeat(30))
+    );
+    assert_eq!(
+        n(r#"number:decimal-places="31" number:min-integer-digits="1""#),
+        format!("0.{}", "0".repeat(30))
+    );
+    assert_eq!(
+        n(r#"number:decimal-places="0" number:min-integer-digits="30""#),
+        "0".repeat(30)
+    );
+    assert_eq!(
+        n(r#"number:decimal-places="0" number:min-integer-digits="31""#),
+        "0".repeat(30)
+    );
+    assert_eq!(
+        n(r#"number:decimal-places="0" number:min-integer-digits="0""#),
+        "0",
+        "at least one integer digit"
+    );
+}
+
+#[test]
+fn xml_entities_in_literal_text_are_decoded() {
+    // The five predefined entities, and numeric character references.
+    let lit = |t: &str| {
+        code(
+            "number-style",
+            &format!("<number:text>{t}</number:text>{NUM_0}"),
+        )
+    };
+    assert_eq!(lit("a&lt;b"), "\"a<b\"#,##0");
+    assert_eq!(lit("a&gt;b"), "\"a>b\"#,##0");
+    assert_eq!(lit("a&amp;b"), "\"a&b\"#,##0");
+    assert_eq!(lit("a&apos;b"), "\"a'b\"#,##0");
+    assert_eq!(lit("a&quot;b"), "\"a\"\\\"\"b\"#,##0");
+    assert_eq!(lit("&#x20AC;"), "\"€\"#,##0");
+    assert_eq!(lit("&#8364;"), "\"€\"#,##0");
+}
+
+#[test]
+fn only_the_first_two_maps_of_a_style_shape_the_code() {
+    // Three maps: the code uses the first two (a format code has at most 3 numeric sections).
+    let auto = format!(
+        r#"<number:number-style style:name="NP">{NUM_0}</number:number-style>
+           <number:number-style style:name="NN"><number:text>-</number:text>{NUM_0}</number:number-style>
+           <number:number-style style:name="NX"><number:text>x</number:text>{NUM_0}</number:number-style>
+           <number:number-style style:name="N"><number:text>zero</number:text><style:map style:condition="value()&gt;0" style:apply-style-name="NP"/><style:map style:condition="value()&lt;0" style:apply-style-name="NN"/><style:map style:condition="value()=5" style:apply-style-name="NX"/></number:number-style>
+           <style:style style:name="c" style:family="table-cell" style:data-style-name="N"/>"#
+    );
+    assert_eq!(code_of(&auto, "c").unwrap(), "#,##0;-#,##0;\"zero\"");
+}
+
+#[test]
+fn a_date_cell_with_a_general_data_style_shows_the_serial_not_the_iso_default() {
+    // Design choice (documented in `finish_cell`): a cell that *has* a style is never given the
+    // ISO fallback, even when its data style translates to General, so the date is the number
+    // General makes of it. (An unstyled date cell shows `2026-10-02`, see
+    // `typed_cells_without_any_style_get_a_readable_default`.)
+    let auto = data_style(
+        "number-style",
+        r#"<number:number number:min-integer-digits="1"/>"#,
+    );
+    let rows = row(&format!(
+        r#"{}<table:table-cell table:style-name="c" office:value-type="time" office:time-value="PT12H00M00S"><text:p/></table:table-cell>"#,
+        date("c", "2026-10-02")
+    ));
+    let wb = load_ods_xml("ods_styled_general_date", &auto, &table("S", &rows));
+    let s = sheet0(&wb);
+    assert_eq!(s.display(0, 0), "46297");
+    assert_eq!(s.display(0, 1), "0.5");
+    // The same cells without a style do get the readable defaults.
+    let rows = row(&format!(
+        r#"{}<table:table-cell office:value-type="time" office:time-value="PT12H00M00S"><text:p/></table:table-cell>"#,
+        date("", "2026-10-02")
+    ));
+    let wb = load_ods_xml("ods_unstyled_date", "", &table("S", &rows));
+    assert_eq!(sheet0(&wb).display(0, 0), "2026-10-02");
+    assert_eq!(sheet0(&wb).display(0, 1), "12:00:00");
+    // A *column* default style counts as a style as well.
+    let cols = r#"<table:table-column table:default-cell-style-name="c"/>"#;
+    let rows = row(&date("", "2026-10-02"));
+    let wb = load_ods_xml(
+        "ods_column_general_date",
+        &auto,
+        &table("S", &format!("{cols}{rows}")),
+    );
+    assert_eq!(sheet0(&wb).display(0, 0), "46297");
+}
+
+/// Reads one table and returns its `SheetFormats` under `limits`.
+fn read_table(
+    name: &str,
+    rows: &str,
+    limits: &Limits,
+) -> Result<fmt_xlsx::XlsxFormats, OfficeError> {
+    let dir = tmp(name);
+    let p = write(
+        &dir,
+        "t.ods",
+        &ods_bytes(&content_xml("", &table("S", rows)), None, None),
+    );
+    fmt_ods::read(&p, limits)
+}
+
+#[test]
+fn row_repeats_stop_at_the_last_row_counting_the_rows_before_them() {
+    // 1,048,570 rows of nothing, then a row repeated 100 times: only the 6 rows that are left
+    // (1,048,570..=1,048,575) exist, like calamine.
+    let rows = r#"<table:table-row table:number-rows-repeated="1048570"><table:table-cell/></table:table-row><table:table-row table:number-rows-repeated="100"><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row>"#;
+    let fm = read_table("ods_rows_left", rows, &Limits::default()).unwrap();
+    let sf = &fm.sheets["S"];
+    assert_eq!(sf.value_cells, 6);
+    assert_eq!(sf.bbox, Some((1_048_570, 0, 1_048_575, 0)));
+}
+
+#[test]
+fn rows_past_the_last_row_are_ignored_not_counted() {
+    // The first repeat uses up all 1,048,576 rows; a later row has no room at all and must not
+    // count, widen the bounding box or underflow.
+    let rows = r#"<table:table-row table:number-rows-repeated="1048576"><table:table-cell/></table:table-row><table:table-row><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row><table:table-row table:number-rows-repeated="5"><table:table-cell office:value-type="float" office:value="2"><text:p>2</text:p></table:table-cell></table:table-row>"#;
+    let fm = read_table("ods_rows_none_left", rows, &Limits::default()).unwrap();
+    let sf = &fm.sheets["S"];
+    assert_eq!(sf.value_cells, 0);
+    assert_eq!(sf.bbox, None);
+    assert_eq!(sf.bbox_area(), 0);
+}
+
+#[test]
+fn the_ods_budgets_are_exact_at_their_boundaries() {
+    let limits = |max: u64| Limits {
+        max_dense_cells: max,
+        max_cols: 2000,
+        ..Limits::default()
+    };
+    let too_large_area = || OfficeError::TooLarge { what: "sheet area" };
+    let too_large_cells = || OfficeError::TooLarge {
+        what: "sheet cells",
+    };
+
+    // value cells: 10 values in a row against a budget of 10 (the box and the read cost are 10
+    // as well, so this one is exactly full on all three).
+    let ten = row(&float("", "1").repeat(10));
+    assert!(read_table("ods_cells_ok", &ten, &limits(10)).is_ok());
+    assert_eq!(
+        read_table("ods_cells_over", &ten, &limits(9)).unwrap_err(),
+        too_large_cells()
+    );
+
+    // bounding box: two values at A1 and CV100 span 100 x 100 = 10,000 cells while only two
+    // cells hold values and the widest row reads 100 cells.
+    let corner = format!(
+        r#"{}<table:table-row table:number-rows-repeated="98"><table:table-cell/></table:table-row><table:table-row><table:table-cell table:number-columns-repeated="99"/>{}</table:table-row>"#,
+        row(&float("", "1")),
+        float("", "2")
+    );
+    let fm = read_table("ods_box_ok", &corner, &limits(10_000)).unwrap();
+    assert_eq!(fm.sheets["S"].bbox_area(), 10_000);
+    assert_eq!(fm.sheets["S"].value_cells, 2);
+    assert_eq!(
+        read_table("ods_box_over", &corner, &limits(9_999)).unwrap_err(),
+        too_large_area()
+    );
+
+    // read cost: 10 rows that each read 1,000 cells (a value at column 1,000) against 10,000.
+    let wide = format!(
+        r#"<table:table-row><table:table-cell table:number-columns-repeated="999"/>{}</table:table-row>"#,
+        float("", "1")
+    );
+    let ten_rows = wide.repeat(10);
+    let fm = read_table("ods_cost_ok", &ten_rows, &limits(10_000)).unwrap();
+    assert_eq!(fm.sheets["S"].read_cost, 10_000);
+    assert_eq!(fm.sheets["S"].bbox_area(), 10);
+    assert_eq!(
+        read_table("ods_cost_over", &ten_rows, &limits(9_999)).unwrap_err(),
+        too_large_area()
+    );
+}
