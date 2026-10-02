@@ -117,6 +117,9 @@ impl App {
     /// Confirm input (Enter): run the query (collect all matching lines) and jump to the first match at or after the current position.
     pub fn search_commit(&mut self) {
         let q = self.tab.search_input.take().unwrap_or_default();
+        // Whatever was waiting for a sheet to arrive is replaced by this confirmation (or, with no
+        // query, by no search at all): an old wait must not run when the sheet lands.
+        self.tab.search_pending = false;
         if q.is_empty() {
             self.tab.preview_search = None;
             self.tab.search_matches.clear();

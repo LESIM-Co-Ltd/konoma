@@ -1653,3 +1653,25 @@ fn the_area_budget_is_for_the_whole_workbook_not_each_table() {
         OfficeError::TooLarge { what: "sheet area" }
     );
 }
+
+/// The tables are summed one by one: two tables with one name are two matrices in memory.
+#[test]
+fn tables_that_share_a_name_are_all_counted_in_the_workbook_total() {
+    let limits = small_limits(); // 10,000 cells
+    let wide = |cols: u32| {
+        row(&format!(
+            r#"<table:table-cell table:number-columns-repeated="{cols}" office:value-type="float" office:value="1"/>"#
+        ))
+    };
+    let tables = format!("{}{}", table("S", &wide(6000)), table("S", &wide(6000)));
+    let dir = tmp("ods_same_name_area");
+    let p = write(
+        &dir,
+        "same.ods",
+        &ods_bytes(&content_xml("", &tables), None, None),
+    );
+    assert_eq!(
+        fmt_ods::read(&p, &limits).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+}

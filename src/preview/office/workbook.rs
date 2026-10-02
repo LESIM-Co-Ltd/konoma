@@ -385,7 +385,7 @@ impl Cancel {
         Cancel::new(move || latest.load(std::sync::atomic::Ordering::Relaxed) != mine)
     }
 
-    fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         (self.0)()
     }
 }
@@ -493,7 +493,9 @@ fn load_xlsx(
         // Our own pass over the sheet: the format of each cell (which `calamine` does not
         // expose), the merged ranges, and a check of what would make the value reader allocate.
         let sf = match pkg.part_of(name) {
-            Some(part) => fmt_xlsx::read_sheet(path, part, &pkg.xf_to_format, limits)?,
+            Some(part) => {
+                fmt_xlsx::read_sheet(path, part, &pkg.xf_to_format, limits, cancel.as_ref())?
+            }
             None => SheetFormats::default(),
         };
         let mut rdr = wb.worksheet_cells_reader(name).map_err(map_xlsx)?;

@@ -27,7 +27,7 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
 use super::container::{self, Limits};
-use super::workbook::{CellError, MergeRange, NumFmtRef};
+use super::workbook::{Cancel, CellError, MergeRange, NumFmtRef};
 use super::OfficeError;
 
 /// Everything a format pass learned about the workbook. Shared by every format's pass
@@ -256,11 +256,12 @@ pub fn read_sheet(
     part: &str,
     xf_to_format: &[u16],
     limits: &Limits,
+    cancel: Option<&Cancel>,
 ) -> Result<SheetFormats, OfficeError> {
     let mut zip = container::open_zip(path)?;
     let reader = container::part_reader(&mut zip, part, limits.max_part_bytes)?;
     match reader {
-        Some(r) => parse_sheet(BufReader::new(r), xf_to_format, limits),
+        Some(r) => parse_sheet_cancellable(BufReader::new(r), xf_to_format, limits, cancel),
         None => Ok(SheetFormats::default()),
     }
 }
@@ -274,7 +275,7 @@ pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, Offi
     for (name, part) in &pkg.sheets {
         sheets.insert(
             name.clone(),
-            read_sheet(path, part, &pkg.xf_to_format, limits)?,
+            read_sheet(path, part, &pkg.xf_to_format, limits, None)?,
         );
     }
     Ok(XlsxFormats {
@@ -578,10 +579,37 @@ fn resolve_num_fmt(id: u32, custom: &HashMap<u32, String>) -> NumFmtRef {
 /// to see whether anything is left to show: a value, an inline string or a formula in a cell
 /// past the stop sets [`SheetFormats::truncated`]; a tail of formatted empty cells and empty rows
 /// (Excel writes those) does not.
+#[cfg(test)]
 pub(crate) fn parse_sheet(
     src: impl BufRead,
     xf_to_format: &[u16],
     limits: &Limits,
+) -> Result<SheetFormats, OfficeError> {
+    parse_sheet_cancellable(src, xf_to_format, limits, None)
+}
+
+/// How the value reader treats the `<v>` of a cell, by its `t` attribute (`cells_reader.rs`
+/// `read_value`).
+#[derive(Default, Clone, Copy, PartialEq)]
+enum VKind {
+    /// `n`, `s`, `b`, `e` or no `t`: a value only when the first thing in `<v>` is text (an
+    /// entity reference or CDATA first gives an empty cell).
+    #[default]
+    Plain,
+    /// `inlineStr` / `is`: `<v>` is ignored, the value is in `<is>`.
+    Ignored,
+    /// `str`, `d`, ...: the text and entity references are gathered, and the cell holds a
+    /// string even when it is empty.
+    Gathered,
+}
+
+/// [`parse_sheet`] that also gives up the scan of what follows a stop when `cancel` says so
+/// (the result is then partial: the caller is discarding it).
+pub(crate) fn parse_sheet_cancellable(
+    src: impl BufRead,
+    xf_to_format: &[u16],
+    limits: &Limits,
+    cancel: Option<&Cancel>,
 ) -> Result<SheetFormats, OfficeError> {
     /// The `<c>` being read.
     #[derive(Default)]
@@ -589,8 +617,19 @@ pub(crate) fn parse_sheet(
         row: u32,
         col: u32,
         xf: u32,
-        /// A `<v>` with text or an `<is>`: the cell shows something.
+        kind: VKind,
+        /// What the value reader returns for this cell: the value of the *last* `<v>` / `<is>`
+        /// (`<f>` never changes it). A non-empty one is a cell the builder keeps.
         has_value: bool,
+        /// A `<v>` of a [`VKind::Plain`] cell opened with text.
+        v_text: bool,
+    }
+    fn kind_of(e: &BytesStart<'_>) -> VKind {
+        match attr(e, b"t", false).as_deref() {
+            None | Some("n" | "s" | "b" | "e") => VKind::Plain,
+            Some("inlineStr" | "is") => VKind::Ignored,
+            Some(_) => VKind::Gathered,
+        }
     }
     let mut rd = Reader::from_reader(src);
     let mut buf = Vec::new();
@@ -607,11 +646,29 @@ pub(crate) fn parse_sheet(
     // Only what is inside `<sheetData>` is cells (the value reader stops at its end).
     let mut in_data = false;
     let mut in_v = false;
+    // Inside a `<f>` that has not shown any text yet.
+    let mut in_f = false;
+    // The event just read is the first one inside `<v>`.
+    let mut v_first = false;
+    // Events read, to look at `cancel` now and then while scanning past a stop.
+    let mut ticks: u32 = 0;
+    // The largest `(row, col)` of a recorded cell so far: a cell at or before it is out of
+    // order, possibly a second cell at one address.
+    let mut max_pos: Option<(u32, u32)> = None;
     // The reader's stop point was fixed: from here on only the question "is there data left?".
     let mut stopped = false;
     loop {
         buf.clear();
         let ev = rd.read_event_into(&mut buf).map_err(xml_err)?;
+        let first_in_v = std::mem::take(&mut v_first);
+        if stopped {
+            // What follows a stop can be millions of empty rows: a superseded load must not
+            // read them all.
+            ticks = ticks.wrapping_add(1);
+            if ticks.is_multiple_of(1024) && cancel.is_some_and(Cancel::is_cancelled) {
+                break;
+            }
+        }
         match ev {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 let is_empty = matches!(ev, Event::Empty(_));
@@ -660,28 +717,58 @@ pub(crate) fn parse_sheet(
                                         row,
                                         col,
                                         xf,
-                                        has_value: false,
+                                        kind: kind_of(e),
+                                        ..Cur::default()
                                     });
                                 }
                             }
                         }
                         if stopped && !is_empty {
-                            cell = Some(Cur::default());
+                            cell = Some(Cur {
+                                kind: kind_of(e),
+                                ..Cur::default()
+                            });
                         }
                     }
                     b"v" | b"is" | b"f" if cell.is_some() => {
                         let name = e.local_name();
                         let name = name.as_ref();
+                        let kind = cell.as_ref().map_or(VKind::Plain, |c| c.kind);
                         if name == b"v" {
                             in_v = !is_empty;
-                        } else if stopped {
-                            // An inline string or a formula past the stop: data not shown.
-                            out.truncated = true;
-                            break;
+                            v_first = in_v;
+                            if let Some(c) = cell.as_mut() {
+                                // The last value child decides: this one replaces any before it.
+                                c.has_value = false;
+                                c.v_text = false;
+                            }
+                            if kind == VKind::Gathered {
+                                // A string, even an empty one.
+                                if stopped {
+                                    out.truncated = true;
+                                    break;
+                                }
+                                if let Some(c) = cell.as_mut() {
+                                    c.has_value = true;
+                                }
+                            }
                         } else if name == b"is" {
+                            // An inline string, even an empty one (`<is/>` is `""`).
+                            if stopped {
+                                out.truncated = true;
+                                break;
+                            }
                             if let Some(c) = cell.as_mut() {
                                 c.has_value = true;
                             }
+                        } else if stopped {
+                            // A formula past the stop is data when it has text, which is
+                            // learned below; a shared one derives its text from another cell.
+                            if attr(e, b"t", false).as_deref() == Some("shared") {
+                                out.truncated = true;
+                                break;
+                            }
+                            in_f = !is_empty;
                         } else if attr(e, b"si", false)
                             .and_then(|v| v.trim().parse::<u64>().ok())
                             .is_some_and(|si| si >= limits.max_sheet_cells)
@@ -703,28 +790,55 @@ pub(crate) fn parse_sheet(
                     _ => {}
                 }
             }
-            Event::Text(_) | Event::CData(_) if in_v && cell.is_some() => {
-                let empty = match &ev {
-                    Event::Text(t) => t.is_empty(),
-                    Event::CData(t) => t.is_empty(),
-                    _ => true,
-                };
-                if !empty {
-                    if stopped {
+            // Text inside a `<v>` (an entity reference such as `&amp;` arrives as `GeneralRef`,
+            // not as text). Only the first event of a plain cell's `<v>` makes a value there.
+            Event::Text(_) | Event::CData(_) | Event::GeneralRef(_) if in_v && cell.is_some() => {
+                let text = matches!(&ev, Event::Text(t) if !t.is_empty());
+                if first_in_v && text {
+                    if stopped && cell.as_ref().is_some_and(|c| c.kind == VKind::Plain) {
                         out.truncated = true;
                         break;
                     }
                     if let Some(c) = cell.as_mut() {
-                        c.has_value = true;
+                        c.v_text = true;
                     }
+                }
+            }
+            // The text of a formula past the stop (an empty `<f/>` is not data).
+            Event::Text(_) | Event::CData(_) | Event::GeneralRef(_) if in_f => {
+                let text = match &ev {
+                    Event::Text(t) => !t.is_empty(),
+                    Event::CData(t) => !t.is_empty(),
+                    _ => true,
+                };
+                if text {
+                    out.truncated = true;
+                    break;
                 }
             }
             Event::End(e) => match e.local_name().as_ref() {
                 b"sheetData" => in_data = false,
                 b"row" => next_row = cur_row.saturating_add(1),
-                b"v" => in_v = false,
+                b"v" => {
+                    if in_v {
+                        if let Some(c) = cell.as_mut() {
+                            if c.kind == VKind::Plain && c.v_text {
+                                c.has_value = true;
+                            }
+                        }
+                    }
+                    in_v = false;
+                }
+                b"f" => in_f = false,
                 b"c" => {
-                    if let Some(c) = cell.take().filter(|c| c.has_value && !stopped) {
+                    in_v = false;
+                    in_f = false;
+                    // Only a cell inside the grid is kept by the builder: one past the column
+                    // cap is skipped there, so it does not use the budget here either.
+                    if let Some(c) = cell
+                        .take()
+                        .filter(|c| c.has_value && !stopped && c.col < max_col)
+                    {
                         if out.value_cells >= limits.max_sheet_cells {
                             // This cell is the first one over the budget: it and what follows
                             // are not read (the reader is stopped before it).
@@ -734,9 +848,14 @@ pub(crate) fn parse_sheet(
                         }
                         out.value_cells += 1;
                         let fmt = xf_to_format.get(c.xf as usize).copied().unwrap_or(0);
-                        if fmt != 0 && c.col < max_col {
+                        let pos = (c.row, c.col);
+                        // A cell at or before one already seen may be a second one at its
+                        // address, whose format replaces the first's, `General` included.
+                        let out_of_order = max_pos.is_some_and(|m| pos <= m);
+                        if fmt != 0 || out_of_order {
                             out.cells.push((c.row, c.col as u16, fmt));
                         }
+                        max_pos = Some(max_pos.map_or(pos, |m| m.max(pos)));
                     }
                 }
                 _ => {}
@@ -747,7 +866,24 @@ pub(crate) fn parse_sheet(
     }
     // Real files are in order already (the sort is then a no-op scan); a hostile or sloppy
     // producer cannot break the binary search.
-    out.cells.sort_unstable_by_key(|&(r, c, _)| (r, c));
+    // The sort is stable, so among cells at one address the last in the file is the last here,
+    // and it is the one kept (as the value reader's dense matrix and the sheet builder do).
+    out.cells.sort_by_key(|&(r, c, _)| (r, c));
+    let mut w = 0;
+    for i in 0..out.cells.len() {
+        if out
+            .cells
+            .get(i + 1)
+            .is_some_and(|n| (n.0, n.1) == (out.cells[i].0, out.cells[i].1))
+        {
+            continue;
+        }
+        out.cells.swap(w, i);
+        w += 1;
+    }
+    out.cells.truncate(w);
+    // `General` entries only stood in for a replaced format.
+    out.cells.retain(|&(_, _, f)| f != 0);
     Ok(out)
 }
 

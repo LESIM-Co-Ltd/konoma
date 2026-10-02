@@ -732,11 +732,11 @@ fn parse_sheet_drops_formats_beyond_the_maximum_column_and_survives_bad_refs() {
         </row>"#;
     let sf = sheet_formats(rows, &[0, 1]);
     // XFD (index 16,383) keeps its format; XFE and ZZZZ are past the maximum so their formats are
-    // dropped (the cells themselves are counted: the value reader returns them and the loader
-    // skips them); "??" falls back to the sequence position (after ZZZZ).
+    // dropped, and so are the cells (the loader skips them, so they do not use the budget);
+    // "??" falls back to the sequence position (after ZZZZ).
     assert!(sf.cells.contains(&(0, 16_383, 1)));
     assert_eq!(sf.cells.len(), 1, "{:?}", sf.cells);
-    assert_eq!(sf.value_cells, 4);
+    assert_eq!(sf.value_cells, 1);
     assert!(!sf.truncated);
 }
 
@@ -3479,4 +3479,155 @@ fn a_cancelled_xlsx_load_stops_early_and_an_uncancelled_one_is_complete() {
         .unwrap();
     assert_eq!(cut.sheets.len(), 1);
     assert!(!cut.sheets[0].loaded);
+}
+
+// ---------------------------------------------------------------------------------------------
+// the format pass counts what the sheet builder keeps
+// ---------------------------------------------------------------------------------------------
+
+fn parse_with(rows: &str, xf: &[u16], limits: &Limits) -> SheetFormats {
+    fmt_xlsx::parse_sheet(sheet_xml(rows, "").as_bytes(), xf, limits).unwrap()
+}
+
+#[test]
+fn an_entity_reference_alone_in_v_is_a_value_for_a_string_cell_and_data_past_a_stop() {
+    let limits = Limits {
+        max_rows: 1,
+        ..Limits::default()
+    };
+    // `&gt;` arrives as a `GeneralRef`, not as text.
+    let sf = parse_with(
+        r#"<row r="1"><c r="A1" s="1" t="str"><v>&gt;</v></c></row>"#,
+        &[0, 1],
+        &limits,
+    );
+    assert_eq!(sf.value_cells, 1);
+    assert_eq!(sf.cells, vec![(0, 0, 1)]);
+    assert!(!sf.truncated);
+    // The same cell past the row cap is data left out.
+    let sf = parse_with(
+        r#"<row r="1"><c r="A1" t="str"><v>x</v></c></row><row r="2"><c r="A2" t="str"><v>&amp;</v></c></row>"#,
+        &[0],
+        &limits,
+    );
+    assert!(sf.truncated, "{sf:?}");
+    assert_eq!(sf.reader_stop, Some(1));
+}
+
+#[test]
+fn the_budget_counts_the_cells_the_value_reader_returns_as_values() {
+    let count = |cell: &str| {
+        parse_with(
+            &format!(r#"<row r="1">{cell}</row>"#),
+            &[0],
+            &Limits::default(),
+        )
+        .value_cells
+    };
+    // A string cell holds a string even when it is empty; an inline string too.
+    assert_eq!(count(r#"<c r="A1" t="str"><v/></c>"#), 1);
+    assert_eq!(count(r#"<c r="A1" t="inlineStr"><is/></c>"#), 1);
+    // `<v>` of an inline string cell is ignored; a plain cell needs text first.
+    assert_eq!(count(r#"<c r="A1" t="inlineStr"><v>5</v></c>"#), 0);
+    assert_eq!(count(r#"<c r="A1"><v>&amp;</v></c>"#), 0);
+    assert_eq!(count(r#"<c r="A1"><v/></c>"#), 0);
+    assert_eq!(count(r#"<c r="A1"><f/></c>"#), 0);
+    assert_eq!(count(r#"<c r="A1"><v>1</v></c>"#), 1);
+    // The last value child wins.
+    assert_eq!(
+        count(r#"<c r="A1" t="inlineStr"><is><t>x</t></is><v>1</v></c>"#),
+        0
+    );
+}
+
+#[test]
+fn a_cell_past_the_column_cap_does_not_use_the_cell_budget() {
+    let limits = Limits {
+        max_cols: 2,
+        max_sheet_cells: 2,
+        ..Limits::default()
+    };
+    let rows = r#"<row r="1"><c r="A1"><v>1</v></c><c r="C1"><v>1</v></c><c r="D1"><v>1</v></c><c r="B1"><v>1</v></c></row>"#;
+    let sf = parse_with(rows, &[0], &limits);
+    assert_eq!(sf.value_cells, 2);
+    assert!(!sf.truncated, "{sf:?}");
+    assert_eq!(sf.reader_stop, None);
+}
+
+#[test]
+fn an_empty_formula_or_inline_string_past_a_stop_is_judged_like_the_builder_does() {
+    let limits = Limits {
+        max_rows: 1,
+        ..Limits::default()
+    };
+    let past = |cell: &str| {
+        parse_with(
+            &format!(r#"<row r="1"><c r="A1"><v>1</v></c></row><row r="2">{cell}</row>"#),
+            &[0],
+            &limits,
+        )
+        .truncated
+    };
+    // An empty formula is nothing to keep; one with text is.
+    assert!(!past(r#"<c r="A2"><f/></c>"#));
+    assert!(!past(r#"<c r="A2"><f></f></c>"#));
+    assert!(past(r#"<c r="A2"><f>1+1</f></c>"#));
+    assert!(past(r#"<c r="A2"><f>A1&gt;0</f></c>"#));
+    // A `<v>` an inline-string cell ignores is nothing.
+    assert!(!past(r#"<c r="A2" t="inlineStr"><v>5</v></c>"#));
+    assert!(past(r#"<c r="A2" t="inlineStr"><is><t>x</t></is></c>"#));
+}
+
+#[test]
+fn the_scan_past_a_stop_ends_when_the_load_is_cancelled() {
+    let limits = Limits {
+        max_rows: 1,
+        ..Limits::default()
+    };
+    let mut rows = String::from(r#"<row r="1"><c r="A1"><v>1</v></c></row>"#);
+    for r in 2..6000 {
+        rows += &format!(r#"<row r="{r}"><c r="A{r}"/></row>"#);
+    }
+    rows += r#"<row r="6000"><c r="A6000"><v>9</v></c></row>"#;
+    let xml = sheet_xml(&rows, "");
+    let run = |cancel: Option<&workbook::Cancel>| {
+        fmt_xlsx::parse_sheet_cancellable(xml.as_bytes(), &[0], &limits, cancel).unwrap()
+    };
+    assert!(run(None).truncated, "the data at the end is found");
+    let yes = workbook::Cancel::new(|| true);
+    assert!(!run(Some(&yes)).truncated, "a cancelled scan stops early");
+    let no = workbook::Cancel::new(|| false);
+    assert!(run(Some(&no)).truncated);
+}
+
+#[test]
+fn the_last_format_at_one_address_wins() {
+    let cell = |s: u32| format!(r#"<c r="A1" s="{s}"><v>1</v></c>"#);
+    let xf = [0, 1, 2];
+    // A later General cell replaces an earlier formatted one, and the reverse.
+    let sf = parse_with(
+        &format!(r#"<row r="1">{}{}</row>"#, cell(1), cell(0)),
+        &xf,
+        &Limits::default(),
+    );
+    assert_eq!(sf.cells, vec![]);
+    let sf = parse_with(
+        &format!(r#"<row r="1">{}{}</row>"#, cell(0), cell(1)),
+        &xf,
+        &Limits::default(),
+    );
+    assert_eq!(sf.cells, vec![(0, 0, 1)]);
+    // Many cells at one address among others: whatever the sort does, the last in the file wins.
+    let mut row = String::new();
+    for i in 0..300u32 {
+        row += &format!(r#"<c r="A1" s="{}"><v>1</v></c>"#, 1 + i % 2);
+        row += &format!(r#"<c r="B1" s="{}"><v>1</v></c>"#, 2 - i % 2);
+    }
+    let sf = parse_with(
+        &format!(r#"<row r="1">{row}</row>"#),
+        &xf,
+        &Limits::default(),
+    );
+    // The last A1 has i = 299: s = 2; the last B1: s = 1.
+    assert_eq!(sf.cells, vec![(0, 0, 2), (0, 1, 1)]);
 }

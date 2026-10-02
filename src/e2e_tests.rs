@@ -19766,6 +19766,57 @@ fn e2e_sheet_a_search_confirmed_while_loading_runs_on_arrival() {
         .is_some_and(|m| m.contains("no match")));
 }
 
+/// Confirming an empty query while a search waits for the sheet drops the wait: when the sheet
+/// has landed, a later reload keeps the current hit instead of jumping to the first one.
+#[test]
+fn e2e_sheet_an_empty_confirmation_cancels_the_search_waiting_for_the_sheet() {
+    let dir = sandbox("sheet_search_pending_cleared");
+    let book = canon(&dir).join("p.xlsx");
+    let write = |rows: &str| {
+        build_xlsx(&book, &[("S", "visible", rows, "")]);
+    };
+    write(&format!(
+        r#"<row r="1">{}</row><row r="3">{}</row><row r="6">{}</row>"#,
+        x_str("A1", "head"),
+        x_str("A3", "apple one"),
+        x_str("A6", "apple two")
+    ));
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("p.xlsx");
+    s.enter();
+    assert!(s.app.is_sheet_loading());
+    s.key('/');
+    s.keys("apple");
+    s.enter(); // waits for the sheet
+    s.key('/');
+    s.enter(); // empty: no search at all
+    s.drain_media();
+    assert_eq!(s.app.search_status(), None);
+    assert_eq!(s.app.table_cursor(), (0, 0), "no stale search jumped");
+    s.key('/');
+    s.keys("apple");
+    s.enter();
+    s.key('n');
+    assert_eq!(s.app.search_status(), Some((2, 2)));
+    s.key('g');
+    assert_eq!(s.app.table_cursor().0, 0);
+    // The file is rewritten with a new first hit; the reload keeps the second hit current.
+    write(&format!(
+        r#"<row r="1">{}</row><row r="2">{}</row><row r="6">{}</row>"#,
+        x_str("A1", "head"),
+        x_str("B2", "an apple"),
+        x_str("A6", "apple two")
+    ));
+    let f = std::fs::OpenOptions::new().write(true).open(&book).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_900_000_000))
+        .unwrap();
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&book));
+    s.draw();
+    drain_media_until_current(&mut s);
+    assert_eq!(s.app.search_status(), Some((2, 2)));
+    assert_eq!(s.app.table_cursor().0, 0, "the cursor did not move");
+}
+
 #[test]
 fn e2e_sheet_a_search_without_a_hit_confirmed_while_loading_says_so_on_arrival() {
     let dir = sandbox("sheet_search_loading_none");

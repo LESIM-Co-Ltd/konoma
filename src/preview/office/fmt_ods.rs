@@ -96,22 +96,16 @@ pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, Offi
     }
 
     let mut table = FormatTable::new();
-    let sheets = {
+    let (sheets, totals) = {
         let r = container::part_reader(&mut zip, "content.xml", cap)?
             .ok_or_else(|| OfficeError::Corrupt("missing content.xml".into()))?;
         parse_body(std::io::BufReader::new(r), &styles, &mut table, limits)?
     };
-    // So is the area (every table's matrix stays in memory once the file is open).
-    SheetFormats::check_total_area(
-        sheets
-            .values()
-            .map(SheetFormats::bbox_area)
-            .fold(0, u64::saturating_add),
-        limits,
-    )?;
+    // So is the area (every table's matrix stays in memory once the file is open). Summed per
+    // table in document order: two tables may share a name, and the map keeps only one of them.
+    SheetFormats::check_total_area(totals.area, limits)?;
     // The text budget is for the whole workbook (`calamine` reads every table).
-    let text: u64 = sheets.values().map(|s| s.text_bytes).sum();
-    if text > limits.max_text_bytes {
+    if totals.text > limits.max_text_bytes {
         return Err(OfficeError::TooLarge { what: "text" });
     }
     Ok(XlsxFormats {
@@ -801,15 +795,23 @@ struct CellState {
     text_len: u64,
 }
 
+/// What every table of the workbook costs together (see [`parse_body`]).
+#[derive(Default)]
+struct BodyTotals {
+    area: u64,
+    text: u64,
+}
+
 fn parse_body(
     src: impl BufRead,
     styles: &Styles,
     table: &mut FormatTable,
     limits: &Limits,
-) -> Result<HashMap<String, SheetFormats>, OfficeError> {
+) -> Result<(HashMap<String, SheetFormats>, BodyTotals), OfficeError> {
     let mut rd = new_reader(src);
     let mut buf = Vec::new();
     let mut sheets: HashMap<String, SheetFormats> = HashMap::new();
+    let mut totals = BodyTotals::default();
     let mut cur: Option<TableState> = None;
     // Depth of `table:table` elements nested inside the current one (ignored wholesale).
     let mut nested = 0usize;
@@ -926,6 +928,8 @@ fn parse_body(
                         // Real files are in order already; a hostile one cannot break lookups.
                         t.out.cells.sort_unstable_by_key(|&(r, c, _)| (r, c));
                         t.out.errors.sort_unstable_by_key(|&(r, c, _)| (r, c));
+                        totals.area = totals.area.saturating_add(t.out.bbox_area());
+                        totals.text = totals.text.saturating_add(t.out.text_bytes);
                         sheets.insert(t.name, t.out);
                     }
                     continue;
@@ -962,7 +966,7 @@ fn parse_body(
             _ => {}
         }
     }
-    Ok(sheets)
+    Ok((sheets, totals))
 }
 
 /// `number-*-repeated`, at least 1 (a malformed value counts as 1).
