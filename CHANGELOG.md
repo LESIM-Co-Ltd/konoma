@@ -6,6 +6,12 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Added
+- **`e` on an Office document opens it in a GUI app** (docx/docm/dotx/dotm/doc/odt, xlsx/xlsm/xltx/xltm/xlsb/xls/ods,
+  pptx/pptm/ppsx/potx/ppt/odp) instead of handing the zip to `$EDITOR`: Microsoft Office (macOS only), then
+  LibreOffice, then the OS default (`open` / `xdg-open`). The launch runs off the UI thread and the footer says
+  which app opened it. `[external] office_apps = false` opens nothing; an explicit `[editor.ext]` entry wins.
+
 ## [0.30.0] - 2026-09-28
 
 ### Added

@@ -635,6 +635,9 @@ video            = true   # 外部フォールバックの抽出ツール(ffmpeg
 remote_images    = true   # Markdown 内の http(s) 画像取得。konoma が行う唯一の外向き通信。
                            # ureq(rustls)でプロセス内取得=外部ツールは使わない。
 open_links       = true   # URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・`P` 等。
+office_apps      = true   # Office 文書(docx xlsx pptx odt ods odp 等)で `e` を押すと、$EDITOR に zip を渡さず GUI アプリで開く。
+                           # Microsoft Office(macOS のみ)→ LibreOffice → OS の既定(`open`/`xdg-open`)の順。
+                           # false なら何も起動せず理由を表示。`[editor.ext]` でその拡張子を指定していればそちらが優先。
 preview_commands = true   # `[[preview.rules]] command = "..."` への委譲。false ではそのルールは「マッチしなかった」扱いになり
                            # `[can not preview]` へ落ちる(builtin レンダラには影響しない)。
 

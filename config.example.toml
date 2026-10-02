@@ -679,6 +679,10 @@ video            = true   # The external fallback thumbnail extractors (ffmpegth
 remote_images    = true   # Fetching http(s) images referenced from Markdown — the only outbound network call konoma makes.
                            # Done in-process via ureq (rustls), not an external tool.
 open_links       = true   # Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.
+office_apps      = true   # `e` on an Office document (Word/Excel/PowerPoint/ODF: docx xlsx pptx odt ods odp ...) opens it in a GUI app —
+                           # Microsoft Office (macOS only), then LibreOffice, then the OS default (`open`/`xdg-open`) —
+                           # instead of handing the zip to $EDITOR. false opens nothing and says so. An explicit
+                           # `[editor.ext]` entry for the extension always wins.
 preview_commands = true   # Running a `[[preview.rules]] command = "..."` delegation. false makes that rule shape behave
                            # like no rule matched (falls through to `[can not preview]`); builtin renderers are unaffected.
 

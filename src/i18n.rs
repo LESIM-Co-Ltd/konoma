@@ -791,6 +791,14 @@ pub enum Msg {
     ExternalGitToolDisabled,
     /// Opening a link/file (Markdown link, `P`, ...) when `[external] open_links = false`.
     ExternalOpenLinksDisabled,
+    /// `e` on an Office document with `[external] office_apps = false`.
+    OfficeAppsDisabled,
+    /// `e` opened an Office document; `{app}` is the application name.
+    OfficeOpenedIn,
+    /// `e` opened an Office document with the OS default app.
+    OfficeOpenedDefault,
+    /// Prefix of the reason an Office document could not be opened.
+    OfficeOpenFailed,
     // --- fileops error translation (`App::describe_error`/`build_rename_plan`) ---
     /// A create/rename target already exists. Shared by `fileops::FileOpError::AlreadyExists`
     /// (create/rename) and `build_rename_plan`'s own final-collision check (same condition, one
@@ -1387,6 +1395,10 @@ fn en(msg: Msg) -> &'static str {
         GitNotInstalled => "git is not installed — git integration is off",
         ExternalGitToolDisabled => "external git tool is disabled (config: [external] git_tool = false)",
         ExternalOpenLinksDisabled => "opening links/files is disabled (config: [external] open_links = false)",
+        OfficeAppsDisabled => "opening Office documents in an app is disabled (config: [external] office_apps = false)",
+        OfficeOpenedIn => "opened in {app}",
+        OfficeOpenedDefault => "opened with the default app",
+        OfficeOpenFailed => "could not open: ",
         AlreadyExists => "already exists: ",
         TrashFailed => "failed to move to Trash",
         RenameTempExists => "temporary rename name already exists: ",
@@ -1936,6 +1948,10 @@ fn jp(msg: Msg) -> &'static str {
         GitNotInstalled => "git が見つかりません — git 連携はオフです",
         ExternalGitToolDisabled => "外部 git ツールは無効です(設定: [external] git_tool = false)",
         ExternalOpenLinksDisabled => "リンク/ファイルを開く機能は無効です(設定: [external] open_links = false)",
+        OfficeAppsDisabled => "Office アプリで開く機能は無効です(設定: [external] office_apps = false)",
+        OfficeOpenedIn => "{app} で開きました",
+        OfficeOpenedDefault => "既定のアプリで開きました",
+        OfficeOpenFailed => "開けませんでした: ",
         AlreadyExists => "既に存在します: ",
         TrashFailed => "ゴミ箱への移動に失敗しました",
         RenameTempExists => "一時ファイル名が既存: ",
@@ -2556,6 +2572,10 @@ mod tests {
         Msg::GitNotInstalled,
         Msg::ExternalGitToolDisabled,
         Msg::ExternalOpenLinksDisabled,
+        Msg::OfficeAppsDisabled,
+        Msg::OfficeOpenedIn,
+        Msg::OfficeOpenedDefault,
+        Msg::OfficeOpenFailed,
         Msg::AlreadyExists,
         Msg::TrashFailed,
         Msg::RenameTempExists,

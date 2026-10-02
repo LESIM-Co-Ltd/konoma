@@ -279,7 +279,9 @@ impl App {
         if let Some((is_local, _, p)) = items.get(self.bookmark_list_sel).cloned() {
             if p.is_file() {
                 self.bookmark_list = false;
-                self.pending_edit = Some((p, None));
+                if !self.try_open_in_office(&p) {
+                    self.pending_edit = Some((p, None));
+                }
             } else if p.is_dir() {
                 self.flash =
                     Some(crate::i18n::tr(self.lang, crate::i18n::Msg::CannotEditDirectory).into());

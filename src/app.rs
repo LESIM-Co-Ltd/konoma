@@ -36,6 +36,8 @@ mod md_tasks;
 mod md_text;
 mod media_diff;
 mod media_load;
+mod office_open;
+pub use office_open::OfficeOpenResult;
 mod outline;
 mod paste_jump;
 mod preview_visual;
@@ -1902,6 +1904,10 @@ pub struct App {
     /// (paste/duplicate/trash/permanent-delete/drop-transfer). If not attached (tests), `start_file_op`
     /// falls back to computing synchronously, exactly like `spawn_or_sync_statuses`/`_ignored`.
     fileop_tx: Option<std::sync::mpsc::Sender<FileOpResult>>,
+    /// `e` on an Office document: where the background launch chain reports (see `office_open`).
+    office_tx: Option<std::sync::mpsc::Sender<OfficeOpenResult>>,
+    /// How the launch chain starts processes (production = real; tests install a fake).
+    office_runner: office_open::Runner,
     /// Generation of the current/most recent background file operation. Incremented on dispatch;
     /// a result is applied only if it still matches (guards against a stray stale send).
     fileop_gen: u64,
@@ -3266,6 +3272,8 @@ impl App {
             git_graph_picker_set: std::collections::HashSet::new(),
             git_graph_reordered: false,
             fileop_tx: None,
+            office_tx: None,
+            office_runner: office_open::real_runner(),
             fileop_gen: 0,
             fileop_pending: None,
             fileop_total: 0,
@@ -4370,6 +4378,7 @@ impl App {
             Mode::Preview => self.tab.preview_path.clone(),
         };
         match target {
+            Some(p) if self.try_open_in_office(&p) => {}
             Some(p) => self.pending_edit = Some((p, self.preview_edit_line())),
             None => self.flash = Some(tr(self.lang, crate::i18n::Msg::NoFileToEdit).into()),
         }

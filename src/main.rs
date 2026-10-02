@@ -346,6 +346,9 @@ fn main() -> Result<()> {
     // Long-running file operations (copy/move/duplicate/delete) also go to a separate thread.
     // Pasting/deleting a large directory used to freeze input/rendering (design principle #4).
     let (fileop_tx, fileop_rx) = std::sync::mpsc::channel::<FileOpResult>();
+    // `e` on an Office document launches a GUI app (Microsoft Office -> LibreOffice -> OS default)
+    // from a worker thread and reports which one opened it.
+    let (office_tx, office_rx) = std::sync::mpsc::channel::<app::OfficeOpenResult>();
     // Git **writes** (stage/unstage/discard/commit/checkout/branch/worktree) too. `git` has no
     // bounded runtime — a pre-commit hook, a network mount, or another process holding
     // `.git/index.lock` can each stall it — and running one on the UI thread froze konoma
@@ -367,6 +370,7 @@ fn main() -> Result<()> {
     app.attach_md_diff_loader(md_diff_tx);
     app.attach_media_diff_loader(media_diff_tx);
     app.attach_fileop_runner(fileop_tx);
+    app.attach_office_opener(office_tx);
     app.attach_gitop_runner(gitop_tx);
     app.attach_filter_pool_loader(pool_tx);
     // Report a config load error + keymap conflicts/ignored settings via a startup message
@@ -413,6 +417,7 @@ fn main() -> Result<()> {
             md_diff: md_diff_rx,
             media_diff: media_diff_rx,
             fileop: fileop_rx,
+            office: office_rx,
             gitop: gitop_rx,
             pool: pool_rx,
         },
@@ -619,6 +624,7 @@ struct WorkerRx {
     md_diff: std::sync::mpsc::Receiver<MdDiffResult>,
     media_diff: std::sync::mpsc::Receiver<MediaDiffResult>,
     fileop: std::sync::mpsc::Receiver<FileOpResult>,
+    office: std::sync::mpsc::Receiver<app::OfficeOpenResult>,
     gitop: std::sync::mpsc::Receiver<GitOpResult>,
     pool: std::sync::mpsc::Receiver<FilterPoolResult>,
 }
@@ -929,6 +935,13 @@ fn run(
         // Apply the separate thread's file operation (copy/move/duplicate/delete) completion.
         while let Ok(result) = rx.fileop.try_recv() {
             if app.apply_file_op(result) {
+                needs_redraw = true;
+            }
+        }
+
+        // Report the Office-app launch chain's outcome (which app opened the document / why not).
+        while let Ok(result) = rx.office.try_recv() {
+            if app.apply_office_open(result) {
                 needs_redraw = true;
             }
         }

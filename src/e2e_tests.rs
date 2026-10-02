@@ -18413,3 +18413,172 @@ fn e2e_sheet_bookmarks_and_path_style_keys_still_work_in_a_sheet() {
     s.key('q');
     assert_eq!(s.app.tab.mode, Mode::Tree);
 }
+
+// ---------------------------------------------------------------------------------------------
+// `e` on an Office document (GUI app via the launch-chain seam; no real process is ever started)
+// ---------------------------------------------------------------------------------------------
+
+type LaunchLog = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<String>)>>>;
+
+/// A recording runner whose every launch succeeds; returns the log of attempted command lines.
+fn office_recorder(s: &mut Sim, code: i32) -> LaunchLog {
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let l = log.clone();
+    s.app.set_office_runner(std::sync::Arc::new(move |a| {
+        l.lock().unwrap().push((a.prog.clone(), a.args.clone()));
+        Ok(Some(code))
+    }));
+    log
+}
+
+fn office_sandbox(name: &str, file: &str) -> (Sim, crate::test_support::TmpDir) {
+    let dir = sandbox(name);
+    build_xlsx(&dir.join("b.xlsx"), &[("S", "visible", "", "")]);
+    std::fs::write(dir.join("c.csv"), "a,b\n1,2\n").unwrap();
+    let root = canon(&dir);
+    let mut s = Sim::with_config(&root, cfg_en());
+    s.select(file);
+    (s, dir)
+}
+
+#[test]
+fn e2e_office_e_in_the_tree_uses_the_app_chain_not_the_editor() {
+    let (mut s, _d) = office_sandbox("office_e_tree", "b.xlsx");
+    let log = office_recorder(&mut s, 0);
+    s.key('e');
+    assert!(
+        s.app.take_pending_edit().is_none(),
+        "must not reach run_editor"
+    );
+    assert!(!log.lock().unwrap().is_empty(), "the chain must run");
+    let first = log.lock().unwrap()[0].clone();
+    assert!(first.1.last().unwrap().ends_with("b.xlsx"));
+    let shown = s.app.flash.clone().unwrap_or_default();
+    assert!(shown.contains("opened"), "{shown}");
+}
+
+#[test]
+fn e2e_office_e_in_the_table_preview_does_the_same() {
+    let (mut s, _d) = office_sandbox("office_e_preview", "b.xlsx");
+    s.enter();
+    assert!(s.app.is_table_preview());
+    let log = office_recorder(&mut s, 0);
+    s.key('e');
+    assert!(s.app.take_pending_edit().is_none());
+    assert_eq!(log.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn e2e_office_flash_names_the_fallback_when_every_launch_fails() {
+    let (mut s, _d) = office_sandbox("office_e_fail", "b.xlsx");
+    let log = office_recorder(&mut s, 1);
+    s.key('e');
+    assert_eq!(log.lock().unwrap().len(), 3, "all three attempts tried");
+    assert!(
+        s.app
+            .flash
+            .clone()
+            .unwrap_or_default()
+            .contains("could not open"),
+        "{:?}",
+        s.app.flash
+    );
+}
+
+#[test]
+fn e2e_office_explicit_editor_ext_keeps_the_old_path() {
+    let dir = sandbox("office_e_ext");
+    build_xlsx(&dir.join("b.xlsx"), &[("S", "visible", "", "")]);
+    let root = canon(&dir);
+    let mut cfg = cfg_en();
+    cfg.editor.ext.insert("xlsx".into(), "myeditor".into());
+    let mut s = Sim::with_config(&root, cfg);
+    s.select("b.xlsx");
+    let log = office_recorder(&mut s, 0);
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert!(s.app.take_pending_edit().is_some());
+}
+
+#[test]
+fn e2e_office_apps_false_starts_nothing_and_says_why() {
+    let dir = sandbox("office_e_off");
+    build_xlsx(&dir.join("b.xlsx"), &[("S", "visible", "", "")]);
+    let root = canon(&dir);
+    let mut cfg = cfg_en();
+    cfg.external.office_apps = false;
+    let mut s = Sim::with_config(&root, cfg);
+    s.select("b.xlsx");
+    let log = office_recorder(&mut s, 0);
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert!(
+        s.app.take_pending_edit().is_none(),
+        "never falls back to the editor"
+    );
+    assert!(s
+        .app
+        .flash
+        .clone()
+        .unwrap_or_default()
+        .contains("office_apps"));
+}
+
+#[test]
+fn e2e_office_csv_still_goes_to_the_editor() {
+    let (mut s, _d) = office_sandbox("office_e_csv", "c.csv");
+    let log = office_recorder(&mut s, 0);
+    s.key('e');
+    assert!(log.lock().unwrap().is_empty());
+    assert!(s.app.take_pending_edit().is_some());
+}
+
+#[test]
+fn e2e_office_async_path_reports_through_the_channel() {
+    let (mut s, _d) = office_sandbox("office_e_async", "b.xlsx");
+    let _log = office_recorder(&mut s, 0);
+    let (tx, rx) = std::sync::mpsc::channel();
+    s.app.attach_office_opener(tx);
+    s.key('e');
+    let r = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("worker reports");
+    assert!(s.app.apply_office_open(r));
+    assert!(s.app.flash.clone().unwrap_or_default().contains("opened"));
+}
+
+/// The app saves the workbook after `e`: the existing file watching re-reads the open spreadsheet
+/// (no explicit reload is wanted after launching a GUI app).
+#[test]
+fn e2e_office_saved_workbook_is_re_read_by_the_watcher_path() {
+    let dir = sandbox("office_saved");
+    let book = dir.join("b.xlsx");
+    build_xlsx(
+        &book,
+        &[(
+            "S",
+            "visible",
+            &format!("<row r=\"1\">{}</row>", x_str("A1", "before")),
+            "",
+        )],
+    );
+    let root = canon(&dir);
+    let mut s = Sim::with_config(&root, cfg_en());
+    s.select("b.xlsx");
+    s.enter();
+    s.see("before");
+    build_xlsx(
+        &book,
+        &[(
+            "S",
+            "visible",
+            &format!("<row r=\"1\">{}</row>", x_str("A1", "after")),
+            "",
+        )],
+    );
+    s.app
+        .refresh_fs_watched(false, std::slice::from_ref(&root.join("b.xlsx")));
+    s.draw();
+    s.see("after");
+    s.dont_see("before");
+}

@@ -64,6 +64,10 @@ pub struct ExternalConfig {
     pub remote_images: bool,
     /// Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.
     pub open_links: bool,
+    /// `e` on an Office document (Word/Excel/PowerPoint/ODF) opens it in a GUI app — Microsoft Office,
+    /// then LibreOffice, then the OS default — instead of handing the zip to `$EDITOR`. `false` opens
+    /// nothing and says so. An explicit `[editor.ext]` entry for the extension always wins.
+    pub office_apps: bool,
     /// Running a `[[preview.rules]] command = "..."` delegation. `false` makes that rule shape behave
     /// like no rule matched (falls through to `[can not preview]`).
     pub preview_commands: bool,
@@ -79,6 +83,7 @@ impl Default for ExternalConfig {
             video: true,
             remote_images: true,
             open_links: true,
+            office_apps: true,
             preview_commands: true,
         }
     }
