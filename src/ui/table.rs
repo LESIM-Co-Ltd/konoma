@@ -14,7 +14,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, TableCellView};
 use crate::i18n::tr;
-use crate::preview::table::TableData;
+use crate::preview::table::Grid;
 
 /// Rotating palette for rainbow columns. Mid-tone hues that read on both light and dark terminals
 /// (the same idea as Rainbow CSV / csvlens: color = which column).
@@ -39,13 +39,20 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let (cur_row, cur_col) = app.table_cursor();
     let (mut top, mut left) = app.table_scroll();
 
-    let Some(t) = app.table_data() else {
+    let Some(t) = app.grid() else {
         return; // The caller (preview::render) has already confirmed is_table_preview. Defensive no-op.
     };
     let nrows = t.nrows();
-    let ncols = t.ncols;
+    let ncols = t.ncols();
+    // A spreadsheet sheet gets a row-number gutter on the left (1-based, like Excel); it is not
+    // data (never copied/searched) and stays put while the columns scroll sideways.
+    let gutter_w = if t.is_sheet() {
+        nrows.max(1).to_string().len() + COL_GAP
+    } else {
+        0
+    };
 
-    let title = build_title(app, nrows, ncols, cur_row, cur_col);
+    let title = build_title(app, &t, cur_row, cur_col);
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
 
@@ -82,38 +89,36 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     if cur_col < left {
         left = cur_col;
     }
-    let (cols, _) = loop {
-        let fitted = fit_columns(
-            t,
-            left,
-            row_end.saturating_sub(top).max(1),
-            top,
-            inner.width,
-        );
-        let last = fitted.last().map(|(c, _)| *c).unwrap_or(left);
-        if cur_col <= last || left >= cur_col {
-            break (fitted, last);
-        }
-        left += 1;
-    };
+    let data_rows = row_end.saturating_sub(top).max(1);
+    let avail = inner.width.saturating_sub(gutter_w as u16);
+    // The smallest `left` (not before the current one) from which the cursor column still fits:
+    // count the columns that fit leftwards from the cursor. (Stepping `left` forward one column
+    // at a time and re-fitting every time cost 400 ms at the last of 16,384 columns.)
+    left = leftmost_visible(t, cur_col, left, data_rows, top, avail);
+    let cols = fit_columns(t, left, data_rows, top, avail);
 
     // --- Assembling rows (all owned String = 'static) ---
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible_rows + 2);
 
     // Header row (bold, column color).
-    lines.push(compose_line(&cols, |col, w| {
-        let text = fit_to_width(t.header(col), w);
+    let mut header = compose_line(&cols, |col, w| {
+        let text = fit_to_width(&t.header(col), w);
         Span::styled(
             text,
             Style::default()
                 .fg(column_color(app, col))
                 .add_modifier(Modifier::BOLD),
         )
-    }));
+    });
+    if gutter_w > 0 {
+        header.spans.insert(0, Span::raw(" ".repeat(gutter_w)));
+    }
+    lines.push(header);
 
     // Separator line (dim).
-    let sep_w: usize =
-        cols.iter().map(|(_, w)| *w).sum::<usize>() + COL_GAP * cols.len().saturating_sub(1);
+    let sep_w: usize = gutter_w
+        + cols.iter().map(|(_, w)| *w).sum::<usize>()
+        + COL_GAP * cols.len().saturating_sub(1);
     lines.push(Line::from(Span::styled(
         "─".repeat(sep_w.min(inner.width as usize)),
         Style::default().fg(Color::DarkGray),
@@ -122,7 +127,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // Data rows. The cursor cell is reversed. A search-match cell is shown underlined + bold (using a
     // modifier rather than a background so as not to blot out the rainbow column color). The current match is at the cursor, so reversal makes it clear.
     for r in top..row_end {
-        lines.push(compose_line(&cols, |col, w| {
+        let mut line = compose_line(&cols, |col, w| {
             let text = fit_to_width(t.cell(r, col), w);
             let mut style = Style::default().fg(column_color(app, col));
             if app.table_cell_is_hit(r, col) {
@@ -134,7 +139,28 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
                 style = style.add_modifier(Modifier::REVERSED);
             }
             Span::styled(text, style)
-        }));
+        });
+        if gutter_w > 0 {
+            // Muted so it reads as chrome, not data; the cursor's row number stands out a little.
+            let num_style = if r == cur_row {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            line.spans.insert(
+                0,
+                Span::styled(
+                    format!(
+                        "{:>w$}{}",
+                        r + 1,
+                        " ".repeat(COL_GAP),
+                        w = gutter_w - COL_GAP
+                    ),
+                    num_style,
+                ),
+            );
+        }
+        lines.push(line);
     }
 
     // The borrow of t ends here (lines holds only owned Strings) → App can now be updated mutably.
@@ -233,15 +259,38 @@ pub fn render_cell_popup(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Title with path + dimensions + cursor position (+ a truncation note when the file was capped).
-fn build_title(app: &App, nrows: usize, ncols: usize, cur_row: usize, cur_col: usize) -> String {
+/// A spreadsheet shows the sheet name and position, the hidden-sheet count and the cursor's cell
+/// address instead of the row/column counters.
+fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize) -> String {
+    let (nrows, ncols) = (t.nrows(), t.ncols());
     let path = app
         .tab
         .preview_path
         .clone()
         .map(|p| app.format_path(&p))
         .unwrap_or_else(|| "table".to_string());
-    let truncated = app.table_data().map(|t| t.truncated).unwrap_or(false);
-    let cap = if truncated { "  (capped)" } else { "" };
+    let cap = if t.truncated() { "  (capped)" } else { "" };
+    if t.is_sheet() {
+        let (name, idx, count, hidden) = app.sheet_info().unwrap_or(("", 1, 1, 0));
+        let hidden = if hidden > 0 {
+            format!(
+                " +{hidden} {}",
+                tr(app.lang, crate::i18n::Msg::SheetHiddenWord)
+            )
+        } else {
+            String::new()
+        };
+        // e.g. " book.xlsx  Sales (1/3) +1 hidden  B3  5×6  (capped) "
+        let addr = if nrows > 0 && ncols > 0 {
+            format!(
+                "  {}",
+                crate::preview::table::cell_address(cur_row, cur_col)
+            )
+        } else {
+            String::new()
+        };
+        return format!(" {path}  {name} ({idx}/{count}){hidden}{addr}  {nrows}×{ncols}{cap} ");
+    }
     // e.g. " data.csv  r3/100 c2/5  100×5  (capped) "
     format!(
         " {path}  r{}/{} c{}/{}  {}×{}{cap} ",
@@ -263,11 +312,46 @@ fn column_color(app: &App, col: usize) -> Color {
     }
 }
 
+/// The smallest `left >= min_left` such that the columns `left..=cur_col` fit in `width` (or
+/// `cur_col` itself when even that column alone does not). Same answer as advancing `left` one
+/// column at a time until `fit_columns` shows `cur_col`, in time proportional to the columns that
+/// fit rather than to the distance scrolled.
+fn leftmost_visible(
+    t: Grid<'_>,
+    cur_col: usize,
+    min_left: usize,
+    visible_rows: usize,
+    top: usize,
+    width: u16,
+) -> usize {
+    let avail = width as usize;
+    let mut used = col_width(t, cur_col, visible_rows, top);
+    let mut left = cur_col;
+    while left > min_left {
+        let w = col_width(t, left - 1, visible_rows, top);
+        if used + COL_GAP + w > avail {
+            break;
+        }
+        used += COL_GAP + w;
+        left -= 1;
+    }
+    left
+}
+
+/// A column's display width: the widest of its header and the visible cells, clamped.
+fn col_width(t: Grid<'_>, col: usize, visible_rows: usize, top: usize) -> usize {
+    let mut w = t.header(col).width();
+    for r in top..(top + visible_rows).min(t.nrows()) {
+        w = w.max(flat_width(t.cell(r, col)));
+    }
+    w.clamp(MIN_COL_W, MAX_COL_W)
+}
+
 /// Which columns (starting at `left`) fit in `width`, and each column's display width.
 /// Column width = max(header, visible cells), clamped to [MIN_COL_W, MAX_COL_W]. Always yields at
 /// least one column (even if it overflows) so something is always drawn.
 fn fit_columns(
-    t: &TableData,
+    t: Grid<'_>,
     left: usize,
     visible_rows: usize,
     top: usize,
@@ -276,12 +360,8 @@ fn fit_columns(
     let mut out: Vec<(usize, usize)> = Vec::new();
     let mut used = 0usize;
     let avail = width as usize;
-    for col in left..t.ncols {
-        let mut w = t.header(col).width();
-        for r in top..(top + visible_rows).min(t.nrows()) {
-            w = w.max(flat_width(t.cell(r, col)));
-        }
-        let w = w.clamp(MIN_COL_W, MAX_COL_W);
+    for col in left..t.ncols() {
+        let w = col_width(t, col, visible_rows, top);
         let gap = if out.is_empty() { 0 } else { COL_GAP };
         if !out.is_empty() && used + gap + w > avail {
             break;
@@ -379,19 +459,73 @@ mod tests {
         assert_eq!(fit_to_width("あい", 3).width(), 3);
     }
 
+    /// The old way: step `left` forward until `fit_columns` shows the cursor column.
+    fn leftmost_by_stepping(
+        t: Grid<'_>,
+        cur_col: usize,
+        mut left: usize,
+        rows: usize,
+        top: usize,
+        width: u16,
+    ) -> usize {
+        loop {
+            let fitted = fit_columns(t, left, rows, top, width);
+            let last = fitted.last().map(|(c, _)| *c).unwrap_or(left);
+            if cur_col <= last || left >= cur_col {
+                return left;
+            }
+            left += 1;
+        }
+    }
+
+    #[test]
+    fn leftmost_visible_matches_stepping_left_forward() {
+        // Columns of many different widths (header and cell widths from 1 to 60, so some are
+        // clamped), several rows.
+        let ncols = 90;
+        let headers: Vec<String> = (0..ncols).map(|c| "h".repeat(1 + (c * 7) % 23)).collect();
+        let rows: Vec<Vec<String>> = (0..4)
+            .map(|r| {
+                (0..ncols)
+                    .map(|c| "x".repeat(((c * 13 + r * 5) % 61).max(1)))
+                    .collect()
+            })
+            .collect();
+        let t = crate::preview::table::TableData {
+            headers,
+            rows,
+            ncols,
+            truncated: false,
+        };
+        let g = Grid::Csv(&t);
+        let mut checked = 0;
+        for width in [1u16, 5, 20, 40, 80, 200, 1000] {
+            for cur in (0..ncols).step_by(3).chain([ncols - 1]) {
+                // The caller has already moved `left` back to the cursor when it was past it.
+                for min_left in [0, 1.min(cur), cur / 2, cur.saturating_sub(1), cur] {
+                    let want = leftmost_by_stepping(g, cur, min_left, 4, 0, width);
+                    let got = leftmost_visible(g, cur, min_left, 4, 0, width);
+                    assert_eq!(got, want, "width {width} cur {cur} min_left {min_left}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 500);
+    }
+
     #[test]
     fn fit_columns_always_yields_one() {
-        let t = TableData {
+        let t = crate::preview::table::TableData {
             headers: vec!["a".into(), "b".into()],
             rows: vec![vec!["1".into(), "2".into()]],
             ncols: 2,
             truncated: false,
         };
         // At least 1 column even when extremely narrow.
-        let cols = fit_columns(&t, 0, 1, 0, 1);
+        let cols = fit_columns(Grid::Csv(&t), 0, 1, 0, 1);
         assert!(!cols.is_empty());
         // Both columns when wide enough.
-        let cols = fit_columns(&t, 0, 1, 0, 80);
+        let cols = fit_columns(Grid::Csv(&t), 0, 1, 0, 80);
         assert_eq!(cols.len(), 2);
     }
 

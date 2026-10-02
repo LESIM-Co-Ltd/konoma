@@ -583,7 +583,7 @@ impl App {
     /// `DiffOpen` up front and call this once.
     pub(super) fn open_git_diff_with(&mut self, path: &Path, open: DiffOpen) {
         self.tab.preview_path = Some(path.to_path_buf());
-        self.tab.preview_kind = Some(PreviewKind::GitDiff(path.to_path_buf()));
+        self.set_preview_kind(Some(PreviewKind::GitDiff(path.to_path_buf())));
         // The diff preview draws itself (it doesn't use window/image/md). Reset the related state.
         self.tab.preview_scroll = 0;
         self.tab.preview_hscroll = 0;

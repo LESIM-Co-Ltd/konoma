@@ -294,7 +294,7 @@ impl App {
         self.clear_image();
         let kind = PreviewKind::MermaidFence(ordinal);
         self.start_media_load(&kind, &md);
-        self.tab.preview_kind = Some(kind);
+        self.set_preview_kind(Some(kind));
     }
 
     /// Raw source of the focused code block — the item's own `body`, verbatim. `None` when the

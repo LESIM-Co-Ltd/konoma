@@ -13,6 +13,7 @@ pub mod markdown;
 pub mod math;
 pub mod media_diff;
 pub mod mermaid;
+pub mod office;
 pub mod pdf;
 pub mod svg;
 pub mod table;
@@ -48,6 +49,10 @@ pub enum PreviewKind {
     /// Built-in CSV/TSV table preview: aligned grid with rainbow columns and a movable cell cursor.
     /// `delimiter` is the field separator byte (`b','` for csv, `b'\t'` for tsv).
     Table { path: PathBuf, delimiter: u8 },
+    /// Built-in spreadsheet preview (xlsx / xlsm / xltx / xltm / xlsb / xls / ods): the visible
+    /// sheets are shown through the table grid with cells formatted as Excel shows them. The
+    /// workbook is parsed on a worker thread (`MediaJob::Workbook`).
+    Spreadsheet(PathBuf),
     /// Built-in archive listing (zip / tar / tar.gz / tgz): entries (name/size/modified) rendered
     /// through the same table grid as CSV/TSV. Metadata only — never extracts/decompresses entry
     /// content (see `preview/archive.rs`'s module docs for the security boundary).
@@ -105,6 +110,7 @@ impl PreviewKind {
                     Some(kind) => PreviewKind::Archive { path: p, kind },
                     None => PreviewKind::can_not_preview(path),
                 },
+                "spreadsheet" => PreviewKind::Spreadsheet(p),
                 "text" => PreviewKind::Text(p),
                 _ => PreviewKind::can_not_preview(path),
             };
@@ -158,6 +164,68 @@ pub fn is_previewable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_rules_send_every_spreadsheet_extension_to_the_spreadsheet_viewer() {
+        // The rule is a glob (not a mime), so the kind resolves from the *name* — a deleted file
+        // (diff of a removed workbook) still gets it. None of these paths exist.
+        let cfg = crate::config::Config::default();
+        for name in [
+            "a.xlsx",
+            "a.xlsm",
+            "a.xltx",
+            "a.xltm",
+            "a.xlsb",
+            "a.xls",
+            "a.ods",
+            "A.XLSX",
+            "dir.v2/b.Ods",
+        ] {
+            match cfg.resolve_preview(Path::new(&format!("/nonexistent/{name}"))) {
+                PreviewKind::Spreadsheet(p) => assert!(p.ends_with(name), "{p:?}"),
+                other => panic!("{name}: Spreadsheet を期待: {other:?}"),
+            }
+        }
+        // Not spreadsheets: a near-miss extension and the csv/zip rules keep their own kinds.
+        assert!(!matches!(
+            cfg.resolve_preview(Path::new("/nonexistent/a.xlsxx")),
+            PreviewKind::Spreadsheet(_)
+        ));
+        assert!(matches!(
+            cfg.resolve_preview(Path::new("/nonexistent/a.csv")),
+            PreviewKind::Table { .. }
+        ));
+        assert!(matches!(
+            cfg.resolve_preview(Path::new("/nonexistent/a.zip")),
+            PreviewKind::Archive { .. }
+        ));
+    }
+
+    #[test]
+    fn spreadsheet_builtin_name_resolves_and_a_user_rule_can_override_it() {
+        let rule = Rule {
+            builtin: Some("spreadsheet".into()),
+            ..Rule::default()
+        };
+        assert!(matches!(
+            PreviewKind::from_rule(&rule, Path::new("/x/a.xlsx")),
+            PreviewKind::Spreadsheet(_)
+        ));
+        // A user rule placed first wins (rules are evaluated top to bottom): delegate .xlsx instead.
+        let mut cfg = crate::config::Config::default();
+        cfg.preview.rules.insert(
+            0,
+            Rule {
+                glob: Some("*.xlsx".into()),
+                command: Some("echo {path}".into()),
+                ..Rule::default()
+            },
+        );
+        assert!(matches!(
+            cfg.resolve_preview(Path::new("/nonexistent/a.xlsx")),
+            PreviewKind::Command { .. }
+        ));
+    }
 
     #[test]
     fn can_not_preview_captures_extension_or_empty() {

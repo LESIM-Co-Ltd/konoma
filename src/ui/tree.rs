@@ -127,22 +127,25 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     use crate::ui::help::HelpSection;
     let lang = app.lang;
     let l = |m| tr(lang, m);
+    let mut tree = HelpSection::new(l(crate::i18n::Msg::TreeSection))
+        .row("j / k / ↑ ↓", l(crate::i18n::Msg::TreeMoveUpDown))
+        .row("g / G", l(crate::i18n::Msg::TopBottom))
+        .row("l", l(crate::i18n::Msg::EnterDirectory))
+        .row("Enter", l(crate::i18n::Msg::ExpandInPlace))
+        .row("Ctrl-t", l(crate::i18n::Msg::OpenInNewTabHelp))
+        .row("h", l(crate::i18n::Msg::ToParent))
+        .row("a", l(crate::i18n::Msg::TreeAnchorRoot))
+        .row("A", l(crate::i18n::Msg::ResetRoot))
+        .row("d", l(crate::i18n::Msg::TreeDiffFile))
+        .row("/", l(crate::i18n::Msg::TreeFilter))
+        .row(".", l(crate::i18n::Msg::ToggleHidden))
+        .row("i", l(crate::i18n::Msg::TreeFileInfo));
+    // [[hint-shown-iff-key-acts]]: on an Office document `e` opens an Office app, not an editor.
+    if let Some(msg) = app.edit_help_label(crate::i18n::Msg::EditExternalEnv) {
+        tree = tree.row("e", l(msg));
+    }
     vec![
-        HelpSection::new(l(crate::i18n::Msg::TreeSection))
-            .row("j / k / ↑ ↓", l(crate::i18n::Msg::TreeMoveUpDown))
-            .row("g / G", l(crate::i18n::Msg::TopBottom))
-            .row("l", l(crate::i18n::Msg::EnterDirectory))
-            .row("Enter", l(crate::i18n::Msg::ExpandInPlace))
-            .row("Ctrl-t", l(crate::i18n::Msg::OpenInNewTabHelp))
-            .row("h", l(crate::i18n::Msg::ToParent))
-            .row("a", l(crate::i18n::Msg::TreeAnchorRoot))
-            .row("A", l(crate::i18n::Msg::ResetRoot))
-            .row("d", l(crate::i18n::Msg::TreeDiffFile))
-            .row("/", l(crate::i18n::Msg::TreeFilter))
-            .row(".", l(crate::i18n::Msg::ToggleHidden))
-            .row("i", l(crate::i18n::Msg::TreeFileInfo))
-            .row("e", l(crate::i18n::Msg::EditExternalEnv))
-            .row("o", l(crate::i18n::Msg::TreeGitChangesHub))
+        tree.row("o", l(crate::i18n::Msg::TreeGitChangesHub))
             .row("C", l(crate::i18n::Msg::ChangedFilterHelp))
             .row("n / N", l(crate::i18n::Msg::JumpChangeHelp))
             .row("F", l(crate::i18n::Msg::FollowHelp))

@@ -362,7 +362,7 @@ code_theme = "TwoDark"
 
 # プレビュールールは上から評価し、最初にマッチしたものを使う。
 # builtin: 内蔵レンダラ ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "csv" | "tsv" |
-#          "archive" | "code" | "text")
+#          "archive" | "spreadsheet" | "code" | "text")
 #   markdown=konoma 自前のレンダラで装飾(コードは syntect ハイライト)。md内の ```mermaid は図に合成。
 #   mermaid =.mmd/.mermaid 単体を図として表示。既定は画像(mermaid-rs-renderer→resvg・純Rust・
 #            全画面ズーム/パン)。[ui] mermaid="text" で Unicode 罫線図(mermaid-text)に切替。
@@ -381,6 +381,9 @@ code_theme = "TwoDark"
 #   tsv    =タブ区切り。表示・操作は csv と同じ(区切り文字だけタブ)。色は [ui] csv_rainbow で切替。
 #   archive=.zip/.tar/.tar.gz/.tgz を同じテーブルレンダラで一覧表示(エントリ名 / サイズ / 更新日時)。
 #          メタデータのみで展開は一切しない。hjkl / y→ のキーは csv と同じ。
+#   spreadsheet=.xlsx/.xlsm/.xltx/.xltm/.xlsb/.xls/.ods を、各セルを Excel の表示書式どおり(日付・通貨・%など)に
+#          した表で表示。列は A,B,C… と行番号つき。J/K で次/前のシート。hjkl / y→ は csv と同じ。
+#          数式は計算せず、マクロも実行しない。
 # command: 外部コマンド委譲。{path}=対象ファイル, {out}=出力先(一時パス)
 # render_as: command 出力の扱い ("image" でPNG等を全画面画像表示。それ以外(未指定/"text"/未知の値)は
 #            出力をキャプチャして通常の windowed リーダーでテキスト表示)
@@ -411,6 +414,10 @@ builtin = "csv"
 [[preview.rules]]
 glob = "*.tsv"             # タブ区切り版
 builtin = "tsv"
+
+[[preview.rules]]
+glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # 表計算を表で表示(セルは Excel の表示書式どおり)。J/K=シート切替
+builtin = "spreadsheet"
 
 [[preview.rules]]
 glob = "*.{zip,tar,tgz}"   # アーカイブの中身一覧(名前/サイズ/更新日)。展開はしない
@@ -494,6 +501,7 @@ builtin = "pdf"
 #                    ファイルをプレビュー=ファイル送り。ディレクトリはスキップ・端で wrap)
 #                  "toggle_outline"(o: Markdown プレビューの見出しアウトラインを開く。Enter で見出しへジャンプ)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
+#                  "sheet_next" "sheet_prev"(表計算の表での J/K: 次/前のシート。表示シートが 2 枚以上の時だけ)
 #   テーブル     : "table_copy_cell" "table_copy_row" "table_copy_column"(y → c/r/C: CSV/TSV/アーカイブ表からコピー)
 #                  "toggle_table_cell"(テーブルプレビューの Enter: カーソルセルの全文ポップアップ。グリッドは
 #                    幅の広いセルを "…" で切り詰めるが、これは切り詰め無しの値を折返し表示し、
@@ -628,6 +636,9 @@ video            = true   # 外部フォールバックの抽出ツール(ffmpeg
 remote_images    = true   # Markdown 内の http(s) 画像取得。konoma が行う唯一の外向き通信。
                            # ureq(rustls)でプロセス内取得=外部ツールは使わない。
 open_links       = true   # URL/ファイルを OS のハンドラで開く(macOS は `open`、それ以外は `xdg-open`)。Markdown リンク・`P` 等。
+office_apps      = true   # Office 文書(docx xlsx pptx odt ods odp 等)で `e` を押すと、$EDITOR に zip を渡さず GUI アプリで開く。
+                           # Microsoft Office(macOS のみ)→ LibreOffice → OS の既定(`open`/`xdg-open`)の順。
+                           # false なら何も起動せず理由を表示。`[editor.ext]` でその拡張子を指定していればそちらが優先。
 preview_commands = true   # `[[preview.rules]] command = "..."` への委譲。false ではそのルールは「マッチしなかった」扱いになり
                            # `[can not preview]` へ落ちる(builtin レンダラには影響しない)。
 

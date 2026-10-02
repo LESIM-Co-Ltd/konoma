@@ -106,6 +106,16 @@ impl App {
                 self.tab.pdf_page,
                 self.cfg.external.pdf,
             )),
+            // A spreadsheet: parsed on the worker (no graphics backend needed — the table is drawn
+            // with ordinary text). The display language picks the locale that decides what
+            // locale-dependent built-in number formats look like.
+            PreviewKind::Spreadsheet(_) => {
+                let locale = match self.lang {
+                    crate::i18n::Lang::Jp => crate::preview::office::Locale::Ja,
+                    crate::i18n::Lang::En => crate::preview::office::Locale::En,
+                };
+                self.spawn_workbook_job(path.to_path_buf(), locale, self.tab.sheet_idx);
+            }
             // A standalone .mmd/.mermaid: in image mode, convert to SVG in pure Rust → rasterize
             // (on a separate thread). In text mode / with no backend, do nothing — the decorated
             // text path draws it instead (principle #3).
@@ -244,7 +254,7 @@ impl App {
             }
             return;
         };
-        self.media_gen = self.media_gen.wrapping_add(1);
+        self.bump_media_gen();
         self.media_loading = true;
         let gen = self.media_gen;
         std::thread::spawn(move || {
@@ -253,13 +263,107 @@ impl App {
             // stay stuck at true until the next preview transition, keeping the "Loading…" display
             // and the run loop's 16ms polling going forever (breaking the idle-0% guarantee).
             let payload = crate::preview::markdown::catch_silent(move || job.run()).flatten();
-            let _ = tx.send(MediaResult { gen, payload });
+            let _ = tx.send(MediaResult {
+                gen,
+                wb_worker: false,
+                payload,
+            });
+        });
+    }
+
+    /// Starts a new media generation: whatever is running for the old one is stale (its result is
+    /// dropped on arrival, and a workbook load sees it and stops).
+    pub(super) fn bump_media_gen(&mut self) {
+        self.media_gen = self.media_gen.wrapping_add(1);
+        self.media_gen_shared
+            .store(self.media_gen, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Loads one sheet of a spreadsheet on a worker thread — **one load at a time, newest request
+    /// only**. Holding `J` asks for a sheet per key repeat; each load of a large workbook can take
+    /// gigabytes, and a load that is no longer wanted used to run to its end beside the next ones.
+    /// Now a request made while a load is running replaces the one waiting behind it (the same
+    /// shape as the media diff's worker, `kick_media_diff`) and the running one is told to stop
+    /// (`Cancel` on the generation: the sheet builder checks it at every row). With no channel
+    /// attached (tests), the load runs inline.
+    fn spawn_workbook_job(
+        &mut self,
+        path: PathBuf,
+        locale: crate::preview::office::Locale,
+        sheet: usize,
+    ) {
+        let Some(_) = self.media_tx else {
+            if let Some(payload) = MediaJob::Workbook(path, locale, sheet).run() {
+                self.apply_payload(payload);
+            }
+            return;
+        };
+        self.bump_media_gen();
+        self.media_loading = true;
+        let req = WbRequest {
+            path,
+            locale,
+            sheet,
+            gen: self.media_gen,
+        };
+        if self.wb_worker_busy {
+            self.wb_queued = Some(req);
+        } else {
+            self.dispatch_workbook(req);
+        }
+    }
+
+    /// Test-only: workbook loads started on a thread so far.
+    #[cfg(test)]
+    pub fn workbook_loads_started(&self) -> u32 {
+        self.wb_dispatches
+    }
+
+    /// Starts `req` on the one workbook thread.
+    fn dispatch_workbook(&mut self, req: WbRequest) {
+        let Some(tx) = self.media_tx.clone() else {
+            return;
+        };
+        self.wb_worker_busy = true;
+        #[cfg(test)]
+        {
+            self.wb_dispatches += 1;
+        }
+        let cancel =
+            crate::preview::office::Cancel::generation(self.media_gen_shared.clone(), req.gen);
+        let WbRequest {
+            path,
+            locale,
+            sheet,
+            gen,
+        } = req;
+        std::thread::spawn(move || {
+            // Always answers (even a panic): the slot is only freed by the answer.
+            let payload = crate::preview::markdown::catch_silent(move || {
+                MediaJob::Workbook(path, locale, sheet).run_cancellable(Some(cancel))
+            })
+            .flatten();
+            let _ = tx.send(MediaResult {
+                gen,
+                wb_worker: true,
+                payload,
+            });
         });
     }
 
     /// Apply a media-load result from another thread. Stale results (from after moving to another file) are discarded.
     /// Returns true if the state changes from applying / staleness judgment (the caller re-renders).
     pub fn apply_media(&mut self, result: MediaResult) -> bool {
+        // The workbook thread is free again, current result or not; what was asked for meanwhile
+        // starts now (and is dropped if the preview moved on since).
+        if result.wb_worker {
+            self.wb_worker_busy = false;
+            if let Some(next) = self.wb_queued.take() {
+                if next.gen == self.media_gen {
+                    self.dispatch_workbook(next);
+                }
+            }
+        }
         if result.gen != self.media_gen {
             return false; // stale: we've already moved on to another file
         }
@@ -306,6 +410,62 @@ impl App {
             MediaPayload::CommandFailed(msg) => {
                 self.command_err = Some(msg);
             }
+            // A late result for a preview that has since been replaced by something else (the
+            // generation only guards against a *newer media job*, and a non-media preview starts
+            // none) must not be adopted by the new preview.
+            MediaPayload::Workbook(wb) => {
+                if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) {
+                    // The worker clamps the requested sheet to the file as it is now (it may have
+                    // lost sheets since): what it loaded is what is shown.
+                    if let Some(i) = wb.loaded_index() {
+                        self.tab.sheet_idx = i;
+                    }
+                    self.workbook_error = wb.sheet_error.clone();
+                    self.workbook = Some(wb);
+                    self.clamp_table_cursor();
+                    // The search in force runs on what arrived (a reload after an outside edit, or
+                    // another sheet): hits recorded for the old cells are not hits any more.
+                    self.rescan_table_search();
+                }
+            }
+            MediaPayload::WorkbookFailed(e) => {
+                if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) {
+                    self.workbook = None;
+                    self.workbook_error = Some(e);
+                    self.tab.search_pending = false;
+                }
+            }
+        }
+    }
+
+    /// Runs the active table search again on the cells now shown. A search confirmed while the
+    /// sheet was loading (`search_pending`) lands on its first hit like a search on a loaded
+    /// sheet, and says so when there is none; otherwise the current hit stays current when it
+    /// still is one (else the next hit after it) and the cursor does not move.
+    fn rescan_table_search(&mut self) {
+        let Some(q) = self.tab.preview_search.clone() else {
+            return;
+        };
+        let was = self.tab.search_matches.get(self.tab.search_idx).copied();
+        let pending = std::mem::take(&mut self.tab.search_pending);
+        self.table_search_scan(&q);
+        if self.tab.search_matches.is_empty() {
+            self.tab.search_idx = 0;
+            if pending {
+                self.flash = Some(tr(self.lang, crate::i18n::Msg::NoMatch).into());
+            }
+        } else if pending {
+            self.tab.search_idx = self.first_table_match_from_cursor();
+            self.jump_to_match();
+        } else {
+            let last = self.tab.search_matches.len() - 1;
+            self.tab.search_idx = match was {
+                Some(w) => match self.tab.search_matches.binary_search(&w) {
+                    Ok(i) => i,
+                    Err(i) => i.min(last),
+                },
+                None => 0,
+            };
         }
     }
 
