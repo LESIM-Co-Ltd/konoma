@@ -535,6 +535,7 @@ builtin = "pdf"
 #                    = file paging. Directories are skipped; wraps at the ends.)
 #                  "toggle_outline" (o: open the heading outline of a Markdown preview; Enter jumps to a heading)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
+#                  "sheet_next" "sheet_prev" (J/K on a spreadsheet table: next/previous sheet; only with 2+ visible sheets)
 #   Table        : "table_copy_cell" "table_copy_row" "table_copy_column" (y → c/r/C: copy from a CSV/TSV/archive table)
 #                  "toggle_table_cell" (Enter in a table preview: full-text popup for the cursor cell — the grid
 #                    truncates wide cells with "…", this shows the untruncated value, wrapped and scrollable with

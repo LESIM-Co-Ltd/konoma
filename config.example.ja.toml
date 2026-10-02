@@ -501,6 +501,7 @@ builtin = "pdf"
 #                    ファイルをプレビュー=ファイル送り。ディレクトリはスキップ・端で wrap)
 #                  "toggle_outline"(o: Markdown プレビューの見出しアウトラインを開く。Enter で見出しへジャンプ)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
+#                  "sheet_next" "sheet_prev"(表計算の表での J/K: 次/前のシート。表示シートが 2 枚以上の時だけ)
 #   テーブル     : "table_copy_cell" "table_copy_row" "table_copy_column"(y → c/r/C: CSV/TSV/アーカイブ表からコピー)
 #                  "toggle_table_cell"(テーブルプレビューの Enter: カーソルセルの全文ポップアップ。グリッドは
 #                    幅の広いセルを "…" で切り詰めるが、これは切り詰め無しの値を折返し表示し、

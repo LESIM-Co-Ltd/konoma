@@ -7,6 +7,14 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- **Spreadsheet preview**: `.xlsx`/`.xlsm`/`.xltx`/`.xltm`/`.xlsb`/`.xls`/`.ods` open in the table view, read by konoma
+  itself (pure Rust, no external tool). Cells are shown the way Excel shows them (thousands separators, percent,
+  currency, dates, times, Japanese eras), with column letters and row numbers; the title carries the sheet name
+  `(1/3)`, `+N hidden` and the cursor's address. `J`/`K` (`sheet_next`/`sheet_prev`) switch sheets; the `Enter`
+  popup shows address, displayed text, raw value, type, formula and format; `/` search and `y` copy use the displayed
+  text. Password-protected, oversized (file > 256 MiB) or corrupt files say why they cannot be shown. Formulas are
+  not evaluated and macros never run. New `builtin = "spreadsheet"` and a default rule for the seven extensions.
+  Merged cells show their value in the top-left cell only; the sheet is not saved in session restore.
 - **`e` on an Office document opens it in a GUI app** (docx/docm/dotx/dotm/doc/odt, xlsx/xlsm/xltx/xltm/xlsb/xls/ods,
   pptx/pptm/ppsx/potx/ppt/odp) instead of handing the zip to `$EDITOR`: Microsoft Office (macOS only), then
   LibreOffice, then the OS default (`open` / `xdg-open`). The launch runs off the UI thread and the footer says

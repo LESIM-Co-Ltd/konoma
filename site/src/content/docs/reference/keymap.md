@@ -34,7 +34,7 @@ information contextually inside the app.
 | `/` | filter as you type (`Esc` clears) |
 | `.` | toggle dotfiles |
 | `s` / `i` / `r` | sort menu / file info / refresh |
-| `e` | open in external editor |
+| `e` | open in external editor (Word/Excel/PowerPoint/ODF files: in an Office app — `[external] office_apps`) |
 | `p` | cycle path display (relative / `~` / full) |
 | `v` / `V` | visual range selection / toggle one selection |
 | `Space` → `n r d c x p D` | create / rename / delete / copy / cut / paste / duplicate in place |
@@ -77,17 +77,18 @@ information contextually inside the app.
 | `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
 | `m` `'` / `e` / `q` | bookmark / editor / back |
 
-## CSV / TSV table preview
+## CSV / TSV / spreadsheet / archive table preview
 
 | Key | Action |
 |---|---|
 | `h j k l` | move by cell |
 | `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
 | `g` `G` / `0` `$` | first/last row / first/last column |
+| `J` `K` | spreadsheets only: next / previous sheet (needs 2+ visible sheets; actions `sheet_next` / `sheet_prev`) |
 | `/` / `n` `N` | search cells (case-insensitive) / next, previous match (wraps) |
 | `y` → `c r C f` | copy cell / row / column / full path |
-| `Enter` | Open the cursor cell in a popup — the full, untruncated value, wrapped and scrollable (`Enter` / `q` / `Esc` closes). Also works on `.zip` / `.tar` listings. |
-| `m` `'` / `e` / `q` | bookmark / editor / back |
+| `Enter` | Open the cursor cell in a popup — the full, untruncated value, wrapped and scrollable (`Enter` / `q` / `Esc` closes). Also works on `.zip` / `.tar` listings and spreadsheets (address, displayed text, raw value, type, formula, format). |
+| `m` `'` / `e` / `q` | bookmark / editor (on an Office document: opens it in an Office app instead — `[external] office_apps`) / back |
 
 ## Git
 
