@@ -115,7 +115,7 @@ impl App {
                     crate::i18n::Lang::En => crate::preview::office::Locale::En,
                 };
                 self.spawn_or_sync_media_gated(
-                    MediaJob::Workbook(path.to_path_buf(), locale),
+                    MediaJob::Workbook(path.to_path_buf(), locale, self.tab.sheet_idx),
                     false,
                 );
             }
@@ -324,9 +324,20 @@ impl App {
             // none) must not be adopted by the new preview.
             MediaPayload::Workbook(wb) => {
                 if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) {
-                    self.workbook_error = None;
+                    // The worker clamps the requested sheet to the file as it is now (it may have
+                    // lost sheets since): what it loaded is what is shown.
+                    if let Some(i) = wb.loaded_index() {
+                        self.tab.sheet_idx = i;
+                    }
+                    self.workbook_error = wb.sheet_error.clone();
                     self.workbook = Some(wb);
                     self.clamp_table_cursor();
+                    // A search typed on the previous sheet re-runs on the one that just arrived.
+                    if self.tab.search_matches.is_empty() {
+                        if let Some(q) = self.tab.preview_search.clone() {
+                            self.table_search_scan(&q);
+                        }
+                    }
                 }
             }
             MediaPayload::WorkbookFailed(e) => {

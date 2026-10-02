@@ -8,6 +8,7 @@
 
 use super::container::Limits;
 use super::fmt_xlsb;
+use super::fmt_xlsx::SheetFormats;
 use super::tests::{
     assert_inner_does_not_panic, deflated, load, load_with, mutate, small_limits, tmp, write,
     xorshift,
@@ -457,7 +458,6 @@ fn the_pass_reports_what_it_read() {
     let fm = fmt_xlsb::read(&p, &Limits::default()).unwrap();
     let sf = &fm.sheets["S"];
     assert_eq!(sf.value_cells, 3);
-    assert_eq!(sf.bbox, Some((2, 0, 9, 3)));
     assert_eq!(sf.cells, vec![(2, 1, 1), (9, 0, 1)]);
     assert_eq!(fm.formats, vec![NumFmtRef::General, NumFmtRef::Builtin(4)]);
 }
@@ -467,7 +467,9 @@ fn the_pass_reports_what_it_read() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn a_far_flung_sheet_is_refused_before_calamine_densifies_it() {
+fn a_far_flung_sheet_shows_what_fits_instead_of_being_refused() {
+    // Values at A1 and XFD1048576: a dense matrix over the box is ~17 billion cells. Streamed,
+    // the sheet shows A1 and ends at the row past the cap.
     let pkg = one_sheet(
         None,
         &[
@@ -477,66 +479,58 @@ fn a_far_flung_sheet_is_refused_before_calamine_densifies_it() {
     );
     let dir = tmp("xlsb_far");
     let p = pkg.write(&dir, "f.xlsb");
-    assert_eq!(
-        load(&p).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
-    );
+    let wb = load(&p).unwrap();
+    let s = &wb.sheets[0];
+    assert_eq!(s.display(0, 0), "1");
+    assert!(s.rows_truncated);
+    assert_eq!((s.nrows, s.ncols), (1, 1));
 }
 
 #[test]
-fn columns_past_excels_last_still_count_in_the_box() {
-    // A hostile column index beyond XFD: calamine's matrix would span it, so the pass must too.
+fn a_column_past_excels_last_is_skipped_not_widened_to() {
+    // A hostile column index beyond XFD: the cell is dropped (and the sheet says columns were
+    // cut); it neither widens the grid nor needs a matrix that spans it.
     let pkg = one_sheet(
         None,
         &[
             (0, vec![real(0, 0, 1.0)]),
-            (100_000, vec![real(4_000_000, 0, 1.0)]),
+            (5, vec![real(4_000_000, 0, 1.0)]),
         ],
     );
     let dir = tmp("xlsb_widecol");
     let p = pkg.write(&dir, "w.xlsb");
-    assert_eq!(
-        load(&p).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
-    );
+    let wb = load(&p).unwrap();
+    let s = &wb.sheets[0];
+    assert!(s.cols_truncated);
+    assert_eq!(s.ncols, Limits::default().max_cols);
+    assert_eq!(s.row_cells(5).len(), 0);
+    assert_eq!(s.display(0, 0), "1");
     // The cell itself is not kept in the format list (past max_cols).
     let sf = fmt_xlsb::read(&p, &Limits::default()).unwrap();
     assert!(sf.sheets["S"].cells.is_empty());
 }
 
 #[test]
-fn the_budget_is_exact_at_the_boundary() {
-    let limits = small_limits(); // 10,000 cells
-    let ok = one_sheet(
-        None,
-        &[(0, vec![real(0, 0, 1.0)]), (99, vec![real(99, 0, 1.0)])],
-    );
-    let sf = fmt_xlsb::parse_sheet(
-        &sheet_bin(&[(0, vec![real(0, 0, 1.0)]), (99, vec![real(99, 0, 1.0)])])[..],
-        &[],
-        &[],
-        &limits,
-    )
-    .unwrap();
-    assert_eq!(sf.bbox_area(), 10_000);
-    assert!(sf.dense_cost() <= limits.max_dense_cells);
+fn the_cell_budget_is_exact_at_the_boundary() {
+    // 100 cells (one per row) against a budget of exactly that many.
+    let rows: Vec<(u32, Vec<Vec<u8>>)> = (0..100).map(|r| (r, vec![real(0, 0, 1.0)])).collect();
     let dir = tmp("xlsb_exact");
-    let p = ok.write(&dir, "ok.xlsb");
-    assert!(load_with(&p, limits).is_ok());
-    let over = one_sheet(
-        None,
-        &[(0, vec![real(0, 0, 1.0)]), (100, vec![real(99, 0, 1.0)])],
-    );
-    let p = over.write(&dir, "over.xlsb");
-    assert_eq!(
-        load_with(&p, limits).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
-    );
+    let p = Pkg::new(None, vec![sheet("S", sheet_bin(&rows))]).write(&dir, "ok.xlsb");
+    let at = |cells: u64| {
+        let limits = Limits {
+            max_sheet_cells: cells,
+            ..small_limits()
+        };
+        let s = load_with(&p, limits).unwrap().sheets.remove(0);
+        (s.nrows, s.rows_truncated)
+    };
+    assert_eq!(at(100), (100, false));
+    assert_eq!(at(99), (99, true));
 }
 
 #[test]
 fn a_far_flung_hidden_sheet_does_not_block_the_visible_ones() {
-    // xlsb sheets are read lazily: the hidden one is never densified, so it is not refused.
+    // Only the sheet asked for is read: the hidden one is never touched, so it cannot be refused.
     let mut hidden = sheet(
         "H",
         sheet_bin(&[
@@ -559,17 +553,14 @@ fn a_far_flung_hidden_sheet_does_not_block_the_visible_ones() {
 #[test]
 fn the_cell_count_budget_is_enforced_while_streaming() {
     let limits = Limits {
-        max_dense_cells: 3,
+        max_sheet_cells: 3,
         ..Limits::default()
     };
     let cells: Vec<Vec<u8>> = (0..4).map(|c| real(c, 0, 1.0)).collect();
     let bin = sheet_bin(&[(0, cells)]);
-    assert_eq!(
-        fmt_xlsb::parse_sheet(&bin[..], &[], &[], &limits).unwrap_err(),
-        OfficeError::TooLarge {
-            what: "sheet cells"
-        }
-    );
+    let sf = fmt_xlsb::parse_sheet(&bin[..], &[], &limits).unwrap();
+    assert!(sf.truncated);
+    assert_eq!(sf.value_cells, 3);
 }
 
 #[test]
@@ -579,7 +570,7 @@ fn rows_past_the_last_excel_row_end_the_sheet_like_calamine() {
         (0x0010_0001, vec![real(0, 0, 2.0)]),
         (5, vec![real(0, 0, 3.0)]),
     ]);
-    let sf = fmt_xlsb::parse_sheet(&bin[..], &[], &[], &Limits::default()).unwrap();
+    let sf = fmt_xlsb::parse_sheet(&bin[..], &[], &Limits::default()).unwrap();
     assert_eq!(sf.value_cells, 1);
 }
 
@@ -596,7 +587,7 @@ fn record_ids_and_sizes_use_the_variable_length_forms() {
     bin.extend(row_hdr(0));
     bin.extend(real(0, 0, 1.0));
     bin.extend(rec(0x0092, &[]));
-    let sf = fmt_xlsb::parse_sheet(&bin[..], &[], &[], &Limits::default()).unwrap();
+    let sf = fmt_xlsb::parse_sheet(&bin[..], &[], &Limits::default()).unwrap();
     assert_eq!(sf.value_cells, 1);
 }
 
@@ -607,8 +598,8 @@ fn a_body_longer_than_the_read_cap_is_skipped_not_buffered() {
     bin.extend(row_hdr(4));
     bin.extend(real(1, 0, 1.0));
     bin.extend(rec(0x0092, &[]));
-    let sf = fmt_xlsb::parse_sheet(&bin[..], &[], &[], &Limits::default()).unwrap();
-    assert_eq!(sf.bbox, Some((4, 1, 4, 1)));
+    let sf = fmt_xlsb::parse_sheet(&bin[..], &[], &Limits::default()).unwrap();
+    assert_eq!(sf.value_cells, 1, "the record after the long body is read");
 }
 
 #[test]
@@ -617,7 +608,7 @@ fn a_forged_giant_size_neither_allocates_nor_hangs() {
     let mut bin = rec(0x0091, &[]);
     bin.extend([0x02, 0xFF, 0xFF, 0xFF, 0x7F]);
     bin.extend([1, 2, 3]);
-    let r = fmt_xlsb::parse_sheet(&bin[..], &[], &[], &Limits::default());
+    let r = fmt_xlsb::parse_sheet(&bin[..], &[], &Limits::default());
     assert!(matches!(r, Err(OfficeError::Corrupt(_))), "{r:?}");
     // The same in the workbook and styles streams.
     let giant = [0x83u8, 0x00, 0xFF, 0xFF, 0xFF, 0x7F];
@@ -627,7 +618,7 @@ fn a_forged_giant_size_neither_allocates_nor_hangs() {
     let mut ok = rec(0x0091, &[]);
     ok.extend(rec(0x0200, &vec![0u8; 3_000_000]));
     ok.extend(rec(0x0092, &[]));
-    assert!(fmt_xlsb::parse_sheet(&ok[..], &[], &[], &Limits::default()).is_ok());
+    assert!(fmt_xlsb::parse_sheet(&ok[..], &[], &Limits::default()).is_ok());
 }
 
 #[test]
@@ -644,7 +635,7 @@ fn a_stream_cut_inside_a_record_is_corrupt_and_between_records_is_the_end() {
     for r in &records {
         // Inside this record: corrupt (a cut header or a cut body).
         for cut in 1..r.len() {
-            let res = fmt_xlsb::parse_sheet(&bin[..at + cut], &[], &[], &limits);
+            let res = fmt_xlsb::parse_sheet(&bin[..at + cut], &[], &limits);
             assert!(
                 matches!(res, Err(OfficeError::Corrupt(_))),
                 "cut {cut} bytes into a {}-byte record: {res:?}",
@@ -653,13 +644,13 @@ fn a_stream_cut_inside_a_record_is_corrupt_and_between_records_is_the_end() {
         }
         at += r.len();
         // Right after it: a clean end.
-        assert!(fmt_xlsb::parse_sheet(&bin[..at], &[], &[], &limits).is_ok());
+        assert!(fmt_xlsb::parse_sheet(&bin[..at], &[], &limits).is_ok());
     }
     // A cell record shorter than col + style is corrupt.
     let mut short = rec(0x0091, &[]);
     short.extend(rec(0x0005, &[1, 2, 3]));
     assert!(matches!(
-        fmt_xlsb::parse_sheet(&short[..], &[], &[], &limits),
+        fmt_xlsb::parse_sheet(&short[..], &[], &limits),
         Err(OfficeError::Corrupt(_))
     ));
 }
@@ -674,9 +665,8 @@ fn cells_before_begin_sheet_data_are_ignored() {
     bin.extend(rec(0x0092, &[]));
     bin.extend(row_hdr(9)); // after the end: ignored
     bin.extend(real(5, 0, 1.0));
-    let sf = fmt_xlsb::parse_sheet(&bin[..], &[], &[], &Limits::default()).unwrap();
+    let sf = fmt_xlsb::parse_sheet(&bin[..], &[], &Limits::default()).unwrap();
     assert_eq!(sf.value_cells, 1);
-    assert_eq!(sf.bbox, Some((0, 2, 0, 2)));
 }
 
 #[test]
@@ -732,8 +722,11 @@ fn a_sheet_without_a_relationship_or_part_is_skipped_by_the_pass() {
     ]);
     let dir = tmp("xlsb_nopart");
     let p = write(&dir, "n.xlsb", &bytes);
+    // The sheet is listed (its relationship resolves) but its part is not there: no formats.
     let fm = fmt_xlsb::read(&p, &Limits::default()).unwrap();
-    assert!(fm.sheets.is_empty());
+    assert_eq!(fm.sheets["S"], SheetFormats::default());
+    // Loading it fails (calamine cannot find the part): at the sheet when the workbook opened.
+    assert!(load(&p).is_err());
 }
 
 #[test]
@@ -795,9 +788,8 @@ fn every_prefix_of_each_part_never_panics_in_konomas_pass() {
         assert!(r.is_ok(), "styles prefix {n}");
     }
     for n in 0..sh.len() {
-        let r = std::panic::catch_unwind(|| {
-            fmt_xlsb::parse_sheet(&sh[..n], &[0, 1], &[], &small_limits())
-        });
+        let r =
+            std::panic::catch_unwind(|| fmt_xlsb::parse_sheet(&sh[..n], &[0, 1], &small_limits()));
         assert!(r.is_ok(), "sheet prefix {n}");
     }
 }
@@ -822,7 +814,7 @@ fn mutated_parts_never_panic_in_konomas_pass() {
             let r = std::panic::catch_unwind(|| match which {
                 0 => fmt_xlsb::parse_workbook(&b[..]).map(|_| ()),
                 1 => fmt_xlsb::parse_styles(&b[..]).map(|_| ()),
-                _ => fmt_xlsb::parse_sheet(&b[..], &[0, 1, 2], &[], &small_limits()).map(|_| ()),
+                _ => fmt_xlsb::parse_sheet(&b[..], &[0, 1, 2], &small_limits()).map(|_| ()),
             });
             assert!(
                 r.is_ok(),
@@ -864,7 +856,7 @@ fn fmla_error(col: u32, style: u32) -> Vec<u8> {
 }
 
 #[test]
-fn a_formula_error_cell_in_a_far_corner_counts_in_the_box() {
+fn a_formula_error_cell_in_a_far_corner_does_not_widen_the_sheet() {
     let pkg = one_sheet(
         None,
         &[
@@ -875,12 +867,10 @@ fn a_formula_error_cell_in_a_far_corner_counts_in_the_box() {
     let dir = tmp("xlsb_fmla_err");
     let p = pkg.write(&dir, "e.xlsb");
     let sf = fmt_xlsb::read(&p, &Limits::default()).unwrap();
-    assert_eq!(sf.sheets["S"].value_cells, 2);
-    assert_eq!(sf.sheets["S"].bbox, Some((0, 0, 1_048_575, 16_383)));
-    assert_eq!(
-        load(&p).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
-    );
+    assert_eq!(sf.sheets["S"].value_cells, 1);
+    assert!(sf.sheets["S"].truncated);
+    let wb = load(&p).unwrap();
+    assert_eq!((wb.sheets[0].nrows, wb.sheets[0].ncols), (1, 1));
     // Formula-only on both ends.
     let pkg = one_sheet(
         None,
@@ -890,10 +880,7 @@ fn a_formula_error_cell_in_a_far_corner_counts_in_the_box() {
         ],
     );
     let p = pkg.write(&dir, "e2.xlsb");
-    assert_eq!(
-        load(&p).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
-    );
+    assert!(load(&p).is_ok());
 }
 
 fn sst_bin(strings: &[String], declared_unique: Option<u32>) -> Vec<u8> {
@@ -917,44 +904,44 @@ fn isst(col: u32, style: u32, i: u32) -> Vec<u8> {
 }
 
 #[test]
-fn one_long_shared_string_used_by_many_cells_is_refused_by_the_text_budget() {
-    // 4,000 characters (8,000 budget bytes) x 200 cells = 1.6 MB against the 1 MiB budget.
+fn one_long_shared_string_used_by_many_cells_cuts_the_sheet_at_the_text_budget() {
+    // 10,000 characters x 200 cells = 2 MB against the sheet's 1 MiB text budget: shown up to the
+    // cell that no longer fits (each kept cell costs 10,000 + 32), marked as cut — not refused.
     let limits = Limits {
         max_rows: 1000,
-        max_grid_cells: 100_000,
+        max_sheet_cells: 100_000,
         ..small_limits()
     };
     let mk = |cells: u32| {
         let rows: Vec<(u32, Vec<Vec<u8>>)> = (0..cells).map(|r| (r, vec![isst(0, 0, 0)])).collect();
         Pkg::new(None, vec![sheet("S", sheet_bin(&rows))])
-            .with_shared(sst_bin(&["q".repeat(4000)], None))
+            .with_shared(sst_bin(&["q".repeat(10_000)], None))
     };
     let dir = tmp("xlsb_amplify");
     let p = mk(200).write(&dir, "a.xlsb");
-    assert_eq!(
-        load_with(&p, limits).unwrap_err(),
-        OfficeError::TooLarge { what: "text" }
-    );
+    let s = load_with(&p, limits).unwrap().sheets.remove(0);
+    assert!(s.rows_truncated);
+    assert_eq!(s.nrows as u64, limits.max_sheet_text_bytes / 10_032);
     let p = mk(50).write(&dir, "b.xlsb");
     let wb = load_with(&p, limits).unwrap();
-    assert_eq!(wb.sheets[0].display(49, 0).len(), 4000);
+    assert!(!wb.sheets[0].rows_truncated);
+    assert_eq!(wb.sheets[0].display(49, 0).len(), 10_000);
 }
 
 #[test]
-fn inline_strings_count_against_the_text_budget_in_xlsb() {
+fn inline_strings_count_against_the_sheet_text_budget_in_xlsb() {
     let limits = Limits {
-        max_text_bytes: 100_000,
+        max_sheet_text_bytes: 50_000,
         ..small_limits()
     };
-    // 20 x (4,000 chars -> 8,000 budget bytes) = 160 KB against 100 KB.
+    // 20 x (4,000 + 32) against 50,000: twelve fit.
     let big = "w".repeat(4000);
     let rows: Vec<(u32, Vec<Vec<u8>>)> = (0..20).map(|r| (r, vec![cell_st(0, 0, &big)])).collect();
     let dir = tmp("xlsb_inline");
     let p = Pkg::new(None, vec![sheet("S", sheet_bin(&rows))]).write(&dir, "i.xlsb");
-    assert_eq!(
-        load_with(&p, limits).unwrap_err(),
-        OfficeError::TooLarge { what: "text" }
-    );
+    let s = load_with(&p, limits).unwrap().sheets.remove(0);
+    assert_eq!(s.nrows, 12);
+    assert!(s.rows_truncated);
 }
 
 #[test]
@@ -989,7 +976,7 @@ fn exactly_the_value_cell_records_2_to_0b_are_read() {
             bin.extend(rec(id, &body));
         }
         bin.extend(rec(0x0092, &[]));
-        let sf = fmt_xlsb::parse_sheet(&bin[..], &[0, 1], &[], &Limits::default()).unwrap();
+        let sf = fmt_xlsb::parse_sheet(&bin[..], &[0, 1], &Limits::default()).unwrap();
         if sf.value_cells == 1 {
             ids_read.push(id);
             assert_eq!(sf.cells, vec![(0, 3, 1)], "id {id:#x} keeps its format");
@@ -1015,27 +1002,37 @@ fn a_style_ref_above_65535_is_not_truncated_to_16_bits() {
     assert_ne!(date, 0);
     assert_eq!(st.formats[usize::from(date)], NumFmtRef::Builtin(14));
     let bin = sheet_bin(&[(0, vec![real(0, 66_000, 45292.0), real(1, 464, 45292.0)])]);
-    let sf = fmt_xlsb::parse_sheet(&bin[..], &st.xf_to_format, &[], &Limits::default()).unwrap();
+    let sf = fmt_xlsb::parse_sheet(&bin[..], &st.xf_to_format, &Limits::default()).unwrap();
     assert_eq!(sf.format_at(0, 0), date);
     assert_eq!(sf.format_at(0, 1), 0, "xf 464 is General");
     // And the 4th byte of the word is a flag byte, never part of the index.
     let bin = sheet_bin(&[(0, vec![real(0, 0x7F00_0000 | 66_000, 1.0)])]);
-    let sf = fmt_xlsb::parse_sheet(&bin[..], &st.xf_to_format, &[], &Limits::default()).unwrap();
+    let sf = fmt_xlsb::parse_sheet(&bin[..], &st.xf_to_format, &Limits::default()).unwrap();
     assert_eq!(sf.format_at(0, 0), date);
 }
 
 #[test]
 fn the_row_limit_is_exact() {
-    // A row header of 0x100000 is still read; one above it ends the sheet (as in calamine).
-    let at = |row: u32| {
+    // The pass stops at the first row header at or past `max_rows`; and, whatever `max_rows` is,
+    // at one past Excel's last row (0x100000), as `calamine` does.
+    let at = |row: u32, max_rows: usize| {
         let bin = sheet_bin(&[(row, vec![real(0, 0, 1.0)])]);
-        fmt_xlsb::parse_sheet(&bin[..], &[], &[], &Limits::default()).unwrap()
+        let limits = Limits {
+            max_rows,
+            ..Limits::default()
+        };
+        fmt_xlsb::parse_sheet(&bin[..], &[], &limits).unwrap()
     };
-    let sf = at(0x0010_0000);
+    let sf = at(99, 100);
     assert_eq!(sf.value_cells, 1);
-    assert_eq!(sf.bbox, Some((0x0010_0000, 0, 0x0010_0000, 0)));
-    assert_eq!(at(0x000F_FFFF).value_cells, 1);
-    assert_eq!(at(0x0010_0001).value_cells, 0);
+    assert!(!sf.truncated);
+    let sf = at(100, 100);
+    assert_eq!(sf.value_cells, 0);
+    assert!(sf.truncated);
+    // With a cap above Excel's last row, Excel's last row decides.
+    assert_eq!(at(0x0010_0000, 2_000_000).value_cells, 1);
+    assert_eq!(at(0x000F_FFFF, 2_000_000).value_cells, 1);
+    assert_eq!(at(0x0010_0001, 2_000_000).value_cells, 0);
 }
 
 #[test]
@@ -1051,4 +1048,83 @@ fn only_the_first_100_000_cell_xfs_are_kept() {
     let dropped = fmt_xlsb::parse_styles(&styles(100_001, 14)[..]).unwrap();
     assert_eq!(dropped.xf_to_format.len(), 100_000);
     assert_eq!(dropped.formats, vec![NumFmtRef::General]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// one sheet at a time, and the format-code length limit
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_format_code_over_255_characters_is_dropped_and_255_is_kept() {
+    let keep = format!("0.{}", "0".repeat(253)); // 255 characters
+    assert_eq!(keep.chars().count(), 255);
+    let drop = format!("0.{}", "0".repeat(254)); // 256
+    let styles = styles_bin(&[(164, &keep), (165, &drop)], &[164, 165]);
+    let st = fmt_xlsb::parse_styles(&styles[..]).unwrap();
+    assert_eq!(
+        st.formats,
+        vec![NumFmtRef::General, NumFmtRef::Custom(keep.as_str().into())],
+        "the long code is not held in the format table"
+    );
+    assert_eq!(st.xf_to_format, vec![1, 0], "its cells are General");
+    // End to end: the cell with the long code shows the General text.
+    let pkg = one_sheet(Some(styles), &[(0, vec![real(0, 0, 0.5), real(1, 1, 0.5)])]);
+    let dir = tmp("xlsb_longcode");
+    let p = pkg.write(&dir, "l.xlsb");
+    let wb = load(&p).unwrap();
+    assert!(
+        text(&wb, 0, 0, 0).starts_with("0.5000"),
+        "the 255-character code applies"
+    );
+    assert_eq!(text(&wb, 0, 0, 1), "0.5");
+}
+
+#[test]
+fn only_the_sheet_asked_for_is_read_and_the_index_is_clamped() {
+    let pkg = Pkg::new(
+        None,
+        vec![
+            sheet("A", sheet_bin(&[(0, vec![real(0, 0, 1.0)])])),
+            sheet("B", sheet_bin(&[(0, vec![real(0, 0, 2.0)])])),
+            sheet("C", sheet_bin(&[(0, vec![real(0, 0, 3.0)])])),
+        ],
+    );
+    let dir = tmp("xlsb_one");
+    let p = pkg.write(&dir, "o.xlsb");
+    let one = |i: usize| load_workbook_sheet(&p, &LoadOptions::default(), i).unwrap();
+    for (i, want) in [(0, "1"), (1, "2"), (2, "3"), (9, "3")] {
+        let wb = one(i);
+        let names: Vec<&str> = wb.sheets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["A", "B", "C"], "every sheet is listed");
+        let loaded: Vec<usize> = (0..3).filter(|&k| wb.sheets[k].loaded).collect();
+        assert_eq!(loaded, [i.min(2)], "exactly the requested sheet has cells");
+        assert_eq!(wb.loaded_index(), Some(i.min(2)));
+        assert_eq!(wb.sheets[i.min(2)].display(0, 0), want);
+        assert!(wb.sheet_error.is_none());
+    }
+}
+
+#[test]
+fn a_damaged_sheet_part_is_a_sheet_error_and_the_other_sheets_still_load() {
+    let pkg = Pkg::new(
+        None,
+        vec![
+            sheet("Good", sheet_bin(&[(0, vec![real(0, 0, 1.0)])])),
+            // A record that claims more bytes than the stream has.
+            sheet("Bad", vec![0x91, 0x7F, 1, 2, 3]),
+        ],
+    );
+    let dir = tmp("xlsb_badsheet");
+    let p = pkg.write(&dir, "b.xlsb");
+    let wb = load_workbook_sheet(&p, &LoadOptions::default(), 1).unwrap();
+    assert_eq!(wb.sheets.len(), 2, "the workbook opened and lists both");
+    assert!(wb.loaded_index().is_none());
+    assert!(
+        matches!(wb.sheet_error, Some(OfficeError::Corrupt(_))),
+        "{:?}",
+        wb.sheet_error
+    );
+    let wb = load_workbook_sheet(&p, &LoadOptions::default(), 0).unwrap();
+    assert_eq!(wb.sheets[0].display(0, 0), "1");
+    assert!(wb.sheet_error.is_none());
 }

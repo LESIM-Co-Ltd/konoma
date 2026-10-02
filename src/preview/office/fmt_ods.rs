@@ -58,7 +58,7 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
 use super::container::{self, Limits};
-use super::fmt_xlsx::{SheetFormats, XlsxFormats, STRING_OVERHEAD};
+use super::fmt_xlsx::{keep_format_code, SheetFormats, XlsxFormats, STRING_OVERHEAD};
 use super::workbook::{CellError, NumFmtRef};
 use super::OfficeError;
 
@@ -702,6 +702,10 @@ impl FormatTable {
     }
 
     fn intern_code(&mut self, code: &str) -> u16 {
+        // Longer than Excel allows: not a format Excel wrote, shown as General (and never kept).
+        if !keep_format_code(code) {
+            return 0;
+        }
         let fmt = if code.trim().eq_ignore_ascii_case("general") {
             NumFmtRef::General
         } else {

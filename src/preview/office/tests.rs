@@ -11,7 +11,7 @@ use zip::{CompressionMethod, ZipWriter};
 
 use super::container::{self, Detected, Limits};
 use super::fmt_xlsx::{self, parse_a1, resolve_target, SheetFormats};
-use super::workbook::{load_inner, number_text};
+use super::workbook::{load_workbook_unguarded, number_text};
 use super::*;
 use crate::test_support::{sample_path_or_skip, unique_tmp, TmpDir};
 
@@ -229,9 +229,10 @@ pub(super) fn small_limits() -> Limits {
         max_entries: 50,
         max_part_bytes: 1 << 20,
         max_total_bytes: 4 << 20,
-        max_grid_cells: 1000,
+        max_sheet_cells: 1000,
         max_rows: 100,
         max_cols: 16,
+        max_sheet_text_bytes: 1 << 20,
         max_dense_cells: 10_000,
         max_text_bytes: 1 << 20,
     }
@@ -649,7 +650,7 @@ fn parse_styles_rejects_broken_xml_with_corrupt_not_panic() {
 
 fn sheet_formats(rows: &str, xf_to_format: &[u16]) -> SheetFormats {
     let xml = sheet_xml(rows, "");
-    fmt_xlsx::parse_sheet(xml.as_bytes(), xf_to_format, &[], &Limits::default()).unwrap()
+    fmt_xlsx::parse_sheet(xml.as_bytes(), xf_to_format, &Limits::default()).unwrap()
 }
 
 #[test]
@@ -666,7 +667,6 @@ fn parse_sheet_xf_zero_and_missing_s_are_general() {
     );
     assert_eq!(sf.cells, vec![(0, 1, 1)]);
     assert_eq!(sf.value_cells, 3);
-    assert_eq!(sf.bbox, Some((0, 0, 0, 2)));
     assert_eq!(sf.format_at(0, 1), 1);
     assert_eq!(sf.format_at(0, 0), 0);
     assert_eq!(sf.format_at(5, 5), 0);
@@ -718,7 +718,6 @@ fn parse_sheet_counts_only_value_bearing_cells() {
     // of what the dense matrix must cover.
     assert_eq!(sf.value_cells, 3);
     assert_eq!(sf.cells, vec![(0, 2, 1), (0, 3, 1), (0, 4, 1)]);
-    assert_eq!(sf.bbox, Some((0, 2, 0, 4)));
 }
 
 #[test]
@@ -731,11 +730,12 @@ fn parse_sheet_drops_formats_beyond_the_maximum_column_and_survives_bad_refs() {
         </row>"#;
     let sf = sheet_formats(rows, &[0, 1]);
     // XFD (index 16,383) keeps its format; XFE and ZZZZ are past the maximum so their formats are
-    // dropped, but they stay in the bounding box (the reader keeps those cells, so its dense matrix
-    // covers them); "??" falls back to the sequence position (after ZZZZ).
+    // dropped (the cells themselves are counted: the value reader returns them and the loader
+    // skips them); "??" falls back to the sequence position (after ZZZZ).
     assert!(sf.cells.contains(&(0, 16_383, 1)));
     assert_eq!(sf.cells.len(), 1, "{:?}", sf.cells);
-    assert!(sf.bbox.unwrap().3 > 16_383);
+    assert_eq!(sf.value_cells, 4);
+    assert!(!sf.truncated);
 }
 
 #[test]
@@ -750,8 +750,6 @@ fn parse_sheet_sorts_out_of_order_cells_so_lookup_works() {
     assert_eq!(sf.cells, vec![(0, 0, 1), (0, 2, 1), (2, 0, 1)]);
     assert_eq!(sf.format_at(0, 2), 1);
     assert_eq!(sf.format_at(2, 0), 1);
-    assert_eq!(sf.bbox, Some((0, 0, 2, 2)));
-    assert_eq!(sf.bbox_area(), 9);
 }
 
 #[test]
@@ -766,23 +764,22 @@ fn parse_sheet_value_cell_budget_is_enforced_while_streaming() {
     }
     let xml = sheet_xml(&rows, "");
     let limits = Limits {
-        max_dense_cells: 10,
+        max_sheet_cells: 10,
         ..Limits::default()
     };
-    let r = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0], &[], &limits);
-    assert_eq!(
-        r,
-        Err(OfficeError::TooLarge {
-            what: "sheet cells"
-        })
-    );
+    // The sheet has 40 cells: the pass stops at the 11th and says so; nothing past it is kept.
+    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0], &limits).unwrap();
+    assert!(sf.truncated);
+    assert_eq!(sf.value_cells, 10);
+    // Stopping at a budget is not stopping at a bad reference: the reader is not told to stop
+    // (its own budget does that).
+    assert_eq!(sf.reader_stop, None);
 }
 
 #[test]
 fn parse_sheet_empty_and_no_cells() {
     let sf = sheet_formats("", &[0]);
     assert_eq!(sf, SheetFormats::default());
-    assert_eq!(sf.bbox_area(), 0);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1125,7 +1122,7 @@ fn the_cell_budget_cuts_rows_not_columns() {
         .write(&dir, "bud.xlsx");
     // 4 columns, budget 40 cells -> 10 rows.
     let limits = Limits {
-        max_grid_cells: 40,
+        max_sheet_cells: 40,
         max_rows: 1000,
         ..small_limits()
     };
@@ -1134,7 +1131,7 @@ fn the_cell_budget_cuts_rows_not_columns() {
     assert!(s.rows_truncated && !s.cols_truncated);
     // A budget smaller than one row still keeps one row (never an empty grid for a non-empty sheet).
     let limits = Limits {
-        max_grid_cells: 1,
+        max_sheet_cells: 1,
         max_rows: 1000,
         ..small_limits()
     };
@@ -1144,8 +1141,10 @@ fn the_cell_budget_cuts_rows_not_columns() {
 }
 
 #[test]
-fn a_sparse_far_flung_sheet_is_refused_before_calamine_can_allocate_for_it() {
-    // Values at A1 and XFD1048576: calamine would build a ~17-billion-cell dense matrix.
+fn a_sparse_far_flung_sheet_shows_what_fits_instead_of_being_refused() {
+    // Values at A1 and XFD1048576. The old reader built a dense matrix over the bounding box
+    // (~17 billion cells, so the file had to be refused); the streamed reader reads A1, meets a
+    // row past the row cap and stops: the sheet is shown, capped.
     let dir = tmp("sparse");
     let rows = format!(
         r#"<row r="1">{}</row><row r="1048576">{}</row>"#,
@@ -1156,9 +1155,276 @@ fn a_sparse_far_flung_sheet_is_refused_before_calamine_can_allocate_for_it() {
         .sheet("S", "visible", sheet_xml(&rows, ""))
         .write(&dir, "sparse.xlsx");
     let t = std::time::Instant::now();
-    let r = load(&p);
-    assert_eq!(r.unwrap_err(), OfficeError::TooLarge { what: "sheet area" });
+    let wb = load(&p).unwrap();
     assert!(t.elapsed().as_secs() < 5);
+    let s = &wb.sheets[0];
+    assert_eq!(s.display(0, 0), "1");
+    assert!(s.rows_truncated, "the far cell is past the row cap");
+    // The grid is what was kept, never the box the file describes.
+    assert_eq!((s.nrows, s.ncols), (1, 1));
+}
+
+#[test]
+fn a_format_code_over_255_characters_is_dropped_and_255_is_kept() {
+    let keep = format!("0.{}", "0".repeat(253));
+    let drop = format!("0.{}", "0".repeat(254));
+    let xml = styles_xml(&[(164, &keep), (165, &drop)], &[164, 165]);
+    let st = fmt_xlsx::parse_styles(xml.as_bytes()).unwrap();
+    assert_eq!(
+        st.formats,
+        vec![NumFmtRef::General, NumFmtRef::Custom(keep.as_str().into())]
+    );
+    assert_eq!(st.xf_to_format, vec![1, 0]);
+    // Counted in characters, not bytes: 255 two-byte characters are kept.
+    let wide = "é".repeat(255);
+    let xml = styles_xml(&[(164, &wide)], &[164]);
+    let st = fmt_xlsx::parse_styles(xml.as_bytes()).unwrap();
+    assert_eq!(st.formats.len(), 2);
+    // A code written with escapes is measured after decoding: 255 `&amp;` are 255 characters.
+    let esc = "&amp;".repeat(255);
+    let xml = styles_xml(&[(164, &esc)], &[164]);
+    let st = fmt_xlsx::parse_styles(xml.as_bytes()).unwrap();
+    assert_eq!(st.formats.len(), 2, "1,275 raw bytes, 255 characters");
+    // End to end.
+    let dir = tmp("xlsx_longcode");
+    let rows = format!(
+        r#"<row r="1">{}{}</row>"#,
+        num("A1", Some(1), "0.5"),
+        num("B1", Some(2), "0.5")
+    );
+    let p = Pkg::new()
+        .styles(styles_xml(&[(164, &keep), (165, &drop)], &[0, 164, 165]))
+        .sheet("S", "visible", sheet_xml(&rows, ""))
+        .write(&dir, "l.xlsx");
+    let wb = load(&p).unwrap();
+    assert!(
+        wb.sheets[0].display(0, 0).starts_with("0.5000"),
+        "the kept code applies"
+    );
+    assert_eq!(wb.sheets[0].display(0, 1), "0.5");
+    assert_eq!(
+        wb.formats.len(),
+        2,
+        "the long code is not in the workbook's table"
+    );
+}
+
+#[test]
+fn a_huge_format_code_is_dropped_without_being_decoded() {
+    // A 4 MB attribute: far past the 2,550 raw bytes a kept code can take, so it is skipped
+    // before being unescaped or copied; the styles part still parses and the rest is intact.
+    let huge = "9".repeat(4 << 20);
+    let xml = format!(
+        r#"<?xml version="1.0"?><styleSheet xmlns="{NS}"><numFmts count="2">
+        <numFmt numFmtId="164" formatCode="{huge}"/><numFmt numFmtId="165" formatCode="0.0"/></numFmts>
+        <cellXfs count="2"><xf numFmtId="164"/><xf numFmtId="165"/></cellXfs></styleSheet>"#
+    );
+    let st = fmt_xlsx::parse_styles(xml.as_bytes()).unwrap();
+    assert_eq!(
+        st.formats,
+        vec![NumFmtRef::General, NumFmtRef::Custom("0.0".into())]
+    );
+    assert_eq!(st.xf_to_format, vec![0, 1]);
+}
+
+#[test]
+fn a_row_reference_past_u32_saturates_instead_of_falling_back_to_the_next_row() {
+    // `parse::<u32>` fails on 5000000000 and the old code then treated the row as "the next one";
+    // the reference is a row far past any cap and must read as such.
+    use super::fmt_xlsx::MAX_MERGES;
+    let _ = MAX_MERGES;
+    let xml = sheet_xml(
+        &format!(
+            r#"<row r="1">{}</row><row r="5000000000">{}</row>"#,
+            num("A1", Some(1), "1"),
+            num("A5000000000", Some(1), "2")
+        ),
+        "",
+    );
+    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &Limits::default()).unwrap();
+    assert!(sf.truncated);
+    assert_eq!(sf.reader_stop, Some(1), "one cell precedes the bad row");
+    assert_eq!(sf.cells, vec![(0, 0, 1)]);
+}
+
+#[test]
+fn the_format_pass_stops_at_the_first_row_past_the_cap_and_counts_what_precedes() {
+    let rows: String = (1..=10)
+        .map(|r| {
+            format!(
+                r#"<row r="{r}">{}{}</row>"#,
+                num(&format!("A{r}"), Some(1), "1"),
+                num(&format!("B{r}"), Some(1), "1")
+            )
+        })
+        .collect();
+    let xml = sheet_xml(&rows, "");
+    let limits = Limits {
+        max_rows: 4,
+        ..Limits::default()
+    };
+    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &limits).unwrap();
+    assert!(sf.truncated);
+    assert_eq!(
+        sf.reader_stop,
+        Some(8),
+        "rows 1-4: eight cells, then row 5 is past the cap"
+    );
+    assert_eq!(sf.cells.len(), 8);
+}
+
+#[test]
+fn merged_ranges_are_read_by_the_format_pass_and_bounded() {
+    let after = r#"<mergeCells count="3"><mergeCell ref="A1:B2"/><mergeCell ref="C3"/><mergeCell ref="??"/></mergeCells>"#;
+    let xml = sheet_xml(
+        &format!(r#"<row r="1">{}</row>"#, num("A1", None, "1")),
+        after,
+    );
+    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0], &Limits::default()).unwrap();
+    assert_eq!(
+        sf.merges,
+        vec![
+            MergeRange {
+                row0: 0,
+                col0: 0,
+                row1: 1,
+                col1: 1
+            },
+            MergeRange {
+                row0: 2,
+                col0: 2,
+                row1: 2,
+                col1: 2
+            },
+        ]
+    );
+    // And through the loader.
+    let dir = tmp("xlsx_merges");
+    let p = Pkg::new()
+        .sheet(
+            "S",
+            "visible",
+            sheet_xml(
+                &format!(r#"<row r="1">{}</row>"#, num("A1", None, "1")),
+                after,
+            ),
+        )
+        .write(&dir, "m.xlsx");
+    assert_eq!(load(&p).unwrap().sheets[0].merges.len(), 2);
+    // At most MAX_MERGES are kept.
+    let many: String = (0..fmt_xlsx::MAX_MERGES + 50)
+        .map(|i| format!(r#"<mergeCell ref="A{}"/>"#, i + 1))
+        .collect();
+    let xml = sheet_xml("", &format!("<mergeCells>{many}</mergeCells>"));
+    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0], &Limits::default()).unwrap();
+    assert_eq!(sf.merges.len(), fmt_xlsx::MAX_MERGES);
+}
+
+#[test]
+fn only_the_sheet_asked_for_is_read_and_the_index_is_clamped() {
+    let dir = tmp("xlsx_one");
+    let cell = |t: &str| format!(r#"<row r="1">{}</row>"#, istr("A1", None, t));
+    let p = Pkg::new()
+        .sheet("A", "visible", sheet_xml(&cell("a-text"), ""))
+        .sheet("Hidden", "hidden", sheet_xml(&cell("h-text"), ""))
+        .sheet("B", "visible", sheet_xml(&cell("b-text"), ""))
+        .sheet("C", "visible", sheet_xml(&cell("c-text"), ""))
+        .write(&dir, "o.xlsx");
+    let one = |i: usize| load_workbook_sheet(&p, &LoadOptions::default(), i).unwrap();
+    for (i, want) in [(0, "a-text"), (1, "b-text"), (2, "c-text"), (50, "c-text")] {
+        let wb = one(i);
+        let names: Vec<&str> = wb.sheets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["A", "B", "C"],
+            "visible sheets listed by name, hidden counted"
+        );
+        assert_eq!(wb.hidden_sheets, 1);
+        let k = i.min(2);
+        assert_eq!(wb.loaded_index(), Some(k));
+        assert_eq!(wb.sheets.iter().filter(|s| s.loaded).count(), 1);
+        assert_eq!(wb.sheets[k].display(0, 0), want);
+        // The sheets that were not asked for are the placeholders, not empty grids that look read.
+        for (j, s) in wb.sheets.iter().enumerate().filter(|&(j, _)| j != k) {
+            assert!(!s.loaded && s.nrows == 0 && s.cell(0, 0).is_none(), "{j}");
+        }
+    }
+    // A workbook with no visible sheet lists none and loads none, whatever is asked.
+    let p = Pkg::new()
+        .sheet("H", "hidden", sheet_xml(&cell("x"), ""))
+        .write(&dir, "n.xlsx");
+    let wb = one_of(&p, 3);
+    assert!(wb.sheets.is_empty() && wb.loaded_index().is_none() && wb.sheet_error.is_none());
+    assert_eq!(wb.hidden_sheets, 1);
+}
+
+fn one_of(p: &Path, i: usize) -> Workbook {
+    load_workbook_sheet(p, &LoadOptions::default(), i).unwrap()
+}
+
+#[test]
+fn a_damaged_sheet_is_a_sheet_error_not_a_workbook_error() {
+    let dir = tmp("xlsx_badsheet");
+    let good = format!(r#"<row r="1">{}</row>"#, istr("A1", None, "fine"));
+    let p = Pkg::new()
+        .sheet("Good", "visible", sheet_xml(&good, ""))
+        .sheet(
+            "Bad",
+            "visible",
+            sheet_xml(r#"<row r="1"><c r="A1"><v>1</v></c></row></nope>"#, ""),
+        )
+        .write(&dir, "b.xlsx");
+    let wb = one_of(&p, 1);
+    assert_eq!(wb.sheets.len(), 2);
+    assert!(wb.loaded_index().is_none());
+    assert!(
+        matches!(wb.sheet_error, Some(OfficeError::Corrupt(_))),
+        "{:?}",
+        wb.sheet_error
+    );
+    let wb = one_of(&p, 0);
+    assert_eq!(wb.sheets[0].display(0, 0), "fine");
+    assert!(wb.sheet_error.is_none());
+    // Asking for every sheet at once (tests only) is an error: nothing is silently skipped.
+    assert!(matches!(load(&p), Err(OfficeError::Corrupt(_))));
+}
+
+#[test]
+fn unload_cells_keeps_the_names_and_drops_the_cells_and_the_error() {
+    let dir = tmp("xlsx_unload");
+    let cell = |t: &str| format!(r#"<row r="1">{}</row>"#, istr("A1", None, t));
+    let p = Pkg::new()
+        .sheet("A", "visible", sheet_xml(&cell("a"), ""))
+        .sheet("B", "visible", sheet_xml(&cell("b"), ""))
+        .write(&dir, "u.xlsx");
+    let mut wb = one_of(&p, 1);
+    wb.sheet_error = Some(OfficeError::Encrypted);
+    wb.unload_cells();
+    assert!(wb.loaded_index().is_none() && wb.sheet_error.is_none());
+    let names: Vec<&str> = wb.sheets.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["A", "B"]);
+    assert!(wb.sheets.iter().all(|s| s.nrows == 0));
+}
+
+#[test]
+fn a_cell_that_arrives_out_of_order_or_twice_is_sorted_and_the_last_one_wins() {
+    let dir = tmp("xlsx_order");
+    let rows = format!(
+        r#"<row r="1">{}{}{}</row>"#,
+        num("C1", None, "3"),
+        num("A1", None, "1"),
+        num("C1", None, "30"),
+    );
+    let p = Pkg::new()
+        .sheet("S", "visible", sheet_xml(&rows, ""))
+        .write(&dir, "o.xlsx");
+    let s = &load(&p).unwrap().sheets[0];
+    assert_eq!(
+        s.row_cells(0).iter().map(|&(c, _)| c).collect::<Vec<_>>(),
+        [0, 2]
+    );
+    assert_eq!(s.display(0, 0), "1");
+    assert_eq!(s.display(0, 2), "30");
 }
 
 #[test]
@@ -1223,9 +1489,10 @@ fn shared_ref(r: &str) -> String {
 }
 
 #[test]
-fn formula_only_cells_in_far_corners_are_refused_like_value_cells() {
-    // calamine builds the range of formulas over the bounding box of the cells that have a
-    // formula (`Range::from_sparse`): ~550 GB for these two, with no `<v>` anywhere.
+fn formula_only_cells_in_far_corners_do_not_widen_the_sheet() {
+    // The old reader built the range of formulas over the bounding box of the formula cells
+    // (~550 GB for these two). Streamed, the formula at A1 is kept and the far one is past the
+    // row cap, where the reading stops.
     let dir = tmp("xlsx_formula_far");
     let rows = format!(
         r#"<row r="1">{}</row><row r="1048576">{}</row>"#,
@@ -1236,12 +1503,13 @@ fn formula_only_cells_in_far_corners_are_refused_like_value_cells() {
         .sheet("S", "visible", sheet_xml(&rows, ""))
         .write(&dir, "f.xlsx");
     let t = std::time::Instant::now();
-    assert_eq!(
-        load(&p).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
-    );
+    let wb = load(&p).unwrap();
     assert!(t.elapsed().as_secs() < 5);
-    // One value and one formula-only cell apart: the box is what counts, not the kinds.
+    let s = &wb.sheets[0];
+    assert_eq!(s.formula(0, 0), Some("1"));
+    assert!(s.rows_truncated);
+    assert_eq!((s.nrows, s.ncols), (1, 1));
+    // One value and one formula-only cell apart: same.
     let rows = format!(
         r#"<row r="1">{}</row><row r="1048576">{}</row>"#,
         num("A1", None, "1"),
@@ -1250,14 +1518,13 @@ fn formula_only_cells_in_far_corners_are_refused_like_value_cells() {
     let p = Pkg::new()
         .sheet("S", "visible", sheet_xml(&rows, ""))
         .write(&dir, "g.xlsx");
-    assert_eq!(
-        load(&p).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
-    );
+    let s = &load(&p).unwrap().sheets[0];
+    assert_eq!(s.display(0, 0), "1");
+    assert_eq!((s.nrows, s.ncols), (1, 1));
 }
 
 #[test]
-fn a_shared_formula_cell_without_text_still_counts_as_a_cell() {
+fn a_shared_formula_cell_without_text_far_away_is_never_reached() {
     let dir = tmp("xlsx_shared_formula_far");
     let rows = format!(
         r#"<row r="1">{}</row><row r="1048576"><c r="XFD1048576"><f t="shared" si="0"/></c></row>"#,
@@ -1266,48 +1533,142 @@ fn a_shared_formula_cell_without_text_still_counts_as_a_cell() {
     let p = Pkg::new()
         .sheet("S", "visible", sheet_xml(&rows, ""))
         .write(&dir, "s.xlsx");
-    assert_eq!(
-        load(&p).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
-    );
+    let s = &load(&p).unwrap().sheets[0];
+    assert_eq!((s.nrows, s.ncols), (1, 1));
+    assert!(s.rows_truncated);
 }
 
 #[test]
-fn columns_past_xfd_widen_the_box_so_a_far_column_is_refused() {
-    // The reader does not drop `ZZZ1048576`; its dense matrix would be 475k x 1M cells.
+fn columns_past_xfd_are_skipped_and_a_far_row_ends_the_sheet() {
+    // `ZZZ1` is past the column cap: its cell is dropped and the sheet says columns were cut.
+    // `ZZZ1048576` is past the row cap, where the reading stops.
     let dir = tmp("xlsx_zzz");
     let rows = format!(
-        r#"<row r="1">{}</row><row r="1048576">{}</row>"#,
+        r#"<row r="1">{}{}</row><row r="1048576">{}</row>"#,
         num("A1", None, "1"),
+        num("ZZZ1", None, "9"),
         num("ZZZ1048576", None, "2")
     );
     let p = Pkg::new()
         .sheet("S", "visible", sheet_xml(&rows, ""))
         .write(&dir, "z.xlsx");
+    let s = &load_with(&p, small_limits()).unwrap().sheets[0];
+    assert_eq!(s.display(0, 0), "1");
+    assert!(s.cols_truncated && s.rows_truncated);
+    assert_eq!(s.ncols, 16, "the column cap of `small_limits`");
     assert_eq!(
-        load(&p).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
+        s.row_cells(0).len(),
+        1,
+        "the cell past the column cap is gone"
     );
 }
 
+/// The properties of a hostile reference that matter, whichever way it is written: the sheet
+/// loads (the rows before it are shown), it says it was cut, and **the value reader is never asked
+/// to parse the reference** — `calamine` does that with plain `u32` arithmetic that panics in a
+/// debug build and wraps in a release build (to an arbitrary row: a `<row r="5000000000">` landed
+/// at row ~705 million, which sized its dense matrix at ~22 GB). The tests run in a debug build, so
+/// a reader that *was* asked would panic and the sheet would come back as a `Corrupt`.
 #[test]
-fn a_cell_reference_long_enough_to_wrap_the_readers_arithmetic_is_refused() {
+fn a_reference_that_would_overflow_the_readers_arithmetic_is_never_handed_to_it() {
     let dir = tmp("xlsx_absurd_ref");
-    for r in ["ZZZZZZZZZZ1", "A99999999999", "AAAAAAAA5"] {
-        let rows = format!(
-            r#"<row r="1">{}{}</row>"#,
-            num("A1", None, "1"),
-            num(r, None, "2")
-        );
+    let cases: Vec<(&str, String)> = vec![
+        // The cell reference overflows.
+        (
+            "cell letters",
+            format!(
+                r#"<row r="1">{}{}</row>"#,
+                num("A1", None, "1"),
+                num("ZZZZZZZZZZ1", None, "2")
+            ),
+        ),
+        (
+            "cell digits",
+            format!(
+                r#"<row r="1">{}{}</row>"#,
+                num("A1", None, "1"),
+                num("A99999999999", None, "2")
+            ),
+        ),
+        (
+            "cell letters 2",
+            format!(
+                r#"<row r="1">{}{}</row>"#,
+                num("A1", None, "1"),
+                num("AAAAAAAA5", None, "2")
+            ),
+        ),
+        // The row reference overflows `u32` (5,000,000,000; and 4,294,967,297, which wraps to row 1).
+        (
+            "row 5e9",
+            format!(
+                r#"<row r="1">{}</row><row r="5000000000">{}</row>"#,
+                num("A1", None, "1"),
+                num("A5000000000", None, "2")
+            ),
+        ),
+        (
+            "row 5e9 cell without r",
+            format!(
+                r#"<row r="1">{}</row><row r="5000000000"><c><v>2</v></c></row>"#,
+                num("A1", None, "1"),
+            ),
+        ),
+        (
+            "row wraps to 1",
+            format!(
+                r#"<row r="1">{}</row><row r="4294967297"><c r="A4294967297"><v>2</v></c></row>"#,
+                num("A1", None, "1"),
+            ),
+        ),
+        // Merely past the row cap (a perfectly valid file).
+        (
+            "row past the cap",
+            format!(
+                r#"<row r="1">{}</row><row r="101">{}</row>"#,
+                num("A1", None, "1"),
+                num("A101", None, "2")
+            ),
+        ),
+    ];
+    for (what, rows) in cases {
         let p = Pkg::new()
             .sheet("S", "visible", sheet_xml(&rows, ""))
             .write(&dir, "r.xlsx");
+        let wb = load_with(&p, small_limits()).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+        let s = &wb.sheets[0];
+        assert_eq!(s.display(0, 0), "1", "{what}");
+        assert!(s.rows_truncated, "{what}");
         assert_eq!(
-            load(&p).unwrap_err(),
-            OfficeError::TooLarge { what: "sheet area" },
-            "{r}"
+            (s.nrows, s.ncols),
+            (1, 1),
+            "{what}: nothing past the bad reference"
         );
     }
+}
+
+#[test]
+fn a_forged_shared_formula_index_is_refused_for_that_sheet() {
+    // The value reader grows a table to the largest `si` it meets (`si="4000000000"` = ~160 GB).
+    // A group index cannot honestly exceed the cells a sheet may hold.
+    let dir = tmp("xlsx_si");
+    let rows = r#"<row r="1"><c r="A1"><f t="shared" ref="A1:A2" si="4000000000">1+1</f><v>2</v></c></row>"#;
+    let p = Pkg::new()
+        .sheet("S", "visible", sheet_xml(rows, ""))
+        .write(&dir, "si.xlsx");
+    let r = load(&p);
+    assert_eq!(
+        r.unwrap_err(),
+        OfficeError::TooLarge {
+            what: "sheet cells"
+        }
+    );
+    // An index inside the sheet's cell budget is fine.
+    let rows = r#"<row r="1"><c r="A1"><f t="shared" ref="A1:A2" si="3">1+1</f><v>2</v></c></row>"#;
+    let p = Pkg::new()
+        .sheet("S", "visible", sheet_xml(rows, ""))
+        .write(&dir, "si_ok.xlsx");
+    assert!(load(&p).is_ok());
 }
 
 /// A workbook with one shared string of `len` bytes referenced by `refs` cells.
@@ -1321,37 +1682,69 @@ fn shared_ref_pkg(len: usize, refs: usize) -> Pkg {
 }
 
 #[test]
-fn one_long_shared_string_used_by_many_cells_is_refused_by_the_text_budget() {
-    // 10 KB x 200 cells = 2 MB of text from a ~12 KB file (the budget here is 1 MiB). In the
-    // real limits this is the 100 KB -> 1.2 GB amplification.
+fn one_long_shared_string_used_by_many_cells_cuts_the_sheet_at_the_text_budget() {
+    // 10 KB x 200 cells = 2 MB of text from a ~12 KB file (the sheet's text budget here is
+    // 1 MiB). In the real limits this is the 100 KB -> 1.2 GB amplification. The sheet is shown up
+    // to the cell that no longer fits, and says it was cut — it is not refused.
     let dir = tmp("xlsx_amplify");
     let limits = Limits {
         max_rows: 1000,
-        max_grid_cells: 100_000,
+        max_sheet_cells: 100_000,
         ..small_limits()
     };
     let p = shared_ref_pkg(10_000, 200).write(&dir, "a.xlsx");
-    assert_eq!(
-        load_with(&p, limits).unwrap_err(),
-        OfficeError::TooLarge { what: "text" }
-    );
-    // The same string used by few cells loads.
+    let s = &load_with(&p, limits).unwrap().sheets[0];
+    assert!(s.rows_truncated);
+    // Each kept cell costs 10,000 + 32 bytes: 1 MiB holds 104 of them.
+    let budget = limits.max_sheet_text_bytes;
+    assert_eq!(s.nrows as u64, budget / 10_032);
+    assert_eq!(s.display(s.nrows - 1, 0).len(), 10_000);
+    // The same string used by few cells loads whole.
     let p = shared_ref_pkg(10_000, 50).write(&dir, "b.xlsx");
-    let wb = load_with(&p, limits).unwrap();
-    assert_eq!(wb.sheets[0].display(49, 0).len(), 10_000);
+    let s = &load_with(&p, limits).unwrap().sheets[0];
+    assert!(!s.rows_truncated);
+    assert_eq!(s.display(49, 0).len(), 10_000);
 }
 
 #[test]
 fn the_text_budget_boundary_is_exact_for_shared_strings() {
-    // table cost = len + 32; each reference = len + 32. With 2 cells: 3 x (len + 32).
+    // Each kept reference costs len + 32 against the sheet's text budget (the table itself is
+    // checked separately, before the file is opened, against `max_text_bytes`).
     let dir = tmp("xlsx_text_boundary");
     let len = 1000usize;
-    let exact = 3 * (len as u64 + 32);
+    let mk = |budget| Limits {
+        max_sheet_text_bytes: budget,
+        ..small_limits()
+    };
+    let p = shared_ref_pkg(len, 3).write(&dir, "e.xlsx");
+    let rows_at = |budget| {
+        let s = &load_with(&p, mk(budget)).unwrap().sheets[0];
+        (s.nrows, s.rows_truncated)
+    };
+    let one = len as u64 + 32;
+    assert_eq!(rows_at(3 * one), (3, false), "exactly fits");
+    assert_eq!(
+        rows_at(3 * one - 1),
+        (2, true),
+        "one byte short of the third"
+    );
+    assert_eq!(rows_at(2 * one), (2, true));
+    assert_eq!(rows_at(one - 1), (0, true), "not even the first");
+}
+
+#[test]
+fn the_shared_strings_table_is_checked_against_its_own_limit() {
+    // The table is the one thing `calamine` loads whole when it opens the file: it is refused
+    // before opening when it is over `max_text_bytes` (table cost = len + 32 per string), whatever
+    // the sheets hold.
+    let dir = tmp("xlsx_sst_boundary");
+    let len = 1000usize;
+    let p = shared_ref_pkg(len, 1).write(&dir, "t.xlsx");
     let mk = |budget| Limits {
         max_text_bytes: budget,
         ..small_limits()
     };
-    let p = shared_ref_pkg(len, 2).write(&dir, "e.xlsx");
+    let exact = len as u64 + 32;
     assert!(load_with(&p, mk(exact)).is_ok());
     assert_eq!(
         load_with(&p, mk(exact - 1)).unwrap_err(),
@@ -1390,11 +1783,11 @@ fn a_forged_unique_count_is_refused_before_calamine_reserves_for_it() {
 }
 
 #[test]
-fn inline_strings_and_formula_text_count_against_the_text_budget() {
+fn inline_strings_and_formula_text_count_against_the_sheet_text_budget() {
     let dir = tmp("xlsx_inline_text");
     let limits = Limits {
         max_rows: 1000,
-        max_grid_cells: 100_000,
+        max_sheet_cells: 100_000,
         ..roomy_parts()
     };
     let big = "z".repeat(10_000);
@@ -1409,10 +1802,9 @@ fn inline_strings_and_formula_text_count_against_the_text_budget() {
     let p = Pkg::new()
         .sheet("S", "visible", sheet_xml(&rows, ""))
         .write(&dir, "i.xlsx");
-    assert_eq!(
-        load_with(&p, limits).unwrap_err(),
-        OfficeError::TooLarge { what: "text" }
-    );
+    let s = &load_with(&p, limits).unwrap().sheets[0];
+    assert!(s.rows_truncated);
+    assert_eq!(s.nrows as u64, limits.max_sheet_text_bytes / 10_032);
     // The text result of a formula (`t="str"`) is text too; a long numeric `<v>` is not.
     let rows: String = (1..=200)
         .map(|i| format!(r#"<row r="{i}"><c r="A{i}" t="str"><f>1</f><v>{big}</v></c></row>"#))
@@ -1420,12 +1812,12 @@ fn inline_strings_and_formula_text_count_against_the_text_budget() {
     let p = Pkg::new()
         .sheet("S", "visible", sheet_xml(&rows, ""))
         .write(&dir, "s.xlsx");
-    assert_eq!(
-        load_with(&p, limits).unwrap_err(),
-        OfficeError::TooLarge { what: "text" }
-    );
+    let s = &load_with(&p, limits).unwrap().sheets[0];
+    assert!(s.rows_truncated);
+    assert!(s.nrows < 200);
     // A shared formula: one master with 2 KB of text, 600 cells derived from it (each gets its
-    // own copy of the translated text in the reader and in the loader).
+    // own copy of the translated text in the reader and in the loader): 600 x 2 KB is over the
+    // 1 MiB budget, so the sheet is cut where the formulas stop fitting.
     let master = format!(
         r#"<c r="A1"><f t="shared" ref="A1:A600" si="0">{}</f><v>1</v></c>"#,
         "1+".repeat(1000) + "1"
@@ -1437,10 +1829,10 @@ fn inline_strings_and_formula_text_count_against_the_text_budget() {
     let p = Pkg::new()
         .sheet("S", "visible", sheet_xml(&rows, ""))
         .write(&dir, "f.xlsx");
-    assert_eq!(
-        load_with(&p, limits).unwrap_err(),
-        OfficeError::TooLarge { what: "text" }
-    );
+    let s = &load_with(&p, limits).unwrap().sheets[0];
+    assert!(s.rows_truncated);
+    assert!(s.nrows > 100 && s.nrows < 600, "{}", s.nrows);
+    assert!(s.formula(s.nrows - 1, 0).is_some());
 }
 
 #[test]
@@ -1476,12 +1868,14 @@ fn column_sheet(rows: usize) -> String {
 }
 
 #[test]
-fn the_grid_cell_budget_is_shared_by_the_whole_workbook() {
-    // 1,000 cells for the workbook, one column per sheet: the first sheet takes 600, the second
-    // gets the 400 that are left, the third none (and says so).
+fn the_cell_budget_is_per_sheet_so_every_sheet_of_a_big_workbook_is_shown() {
+    // The old budget was one for the whole workbook (handed out in sheet order: the third of
+    // three big sheets came out empty). Now each sheet has its own, and only the one on screen
+    // is held anyway.
     let dir = tmp("xlsx_wb_budget");
     let limits = Limits {
         max_rows: 1000,
+        max_sheet_cells: 1000,
         ..small_limits()
     };
     let p = Pkg::new()
@@ -1491,44 +1885,99 @@ fn the_grid_cell_budget_is_shared_by_the_whole_workbook() {
         .write(&dir, "wb.xlsx");
     let wb = load_with(&p, limits).unwrap();
     let rows: Vec<usize> = wb.sheets.iter().map(|s| s.nrows).collect();
-    assert_eq!(rows, vec![600, 400, 0]);
-    let cut: Vec<bool> = wb.sheets.iter().map(|s| s.rows_truncated).collect();
-    assert_eq!(cut, vec![false, true, true]);
-    let cells: usize = wb.sheets.iter().map(|s| s.nrows * s.ncols).sum();
-    assert!(cells <= 1000, "{cells}");
-    // A sheet that fits is not cut just because others exist.
+    assert_eq!(rows, vec![600, 600, 600]);
+    assert!(wb.sheets.iter().all(|s| !s.rows_truncated));
+    // A sheet over its own budget is cut, the others are not.
     let p = Pkg::new()
         .sheet("A", "visible", column_sheet(300))
-        .sheet("B", "visible", column_sheet(300))
+        .sheet("B", "visible", column_sheet(1500))
+        .sheet("C", "visible", column_sheet(300))
         .write(&dir, "ok.xlsx");
     let wb = load_with(&p, limits).unwrap();
-    assert!(wb
+    let cut: Vec<(usize, bool)> = wb
         .sheets
         .iter()
-        .all(|s| s.nrows == 300 && !s.rows_truncated));
+        .map(|s| (s.nrows, s.rows_truncated))
+        .collect();
+    assert_eq!(cut, vec![(300, false), (1000, true), (300, false)]);
 }
 
 #[test]
-fn a_sheet_always_gets_one_row_while_budget_remains() {
-    let dir = tmp("xlsx_wb_one_row");
+fn a_hidden_sheets_size_never_refuses_the_workbook() {
+    // The old format pass parsed hidden sheets too (it parsed every sheet) and refused the whole
+    // workbook for the size of one nobody can see. Only the sheet asked for is read now.
+    let dir = tmp("xlsx_hidden_big");
+    let huge: String = (1..=1000)
+        .map(|r| {
+            format!(
+                r#"<row r="{r}">{}</row>"#,
+                istr(&format!("A{r}"), None, &"h".repeat(5000))
+            )
+        })
+        .collect();
+    let far = format!(
+        r#"<row r="1">{}</row><row r="1048576">{}</row>"#,
+        num("A1", None, "1"),
+        num("XFD1048576", None, "2")
+    );
+    let ok = format!(r#"<row r="1">{}</row>"#, num("A1", None, "7"));
+    let p = Pkg::new()
+        .sheet("Visible", "visible", sheet_xml(&ok, ""))
+        .sheet("HiddenText", "hidden", sheet_xml(&huge, ""))
+        .sheet("HiddenFar", "veryHidden", sheet_xml(&far, ""))
+        .write(&dir, "h.xlsx");
     let limits = Limits {
-        max_grid_cells: 5,
-        max_cols: 16,
-        max_rows: 100,
+        max_sheet_text_bytes: 1000,
+        max_sheet_cells: 10,
+        ..roomy_parts()
+    };
+    let wb = load_with(&p, limits).unwrap();
+    assert_eq!(wb.sheets.len(), 1);
+    assert_eq!(wb.hidden_sheets, 2);
+    assert_eq!(wb.sheets[0].display(0, 0), "7");
+    // One sheet only, as the application asks for it: the other sheet's cells are not even read.
+    let one = load_workbook_sheet(
+        &p,
+        &LoadOptions {
+            limits,
+            ..LoadOptions::default()
+        },
+        0,
+    )
+    .unwrap();
+    assert_eq!(one.sheets[0].display(0, 0), "7");
+}
+
+#[test]
+fn a_text_cell_shown_through_a_repeating_format_is_cut_at_the_display_cap() {
+    // A text format of 255 `@` repeats the text 255 times; a 32,767-character cell would then
+    // display 8 MB. A displayed string is cut at 1,024 characters, and what is kept is what the
+    // budget counts.
+    let dir = tmp("xlsx_display_cap");
+    let code = "@".repeat(255);
+    let rows = format!(
+        r#"<row r="1">{}{}</row>"#,
+        istr("A1", Some(1), "hello"),
+        istr("B1", Some(1), &"x".repeat(30_000)),
+    );
+    let p = Pkg::new()
+        .styles(styles_xml(&[(164, &code)], &[0, 164]))
+        .sheet("S", "visible", sheet_xml(&rows, ""))
+        .write(&dir, "cap.xlsx");
+    let limits = Limits {
+        max_sheet_text_bytes: 1 << 20,
         ..small_limits()
     };
-    // 10 columns wide but only 5 cells left: one (over-budget) row, then nothing for the next.
-    let wide: String = (0..10)
-        .map(|c| num(&format!("{}1", (b'A' + c) as char), None, "1"))
-        .collect();
-    let rows = format!(r#"<row r="1">{wide}</row><row r="2">{wide}</row>"#);
-    let p = Pkg::new()
-        .sheet("A", "visible", sheet_xml(&rows, ""))
-        .sheet("B", "visible", sheet_xml(&rows, ""))
-        .write(&dir, "w.xlsx");
-    let wb = load_with(&p, limits).unwrap();
-    assert_eq!(wb.sheets[0].nrows, 1);
-    assert_eq!(wb.sheets[1].nrows, 0);
+    let s = &load_with(&p, limits).unwrap().sheets[0];
+    assert_eq!(
+        s.display(0, 0).chars().count(),
+        1024,
+        "5 x 255 = 1,275 characters, cut"
+    );
+    assert!(s.display(0, 0).starts_with("hellohello"));
+    assert_eq!(s.display(0, 1).chars().count(), 1024);
+    // The raw value is whole.
+    assert_eq!(s.cell(0, 1).unwrap().raw_text().len(), 30_000);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1686,10 +2135,11 @@ fn default_limits_are_the_documented_values() {
     assert_eq!(l.max_entries, 10_000);
     assert_eq!(l.max_part_bytes, 256 << 20);
     assert_eq!(l.max_total_bytes, 1 << 30);
-    assert_eq!(l.max_grid_cells, 4_000_000);
+    assert_eq!(l.max_sheet_cells, 4_000_000);
     assert_eq!(l.max_rows, crate::preview::table::MAX_ROWS);
     assert_eq!(l.max_cols, 16_384);
-    assert_eq!(l.max_dense_cells, 16_000_000);
+    assert_eq!(l.max_sheet_text_bytes, 128 << 20);
+    assert_eq!(l.max_dense_cells, 8_000_000);
     assert_eq!(l.max_text_bytes, 256 << 20);
 }
 
@@ -1827,7 +2277,12 @@ pub(super) fn assert_inner_does_not_panic(
         ..LoadOptions::default()
     };
     let p = path.to_path_buf();
-    match std::panic::catch_unwind(move || load_inner(&p, &opts)) {
+    match std::panic::catch_unwind(move || load_workbook_unguarded(&p, &opts)) {
+        // A panic inside one sheet is caught per sheet (the workbook stays usable) and reported
+        // as this `Corrupt`; for a test it is still a panic.
+        Ok(Err(OfficeError::Corrupt(m))) if m.contains("crashed") => {
+            panic!("the loader panicked on {what}: {m}")
+        }
         Ok(r) => r,
         Err(_) => panic!("the loader panicked on {what}"),
     }
@@ -2498,8 +2953,9 @@ fn a_chartsheet_in_an_xlsx_is_neither_listed_nor_counted_as_hidden() {
 }
 
 #[test]
-fn the_dense_box_limit_is_exact() {
-    // Two values at A1 and C3: a 3 x 3 bounding box, nine cells for the reader's dense matrix.
+fn the_bounding_box_of_an_xlsx_sheet_is_not_limited_because_it_is_never_built() {
+    // Two values at A1 and C3 (a 3 x 3 box) with `max_dense_cells` of 1: xlsx is streamed, so
+    // the limit that guards the dense matrices of ods / xls does not apply to it.
     let dir = tmp("denseexact");
     let rows = format!(
         r#"<row r="1">{}</row><row r="3">{}</row>"#,
@@ -2509,21 +2965,16 @@ fn the_dense_box_limit_is_exact() {
     let p = Pkg::new()
         .sheet("S", "visible", sheet_xml(&rows, ""))
         .write(&dir, "d.xlsx");
-    let at = |n: u64| {
-        load_with(
-            &p,
-            Limits {
-                max_dense_cells: n,
-                ..small_limits()
-            },
-        )
-    };
-    let wb = at(9).unwrap();
+    let wb = load_with(
+        &p,
+        Limits {
+            max_dense_cells: 1,
+            ..small_limits()
+        },
+    )
+    .unwrap();
     assert_eq!((wb.sheets[0].nrows, wb.sheets[0].ncols), (3, 3));
-    assert_eq!(
-        at(8).unwrap_err(),
-        OfficeError::TooLarge { what: "sheet area" }
-    );
+    assert_eq!(wb.sheets[0].display(2, 2), "2");
 }
 
 #[test]
@@ -2536,20 +2987,19 @@ fn the_value_cell_limit_is_exact() {
         fmt_xlsx::parse_sheet(
             xml.as_bytes(),
             &[0],
-            &[],
             &Limits {
-                max_dense_cells: n,
+                max_sheet_cells: n,
                 ..Limits::default()
             },
         )
+        .unwrap()
     };
-    assert_eq!(at(10).unwrap().value_cells, 10);
-    assert_eq!(
-        at(9),
-        Err(OfficeError::TooLarge {
-            what: "sheet cells"
-        })
-    );
+    let exact = at(10);
+    assert_eq!(exact.value_cells, 10);
+    assert!(!exact.truncated, "10 cells in a budget of 10 is not cut");
+    let over = at(9);
+    assert_eq!(over.value_cells, 9);
+    assert!(over.truncated);
 }
 
 #[test]
@@ -2630,9 +3080,8 @@ fn the_last_column_of_the_cap_keeps_its_format_and_the_first_past_it_does_not() 
         max_cols: 4,
         ..Limits::default()
     };
-    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &[], &limits).unwrap();
+    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &limits).unwrap();
     assert_eq!(sf.cells, vec![(0, 3, 1)]);
-    assert_eq!(sf.bbox, Some((0, 3, 0, 4)));
 }
 
 #[test]

@@ -12,7 +12,13 @@ fn grid_of<'a>(
     sheet_idx: usize,
 ) -> Option<Grid<'a>> {
     if let Some(wb) = workbook {
-        return wb.sheets.get(sheet_idx).map(Grid::Sheet);
+        // Only the sheet on screen has cells: while another one is being read (or failed to
+        // read) there is no grid, whatever was loaded before.
+        return wb
+            .sheets
+            .get(sheet_idx)
+            .filter(|s| s.loaded)
+            .map(Grid::Sheet);
     }
     table.as_ref().map(Grid::Csv)
 }
@@ -20,26 +26,38 @@ fn grid_of<'a>(
 /// A search query for table cells: case-insensitive "contains", without allocating per cell.
 /// (`cell.to_lowercase().contains(..)` allocated a string for every cell: 60-100 ms on a
 /// maximum-size sheet, on the UI thread.)
+///
+/// **The query and the cell text go through the same folding, character by character**
+/// ([`fold`]). (An earlier version lower-cased the query as a whole string and the text one
+/// character at a time: the two disagree on a word-final `Σ`, which `str::to_lowercase` turns into
+/// `ς` from its context and `char::to_lowercase` into `σ`, so `ΟΔΟΣ` found neither `ΟΔΟΣ` nor
+/// `οδος`.)
 struct Needle {
-    /// The query lower-cased, as characters.
+    /// The query folded, as characters.
     chars: Vec<char>,
     /// The same as bytes when it is all ASCII (the common case: a byte search, no decoding).
     ascii: Option<Vec<u8>>,
 }
 
+/// The case folding of search: full Unicode lower-casing of one character, and `ς` (final sigma)
+/// the same as `σ`, so `Σ`, `σ` and `ς` are one letter whatever the position in the word.
+fn fold(c: char) -> impl Iterator<Item = char> {
+    c.to_lowercase().map(|l| if l == 'ς' { 'σ' } else { l })
+}
+
 impl Needle {
     fn new(q: &str) -> Needle {
-        let lower = q.to_lowercase();
-        let ascii = lower.is_ascii().then(|| lower.clone().into_bytes());
-        Needle {
-            chars: lower.chars().collect(),
-            ascii,
-        }
+        let chars: Vec<char> = q.chars().flat_map(fold).collect();
+        let ascii = chars
+            .iter()
+            .all(char::is_ascii)
+            .then(|| chars.iter().map(|&c| c as u8).collect());
+        Needle { chars, ascii }
     }
 
     /// Whether `hay` contains the query, ignoring case. An all-ASCII haystack is searched as
-    /// bytes; otherwise characters are lower-cased one at a time (full Unicode lower-casing, so
-    /// `É` matches `é` and the Kelvin sign matches `k`).
+    /// bytes; otherwise characters are folded one at a time (full Unicode lower-casing, so `É`
+    /// matches `é` and the Kelvin sign matches `k`).
     fn found_in(&self, hay: &str) -> bool {
         if self.chars.is_empty() {
             return true;
@@ -61,10 +79,10 @@ impl Needle {
         hay.char_indices().any(|(i, _)| self.starts_at(&hay[i..]))
     }
 
-    /// Whether the lower-cased characters of `s` begin with the query.
+    /// Whether the folded characters of `s` begin with the query.
     fn starts_at(&self, s: &str) -> bool {
-        let mut lowered = s.chars().flat_map(char::to_lowercase);
-        self.chars.iter().all(|&n| lowered.next() == Some(n))
+        let mut folded = s.chars().flat_map(fold);
+        self.chars.iter().all(|&n| folded.next() == Some(n))
     }
 }
 
@@ -99,7 +117,7 @@ impl App {
         // A spreadsheet that is still loading (or failed) has nothing to clamp against yet: keep the
         // saved sheet number and cursor so they apply when the workbook lands.
         if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_)))
-            && self.workbook.is_none()
+            && self.grid().is_none()
         {
             return;
         }
@@ -122,15 +140,19 @@ impl App {
     /// Whether a CSV/TSV/archive table preview is active **and parsed** (routes the PreviewTable
     /// surface / renderer). A Table/Archive kind whose parse failed returns false → the preview
     /// degrades to raw text (CSV/TSV) or a can-not-preview-style hint (archive).
+    ///
+    /// A spreadsheet counts as soon as its workbook is open with at least one visible sheet, even
+    /// while the cells of the sheet just switched to are still being read: the surface (keys,
+    /// footer, help) stays the table's, so `J`/`K` keep working. The renderer draws the spinner
+    /// (`is_sheet_loading`) or the reason the sheet could not be read until the grid is there.
     pub fn is_table_preview(&self) -> bool {
-        matches!(
-            self.tab.preview_kind,
-            Some(
-                PreviewKind::Table { .. }
-                    | PreviewKind::Archive { .. }
-                    | PreviewKind::Spreadsheet(_)
-            )
-        ) && self.grid().is_some()
+        match self.tab.preview_kind {
+            Some(PreviewKind::Table { .. } | PreviewKind::Archive { .. }) => self.grid().is_some(),
+            Some(PreviewKind::Spreadsheet(_)) => {
+                self.workbook.as_ref().is_some_and(|w| !w.sheets.is_empty())
+            }
+            _ => false,
+        }
     }
 
     /// Sets what the preview shows. **The one place a preview kind is assigned**: the parsed
@@ -178,18 +200,29 @@ impl App {
     }
 
     /// Whether a spreadsheet preview is on screen (a sheet is showing).
+    #[cfg(test)]
     pub fn is_sheet_preview(&self) -> bool {
         matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_)))
             && matches!(self.grid(), Some(Grid::Sheet(_)))
     }
 
-    /// True while a spreadsheet's worker has not delivered yet and nothing is showing: the
-    /// "loading" screen (a reload keeps the previous workbook on screen instead).
+    /// True while a spreadsheet's worker has not delivered the sheet to show: the "loading" screen
+    /// (opening the file, or moving to another sheet). A *re*load keeps the sheet that is on
+    /// screen instead.
     pub fn is_sheet_loading(&self) -> bool {
         matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_)))
-            && self.workbook.is_none()
+            && self.grid().is_none()
             && self.workbook_error.is_none()
             && self.media_loading
+    }
+
+    /// How many sheets of the open workbook hold cells (at most one: the sheet on screen); `None`
+    /// when no workbook is open.
+    #[cfg(test)]
+    pub(crate) fn loaded_sheet_count(&self) -> Option<usize> {
+        self.workbook
+            .as_ref()
+            .map(|w| w.sheets.iter().filter(|s| s.loaded).count())
     }
 
     /// Why the spreadsheet could not be shown (None while loading, or on success).
@@ -199,8 +232,11 @@ impl App {
 
     /// Whether the loaded spreadsheet has more than one visible sheet — the single predicate behind
     /// `J`/`K`, the footer hint and the help row (a hint shows only when its key acts).
+    /// It does not depend on whether the sheet on screen has been read yet: the keys act the same
+    /// while a sheet is loading.
     pub fn sheet_can_switch(&self) -> bool {
-        self.is_sheet_preview() && self.workbook.as_ref().is_some_and(|w| w.sheets.len() > 1)
+        matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_)))
+            && self.workbook.as_ref().is_some_and(|w| w.sheets.len() > 1)
     }
 
     /// `(name, 1-based index, sheet count, hidden sheet count)` of the sheet on screen.
@@ -226,28 +262,35 @@ impl App {
         self.sheet_goto(self.tab.sheet_idx.saturating_sub(1));
     }
 
+    /// Moves to sheet `idx`. Only one sheet's cells are held at a time (memory stays that of the
+    /// largest sheet shown), so this drops the cells of the sheet being left and starts the worker
+    /// that reads the one being entered; the table shows the loading screen until it arrives
+    /// (`apply_payload` then re-runs an active search on the new sheet). A result of a worker
+    /// started earlier is dropped by the media generation, so quick `J J J` ends on the last sheet.
     fn sheet_goto(&mut self, idx: usize) {
         if !self.sheet_can_switch() {
             return;
         }
-        let Some(wb) = &self.workbook else {
+        let Some(wb) = self.workbook.as_mut() else {
             return;
         };
         let idx = idx.min(wb.sheets.len() - 1);
         if idx == self.tab.sheet_idx {
             return;
         }
+        wb.unload_cells();
+        self.workbook_error = None;
         self.tab.sheet_idx = idx;
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
         self.tab.table_left_col = 0;
         self.table_cell_open = false;
-        // The old sheet's match cells mean nothing here: re-run an active search on the new sheet.
+        // The old sheet's match cells mean nothing here.
         self.tab.search_matches.clear();
         self.tab.search_idx = 0;
-        if let Some(q) = self.tab.preview_search.clone() {
-            self.table_search_scan(&q);
+        if let Some(PreviewKind::Spreadsheet(path)) = self.tab.preview_kind.clone() {
+            self.start_media_load(&PreviewKind::Spreadsheet(path.clone()), &path);
         }
     }
 
@@ -621,8 +664,8 @@ mod needle_tests {
 
     #[test]
     fn needle_matches_exactly_what_to_lowercase_contains_did() {
-        // (A word-final `Σ` is the one place where `str::to_lowercase` looks at context (`ς`);
-        // lower-casing one character at a time gives `σ`. Not in the corpus on purpose.)
+        // (Sigma is the one place the new folding is deliberately not the old one: see
+        // `sigma_is_one_letter_in_any_position`, which has its own corpus.)
         let hays = [
             "",
             "a",
@@ -643,6 +686,13 @@ mod needle_tests {
             "tab\tnew\nline",
             "😀 smile",
             "ǅ title",
+            // Precomposed vs decomposed é, and an İ followed by a combining dot: no normalization
+            // either way, exactly as before.
+            "caf\u{e9}",
+            "cafe\u{301}",
+            "\u{130}\u{307}x",
+            "Ǳǲǳ",
+            "ﬁne ﬃ",
         ];
         let needles = [
             "",
@@ -679,6 +729,11 @@ mod needle_tests {
             "Ǆ",
             "zzzz",
             "hello world and more",
+            "e\u{301}",
+            "caf\u{e9}",
+            "fi",
+            "ﬁ",
+            "ǳ",
         ];
         for h in hays {
             for q in needles {
@@ -689,6 +744,77 @@ mod needle_tests {
                 );
             }
         }
+    }
+
+    /// `σ`, `ς` and `Σ` are one letter. The old search (`to_lowercase().contains`) found `ΟΔΟΣ`
+    /// in `ΟΔΟΣ` and in `οδος` and so must this one; the new folding additionally finds `οδοσ` in
+    /// `οδος` (a `σ` typed for a final `ς`), which the old search did not. Every other pair must
+    /// agree with the old search.
+    #[test]
+    fn sigma_is_one_letter_in_any_position() {
+        let hays = [
+            "ΟΔΟΣ",
+            "οδος",
+            "οδοσ",
+            "ΟΔΟΣ ΑΘΗΝΩΝ",
+            "οδός",
+            "Σίσυφος",
+            "ΣΊΣΥΦΟΣ",
+            "ΣΣ",
+            "σς",
+            "ΑΣ-ΒΣ",
+            "Ωmega ΩΣ",
+            "Σ",
+            "ς",
+            "x",
+        ];
+        let needles = [
+            "Σ",
+            "σ",
+            "ς",
+            "ΟΔΟΣ",
+            "οδος",
+            "οδοσ",
+            "ΟΣ",
+            "ος",
+            "οσ",
+            "Σίσυφος",
+            "ΣΊΣΥΦΟΣ",
+            "σίσυφοσ",
+            "ΣΣ",
+            "σς",
+            "ΑΣ",
+            "ΒΣ",
+            "ΩΣ",
+            "ΟΔΟΣ ΑΘΗΝΩΝ",
+            "οδός",
+        ];
+        let mut only_new = 0;
+        for h in hays {
+            for q in needles {
+                let new = Needle::new(q).found_in(h);
+                let old = old(h, q);
+                // Never loses a hit the old search had.
+                assert!(new || !old, "hay {h:?} needle {q:?}: lost a hit");
+                if new != old {
+                    only_new += 1;
+                    // A new hit is a sigma-blind hit and nothing else.
+                    let blind = |s: &str| s.to_lowercase().replace('ς', "σ");
+                    assert!(
+                        blind(h).contains(&blind(q)),
+                        "hay {h:?} needle {q:?}: a hit that is not sigma-blind"
+                    );
+                }
+            }
+        }
+        assert!(only_new > 0, "the corpus does exercise the sigma folding");
+        // The cases that were broken, spelled out.
+        assert!(Needle::new("ΟΔΟΣ").found_in("ΟΔΟΣ"));
+        assert!(Needle::new("οδος").found_in("ΟΔΟΣ"));
+        assert!(Needle::new("ΟΔΟΣ").found_in("οδος"));
+        assert!(Needle::new("σ").found_in("ΟΔΟΣ"));
+        assert!(Needle::new("ς").found_in("ΟΔΟΣ"));
+        assert!(!Needle::new("ΟΔΟΣ").found_in("ΟΔΟΝ"));
     }
 
     #[test]

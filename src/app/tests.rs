@@ -24821,6 +24821,7 @@ use crate::preview::office::{OfficeError, Sheet, Workbook};
 fn shaped_workbook(nrows: usize, ncols: usize, rows_cut: bool, cols_cut: bool) -> Workbook {
     let mut sheet = Sheet::default();
     sheet.name = "S".into();
+    sheet.loaded = true;
     sheet.nrows = nrows;
     sheet.ncols = ncols;
     sheet.rows_truncated = rows_cut;

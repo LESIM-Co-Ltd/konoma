@@ -15,6 +15,10 @@ All notable changes to konoma are documented in this file. The format is based o
   text. Password-protected, oversized (file > 256 MiB) or corrupt files say why they cannot be shown. Formulas are
   not evaluated and macros never run. New `builtin = "spreadsheet"` and a default rule for the seven extensions.
   Merged cells show their value in the top-left cell only; the sheet is not saved in session restore.
+  A sheet over the limits (100,000 rows, 4M cells, 128 MiB of text) shows its beginning, marked `(capped)`, instead
+  of being refused: xlsx/xlsb are read as a stream and reading stops at the limit. Only the sheet on screen is kept
+  in memory; `J`/`K` read the next sheet in the background. (ods/xls cannot be streamed, so a file too large to open
+  safely is still refused, with the reason.)
 - **`e` on an Office document opens it in a GUI app** (docx/docm/dotx/dotm/doc/odt, xlsx/xlsm/xltx/xltm/xlsb/xls/ods,
   pptx/pptm/ppsx/potx/ppt/odp) instead of handing the zip to `$EDITOR`: Microsoft Office (macOS only), then
   LibreOffice, then the OS default (`open` / `xdg-open`). The launch runs off the UI thread and the footer says

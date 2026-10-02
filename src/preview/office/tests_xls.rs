@@ -895,7 +895,7 @@ fn one_long_shared_string_used_by_many_cells_is_refused_by_the_text_budget() {
     let dir = tmp("xls_amplify");
     let limits = Limits {
         max_rows: 1000,
-        max_grid_cells: 100_000,
+        max_sheet_cells: 100_000,
         max_text_bytes: 100_000,
         ..small_limits()
     };
@@ -1066,4 +1066,48 @@ fn only_the_first_200_000_xf_records_are_kept() {
     );
     let dropped = fmt_xls::parse_stream(&xf_bytes(200_001, 14), &Limits::default()).unwrap();
     assert_eq!(dropped.formats, vec![NumFmtRef::General]);
+}
+
+#[test]
+fn a_format_code_over_255_characters_is_dropped_and_255_is_kept() {
+    let keep = format!("0.{}", "0".repeat(253));
+    let drop = format!("0.{}", "0".repeat(254));
+    let book = Book {
+        globals: globals(&[(164, &keep), (165, &drop)], &[164, 165]),
+        sheets: vec![sheet("S", vec![number(0, 0, 3, 0.5), number(0, 1, 4, 0.5)])],
+    };
+    let dir = tmp("xls_longcode");
+    let p = book.write(&dir, "l.xls");
+    let wb = load(&p).unwrap();
+    assert!(
+        cell_text(&wb, 0, 0).starts_with("0.5000"),
+        "the 255-character code applies"
+    );
+    assert_eq!(
+        cell_text(&wb, 0, 1),
+        "0.5",
+        "256 characters is not a format Excel wrote"
+    );
+    assert_eq!(
+        wb.formats,
+        vec![NumFmtRef::General, NumFmtRef::Custom(keep.as_str().into())]
+    );
+}
+
+#[test]
+fn only_the_sheet_asked_for_is_taken_out_of_the_workbook() {
+    let book = Book {
+        globals: globals(&[], &[]),
+        sheets: vec![
+            sheet("A", vec![number(0, 0, 3, 1.0)]),
+            sheet("B", vec![number(0, 0, 3, 2.0)]),
+        ],
+    };
+    let dir = tmp("xls_one");
+    let p = book.write(&dir, "o.xls");
+    let wb = load_workbook_sheet(&p, &LoadOptions::default(), 1).unwrap();
+    assert_eq!(wb.loaded_index(), Some(1));
+    assert_eq!(wb.sheets[1].display(0, 0), "2");
+    assert!(!wb.sheets[0].loaded);
+    assert_eq!(wb.sheets[0].name, "A");
 }

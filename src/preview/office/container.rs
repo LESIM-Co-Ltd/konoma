@@ -26,42 +26,58 @@ use super::OfficeError;
 
 /// Hard limits applied before and while reading a workbook. Every value has a reason; tests build
 /// small `Limits` so the boundaries are cheap to hit.
+///
+/// Two kinds of limit, because the readers are of two kinds. **xlsx / xlsb are streamed**: the
+/// per-sheet budgets (`max_rows`, `max_sheet_cells`, `max_sheet_text_bytes`) *stop the reading*, so
+/// a sheet of any size shows its beginning, marked as capped. **ods / xls cannot be streamed**
+/// (`calamine` builds a dense matrix of every sheet while opening the file), so their size is
+/// checked *before* opening (`max_dense_cells`, `max_text_bytes`) and a file over it is refused.
+/// Memory figures below are measured on a release build (see `docs/FEATURE-OFFICE-PREVIEW.md` §7-3a).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// Largest file we open. A real workbook of this size already costs a few GiB of RAM once a
-    /// reader densifies it; beyond that "can not preview" is the honest answer.
+    /// Largest file we open. Beyond this "can not preview" is the honest answer: opening such a
+    /// package already means decompressing gigabytes (`max_total_bytes`).
     pub max_file_bytes: u64,
     /// Most zip entries. Real packages hold tens (one XML per sheet, a few dozen parts); 10,000
     /// leaves room for workbooks with thousands of images/charts, and bounds the central
     /// directory a crafted file can make us index.
     pub max_entries: usize,
-    /// Largest expanded size of one zip entry (counted while inflating, not as declared). A single
-    /// sheet XML of 256 MiB is already ~10M cells.
+    /// Largest expanded size of one zip entry (counted while inflating, not as declared). One
+    /// sheet XML of 256 MiB is already ~10M cells; the streaming readers never hold it, but a
+    /// single `<v>` / `formatCode` can be as long as the part, so it bounds those too.
     pub max_part_bytes: u64,
     /// Largest total expanded size over all entries (a zip bomb with many medium parts).
     pub max_total_bytes: u64,
-    /// Budget for cells kept in the grid (`rows x columns`) over the **whole workbook** (handed
-    /// out to the sheets in order; rows beyond it are cut off). Measured cost of a loaded cell is
-    /// about 105-115 bytes (the kept cell plus the reader's dense copy of the sheet being built),
-    /// so 4M cells is roughly 450 MB worst case, plus the text budget below.
-    pub max_grid_cells: u64,
     /// Rows kept per sheet. Same cap as the CSV table (`table::MAX_ROWS`) so both table previews
     /// truncate alike.
     pub max_rows: usize,
     /// Columns kept per sheet: Excel's own maximum (XFD = 16,384).
     pub max_cols: usize,
-    /// Largest `rows x columns` *bounding box* of a sheet's values that we let `calamine` build.
-    /// `calamine` fills a dense matrix over the bounding box (32 bytes per cell), so a sheet with
-    /// values only at A1 and XFD1048576 would ask for ~550 GB and abort the process (an OOM abort
-    /// is not a catchable panic). 16M cells is ~512 MB worst case.
+    /// Cells kept per sheet (non-empty cells; **per sheet**, not per workbook: only the sheet on
+    /// screen is held). A kept cell is 56 bytes (48 for the cell, 8 more for its column in the
+    /// row) plus its strings (`max_sheet_text_bytes`), so 4M cells are ~225 MB of cells. The
+    /// largest sheet that fits whole is 100,000 rows x 40 columns; a 10 x 100,000-row sheet of
+    /// 20 columns (2M cells) is far inside it.
+    pub max_sheet_cells: u64,
+    /// Bytes of strings kept per sheet: text values, displayed (formatted) strings and formulas,
+    /// each counted at its length plus a fixed overhead per string. Counted at the moment a cell
+    /// is kept, so a shared string used by a million cells is counted a million times — which is
+    /// what it costs once copied into each. 128 MiB on top of the cells' 225 MB keeps the
+    /// ceiling for one sheet near 400 MB (+ the shared strings `calamine` holds, below).
+    pub max_sheet_text_bytes: u64,
+    /// ods / xls only: largest `rows x columns` *bounding box* of a sheet's values that we let
+    /// `calamine` build. It fills a dense matrix over the box (a 32-byte `Data` per cell) and
+    /// parses through a per-cell list of its own (~40 bytes) and, with formulas, a second matrix
+    /// of `String`s (24 bytes): about 100 bytes per cell at the peak. A sheet with values only at
+    /// A1 and XFD1048576 would ask for ~550 GB, and an OOM abort is not a catchable panic, so the
+    /// box is checked first. 8M cells is ~800 MB at the peak; xlsx/xlsb do not use this limit.
     pub max_dense_cells: u64,
-    /// Budget for text held in memory, counted per *reference*: a shared string used by a million
-    /// cells is copied into each of them by the reader and again by us, so 10 KB x 50,000 cells
-    /// is 500 MB from a 100 KB file. Counted before `calamine` runs, over the whole workbook:
-    /// the shared-string table itself (each string plus a fixed per-string overhead), every cell
-    /// that refers to a shared string (its length again), inline and formula strings, and ods
-    /// text times its repeat counts. 256 MiB of text is about 1 GB peak once copied by the reader
-    /// and by us, well above any real workbook (a 4M-cell sheet of 30-byte strings is 120 MB).
+    /// Bytes of text `calamine` holds *once the file is open*, which it reads whole: for xlsx /
+    /// xlsb the shared-string table (each string plus a fixed per-string overhead; a table over
+    /// this is refused before opening); for ods / xls all text of every sheet (a shared string
+    /// counted per cell that uses it, ods text times its repeat counts, plus the overhead).
+    /// 256 MiB is about 1 GB of resident memory once copied, well above any real workbook (a
+    /// 4M-cell sheet of 30-byte strings is 120 MB).
     pub max_text_bytes: u64,
 }
 
@@ -73,10 +89,11 @@ impl Default for Limits {
             max_entries: 10_000,
             max_part_bytes: 256 * MIB,
             max_total_bytes: 1024 * MIB,
-            max_grid_cells: 4_000_000,
             max_rows: crate::preview::table::MAX_ROWS,
             max_cols: 16_384,
-            max_dense_cells: 16_000_000,
+            max_sheet_cells: 4_000_000,
+            max_sheet_text_bytes: 128 * MIB,
+            max_dense_cells: 8_000_000,
             max_text_bytes: 256 * MIB,
         }
     }

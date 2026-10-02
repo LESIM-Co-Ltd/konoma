@@ -27,7 +27,7 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
 use super::container::{self, Limits};
-use super::workbook::{CellError, NumFmtRef};
+use super::workbook::{CellError, MergeRange, NumFmtRef};
 use super::OfficeError;
 
 /// Everything a format pass learned about the workbook. Shared by every format's pass
@@ -64,6 +64,33 @@ pub struct SheetFormats {
     /// Cells the value reader materialises on the way to its dense matrix, when that is more than
     /// the bounding box (ods builds one row of cells per *physical* row before expanding repeats).
     pub read_cost: u64,
+    /// Merged ranges (xlsx only; at most [`MAX_MERGES`]). `sheetData` comes before `mergeCells` in
+    /// the part, so a sheet cut off by a limit has none: the merges that matter are in the part of
+    /// the sheet that was not read.
+    pub merges: Vec<MergeRange>,
+    /// The pass stopped before the end of the part: at a row past the row cap, at a row or cell
+    /// reference that overflows the value reader's arithmetic, or at the sheet's cell budget.
+    pub truncated: bool,
+    /// xlsx: when the pass stopped at a row or cell *reference* (the first two cases above), how
+    /// many cells (`<c>` elements) precede it. The value reader must stop after that many and
+    /// never be asked for the next one: it parses references with plain `u32` arithmetic (a panic
+    /// in a debug build, a wrapped position in a release build) and a stop at the row cap is
+    /// also a stop that saves reading the rest of a million-row part.
+    pub reader_stop: Option<u64>,
+}
+
+/// Most merged ranges kept per sheet (a hostile part could list millions).
+pub const MAX_MERGES: usize = 100_000;
+
+/// Longest number-format code (in characters) that is kept. Excel itself allows 255; anything longer
+/// is not a format Excel wrote, and is dropped at read time (the cell is shown as `General`)
+/// instead of being held in memory — a 100 MB `formatCode` attribute must not be.
+pub const MAX_FORMAT_CODE_CHARS: usize = 255;
+
+/// Whether a number-format code is short enough to keep.
+pub(crate) fn keep_format_code(code: &str) -> bool {
+    // `chars().take(256)` bounds the work on a huge string.
+    code.chars().take(MAX_FORMAT_CODE_CHARS + 1).count() <= MAX_FORMAT_CODE_CHARS
 }
 
 impl SheetFormats {
@@ -138,8 +165,35 @@ impl SheetFormats {
     }
 }
 
-/// Reads the workbook-level and per-cell format information of an xlsx-family package.
-pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, OfficeError> {
+/// What the workbook-level parts of an OOXML package (xlsx-family or xlsb) say: the date system, the
+/// format table, which format each cell style has, and where each sheet's part is. Reading this is
+/// cheap and independent of the size of any sheet: the sheets themselves are read one at a time
+/// ([`read_sheet`]).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct OoxmlPackage {
+    /// `<workbookPr date1904="1"/>`.
+    pub date1904: bool,
+    /// Deduplicated formats; index 0 is always `General`.
+    pub formats: Vec<NumFmtRef>,
+    /// Cell style (`cellXfs` ordinal) -> index into `formats`.
+    pub xf_to_format: Vec<u16>,
+    /// `(sheet name, part path)` in workbook order, for the sheets whose relationship resolves.
+    pub sheets: Vec<(String, String)>,
+}
+
+impl OoxmlPackage {
+    /// The part holding the sheet called `name`.
+    pub fn part_of(&self, name: &str) -> Option<&str> {
+        self.sheets
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, p)| p.as_str())
+    }
+}
+
+/// Reads the workbook-level parts of an xlsx-family package. No sheet part is touched; the shared
+/// string table is only *checked* (`calamine` loads all of it when it opens the file).
+pub fn read_package(path: &std::path::Path, limits: &Limits) -> Result<OoxmlPackage, OfficeError> {
     let mut zip = container::open_zip(path)?;
     let cap = limits.max_part_bytes;
 
@@ -162,59 +216,71 @@ pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, Offi
         None => Styles::without_styles(),
     };
 
-    // 4. shared strings: only their lengths (the text budget counts a string once per cell that
-    //    refers to it, before `calamine` copies it that many times).
-    let (shared_lens, mut text_total) =
-        match container::part_reader(&mut zip, "xl/sharedStrings.xml", cap)? {
-            Some(r) => parse_shared_strings(BufReader::new(r), limits)?,
-            None => (Vec::new(), 0),
-        };
+    // 4. shared strings: `calamine` reads the whole table when it opens the file, so a table that
+    //    is too large is refused here, before that.
+    if let Some(r) = container::part_reader(&mut zip, "xl/sharedStrings.xml", cap)? {
+        check_shared_strings(BufReader::new(r), limits)?;
+    }
 
-    let mut out = XlsxFormats {
+    let sheets = sheet_decls
+        .into_iter()
+        .filter_map(|d| rels.get(&d.rid).map(|part| (d.name, part.clone())))
+        .collect();
+    Ok(OoxmlPackage {
         date1904,
         formats: styles.formats,
-        sheets: HashMap::new(),
-    };
+        xf_to_format: styles.xf_to_format,
+        sheets,
+    })
+}
 
-    // 5. every sheet part
-    for decl in sheet_decls {
-        let Some(part) = rels.get(&decl.rid) else {
-            continue;
-        };
-        let Some(r) = container::part_reader(&mut zip, part, cap)? else {
-            continue;
-        };
-        let sf = parse_sheet(
-            BufReader::new(r),
-            &styles.xf_to_format,
-            &shared_lens,
-            limits,
-        )?;
-        text_total = text_total.saturating_add(sf.text_bytes);
-        if text_total > limits.max_text_bytes {
-            return Err(OfficeError::TooLarge { what: "text" });
-        }
-        out.sheets.insert(decl.name, sf);
+/// Reads the cell formats of **one** sheet part (`part` from [`OoxmlPackage::sheets`]). Streams the
+/// part and keeps only what is bounded by `limits`; a missing part is a sheet with no formats.
+pub fn read_sheet(
+    path: &std::path::Path,
+    part: &str,
+    xf_to_format: &[u16],
+    limits: &Limits,
+) -> Result<SheetFormats, OfficeError> {
+    let mut zip = container::open_zip(path)?;
+    let reader = container::part_reader(&mut zip, part, limits.max_part_bytes)?;
+    match reader {
+        Some(r) => parse_sheet(BufReader::new(r), xf_to_format, limits),
+        None => Ok(SheetFormats::default()),
     }
-    Ok(out)
+}
+
+/// The package and every sheet's formats in one value (tests: one call inspects a whole file;
+/// the loader reads sheets one at a time).
+#[cfg(test)]
+pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, OfficeError> {
+    let pkg = read_package(path, limits)?;
+    let mut sheets = HashMap::new();
+    for (name, part) in &pkg.sheets {
+        sheets.insert(
+            name.clone(),
+            read_sheet(path, part, &pkg.xf_to_format, limits)?,
+        );
+    }
+    Ok(XlsxFormats {
+        date1904: pkg.date1904,
+        formats: pkg.formats,
+        sheets,
+    })
 }
 
 /// Fixed cost charged to the text budget for each string the reader keeps (the `String` header
 /// and allocation overhead, which is not part of its length).
 pub(crate) const STRING_OVERHEAD: u64 = 32;
 
-/// `xl/sharedStrings.xml` -> the byte length of each `<si>` (in order, as `calamine` indexes
-/// them) and the budget cost of the whole table. A table that alone exceeds the text budget, or
-/// that announces more strings than the budget could hold, is `TooLarge` (`calamine` reserves
-/// room for `uniqueCount` strings up front).
-pub(crate) fn parse_shared_strings(
-    src: impl BufRead,
-    limits: &Limits,
-) -> Result<(Vec<u32>, u64), OfficeError> {
+/// Refuses a shared-string table that `calamine` could not hold: `calamine` copies every `<si>`
+/// into a `String` when it opens the file (and reserves room for `uniqueCount` of them up front).
+/// Counts each string plus [`STRING_OVERHEAD`] against `Limits::max_text_bytes`. Returns the cost
+/// of the table.
+pub(crate) fn check_shared_strings(src: impl BufRead, limits: &Limits) -> Result<u64, OfficeError> {
     let too_large = || OfficeError::TooLarge { what: "text" };
     let mut rd = Reader::from_reader(src);
     let mut buf = Vec::new();
-    let mut lens: Vec<u32> = Vec::new();
     let mut total: u64 = 0;
     let mut cur: Option<u64> = None;
     loop {
@@ -244,7 +310,6 @@ pub(crate) fn parse_shared_strings(
             }
             Event::End(e) if e.local_name().as_ref() == b"si" => {
                 if let Some(n) = cur.take() {
-                    lens.push(u32::try_from(n).unwrap_or(u32::MAX));
                     total = total.saturating_add(n + STRING_OVERHEAD);
                     if total > limits.max_text_bytes {
                         return Err(too_large());
@@ -255,7 +320,7 @@ pub(crate) fn parse_shared_strings(
             _ => {}
         }
     }
-    Ok((lens, total))
+    Ok(total)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -447,11 +512,18 @@ fn xf_num_fmt_id(e: &BytesStart<'_>) -> u32 {
 
 fn note_num_fmt(e: &BytesStart<'_>, custom: &mut HashMap<u32, String>) {
     let id = attr(e, b"numFmtId", false).and_then(|v| v.trim().parse::<u32>().ok());
-    let code = attr(e, b"formatCode", false);
+    let code = attr_bounded(e, b"formatCode", MAX_RAW_FORMAT_CODE);
     if let (Some(id), Some(code)) = (id, code) {
-        custom.insert(id, code);
+        if keep_format_code(&code) {
+            custom.insert(id, code);
+        }
     }
 }
+
+/// Longest raw (still escaped) `formatCode` attribute that is decoded at all: a numeric character
+/// reference (`&#x10FFFF;`) is 10 bytes for one character, so a code of the longest kept length
+/// is at most 2,550 raw bytes. A longer attribute is dropped without being copied.
+const MAX_RAW_FORMAT_CODE: usize = MAX_FORMAT_CODE_CHARS * 10;
 
 /// A `numFmtId` + the file's custom table -> the format reference. A custom definition wins over
 /// a built-in id of the same number; an id that is neither defined nor built-in is `General`.
@@ -474,33 +546,31 @@ fn resolve_num_fmt(id: u32, custom: &HashMap<u32, String>) -> NumFmtRef {
 // sheet XML
 // ---------------------------------------------------------------------------------------------
 
+/// Streams one sheet part and records the number format of every value-bearing cell.
+///
+/// Everything kept is bounded: the pass **stops** (and sets [`SheetFormats::truncated`]) at the
+/// first row or cell reference past `Limits::max_rows` or one that overflows `u32` (the value
+/// reader wraps such a number instead of failing, so a hostile `<row r="5000000000">` lands at an
+/// arbitrary row there), and once the sheet has `Limits::max_sheet_cells` cells. Real sheets list
+/// rows in order, so what is cut off is the tail, never the middle.
 pub(crate) fn parse_sheet(
     src: impl BufRead,
     xf_to_format: &[u16],
-    shared_lens: &[u32],
     limits: &Limits,
 ) -> Result<SheetFormats, OfficeError> {
     let mut rd = Reader::from_reader(src);
     let mut buf = Vec::new();
     let mut out = SheetFormats::default();
     let max_col = limits.max_cols as u32;
+    let max_row = u32::try_from(limits.max_rows).unwrap_or(u32::MAX);
     // 0-based position the next row / cell takes when it carries no `r`.
     let mut next_row: u32 = 0;
     let mut cur_row: u32 = 0;
     let mut next_col: u32 = 0;
     // The `<c>` being read: (row, col, xf, has_value).
     let mut cell: Option<(u32, u32, u32, bool)> = None;
-    // Text accounting. `shared`: the cell's `t="s"` (its `<v>` is an index into the shared
-    // strings). `v_index`: that index, being read. `f_len` / `f_shared`: the formula being read.
-    let mut shared = false;
-    // The cell's `<v>` is text (`t="str"` formula result, `"e"` error, `"d"` ISO date), not a number.
-    let mut text_v = false;
-    let (mut in_v, mut in_is, mut in_f) = (false, false, false);
-    let mut v_index: Option<u64> = None;
-    let mut f_len: u64 = 0;
-    let mut f_shared: Option<usize> = None;
-    // Text length of each shared formula's master, by `si`, for the cells that derive from it.
-    let mut shared_formula_len: HashMap<usize, u64> = HashMap::new();
+    // `<c>` elements met so far (what the value reader returns, whatever they hold).
+    let mut c_starts: u64 = 0;
     loop {
         buf.clear();
         let ev = rd.read_event_into(&mut buf).map_err(xml_err)?;
@@ -509,11 +579,15 @@ pub(crate) fn parse_sheet(
                 let is_empty = matches!(ev, Event::Empty(_));
                 match e.local_name().as_ref() {
                     b"row" => {
-                        cur_row = attr(e, b"r", false)
-                            .and_then(|v| v.trim().parse::<u32>().ok())
-                            .filter(|&r| r >= 1)
-                            .map(|r| r - 1)
-                            .unwrap_or(next_row);
+                        cur_row = match attr(e, b"r", false).and_then(|v| parse_row_ref(&v)) {
+                            Some(r) => r,
+                            None => next_row,
+                        };
+                        if cur_row >= max_row {
+                            out.truncated = true;
+                            out.reader_stop = Some(c_starts);
+                            break;
+                        }
                         next_col = 0;
                         if is_empty {
                             next_row = cur_row.saturating_add(1);
@@ -523,118 +597,73 @@ pub(crate) fn parse_sheet(
                         let r_attr = attr(e, b"r", false);
                         let (row, col) = match r_attr.as_deref().map(parse_a1) {
                             Some(Some(pos)) => pos,
-                            // A reference that is long enough to overflow the reader's own
-                            // arithmetic (it wraps in release builds): its dense matrix could be
-                            // anything, so refuse it. Short junk (`??`) just continues the row.
+                            // A reference too long to be a real one (it overflows `u32`, which the
+                            // value reader would wrap): the rest of the sheet is not trusted.
                             Some(None) if r_attr.as_deref().is_some_and(absurd_ref) => {
-                                return Err(OfficeError::TooLarge { what: "sheet area" });
+                                out.truncated = true;
+                                out.reader_stop = Some(c_starts);
+                                break;
                             }
+                            // Short junk (`??`) just continues the row.
                             _ => (cur_row, next_col),
                         };
+                        if row >= max_row {
+                            out.truncated = true;
+                            out.reader_stop = Some(c_starts);
+                            break;
+                        }
                         let xf = attr(e, b"s", false)
                             .and_then(|v| v.trim().parse::<u32>().ok())
                             .unwrap_or(0);
-                        let t = attr(e, b"t", false);
-                        shared = t.as_deref() == Some("s");
-                        text_v = matches!(t.as_deref(), Some("str" | "e" | "d"));
                         next_col = col.saturating_add(1);
-                        if is_empty {
-                            // `<c .../>` has no value: nothing to record.
-                        } else {
+                        if !is_empty {
+                            c_starts += 1;
                             cell = Some((row, col, xf, false));
                         }
                     }
                     // Only a value-bearing child makes the cell show something; a formula makes
-                    // the reader keep it too (in the range of formulas).
+                    // the reader keep it too.
                     b"v" | b"is" | b"f" => {
-                        let name = e.local_name();
-                        let name = name.as_ref();
                         if let Some(c) = cell.as_mut() {
                             c.3 = true;
                         }
-                        match name {
-                            b"v" => {
-                                in_v = !is_empty;
-                                v_index = None;
-                            }
-                            b"is" => in_is = !is_empty,
-                            _ => {
-                                f_len = 0;
-                                f_shared = if attr(e, b"t", false).is_some_and(|t| t == "shared") {
-                                    attr(e, b"si", false).and_then(|v| v.trim().parse().ok())
-                                } else {
-                                    None
-                                };
-                                if is_empty {
-                                    // `<f t="shared" si="3"/>`: derived from the master's text.
-                                    finish_formula(&mut out, f_shared, 0, &mut shared_formula_len);
-                                } else {
-                                    in_f = true;
-                                }
-                            }
+                        // The value reader keeps a table of the shared formulas by `si` and grows
+                        // it to the largest one named, so an `si` in the millions asks it for
+                        // gigabytes. `si` counts formula groups: it cannot honestly exceed the
+                        // number of cells a sheet may hold.
+                        if e.local_name().as_ref() == b"f"
+                            && attr(e, b"si", false)
+                                .and_then(|v| v.trim().parse::<u64>().ok())
+                                .is_some_and(|si| si >= limits.max_sheet_cells)
+                        {
+                            return Err(OfficeError::TooLarge {
+                                what: "sheet cells",
+                            });
+                        }
+                    }
+                    b"mergeCell" if out.merges.len() < MAX_MERGES => {
+                        if let Some(m) = attr(e, b"ref", false).and_then(|v| parse_merge(&v)) {
+                            out.merges.push(m);
                         }
                     }
                     _ => {}
                 }
             }
-            Event::Text(ref t) => {
-                let n = t.len() as u64;
-                if in_is || in_f {
-                    if in_f {
-                        f_len += n;
-                    } else {
-                        out.text_bytes += n;
-                    }
-                } else if in_v {
-                    if shared {
-                        // Digits of the shared-string index.
-                        let mut idx = v_index.unwrap_or(0);
-                        for b in t.iter().filter(|b| b.is_ascii_digit()) {
-                            idx = idx.saturating_mul(10).saturating_add(u64::from(b - b'0'));
-                        }
-                        v_index = Some(idx);
-                    } else if text_v {
-                        out.text_bytes += n;
-                    }
-                }
-            }
-            Event::CData(ref t) => {
-                // Inline text, or the text of a text-valued `<v>` (a shared one is an index).
-                if in_is || (in_v && text_v) {
-                    out.text_bytes += t.len() as u64;
-                }
-            }
             Event::End(e) => match e.local_name().as_ref() {
                 b"row" => next_row = cur_row.saturating_add(1),
-                b"v" => {
-                    in_v = false;
-                    if let Some(i) = v_index.take().filter(|_| shared) {
-                        let len = usize::try_from(i)
-                            .ok()
-                            .and_then(|i| shared_lens.get(i))
-                            .copied()
-                            .unwrap_or(0);
-                        out.text_bytes += u64::from(len) + STRING_OVERHEAD;
-                    }
-                }
-                b"is" => {
-                    in_is = false;
-                    out.text_bytes += STRING_OVERHEAD;
-                }
-                b"f" => {
-                    in_f = false;
-                    finish_formula(&mut out, f_shared, f_len, &mut shared_formula_len);
-                }
                 b"c" => {
                     if let Some((row, col, xf, true)) = cell.take() {
-                        record(&mut out, row, col, xf, xf_to_format, max_col, limits)?;
+                        if out.value_cells >= limits.max_sheet_cells {
+                            out.truncated = true;
+                            break;
+                        }
+                        out.value_cells += 1;
+                        let fmt = xf_to_format.get(xf as usize).copied().unwrap_or(0);
+                        if fmt != 0 && col < max_col {
+                            out.cells.push((row, col as u16, fmt));
+                        }
                     }
                     cell = None;
-                    shared = false;
-                    text_v = false;
-                    if out.text_bytes > limits.max_text_bytes {
-                        return Err(OfficeError::TooLarge { what: "text" });
-                    }
                 }
                 _ => {}
             },
@@ -642,13 +671,41 @@ pub(crate) fn parse_sheet(
             _ => {}
         }
     }
-    if out.text_bytes > limits.max_text_bytes {
-        return Err(OfficeError::TooLarge { what: "text" });
-    }
     // Real files are in order already (the sort is then a no-op scan); a hostile or sloppy
     // producer cannot break the binary search.
     out.cells.sort_unstable_by_key(|&(r, c, _)| (r, c));
     Ok(out)
+}
+
+/// A `<row r="...">` value as a 0-based row. `None` when it is not a positive decimal number (the
+/// row then follows the previous one); a number past `u32` is `u32::MAX`, beyond any row cap.
+fn parse_row_ref(v: &str) -> Option<u32> {
+    let v = v.trim();
+    if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // Digit by digit with saturation: `parse::<u32>` would refuse 5000000000 and the row would
+    // silently fall back to "the next row".
+    let n = v.bytes().fold(0u64, |n, b| {
+        n.saturating_mul(10).saturating_add(u64::from(b - b'0'))
+    });
+    match n {
+        0 => None,
+        n => Some(u32::try_from(n - 1).unwrap_or(u32::MAX)),
+    }
+}
+
+/// `A1:C3` (or a lone `A1`) -> the range.
+fn parse_merge(v: &str) -> Option<MergeRange> {
+    let (a, b) = v.split_once(':').unwrap_or((v, v));
+    let (row0, col0) = parse_a1(a)?;
+    let (row1, col1) = parse_a1(b)?;
+    Some(MergeRange {
+        row0,
+        col0,
+        row1,
+        col1,
+    })
 }
 
 /// A cell reference `parse_a1` rejected that is long enough to wrap the reader's own arithmetic
@@ -657,58 +714,6 @@ fn absurd_ref(r: &str) -> bool {
     let letters = r.bytes().filter(u8::is_ascii_alphabetic).count();
     let digits = r.bytes().filter(u8::is_ascii_digit).count();
     letters >= 4 || digits >= 8
-}
-
-/// Books the text of a finished formula: its own length, or (a shared-formula cell with no text)
-/// that of its master. A master (`ref` is not tracked: any `<f t="shared">` with text) is
-/// remembered for the cells that follow.
-fn finish_formula(
-    out: &mut SheetFormats,
-    shared: Option<usize>,
-    own: u64,
-    masters: &mut HashMap<usize, u64>,
-) {
-    let len = match shared {
-        Some(si) if own == 0 => masters.get(&si).copied().unwrap_or(0),
-        Some(si) => {
-            // Bounded by the part size, but a hostile file could name millions of `si`.
-            if masters.len() < 1 << 20 {
-                masters.insert(si, own);
-            }
-            own
-        }
-        None => own,
-    };
-    out.text_bytes += len + STRING_OVERHEAD;
-}
-
-pub(crate) fn record(
-    out: &mut SheetFormats,
-    row: u32,
-    col: u32,
-    xf: u32,
-    xf_to_format: &[u16],
-    max_col: u32,
-    limits: &Limits,
-) -> Result<(), OfficeError> {
-    // The bounding box and the count include columns beyond Excel's last: the reader keeps such a
-    // cell, so its dense matrix covers it (`A1` and `ZZZZ1048576` would ask for ~500 GB). Only the
-    // format of a cell that is not shown is dropped.
-    out.value_cells += 1;
-    if out.value_cells > limits.max_dense_cells {
-        return Err(OfficeError::TooLarge {
-            what: "sheet cells",
-        });
-    }
-    out.bbox = Some(match out.bbox {
-        None => (row, col, row, col),
-        Some((r0, c0, r1, c1)) => (r0.min(row), c0.min(col), r1.max(row), c1.max(col)),
-    });
-    let fmt = xf_to_format.get(xf as usize).copied().unwrap_or(0);
-    if fmt != 0 && col < max_col {
-        out.cells.push((row, col as u16, fmt));
-    }
-    Ok(())
 }
 
 /// `B3` -> `(row 2, col 1)` (0-based). `None` for anything that is not a plain A1 reference.
@@ -746,6 +751,24 @@ fn attr(e: &BytesStart<'_>, local: &[u8], prefixed: bool) -> Option<String> {
     for a in e.attributes().with_checks(false).flatten() {
         let key = a.key;
         if key.local_name().as_ref() == local && key.prefix().is_some() == prefixed {
+            return Some(match a.normalized_value(XmlVersion::Implicit1_0) {
+                Ok(v) => v.into_owned(),
+                Err(_) => String::from_utf8_lossy(&a.value).into_owned(),
+            });
+        }
+    }
+    None
+}
+
+/// [`attr`] for an unprefixed attribute, but `None` (without decoding or copying it) when the
+/// raw value is longer than `max_raw` bytes.
+fn attr_bounded(e: &BytesStart<'_>, local: &[u8], max_raw: usize) -> Option<String> {
+    for a in e.attributes().with_checks(false).flatten() {
+        let key = a.key;
+        if key.local_name().as_ref() == local && key.prefix().is_none() {
+            if a.value.len() > max_raw {
+                return None;
+            }
             return Some(match a.normalized_value(XmlVersion::Implicit1_0) {
                 Ok(v) => v.into_owned(),
                 Err(_) => String::from_utf8_lossy(&a.value).into_owned(),

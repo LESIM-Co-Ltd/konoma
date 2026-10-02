@@ -19,10 +19,10 @@ pub mod workbook;
 use std::fmt;
 use std::path::Path;
 
-pub use workbook::{load_workbook, CellType, LoadOptions, NumFmtRef, Sheet, Workbook};
+pub use workbook::{load_workbook_sheet, CellType, LoadOptions, NumFmtRef, Sheet, Workbook};
 // What the tests of this module (`use super::*`) name directly.
 #[cfg(test)]
-pub use workbook::{display_text, Cell, CellValue, DisplayCtx, MergeRange};
+pub use workbook::{display_text, load_workbook, Cell, CellValue, DisplayCtx, MergeRange};
 
 /// The spreadsheet kinds konoma previews, by file extension (case-insensitive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

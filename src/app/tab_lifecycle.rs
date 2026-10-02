@@ -50,6 +50,9 @@ impl App {
         // the whole bundle at the end — hoist this tab's own saved value first so that happens
         // against the *target* tab's leftover output, not whatever tab was live a moment ago.
         self.tab.command_out = t.command_out.clone();
+        // A spreadsheet's worker reads the sheet this tab was showing, so its sheet number is
+        // needed by `start_media_load` below (the bulk restore at the end comes too late).
+        self.tab.sheet_idx = t.sheet_idx;
         // The parsed spreadsheet is App-level (too big to clone into every tab snapshot): drop the
         // previous tab's and let the media block below re-read this tab's on the worker. The sheet
         // number and cursor come back with `self.tab = t` and are clamped when the workbook lands.
@@ -131,6 +134,8 @@ impl App {
                 // revert it to this tab's stale pre-restore leftover — same reasoning as the
                 // `t.pdf_page` clamp above.
                 t.command_out = self.tab.command_out.clone();
+                // Likewise a synchronously landed workbook may have clamped the sheet number.
+                t.sheet_idx = self.tab.sheet_idx;
                 if reused {
                     // Restore doesn't go through apply_payload, so the sharp reraster that would
                     // normally fire there doesn't run. This prevents an SVG/mermaid that left its

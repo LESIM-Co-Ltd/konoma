@@ -497,7 +497,9 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // CSV/TSV table: draw it as an aligned grid (column rainbow + cell cursor) (dedicated path).
     // On a parse failure is_table_preview becomes false and it safely degrades to raw CSV via the
     // text path below.
-    if app.is_table_preview() {
+    // (A spreadsheet whose sheet could not be read keeps the table's surface but has no grid: it
+    // falls through to the reason shown at the end.)
+    if app.is_table_preview() && app.grid().is_some() {
         crate::ui::table::render(frame, app, area);
         return;
     }
@@ -1782,12 +1784,18 @@ fn sheet_error_msg(err: Option<&crate::preview::office::OfficeError>) -> crate::
 }
 
 fn render_media_loading(frame: &mut Frame, app: &App, area: Rect) {
-    let title = app
+    let mut title = app
         .tab
         .preview_path
         .clone()
         .map(|p| format!(" {} ", app.format_path(&p)))
         .unwrap_or_else(|| " image ".to_string());
+    // A spreadsheet moving to another sheet says which one (the table's own title shape).
+    if app.is_sheet_loading() {
+        if let Some((name, idx, count, _)) = app.sheet_info() {
+            title = format!("{} {name} ({idx}/{count}) ", title.trim_end());
+        }
+    }
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);

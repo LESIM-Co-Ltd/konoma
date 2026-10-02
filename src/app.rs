@@ -747,7 +747,8 @@ pub enum MediaPayload {
     /// `apply_payload` turns it into `App::command_err` for the render side's `[can not preview]`
     /// fallback (`ui/preview.rs`).
     CommandFailed(String),
-    /// A parsed spreadsheet (`PreviewKind::Spreadsheet`) → goes to `App::workbook`.
+    /// An opened spreadsheet (`PreviewKind::Spreadsheet`: its sheet list and the cells of the one
+    /// sheet that was asked for) → goes to `App::workbook`.
     Workbook(Box<crate::preview::office::Workbook>),
     /// A spreadsheet that could not be loaded; the reason is mapped to a translated message by the
     /// render side. Carried as a payload (not the plain `None` failure) so the *reason* travels
@@ -796,9 +797,11 @@ enum MediaJob {
     /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom). The path is only
     /// the base for relative resources inside the SVG (mermaid output has none).
     SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32),
-    /// Parse a spreadsheet (path, the display locale that decides locale-dependent built-in
-    /// formats). Always yields a payload: a workbook, or the reason it could not be loaded.
-    Workbook(PathBuf, crate::preview::office::Locale),
+    /// Open a spreadsheet and read one sheet of it (path, the display locale that decides
+    /// locale-dependent built-in formats, the 0-based visible sheet to read). Always yields a
+    /// payload: a workbook (every visible sheet listed, the requested one's cells loaded), or the
+    /// reason it could not be opened.
+    Workbook(PathBuf, crate::preview::office::Locale, usize),
     /// Run a non-detached `PreviewKind::Command` delegation (`preview::command::run_capture`).
     /// `as_image` (the resolved `render_as == Some("image")`) decides whether the produced artifact
     /// is decoded as an image (`MediaPayload::Static`) or shown as text (`MediaPayload::CommandText`).
@@ -854,16 +857,18 @@ impl MediaJob {
                 let img = crate::preview::svg::rasterize_bytes(&svg, &p, max_px)?;
                 Some(MediaPayload::Vector { img, svg })
             }
-            MediaJob::Workbook(p, locale) => {
-                use crate::preview::office::{load_workbook, LoadOptions, OfficeError};
+            MediaJob::Workbook(p, locale, sheet) => {
+                use crate::preview::office::{load_workbook_sheet, LoadOptions, OfficeError};
                 let opts = LoadOptions {
                     locale,
                     ..LoadOptions::default()
                 };
                 // The readers sit on third-party parsers: a panic on a pathological file becomes a
                 // "corrupt" reason instead of killing the thread (principle #3).
-                let loaded = crate::preview::markdown::catch_silent(|| load_workbook(&p, &opts))
-                    .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
+                let loaded = crate::preview::markdown::catch_silent(|| {
+                    load_workbook_sheet(&p, &opts, sheet)
+                })
+                .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
                 Some(match loaded {
                     Ok(wb) => MediaPayload::Workbook(Box::new(wb)),
                     Err(e) => MediaPayload::WorkbookFailed(e),
@@ -1578,10 +1583,12 @@ pub struct App {
     /// Parsed CSV/TSV table (Some while a table preview is active and parsing succeeded).
     /// None while not a table, or when parsing failed (then the preview degrades to raw text).
     table_data: Option<crate::preview::table::TableData>,
-    /// The parsed spreadsheet while a `PreviewKind::Spreadsheet` preview is active and its worker
-    /// finished successfully. Lives on `App` (like `table_data`), not on `PerTab`: it can hold up to
-    /// 4M cells, so cloning it into every tab snapshot is not an option — a tab switch re-reads it
-    /// on the worker instead (the sheet number and cursor are `PerTab` state and survive).
+    /// The opened spreadsheet while a `PreviewKind::Spreadsheet` preview is active and its worker
+    /// finished successfully: every visible sheet by name, and the cells of **the one sheet on
+    /// screen** (`PerTab::sheet_idx`) — moving to another sheet loads that one and drops this one.
+    /// Lives on `App` (like `table_data`), not on `PerTab`: a sheet can hold up to 4M cells, so
+    /// cloning it into every tab snapshot is not an option — a tab switch re-reads it on the worker
+    /// instead (the sheet number and cursor are `PerTab` state and survive).
     workbook: Option<Box<crate::preview::office::Workbook>>,
     /// Why the last spreadsheet load failed (`Some` only while `workbook` is `None`). Drives the
     /// reason shown on the "can not preview" screen.

@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::io::Read;
 
 use super::container::Limits;
-use super::fmt_xlsx::{styles_from, SheetFormats, XlsxFormats, STRING_OVERHEAD};
+use super::fmt_xlsx::{keep_format_code, styles_from, SheetFormats, XlsxFormats, STRING_OVERHEAD};
 use super::OfficeError;
 
 const BOF: u16 = 0x0809;
@@ -324,7 +324,10 @@ pub(crate) fn parse_stream(stream: &[u8], limits: &Limits) -> Result<XlsxFormats
             DATEMODE => date1904 = u16_at(r.data, 0) == Some(1),
             FORMAT => {
                 if let (Some(ifmt), Some(code)) = (u16_at(r.data, 0), format_code(r.data, biff8)) {
-                    custom.insert(u32::from(ifmt), code);
+                    // Longer than Excel allows: not a format Excel wrote, shown as General.
+                    if keep_format_code(&code) {
+                        custom.insert(u32::from(ifmt), code);
+                    }
                 }
             }
             XF if xf_ids.len() < MAX_XFS => {

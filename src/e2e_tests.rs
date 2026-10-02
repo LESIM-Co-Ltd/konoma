@@ -17962,6 +17962,7 @@ fn e2e_sheet_tab_switch_through_the_worker_restores_sheet_and_cursor() {
     s.enter();
     s.drain_media();
     s.key('J');
+    s.drain_media(); // the sheet that was switched to is read on the worker
     s.keys("jl");
     s.key('t');
     s.key('[');
@@ -18379,6 +18380,7 @@ fn e2e_sheet_worker_result_lands_in_the_table() {
     see_cjk(&mut s, "¥1,500");
     s.see("Sales (1/2)");
     s.key('J');
+    s.drain_media();
     see_cjk(&mut s, "令和8年10月2日");
 }
 
@@ -19259,7 +19261,8 @@ fn e2e_sheet_next_workbook_starts_clean_while_it_loads() {
     s.select("a.xlsx");
     s.enter();
     s.drain_media();
-    s.key('J');
+    s.key('J'); // the second sheet is read on the worker
+    s.drain_media();
     s.see("a-second");
     s.ctrl('n');
     assert!(s.app.is_sheet_loading(), "{}", s.screen());
@@ -19320,4 +19323,285 @@ fn e2e_sheet_one_tabs_load_error_does_not_follow_into_another_tab() {
     s.drain_media();
     s.see("fine-cell");
     s.dont_see("damaged");
+}
+
+// ---------------------------------------------------------------------------------------------
+// one sheet at a time: moving between the sheets of a workbook reads the sheet on the worker
+// ---------------------------------------------------------------------------------------------
+
+/// A three-sheet workbook whose sheets each hold one distinctive cell (`<name> <tag>`).
+fn three_sheet_book(path: &std::path::Path, tag: &str) {
+    let rows = |t: &str| format!(r#"<row r="1">{}</row>"#, x_str("A1", &format!("{t} {tag}")));
+    build_xlsx(
+        path,
+        &[
+            ("One", "visible", &rows("first"), ""),
+            ("Two", "visible", &rows("second"), ""),
+            ("Three", "visible", &rows("third"), ""),
+        ],
+    );
+}
+
+/// Applies the next `n` worker results whatever their generation (a result that was superseded is
+/// dropped by `apply_media`; the test wants every worker to have finished before it looks).
+#[track_caller]
+fn drain_all_media(s: &mut Sim, n: usize) {
+    for _ in 0..n {
+        let res = s
+            .media_rx
+            .as_ref()
+            .expect("with_media() を呼んでいない")
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("media loader が結果を返す");
+        s.app.apply_media(res);
+    }
+    s.draw();
+}
+
+#[test]
+fn e2e_sheet_every_sheet_of_a_workbook_is_reachable_on_both_load_paths() {
+    // The workbook-wide cell budget used to leave a later sheet empty; every sheet has its own
+    // read now. Walk J / K over three sheets through the synchronous fallback and the worker.
+    for worker in [false, true] {
+        let dir = sandbox(&format!("sheet_three_{worker}"));
+        three_sheet_book(&dir.join("t.xlsx"), "v1");
+        let mut s = Sim::with_config(&canon(&dir), cfg_en());
+        if worker {
+            s = s.with_media();
+        }
+        s.select("t.xlsx");
+        s.enter();
+        if worker {
+            s.drain_media();
+        }
+        s.see("One (1/3)");
+        s.see("first v1");
+        for (key, title, cell, gone) in [
+            ('J', "Two (2/3)", "second v1", "first v1"),
+            ('J', "Three (3/3)", "third v1", "second v1"),
+            ('K', "Two (2/3)", "second v1", "third v1"),
+            ('K', "One (1/3)", "first v1", "second v1"),
+        ] {
+            s.key(key);
+            if worker {
+                s.drain_media();
+            }
+            s.see(title);
+            s.see(cell);
+            s.dont_see(gone);
+            // Only the sheet on screen holds cells.
+            assert_eq!(
+                s.app.loaded_sheet_count(),
+                Some(1),
+                "worker={worker} after {key}"
+            );
+        }
+        // The ends stop, as before.
+        s.key('K');
+        if worker {
+            // Nothing was started: a worker result here would be a stray read.
+            assert!(!s.app.is_media_loading());
+        }
+        s.see("One (1/3)");
+    }
+}
+
+#[test]
+fn e2e_sheet_moving_to_another_sheet_shows_loading_and_keeps_the_sheet_keys() {
+    let dir = sandbox("sheet_switch_loading");
+    three_sheet_book(&dir.join("t.xlsx"), "v1");
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("t.xlsx");
+    s.enter();
+    s.drain_media();
+    s.key('J');
+    // The worker has not answered: the table says what it is loading, keeps its footer and keys.
+    assert!(s.app.is_sheet_loading(), "{}", s.screen());
+    s.see("loading");
+    s.see("Two (2/3)");
+    s.dont_see("first v1");
+    assert!(
+        s.app.sheet_can_switch(),
+        "the J/K hint does not wait for the read"
+    );
+    assert_eq!(
+        s.app.loaded_sheet_count(),
+        Some(0),
+        "the sheet that was left is released while the next one is read"
+    );
+    assert!(s.app.is_table_preview());
+    s.see("J/K");
+    // A cursor key meanwhile has no grid to move on and must not panic or move anything.
+    s.keys("jlG$");
+    assert_eq!(s.app.table_cursor(), (0, 0));
+    s.drain_media();
+    assert!(!s.app.is_sheet_loading());
+    s.see("second v1");
+    s.see("J/K");
+}
+
+#[test]
+fn e2e_sheet_quick_presses_end_on_the_last_sheet_and_the_superseded_reads_are_dropped() {
+    let dir = sandbox("sheet_switch_quick");
+    three_sheet_book(&dir.join("t.xlsx"), "v1");
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("t.xlsx");
+    s.enter();
+    s.drain_media();
+    s.key('J');
+    s.key('J'); // sheet 3 requested while sheet 2 is still being read
+    assert!(s.app.is_sheet_loading());
+    drain_all_media(&mut s, 2);
+    assert!(!s.app.is_sheet_loading());
+    s.see("Three (3/3)");
+    s.see("third v1");
+    s.dont_see("second v1");
+    // …and the other way: K while a J is out.
+    s.key('K');
+    s.key('K');
+    drain_all_media(&mut s, 2);
+    s.see("One (1/3)");
+    s.see("first v1");
+}
+
+#[test]
+fn e2e_sheet_a_file_rewritten_while_a_sheet_is_being_read_shows_the_new_file_s_sheet() {
+    let dir = sandbox("sheet_switch_rewrite");
+    let book = canon(&dir).join("t.xlsx");
+    three_sheet_book(&book, "v1");
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("t.xlsx");
+    s.enter();
+    s.drain_media();
+    s.key('J'); // sheet 2 of v1 is out…
+    three_sheet_book(&book, "v2"); // …the agent rewrites the file…
+    let f = std::fs::OpenOptions::new().write(true).open(&book).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_900_000_000))
+        .unwrap();
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&book)); // …and the reload asks for sheet 2 again
+    drain_all_media(&mut s, 2);
+    s.see("Two (2/3)");
+    s.see("second v2");
+    s.dont_see("second v1");
+}
+
+#[test]
+fn e2e_sheet_a_read_that_lands_after_moving_to_another_file_or_tab_is_dropped() {
+    let dir = sandbox("sheet_switch_late");
+    three_sheet_book(&dir.join("a.xlsx"), "A");
+    three_sheet_book(&dir.join("b.xlsx"), "B");
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("a.xlsx");
+    s.enter();
+    s.drain_media();
+    // Another file: sheet 2 of a.xlsx is out, then Ctrl-n opens b.xlsx before it answers.
+    s.key('J');
+    s.ctrl('n');
+    drain_all_media(&mut s, 2);
+    s.see("One (1/3)");
+    s.see("first B");
+    s.dont_see("second A");
+    // Another tab: sheet 2 of b.xlsx is out, then a new tab (tree) takes over.
+    s.key('J');
+    s.key('t');
+    assert!(s.app.workbook_matches_preview());
+    drain_all_media(&mut s, 1);
+    assert_eq!(
+        s.app.loaded_sheet_count(),
+        None,
+        "the tree tab holds no workbook"
+    );
+    assert!(s.app.workbook_matches_preview());
+    // Back on the first tab, which re-reads the sheet it was showing (sheet 2).
+    s.key('[');
+    drain_all_media(&mut s, 1);
+    s.see("Two (2/3)");
+    s.see("second B");
+}
+
+#[test]
+fn e2e_sheet_a_damaged_sheet_says_so_and_the_other_sheets_stay_reachable() {
+    for worker in [false, true] {
+        let dir = sandbox(&format!("sheet_damaged_{worker}"));
+        build_xlsx(
+            &dir.join("d.xlsx"),
+            &[
+                (
+                    "Good",
+                    "visible",
+                    &format!(r#"<row r="1">{}</row>"#, x_str("A1", "fine")),
+                    "",
+                ),
+                // A mismatched end tag: the sheet part is not well-formed XML.
+                (
+                    "Bad",
+                    "visible",
+                    "<row r=\"1\"><c r=\"A1\"><v>1</v></c></row></nope>",
+                    "",
+                ),
+                (
+                    "Last",
+                    "visible",
+                    &format!(r#"<row r="1">{}</row>"#, x_str("A1", "tail")),
+                    "",
+                ),
+            ],
+        );
+        let mut s = Sim::with_config(&canon(&dir), cfg_en());
+        if worker {
+            s = s.with_media();
+        }
+        s.select("d.xlsx");
+        s.enter();
+        if worker {
+            s.drain_media();
+        }
+        s.see("fine");
+        s.key('J');
+        if worker {
+            s.drain_media();
+        }
+        s.see("damaged");
+        assert!(s.app.sheet_can_switch(), "worker={worker}");
+        assert!(s.app.sheet_error().is_some());
+        s.key('J');
+        if worker {
+            s.drain_media();
+        }
+        s.see("Last (3/3)");
+        s.see("tail");
+        assert!(
+            s.app.sheet_error().is_none(),
+            "the error belonged to the sheet"
+        );
+        s.keys("KK");
+        if worker {
+            drain_all_media(&mut s, 2);
+        }
+        s.see("Good (1/3)");
+        s.see("fine");
+    }
+}
+
+#[test]
+fn e2e_sheet_search_finds_a_greek_word_by_either_sigma() {
+    // `ΟΔΟΣ` ends in a capital sigma, which lower-cases to `ς` in context and `σ` alone.
+    let dir = sandbox("sheet_sigma");
+    build_text_grid(&dir.join("g.xlsx"), 2, 1, |r, _| match r {
+        1 => "head".into(),
+        _ => "ΟΔΟΣ".into(),
+    });
+    for q in ["ΟΔΟΣ", "οδος", "οδοσ", "Σ", "ς"] {
+        let mut s = open_sheet_file(&dir, "g.xlsx", cfg_en());
+        s.key('/');
+        s.keys(q);
+        s.enter();
+        assert_eq!(
+            s.app.search_status(),
+            Some((1, 1)),
+            "query {q:?}\n{}",
+            s.screen()
+        );
+        assert_eq!(s.app.table_cursor(), (1, 0), "query {q:?}");
+    }
 }

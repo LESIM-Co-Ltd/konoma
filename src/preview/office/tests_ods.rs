@@ -1198,7 +1198,7 @@ fn a_repeated_long_string_is_refused_by_the_text_budget() {
     let limits = Limits {
         max_cols: 1000,
         max_rows: 1000,
-        max_grid_cells: 100_000,
+        max_sheet_cells: 100_000,
         ..small_limits()
     };
     let dir = tmp("ods_amplify");
@@ -1534,4 +1534,65 @@ fn the_ods_budgets_are_exact_at_their_boundaries() {
         read_table("ods_cost_over", &ten_rows, &limits(9_999)).unwrap_err(),
         too_large_area()
     );
+}
+
+#[test]
+fn a_format_code_over_255_characters_is_dropped_and_255_is_kept() {
+    // The data style is `"<text>"0.0`: 2 quotes + the text + `0.0`. Total 255 / 256 characters.
+    let style = |n: usize| {
+        data_style(
+            "number-style",
+            &format!(
+                r#"<number:text>{}</number:text><number:number number:decimal-places="1" number:min-integer-digits="1"/>"#,
+                "t".repeat(n)
+            ),
+        )
+    };
+    let load_one = |name: &str, n: usize| {
+        let wb = load_ods_xml(name, &style(n), &table("S", &row(&float("c", "0.5"))));
+        (sheet0(&wb).display(0, 0).to_string(), wb.formats.clone())
+    };
+    // `"ttt…"0.0` is 2 + n + 3 characters: n = 250 -> 255, n = 251 -> 256.
+    let (shown, formats) = load_one("ods_code_keep", 250);
+    assert!(
+        shown.starts_with("ttt") && shown.ends_with("0.5"),
+        "{shown}"
+    );
+    assert!(formats
+        .iter()
+        .any(|f| matches!(f, NumFmtRef::Custom(c) if c.chars().count() == 255)));
+    let (shown, formats) = load_one("ods_code_drop", 251);
+    assert_eq!(shown, "0.5", "256 characters is not a format Excel wrote");
+    // And it is not held: the workbook's format table never carries a code over the limit.
+    assert!(
+        formats
+            .iter()
+            .all(|f| !matches!(f, NumFmtRef::Custom(c) if c.chars().count() > 255)),
+        "{formats:?}"
+    );
+}
+
+#[test]
+fn only_the_sheet_asked_for_is_taken_out_of_the_workbook() {
+    let dir = tmp("ods_one");
+    let p = write(
+        &dir,
+        "t.ods",
+        &ods_bytes(
+            &content_xml(
+                "",
+                &format!(
+                    "{}{}",
+                    table("A", &row(&float("", "1"))),
+                    table("B", &row(&float("", "2")))
+                ),
+            ),
+            None,
+            None,
+        ),
+    );
+    let wb = load_workbook_sheet(&p, &LoadOptions::default(), 1).unwrap();
+    assert_eq!(wb.loaded_index(), Some(1));
+    assert_eq!(wb.sheets[1].display(0, 0), "2");
+    assert!(!wb.sheets[0].loaded);
 }

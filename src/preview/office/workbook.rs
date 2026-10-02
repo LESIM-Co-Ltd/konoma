@@ -3,18 +3,32 @@
 //! **What the UI uses**: a grid of *display strings* ([`Sheet::display`]) and, for the cell under
 //! the cursor, the *detail* ([`Cell`]: raw value, type, formula, number-format reference).
 //!
-//! **Memory design** (the cell budget in [`Limits::max_grid_cells`] bounds rows x columns over
-//! the *whole workbook*, handed out to the sheets in order):
+//! **One sheet at a time.** A [`Workbook`] always lists every visible sheet (name only), but holds
+//! the cells of **one** sheet: the one being shown. Moving to another sheet loads that sheet
+//! (`load_workbook_sheet`) and drops the previous one, so the memory in use is that of the
+//! largest sheet shown, not of the workbook, and a hidden or never-shown sheet costs nothing.
+//! Re-opening the file for each switch is cheap for xlsx/xlsb (the workbook parts, the style
+//! table and the shared strings are read again; the sheet XML is streamed) — see the doc of each
+//! loader for what is read.
+//!
+//! **Bounded reads.** xlsx and xlsb are read with `calamine`'s *streaming* cell readers: cells come
+//! one at a time and reading **stops** when a budget of [`Limits`] is reached (rows, kept cells,
+//! kept text bytes), so a huge sheet shows its beginning (marked as capped) instead of being
+//! refused, and no dense matrix is ever built. ods and xls cannot be streamed (`calamine` reads
+//! every sheet of those into dense matrices while opening the file), so for them the size is
+//! checked *before* opening and a file that is too large is refused with a reason.
+//!
+//! **Memory design** (per sheet):
 //! - Rows are sparse: `rows[r]` holds only the non-empty cells as `(col, Cell)` sorted by column,
 //!   so an empty cell costs nothing and a mostly-empty wide sheet stays small.
 //! - A [`Cell`] is `CellValue` (24 bytes: the tag plus an `f64` / `Box<str>` / `&'static str`),
 //!   an optional display string (16 bytes; `None` when it is the same as a text cell's own text,
 //!   which is the common case for strings) and a `u16` index into the workbook's deduplicated
-//!   format table: ~48 bytes per non-empty cell plus its string heap. Measured (a 4M-cell sheet
-//!   of numbers, release build) the whole load costs about 105-115 bytes per non-empty cell
-//!   (this model, plus the reader's own dense copy that is alive while a sheet is built), so
-//!   4M cells is roughly 450 MB — the worst case the budget allows.
+//!   format table: 48 bytes, 56 with its column in the row vector, plus its string heap.
 //! - The raw value is *not* stored as a second string: [`Cell::raw_text`] derives it on demand.
+//! - A displayed (formatted) string is cut at 1,024 characters: no format of a real workbook
+//!   produces more, and `mmmm` repeated in a 255-character format code would otherwise cost
+//!   hundreds of bytes in every cell.
 //! - Formulas are rare per cell and live in a per-sheet map, not in every `Cell`.
 //! - Number formats are not stored per cell as strings: a cell carries an index into
 //!   [`Workbook::formats`] (usually < 50 entries).
@@ -150,16 +164,19 @@ pub struct MergeRange {
     pub col1: u32,
 }
 
-/// One visible sheet.
+/// One visible sheet (its cells only when [`Sheet::loaded`]).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Sheet {
     /// The sheet name.
     pub name: String,
+    /// Whether the cells of this sheet were read. Only the sheet being shown is (see the module
+    /// doc); the others are listed by name.
+    pub loaded: bool,
     /// Rows in the grid (from A1; includes leading empty rows). After truncation.
     pub nrows: usize,
     /// Columns in the grid (from A1). After truncation.
     pub ncols: usize,
-    /// True when rows were cut off (row cap or cell budget).
+    /// True when rows were cut off (row cap, or the sheet's cell or text budget).
     pub rows_truncated: bool,
     /// True when columns were cut off (Excel's 16,384-column maximum).
     pub cols_truncated: bool,
@@ -201,7 +218,7 @@ impl Sheet {
 /// A loaded workbook.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Workbook {
-    /// The visible worksheets, in workbook order.
+    /// The visible worksheets, in workbook order. Only the one that was asked for has cells.
     pub sheets: Vec<Sheet>,
     /// How many worksheets were hidden or very hidden (not in `sheets`).
     pub hidden_sheets: usize,
@@ -209,9 +226,30 @@ pub struct Workbook {
     pub date1904: bool,
     /// Deduplicated number formats referenced by [`Cell::fmt`]; index 0 is always `General`.
     pub formats: Vec<NumFmtRef>,
+    /// Why the requested sheet could not be read although the workbook itself opened (a damaged
+    /// sheet part, a hostile one). The other sheets are still listed and can be shown.
+    pub sheet_error: Option<OfficeError>,
 }
 
 impl Workbook {
+    /// Drops the cells of every sheet (the names stay): the sheet being left is not kept.
+    pub fn unload_cells(&mut self) {
+        for s in &mut self.sheets {
+            if s.loaded {
+                *s = Sheet {
+                    name: std::mem::take(&mut s.name),
+                    ..Sheet::default()
+                };
+            }
+        }
+        self.sheet_error = None;
+    }
+
+    /// The index of the sheet whose cells are loaded.
+    pub fn loaded_index(&self) -> Option<usize> {
+        self.sheets.iter().position(|s| s.loaded)
+    }
+
     /// The number format of a cell.
     pub fn format_of(&self, cell: &Cell) -> &NumFmtRef {
         self.formats
@@ -317,28 +355,69 @@ pub(crate) fn number_text(n: f64) -> String {
 // loading
 // ---------------------------------------------------------------------------------------------
 
-/// Loads a workbook. Never panics: a panic inside a reader is caught and reported as
-/// [`OfficeError::Corrupt`].
+/// What to read of the sheets.
+#[derive(Debug, Clone, Copy)]
+enum Which {
+    /// The cells of one visible sheet (an index past the last is clamped to it); all the others
+    /// are only listed.
+    One(usize),
+    /// Every visible sheet (tests: lets one call inspect a whole file).
+    #[cfg(test)]
+    All,
+}
+
+/// Loads a workbook: the list of its visible sheets, and the cells of the one at `sheet` (an index
+/// past the last visible sheet is clamped to it). Never panics: a panic inside a reader is caught
+/// and reported as [`OfficeError::Corrupt`] (for the sheet alone when the workbook itself opened).
+///
+/// A file that cannot be opened at all is an `Err`. A workbook that opens but whose requested
+/// sheet cannot be read is an `Ok` with [`Workbook::sheet_error`] set, so the other sheets stay
+/// reachable.
+pub fn load_workbook_sheet(
+    path: &Path,
+    opts: &LoadOptions,
+    sheet: usize,
+) -> Result<Workbook, OfficeError> {
+    load_guarded(path, opts, Which::One(sheet))
+}
+
+/// [`load_workbook_sheet`] for every visible sheet (each within its own budgets). A sheet that
+/// cannot be read makes the whole call an `Err`.
+#[cfg(test)]
 pub fn load_workbook(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
+    load_guarded(path, opts, Which::All)
+}
+
+/// [`load_workbook`] without the outer panic net (tests: a panic must fail the test). A panic inside
+/// one sheet is still caught per sheet and comes back as a `Corrupt` whose text says it crashed.
+#[cfg(test)]
+pub(crate) fn load_workbook_unguarded(
+    path: &Path,
+    opts: &LoadOptions,
+) -> Result<Workbook, OfficeError> {
+    load_inner(path, opts, Which::All)
+}
+
+fn load_guarded(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, OfficeError> {
     if SheetKind::from_path(path).is_none() {
         return Err(OfficeError::Unsupported);
     }
-    crate::preview::markdown::catch_silent(|| load_inner(path, opts)).unwrap_or_else(|| {
+    crate::preview::markdown::catch_silent(|| load_inner(path, opts, which)).unwrap_or_else(|| {
         Err(OfficeError::Corrupt(
             "the reader crashed on this file".into(),
         ))
     })
 }
 
-pub(crate) fn load_inner(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
+fn load_inner(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, OfficeError> {
     let limits = &opts.limits;
     // The container decides the format, not the extension.
     let detected = container::inspect(path, limits)?;
     match detected {
-        Detected::Xlsx => load_xlsx(path, opts),
-        Detected::Xlsb => load_xlsb(path, opts),
-        Detected::Ods => load_ods(path, opts),
-        Detected::Xls => load_xls(path, opts),
+        Detected::Xlsx => load_xlsx(path, opts, which),
+        Detected::Xlsb => load_xlsb(path, opts, which),
+        Detected::Ods => load_ods(path, opts, which),
+        Detected::Xls => load_xls(path, opts, which),
     }
 }
 
@@ -346,86 +425,121 @@ fn open_reader(path: &Path) -> Result<BufReader<File>, OfficeError> {
     Ok(BufReader::new(File::open(path).map_err(container::io_err)?))
 }
 
-fn load_xlsx(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
+/// xlsx / xlsm / xltx / xltm. **Streamed**: the workbook parts, the style table and the shared
+/// strings are read when the file is opened (the shared strings are the one part `calamine` loads
+/// whole; `fmt_xlsx::read_package` refuses a table too large for that), then the requested sheet
+/// is read cell by cell until a budget of [`Limits`] is reached. Sheets that are not asked for
+/// are not read at all.
+fn load_xlsx(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, OfficeError> {
     let limits = &opts.limits;
-    // Our own pass first: it also tells how big each sheet's value box is, before calamine
-    // allocates a dense matrix for it.
-    let fm = fmt_xlsx::read(path, limits)?;
+    let pkg = fmt_xlsx::read_package(path, limits)?;
     let mut wb: calamine::Xlsx<_> = calamine::Xlsx::new(open_reader(path)?).map_err(map_xlsx)?;
     let metas = sheet_metas(&wb);
-    let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
-    assemble(&ctx, metas, |name| {
-        let sf = fm.sheets.get(name);
-        if let Some(sf) = sf {
-            if sf.dense_cost() > limits.max_dense_cells {
-                return Err(OfficeError::TooLarge { what: "sheet area" });
+    let ctx = Ctx::new(pkg.date1904, pkg.formats.clone(), *opts);
+    assemble(&ctx, metas, which, |name| {
+        // Our own pass over the sheet: the format of each cell (which `calamine` does not
+        // expose), the merged ranges, and a check of what would make the value reader allocate.
+        let sf = match pkg.part_of(name) {
+            Some(part) => fmt_xlsx::read_sheet(path, part, &pkg.xf_to_format, limits)?,
+            None => SheetFormats::default(),
+        };
+        let mut rdr = wb.worksheet_cells_reader(name).map_err(map_xlsx)?;
+        let mut b = SheetBuilder::new(&ctx, name, Some(&sf));
+        b.set_merges(&sf.merges);
+        // One pass for values and formulas (`next_cell_with_formula`). The format pass knows where
+        // the sheet stops being trustworthy (or being shown): the reader is never asked past it.
+        let mut n: u64 = 0;
+        while sf.reader_stop.is_none_or(|stop| n < stop) {
+            let Some(c) = rdr.next_cell_with_formula().map_err(map_xlsx)? else {
+                break;
+            };
+            n += 1;
+            let (row, col) = c.pos;
+            if b.push(row, col, value_from_ref(&c.value), c.formula.as_deref()) == Flow::Stop {
+                break;
             }
         }
-        let data = wb.worksheet_range(name).map_err(map_xlsx)?;
-        let formulas = wb.worksheet_formula(name).unwrap_or_default();
-        let merges = wb.merge_cells_by_sheet_name(name).unwrap_or_default();
-        Ok(Fetched {
-            data,
-            formulas,
-            merges,
-            fmts: sf,
-        })
+        Ok(b.finish())
     })
 }
 
-fn load_xlsb(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
+/// xlsb. Streamed like [`load_xlsx`]; `calamine` has no one-pass reader for values and formulas
+/// here, so the sheet is read a second time for the formulas of the rows that were kept.
+fn load_xlsb(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, OfficeError> {
     let limits = &opts.limits;
-    // Our own pass first (formats, 1904, and the size of each sheet's value box): calamine fills
-    // a dense matrix over that box and an OOM abort cannot be caught.
-    let fm = fmt_xlsb::read(path, limits)?;
+    let pkg = fmt_xlsb::read_package(path, limits)?;
     let mut wb: calamine::Xlsb<_> = calamine::Xlsb::new(open_reader(path)?).map_err(map_xlsb)?;
     let metas = sheet_metas(&wb);
-    let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
-    assemble(&ctx, metas, |name| {
-        let sf = fm.sheets.get(name);
-        if sf.is_some_and(|sf| sf.dense_cost() > limits.max_dense_cells) {
-            return Err(OfficeError::TooLarge { what: "sheet area" });
+    let ctx = Ctx::new(pkg.date1904, pkg.formats.clone(), *opts);
+    assemble(&ctx, metas, which, |name| {
+        let sf = match pkg.part_of(name) {
+            Some(part) => fmt_xlsb::read_sheet(path, part, &pkg.xf_to_format, limits)?,
+            None => SheetFormats::default(),
+        };
+        let mut b = SheetBuilder::new(&ctx, name, Some(&sf));
+        {
+            let mut rdr = wb.worksheet_cells_reader(name).map_err(map_xlsb)?;
+            while let Some(c) = rdr.next_cell().map_err(map_xlsb)? {
+                let (row, col) = c.get_position();
+                if b.push_cell(row, col, value_from_ref(c.get_value())) == Flow::Stop {
+                    break;
+                }
+            }
         }
-        Ok(Fetched {
-            data: wb.worksheet_range(name).map_err(map_xlsb)?,
-            formulas: wb.worksheet_formula(name).unwrap_or_default(),
-            merges: Vec::new(),
-            fmts: sf,
-        })
+        if !b.stopped_by_row_cap() {
+            b.formulas_follow_values();
+            let mut rdr = wb.worksheet_cells_reader(name).map_err(map_xlsb)?;
+            while let Some(c) = rdr.next_formula().map_err(map_xlsb)? {
+                let (row, col) = c.get_position();
+                if b.push_formula(row, col, c.get_value()) == Flow::Stop {
+                    break;
+                }
+            }
+        }
+        Ok(b.finish())
     })
 }
 
-fn load_ods(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
-    // Our own pass first: it detects encryption, budgets every table (calamine parses them all
-    // while opening) and reads the styles, so it must run before `Ods::new`.
+/// ods. **Not streamable**: `calamine` parses every table (hidden ones too) into a dense matrix
+/// when it opens the file, so `fmt_ods::read` checks the size of every table *first* and a file
+/// that is too large is refused with a reason. Showing another sheet re-opens the file and takes
+/// that sheet out of the parsed workbook.
+fn load_ods(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, OfficeError> {
     let fm = fmt_ods::read(path, &opts.limits)?;
     let mut wb: calamine::Ods<_> = calamine::Ods::new(open_reader(path)?).map_err(map_ods)?;
     let metas = sheet_metas(&wb);
     let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
-    assemble(&ctx, metas, |name| {
-        Ok(Fetched {
-            data: wb.worksheet_range(name).map_err(map_ods)?,
-            formulas: wb.worksheet_formula(name).unwrap_or_default(),
-            merges: Vec::new(),
-            fmts: fm.sheets.get(name),
-        })
+    assemble(&ctx, metas, which, |name| {
+        Ok(build_sheet(
+            &ctx,
+            name,
+            Fetched {
+                data: wb.worksheet_range(name).map_err(map_ods)?,
+                formulas: wb.worksheet_formula(name).unwrap_or_default(),
+                merges: Vec::new(),
+                fmts: fm.sheets.get(name),
+            },
+        ))
     })
 }
 
-fn load_xls(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
-    // Our own pass first: encryption, formats, and the size of *every* sheet's value box (calamine
-    // builds all of them while opening).
+/// xls. Not streamable, like [`load_ods`]: `fmt_xls::read` checks the size of every sheet first.
+fn load_xls(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, OfficeError> {
     let fm = fmt_xls::read(path, &opts.limits)?;
     let mut wb: calamine::Xls<_> = calamine::Xls::new(open_reader(path)?).map_err(map_xls)?;
     let metas = sheet_metas(&wb);
     let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
-    assemble(&ctx, metas, |name| {
-        Ok(Fetched {
-            data: wb.worksheet_range(name).map_err(map_xls)?,
-            formulas: wb.worksheet_formula(name).unwrap_or_default(),
-            merges: wb.merge_cells_by_sheet_name(name).unwrap_or_default(),
-            fmts: fm.sheets.get(name),
-        })
+    assemble(&ctx, metas, which, |name| {
+        Ok(build_sheet(
+            &ctx,
+            name,
+            Fetched {
+                data: wb.worksheet_range(name).map_err(map_xls)?,
+                formulas: wb.worksheet_formula(name).unwrap_or_default(),
+                merges: wb.merge_cells_by_sheet_name(name).unwrap_or_default(),
+                fmts: fm.sheets.get(name),
+            },
+        ))
     })
 }
 
@@ -503,7 +617,7 @@ where
         .collect()
 }
 
-/// What one sheet's reader call returns.
+/// What a dense reader (ods / xls) returns for one sheet.
 struct Fetched<'a> {
     data: Range<Data>,
     formulas: Range<String>,
@@ -511,22 +625,22 @@ struct Fetched<'a> {
     fmts: Option<&'a SheetFormats>,
 }
 
-/// Walks the sheet list in workbook order; hidden sheets are only counted. Chart/dialog/macro
-/// sheets carry no cells and are skipped without being counted as hidden.
-fn assemble<'a>(
+/// Walks the sheet list in workbook order: visible worksheets are listed by name (and loaded when
+/// `which` asks for them), hidden ones are only counted. Chart/dialog/macro sheets carry no cells
+/// and are skipped without being counted as hidden.
+fn assemble(
     ctx: &Ctx,
     metas: Vec<Meta>,
-    mut fetch: impl FnMut(&str) -> Result<Fetched<'a>, OfficeError>,
+    which: Which,
+    mut load: impl FnMut(&str) -> Result<Sheet, OfficeError>,
 ) -> Result<Workbook, OfficeError> {
     let mut out = Workbook {
         sheets: Vec::new(),
         hidden_sheets: 0,
         date1904: ctx.date1904,
         formats: ctx.formats.clone(),
+        sheet_error: None,
     };
-    // One grid-cell budget for the whole workbook, handed out in sheet order: ten sheets of the
-    // per-sheet maximum would otherwise cost ten times the memory the limit promises.
-    let mut cells_left = ctx.opts.limits.max_grid_cells;
     for m in metas {
         if m.typ != SheetType::WorkSheet {
             continue;
@@ -535,23 +649,40 @@ fn assemble<'a>(
             out.hidden_sheets += 1;
             continue;
         }
-        let f = fetch(&m.name)?;
-        out.sheets
-            .push(build_sheet(ctx, m.name, f, &mut cells_left));
+        out.sheets.push(Sheet {
+            name: m.name,
+            ..Sheet::default()
+        });
+    }
+    let wanted: Vec<usize> = match which {
+        Which::One(_) if out.sheets.is_empty() => Vec::new(),
+        Which::One(i) => vec![i.min(out.sheets.len() - 1)],
+        #[cfg(test)]
+        Which::All => (0..out.sheets.len()).collect(),
+    };
+    for i in wanted {
+        let name = out.sheets[i].name.clone();
+        // A panic on a pathological sheet fails that sheet, not the workbook.
+        let loaded = crate::preview::markdown::catch_silent(|| load(&name)).unwrap_or_else(|| {
+            Err(OfficeError::Corrupt(
+                "the reader crashed on this sheet".into(),
+            ))
+        });
+        match (loaded, which) {
+            (Ok(sheet), _) => out.sheets[i] = sheet,
+            #[cfg(test)]
+            (Err(e), Which::All) => return Err(e),
+            (Err(e), _) => out.sheet_error = Some(e),
+        }
     }
     Ok(out)
 }
 
-fn build_sheet(ctx: &Ctx, name: String, f: Fetched<'_>, cells_left: &mut u64) -> Sheet {
-    let limits = &ctx.opts.limits;
-    let dctx = DisplayCtx {
-        date1904: ctx.date1904,
-        locale: ctx.opts.locale,
-    };
-    let mut sheet = Sheet {
-        name,
-        merges: f
-            .merges
+/// Builds a sheet from a dense range (ods / xls).
+fn build_sheet(ctx: &Ctx, name: &str, f: Fetched<'_>) -> Sheet {
+    let mut b = SheetBuilder::new(ctx, name, f.fmts);
+    b.set_merges(
+        &f.merges
             .iter()
             .map(|d| MergeRange {
                 row0: d.start.0,
@@ -559,94 +690,292 @@ fn build_sheet(ctx: &Ctx, name: String, f: Fetched<'_>, cells_left: &mut u64) ->
                 row1: d.end.0,
                 col1: d.end.1,
             })
-            .collect(),
-        ..Sheet::default()
-    };
-    let (Some((r0, c0)), Some((r1, c1))) = (f.data.start(), f.data.end()) else {
-        return sheet;
-    };
-
-    // Grid extent from A1 to the last used row/column, then the caps.
-    let abs_rows = u64::from(r1) + 1;
-    let abs_cols = u64::from(c1) + 1;
-    let ncols = abs_cols.min(limits.max_cols as u64) as usize;
-    sheet.cols_truncated = abs_cols > limits.max_cols as u64;
-    // Rows this sheet may take from what is left of the workbook's budget. A sheet always gets
-    // one row while any budget is left; once it is gone later sheets are empty (and flagged).
-    let budget_rows = match *cells_left {
-        0 => 0,
-        left => (left / ncols.max(1) as u64).max(1),
-    };
-    let row_cap = (limits.max_rows as u64).min(budget_rows);
-    let nrows = abs_rows.min(row_cap) as usize;
-    sheet.rows_truncated = abs_rows > row_cap;
-    sheet.ncols = ncols;
-    sheet.nrows = nrows;
-    *cells_left = cells_left.saturating_sub(nrows as u64 * ncols as u64);
-    sheet.rows = vec![Vec::new(); nrows];
-
-    for (i, row) in f.data.rows().enumerate() {
-        let abs_row = r0 as usize + i;
-        if abs_row >= nrows {
-            break;
-        }
-        let out_row = &mut sheet.rows[abs_row];
-        for (j, v) in row.iter().enumerate() {
-            let abs_col = c0 as usize + j;
-            if abs_col >= ncols {
-                break;
+            .collect::<Vec<_>>(),
+    );
+    if let Some((r0, c0)) = f.data.start() {
+        'rows: for (i, row) in f.data.rows().enumerate() {
+            for (j, v) in row.iter().enumerate() {
+                if b.push_cell(r0 + i as u32, c0 + j as u32, to_value(v)) == Flow::Stop {
+                    break 'rows;
+                }
             }
-            let Some(mut value) = to_value(v) else {
-                continue;
-            };
-            // ods: an error cell reaches us as an empty string; the format pass knows better.
-            if let Some(code) = f
-                .fmts
-                .and_then(|s| s.error_at(abs_row as u32, abs_col as u32))
-            {
-                value = CellValue::Error(code);
-            }
-            let fmt = f
-                .fmts
-                .map(|s| s.format_at(abs_row as u32, abs_col as u32))
-                .unwrap_or(0);
-            let code = ctx.compiled.get(usize::from(fmt)).unwrap_or(&ctx.general);
-            let shown = display_compiled(&value, code, &dctx);
-            let display = match &value {
-                CellValue::Text(t) if **t == *shown => None,
-                _ => Some(shown.into_boxed_str()),
-            };
-            out_row.push((
-                abs_col as u32,
-                Cell {
-                    value,
-                    display,
-                    fmt,
-                },
-            ));
         }
     }
-
     if let Some((fr0, fc0)) = f.formulas.start() {
-        for (i, row) in f.formulas.rows().enumerate() {
-            let abs_row = fr0 as usize + i;
-            if abs_row >= nrows {
-                break;
-            }
+        'frows: for (i, row) in f.formulas.rows().enumerate() {
             for (j, formula) in row.iter().enumerate() {
-                let abs_col = fc0 as usize + j;
-                if abs_col >= ncols {
-                    break;
-                }
-                if !formula.is_empty() {
-                    sheet
-                        .formulas
-                        .insert((abs_row as u32, abs_col as u32), formula.as_str().into());
+                if b.push_formula(fr0 + i as u32, fc0 + j as u32, formula) == Flow::Stop {
+                    break 'frows;
                 }
             }
         }
     }
-    sheet
+    b.finish()
+}
+
+/// Whether the reader should go on after a cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Flow {
+    Continue,
+    /// A limit was reached: nothing more is read.
+    Stop,
+}
+
+/// Longest display string kept per cell, in characters. A formatted number or date is a few
+/// dozen characters at most; the only way to get more is a format code that repeats a long
+/// pattern (`mmmm` x 60 = 570 bytes for every cell of the column), so the text is cut here and
+/// not left to cost memory in proportion to the cell count.
+const MAX_DISPLAY_CHARS: usize = 1024;
+
+/// Bytes charged to a sheet's text budget for each stored string on top of its length: the
+/// allocation overhead of a `Box<str>` / formula entry. Not exact — a budget needs a proportional,
+/// not a precise, measure.
+const STRING_COST: u64 = 32;
+
+/// Accumulates one sheet within its budgets and then yields the [`Sheet`].
+///
+/// The three budgets (all in [`Limits`], all per sheet): `max_rows`, `max_sheet_cells` (cells kept)
+/// and `max_sheet_text_bytes` (the strings kept: text values, displayed strings, formulas). When
+/// one is reached the sheet is marked truncated and [`Flow::Stop`] tells the reader to stop —
+/// nothing past the limit is allocated, whatever the file says about its size.
+struct SheetBuilder<'a> {
+    ctx: &'a Ctx,
+    dctx: DisplayCtx,
+    fmts: Option<&'a SheetFormats>,
+    sheet: Sheet,
+    rows: Vec<Vec<(u32, Cell)>>,
+    /// Cells kept.
+    kept: u64,
+    /// Text bytes charged.
+    text: u64,
+    /// Largest row / column index kept (value or formula).
+    max_row: Option<u32>,
+    max_col: Option<u32>,
+    /// Stopped at a row past the row cap.
+    row_cap_hit: bool,
+    /// Set when the formulas are read in a second pass after a values pass that was cut short
+    /// (xlsb): the last row the values reached (`None` = none), past which formulas are dropped.
+    formula_row_limit: Option<Option<u32>>,
+}
+
+impl<'a> SheetBuilder<'a> {
+    fn new(ctx: &'a Ctx, name: &str, fmts: Option<&'a SheetFormats>) -> Self {
+        SheetBuilder {
+            ctx,
+            dctx: DisplayCtx {
+                date1904: ctx.date1904,
+                locale: ctx.opts.locale,
+            },
+            fmts,
+            sheet: Sheet {
+                name: name.to_string(),
+                loaded: true,
+                // The format pass stopped before the end of the sheet (the value reader was
+                // stopped at the same cell).
+                rows_truncated: fmts.is_some_and(|f| f.truncated),
+                ..Sheet::default()
+            },
+            rows: Vec::new(),
+            kept: 0,
+            text: 0,
+            max_row: None,
+            max_col: None,
+            row_cap_hit: false,
+            formula_row_limit: None,
+        }
+    }
+
+    /// For a second pass that reads formulas after the values: if the values were cut short, the
+    /// formulas stop at the last row they reached.
+    fn formulas_follow_values(&mut self) {
+        if self.sheet.rows_truncated {
+            self.formula_row_limit = Some(self.max_row);
+        }
+    }
+
+    fn set_merges(&mut self, merges: &[MergeRange]) {
+        self.sheet.merges = merges.to_vec();
+    }
+
+    /// Whether reading stopped at the row cap (nothing after it can be kept either).
+    fn stopped_by_row_cap(&self) -> bool {
+        self.row_cap_hit
+    }
+
+    /// Where a cell at `(row, col)` may go: `Stop` past the row cap, `Continue` (skip) past the
+    /// column cap, `None` when it is in the grid.
+    fn gate(&mut self, row: u32, col: u32) -> Option<Flow> {
+        let limits = &self.ctx.opts.limits;
+        if row as usize >= limits.max_rows {
+            self.row_cap_hit = true;
+            self.sheet.rows_truncated = true;
+            return Some(Flow::Stop);
+        }
+        if col as usize >= limits.max_cols {
+            self.sheet.cols_truncated = true;
+            return Some(Flow::Continue);
+        }
+        None
+    }
+
+    fn note_extent(&mut self, row: u32, col: u32) {
+        self.max_row = Some(self.max_row.map_or(row, |m| m.max(row)));
+        self.max_col = Some(self.max_col.map_or(col, |m| m.max(col)));
+    }
+
+    /// Keeps a value (`None` = an empty cell: nothing to keep).
+    fn push_cell(&mut self, row: u32, col: u32, value: Option<CellValue>) -> Flow {
+        self.push(row, col, value, None)
+    }
+
+    /// Keeps a formula (without the leading `=`; an empty one is nothing).
+    fn push_formula(&mut self, row: u32, col: u32, formula: &str) -> Flow {
+        // Rows after the point where the values stopped are not in the sheet.
+        if let Some(limit) = self.formula_row_limit {
+            if limit.is_none_or(|m| row > m) {
+                return Flow::Stop;
+            }
+        }
+        self.push(row, col, None, Some(formula))
+    }
+
+    /// Keeps what a cell holds — its value and/or its formula — **as one unit**: both fit the
+    /// budgets or neither is kept (a cut never leaves a value without its formula).
+    fn push(
+        &mut self,
+        row: u32,
+        col: u32,
+        value: Option<CellValue>,
+        formula: Option<&str>,
+    ) -> Flow {
+        if let Some(flow) = self.gate(row, col) {
+            return flow;
+        }
+        let formula = formula.filter(|f| !f.is_empty());
+        if value.is_none() && formula.is_none() {
+            return Flow::Continue;
+        }
+        let cell = value.map(|v| self.make_cell(row, col, v));
+        if cell.is_some() && self.kept >= self.ctx.opts.limits.max_sheet_cells {
+            self.sheet.rows_truncated = true;
+            return Flow::Stop;
+        }
+        let cost = cell.as_ref().map_or(0, |(_, c)| *c)
+            + formula.map_or(0, |f| f.len() as u64 + STRING_COST);
+        if !self.charge(cost) {
+            return Flow::Stop;
+        }
+        self.note_extent(row, col);
+        if let Some((cell, _)) = cell {
+            self.kept += 1;
+            let r = row as usize;
+            if self.rows.len() <= r {
+                self.rows.resize_with(r + 1, Vec::new);
+            }
+            self.rows[r].push((col, cell));
+        }
+        if let Some(f) = formula {
+            self.sheet.formulas.insert((row, col), f.into());
+        }
+        Flow::Continue
+    }
+
+    /// The cell for a value, and the text bytes it costs.
+    fn make_cell(&self, row: u32, col: u32, mut value: CellValue) -> (Cell, u64) {
+        // ods: an error cell reaches us as an empty string; the format pass knows better.
+        if let Some(code) = self.fmts.and_then(|s| s.error_at(row, col)) {
+            value = CellValue::Error(code);
+        }
+        let fmt = self.fmts.map(|s| s.format_at(row, col)).unwrap_or(0);
+        let code = self
+            .ctx
+            .compiled
+            .get(usize::from(fmt))
+            .unwrap_or(&self.ctx.general);
+        let mut shown = display_compiled(&value, code, &self.dctx);
+        // A text cell shown as it is written keeps no second copy (and is not cut: it is the value).
+        let display = match &value {
+            CellValue::Text(t) if **t == *shown => None,
+            _ => {
+                clip_display(&mut shown);
+                Some(shown.into_boxed_str())
+            }
+        };
+        let cost =
+            value_text_len(&value) + display.as_ref().map_or(0, |d| d.len() as u64 + STRING_COST);
+        (
+            Cell {
+                value,
+                display,
+                fmt,
+            },
+            cost,
+        )
+    }
+
+    /// Charges `cost` bytes to the text budget; false (and the sheet marked truncated) when it
+    /// does not fit.
+    fn charge(&mut self, cost: u64) -> bool {
+        let next = self.text.saturating_add(cost);
+        if next > self.ctx.opts.limits.max_sheet_text_bytes {
+            self.sheet.rows_truncated = true;
+            return false;
+        }
+        self.text = next;
+        true
+    }
+
+    fn finish(mut self) -> Sheet {
+        let limits = &self.ctx.opts.limits;
+        // The grid runs from A1 to the last used row / column, up to the caps.
+        // (A sheet cut at the row cap with a gap before it shows its last row of data, not a
+        // hundred thousand empty rows: the cut is told by `rows_truncated`.)
+        let nrows = self.max_row.map_or(0, |r| r as usize + 1);
+        let ncols = if self.sheet.cols_truncated {
+            limits.max_cols
+        } else {
+            self.max_col.map_or(0, |c| c as usize + 1)
+        };
+        self.rows.resize_with(nrows, Vec::new);
+        for row in &mut self.rows {
+            // Cells arrive in file order, which is column order in any real file; a producer
+            // that is not keeps its cells reachable by the binary search all the same.
+            if !row.windows(2).all(|w| w[0].0 < w[1].0) {
+                row.sort_by_key(|&(c, _)| c);
+                // The last of two cells at one address wins (as in a dense matrix).
+                let mut i = 0;
+                while i + 1 < row.len() {
+                    if row[i].0 == row[i + 1].0 {
+                        row.remove(i);
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+        }
+        self.sheet.nrows = nrows;
+        self.sheet.ncols = ncols;
+        self.sheet.rows = self.rows;
+        self.sheet
+    }
+}
+
+/// Cuts a displayed string at [`MAX_DISPLAY_CHARS`] characters.
+fn clip_display(s: &mut String) {
+    if s.len() <= MAX_DISPLAY_CHARS {
+        return;
+    }
+    if let Some((i, _)) = s.char_indices().nth(MAX_DISPLAY_CHARS) {
+        s.truncate(i);
+    }
+}
+
+/// The bytes a value's own text takes (text and ISO strings), plus the per-string overhead.
+fn value_text_len(v: &CellValue) -> u64 {
+    match v {
+        CellValue::Text(t) | CellValue::DateTimeIso(t) => t.len() as u64 + STRING_COST,
+        _ => 0,
+    }
 }
 
 fn to_value(d: &Data) -> Option<CellValue> {
@@ -664,6 +993,25 @@ fn to_value(d: &Data) -> Option<CellValue> {
         // An ISO 8601 duration (ODS `PT1H30M`): shown as the string, typed as date/time.
         Data::DurationIso(s) => CellValue::DateTimeIso(s.as_str().into()),
         Data::Error(e) => CellValue::Error(error_code(e)),
+    })
+}
+
+/// [`to_value`] for the streaming readers' borrowing cell type.
+fn value_from_ref(d: &calamine::DataRef<'_>) -> Option<CellValue> {
+    use calamine::DataRef as D;
+    Some(match d {
+        D::Empty => return None,
+        D::Int(i) => CellValue::Int(*i),
+        D::Float(f) => CellValue::Number(*f),
+        D::String(s) => CellValue::Text(s.as_str().into()),
+        D::SharedString(s) => CellValue::Text((*s).into()),
+        D::Bool(b) => CellValue::Bool(*b),
+        D::DateTime(dt) => CellValue::DateTime {
+            serial: dt.as_f64(),
+            duration: dt.is_duration(),
+        },
+        D::DateTimeIso(s) | D::DurationIso(s) => CellValue::DateTimeIso(s.as_str().into()),
+        D::Error(e) => CellValue::Error(error_code(e)),
     })
 }
 
@@ -727,8 +1075,7 @@ mod tests {
     }
 
     fn build(limits: Limits, f: Fetched<'static>) -> Sheet {
-        let mut left = limits.max_grid_cells;
-        build_sheet(&ctx(limits), "S".into(), f, &mut left)
+        build_sheet(&ctx(limits), "S", f)
     }
 
     /// An `r x c` grid of integers.
@@ -759,9 +1106,10 @@ mod tests {
             meta("B", SheetType::WorkSheet, SheetVisible::Visible),
         ];
         let mut fetched_names = Vec::new();
-        let wb = assemble(&ctx(Limits::default()), metas, |name| {
+        let c = ctx(Limits::default());
+        let wb = assemble(&c, metas, Which::All, |name| {
             fetched_names.push(name.to_string());
-            Ok(fetched(ints(1, 1), Range::empty()))
+            Ok(build_sheet(&c, name, fetched(ints(1, 1), Range::empty())))
         })
         .unwrap();
         let names: Vec<&str> = wb.sheets.iter().map(|s| s.name.as_str()).collect();
