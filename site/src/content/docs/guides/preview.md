@@ -122,7 +122,11 @@ grid, read by konoma itself — no Excel, LibreOffice or other tool needed:
 - `Enter` opens the cell popup: address, displayed text, raw value, type,
   formula and format. `/` search and the `y` copy menu (`c` / `r` / `C`) work on
   the displayed text.
-- Password-protected, very large (over 256 MiB) or corrupt files show a reason
+- A sheet beyond the limits (100,000 rows, 4M cells, 128 MiB of text) shows its
+  beginning, marked `(capped)`, instead of being refused. Only the sheet on screen
+  is read; `J` / `K` read the next one in the background.
+- Password-protected or corrupt files, files over 256 MiB, and `.ods` / `.xls`
+  files too large to open safely (they cannot be read in part) show a reason
   instead of a preview.
 
 Limits to know: formulas are not evaluated (the stored result is shown) and
