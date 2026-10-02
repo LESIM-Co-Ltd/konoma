@@ -9,7 +9,11 @@
 //! (the caller maps each variant to a translated message).
 
 pub mod container;
+pub mod fmt_ods;
+pub mod fmt_xls;
+pub mod fmt_xlsb;
 pub mod fmt_xlsx;
+pub mod numfmt;
 pub mod workbook;
 
 use std::fmt;
@@ -64,14 +68,9 @@ impl SheetKind {
 }
 
 /// The locale that decides what a locale-dependent built-in format looks like (e.g. built-in
-/// number 14 is `m/d/yy` in English and `yyyy/m/d` in Japanese).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Locale {
-    /// English (en-US).
-    En,
-    /// Japanese (ja-JP).
-    Ja,
-}
+/// number 14 is `m/d/yy` in English and `yyyy/m/d` in Japanese). Defined by the number-format
+/// engine so there is one type.
+pub use numfmt::Locale;
 
 /// Why a workbook could not be loaded. No user-facing text here.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,3 +107,9 @@ impl std::error::Error for OfficeError {}
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_ods;
+#[cfg(test)]
+mod tests_xls;
+#[cfg(test)]
+mod tests_xlsb;

@@ -19,13 +19,13 @@ use crate::test_support::{sample_path_or_skip, unique_tmp, TmpDir};
 // fixture helpers
 // ---------------------------------------------------------------------------------------------
 
-fn tmp(name: &str) -> TmpDir {
+pub(super) fn tmp(name: &str) -> TmpDir {
     let dir = unique_tmp(&format!("konoma_office_{name}"));
     fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-fn zip_bytes(entries: &[(&str, &[u8])], method: CompressionMethod) -> Vec<u8> {
+pub(super) fn zip_bytes(entries: &[(&str, &[u8])], method: CompressionMethod) -> Vec<u8> {
     let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
     let opts = SimpleFileOptions::default().compression_method(method);
     for (name, content) in entries {
@@ -35,11 +35,11 @@ fn zip_bytes(entries: &[(&str, &[u8])], method: CompressionMethod) -> Vec<u8> {
     zw.finish().unwrap().into_inner()
 }
 
-fn deflated(entries: &[(&str, &[u8])]) -> Vec<u8> {
+pub(super) fn deflated(entries: &[(&str, &[u8])]) -> Vec<u8> {
     zip_bytes(entries, CompressionMethod::Deflated)
 }
 
-fn write(dir: &TmpDir, name: &str, bytes: &[u8]) -> PathBuf {
+pub(super) fn write(dir: &TmpDir, name: &str, bytes: &[u8]) -> PathBuf {
     let p = dir.join(name);
     fs::write(&p, bytes).unwrap();
     p
@@ -199,11 +199,11 @@ impl Pkg {
     }
 }
 
-fn load(path: &Path) -> Result<Workbook, OfficeError> {
+pub(super) fn load(path: &Path) -> Result<Workbook, OfficeError> {
     load_workbook(path, &LoadOptions::default())
 }
 
-fn load_with(path: &Path, limits: Limits) -> Result<Workbook, OfficeError> {
+pub(super) fn load_with(path: &Path, limits: Limits) -> Result<Workbook, OfficeError> {
     load_workbook(
         path,
         &LoadOptions {
@@ -213,7 +213,7 @@ fn load_with(path: &Path, limits: Limits) -> Result<Workbook, OfficeError> {
     )
 }
 
-fn small_limits() -> Limits {
+pub(super) fn small_limits() -> Limits {
     Limits {
         max_file_bytes: 1 << 20,
         max_entries: 50,
@@ -312,21 +312,28 @@ fn number_text_is_shortest_roundtrip() {
     assert_eq!(number_text(123456789012345.0), "123456789012345");
 }
 
+fn shown(v: CellValue, fmt: &NumFmtRef, date1904: bool, locale: Locale) -> String {
+    display_text(&v, fmt, &DisplayCtx { date1904, locale })
+}
+
+fn custom(code: &str) -> NumFmtRef {
+    NumFmtRef::Custom(code.into())
+}
+
 #[test]
-fn display_text_is_plain_for_every_value_kind() {
-    let ctx = DisplayCtx {
-        date1904: false,
-        locale: Locale::Ja,
-    };
+fn display_text_with_general_is_plain_for_every_value_kind() {
     let g = NumFmtRef::General;
-    let t = |v: CellValue| display_text(&v, &g, &ctx);
+    let t = |v: CellValue| shown(v, &g, false, Locale::Ja);
     assert_eq!(t(CellValue::Empty), "");
     assert_eq!(t(CellValue::Int(-7)), "-7");
     assert_eq!(t(CellValue::Number(0.5)), "0.5");
+    assert_eq!(t(CellValue::Number(0.1 + 0.2)), "0.3");
+    assert_eq!(t(CellValue::Number(12345678901234.0)), "1.23457E+13");
     assert_eq!(t(CellValue::Text("あ".into())), "あ");
     assert_eq!(t(CellValue::Bool(true)), "TRUE");
     assert_eq!(t(CellValue::Bool(false)), "FALSE");
     assert_eq!(t(CellValue::Error("#N/A")), "#N/A");
+    // A date with General is its serial number, as Excel shows it.
     assert_eq!(
         t(CellValue::DateTime {
             serial: 45292.0,
@@ -334,7 +341,152 @@ fn display_text_is_plain_for_every_value_kind() {
         }),
         "45292"
     );
-    assert_eq!(t(CellValue::DateTimeIso("2026-10-02".into())), "2026-10-02");
+    assert_eq!(t(CellValue::DateTimeIso("2026-10-02".into())), "46297");
+    // An ISO string that is no date is shown as written.
+    assert_eq!(t(CellValue::DateTimeIso("not a date".into())), "not a date");
+}
+
+#[test]
+fn display_text_applies_builtin_and_custom_formats() {
+    let en = Locale::En;
+    let ja = Locale::Ja;
+    let n = |v: f64, f: &NumFmtRef, l| shown(CellValue::Number(v), f, false, l);
+    assert_eq!(n(1234.5, &NumFmtRef::Builtin(4), en), "1,234.50");
+    assert_eq!(n(0.256, &NumFmtRef::Builtin(10), en), "25.60%");
+    assert_eq!(n(46297.0, &NumFmtRef::Builtin(14), en), "10/2/2026");
+    assert_eq!(n(46297.0, &NumFmtRef::Builtin(14), ja), "2026/10/2");
+    assert_eq!(n(1500.0, &NumFmtRef::Builtin(5), en), "$1,500 ");
+    assert_eq!(n(1500.0, &NumFmtRef::Builtin(5), ja), "¥1,500");
+    // A built-in id that has no code is General (23..=26, 59+).
+    assert_eq!(n(0.5, &NumFmtRef::Builtin(23), en), "0.5");
+    assert_eq!(n(0.5, &NumFmtRef::Builtin(999), en), "0.5");
+    assert_eq!(n(1234.5, &custom("[$¥-411]#,##0"), en), "¥1,235");
+    assert_eq!(n(0.256, &custom("0.0%"), en), "25.6%");
+    assert_eq!(n(-3.0, &custom("0;[Red]-0"), en), "-3");
+    // Ints go through the same engine.
+    assert_eq!(
+        shown(CellValue::Int(1234567), &custom("#,##0"), false, en),
+        "1,234,567"
+    );
+    // Dates and durations are serials.
+    let d = |serial: f64, duration: bool, f: &NumFmtRef| {
+        shown(CellValue::DateTime { serial, duration }, f, false, en)
+    };
+    assert_eq!(d(46297.0, false, &custom("yyyy-mm-dd")), "2026-10-02");
+    assert_eq!(
+        d(46297.0, false, &custom("ggge\\年m\\月d\\日")),
+        "令和8年10月2日"
+    );
+    assert_eq!(d(1.5, true, &custom("[h]:mm:ss")), "36:00:00");
+    assert_eq!(d(0.5, false, &custom("h:mm AM/PM")), "12:00 PM");
+    // The 1904 system shifts the same serial.
+    assert_eq!(
+        shown(
+            CellValue::DateTime {
+                serial: 0.0,
+                duration: false
+            },
+            &custom("yyyy-mm-dd"),
+            true,
+            en
+        ),
+        "1904-01-01"
+    );
+    // Text goes through the text section; numbers formats leave text alone.
+    assert_eq!(
+        shown(CellValue::Text("x".into()), &custom("@\"!\""), false, en),
+        "x!"
+    );
+    assert_eq!(
+        shown(CellValue::Text("x".into()), &custom("0.00"), false, en),
+        "x"
+    );
+    // Booleans and errors ignore the number format.
+    assert_eq!(
+        shown(CellValue::Bool(true), &custom("0.00"), false, en),
+        "TRUE"
+    );
+    assert_eq!(
+        shown(CellValue::Error("#REF!"), &custom("0.00"), false, en),
+        "#REF!"
+    );
+}
+
+#[test]
+fn display_text_converts_iso_dates_and_durations_from_ods() {
+    let iso = |s: &str, f: &str| {
+        shown(
+            CellValue::DateTimeIso(s.into()),
+            &custom(f),
+            false,
+            Locale::En,
+        )
+    };
+    assert_eq!(iso("2026-10-02", "yyyy/mm/dd"), "2026/10/02");
+    assert_eq!(
+        iso("2026-10-02T13:05:09", "yyyy-mm-dd hh:mm:ss"),
+        "2026-10-02 13:05:09"
+    );
+    assert_eq!(iso("PT13H05M09S", "hh:mm:ss"), "13:05:09");
+    assert_eq!(iso("PT25H30M00S", "[h]:mm"), "25:30");
+    assert_eq!(iso("P1DT2H", "[h]:mm"), "26:00");
+    assert_eq!(iso("garbage", "yyyy"), "garbage");
+}
+
+#[test]
+fn display_text_never_panics_on_extreme_numbers() {
+    let fmts = [
+        NumFmtRef::General,
+        NumFmtRef::Builtin(14),
+        NumFmtRef::Builtin(11),
+        custom("0.00"),
+        custom("yyyy-mm-dd"),
+        custom("[h]:mm:ss"),
+        custom("0.0%"),
+        custom("#,##0"),
+        custom("garbage ;;; [[["),
+    ];
+    for v in [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::MAX,
+        f64::MIN,
+        f64::MIN_POSITIVE,
+        -0.0,
+        1e300,
+        -1e-300,
+        2958466.0,
+        2958467.0,
+        -1.0,
+    ] {
+        for f in &fmts {
+            for date1904 in [false, true] {
+                let _ = shown(CellValue::Number(v), f, date1904, Locale::En);
+                let _ = shown(
+                    CellValue::DateTime {
+                        serial: v,
+                        duration: false,
+                    },
+                    f,
+                    date1904,
+                    Locale::Ja,
+                );
+            }
+        }
+    }
+    let _ = shown(
+        CellValue::Int(i64::MIN),
+        &custom("#,##0"),
+        false,
+        Locale::En,
+    );
+    let _ = shown(
+        CellValue::Int(i64::MAX),
+        &NumFmtRef::General,
+        false,
+        Locale::En,
+    );
 }
 
 #[test]
@@ -1199,7 +1351,7 @@ fn default_limits_are_the_documented_values() {
 // encryption and format detection
 // ---------------------------------------------------------------------------------------------
 
-fn write_cfb(path: &Path, streams: &[(&str, &[u8])]) {
+pub(super) fn write_cfb(path: &Path, streams: &[(&str, &[u8])]) {
     let mut cf = cfb::create(path).unwrap();
     for (name, data) in streams {
         cf.create_stream(name).unwrap().write_all(data).unwrap();
@@ -1320,7 +1472,10 @@ fn unknown_extension_is_unsupported_and_missing_file_is_io() {
 
 /// Runs the loader *without* the outer safety net, so a panic fails the test instead of being
 /// converted into `Corrupt`.
-fn assert_inner_does_not_panic(path: &Path, what: &str) -> Result<Workbook, OfficeError> {
+pub(super) fn assert_inner_does_not_panic(
+    path: &Path,
+    what: &str,
+) -> Result<Workbook, OfficeError> {
     let opts = LoadOptions {
         limits: small_limits(),
         ..LoadOptions::default()
@@ -1379,14 +1534,14 @@ fn every_truncation_of_a_real_xlsx_is_handled() {
     }
 }
 
-fn xorshift(state: &mut u64) -> u64 {
+pub(super) fn xorshift(state: &mut u64) -> u64 {
     *state ^= *state << 13;
     *state ^= *state >> 7;
     *state ^= *state << 17;
     *state
 }
 
-fn read_parts(path: &Path) -> Vec<(String, Vec<u8>)> {
+pub(super) fn read_parts(path: &Path) -> Vec<(String, Vec<u8>)> {
     let mut ar = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
     let mut parts = Vec::new();
     for i in 0..ar.len() {
@@ -1398,7 +1553,7 @@ fn read_parts(path: &Path) -> Vec<(String, Vec<u8>)> {
     parts
 }
 
-fn mutate(data: &mut Vec<u8>, seed: &mut u64, kind: u64) {
+pub(super) fn mutate(data: &mut Vec<u8>, seed: &mut u64, kind: u64) {
     if data.is_empty() {
         return;
     }
@@ -1618,11 +1773,10 @@ fn real_ods_written_by_libreoffice() {
     let wb = load(&p).unwrap();
     check_common_sample(&wb, "ods");
     let s = &wb.sheets[0];
-    // calamine's ods reader does not understand LibreOffice's `calcext:value-type="error"`: an error
-    // cell arrives as an empty string (known limitation of the ods reader, to revisit when the ods
-    // format pass is written).
-    assert_eq!(s.display(4, 3), "");
-    assert_eq!(s.cell(4, 3).unwrap().cell_type(), CellType::Text);
+    // calamine's ods reader turns LibreOffice's `calcext:value-type="error"` cell into an empty
+    // string; the ods format pass restores the error value.
+    assert_eq!(s.display(4, 3), "#DIV/0!");
+    assert_eq!(s.cell(4, 3).unwrap().cell_type(), CellType::Error);
     // LibreOffice imports the source's boolean as the number 1 (no boolean style) when it saves.
     assert_eq!(s.cell(4, 4).unwrap().cell_type(), CellType::Number);
     assert_eq!(s.display(4, 4), "1");
@@ -1683,4 +1837,106 @@ fn locale_option_is_accepted_for_every_locale() {
         .unwrap();
         assert_eq!(wb.sheets.len(), 2);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// what the user sees: the same source, three formats, one display
+// ---------------------------------------------------------------------------------------------
+
+/// The display strings Excel / LibreOffice show for `scripts/office-samples/sample-source.fods`
+/// (derived from that file: `#,##0.00`, `[$¥-411]#,##0`, `0.0%`, `yyyy-mm-dd`, `hh:mm:ss` and the
+/// Japanese era format; the source's TRUE is stored by LibreOffice as the number 1 in all three
+/// formats, so it is `1` here).
+const SAMPLE_SALES: [[&str; 6]; 5] = [
+    ["Quarterly report 四半期報告", "", "", "", "", ""],
+    ["Item 品名", "Qty", "Price", "Rate", "Date", "Time"],
+    [
+        "Apple りんご",
+        "1,234,567.89",
+        "¥1,500",
+        "25.6%",
+        "2026-10-02",
+        "13:05:09",
+    ],
+    [
+        "Banana バナナ",
+        "42.00",
+        "¥980",
+        "5.0%",
+        "2024-02-29",
+        "00:00:30",
+    ],
+    ["Total 合計", "1,234,609.89", "¥2,480", "#DIV/0!", "1", ""],
+];
+
+const SAMPLE_URIAGE: [[&str; 4]; 3] = [
+    ["", "", "和暦の日付", "Plain text"],
+    ["", "", "令和8年10月2日", "0.1"],
+    ["", "", "平成1年1月8日", "こんにちは 世界"],
+];
+
+#[test]
+fn the_three_real_samples_show_what_excel_shows() {
+    for name in ["sample.xlsx", "sample.ods", "sample.xls"] {
+        let Some(p) = sample_path_or_skip(name) else {
+            continue;
+        };
+        // The formats in the samples are explicit, so the locale must not matter.
+        for locale in [Locale::En, Locale::Ja] {
+            let wb = load_workbook(
+                &p,
+                &LoadOptions {
+                    locale,
+                    limits: Limits::default(),
+                },
+            )
+            .unwrap();
+            let sales = &wb.sheets[0];
+            for (r, row) in SAMPLE_SALES.iter().enumerate() {
+                for (c, want) in row.iter().enumerate() {
+                    assert_eq!(
+                        sales.display(r, c),
+                        *want,
+                        "{name} {locale:?} Sales ({r},{c})"
+                    );
+                }
+            }
+            let uriage = &wb.sheets[1];
+            for (r, row) in SAMPLE_URIAGE.iter().enumerate() {
+                for (c, want) in row.iter().enumerate() {
+                    assert_eq!(
+                        uriage.display(r, c),
+                        *want,
+                        "{name} {locale:?} 売上 ({r},{c})"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_error_cell_of_every_real_sample_is_an_error_value() {
+    for name in ["sample.xlsx", "sample.ods", "sample.xls"] {
+        let Some(p) = sample_path_or_skip(name) else {
+            continue;
+        };
+        let wb = load(&p).unwrap();
+        let c = wb.sheets[0].cell(4, 3).unwrap();
+        assert_eq!(c.cell_type(), CellType::Error, "{name}");
+        assert_eq!(c.display(), "#DIV/0!", "{name}");
+    }
+}
+
+#[test]
+fn raw_values_stay_available_next_to_the_formatted_text() {
+    // The detail view shows the raw value: formatting must not lose it.
+    let Some(p) = sample_path_or_skip("sample.ods") else {
+        return;
+    };
+    let wb = load(&p).unwrap();
+    let s = &wb.sheets[0];
+    assert_eq!(s.display(2, 1), "1,234,567.89");
+    assert_eq!(s.cell(2, 1).unwrap().raw_text(), "1234567.891");
+    assert_eq!(s.cell(2, 3).unwrap().raw_text(), "0.256");
 }

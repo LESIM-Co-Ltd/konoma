@@ -27,10 +27,11 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, XmlVersion};
 
 use super::container::{self, Limits};
-use super::workbook::NumFmtRef;
+use super::workbook::{CellError, NumFmtRef};
 use super::OfficeError;
 
-/// Everything the xlsx format pass learned about the workbook.
+/// Everything a format pass learned about the workbook. Shared by every format's pass
+/// (`fmt_ods`, `fmt_xlsb`, `fmt_xls` return it too).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct XlsxFormats {
     /// `<workbookPr date1904="1"/>`.
@@ -51,6 +52,12 @@ pub struct SheetFormats {
     pub value_cells: u64,
     /// Bounding box of the value-bearing cells: `(min_row, min_col, max_row, max_col)`, 0-based.
     pub bbox: Option<(u32, u32, u32, u32)>,
+    /// Error values the value reader loses (ods: `calcext:value-type="error"` cells arrive as an
+    /// empty string), `(row, col, code)` sorted by `(row, col)`. Empty for the other formats.
+    pub errors: Vec<(u32, u32, CellError)>,
+    /// Cells the value reader materialises on the way to its dense matrix, when that is more than
+    /// the bounding box (ods builds one row of cells per *physical* row before expanding repeats).
+    pub read_cost: u64,
 }
 
 impl SheetFormats {
@@ -62,6 +69,46 @@ impl SheetFormats {
                 (u64::from(r1 - r0) + 1).saturating_mul(u64::from(c1 - c0) + 1)
             }
         }
+    }
+
+    /// Books one value-bearing cell of a binary format: counts it against the cell budget, grows
+    /// the bounding box (whatever its column: the value reader's dense matrix would cover it) and
+    /// remembers a non-`General` format for it (columns past Excel's last are not shown).
+    pub(crate) fn note_value(
+        &mut self,
+        row: u32,
+        col: u32,
+        fmt: u16,
+        limits: &Limits,
+    ) -> Result<(), OfficeError> {
+        self.value_cells += 1;
+        if self.value_cells > limits.max_dense_cells {
+            return Err(OfficeError::TooLarge {
+                what: "sheet cells",
+            });
+        }
+        self.bbox = Some(match self.bbox {
+            None => (row, col, row, col),
+            Some((r0, c0, r1, c1)) => (r0.min(row), c0.min(col), r1.max(row), c1.max(col)),
+        });
+        if fmt != 0 && (col as usize) < limits.max_cols {
+            self.cells.push((row, col as u16, fmt));
+        }
+        Ok(())
+    }
+
+    /// The cost the value reader will pay for this sheet: the larger of the bounding box and any
+    /// intermediate materialisation (`read_cost`).
+    pub fn dense_cost(&self) -> u64 {
+        self.bbox_area().max(self.read_cost)
+    }
+
+    /// The error value recorded at `(row, col)`, if any.
+    pub fn error_at(&self, row: u32, col: u32) -> Option<CellError> {
+        self.errors
+            .binary_search_by_key(&(row, col), |&(r, c, _)| (r, c))
+            .ok()
+            .map(|i| self.errors[i].2)
     }
 
     /// The format index of the cell at `(row, col)` (0 = `General`).
@@ -263,12 +310,18 @@ pub(crate) fn parse_styles(src: impl BufRead) -> Result<Styles, OfficeError> {
             _ => {}
         }
     }
+    Ok(styles_from(&xf_ids, &custom))
+}
+
+/// Folds `xf index -> numFmtId` and the file's custom format table into the compact
+/// [`Styles`] (shared by the binary formats, which read the same two tables from records).
+pub(crate) fn styles_from(xf_ids: &[u32], custom: &HashMap<u32, String>) -> Styles {
     let mut formats = vec![NumFmtRef::General];
     let mut index: HashMap<NumFmtRef, u16> = HashMap::new();
     index.insert(NumFmtRef::General, 0);
     let mut xf_to_format = Vec::with_capacity(xf_ids.len());
-    for id in xf_ids {
-        let fmt = resolve_num_fmt(id, &custom);
+    for &id in xf_ids {
+        let fmt = resolve_num_fmt(id, custom);
         let idx = match index.get(&fmt) {
             Some(&i) => i,
             None => match u16::try_from(formats.len()) {
@@ -284,10 +337,10 @@ pub(crate) fn parse_styles(src: impl BufRead) -> Result<Styles, OfficeError> {
         };
         xf_to_format.push(idx);
     }
-    Ok(Styles {
+    Styles {
         formats,
         xf_to_format,
-    })
+    }
 }
 
 fn xf_num_fmt_id(e: &BytesStart<'_>) -> u32 {
@@ -401,7 +454,7 @@ pub(crate) fn parse_sheet(
     Ok(out)
 }
 
-fn record(
+pub(crate) fn record(
     out: &mut SheetFormats,
     row: u32,
     col: u32,

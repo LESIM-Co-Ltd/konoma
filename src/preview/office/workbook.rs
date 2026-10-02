@@ -28,11 +28,13 @@ use calamine::{Data, Dimensions, Range, Reader, SheetType, SheetVisible};
 
 use super::container::{self, Detected, Limits};
 use super::fmt_xlsx::{self, SheetFormats};
+use super::numfmt;
+use super::{fmt_ods, fmt_xls, fmt_xlsb};
 use super::{Locale, OfficeError, SheetKind};
 
 /// How a cell's number format is referred to. The *meaning* of a built-in number or of a custom
-/// code is the job of the number-format engine (`numfmt`, added in a later stage); the loader only
-/// carries the reference.
+/// code is the job of the number-format engine ([`numfmt`]); the loader only carries the
+/// reference (ods styles are translated to Excel-style codes by `fmt_ods` first).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NumFmtRef {
     /// No format (Excel's `General`).
@@ -257,21 +259,38 @@ pub struct DisplayCtx {
     pub locale: Locale,
 }
 
-/// The text shown in the grid for a value with a number format.
+/// The text shown in the grid for a value with a number format: what Excel would display.
 ///
-/// **Provisional**: this stage renders the value plainly and ignores `fmt`. The next stage replaces
-/// the body with the number-format engine; the signature already carries everything it needs
-/// (value, format reference, date system, locale), so no caller changes.
-pub fn display_text(value: &CellValue, _fmt: &NumFmtRef, _ctx: &DisplayCtx) -> String {
+/// A built-in id that has no code (23..=26, 59+) falls back to `General`. An ISO date/duration
+/// that cannot be converted to a serial is shown as the file wrote it.
+pub fn display_text(value: &CellValue, fmt: &NumFmtRef, ctx: &DisplayCtx) -> String {
+    use numfmt::Value;
+    let code: &str = match fmt {
+        NumFmtRef::General => "General",
+        NumFmtRef::Builtin(id) => {
+            numfmt::builtin_format_code(u32::from(*id), ctx.locale).unwrap_or("General")
+        }
+        NumFmtRef::Custom(c) => c,
+    };
+    let opts = numfmt::Options {
+        date1904: ctx.date1904,
+        locale: ctx.locale,
+    };
+    let num = |n: f64| numfmt::format_value(code, Value::Number(n), &opts);
     match value {
         CellValue::Empty => String::new(),
-        CellValue::Int(i) => i.to_string(),
-        CellValue::Number(n) => number_text(*n),
-        CellValue::Text(t) => t.to_string(),
-        CellValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
-        CellValue::Error(e) => (*e).to_string(),
-        CellValue::DateTime { serial, .. } => number_text(*serial),
-        CellValue::DateTimeIso(s) => s.to_string(),
+        CellValue::Int(i) => num(*i as f64),
+        CellValue::Number(n) => num(*n),
+        CellValue::Text(t) => numfmt::format_value(code, Value::Text(t), &opts),
+        CellValue::Bool(b) => numfmt::format_value(code, Value::Bool(*b), &opts),
+        CellValue::Error(e) => numfmt::format_value(code, Value::Error(e), &opts),
+        CellValue::DateTime { serial, .. } => num(*serial),
+        CellValue::DateTimeIso(s) => {
+            match numfmt::iso_datetime_to_serial(s).or_else(|| numfmt::iso_duration_to_serial(s)) {
+                Some(n) => num(n),
+                None => s.to_string(),
+            }
+        }
     }
 }
 
@@ -343,7 +362,7 @@ fn load_xlsx(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
     assemble(&ctx, metas, |name| {
         let sf = fm.sheets.get(name);
         if let Some(sf) = sf {
-            if sf.bbox_area() > limits.max_dense_cells {
+            if sf.dense_cost() > limits.max_dense_cells {
                 return Err(OfficeError::TooLarge { what: "sheet area" });
             }
         }
@@ -360,43 +379,69 @@ fn load_xlsx(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
 }
 
 fn load_xlsb(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
+    let limits = &opts.limits;
+    // Our own pass first (formats, 1904, and the size of each sheet's value box): calamine fills
+    // a dense matrix over that box and an OOM abort cannot be caught.
+    let fm = fmt_xlsb::read(path, limits)?;
     let mut wb: calamine::Xlsb<_> = calamine::Xlsb::new(open_reader(path)?).map_err(map_xlsb)?;
     let metas = sheet_metas(&wb);
-    let ctx = Ctx::plain(opts);
+    let ctx = Ctx {
+        date1904: fm.date1904,
+        formats: fm.formats.clone(),
+        opts: *opts,
+    };
     assemble(&ctx, metas, |name| {
+        let sf = fm.sheets.get(name);
+        if sf.is_some_and(|sf| sf.dense_cost() > limits.max_dense_cells) {
+            return Err(OfficeError::TooLarge { what: "sheet area" });
+        }
         Ok(Fetched {
             data: wb.worksheet_range(name).map_err(map_xlsb)?,
             formulas: wb.worksheet_formula(name).unwrap_or_default(),
             merges: Vec::new(),
-            fmts: None,
+            fmts: sf,
         })
     })
 }
 
 fn load_ods(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
+    // Our own pass first: it detects encryption, budgets every table (calamine parses them all
+    // while opening) and reads the styles, so it must run before `Ods::new`.
+    let fm = fmt_ods::read(path, &opts.limits)?;
     let mut wb: calamine::Ods<_> = calamine::Ods::new(open_reader(path)?).map_err(map_ods)?;
     let metas = sheet_metas(&wb);
-    let ctx = Ctx::plain(opts);
+    let ctx = Ctx {
+        date1904: fm.date1904,
+        formats: fm.formats.clone(),
+        opts: *opts,
+    };
     assemble(&ctx, metas, |name| {
         Ok(Fetched {
             data: wb.worksheet_range(name).map_err(map_ods)?,
             formulas: wb.worksheet_formula(name).unwrap_or_default(),
             merges: Vec::new(),
-            fmts: None,
+            fmts: fm.sheets.get(name),
         })
     })
 }
 
 fn load_xls(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
+    // Our own pass first: encryption, formats, and the size of *every* sheet's value box (calamine
+    // builds all of them while opening).
+    let fm = fmt_xls::read(path, &opts.limits)?;
     let mut wb: calamine::Xls<_> = calamine::Xls::new(open_reader(path)?).map_err(map_xls)?;
     let metas = sheet_metas(&wb);
-    let ctx = Ctx::plain(opts);
+    let ctx = Ctx {
+        date1904: fm.date1904,
+        formats: fm.formats.clone(),
+        opts: *opts,
+    };
     assemble(&ctx, metas, |name| {
         Ok(Fetched {
             data: wb.worksheet_range(name).map_err(map_xls)?,
             formulas: wb.worksheet_formula(name).unwrap_or_default(),
             merges: wb.merge_cells_by_sheet_name(name).unwrap_or_default(),
-            fmts: None,
+            fmts: fm.sheets.get(name),
         })
     })
 }
@@ -433,17 +478,6 @@ struct Ctx {
     date1904: bool,
     formats: Vec<NumFmtRef>,
     opts: LoadOptions,
-}
-
-impl Ctx {
-    /// Formats not read yet (xlsb / xls / ods): everything is `General`.
-    fn plain(opts: &LoadOptions) -> Ctx {
-        Ctx {
-            date1904: false,
-            formats: vec![NumFmtRef::General],
-            opts: *opts,
-        }
-    }
 }
 
 struct Meta {
@@ -549,7 +583,16 @@ fn build_sheet(ctx: &Ctx, name: String, f: Fetched<'_>) -> Sheet {
             if abs_col >= ncols {
                 break;
             }
-            let Some(value) = to_value(v) else { continue };
+            let Some(mut value) = to_value(v) else {
+                continue;
+            };
+            // ods: an error cell reaches us as an empty string; the format pass knows better.
+            if let Some(code) = f
+                .fmts
+                .and_then(|s| s.error_at(abs_row as u32, abs_col as u32))
+            {
+                value = CellValue::Error(code);
+            }
             let fmt = f
                 .fmts
                 .map(|s| s.format_at(abs_row as u32, abs_col as u32))
