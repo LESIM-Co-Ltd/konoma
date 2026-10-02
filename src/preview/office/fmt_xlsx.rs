@@ -48,8 +48,10 @@ pub struct SheetFormats {
     /// `(row, col, format index)` of value-bearing cells whose format is not `General`, 0-based,
     /// sorted by `(row, col)`. `col` fits `u16` because columns beyond Excel's 16,384 are dropped.
     pub cells: Vec<(u32, u16, u16)>,
-    /// Number of cells the value reader will put into a range: those with `<v>`, `<is>` or `<f>`
-    /// (`calamine` builds a second range, of the formulas, over the cells that have a formula).
+    /// Number of cells that show a value: those with a `<v>` holding text or an `<is>` (the
+    /// binary formats and ods count their own value-bearing cells). A formula-only cell shows
+    /// nothing and is not a kept cell, so it does not count (xlsx), and the builder's `kept`
+    /// never exceeds this.
     pub value_cells: u64,
     /// Bounding box of those cells: `(min_row, min_col, max_row, max_col)`, 0-based. Columns past
     /// Excel's last are part of it: the reader does not drop them, so its dense matrix covers them.
@@ -68,14 +70,16 @@ pub struct SheetFormats {
     /// the part, so a sheet cut off by a limit has none: the merges that matter are in the part of
     /// the sheet that was not read.
     pub merges: Vec<MergeRange>,
-    /// The pass stopped before the end of the part: at a row past the row cap, at a row or cell
-    /// reference that overflows the value reader's arithmetic, or at the sheet's cell budget.
+    /// Data was left out: the pass stopped at a row past the row cap, at a reference that
+    /// overflows the value reader's arithmetic, or at the sheet's cell budget, **and** a value,
+    /// an inline string or a formula lies past that point (a tail of empty cells is not data).
     pub truncated: bool,
-    /// xlsx: when the pass stopped at a row or cell *reference* (the first two cases above), how
-    /// many cells (`<c>` elements) precede it. The value reader must stop after that many and
-    /// never be asked for the next one: it parses references with plain `u32` arithmetic (a panic
-    /// in a debug build, a wrapped position in a release build) and a stop at the row cap is
-    /// also a stop that saves reading the rest of a million-row part.
+    /// xlsx: where the pass stopped reading (any of the three cases above): how many cells (`<c>`
+    /// elements, empty ones included, as the value reader counts them) precede it. The value
+    /// reader must stop after that many and never be asked for the next one, so it never reads a
+    /// cell whose format was not recorded. The reader parses references with plain `u32` arithmetic
+    /// (a panic in a debug build, a wrapped position in a release build), and a stop at the row
+    /// cap also saves reading the rest of a million-row part.
     pub reader_stop: Option<u64>,
 }
 
@@ -143,6 +147,17 @@ impl SheetFormats {
     /// intermediate materialisation (`read_cost`).
     pub fn dense_cost(&self) -> u64 {
         self.bbox_area().max(self.read_cost)
+    }
+
+    /// Refuses a workbook whose sheets together take more of the reader's dense matrices than
+    /// `Limits::max_dense_cells`. The per-sheet check does not see this: `calamine` keeps **every**
+    /// sheet's matrix once the file is open (hidden ones too), so a hundred sheets each just under
+    /// the limit would ask for a hundred times the memory the limit stands for.
+    pub(crate) fn check_total_area(total: u64, limits: &Limits) -> Result<(), OfficeError> {
+        if total > limits.max_dense_cells {
+            return Err(OfficeError::TooLarge { what: "sheet area" });
+        }
+        Ok(())
     }
 
     /// The error value recorded at `(row, col)`, if any.
@@ -548,16 +563,35 @@ fn resolve_num_fmt(id: u32, custom: &HashMap<u32, String>) -> NumFmtRef {
 
 /// Streams one sheet part and records the number format of every value-bearing cell.
 ///
-/// Everything kept is bounded: the pass **stops** (and sets [`SheetFormats::truncated`]) at the
-/// first row or cell reference past `Limits::max_rows` or one that overflows `u32` (the value
-/// reader wraps such a number instead of failing, so a hostile `<row r="5000000000">` lands at an
-/// arbitrary row there), and once the sheet has `Limits::max_sheet_cells` cells. Real sheets list
-/// rows in order, so what is cut off is the tail, never the middle.
+/// Everything kept is bounded: the pass **stops reading** at the first row or cell reference past
+/// `Limits::max_rows` or one that overflows `u32` (the value reader wraps such a number instead of
+/// failing, so a hostile `<row r="5000000000">` lands at an arbitrary row there), and once the
+/// sheet has `Limits::max_sheet_cells` value cells. Real sheets list rows in order, so what is cut
+/// off is the tail, never the middle.
+///
+/// **What the value reader counts** (`calamine` 0.36 `xlsx/cells_reader.rs`, which reads with
+/// `expand_empty_elements`): every `<c>` element inside `<sheetData>` is one returned cell, whether
+/// it is `<c .../>`, `<c ...></c>`, holds only a formula or an inline string, or a value. So
+/// [`SheetFormats::reader_stop`] counts *every* `<c>`, not only the ones with a value.
+///
+/// **Truncation is about data.** After a stop the pass keeps scanning (it records nothing) only
+/// to see whether anything is left to show: a value, an inline string or a formula in a cell
+/// past the stop sets [`SheetFormats::truncated`]; a tail of formatted empty cells and empty rows
+/// (Excel writes those) does not.
 pub(crate) fn parse_sheet(
     src: impl BufRead,
     xf_to_format: &[u16],
     limits: &Limits,
 ) -> Result<SheetFormats, OfficeError> {
+    /// The `<c>` being read.
+    #[derive(Default)]
+    struct Cur {
+        row: u32,
+        col: u32,
+        xf: u32,
+        /// A `<v>` with text or an `<is>`: the cell shows something.
+        has_value: bool,
+    }
     let mut rd = Reader::from_reader(src);
     let mut buf = Vec::new();
     let mut out = SheetFormats::default();
@@ -567,10 +601,14 @@ pub(crate) fn parse_sheet(
     let mut next_row: u32 = 0;
     let mut cur_row: u32 = 0;
     let mut next_col: u32 = 0;
-    // The `<c>` being read: (row, col, xf, has_value).
-    let mut cell: Option<(u32, u32, u32, bool)> = None;
+    let mut cell: Option<Cur> = None;
     // `<c>` elements met so far (what the value reader returns, whatever they hold).
     let mut c_starts: u64 = 0;
+    // Only what is inside `<sheetData>` is cells (the value reader stops at its end).
+    let mut in_data = false;
+    let mut in_v = false;
+    // The reader's stop point was fixed: from here on only the question "is there data left?".
+    let mut stopped = false;
     loop {
         buf.clear();
         let ev = rd.read_event_into(&mut buf).map_err(xml_err)?;
@@ -578,64 +616,80 @@ pub(crate) fn parse_sheet(
             Event::Start(ref e) | Event::Empty(ref e) => {
                 let is_empty = matches!(ev, Event::Empty(_));
                 match e.local_name().as_ref() {
-                    b"row" => {
+                    b"sheetData" => in_data = !is_empty,
+                    b"row" if in_data && !stopped => {
                         cur_row = match attr(e, b"r", false).and_then(|v| parse_row_ref(&v)) {
                             Some(r) => r,
                             None => next_row,
                         };
                         if cur_row >= max_row {
-                            out.truncated = true;
                             out.reader_stop = Some(c_starts);
-                            break;
+                            stopped = true;
                         }
                         next_col = 0;
                         if is_empty {
                             next_row = cur_row.saturating_add(1);
                         }
                     }
-                    b"c" => {
-                        let r_attr = attr(e, b"r", false);
-                        let (row, col) = match r_attr.as_deref().map(parse_a1) {
-                            Some(Some(pos)) => pos,
-                            // A reference too long to be a real one (it overflows `u32`, which the
-                            // value reader would wrap): the rest of the sheet is not trusted.
-                            Some(None) if r_attr.as_deref().is_some_and(absurd_ref) => {
-                                out.truncated = true;
+                    b"c" if in_data => {
+                        if !stopped {
+                            let r_attr = attr(e, b"r", false);
+                            let (row, col) = match r_attr.as_deref().map(parse_a1) {
+                                Some(Some(pos)) => pos,
+                                // A reference too long to be a real one (it overflows `u32`,
+                                // which the value reader would wrap): the rest of the sheet is
+                                // not trusted.
+                                Some(None) if r_attr.as_deref().is_some_and(absurd_ref) => {
+                                    (max_row, 0)
+                                }
+                                // Short junk (`??`) just continues the row.
+                                _ => (cur_row, next_col),
+                            };
+                            if row >= max_row {
                                 out.reader_stop = Some(c_starts);
-                                break;
+                                stopped = true;
+                            } else {
+                                let xf = attr(e, b"s", false)
+                                    .and_then(|v| v.trim().parse::<u32>().ok())
+                                    .unwrap_or(0);
+                                next_col = col.saturating_add(1);
+                                // Counted when it opens, empty element or not.
+                                c_starts += 1;
+                                if !is_empty {
+                                    cell = Some(Cur {
+                                        row,
+                                        col,
+                                        xf,
+                                        has_value: false,
+                                    });
+                                }
                             }
-                            // Short junk (`??`) just continues the row.
-                            _ => (cur_row, next_col),
-                        };
-                        if row >= max_row {
-                            out.truncated = true;
-                            out.reader_stop = Some(c_starts);
-                            break;
                         }
-                        let xf = attr(e, b"s", false)
-                            .and_then(|v| v.trim().parse::<u32>().ok())
-                            .unwrap_or(0);
-                        next_col = col.saturating_add(1);
-                        if !is_empty {
-                            c_starts += 1;
-                            cell = Some((row, col, xf, false));
+                        if stopped && !is_empty {
+                            cell = Some(Cur::default());
                         }
                     }
-                    // Only a value-bearing child makes the cell show something; a formula makes
-                    // the reader keep it too.
-                    b"v" | b"is" | b"f" => {
-                        if let Some(c) = cell.as_mut() {
-                            c.3 = true;
-                        }
-                        // The value reader keeps a table of the shared formulas by `si` and grows
-                        // it to the largest one named, so an `si` in the millions asks it for
-                        // gigabytes. `si` counts formula groups: it cannot honestly exceed the
-                        // number of cells a sheet may hold.
-                        if e.local_name().as_ref() == b"f"
-                            && attr(e, b"si", false)
-                                .and_then(|v| v.trim().parse::<u64>().ok())
-                                .is_some_and(|si| si >= limits.max_sheet_cells)
+                    b"v" | b"is" | b"f" if cell.is_some() => {
+                        let name = e.local_name();
+                        let name = name.as_ref();
+                        if name == b"v" {
+                            in_v = !is_empty;
+                        } else if stopped {
+                            // An inline string or a formula past the stop: data not shown.
+                            out.truncated = true;
+                            break;
+                        } else if name == b"is" {
+                            if let Some(c) = cell.as_mut() {
+                                c.has_value = true;
+                            }
+                        } else if attr(e, b"si", false)
+                            .and_then(|v| v.trim().parse::<u64>().ok())
+                            .is_some_and(|si| si >= limits.max_sheet_cells)
                         {
+                            // The value reader keeps a table of the shared formulas by `si` and
+                            // grows it to the largest one named, so an `si` in the millions asks
+                            // it for gigabytes. `si` counts formula groups: it cannot honestly
+                            // exceed the number of cells a sheet may hold.
                             return Err(OfficeError::TooLarge {
                                 what: "sheet cells",
                             });
@@ -649,21 +703,41 @@ pub(crate) fn parse_sheet(
                     _ => {}
                 }
             }
+            Event::Text(_) | Event::CData(_) if in_v && cell.is_some() => {
+                let empty = match &ev {
+                    Event::Text(t) => t.is_empty(),
+                    Event::CData(t) => t.is_empty(),
+                    _ => true,
+                };
+                if !empty {
+                    if stopped {
+                        out.truncated = true;
+                        break;
+                    }
+                    if let Some(c) = cell.as_mut() {
+                        c.has_value = true;
+                    }
+                }
+            }
             Event::End(e) => match e.local_name().as_ref() {
+                b"sheetData" => in_data = false,
                 b"row" => next_row = cur_row.saturating_add(1),
+                b"v" => in_v = false,
                 b"c" => {
-                    if let Some((row, col, xf, true)) = cell.take() {
+                    if let Some(c) = cell.take().filter(|c| c.has_value && !stopped) {
                         if out.value_cells >= limits.max_sheet_cells {
+                            // This cell is the first one over the budget: it and what follows
+                            // are not read (the reader is stopped before it).
                             out.truncated = true;
+                            out.reader_stop = Some(c_starts.saturating_sub(1));
                             break;
                         }
                         out.value_cells += 1;
-                        let fmt = xf_to_format.get(xf as usize).copied().unwrap_or(0);
-                        if fmt != 0 && col < max_col {
-                            out.cells.push((row, col as u16, fmt));
+                        let fmt = xf_to_format.get(c.xf as usize).copied().unwrap_or(0);
+                        if fmt != 0 && c.col < max_col {
+                            out.cells.push((c.row, c.col as u16, fmt));
                         }
                     }
-                    cell = None;
                 }
                 _ => {}
             },

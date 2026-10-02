@@ -759,8 +759,19 @@ pub enum MediaPayload {
 /// Result of media loading from another thread. Matched by generation via `gen`; results made stale by navigation are discarded.
 pub struct MediaResult {
     gen: u64,
+    /// The result of the (single) workbook load thread: its slot is free again, whatever `gen` is.
+    wb_worker: bool,
     /// None = decode/rasterize failure (the render side shows a fallback).
     payload: Option<MediaPayload>,
+}
+
+/// A workbook load waiting for the running one to end (`App::wb_queued`).
+struct WbRequest {
+    path: PathBuf,
+    locale: crate::preview::office::Locale,
+    sheet: usize,
+    /// The `media_gen` it was asked under; stale (dropped) if that moved on.
+    gen: u64,
 }
 
 /// The geometry a kitty image targets: `(crop rect (x,y,w,h) in source px, display cols, rows)`.
@@ -818,6 +829,14 @@ enum MediaJob {
 impl MediaJob {
     /// Load the actual data (called on a separate thread or via the synchronous fallback). None on failure.
     fn run(self) -> Option<MediaPayload> {
+        self.run_cancellable(None)
+    }
+
+    /// [`Self::run`]; `cancel` is honoured by the workbook load (the other kinds are short).
+    fn run_cancellable(
+        self,
+        cancel: Option<crate::preview::office::Cancel>,
+    ) -> Option<MediaPayload> {
         match self {
             MediaJob::Svg(p, max_px) => {
                 let data = std::fs::read(&p).ok()?;
@@ -858,7 +877,9 @@ impl MediaJob {
                 Some(MediaPayload::Vector { img, svg })
             }
             MediaJob::Workbook(p, locale, sheet) => {
-                use crate::preview::office::{load_workbook_sheet, LoadOptions, OfficeError};
+                use crate::preview::office::{
+                    load_workbook_sheet_cancellable, LoadOptions, OfficeError,
+                };
                 let opts = LoadOptions {
                     locale,
                     ..LoadOptions::default()
@@ -866,7 +887,7 @@ impl MediaJob {
                 // The readers sit on third-party parsers: a panic on a pathological file becomes a
                 // "corrupt" reason instead of killing the thread (principle #3).
                 let loaded = crate::preview::markdown::catch_silent(|| {
-                    load_workbook_sheet(&p, &opts, sheet)
+                    load_workbook_sheet_cancellable(&p, &opts, sheet, cancel)
                 })
                 .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
                 Some(match loaded {
@@ -1714,8 +1735,20 @@ pub struct App {
     md_enc_tx: Option<std::sync::mpsc::Sender<MdEncodeRequest>>,
     /// Media-load generation. Incremented in enter_preview/clear to make old thread results stale.
     media_gen: u64,
+    /// `media_gen`, shared with the running workbook load so it can see that it was superseded
+    /// (every change of `media_gen` goes through `bump_media_gen`).
+    media_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Whether waiting on another thread's media load (used by the render side to show "Loading…").
     media_loading: bool,
+    /// A workbook load is running on its thread. **At most one at a time**: a spreadsheet is read
+    /// in one pass of a parser that can hold gigabytes, so `J` held down must not start one per
+    /// press (see `spawn_workbook_job`).
+    wb_worker_busy: bool,
+    /// The newest workbook load asked for while one was running; it starts when that one ends.
+    wb_queued: Option<WbRequest>,
+    /// Test-only: workbook loads started on a thread.
+    #[cfg(test)]
+    wb_dispatches: u32,
 
     /// Run2 keymap (Surface × key → Action). Built from the config at startup.
     pub keymaps: crate::keymap::KeyMap,
@@ -3008,6 +3041,10 @@ pub(crate) struct PerTab {
     search_input: Option<String>,
     search_matches: Vec<(u64, usize, usize)>,
     search_idx: usize,
+    /// A table search was confirmed while the spreadsheet it is for was still loading, so it found
+    /// nothing yet: when the sheet arrives it is run and the cursor goes to the first hit (the
+    /// same as confirming it on a loaded sheet). Cleared with the search.
+    search_pending: bool,
 }
 
 impl Default for PerTab {
@@ -3105,6 +3142,7 @@ impl Default for PerTab {
             search_input: None,
             search_matches: Vec::new(),
             search_idx: 0,
+            search_pending: false,
         }
     }
 }
@@ -3223,7 +3261,12 @@ impl App {
             md_remote_tx: None,
             md_enc_tx: None,
             media_gen: 0,
+            media_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             media_loading: false,
+            wb_worker_busy: false,
+            wb_queued: None,
+            #[cfg(test)]
+            wb_dispatches: 0,
             keymaps,
             pending_leader: None,
             flash: None,
@@ -4169,6 +4212,7 @@ impl App {
         self.tab.search_input = None;
         self.tab.search_matches.clear();
         self.tab.search_idx = 0;
+        self.tab.search_pending = false;
         self.setup_windowed(); // Switches to less-style windowed reading for a large Code/Text
                                // Reset the windowed preview's 2D caret/selection to the start.
         self.tab.preview_cursor_line = 0;
@@ -4783,6 +4827,7 @@ impl App {
         self.tab.search_input = None;
         self.tab.search_matches.clear();
         self.tab.search_idx = 0;
+        self.tab.search_pending = false;
         self.tab.came_from_git_view = false;
         self.table_data = None;
         self.workbook = None;
@@ -4940,7 +4985,8 @@ impl App {
         self.tab.pdf_page = 1;
         self.tab.pdf_pages = None;
         // Advance the generation, so an old file's media result that arrives while loading a different file is treated as stale.
-        self.media_gen = self.media_gen.wrapping_add(1);
+        self.bump_media_gen();
+        self.wb_queued = None;
         self.media_loading = false;
         self.vector_reraster_inflight = false;
         // When image state is discarded, also discard the mtime claim (an invariant). Leaving it

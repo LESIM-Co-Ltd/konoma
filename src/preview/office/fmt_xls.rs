@@ -354,6 +354,7 @@ pub(crate) fn parse_stream(stream: &[u8], limits: &Limits) -> Result<XlsxFormats
         formats: styles.formats,
         sheets: HashMap::new(),
     };
+    let mut area_total = 0u64;
     for (pos, name) in sheets {
         let sub = stream
             .get(pos..)
@@ -367,6 +368,9 @@ pub(crate) fn parse_stream(stream: &[u8], limits: &Limits) -> Result<XlsxFormats
         if sf.dense_cost() > limits.max_dense_cells {
             return Err(OfficeError::TooLarge { what: "sheet area" });
         }
+        // And all the sheets together: every matrix stays in memory once the file is open.
+        area_total = area_total.saturating_add(sf.bbox_area());
+        SheetFormats::check_total_area(area_total, limits)?;
         out.sheets.insert(name, sf);
     }
     Ok(out)

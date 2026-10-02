@@ -1596,3 +1596,60 @@ fn only_the_sheet_asked_for_is_taken_out_of_the_workbook() {
     assert_eq!(wb.sheets[1].display(0, 0), "2");
     assert!(!wb.sheets[0].loaded);
 }
+
+/// `calamine` keeps every table's matrix once the file is open, so the area budget is for the
+/// workbook, not for each table: tables that are each fine can still be too many together.
+#[test]
+fn the_area_budget_is_for_the_whole_workbook_not_each_table() {
+    let limits = small_limits(); // 10,000 cells
+    let wide = |cols: u32| {
+        row(&format!(
+            r#"<table:table-cell table:number-columns-repeated="{cols}" office:value-type="float" office:value="1"/>"#
+        ))
+    };
+    let book = |sizes: &[u32]| {
+        let tables: String = sizes
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| table(&format!("T{i}"), &wide(c)))
+            .collect();
+        ods_bytes(&content_xml("", &tables), None, None)
+    };
+    let dir = tmp("ods_total_area");
+    let one = write(&dir, "one.ods", &book(&[9000]));
+    assert!(
+        fmt_ods::read(&one, &limits).is_ok(),
+        "one table under the budget"
+    );
+    // 5,000 + 5,000 is exactly the budget; one cell more is over it.
+    let exact = write(&dir, "exact.ods", &book(&[5000, 5000]));
+    assert!(
+        fmt_ods::read(&exact, &limits).is_ok(),
+        "exactly 10,000 in total"
+    );
+    let over = write(&dir, "over.ods", &book(&[5000, 5001]));
+    assert_eq!(
+        fmt_ods::read(&over, &limits).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+    // Many small tables: each is nothing, together they are 12,000 cells. Hidden ones count.
+    let many = write(&dir, "many.ods", &book(&[1000; 12]));
+    assert_eq!(
+        load_with(&many, limits).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+    let tables = format!(
+        "{}{}",
+        table("A", &wide(6000)),
+        hidden_table("B", &wide(6000))
+    );
+    let hid = write(
+        &dir,
+        "hid.ods",
+        &ods_bytes(&content_xml(HIDDEN_STYLE, &tables), None, None),
+    );
+    assert_eq!(
+        load_with(&hid, limits).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+}

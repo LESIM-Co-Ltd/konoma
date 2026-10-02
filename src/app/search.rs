@@ -31,7 +31,7 @@ impl App {
         if self.preview_win.is_some() {
             // Code/Text and the raw Markdown from `R` (the window moves via byte offset).
             SearchTarget::Windowed
-        } else if self.grid().is_some() {
+        } else if self.grid().is_some() || self.sheet_load_in_flight() {
             SearchTarget::Table
         } else if self.md_cache.is_some() {
             // Decorated Markdown / Mermaid. The search target is **the decorated lines shown on
@@ -124,6 +124,16 @@ impl App {
         }
         const CAP: usize = 5000;
         let target = self.search_target();
+        // A sheet that is being (re)loaded has nothing to search yet (or only cells that are about
+        // to be replaced): remember the query and let the arrival run it (`apply_payload`),
+        // instead of reporting "no match" for a sheet nobody has looked at.
+        if matches!(target, SearchTarget::Table) && self.sheet_load_in_flight() {
+            self.tab.search_matches.clear();
+            self.tab.search_idx = 0;
+            self.tab.preview_search = Some(q);
+            self.tab.search_pending = true;
+            return;
+        }
         match target {
             SearchTarget::Table => self.table_search_scan(&q),
             SearchTarget::Markdown => {
@@ -145,14 +155,7 @@ impl App {
         self.tab.search_idx = match target {
             // Table: to the first match at or after the current cell (reading order). Wrap to
             // the top if there is none.
-            SearchTarget::Table => {
-                let (cr, cc) = (self.tab.table_cur_row, self.tab.table_cur_col);
-                self.tab
-                    .search_matches
-                    .iter()
-                    .position(|(_, r, c)| (*r, *c) >= (cr, cc))
-                    .unwrap_or(0)
-            }
+            SearchTarget::Table => self.first_table_match_from_cursor(),
             // Decorated md: to the first match at or after the currently visible top logical
             // line. Wrap to the top if there is none.
             SearchTarget::Markdown => {
@@ -177,6 +180,17 @@ impl App {
         self.jump_to_match();
     }
 
+    /// The index of the first table match at or after the cell cursor (reading order); the first
+    /// one when there is none after it (wraps to the top).
+    pub(super) fn first_table_match_from_cursor(&self) -> usize {
+        let (cr, cc) = (self.tab.table_cur_row, self.tab.table_cur_col);
+        self.tab
+            .search_matches
+            .iter()
+            .position(|(_, r, c)| (*r, *c) >= (cr, cc))
+            .unwrap_or(0)
+    }
+
     /// `n`/`N`: to the next/previous match (cyclic).
     pub fn search_next(&mut self, dir: i32) {
         if self.tab.search_matches.is_empty() {
@@ -193,11 +207,12 @@ impl App {
         self.tab.search_input = None;
         self.tab.search_matches.clear();
         self.tab.search_idx = 0;
+        self.tab.search_pending = false;
     }
 
     /// Bring the line of the current occurrence to the top of the display (updates the line-head byte and line number). For moves within the same line,
     /// the top does not change, and only the highlight color (orange) moves to that occurrence (the column is referenced by the render side).
-    fn jump_to_match(&mut self) {
+    pub(super) fn jump_to_match(&mut self) {
         let Some(&(off, a, b)) = self.tab.search_matches.get(self.tab.search_idx) else {
             return;
         };

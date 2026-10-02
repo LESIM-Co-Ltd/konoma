@@ -1569,6 +1569,7 @@ fn stale_media_result_is_ignored() {
         image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3])));
     let stale = MediaResult {
         gen: app.media_gen.wrapping_sub(1),
+        wb_worker: false,
         payload: Some(MediaPayload::Static(img)),
     };
     assert!(!app.apply_media(stale), "古い世代は反映しない");
@@ -24943,6 +24944,7 @@ fn sheet_loading_needs_a_worker_that_is_still_out() {
 fn workbook_result(app: &App, payload: MediaPayload) -> MediaResult {
     MediaResult {
         gen: app.media_gen,
+        wb_worker: false,
         payload: Some(payload),
     }
 }
@@ -25018,6 +25020,7 @@ fn a_workbook_result_of_a_superseded_job_is_ignored() {
     app.media_loading = true;
     let stale = MediaResult {
         gen: app.media_gen.wrapping_add(1),
+        wb_worker: false,
         payload: Some(MediaPayload::Workbook(Box::new(shaped_workbook(
             1, 1, false, false,
         )))),

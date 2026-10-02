@@ -101,6 +101,14 @@ pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, Offi
             .ok_or_else(|| OfficeError::Corrupt("missing content.xml".into()))?;
         parse_body(std::io::BufReader::new(r), &styles, &mut table, limits)?
     };
+    // So is the area (every table's matrix stays in memory once the file is open).
+    SheetFormats::check_total_area(
+        sheets
+            .values()
+            .map(SheetFormats::bbox_area)
+            .fold(0, u64::saturating_add),
+        limits,
+    )?;
     // The text budget is for the whole workbook (`calamine` reads every table).
     let text: u64 = sheets.values().map(|s| s.text_bytes).sum();
     if text > limits.max_text_bytes {

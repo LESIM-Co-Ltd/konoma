@@ -1111,3 +1111,50 @@ fn only_the_sheet_asked_for_is_taken_out_of_the_workbook() {
     assert!(!wb.sheets[0].loaded);
     assert_eq!(wb.sheets[0].name, "A");
 }
+
+/// Every sheet's matrix stays in memory once `calamine` has opened the file, so the budget is for
+/// the workbook: sheets that are each within it can still be too many together.
+#[test]
+fn the_area_budget_is_for_the_whole_workbook_not_each_sheet() {
+    let limits = small_limits(); // 10,000 cells
+    let book = |areas: &[(u16, u16)]| Book {
+        globals: globals(&[], &[]),
+        sheets: areas
+            .iter()
+            .enumerate()
+            .map(|(i, &(rows, cols))| {
+                sheet(
+                    &format!("S{i}"),
+                    vec![number(0, 0, 0, 1.0), number(rows - 1, cols - 1, 0, 1.0)],
+                )
+            })
+            .collect(),
+    };
+    let parse = |b: &Book| fmt_xls::parse_stream(&b.stream(), &limits);
+    assert!(
+        parse(&book(&[(100, 90)])).is_ok(),
+        "one sheet under the budget"
+    );
+    assert!(
+        parse(&book(&[(100, 50), (100, 50)])).is_ok(),
+        "5,000 + 5,000 is exactly the budget"
+    );
+    assert_eq!(
+        parse(&book(&[(100, 50), (100, 51)])).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" },
+        "one cell over"
+    );
+    let many = book(&[(10, 100); 12]);
+    assert_eq!(
+        parse(&many).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" },
+        "12 sheets of 1,000 cells each"
+    );
+    // A hidden sheet is counted like any other.
+    let mut b = book(&[(100, 60), (100, 60)]);
+    b.sheets[1].state = 1;
+    assert_eq!(
+        parse(&b).unwrap_err(),
+        OfficeError::TooLarge { what: "sheet area" }
+    );
+}

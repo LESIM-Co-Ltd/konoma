@@ -366,6 +366,30 @@ enum Which {
     All,
 }
 
+/// A request to stop a load that is no longer wanted. Checked by the sheet builder at every row,
+/// so a superseded load of a huge sheet ends within one row of the request instead of running to
+/// its budgets (the result would be thrown away). The readers of ods and xls parse the whole file
+/// inside `calamine` when it is opened, where nothing can stop them: for those the app never has
+/// more than one load running (see `App::spawn_workbook_job`) and this ends the cell loop.
+#[derive(Clone)]
+pub struct Cancel(std::sync::Arc<dyn Fn() -> bool + Send + Sync>);
+
+impl Cancel {
+    /// Cancelled once `is_cancelled` says so (a counting closure in tests).
+    pub fn new(is_cancelled: impl Fn() -> bool + Send + Sync + 'static) -> Cancel {
+        Cancel(std::sync::Arc::new(is_cancelled))
+    }
+
+    /// Cancelled as soon as `latest` (the newest generation anyone asked for) is not `mine`.
+    pub fn generation(latest: std::sync::Arc<std::sync::atomic::AtomicU64>, mine: u64) -> Cancel {
+        Cancel::new(move || latest.load(std::sync::atomic::Ordering::Relaxed) != mine)
+    }
+
+    fn is_cancelled(&self) -> bool {
+        (self.0)()
+    }
+}
+
 /// Loads a workbook: the list of its visible sheets, and the cells of the one at `sheet` (an index
 /// past the last visible sheet is clamped to it). Never panics: a panic inside a reader is caught
 /// and reported as [`OfficeError::Corrupt`] (for the sheet alone when the workbook itself opened).
@@ -373,19 +397,31 @@ enum Which {
 /// A file that cannot be opened at all is an `Err`. A workbook that opens but whose requested
 /// sheet cannot be read is an `Ok` with [`Workbook::sheet_error`] set, so the other sheets stay
 /// reachable.
+#[cfg(test)]
 pub fn load_workbook_sheet(
     path: &Path,
     opts: &LoadOptions,
     sheet: usize,
 ) -> Result<Workbook, OfficeError> {
-    load_guarded(path, opts, Which::One(sheet))
+    load_workbook_sheet_cancellable(path, opts, sheet, None)
+}
+
+/// [`load_workbook_sheet`] that gives up when `cancel` says so. A cancelled load returns a
+/// partial workbook (the caller is discarding it, so what is in it does not matter).
+pub fn load_workbook_sheet_cancellable(
+    path: &Path,
+    opts: &LoadOptions,
+    sheet: usize,
+    cancel: Option<Cancel>,
+) -> Result<Workbook, OfficeError> {
+    load_guarded(path, opts, Which::One(sheet), cancel)
 }
 
 /// [`load_workbook_sheet`] for every visible sheet (each within its own budgets). A sheet that
 /// cannot be read makes the whole call an `Err`.
 #[cfg(test)]
 pub fn load_workbook(path: &Path, opts: &LoadOptions) -> Result<Workbook, OfficeError> {
-    load_guarded(path, opts, Which::All)
+    load_guarded(path, opts, Which::All, None)
 }
 
 /// [`load_workbook`] without the outer panic net (tests: a panic must fail the test). A panic inside
@@ -395,29 +431,41 @@ pub(crate) fn load_workbook_unguarded(
     path: &Path,
     opts: &LoadOptions,
 ) -> Result<Workbook, OfficeError> {
-    load_inner(path, opts, Which::All)
+    load_inner(path, opts, Which::All, None)
 }
 
-fn load_guarded(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, OfficeError> {
+fn load_guarded(
+    path: &Path,
+    opts: &LoadOptions,
+    which: Which,
+    cancel: Option<Cancel>,
+) -> Result<Workbook, OfficeError> {
     if SheetKind::from_path(path).is_none() {
         return Err(OfficeError::Unsupported);
     }
-    crate::preview::markdown::catch_silent(|| load_inner(path, opts, which)).unwrap_or_else(|| {
-        Err(OfficeError::Corrupt(
-            "the reader crashed on this file".into(),
-        ))
-    })
+    crate::preview::markdown::catch_silent(|| load_inner(path, opts, which, cancel)).unwrap_or_else(
+        || {
+            Err(OfficeError::Corrupt(
+                "the reader crashed on this file".into(),
+            ))
+        },
+    )
 }
 
-fn load_inner(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, OfficeError> {
+fn load_inner(
+    path: &Path,
+    opts: &LoadOptions,
+    which: Which,
+    cancel: Option<Cancel>,
+) -> Result<Workbook, OfficeError> {
     let limits = &opts.limits;
     // The container decides the format, not the extension.
     let detected = container::inspect(path, limits)?;
     match detected {
-        Detected::Xlsx => load_xlsx(path, opts, which),
-        Detected::Xlsb => load_xlsb(path, opts, which),
-        Detected::Ods => load_ods(path, opts, which),
-        Detected::Xls => load_xls(path, opts, which),
+        Detected::Xlsx => load_xlsx(path, opts, which, cancel),
+        Detected::Xlsb => load_xlsb(path, opts, which, cancel),
+        Detected::Ods => load_ods(path, opts, which, cancel),
+        Detected::Xls => load_xls(path, opts, which, cancel),
     }
 }
 
@@ -430,13 +478,18 @@ fn open_reader(path: &Path) -> Result<BufReader<File>, OfficeError> {
 /// whole; `fmt_xlsx::read_package` refuses a table too large for that), then the requested sheet
 /// is read cell by cell until a budget of [`Limits`] is reached. Sheets that are not asked for
 /// are not read at all.
-fn load_xlsx(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, OfficeError> {
+fn load_xlsx(
+    path: &Path,
+    opts: &LoadOptions,
+    which: Which,
+    cancel: Option<Cancel>,
+) -> Result<Workbook, OfficeError> {
     let limits = &opts.limits;
     let pkg = fmt_xlsx::read_package(path, limits)?;
     let mut wb: calamine::Xlsx<_> = calamine::Xlsx::new(open_reader(path)?).map_err(map_xlsx)?;
     let metas = sheet_metas(&wb);
     let ctx = Ctx::new(pkg.date1904, pkg.formats.clone(), *opts);
-    assemble(&ctx, metas, which, |name| {
+    assemble(&ctx, metas, which, cancel.as_ref(), |name| {
         // Our own pass over the sheet: the format of each cell (which `calamine` does not
         // expose), the merged ranges, and a check of what would make the value reader allocate.
         let sf = match pkg.part_of(name) {
@@ -444,7 +497,7 @@ fn load_xlsx(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, 
             None => SheetFormats::default(),
         };
         let mut rdr = wb.worksheet_cells_reader(name).map_err(map_xlsx)?;
-        let mut b = SheetBuilder::new(&ctx, name, Some(&sf));
+        let mut b = SheetBuilder::new(&ctx, name, Some(&sf), cancel.as_ref());
         b.set_merges(&sf.merges);
         // One pass for values and formulas (`next_cell_with_formula`). The format pass knows where
         // the sheet stops being trustworthy (or being shown): the reader is never asked past it.
@@ -465,18 +518,23 @@ fn load_xlsx(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, 
 
 /// xlsb. Streamed like [`load_xlsx`]; `calamine` has no one-pass reader for values and formulas
 /// here, so the sheet is read a second time for the formulas of the rows that were kept.
-fn load_xlsb(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, OfficeError> {
+fn load_xlsb(
+    path: &Path,
+    opts: &LoadOptions,
+    which: Which,
+    cancel: Option<Cancel>,
+) -> Result<Workbook, OfficeError> {
     let limits = &opts.limits;
     let pkg = fmt_xlsb::read_package(path, limits)?;
     let mut wb: calamine::Xlsb<_> = calamine::Xlsb::new(open_reader(path)?).map_err(map_xlsb)?;
     let metas = sheet_metas(&wb);
     let ctx = Ctx::new(pkg.date1904, pkg.formats.clone(), *opts);
-    assemble(&ctx, metas, which, |name| {
+    assemble(&ctx, metas, which, cancel.as_ref(), |name| {
         let sf = match pkg.part_of(name) {
             Some(part) => fmt_xlsb::read_sheet(path, part, &pkg.xf_to_format, limits)?,
             None => SheetFormats::default(),
         };
-        let mut b = SheetBuilder::new(&ctx, name, Some(&sf));
+        let mut b = SheetBuilder::new(&ctx, name, Some(&sf), cancel.as_ref());
         {
             let mut rdr = wb.worksheet_cells_reader(name).map_err(map_xlsb)?;
             while let Some(c) = rdr.next_cell().map_err(map_xlsb)? {
@@ -504,12 +562,17 @@ fn load_xlsb(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, 
 /// when it opens the file, so `fmt_ods::read` checks the size of every table *first* and a file
 /// that is too large is refused with a reason. Showing another sheet re-opens the file and takes
 /// that sheet out of the parsed workbook.
-fn load_ods(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, OfficeError> {
+fn load_ods(
+    path: &Path,
+    opts: &LoadOptions,
+    which: Which,
+    cancel: Option<Cancel>,
+) -> Result<Workbook, OfficeError> {
     let fm = fmt_ods::read(path, &opts.limits)?;
     let mut wb: calamine::Ods<_> = calamine::Ods::new(open_reader(path)?).map_err(map_ods)?;
     let metas = sheet_metas(&wb);
     let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
-    assemble(&ctx, metas, which, |name| {
+    assemble(&ctx, metas, which, cancel.as_ref(), |name| {
         Ok(build_sheet(
             &ctx,
             name,
@@ -518,18 +581,24 @@ fn load_ods(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, O
                 formulas: wb.worksheet_formula(name).unwrap_or_default(),
                 merges: Vec::new(),
                 fmts: fm.sheets.get(name),
+                cancel: cancel.as_ref(),
             },
         ))
     })
 }
 
 /// xls. Not streamable, like [`load_ods`]: `fmt_xls::read` checks the size of every sheet first.
-fn load_xls(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, OfficeError> {
+fn load_xls(
+    path: &Path,
+    opts: &LoadOptions,
+    which: Which,
+    cancel: Option<Cancel>,
+) -> Result<Workbook, OfficeError> {
     let fm = fmt_xls::read(path, &opts.limits)?;
     let mut wb: calamine::Xls<_> = calamine::Xls::new(open_reader(path)?).map_err(map_xls)?;
     let metas = sheet_metas(&wb);
     let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
-    assemble(&ctx, metas, which, |name| {
+    assemble(&ctx, metas, which, cancel.as_ref(), |name| {
         Ok(build_sheet(
             &ctx,
             name,
@@ -538,6 +607,7 @@ fn load_xls(path: &Path, opts: &LoadOptions, which: Which) -> Result<Workbook, O
                 formulas: wb.worksheet_formula(name).unwrap_or_default(),
                 merges: wb.merge_cells_by_sheet_name(name).unwrap_or_default(),
                 fmts: fm.sheets.get(name),
+                cancel: cancel.as_ref(),
             },
         ))
     })
@@ -623,6 +693,7 @@ struct Fetched<'a> {
     formulas: Range<String>,
     merges: Vec<Dimensions>,
     fmts: Option<&'a SheetFormats>,
+    cancel: Option<&'a Cancel>,
 }
 
 /// Walks the sheet list in workbook order: visible worksheets are listed by name (and loaded when
@@ -632,6 +703,7 @@ fn assemble(
     ctx: &Ctx,
     metas: Vec<Meta>,
     which: Which,
+    cancel: Option<&Cancel>,
     mut load: impl FnMut(&str) -> Result<Sheet, OfficeError>,
 ) -> Result<Workbook, OfficeError> {
     let mut out = Workbook {
@@ -661,6 +733,10 @@ fn assemble(
         Which::All => (0..out.sheets.len()).collect(),
     };
     for i in wanted {
+        // A load nobody waits for any more does not even start reading the sheet.
+        if cancel.is_some_and(Cancel::is_cancelled) {
+            break;
+        }
         let name = out.sheets[i].name.clone();
         // A panic on a pathological sheet fails that sheet, not the workbook.
         let loaded = crate::preview::markdown::catch_silent(|| load(&name)).unwrap_or_else(|| {
@@ -680,7 +756,7 @@ fn assemble(
 
 /// Builds a sheet from a dense range (ods / xls).
 fn build_sheet(ctx: &Ctx, name: &str, f: Fetched<'_>) -> Sheet {
-    let mut b = SheetBuilder::new(ctx, name, f.fmts);
+    let mut b = SheetBuilder::new(ctx, name, f.fmts, f.cancel);
     b.set_merges(
         &f.merges
             .iter()
@@ -756,10 +832,18 @@ struct SheetBuilder<'a> {
     /// Set when the formulas are read in a second pass after a values pass that was cut short
     /// (xlsb): the last row the values reached (`None` = none), past which formulas are dropped.
     formula_row_limit: Option<Option<u32>>,
+    /// Checked whenever a cell opens a new row; once it says so, nothing more is read.
+    cancel: Option<&'a Cancel>,
+    last_row: Option<u32>,
 }
 
 impl<'a> SheetBuilder<'a> {
-    fn new(ctx: &'a Ctx, name: &str, fmts: Option<&'a SheetFormats>) -> Self {
+    fn new(
+        ctx: &'a Ctx,
+        name: &str,
+        fmts: Option<&'a SheetFormats>,
+        cancel: Option<&'a Cancel>,
+    ) -> Self {
         SheetBuilder {
             ctx,
             dctx: DisplayCtx {
@@ -782,6 +866,8 @@ impl<'a> SheetBuilder<'a> {
             max_col: None,
             row_cap_hit: false,
             formula_row_limit: None,
+            cancel,
+            last_row: None,
         }
     }
 
@@ -848,12 +934,21 @@ impl<'a> SheetBuilder<'a> {
         value: Option<CellValue>,
         formula: Option<&str>,
     ) -> Flow {
-        if let Some(flow) = self.gate(row, col) {
-            return flow;
+        // One check per row: an atomic load is cheap, and a row is the unit a huge sheet is made of.
+        if self.last_row != Some(row) {
+            self.last_row = Some(row);
+            if self.cancel.is_some_and(Cancel::is_cancelled) {
+                return Flow::Stop;
+            }
         }
+        // An empty cell is nothing wherever it is: one past the row or column cap does not cut
+        // anything off (a dense matrix and a sheet's formatted empty cells reach there too).
         let formula = formula.filter(|f| !f.is_empty());
         if value.is_none() && formula.is_none() {
             return Flow::Continue;
+        }
+        if let Some(flow) = self.gate(row, col) {
+            return flow;
         }
         let cell = value.map(|v| self.make_cell(row, col, v));
         if cell.is_some() && self.kept >= self.ctx.opts.limits.max_sheet_cells {
@@ -942,15 +1037,18 @@ impl<'a> SheetBuilder<'a> {
             // that is not keeps its cells reachable by the binary search all the same.
             if !row.windows(2).all(|w| w[0].0 < w[1].0) {
                 row.sort_by_key(|&(c, _)| c);
-                // The last of two cells at one address wins (as in a dense matrix).
-                let mut i = 0;
-                while i + 1 < row.len() {
-                    if row[i].0 == row[i + 1].0 {
-                        row.remove(i);
-                    } else {
-                        i += 1;
+                // The last of two cells at one address wins (as in a dense matrix; the sort is
+                // stable, so "last" is file order). One pass: removing from the middle one
+                // duplicate at a time is quadratic in a row of many cells at one address.
+                let mut w = 0;
+                for i in 0..row.len() {
+                    if i + 1 < row.len() && row[i].0 == row[i + 1].0 {
+                        continue;
                     }
+                    row.swap(w, i);
+                    w += 1;
                 }
+                row.truncate(w);
             }
         }
         self.sheet.nrows = nrows;
@@ -1071,6 +1169,7 @@ mod tests {
             formulas,
             merges: Vec::new(),
             fmts: None,
+            cancel: None,
         }
     }
 
@@ -1107,7 +1206,7 @@ mod tests {
         ];
         let mut fetched_names = Vec::new();
         let c = ctx(Limits::default());
-        let wb = assemble(&c, metas, Which::All, |name| {
+        let wb = assemble(&c, metas, Which::All, None, |name| {
             fetched_names.push(name.to_string());
             Ok(build_sheet(&c, name, fetched(ints(1, 1), Range::empty())))
         })
@@ -1229,6 +1328,162 @@ mod tests {
             "45292.5"
         );
         assert_eq!(t(CellValue::DateTimeIso("2024-01-01".into())), "2024-01-01");
+    }
+
+    /// Many cells at one address in one row (a hostile or sloppy producer) used to be removed one
+    /// at a time from the middle of the row: quadratic. A row of 200,000 of them finishes in a
+    /// fraction of a second now (the quadratic version moves ~2e10 elements), and the last one
+    /// wins, as in a dense matrix.
+    #[test]
+    fn duplicate_cell_addresses_are_removed_in_linear_time_and_the_last_wins() {
+        let c = ctx(Limits::default());
+        let mut b = SheetBuilder::new(&c, "S", None, None);
+        let n = 200_000i64;
+        for i in 0..n {
+            assert_eq!(b.push_cell(0, 3, Some(CellValue::Int(i))), Flow::Continue);
+        }
+        // Interleaved with a second address, so the row is out of order as well as duplicated.
+        for i in 0..n {
+            b.push_cell(0, 1, Some(CellValue::Int(i)));
+            b.push_cell(0, 3, Some(CellValue::Int(n + i)));
+        }
+        let t = std::time::Instant::now();
+        let s = b.finish();
+        let took = t.elapsed();
+        assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+        let row = s.row_cells(0);
+        assert_eq!(row.iter().map(|(c, _)| *c).collect::<Vec<_>>(), [1, 3]);
+        assert_eq!(row[0].1.value, CellValue::Int(n - 1), "last at column 1");
+        assert_eq!(
+            row[1].1.value,
+            CellValue::Int(2 * n - 1),
+            "last at column 3"
+        );
+    }
+
+    #[test]
+    fn dedup_keeps_the_last_of_each_run_and_everything_else_in_order() {
+        let c = ctx(Limits::default());
+        let mut b = SheetBuilder::new(&c, "S", None, None);
+        // Columns 5 (x3), 2 (x2), 9, 2 again later: sorted stably, the last of each address wins.
+        for (col, v) in [(5, 0), (5, 1), (2, 2), (9, 3), (2, 4), (5, 5), (7, 6)] {
+            b.push_cell(0, col, Some(CellValue::Int(v)));
+        }
+        let s = b.finish();
+        let got: Vec<(u32, CellValue)> = s
+            .row_cells(0)
+            .iter()
+            .map(|(c, cell)| (*c, cell.value.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (2, CellValue::Int(4)),
+                (5, CellValue::Int(5)),
+                (7, CellValue::Int(6)),
+                (9, CellValue::Int(3)),
+            ]
+        );
+    }
+
+    /// An empty cell past the row or column cap cuts nothing off: a dense matrix (ods / xls) and a
+    /// sheet's styled blanks reach there too.
+    #[test]
+    fn empty_cells_past_the_caps_are_not_a_cut() {
+        let data = range(vec![
+            (0, 0, Data::Int(1)),
+            (1, 1, Data::Int(2)),
+            // Empty cells outside the grid of 2 x 2.
+            (2, 0, Data::Empty),
+            (0, 2, Data::Empty),
+            (5, 5, Data::Empty),
+        ]);
+        let s = build(limits(2, 2), fetched(data, Range::empty()));
+        assert!(!s.rows_truncated, "an empty row past the cap is no cut");
+        assert!(!s.cols_truncated, "an empty column past the cap is no cut");
+        assert_eq!((s.nrows, s.ncols), (2, 2));
+        // The same cells holding something are.
+        let data = range(vec![(0, 0, Data::Int(1)), (2, 0, Data::Int(3))]);
+        assert!(build(limits(2, 2), fetched(data, Range::empty())).rows_truncated);
+        let data = range(vec![(0, 0, Data::Int(1)), (0, 2, Data::Int(3))]);
+        assert!(build(limits(2, 2), fetched(data, Range::empty())).cols_truncated);
+    }
+
+    /// The builder asks the cancel check once per row (not per cell), and a load that is
+    /// cancelled keeps nothing more.
+    #[test]
+    fn a_cancelled_load_stops_within_the_row_it_was_cancelled_in() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let checks = Arc::new(AtomicUsize::new(0));
+        let seen = checks.clone();
+        // Cancelled from the 4th check on.
+        let cancel = Cancel::new(move || seen.fetch_add(1, Ordering::SeqCst) >= 3);
+        let c = ctx(Limits::default());
+        let mut b = SheetBuilder::new(&c, "S", None, Some(&cancel));
+        let mut stopped_at = None;
+        'rows: for r in 0..100u32 {
+            for col in 0..5u32 {
+                if b.push_cell(r, col, Some(CellValue::Int(1))) == Flow::Stop {
+                    stopped_at = Some((r, col));
+                    break 'rows;
+                }
+            }
+        }
+        assert_eq!(
+            stopped_at,
+            Some((3, 0)),
+            "stopped at the first cell of row 4"
+        );
+        assert_eq!(checks.load(Ordering::SeqCst), 4, "one check per row");
+        let s = b.finish();
+        assert_eq!(s.nrows, 3, "only the three rows before it are kept");
+    }
+
+    /// The dense readers (ods / xls) loop over a finished matrix; the same check ends that loop.
+    #[test]
+    fn a_cancelled_dense_load_keeps_only_the_rows_before_the_cancel() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let checks = Arc::new(AtomicUsize::new(0));
+        let seen = checks.clone();
+        let cancel = Cancel::new(move || seen.fetch_add(1, Ordering::SeqCst) >= 5);
+        let mut f = fetched(ints(50, 4), Range::empty());
+        f.cancel = Some(&cancel);
+        let s = build_sheet(&ctx(Limits::default()), "S", f);
+        assert_eq!(s.nrows, 5);
+        assert_eq!(checks.load(Ordering::SeqCst), 6);
+    }
+
+    #[test]
+    fn a_generation_cancel_fires_only_when_the_latest_generation_moved_on() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        let latest = Arc::new(AtomicU64::new(7));
+        let cancel = Cancel::generation(latest.clone(), 7);
+        assert!(!cancel.is_cancelled());
+        latest.store(8, Ordering::Relaxed);
+        assert!(cancel.is_cancelled());
+        assert!(!Cancel::generation(latest, 8).is_cancelled());
+    }
+
+    #[test]
+    fn assemble_does_not_read_a_sheet_once_cancelled() {
+        let c = ctx(Limits::default());
+        let metas = vec![Meta {
+            name: "A".into(),
+            visible: SheetVisible::Visible,
+            typ: SheetType::WorkSheet,
+        }];
+        let cancel = Cancel::new(|| true);
+        let mut asked = false;
+        let wb = assemble(&c, metas, Which::All, Some(&cancel), |_| {
+            asked = true;
+            Ok(Sheet::default())
+        })
+        .unwrap();
+        assert!(!asked, "the reader is never started");
+        assert_eq!(wb.sheets.len(), 1, "the sheet list is still there");
     }
 
     #[test]

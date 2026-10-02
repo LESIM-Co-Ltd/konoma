@@ -17495,7 +17495,7 @@ fn e2e_follow_jump_from_tree_or_plain_preview_does_not_carry_an_earlier_choice()
 // ---------------------------------------------------------------------------------------------
 
 /// Write a minimal xlsx: `(name, state, <sheetData> rows, extra xml after sheetData)` per sheet.
-fn build_xlsx(path: &std::path::Path, sheets: &[(&str, &str, &str, &str)]) {
+pub(crate) fn build_xlsx(path: &std::path::Path, sheets: &[(&str, &str, &str, &str)]) {
     build_xlsx_with_styles(path, sheets, None);
 }
 
@@ -17548,7 +17548,7 @@ fn build_xlsx_with_styles(
 }
 
 /// An inline-string cell.
-fn x_str(r: &str, text: &str) -> String {
+pub(crate) fn x_str(r: &str, text: &str) -> String {
     format!(r#"<c r="{r}" t="inlineStr"><is><t>{text}</t></is></c>"#)
 }
 
@@ -19604,4 +19604,251 @@ fn e2e_sheet_search_finds_a_greek_word_by_either_sigma() {
         );
         assert_eq!(s.app.table_cursor(), (1, 0), "query {q:?}");
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Spreadsheet loads: one at a time, newest request only; the search after a reload
+// ---------------------------------------------------------------------------------------------
+
+/// A workbook of `n` sheets, `S1`..`Sn`, each with `A1 = "sheet N"` and the given extra rows.
+fn numbered_book(path: &std::path::Path, n: usize, extra: impl Fn(usize) -> String) {
+    let rows: Vec<String> = (1..=n)
+        .map(|i| {
+            format!(
+                r#"<row r="1">{}</row>{}"#,
+                x_str("A1", &format!("sheet {i}")),
+                extra(i)
+            )
+        })
+        .collect();
+    let sheets: Vec<(String, &str, &str, &str)> = (1..=n)
+        .map(|i| (format!("S{i}"), "visible", rows[i - 1].as_str(), ""))
+        .collect();
+    let refs: Vec<(&str, &str, &str, &str)> = sheets
+        .iter()
+        .map(|(a, b, c, d)| (a.as_str(), *b, *c, *d))
+        .collect();
+    build_xlsx(path, &refs);
+}
+
+/// Waits for worker results and applies them until one is current; returns how many arrived.
+#[track_caller]
+fn drain_media_until_current(s: &mut Sim) -> usize {
+    let mut arrived = 0;
+    loop {
+        let res = s
+            .media_rx
+            .as_ref()
+            .expect("with_media() を呼んでいない")
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("workbook worker が結果を返す");
+        arrived += 1;
+        if s.app.apply_media(res) {
+            s.draw();
+            return arrived;
+        }
+    }
+}
+
+/// `J` held down asks for a sheet per key repeat. Only one load may run at a time (each can take
+/// gigabytes on a big workbook); the requests made meanwhile collapse into the newest, and the
+/// sheet that ends up on screen is the last one asked for.
+#[test]
+fn e2e_sheet_holding_j_runs_one_load_at_a_time_and_ends_on_the_last_sheet() {
+    let dir = sandbox("sheet_hold_j");
+    let book = canon(&dir).join("h.xlsx");
+    numbered_book(&book, 6, |_| String::new());
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("h.xlsx");
+    s.enter();
+    s.drain_media();
+    assert_eq!(s.app.workbook_loads_started(), 1);
+    s.see("S1 (1/6)");
+    for _ in 0..5 {
+        s.key('J');
+    }
+    assert_eq!(s.app.table_cursor(), (0, 0));
+    assert!(s.app.is_sheet_loading());
+    assert_eq!(
+        s.app.workbook_loads_started(),
+        2,
+        "5 presses started ONE load (the first); the other four wait as one request"
+    );
+    // The first load's answer is for an old request: dropped. Then the newest one runs, alone.
+    let arrived = drain_media_until_current(&mut s);
+    assert_eq!(arrived, 2, "the stale answer, then the last request's");
+    assert_eq!(
+        s.app.workbook_loads_started(),
+        3,
+        "initial + the first press + the last press: three loads for six requests"
+    );
+    s.see("S6 (6/6)");
+    s.see("sheet 6");
+    assert!(!s.app.is_sheet_loading());
+    // Nothing is left behind: another press starts a fresh load at once.
+    s.key('K');
+    assert_eq!(s.app.workbook_loads_started(), 4);
+    drain_media_until_current(&mut s);
+    s.see("S5 (5/6)");
+}
+
+/// Moving on to another file while a load runs drops the waiting request too.
+#[test]
+fn e2e_sheet_leaving_the_book_drops_the_waiting_load() {
+    let dir = sandbox("sheet_leave");
+    let book = canon(&dir).join("h.xlsx");
+    numbered_book(&book, 4, |_| String::new());
+    std::fs::write(canon(&dir).join("z.txt"), "plain\n").unwrap();
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("h.xlsx");
+    s.enter();
+    s.drain_media();
+    s.key('J');
+    s.key('J'); // waits behind the first
+    assert_eq!(s.app.workbook_loads_started(), 2);
+    s.esc();
+    s.select("z.txt");
+    s.enter();
+    // Both answers are stale; the waiting request must not start a third load.
+    let rx = s.media_rx.as_ref().unwrap();
+    let first = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+    assert!(!s.app.apply_media(first));
+    assert_eq!(
+        s.app.workbook_loads_started(),
+        2,
+        "the request made under a generation that is gone is not started"
+    );
+    s.draw();
+    s.see("plain");
+    assert!(s.app.workbook_for_test().is_none());
+}
+
+/// A search confirmed while the sheet is being loaded is run when it arrives, and the cursor goes
+/// to its first hit; without a hit it says so then (not before).
+#[test]
+fn e2e_sheet_a_search_confirmed_while_loading_runs_on_arrival() {
+    let dir = sandbox("sheet_search_loading");
+    let book = canon(&dir).join("q.xlsx");
+    numbered_book(&book, 1, |_| {
+        format!(
+            r#"<row r="2">{}</row><row r="3">{}</row><row r="4">{}</row>"#,
+            x_str("A2", "plum"),
+            x_str("B3", "Apple tart"),
+            x_str("A4", "apple pie")
+        )
+    });
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("q.xlsx");
+    s.enter();
+    assert!(s.app.is_sheet_loading(), "the first load is still running");
+    s.key('/');
+    s.keys("apple");
+    s.enter();
+    assert!(
+        s.app.flash.is_none(),
+        "no \"no match\" for a sheet that has not arrived: {:?}",
+        s.app.flash
+    );
+    assert_eq!(s.app.search_status(), None);
+    s.drain_media();
+    assert_eq!(s.app.search_status(), Some((1, 2)), "run on arrival");
+    assert_eq!(s.app.table_cursor(), (2, 1), "the first hit, B3");
+    assert!(s.app.table_cell_is_hit(3, 0));
+    // Without a hit: said on arrival.
+    s.esc();
+    s.key('/');
+    s.keys("zzz");
+    s.enter();
+    assert!(s
+        .app
+        .flash
+        .as_deref()
+        .is_some_and(|m| m.contains("no match")));
+}
+
+#[test]
+fn e2e_sheet_a_search_without_a_hit_confirmed_while_loading_says_so_on_arrival() {
+    let dir = sandbox("sheet_search_loading_none");
+    let book = canon(&dir).join("q.xlsx");
+    numbered_book(&book, 1, |_| String::new());
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("q.xlsx");
+    s.enter();
+    s.key('/');
+    s.keys("zzz");
+    s.enter();
+    assert!(s.app.flash.is_none(), "not yet: nothing has been searched");
+    s.drain_media();
+    assert!(s
+        .app
+        .flash
+        .as_deref()
+        .is_some_and(|m| m.contains("no match")));
+    assert_eq!(s.app.search_status(), None);
+}
+
+/// After an outside edit the sheet is read again: hits recorded for the old cells must not stay,
+/// whether or not the old list was empty, and the current hit stays current when it still is one.
+#[test]
+fn e2e_sheet_a_reload_reruns_the_search_on_the_new_cells() {
+    let dir = sandbox("sheet_search_reload");
+    let book = canon(&dir).join("r.xlsx");
+    let write = |rows: &str| {
+        build_xlsx(&book, &[("S", "visible", rows, "")]);
+    };
+    write(&format!(
+        r#"<row r="1">{}</row><row r="3">{}</row><row r="6">{}</row>"#,
+        x_str("A1", "head"),
+        x_str("A3", "apple one"),
+        x_str("A6", "apple two")
+    ));
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("r.xlsx");
+    s.enter();
+    s.drain_media();
+    s.key('/');
+    s.keys("apple");
+    s.enter();
+    assert_eq!(s.app.search_status(), Some((1, 2)));
+    s.key('n');
+    assert_eq!(s.app.search_status(), Some((2, 2)));
+    assert_eq!(s.app.table_cursor(), (5, 0));
+    // The file is rewritten: the first apple is gone, a new one is at B2; apple two stays at A6.
+    write(&format!(
+        r#"<row r="1">{}</row><row r="2">{}</row><row r="6">{}</row>"#,
+        x_str("A1", "head"),
+        x_str("B2", "an apple"),
+        x_str("A6", "apple two")
+    ));
+    let f = std::fs::OpenOptions::new().write(true).open(&book).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_900_000_000))
+        .unwrap();
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&book));
+    s.draw();
+    drain_media_until_current(&mut s);
+    assert!(
+        !s.app.table_cell_is_hit(2, 0),
+        "the old hit's cell is plain text now"
+    );
+    assert!(s.app.table_cell_is_hit(1, 1), "the new hit is found");
+    assert!(s.app.table_cell_is_hit(5, 0));
+    assert_eq!(s.app.search_status(), Some((2, 2)), "still on apple two");
+    // And from an empty list: a hit that appears in a reload is found.
+    s.key('/');
+    s.keys("brand new");
+    s.enter();
+    assert_eq!(s.app.search_status(), None);
+    write(&format!(
+        r#"<row r="1">{}</row><row r="4">{}</row>"#,
+        x_str("A1", "head"),
+        x_str("C4", "a Brand New cell")
+    ));
+    let f = std::fs::OpenOptions::new().write(true).open(&book).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_900_000_100))
+        .unwrap();
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&book));
+    s.draw();
+    drain_media_until_current(&mut s);
+    assert!(s.app.table_cell_is_hit(3, 2));
+    assert_eq!(s.app.search_status(), Some((1, 1)));
 }

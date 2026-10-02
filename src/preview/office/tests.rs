@@ -716,8 +716,10 @@ fn parse_sheet_counts_only_value_bearing_cells() {
     let sf = sheet_formats(rows, &[0, 1]);
     // `<f>` counts: the reader keeps a formula-only cell (in its range of formulas), so it is part
     // of what the dense matrix must cover.
-    assert_eq!(sf.value_cells, 3);
-    assert_eq!(sf.cells, vec![(0, 2, 1), (0, 3, 1), (0, 4, 1)]);
+    // Only a `<v>` with text and an `<is>` show something. A formula-only cell shows nothing and
+    // the loader does not keep it as a cell, so it is not part of the budget.
+    assert_eq!(sf.value_cells, 2);
+    assert_eq!(sf.cells, vec![(0, 3, 1), (0, 4, 1)]);
 }
 
 #[test]
@@ -771,9 +773,9 @@ fn parse_sheet_value_cell_budget_is_enforced_while_streaming() {
     let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0], &limits).unwrap();
     assert!(sf.truncated);
     assert_eq!(sf.value_cells, 10);
-    // Stopping at a budget is not stopping at a bad reference: the reader is not told to stop
-    // (its own budget does that).
-    assert_eq!(sf.reader_stop, None);
+    // The reader is stopped before the first cell the pass did not record: it never reads a cell
+    // whose format is unknown (here the 11th cell).
+    assert_eq!(sf.reader_stop, Some(10));
 }
 
 #[test]
@@ -3147,4 +3149,334 @@ fn formulas_outside_the_cut_grid_are_dropped() {
     // Uncut, all nine are there.
     let s = &load_with(&p, small_limits()).unwrap().sheets[0];
     assert_eq!(s.formula(2, 2), Some("C3+1"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// the stop point of the value reader, and what counts as "cut off"
+// ---------------------------------------------------------------------------------------------
+
+/// Every cell `calamine`'s streaming reader returns for a sheet, in order, as `(row, col)`.
+fn calamine_cells(path: &Path, name: &str) -> Vec<(u32, u32)> {
+    use calamine::Reader;
+    let f = std::io::BufReader::new(fs::File::open(path).unwrap());
+    let mut wb: calamine::Xlsx<_> = calamine::Xlsx::new(f).unwrap();
+    let mut rdr = wb.worksheet_cells_reader(name).unwrap();
+    let mut out = Vec::new();
+    while let Some(c) = rdr.next_cell_with_formula().unwrap() {
+        out.push(c.pos);
+    }
+    out
+}
+
+fn single_sheet(dir: &TmpDir, file: &str, rows: &str) -> PathBuf {
+    Pkg::new()
+        .styles(styles_xml(&[], &[0, 14]))
+        .sheet("S", "visible", sheet_xml(rows, ""))
+        .write(dir, file)
+}
+
+fn parse_with_rows(rows: &str, max_rows: usize) -> SheetFormats {
+    let xml = sheet_xml(rows, "");
+    let limits = Limits {
+        max_rows,
+        ..Limits::default()
+    };
+    fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &limits).unwrap()
+}
+
+/// The sheet the stop-point tests share: every shape of `<c>` the value reader returns (empty
+/// element, empty pair, formula only, inline string, value, no `r`), an empty `<row/>`, and then
+/// data past the row cap of 4.
+fn mixed_cells_rows() -> String {
+    [
+        r#"<row r="1"><c r="A1" s="1"/><c r="B1" s="1"></c><c r="C1"><v>5</v></c><c r="D1" t="inlineStr"><is><t>x</t></is></c><c r="E1"><f>1+1</f></c></row>"#,
+        r#"<row r="2"><c r="A2" s="1"/><c r="B2" s="1"/><c r="C2" s="1"/></row>"#,
+        r#"<row r="3"/>"#,
+        r#"<row r="4"><c s="1"><v>1</v></c><c s="1"/></row>"#,
+        r#"<row r="5"><c r="A5" s="1"/><c r="B5"><v>9</v></c></row>"#,
+    ]
+    .concat()
+}
+
+/// The stop point counts what `calamine` counts: **every** `<c>` (a value, a formula only, an
+/// inline string, and the empty `<c .../>` Excel writes for a formatted blank), checked against
+/// the cells `calamine` itself returns for the same part. Counting only the cells with a value
+/// made the reader stop too early on a sheet full of formatted blanks.
+#[test]
+fn the_stop_point_is_the_number_of_cells_the_value_reader_returns() {
+    let rows = mixed_cells_rows();
+    let sf = parse_with_rows(&rows, 4);
+    let dir = tmp("stop_vs_calamine");
+    let p = single_sheet(&dir, "m.xlsx", &rows);
+    let all = calamine_cells(&p, "S");
+    let before_cap = all.iter().take_while(|&&(r, _)| r < 4).count();
+    assert_eq!(before_cap, 10, "5 + 3 + 0 + 2 cells before the row cap");
+    assert_eq!(sf.reader_stop, Some(before_cap as u64));
+    // And the loader, which asks the reader for exactly that many, shows the rows above the cap.
+    let wb = load_with(
+        &p,
+        Limits {
+            max_rows: 4,
+            ..Limits::default()
+        },
+    )
+    .unwrap();
+    let s = &wb.sheets[0];
+    assert_eq!(s.nrows, 4);
+    assert_eq!(s.display(0, 2), "5");
+    // (xf 1 is a date format: the cell with no `r` is read, and shown with its format.)
+    assert_eq!(s.display(3, 0), "1/1/1900");
+    assert!(
+        s.rows_truncated,
+        "B5 holds a value that is not shown: cut off"
+    );
+}
+
+#[test]
+fn the_stop_point_matches_the_reader_for_every_prefix_of_shapes() {
+    // Each shape alone, with the cap right before it: the reader must return exactly the cells
+    // before it. A rule that differs for one shape fails here.
+    let shapes = [
+        r#"<c r="A1" s="1"/>"#,
+        r#"<c r="A1" s="1"></c>"#,
+        r#"<c r="A1"><f>1+1</f></c>"#,
+        r#"<c r="A1" t="inlineStr"><is><t>x</t></is></c>"#,
+        r#"<c r="A1"><v>3</v></c>"#,
+        r#"<c r="A1"><f>1</f><v>3</v></c>"#,
+        r#"<c r="A1"><v></v></c>"#,
+        r#"<c r="A1"><v/></c>"#,
+        r#"<c s="1"/>"#,
+    ];
+    let dir = tmp("stop_shapes");
+    for (i, shape) in shapes.iter().enumerate() {
+        let rows = format!(
+            r#"<row r="1">{shape}{shape}</row><row r="2">{shape}</row><row r="3"><c r="A3"><v>1</v></c></row>"#
+        );
+        let sf = parse_with_rows(&rows, 2);
+        let p = single_sheet(&dir, &format!("s{i}.xlsx"), &rows);
+        let before = calamine_cells(&p, "S")
+            .iter()
+            .take_while(|&&(r, _)| r < 2)
+            .count();
+        assert_eq!(sf.reader_stop, Some(before as u64), "shape {shape}");
+        assert!(sf.truncated, "row 3 has a value: {shape}");
+    }
+}
+
+/// Formatted blank cells and empty rows past the cap are not data: nothing is cut off, so no
+/// `(capped)` marker.
+#[test]
+fn a_tail_of_formatted_blanks_and_empty_rows_is_not_a_cut() {
+    let mut rows = String::new();
+    for r in 1..=3 {
+        rows += &format!(r#"<row r="{r}">{}</row>"#, num(&format!("A{r}"), None, "1"));
+    }
+    for r in 4..=50 {
+        rows += &format!(r#"<row r="{r}"><c r="A{r}" s="1"/><c r="B{r}" s="1"></c></row>"#);
+    }
+    rows += r#"<row r="51"/><row r="52" ht="15"/>"#;
+    let sf = parse_with_rows(&rows, 3);
+    assert!(!sf.truncated, "nothing past the cap holds data");
+    assert_eq!(sf.reader_stop, Some(3));
+    let dir = tmp("blank_tail");
+    let p = single_sheet(&dir, "t.xlsx", &rows);
+    let wb = load_with(
+        &p,
+        Limits {
+            max_rows: 3,
+            ..Limits::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(wb.sheets[0].nrows, 3);
+    assert!(!wb.sheets[0].rows_truncated, "no capped marker");
+    // The same tail with one value in it is a cut.
+    let with_data = rows.replace(
+        r#"<c r="B30" s="1"></c>"#,
+        r#"<c r="B30" s="1"><v>7</v></c>"#,
+    );
+    assert!(parse_with_rows(&with_data, 3).truncated);
+    // A formula, an inline string and a `<v>` with text each count as data; an empty `<v>` not.
+    for (cell, data) in [
+        (r#"<c r="B30"><f>1+1</f></c>"#, true),
+        (r#"<c r="B30" t="inlineStr"><is><t>x</t></is></c>"#, true),
+        (r#"<c r="B30"><v>7</v></c>"#, true),
+        (r#"<c r="B30"><v></v></c>"#, false),
+        (r#"<c r="B30"><v/></c>"#, false),
+        (r#"<c r="B30" s="1"/>"#, false),
+    ] {
+        let r = rows.replace(r#"<c r="B30" s="1"></c>"#, cell);
+        assert_eq!(parse_with_rows(&r, 3).truncated, data, "{cell}");
+    }
+}
+
+/// The report that started this: a sheet where every row ends in styled blanks. The stop point
+/// has to count them, or the reader stops after a third of the cells and the display ends far
+/// before the row cap.
+#[test]
+fn styled_blanks_do_not_stop_the_display_before_the_row_cap() {
+    let rows: String = (1..=200)
+        .map(|r| {
+            format!(
+                r#"<row r="{r}">{}<c r="B{r}" s="1"/><c r="C{r}" s="1"/></row>"#,
+                num(&format!("A{r}"), None, &r.to_string())
+            )
+        })
+        .collect();
+    let sf = parse_with_rows(&rows, 100);
+    assert_eq!(sf.reader_stop, Some(300), "100 rows of 3 cells");
+    let dir = tmp("blanks_cap");
+    let p = single_sheet(&dir, "b.xlsx", &rows);
+    let wb = load_with(
+        &p,
+        Limits {
+            max_rows: 100,
+            ..Limits::default()
+        },
+    )
+    .unwrap();
+    let s = &wb.sheets[0];
+    assert_eq!(s.nrows, 100);
+    assert_eq!(
+        s.display(99, 0),
+        "100",
+        "the last row under the cap is read"
+    );
+    assert!(s.rows_truncated, "rows 101.. do hold values");
+}
+
+/// A formula-only cell is not a kept cell, so a sheet with many of them must not use up the
+/// budget the formats are recorded under: the value cells after them still get their format.
+#[test]
+fn formula_only_cells_do_not_use_up_the_format_budget() {
+    let mut rows = String::new();
+    for r in 1..=30 {
+        rows += &format!(r#"<row r="{r}"><c r="A{r}" s="1"><f>1+1</f></c></row>"#);
+    }
+    for r in 31..=35 {
+        rows += &format!(
+            r#"<row r="{r}">{}</row>"#,
+            num(&format!("A{r}"), Some(1), "46297")
+        );
+    }
+    let limits = Limits {
+        max_sheet_cells: 10,
+        ..Limits::default()
+    };
+    let xml = sheet_xml(&rows, "");
+    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &limits).unwrap();
+    assert_eq!(sf.value_cells, 5);
+    assert!(!sf.truncated);
+    assert_eq!(sf.cells.len(), 5, "the five dates keep their format");
+    // Through the loader: the dates are shown as dates (xf 1 = numFmtId 14), not as 46297.
+    let dir = tmp("formula_budget");
+    let p = single_sheet(&dir, "f.xlsx", &rows);
+    let wb = load_with(&p, limits).unwrap();
+    let s = &wb.sheets[0];
+    assert!(!s.rows_truncated);
+    assert_ne!(s.display(34, 0), "46297", "formatted, not General");
+    assert_eq!(s.formula(0, 0), Some("1+1"), "the formulas are still kept");
+}
+
+/// When the cell budget does cut the sheet, the reader stops where the format pass did, so no
+/// cell is shown without its format, and exactly the budget is kept.
+#[test]
+fn the_cell_budget_cuts_the_reader_and_the_format_pass_at_the_same_cell() {
+    let mut rows = String::new();
+    for r in 1..=20 {
+        rows += &format!(
+            r#"<row r="{r}">{}{}<c r="C{r}" s="1"/></row>"#,
+            num(&format!("A{r}"), Some(1), "46297"),
+            num(&format!("B{r}"), Some(1), "46297")
+        );
+    }
+    let limits = Limits {
+        max_sheet_cells: 10,
+        ..Limits::default()
+    };
+    let dir = tmp("budget_cut");
+    let p = single_sheet(&dir, "c.xlsx", &rows);
+    let wb = load_with(&p, limits).unwrap();
+    let s = &wb.sheets[0];
+    assert!(s.rows_truncated);
+    let kept: usize = (0..s.nrows).map(|r| s.row_cells(r).len()).sum();
+    assert_eq!(kept, 10);
+    for r in 0..s.nrows {
+        for (c, cell) in s.row_cells(r) {
+            assert_ne!(cell.display(), "46297", "({r},{c}) shown with its format");
+        }
+    }
+}
+
+/// `<c>` elements outside `<sheetData>` (an extension list after it) are not cells: the value
+/// reader stops at `</sheetData>`.
+#[test]
+fn cells_outside_sheet_data_are_not_counted() {
+    let xml = format!(
+        r#"<?xml version="1.0"?><worksheet xmlns="{NS}"><sheetData><row r="1">{}</row></sheetData><extLst><ext><c r="A9" s="1"><v>1</v></c><c r="B9" s="1"><v>1</v></c></ext></extLst></worksheet>"#,
+        num("A1", Some(1), "1")
+    );
+    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &Limits::default()).unwrap();
+    assert_eq!(sf.value_cells, 1);
+    assert_eq!(sf.cells, vec![(0, 0, 1)]);
+    // An empty `<sheetData/>` is no data either.
+    let xml = format!(
+        r#"<?xml version="1.0"?><worksheet xmlns="{NS}"><sheetData/><c r="A1" s="1"><v>1</v></c></worksheet>"#
+    );
+    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &Limits::default()).unwrap();
+    assert_eq!(sf.value_cells, 0);
+}
+
+/// An absurd reference is a stop like a row past the cap, and what follows it is data (or not).
+#[test]
+fn an_absurd_reference_stops_the_reader_and_cuts_only_when_data_follows() {
+    let with_value = format!(
+        r#"<row r="1">{}<c r="ZZZZZZZZZZZ1" s="1"><v>1</v></c></row>"#,
+        num("A1", Some(1), "1")
+    );
+    let sf = parse_with_rows(&with_value, 100);
+    assert_eq!(sf.reader_stop, Some(1));
+    assert!(sf.truncated);
+    let blank = format!(
+        r#"<row r="1">{}<c r="ZZZZZZZZZZZ1" s="1"/></row>"#,
+        num("A1", Some(1), "1")
+    );
+    let sf = parse_with_rows(&blank, 100);
+    assert_eq!(sf.reader_stop, Some(1));
+    assert!(!sf.truncated);
+}
+
+/// A real xlsx read with a cancel that fires after a few rows: the sheet comes back cut short
+/// (the result is thrown away by the caller), and a cancel that never fires changes nothing.
+#[test]
+fn a_cancelled_xlsx_load_stops_early_and_an_uncancelled_one_is_complete() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let rows: String = (1..=500)
+        .map(|r| format!(r#"<row r="{r}">{}</row>"#, num(&format!("A{r}"), None, "1")))
+        .collect();
+    let dir = tmp("cancel_xlsx");
+    let p = single_sheet(&dir, "c.xlsx", &rows);
+    let opts = LoadOptions::default();
+    let full = workbook::load_workbook_sheet_cancellable(&p, &opts, 0, None).unwrap();
+    assert_eq!(full.sheets[0].nrows, 500);
+    let never = Cancel::new(|| false);
+    let same = workbook::load_workbook_sheet_cancellable(&p, &opts, 0, Some(never)).unwrap();
+    assert_eq!(same.sheets[0].nrows, 500);
+    let seen = Arc::new(AtomicUsize::new(0));
+    let s2 = seen.clone();
+    let cancel = Cancel::new(move || s2.fetch_add(1, Ordering::SeqCst) >= 10);
+    let cut = workbook::load_workbook_sheet_cancellable(&p, &opts, 0, Some(cancel)).unwrap();
+    // One check before the sheet is read, then one per row: the 11th check is the 10th row's.
+    assert_eq!(cut.sheets[0].nrows, 9, "stopped at the 10th row");
+    assert_eq!(
+        seen.load(Ordering::SeqCst),
+        11,
+        "not asked again once it said stop"
+    );
+    // Already cancelled before the sheet is read: the sheet list, no cells.
+    let cut = workbook::load_workbook_sheet_cancellable(&p, &opts, 0, Some(Cancel::new(|| true)))
+        .unwrap();
+    assert_eq!(cut.sheets.len(), 1);
+    assert!(!cut.sheets[0].loaded);
 }

@@ -35,9 +35,25 @@ fn grid_of<'a>(
 struct Needle {
     /// The query folded, as characters.
     chars: Vec<char>,
-    /// The same as bytes when it is all ASCII (the common case: a byte search, no decoding).
-    ascii: Option<Vec<u8>>,
+    /// The query as the bytes a **byte search** compares (ASCII letters lower-cased, everything
+    /// else as UTF-8), when such a search finds exactly what the folding would. That holds when
+    /// no character of the query other than an ASCII letter is the result of folding some other
+    /// character: ASCII letters are compared case-insensitively on the bytes, a CJK or other
+    /// uncased character only equals itself, and UTF-8 is self-synchronising, so a byte match is
+    /// a match of whole characters. `None` for a query with a cased non-ASCII letter (`é`,
+    /// `Σ`, `ω`...), which needs the character-by-character comparison.
+    bytes: Option<Vec<u8>>,
+    /// The byte search is only exact for text without [`FOLDS_TO_ASCII`] when the query has one of
+    /// the ASCII letters they fold to.
+    has_folded_to_ascii_letter: bool,
 }
+
+/// The characters outside ASCII whose folding contains an ASCII letter: the Kelvin sign `K`
+/// (`k`) and `İ` (`i` and a combining dot). Text with one of them can match an ASCII query in
+/// a way a byte search does not see; a pinned test scans all of Unicode for the complete list.
+const FOLDS_TO_ASCII: [char; 2] = ['\u{212A}', '\u{130}'];
+/// The ASCII letters those fold to.
+const FOLDED_TO_ASCII: [u8; 2] = *b"ki";
 
 /// The case folding of search: full Unicode lower-casing of one character, and `ς` (final sigma)
 /// the same as `σ`, so `Σ`, `σ` and `ς` are one letter whatever the position in the word.
@@ -45,37 +61,85 @@ fn fold(c: char) -> impl Iterator<Item = char> {
     c.to_lowercase().map(|l| if l == 'ς' { 'σ' } else { l })
 }
 
+/// Every character that is the result of folding a *different* character (sorted). Characters
+/// above U+1FFFF have no case, so the scan stops there (a test checks the whole range).
+fn fold_results() -> &'static [char] {
+    static RESULTS: std::sync::OnceLock<Vec<char>> = std::sync::OnceLock::new();
+    RESULTS.get_or_init(|| fold_results_up_to(0x1FFFF))
+}
+
+fn fold_results_up_to(last: u32) -> Vec<char> {
+    let mut out: Vec<char> = (0..=last)
+        .filter_map(char::from_u32)
+        .flat_map(|c| {
+            let folded: Vec<char> = fold(c).collect();
+            if folded == [c] {
+                Vec::new()
+            } else {
+                folded
+            }
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 impl Needle {
     fn new(q: &str) -> Needle {
         let chars: Vec<char> = q.chars().flat_map(fold).collect();
-        let ascii = chars
+        let bytes = (chars
             .iter()
-            .all(char::is_ascii)
-            .then(|| chars.iter().map(|&c| c as u8).collect());
-        Needle { chars, ascii }
+            .all(|c| c.is_ascii() || fold_results().binary_search(c).is_err()))
+        .then(|| {
+            chars
+                .iter()
+                .collect::<String>()
+                .into_bytes()
+                .into_iter()
+                .map(|b| b.to_ascii_lowercase())
+                .collect::<Vec<u8>>()
+        });
+        let has_folded_to_ascii_letter = chars
+            .iter()
+            .any(|&c| c.is_ascii() && FOLDED_TO_ASCII.contains(&(c as u8)));
+        Needle {
+            chars,
+            bytes,
+            has_folded_to_ascii_letter,
+        }
     }
 
-    /// Whether `hay` contains the query, ignoring case. An all-ASCII haystack is searched as
-    /// bytes; otherwise characters are folded one at a time (full Unicode lower-casing, so `É`
-    /// matches `é` and the Kelvin sign matches `k`).
+    /// Whether `hay` contains the query, ignoring case. Most text is searched as bytes (no
+    /// decoding, no allocation): ASCII text, and any text for a query whose byte match is exact
+    /// (`bytes`) unless the text holds a character that folds to an ASCII letter the query has.
+    /// Otherwise characters are folded one at a time (full Unicode lower-casing, so `É` matches
+    /// `é` and the Kelvin sign matches `k`).
     fn found_in(&self, hay: &str) -> bool {
         if self.chars.is_empty() {
             return true;
         }
-        if hay.is_ascii() {
-            // A non-ASCII query cannot match an ASCII-only text.
-            let Some(n) = self.ascii.as_deref() else {
-                return false;
-            };
-            let h = hay.as_bytes();
-            let first = n[0];
-            if h.len() < n.len() {
-                return false;
+        match self.bytes.as_deref() {
+            Some(n) => {
+                // A byte match is a match of the folded text, whatever else the text holds.
+                if bytes_contain(hay.as_bytes(), n) {
+                    return true;
+                }
+                // A miss is only a miss when no character of the text folds to a letter the
+                // query has (the Kelvin sign for `k`, `İ` for `i`).
+                self.has_folded_to_ascii_letter
+                    && !hay.is_ascii()
+                    && has_folds_to_ascii(hay)
+                    && self.found_in_by_chars(hay)
             }
-            return (0..=h.len() - n.len()).any(|i| {
-                h[i].to_ascii_lowercase() == first && h[i..i + n.len()].eq_ignore_ascii_case(n)
-            });
+            // A query with a cased non-ASCII letter cannot match ASCII-only text.
+            None if hay.is_ascii() => false,
+            None => self.found_in_by_chars(hay),
         }
+    }
+
+    /// The reference: fold the text one character at a time. Every fast path must agree with it.
+    fn found_in_by_chars(&self, hay: &str) -> bool {
         hay.char_indices().any(|(i, _)| self.starts_at(&hay[i..]))
     }
 
@@ -84,6 +148,36 @@ impl Needle {
         let mut folded = s.chars().flat_map(fold);
         self.chars.iter().all(|&n| folded.next() == Some(n))
     }
+}
+
+/// Whether the text has a character of [`FOLDS_TO_ASCII`] (two substring searches, which std
+/// does with a fast byte scan; only made for a text the byte search did not find the query in).
+fn has_folds_to_ascii(hay: &str) -> bool {
+    FOLDS_TO_ASCII.iter().any(|&c| hay.contains(c))
+}
+
+/// Whether `h` contains `n`, comparing ASCII letters without regard to case (`n` has them in
+/// lower case) and everything else byte for byte.
+fn bytes_contain(h: &[u8], n: &[u8]) -> bool {
+    if h.len() < n.len() {
+        return false;
+    }
+    let (lo, up) = (n[0], n[0].to_ascii_uppercase());
+    let last = h.len() - n.len();
+    let mut i = 0;
+    while i <= last {
+        match h[i..=last].iter().position(|&b| b == lo || b == up) {
+            None => return false,
+            Some(p) => {
+                i += p;
+                if h[i..i + n.len()].eq_ignore_ascii_case(n) {
+                    return true;
+                }
+                i += 1;
+            }
+        }
+    }
+    false
 }
 
 impl App {
@@ -214,6 +308,18 @@ impl App {
             && self.grid().is_none()
             && self.workbook_error.is_none()
             && self.media_loading
+    }
+
+    /// Test-only: the loaded workbook, if any.
+    #[cfg(test)]
+    pub fn workbook_for_test(&self) -> Option<&crate::preview::office::Workbook> {
+        self.workbook.as_deref()
+    }
+
+    /// A spreadsheet's worker has not delivered yet (the file is being opened, another sheet is
+    /// being read, or the sheet on screen is being re-read after an outside edit).
+    pub(super) fn sheet_load_in_flight(&self) -> bool {
+        matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) && self.media_loading
     }
 
     /// How many sheets of the open workbook hold cells (at most one: the sheet on screen); `None`
@@ -655,7 +761,7 @@ pub struct TableCellView {
 
 #[cfg(test)]
 mod needle_tests {
-    use super::Needle;
+    use super::{fold, fold_results, fold_results_up_to, Needle, FOLDED_TO_ASCII, FOLDS_TO_ASCII};
 
     /// What the search used to do (allocating per cell).
     fn old(hay: &str, q: &str) -> bool {
@@ -815,6 +921,115 @@ mod needle_tests {
         assert!(Needle::new("σ").found_in("ΟΔΟΣ"));
         assert!(Needle::new("ς").found_in("ΟΔΟΣ"));
         assert!(!Needle::new("ΟΔΟΣ").found_in("ΟΔΟΝ"));
+    }
+
+    /// The facts the byte search is built on, checked against all of Unicode (not just the range
+    /// the lazily built table scans): which characters fold to ASCII, and that nothing above
+    /// U+1FFFF folds to anything.
+    #[test]
+    fn the_folding_facts_the_byte_search_relies_on_hold_for_all_of_unicode() {
+        let all = fold_results_up_to(0x10FFFF);
+        assert_eq!(all, fold_results(), "no character above U+1FFFF has a case");
+        let mut sources = Vec::new();
+        let mut targets = std::collections::BTreeSet::new();
+        for c in (0x80..=0x10FFFFu32).filter_map(char::from_u32) {
+            for f in fold(c) {
+                if f.is_ascii() {
+                    sources.push(c);
+                    targets.insert(f as u8);
+                }
+            }
+        }
+        sources.sort_unstable();
+        let mut want = FOLDS_TO_ASCII.to_vec();
+        want.sort_unstable();
+        assert_eq!(sources, want, "the characters that fold to an ASCII letter");
+        let mut want_t = FOLDED_TO_ASCII.to_vec();
+        want_t.sort_unstable();
+        assert_eq!(targets.into_iter().collect::<Vec<_>>(), want_t);
+        // Folding is idempotent on its own results (the byte search compares folded text).
+        for &r in &all {
+            assert_eq!(fold(r).collect::<Vec<_>>(), [r], "{r:?}");
+        }
+    }
+
+    #[test]
+    fn which_queries_get_a_byte_search() {
+        assert!(Needle::new("abc").bytes.is_some());
+        assert!(Needle::new("ABC 123").bytes.is_some());
+        assert!(Needle::new("日本語").bytes.is_some(), "uncased text");
+        assert!(Needle::new("Excel表").bytes.is_some(), "ASCII and uncased");
+        assert!(Needle::new("😀").bytes.is_some());
+        assert!(Needle::new("é").bytes.is_none(), "a cased non-ASCII letter");
+        assert!(Needle::new("É").bytes.is_none());
+        assert!(Needle::new("σ").bytes.is_none());
+        assert!(Needle::new("ς").bytes.is_none());
+        assert!(
+            Needle::new("ａ").bytes.is_none(),
+            "fullwidth letters are cased"
+        );
+        assert!(
+            Needle::new("\u{307}").bytes.is_none(),
+            "a combining dot is a folding result (of İ)"
+        );
+        assert_eq!(
+            Needle::new("日本k").bytes.as_deref(),
+            Some("日本k".as_bytes())
+        );
+        assert_eq!(Needle::new("AbC").bytes.as_deref(), Some(b"abc".as_slice()));
+    }
+
+    /// Every fast path against the character-by-character reference, over a corpus built from the
+    /// awkward characters (Kelvin sign, `İ`, a combining dot, sigmas, CJK, fullwidth, emoji) and
+    /// a deterministic scramble of them.
+    #[test]
+    fn the_byte_search_agrees_with_the_folding_on_a_corpus() {
+        let alphabet: Vec<&str> = vec![
+            "a", "A", "k", "K", "i", "I", "x", "1", " ", "\u{212A}", "\u{130}", "\u{307}", "ı",
+            "σ", "ς", "Σ", "é", "É", "e", "日", "本", "語", "ａ", "Ａ", "😀", "ß", "ǅ", "ǆ", "Ǆ",
+            "ﬁ", "\t",
+        ];
+        // Deterministic xorshift: no `rand` dependency.
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut make = |max: u64| -> String {
+            let n = next() % max + 1;
+            (0..n)
+                .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+                .collect()
+        };
+        let hays: Vec<String> = (0..400).map(|_| make(10)).collect();
+        let needles: Vec<String> = (0..300).map(|_| make(3)).collect();
+        let mut hits = 0;
+        let mut byte_queries = 0;
+        for q in &needles {
+            let n = Needle::new(q);
+            byte_queries += usize::from(n.bytes.is_some());
+            for h in &hays {
+                let want = n.found_in_by_chars(h);
+                assert_eq!(n.found_in(h), want, "hay {h:?} needle {q:?}");
+                hits += usize::from(want);
+            }
+        }
+        assert!(hits > 500, "the corpus finds things ({hits})");
+        assert!(
+            byte_queries > 50,
+            "and exercises the byte search ({byte_queries})"
+        );
+        // The cases the byte search must hand to the folding, spelled out.
+        assert!(Needle::new("k").found_in("\u{212A}elvin"));
+        assert!(Needle::new("日本k").found_in("日本\u{212A}"));
+        assert!(Needle::new("i").found_in("日本\u{130}"));
+        // `İ` folds to `i` and a combining dot: `i` alone is found in it, `istanbul` is not.
+        assert!(Needle::new("i\u{307}stanbul").found_in("\u{130}stanbul 日本"));
+        assert!(!Needle::new("istanbul").found_in("\u{130}stanbul 日本"));
+        assert!(!Needle::new("日本").found_in("日 本"));
+        assert!(Needle::new("excel表").found_in("EXCEL表 2024"));
     }
 
     #[test]
