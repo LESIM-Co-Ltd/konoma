@@ -2458,3 +2458,76 @@ mod gitdiff_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod sheet_error_tests {
+    use super::sheet_error_msg;
+    use crate::i18n::{tr, Lang, Msg};
+    use crate::preview::office::OfficeError;
+
+    /// Every way a workbook can fail has its own explanation: the user is told *which* limit or
+    /// problem it was, so two failures must never share a sentence by accident.
+    #[test]
+    fn every_office_error_has_its_own_message() {
+        let cases: Vec<(Option<OfficeError>, Msg)> = vec![
+            (None, Msg::SheetNoVisibleSheets),
+            (Some(OfficeError::Encrypted), Msg::SheetErrEncrypted),
+            (
+                Some(OfficeError::TooLarge { what: "file" }),
+                Msg::SheetErrTooLargeFile,
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "entries" }),
+                Msg::SheetErrTooLargeEntries,
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "entry" }),
+                Msg::SheetErrTooLargeEntry,
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "package" }),
+                Msg::SheetErrTooLargePackage,
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "sheet area" }),
+                Msg::SheetErrTooLargeArea,
+            ),
+            (
+                Some(OfficeError::TooLarge {
+                    what: "sheet cells",
+                }),
+                Msg::SheetErrTooLargeArea,
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "text" }),
+                Msg::SheetErrTooLargeText,
+            ),
+            (
+                Some(OfficeError::TooLarge {
+                    what: "something new",
+                }),
+                Msg::SheetErrTooLargeOther,
+            ),
+            (Some(OfficeError::Corrupt("x".into())), Msg::SheetErrCorrupt),
+            (Some(OfficeError::Unsupported), Msg::SheetErrUnsupported),
+            (Some(OfficeError::Io("x".into())), Msg::SheetErrIo),
+        ];
+        for (err, want) in &cases {
+            assert_eq!(sheet_error_msg(err.as_ref()), *want, "{err:?}");
+        }
+        // And the sentences themselves differ, in both languages (one per distinct `Msg`).
+        for lang in [Lang::En, Lang::Jp] {
+            let mut seen: Vec<(Msg, &str)> = Vec::new();
+            for (_, m) in &cases {
+                if seen.iter().any(|(s, _)| s == m) {
+                    continue;
+                }
+                let text = tr(lang, *m);
+                if let Some((other, _)) = seen.iter().find(|(_, t)| *t == text) {
+                    panic!("{m:?} and {other:?} read the same: {text}");
+                }
+                seen.push((*m, text));
+            }
+        }
+    }
+}

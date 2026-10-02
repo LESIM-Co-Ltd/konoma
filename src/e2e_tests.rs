@@ -17496,6 +17496,15 @@ fn e2e_follow_jump_from_tree_or_plain_preview_does_not_carry_an_earlier_choice()
 
 /// Write a minimal xlsx: `(name, state, <sheetData> rows, extra xml after sheetData)` per sheet.
 fn build_xlsx(path: &std::path::Path, sheets: &[(&str, &str, &str, &str)]) {
+    build_xlsx_with_styles(path, sheets, None);
+}
+
+/// [`build_xlsx`] plus an optional `xl/styles.xml` (the cells' `s="N"` pick `cellXfs` entry N).
+fn build_xlsx_with_styles(
+    path: &std::path::Path,
+    sheets: &[(&str, &str, &str, &str)],
+    styles: Option<&str>,
+) {
     use std::io::Write as _;
     const NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
     const RNS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -17524,6 +17533,9 @@ fn build_xlsx(path: &std::path::Path, sheets: &[(&str, &str, &str, &str)]) {
     put("_rels/.rels", root_rels);
     put("xl/workbook.xml", &wb);
     put("xl/_rels/workbook.xml.rels", &rels);
+    if let Some(styles) = styles {
+        put("xl/styles.xml", styles);
+    }
     for (i, (_, _, rows, after)) in sheets.iter().enumerate() {
         put(
             &format!("xl/worksheets/sheet{}.xml", i + 1),
@@ -18702,4 +18714,610 @@ fn e2e_office_help_row_for_e_matches_what_e_does() {
     s.key('?');
     s.dont_see("edit in external editor");
     s.dont_see("open in an Office app");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Spreadsheet preview: mutation-hardening tests (App/UI side). Each one pins behaviour a mutated
+// build used to get away with; the comments say which kind of mistake it would catch.
+// ---------------------------------------------------------------------------------------------
+
+/// `xl/styles.xml` with four cell formats: 0 = General, 1 = built-in 14 (a date), 2 = built-in 59
+/// (an id with no format code of its own), 3 = the custom code `;;;` (shows nothing at all).
+const STYLES_XML: &str = r#"<?xml version="1.0"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode=";;;"/></numFmts><cellXfs count="4"><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="59"/><xf numFmtId="164"/></cellXfs></styleSheet>"#;
+
+fn cfg_ja() -> Config {
+    let mut cfg = Config::default();
+    cfg.ui.lang = "ja".into();
+    cfg
+}
+
+/// The screen row `y` between the frame's side borders, trailing blanks removed but leading ones
+/// kept (the row-number gutter is made of them).
+fn grid_line(s: &Sim, y: usize) -> String {
+    let line = s.screen().lines().nth(y).unwrap_or("").to_string();
+    let mut chars: Vec<char> = line.chars().collect();
+    if chars.first() == Some(&'│') {
+        chars.remove(0);
+    }
+    if chars.last() == Some(&'│') {
+        chars.pop();
+    }
+    chars.into_iter().collect::<String>().trim_end().to_string()
+}
+
+/// A one-sheet xlsx whose cell `(r, c)` (1-based row, 0-based column) is `text(r, c)`.
+fn build_text_grid(
+    path: &std::path::Path,
+    nrows: usize,
+    ncols: usize,
+    text: impl Fn(usize, usize) -> String,
+) {
+    let mut rows = String::new();
+    for r in 1..=nrows {
+        rows += &format!(r#"<row r="{r}">"#);
+        for c in 0..ncols {
+            let col = crate::preview::table::column_letters(c);
+            rows += &x_str(&format!("{col}{r}"), &text(r, c));
+        }
+        rows += "</row>";
+    }
+    build_xlsx(path, &[("S", "visible", &rows, "")]);
+}
+
+fn open_sheet_file(dir: &crate::test_support::TmpDir, name: &str, cfg: Config) -> Sim {
+    let mut s = Sim::with_config(&canon(dir), cfg);
+    s.select(name);
+    s.enter();
+    s
+}
+
+/// Built-in number format 14 is a *date* whose pattern depends on the UI language
+/// (`m/d/yyyy` / `yyyy/m/d`). The language must reach the loader on both paths: the synchronous
+/// fallback and the worker thread that production uses. The cell popup spells the format code out
+/// in the same language.
+#[test]
+fn e2e_sheet_builtin_date_follows_the_ui_language_on_both_load_paths() {
+    let dir = sandbox("sheet_locale");
+    build_xlsx_with_styles(
+        &dir.join("d.xlsx"),
+        &[(
+            "S",
+            "visible",
+            r#"<row r="1"><c r="A1" s="1"><v>45296</v></c></row>"#,
+            "",
+        )],
+        Some(STYLES_XML),
+    );
+    for worker in [false, true] {
+        // English: month first.
+        let mut s = Sim::with_config(&canon(&dir), cfg_en());
+        if worker {
+            s = s.with_media();
+        }
+        s.select("d.xlsx");
+        s.enter();
+        if worker {
+            s.drain_media();
+        }
+        s.see("1/5/2024");
+        s.dont_see("2024/1/5");
+        s.enter();
+        s.see("Displayed: 1/5/2024");
+        s.see("Number format: m/d/yyyy");
+        s.see("Type: date / time");
+
+        // Japanese: year first.
+        let mut s = Sim::with_config(&canon(&dir), cfg_ja());
+        if worker {
+            s = s.with_media();
+        }
+        s.select("d.xlsx");
+        s.enter();
+        if worker {
+            s.drain_media();
+        }
+        see_cjk(&mut s, "2024/1/5");
+        s.dont_see("1/5/2024");
+        s.enter();
+        see_cjk(&mut s, "表示: 2024/1/5");
+        see_cjk(&mut s, "表示書式: yyyy/m/d");
+        see_cjk(&mut s, "型: 日付・時刻");
+    }
+}
+
+/// The popup names the cell by its address (`B3`, not just the column letter `B`), labels every
+/// cell type with its own word, and shows a built-in format id that has no code of its own as
+/// `#59` rather than hiding it.
+#[test]
+fn e2e_sheet_cell_popup_title_type_labels_and_unknown_builtin_format() {
+    let dir = sandbox("sheet_popup_kinds");
+    build_xlsx_with_styles(
+        &dir.join("k.xlsx"),
+        &[(
+            "S",
+            "visible",
+            &format!(
+                r#"<row r="1"><c r="A1" t="b"><v>1</v></c></row><row r="2"><c r="A2" s="1"><v>45296</v></c></row><row r="3"><c r="A3" s="2"><v>5</v></c>{}</row>"#,
+                x_str("B3", "plain")
+            ),
+            "",
+        )],
+        Some(STYLES_XML),
+    );
+    let mut s = open_sheet_file(&dir, "k.xlsx", cfg_en());
+    // A1: a boolean (raw `TRUE`), General format → no format line.
+    s.enter();
+    s.see("Cell: A1");
+    s.see("Raw value: TRUE");
+    s.see("Type: boolean");
+    s.dont_see("Type: text");
+    s.dont_see("Type: date");
+    s.dont_see("Number format:");
+    s.esc();
+    // A2: a date/time (a number to the file, a date to the user).
+    s.key('j');
+    s.enter();
+    s.see("Cell: A2");
+    s.see("Raw value: 45296");
+    s.see("Type: date / time");
+    s.dont_see("Type: number");
+    s.see("Number format: m/d/yyyy");
+    s.esc();
+    // A3: built-in id 59 has no format code → shown as `#59`.
+    s.key('j');
+    s.enter();
+    s.see("Cell: A3");
+    s.see("Type: number");
+    s.see("Number format: #59");
+    s.esc();
+    // B3: the popup's own title carries the address, and the position counters.
+    s.key('l');
+    s.enter();
+    s.see("Cell: B3");
+    let title = grid_line(&s, 0);
+    let popup_title = s
+        .screen()
+        .lines()
+        .find(|l| l.contains("r3/3"))
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        popup_title.contains("· B3  r3/3 c2/2"),
+        "title {title:?} / {popup_title:?}\n{}",
+        s.screen()
+    );
+}
+
+/// Copying a row stops at the last cell that *shows* something: a stored cell whose format hides
+/// its value (`;;;`) is not "something", so no trailing tab is added for it; a row of only such
+/// cells copies as nothing.
+#[test]
+fn e2e_sheet_row_copy_ignores_trailing_cells_that_display_nothing() {
+    let dir = sandbox("sheet_copy_hidden");
+    build_xlsx_with_styles(
+        &dir.join("h.xlsx"),
+        &[(
+            "S",
+            "visible",
+            &format!(
+                r#"<row r="1">{}{}<c r="C1" s="3"><v>5</v></c></row><row r="2"><c r="A2" s="3"><v>7</v></c></row>"#,
+                x_str("A1", "x"),
+                x_str("B1", "y")
+            ),
+            "",
+        )],
+        Some(STYLES_XML),
+    );
+    let mut s = open_sheet_file(&dir, "h.xlsx", cfg_en());
+    crate::test_support::clear_test_clipboard();
+    s.keys("yr");
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some("x\ty"),
+        "the hidden C1 adds nothing, not even a tab"
+    );
+    s.key('j');
+    crate::test_support::clear_test_clipboard();
+    s.keys("yr");
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some(""),
+        "a row that shows nothing copies as nothing"
+    );
+}
+
+/// Search ignores case on both sides (the query `APPLE` finds `apple pie` and `Big APPLE`), puts
+/// the highlight on exactly the matching cells — including ones in later columns — and `n` walks
+/// them in reading order.
+#[test]
+fn e2e_sheet_search_ignores_case_and_highlights_the_matching_columns() {
+    let dir = sandbox("sheet_search_case");
+    build_xlsx(
+        &dir.join("s.xlsx"),
+        &[(
+            "S",
+            "visible",
+            &format!(
+                r#"<row r="1">{}</row><row r="2">{}</row><row r="3">{}{}</row>"#,
+                x_str("A1", "Header"),
+                x_str("B2", "apple pie"),
+                x_str("A3", "none"),
+                x_str("C3", "Big APPLE")
+            ),
+            "",
+        )],
+    );
+    let mut s = open_sheet_file(&dir, "s.xlsx", cfg_en());
+    s.key('/');
+    s.keys("APPLE");
+    s.enter();
+    assert_eq!(s.app.search_status(), Some((1, 2)), "{}", s.screen());
+    assert_eq!(s.app.table_cursor(), (1, 1), "the first hit is B2");
+    let hits: Vec<(usize, usize)> = (0..3)
+        .flat_map(|r| (0..3).map(move |c| (r, c)))
+        .filter(|&(r, c)| s.app.table_cell_is_hit(r, c))
+        .collect();
+    assert_eq!(hits, [(1, 1), (2, 2)], "exactly B2 and C3");
+    // Drawn: the match is underlined, the non-match is not.
+    s.see_styled(
+        "apple pie",
+        |st| {
+            st.add_modifier
+                .contains(ratatui::style::Modifier::UNDERLINED)
+        },
+        "underlined search hit",
+    );
+    s.see_styled(
+        "Header",
+        |st| {
+            !st.add_modifier
+                .contains(ratatui::style::Modifier::UNDERLINED)
+        },
+        "no underline off a hit",
+    );
+    s.key('n');
+    assert_eq!(s.app.table_cursor(), (2, 2), "n goes on to C3");
+    // The search belongs to the tab: it is still there after switching away and back.
+    s.key('t');
+    s.key('[');
+    assert!(s.app.is_sheet_preview(), "{}", s.screen());
+    assert!(s.app.table_cell_is_hit(1, 1) && s.app.table_cell_is_hit(2, 2));
+    assert!(!s.app.table_cell_is_hit(0, 0));
+    s.key('N');
+    assert_eq!(
+        s.app.table_cursor(),
+        (1, 1),
+        "N still walks the restored hits"
+    );
+}
+
+/// `J` goes one sheet at a time (not two), and neither `J` on the last nor `K` on the first sheet
+/// does anything — the cursor stays where it was. A switch puts the cursor *and the scroll* back
+/// at the top left (checked before the next redraw, which would otherwise hide a stale offset by
+/// clamping it to the cursor).
+#[test]
+fn e2e_sheet_switching_steps_by_one_and_resets_cursor_and_scroll() {
+    let dir = sandbox("sheet_switch3");
+    let cell = |t: &str| {
+        format!(
+            r#"<row r="1">{}</row><row r="2">{}{}</row>"#,
+            x_str("A1", t),
+            x_str("A2", t),
+            x_str("B2", t)
+        )
+    };
+    build_xlsx(
+        &dir.join("t.xlsx"),
+        &[
+            ("One", "visible", &cell("o"), ""),
+            ("Two", "visible", &cell("t"), ""),
+            ("Three", "visible", &cell("h"), ""),
+        ],
+    );
+    let mut s = open_sheet_file(&dir, "t.xlsx", cfg_en());
+    s.see("One (1/3)");
+    s.key('J');
+    s.see("Two (2/3)");
+    s.key('J');
+    s.see("Three (3/3)");
+    // On the last sheet `J` is a no-op: the cursor stays on B2.
+    s.keys("jl");
+    assert_eq!(s.app.table_cursor(), (1, 1));
+    s.key('J');
+    s.see("Three (3/3)");
+    assert_eq!(
+        s.app.table_cursor(),
+        (1, 1),
+        "J on the last sheet does not reset the cursor"
+    );
+    s.key('K');
+    s.see("Two (2/3)");
+    s.key('K');
+    s.see("One (1/3)");
+    s.keys("jl");
+    assert_eq!(s.app.table_cursor(), (1, 1));
+    s.key('K');
+    s.see("One (1/3)");
+    assert_eq!(
+        s.app.table_cursor(),
+        (1, 1),
+        "K on the first sheet does not reset the cursor"
+    );
+
+    // Scroll both ways on a big first sheet, then switch without drawing in between.
+    let dir = sandbox("sheet_switch_scroll");
+    let mut rows = String::new();
+    for r in 1..=80usize {
+        rows += &format!(r#"<row r="{r}">"#);
+        for c in 0..40usize {
+            let col = crate::preview::table::column_letters(c);
+            rows += &x_str(&format!("{col}{r}"), &format!("r{r}c{c}-wide-text"));
+        }
+        rows += "</row>";
+    }
+    build_xlsx(
+        &dir.join("b.xlsx"),
+        &[
+            ("Big", "visible", &rows, ""),
+            (
+                "Small",
+                "visible",
+                &format!(r#"<row r="1">{}</row>"#, x_str("A1", "tiny")),
+                "",
+            ),
+        ],
+    );
+    let mut s = open_sheet_file(&dir, "b.xlsx", cfg_en());
+    s.key('G');
+    s.key('$');
+    let (top, left) = s.app.table_scroll();
+    assert!(
+        top > 0 && left > 0,
+        "the view scrolled on both axes: {top},{left}"
+    );
+    s.app.sheet_next();
+    assert_eq!(
+        s.app.table_scroll(),
+        (0, 0),
+        "a new sheet starts at the top left"
+    );
+    assert_eq!(s.app.table_cursor(), (0, 0));
+    // And back again (K) the same.
+    s.draw();
+    s.key('G');
+    s.app.sheet_prev();
+    assert_eq!(s.app.table_scroll(), (0, 0));
+}
+
+/// While the worker has not delivered yet the preview says it is loading — and must not claim
+/// there is nothing to show (the message for a workbook whose sheets are all hidden).
+#[test]
+fn e2e_sheet_loading_is_a_spinner_not_an_empty_workbook_message() {
+    let dir = sandbox("sheet_wait_msg");
+    build_xlsx(
+        &dir.join("l.xlsx"),
+        &[(
+            "S",
+            "visible",
+            &format!(r#"<row r="1">{}</row>"#, x_str("A1", "v")),
+            "",
+        )],
+    );
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("l.xlsx");
+    s.enter();
+    assert!(s.app.is_sheet_loading());
+    s.see("loading");
+    s.dont_see("nothing to show");
+    s.dont_see("cannot preview");
+    s.drain_media();
+    s.see("S (1/1)");
+    s.dont_see("loading");
+}
+
+/// A workbook whose sheets are all hidden is not "loading" and not an error: it says so.
+#[test]
+fn e2e_sheet_all_sheets_hidden_says_nothing_to_show() {
+    let dir = sandbox("sheet_all_hidden");
+    build_xlsx(&dir.join("h.xlsx"), &[("Secret", "hidden", "", "")]);
+    let s = open_sheet_file(&dir, "h.xlsx", cfg_en());
+    s.see("every sheet in this workbook is hidden");
+    assert!(!s.app.is_sheet_loading());
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("h.xlsx");
+    s.enter();
+    s.drain_media();
+    s.see("every sheet in this workbook is hidden");
+    s.dont_see("loading");
+}
+
+/// The first three screen rows of the grid (column letters, the rule under them, the first data
+/// row) for 9, 10 and 100 rows: the row-number gutter widens with the digit count, the rule is as
+/// long as gutter + columns, the letters line up over their columns, and the cursor row's number
+/// is bold while the others are dim.
+#[test]
+fn e2e_sheet_grid_header_rule_and_gutter_for_9_10_and_100_rows() {
+    for (n, header, rule, first) in [
+        (9usize, "  A   B", "─────────", "1 a1  bb1"),
+        (10, "   A   B", "───────────", " 1 a1  bb1"),
+        (100, "    A   B", "────────────", "  1 a1  bb1"),
+    ] {
+        let dir = sandbox(&format!("sheet_gutter_{n}"));
+        build_text_grid(&dir.join("g.xlsx"), n, 2, |r, c| {
+            if c == 0 {
+                format!("a{r}")
+            } else {
+                format!("bb{r}")
+            }
+        });
+        let mut s = open_sheet_file(&dir, "g.xlsx", cfg_en());
+        assert_eq!(grid_line(&s, 2), header, "{n} rows: header\n{}", s.screen());
+        assert_eq!(grid_line(&s, 3), rule, "{n} rows: rule");
+        assert_eq!(grid_line(&s, 4), first, "{n} rows: first data row");
+        // Row numbers: bold on the cursor row, dim elsewhere — and they follow the cursor.
+        let gutter_x = 1 + (n.to_string().len() as u16 - 1).saturating_sub(1);
+        let bold = |s: &Sim, y: u16| {
+            s.cell_style(y, gutter_x)
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        };
+        assert!(bold(&s, 4), "{n}: cursor row number is bold");
+        assert!(!bold(&s, 5), "{n}: other row numbers are not");
+        s.key('j');
+        assert!(!bold(&s, 4), "{n}: moved off row 1");
+        assert!(bold(&s, 5), "{n}: now row 2 is bold");
+    }
+}
+
+/// A sheet wider than the screen, with the cursor sent to the last column: the gutter is taken
+/// off the width the columns may use, so the last column is drawn whole and the same columns
+/// (not one more at the left) are shown as fit.
+#[test]
+fn e2e_sheet_columns_are_fitted_after_the_gutter_is_taken_off_the_width() {
+    let dir = sandbox("sheet_fit_gutter");
+    // 100 rows (a 4-wide gutter), 16 columns of exactly 10 cells each: `C<col>-R<row>xx`.
+    build_text_grid(&dir.join("w.xlsx"), 100, 16, |r, c| {
+        format!("C{c:02}-R{r:03}xx")
+    });
+    let mut s = open_sheet_file(&dir, "w.xlsx", cfg_en());
+    s.key('$');
+    assert_eq!(s.app.table_cursor(), (0, 15));
+    // 88 inner columns − 4 gutter = 84 for cells: the cursor column plus six to its left fit
+    // (7 × 10 + 6 gaps = 76; an eighth would need 87).
+    let letters: Vec<String> = (9..16)
+        .map(|c| format!("{:<10}", crate::preview::table::column_letters(c)))
+        .collect();
+    assert_eq!(
+        grid_line(&s, 2),
+        format!("    {}", letters.join(" ")).trim_end()
+    );
+    assert_eq!(grid_line(&s, 3), "─".repeat(4 + 7 * 10 + 6));
+    let cells: Vec<String> = (9..16).map(|c| format!("C{c:02}-R001xx")).collect();
+    assert_eq!(grid_line(&s, 4), format!("  1 {}", cells.join(" ")));
+    // The last row of the screen shows the same columns.
+    assert!(
+        grid_line(&s, 4 + 19).ends_with("C15-R020xx"),
+        "{}",
+        s.screen()
+    );
+}
+
+/// A new tab does not inherit a workbook from the one it was opened from, and switching to a tab
+/// whose workbook is read on the worker shows that tab's own "loading" rather than the previous
+/// tab's sheet.
+#[test]
+fn e2e_sheet_switching_tabs_never_shows_another_tabs_workbook() {
+    let dir = sandbox("sheet_tabs_two");
+    build_text_grid(&dir.join("one.xlsx"), 2, 1, |_, _| "from-one".into());
+    build_text_grid(&dir.join("two.xlsx"), 2, 1, |_, _| "from-two".into());
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("one.xlsx");
+    s.enter();
+    s.drain_media();
+    s.see("from-one");
+    s.key('t'); // a new tab (in the tree)
+    assert!(s.app.workbook_matches_preview());
+    s.select("two.xlsx");
+    s.enter();
+    s.drain_media();
+    s.see("from-two");
+    // Back to the first tab: its workbook is re-read on the worker. Until it lands, nothing of the
+    // second tab's sheet may be on screen, and the sheet is "loading".
+    s.key('[');
+    assert!(s.app.is_sheet_loading(), "{}", s.screen());
+    s.dont_see("from-two");
+    s.drain_media();
+    s.see("from-one");
+    s.dont_see("from-two");
+    assert!(s.app.workbook_matches_preview());
+    // Forward again, the same the other way round.
+    s.key(']');
+    assert!(s.app.is_sheet_loading(), "{}", s.screen());
+    s.dont_see("from-one");
+    s.drain_media();
+    s.see("from-two");
+}
+
+/// Opening another workbook (Ctrl-n/p) while the previous one is on screen must not keep showing
+/// the previous workbook, or its sheet number, until the new one lands.
+#[test]
+fn e2e_sheet_next_workbook_starts_clean_while_it_loads() {
+    let dir = sandbox("sheet_next_book");
+    let two = |tag: &str| {
+        let rows = |t: &str| format!(r#"<row r="1">{}</row>"#, x_str("A1", t));
+        build_xlsx(
+            &dir.join(format!("{tag}.xlsx")),
+            &[
+                ("First", "visible", &rows(&format!("{tag}-first")), ""),
+                ("Second", "visible", &rows(&format!("{tag}-second")), ""),
+            ],
+        );
+    };
+    two("a");
+    two("b");
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("a.xlsx");
+    s.enter();
+    s.drain_media();
+    s.key('J');
+    s.see("a-second");
+    s.ctrl('n');
+    assert!(s.app.is_sheet_loading(), "{}", s.screen());
+    s.dont_see("a-second");
+    s.drain_media();
+    s.see("First (1/2)"); // the new file starts at its first sheet
+    s.see("b-first");
+}
+
+/// A reload that fails (the file was broken by an external write) replaces the old sheet with the
+/// reason — it must not keep showing stale cells as if they were current.
+#[test]
+fn e2e_sheet_a_failed_reload_replaces_the_old_sheet_with_the_reason() {
+    let dir = sandbox("sheet_reload_broken");
+    let book = canon(&dir).join("r.xlsx");
+    build_text_grid(&book, 2, 2, |_, _| "good-cell".into());
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("r.xlsx");
+    s.enter();
+    s.drain_media();
+    s.see("good-cell");
+    std::fs::write(&book, b"this is not a workbook").unwrap();
+    let f = std::fs::OpenOptions::new().write(true).open(&book).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_900_000_000))
+        .unwrap();
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&book));
+    s.draw();
+    s.drain_media();
+    assert!(s.app.workbook_matches_preview());
+    assert!(!s.app.is_table_preview(), "{}", s.screen());
+    s.see("damaged");
+    s.dont_see("good-cell");
+}
+
+/// The reason a workbook failed to load belongs to that tab: switching to a tab whose (good)
+/// workbook is still being read must show that tab's own "loading", not the other tab's error.
+#[test]
+fn e2e_sheet_one_tabs_load_error_does_not_follow_into_another_tab() {
+    let dir = sandbox("sheet_tab_error");
+    std::fs::write(dir.join("bad.xlsx"), b"this is not a workbook").unwrap();
+    build_text_grid(&dir.join("good.xlsx"), 2, 1, |_, _| "fine-cell".into());
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("good.xlsx");
+    s.enter();
+    s.drain_media();
+    s.see("fine-cell");
+    s.key('t');
+    s.select("bad.xlsx");
+    s.enter();
+    s.drain_media();
+    s.see("damaged");
+    assert!(s.app.sheet_error().is_some());
+    // Back to the good tab: it is being re-read; the other tab's error must not be on screen.
+    s.key('[');
+    assert!(s.app.sheet_error().is_none(), "{}", s.screen());
+    assert!(s.app.is_sheet_loading(), "{}", s.screen());
+    s.dont_see("damaged");
+    s.drain_media();
+    s.see("fine-cell");
+    s.dont_see("damaged");
 }

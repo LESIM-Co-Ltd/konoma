@@ -24809,3 +24809,219 @@ fn table_search_highlight_is_exactly_the_matching_cells() {
         assert!(!app.table_cell_is_hit(0, 0), "cleared");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Spreadsheet preview: what the App does with a worker's answer, and how the title reads
+// ---------------------------------------------------------------------------------------------
+
+use crate::preview::office::{OfficeError, Sheet, Workbook};
+
+/// A workbook of one sheet with the given shape (cells stay empty: the title and the cap marker
+/// only depend on the dimensions and the truncation flags).
+fn shaped_workbook(nrows: usize, ncols: usize, rows_cut: bool, cols_cut: bool) -> Workbook {
+    let mut sheet = Sheet::default();
+    sheet.name = "S".into();
+    sheet.nrows = nrows;
+    sheet.ncols = ncols;
+    sheet.rows_truncated = rows_cut;
+    sheet.cols_truncated = cols_cut;
+    Workbook {
+        sheets: vec![sheet],
+        ..Workbook::default()
+    }
+}
+
+/// An English-UI App previewing `b.xlsx` as a spreadsheet (the file is never read: the workbook,
+/// when there is one, is put in by hand).
+fn app_previewing_a_sheet(name: &str) -> (App, crate::test_support::TmpDir) {
+    let dir = unique_tmp(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("b.xlsx"), b"x").unwrap();
+    let root = dir.canonicalize().unwrap();
+    let book = root.join("b.xlsx");
+    let mut cfg = Config::default();
+    cfg.ui.lang = "en".into();
+    let mut app = App::new(root, cfg).unwrap();
+    app.tab.preview_path = Some(book.clone());
+    app.tab.preview_kind = Some(PreviewKind::Spreadsheet(book));
+    app.tab.mode = Mode::Preview;
+    (app, dir)
+}
+
+/// The text of a 90x26 frame drawn from `app`.
+fn drawn_screen(app: &mut App) -> String {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let mut term = Terminal::new(TestBackend::new(90, 26)).unwrap();
+    term.draw(|f| crate::ui::render(f, app)).unwrap();
+    let buf = term.backend().buffer();
+    let w = buf.area.width as usize;
+    let mut out = String::new();
+    for (i, cell) in buf.content().iter().enumerate() {
+        out.push_str(cell.symbol());
+        if (i + 1) % w == 0 {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn title_row(screen: &str) -> String {
+    screen.lines().nth(1).unwrap_or("").to_string()
+}
+
+/// `(capped)` in the title means "this is not the whole sheet": it shows when rows were cut, when
+/// columns were cut, or both — and not when nothing was.
+#[test]
+fn sheet_title_marks_a_capped_sheet_for_either_kind_of_cut() {
+    for (rows_cut, cols_cut, capped) in [
+        (false, false, false),
+        (true, false, true),
+        (false, true, true),
+        (true, true, true),
+    ] {
+        let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_capped");
+        app.workbook = Some(Box::new(shaped_workbook(5, 3, rows_cut, cols_cut)));
+        let title = title_row(&drawn_screen(&mut app));
+        assert_eq!(
+            title.contains("(capped)"),
+            capped,
+            "rows_cut={rows_cut} cols_cut={cols_cut}: {title}"
+        );
+        assert!(title.contains("S (1/1)  A1  5×3"), "{title}");
+    }
+}
+
+/// An empty sheet (no rows, or no columns) has no cell under the cursor, so the title names no
+/// cell address.
+#[test]
+fn sheet_title_names_no_cell_when_the_sheet_has_no_rows_or_no_columns() {
+    for (nrows, ncols) in [(0, 0), (3, 0), (0, 3)] {
+        let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_no_addr");
+        app.workbook = Some(Box::new(shaped_workbook(nrows, ncols, false, false)));
+        let title = title_row(&drawn_screen(&mut app));
+        assert!(
+            title.contains(&format!("S (1/1)  {nrows}×{ncols}")),
+            "{nrows}x{ncols}: {title}"
+        );
+        assert!(!title.contains("A1"), "{nrows}x{ncols}: {title}");
+    }
+}
+
+/// "Loading" is exactly: a spreadsheet is being previewed, nothing is loaded and no error is
+/// known **and a worker is still out** (`media_loading`). Without the worker it is the empty
+/// workbook, not a spinner that would never end.
+#[test]
+fn sheet_loading_needs_a_worker_that_is_still_out() {
+    let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_wait_state");
+    app.media_loading = true;
+    assert!(app.is_sheet_loading());
+    let s = drawn_screen(&mut app);
+    assert!(s.contains("loading"), "{s}");
+    assert!(!s.contains("nothing to show"), "{s}");
+
+    app.media_loading = false;
+    assert!(!app.is_sheet_loading(), "no worker out: not loading");
+    let s = drawn_screen(&mut app);
+    assert!(s.contains("nothing to show"), "{s}");
+    assert!(!s.contains("loading"), "{s}");
+
+    // A loaded workbook or a known error is never "loading", worker or not.
+    app.media_loading = true;
+    app.workbook = Some(Box::new(shaped_workbook(1, 1, false, false)));
+    assert!(!app.is_sheet_loading());
+    app.workbook = None;
+    app.workbook_error = Some(OfficeError::Encrypted);
+    assert!(!app.is_sheet_loading());
+    // And never for a preview that is not a spreadsheet.
+    app.workbook_error = None;
+    app.tab.preview_kind = Some(PreviewKind::CanNotPreview { ext: "x".into() });
+    assert!(!app.is_sheet_loading());
+}
+
+fn workbook_result(app: &App, payload: MediaPayload) -> MediaResult {
+    MediaResult {
+        gen: app.media_gen,
+        payload: Some(payload),
+    }
+}
+
+/// A worker's workbook that arrives for the *current* job but while the preview is something else
+/// (a CSV here — the job's generation is still current because a non-media preview starts no job
+/// of its own) is dropped: the kind check is what keeps a late workbook out of another preview.
+/// The same goes for a failure, which must not leave an error behind either.
+#[test]
+fn a_workbook_result_is_not_adopted_by_a_preview_that_is_not_a_spreadsheet() {
+    let dir = unique_tmp("konoma_sheet_late_result");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("t.csv"), "a,b\n1,2\n").unwrap();
+    let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+    let p = dir.canonicalize().unwrap().join("t.csv");
+    app.tab.preview_kind = Some(app.cfg.resolve_preview(&p));
+    app.tab.preview_path = Some(p);
+    app.tab.mode = Mode::Preview;
+    app.load_table();
+    assert!(app.is_table_preview() && !app.is_sheet_preview());
+
+    let r = workbook_result(
+        &app,
+        MediaPayload::Workbook(Box::new(shaped_workbook(2, 2, false, false))),
+    );
+    app.apply_media(r);
+    assert!(
+        app.workbook.is_none(),
+        "the CSV preview did not take the workbook"
+    );
+    assert!(!app.is_sheet_preview());
+    assert!(app.table_data().is_some());
+    assert!(app.workbook_matches_preview());
+
+    let r = workbook_result(&app, MediaPayload::WorkbookFailed(OfficeError::Encrypted));
+    app.apply_media(r);
+    assert!(app.sheet_error().is_none(), "nor did it take the failure");
+    assert!(app.workbook_matches_preview());
+    assert!(app.is_table_preview(), "the CSV is still shown");
+}
+
+/// A failed (re)load replaces the previous workbook: stale cells are not shown next to an error;
+/// and a later good result clears the error again.
+#[test]
+fn a_failed_workbook_result_replaces_the_previous_workbook_and_a_good_one_the_error() {
+    let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_result_swap");
+    app.workbook = Some(Box::new(shaped_workbook(2, 2, false, false)));
+    assert!(app.is_sheet_preview());
+
+    let r = workbook_result(
+        &app,
+        MediaPayload::WorkbookFailed(OfficeError::Corrupt("x".into())),
+    );
+    app.apply_media(r);
+    assert!(app.workbook.is_none(), "the old workbook is gone");
+    assert_eq!(app.sheet_error(), Some(&OfficeError::Corrupt("x".into())));
+    assert!(!app.is_sheet_preview() && !app.is_table_preview());
+
+    let r = workbook_result(
+        &app,
+        MediaPayload::Workbook(Box::new(shaped_workbook(3, 1, false, false))),
+    );
+    app.apply_media(r);
+    assert!(app.sheet_error().is_none(), "a good load clears the error");
+    assert!(app.is_sheet_preview());
+    assert_eq!(app.grid().map(|g| g.nrows()), Some(3));
+}
+
+/// A result of an older job (a newer one has been started since) is ignored altogether.
+#[test]
+fn a_workbook_result_of_a_superseded_job_is_ignored() {
+    let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_result_stale");
+    app.media_loading = true;
+    let stale = MediaResult {
+        gen: app.media_gen.wrapping_add(1),
+        payload: Some(MediaPayload::Workbook(Box::new(shaped_workbook(
+            1, 1, false, false,
+        )))),
+    };
+    assert!(!app.apply_media(stale));
+    assert!(app.workbook.is_none());
+    assert!(app.is_sheet_loading(), "still waiting for the current job");
+}

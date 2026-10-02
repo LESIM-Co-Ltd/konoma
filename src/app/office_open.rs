@@ -530,6 +530,219 @@ mod tests {
         assert_eq!(*calls.lock().unwrap(), 2);
     }
 
+    // ---- the App side: flash text, the editor-vs-Office decision, the launched command line ----
+
+    use crate::config::Config;
+    use crate::i18n::Lang;
+    use crate::test_support::unique_tmp;
+
+    /// An English-UI App rooted in a fresh sandbox, with a recording runner (no process starts).
+    fn office_app(name: &str) -> (App, crate::test_support::TmpDir, Arc<Mutex<Vec<Attempt>>>) {
+        let dir = unique_tmp(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::default();
+        cfg.ui.lang = "en".into();
+        let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+        let (r, log) = fake(|_| Ok(Some(0)));
+        app.set_office_runner(r);
+        (app, dir, log)
+    }
+
+    fn done(outcome: Result<Opener, String>) -> OfficeOpenResult {
+        OfficeOpenResult { outcome }
+    }
+
+    #[test]
+    fn flash_names_the_exact_application_that_opened_the_document() {
+        let (mut app, _d, _) = office_app("konoma_office_flash_names");
+        for (opener, want) in [
+            (
+                Opener::Microsoft(OfficeKind::Word),
+                "opened in Microsoft Word",
+            ),
+            (
+                Opener::Microsoft(OfficeKind::Excel),
+                "opened in Microsoft Excel",
+            ),
+            (
+                Opener::Microsoft(OfficeKind::PowerPoint),
+                "opened in Microsoft PowerPoint",
+            ),
+            (Opener::LibreOffice, "opened in LibreOffice"),
+            (Opener::SystemDefault, "opened with the default app"),
+        ] {
+            app.flash = None;
+            assert!(
+                app.apply_office_open(done(Ok(opener))),
+                "{opener:?}: redraw"
+            );
+            assert_eq!(app.flash.as_deref(), Some(want), "{opener:?}");
+        }
+    }
+
+    #[test]
+    fn a_failed_launch_flashes_the_reason_after_the_prefix() {
+        let (mut app, _d, _) = office_app("konoma_office_flash_fail");
+        app.flash = None;
+        assert!(app.apply_office_open(done(Err("xdg-open: not found".into()))));
+        assert_eq!(
+            app.flash.as_deref(),
+            Some("could not open: xdg-open: not found")
+        );
+    }
+
+    #[test]
+    fn flash_is_localised() {
+        let (mut app, _d, _) = office_app("konoma_office_flash_ja");
+        app.lang = Lang::Jp;
+        app.apply_office_open(done(Ok(Opener::LibreOffice)));
+        let ja = app.flash.clone().unwrap();
+        assert!(ja.contains("LibreOffice"), "{ja}");
+        assert_ne!(
+            ja, "opened in LibreOffice",
+            "the Japanese UI has its own wording"
+        );
+    }
+
+    #[test]
+    fn an_empty_chain_says_there_was_nothing_to_try() {
+        let (r, log) = fake(|_| Ok(Some(0)));
+        assert_eq!(
+            run_chain(&[], &*r),
+            Err("no application to try".to_string())
+        );
+        assert!(log.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failed_run_reports_why_through_the_flash_end_to_end() {
+        let (mut app, d, _) = office_app("konoma_office_fail_flash");
+        let book = d.join("b.xlsx");
+        std::fs::write(&book, b"x").unwrap();
+        let (r, _) = fake(|a| {
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{} gone", a.prog),
+            ))
+        });
+        app.set_office_runner(r);
+        assert!(app.try_open_in_office(&book));
+        let shown = app.flash.clone().unwrap();
+        // The last attempt of the chain is the OS default; its reason is part of the message.
+        let last = plan(OfficeOs::current(), OfficeKind::Excel, &book)
+            .pop()
+            .unwrap();
+        assert_eq!(
+            shown,
+            format!("could not open: {}: {} gone", last.prog, last.prog)
+        );
+    }
+
+    #[test]
+    fn a_blank_editor_ext_entry_means_not_configured() {
+        let (mut app, d, log) = office_app("konoma_office_blank_ext");
+        let book = d.join("b.xlsx");
+        std::fs::write(&book, b"x").unwrap();
+        for blank in ["", " ", "  \t "] {
+            app.cfg.editor.ext.insert("xlsx".into(), blank.into());
+            assert_eq!(
+                app.edit_target(&book),
+                EditTarget::OfficeApp(OfficeKind::Excel),
+                "{blank:?}"
+            );
+        }
+        app.cfg.editor.ext.insert("xlsx".into(), "  ".into());
+        assert!(app.try_open_in_office(&book));
+        assert!(!log.lock().unwrap().is_empty(), "the Office chain ran");
+        // A real command is "configured".
+        app.cfg.editor.ext.insert("xlsx".into(), "myeditor".into());
+        assert_eq!(app.edit_target(&book), EditTarget::Editor);
+    }
+
+    #[test]
+    fn editor_ext_is_matched_case_insensitively_on_the_file_extension() {
+        let (mut app, d, log) = office_app("konoma_office_ext_case");
+        app.cfg.editor.ext.insert("xlsx".into(), "myeditor".into());
+        for name in ["BOOK.XLSX", "Book.XlSx", "book.xlsx"] {
+            let p = d.join(name);
+            assert_eq!(app.edit_target(&p), EditTarget::Editor, "{name}");
+            assert!(
+                !app.try_open_in_office(&p),
+                "{name}: left to the editor path"
+            );
+        }
+        assert!(log.lock().unwrap().is_empty());
+        // Without the entry the upper-case name is an Office document like any other.
+        app.cfg.editor.ext.clear();
+        assert_eq!(
+            app.edit_target(&d.join("BOOK.XLSX")),
+            EditTarget::OfficeApp(OfficeKind::Excel)
+        );
+    }
+
+    #[test]
+    fn a_relative_path_is_handed_to_the_application_as_an_absolute_one() {
+        let (mut app, _d, log) = office_app("konoma_office_abs");
+        let rel = Path::new("some/dir/b.xlsx");
+        assert!(rel.is_relative());
+        assert!(app.try_open_in_office(rel));
+        let log = log.lock().unwrap();
+        assert!(!log.is_empty());
+        for a in log.iter() {
+            let last = a.args.last().unwrap();
+            assert!(Path::new(last).is_absolute(), "{a:?}");
+            assert!(last.ends_with("some/dir/b.xlsx"), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn e_in_the_bookmark_list_opens_an_office_file_in_the_app_not_the_editor() {
+        let (mut app, d, log) = office_app("konoma_office_bm_edit");
+        let base = unique_tmp("konoma_office_bm_base");
+        let book = d.join("b.xlsx");
+        std::fs::write(&book, b"x").unwrap();
+        std::fs::write(d.join("n.txt"), b"x").unwrap();
+        app.bookmarks =
+            crate::bookmarks::Bookmarks::with_base(base.to_path_buf(), &app.tab.open_dir);
+        app.rebuild_tree().unwrap();
+        let idx = |app: &App, n: &str| {
+            app.tab
+                .entries
+                .iter()
+                .position(|e| e.path.ends_with(n))
+                .unwrap()
+        };
+        for (mark, file) in [('a', "b.xlsx"), ('b', "n.txt")] {
+            app.tab.selected = idx(&app, file);
+            app.start_mark_set();
+            app.mark_input(mark);
+        }
+        // The Office file: the chain runs, the editor is not asked for.
+        app.open_bookmark_list();
+        app.bookmark_list_edit();
+        assert!(!app.is_bookmark_list());
+        assert!(
+            app.take_pending_edit().is_none(),
+            "no editor for a workbook"
+        );
+        assert!(!log.lock().unwrap().is_empty(), "the Office chain ran");
+        assert!(
+            app.flash.clone().unwrap().contains("opened"),
+            "{:?}",
+            app.flash
+        );
+        // A plain file still goes to the editor.
+        let before = log.lock().unwrap().len();
+        app.open_bookmark_list();
+        app.bookmark_list_move(1);
+        app.bookmark_list_edit();
+        assert_eq!(
+            app.take_pending_edit().map(|(p, _)| p).as_deref(),
+            Some(d.join("n.txt").as_path())
+        );
+        assert_eq!(log.lock().unwrap().len(), before);
+    }
+
     #[test]
     fn test_default_runner_never_launches() {
         let a = &mac_chain()[0];

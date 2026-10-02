@@ -940,10 +940,8 @@ fn run(
         }
 
         // Report the Office-app launch chain's outcome (which app opened the document / why not).
-        while let Ok(result) = rx.office.try_recv() {
-            if app.apply_office_open(result) {
-                needs_redraw = true;
-            }
+        if apply_office_results(app, &rx.office) {
+            needs_redraw = true;
         }
 
         // Apply the separate thread's git write (stage/commit/checkout/...) completion.
@@ -2222,6 +2220,21 @@ fn resolve_key_result(app: &mut App, result: Result<bool>) -> bool {
     }
 }
 
+/// Report every finished Office-app launch waiting on `rx` (which app opened the document, or why
+/// not) as a flash. Returns whether anything was applied, i.e. whether the screen needs a redraw.
+fn apply_office_results(
+    app: &mut App,
+    rx: &std::sync::mpsc::Receiver<app::OfficeOpenResult>,
+) -> bool {
+    let mut changed = false;
+    while let Ok(result) = rx.try_recv() {
+        if app.apply_office_open(result) {
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2239,6 +2252,47 @@ mod tests {
         let mut v = vec!["konoma".to_string()];
         v.extend(rest.iter().map(|s| s.to_string()));
         v
+    }
+
+    /// The run loop applies a finished Office launch through `apply_office_results`, and its
+    /// return value is what makes the loop redraw (`needs_redraw`): the flash that says which app
+    /// opened the document must reach the screen without waiting for the next key.
+    #[test]
+    fn a_finished_office_launch_asks_the_run_loop_for_a_redraw() {
+        let dir = unique_tmp("konoma_office_redraw");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("b.xlsx"), b"x").unwrap();
+        let mut cfg = Config::default();
+        cfg.ui.lang = "en".into();
+        let mut app = App::new(dir.canonicalize().unwrap(), cfg).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.attach_office_opener(tx);
+        app.set_office_runner(std::sync::Arc::new(|_| Ok(Some(0))));
+        // Nothing has finished yet: nothing to redraw, nothing flashed.
+        assert!(!apply_office_results(&mut app, &rx));
+        assert_eq!(app.flash, None);
+        // `e` on a workbook starts the launch on a worker thread; wait for its result.
+        app.tab.selected = app
+            .tab
+            .entries
+            .iter()
+            .position(|e| e.path.ends_with("b.xlsx"))
+            .unwrap();
+        app.request_edit();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut redraw = false;
+        while !redraw && std::time::Instant::now() < deadline {
+            redraw = apply_office_results(&mut app, &rx);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(redraw, "a result was applied: the loop must redraw");
+        assert!(
+            app.flash.clone().unwrap_or_default().starts_with("opened"),
+            "{:?}",
+            app.flash
+        );
+        // Drained: the next tick has nothing to apply.
+        assert!(!apply_office_results(&mut app, &rx));
     }
 
     #[test]
