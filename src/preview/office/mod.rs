@@ -123,6 +123,8 @@ mod tests_numfmt;
 #[cfg(test)]
 mod tests_ods;
 #[cfg(test)]
+mod tests_survivors;
+#[cfg(test)]
 mod tests_xls;
 #[cfg(test)]
 mod tests_xlsb;

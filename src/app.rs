@@ -6953,3 +6953,6 @@ mod md_snapshot_tests;
 // directly (a sibling, not a descendant, so those are `pub(super)` there).
 #[cfg(test)]
 mod md_model_snapshot_tests;
+
+#[cfg(test)]
+mod survivor_tests;

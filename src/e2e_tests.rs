@@ -20108,3 +20108,6 @@ fn e2e_complex_many_sheets_navigate_to_the_end_and_back() {
     }
     see_cjk(&mut s, "売上 (1/18)");
 }
+
+#[cfg(test)]
+mod survivors;

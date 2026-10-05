@@ -1149,3 +1149,53 @@ fn an_xlsb_may_have_the_most_sheets_and_no_more() {
         OfficeError::TooLarge { what: "sheets" }
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// mutation survivors: the formulas of the last row that fits
+// ---------------------------------------------------------------------------------------------
+
+/// `BrtFmlaNum` (0x0009) whose formula is the integer `n` (`PtgInt`, `1E nn nn`).
+fn fmla_num(col: u32, style: u32, v: f64, n: u16) -> Vec<u8> {
+    let mut b = cell_head(col, style);
+    b.extend(v.to_le_bytes());
+    b.extend([0, 0]); // grbitFlags
+    let rgce = [0x1E, (n & 0xFF) as u8, (n >> 8) as u8];
+    b.extend((rgce.len() as u32).to_le_bytes());
+    b.extend(rgce);
+    b.extend(0u32.to_le_bytes()); // cb
+    rec(0x0009, &b)
+}
+
+/// The formulas are read in a second pass after the values. When the values were cut by the cell
+/// budget (a cut at the row cap stops the formula pass altogether), the formulas stop at the last
+/// row the values reached — that row's formula is kept (a `>=`
+/// where `>` belongs loses it) and the row after it is not.
+#[test]
+fn the_formula_of_the_last_row_that_fits_is_kept_and_the_next_is_not() {
+    let rows: Vec<(u32, Vec<Vec<u8>>)> = (0..6u32)
+        .map(|r| (r, vec![fmla_num(0, 0, f64::from(r), 10 + r as u16)]))
+        .collect();
+    let dir = tmp("xlsb_formula_cap");
+    let p = one_sheet(None, &rows).write(&dir, "f.xlsb");
+    let limits = Limits {
+        max_sheet_cells: 3,
+        ..small_limits()
+    };
+    let wb = load_with(&p, limits).unwrap();
+    let s = &wb.sheets[0];
+    assert!(s.rows_truncated);
+    assert_eq!(s.nrows, 3);
+    assert_eq!(s.formula(0, 0), Some("10"));
+    assert_eq!(s.formula(1, 0), Some("11"));
+    assert_eq!(
+        s.formula(2, 0),
+        Some("12"),
+        "the last row that fits keeps its formula"
+    );
+    assert_eq!(s.formula(3, 0), None);
+    assert_eq!(s.display(2, 0), "2");
+    // Not cut: every formula is there.
+    let wb = load(&p).unwrap();
+    assert!(!wb.sheets[0].rows_truncated);
+    assert_eq!(wb.sheets[0].formula(5, 0), Some("15"));
+}

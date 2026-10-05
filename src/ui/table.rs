@@ -759,3 +759,53 @@ mod tests {
         assert!(flat_width(&s) >= MAX_COL_W);
     }
 }
+
+/// Tests added after a mutation audit (the boundary of `leftmost_visible`).
+#[cfg(test)]
+mod survivor_tests {
+    use super::*;
+
+    /// Six columns, each exactly 5 cells wide. Columns that *exactly* fill the width fit
+    /// (`fit_columns` keeps a column when `used + gap + w == avail`), so `leftmost_visible` must
+    /// reach as far left as `fit_columns` allows: a `>=` instead of `>` leaves one column out
+    /// whenever the width is an exact fit, and the cursor scrolls one column too early.
+    #[test]
+    fn leftmost_visible_counts_columns_that_exactly_fill_the_width() {
+        let ncols = 6;
+        let t = crate::preview::table::TableData {
+            headers: (0..ncols).map(|_| "hhhhh".to_string()).collect(),
+            rows: vec![(0..ncols).map(|_| "xxxxx".to_string()).collect()],
+            ncols,
+            truncated: false,
+        };
+        let g = Grid::Csv(&t);
+        let cur = ncols - 1;
+        for k in 1..=ncols {
+            let exact = (5 * k + COL_GAP * (k - 1)) as u16;
+            let left = leftmost_visible(g, cur, 0, 1, 0, exact);
+            assert_eq!(left, ncols - k, "{k} columns fill {exact} exactly");
+            // The same answer `fit_columns` gives: from `left` the cursor column is shown...
+            let shown: Vec<usize> = fit_columns(g, left, 1, 0, exact)
+                .iter()
+                .map(|c| c.0)
+                .collect();
+            assert_eq!(shown.last(), Some(&cur), "{k}: {shown:?}");
+            // ...and one column to the left of it would not fit.
+            if left > 0 {
+                let shown: Vec<usize> = fit_columns(g, left - 1, 1, 0, exact)
+                    .iter()
+                    .map(|c| c.0)
+                    .collect();
+                assert_ne!(shown.last(), Some(&cur), "{k}: {shown:?}");
+            }
+            // One cell narrower: one column less.
+            if k > 1 {
+                assert_eq!(
+                    leftmost_visible(g, cur, 0, 1, 0, exact - 1),
+                    ncols - k + 1,
+                    "{k}"
+                );
+            }
+        }
+    }
+}
