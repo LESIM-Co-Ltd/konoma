@@ -1,9 +1,11 @@
 //! Spreadsheet preview (xlsx / xlsm / xltx / xltm / xlsb / xls / ods): the reading side.
 //!
-//! Values, sheet list, visibility, merged ranges and formulas come from `calamine`; the number
-//! format of each cell (which `calamine` does not expose) is read by konoma's own per-format
-//! "format pass" (`fmt_*.rs`). Every file passes through [`container`] first: size limits,
-//! decompression accounting and encryption detection happen *before* any reader runs.
+//! xlsx / xlsm / xltx / xltm are read by konoma itself in one pass (`xlsx.rs`: values, number
+//! formats, formulas, merged ranges). For xlsb / xls / ods the values, sheet list, visibility and
+//! formulas come from `calamine`, and the number format of each cell (which `calamine` does not
+//! expose) is read by konoma's own per-format "format pass" (`fmt_*.rs`). Every file passes
+//! through [`container`] first: size limits, decompression accounting and encryption detection
+//! happen *before* any reader runs.
 //!
 //! This module has no UI, `App` or i18n dependency: [`OfficeError`] carries no user-facing text
 //! (the caller maps each variant to a translated message).
@@ -15,6 +17,7 @@ pub mod fmt_xlsb;
 pub mod fmt_xlsx;
 pub mod numfmt;
 pub mod workbook;
+pub(crate) mod xlsx;
 
 use std::fmt;
 use std::path::Path;
@@ -120,3 +123,5 @@ mod tests_ods;
 mod tests_xls;
 #[cfg(test)]
 mod tests_xlsb;
+#[cfg(test)]
+mod tests_xlsx;

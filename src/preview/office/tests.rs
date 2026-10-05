@@ -12,6 +12,7 @@ use zip::{CompressionMethod, ZipWriter};
 use super::container::{self, Detected, Limits};
 use super::fmt_xlsx::{self, parse_a1, resolve_target, SheetFormats};
 use super::workbook::{load_workbook_unguarded, number_text};
+use super::xlsx;
 use super::*;
 use crate::test_support::{sample_path_or_skip, unique_tmp, TmpDir};
 
@@ -45,11 +46,11 @@ pub(super) fn write(dir: &TmpDir, name: &str, bytes: &[u8]) -> PathBuf {
     p
 }
 
-const NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
-const RNS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+pub(super) const NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+pub(super) const RNS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 /// `[(name, state, rid)]`.
-fn workbook_xml(date1904: bool, sheets: &[(&str, &str, &str)]) -> String {
+pub(super) fn workbook_xml(date1904: bool, sheets: &[(&str, &str, &str)]) -> String {
     let mut s = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="{NS}" xmlns:r="{RNS}"><workbookPr date1904="{}"/><sheets>"#,
         if date1904 { "1" } else { "0" }
@@ -63,7 +64,7 @@ fn workbook_xml(date1904: bool, sheets: &[(&str, &str, &str)]) -> String {
     s + "</sheets></workbook>"
 }
 
-fn rels_xml(rels: &[(&str, &str)]) -> String {
+pub(super) fn rels_xml(rels: &[(&str, &str)]) -> String {
     let mut s = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
     );
@@ -74,7 +75,7 @@ fn rels_xml(rels: &[(&str, &str)]) -> String {
 }
 
 /// `numfmts`: `(id, code)`; `xfs`: numFmtId of each cellXfs entry.
-fn styles_xml(numfmts: &[(u32, &str)], xfs: &[u32]) -> String {
+pub(super) fn styles_xml(numfmts: &[(u32, &str)], xfs: &[u32]) -> String {
     let mut s = format!(r#"<?xml version="1.0"?><styleSheet xmlns="{NS}">"#);
     if !numfmts.is_empty() {
         s += &format!(r#"<numFmts count="{}">"#, numfmts.len());
@@ -92,43 +93,43 @@ fn styles_xml(numfmts: &[(u32, &str)], xfs: &[u32]) -> String {
     s + "</cellXfs></styleSheet>"
 }
 
-fn sheet_xml(rows: &str, after: &str) -> String {
+pub(super) fn sheet_xml(rows: &str, after: &str) -> String {
     format!(
         r#"<?xml version="1.0"?><worksheet xmlns="{NS}"><sheetData>{rows}</sheetData>{after}</worksheet>"#
     )
 }
 
-fn istr(r: &str, s: Option<u32>, text: &str) -> String {
+pub(super) fn istr(r: &str, s: Option<u32>, text: &str) -> String {
     let style = s.map(|s| format!(r#" s="{s}""#)).unwrap_or_default();
     format!(r#"<c r="{r}"{style} t="inlineStr"><is><t>{text}</t></is></c>"#)
 }
 
-fn num(r: &str, s: Option<u32>, v: &str) -> String {
+pub(super) fn num(r: &str, s: Option<u32>, v: &str) -> String {
     let style = s.map(|s| format!(r#" s="{s}""#)).unwrap_or_default();
     format!(r#"<c r="{r}"{style}><v>{v}</v></c>"#)
 }
 
-struct SheetDef {
-    name: String,
-    state: String,
-    rid: String,
+pub(super) struct SheetDef {
+    pub(super) name: String,
+    pub(super) state: String,
+    pub(super) rid: String,
     /// Path of the part inside the zip.
-    part: String,
+    pub(super) part: String,
     /// `Target` written in the relationships file.
-    target: String,
-    xml: String,
+    pub(super) target: String,
+    pub(super) xml: String,
 }
 
-struct Pkg {
-    date1904: bool,
-    sheets: Vec<SheetDef>,
-    styles: Option<String>,
+pub(super) struct Pkg {
+    pub(super) date1904: bool,
+    pub(super) sheets: Vec<SheetDef>,
+    pub(super) styles: Option<String>,
     /// `xl/sharedStrings.xml`.
-    shared: Option<String>,
+    pub(super) shared: Option<String>,
 }
 
 impl Pkg {
-    fn new() -> Pkg {
+    pub(super) fn new() -> Pkg {
         Pkg {
             date1904: false,
             sheets: Vec::new(),
@@ -136,11 +137,11 @@ impl Pkg {
             shared: None,
         }
     }
-    fn shared(mut self, xml: String) -> Pkg {
+    pub(super) fn shared(mut self, xml: String) -> Pkg {
         self.shared = Some(xml);
         self
     }
-    fn sheet(mut self, name: &str, state: &str, xml: String) -> Pkg {
+    pub(super) fn sheet(mut self, name: &str, state: &str, xml: String) -> Pkg {
         let n = self.sheets.len() + 1;
         self.sheets.push(SheetDef {
             name: name.into(),
@@ -152,22 +153,22 @@ impl Pkg {
         });
         self
     }
-    fn styles(mut self, xml: String) -> Pkg {
+    pub(super) fn styles(mut self, xml: String) -> Pkg {
         self.styles = Some(xml);
         self
     }
-    fn date1904(mut self) -> Pkg {
+    pub(super) fn date1904(mut self) -> Pkg {
         self.date1904 = true;
         self
     }
     /// Use `/xl/worksheets/sheetN.xml` (absolute) targets in the rels.
-    fn absolute_targets(mut self) -> Pkg {
+    pub(super) fn absolute_targets(mut self) -> Pkg {
         for s in &mut self.sheets {
             s.target = format!("/{}", s.part);
         }
         self
     }
-    fn bytes(&self) -> Vec<u8> {
+    pub(super) fn bytes(&self) -> Vec<u8> {
         let wb = workbook_xml(
             self.date1904,
             &self
@@ -204,7 +205,7 @@ impl Pkg {
             .collect();
         deflated(&refs)
     }
-    fn write(&self, dir: &TmpDir, name: &str) -> PathBuf {
+    pub(super) fn write(&self, dir: &TmpDir, name: &str) -> PathBuf {
         write(dir, name, &self.bytes())
     }
 }
@@ -532,7 +533,7 @@ fn office_error_display_never_panics_and_is_distinct() {
 
 #[test]
 fn parse_workbook_date_system_and_sheet_ids() {
-    let p = |xml: &str| fmt_xlsx::parse_workbook(xml.as_bytes()).unwrap();
+    let p = |xml: &str| xlsx::parse_workbook(xml.as_bytes()).unwrap();
     for (attr, want) in [
         (r#"date1904="1""#, true),
         (r#"date1904="true""#, true),
@@ -648,38 +649,67 @@ fn parse_styles_rejects_broken_xml_with_corrupt_not_panic() {
     assert!(matches!(r, Err(OfficeError::Corrupt(_))), "{r:?}");
 }
 
-fn sheet_formats(rows: &str, xf_to_format: &[u16]) -> SheetFormats {
-    let xml = sheet_xml(rows, "");
-    fmt_xlsx::parse_sheet(xml.as_bytes(), xf_to_format, &Limits::default()).unwrap()
+/// A sheet read through the real loader. `xfs` are the `numFmtId` of each cell style: with
+/// `[0, 14]`, a cell with `s="1"` has format index 1 (a date) and shows as one.
+fn read_xml(xml: &str, xfs: &[u32], limits: Limits) -> Sheet {
+    let dir = tmp("readxml");
+    let p = Pkg::new()
+        .styles(styles_xml(&[], xfs))
+        .sheet("S", "visible", xml.to_string())
+        .write(&dir, "r.xlsx");
+    load_with(&p, limits).unwrap().sheets.remove(0)
+}
+
+fn read_rows(rows: &str, limits: Limits) -> Sheet {
+    read_xml(&sheet_xml(rows, ""), &[0, 14], limits)
+}
+
+/// `(row, col, format index)` of every kept cell whose format is not General.
+fn formatted(s: &Sheet) -> Vec<(u32, u32, u16)> {
+    let mut out = Vec::new();
+    for r in 0..s.nrows {
+        for (c, cell) in s.row_cells(r) {
+            if cell.fmt != 0 {
+                out.push((r as u32, *c, cell.fmt));
+            }
+        }
+    }
+    out
+}
+
+/// How many cells the sheet keeps.
+fn kept(s: &Sheet) -> usize {
+    (0..s.nrows).map(|r| s.row_cells(r).len()).sum()
 }
 
 #[test]
-fn parse_sheet_xf_zero_and_missing_s_are_general() {
-    // xf 1 -> format 1; a cell without `s` uses xf 0 -> format 0 (General, not recorded).
-    let sf = sheet_formats(
+fn xf_zero_and_missing_s_are_general() {
+    // xf 1 -> format 1; a cell without `s` uses xf 0 -> format 0 (General).
+    let s = read_rows(
         &format!(
             r#"<row r="1">{}{}{}</row>"#,
             num("A1", None, "1"),
             num("B1", Some(1), "2"),
             num("C1", Some(0), "3")
         ),
-        &[0, 1],
+        Limits::default(),
     );
-    assert_eq!(sf.cells, vec![(0, 1, 1)]);
-    assert_eq!(sf.value_cells, 3);
-    assert_eq!(sf.format_at(0, 1), 1);
-    assert_eq!(sf.format_at(0, 0), 0);
-    assert_eq!(sf.format_at(5, 5), 0);
+    assert_eq!(formatted(&s), vec![(0, 1, 1)]);
+    assert_eq!(kept(&s), 3);
+    assert_eq!(s.cell(0, 1).unwrap().fmt, 1);
+    assert_eq!(s.cell(0, 0).unwrap().fmt, 0);
+    assert!(s.cell(5, 5).is_none());
     // A file whose xf 0 is itself a date format applies it to cells with no `s`.
-    let sf = sheet_formats(
-        &format!(r#"<row r="1">{}</row>"#, num("A1", None, "1")),
-        &[1],
+    let s = read_xml(
+        &sheet_xml(&format!(r#"<row r="1">{}</row>"#, num("A1", None, "1")), ""),
+        &[14],
+        Limits::default(),
     );
-    assert_eq!(sf.format_at(0, 0), 1);
+    assert_eq!(s.cell(0, 0).unwrap().fmt, 1);
 }
 
 #[test]
-fn parse_sheet_cells_without_r_continue_in_their_row_and_rows_without_r_follow() {
+fn cells_without_r_continue_in_their_row_and_rows_without_r_follow() {
     // Row 1 has `r`; its cells do not. Row 2 has no `r` (-> 2). Row 5 jumps; the row after it has none (-> 6).
     let rows = r#"
         <row r="1"><c s="1"><v>1</v></c><c s="1"><v>2</v></c><c r="D1" s="1"><v>3</v></c><c s="1"><v>4</v></c></row>
@@ -688,9 +718,9 @@ fn parse_sheet_cells_without_r_continue_in_their_row_and_rows_without_r_follow()
         <row><c s="1"><v>7</v></c></row>
         <row r="9"/>
         <row><c s="1"><v>8</v></c></row>"#;
-    let sf = sheet_formats(rows, &[0, 1]);
+    let s = read_rows(rows, Limits::default());
     assert_eq!(
-        sf.cells,
+        formatted(&s),
         vec![
             (0, 0, 1),
             (0, 1, 1),
@@ -705,7 +735,7 @@ fn parse_sheet_cells_without_r_continue_in_their_row_and_rows_without_r_follow()
 }
 
 #[test]
-fn parse_sheet_counts_only_value_bearing_cells() {
+fn only_value_bearing_cells_are_kept() {
     let rows = r#"<row r="1">
         <c r="A1" s="1"/>
         <c r="B1" s="1"></c>
@@ -713,49 +743,47 @@ fn parse_sheet_counts_only_value_bearing_cells() {
         <c r="D1" s="1"><v>1</v></c>
         <c r="E1" s="1" t="inlineStr"><is><t>x</t></is></c>
         </row>"#;
-    let sf = sheet_formats(rows, &[0, 1]);
-    // `<f>` counts: the reader keeps a formula-only cell (in its range of formulas), so it is part
-    // of what the dense matrix must cover.
-    // Only a `<v>` with text and an `<is>` show something. A formula-only cell shows nothing and
-    // the loader does not keep it as a cell, so it is not part of the budget.
-    assert_eq!(sf.value_cells, 2);
-    assert_eq!(sf.cells, vec![(0, 3, 1), (0, 4, 1)]);
+    let s = read_rows(rows, Limits::default());
+    // Only a `<v>` with text and an `<is>` show something. A formula-only cell shows nothing, so it
+    // is not a cell (its formula is kept in the formula map).
+    assert_eq!(kept(&s), 2);
+    assert_eq!(formatted(&s), vec![(0, 3, 1), (0, 4, 1)]);
+    assert_eq!(s.formula(0, 2), Some("1+1"));
 }
 
 #[test]
-fn parse_sheet_drops_formats_beyond_the_maximum_column_and_survives_bad_refs() {
+fn cells_beyond_the_maximum_column_are_dropped_and_bad_refs_survive() {
     let rows = r#"<row r="1">
         <c r="XFD1" s="1"><v>1</v></c>
         <c r="XFE1" s="1"><v>1</v></c>
         <c r="ZZZZ1" s="1"><v>1</v></c>
         <c r="??" s="1"><v>1</v></c>
         </row>"#;
-    let sf = sheet_formats(rows, &[0, 1]);
-    // XFD (index 16,383) keeps its format; XFE and ZZZZ are past the maximum so their formats are
-    // dropped, and so are the cells (the loader skips them, so they do not use the budget);
-    // "??" falls back to the sequence position (after ZZZZ).
-    assert!(sf.cells.contains(&(0, 16_383, 1)));
-    assert_eq!(sf.cells.len(), 1, "{:?}", sf.cells);
-    assert_eq!(sf.value_cells, 1);
-    assert!(!sf.truncated);
+    let s = read_rows(rows, Limits::default());
+    // XFD (index 16,383) is kept with its format; XFE and ZZZZ are past the maximum so the cells
+    // are skipped; "??" falls back to the sequence position (after ZZZZ), also past it.
+    assert_eq!(formatted(&s), vec![(0, 16_383, 1)]);
+    assert_eq!(kept(&s), 1);
+    assert!(s.cols_truncated);
+    assert!(!s.rows_truncated);
 }
 
 #[test]
-fn parse_sheet_sorts_out_of_order_cells_so_lookup_works() {
+fn out_of_order_cells_are_sorted_so_lookup_works() {
     let rows = format!(
         r#"<row r="3">{}</row><row r="1">{}{}</row>"#,
         num("A3", Some(1), "1"),
         num("C1", Some(1), "1"),
         num("A1", Some(1), "1"),
     );
-    let sf = sheet_formats(&rows, &[0, 1]);
-    assert_eq!(sf.cells, vec![(0, 0, 1), (0, 2, 1), (2, 0, 1)]);
-    assert_eq!(sf.format_at(0, 2), 1);
-    assert_eq!(sf.format_at(2, 0), 1);
+    let s = read_rows(&rows, Limits::default());
+    assert_eq!(formatted(&s), vec![(0, 0, 1), (0, 2, 1), (2, 0, 1)]);
+    assert_eq!(s.cell(0, 2).unwrap().fmt, 1);
+    assert_eq!(s.cell(2, 0).unwrap().fmt, 1);
 }
 
 #[test]
-fn parse_sheet_value_cell_budget_is_enforced_while_streaming() {
+fn the_cell_budget_is_enforced_while_streaming() {
     let mut rows = String::new();
     for r in 1..=20 {
         rows += &format!(
@@ -764,24 +792,23 @@ fn parse_sheet_value_cell_budget_is_enforced_while_streaming() {
             num(&format!("B{r}"), None, "1")
         );
     }
-    let xml = sheet_xml(&rows, "");
     let limits = Limits {
         max_sheet_cells: 10,
         ..Limits::default()
     };
-    // The sheet has 40 cells: the pass stops at the 11th and says so; nothing past it is kept.
-    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0], &limits).unwrap();
-    assert!(sf.truncated);
-    assert_eq!(sf.value_cells, 10);
-    // The reader is stopped before the first cell the pass did not record: it never reads a cell
-    // whose format is unknown (here the 11th cell).
-    assert_eq!(sf.reader_stop, Some(10));
+    // The sheet has 40 cells: the reader stops at the 11th and the sheet says so; nothing past it
+    // is kept.
+    let s = read_rows(&rows, limits);
+    assert!(s.rows_truncated);
+    assert_eq!(kept(&s), 10);
 }
 
 #[test]
-fn parse_sheet_empty_and_no_cells() {
-    let sf = sheet_formats("", &[0]);
-    assert_eq!(sf, SheetFormats::default());
+fn an_empty_sheet_has_no_cells() {
+    let s = read_rows("", Limits::default());
+    assert!(s.loaded);
+    assert_eq!((s.nrows, s.ncols), (0, 0));
+    assert!(!s.rows_truncated && !s.cols_truncated);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -914,9 +941,9 @@ fn rels_with_absolute_targets_resolve() {
         .write(&dir, "abs.xlsx");
     let wb = load(&p).unwrap();
     assert_eq!(wb.sheets[0].display(0, 0), "abs");
-    // The format pass resolved the absolute target too (it saw the sheet).
-    let fm = fmt_xlsx::read(&p, &Limits::default()).unwrap();
-    assert!(fm.sheets.contains_key("S"));
+    // The reader resolved the absolute target too (it saw the sheet).
+    let book = xlsx::open(&p, &Limits::default()).unwrap();
+    assert_eq!(book.part_of("S"), Some("xl/worksheets/sheet1.xml"));
 }
 
 #[test]
@@ -1231,10 +1258,8 @@ fn a_huge_format_code_is_dropped_without_being_decoded() {
 
 #[test]
 fn a_row_reference_past_u32_saturates_instead_of_falling_back_to_the_next_row() {
-    // `parse::<u32>` fails on 5000000000 and the old code then treated the row as "the next one";
-    // the reference is a row far past any cap and must read as such.
-    use super::fmt_xlsx::MAX_MERGES;
-    let _ = MAX_MERGES;
+    // `parse::<u32>` fails on 5000000000 and a reader that treated that as "the next row" would
+    // show the cell at row 2; the reference is a row far past any cap and must read as such.
     let xml = sheet_xml(
         &format!(
             r#"<row r="1">{}</row><row r="5000000000">{}</row>"#,
@@ -1243,14 +1268,14 @@ fn a_row_reference_past_u32_saturates_instead_of_falling_back_to_the_next_row() 
         ),
         "",
     );
-    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &Limits::default()).unwrap();
-    assert!(sf.truncated);
-    assert_eq!(sf.reader_stop, Some(1), "one cell precedes the bad row");
-    assert_eq!(sf.cells, vec![(0, 0, 1)]);
+    let s = read_xml(&xml, &[0, 14], Limits::default());
+    assert!(s.rows_truncated);
+    assert_eq!(formatted(&s), vec![(0, 0, 1)]);
+    assert_eq!(s.nrows, 1);
 }
 
 #[test]
-fn the_format_pass_stops_at_the_first_row_past_the_cap_and_counts_what_precedes() {
+fn the_reader_stops_at_the_first_row_past_the_cap() {
     let rows: String = (1..=10)
         .map(|r| {
             format!(
@@ -1260,31 +1285,26 @@ fn the_format_pass_stops_at_the_first_row_past_the_cap_and_counts_what_precedes(
             )
         })
         .collect();
-    let xml = sheet_xml(&rows, "");
     let limits = Limits {
         max_rows: 4,
         ..Limits::default()
     };
-    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &limits).unwrap();
-    assert!(sf.truncated);
-    assert_eq!(
-        sf.reader_stop,
-        Some(8),
-        "rows 1-4: eight cells, then row 5 is past the cap"
-    );
-    assert_eq!(sf.cells.len(), 8);
+    let s = read_rows(&rows, limits);
+    assert!(s.rows_truncated);
+    assert_eq!(s.nrows, 4);
+    assert_eq!(formatted(&s).len(), 8, "rows 1-4: eight cells");
 }
 
 #[test]
-fn merged_ranges_are_read_by_the_format_pass_and_bounded() {
+fn merged_ranges_are_read_and_bounded() {
     let after = r#"<mergeCells count="3"><mergeCell ref="A1:B2"/><mergeCell ref="C3"/><mergeCell ref="??"/></mergeCells>"#;
     let xml = sheet_xml(
         &format!(r#"<row r="1">{}</row>"#, num("A1", None, "1")),
         after,
     );
-    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0], &Limits::default()).unwrap();
+    let s = read_xml(&xml, &[0], Limits::default());
     assert_eq!(
-        sf.merges,
+        s.merges,
         vec![
             MergeRange {
                 row0: 0,
@@ -1314,12 +1334,12 @@ fn merged_ranges_are_read_by_the_format_pass_and_bounded() {
         .write(&dir, "m.xlsx");
     assert_eq!(load(&p).unwrap().sheets[0].merges.len(), 2);
     // At most MAX_MERGES are kept.
-    let many: String = (0..fmt_xlsx::MAX_MERGES + 50)
+    let many: String = (0..xlsx::MAX_MERGES + 50)
         .map(|i| format!(r#"<mergeCell ref="A{}"/>"#, i + 1))
         .collect();
     let xml = sheet_xml("", &format!("<mergeCells>{many}</mergeCells>"));
-    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0], &Limits::default()).unwrap();
-    assert_eq!(sf.merges.len(), fmt_xlsx::MAX_MERGES);
+    let s = read_xml(&xml, &[0], Limits::default());
+    assert_eq!(s.merges.len(), xlsx::MAX_MERGES);
 }
 
 #[test]
@@ -1526,11 +1546,12 @@ fn formula_only_cells_in_far_corners_do_not_widen_the_sheet() {
 }
 
 #[test]
-fn a_shared_formula_cell_without_text_far_away_is_never_reached() {
+fn a_shared_formula_cell_far_away_is_never_reached() {
     let dir = tmp("xlsx_shared_formula_far");
+    let far = r#"<row r="1048576"><c r="XFD1048576"><f t="shared" si="0"/></c></row>"#;
+    // With its anchor before it, the far cell is a formula past the row cap: data left out.
     let rows = format!(
-        r#"<row r="1">{}</row><row r="1048576"><c r="XFD1048576"><f t="shared" si="0"/></c></row>"#,
-        num("A1", None, "1"),
+        r#"<row r="1"><c r="A1"><f t="shared" ref="A1:XFD1048576" si="0">1+1</f><v>2</v></c></row>{far}"#,
     );
     let p = Pkg::new()
         .sheet("S", "visible", sheet_xml(&rows, ""))
@@ -1538,6 +1559,14 @@ fn a_shared_formula_cell_without_text_far_away_is_never_reached() {
     let s = &load(&p).unwrap().sheets[0];
     assert_eq!((s.nrows, s.ncols), (1, 1));
     assert!(s.rows_truncated);
+    // Without an anchor the cell has no formula and no value: nothing is left out.
+    let rows = format!(r#"<row r="1">{}</row>{far}"#, num("A1", None, "1"));
+    let p = Pkg::new()
+        .sheet("S", "visible", sheet_xml(&rows, ""))
+        .write(&dir, "t.xlsx");
+    let s = &load(&p).unwrap().sheets[0];
+    assert_eq!((s.nrows, s.ncols), (1, 1));
+    assert!(!s.rows_truncated);
 }
 
 #[test]
@@ -1649,23 +1678,24 @@ fn a_reference_that_would_overflow_the_readers_arithmetic_is_never_handed_to_it(
     }
 }
 
+/// The old value reader (`calamine`) grew a table to the largest `si` it met (`si="4000000000"` =
+/// ~160 GB), so such a sheet had to be refused. konoma's reader keys the shared formulas by `si`
+/// in a bounded map: a forged index costs one entry, and the sheet loads.
 #[test]
-fn a_forged_shared_formula_index_is_refused_for_that_sheet() {
-    // The value reader grows a table to the largest `si` it meets (`si="4000000000"` = ~160 GB).
-    // A group index cannot honestly exceed the cells a sheet may hold.
+fn a_forged_shared_formula_index_costs_one_table_entry() {
     let dir = tmp("xlsx_si");
-    let rows = r#"<row r="1"><c r="A1"><f t="shared" ref="A1:A2" si="4000000000">1+1</f><v>2</v></c></row>"#;
+    let rows = r#"<row r="1"><c r="A1"><f t="shared" ref="A1:A2" si="4000000000">1+1</f><v>2</v></c><c r="B1"><f t="shared" si="4000000000"/><v>3</v></c></row>"#;
     let p = Pkg::new()
         .sheet("S", "visible", sheet_xml(rows, ""))
         .write(&dir, "si.xlsx");
-    let r = load(&p);
+    let s = &load(&p).unwrap().sheets[0];
+    assert_eq!(s.formula(0, 0), Some("1+1"));
     assert_eq!(
-        r.unwrap_err(),
-        OfficeError::TooLarge {
-            what: "sheet cells"
-        }
+        s.formula(0, 1),
+        Some("1+1"),
+        "same group, no reference to move"
     );
-    // An index inside the sheet's cell budget is fine.
+    // An index past u32 is no group: an ordinary formula.
     let rows = r#"<row r="1"><c r="A1"><f t="shared" ref="A1:A2" si="3">1+1</f><v>2</v></c></row>"#;
     let p = Pkg::new()
         .sheet("S", "visible", sheet_xml(rows, ""))
@@ -2404,16 +2434,20 @@ fn mutated_xml_parts_inside_a_valid_zip_never_panic_in_konomas_code() {
             .map(|(n, c)| (n.as_str(), c.as_slice()))
             .collect();
         let p = write(&dir, "m.xlsx", &deflated(&refs));
-        // konoma's own code (container scan + format pass) must never panic, uncontained.
+        // konoma's own code (container scan + xlsx reader) must never panic, uncontained.
         let inspected = std::panic::catch_unwind(|| {
             let _ = container::inspect(&p, &small_limits());
-            let _ = fmt_xlsx::read(&p, &small_limits());
+            if let Ok(mut book) = xlsx::open(&p, &small_limits()) {
+                for sheet in book.sheets.clone() {
+                    let _ = book.read_sheet(&sheet.part, &small_limits(), None, |_| true);
+                }
+            }
         });
         assert!(
             inspected.is_ok(),
             "container/format pass panicked in round {round}"
         );
-        // The whole load (calamine included) is contained and must answer Ok or Err.
+        // The whole load is contained and must answer Ok or Err.
         let _ = load_with(&p, small_limits());
     }
 }
@@ -2984,24 +3018,24 @@ fn the_value_cell_limit_is_exact() {
     let rows: String = (1..=10)
         .map(|r| format!(r#"<row r="{r}">{}</row>"#, num(&format!("A{r}"), None, "1")))
         .collect();
-    let xml = sheet_xml(&rows, "");
     let at = |n: u64| {
-        fmt_xlsx::parse_sheet(
-            xml.as_bytes(),
-            &[0],
-            &Limits {
+        read_rows(
+            &rows,
+            Limits {
                 max_sheet_cells: n,
                 ..Limits::default()
             },
         )
-        .unwrap()
     };
     let exact = at(10);
-    assert_eq!(exact.value_cells, 10);
-    assert!(!exact.truncated, "10 cells in a budget of 10 is not cut");
+    assert_eq!(kept(&exact), 10);
+    assert!(
+        !exact.rows_truncated,
+        "10 cells in a budget of 10 is not cut"
+    );
     let over = at(9);
-    assert_eq!(over.value_cells, 9);
-    assert!(over.truncated);
+    assert_eq!(kept(&over), 9);
+    assert!(over.rows_truncated);
 }
 
 #[test]
@@ -3077,13 +3111,14 @@ fn when_a_numfmt_id_is_defined_twice_the_later_definition_wins() {
 fn the_last_column_of_the_cap_keeps_its_format_and_the_first_past_it_does_not() {
     // Columns A..D with a cap of 4: D (index 3) is shown, E (index 4) is past the cap.
     let rows = r#"<row r="1"><c r="D1" s="1"><v>1</v></c><c r="E1" s="1"><v>1</v></c></row>"#;
-    let xml = sheet_xml(rows, "");
-    let limits = Limits {
-        max_cols: 4,
-        ..Limits::default()
-    };
-    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &limits).unwrap();
-    assert_eq!(sf.cells, vec![(0, 3, 1)]);
+    let s = read_rows(
+        rows,
+        Limits {
+            max_cols: 4,
+            ..Limits::default()
+        },
+    );
+    assert_eq!(formatted(&s), vec![(0, 3, 1)]);
 }
 
 #[test]
@@ -3155,19 +3190,6 @@ fn formulas_outside_the_cut_grid_are_dropped() {
 // the stop point of the value reader, and what counts as "cut off"
 // ---------------------------------------------------------------------------------------------
 
-/// Every cell `calamine`'s streaming reader returns for a sheet, in order, as `(row, col)`.
-fn calamine_cells(path: &Path, name: &str) -> Vec<(u32, u32)> {
-    use calamine::Reader;
-    let f = std::io::BufReader::new(fs::File::open(path).unwrap());
-    let mut wb: calamine::Xlsx<_> = calamine::Xlsx::new(f).unwrap();
-    let mut rdr = wb.worksheet_cells_reader(name).unwrap();
-    let mut out = Vec::new();
-    while let Some(c) = rdr.next_cell_with_formula().unwrap() {
-        out.push(c.pos);
-    }
-    out
-}
-
 fn single_sheet(dir: &TmpDir, file: &str, rows: &str) -> PathBuf {
     Pkg::new()
         .styles(styles_xml(&[], &[0, 14]))
@@ -3175,13 +3197,14 @@ fn single_sheet(dir: &TmpDir, file: &str, rows: &str) -> PathBuf {
         .write(dir, file)
 }
 
-fn parse_with_rows(rows: &str, max_rows: usize) -> SheetFormats {
-    let xml = sheet_xml(rows, "");
-    let limits = Limits {
-        max_rows,
-        ..Limits::default()
-    };
-    fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &limits).unwrap()
+fn read_rows_capped(rows: &str, max_rows: usize) -> Sheet {
+    read_rows(
+        rows,
+        Limits {
+            max_rows,
+            ..Limits::default()
+        },
+    )
 }
 
 /// The sheet the stop-point tests share: every shape of `<c>` the value reader returns (empty
@@ -3198,21 +3221,14 @@ fn mixed_cells_rows() -> String {
     .concat()
 }
 
-/// The stop point counts what `calamine` counts: **every** `<c>` (a value, a formula only, an
-/// inline string, and the empty `<c .../>` Excel writes for a formatted blank), checked against
-/// the cells `calamine` itself returns for the same part. Counting only the cells with a value
-/// made the reader stop too early on a sheet full of formatted blanks.
+/// Rows above the cap are shown with their formats whatever shapes of `<c>` they hold (empty
+/// element, empty pair, formula only, inline string, value, no `r`), and the sheet says it is cut
+/// when a later row holds a value.
 #[test]
-fn the_stop_point_is_the_number_of_cells_the_value_reader_returns() {
+fn the_rows_above_the_cap_are_shown_with_their_formats() {
     let rows = mixed_cells_rows();
-    let sf = parse_with_rows(&rows, 4);
     let dir = tmp("stop_vs_calamine");
     let p = single_sheet(&dir, "m.xlsx", &rows);
-    let all = calamine_cells(&p, "S");
-    let before_cap = all.iter().take_while(|&&(r, _)| r < 4).count();
-    assert_eq!(before_cap, 10, "5 + 3 + 0 + 2 cells before the row cap");
-    assert_eq!(sf.reader_stop, Some(before_cap as u64));
-    // And the loader, which asks the reader for exactly that many, shows the rows above the cap.
     let wb = load_with(
         &p,
         Limits {
@@ -3233,9 +3249,9 @@ fn the_stop_point_is_the_number_of_cells_the_value_reader_returns() {
 }
 
 #[test]
-fn the_stop_point_matches_the_reader_for_every_prefix_of_shapes() {
-    // Each shape alone, with the cap right before it: the reader must return exactly the cells
-    // before it. A rule that differs for one shape fails here.
+fn every_shape_of_cell_before_the_cap_is_read_and_the_data_after_it_is_a_cut() {
+    // Each shape alone, with the cap right before row 3: whatever the shape, the sheet keeps rows
+    // 1-2 and reports the value of row 3 as cut off.
     let shapes = [
         r#"<c r="A1" s="1"/>"#,
         r#"<c r="A1" s="1"></c>"#,
@@ -3247,19 +3263,14 @@ fn the_stop_point_matches_the_reader_for_every_prefix_of_shapes() {
         r#"<c r="A1"><v/></c>"#,
         r#"<c s="1"/>"#,
     ];
-    let dir = tmp("stop_shapes");
-    for (i, shape) in shapes.iter().enumerate() {
+    for shape in shapes {
         let rows = format!(
             r#"<row r="1">{shape}{shape}</row><row r="2">{shape}</row><row r="3"><c r="A3"><v>1</v></c></row>"#
         );
-        let sf = parse_with_rows(&rows, 2);
-        let p = single_sheet(&dir, &format!("s{i}.xlsx"), &rows);
-        let before = calamine_cells(&p, "S")
-            .iter()
-            .take_while(|&&(r, _)| r < 2)
-            .count();
-        assert_eq!(sf.reader_stop, Some(before as u64), "shape {shape}");
-        assert!(sf.truncated, "row 3 has a value: {shape}");
+        let s = read_rows_capped(&rows, 2);
+        assert!(s.rows_truncated, "row 3 has a value: {shape}");
+        assert!(s.nrows <= 2, "{shape}");
+        assert!(s.cell(2, 0).is_none(), "{shape}");
     }
 }
 
@@ -3275,27 +3286,15 @@ fn a_tail_of_formatted_blanks_and_empty_rows_is_not_a_cut() {
         rows += &format!(r#"<row r="{r}"><c r="A{r}" s="1"/><c r="B{r}" s="1"></c></row>"#);
     }
     rows += r#"<row r="51"/><row r="52" ht="15"/>"#;
-    let sf = parse_with_rows(&rows, 3);
-    assert!(!sf.truncated, "nothing past the cap holds data");
-    assert_eq!(sf.reader_stop, Some(3));
-    let dir = tmp("blank_tail");
-    let p = single_sheet(&dir, "t.xlsx", &rows);
-    let wb = load_with(
-        &p,
-        Limits {
-            max_rows: 3,
-            ..Limits::default()
-        },
-    )
-    .unwrap();
-    assert_eq!(wb.sheets[0].nrows, 3);
-    assert!(!wb.sheets[0].rows_truncated, "no capped marker");
+    let s = read_rows_capped(&rows, 3);
+    assert!(!s.rows_truncated, "nothing past the cap holds data");
+    assert_eq!(s.nrows, 3);
     // The same tail with one value in it is a cut.
     let with_data = rows.replace(
         r#"<c r="B30" s="1"></c>"#,
         r#"<c r="B30" s="1"><v>7</v></c>"#,
     );
-    assert!(parse_with_rows(&with_data, 3).truncated);
+    assert!(read_rows_capped(&with_data, 3).rows_truncated);
     // A formula, an inline string and a `<v>` with text each count as data; an empty `<v>` not.
     for (cell, data) in [
         (r#"<c r="B30"><f>1+1</f></c>"#, true),
@@ -3306,13 +3305,12 @@ fn a_tail_of_formatted_blanks_and_empty_rows_is_not_a_cut() {
         (r#"<c r="B30" s="1"/>"#, false),
     ] {
         let r = rows.replace(r#"<c r="B30" s="1"></c>"#, cell);
-        assert_eq!(parse_with_rows(&r, 3).truncated, data, "{cell}");
+        assert_eq!(read_rows_capped(&r, 3).rows_truncated, data, "{cell}");
     }
 }
 
-/// The report that started this: a sheet where every row ends in styled blanks. The stop point
-/// has to count them, or the reader stops after a third of the cells and the display ends far
-/// before the row cap.
+/// The report that started this: a sheet where every row ends in styled blanks. The display has
+/// to reach the row cap.
 #[test]
 fn styled_blanks_do_not_stop_the_display_before_the_row_cap() {
     let rows: String = (1..=200)
@@ -3323,8 +3321,6 @@ fn styled_blanks_do_not_stop_the_display_before_the_row_cap() {
             )
         })
         .collect();
-    let sf = parse_with_rows(&rows, 100);
-    assert_eq!(sf.reader_stop, Some(300), "100 rows of 3 cells");
     let dir = tmp("blanks_cap");
     let p = single_sheet(&dir, "b.xlsx", &rows);
     let wb = load_with(
@@ -3345,10 +3341,10 @@ fn styled_blanks_do_not_stop_the_display_before_the_row_cap() {
     assert!(s.rows_truncated, "rows 101.. do hold values");
 }
 
-/// A formula-only cell is not a kept cell, so a sheet with many of them must not use up the
-/// budget the formats are recorded under: the value cells after them still get their format.
+/// A formula-only cell is not a kept cell, so a sheet with many of them must not use up the cell
+/// budget: the value cells after them are still shown, with their format.
 #[test]
-fn formula_only_cells_do_not_use_up_the_format_budget() {
+fn formula_only_cells_do_not_use_up_the_cell_budget() {
     let mut rows = String::new();
     for r in 1..=30 {
         rows += &format!(r#"<row r="{r}"><c r="A{r}" s="1"><f>1+1</f></c></row>"#);
@@ -3363,25 +3359,18 @@ fn formula_only_cells_do_not_use_up_the_format_budget() {
         max_sheet_cells: 10,
         ..Limits::default()
     };
-    let xml = sheet_xml(&rows, "");
-    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &limits).unwrap();
-    assert_eq!(sf.value_cells, 5);
-    assert!(!sf.truncated);
-    assert_eq!(sf.cells.len(), 5, "the five dates keep their format");
-    // Through the loader: the dates are shown as dates (xf 1 = numFmtId 14), not as 46297.
-    let dir = tmp("formula_budget");
-    let p = single_sheet(&dir, "f.xlsx", &rows);
-    let wb = load_with(&p, limits).unwrap();
-    let s = &wb.sheets[0];
+    let s = read_rows(&rows, limits);
     assert!(!s.rows_truncated);
+    assert_eq!(kept(&s), 5);
+    assert_eq!(formatted(&s).len(), 5, "the five dates keep their format");
     assert_ne!(s.display(34, 0), "46297", "formatted, not General");
     assert_eq!(s.formula(0, 0), Some("1+1"), "the formulas are still kept");
 }
 
-/// When the cell budget does cut the sheet, the reader stops where the format pass did, so no
-/// cell is shown without its format, and exactly the budget is kept.
+/// When the cell budget does cut the sheet, exactly the budget is kept and every kept cell is
+/// shown with its format.
 #[test]
-fn the_cell_budget_cuts_the_reader_and_the_format_pass_at_the_same_cell() {
+fn the_cell_budget_cuts_the_sheet_and_every_kept_cell_has_its_format() {
     let mut rows = String::new();
     for r in 1..=20 {
         rows += &format!(
@@ -3399,8 +3388,7 @@ fn the_cell_budget_cuts_the_reader_and_the_format_pass_at_the_same_cell() {
     let wb = load_with(&p, limits).unwrap();
     let s = &wb.sheets[0];
     assert!(s.rows_truncated);
-    let kept: usize = (0..s.nrows).map(|r| s.row_cells(r).len()).sum();
-    assert_eq!(kept, 10);
+    assert_eq!(kept(s), 10);
     for r in 0..s.nrows {
         for (c, cell) in s.row_cells(r) {
             assert_ne!(cell.display(), "46297", "({r},{c}) shown with its format");
@@ -3408,42 +3396,42 @@ fn the_cell_budget_cuts_the_reader_and_the_format_pass_at_the_same_cell() {
     }
 }
 
-/// `<c>` elements outside `<sheetData>` (an extension list after it) are not cells: the value
-/// reader stops at `</sheetData>`.
+/// `<c>` elements outside `<sheetData>` (an extension list after it) are not cells.
 #[test]
-fn cells_outside_sheet_data_are_not_counted() {
+fn cells_outside_sheet_data_are_not_cells() {
     let xml = format!(
         r#"<?xml version="1.0"?><worksheet xmlns="{NS}"><sheetData><row r="1">{}</row></sheetData><extLst><ext><c r="A9" s="1"><v>1</v></c><c r="B9" s="1"><v>1</v></c></ext></extLst></worksheet>"#,
         num("A1", Some(1), "1")
     );
-    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &Limits::default()).unwrap();
-    assert_eq!(sf.value_cells, 1);
-    assert_eq!(sf.cells, vec![(0, 0, 1)]);
+    let s = read_xml(&xml, &[0, 14], Limits::default());
+    assert_eq!(kept(&s), 1);
+    assert_eq!(formatted(&s), vec![(0, 0, 1)]);
     // An empty `<sheetData/>` is no data either.
     let xml = format!(
         r#"<?xml version="1.0"?><worksheet xmlns="{NS}"><sheetData/><c r="A1" s="1"><v>1</v></c></worksheet>"#
     );
-    let sf = fmt_xlsx::parse_sheet(xml.as_bytes(), &[0, 1], &Limits::default()).unwrap();
-    assert_eq!(sf.value_cells, 0);
+    let s = read_xml(&xml, &[0, 14], Limits::default());
+    assert_eq!(kept(&s), 0);
 }
 
-/// An absurd reference is a stop like a row past the cap, and what follows it is data (or not).
+/// An absurd reference is a stop like a row past the cap, and it is a cut only when the cell holds
+/// data.
 #[test]
-fn an_absurd_reference_stops_the_reader_and_cuts_only_when_data_follows() {
+fn an_absurd_reference_stops_the_reader_and_cuts_only_when_data_holds() {
     let with_value = format!(
         r#"<row r="1">{}<c r="ZZZZZZZZZZZ1" s="1"><v>1</v></c></row>"#,
         num("A1", Some(1), "1")
     );
-    let sf = parse_with_rows(&with_value, 100);
-    assert_eq!(sf.reader_stop, Some(1));
-    assert!(sf.truncated);
+    let s = read_rows_capped(&with_value, 100);
+    assert_eq!(kept(&s), 1);
+    assert!(s.rows_truncated);
     let blank = format!(
         r#"<row r="1">{}<c r="ZZZZZZZZZZZ1" s="1"/></row>"#,
         num("A1", Some(1), "1")
     );
-    let sf = parse_with_rows(&blank, 100);
-    assert_eq!(sf.reader_stop, Some(1));
-    assert!(!sf.truncated);
+    let s = read_rows_capped(&blank, 100);
+    assert_eq!(kept(&s), 1);
+    assert!(!s.rows_truncated);
 }
 
 /// A real xlsx read with a cancel that fires after a few rows: the sheet comes back cut short
@@ -3482,47 +3470,48 @@ fn a_cancelled_xlsx_load_stops_early_and_an_uncancelled_one_is_complete() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// the format pass counts what the sheet builder keeps
+// what the sheet keeps
 // ---------------------------------------------------------------------------------------------
 
-fn parse_with(rows: &str, xf: &[u16], limits: &Limits) -> SheetFormats {
-    fmt_xlsx::parse_sheet(sheet_xml(rows, "").as_bytes(), xf, limits).unwrap()
-}
-
 #[test]
-fn an_entity_reference_alone_in_v_is_a_value_for_a_string_cell_and_data_past_a_stop() {
+fn an_entity_reference_alone_in_v_is_a_value_for_a_string_cell_and_data_past_a_cap() {
     let limits = Limits {
         max_rows: 1,
         ..Limits::default()
     };
     // `&gt;` arrives as a `GeneralRef`, not as text.
-    let sf = parse_with(
-        r#"<row r="1"><c r="A1" s="1" t="str"><v>&gt;</v></c></row>"#,
-        &[0, 1],
-        &limits,
+    let s = read_xml(
+        &sheet_xml(
+            r#"<row r="1"><c r="A1" s="1" t="str"><v>&gt;</v></c></row>"#,
+            "",
+        ),
+        &[0, 14],
+        limits,
     );
-    assert_eq!(sf.value_cells, 1);
-    assert_eq!(sf.cells, vec![(0, 0, 1)]);
-    assert!(!sf.truncated);
+    assert_eq!(kept(&s), 1);
+    assert_eq!(s.display(0, 0), ">");
+    assert_eq!(formatted(&s), vec![(0, 0, 1)]);
+    assert!(!s.rows_truncated);
     // The same cell past the row cap is data left out.
-    let sf = parse_with(
-        r#"<row r="1"><c r="A1" t="str"><v>x</v></c></row><row r="2"><c r="A2" t="str"><v>&amp;</v></c></row>"#,
+    let s = read_xml(
+        &sheet_xml(
+            r#"<row r="1"><c r="A1" t="str"><v>x</v></c></row><row r="2"><c r="A2" t="str"><v>&amp;</v></c></row>"#,
+            "",
+        ),
         &[0],
-        &limits,
+        limits,
     );
-    assert!(sf.truncated, "{sf:?}");
-    assert_eq!(sf.reader_stop, Some(1));
+    assert!(s.rows_truncated);
+    assert_eq!(kept(&s), 1);
 }
 
 #[test]
-fn the_budget_counts_the_cells_the_value_reader_returns_as_values() {
+fn a_cell_is_kept_when_it_holds_a_value() {
     let count = |cell: &str| {
-        parse_with(
+        kept(&read_rows(
             &format!(r#"<row r="1">{cell}</row>"#),
-            &[0],
-            &Limits::default(),
-        )
-        .value_cells
+            Limits::default(),
+        ))
     };
     // A string cell holds a string even when it is empty; an inline string too.
     assert_eq!(count(r#"<c r="A1" t="str"><v/></c>"#), 1);
@@ -3548,25 +3537,20 @@ fn a_cell_past_the_column_cap_does_not_use_the_cell_budget() {
         ..Limits::default()
     };
     let rows = r#"<row r="1"><c r="A1"><v>1</v></c><c r="C1"><v>1</v></c><c r="D1"><v>1</v></c><c r="B1"><v>1</v></c></row>"#;
-    let sf = parse_with(rows, &[0], &limits);
-    assert_eq!(sf.value_cells, 2);
-    assert!(!sf.truncated, "{sf:?}");
-    assert_eq!(sf.reader_stop, None);
+    let s = read_rows(rows, limits);
+    assert_eq!(kept(&s), 2);
+    assert!(!s.rows_truncated);
+    assert!(s.cols_truncated);
 }
 
 #[test]
-fn an_empty_formula_or_inline_string_past_a_stop_is_judged_like_the_builder_does() {
-    let limits = Limits {
-        max_rows: 1,
-        ..Limits::default()
-    };
+fn an_empty_formula_or_inline_string_past_the_cap_is_judged_like_a_value() {
     let past = |cell: &str| {
-        parse_with(
+        read_rows_capped(
             &format!(r#"<row r="1"><c r="A1"><v>1</v></c></row><row r="2">{cell}</row>"#),
-            &[0],
-            &limits,
+            1,
         )
-        .truncated
+        .rows_truncated
     };
     // An empty formula is nothing to keep; one with text is.
     assert!(!past(r#"<c r="A2"><f/></c>"#));
@@ -3579,55 +3563,51 @@ fn an_empty_formula_or_inline_string_past_a_stop_is_judged_like_the_builder_does
 }
 
 #[test]
-fn the_scan_past_a_stop_ends_when_the_load_is_cancelled() {
-    let limits = Limits {
-        max_rows: 1,
-        ..Limits::default()
-    };
-    let mut rows = String::from(r#"<row r="1"><c r="A1"><v>1</v></c></row>"#);
-    for r in 2..6000 {
-        rows += &format!(r#"<row r="{r}"><c r="A{r}"/></row>"#);
+fn rows_without_cells_are_checked_for_cancellation_too() {
+    // 6000 rows that hold no cell (the builder is never asked), then a value: a cancelled load
+    // ends within a thousand rows, an uncancelled one reaches the value.
+    let mut rows = String::new();
+    for r in 1..6000 {
+        rows += &format!(r#"<row r="{r}"/>"#);
     }
     rows += r#"<row r="6000"><c r="A6000"><v>9</v></c></row>"#;
     let xml = sheet_xml(&rows, "");
+    let limits = Limits::default();
+    let tables = xlsx::Tables::default();
     let run = |cancel: Option<&workbook::Cancel>| {
-        fmt_xlsx::parse_sheet_cancellable(xml.as_bytes(), &[0], &limits, cancel).unwrap()
+        let mut cells = 0;
+        xlsx::parse_sheet(xml.as_bytes(), &tables, &limits, cancel, |_| {
+            cells += 1;
+            true
+        })
+        .unwrap();
+        cells
     };
-    assert!(run(None).truncated, "the data at the end is found");
+    assert_eq!(run(None), 1, "the value at the end is found");
     let yes = workbook::Cancel::new(|| true);
-    assert!(!run(Some(&yes)).truncated, "a cancelled scan stops early");
+    assert_eq!(run(Some(&yes)), 0, "a cancelled read stops early");
     let no = workbook::Cancel::new(|| false);
-    assert!(run(Some(&no)).truncated);
+    assert_eq!(run(Some(&no)), 1);
 }
 
 #[test]
 fn the_last_format_at_one_address_wins() {
     let cell = |s: u32| format!(r#"<c r="A1" s="{s}"><v>1</v></c>"#);
-    let xf = [0, 1, 2];
+    let xf = [0, 14, 15];
+    let sheet = |row: String| read_xml(&sheet_xml(&row, ""), &xf, Limits::default());
     // A later General cell replaces an earlier formatted one, and the reverse.
-    let sf = parse_with(
-        &format!(r#"<row r="1">{}{}</row>"#, cell(1), cell(0)),
-        &xf,
-        &Limits::default(),
-    );
-    assert_eq!(sf.cells, vec![]);
-    let sf = parse_with(
-        &format!(r#"<row r="1">{}{}</row>"#, cell(0), cell(1)),
-        &xf,
-        &Limits::default(),
-    );
-    assert_eq!(sf.cells, vec![(0, 0, 1)]);
+    let s = sheet(format!(r#"<row r="1">{}{}</row>"#, cell(1), cell(0)));
+    assert_eq!(formatted(&s), vec![]);
+    assert_eq!(kept(&s), 1);
+    let s = sheet(format!(r#"<row r="1">{}{}</row>"#, cell(0), cell(1)));
+    assert_eq!(formatted(&s), vec![(0, 0, 1)]);
     // Many cells at one address among others: whatever the sort does, the last in the file wins.
     let mut row = String::new();
     for i in 0..300u32 {
         row += &format!(r#"<c r="A1" s="{}"><v>1</v></c>"#, 1 + i % 2);
         row += &format!(r#"<c r="B1" s="{}"><v>1</v></c>"#, 2 - i % 2);
     }
-    let sf = parse_with(
-        &format!(r#"<row r="1">{row}</row>"#),
-        &xf,
-        &Limits::default(),
-    );
+    let s = sheet(format!(r#"<row r="1">{row}</row>"#));
     // The last A1 has i = 299: s = 2; the last B1: s = 1.
-    assert_eq!(sf.cells, vec![(0, 0, 2), (0, 1, 1)]);
+    assert_eq!(formatted(&s), vec![(0, 0, 2), (0, 1, 1)]);
 }

@@ -11,12 +11,13 @@
 //! table and the shared strings are read again; the sheet XML is streamed) — see the doc of each
 //! loader for what is read.
 //!
-//! **Bounded reads.** xlsx and xlsb are read with `calamine`'s *streaming* cell readers: cells come
-//! one at a time and reading **stops** when a budget of [`Limits`] is reached (rows, kept cells,
-//! kept text bytes), so a huge sheet shows its beginning (marked as capped) instead of being
-//! refused, and no dense matrix is ever built. ods and xls cannot be streamed (`calamine` reads
-//! every sheet of those into dense matrices while opening the file), so for them the size is
-//! checked *before* opening and a file that is too large is refused with a reason.
+//! **Bounded reads.** xlsx (konoma's own reader, `xlsx.rs`) and xlsb (`calamine`'s streaming cell
+//! reader) deliver cells one at a time and reading **stops** when a budget of [`Limits`] is
+//! reached (rows, kept cells, kept text bytes), so a huge sheet shows its beginning (marked as
+//! capped) instead of being refused, and no dense matrix is ever built. ods and xls cannot be
+//! streamed (`calamine` reads every sheet of those into dense matrices while opening the file), so
+//! for them the size is checked *before* opening and a file that is too large is refused with a
+//! reason.
 //!
 //! **Memory design** (per sheet):
 //! - Rows are sparse: `rows[r]` holds only the non-empty cells as `(col, Cell)` sorted by column,
@@ -44,8 +45,9 @@ use std::path::Path;
 use calamine::{Data, Dimensions, Range, Reader, SheetType, SheetVisible};
 
 use super::container::{self, Detected, Limits};
-use super::fmt_xlsx::{self, SheetFormats};
+use super::fmt_xlsx::SheetFormats;
 use super::numfmt;
+use super::xlsx::{self, Val, Visibility};
 use super::{fmt_ods, fmt_xls, fmt_xlsb};
 use super::{Locale, OfficeError, SheetKind};
 
@@ -78,6 +80,9 @@ pub enum CellValue {
     Bool(bool),
     /// An error value such as `#DIV/0!`.
     Error(CellError),
+    /// An error value that is not one of the fixed codes: Excel 365's `#SPILL!`, `#CALC!`,
+    /// `#GETTING_DATA`, ... shown as the file wrote it.
+    ErrorText(Box<str>),
     /// A date/time/duration stored as a serial number (Excel's days since 1899-12-30 / 1904).
     /// `duration` marks a `[h]:mm:ss`-style elapsed time.
     DateTime {
@@ -132,7 +137,7 @@ impl Cell {
             CellValue::Int(_) | CellValue::Number(_) => CellType::Number,
             CellValue::Text(_) => CellType::Text,
             CellValue::Bool(_) => CellType::Bool,
-            CellValue::Error(_) => CellType::Error,
+            CellValue::Error(_) | CellValue::ErrorText(_) => CellType::Error,
             CellValue::DateTime { .. } | CellValue::DateTimeIso(_) => CellType::DateTime,
         }
     }
@@ -145,6 +150,7 @@ impl Cell {
             CellValue::Text(t) => t.to_string(),
             CellValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
             CellValue::Error(e) => (*e).to_string(),
+            CellValue::ErrorText(e) => e.to_string(),
             CellValue::DateTime { serial, .. } => number_text(*serial),
             CellValue::DateTimeIso(s) => s.to_string(),
         }
@@ -321,6 +327,7 @@ fn display_compiled(value: &CellValue, code: &numfmt::Compiled, ctx: &DisplayCtx
         CellValue::Text(t) => numfmt::format_compiled(code, Value::Text(t), &opts),
         CellValue::Bool(b) => numfmt::format_compiled(code, Value::Bool(*b), &opts),
         CellValue::Error(e) => numfmt::format_compiled(code, Value::Error(e), &opts),
+        CellValue::ErrorText(e) => numfmt::format_compiled(code, Value::Error(e), &opts),
         CellValue::DateTime { serial, .. } => num(*serial),
         CellValue::DateTimeIso(s) => {
             match numfmt::iso_datetime_to_serial(s).or_else(|| numfmt::iso_duration_to_serial(s)) {
@@ -473,11 +480,11 @@ fn open_reader(path: &Path) -> Result<BufReader<File>, OfficeError> {
     Ok(BufReader::new(File::open(path).map_err(container::io_err)?))
 }
 
-/// xlsx / xlsm / xltx / xltm. **Streamed**: the workbook parts, the style table and the shared
-/// strings are read when the file is opened (the shared strings are the one part `calamine` loads
-/// whole; `fmt_xlsx::read_package` refuses a table too large for that), then the requested sheet
-/// is read cell by cell until a budget of [`Limits`] is reached. Sheets that are not asked for
-/// are not read at all.
+/// xlsx / xlsm / xltx / xltm, read by konoma itself (`xlsx.rs`). **Streamed**: the workbook parts,
+/// the style table and the shared strings are read when the file is opened (a shared string table
+/// too large is refused there), then the requested sheet is read once, cell by cell, giving the
+/// value, the format and the formula together, until a budget of [`Limits`] is reached. Sheets that
+/// are not asked for are not read at all.
 fn load_xlsx(
     path: &Path,
     opts: &LoadOptions,
@@ -485,34 +492,28 @@ fn load_xlsx(
     cancel: Option<Cancel>,
 ) -> Result<Workbook, OfficeError> {
     let limits = &opts.limits;
-    let pkg = fmt_xlsx::read_package(path, limits)?;
-    let mut wb: calamine::Xlsx<_> = calamine::Xlsx::new(open_reader(path)?).map_err(map_xlsx)?;
-    let metas = sheet_metas(&wb);
-    let ctx = Ctx::new(pkg.date1904, pkg.formats.clone(), *opts);
+    let mut book = xlsx::open(path, limits)?;
+    let metas = book
+        .sheets
+        .iter()
+        .map(|s| Meta {
+            name: s.name.clone(),
+            visible: match s.visible {
+                Visibility::Visible => SheetVisible::Visible,
+                Visibility::Hidden => SheetVisible::Hidden,
+                Visibility::VeryHidden => SheetVisible::VeryHidden,
+            },
+            typ: SheetType::WorkSheet,
+        })
+        .collect();
+    let ctx = Ctx::new(book.date1904, book.formats.clone(), *opts);
     assemble(&ctx, metas, which, cancel.as_ref(), |name| {
-        // Our own pass over the sheet: the format of each cell (which `calamine` does not
-        // expose), the merged ranges, and a check of what would make the value reader allocate.
-        let sf = match pkg.part_of(name) {
-            Some(part) => {
-                fmt_xlsx::read_sheet(path, part, &pkg.xf_to_format, limits, cancel.as_ref())?
-            }
-            None => SheetFormats::default(),
-        };
-        let mut rdr = wb.worksheet_cells_reader(name).map_err(map_xlsx)?;
-        let mut b = SheetBuilder::new(&ctx, name, Some(&sf), cancel.as_ref());
-        b.set_merges(&sf.merges);
-        // One pass for values and formulas (`next_cell_with_formula`). The format pass knows where
-        // the sheet stops being trustworthy (or being shown): the reader is never asked past it.
-        let mut n: u64 = 0;
-        while sf.reader_stop.is_none_or(|stop| n < stop) {
-            let Some(c) = rdr.next_cell_with_formula().map_err(map_xlsx)? else {
-                break;
-            };
-            n += 1;
-            let (row, col) = c.pos;
-            if b.push(row, col, value_from_ref(&c.value), c.formula.as_deref()) == Flow::Stop {
-                break;
-            }
+        let mut b = SheetBuilder::new(&ctx, name, None, cancel.as_ref());
+        if let Some(part) = book.part_of(name).map(str::to_string) {
+            let merges = book.read_sheet(&part, limits, cancel.as_ref(), |c| {
+                b.push_xlsx(c) == Flow::Continue
+            })?;
+            b.set_merges(&merges);
         }
         Ok(b.finish())
     })
@@ -615,13 +616,6 @@ fn load_xls(
     })
 }
 
-fn map_xlsx(e: calamine::XlsxError) -> OfficeError {
-    match e {
-        calamine::XlsxError::Password => OfficeError::Encrypted,
-        calamine::XlsxError::Zip(z) => container::zip_err(z),
-        other => OfficeError::Corrupt(format!("xlsx: {other}")),
-    }
-}
 fn map_xlsb(e: calamine::XlsbError) -> OfficeError {
     match e {
         calamine::XlsbError::Password => OfficeError::Encrypted,
@@ -916,6 +910,19 @@ impl<'a> SheetBuilder<'a> {
         self.push(row, col, value, None)
     }
 
+    /// Keeps a cell of an xlsx sheet: its value, formula and number format come together.
+    fn push_xlsx(&mut self, c: xlsx::CellOut<'_>) -> Flow {
+        let value = c.value.map(|v| match v {
+            Val::Number(n) => CellValue::Number(n),
+            Val::Date { serial, duration } => CellValue::DateTime { serial, duration },
+            Val::Text(t) => CellValue::Text(t.into()),
+            Val::Bool(b) => CellValue::Bool(b),
+            Val::Error(e) => error_value(e),
+            Val::Iso(s) => CellValue::DateTimeIso(s.into()),
+        });
+        self.push_with(c.row, c.col, Some(c.fmt), value, c.formula)
+    }
+
     /// Keeps a formula (without the leading `=`; an empty one is nothing).
     fn push_formula(&mut self, row: u32, col: u32, formula: &str) -> Flow {
         // Rows after the point where the values stopped are not in the sheet.
@@ -936,6 +943,19 @@ impl<'a> SheetBuilder<'a> {
         value: Option<CellValue>,
         formula: Option<&str>,
     ) -> Flow {
+        self.push_with(row, col, None, value, formula)
+    }
+
+    /// [`SheetBuilder::push`] with the number format given by the reader (`Some`) instead of
+    /// looked up in the format pass of the sheet.
+    fn push_with(
+        &mut self,
+        row: u32,
+        col: u32,
+        fmt: Option<u16>,
+        value: Option<CellValue>,
+        formula: Option<&str>,
+    ) -> Flow {
         // One check per row: an atomic load is cheap, and a row is the unit a huge sheet is made of.
         if self.last_row != Some(row) {
             self.last_row = Some(row);
@@ -952,7 +972,7 @@ impl<'a> SheetBuilder<'a> {
         if let Some(flow) = self.gate(row, col) {
             return flow;
         }
-        let cell = value.map(|v| self.make_cell(row, col, v));
+        let cell = value.map(|v| self.make_cell(row, col, fmt, v));
         if cell.is_some() && self.kept >= self.ctx.opts.limits.max_sheet_cells {
             self.sheet.rows_truncated = true;
             return Flow::Stop;
@@ -978,24 +998,30 @@ impl<'a> SheetBuilder<'a> {
     }
 
     /// The cell for a value, and the text bytes it costs.
-    fn make_cell(&self, row: u32, col: u32, mut value: CellValue) -> (Cell, u64) {
+    fn make_cell(&self, row: u32, col: u32, fmt: Option<u16>, mut value: CellValue) -> (Cell, u64) {
         // ods: an error cell reaches us as an empty string; the format pass knows better.
         if let Some(code) = self.fmts.and_then(|s| s.error_at(row, col)) {
             value = CellValue::Error(code);
         }
-        let fmt = self.fmts.map(|s| s.format_at(row, col)).unwrap_or(0);
+        let fmt = fmt.unwrap_or_else(|| self.fmts.map_or(0, |s| s.format_at(row, col)));
         let code = self
             .ctx
             .compiled
             .get(usize::from(fmt))
             .unwrap_or(&self.ctx.general);
-        let mut shown = display_compiled(&value, code, &self.dctx);
-        // A text cell shown as it is written keeps no second copy (and is not cut: it is the value).
-        let display = match &value {
-            CellValue::Text(t) if **t == *shown => None,
-            _ => {
-                clip_display(&mut shown);
-                Some(shown.into_boxed_str())
+        // A text cell under `General` (the common case: format 0) is shown as it is written.
+        let display = if fmt == 0 && matches!(value, CellValue::Text(_)) {
+            None
+        } else {
+            let mut shown = display_compiled(&value, code, &self.dctx);
+            match &value {
+                // A text cell shown as it is written keeps no second copy (and is not cut: it is
+                // the value).
+                CellValue::Text(t) if **t == *shown => None,
+                _ => {
+                    clip_display(&mut shown);
+                    Some(shown.into_boxed_str())
+                }
             }
         };
         let cost =
@@ -1073,7 +1099,9 @@ fn clip_display(s: &mut String) {
 /// The bytes a value's own text takes (text and ISO strings), plus the per-string overhead.
 fn value_text_len(v: &CellValue) -> u64 {
     match v {
-        CellValue::Text(t) | CellValue::DateTimeIso(t) => t.len() as u64 + STRING_COST,
+        CellValue::Text(t) | CellValue::DateTimeIso(t) | CellValue::ErrorText(t) => {
+            t.len() as u64 + STRING_COST
+        }
         _ => 0,
     }
 }
@@ -1113,6 +1141,17 @@ fn value_from_ref(d: &calamine::DataRef<'_>) -> Option<CellValue> {
         D::DateTimeIso(s) | D::DurationIso(s) => CellValue::DateTimeIso(s.as_str().into()),
         D::Error(e) => CellValue::Error(error_code(e)),
     })
+}
+
+/// The value of an error cell of an xlsx sheet: one of the fixed codes, or the text as written.
+fn error_value(code: &str) -> CellValue {
+    const FIXED: [&str; 7] = [
+        "#DIV/0!", "#N/A", "#NAME?", "#NULL!", "#NUM!", "#REF!", "#VALUE!",
+    ];
+    match FIXED.iter().find(|f| **f == code) {
+        Some(f) => CellValue::Error(f),
+        None => CellValue::ErrorText(code.into()),
+    }
 }
 
 fn error_code(e: &calamine::CellErrorType) -> CellError {

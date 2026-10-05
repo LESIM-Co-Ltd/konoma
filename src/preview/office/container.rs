@@ -1,9 +1,10 @@
 //! Safety boundary in front of the spreadsheet readers: size limits, container sniffing and
 //! encryption detection.
 //!
-//! Everything here runs **before** `calamine` (which has no limits of its own) sees the file, and
-//! the format passes (`fmt_*.rs`) read zip parts only through [`part_reader`], so one place decides
-//! what is "too large".
+//! Everything here runs **before** any reader sees the file (`calamine`, which reads xlsb / xls /
+//! ods, has no limits of its own), and the readers that open zip parts themselves (the xlsx
+//! reader and the format passes, `fmt_*.rs`) read them only through [`part_reader`], so one place
+//! decides what is "too large".
 //!
 //! **Why declared zip sizes are not trusted.** `zip` 8.6 does *not* stop a deflate stream at the
 //! `uncompressed_size` written in the central directory: `Decompressor::Deflated` is a bare
@@ -12,8 +13,8 @@
 //! full (the test `zip_does_not_stop_at_declared_size` below pins this against the real crate).
 //! So [`scan_zip`] decompresses every entry once through `Read::take(limit + 1)` and counts the
 //! bytes that actually come out. The cost is one extra inflate pass over the package (a worker
-//! thread, ~1 s per GiB); in exchange `calamine` and the format passes only ever see packages
-//! whose real expanded size is bounded.
+//! thread, ~1 s per GiB); in exchange the readers only ever see packages whose real expanded size
+//! is bounded.
 
 use std::fs::File;
 use std::io::{self, BufReader, Read};
@@ -63,7 +64,7 @@ pub struct Limits {
     /// each counted at its length plus a fixed overhead per string. Counted at the moment a cell
     /// is kept, so a shared string used by a million cells is counted a million times — which is
     /// what it costs once copied into each. 128 MiB on top of the cells' 225 MB keeps the
-    /// ceiling for one sheet near 400 MB (+ the shared strings `calamine` holds, below).
+    /// ceiling for one sheet near 400 MB (+ the shared string table, below).
     pub max_sheet_text_bytes: u64,
     /// ods / xls only: largest `rows x columns` *bounding box* of a sheet's values that we let
     /// `calamine` build. It fills a dense matrix over the box (a 32-byte `Data` per cell) and
@@ -72,9 +73,10 @@ pub struct Limits {
     /// A1 and XFD1048576 would ask for ~550 GB, and an OOM abort is not a catchable panic, so the
     /// box is checked first. 8M cells is ~800 MB at the peak; xlsx/xlsb do not use this limit.
     pub max_dense_cells: u64,
-    /// Bytes of text `calamine` holds *once the file is open*, which it reads whole: for xlsx /
-    /// xlsb the shared-string table (each string plus a fixed per-string overhead; a table over
-    /// this is refused before opening); for ods / xls all text of every sheet (a shared string
+    /// Bytes of text held *once the file is open*, which is read whole: for xlsx / xlsb the
+    /// shared-string table (each string plus a fixed per-string overhead; a table over this is
+    /// refused when the file is opened; konoma's xlsx reader keeps it in one buffer, `calamine`
+    /// copies each string of an xlsb table); for ods / xls all text of every sheet (a shared string
     /// counted per cell that uses it, ods text times its repeat counts, plus the overhead).
     /// 256 MiB is about 1 GB of resident memory once copied, well above any real workbook (a
     /// 4M-cell sheet of 30-byte strings is 120 MB).

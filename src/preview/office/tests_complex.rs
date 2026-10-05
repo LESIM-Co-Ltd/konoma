@@ -829,11 +829,11 @@ fn formulas_every_excel_error_code_in_an_xlsx_cell() {
     );
 }
 
-/// Excel 365 writes `#SPILL!` / `#CALC!` / `#FIELD!` ... for dynamic-array and data-type errors. The
-/// reader (calamine 0.36) knows only the classic seven (even `#GETTING_DATA` is accepted in xls/xlsb
-/// but not in xlsx) and rejects the whole
-/// sheet as corrupt, so one such cell hides every other cell of the sheet. The other sheets of the
-/// workbook stay reachable.
+/// Excel 365 writes `#SPILL!` / `#CALC!` / `#FIELD!` ... for dynamic-array and data-type errors.
+/// `calamine` 0.36 knows only the classic seven (even `#GETTING_DATA` is accepted in xls/xlsb but
+/// not in xlsx) and rejects the whole sheet as corrupt, so one such cell hides every other cell of
+/// the sheet; konoma's own xlsx reader (`xlsx.rs`) takes the error text as the file wrote it.
+/// Either way, the other sheets of the workbook stay reachable.
 #[test]
 fn newer_error_codes_do_not_break_the_workbook() {
     let Some(p) = file("newerrors.xlsx") else {
@@ -852,7 +852,6 @@ fn open_lenient(path: &Path, idx: usize) -> Workbook {
 }
 
 #[test]
-#[ignore = "BUG: an Excel 365 error cell (#SPILL!, #CALC!, #FIELD!, #GETTING_DATA) makes the whole sheet unreadable (Corrupt: Unsupported cell error value)"]
 fn newer_error_codes_are_shown_like_any_other_error() {
     let Some(p) = file("newerrors.xlsx") else {
         return;

@@ -232,16 +232,18 @@ zip = { version = "8", default-features = false, features = ["deflate-flate2"] }
 # このモジュールはそもそも unpack を一切呼ばない(詳細は preview/archive.rs)。
 tar = { version = "0.4.45", default-features = false }
 
-# Spreadsheet preview (xlsx/xlsm/xltx/xltm/xlsb/xls/ods): pure-Rust reader. Values, sheet list, visibility,
-# merged ranges and formulas come from calamine; per-cell number formats (which calamine does not
-# expose) are read by konoma's own "format pass" (preview/office/). No optional features (chrono is
-# not needed: date arithmetic lives in konoma's own numfmt).
+# Spreadsheet preview (xlsx/xlsm/xltx/xltm/xlsb/xls/ods): pure-Rust readers. xlsx/xlsm/xltx/xltm are read
+# by konoma itself in one pass (preview/office/xlsx.rs); for xlsb/xls/ods the values, sheet list,
+# visibility and formulas come from calamine, and the per-cell number formats (which calamine does
+# not expose) are read by konoma's own "format pass" (preview/office/). In the tests calamine is also
+# the oracle the xlsx reader is compared with. No optional features (chrono is not needed: date
+# arithmetic lives in konoma's own numfmt).
 calamine = { version = "0.36", default-features = false }
 # Compound File Binary reader: used to detect a password-protected OOXML package (an
 # `/EncryptedPackage` stream inside a CFB container) and, in later stages, by the xls format pass.
 # Already in the graph through `infer`; named here because konoma reads it directly.
 cfb = "0.14"
-# XML reader for the xlsx format pass. quick-xml never expands DTD-defined entities (a `<!ENTITY>`
+# XML reader for the xlsx reader and the format passes. quick-xml never expands DTD-defined entities (a `<!ENTITY>`
 # declaration arrives as an ignored DocType event; an undefined `&x;` is an error), so there is no
 # billion-laughs path. Same 0.41 line calamine uses (one copy in the graph).
 quick-xml = "0.41"
