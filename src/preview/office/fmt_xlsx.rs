@@ -197,7 +197,7 @@ pub(crate) const STRING_OVERHEAD: u64 = 32;
 
 /// `Id` -> normalized part path inside the zip (no leading slash).
 pub(crate) fn parse_rels(src: impl BufRead) -> Result<HashMap<String, String>, OfficeError> {
-    let mut rd = Reader::from_reader(src);
+    let mut rd = XmlReader::new(src);
     let mut buf = Vec::new();
     let mut map = HashMap::new();
     loop {
@@ -269,7 +269,7 @@ impl Styles {
 }
 
 pub(crate) fn parse_styles(src: impl BufRead) -> Result<Styles, OfficeError> {
-    let mut rd = Reader::from_reader(src);
+    let mut rd = XmlReader::new(src);
     let mut buf = Vec::new();
     let mut custom: HashMap<u32, String> = HashMap::new();
     let mut xf_ids: Vec<u32> = Vec::new();
@@ -440,5 +440,106 @@ pub(crate) fn is_true(v: &str) -> bool {
 }
 
 pub(crate) fn xml_err(e: quick_xml::Error) -> OfficeError {
+    if let quick_xml::Error::Io(io) = &e {
+        if io.get_ref().is_some_and(|inner| inner.is::<TooDeep>()) {
+            return OfficeError::TooLarge { what: "xml depth" };
+        }
+    }
     OfficeError::Corrupt(format!("xml: {e}"))
+}
+
+/// Most sheets a workbook may have, in any format. Excel's own UI copes with a few hundred; a
+/// sheet is a tab, a name, and a place in the file. A file with millions is made to cost memory
+/// (and, for xls, to make `calamine` read the same records once per sheet).
+pub(crate) const MAX_SHEETS: usize = 4_096;
+
+/// Deepest element nesting an XML part may have. Real parts are shallow: a worksheet is about 10
+/// levels (`worksheet/sheetData/row/c/is/r/rPr/...`), an `extLst` or a styles part under 10, an
+/// ods `content.xml` with text boxes inside frames inside text boxes about 40. The reader keeps
+/// the name of every open element (8 bytes plus the name each, whatever the settings), so a
+/// 215 KB part of 70 million nested `<a>` took 1.6 GB; 256 levels costs nothing and is far
+/// beyond any file an application wrote.
+pub(crate) const MAX_XML_DEPTH: usize = 256;
+
+#[derive(Debug)]
+struct TooDeep;
+
+impl std::fmt::Display for TooDeep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "elements nested more than {MAX_XML_DEPTH} deep")
+    }
+}
+
+impl std::error::Error for TooDeep {}
+
+/// A [`quick_xml::Reader`] that refuses a part nested deeper than [`MAX_XML_DEPTH`]. **Every XML
+/// reader of the office previews is one of these**: the depth is counted here, on every event,
+/// including those inside [`XmlReader::read_to_end_into`] (which `quick_xml` runs through the same
+/// open-element stack).
+pub(crate) struct XmlReader<R> {
+    rd: Reader<R>,
+    depth: usize,
+}
+
+impl<R: BufRead> XmlReader<R> {
+    pub(crate) fn new(src: R) -> XmlReader<R> {
+        XmlReader {
+            rd: Reader::from_reader(src),
+            depth: 0,
+        }
+    }
+
+    pub(crate) fn config_mut(&mut self) -> &mut quick_xml::reader::Config {
+        self.rd.config_mut()
+    }
+
+    pub(crate) fn read_event_into<'b>(
+        &mut self,
+        buf: &'b mut Vec<u8>,
+    ) -> Result<Event<'b>, quick_xml::Error> {
+        let ev = self.rd.read_event_into(buf)?;
+        match ev {
+            Event::Start(_) => {
+                self.depth += 1;
+                if self.depth > MAX_XML_DEPTH {
+                    return Err(quick_xml::Error::Io(std::sync::Arc::new(
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, TooDeep),
+                    )));
+                }
+            }
+            Event::End(_) => self.depth = self.depth.saturating_sub(1),
+            _ => {}
+        }
+        Ok(ev)
+    }
+
+    /// Reads up to and including the end tag named `end` that closes the element opened before
+    /// (elements of the same name nested inside are counted, as `quick_xml` does; the start tag
+    /// may have been followed by other events already).
+    pub(crate) fn read_to_end_into(
+        &mut self,
+        end: quick_xml::name::QName<'_>,
+        buf: &mut Vec<u8>,
+    ) -> Result<(), quick_xml::Error> {
+        let mut nested = 0usize;
+        loop {
+            buf.clear();
+            match self.read_event_into(buf)? {
+                Event::Start(e) if e.name() == end => nested += 1,
+                Event::End(e) if e.name() == end => {
+                    if nested == 0 {
+                        return Ok(());
+                    }
+                    nested -= 1;
+                }
+                Event::Eof => {
+                    return Err(quick_xml::errors::IllFormedError::MissingEndTag(
+                        String::from_utf8_lossy(end.as_ref()).into_owned(),
+                    )
+                    .into())
+                }
+                _ => {}
+            }
+        }
+    }
 }

@@ -56,7 +56,7 @@ impl App {
         // The parsed spreadsheet is App-level (too big to clone into every tab snapshot): drop the
         // previous tab's and let the media block below re-read this tab's on the worker. The sheet
         // number and cursor come back with `self.tab = t` and are clamped when the workbook lands.
-        self.workbook = None;
+        self.set_workbook(None);
         self.workbook_error = None;
         // root/open_dir/entries/selected/show_hidden/tree_viewport/mode/preview_scroll/
         // preview_hscroll/preview_viewport/preview_byte_top/preview_top_line/selection/visual_anchor/
@@ -320,7 +320,7 @@ impl App {
         self.tab.came_from_git_view = false;
         // A new tab shows no spreadsheet (the source tab's was snapshotted by save_active; its
         // workbook is re-read on the worker when that tab is activated again).
-        self.workbook = None;
+        self.set_workbook(None);
         self.workbook_error = None;
         self.tab.sheet_idx = 0;
         // A new tab also starts the diff-view state from scratch (part of the PerTab duplication

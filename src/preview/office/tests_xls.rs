@@ -772,7 +772,7 @@ fn the_real_sample_goes_through_the_pass() {
     let Some(p) = crate::test_support::sample_path_or_skip("sample.xls") else {
         return;
     };
-    let fm = fmt_xls::read(&p, &Limits::default()).unwrap();
+    let fm = fmt_xls::read(&p, &Limits::default(), None).unwrap();
     assert!(!fm.date1904);
     assert!(fm.sheets.contains_key("Sales"));
     assert!(
@@ -807,7 +807,7 @@ fn a_formula_string_with_no_formula_lands_at_a1_and_widens_the_box() {
     };
     let dir = tmp("xls_string_a1");
     let p = book.write(&dir, "s.xls");
-    let sf = fmt_xls::read(&p, &Limits::default()).unwrap_err();
+    let sf = fmt_xls::read(&p, &Limits::default(), None).unwrap_err();
     assert_eq!(sf, OfficeError::TooLarge { what: "sheet area" });
     // Without the STRING record the same sheet is fine (one cell).
     let book = Book {
@@ -816,7 +816,7 @@ fn a_formula_string_with_no_formula_lands_at_a1_and_widens_the_box() {
     };
     let p = book.write(&dir, "n.xls");
     assert_eq!(
-        fmt_xls::read(&p, &Limits::default()).unwrap().sheets["S"].value_cells,
+        fmt_xls::read(&p, &Limits::default(), None).unwrap().sheets["S"].value_cells,
         1
     );
 }
@@ -1157,4 +1157,148 @@ fn the_area_budget_is_for_the_whole_workbook_not_each_sheet() {
         parse(&b).unwrap_err(),
         OfficeError::TooLarge { what: "sheet area" }
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// sheets that share records (the format pass and `calamine` read each sheet to its first EOF)
+// ---------------------------------------------------------------------------------------------
+
+/// A stream whose BOUNDSHEET records are written as given: `(position offset into the sheet
+/// bodies, name)`. The bodies are `bodies` (concatenated), starting right after the globals.
+fn stream_with_sheet_positions(positions: &[usize], bodies: &[Vec<u8>]) -> Vec<u8> {
+    let mut head = bof(0x0600, 0x0005);
+    head.extend(xf_rec(0));
+    let sheets_len: usize = positions
+        .iter()
+        .enumerate()
+        .map(|(i, _)| boundsheet(0, 0, &format!("S{i}")).len())
+        .sum();
+    let globals_len = head.len() + sheets_len + eof().len();
+    for (i, p) in positions.iter().enumerate() {
+        head.extend(boundsheet((globals_len + p) as u32, 0, &format!("S{i}")));
+    }
+    head.extend(eof());
+    for b in bodies {
+        head.extend_from_slice(b);
+    }
+    head
+}
+
+fn body_with_numbers(n: usize) -> Vec<u8> {
+    let mut b = bof(0x0600, 0x0010);
+    for i in 0..n {
+        b.extend(number(0, (i % 200) as u16, 0, 1.0));
+    }
+    b.extend(eof());
+    b
+}
+
+#[test]
+fn many_boundsheets_at_the_same_position_are_refused_not_scanned_once_each() {
+    // 3,000 sheets (under the sheet cap), one body of 20,000 records: 60 million record reads
+    // if each sheet is scanned.
+    let body = body_with_numbers(20_000);
+    let positions = vec![0usize; 3_000];
+    let s = stream_with_sheet_positions(&positions, &[body]);
+    let t = std::time::Instant::now();
+    let r = fmt_xls::parse_stream(&s, &Limits::default());
+    assert!(
+        matches!(
+            r,
+            Err(OfficeError::Corrupt(_)) | Err(OfficeError::TooLarge { .. })
+        ),
+        "{r:?}"
+    );
+    assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+}
+
+#[test]
+fn two_sheets_at_the_same_position_are_refused() {
+    let s = stream_with_sheet_positions(&[0, 0], &[body_with_numbers(3)]);
+    assert!(matches!(
+        fmt_xls::parse_stream(&s, &Limits::default()),
+        Err(OfficeError::Corrupt(m)) if m.contains("share")
+    ));
+}
+
+#[test]
+fn a_sheet_that_starts_inside_another_is_refused() {
+    // The second BOUNDSHEET points into the middle of the first sheet's records.
+    let body = body_with_numbers(10);
+    let s = stream_with_sheet_positions(&[0, bof(0x0600, 0x0010).len() + 18 * 3], &[body]);
+    assert!(matches!(
+        fmt_xls::parse_stream(&s, &Limits::default()),
+        Err(OfficeError::Corrupt(m)) if m.contains("share")
+    ));
+}
+
+#[test]
+fn sheets_one_after_another_are_accepted_in_any_boundsheet_order() {
+    let a = body_with_numbers(3);
+    let b = body_with_numbers(4);
+    let c = body_with_numbers(5);
+    let (pa, pb, pc) = (0, a.len(), a.len() + b.len());
+    // BOUNDSHEET order is not stream order (Excel writes them in tab order, which a file can
+    // reorder); all that matters is that the bodies do not overlap.
+    let s = stream_with_sheet_positions(&[pc, pa, pb], &[a, b, c]);
+    let fm = fmt_xls::parse_stream(&s, &Limits::default()).unwrap();
+    assert_eq!(fm.sheets.len(), 3);
+}
+
+#[test]
+fn a_workbook_cannot_have_more_than_the_most_sheets() {
+    // One empty sheet body, a distinct position each is impossible, so use bodies of one record.
+    let bodies: Vec<Vec<u8>> = (0..4_097)
+        .map(|_| {
+            let mut b = bof(0x0600, 0x0010);
+            b.extend(eof());
+            b
+        })
+        .collect();
+    let mut positions = Vec::new();
+    let mut at = 0;
+    for b in &bodies {
+        positions.push(at);
+        at += b.len();
+    }
+    let s = stream_with_sheet_positions(&positions, &bodies);
+    assert_eq!(
+        fmt_xls::parse_stream(&s, &Limits::default()).unwrap_err(),
+        OfficeError::TooLarge { what: "sheets" }
+    );
+    // 4,096 is allowed.
+    let s = stream_with_sheet_positions(&positions[..4_096], &bodies[..4_096]);
+    assert!(fmt_xls::parse_stream(&s, &Limits::default()).is_ok());
+}
+
+#[test]
+fn a_cancelled_format_pass_stops_within_a_sheet() {
+    use super::workbook::Cancel;
+    // A body of 40,000 records (past the check interval), cancelled from the start.
+    let body = body_with_numbers(40_000);
+    let s = stream_with_sheet_positions(&[0], &[body]);
+    let cancel = Cancel::new(|| true);
+    assert!(fmt_xls::parse_stream_cancellable(&s, &Limits::default(), Some(&cancel)).is_err());
+    // Not cancelled: fine.
+    let never = Cancel::new(|| false);
+    assert!(fmt_xls::parse_stream_cancellable(&s, &Limits::default(), Some(&never)).is_ok());
+}
+
+#[test]
+fn the_loader_refuses_the_shared_sheet_file_before_calamine_sees_it() {
+    let body = body_with_numbers(20_000);
+    let s = stream_with_sheet_positions(&vec![0usize; 3_000], &[body]);
+    let dir = tmp("xls_shared_sheets");
+    let p = dir.join("shared.xls");
+    write_cfb(&p, &[("/Workbook", &s)]);
+    let t = std::time::Instant::now();
+    let r = load(&p);
+    assert!(
+        matches!(
+            r,
+            Err(OfficeError::Corrupt(_)) | Err(OfficeError::TooLarge { .. })
+        ),
+        "{r:?}"
+    );
+    assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
 }

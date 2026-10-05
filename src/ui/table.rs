@@ -340,7 +340,7 @@ fn leftmost_visible(
 
 /// A column's display width: the widest of its header and the visible cells, clamped.
 fn col_width(t: Grid<'_>, col: usize, visible_rows: usize, top: usize) -> usize {
-    let mut w = t.header(col).width();
+    let mut w = head(&t.header(col)).width();
     for r in top..(top + visible_rows).min(t.nrows()) {
         w = w.max(flat_width(t.cell(r, col)));
     }
@@ -391,8 +391,26 @@ fn compose_line(
     Line::from(spans)
 }
 
-/// Display width of a cell after flattening embedded newlines/tabs to spaces.
+/// How much of a cell the grid ever looks at, in characters. A column is at most [`MAX_COL_W`]
+/// (40) wide, so only the start of a cell can be on screen; a cell can be megabytes (one is up to
+/// 128 MiB), and every visible cell is measured and cut at every frame, so each of those walks
+/// the head and nothing else. 256 is six times the widest column, which leaves room for the
+/// zero-width characters (combining marks, joiners) that take no column.
+const HEAD_CHARS: usize = 256;
+
+/// The first [`HEAD_CHARS`] characters of `s`: all the grid needs of a cell. Costs the head, not
+/// the length of `s`.
+fn head(s: &str) -> &str {
+    match s.char_indices().nth(HEAD_CHARS) {
+        Some((i, _)) => &s[..i],
+        None => s,
+    }
+}
+
+/// Display width of the head of a cell after flattening embedded newlines/tabs to spaces (the
+/// width is only ever compared with [`MAX_COL_W`]).
 fn flat_width(s: &str) -> usize {
+    let s = head(s);
     if s.contains(['\n', '\r', '\t']) {
         flatten(s).width()
     } else {
@@ -408,7 +426,7 @@ fn flatten(s: &str) -> String {
 /// Truncate `s` to exactly `w` display columns (adding `…` when cut) and right-pad with spaces.
 /// CJK-aware (full-width glyphs count as 2). Embedded newlines/tabs are flattened first.
 fn fit_to_width(s: &str, w: usize) -> String {
-    let s = flatten(s);
+    let s = flatten(head(s));
     let total = s.width();
     let mut out = String::new();
     let mut used = 0usize;
@@ -713,5 +731,31 @@ mod tests {
             "a 1-row-tall terminal should still show a clipped sliver of the popup's top border \
              running across the single visible row, not a blank screen"
         );
+    }
+
+    #[test]
+    fn a_huge_cell_costs_its_head_not_its_length() {
+        let huge = "あ\n".repeat(2_000_000); // 8 MB
+        let t = std::time::Instant::now();
+        for _ in 0..200 {
+            // 128 wide characters (2 columns) and 128 flattened newlines (1 column).
+            assert_eq!(flat_width(&huge), 128 * 3);
+            assert_eq!(fit_to_width(&huge, 10).width(), 10);
+        }
+        assert!(t.elapsed().as_millis() < 500, "{:?}", t.elapsed());
+        // The head is what `fit_to_width` shows, so the result is the one it gave for the whole.
+        assert_eq!(fit_to_width(&huge, 10), "あ あ あ …");
+    }
+
+    #[test]
+    fn head_cuts_on_a_character_boundary_and_keeps_a_short_text_whole() {
+        assert_eq!(head("abc"), "abc");
+        assert_eq!(head(""), "");
+        let s = "é".repeat(HEAD_CHARS + 10);
+        assert_eq!(head(&s).chars().count(), HEAD_CHARS);
+        let exact = "x".repeat(HEAD_CHARS);
+        assert_eq!(head(&exact), exact);
+        // Past the head, the width is still a width of at least a column (what is compared).
+        assert!(flat_width(&s) >= MAX_COL_W);
     }
 }

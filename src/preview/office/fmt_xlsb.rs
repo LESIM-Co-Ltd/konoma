@@ -243,6 +243,9 @@ pub(crate) fn parse_workbook<R: Read>(
                 let Some((name, _)) = wide_str(&buf, next) else {
                     continue;
                 };
+                if sheets.len() >= super::fmt_xlsx::MAX_SHEETS {
+                    return Err(OfficeError::TooLarge { what: "sheets" });
+                }
                 sheets.push((name, rid));
             }
             BRT_END_BUNDLE_SHS => break,

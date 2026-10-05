@@ -1,3 +1,4 @@
+use super::search::SEARCH_MATCH_CAP;
 use super::*;
 use crate::preview::office::{CellType, NumFmtRef};
 use crate::preview::table::{cell_address, Grid, TableData};
@@ -23,6 +24,109 @@ fn grid_of<'a>(
     table.as_ref().map(Grid::Csv)
 }
 
+/// Frees `value` on a thread of its own (one, shared, so holding a key does not start a thread
+/// per press). The UI thread must not spend tens of milliseconds freeing a large workbook; if the
+/// thread cannot be had the value is freed here, as it would have been.
+pub(super) fn discard_in_background<T: Send + 'static>(value: T) {
+    use std::sync::{mpsc, Mutex, OnceLock};
+    type Junk = Box<dyn Send>;
+    static REAPER: OnceLock<Option<Mutex<mpsc::Sender<Junk>>>> = OnceLock::new();
+    let reaper = REAPER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Junk>();
+        std::thread::Builder::new()
+            .name("konoma-reaper".into())
+            .spawn(move || {
+                // Dropping each item as it arrives is the whole job.
+                for junk in rx {
+                    drop(junk);
+                }
+            })
+            .ok()
+            .map(|_| Mutex::new(tx))
+    });
+    if let Some(tx) = reaper {
+        // A send that fails hands the value back inside the error, which is freed right here.
+        if let Ok(tx) = tx.lock() {
+            let _ = tx.send(Box::new(value));
+            return;
+        }
+    }
+    drop(value);
+}
+
+/// Fewer cells than this are searched on the calling thread: starting threads costs a few
+/// hundred microseconds, which only a bigger table earns back.
+const PARALLEL_SEARCH_MIN_CELLS: usize = 2_000;
+/// Most threads a table search uses.
+const MAX_SEARCH_THREADS: usize = 8;
+
+/// The cells of rows `0..nrows` that `scan_row` reports (it appends the matches of one row, in
+/// column order), in reading order, at most [`SEARCH_MATCH_CAP`] of them. A big table (millions
+/// of cells, or a few with megabytes of text each) is split into runs of rows with about as many
+/// cells each and searched on several threads at once: the scan is on the UI thread and has to
+/// stay within a frame, and a search is nothing but independent reads. `cells_in_row` weighs a
+/// row. The result is the one a single thread gives.
+fn scan_rows(
+    nrows: usize,
+    cells_in_row: impl Fn(usize) -> usize,
+    scan_row: impl Fn(usize, &mut Vec<(u64, usize, usize)>) + Sync,
+) -> Vec<(u64, usize, usize)> {
+    let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    scan_rows_with(nrows, cells_in_row, scan_row, threads)
+}
+
+fn scan_rows_with(
+    nrows: usize,
+    cells_in_row: impl Fn(usize) -> usize,
+    scan_row: impl Fn(usize, &mut Vec<(u64, usize, usize)>) + Sync,
+    threads: usize,
+) -> Vec<(u64, usize, usize)> {
+    let total: usize = (0..nrows).map(&cells_in_row).sum();
+    let threads = threads.min(MAX_SEARCH_THREADS).min(nrows);
+    let run = |rows: std::ops::Range<usize>| {
+        let mut out = Vec::new();
+        for r in rows {
+            scan_row(r, &mut out);
+            if out.len() >= SEARCH_MATCH_CAP {
+                break;
+            }
+        }
+        out
+    };
+    let mut out = if threads < 2 || total < PARALLEL_SEARCH_MIN_CELLS {
+        run(0..nrows)
+    } else {
+        // Runs of rows of about `total / threads` cells each, in order.
+        let per = total.div_ceil(threads);
+        let mut runs = Vec::with_capacity(threads);
+        let (mut start, mut weight) = (0, 0);
+        for r in 0..nrows {
+            weight += cells_in_row(r);
+            if weight >= per && runs.len() + 1 < threads {
+                runs.push(start..r + 1);
+                (start, weight) = (r + 1, 0);
+            }
+        }
+        runs.push(start..nrows);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = runs
+                .into_iter()
+                .map(|rows| {
+                    let run = &run;
+                    scope.spawn(move || run(rows))
+                })
+                .collect();
+            // Joined in order, which is reading order.
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+                .collect()
+        })
+    };
+    out.truncate(SEARCH_MATCH_CAP);
+    out
+}
+
 /// A search query for table cells: case-insensitive "contains", without allocating per cell.
 /// (`cell.to_lowercase().contains(..)` allocated a string for every cell: 60-100 ms on a
 /// maximum-size sheet, on the UI thread.)
@@ -46,6 +150,10 @@ struct Needle {
     /// The byte search is only exact for text without [`FOLDS_TO_ASCII`] when the query has one of
     /// the ASCII letters they fold to.
     has_folded_to_ascii_letter: bool,
+    /// Where a match of the folded text can start (see [`Start`]).
+    starts: Vec<Start>,
+    /// The leading byte of every start character: the scan of a text stops only at these.
+    lead_bytes: [bool; 256],
 }
 
 /// The characters outside ASCII whose folding contains an ASCII letter: the Kelvin sign `K`
@@ -85,6 +193,58 @@ fn fold_results_up_to(last: u32) -> Vec<char> {
     out
 }
 
+/// A text longer than this many bytes is searched for each start character with the substring
+/// search of std, a shorter one with a byte loop (see `Needle::found_in_by_chars`).
+const LONG_TEXT: usize = 256;
+
+/// A character a match of the folded text can start at: one whose folding *begins* with the
+/// query's first folded character. A match starts at one of these and nowhere else, so the
+/// character search looks only at their occurrences instead of folding at every position of
+/// every cell.
+struct Start {
+    ch: char,
+    /// How many query characters its folding already matches (more than one when it folds to
+    /// several, as `İ` does).
+    matched: usize,
+    /// The bytes that can begin the next character of a text for the match to go on (the leading
+    /// byte of every character that folds to start with the query's next character); `None` when
+    /// this character alone is the whole query.
+    next_lead: Option<Box<[bool; 256]>>,
+}
+
+/// The characters that fold to something other than themselves, as `(first folded character,
+/// the character)`, sorted. About 1,400 entries; built once. Characters above U+1FFFF have no
+/// case, so the scan stops there, as for [`fold_results`].
+fn fold_sources() -> &'static [(char, char)] {
+    static SOURCES: std::sync::OnceLock<Vec<(char, char)>> = std::sync::OnceLock::new();
+    SOURCES.get_or_init(|| {
+        let mut out: Vec<(char, char)> = (0..=0x1FFFFu32)
+            .filter_map(char::from_u32)
+            .filter_map(|c| match fold(c).next() {
+                Some(f) if f != c => Some((f, c)),
+                _ => None,
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    })
+}
+
+/// The characters `c` with `fold(c)` beginning with `first`.
+fn chars_folding_first_to(first: char) -> Vec<char> {
+    let all = fold_sources();
+    let at = all.partition_point(|&(f, _)| f < first);
+    let mut out: Vec<char> = all[at..]
+        .iter()
+        .take_while(|&&(f, _)| f == first)
+        .map(|&(_, c)| c)
+        .collect();
+    if fold(first).next() == Some(first) {
+        out.push(first);
+    }
+    out
+}
+
 impl Needle {
     fn new(q: &str) -> Needle {
         let chars: Vec<char> = q.chars().flat_map(fold).collect();
@@ -103,10 +263,38 @@ impl Needle {
         let has_folded_to_ascii_letter = chars
             .iter()
             .any(|&c| c.is_ascii() && FOLDED_TO_ASCII.contains(&(c as u8)));
+        let mut starts = Vec::new();
+        let mut lead_bytes = [false; 256];
+        if let Some(&first) = chars.first() {
+            for ch in chars_folding_first_to(first) {
+                let folded: Vec<char> = fold(ch).collect();
+                let matched = folded.len().min(chars.len());
+                // A character whose folding disagrees with the query past its first character
+                // (`İ` for a query `ix`) cannot start a match.
+                if folded[..matched] != chars[..matched] {
+                    continue;
+                }
+                let next_lead = chars.get(matched).map(|&next| {
+                    let mut lead = Box::new([false; 256]);
+                    for c in chars_folding_first_to(next) {
+                        lead[c.to_string().as_bytes()[0] as usize] = true;
+                    }
+                    lead
+                });
+                lead_bytes[ch.to_string().as_bytes()[0] as usize] = true;
+                starts.push(Start {
+                    ch,
+                    matched,
+                    next_lead,
+                });
+            }
+        }
         Needle {
             chars,
             bytes,
             has_folded_to_ascii_letter,
+            starts,
+            lead_bytes,
         }
     }
 
@@ -138,15 +326,80 @@ impl Needle {
         }
     }
 
-    /// The reference: fold the text one character at a time. Every fast path must agree with it.
+    /// Whether the folded text contains the folded query: it starts at a character whose folding
+    /// begins with the query's first character, so only those are tried. (The reference, folding
+    /// at every position, is `found_in_at_every_position` in the tests; this must agree with it.)
     fn found_in_by_chars(&self, hay: &str) -> bool {
-        hay.char_indices().any(|(i, _)| self.starts_at(&hay[i..]))
+        // A long text is scanned for each start character with std's substring search (a word
+        // at a time, several times faster than a byte loop); a short one, the common cell, with
+        // one pass of a byte loop, which has no per-search set-up to pay for.
+        if hay.len() > LONG_TEXT {
+            return self.starts.iter().any(|st| {
+                hay.match_indices(st.ch)
+                    .any(|(i, _)| self.continues(hay, st, i + st.ch.len_utf8()))
+            });
+        }
+        let bytes = hay.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            // A leading byte of a start character (a byte of this kind is never in the middle
+            // of a character, so `i` is a character boundary).
+            if !self.lead_bytes[usize::from(b)] {
+                continue;
+            }
+            let Some(c) = hay[i..].chars().next() else {
+                continue;
+            };
+            if self
+                .starts
+                .iter()
+                .filter(|st| st.ch == c)
+                .any(|st| self.continues(hay, st, i + c.len_utf8()))
+            {
+                return true;
+            }
+        }
+        false
     }
 
-    /// Whether the folded characters of `s` begin with the query.
-    fn starts_at(&self, s: &str) -> bool {
-        let mut folded = s.chars().flat_map(fold);
-        self.chars.iter().all(|&n| folded.next() == Some(n))
+    /// Whether a match that began with the start character `st`, ending at byte `after` of
+    /// `hay`, goes on to the end of the query.
+    fn continues(&self, hay: &str, st: &Start, after: usize) -> bool {
+        // The next byte must be one that can begin the next character of the query.
+        if let Some(lead) = &st.next_lead {
+            match hay.as_bytes().get(after) {
+                Some(&n) if lead[usize::from(n)] => {}
+                _ => return false,
+            }
+        }
+        self.rest_matches(&hay[after..], st.matched)
+    }
+
+    /// Whether the folded characters of `s` continue the query from its `k`th character (ASCII
+    /// folds without the Unicode tables, which are a binary search per character).
+    fn rest_matches(&self, s: &str, mut k: usize) -> bool {
+        let want = &self.chars;
+        for c in s.chars() {
+            if k >= want.len() {
+                return true;
+            }
+            if c.is_ascii() {
+                if want[k] != c.to_ascii_lowercase() {
+                    return false;
+                }
+                k += 1;
+            } else {
+                for f in fold(c) {
+                    if k >= want.len() {
+                        return true;
+                    }
+                    if want[k] != f {
+                        return false;
+                    }
+                    k += 1;
+                }
+            }
+        }
+        k >= want.len()
     }
 }
 
@@ -257,10 +510,19 @@ impl App {
     /// remembering to reset it.
     pub(super) fn set_preview_kind(&mut self, kind: Option<PreviewKind>) {
         if !matches!(kind, Some(PreviewKind::Spreadsheet(_))) {
-            self.workbook = None;
+            self.set_workbook(None);
             self.workbook_error = None;
         }
         self.tab.preview_kind = kind;
+    }
+
+    /// Replaces the open workbook. **The one place a workbook is dropped**: freeing a large one
+    /// (millions of cells and strings) takes about 40 ms, which on the UI thread is a visible
+    /// stall at every `q`, sheet or tab switch, so the old one goes to [`discard_in_background`].
+    pub(super) fn set_workbook(&mut self, wb: Option<Box<crate::preview::office::Workbook>>) {
+        if let Some(old) = std::mem::replace(&mut self.workbook, wb) {
+            discard_in_background(old);
+        }
     }
 
     /// The invariant [`App::set_preview_kind`] keeps: a loaded workbook (or its error) exists only
@@ -384,7 +646,9 @@ impl App {
         if idx == self.tab.sheet_idx {
             return;
         }
-        wb.unload_cells();
+        // The cells of the sheet being left are freed on another thread (about 40 ms for a
+        // large one).
+        discard_in_background(wb.unload_cells());
         self.workbook_error = None;
         self.tab.sheet_idx = idx;
         self.tab.table_cur_row = 0;
@@ -541,29 +805,33 @@ impl App {
         let Some(g) = grid_of(&self.table_data, &self.workbook, self.tab.sheet_idx) else {
             return;
         };
-        match g {
+        self.tab.search_matches = match g {
             // A sheet is sparse (up to 16k columns): walk only the cells that exist, in reading
             // order, and match the displayed text.
-            Grid::Sheet(sheet) => {
-                for r in 0..sheet.nrows {
+            Grid::Sheet(sheet) => scan_rows(
+                sheet.nrows,
+                |r| sheet.row_cells(r).len(),
+                |r, out| {
                     for (c, cell) in sheet.row_cells(r) {
                         let shown = cell.display();
                         if !shown.is_empty() && needle.found_in(shown) {
-                            self.tab.search_matches.push((0, r, *c as usize));
+                            out.push((0, r, *c as usize));
                         }
                     }
-                }
-            }
-            Grid::Csv(t) => {
-                for r in 0..t.nrows() {
+                },
+            ),
+            Grid::Csv(t) => scan_rows(
+                t.nrows(),
+                |_| t.ncols,
+                |r, out| {
                     for c in 0..t.ncols {
                         if needle.found_in(t.cell(r, c)) {
-                            self.tab.search_matches.push((0, r, c));
+                            out.push((0, r, c));
                         }
                     }
-                }
-            }
-        }
+                },
+            ),
+        };
     }
 
     /// Whether this data cell matched the active search (renderer lookup). The matches of a table
@@ -762,6 +1030,14 @@ pub struct TableCellView {
 #[cfg(test)]
 mod needle_tests {
     use super::{fold, fold_results, fold_results_up_to, Needle, FOLDED_TO_ASCII, FOLDS_TO_ASCII};
+
+    /// The reference of the character search: fold the text at every character position.
+    fn found_in_at_every_position(n: &Needle, hay: &str) -> bool {
+        hay.char_indices().any(|(i, _)| {
+            let mut folded = hay[i..].chars().flat_map(fold);
+            n.chars.iter().all(|&c| folded.next() == Some(c))
+        })
+    }
 
     /// What the search used to do (allocating per cell).
     fn old(hay: &str, q: &str) -> bool {
@@ -1011,8 +1287,9 @@ mod needle_tests {
             let n = Needle::new(q);
             byte_queries += usize::from(n.bytes.is_some());
             for h in &hays {
-                let want = n.found_in_by_chars(h);
+                let want = found_in_at_every_position(&n, h);
                 assert_eq!(n.found_in(h), want, "hay {h:?} needle {q:?}");
+                assert_eq!(n.found_in_by_chars(h), want, "hay {h:?} needle {q:?}");
                 hits += usize::from(want);
             }
         }
@@ -1044,5 +1321,314 @@ mod needle_tests {
         assert!(!Needle::new("é").found_in("e"));
         assert!(Needle::new("").found_in("anything"));
         assert!(Needle::new("").found_in(""));
+    }
+
+    /// The character search tries only the characters whose folding begins with the query's first
+    /// character. For every character of Unicode that has a case, a query of its folding is found
+    /// in text holding that character (in any of its forms), exactly as the reference says.
+    #[test]
+    fn the_first_character_filter_loses_no_form_of_any_cased_character() {
+        let mut checked = 0;
+        for c in (0..=0x1FFFFu32).filter_map(char::from_u32) {
+            let folded: String = fold(c).collect();
+            if folded.chars().eq([c]) {
+                continue;
+            }
+            let n = Needle::new(&folded);
+            let hay = format!("x{c}y");
+            assert!(n.found_in_by_chars(&hay), "{c:?} -> {folded:?}");
+            assert_eq!(
+                n.found_in_by_chars(&hay),
+                found_in_at_every_position(&n, &hay),
+                "{c:?}"
+            );
+            // A query of the character itself finds it in the folded text as well.
+            let m = Needle::new(&c.to_string());
+            let hay2 = format!("x{folded}y");
+            assert_eq!(
+                m.found_in(&hay2),
+                found_in_at_every_position(&m, &hay2),
+                "{c:?}"
+            );
+            // And a miss stays a miss.
+            assert!(!n.found_in_by_chars("\u{1}\u{2}"), "{c:?}");
+            checked += 1;
+        }
+        assert!(
+            checked > 1000,
+            "the scan covers the cased characters ({checked})"
+        );
+    }
+
+    /// A query with a cased non-ASCII letter over a long text of non-ASCII cells: the shapes the
+    /// per-position folding was slow for. Not a timing test (that is measured in release); it
+    /// pins the result on a text where nearly every character is a candidate.
+    #[test]
+    fn the_first_character_filter_finds_a_match_after_many_false_starts() {
+        let hay = format!("{}ÉCOLE", "éé é".repeat(5000));
+        assert!(Needle::new("école").found_in(&hay));
+        assert!(Needle::new("ÉCOLE").found_in(&hay));
+        assert!(!Needle::new("écolx").found_in(&hay));
+        let hay = format!("{}Σ", "οδο".repeat(5000));
+        assert!(Needle::new("ς").found_in(&hay));
+        assert!(!Needle::new("ΩΩ").found_in(&hay));
+    }
+}
+
+#[cfg(test)]
+mod release_and_cap_tests {
+    use super::*;
+    use crate::test_support::unique_tmp;
+
+    /// Records which thread it was dropped on.
+    struct Probe(std::sync::mpsc::Sender<std::thread::ThreadId>);
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            let _ = self.0.send(std::thread::current().id());
+        }
+    }
+
+    #[test]
+    fn a_discarded_value_is_dropped_on_another_thread() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        discard_in_background(Probe(tx));
+        let on = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the value is dropped");
+        assert_ne!(on, std::thread::current().id());
+    }
+
+    #[test]
+    fn many_discards_are_all_freed_by_the_one_thread() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..200 {
+            discard_in_background(Probe(tx.clone()));
+        }
+        drop(tx);
+        let ids: std::collections::HashSet<_> = rx.iter().take(200).collect();
+        assert_eq!(ids.len(), 1, "one reaper thread, not a thread per value");
+        assert!(!ids.contains(&std::thread::current().id()));
+    }
+
+    #[test]
+    fn a_search_records_at_most_the_cap_and_the_first_in_reading_order() {
+        let dir = unique_tmp("konoma_table_search_cap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut csv = String::from("h\n");
+        for i in 0..(SEARCH_MATCH_CAP + 1_000) {
+            csv.push_str(&format!("hit {i}\n"));
+        }
+        std::fs::write(dir.join("t.csv"), csv).unwrap();
+        let root = dir.canonicalize().unwrap();
+        let mut app = App::new(root.clone(), Config::default()).unwrap();
+        let path = root.join("t.csv");
+        app.tab.preview_kind = Some(app.cfg.resolve_preview(&path));
+        app.tab.preview_path = Some(path);
+        app.tab.mode = Mode::Preview;
+        app.load_table();
+        assert_eq!(
+            app.table_data().map(|t| t.nrows()),
+            Some(SEARCH_MATCH_CAP + 1_000)
+        );
+
+        app.start_search();
+        for c in "HIT".chars() {
+            app.search_input_push(c);
+        }
+        app.search_commit();
+        assert_eq!(app.tab.search_matches.len(), SEARCH_MATCH_CAP);
+        assert_eq!(
+            app.tab.search_matches.last(),
+            Some(&(0, SEARCH_MATCH_CAP - 1, 0)),
+            "the first hits in reading order"
+        );
+        assert_eq!(app.search_status(), Some((1, SEARCH_MATCH_CAP)));
+        // A search with fewer hits than the cap is not cut.
+        app.start_search();
+        for c in "hit 4999".chars() {
+            app.search_input_push(c);
+        }
+        app.search_commit();
+        assert_eq!(app.tab.search_matches, vec![(0, 4999, 0)]);
+    }
+
+    /// The one place a workbook is dropped is `set_workbook` (and the sheet being left goes to
+    /// `discard_in_background`): a plain assignment would free it on the UI thread again.
+    #[test]
+    fn no_code_assigns_the_workbook_or_drops_unloaded_sheets_on_the_ui_thread() {
+        let table_actions = include_str!("table_actions.rs");
+        let table_actions = table_actions
+            .split("mod release_and_cap_tests")
+            .next()
+            .unwrap();
+        for (name, src) in [
+            ("app.rs", include_str!("../app.rs")),
+            ("media_load.rs", include_str!("media_load.rs")),
+            ("tab_lifecycle.rs", include_str!("tab_lifecycle.rs")),
+            ("table_actions.rs", table_actions),
+        ] {
+            // (the tests module of app.rs is a separate file)
+            for (n, line) in src.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                assert!(
+                    !code.contains("self.workbook = "),
+                    "{name}:{}: assign through set_workbook: {line}",
+                    n + 1
+                );
+                assert!(
+                    !code.contains(".unload_cells();"),
+                    "{name}:{}: hand the freed sheets to discard_in_background: {line}",
+                    n + 1
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod search_agreement_tests {
+    use super::{fold, Needle};
+
+    /// The reference: fold the text at every character position.
+    fn at_every_position(n: &Needle, hay: &str) -> bool {
+        hay.char_indices().any(|(i, _)| {
+            let mut folded = hay[i..].chars().flat_map(fold);
+            n.chars.iter().all(|&c| folded.next() == Some(c))
+        })
+    }
+
+    /// Random short texts and queries over the characters that make the character search
+    /// interesting (cased non-ASCII letters, the ones that fold to several characters or to ASCII,
+    /// the three sigmas, combining marks), several seeds, matches in about half the pairs.
+    #[test]
+    fn the_character_search_agrees_with_folding_at_every_position() {
+        let alphabet: Vec<char> =
+            "aAbBkKiIxé É è ê ω Ω σ ς Σ ǅ ǆ Ǆ ß \u{212A}\u{130}\u{307}\u{3a3} 日 ａ Ａ 1 -"
+                .chars()
+                .collect();
+        let mut agree = 0usize;
+        let mut hits = 0usize;
+        for seed in 1..=6u64 {
+            let mut x: u64 = 0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0xD6E8_FEB8_6659_FD93);
+            let mut next = move || {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x
+            };
+            let mut make = |max: u64| -> String {
+                let n = next() % max + 1;
+                (0..n)
+                    .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+                    .collect()
+            };
+            let hays: Vec<String> = (0..300).map(|_| make(14)).collect();
+            let needles: Vec<String> = (0..150).map(|_| make(4)).collect();
+            for q in &needles {
+                let n = Needle::new(q);
+                for h in &hays {
+                    let want = at_every_position(&n, h);
+                    assert_eq!(n.found_in_by_chars(h), want, "hay {h:?} needle {q:?}");
+                    assert_eq!(n.found_in(h), want, "hay {h:?} needle {q:?}");
+                    // The same text made long (the other branch of the search): padding that
+                    // is in no query, in front and behind.
+                    let long = format!("{pad}{h}{pad}", pad = "\u{b7}".repeat(super::LONG_TEXT));
+                    assert_eq!(
+                        n.found_in_by_chars(&long),
+                        want,
+                        "long hay {h:?} needle {q:?}"
+                    );
+                    assert_eq!(n.found_in(&long), want, "long hay {h:?} needle {q:?}");
+                    agree += 1;
+                    hits += usize::from(want);
+                }
+            }
+        }
+        assert!(agree > 250_000);
+        assert!(hits > 10_000, "the corpus finds things ({hits})");
+    }
+}
+
+#[cfg(test)]
+mod parallel_search_tests {
+    use super::*;
+
+    /// Rows of uneven weight: a row `r` has `r % 7` cells (some none), and a cell matches when
+    /// `(r * 31 + c) % 5 == 0`.
+    fn scan(threads: usize, nrows: usize) -> Vec<(u64, usize, usize)> {
+        scan_rows_with(
+            nrows,
+            |r| r % 7,
+            |r, out| {
+                for c in 0..r % 7 {
+                    if (r * 31 + c) % 5 == 0 {
+                        out.push((0, r, c));
+                    }
+                }
+            },
+            threads,
+        )
+    }
+
+    #[test]
+    fn several_threads_give_exactly_what_one_thread_gives() {
+        for nrows in [0, 1, 2, 7, 100, 1_000, 5_000, 20_000] {
+            let one = scan(1, nrows);
+            for threads in [2, 3, 4, 8, 64] {
+                assert_eq!(
+                    scan(threads, nrows),
+                    one,
+                    "{nrows} rows on {threads} threads"
+                );
+            }
+            assert!(one.windows(2).all(|w| w[0] < w[1]), "reading order");
+        }
+        // The big case really is the parallel path (past the cell threshold) and is cut at the
+        // cap, in reading order.
+        let big = scan(8, 20_000);
+        assert_eq!(big.len(), SEARCH_MATCH_CAP);
+        assert_eq!(big, scan(1, 20_000));
+    }
+
+    #[test]
+    fn one_row_holding_most_of_the_cells_still_searches_everything() {
+        // 3 rows, the middle one with all the cells: runs cannot be balanced, nothing is lost.
+        let out = scan_rows_with(
+            3,
+            |r| if r == 1 { 10_000 } else { 1 },
+            |r, out| {
+                let n = if r == 1 { 10_000 } else { 1 };
+                for c in 0..n {
+                    if c % 1_000 == 0 {
+                        out.push((0, r, c));
+                    }
+                }
+            },
+            8,
+        );
+        let want: Vec<_> = (0..3)
+            .flat_map(|r| {
+                let n = if r == 1 { 10_000 } else { 1 };
+                (0..n).filter(|c| c % 1_000 == 0).map(move |c| (0u64, r, c))
+            })
+            .collect();
+        assert_eq!(out, want);
+    }
+
+    #[test]
+    fn a_small_table_does_not_start_threads() {
+        // Under the threshold the work runs on this thread: the closure may observe it.
+        let me = std::thread::current().id();
+        let out = scan_rows_with(
+            100,
+            |_| 1,
+            |r, out| {
+                assert_eq!(std::thread::current().id(), me);
+                out.push((0, r, 0));
+            },
+            8,
+        );
+        assert_eq!(out.len(), 100);
     }
 }

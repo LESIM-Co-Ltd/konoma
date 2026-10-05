@@ -19999,12 +19999,8 @@ fn e2e_complex_objects_workbook_shows_cells_only() {
         goto_cell_with(&mut s, "735");
         s.enter();
         s.see("Displayed: 735");
-        // (ods keeps its OpenFormula text as written: `of:=SUM([.B2:.B6])`)
-        s.see(if ext == "ods" {
-            "SUM([.B2:.B6])"
-        } else {
-            "Formula: =SUM("
-        });
+        // (an ods stores `of:=SUM([.B2:.B6])`; it is shown as Excel writes it)
+        s.see("Formula: =SUM(");
         s.esc();
         s.key('J');
         see_cjk(&mut s, "図形のみ (2/2)");

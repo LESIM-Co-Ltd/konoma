@@ -1,5 +1,11 @@
 use super::*;
 
+/// Most matches an in-preview search records (windowed text and tables alike). A table of
+/// millions of cells can match in all of them: 4 million hits are ~96 MB of positions, copied at
+/// every tab switch. The first hits in reading order are kept; a count that reads exactly this
+/// is the sign the search stopped.
+pub(super) const SEARCH_MATCH_CAP: usize = 5000;
+
 impl App {
     /// Whether in-preview search input mode is active (intercepting keys).
     pub fn is_searching(&self) -> bool {
@@ -125,7 +131,7 @@ impl App {
             self.tab.search_matches.clear();
             return;
         }
-        const CAP: usize = 5000;
+        let cap = SEARCH_MATCH_CAP;
         let target = self.search_target();
         // A sheet that is being (re)loaded has nothing to search yet (or only cells that are about
         // to be replaced): remember the query and let the arrival run it (`apply_payload`),
@@ -146,7 +152,7 @@ impl App {
                 self.tab.search_matches = self
                     .preview_win
                     .as_mut()
-                    .and_then(|w| w.find_all_matches(&q, CAP).ok())
+                    .and_then(|w| w.find_all_matches(&q, cap).ok())
                     .unwrap_or_default();
             }
         }

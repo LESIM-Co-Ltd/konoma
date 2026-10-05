@@ -2625,7 +2625,7 @@ fn real_ods_written_by_libreoffice() {
     // LibreOffice imports the source's boolean as the number 1 (no boolean style) when it saves.
     assert_eq!(s.cell(4, 4).unwrap().cell_type(), CellType::Number);
     assert_eq!(s.display(4, 4), "1");
-    assert_eq!(s.formula(4, 1), Some("of:=SUM([.B3:.B4])"));
+    assert_eq!(s.formula(4, 1), Some("SUM(B3:B4)"));
 }
 
 #[test]

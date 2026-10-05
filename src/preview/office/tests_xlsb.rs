@@ -1128,3 +1128,24 @@ fn a_damaged_sheet_part_is_a_sheet_error_and_the_other_sheets_still_load() {
     assert_eq!(wb.sheets[0].display(0, 0), "1");
     assert!(wb.sheet_error.is_none());
 }
+
+#[test]
+fn an_xlsb_may_have_the_most_sheets_and_no_more() {
+    let book = |n: usize| {
+        let mut v = Vec::new();
+        for i in 0..n {
+            v.extend(bundle_sh(0, i as u32, &format!("rId{i}"), &format!("S{i}")));
+        }
+        v.extend(rec(0x0090, &[]));
+        v
+    };
+    let most = fmt_xlsx::MAX_SHEETS;
+    assert_eq!(
+        fmt_xlsb::parse_workbook(&book(most)[..]).unwrap().1.len(),
+        most
+    );
+    assert_eq!(
+        fmt_xlsb::parse_workbook(&book(most + 1)[..]).unwrap_err(),
+        OfficeError::TooLarge { what: "sheets" }
+    );
+}

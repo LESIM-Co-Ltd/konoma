@@ -365,7 +365,12 @@ impl App {
             }
         }
         if result.gen != self.media_gen {
-            return false; // stale: we've already moved on to another file
+            // Stale: we've already moved on to another file. A workbook nobody wants is freed off
+            // the UI thread like any other (see `set_workbook`).
+            if let Some(MediaPayload::Workbook(wb)) = result.payload {
+                super::table_actions::discard_in_background(wb);
+            }
+            return false;
         }
         self.media_loading = false;
         // The current generation's result arrived = the reraster in-flight flag is resolved (clear
@@ -421,16 +426,18 @@ impl App {
                         self.tab.sheet_idx = i;
                     }
                     self.workbook_error = wb.sheet_error.clone();
-                    self.workbook = Some(wb);
+                    self.set_workbook(Some(wb));
                     self.clamp_table_cursor();
                     // The search in force runs on what arrived (a reload after an outside edit, or
                     // another sheet): hits recorded for the old cells are not hits any more.
                     self.rescan_table_search();
+                } else {
+                    super::table_actions::discard_in_background(wb);
                 }
             }
             MediaPayload::WorkbookFailed(e) => {
                 if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) {
-                    self.workbook = None;
+                    self.set_workbook(None);
                     self.workbook_error = Some(e);
                     self.tab.search_pending = false;
                 }

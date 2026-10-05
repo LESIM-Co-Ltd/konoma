@@ -55,11 +55,10 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 use quick_xml::events::{BytesRef, BytesStart, Event};
-use quick_xml::Reader;
 use zip::ZipArchive;
 
 use super::container::{self, Limits};
-use super::fmt_xlsx::{self, attr, is_true, parse_a1, xml_err, STRING_OVERHEAD};
+use super::fmt_xlsx::{self, attr, is_true, parse_a1, xml_err, XmlReader, STRING_OVERHEAD};
 use super::workbook::{Cancel, MergeRange, NumFmtRef};
 use super::OfficeError;
 
@@ -330,7 +329,7 @@ pub(crate) struct SheetDecl {
 /// `(date1904, sheets)` of `workbook.xml`. A `<sheet>` needs a name and a relationship id (an
 /// attribute with a namespace prefix: `r:id`).
 pub(crate) fn parse_workbook(src: impl BufRead) -> Result<(bool, Vec<SheetDecl>), OfficeError> {
-    let mut rd = Reader::from_reader(src);
+    let mut rd = XmlReader::new(src);
     let mut buf = Vec::new();
     let mut date1904 = false;
     let mut sheets = Vec::new();
@@ -352,6 +351,9 @@ pub(crate) fn parse_workbook(src: impl BufRead) -> Result<(bool, Vec<SheetDecl>)
                         _ => Visibility::Visible,
                     };
                     if let (Some(name), Some(rid)) = (name, rid) {
+                        if sheets.len() >= fmt_xlsx::MAX_SHEETS {
+                            return Err(OfficeError::TooLarge { what: "sheets" });
+                        }
                         sheets.push(SheetDecl { name, rid, visible });
                     }
                 }
@@ -376,7 +378,7 @@ pub(crate) struct Rel {
 
 /// Internal relationships by id (external targets are not parts of the package).
 pub(crate) fn parse_rels(src: impl BufRead) -> Result<HashMap<String, Rel>, OfficeError> {
-    let mut rd = Reader::from_reader(src);
+    let mut rd = XmlReader::new(src);
     let mut buf = Vec::new();
     let mut map = HashMap::new();
     loop {
@@ -485,7 +487,7 @@ fn push_ref(e: &BytesRef<'_>, out: &mut String) {
 /// read. A byte that is not valid UTF-8 is a replacement character, so one bad cell is not a
 /// bad sheet.
 fn read_text_into<R: BufRead>(
-    rd: &mut Reader<R>,
+    rd: &mut XmlReader<R>,
     closing: &[u8],
     buf: &mut Vec<u8>,
     out: &mut String,
@@ -540,7 +542,7 @@ fn push_capped(out: &mut String, s: &str, cap: usize) {
 /// text of every `<t>` that is not phonetic, in order. Each `<t>` is trimmed of ASCII whitespace
 /// unless it says `xml:space="preserve"`, and `_xHHHH_` escapes are decoded.
 fn read_rich<R: BufRead>(
-    rd: &mut Reader<R>,
+    rd: &mut XmlReader<R>,
     closing: &[u8],
     bufs: (&mut Vec<u8>, &mut Vec<u8>),
     piece: &mut String,
@@ -620,7 +622,7 @@ fn push_unescaped(s: &str, out: &mut String) {
 fn read_shared_strings(src: impl BufRead, limits: &Limits) -> Result<SharedStrings, OfficeError> {
     let too_large = || OfficeError::TooLarge { what: "text" };
     let cap = usize::try_from(limits.max_text_bytes).unwrap_or(usize::MAX);
-    let mut rd = Reader::from_reader(src);
+    let mut rd = XmlReader::new(src);
     rd.config_mut().expand_empty_elements = true;
     let (mut ev, mut ev2, mut piece) = (Vec::new(), Vec::new(), String::new());
     let mut buf = Vec::new();
@@ -850,7 +852,7 @@ pub(crate) fn parse_sheet(
     mut sink: impl FnMut(CellOut<'_>) -> bool,
 ) -> Result<Vec<MergeRange>, OfficeError> {
     let cap = usize::try_from(limits.max_sheet_text_bytes).unwrap_or(usize::MAX);
-    let mut rd = Reader::from_reader(src);
+    let mut rd = XmlReader::new(src);
     rd.config_mut().expand_empty_elements = true;
     let mut buf = Vec::new();
     let mut sc = Scratch::default();
@@ -1011,7 +1013,7 @@ enum Formula {
 /// is skipped. A truncated file ends the cell where it ends.
 #[allow(clippy::too_many_arguments)]
 fn read_cell<R: BufRead>(
-    rd: &mut Reader<R>,
+    rd: &mut XmlReader<R>,
     sc: &mut Scratch,
     tables: &Tables,
     masters: &mut Masters,
@@ -1117,7 +1119,7 @@ fn formula_attrs(e: &BytesStart<'_>) -> (bool, Option<u32>, bool) {
 /// for the types that are text (`str`, `d`, anything else) it is all the text. The `<v>` of an
 /// inline string is redundant and ignored (it also replaces a value read before it).
 fn read_v<R: BufRead>(
-    rd: &mut Reader<R>,
+    rd: &mut XmlReader<R>,
     closing: &[u8],
     bufs: (&mut Vec<u8>, &mut Vec<u8>),
     text: &mut String,

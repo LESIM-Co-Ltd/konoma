@@ -556,3 +556,100 @@ fn iso_durations_weeks_and_misplaced_designators() {
     assert_eq!(iso_duration_to_serial("P5M"), None);
     assert_eq!(iso_duration_to_serial("PT5M"), Some(5.0 / 1440.0));
 }
+
+// ---- the size of what a format produces --------------------------------------------------
+
+#[test]
+fn a_text_format_that_repeats_at_does_not_multiply_the_text() {
+    // 255 `@` over a 30,000-character cell: the shown text is cut at 1,024 characters anyway,
+    // so the output may not be 255 times the text (7.6 MB here, 8 GB for a 32 MB cell).
+    let text = "x".repeat(30_000);
+    let code = "@".repeat(255);
+    let c = compile(&code);
+    let out = format_compiled(&c, Value::Text(&text), &Options::default());
+    assert!(out.len() <= 8 * MAX_OUTPUT_CHARS, "{} bytes", out.len());
+    assert!(out.chars().count() >= MAX_OUTPUT_CHARS, "enough to show");
+    assert!(out.chars().all(|c| c == 'x'));
+    // Multi-byte text is cut on a character boundary, and still covers what is shown.
+    let wide = "あ".repeat(10_000);
+    let out = format_compiled(&c, Value::Text(&wide), &Options::default());
+    assert!(out.len() <= 8 * MAX_OUTPUT_CHARS, "{} bytes", out.len());
+    assert!(out.chars().count() >= MAX_OUTPUT_CHARS);
+    assert!(out.chars().all(|c| c == 'あ'));
+    // With literals in between, and a short text, the repeats still add up to what is shown.
+    let mixed = format!("{}\"-\"", "@".repeat(100));
+    let out = format_value(&mixed, Value::Text("ab"), &Options::default());
+    assert_eq!(out, "ab".repeat(100) + "-");
+    let long_mixed = "@\"-\"".repeat(60);
+    let out = format_value(&long_mixed, Value::Text(&text), &Options::default());
+    assert!(out.len() <= 8 * MAX_OUTPUT_CHARS, "{} bytes", out.len());
+}
+
+#[test]
+fn a_lone_at_returns_the_text_whole_so_it_can_be_told_from_a_format() {
+    let text = "y".repeat(30_000);
+    let out = format_value("@", Value::Text(&text), &Options::default());
+    assert_eq!(out, text);
+    // The same for a text-only section that follows number sections.
+    let out = format_value("0;-0;0;@", Value::Text(&text), &Options::default());
+    assert_eq!(out, text);
+}
+
+#[test]
+fn a_number_through_a_text_only_format_is_bounded_too() {
+    let code = "@".repeat(255);
+    let out = format_value(&code, Value::Number(1234.5), &Options::default());
+    assert_eq!(out, "1234.5".repeat(255));
+    assert!(out.len() <= 8 * MAX_OUTPUT_CHARS);
+}
+
+#[test]
+fn no_code_of_the_longest_length_makes_an_output_over_a_few_thousand_bytes() {
+    // Every other piece of output (placeholders, literals, `*` fills, elapsed time, fractions)
+    // is bounded by the code (255 characters) and by the digits of a number (at most ~310), not
+    // by the text. The worst of each kind, over extreme numbers.
+    let codes: Vec<String> = vec![
+        "0".repeat(255),
+        format!("0.{}", "0".repeat(253)),
+        format!("#,##0.{}", "0".repeat(249)),
+        format!("0.{}E+00", "0".repeat(248)),
+        "?".repeat(255),
+        "?/?".repeat(85),
+        "# ?/?".repeat(51),
+        "[h]".repeat(85),
+        "[hh]:mm:ss.000".repeat(18),
+        "yyyy-mm-dd ".repeat(23),
+        "mmmm".repeat(63),
+        "ss.0000000000".repeat(19),
+        "*x".repeat(127),
+        format!("\"{}\"", "z".repeat(253)),
+        "_(".repeat(127),
+        "\\x".repeat(127),
+        "%".repeat(255),
+        "0,".repeat(127),
+    ];
+    let numbers = [
+        0.0,
+        1.0,
+        -1.0,
+        0.5,
+        1e-300,
+        1e300,
+        1.797e308,
+        123456789.123456,
+        46297.75,
+        -46297.75,
+        1e15,
+        4e6,
+    ];
+    let mut worst = 0;
+    for code in &codes {
+        let c = compile(code);
+        for &n in &numbers {
+            let out = format_compiled(&c, Value::Number(n), &Options::default());
+            worst = worst.max(out.len());
+            assert!(out.len() <= 6000, "{code:.20} on {n}: {} bytes", out.len());
+        }
+    }
+    assert!(worst > 0);
+}

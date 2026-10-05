@@ -35,7 +35,10 @@ use std::collections::HashMap;
 use std::io::Read;
 
 use super::container::Limits;
-use super::fmt_xlsx::{keep_format_code, styles_from, SheetFormats, XlsxFormats, STRING_OVERHEAD};
+use super::fmt_xlsx::{
+    keep_format_code, styles_from, SheetFormats, XlsxFormats, MAX_SHEETS, STRING_OVERHEAD,
+};
+use super::workbook::Cancel;
 use super::OfficeError;
 
 const BOF: u16 = 0x0809;
@@ -56,13 +59,19 @@ const RSTRING: u16 = 0x00D6;
 const LABELSST: u16 = 0x00FD;
 /// NUMBER, LABEL, RSTRING, BOOLERR, LABELSST, RK, FORMULA: `row, col, ixfe` first.
 const SIMPLE_CELLS: [u16; 7] = [0x0203, 0x0204, 0x00D6, 0x0205, 0x00FD, 0x027E, 0x0006];
+/// A cancel flag is looked at every this many records of a sheet.
+const CANCEL_EVERY: u32 = 8_192;
 /// Most XF records kept (Excel allows 64,000 cell XFs plus the style XFs).
 const MAX_XFS: usize = 200_000;
 
 /// Reads the workbook-level and per-cell format information of an xls file.
-pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, OfficeError> {
+pub fn read(
+    path: &std::path::Path,
+    limits: &Limits,
+    cancel: Option<&Cancel>,
+) -> Result<XlsxFormats, OfficeError> {
     let stream = read_workbook_stream(path, limits)?;
-    parse_stream(&stream, limits)
+    parse_stream_cancellable(&stream, limits, cancel)
 }
 
 /// The `Workbook` / `Book` stream, read through a cap on the expanded size.
@@ -292,7 +301,16 @@ pub(crate) fn sst_lengths(
     Ok((lens, total))
 }
 
+#[cfg(test)]
 pub(crate) fn parse_stream(stream: &[u8], limits: &Limits) -> Result<XlsxFormats, OfficeError> {
+    parse_stream_cancellable(stream, limits, None)
+}
+
+pub(crate) fn parse_stream_cancellable(
+    stream: &[u8],
+    limits: &Limits,
+    cancel: Option<&Cancel>,
+) -> Result<XlsxFormats, OfficeError> {
     let mut date1904 = false;
     let mut biff8 = true;
     let mut custom: HashMap<u32, String> = HashMap::new();
@@ -335,6 +353,11 @@ pub(crate) fn parse_stream(stream: &[u8], limits: &Limits) -> Result<XlsxFormats
             }
             BOUNDSHEET => {
                 if let Some(s) = bound_sheet(r.data, biff8) {
+                    // A sheet is at least a `BOF` and an `EOF` (16 bytes), so the stream size alone
+                    // allows millions, and `calamine` parses every one before it can be cancelled.
+                    if sheets.len() >= MAX_SHEETS {
+                        return Err(OfficeError::TooLarge { what: "sheets" });
+                    }
                     sheets.push(s);
                 }
             }
@@ -355,11 +378,24 @@ pub(crate) fn parse_stream(stream: &[u8], limits: &Limits) -> Result<XlsxFormats
         sheets: HashMap::new(),
     };
     let mut area_total = 0u64;
+    // Each sheet is read from its position to its first EOF, and `calamine` does the same for
+    // every sheet. Substreams that overlap (BOUNDSHEETs pointing at one body, or into the middle
+    // of another sheet) would make the work the number of sheets times the length of the body,
+    // so the sheets are taken in stream order and each must start where the previous one ended:
+    // the total work is then at most the length of the stream. No real file does otherwise.
+    sheets.sort_by_key(|&(pos, _)| pos);
+    let mut prev_end = 0usize;
     for (pos, name) in sheets {
+        if pos < prev_end {
+            return Err(OfficeError::Corrupt(
+                "xls sheets share the same records".into(),
+            ));
+        }
         let sub = stream
             .get(pos..)
             .ok_or_else(|| OfficeError::Corrupt("sheet position past the stream".into()))?;
-        let sf = parse_sheet(sub, &styles.xf_to_format, &sst_lens, limits)?;
+        let (sf, used) = parse_sheet_span(sub, &styles.xf_to_format, &sst_lens, limits, cancel)?;
+        prev_end = pos + used;
         text_total = text_total.saturating_add(sf.text_bytes);
         if text_total > limits.max_text_bytes {
             return Err(OfficeError::TooLarge { what: "text" });
@@ -415,23 +451,36 @@ fn string_cost(data: &[u8], cch_at: usize, flags_at: usize, biff8: bool) -> u64 
     (cch.min(room) * width) as u64 + STRING_OVERHEAD
 }
 
-pub(crate) fn parse_sheet(
+/// The format information of one sheet substream, and how many bytes of `stream` its records
+/// took (up to and including its first `EOF`).
+fn parse_sheet_span(
     stream: &[u8],
     xf_to_format: &[u16],
     sst_lens: &[u32],
     limits: &Limits,
-) -> Result<SheetFormats, OfficeError> {
+    cancel: Option<&Cancel>,
+) -> Result<(SheetFormats, usize), OfficeError> {
     let mut out = SheetFormats::default();
     // Where `calamine` puts a formula's `STRING` result: the last FORMULA's cell, A1 before any.
     let mut formula_pos = (0u32, 0u32);
     let mut biff8 = true;
     let fmt_of = |ixfe: u16| xf_to_format.get(usize::from(ixfe)).copied().unwrap_or(0);
     let short = || OfficeError::Corrupt("xls cell record too short".into());
-    for rec in (Records { stream }) {
+    let mut records = Records { stream };
+    let mut seen = 0u32;
+    let mut ended = false;
+    for rec in records.by_ref() {
         let r = rec?;
+        seen += 1;
+        if seen.is_multiple_of(CANCEL_EVERY) && cancel.is_some_and(Cancel::is_cancelled) {
+            return Err(OfficeError::Corrupt("cancelled".into()));
+        }
         match r.typ {
             BOF => biff8 = u16_at(r.data, 0) == Some(0x0600),
-            EOF => break,
+            EOF => {
+                ended = true;
+                break;
+            }
             DIMENSIONS => {
                 if declared_area(r.data)? > limits.max_dense_cells {
                     return Err(OfficeError::TooLarge { what: "sheet area" });
@@ -488,5 +537,10 @@ pub(crate) fn parse_sheet(
         }
     }
     out.cells.sort_unstable_by_key(|&(r, c, _)| (r, c));
-    Ok(out)
+    let used = if ended {
+        stream.len() - records.stream.len()
+    } else {
+        stream.len()
+    };
+    Ok((out, used))
 }

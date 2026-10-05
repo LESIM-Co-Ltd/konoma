@@ -4163,7 +4163,7 @@ impl App {
         // A new preview target: the previous spreadsheet (if any) and its sheet number are done
         // for. Must precede `start_media_load` below, whose synchronous fallback can land the new
         // workbook right away.
-        self.workbook = None;
+        self.set_workbook(None);
         self.workbook_error = None;
         self.tab.sheet_idx = 0;
         // For a PDF, get the page count first (hayro-syntax, pure Rust, no external process, ~a
@@ -4830,7 +4830,7 @@ impl App {
         self.tab.search_pending = false;
         self.tab.came_from_git_view = false;
         self.table_data = None;
-        self.workbook = None;
+        self.set_workbook(None);
         self.workbook_error = None;
         self.tab.sheet_idx = 0;
         self.tab.table_cur_row = 0;

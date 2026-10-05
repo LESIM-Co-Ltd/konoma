@@ -239,16 +239,25 @@ pub struct Workbook {
 
 impl Workbook {
     /// Drops the cells of every sheet (the names stay): the sheet being left is not kept.
-    pub fn unload_cells(&mut self) {
+    ///
+    /// Returns the sheets that held cells, as they were: freeing a large sheet takes tens of
+    /// milliseconds, so the caller decides on which thread that happens.
+    pub fn unload_cells(&mut self) -> Vec<Sheet> {
+        let mut freed = Vec::new();
         for s in &mut self.sheets {
             if s.loaded {
-                *s = Sheet {
-                    name: std::mem::take(&mut s.name),
-                    ..Sheet::default()
-                };
+                let name = std::mem::take(&mut s.name);
+                freed.push(std::mem::replace(
+                    s,
+                    Sheet {
+                        name,
+                        ..Sheet::default()
+                    },
+                ));
             }
         }
         self.sheet_error = None;
+        freed
     }
 
     /// The index of the sheet whose cells are loaded.
@@ -421,7 +430,8 @@ pub fn load_workbook_sheet(
 }
 
 /// [`load_workbook_sheet`] that gives up when `cancel` says so. A cancelled load returns a
-/// partial workbook (the caller is discarding it, so what is in it does not matter).
+/// partial workbook, or an error when it stopped before there was one (the format pass of an xls
+/// or ods): the caller is discarding it, so what is in it does not matter.
 pub fn load_workbook_sheet_cancellable(
     path: &Path,
     opts: &LoadOptions,
@@ -578,7 +588,10 @@ fn load_ods(
     which: Which,
     cancel: Option<Cancel>,
 ) -> Result<Workbook, OfficeError> {
-    let (fm, extra) = fmt_ods::read_full(path, &opts.limits)?;
+    let (fm, extra) = fmt_ods::read_full_cancellable(path, &opts.limits, cancel.as_ref())?;
+    if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+        return Err(OfficeError::Corrupt("cancelled".into()));
+    }
     let mut wb: calamine::Ods<_> = calamine::Ods::new(open_reader(path)?).map_err(map_ods)?;
     let metas = sheet_metas(&wb);
     let mut ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
@@ -635,7 +648,12 @@ fn load_xls(
     which: Which,
     cancel: Option<Cancel>,
 ) -> Result<Workbook, OfficeError> {
-    let fm = fmt_xls::read(path, &opts.limits)?;
+    let fm = fmt_xls::read(path, &opts.limits, cancel.as_ref())?;
+    // `calamine` parses every sheet and cannot be stopped: not even started for a load nobody
+    // waits for any more.
+    if cancel.as_ref().is_some_and(Cancel::is_cancelled) {
+        return Err(OfficeError::Corrupt("cancelled".into()));
+    }
     let mut wb: calamine::Xls<_> = calamine::Xls::new(open_reader(path)?).map_err(map_xls)?;
     let metas = sheet_metas(&wb);
     let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
@@ -838,7 +856,7 @@ enum Flow {
 /// dozen characters at most; the only way to get more is a format code that repeats a long
 /// pattern (`mmmm` x 60 = 570 bytes for every cell of the column), so the text is cut here and
 /// not left to cost memory in proportion to the cell count.
-const MAX_DISPLAY_CHARS: usize = 1024;
+const MAX_DISPLAY_CHARS: usize = numfmt::MAX_OUTPUT_CHARS;
 
 /// Bytes charged to a sheet's text budget for each stored string on top of its length: the
 /// allocation overhead of a `Box<str>` / formula entry. Not exact — a budget needs a proportional,
@@ -1035,7 +1053,13 @@ impl<'a> SheetBuilder<'a> {
             self.rows[r].push((col, cell));
         }
         if let Some(f) = formula {
-            self.sheet.formulas.insert((row, col), f.into());
+            // An ods keeps OpenFormula (`of:=SUM([.B3:.B4])`): shown as Excel writes it.
+            let f: Box<str> = if self.ctx.null_day.is_some() {
+                super::ods_formula::to_a1(f).into()
+            } else {
+                f.into()
+            };
+            self.sheet.formulas.insert((row, col), f);
         }
         Flow::Continue
     }

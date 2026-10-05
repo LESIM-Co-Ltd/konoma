@@ -75,6 +75,9 @@ pub const MAX_CODE_CHARS: usize = 255;
 /// Excel's own limit on decimal places. Placeholders after the decimal point beyond it are
 /// dropped when a code is compiled.
 pub const MAX_DECIMALS: usize = 30;
+/// The longest text a formatted cell shows, in characters. A format applied to a cell never
+/// produces much more than this (see `render_text`); the loader cuts the rest.
+pub const MAX_OUTPUT_CHARS: usize = 1024;
 
 /// A format code parsed once. Parsing a code is the expensive part of formatting a cell, and a
 /// workbook has a handful of distinct codes for millions of cells, so a caller formats many cells
@@ -915,9 +918,29 @@ fn general_sci(d: &Dec) -> String {
 // Number rendering
 // ---------------------------------------------------------------------------------------
 
+/// A text through a text section.
+///
+/// A code can repeat `@` up to [`MAX_CODE_CHARS`] times, so the output is not allowed to grow with
+/// the repeat count or with the length of the text: each piece is cut to the bytes that cover
+/// [`MAX_OUTPUT_CHARS`] characters and the output stops once it holds that many (the caller shows
+/// no more than that anyway). A section that is a lone `@` returns the text whole, so a caller
+/// can tell "shown as written" (and keeps no second copy of it).
 fn render_text(sec: &Section, text: &str) -> String {
+    if matches!(sec.toks.as_slice(), [Tok::At]) {
+        return text.to_string();
+    }
+    // Four bytes per char at most: this many bytes always cover the characters shown.
+    const ENOUGH: usize = MAX_OUTPUT_CHARS * 4;
+    let mut cut = text.len().min(ENOUGH);
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let text = &text[..cut];
     let mut out = String::new();
     for t in &sec.toks {
+        if out.len() >= ENOUGH {
+            break;
+        }
         match t {
             Tok::At => out.push_str(text),
             Tok::Lit(s) => out.push_str(s),

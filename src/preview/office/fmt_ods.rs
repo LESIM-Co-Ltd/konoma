@@ -58,12 +58,12 @@ use std::collections::HashMap;
 use std::io::BufRead;
 
 use quick_xml::events::{BytesStart, Event};
-use quick_xml::{Reader, XmlVersion};
+use quick_xml::XmlVersion;
 
 use super::container::{self, Limits};
-use super::fmt_xlsx::{keep_format_code, SheetFormats, XlsxFormats, STRING_OVERHEAD};
+use super::fmt_xlsx::{keep_format_code, SheetFormats, XlsxFormats, XmlReader, STRING_OVERHEAD};
 use super::numfmt;
-use super::workbook::{CellError, MergeRange, NumFmtRef};
+use super::workbook::{Cancel, CellError, MergeRange, NumFmtRef};
 use super::OfficeError;
 
 /// Excel's own limits, which `calamine`'s ods reader also applies while expanding repeats.
@@ -123,9 +123,20 @@ pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, Offi
 }
 
 /// [`read`] with the ods-only information (null date, merged ranges, repaired texts).
+#[cfg(test)]
 pub fn read_full(
     path: &std::path::Path,
     limits: &Limits,
+) -> Result<(XlsxFormats, OdsExtra), OfficeError> {
+    read_full_cancellable(path, limits, None)
+}
+
+/// [`read_full`] that gives up (with an error nobody sees: the caller is discarding the result)
+/// once `cancel` says so; it is looked at every few thousand events of the body.
+pub fn read_full_cancellable(
+    path: &std::path::Path,
+    limits: &Limits,
+    cancel: Option<&Cancel>,
 ) -> Result<(XlsxFormats, OdsExtra), OfficeError> {
     let mut zip = container::open_zip(path)?;
     let cap = limits.max_part_bytes;
@@ -150,7 +161,13 @@ pub fn read_full(
     let (sheets, totals) = {
         let r = container::part_reader(&mut zip, "content.xml", cap)?
             .ok_or_else(|| OfficeError::Corrupt("missing content.xml".into()))?;
-        parse_body(std::io::BufReader::new(r), &styles, &mut table, limits)?
+        parse_body(
+            std::io::BufReader::new(r),
+            &styles,
+            &mut table,
+            limits,
+            cancel,
+        )?
     };
     // So is the area (every table's matrix stays in memory once the file is open). Summed per
     // table in document order: two tables may share a name, and the map keeps only one of them.
@@ -177,15 +194,15 @@ pub fn read_full(
 // XML helpers
 // ---------------------------------------------------------------------------------------------
 
-fn new_reader<R: BufRead>(src: R) -> Reader<R> {
-    let mut rd = Reader::from_reader(src);
+fn new_reader<R: BufRead>(src: R) -> XmlReader<R> {
+    let mut rd = XmlReader::new(src);
     // `<a/>` arrives as Start + End, so every element is handled in one place.
     rd.config_mut().expand_empty_elements = true;
     rd
 }
 
 fn xml_err(e: quick_xml::Error) -> OfficeError {
-    OfficeError::Corrupt(format!("xml: {e}"))
+    super::fmt_xlsx::xml_err(e)
 }
 
 /// The attribute with the exact qualified name `key` (`table:style-name`). An undefined entity
@@ -984,6 +1001,7 @@ fn parse_body(
     styles: &Styles,
     table: &mut FormatTable,
     limits: &Limits,
+    cancel: Option<&Cancel>,
 ) -> Result<(HashMap<String, SheetFormats>, BodyTotals), OfficeError> {
     let mut rd = new_reader(src);
     let mut buf = Vec::new();
@@ -992,11 +1010,17 @@ fn parse_body(
     let mut cur: Option<TableState> = None;
     // Depth of `table:table` elements nested inside the current one (ignored wholesale).
     let mut nested = 0usize;
+    let mut tables_seen = 0usize;
     let mut resolver_memo: HashMap<String, u16> = HashMap::new();
     let max = limits.max_dense_cells;
+    let mut events = 0u32;
     loop {
         buf.clear();
         let ev = rd.read_event_into(&mut buf).map_err(xml_err)?;
+        events = events.wrapping_add(1);
+        if events.is_multiple_of(8_192) && cancel.is_some_and(Cancel::is_cancelled) {
+            return Err(OfficeError::Corrupt("cancelled".into()));
+        }
         match &ev {
             Event::Start(e) => {
                 let name = e.name();
@@ -1005,6 +1029,10 @@ fn parse_body(
                     if cur.is_some() {
                         nested += 1;
                     } else if let Some(n) = qattr(e, b"table:name") {
+                        tables_seen += 1;
+                        if tables_seen > super::fmt_xlsx::MAX_SHEETS {
+                            return Err(OfficeError::TooLarge { what: "sheets" });
+                        }
                         cur = Some(TableState {
                             name: n,
                             out: SheetFormats::default(),

@@ -16,6 +16,7 @@ pub mod fmt_xls;
 pub mod fmt_xlsb;
 pub mod fmt_xlsx;
 pub mod numfmt;
+mod ods_formula;
 pub mod workbook;
 pub(crate) mod xlsx;
 
@@ -115,6 +116,8 @@ impl std::error::Error for OfficeError {}
 mod tests;
 #[cfg(test)]
 mod tests_complex;
+#[cfg(test)]
+mod tests_limits;
 #[cfg(test)]
 mod tests_numfmt;
 #[cfg(test)]
