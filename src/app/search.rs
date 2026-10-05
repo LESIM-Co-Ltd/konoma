@@ -2,8 +2,8 @@ use super::*;
 
 /// Most matches an in-preview search records (windowed text and tables alike). A table of
 /// millions of cells can match in all of them: 4 million hits are ~96 MB of positions, copied at
-/// every tab switch. The first hits in reading order are kept; a count that reads exactly this
-/// is the sign the search stopped.
+/// every tab switch. The first hits in reading order are kept; a search collects one hit more than
+/// this to know it was cut (`PerTab::search_truncated`).
 pub(super) const SEARCH_MATCH_CAP: usize = 5000;
 
 impl App {
@@ -34,7 +34,7 @@ impl App {
     /// Whether the active search stopped collecting at [`SEARCH_MATCH_CAP`]: the true number of
     /// matches is then *at least* the one shown.
     pub fn search_capped(&self) -> bool {
-        self.search_status().is_some() && self.tab.search_matches.len() >= SEARCH_MATCH_CAP
+        self.search_status().is_some() && self.tab.search_truncated
     }
 
     /// Which preview the in-preview search (`/`) runs against. Each target has its own way of
@@ -63,6 +63,7 @@ impl App {
     /// matching `highlight_query_in_line` so the highlight and the match list never disagree.
     fn md_search_scan(&mut self, q: &str) {
         self.tab.search_matches.clear();
+        self.tab.search_truncated = false;
         let needle = q.to_lowercase();
         let Some(c) = self.md_cache.as_ref() else {
             return;
@@ -76,6 +77,10 @@ impl App {
             let mut i = 0usize;
             while let Some(rel) = lower[i..].find(&needle) {
                 let s = i + rel;
+                if self.tab.search_matches.len() >= SEARCH_MATCH_CAP {
+                    self.tab.search_truncated = true;
+                    return;
+                }
                 self.tab.search_matches.push((0, li, s));
                 i = s + needle.len().max(1);
                 if i >= lower.len() {
@@ -155,11 +160,15 @@ impl App {
                 self.md_search_scan(&q);
             }
             _ => {
-                self.tab.search_matches = self
+                // One past the cap, to tell a cut-off search from one with exactly the cap.
+                let mut found = self
                     .preview_win
                     .as_mut()
-                    .and_then(|w| w.find_all_matches(&q, cap).ok())
+                    .and_then(|w| w.find_all_matches(&q, cap + 1).ok())
                     .unwrap_or_default();
+                self.tab.search_truncated = found.len() > cap;
+                found.truncate(cap);
+                self.tab.search_matches = found;
             }
         }
         self.tab.preview_search = Some(q);

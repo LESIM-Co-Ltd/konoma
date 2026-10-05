@@ -1783,7 +1783,6 @@ fn render_spinner_line(frame: &mut Frame, inner: Rect, spinner: &str, msg: &str)
     frame.render_widget(Paragraph::new(text).alignment(Alignment::Center), line_area);
 }
 
-/// Display shown while loading SVG/GIF on a separate thread (frame + centered spinner + "loading…").
 /// The limit a "too large" message names, read from the limits the readers actually enforce (so a
 /// changed limit can never leave the sentence stating an old number). `{n}` in the catalog text
 /// is replaced by it.
@@ -1855,6 +1854,7 @@ fn sheet_error_msg(err: Option<&crate::preview::office::OfficeError>) -> crate::
     }
 }
 
+/// Display shown while loading SVG/GIF on a separate thread (frame + centered spinner + "loading…").
 fn render_media_loading(frame: &mut Frame, app: &App, area: Rect) {
     let mut title = app
         .tab

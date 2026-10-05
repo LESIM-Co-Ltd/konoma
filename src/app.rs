@@ -3040,6 +3040,8 @@ pub(crate) struct PerTab {
     preview_search: Option<String>,
     search_input: Option<String>,
     search_matches: Vec<(u64, usize, usize)>,
+    /// The search that filled `search_matches` found more hits than it kept (the cap).
+    search_truncated: bool,
     search_idx: usize,
     /// A table search was confirmed while the spreadsheet it is for was still loading, so it found
     /// nothing yet: when the sheet arrives it is run and the cursor goes to the first hit (the
@@ -3141,6 +3143,7 @@ impl Default for PerTab {
             preview_search: None,
             search_input: None,
             search_matches: Vec::new(),
+            search_truncated: false,
             search_idx: 0,
             search_pending: false,
         }

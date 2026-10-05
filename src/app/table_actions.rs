@@ -54,54 +54,65 @@ pub(super) fn discard_in_background<T: Send + 'static>(value: T) {
     drop(value);
 }
 
-/// Fewer cells than this are searched on the calling thread: starting threads costs a few
-/// hundred microseconds, which only a bigger table earns back.
-const PARALLEL_SEARCH_MIN_CELLS: usize = 2_000;
+/// A table lighter than this (see [`row_weight`]) is searched on the calling thread: starting
+/// threads costs a few hundred microseconds, which only a bigger table earns back.
+const PARALLEL_SEARCH_MIN_WEIGHT: usize = 2_000;
+/// Bytes of displayed text that weigh as much as one cell: a cell is about this long on average,
+/// so a few cells with megabytes of text each weigh like the millions of short ones they cost.
+const BYTES_PER_WEIGHT: usize = 32;
+
+/// The cost of searching a row of `cells` cells holding `bytes` bytes of displayed text.
+fn row_weight(cells: usize, bytes: usize) -> usize {
+    cells.saturating_add(bytes / BYTES_PER_WEIGHT)
+}
 /// Most threads a table search uses.
 const MAX_SEARCH_THREADS: usize = 8;
 
 /// The cells of rows `0..nrows` that `scan_row` reports (it appends the matches of one row, in
-/// column order), in reading order, at most [`SEARCH_MATCH_CAP`] of them. A big table (millions
-/// of cells, or a few with megabytes of text each) is split into runs of rows with about as many
-/// cells each and searched on several threads at once: the scan is on the UI thread and has to
-/// stay within a frame, and a search is nothing but independent reads. `cells_in_row` weighs a
-/// row. The result is the one a single thread gives.
+/// column order), in reading order, at most [`SEARCH_MATCH_CAP`] of them, and whether there were
+/// more. A big table (millions of cells, or a few with megabytes of text each) is split into runs
+/// of rows of about the same weight and searched on several threads at once: the scan is on the
+/// UI thread and has to stay within a frame, and a search is nothing but independent reads.
+/// `weigh` is the [`row_weight`] of a row. The result is the one a single thread gives.
 fn scan_rows(
     nrows: usize,
-    cells_in_row: impl Fn(usize) -> usize,
+    weigh: impl Fn(usize) -> usize,
     scan_row: impl Fn(usize, &mut Vec<(u64, usize, usize)>) + Sync,
-) -> Vec<(u64, usize, usize)> {
+) -> (Vec<(u64, usize, usize)>, bool) {
     let threads = std::thread::available_parallelism().map_or(1, usize::from);
-    scan_rows_with(nrows, cells_in_row, scan_row, threads)
+    scan_rows_with(nrows, weigh, scan_row, threads)
 }
 
 fn scan_rows_with(
     nrows: usize,
-    cells_in_row: impl Fn(usize) -> usize,
+    weigh: impl Fn(usize) -> usize,
     scan_row: impl Fn(usize, &mut Vec<(u64, usize, usize)>) + Sync,
     threads: usize,
-) -> Vec<(u64, usize, usize)> {
-    let total: usize = (0..nrows).map(&cells_in_row).sum();
+) -> (Vec<(u64, usize, usize)>, bool) {
+    let weights: Vec<usize> = (0..nrows).map(&weigh).collect();
+    let total: usize = weights.iter().fold(0, |a, w| a.saturating_add(*w));
     let threads = threads.min(MAX_SEARCH_THREADS).min(nrows);
     let run = |rows: std::ops::Range<usize>| {
         let mut out = Vec::new();
         for r in rows {
             scan_row(r, &mut out);
-            if out.len() >= SEARCH_MATCH_CAP {
+            // One past the cap: that extra hit is how a cut-off search is told from one with
+            // exactly the cap.
+            if out.len() > SEARCH_MATCH_CAP {
                 break;
             }
         }
         out
     };
-    let mut out = if threads < 2 || total < PARALLEL_SEARCH_MIN_CELLS {
+    let mut out = if threads < 2 || total < PARALLEL_SEARCH_MIN_WEIGHT {
         run(0..nrows)
     } else {
-        // Runs of rows of about `total / threads` cells each, in order.
+        // Runs of rows of about `total / threads` weight each, in order.
         let per = total.div_ceil(threads);
         let mut runs = Vec::with_capacity(threads);
-        let (mut start, mut weight) = (0, 0);
-        for r in 0..nrows {
-            weight += cells_in_row(r);
+        let (mut start, mut weight) = (0, 0usize);
+        for (r, w) in weights.iter().enumerate() {
+            weight = weight.saturating_add(*w);
             if weight >= per && runs.len() + 1 < threads {
                 runs.push(start..r + 1);
                 (start, weight) = (r + 1, 0);
@@ -123,8 +134,9 @@ fn scan_rows_with(
                 .collect()
         })
     };
+    let truncated = out.len() > SEARCH_MATCH_CAP;
     out.truncate(SEARCH_MATCH_CAP);
-    out
+    (out, truncated)
 }
 
 /// A search query for table cells: case-insensitive "contains", without allocating per cell.
@@ -801,16 +813,23 @@ impl App {
     /// would have nowhere to jump to.
     pub(super) fn table_search_scan(&mut self, q: &str) {
         self.tab.search_matches.clear();
+        self.tab.search_truncated = false;
         let needle = Needle::new(q);
         let Some(g) = grid_of(&self.table_data, &self.workbook, self.tab.sheet_idx) else {
             return;
         };
-        self.tab.search_matches = match g {
+        let (matches, truncated) = match g {
             // A sheet is sparse (up to 16k columns): walk only the cells that exist, in reading
             // order, and match the displayed text.
             Grid::Sheet(sheet) => scan_rows(
                 sheet.nrows,
-                |r| sheet.row_cells(r).len(),
+                |r| {
+                    let cells = sheet.row_cells(r);
+                    row_weight(
+                        cells.len(),
+                        cells.iter().map(|(_, c)| c.display().len()).sum(),
+                    )
+                },
                 |r, out| {
                     for (c, cell) in sheet.row_cells(r) {
                         let shown = cell.display();
@@ -822,7 +841,7 @@ impl App {
             ),
             Grid::Csv(t) => scan_rows(
                 t.nrows(),
-                |_| t.ncols,
+                |r| row_weight(t.ncols, (0..t.ncols).map(|c| t.cell(r, c).len()).sum()),
                 |r, out| {
                     for c in 0..t.ncols {
                         if needle.found_in(t.cell(r, c)) {
@@ -832,6 +851,8 @@ impl App {
                 },
             ),
         };
+        self.tab.search_matches = matches;
+        self.tab.search_truncated = truncated;
     }
 
     /// Whether this data cell matched the active search (renderer lookup). The matches of a table
@@ -1458,6 +1479,65 @@ mod release_and_cap_tests {
         assert!(!app.search_capped());
     }
 
+    #[test]
+    fn a_table_search_with_exactly_the_cap_is_not_marked_cut() {
+        for (extra, cut) in [(0, false), (1, true)] {
+            let dir = unique_tmp("konoma_table_search_exact");
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut csv = String::from("h\n");
+            for i in 0..(SEARCH_MATCH_CAP + extra) {
+                csv.push_str(&format!("hit {i}\n"));
+            }
+            csv.push_str("other\n");
+            std::fs::write(dir.join("t.csv"), csv).unwrap();
+            let root = dir.canonicalize().unwrap();
+            let mut app = App::new(root.clone(), Config::default()).unwrap();
+            let path = root.join("t.csv");
+            app.tab.preview_kind = Some(app.cfg.resolve_preview(&path));
+            app.tab.preview_path = Some(path);
+            app.tab.mode = Mode::Preview;
+            app.load_table();
+            app.start_search();
+            for c in "hit".chars() {
+                app.search_input_push(c);
+            }
+            app.search_commit();
+            assert_eq!(app.tab.search_matches.len(), SEARCH_MATCH_CAP);
+            assert_eq!(app.search_capped(), cut, "{extra} over the cap");
+            let hints = crate::ui::preview::footer_hints(&app);
+            let want = if cut {
+                "n/N:match[1/5000+]"
+            } else {
+                "n/N:match[1/5000]"
+            };
+            assert!(hints.iter().any(|h| h == want), "{hints:?}");
+        }
+    }
+
+    #[test]
+    fn a_windowed_search_with_exactly_the_cap_is_not_marked_cut() {
+        for (hits, cut) in [(SEARCH_MATCH_CAP, false), (SEARCH_MATCH_CAP + 1, true)] {
+            let dir = unique_tmp("konoma_windowed_search_exact");
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut text = String::new();
+            for i in 0..hits {
+                text.push_str(&format!("needle {i}\n"));
+            }
+            std::fs::write(dir.join("a.rs"), text).unwrap();
+            let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
+            app.tab.selected = app.tab.entries.iter().position(|e| !e.is_dir).unwrap();
+            app.tree_activate().unwrap();
+            assert!(app.is_windowed());
+            app.start_search();
+            for c in "needle".chars() {
+                app.search_input_push(c);
+            }
+            app.search_commit();
+            assert_eq!(app.tab.search_matches.len(), SEARCH_MATCH_CAP);
+            assert_eq!(app.search_capped(), cut, "{hits} hits");
+        }
+    }
+
     /// The one place a workbook is dropped is `set_workbook` (and the sheet being left goes to
     /// `discard_in_background`): a plain assignment would free it on the UI thread again.
     #[test]
@@ -1562,6 +1642,10 @@ mod parallel_search_tests {
     /// Rows of uneven weight: a row `r` has `r % 7` cells (some none), and a cell matches when
     /// `(r * 31 + c) % 5 == 0`.
     fn scan(threads: usize, nrows: usize) -> Vec<(u64, usize, usize)> {
+        scan_flag(threads, nrows).0
+    }
+
+    fn scan_flag(threads: usize, nrows: usize) -> (Vec<(u64, usize, usize)>, bool) {
         scan_rows_with(
             nrows,
             |r| r % 7,
@@ -1611,7 +1695,8 @@ mod parallel_search_tests {
                 }
             },
             8,
-        );
+        )
+        .0;
         let want: Vec<_> = (0..3)
             .flat_map(|r| {
                 let n = if r == 1 { 10_000 } else { 1 };
@@ -1633,7 +1718,71 @@ mod parallel_search_tests {
                 out.push((0, r, 0));
             },
             8,
+        )
+        .0;
+        assert_eq!(out.len(), 100);
+    }
+
+    /// One hit per row: `hits` rows match, so the scan finds exactly `hits` cells.
+    fn exact_hits(threads: usize, hits: usize, weight: usize) -> (usize, bool) {
+        let (v, cut) = scan_rows_with(
+            20_000,
+            |_| weight,
+            |r, out| {
+                if r < hits {
+                    out.push((0, r, 0));
+                }
+            },
+            threads,
+        );
+        (v.len(), cut)
+    }
+
+    #[test]
+    fn exactly_the_cap_is_not_cut_but_one_more_is() {
+        for threads in [1, 2, 8] {
+            for weight in [1, 1_000] {
+                assert_eq!(
+                    exact_hits(threads, SEARCH_MATCH_CAP - 1, weight),
+                    (SEARCH_MATCH_CAP - 1, false)
+                );
+                assert_eq!(
+                    exact_hits(threads, SEARCH_MATCH_CAP, weight),
+                    (SEARCH_MATCH_CAP, false),
+                    "{threads} threads"
+                );
+                assert_eq!(
+                    exact_hits(threads, SEARCH_MATCH_CAP + 1, weight),
+                    (SEARCH_MATCH_CAP, true),
+                    "{threads} threads"
+                );
+                assert_eq!(
+                    exact_hits(threads, SEARCH_MATCH_CAP + 3_000, weight),
+                    (SEARCH_MATCH_CAP, true)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_few_heavy_rows_are_searched_on_several_threads() {
+        // 100 rows of one cell holding a megabyte each: far under the cell threshold, far over
+        // the weight one.
+        let me = std::thread::current().id();
+        let off_thread = std::sync::atomic::AtomicBool::new(false);
+        let (out, _) = scan_rows_with(
+            100,
+            |_| row_weight(1, 1 << 20),
+            |r, out| {
+                if std::thread::current().id() != me {
+                    off_thread.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                out.push((0, r, 0));
+            },
+            8,
         );
         assert_eq!(out.len(), 100);
+        assert!(off_thread.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(row_weight(1, 0) < PARALLEL_SEARCH_MIN_WEIGHT);
     }
 }

@@ -20,7 +20,8 @@ All notable changes to konoma are documented in this file. The format is based o
   A sheet over the limits (100,000 rows, 4M cells, 128 MiB of text) shows its beginning, marked `(capped)`, instead
   of being refused: xlsx/xlsb are read as a stream and reading stops at the limit. Only the sheet on screen is kept
   in memory; `J`/`K` read the next sheet in the background. (ods/xls cannot be streamed, so a file too large to open
-  safely is still refused, with the reason.)
+  safely is still refused, with the reason; so are files with more than 4,096 sheets, XML nested deeper than 256
+  levels, and an `.xls` whose sheets share the same records.)
   xlsx files are read by konoma itself (one pass for values, formats and formulas), so Excel 365 error values such
   as `#SPILL!`, `#CALC!` or `#FIELD!` are shown in their cells instead of making the sheet unreadable, and long
   integer IDs keep every digit. Pivot tables show the totals Excel saved in the cells (they are not recalculated). An `.ods` formula is shown in
