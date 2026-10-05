@@ -1645,7 +1645,12 @@ fn iso_datetime_parts(s: &str) -> Option<(i64, f64)> {
     if it.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
         return None;
     }
-    let y = if neg { -y } else { y };
+    let y = if neg { y.checked_neg()? } else { y };
+    // A spreadsheet date is in years 1..=9999; anything else is not a date (and a huge year would
+    // overflow the day count).
+    if !(1..=9999).contains(&y) {
+        return None;
+    }
     let days = days_from_civil(y, m, d);
     let mut frac = 0.0;
     if let Some(t) = time {
@@ -2642,6 +2647,24 @@ mod tests {
     }
 
     // ---- ISO 8601 -------------------------------------------------------------------------------
+
+    #[test]
+    fn iso_years_outside_1_to_9999_are_not_dates() {
+        for s in [
+            "99999999999999999-01-01",
+            "-99999999999999999-01-01",
+            "9223372036854775807-12-31T00:00:00",
+            "10000-01-01",
+            "0000-01-01",
+            "-0001-01-01",
+        ] {
+            assert_eq!(iso_datetime_to_serial(s), None, "{s}");
+            assert_eq!(iso_datetime_to_ods_serial(s, 0), None, "{s}");
+            assert_eq!(iso_days_since_1970(s), None, "{s}");
+        }
+        assert!(iso_days_since_1970("0001-01-01").is_some());
+        assert!(iso_days_since_1970("9999-12-31").is_some());
+    }
 
     #[test]
     fn iso_datetime() {

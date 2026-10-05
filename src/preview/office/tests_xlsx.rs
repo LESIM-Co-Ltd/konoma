@@ -40,6 +40,8 @@ use super::*;
 /// A cell value in a form both readers can be reduced to.
 #[derive(Debug, Clone, PartialEq)]
 enum V {
+    /// An integer kept exact (`Val::Int` / `Data::Int`), distinct from a float of the same value.
+    Int(i64),
     Num(f64),
     Date(f64, bool),
     Text(String),
@@ -70,6 +72,7 @@ struct BookRead {
 
 fn from_val(v: Val<'_>) -> V {
     match v {
+        Val::Int(i) => V::Int(i),
         Val::Number(n) => V::Num(n),
         Val::Date { serial, duration } => V::Date(serial, duration),
         Val::Text(t) => V::Text(t.to_string()),
@@ -83,7 +86,7 @@ fn from_data(d: &Data) -> Option<V> {
     Some(match d {
         Data::Empty => return None,
         Data::Float(f) => V::Num(*f),
-        Data::Int(i) => V::Num(*i as f64),
+        Data::Int(i) => V::Int(*i),
         Data::String(s) => V::Text(s.clone()),
         Data::Bool(b) => V::Bool(*b),
         Data::DateTime(dt) => V::Date(dt.as_f64(), dt.is_duration()),
@@ -220,11 +223,35 @@ fn known_differences(file: &str, sheet: &str) -> Option<&'static str> {
     }
 }
 
+/// calamine's xlsx reader makes every plain number an `f64`; konoma keeps an integer literal that
+/// fits `i64` exact (`Val::Int`), which only differs for 16+ digits, where the float is already
+/// wrong. An `Int` is made equal to calamine's float only where that float is exactly the
+/// integer converted (the loss being calamine's); an integer where calamine has anything else,
+/// or a float where we have an integer, still fails the comparison.
+fn relax_integers(ours: &mut BookRead, theirs: &BookRead) {
+    for (o, t) in ours.reads.iter_mut().zip(&theirs.reads) {
+        if let (Ok(o), Ok(t)) = (o, t) {
+            relax_sheet(o, t);
+        }
+    }
+}
+
+fn relax_sheet(o: &mut SheetRead, t: &SheetRead) {
+    for (pos, v) in &mut o.values {
+        if let (V::Int(i), Some(V::Num(f))) = (&*v, t.values.get(pos)) {
+            if *f == *i as f64 {
+                *v = V::Num(*f);
+            }
+        }
+    }
+}
+
 /// Compares the two reads of one file. Returns how many sheets and cells were compared.
 fn compare(path: &Path) -> (usize, usize) {
     let file = path.file_name().unwrap().to_string_lossy().to_string();
-    let ours = read_ours(path);
+    let mut ours = read_ours(path);
     let theirs = read_oracle(path);
+    relax_integers(&mut ours, &theirs);
     assert_eq!(ours.date1904, theirs.date1904, "{file}: date system");
     assert_eq!(ours.sheets, theirs.sheets, "{file}: sheet list");
     let (mut sheets, mut cells) = (0, 0);
@@ -807,7 +834,7 @@ fn the_generated_workbooks_cover_every_kind_of_value() {
         for r in read_ours(&p).reads.into_iter().flatten() {
             for v in r.values.values() {
                 match v {
-                    V::Num(_) => num += 1,
+                    V::Num(_) | V::Int(_) => num += 1,
                     V::Date(_, false) => date += 1,
                     V::Date(_, true) => dur += 1,
                     V::Text(_) => text += 1,
@@ -863,6 +890,7 @@ fn a_generated_workbook_reads_the_same_through_the_loader() {
                 // The raw value agrees with the reader's.
                 match (&cell.value, v) {
                     (CellValue::Number(a), V::Num(b)) => assert_eq!(a, b),
+                    (CellValue::Int(a), V::Int(b)) => assert_eq!(a, b),
                     (CellValue::DateTime { serial, duration }, V::Date(b, d)) => {
                         assert_eq!((serial, duration), (b, d))
                     }
@@ -964,7 +992,7 @@ fn what_calamine_refuses_a_sheet_over_is_a_cell_here() {
         (
             "unknown child",
             r#"<c r="A1"><v>1</v><x14ac:foo xmlns:x14ac="u"><b/></x14ac:foo></c>"#,
-            Some(V::Num(1.0)),
+            Some(V::Int(1)),
         ),
         (
             "bad number",
@@ -1003,7 +1031,7 @@ fn what_calamine_refuses_a_sheet_over_is_a_cell_here() {
         assert_eq!(r.values.get(&(0, 0)), want.as_ref(), "{what}");
         assert_eq!(
             r.values[&(0, 1)],
-            V::Num(7.0),
+            V::Int(7),
             "{what}: the next cell is read"
         );
     }
@@ -1063,7 +1091,7 @@ fn a_value_after_a_formula_is_kept_where_calamines_value_reader_drops_it() {
         &body(r#"<row r="1"><c r="A1"><v>5</v><f>1+4</f></c></row>"#),
     );
     let ours = read_ours(&p).reads.remove(0).unwrap();
-    assert_eq!(ours.values[&(0, 0)], V::Num(5.0));
+    assert_eq!(ours.values[&(0, 0)], V::Int(5));
     assert_eq!(ours.formulas[&(0, 0)], "1+4");
     let theirs = read_oracle(&p).reads.remove(0).unwrap();
     assert!(!theirs.values.contains_key(&(0, 0)));
@@ -1119,7 +1147,7 @@ fn date_kind_of_format_codes() {
     // Built-in ids: the fixed date / time numbers.
     for id in 0..=163u16 {
         let want = match id {
-            14..=22 | 45 | 47 => Date,
+            14..=22 | 27..=36 | 45 | 47 | 50..=58 => Date,
             46 => Duration,
             _ => Plain,
         };
@@ -1395,7 +1423,7 @@ fn derived_cells_get_their_anchors_formula_in_every_direction() {
         <row r="3"><c r="B3"><f t="shared" si="0"/><v>4</v></c><c r="C3"><f t="shared" si="0"/><v>5</v></c></row>
         <row r="4"><c r="D4"><f t="shared" si="0"/><v>6</v></c><c r="F4"><f t="shared" si="9"/><v>7</v></c></row>"#;
     let p = one_sheet(&dir, "d.xlsx", &body(rows));
-    let ours = read_ours(&p).reads.remove(0).unwrap();
+    let mut ours = read_ours(&p).reads.remove(0).unwrap();
     assert_eq!(ours.formulas[&(1, 1)], "SUM($A2:A2)+B$1");
     assert_eq!(ours.formulas[&(1, 2)], "SUM($A2:B2)+C$1");
     assert_eq!(ours.formulas[&(1, 3)], "SUM($A2:C2)+D$1");
@@ -1407,6 +1435,7 @@ fn derived_cells_get_their_anchors_formula_in_every_direction() {
         "a group that has no anchor has no formula"
     );
     let theirs = read_oracle(&p).reads.remove(0).unwrap();
+    relax_sheet(&mut ours, &theirs);
     assert_eq!(ours.formulas, theirs.formulas);
     assert_eq!(ours.values, theirs.values);
 }
@@ -1518,7 +1547,7 @@ fn value_types() {
     assert_eq!(v(9), Some(V::Text("in".into())));
     assert_eq!(
         v(10),
-        Some(V::Num(2.0)),
+        Some(V::Int(2)),
         "a style past the table is a plain number"
     );
     assert_eq!(
@@ -1621,12 +1650,12 @@ fn the_last_value_child_wins_and_a_formula_alone_is_a_cell_without_value() {
     );
     assert_eq!(got[0].3, None);
     assert_eq!(got[0].4.as_deref(), Some("1+1"));
-    assert_eq!(got[1].3, Some(V::Num(2.0)));
+    assert_eq!(got[1].3, Some(V::Int(2)));
     assert_eq!(
         got[2].3, None,
         "the `<v>` of an inline-string cell replaces what was read before"
     );
-    assert_eq!(got[3].3, Some(V::Num(2.0)));
+    assert_eq!(got[3].3, Some(V::Int(2)));
     assert_eq!(got[4].4.as_deref(), Some("E2*2"));
 }
 
@@ -2053,4 +2082,224 @@ fn bench_xlsx_load() {
             wb.sheets[0].rows_truncated
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// review fixes: budgets, exact integers, hostile values
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_cell_past_the_column_cap_is_not_expanded_or_decoded() {
+    // A shared formula's anchor is large; its derived cells past the column cap would each walk
+    // it again. They are read past: no formula, no value, but they still reach the builder (an
+    // empty text) so that it notes the truncation.
+    let limits = Limits {
+        max_cols: 4,
+        ..Limits::default()
+    };
+    let long = "A1+".repeat(2000);
+    let mut row = format!(r#"<c r="A1"><f t="shared" ref="A1:Z1" si="0">{long}A1</f><v>1</v></c>"#);
+    for col in ["B", "C", "E", "F"] {
+        row += &format!(r#"<c r="{col}1"><f t="shared" si="0"/><v>2</v></c>"#);
+    }
+    row += r#"<c r="G1" t="str"><v>text</v></c><c r="H1" t="inlineStr"><is><t>t</t></is></c><c r="I1" s="0"/>"#;
+    let xml = body(&format!(r#"<row r="1">{row}</row>"#));
+    let mut got = Vec::new();
+    xlsx::parse_sheet(xml.as_bytes(), &Tables::default(), &limits, None, |c| {
+        got.push((c.col, c.value.map(from_val), c.formula.map(str::len)));
+        true
+    })
+    .unwrap();
+    // Inside the cap: expanded as before.
+    assert!(got[1].2.is_some() && got[2].2.is_some(), "{got:?}");
+    // Past it: an empty text and no formula, whatever the cell held; a blank cell stays blank.
+    for (col, v, f) in &got[3..7] {
+        assert_eq!((v, f), (&Some(V::Text(String::new())), &None), "col {col}");
+    }
+    assert_eq!(got[7], (8, None, None));
+}
+
+#[test]
+fn a_cell_past_the_column_cap_still_marks_the_sheet_as_cut() {
+    let dir = tmp("xlsx_colcap");
+    let xml = body(r#"<row r="1"><c r="A1"><v>1</v></c><c r="D1"><f>A1</f><v>2</v></c></row>"#);
+    let p = one_sheet(&dir, "c.xlsx", &xml);
+    let wb = super::workbook::load_workbook_sheet(
+        &p,
+        &LoadOptions {
+            locale: Locale::En,
+            limits: Limits {
+                max_cols: 3,
+                ..Limits::default()
+            },
+        },
+        0,
+    )
+    .unwrap();
+    let sh = &wb.sheets[0];
+    assert!(sh.cols_truncated);
+    assert_eq!(sh.formula(0, 3), None);
+    assert_eq!(sh.formula(0, 0), None);
+}
+
+#[test]
+fn cancellation_is_checked_inside_one_huge_row() {
+    // One row of 5000 cells: a cancelled read ends within a thousand of them.
+    let row: String = (0..5000).map(|_| "<c><v>1</v></c>").collect();
+    let xml = body(&format!(r#"<row r="1">{row}</row>"#));
+    let run = |cancel: Option<&workbook::Cancel>| {
+        let mut n = 0;
+        xlsx::parse_sheet(
+            xml.as_bytes(),
+            &Tables::default(),
+            &Limits::default(),
+            cancel,
+            |_| {
+                n += 1;
+                true
+            },
+        )
+        .unwrap();
+        n
+    };
+    assert_eq!(run(None), 5000);
+    let yes = workbook::Cancel::new(|| true);
+    assert!(run(Some(&yes)) < 1024);
+}
+
+#[test]
+fn integers_are_kept_exact_and_other_numbers_are_floats() {
+    let rows = r#"<row r="1"><c r="A1"><v>12345678901234567</v></c><c r="B1"><v>-42</v></c><c r="C1"><v>1.5</v></c><c r="D1"><v>1e3</v></c><c r="E1"><v>99999999999999999999</v></c><c r="F1" s="1"><v>45000</v></c><c r="G1" t="n"><v>+7</v></c></row>"#;
+    let t = tables_with(&[], &[(0, DateKind::Plain), (14, DateKind::Date)]);
+    let got = cells(rows, &t);
+    let v = |i: usize| got[i].3.clone();
+    assert_eq!(v(0), Some(V::Int(12345678901234567)));
+    assert_eq!(v(1), Some(V::Int(-42)));
+    assert_eq!(v(2), Some(V::Num(1.5)));
+    assert_eq!(v(3), Some(V::Num(1000.0)));
+    // Past i64: a float.
+    assert_eq!(v(4), Some(V::Num(1e20)));
+    // A date-styled integer is a date.
+    assert_eq!(v(5), Some(V::Date(45000.0, false)));
+    assert_eq!(v(6), Some(V::Int(7)));
+}
+
+#[test]
+fn a_17_digit_integer_keeps_its_raw_text() {
+    let dir = tmp("xlsx_bigint");
+    let xml = body(r#"<row r="1"><c r="A1"><v>12345678901234567</v></c></row>"#);
+    let p = one_sheet(&dir, "i.xlsx", &xml);
+    let wb = super::workbook::load_workbook_sheet(
+        &p,
+        &LoadOptions {
+            locale: Locale::En,
+            limits: Limits::default(),
+        },
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        wb.sheets[0].cell(0, 0).unwrap().raw_text(),
+        "12345678901234567"
+    );
+}
+
+#[test]
+fn non_finite_numbers_are_text() {
+    let rows = r#"<row r="1"><c r="A1"><v>NaN</v></c><c r="B1"><v>inf</v></c><c r="C1"><v>Infinity</v></c><c r="D1"><v>-inf</v></c><c r="E1"><v>1e999</v></c><c r="F1" t="n"><v>nan</v></c></row>"#;
+    for (i, c) in cells(rows, &Tables::default()).iter().enumerate() {
+        let Some(V::Text(t)) = &c.3 else {
+            panic!("cell {i}: {:?}", c.3)
+        };
+        assert!(!t.is_empty());
+    }
+    // A date-styled one too.
+    let t = tables_with(&[], &[(0, DateKind::Plain), (14, DateKind::Date)]);
+    let got = cells(r#"<row r="1"><c r="A1" s="1"><v>inf</v></c></row>"#, &t);
+    assert!(matches!(got[0].3, Some(V::Text(_))), "{:?}", got[0].3);
+}
+
+#[test]
+fn a_reversed_merge_is_normalised() {
+    let xml = format!(
+        r#"<worksheet xmlns="{NS}"><sheetData/><mergeCells><mergeCell ref="B2:A1"/><mergeCell ref="C3:A4"/></mergeCells></worksheet>"#
+    );
+    let merges = xlsx::parse_sheet(
+        xml.as_bytes(),
+        &Tables::default(),
+        &Limits::default(),
+        None,
+        |_| true,
+    )
+    .unwrap();
+    let mr = |row0, col0, row1, col1| MergeRange {
+        row0,
+        col0,
+        row1,
+        col1,
+    };
+    assert_eq!(merges, vec![mr(0, 0, 1, 1), mr(2, 0, 3, 2)]);
+}
+
+#[test]
+fn plain_text_is_cut_at_the_budget_not_added_whole() {
+    // One text event of 250 KB against a 1000-byte budget: the text kept stays within it (and is
+    // cut at a character boundary), for a cell, an inline string and a formula.
+    let limits = Limits {
+        max_sheet_text_bytes: 1000,
+        ..Limits::default()
+    };
+    for unit in ["a", "あ"] {
+        let big = unit.repeat(250_000 / unit.len());
+        let xml = body(&format!(
+            r#"<row r="1"><c r="A1" t="str"><v>{big}</v></c><c r="B1" t="inlineStr"><is><t>{big}</t></is></c><c r="C1"><f>{big}</f></c></row>"#
+        ));
+        let mut seen = Vec::new();
+        xlsx::parse_sheet(xml.as_bytes(), &Tables::default(), &limits, None, |c| {
+            seen.push((
+                match c.value {
+                    Some(Val::Text(t)) => t.len(),
+                    _ => 0,
+                },
+                c.formula.map_or(0, str::len),
+            ));
+            true
+        })
+        .unwrap();
+        assert_eq!(seen.len(), 3);
+        for (t, f) in seen {
+            assert!(t <= 1000 && f <= 1000, "{unit}: {t} {f}");
+        }
+    }
+}
+
+#[test]
+fn one_invalid_utf8_byte_costs_that_cell_only() {
+    let mut xml = body(
+        r#"<row r="1"><c r="A1" t="str"><v>ab@@cd</v></c><c r="B1"><v>5</v></c><c r="C1" t="inlineStr"><is><t>x@@y</t></is></c></row>"#,
+    )
+    .into_bytes();
+    while let Some(i) = xml.windows(2).position(|w| w == b"@@") {
+        xml.splice(i..i + 2, [0xFF]);
+    }
+    let mut got = Vec::new();
+    xlsx::parse_sheet(
+        &xml[..],
+        &Tables::default(),
+        &Limits::default(),
+        None,
+        |c| {
+            got.push(c.value.map(from_val));
+            true
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        got,
+        vec![
+            Some(V::Text("ab\u{FFFD}cd".into())),
+            Some(V::Int(5)),
+            Some(V::Text("x\u{FFFD}y".into())),
+        ]
+    );
 }

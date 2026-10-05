@@ -1338,12 +1338,19 @@ fn record_merges(t: &mut TableState, c: &CellState, row0: u64, rows: u64, col0: 
             if t.extra.merges.len() >= MAX_MERGES {
                 return;
             }
-            let (r, col) = (row0 + dr, col0 + dc);
+            // Saturating: a hostile span (`u64::MAX`) must not wrap into a reversed range.
+            let (r, col) = (row0.saturating_add(dr), col0.saturating_add(dc));
+            let r1 = r
+                .saturating_add(c.rows_spanned.max(1) - 1)
+                .min(MAX_ROWS - 1);
+            let c1 = col
+                .saturating_add(c.cols_spanned.max(1) - 1)
+                .min(MAX_COLS - 1);
             t.extra.merges.push(MergeRange {
-                row0: r as u32,
-                col0: col as u32,
-                row1: (r + c.rows_spanned.max(1) - 1).min(MAX_ROWS - 1) as u32,
-                col1: (col + c.cols_spanned.max(1) - 1).min(MAX_COLS - 1) as u32,
+                row0: r.min(r1) as u32,
+                col0: col.min(c1) as u32,
+                row1: r1 as u32,
+                col1: c1 as u32,
             });
         }
     }

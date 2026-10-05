@@ -2211,6 +2211,24 @@ fn mr(row0: u32, col0: u32, row1: u32, col1: u32) -> MergeRange {
 }
 
 #[test]
+fn a_hostile_span_does_not_overflow_a_merge() {
+    // A span of `u64::MAX` rows / columns, at row and column offsets that would wrap an
+    // unchecked sum: every range is clamped to the sheet and never reversed.
+    let huge = r#"<table:table-cell table:number-columns-spanned="18446744073709551615" table:number-rows-spanned="18446744073709551615" office:value-type="string"><text:p>a</text:p></table:table-cell>"#;
+    let plain =
+        r#"<table:table-cell office:value-type="string"><text:p>p</text:p></table:table-cell>"#;
+    let rows = format!(
+        "<table:table-row>{huge}</table:table-row><table:table-row>{plain}{plain}{huge}</table:table-row><table:table-row>{plain}{plain}{plain}{huge}</table:table-row>"
+    );
+    let ms = merges_of("ods_merge_huge", &table("S", &rows));
+    assert_eq!(ms.len(), 3, "{ms:?}");
+    for m in ms {
+        assert!(m.row0 <= m.row1 && m.col0 <= m.col1, "{m:?}");
+        assert_eq!((m.row1, m.col1), (1_048_575, 16_383), "{m:?}");
+    }
+}
+
+#[test]
 fn merged_ranges_are_read_from_the_spans() {
     // A1:C2, then (after its covered cells) D2:D4.
     let rows = format!(

@@ -955,6 +955,7 @@ impl<'a> SheetBuilder<'a> {
     /// Keeps a cell of an xlsx sheet: its value, formula and number format come together.
     fn push_xlsx(&mut self, c: xlsx::CellOut<'_>) -> Flow {
         let value = c.value.map(|v| match v {
+            Val::Int(i) => CellValue::Int(i),
             Val::Number(n) => CellValue::Number(n),
             Val::Date { serial, duration } => CellValue::DateTime { serial, duration },
             Val::Text(t) => CellValue::Text(t.into()),

@@ -83,7 +83,8 @@ pub(crate) fn date_kind(fmt: &NumFmtRef) -> DateKind {
     match fmt {
         NumFmtRef::General => DateKind::Plain,
         NumFmtRef::Builtin(id) => match id {
-            14..=22 | 45 | 47 => DateKind::Date,
+            // 27-36 and 50-58 are the East-Asian (Japanese era) dates and times.
+            14..=22 | 27..=36 | 45 | 47 | 50..=58 => DateKind::Date,
             46 => DateKind::Duration,
             _ => DateKind::Plain,
         },
@@ -479,7 +480,10 @@ fn push_ref(e: &BytesRef<'_>, out: &mut String) {
 }
 
 /// Gathers the text of the element named `closing` (whose start was just read) into `out`: text,
-/// CDATA and references. Stops appending once `out` holds `cap` bytes (the rest is still read).
+/// CDATA and references. Never appends past `cap` bytes of `out` (a text event is cut at the cap
+/// rather than added whole, so one huge event cannot grow `out` far beyond it); the rest is still
+/// read. A byte that is not valid UTF-8 is a replacement character, so one bad cell is not a
+/// bad sheet.
 fn read_text_into<R: BufRead>(
     rd: &mut Reader<R>,
     closing: &[u8],
@@ -491,17 +495,23 @@ fn read_text_into<R: BufRead>(
         buf.clear();
         match rd.read_event_into(buf).map_err(xml_err)? {
             Event::Text(t) => {
-                if out.len() <= cap {
-                    out.push_str(&t.xml10_content().map_err(enc_err)?);
+                if out.len() < cap {
+                    match t.xml10_content() {
+                        Ok(s) => push_capped(out, &s, cap),
+                        Err(_) => push_capped(out, &String::from_utf8_lossy(&t), cap),
+                    }
                 }
             }
             Event::CData(t) => {
-                if out.len() <= cap {
-                    out.push_str(&t.xml10_content().map_err(enc_err)?);
+                if out.len() < cap {
+                    match t.xml10_content() {
+                        Ok(s) => push_capped(out, &s, cap),
+                        Err(_) => push_capped(out, &String::from_utf8_lossy(&t), cap),
+                    }
                 }
             }
             Event::GeneralRef(e) => {
-                if out.len() <= cap {
+                if out.len() < cap {
                     push_ref(&e, out);
                 }
             }
@@ -512,8 +522,18 @@ fn read_text_into<R: BufRead>(
     }
 }
 
-fn enc_err(e: impl std::fmt::Display) -> OfficeError {
-    OfficeError::Corrupt(format!("xml text: {e}"))
+/// Appends as much of `s` as keeps `out` within `cap` bytes, cutting at a character boundary.
+fn push_capped(out: &mut String, s: &str, cap: usize) {
+    let room = cap.saturating_sub(out.len());
+    if s.len() <= room {
+        out.push_str(s);
+        return;
+    }
+    let mut end = room;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    out.push_str(&s[..end]);
 }
 
 /// Reads a string item (`<si>` of the shared strings, `<is>` of an inline string) into `out`: the
@@ -657,6 +677,8 @@ fn read_shared_strings(src: impl BufRead, limits: &Limits) -> Result<SharedStrin
 /// A cell value as the file holds it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Val<'a> {
+    /// A plain integer literal that fits `i64`, kept exact (an `f64` loses the end of 17+ digits).
+    Int(i64),
     Number(f64),
     /// A number whose style is a date / time (`duration`: an elapsed time).
     Date {
@@ -688,6 +710,7 @@ pub(crate) struct CellOut<'a> {
 #[derive(Debug, Clone, Copy)]
 enum Pv {
     Empty,
+    Int(i64),
     Num(f64),
     Date(f64, bool),
     Bool(bool),
@@ -803,11 +826,12 @@ fn parse_merge(v: &str) -> Option<MergeRange> {
     let (a, b) = v.split_once(':').unwrap_or((v, v));
     let (row0, col0) = parse_a1(a)?;
     let (row1, col1) = parse_a1(b)?;
+    // `B2:A1` names the same rectangle as `A1:B2`.
     Some(MergeRange {
-        row0,
-        col0,
-        row1,
-        col1,
+        row0: row0.min(row1),
+        col0: col0.min(col1),
+        row1: row0.max(row1),
+        col1: col0.max(col1),
     })
 }
 
@@ -842,6 +866,7 @@ pub(crate) fn parse_sheet(
     let mut cur_row: u32 = 0;
     let mut next_col: u32 = 0;
     let mut rows_seen: u32 = 0;
+    let mut cells_seen: u32 = 0;
     loop {
         buf.clear();
         match rd.read_event_into(&mut buf).map_err(xml_err)? {
@@ -868,6 +893,11 @@ pub(crate) fn parse_sheet(
                         None => (cur_row, next_col),
                     };
                     next_col = col.saturating_add(1);
+                    // A row of millions of cells is one row: look at `cancel` within it too.
+                    cells_seen = cells_seen.wrapping_add(1);
+                    if cells_seen.is_multiple_of(1024) && cancel.is_some_and(Cancel::is_cancelled) {
+                        break;
+                    }
                     let t = type_of(a.t.as_deref());
                     let kind =
                         a.s.as_deref()
@@ -887,6 +917,7 @@ pub(crate) fn parse_sheet(
                         t,
                         kind,
                         cap,
+                        col as usize >= limits.max_cols,
                     )?;
                     let formula = match formula {
                         Formula::None => None,
@@ -895,6 +926,7 @@ pub(crate) fn parse_sheet(
                     };
                     let value = match pv {
                         Pv::Empty => None,
+                        Pv::Int(i) => Some(Val::Int(i)),
                         Pv::Num(n) => Some(Val::Number(n)),
                         Pv::Date(serial, duration) => Some(Val::Date { serial, duration }),
                         Pv::Bool(b) => Some(Val::Bool(b)),
@@ -987,12 +1019,22 @@ fn read_cell<R: BufRead>(
     t: T,
     kind: DateKind,
     cap: usize,
+    skip: bool,
 ) -> Result<(Pv, Formula), OfficeError> {
     let mut pv = Pv::Empty;
     let mut formula = Formula::None;
+    // A cell the grid will drop (past the column cap) is only read past: nothing in it is
+    // decoded, expanded or kept. `had` records that it held something, which is all the builder
+    // needs to note the truncation.
+    let mut had = false;
     loop {
         sc.ev.clear();
         match rd.read_event_into(&mut sc.ev).map_err(xml_err)? {
+            Event::Start(e) if skip => {
+                had |= matches!(e.local_name().as_ref(), b"f" | b"v" | b"is");
+                rd.read_to_end_into(e.name(), &mut sc.ev2)
+                    .map_err(xml_err)?;
+            }
             Event::Start(e) => match e.local_name().as_ref() {
                 b"f" => {
                     let (shared, si, has_ref) = formula_attrs(&e);
@@ -1047,6 +1089,10 @@ fn read_cell<R: BufRead>(
             Event::Eof => break,
             _ => {}
         }
+    }
+    if skip {
+        sc.v.clear();
+        return Ok((if had { Pv::Str } else { Pv::Empty }, Formula::None));
     }
     Ok((pv, formula))
 }
@@ -1123,9 +1169,18 @@ fn plain_value(raw: &[u8], t: T, kind: DateKind, tables: &Tables, text: &mut Str
             if raw.is_empty() {
                 return Pv::Empty;
             }
-            match std::str::from_utf8(raw)
-                .ok()
+            let lit = std::str::from_utf8(raw).ok();
+            // A plain integer literal that fits `i64` stays exact (as it is read by calamine).
+            if kind == DateKind::Plain {
+                if let Some(i) = lit.and_then(parse_int_literal) {
+                    return Pv::Int(i);
+                }
+            }
+            // `f64::from_str` also takes `NaN`, `inf` and `infinity`, and overflows to infinity:
+            // none of those is a number in a sheet.
+            match lit
                 .and_then(|s| s.parse::<f64>().ok())
+                .filter(|n| n.is_finite())
             {
                 Some(n) => match kind {
                     DateKind::Plain => Pv::Num(n),
@@ -1141,6 +1196,15 @@ fn plain_value(raw: &[u8], t: T, kind: DateKind, tables: &Tables, text: &mut Str
             }
         }
     }
+}
+
+/// An optionally signed run of ASCII digits that fits `i64`.
+fn parse_int_literal(s: &str) -> Option<i64> {
+    let digits = s.strip_prefix(['-', '+']).unwrap_or(s);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
 }
 
 // ---------------------------------------------------------------------------------------------
