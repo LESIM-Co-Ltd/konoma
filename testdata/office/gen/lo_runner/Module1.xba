@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
+<script:module xmlns:script="http://openoffice.org/2000/script" script:name="Module1" script:language="StarBasic">
+Sub RunJob
+  Dim f As Object, p As Object, s As Object
+  f = CreateUnoService(&quot;com.sun.star.script.provider.MasterScriptProviderFactory&quot;)
+  p = f.createScriptProvider(&quot;&quot;)
+  s = p.getScript(&quot;vnd.sun.star.script:runner.py$run?language=Python&amp;location=user&quot;)
+  s.invoke(Array(), Array(), Array())
+End Sub
+</script:module>

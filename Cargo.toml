@@ -38,6 +38,9 @@ exclude = [
     # 参照しない(#[cfg(test)] のみ)。snapshots/ が無い環境ではテストが安全にスキップする
     # (samples/ と同じ流儀)。
     "/snapshots",
+    # Office/spreadsheet test files generated with LibreOffice/openpyxl (own content; test-only,
+    # same treatment as snapshots/). Tests skip safely when the directory is absent.
+    "/testdata",
 ]
 
 # cargo-binstall: fetch the prebuilt binary from the GitHub Release instead of

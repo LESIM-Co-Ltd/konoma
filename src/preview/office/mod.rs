@@ -111,6 +111,8 @@ impl std::error::Error for OfficeError {}
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_complex;
+#[cfg(test)]
 mod tests_numfmt;
 #[cfg(test)]
 mod tests_ods;
