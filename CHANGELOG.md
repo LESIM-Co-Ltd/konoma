@@ -19,6 +19,9 @@ All notable changes to konoma are documented in this file. The format is based o
   of being refused: xlsx/xlsb are read as a stream and reading stops at the limit. Only the sheet on screen is kept
   in memory; `J`/`K` read the next sheet in the background. (ods/xls cannot be streamed, so a file too large to open
   safely is still refused, with the reason.)
+  xlsx files are read by konoma itself (one pass for values, formats and formulas), so Excel 365 error values such
+  as `#SPILL!`, `#CALC!` or `#FIELD!` are shown in their cells instead of making the sheet unreadable, and long
+  integer IDs keep every digit. Pivot tables show the totals Excel saved in the cells (they are not recalculated).
 - **`e` on an Office document opens it in a GUI app** (docx/docm/dotx/dotm/doc/odt, xlsx/xlsm/xltx/xltm/xlsb/xls/ods,
   pptx/pptm/ppsx/potx/ppt/odp) instead of handing the zip to `$EDITOR`: Microsoft Office (macOS only), then
   LibreOffice, then the OS default (`open` / `xdg-open`). The launch runs off the UI thread and the footer says
