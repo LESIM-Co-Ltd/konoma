@@ -134,7 +134,13 @@ pub fn inspect(path: &Path, limits: &Limits) -> Result<Detected, OfficeError> {
     }
     if n >= 2 && head[..2] == ZIP_MAGIC {
         let names = scan_zip(path, limits)?;
-        return detect_zip(&names);
+        return match detect_zip(&names) {
+            // Not a spreadsheet *we can read*: but an ods whose content is encrypted is one.
+            Err(OfficeError::Unsupported) if is_encrypted_ods(path, &names, limits) => {
+                Err(OfficeError::Encrypted)
+            }
+            r => r,
+        };
     }
     if n == 8 && head == CFB_MAGIC {
         return inspect_cfb(path);
@@ -154,6 +160,39 @@ fn detect_zip(names: &[String]) -> Result<Detected, OfficeError> {
         // A valid zip that is something else (docx, pptx, jar, ...): not ours to read.
         Err(OfficeError::Unsupported)
     }
+}
+
+/// An OpenDocument spreadsheet whose `content.xml` is not there to read because the package is
+/// encrypted: LibreOffice 25+ stores the whole package as one `encrypted-package` entry (AES-GCM),
+/// and the manifest says so with `encryption-data`. The `mimetype` entry stays in the clear and
+/// says what the document is. (Older packages keep `content.xml` with encrypted bytes and are
+/// recognised by `fmt_ods::read`, which looks at the manifest.)
+fn is_encrypted_ods(path: &Path, names: &[String], limits: &Limits) -> bool {
+    const ODS_MIME: &[u8] = b"application/vnd.oasis.opendocument.spreadsheet";
+    let Ok(mut zip) = open_zip(path) else {
+        return false;
+    };
+    let mime = match part_reader(&mut zip, "mimetype", 256) {
+        Ok(Some(mut r)) => {
+            let mut buf = Vec::new();
+            if r.read_to_end(&mut buf).is_err() {
+                return false;
+            }
+            buf
+        }
+        _ => return false,
+    };
+    if !mime.trim_ascii().starts_with(ODS_MIME) {
+        return false;
+    }
+    if names.iter().any(|n| n == "encrypted-package") {
+        return true;
+    }
+    let encrypted = match part_reader(&mut zip, "META-INF/manifest.xml", limits.max_part_bytes) {
+        Ok(Some(r)) => super::fmt_ods::manifest_is_encrypted(BufReader::new(r)).unwrap_or(false),
+        _ => false,
+    };
+    encrypted
 }
 
 fn inspect_cfb(path: &Path) -> Result<Detected, OfficeError> {

@@ -12,6 +12,7 @@ fn fj(code: &str, v: f64) -> String {
     let o = Options {
         date1904: false,
         locale: Locale::Ja,
+        null_day: None,
     };
     format_value(code, Value::Number(v), &o)
 }
@@ -19,6 +20,7 @@ fn f1904(code: &str, v: f64) -> String {
     let o = Options {
         date1904: true,
         locale: Locale::En,
+        null_day: None,
     };
     format_value(code, Value::Number(v), &o)
 }

@@ -215,21 +215,28 @@ fn scientific_and_fraction_styles() {
         f(
             r#"number:min-integer-digits="1" number:min-numerator-digits="1" number:min-denominator-digits="1""#
         ),
-        "# ?/?"
+        "0 ?/?"
     );
     assert_eq!(
         f(
             r#"number:min-integer-digits="1" number:min-numerator-digits="1" number:min-denominator-digits="1" number:denominator-value="8""#
         ),
-        "# ?/8"
+        "0 ?/8"
     );
+    // LibreOffice writes `min-integer-digits="0"` for `# ?/?`: the integer part is there, optional.
     assert_eq!(
         f(
             r#"number:min-integer-digits="0" number:min-numerator-digits="2" number:min-denominator-digits="2""#
         ),
+        "# ??/??"
+    );
+    // No attribute: an improper fraction.
+    assert_eq!(
+        f(r#"number:min-numerator-digits="2" number:min-denominator-digits="2""#),
         "??/??"
     );
     assert_eq!(render("# ?/?", 1.5), "1 1/2");
+    assert_eq!(render("0 ?/?", 0.75), "0 3/4");
 }
 
 #[test]
@@ -1674,4 +1681,692 @@ fn tables_that_share_a_name_are_all_counted_in_the_workbook_total() {
         fmt_ods::read(&p, &limits).unwrap_err(),
         OfficeError::TooLarge { what: "sheet area" }
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// elapsed time, embedded text, engineering notation, fractions
+// ---------------------------------------------------------------------------------------------
+
+/// A time style with the given attributes on the style and the given children.
+fn time_code(style_attrs: &str, body: &str) -> String {
+    let auto = format!(
+        r#"<number:time-style style:name="N" {style_attrs}>{body}</number:time-style><style:style style:name="c" style:family="table-cell" style:data-style-name="N"/>"#
+    );
+    code_of(&auto, "c").unwrap()
+}
+
+const HMS: &str = r#"<number:hours/><number:text>:</number:text><number:minutes number:style="long"/><number:text>:</number:text><number:seconds number:style="long"/>"#;
+
+#[test]
+fn the_elapsed_flag_on_the_time_style_unbounds_its_first_unit_only() {
+    // LibreOffice writes `truncate-on-overflow="false"` on the style, never on the children.
+    let c = time_code(r#"number:truncate-on-overflow="false""#, HMS);
+    assert_eq!(c, "[h]:mm:ss");
+    assert_eq!(render(&c, 1.5), "36:00:00");
+    // The first unit present is the unbounded one, whichever it is.
+    let c = time_code(
+        r#"number:truncate-on-overflow="false""#,
+        r#"<number:minutes number:style="long"/><number:text>:</number:text><number:seconds number:style="long"/>"#,
+    );
+    assert_eq!(c, "[mm]:ss");
+    assert_eq!(render(&c, 61.2 / 1440.0), "61:12");
+    let c = time_code(
+        r#"number:truncate-on-overflow="false""#,
+        r#"<number:seconds number:style="long"/>"#,
+    );
+    assert_eq!(c, "[ss]");
+    // A text before the first unit does not use it up.
+    let c = time_code(
+        r#"number:truncate-on-overflow="false""#,
+        r#"<number:text>T=</number:text><number:hours number:style="long"/><number:text>:</number:text><number:minutes number:style="long"/>"#,
+    );
+    assert_eq!(c, "\"T=\"[hh]:mm");
+    // Not elapsed: `false` is the only value that turns it on.
+    for attrs in ["", r#"number:truncate-on-overflow="true""#] {
+        assert_eq!(time_code(attrs, HMS), "h:mm:ss", "{attrs}");
+    }
+    // The old per-element spelling still works.
+    let c = time_code(
+        "",
+        r#"<number:hours number:truncate-on-overflow="false"/><number:text>:</number:text><number:minutes number:style="long"/>"#,
+    );
+    assert_eq!(c, "[h]:mm");
+}
+
+#[test]
+fn the_elapsed_flag_does_not_leak_into_the_next_style() {
+    // Two styles in one file: the second is an ordinary clock time.
+    let auto = format!(
+        r#"<number:time-style style:name="E" number:truncate-on-overflow="false">{HMS}</number:time-style><number:time-style style:name="C">{HMS}</number:time-style><style:style style:name="e" style:family="table-cell" style:data-style-name="E"/><style:style style:name="c" style:family="table-cell" style:data-style-name="C"/>"#
+    );
+    assert_eq!(code_of(&auto, "e").unwrap(), "[h]:mm:ss");
+    assert_eq!(code_of(&auto, "c").unwrap(), "h:mm:ss");
+}
+
+#[test]
+fn an_elapsed_duration_cell_goes_through_the_whole_pipeline() {
+    let auto = format!(
+        r#"<number:time-style style:name="N" number:truncate-on-overflow="false">{HMS}</number:time-style><style:style style:name="c" style:family="table-cell" style:data-style-name="N"/>"#
+    );
+    let rows = row(
+        r#"<table:table-cell table:style-name="c" office:value-type="time" office:time-value="PT36H00M00S"><text:p/></table:table-cell><table:table-cell table:style-name="c" office:value-type="float" office:value="100.25"><text:p/></table:table-cell>"#,
+    );
+    let wb = load_ods_xml("ods_elapsed", &auto, &table("S", &rows));
+    assert_eq!(sheet0(&wb).display(0, 0), "36:00:00");
+    assert_eq!(sheet0(&wb).display(0, 1), "2406:00:00");
+}
+
+fn number_code(body: &str) -> String {
+    code("number-style", body)
+}
+
+#[test]
+fn embedded_text_is_inserted_between_the_digits() {
+    // 090-1234-5678: positions count the digits to the right of the text.
+    let c = number_code(
+        r#"<number:number number:decimal-places="0" number:min-integer-digits="11"><number:embedded-text number:position="8">-</number:embedded-text><number:embedded-text number:position="4">-</number:embedded-text></number:number>"#,
+    );
+    assert_eq!(c, "000-0000-0000");
+    assert_eq!(render(&c, 9_012_345_678.0), "090-1234-5678");
+    // Position 0: after the last digit (before the decimals).
+    let c = number_code(
+        r#"<number:number number:decimal-places="1" number:min-integer-digits="1"><number:embedded-text number:position="0">m</number:embedded-text></number:number>"#,
+    );
+    assert_eq!(c, "0\"m\".0");
+    assert_eq!(render(&c, 5.0), "5m.0");
+    // Past the leftmost digit: in front of all of them.
+    let c = number_code(
+        r#"<number:number number:decimal-places="0" number:min-integer-digits="2"><number:embedded-text number:position="9">#</number:embedded-text></number:number>"#,
+    );
+    assert_eq!(c, "\"#\"00");
+    // Next to grouping and other elements of the style.
+    let c = code(
+        "currency-style",
+        r#"<number:currency-symbol>¥</number:currency-symbol><number:number number:decimal-places="0" number:min-integer-digits="4" number:grouping="true"><number:embedded-text number:position="2">/</number:embedded-text></number:number>"#,
+    );
+    assert_eq!(c, "\"¥\"0,0/00");
+    // A text with nothing in it, and an embedded text outside a number, change nothing.
+    assert_eq!(
+        number_code(
+            r#"<number:number number:min-integer-digits="1" number:decimal-places="0"><number:embedded-text number:position="1"></number:embedded-text></number:number>"#
+        ),
+        "0"
+    );
+    assert_eq!(
+        number_code(r#"<number:embedded-text number:position="1">x</number:embedded-text>"#),
+        "General"
+    );
+}
+
+#[test]
+fn embedded_texts_never_run_away() {
+    let texts: String = (0..500)
+        .map(|i| format!(r#"<number:embedded-text number:position="{i}">x</number:embedded-text>"#))
+        .collect();
+    let c = number_code(&format!(
+        r#"<number:number number:decimal-places="0" number:min-integer-digits="3">{texts}</number:number>"#
+    ));
+    assert!(c.len() < 2000, "{}", c.len());
+    // A position that is not a number is 0.
+    let c = number_code(
+        r#"<number:number number:decimal-places="0" number:min-integer-digits="2"><number:embedded-text number:position="-1">x</number:embedded-text><number:embedded-text number:position="9999999999999999999999">y</number:embedded-text></number:number>"#,
+    );
+    assert!(
+        c.starts_with('"') || c.ends_with('"') || c.contains("00"),
+        "{c}"
+    );
+}
+
+#[test]
+fn engineering_notation_follows_the_exponent_interval() {
+    let sci = |attrs: &str| {
+        code(
+            "number-style",
+            &format!("<number:scientific-number {attrs}/>"),
+        )
+    };
+    assert_eq!(
+        sci(
+            r#"number:decimal-places="1" number:min-integer-digits="1" number:min-exponent-digits="1" number:exponent-interval="3""#
+        ),
+        "##0.0E+0"
+    );
+    assert_eq!(
+        render("##0.0E+0", 12345.0),
+        "12.3E+3",
+        "the engine reads what we write"
+    );
+    assert_eq!(
+        sci(
+            r#"number:decimal-places="2" number:min-integer-digits="1" number:exponent-interval="2""#
+        ),
+        "#0.00E+00"
+    );
+    // The interval never makes the integer part narrower than its minimum.
+    assert_eq!(
+        sci(
+            r#"number:decimal-places="0" number:min-integer-digits="3" number:min-exponent-digits="2" number:exponent-interval="1""#
+        ),
+        "000E+00"
+    );
+    // No interval: the usual notation.
+    assert_eq!(
+        sci(
+            r#"number:decimal-places="2" number:min-integer-digits="1" number:min-exponent-digits="2""#
+        ),
+        "0.00E+00"
+    );
+    // The sign is forced unless the file says it is not.
+    assert_eq!(
+        sci(
+            r#"number:decimal-places="1" number:min-integer-digits="1" number:min-exponent-digits="2" number:forced-exponent-sign="false""#
+        ),
+        "0.0E-00"
+    );
+    assert_eq!(
+        sci(
+            r#"number:decimal-places="1" number:min-integer-digits="1" number:min-exponent-digits="2" number:forced-exponent-sign="true""#
+        ),
+        "0.0E+00"
+    );
+    // A huge interval is bounded.
+    let c = sci(r#"number:decimal-places="1" number:exponent-interval="999999""#);
+    assert!(c.len() < 80, "{c}");
+}
+
+#[test]
+#[allow(clippy::approx_constant)]
+fn fractions_have_an_integer_part_when_the_style_says_so() {
+    let f = |attrs: &str| code("number-style", &format!("<number:fraction {attrs}/>"));
+    // LibreOffice: `# ??/??`.
+    let mixed = f(
+        r#"number:min-integer-digits="0" number:min-numerator-digits="2" number:min-denominator-digits="2" number:max-denominator-value="99""#,
+    );
+    assert_eq!(mixed, "# ??/??");
+    assert_eq!(render(&mixed, 3.14159), "3 14/99");
+    assert_eq!(render(&mixed, 0.75), "  3/4 ");
+    // LibreOffice: `# ?/?` shows no integer for a value below 1 but keeps the slot.
+    let one = f(
+        r#"number:min-integer-digits="0" number:min-numerator-digits="1" number:min-denominator-digits="1" number:max-denominator-value="9""#,
+    );
+    assert_eq!(one, "# ?/?");
+    assert_eq!(render(&one, 0.75), " 3/4");
+    // `?/?`: no `min-integer-digits` at all, an improper fraction.
+    let improper = f(
+        r#"number:min-numerator-digits="2" number:min-denominator-digits="2" number:max-denominator-value="99""#,
+    );
+    assert_eq!(improper, "??/??");
+    assert_eq!(render(&improper, 3.14159), "311/99");
+    // The largest denominator allowed widens a too-narrow placeholder.
+    assert_eq!(
+        f(
+            r#"number:min-integer-digits="0" number:min-numerator-digits="1" number:min-denominator-digits="1" number:max-denominator-value="999""#
+        ),
+        "# ?/???"
+    );
+    // A fixed denominator.
+    assert_eq!(
+        f(
+            r#"number:min-integer-digits="0" number:min-numerator-digits="1" number:denominator-value="8""#
+        ),
+        "# ?/8"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// the ods calendar (null date, no 1900 leap-year bug)
+// ---------------------------------------------------------------------------------------------
+
+fn date_style_auto(body: &str) -> String {
+    data_style("date-style", body)
+}
+
+const YMD: &str = r#"<number:year number:style="long"/><number:text>-</number:text><number:month number:style="long"/><number:text>-</number:text><number:day number:style="long"/>"#;
+const YMD_DAY: &str = r#"<number:year number:style="long"/><number:text>-</number:text><number:month number:style="long"/><number:text>-</number:text><number:day number:style="long"/><number:text> </number:text><number:day-of-week number:style="long"/>"#;
+
+fn null_date(iso: &str) -> String {
+    format!(
+        r#"<table:calculation-settings><table:null-date table:value-type="date" table:date-value="{iso}"/></table:calculation-settings>"#
+    )
+}
+
+#[test]
+fn ods_dates_use_the_ods_calendar_not_excels() {
+    let auto = date_style_auto(YMD_DAY);
+    let rows = row(&format!(
+        "{}{}{}{}{}{}",
+        float("c", "0"),
+        float("c", "-1"),
+        float("c", "1"),
+        float("c", "61"),
+        date("c", "1899-12-30"),
+        date("c", "1800-01-01"),
+    ));
+    let wb = load_ods_xml("ods_cal", &auto, &table("S", &rows));
+    let s = sheet0(&wb);
+    // Excel would show `1900-01-00` for 0, `########` below it and be a day off before 1900-03-01.
+    assert_eq!(s.display(0, 0), "1899-12-30 Saturday");
+    assert_eq!(s.display(0, 1), "1899-12-29 Friday");
+    assert_eq!(s.display(0, 2), "1899-12-31 Sunday");
+    assert_eq!(s.display(0, 3), "1900-03-01 Thursday");
+    assert_eq!(s.display(0, 4), "1899-12-30 Saturday");
+    assert_eq!(s.display(0, 5), "1800-01-01 Wednesday");
+}
+
+#[test]
+fn ods_dates_around_1900_are_exact() {
+    // Every day from 1899-12-25 to 1900-03-05 keeps its own date (Excel's 1900 bug shifts them).
+    let auto = date_style_auto(YMD);
+    let days = [
+        "1899-12-25",
+        "1899-12-31",
+        "1900-01-01",
+        "1900-01-31",
+        "1900-02-01",
+        "1900-02-27",
+        "1900-02-28",
+        "1900-03-01",
+        "1900-03-02",
+        "1900-03-05",
+    ];
+    let rows = row(&days.iter().map(|d| date("c", d)).collect::<String>());
+    let wb = load_ods_xml("ods_cal1900", &auto, &table("S", &rows));
+    for (i, d) in days.iter().enumerate() {
+        assert_eq!(sheet0(&wb).display(0, i), *d);
+    }
+}
+
+#[test]
+fn a_number_with_a_date_format_counts_from_the_null_date() {
+    let auto = date_style_auto(YMD);
+    // Default null date 1899-12-30; 46300 days later.
+    let wb = load_ods_xml("ods_nd0", &auto, &table("S", &row(&float("c", "46300"))));
+    assert_eq!(sheet0(&wb).display(0, 0), "2026-10-05");
+    // A null date of 1904-01-01: numbers count from it, ISO dates stay absolute.
+    let tables = format!(
+        "{}{}",
+        null_date("1904-01-01"),
+        table(
+            "S",
+            &row(&format!(
+                "{}{}{}",
+                float("c", "0"),
+                float("c", "1462"),
+                date("c", "2026-10-05")
+            ))
+        )
+    );
+    let wb = load_ods_xml("ods_nd1904", &auto, &tables);
+    assert_eq!(sheet0(&wb).display(0, 0), "1904-01-01");
+    assert_eq!(sheet0(&wb).display(0, 1), "1908-01-02");
+    assert_eq!(sheet0(&wb).display(0, 2), "2026-10-05");
+    // Any other null date works the same.
+    let tables = format!(
+        "{}{}",
+        null_date("2000-01-01"),
+        table("S", &row(&float("c", "1")))
+    );
+    let wb = load_ods_xml("ods_nd2000", &auto, &tables);
+    assert_eq!(sheet0(&wb).display(0, 0), "2000-01-02");
+}
+
+#[test]
+fn a_broken_null_date_falls_back_to_the_default() {
+    let auto = date_style_auto(YMD);
+    for bad in ["", "garbage", "2000-13-01", "2000-01"] {
+        let tables = format!("{}{}", null_date(bad), table("S", &row(&float("c", "0"))));
+        let wb = load_ods_xml("ods_ndbad", &auto, &tables);
+        assert_eq!(sheet0(&wb).display(0, 0), "1899-12-30", "{bad:?}");
+    }
+}
+
+#[test]
+fn ods_calendar_edges_do_not_panic() {
+    let auto = date_style_auto(YMD);
+    let cells: String = [
+        "1e300", "-1e300", "-1e9", "1e9", "2958465", "2958466", "-693593", "-693594", "NaN",
+    ]
+    .iter()
+    .map(|v| float("c", v))
+    .collect();
+    let wb = load_ods_xml("ods_caledge", &auto, &table("S", &row(&cells)));
+    let s = sheet0(&wb);
+    // 0001-01-01 is the first day, 9999-12-31 the last; outside is a row of hashes.
+    assert_eq!(s.display(0, 6), "0001-01-01");
+    assert_eq!(s.display(0, 7), "########");
+    assert_eq!(s.display(0, 0), "########");
+    assert_eq!(s.display(0, 1), "########");
+    assert_eq!(s.display(0, 3), "########");
+    // A negative number with a time format is not a date.
+    let auto = data_style(
+        "time-style",
+        r#"<number:hours number:style="long"/><number:text>:</number:text><number:minutes number:style="long"/>"#,
+    );
+    let wb = load_ods_xml("ods_negtime", &auto, &table("S", &row(&float("c", "-0.5"))));
+    assert_eq!(sheet0(&wb).display(0, 0), "########");
+}
+
+// ---------------------------------------------------------------------------------------------
+// text with tabs and line breaks
+// ---------------------------------------------------------------------------------------------
+
+fn text_cell(attrs: &str, body: &str) -> String {
+    format!(r#"<table:table-cell office:value-type="string" {attrs}>{body}</table:table-cell>"#)
+}
+
+#[test]
+fn tabs_and_line_breaks_in_a_cell_are_kept() {
+    let rows = row(&format!(
+        "{}{}{}{}",
+        text_cell("", r#"<text:p>a<text:tab/>b</text:p>"#),
+        text_cell("", r#"<text:p>one<text:line-break/>two</text:p>"#),
+        text_cell(
+            "",
+            r#"<text:p>x<text:s text:c="3"/>y<text:tab/>z</text:p><text:p>second</text:p><text:p/><text:p>fourth</text:p>"#
+        ),
+        text_cell(
+            "",
+            r#"<text:p><text:span>in <text:a>a link</text:a></text:span><text:tab/>end</text:p>"#
+        ),
+    ));
+    let wb = load_ods_xml("ods_tabs", "", &table("S", &rows));
+    let s = sheet0(&wb);
+    assert_eq!(s.display(0, 0), "a\tb");
+    assert_eq!(s.display(0, 1), "one\ntwo");
+    assert_eq!(s.display(0, 2), "x   y\tz\nsecond\n\nfourth");
+    assert_eq!(s.display(0, 3), "in a link\tend");
+}
+
+#[test]
+fn a_cell_without_tabs_is_left_to_calamine() {
+    // The pass rebuilds nothing unless a tab or a line break is there: spaces, paragraphs and
+    // entities read the way calamine reads them.
+    let rows = row(&format!(
+        "{}{}",
+        text_cell(
+            "",
+            r#"<text:p>a<text:s/>b<text:s text:c="2"/>c &amp; &lt;d&gt;</text:p><text:p>next</text:p>"#
+        ),
+        text_cell("", r#"<text:p>plain</text:p>"#),
+    ));
+    let wb = load_ods_xml("ods_notabs", "", &table("S", &rows));
+    assert_eq!(sheet0(&wb).display(0, 0), "a b  c & <d>\nnext");
+    assert_eq!(sheet0(&wb).display(0, 1), "plain");
+}
+
+#[test]
+fn a_comment_in_the_cell_is_not_its_text() {
+    let ann = r#"<office:annotation><dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/">me</dc:creator><text:p>note<text:tab/>x</text:p></office:annotation>"#;
+    let rows = row(&text_cell(
+        "",
+        &format!(r#"{ann}<text:p>a<text:tab/>b</text:p>"#),
+    ));
+    let wb = load_ods_xml("ods_ann", "", &table("S", &rows));
+    assert_eq!(sheet0(&wb).display(0, 0), "a\tb");
+}
+
+#[test]
+fn a_string_value_attribute_is_the_text_and_is_not_rebuilt() {
+    let rows = row(&text_cell(
+        r#"office:string-value="from attribute""#,
+        r#"<text:p>shown<text:tab/>text</text:p>"#,
+    ));
+    let wb = load_ods_xml("ods_strval", "", &table("S", &rows));
+    assert_eq!(sheet0(&wb).display(0, 0), "from attribute");
+}
+
+#[test]
+fn repeated_cells_with_a_tab_are_all_repaired() {
+    let cell = text_cell(
+        r#"table:number-columns-repeated="3""#,
+        r#"<text:p>a<text:tab/>b</text:p>"#,
+    );
+    let rows = format!(
+        r#"<table:table-row table:number-rows-repeated="2">{cell}</table:table-row>{}"#,
+        row(&string("z"))
+    );
+    let wb = load_ods_xml("ods_tabrep", "", &table("S", &rows));
+    let s = sheet0(&wb);
+    for r in 0..2 {
+        for c in 0..3 {
+            assert_eq!(s.display(r, c), "a\tb", "({r},{c})");
+        }
+    }
+    assert_eq!(s.display(2, 0), "z");
+}
+
+#[test]
+fn tabs_in_cells_after_empty_ones_land_on_the_right_cell() {
+    let rows = format!(
+        r#"<table:table-row table:number-rows-repeated="5"><table:table-cell table:number-columns-repeated="1024"/></table:table-row>{}"#,
+        row(&format!(
+            r#"<table:table-cell table:number-columns-repeated="3"/>{}"#,
+            text_cell("", r#"<text:p>t<text:tab/>t</text:p>"#)
+        ))
+    );
+    let wb = load_ods_xml("ods_tabpos", "", &table("S", &rows));
+    assert_eq!(sheet0(&wb).display(5, 3), "t\tt");
+}
+
+#[test]
+fn a_huge_space_count_is_counted_against_the_text_budget() {
+    // calamine allocates `text:c` spaces; the budget must see them before it does.
+    let rows = row(&text_cell(
+        "",
+        r#"<text:p>a<text:s text:c="4000000000"/>b</text:p>"#,
+    ));
+    let dir = tmp("ods_hugespace");
+    let p = write(
+        &dir,
+        "s.ods",
+        &ods_bytes(&content_xml("", &table("S", &rows)), None, None),
+    );
+    assert_eq!(
+        load_with(&p, small_limits()).unwrap_err(),
+        OfficeError::TooLarge { what: "text" }
+    );
+}
+
+#[test]
+fn a_very_long_cell_with_a_tab_is_not_collected_twice() {
+    let long = "x".repeat((1 << 20) + 10);
+    let rows = row(&text_cell(
+        "",
+        &format!("<text:p>{long}<text:tab/>y</text:p>"),
+    ));
+    let wb = load_ods_xml("ods_longtab", "", &table("S", &rows));
+    // Over the repair limit: left as calamine read it (still the whole text, minus the tab).
+    let d = sheet0(&wb).display(0, 0);
+    assert!(d.starts_with("xxx") && d.ends_with("xy"), "{}", d.len());
+}
+
+// ---------------------------------------------------------------------------------------------
+// merged ranges
+// ---------------------------------------------------------------------------------------------
+
+fn merged(cs: u32, rs: u32, inner: &str) -> String {
+    format!(
+        r#"<table:table-cell table:number-columns-spanned="{cs}" table:number-rows-spanned="{rs}" office:value-type="string"><text:p>{inner}</text:p></table:table-cell>"#
+    )
+}
+
+fn covered(n: u32) -> String {
+    format!(r#"<table:covered-table-cell table:number-columns-repeated="{n}"/>"#)
+}
+
+fn merges_of(name: &str, tables: &str) -> Vec<MergeRange> {
+    let wb = load_ods_xml(name, "", tables);
+    let mut m = wb.sheets[0].merges.clone();
+    m.sort_by_key(|r| (r.row0, r.col0));
+    m
+}
+
+fn mr(row0: u32, col0: u32, row1: u32, col1: u32) -> MergeRange {
+    MergeRange {
+        row0,
+        col0,
+        row1,
+        col1,
+    }
+}
+
+#[test]
+fn merged_ranges_are_read_from_the_spans() {
+    // A1:C2, then (after its covered cells) D2:D4.
+    let rows = format!(
+        "<table:table-row>{}{}</table:table-row><table:table-row>{}{}</table:table-row>{}",
+        merged(3, 2, "a"),
+        covered(2),
+        covered(3),
+        merged(1, 3, "b"),
+        row(&string("plain")),
+    );
+    let m = merges_of("ods_merge", &table("S", &rows));
+    assert_eq!(m, [mr(0, 0, 1, 2), mr(1, 3, 3, 3)]);
+    // A span of 1 x 1 is not a merge, and neither is a missing or garbled attribute.
+    let rows = row(&format!(
+        "{}{}{}",
+        merged(1, 1, "x"),
+        r#"<table:table-cell table:number-columns-spanned="zz" office:value-type="string"><text:p>y</text:p></table:table-cell>"#,
+        r#"<table:table-cell table:number-columns-spanned="0" table:number-rows-spanned="0" office:value-type="string"><text:p>y</text:p></table:table-cell>"#,
+    ));
+    assert!(merges_of("ods_nomerge", &table("S", &rows)).is_empty());
+}
+
+#[test]
+fn an_empty_merged_cell_is_a_merge_too() {
+    let rows = row(
+        r#"<table:table-cell table:number-columns-spanned="2" table:number-rows-spanned="1"/><table:covered-table-cell/>"#,
+    );
+    assert_eq!(
+        merges_of("ods_emptymerge", &table("S", &rows)),
+        [mr(0, 0, 0, 1)]
+    );
+}
+
+#[test]
+fn merged_ranges_follow_repeats_and_are_clamped() {
+    // A spanned cell repeated: one range per repetition.
+    let rows = r#"<table:table-row table:number-rows-repeated="2"><table:table-cell table:number-columns-repeated="2" table:number-columns-spanned="2"/><table:covered-table-cell/></table:table-row>"#;
+    let m = merges_of("ods_mergerep", &table("S", rows));
+    assert_eq!(
+        m,
+        [
+            mr(0, 0, 0, 1),
+            mr(0, 1, 0, 2),
+            mr(1, 0, 1, 1),
+            mr(1, 1, 1, 2)
+        ]
+    );
+    // A span past the last column / row stops at Excel's limit; leading empty rows and cells
+    // shift the range.
+    let rows = r#"<table:table-row table:number-rows-repeated="3"/><table:table-row><table:table-cell table:number-columns-repeated="2"/><table:table-cell table:number-columns-spanned="4294967295" table:number-rows-spanned="4294967295"/></table:table-row>"#;
+    assert_eq!(
+        merges_of("ods_mergeclamp", &table("S", rows)),
+        [mr(3, 2, 1_048_575, 16_383)]
+    );
+}
+
+#[test]
+fn merged_ranges_are_capped_and_stay_with_their_table() {
+    // 1,000 x 200 repeated spanned cells (200,000) are more than the cap.
+    let cell = r#"<table:table-cell table:number-columns-repeated="200" table:number-columns-spanned="2"/>"#;
+    let rows =
+        format!(r#"<table:table-row table:number-rows-repeated="1000">{cell}</table:table-row>"#);
+    let wb = load_ods_xml("ods_mergecap", "", &table("S", &rows));
+    assert_eq!(wb.sheets[0].merges.len(), 100_000);
+    // Each table keeps its own.
+    let tables = format!(
+        "{}{}",
+        table("A", &row(&merged(2, 2, "a"))),
+        table("B", &row(&string("b")))
+    );
+    let dir = tmp("ods_mergetables");
+    let p = write(
+        &dir,
+        "m.ods",
+        &ods_bytes(&content_xml("", &tables), None, None),
+    );
+    let wb = load(&p).unwrap();
+    assert_eq!(wb.sheets[0].merges, [mr(0, 0, 1, 1)]);
+    assert!(wb.sheets[1].merges.is_empty());
+}
+
+// ---------------------------------------------------------------------------------------------
+// encrypted packages
+// ---------------------------------------------------------------------------------------------
+
+const MANIFEST_PACKAGE: &str = r#"<?xml version="1.0"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.4"><manifest:file-entry manifest:full-path="encrypted-package" manifest:media-type="application/vnd.oasis.opendocument.spreadsheet" manifest:size="6409"><manifest:encryption-data><manifest:algorithm manifest:algorithm-name="http://www.w3.org/2009/xmlenc11#aes256-gcm"/></manifest:encryption-data></manifest:file-entry></manifest:manifest>"#;
+
+fn package(mime: &[u8], manifest: &str, with_package: bool) -> Vec<u8> {
+    let mut entries: Vec<(&str, &[u8])> = Vec::new();
+    if !mime.is_empty() {
+        entries.push(("mimetype", mime));
+    }
+    if with_package {
+        entries.push(("encrypted-package", b"\x00\x01\x02 not a zip"));
+    }
+    entries.push(("META-INF/manifest.xml", manifest.as_bytes()));
+    deflated(&entries)
+}
+
+const SHEET_MIME: &[u8] = b"application/vnd.oasis.opendocument.spreadsheet";
+
+#[test]
+fn a_single_package_encrypted_ods_is_encrypted_not_unsupported() {
+    let dir = tmp("ods_pkg");
+    let p = write(&dir, "e.ods", &package(SHEET_MIME, MANIFEST_PACKAGE, true));
+    assert_eq!(load(&p).unwrap_err(), OfficeError::Encrypted);
+    // A template is a spreadsheet too, and trailing newline / spaces in the mimetype are fine.
+    let p = write(
+        &dir,
+        "t.ods",
+        &package(
+            b"application/vnd.oasis.opendocument.spreadsheet-template\n",
+            MANIFEST_PACKAGE,
+            true,
+        ),
+    );
+    assert_eq!(load(&p).unwrap_err(), OfficeError::Encrypted);
+    // The manifest alone says so when the package entry has another name.
+    let p = write(&dir, "m.ods", &package(SHEET_MIME, MANIFEST_PACKAGE, false));
+    assert_eq!(load(&p).unwrap_err(), OfficeError::Encrypted);
+}
+
+#[test]
+fn an_encrypted_text_or_presentation_document_is_still_not_ours() {
+    let dir = tmp("ods_pkg_other");
+    for mime in [
+        &b"application/vnd.oasis.opendocument.text"[..],
+        b"application/vnd.oasis.opendocument.presentation",
+        b"",
+        b"application/zip",
+    ] {
+        let p = write(&dir, "x.ods", &package(mime, MANIFEST_PACKAGE, true));
+        assert_eq!(
+            load(&p).unwrap_err(),
+            OfficeError::Unsupported,
+            "{}",
+            String::from_utf8_lossy(mime)
+        );
+    }
+    // A spreadsheet without content and without any sign of encryption is not "encrypted".
+    let p = write(&dir, "n.ods", &package(SHEET_MIME, MANIFEST_PLAIN, false));
+    assert_eq!(load(&p).unwrap_err(), OfficeError::Unsupported);
+    // A broken manifest does not turn into a panic or an "encrypted".
+    let p = write(&dir, "b.ods", &package(SHEET_MIME, "<a><b></a>", false));
+    assert_eq!(load(&p).unwrap_err(), OfficeError::Unsupported);
+}
+
+#[test]
+fn an_old_style_encrypted_ods_keeps_its_content_part_and_is_encrypted() {
+    // Per-entry encryption (LibreOffice before 25, OpenOffice): `content.xml` is there, unreadable,
+    // and the manifest has the `encryption-data`.
+    let dir = tmp("ods_old_enc");
+    let p = write(
+        &dir,
+        "o.ods",
+        &ods_bytes("\u{1}\u{2} cipher text", None, Some(MANIFEST_ENCRYPTED)),
+    );
+    assert_eq!(load(&p).unwrap_err(), OfficeError::Encrypted);
 }

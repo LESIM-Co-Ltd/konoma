@@ -326,7 +326,15 @@ fn number_text_is_shortest_roundtrip() {
 }
 
 fn shown(v: CellValue, fmt: &NumFmtRef, date1904: bool, locale: Locale) -> String {
-    display_text(&v, fmt, &DisplayCtx { date1904, locale })
+    display_text(
+        &v,
+        fmt,
+        &DisplayCtx {
+            date1904,
+            null_day: None,
+            locale,
+        },
+    )
 }
 
 fn custom(code: &str) -> NumFmtRef {

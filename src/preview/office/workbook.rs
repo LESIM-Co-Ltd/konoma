@@ -287,6 +287,8 @@ impl Default for LoadOptions {
 pub struct DisplayCtx {
     /// 1904 date system.
     pub date1904: bool,
+    /// ods: days from 1970-01-01 to the sheet's null date (see `numfmt::Options::null_day`).
+    pub null_day: Option<i64>,
     /// Locale.
     pub locale: Locale,
 }
@@ -319,6 +321,7 @@ fn display_compiled(value: &CellValue, code: &numfmt::Compiled, ctx: &DisplayCtx
     let opts = numfmt::Options {
         date1904: ctx.date1904,
         locale: ctx.locale,
+        null_day: ctx.null_day,
     };
     let num = |n: f64| numfmt::format_compiled(code, Value::Number(n), &opts);
     match value {
@@ -330,7 +333,11 @@ fn display_compiled(value: &CellValue, code: &numfmt::Compiled, ctx: &DisplayCtx
         CellValue::ErrorText(e) => numfmt::format_compiled(code, Value::Error(e), &opts),
         CellValue::DateTime { serial, .. } => num(*serial),
         CellValue::DateTimeIso(s) => {
-            match numfmt::iso_datetime_to_serial(s).or_else(|| numfmt::iso_duration_to_serial(s)) {
+            let date = match ctx.null_day {
+                Some(nd) => numfmt::iso_datetime_to_ods_serial(s, nd),
+                None => numfmt::iso_datetime_to_serial(s),
+            };
+            match date.or_else(|| numfmt::iso_duration_to_serial(s)) {
                 Some(n) => num(n),
                 None => s.to_string(),
             }
@@ -571,23 +578,54 @@ fn load_ods(
     which: Which,
     cancel: Option<Cancel>,
 ) -> Result<Workbook, OfficeError> {
-    let fm = fmt_ods::read(path, &opts.limits)?;
+    let (fm, extra) = fmt_ods::read_full(path, &opts.limits)?;
     let mut wb: calamine::Ods<_> = calamine::Ods::new(open_reader(path)?).map_err(map_ods)?;
     let metas = sheet_metas(&wb);
-    let ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
+    let mut ctx = Ctx::new(fm.date1904, fm.formats.clone(), *opts);
+    // ods dates run from the table's null date and have no 1900 leap-year bug.
+    ctx.null_day = Some(extra.null_day);
     assemble(&ctx, metas, which, cancel.as_ref(), |name| {
-        Ok(build_sheet(
+        let mut data = wb.worksheet_range(name).map_err(map_ods)?;
+        let ods = extra.sheets.get(name);
+        if let Some(o) = ods {
+            apply_ods_texts(&mut data, &o.texts);
+        }
+        let mut sheet = build_sheet(
             &ctx,
             name,
             Fetched {
-                data: wb.worksheet_range(name).map_err(map_ods)?,
+                data,
                 formulas: wb.worksheet_formula(name).unwrap_or_default(),
                 merges: Vec::new(),
                 fmts: fm.sheets.get(name),
                 cancel: cancel.as_ref(),
             },
-        ))
+        );
+        if let Some(o) = ods {
+            sheet.merges = o.merges.clone();
+        }
+        Ok(sheet)
     })
+}
+
+/// Puts back the text `calamine` loses from an ods string cell (`<text:tab/>`, `<text:line-break/>`).
+fn apply_ods_texts(data: &mut Range<Data>, runs: &[fmt_ods::TextRun]) {
+    let (Some(start), Some(end)) = (data.start(), data.end()) else {
+        return;
+    };
+    for run in runs {
+        for r in run.row0..run.row0.saturating_add(run.rows) {
+            for c in run.col0..run.col0.saturating_add(run.cols) {
+                // Only cells the reader has: never grows the matrix.
+                if r < start.0 || r > end.0 || c < start.1 || c > end.1 {
+                    continue;
+                }
+                if matches!(data.get_value((r, c)), Some(Data::String(_))) {
+                    data.set_value((r, c), Data::String(run.text.clone()));
+                }
+            }
+        }
+    }
 }
 
 /// xls. Not streamable, like [`load_ods`]: `fmt_xls::read` checks the size of every sheet first.
@@ -639,6 +677,8 @@ fn map_xls(e: calamine::XlsError) -> OfficeError {
 
 struct Ctx {
     date1904: bool,
+    /// ods only: days from 1970-01-01 to the table's null date (`None` for the other formats).
+    null_day: Option<i64>,
     formats: Vec<NumFmtRef>,
     /// `formats`, each parsed once (same indices).
     compiled: Vec<numfmt::Compiled>,
@@ -655,6 +695,7 @@ impl Ctx {
             .collect();
         Ctx {
             date1904,
+            null_day: None,
             formats,
             compiled,
             general: compile_fmt(&NumFmtRef::General, opts.locale),
@@ -844,6 +885,7 @@ impl<'a> SheetBuilder<'a> {
             ctx,
             dctx: DisplayCtx {
                 date1904: ctx.date1904,
+                null_day: ctx.null_day,
                 locale: ctx.opts.locale,
             },
             fmts,

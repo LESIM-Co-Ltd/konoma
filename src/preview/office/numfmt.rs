@@ -63,6 +63,10 @@ pub struct Options {
     /// Workbook uses the 1904 date system.
     pub date1904: bool,
     pub locale: Locale,
+    /// OpenDocument calendar: the day number 0 is this many days after 1970-01-01 (the
+    /// spreadsheet's `table:null-date`, 1899-12-30 by default). Unlike Excel's, this calendar has
+    /// no 1900 leap-year bug and runs below 0. `None` = Excel's calendar (`date1904` applies).
+    pub null_day: Option<i64>,
 }
 
 /// Excel's own limit on the length of a format code. A longer code is not valid in Excel and is
@@ -1293,9 +1297,18 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// Excel serial day number -> (year, month, day, weekday 0=Sunday).
-fn serial_to_ymd(day: i64, date1904: bool) -> Option<(i32, u32, u32, u32)> {
-    if date1904 {
+/// Serial day number -> (year, month, day, weekday 0=Sunday), in the calendar `opts` selects.
+fn serial_to_ymd(day: i64, opts: &Options) -> Option<(i32, u32, u32, u32)> {
+    if let Some(null_day) = opts.null_day {
+        // OpenDocument: plain proleptic Gregorian days from the null date, years 1..=9999.
+        let days = day.checked_add(null_day)?;
+        if !(-719_162..=2_932_896).contains(&days) {
+            return None;
+        }
+        let (y, m, d) = civil_from_days(days);
+        return Some((y as i32, m, d, (days + 4).rem_euclid(7) as u32));
+    }
+    if opts.date1904 {
         if !(0..=2_957_003).contains(&day) {
             return None;
         }
@@ -1392,7 +1405,24 @@ const JA_DAYS: [&str; 7] = ["日", "月", "火", "水", "木", "金", "土"];
 
 fn render_date(sec: &Section, x: f64, opts: &Options) -> String {
     const HASHES: &str = "########";
-    if x < 0.0 || x >= 1e9 {
+    // A negative serial is a date before the null date in the OpenDocument calendar (when the
+    // section shows a calendar date); everywhere else it is not displayable.
+    let shows_date = |sec: &Section| {
+        sec.toks.iter().any(|t| {
+            matches!(
+                t,
+                Tok::Year(_)
+                    | Tok::Month(_)
+                    | Tok::Day(_)
+                    | Tok::EraG(_)
+                    | Tok::EraE(_)
+                    | Tok::JaWeekday(_)
+                    | Tok::BuddhistYear(_)
+            )
+        })
+    };
+    let negative_ok = opts.null_day.is_some() && x >= -1e9 && shows_date(sec);
+    if (x < 0.0 && !negative_ok) || x >= 1e9 {
         return HASHES.to_string();
     }
     let ja = match sec.lang {
@@ -1423,19 +1453,8 @@ fn render_date(sec: &Section, x: f64, opts: &Options) -> String {
         day += 1;
     }
     let total_ms = round_ms((x * 86_400_000.0).round() as i64);
-    let has_calendar = sec.toks.iter().any(|t| {
-        matches!(
-            t,
-            Tok::Year(_)
-                | Tok::Month(_)
-                | Tok::Day(_)
-                | Tok::EraG(_)
-                | Tok::EraE(_)
-                | Tok::JaWeekday(_)
-                | Tok::BuddhistYear(_)
-        )
-    });
-    let ymd = serial_to_ymd(day, opts.date1904);
+    let has_calendar = shows_date(sec);
+    let ymd = serial_to_ymd(day, opts);
     if has_calendar && ymd.is_none() {
         return HASHES.to_string();
     }
@@ -1585,6 +1604,31 @@ fn push_padded(out: &mut String, v: i64, width: u8) {
 /// Converts an ODS date/time (`2026-10-02`, `2026-10-02T13:45:00`, optional fraction and
 /// zone suffix, which is ignored) to a 1900-system Excel serial.
 pub fn iso_datetime_to_serial(s: &str) -> Option<f64> {
+    let (days, frac) = iso_datetime_parts(s)?;
+    let mut serial = days + 25569;
+    if serial <= 60 {
+        // Excel's 1900 leap-year bug: serials before 1900-03-01 are one lower.
+        serial -= 1;
+    }
+    Some(serial as f64 + frac)
+}
+
+/// Converts an ODS date/time to the serial of the OpenDocument calendar whose day 0 is
+/// `null_day` days after 1970-01-01 (see [`Options::null_day`]): no leap-year bug, negative
+/// below the null date.
+pub fn iso_datetime_to_ods_serial(s: &str, null_day: i64) -> Option<f64> {
+    let (days, frac) = iso_datetime_parts(s)?;
+    Some(days.checked_sub(null_day)? as f64 + frac)
+}
+
+/// The day (days since 1970-01-01) of an ISO 8601 date or date-time (the time is ignored): the
+/// ods `table:null-date`.
+pub fn iso_days_since_1970(s: &str) -> Option<i64> {
+    iso_datetime_parts(s).map(|(d, _)| d)
+}
+
+/// `(days since 1970-01-01, fraction of a day)` of an ISO 8601 date or date-time.
+fn iso_datetime_parts(s: &str) -> Option<(i64, f64)> {
     let s = s.trim();
     let (date, time) = match s.split_once(['T', 't']) {
         Some((d, t)) => (d, Some(t)),
@@ -1602,11 +1646,7 @@ pub fn iso_datetime_to_serial(s: &str) -> Option<f64> {
         return None;
     }
     let y = if neg { -y } else { y };
-    let mut serial = days_from_civil(y, m, d) + 25569;
-    if serial <= 60 {
-        // Excel's 1900 leap-year bug: serials before 1900-03-01 are one lower.
-        serial -= 1;
-    }
+    let days = days_from_civil(y, m, d);
     let mut frac = 0.0;
     if let Some(t) = time {
         let t = t.trim_end_matches(['Z', 'z']);
@@ -1617,7 +1657,7 @@ pub fn iso_datetime_to_serial(s: &str) -> Option<f64> {
         };
         frac = hms_to_days(t)?;
     }
-    Some(serial as f64 + frac)
+    Some((days, frac))
 }
 
 fn hms_to_days(t: &str) -> Option<f64> {
@@ -1822,6 +1862,7 @@ mod tests {
             &Options {
                 date1904: false,
                 locale: Locale::Ja,
+                null_day: None,
             },
         )
     }
@@ -1832,6 +1873,7 @@ mod tests {
             &Options {
                 date1904: true,
                 locale: Locale::En,
+                null_day: None,
             },
         )
     }
@@ -2489,6 +2531,7 @@ mod tests {
                 let o = Options {
                     date1904: false,
                     locale: l,
+                    null_day: None,
                 };
                 for v in [0.0, 1.5, -2.5, D + t1345(), 1234567.891] {
                     let _ = format_value(code, Value::Number(v), &o);
@@ -2503,6 +2546,7 @@ mod tests {
         let o_ja = Options {
             date1904: false,
             locale: Locale::Ja,
+            null_day: None,
         };
         let o_en = Options::default();
         let r = |id: u32, v: f64, o: &Options| {
@@ -2549,6 +2593,7 @@ mod tests {
         let o_ja = Options {
             date1904: false,
             locale: Locale::Ja,
+            null_day: None,
         };
         let o_en = Options::default();
         let r = |id: u32, v: f64, o: &Options| {
@@ -2743,6 +2788,7 @@ mod tests {
                     Options {
                         date1904: true,
                         locale: Locale::Ja,
+                        null_day: None,
                     },
                 ] {
                     let _ = format_value(c, Value::Number(v), &o);
@@ -2764,6 +2810,7 @@ mod tests {
         let o = Options {
             date1904: false,
             locale: Locale::Ja,
+            null_day: None,
         };
         let mut code = String::new();
         let run = |code: &str| {
@@ -2968,6 +3015,7 @@ mod tests {
                 Options {
                     date1904: true,
                     locale: Locale::Ja,
+                    null_day: None,
                 },
             ] {
                 for v in values {

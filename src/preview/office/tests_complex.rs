@@ -650,10 +650,9 @@ fn layout_merged_ranges_are_reported_for_xlsx_and_xls() {
     }
 }
 
-/// `Sheet::merges` is "the merged ranges as the file declares them", but for ods it is empty
-/// (calamine's ods reader does not report merges). Nothing in the UI uses it today.
+/// `Sheet::merges` is "the merged ranges as the file declares them": for ods they come from the
+/// format pass (`table:number-columns-spanned` / `number-rows-spanned`).
 #[test]
-#[ignore = "BUG: ods merged ranges are not reported (Sheet::merges is empty for .ods)"]
 fn layout_merged_ranges_are_reported_for_ods_too() {
     let Some((wb, i)) = sheet_wb("layout.ods", 3) else {
         return;
@@ -689,9 +688,8 @@ fn layout_multi_line_and_long_text_is_kept_whole() {
     }
 }
 
-/// ods writes a tab as `<text:tab/>`; konoma drops it ("tabhere").
+/// ods writes a tab as `<text:tab/>`, which calamine drops ("tabhere"); the format pass puts it back.
 #[test]
-#[ignore = "BUG: ods <text:tab/> inside a cell is dropped (tab\\there -> tabhere)"]
 fn layout_ods_tab_characters_are_kept() {
     let Some((wb, i)) = sheet_wb("layout.ods", 4) else {
         return;
@@ -1039,21 +1037,13 @@ fn formats_fractional_seconds_carry_instead_of_showing_sixty() {
 }
 
 #[test]
-fn formats_ods_matches_excel_for_the_families_it_translates_correctly() {
+fn formats_ods_matches_excel_for_every_family() {
     let Some((wb, i)) = sheet_wb("formats.ods", 0) else {
         return;
     };
     let m = formats_by_label(&wb.sheets[i]);
-    // Skipped here, each with its own BUG test below: elapsed time, fractions, engineering
-    // notation, digits with a literal in the middle, and serial 0.
     let skip = [
-        "24 時間超 [h]:mm:ss",
-        "100.25 日 [h]:mm",
-        "経過分 [mm]:ss",
-        "分数 # ?/?",
-        "分数 帯分数",
-        "指数 ##0.0E+0",
-        "電話番号",
+        // LibreOffice's day 0 is 1899-12-30 (Excel's is "1900-01-00"): checked below
         "通し日付 0",
         // the weekday name `aaa` is English here: an ods style carries no locale for it
         "西暦 日本語曜日",
@@ -1073,6 +1063,7 @@ fn formats_ods_matches_excel_for_the_families_it_translates_correctly() {
             "ods: {label}"
         );
     }
+    assert_eq!(m["通し日付 0"], "1899-12-30");
     assert_eq!(m["西暦 日本語曜日"], "2026年10月05日 (Mon)");
     assert_eq!(m["1900 閏年 60"], "1900-02-28");
     assert_eq!(m["大きい数 General"], "1.23457E+11");
@@ -1080,9 +1071,8 @@ fn formats_ods_matches_excel_for_the_families_it_translates_correctly() {
 }
 
 /// LibreOffice writes the elapsed-time flag `truncate-on-overflow="false"` on the `number:time-style`
-/// element; konoma reads it only on the child elements, so `[h]:mm:ss` of 36 hours shows 12:00:00.
+/// element (not on its children): `[h]:mm:ss` of 36 hours must show 36:00:00, not 12:00:00.
 #[test]
-#[ignore = "BUG: ods elapsed-time formats ([h]:mm:ss, [mm]:ss) show the wrapped clock time (36:00:00 -> 12:00:00)"]
 fn formats_ods_elapsed_time_shows_hours_beyond_24() {
     let Some((wb, i)) = sheet_wb("formats.ods", 0) else {
         return;
@@ -1094,7 +1084,6 @@ fn formats_ods_elapsed_time_shows_hours_beyond_24() {
 }
 
 #[test]
-#[ignore = "BUG: ods number:fraction with min-integer-digits=0 shows an improper fraction (3.14159 -> 311/99, 0.75 -> 3/4 without the integer slot)"]
 fn formats_ods_mixed_fractions_keep_the_integer_part() {
     let Some((wb, i)) = sheet_wb("formats.ods", 0) else {
         return;
@@ -1105,7 +1094,6 @@ fn formats_ods_mixed_fractions_keep_the_integer_part() {
 }
 
 #[test]
-#[ignore = "BUG: ods number format 000-0000-0000 (digits with embedded text) loses the dashes: 09012345678"]
 fn formats_ods_digits_with_embedded_text_keep_the_literal() {
     let Some((wb, i)) = sheet_wb("formats.ods", 0) else {
         return;
@@ -1115,7 +1103,6 @@ fn formats_ods_digits_with_embedded_text_keep_the_literal() {
 }
 
 #[test]
-#[ignore = "BUG: ods engineering notation (##0.0E+0, exponent-interval 3) shows 1.2E+4 instead of 12.3E+3"]
 fn formats_ods_engineering_notation_uses_the_exponent_interval() {
     let Some((wb, i)) = sheet_wb("formats.ods", 0) else {
         return;
@@ -1125,7 +1112,6 @@ fn formats_ods_engineering_notation_uses_the_exponent_interval() {
 }
 
 #[test]
-#[ignore = "BUG: ods date cell 1899-12-30 (LibreOffice's day 0) with a date format shows ######## instead of a date"]
 fn formats_ods_the_null_date_itself_is_a_date() {
     let Some((wb, i)) = sheet_wb("formats.ods", 0) else {
         return;
@@ -1165,7 +1151,6 @@ fn formats_1904_date_system_shows_the_same_dates() {
 }
 
 #[test]
-#[ignore = "BUG: ods [h]:mm in a 1904-date file shows 12:00 instead of 36:00 (same cause as the elapsed-time bug)"]
 fn formats_1904_ods_elapsed_time() {
     let Some((wb, i)) = sheet_wb("date1904.ods", 0) else {
         return;
@@ -1397,9 +1382,8 @@ fn encrypted_xlsx_and_xls_are_reported_as_encrypted() {
 }
 
 /// LibreOffice 25+ encrypts an ods as one `encrypted-package` entry (AES-GCM, Argon2). The package
-/// has no `content.xml`, so the container check calls it "not a spreadsheet" instead of "encrypted".
+/// has no `content.xml`; the clear `mimetype` and the manifest tell it is an encrypted spreadsheet.
 #[test]
-#[ignore = "BUG: a password-protected .ods (LibreOffice 'encrypted-package') is Unsupported, not Encrypted"]
 fn encrypted_ods_is_reported_as_encrypted() {
     let Some(p) = file("encrypted.ods") else {
         return;

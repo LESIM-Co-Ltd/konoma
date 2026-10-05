@@ -48,8 +48,11 @@
 //! | `fo:color` red / blue / ... on a data style                | `[Red]` / `[Blue]` ...        |
 //!
 //! Not translated (shown without the element): `number:quarter`, `number:week-of-year`,
-//! `number:fill-character`, `number:decimal-replacement`, text styles' conditions. The ods
-//! `table:null-date` (1904 date system) is not read: ods dates are ISO strings in the file.
+//! `number:fill-character`, `number:decimal-replacement`, text styles' conditions.
+//!
+//! Besides formats the pass reads what `calamine` does not report: the `table:null-date` (the day
+//! 0 of numbers used as dates; dates themselves are ISO strings in the file), merged ranges, and
+//! the text of cells with `<text:tab/>` / `<text:line-break/>` (which `calamine` drops).
 
 use std::collections::HashMap;
 use std::io::BufRead;
@@ -59,7 +62,8 @@ use quick_xml::{Reader, XmlVersion};
 
 use super::container::{self, Limits};
 use super::fmt_xlsx::{keep_format_code, SheetFormats, XlsxFormats, STRING_OVERHEAD};
-use super::workbook::{CellError, NumFmtRef};
+use super::numfmt;
+use super::workbook::{CellError, MergeRange, NumFmtRef};
 use super::OfficeError;
 
 /// Excel's own limits, which `calamine`'s ods reader also applies while expanding repeats.
@@ -73,9 +77,56 @@ const MAX_PARTS: usize = 256;
 /// Longest `style:parent-style-name` / `style:apply-style-name` chain followed.
 const MAX_DEPTH: usize = 8;
 
+/// What an ods file says that `calamine` does not report.
+#[derive(Debug, Default)]
+pub struct OdsExtra {
+    /// Days from 1970-01-01 to the spreadsheet's `table:null-date` (1899-12-30 unless the file
+    /// says otherwise): the day number 0 of its numbers and, relative to it, of its dates.
+    pub null_day: i64,
+    /// Per table name.
+    pub sheets: HashMap<String, OdsSheet>,
+}
+
+/// The ods-only information of one table.
+#[derive(Debug, Default)]
+pub struct OdsSheet {
+    /// Merged ranges (`table:number-columns-spanned` / `number-rows-spanned`), at most
+    /// [`MAX_MERGES`].
+    pub merges: Vec<MergeRange>,
+    /// Cells whose text `calamine` reads wrongly (it drops `<text:tab/>` and `<text:line-break/>`).
+    pub texts: Vec<TextRun>,
+}
+
+/// A rectangle of cells (a repeated cell) that all hold `text`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextRun {
+    pub row0: u32,
+    pub rows: u32,
+    pub col0: u32,
+    pub cols: u32,
+    pub text: String,
+}
+
+/// The ods null date when the file has none: 1899-12-30 (LibreOffice's day 0).
+const DEFAULT_NULL_DAY: i64 = -25_569;
+/// Most merged ranges kept per table (a hostile file could list millions).
+const MAX_MERGES: usize = 100_000;
+/// Longest cell text collected for the tab / line-break repair; a longer cell is left as
+/// `calamine` read it.
+const MAX_FIX_TEXT: usize = 1 << 20;
+
 /// Reads the format information of an ods package. Errors for any table that is too large for
 /// `calamine` to open safely (it parses hidden tables too).
+#[cfg(test)]
 pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, OfficeError> {
+    read_full(path, limits).map(|(f, _)| f)
+}
+
+/// [`read`] with the ods-only information (null date, merged ranges, repaired texts).
+pub fn read_full(
+    path: &std::path::Path,
+    limits: &Limits,
+) -> Result<(XlsxFormats, OdsExtra), OfficeError> {
     let mut zip = container::open_zip(path)?;
     let cap = limits.max_part_bytes;
 
@@ -108,11 +159,18 @@ pub fn read(path: &std::path::Path, limits: &Limits) -> Result<XlsxFormats, Offi
     if totals.text > limits.max_text_bytes {
         return Err(OfficeError::TooLarge { what: "text" });
     }
-    Ok(XlsxFormats {
-        date1904: false,
-        formats: table.formats,
-        sheets,
-    })
+    let extra = OdsExtra {
+        null_day: totals.null_day.unwrap_or(DEFAULT_NULL_DAY),
+        sheets: totals.extra,
+    };
+    Ok((
+        XlsxFormats {
+            date1904: false,
+            formats: table.formats,
+            sheets,
+        },
+        extra,
+    ))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -239,6 +297,9 @@ struct Condition {
 #[derive(Debug, Clone)]
 struct DataStyle {
     kind: Kind,
+    /// A time style written with `number:truncate-on-overflow="false"` (elapsed time): its first
+    /// hours / minutes / seconds element is the unbounded one. Cleared once it is used.
+    elapsed_pending: bool,
     toks: Vec<Tok>,
     maps: Vec<(Condition, String)>,
     color: Option<&'static str>,
@@ -405,7 +466,11 @@ fn excel_color(hex: &str) -> Option<&'static str> {
     })
 }
 
-fn number_token(e: &BytesStart<'_>) -> String {
+/// `number:embedded-text` of a `number:number`: `(position, text)`, the position counted in digits
+/// from the right end of the integer part.
+type Embeds = [(usize, String)];
+
+fn number_token(e: &BytesStart<'_>, embeds: &Embeds, kind: Kind) -> String {
     let decimals = attr_usize(e, b"number:decimal-places");
     let min_dec = attr_usize(e, b"number:min-decimal-places");
     let min_int = attr_usize(e, b"number:min-integer-digits").unwrap_or(1);
@@ -427,22 +492,32 @@ fn number_token(e: &BytesStart<'_>) -> String {
     let opt = opt.min(30 - dec);
     let width = min_int.clamp(1, 30);
     let digits = if grouping { width.max(4) } else { width };
-    let mut int = String::new();
-    for i in 0..digits {
-        // `i` counts from the left; the last `width` positions are required zeros.
-        int.push(if digits - i <= width { '0' } else { '#' });
-    }
-    if grouping {
-        let mut grouped = String::new();
-        for (i, ch) in int.chars().enumerate() {
-            if i > 0 && (digits - i) % 3 == 0 {
-                grouped.push(',');
-            }
-            grouped.push(ch);
+    // One entry per integer digit placeholder; the last `width` positions are required zeros.
+    let mut cells: Vec<String> = (0..digits)
+        .map(|i| if digits - i <= width { "0" } else { "#" }.to_string())
+        .collect();
+    // Embedded text sits before the digit that has `position` digits to its right (0 = after the
+    // last digit). A position past the leftmost digit puts it in front of all of them.
+    let mut after = String::new();
+    for (pos, text) in embeds {
+        let mut lit = String::new();
+        push_literal(&mut lit, text, kind);
+        if *pos == 0 {
+            after.push_str(&lit);
+        } else {
+            let i = digits.saturating_sub(*pos);
+            cells[i].insert_str(0, &lit);
         }
-        int = grouped;
+    }
+    let mut int = String::new();
+    for (i, cell) in cells.iter().enumerate() {
+        if grouping && i > 0 && (digits - i) % 3 == 0 {
+            int.push(',');
+        }
+        int.push_str(cell);
     }
     let mut out = int;
+    out.push_str(&after);
     if dec + opt > 0 {
         out.push('.');
         out.push_str(&"0".repeat(dec));
@@ -467,30 +542,53 @@ fn scientific_token(e: &BytesStart<'_>) -> String {
     let min_int = attr_usize(e, b"number:min-integer-digits")
         .unwrap_or(1)
         .clamp(1, 30);
+    // Engineering notation (`##0.0E+0`): the exponent is a multiple of the interval and the
+    // integer part has up to `interval` digits.
+    let interval = attr_usize(e, b"number:exponent-interval")
+        .unwrap_or(1)
+        .clamp(1, 30);
     let exp = attr_usize(e, b"number:min-exponent-digits")
         .unwrap_or(2)
         .clamp(1, 5);
-    let mut out = "0".repeat(min_int);
+    let digits = interval.max(min_int);
+    let mut out = "#".repeat(digits - min_int);
+    out.push_str(&"0".repeat(min_int));
     if dec > 0 {
         out.push('.');
         out.push_str(&"0".repeat(dec));
     }
-    out.push_str("E+");
+    // The sign is always shown unless the file says it is not forced.
+    let forced = qattr(e, b"number:forced-exponent-sign")
+        .or_else(|| qattr(e, b"loext:forced-exponent-sign"))
+        .is_none_or(|v| !v.trim().eq_ignore_ascii_case("false"));
+    out.push_str(if forced { "E+" } else { "E-" });
     out.push_str(&"0".repeat(exp));
     out
 }
 
 fn fraction_token(e: &BytesStart<'_>) -> String {
-    let min_int = attr_usize(e, b"number:min-integer-digits").unwrap_or(0);
+    // An integer part exists when `min-integer-digits` is written at all (LibreOffice writes `0`
+    // for `# ?/?`, and leaves the attribute out of an improper fraction `?/?`).
+    let min_int = attr_usize(e, b"number:min-integer-digits");
     let num = attr_usize(e, b"number:min-numerator-digits")
         .unwrap_or(1)
         .clamp(1, 10);
+    // The denominator is as wide as the larger of its minimum digits and the digits of the
+    // largest denominator allowed.
+    let max_den_digits = attr_usize(e, b"number:max-denominator-value")
+        .filter(|&d| d > 0)
+        .map_or(0, |d| d.to_string().len());
     let den = attr_usize(e, b"number:min-denominator-digits")
         .unwrap_or(1)
+        .max(max_den_digits)
         .clamp(1, 10);
     let mut out = String::new();
-    if min_int > 0 {
-        out.push_str("# ");
+    if let Some(m) = min_int {
+        out.push_str(&"0".repeat(m.min(10)));
+        if m == 0 {
+            out.push('#');
+        }
+        out.push(' ');
     }
     out.push_str(&"?".repeat(num));
     out.push('/');
@@ -502,10 +600,17 @@ fn fraction_token(e: &BytesStart<'_>) -> String {
 }
 
 /// A date/time element -> its code token. `None` for elements that have no Excel equivalent.
-fn date_token(name: &[u8], e: &BytesStart<'_>) -> Option<String> {
+fn date_token(name: &[u8], e: &BytesStart<'_>, style_elapsed: &mut bool) -> Option<String> {
     let long = qattr(e, b"number:style").is_some_and(|s| s == "long");
     let gengou = qattr(e, b"number:calendar").is_some_and(|c| c == "gengou");
-    let elapsed = qattr(e, b"number:truncate-on-overflow").is_some_and(|v| v == "false");
+    let mut elapsed = qattr(e, b"number:truncate-on-overflow").is_some_and(|v| v == "false");
+    // LibreOffice writes the flag on the style: its first time unit is the unbounded one.
+    if matches!(
+        name,
+        b"number:hours" | b"number:minutes" | b"number:seconds"
+    ) {
+        elapsed |= std::mem::take(style_elapsed);
+    }
     let pick = |s: &str, l: &str| if long { l } else { s }.to_string();
     let unit = |s: &str, l: &str| {
         let t = pick(s, l);
@@ -575,8 +680,12 @@ pub(crate) fn parse_styles(
     let mut rd = new_reader(src);
     let mut buf = Vec::new();
     let mut cur: Option<(String, DataStyle)> = None;
-    // Text collected for `number:text` / `number:currency-symbol`.
+    // Text collected for `number:text` / `number:currency-symbol` / `number:embedded-text`.
     let mut text: Option<String> = None;
+    // The `number:number` being read (its token is built at its end, once its embedded text is
+    // known): its start tag and the embedded texts so far.
+    let mut number: Option<(BytesStart<'static>, Vec<(usize, String)>)> = None;
+    let mut embed_pos = 0usize;
     loop {
         buf.clear();
         let ev = rd.read_event_into(&mut buf).map_err(xml_err)?;
@@ -589,10 +698,14 @@ pub(crate) fn parse_styles(
                 }
                 if let Some(kind) = kind_of(name) {
                     if let Some(n) = qattr(e, b"style:name") {
+                        number = None;
                         cur = Some((
                             n,
                             DataStyle {
                                 kind,
+                                elapsed_pending: kind == Kind::Time
+                                    && qattr(e, b"number:truncate-on-overflow")
+                                        .is_some_and(|v| v.trim() == "false"),
                                 toks: Vec::new(),
                                 maps: Vec::new(),
                                 color: None,
@@ -639,14 +752,18 @@ pub(crate) fn parse_styles(
                         }
                     }
                     b"number:text" | b"number:currency-symbol" => text = Some(String::new()),
+                    b"number:embedded-text" => {
+                        embed_pos = attr_usize(e, b"number:position").unwrap_or(0);
+                        text = Some(String::new());
+                    }
                     _ if ds.toks.len() >= MAX_PARTS => {}
-                    b"number:number" => ds.toks.push(Tok::Code(number_token(e))),
+                    b"number:number" => number = Some((e.to_owned(), Vec::new())),
                     b"number:scientific-number" => ds.toks.push(Tok::Code(scientific_token(e))),
                     b"number:fraction" => ds.toks.push(Tok::Code(fraction_token(e))),
                     b"number:text-content" => ds.toks.push(Tok::Code("@".into())),
                     b"number:boolean" => ds.toks.push(Tok::Code("General".into())),
                     _ => {
-                        if let Some(t) = date_token(name, e) {
+                        if let Some(t) = date_token(name, e, &mut ds.elapsed_pending) {
                             ds.toks.push(Tok::Code(t));
                         }
                     }
@@ -662,7 +779,18 @@ pub(crate) fn parse_styles(
             Event::End(e) => {
                 let name = e.name();
                 let name = name.as_ref();
-                if name == b"number:text" || name == b"number:currency-symbol" {
+                if name == b"number:embedded-text" {
+                    if let (Some(t), Some((_, embeds))) = (text.take(), number.as_mut()) {
+                        if !t.is_empty() && embeds.len() < MAX_PARTS {
+                            embeds.push((embed_pos, t));
+                        }
+                    }
+                } else if name == b"number:number" {
+                    if let (Some((start, embeds)), Some((_, ds))) = (number.take(), cur.as_mut()) {
+                        let tok = number_token(&start, &embeds, ds.kind);
+                        ds.toks.push(Tok::Code(tok));
+                    }
+                } else if name == b"number:text" || name == b"number:currency-symbol" {
                     if let (Some(t), Some((_, ds))) = (text.take(), cur.as_mut()) {
                         if !t.is_empty() && ds.toks.len() < MAX_PARTS {
                             ds.toks.push(Tok::Lit(t));
@@ -771,6 +899,8 @@ struct TableState {
     col_defaults: Vec<(u64, Option<String>)>,
     /// Rows consumed so far (repeats included, capped like calamine).
     row_cursor: u64,
+    /// ods-only information of the table.
+    extra: OdsSheet,
     // The row being read.
     row_default: Option<String>,
     row_reps: u64,
@@ -790,16 +920,63 @@ struct CellState {
     nonempty: bool,
     is_error: bool,
     text: String,
+    /// `table:number-columns-spanned` / `number-rows-spanned` (1 = not merged).
+    cols_spanned: u64,
+    rows_spanned: u64,
+    /// The text of a string cell that has no `office:string-value`, collected the way `calamine`
+    /// reads it but with tabs and line breaks kept (only while the cell is open).
+    fix: Option<TextFix>,
     /// Bytes of text the cell holds (its `string-value`, its paragraphs, its formula), for the
     /// text budget: a repeated cell holds them once per repetition.
     text_len: u64,
 }
 
-/// What every table of the workbook costs together (see [`parse_body`]).
+/// A string cell's text being rebuilt (see [`CellState::fix`]).
+#[derive(Default)]
+struct TextFix {
+    text: String,
+    /// A `text:p` has been seen (the next one starts a new line).
+    paragraph: bool,
+    /// A tab or a line break was seen: `calamine`'s text is wrong.
+    special: bool,
+    /// Nesting depth of `office:annotation` (its text is not the cell's).
+    annotation: usize,
+    /// Longer than [`MAX_FIX_TEXT`]: not repaired.
+    overflow: bool,
+}
+
+impl TextFix {
+    fn push_str(&mut self, s: &str) {
+        if self.annotation > 0 || self.overflow {
+            return;
+        }
+        if self.text.len() + s.len() > MAX_FIX_TEXT {
+            self.overflow = true;
+            self.text = String::new();
+        } else {
+            self.text.push_str(s);
+        }
+    }
+
+    fn push_event(&mut self, ev: &Event<'_>) {
+        if self.annotation > 0 || self.overflow {
+            return;
+        }
+        let mut t = String::new();
+        push_text(ev, &mut t);
+        self.push_str(&t);
+    }
+}
+
+/// What every table of the workbook costs together (see [`parse_body`]), and what else the body
+/// says.
 #[derive(Default)]
 struct BodyTotals {
     area: u64,
     text: u64,
+    /// `table:null-date`, when the file has one.
+    null_day: Option<i64>,
+    extra: HashMap<String, OdsSheet>,
 }
 
 fn parse_body(
@@ -833,6 +1010,7 @@ fn parse_body(
                             out: SheetFormats::default(),
                             col_defaults: Vec::new(),
                             row_cursor: 0,
+                            extra: OdsSheet::default(),
                             row_default: None,
                             row_reps: 1,
                             row_width: 0,
@@ -842,11 +1020,69 @@ fn parse_body(
                     }
                     continue;
                 }
+                if name == b"table:null-date" && cur.is_none() {
+                    totals.null_day = qattr(e, b"table:date-value")
+                        .as_deref()
+                        .and_then(numfmt::iso_days_since_1970);
+                    continue;
+                }
                 let Some(t) = cur.as_mut() else { continue };
                 if nested > 0 {
                     continue;
                 }
                 match name {
+                    b"office:annotation" => {
+                        if let Some(f) = t.cell.as_mut().and_then(|c| c.fix.as_mut()) {
+                            f.annotation += 1;
+                        }
+                    }
+                    b"text:p" => {
+                        if let Some(f) = t.cell.as_mut().and_then(|c| c.fix.as_mut()) {
+                            if f.annotation == 0 {
+                                if f.paragraph {
+                                    f.push_str("\n");
+                                }
+                                f.paragraph = true;
+                            }
+                        }
+                    }
+                    b"text:s" | b"text:tab" | b"text:line-break" => {
+                        if let Some(c) = t.cell.as_mut() {
+                            let n = qattr(e, b"text:c")
+                                .and_then(|v| v.trim().parse::<u64>().ok())
+                                .unwrap_or(1);
+                            if name == b"text:s" {
+                                // Counted against the text budget as well: `calamine` allocates
+                                // this many spaces.
+                                if matches!(c.value_type.as_str(), "string" | "") {
+                                    c.text_len = c.text_len.saturating_add(n);
+                                }
+                            }
+                            if let Some(f) = c.fix.as_mut() {
+                                if f.annotation == 0 {
+                                    match name {
+                                        b"text:s" => {
+                                            let room = MAX_FIX_TEXT.saturating_sub(f.text.len());
+                                            if n as usize > room {
+                                                f.overflow = true;
+                                                f.text = String::new();
+                                            } else {
+                                                f.push_str(&" ".repeat(n as usize));
+                                            }
+                                        }
+                                        b"text:tab" => {
+                                            f.special = true;
+                                            f.push_str("\t");
+                                        }
+                                        _ => {
+                                            f.special = true;
+                                            f.push_str("\n");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     b"table:table-column" => {
                         let reps = rep_attr(e, b"table:number-columns-repeated");
                         let start = t.col_defaults.last().map_or(0, |d| d.0);
@@ -870,8 +1106,9 @@ fn parse_body(
                         let reps = reps.min(MAX_COLS.saturating_sub(start_col));
                         t.col_cursor = start_col + reps;
                         let value_type = qattr(e, b"office:value-type").unwrap_or_default();
+                        let is_string_cell = value_type == "string";
                         let date_value = qattr(e, b"office:date-value");
-                        let has_value = [
+                        let value_attr = [
                             &b"office:value"[..],
                             b"office:string-value",
                             b"office:date-value",
@@ -879,8 +1116,8 @@ fn parse_body(
                             b"office:boolean-value",
                         ]
                         .iter()
-                        .any(|k| has_attr(e, k))
-                            || value_type == "string";
+                        .any(|k| has_attr(e, k));
+                        let has_value = value_attr || value_type == "string";
                         let formula_len = qattr(e, b"table:formula").map_or(0, |f| f.len() as u64);
                         let has_formula = formula_len > 0;
                         let value_type_is_text = matches!(value_type.as_str(), "string" | "");
@@ -895,6 +1132,13 @@ fn parse_body(
                             nonempty: (has_value || has_formula) && reps > 0,
                             is_error: qattr(e, b"calcext:value-type").is_some_and(|v| v == "error"),
                             text: String::new(),
+                            cols_spanned: attr_usize(e, b"table:number-columns-spanned")
+                                .map_or(1, |v| v as u64),
+                            rows_spanned: attr_usize(e, b"table:number-rows-spanned")
+                                .map_or(1, |v| v as u64),
+                            // `calamine` takes the text of a string cell from its content when
+                            // there is no value attribute.
+                            fix: (reps > 0 && !value_attr && is_string_cell).then(TextFix::default),
                             // Only strings keep their text (numbers and dates are read from
                             // attributes); every cell keeps its formula.
                             text_len: formula_len + if value_type_is_text { string_len } else { 0 },
@@ -915,6 +1159,9 @@ fn parse_body(
                         if c.is_error && c.text.len() < 256 {
                             push_text(&ev, &mut c.text);
                         }
+                        if let Some(f) = c.fix.as_mut() {
+                            f.push_event(&ev);
+                        }
                     }
                 }
             }
@@ -930,6 +1177,7 @@ fn parse_body(
                         t.out.errors.sort_unstable_by_key(|&(r, c, _)| (r, c));
                         totals.area = totals.area.saturating_add(t.out.bbox_area());
                         totals.text = totals.text.saturating_add(t.out.text_bytes);
+                        totals.extra.insert(t.name.clone(), t.extra);
                         sheets.insert(t.name, t.out);
                     }
                     continue;
@@ -939,6 +1187,11 @@ fn parse_body(
                     continue;
                 }
                 match name {
+                    b"office:annotation" => {
+                        if let Some(f) = t.cell.as_mut().and_then(|c| c.fix.as_mut()) {
+                            f.annotation = f.annotation.saturating_sub(1);
+                        }
+                    }
                     b"table:table-cell" | b"table:covered-table-cell" => {
                         if let Some(c) = t.cell.take() {
                             let mut res = StyleResolver {
@@ -986,12 +1239,14 @@ fn finish_cell(
     limits: &Limits,
 ) -> Result<(), OfficeError> {
     let max = limits.max_dense_cells;
-    if !c.nonempty {
-        return Ok(());
-    }
     let row0 = t.row_cursor;
     let rows = t.row_reps;
     let col0 = c.start_col;
+    // A merged range is there whether or not its first cell holds anything.
+    record_merges(t, &c, row0, rows, col0);
+    if !c.nonempty {
+        return Ok(());
+    }
     t.row_width = t.row_width.max(col0 + c.reps);
     if rows == 0 {
         return Ok(());
@@ -1023,6 +1278,18 @@ fn finish_cell(
         return Err(OfficeError::TooLarge { what: "sheet area" });
     }
 
+    // A string with tabs or line breaks: the text `calamine` will not have.
+    if let Some(f) = c.fix {
+        if f.special && !f.overflow {
+            t.extra.texts.push(TextRun {
+                row0: row0 as u32,
+                rows: rows as u32,
+                col0: col0 as u32,
+                cols: c.reps as u32,
+                text: f.text,
+            });
+        }
+    }
     // The error value: remembered per repetition (capped).
     let error = c.is_error.then(|| error_code(&c.text));
     // Formats: cell style, else the row default, else the column default.
@@ -1059,6 +1326,27 @@ fn finish_cell(
         }
     }
     Ok(())
+}
+
+/// Books the merged range(s) a cell starts (`table:number-*-spanned`), one per repetition.
+fn record_merges(t: &mut TableState, c: &CellState, row0: u64, rows: u64, col0: u64) {
+    if (c.cols_spanned <= 1 && c.rows_spanned <= 1) || rows == 0 || c.reps == 0 {
+        return;
+    }
+    for dr in 0..rows {
+        for dc in 0..c.reps {
+            if t.extra.merges.len() >= MAX_MERGES {
+                return;
+            }
+            let (r, col) = (row0 + dr, col0 + dc);
+            t.extra.merges.push(MergeRange {
+                row0: r as u32,
+                col0: col as u32,
+                row1: (r + c.rows_spanned.max(1) - 1).min(MAX_ROWS - 1) as u32,
+                col1: (col + c.cols_spanned.max(1) - 1).min(MAX_COLS - 1) as u32,
+            });
+        }
+    }
 }
 
 /// The Excel error code for the text LibreOffice shows in an error cell (`#DIV/0!`, `Err:532`).
