@@ -1444,6 +1444,10 @@ mod release_and_cap_tests {
             "the first hits in reading order"
         );
         assert_eq!(app.search_status(), Some((1, SEARCH_MATCH_CAP)));
+        // The footer says the count was cut: "at least", not "exactly".
+        assert!(app.search_capped());
+        let hints = crate::ui::preview::footer_hints(&app);
+        assert!(hints.iter().any(|h| h == "n/N:match[1/5000+]"), "{hints:?}");
         // A search with fewer hits than the cap is not cut.
         app.start_search();
         for c in "hit 4999".chars() {
@@ -1451,6 +1455,7 @@ mod release_and_cap_tests {
         }
         app.search_commit();
         assert_eq!(app.tab.search_matches, vec![(0, 4999, 0)]);
+        assert!(!app.search_capped());
     }
 
     /// The one place a workbook is dropped is `set_workbook` (and the sheet being left goes to

@@ -15,17 +15,21 @@ All notable changes to konoma are documented in this file. The format is based o
   text. Password-protected, oversized (file > 256 MiB) or corrupt files say why they cannot be shown. Formulas are
   not evaluated and macros never run. New `builtin = "spreadsheet"` and a default rule for the seven extensions.
   Merged cells show their value in the top-left cell only; the sheet is not saved in session restore.
+  Rows and columns hidden in Excel (or by a filter) are still shown, hidden sheets are not; `J`/`K` put the cursor back
+  at A1; `/` search covers the sheet on screen (at most 5,000 hits, and the footer reads `[1/5000+]` when it was cut).
   A sheet over the limits (100,000 rows, 4M cells, 128 MiB of text) shows its beginning, marked `(capped)`, instead
   of being refused: xlsx/xlsb are read as a stream and reading stops at the limit. Only the sheet on screen is kept
   in memory; `J`/`K` read the next sheet in the background. (ods/xls cannot be streamed, so a file too large to open
   safely is still refused, with the reason.)
   xlsx files are read by konoma itself (one pass for values, formats and formulas), so Excel 365 error values such
   as `#SPILL!`, `#CALC!` or `#FIELD!` are shown in their cells instead of making the sheet unreadable, and long
-  integer IDs keep every digit. Pivot tables show the totals Excel saved in the cells (they are not recalculated).
+  integer IDs keep every digit. Pivot tables show the totals Excel saved in the cells (they are not recalculated). An `.ods` formula is shown in
+  Excel's notation (`SUM(B3:B4)` rather than `of:=SUM([.B3:.B4])`). The "too large" messages quote the limits that are
+  actually enforced, and the title's `(capped)` / the empty table's `(empty)` are translated on a Japanese screen.
 - **`e` on an Office document opens it in a GUI app** (docx/docm/dotx/dotm/doc/odt, xlsx/xlsm/xltx/xltm/xlsb/xls/ods,
   pptx/pptm/ppsx/potx/ppt/odp) instead of handing the zip to `$EDITOR`: Microsoft Office (macOS only), then
   LibreOffice, then the OS default (`open` / `xdg-open`). The launch runs off the UI thread and the footer says
-  which app opened it. `[external] office_apps = false` opens nothing; an explicit `[editor.ext]` entry wins.
+  which app opened it. `[external] office_apps = false` opens nothing (and the footer no longer offers `e` there); an explicit `[editor.ext]` entry wins.
 
 ## [0.30.0] - 2026-09-28
 

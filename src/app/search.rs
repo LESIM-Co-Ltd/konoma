@@ -31,6 +31,12 @@ impl App {
         }
     }
 
+    /// Whether the active search stopped collecting at [`SEARCH_MATCH_CAP`]: the true number of
+    /// matches is then *at least* the one shown.
+    pub fn search_capped(&self) -> bool {
+        self.search_status().is_some() && self.tab.search_matches.len() >= SEARCH_MATCH_CAP
+    }
+
     /// Which preview the in-preview search (`/`) runs against. Each target has its own way of
     /// locating matches and of moving to one, so `search_commit` / `jump_to_match` branch on this.
     fn search_target(&self) -> SearchTarget {

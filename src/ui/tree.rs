@@ -200,7 +200,9 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         hint(lang, "?", crate::i18n::Msg::HintHelp),
         hint(lang, "/", crate::i18n::Msg::HintFilter),
         hint(lang, "Space", crate::i18n::Msg::HintFileOps),
-        hint(lang, "e", crate::i18n::Msg::HintEdit),
+    ]);
+    v.extend(crate::ui::preview::edit_footer_hint(app));
+    v.extend([
         hint(lang, "o", crate::i18n::Msg::HintGit),
         hint(lang, "d", crate::i18n::Msg::HintDiff),
         hint(lang, "C", crate::i18n::Msg::StChangedOnly),

@@ -129,6 +129,8 @@ you came from, since a worktree's directory rarely does.
   same grid, without extracting anything. **Spreadsheets** (`.xlsx`/`.xlsm`/`.xltx`/`.xltm`/`.xlsb`/
   `.xls`/`.ods`) open in the same grid with every cell shown in its Excel number format (thousands
   separators, percent, currency, dates, times), column letters and row numbers; `J`/`K` switch sheets.
+  Rows and columns hidden in Excel are still shown (hidden sheets are not); Excel 365 error values and
+  pivot-table totals appear as saved, and formulas are never recalculated.
 - **Open Office documents in their app**: `e` on a Word / Excel / PowerPoint / OpenDocument file opens it
   in Microsoft Office, LibreOffice or the OS default instead of handing the zip to `$EDITOR`.
   (Only spreadsheets have an in-terminal preview so far; Word and PowerPoint files are open-with-`e` only.)

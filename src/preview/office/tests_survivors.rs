@@ -896,13 +896,9 @@ fn the_last_ods_date_is_9999_12_31() {
 
 /// A column definition after another that already reached the last column must not overflow, whatever
 /// its repeat (`u64::MAX` is a legal `unsignedLong` in the file).
-///
-/// KNOWN BUG, not fixed here: `fmt_ods.rs` computes `(start + reps).min(MAX_COLS)` for a
-/// `table:table-column`, and `start + reps` overflows `u64` when a definition with a huge repeat
-/// follows another one (panics in debug; wraps in release, which silently drops that column
-/// default). The fix is `start.saturating_add(reps).min(MAX_COLS)`. Remove the `ignore` with it.
+/// (Regression: `start + reps` used to overflow `u64` when a definition with a huge repeat
+/// followed another one.)
 #[test]
-#[ignore = "known bug: fmt_ods table-column `start + reps` overflows u64 (see the comment)"]
 fn a_column_definition_after_a_short_one_with_a_huge_repeat_does_not_overflow() {
     let cols = r#"<table:table-column table:number-columns-repeated="5"/><table:table-column table:number-columns-repeated="18446744073709551615"/>"#;
     let rows = ods_row(&ods_float("", "1"));

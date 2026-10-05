@@ -1114,7 +1114,7 @@ fn parse_body(
                     b"table:table-column" => {
                         let reps = rep_attr(e, b"table:number-columns-repeated");
                         let start = t.col_defaults.last().map_or(0, |d| d.0);
-                        let end = (start + reps).min(MAX_COLS);
+                        let end = start.saturating_add(reps).min(MAX_COLS);
                         if end > start {
                             t.col_defaults
                                 .push((end, qattr(e, b"table:default-cell-style-name")));
@@ -1132,7 +1132,7 @@ fn parse_body(
                         let reps = rep_attr(e, b"table:number-columns-repeated");
                         let start_col = t.col_cursor;
                         let reps = reps.min(MAX_COLS.saturating_sub(start_col));
-                        t.col_cursor = start_col + reps;
+                        t.col_cursor = start_col.saturating_add(reps);
                         let value_type = qattr(e, b"office:value-type").unwrap_or_default();
                         let is_string_cell = value_type == "string";
                         let date_value = qattr(e, b"office:date-value");
@@ -1179,10 +1179,10 @@ fn parse_body(
                 if nested == 0 {
                     if let Some(c) = cur.as_mut().and_then(|t| t.cell.as_mut()) {
                         if matches!(c.value_type.as_str(), "string" | "") {
-                            c.text_len += match &ev {
+                            c.text_len = c.text_len.saturating_add(match &ev {
                                 Event::Text(t) => t.len() as u64,
                                 _ => 1,
-                            };
+                            });
                         }
                         if c.is_error && c.text.len() < 256 {
                             push_text(&ev, &mut c.text);
@@ -1233,7 +1233,7 @@ fn parse_body(
                         }
                     }
                     b"table:table-row" => {
-                        t.row_cursor += t.row_reps;
+                        t.row_cursor = t.row_cursor.saturating_add(t.row_reps);
                         // calamine builds one row of cells per physical row, repeats or not.
                         t.out.read_cost = t.out.read_cost.saturating_add(t.row_width);
                         if t.out.read_cost > max {
@@ -1275,7 +1275,7 @@ fn finish_cell(
     if !c.nonempty {
         return Ok(());
     }
-    t.row_width = t.row_width.max(col0 + c.reps);
+    t.row_width = t.row_width.max(col0.saturating_add(c.reps));
     if rows == 0 {
         return Ok(());
     }

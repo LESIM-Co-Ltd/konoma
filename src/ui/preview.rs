@@ -172,6 +172,25 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         .row("q / Esc", l(crate::i18n::Msg::BackToTree))]
 }
 
+/// `n/N:match[3/12]` while a search has hits; `[1/5000+]` once collecting stopped at the cap (the
+/// real number is at least that), so a capped search never reads as complete.
+fn search_status_hint(app: &App) -> Option<String> {
+    let (cur, total) = app.search_status()?;
+    let plus = if app.search_capped() { "+" } else { "" };
+    Some(format!(
+        "n/N:{}[{cur}/{total}{plus}]",
+        tr(app.lang, crate::i18n::Msg::Match)
+    ))
+}
+
+/// The footer's `e` hint as `e` acts now ([[hint-shown-iff-key-acts]]): "edit" for an editor,
+/// "open" for an Office app, nothing when opening Office documents is switched off. It is the
+/// predicate the `?` help row uses (`App::edit_target` through `App::edit_label`).
+pub fn edit_footer_hint(app: &App) -> Option<String> {
+    app.edit_label(crate::i18n::Msg::HintEdit, crate::i18n::Msg::HintOpen)
+        .map(|m| crate::ui::status::hint(app.lang, "e", m))
+}
+
 /// The Preview view's footer key hints. Switches by kind (image/Markdown/other text).
 /// **Edit here to change the Preview footer**. Takes `&App`, so it can also depend on state.
 pub fn footer_hints(app: &App) -> Vec<String> {
@@ -181,6 +200,8 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "hjkl", crate::i18n::Msg::HintCell),
             hint(lang, "↵", crate::i18n::Msg::HintViewCell),
         ];
+        // While a search is active: `n/N:match[cur/total]` (with `+` once the hit cap was reached).
+        v.extend(search_status_hint(app));
         // `J/K` only acts on a workbook with 2+ visible sheets — the same predicate as the handler.
         if app.sheet_can_switch() {
             v.push(hint(lang, "J/K", crate::i18n::Msg::HintSheet));
@@ -192,7 +213,9 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
             hint(lang, "q", crate::i18n::Msg::GitBack),
             hint(lang, "?", crate::i18n::Msg::HintHelp),
-            hint(lang, "e", crate::i18n::Msg::HintEdit),
+        ]);
+        v.extend(edit_footer_hint(app));
+        v.extend([
             hint(lang, "[/]", crate::i18n::Msg::HintTab),
             hint(lang, "p", crate::i18n::Msg::HintPath),
         ]);
@@ -218,7 +241,9 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
             hint(lang, "q", crate::i18n::Msg::GitBack),
             hint(lang, "?", crate::i18n::Msg::HintHelp),
-            hint(lang, "e", crate::i18n::Msg::HintEdit),
+        ]);
+        v.extend(edit_footer_hint(app));
+        v.extend([
             hint(lang, "[/]", crate::i18n::Msg::HintTab),
             hint(lang, "p", crate::i18n::Msg::HintPath),
         ]);
@@ -278,7 +303,9 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
             hint(lang, "q", crate::i18n::Msg::GitBack),
             hint(lang, "?", crate::i18n::Msg::HintHelp),
-            hint(lang, "e", crate::i18n::Msg::HintEdit),
+        ]);
+        v.extend(edit_footer_hint(app));
+        v.extend([
             hint(lang, "g/G", crate::i18n::Msg::HintEnds),
             hint(lang, "[/]", crate::i18n::Msg::HintTab),
             hint(lang, "p", crate::i18n::Msg::HintPath),
@@ -288,11 +315,8 @@ pub fn footer_hints(app: &App) -> Vec<String> {
     }
     // Code / plain text. While searching, show n/N (match cur/total) up front.
     let mut v = vec![hint(lang, "jk", crate::i18n::Msg::Scroll)];
-    if let Some((cur, total)) = app.search_status() {
-        v.push(format!(
-            "n/N:{}[{cur}/{total}]",
-            tr(lang, crate::i18n::Msg::Match)
-        ));
+    if let Some(status) = search_status_hint(app) {
+        v.push(status);
     } else if app.preview_search_query().is_some() {
         v.push(format!("n/N:{}", tr(lang, crate::i18n::Msg::Match)));
     }
@@ -332,7 +356,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
     v.push(hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump));
     v.push(hint(lang, "q", crate::i18n::Msg::GitBack));
     v.push(hint(lang, "?", crate::i18n::Msg::HintHelp));
-    v.push(hint(lang, "e", crate::i18n::Msg::HintEdit));
+    v.extend(edit_footer_hint(app));
     v.push(hint(lang, "g/G", crate::i18n::Msg::HintEnds));
     v.push(hint(lang, "hl", crate::i18n::Msg::HintHscroll));
     v.push(hint(lang, "0/$", crate::i18n::Msg::HintLineEnds));
@@ -604,7 +628,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         Some(PreviewKind::Spreadsheet(path)) => (
             format!(
                 "{}\n{}",
-                tr(app.lang, sheet_error_msg(app.sheet_error())),
+                sheet_error_text(app.lang, app.sheet_error()),
                 path.display()
             ),
             false,
@@ -1760,6 +1784,54 @@ fn render_spinner_line(frame: &mut Frame, inner: Rect, spinner: &str, msg: &str)
 }
 
 /// Display shown while loading SVG/GIF on a separate thread (frame + centered spinner + "loading…").
+/// The limit a "too large" message names, read from the limits the readers actually enforce (so a
+/// changed limit can never leave the sentence stating an old number). `{n}` in the catalog text
+/// is replaced by it.
+fn sheet_error_limit(msg: crate::i18n::Msg) -> String {
+    use crate::i18n::Msg;
+    use crate::preview::office::container::Limits;
+    let l = Limits::default();
+    let bytes = |b: u64| {
+        const MIB: u64 = 1024 * 1024;
+        if b.is_multiple_of(1024 * MIB) {
+            format!("{} GiB", b / (1024 * MIB))
+        } else {
+            format!("{} MiB", b / MIB)
+        }
+    };
+    match msg {
+        Msg::SheetErrTooLargeFile => bytes(l.max_file_bytes),
+        Msg::SheetErrTooLargeEntries => group_thousands(l.max_entries as u64),
+        Msg::SheetErrTooLargeEntry => bytes(l.max_part_bytes),
+        Msg::SheetErrTooLargePackage => bytes(l.max_total_bytes),
+        Msg::SheetErrTooLargeArea => group_thousands(l.max_dense_cells),
+        Msg::SheetErrTooLargeText => bytes(l.max_text_bytes),
+        _ => String::new(),
+    }
+}
+
+/// `8000000` -> `8,000,000`.
+fn group_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// The translated, fully formed reason a spreadsheet could not be shown.
+fn sheet_error_text(
+    lang: crate::i18n::Lang,
+    err: Option<&crate::preview::office::OfficeError>,
+) -> String {
+    let msg = sheet_error_msg(err);
+    tr(lang, msg).replace("{n}", &sheet_error_limit(msg))
+}
+
 /// The translated reason for a spreadsheet that could not be shown. `None` (a workbook that loaded
 /// but has no visible sheet — every sheet hidden) gets its own message.
 fn sheet_error_msg(err: Option<&crate::preview::office::OfficeError>) -> crate::i18n::Msg {
@@ -2469,7 +2541,7 @@ mod gitdiff_tests {
 
 #[cfg(test)]
 mod sheet_error_tests {
-    use super::sheet_error_msg;
+    use super::{group_thousands, sheet_error_msg, sheet_error_text};
     use crate::i18n::{tr, Lang, Msg};
     use crate::preview::office::OfficeError;
 
@@ -2537,5 +2609,41 @@ mod sheet_error_tests {
                 seen.push((*m, text));
             }
         }
+    }
+
+    /// The numbers in the "too large" sentences come from the limits the readers enforce: a
+    /// placeholder is never left in the text and the figure is the real one, in both languages.
+    #[test]
+    fn too_large_messages_state_the_enforced_limits() {
+        use crate::preview::office::container::Limits;
+        let l = Limits::default();
+        let cases: [(&'static str, String); 6] = [
+            ("file", format!("{} MiB", l.max_file_bytes / 1024 / 1024)),
+            ("entries", group_thousands(l.max_entries as u64)),
+            ("entry", format!("{} MiB", l.max_part_bytes / 1024 / 1024)),
+            (
+                "package",
+                format!("{} GiB", l.max_total_bytes / 1024 / 1024 / 1024),
+            ),
+            ("sheet area", group_thousands(l.max_dense_cells)),
+            ("text", format!("{} MiB", l.max_text_bytes / 1024 / 1024)),
+        ];
+        for lang in [Lang::En, Lang::Jp] {
+            for (what, figure) in &cases {
+                let err = OfficeError::TooLarge { what };
+                let text = sheet_error_text(lang, Some(&err));
+                assert!(!text.contains("{n}"), "{what}: {text}");
+                assert!(text.contains(figure.as_str()), "{what} {lang:?}: {text}");
+            }
+        }
+    }
+
+    #[test]
+    fn group_thousands_groups_by_three() {
+        assert_eq!(group_thousands(0), "0");
+        assert_eq!(group_thousands(999), "999");
+        assert_eq!(group_thousands(1_000), "1,000");
+        assert_eq!(group_thousands(8_000_000), "8,000,000");
+        assert_eq!(group_thousands(10_000), "10,000");
     }
 }

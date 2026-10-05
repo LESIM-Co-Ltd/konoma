@@ -1298,12 +1298,12 @@ impl Ref {
         let col = if self.abs_col {
             self.col
         } else {
-            self.col + dc
+            self.col.saturating_add(dc)
         };
         let row = if self.abs_row {
             self.row
         } else {
-            self.row + dr
+            self.row.saturating_add(dr)
         };
         let ok_col = (1..=MAX_COL).contains(&col);
         let ok_row = (1..=MAX_ROW).contains(&row);

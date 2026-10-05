@@ -116,12 +116,16 @@ grid, read by konoma itself — no Excel, LibreOffice or other tool needed:
   number format. Columns are headed `A`, `B`, `C…` and rows are numbered.
 - The title shows the sheet name and position `(1/3)`, `+N hidden` when sheets
   are hidden, and the cursor's address (e.g. `C4`).
+- Rows and columns you hid in Excel, and rows hidden by a filter, are still shown
+  (konoma shows what is stored); hidden *sheets* are not.
 - `J` / `K` switch to the next / previous sheet (only when the workbook has two
-  or more visible sheets; hidden sheets are not shown). Rebind them with the
-  `sheet_next` / `sheet_prev` actions.
+  or more visible sheets). The cursor goes back to `A1` on each sheet. Rebind them
+  with the `sheet_next` / `sheet_prev` actions.
 - `Enter` opens the cell popup: address, displayed text, raw value, type,
   formula and format. `/` search and the `y` copy menu (`c` / `r` / `C`) work on
-  the displayed text.
+  the displayed text. Search covers the sheet on screen only, and keeps at most
+  5,000 hits: the footer reads `[1/5000+]` when it was cut. A cell's displayed text
+  is cut at 1,024 characters.
 - A sheet beyond the limits (100,000 rows, 4M cells, 128 MiB of text) shows its
   beginning, marked `(capped)`, instead of being refused. Only the sheet on screen
   is read; `J` / `K` read the next one in the background.
@@ -129,8 +133,10 @@ grid, read by konoma itself — no Excel, LibreOffice or other tool needed:
   files too large to open safely (they cannot be read in part) show a reason
   instead of a preview.
 
-Limits to know: formulas are not evaluated (the stored result is shown) and
-macros never run; a merged cell shows its value in the top-left cell only; the
+Limits to know: formulas are not evaluated (the stored result is shown; an `.ods`
+formula is written in Excel's notation) and macros never run. Excel 365 error values
+(`#SPILL!`, `#CALC!`, …) are shown as they are, and a pivot table shows the totals
+Excel saved (it is not recalculated); a merged cell shows its value in the top-left cell only; the
 sheet you were on is not saved by session restore; `.xlsb` is supported but has
 not yet been checked against files made by the real application.
 

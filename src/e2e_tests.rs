@@ -18718,6 +18718,106 @@ fn e2e_office_help_row_for_e_matches_what_e_does() {
     s.dont_see("open in an Office app");
 }
 
+/// The table title's "capped" note and the empty-table placeholder are translated like the rest of
+/// the screen (they used to stay English on a Japanese screen).
+#[test]
+fn e2e_table_capped_and_empty_notes_follow_the_language() {
+    let dir = sandbox("table_notes_lang");
+    std::fs::write(dir.join("e.csv"), "").unwrap();
+    let mut big = String::from("h\n");
+    for i in 0..(crate::preview::table::MAX_ROWS + 10) {
+        big.push_str(&format!("{i}\n"));
+    }
+    std::fs::write(dir.join("big.csv"), big).unwrap();
+    let root = canon(&dir);
+    for (cfg, capped, empty, other) in [
+        // (the wide glyphs of a Japanese title are interleaved with border cells in the dump)
+        (cfg_ja(), "打", "空", "capped"),
+        (cfg_en(), "(capped)", "(empty)", "打"),
+    ] {
+        let mut s = Sim::with_config(&root, cfg.clone());
+        s.select("big.csv");
+        s.enter();
+        s.see(capped);
+        s.dont_see(other);
+        s.key('q');
+        s.select("e.csv");
+        s.enter();
+        s.see(empty);
+    }
+}
+
+/// The footer's `e` hint follows the same predicate as the `?` row ([[hint-shown-iff-key-acts]]):
+/// "open" on a workbook, "edit" elsewhere or when `[editor] ext` claims the extension, and no `e`
+/// at all while `office_apps = false`, in the preview and in the tree.
+#[test]
+fn e2e_office_footer_hint_for_e_matches_what_e_does() {
+    let mk = |name: &str, cfg: Config, file: &str, open: bool| {
+        let dir = sandbox(name);
+        build_xlsx(&dir.join("b.xlsx"), &[("S", "visible", "", "")]);
+        std::fs::write(dir.join("c.csv"), "a,b\n1,2\n").unwrap();
+        let root = canon(&dir);
+        let mut s = Sim::with_config(&root, cfg);
+        s.select(file);
+        if open {
+            s.enter();
+        }
+        (s, dir)
+    };
+    let hints = |s: &Sim| {
+        if s.app.tab.mode == crate::app::Mode::Preview {
+            crate::ui::preview::footer_hints(&s.app)
+        } else {
+            crate::ui::tree::footer_hints(&s.app)
+        }
+    };
+    let has = |v: &[String], t: &str| v.iter().any(|h| h == t);
+
+    let (s, _d) = mk("office_foot_tree", cfg_en(), "b.xlsx", false);
+    assert!(
+        has(&hints(&s), "e:open") && !has(&hints(&s), "e:edit"),
+        "{:?}",
+        hints(&s)
+    );
+    let (s, _d) = mk("office_foot_prev", cfg_en(), "b.xlsx", true);
+    assert!(
+        has(&hints(&s), "e:open") && !has(&hints(&s), "e:edit"),
+        "{:?}",
+        hints(&s)
+    );
+    let (s, _d) = mk("office_foot_csv", cfg_en(), "c.csv", true);
+    assert!(
+        has(&hints(&s), "e:edit") && !has(&hints(&s), "e:open"),
+        "{:?}",
+        hints(&s)
+    );
+
+    let mut cfg = cfg_en();
+    cfg.editor.ext.insert("xlsx".into(), "myeditor".into());
+    let (s, _d) = mk("office_foot_ext", cfg, "b.xlsx", true);
+    assert!(has(&hints(&s), "e:edit"), "{:?}", hints(&s));
+
+    let mut cfg = cfg_en();
+    cfg.external.office_apps = false;
+    let (mut s, _d) = mk("office_foot_off", cfg, "b.xlsx", true);
+    assert!(
+        !hints(&s).iter().any(|h| h.starts_with("e:")),
+        "{:?}",
+        hints(&s)
+    );
+    s.key('q');
+    assert!(
+        !hints(&s).iter().any(|h| h.starts_with("e:")),
+        "{:?}",
+        hints(&s)
+    );
+    // Switching Office apps off changes nothing for a file that was never an Office document.
+    let mut cfg = cfg_en();
+    cfg.external.office_apps = false;
+    let (s, _d) = mk("office_foot_off_csv", cfg, "c.csv", false);
+    assert!(has(&hints(&s), "e:edit"), "{:?}", hints(&s));
+}
+
 // ---------------------------------------------------------------------------------------------
 // Spreadsheet preview: mutation-hardening tests (App/UI side). Each one pins behaviour a mutated
 // build used to get away with; the comments say which kind of mistake it would catch.

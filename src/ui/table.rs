@@ -59,7 +59,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // When there are no columns (an empty file), show only a placeholder.
     if ncols == 0 || inner.width == 0 || inner.height == 0 {
         let para = Paragraph::new(Line::from(Span::styled(
-            " (empty) ",
+            format!(" ({}) ", tr(app.lang, crate::i18n::Msg::SheetEmptyWord)),
             Style::default().fg(Color::DarkGray),
         )))
         .block(block);
@@ -269,7 +269,11 @@ fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize) -> Strin
         .clone()
         .map(|p| app.format_path(&p))
         .unwrap_or_else(|| "table".to_string());
-    let cap = if t.truncated() { "  (capped)" } else { "" };
+    let cap = if t.truncated() {
+        format!("  ({})", tr(app.lang, crate::i18n::Msg::SheetCappedWord))
+    } else {
+        String::new()
+    };
     if t.is_sheet() {
         let (name, idx, count, hidden) = app.sheet_info().unwrap_or(("", 1, 1, 0));
         let hidden = if hidden > 0 {

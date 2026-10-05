@@ -256,6 +256,13 @@ impl App {
     /// (a row would promise something it does not do). The target is the selected file in the
     /// tree, the shown file in a preview.
     pub fn edit_help_label(&self, editor_label: Msg) -> Option<Msg> {
+        self.edit_label(editor_label, Msg::EditInOfficeApp)
+    }
+
+    /// What `e` is called now, for any surface (help row or footer hint): `editor_label` when it
+    /// opens an editor, `office_label` when it opens an Office app, `None` when it only explains
+    /// that Office documents are switched off.
+    pub fn edit_label(&self, editor_label: Msg, office_label: Msg) -> Option<Msg> {
         let path = match self.tab.mode {
             crate::app::Mode::Tree => self
                 .tab
@@ -266,7 +273,7 @@ impl App {
             crate::app::Mode::Preview => self.tab.preview_path.clone(),
         };
         match path.map(|p| self.edit_target(&p)) {
-            Some(EditTarget::OfficeApp(_)) => Some(Msg::EditInOfficeApp),
+            Some(EditTarget::OfficeApp(_)) => Some(office_label),
             Some(EditTarget::OfficeDisabled) => None,
             Some(EditTarget::Editor) | None => Some(editor_label),
         }
