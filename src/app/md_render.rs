@@ -266,7 +266,7 @@ impl App {
                 items
             }
         };
-        let anchors = compute_md_anchors(&lines);
+        let anchors = compute_md_anchors_with_math(&lines, &decorated.images);
         // `lines` was rendered at `render_width` (1 narrower than `width` when `gutter_active` —
         // see this function's own doc comment above). `max_line_cols` measures those lines as
         // rendered, so it must gain the same 1 column back once the gutter is actually prepended

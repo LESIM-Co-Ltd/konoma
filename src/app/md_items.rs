@@ -586,7 +586,12 @@ impl App {
         use std::collections::HashMap;
         let mut by_line: HashMap<usize, Vec<usize>> = HashMap::new();
         for (i, p) in images.iter().enumerate() {
-            by_line.entry(p.line).or_default().push(i);
+            // Only a one-row expression can be an in-text reservation. A table cell's picture or a
+            // block image can share a physical line with one (two columns of the same table row),
+            // and counting it here would hand it the sentinel that belongs to the expression.
+            if crate::preview::markdown::is_math_url(&p.url) && p.rows == 1 {
+                by_line.entry(p.line).or_default().push(i);
+            }
         }
         for (line_idx, idxs) in by_line {
             let Some(line) = lines.get(line_idx) else {

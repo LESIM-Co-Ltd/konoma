@@ -397,6 +397,9 @@ enum MathPart {
     Math { latex: String, display: bool },
 }
 
+/// The caller's answer to "how is this `(latex, display)` expression drawn" (`Writer::math`'s slot).
+type MathSlotFn<'a> = dyn Fn(&str, bool) -> MathSlot + 'a;
+
 /// How the app wants one math expression rendered (the math analog of `MermaidSlot`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum MathSlot {
@@ -2702,14 +2705,39 @@ fn decorate_headings(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>
 /// `decorate_headings` the `#` markers are gone; a heading is recognized by its `HEAD_FG` foreground
 /// (headings are the only such lines except the full-width rule under H1/H2 and the code gutter,
 /// both excluded here). Used to build in-page anchor (`[x](#slug)`) jump targets from what's drawn.
+#[cfg(test)]
 pub(crate) fn heading_text(line: &Line<'_>) -> Option<String> {
+    heading_text_restoring_math(line, &[])
+}
+
+/// [`heading_text`] for a heading that holds in-text LaTeX: each math reservation span (blank cells —
+/// the picture is overlaid on them) is read back as `$latex$`, taking the sources in order from
+/// `math` (the `ImagePlacement::alt` of the heading line's own one-row math placements). The slug
+/// and the outline entry of a heading must not depend on whether its expressions happen to be drawn
+/// as pictures right now, or `[x](#energy-emc2)` would stop resolving the moment an equation loaded.
+/// A reservation with no source to give (`math` shorter than the spans) is read as blank cells.
+pub(crate) fn heading_text_restoring_math(line: &Line<'_>, math: &[&str]) -> Option<String> {
     // tui-markdown puts the heading color on the LINE style (the spans keep fg=None). The full-width
     // rule under an H1/H2 is the opposite (span fg = HEAD_FG, line fg = None), so keying off the line
     // fg selects headings and excludes the rule.
     if line.style.fg != Some(HEAD_FG) {
         return None;
     }
-    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    let mut text = String::new();
+    let mut reserved = 0usize;
+    for span in &line.spans {
+        match math.get(reserved) {
+            Some(latex) if is_inline_math_reservation_span(span) => {
+                text.push('$');
+                text.push_str(latex);
+                text.push('$');
+            }
+            _ => text.push_str(span.content.as_ref()),
+        }
+        if is_inline_math_reservation_span(span) {
+            reserved += 1;
+        }
+    }
     if text.starts_with('▎') {
         return None; // a code line
     }
@@ -6091,6 +6119,19 @@ enum CellSeg {
         label: String,
         url: String,
     },
+    /// A LaTeX expression drawn **in the cell's own text**: `cols` blank cells (the sentinel span
+    /// `inline_math_reservation_style`) on one row of the line it sits in, with a [`CellImage`]
+    /// recorded over them — the cell counterpart of `render::render_inline_math`. Always one row
+    /// tall (`math_cells` answers one row for inline size), so unlike [`CellSeg::Image`] it never
+    /// needs a band of its own and the text around it stays on the same line.
+    ///
+    /// Only built when the app can draw the expression right now (`MathSlot::Image`); anything else
+    /// stays the literal `$…$` text of a plain `Text` segment. Atomic when wrapping, and degrades to
+    /// that same literal text when its column is shaved narrower than `cols`.
+    Math {
+        latex: String,
+        cols: u16,
+    },
     /// An image reference. Drawn as **real pixels** when the caller's own `slot_of` answers
     /// `ImageSlot::Inline` for its URL at the width of the column it lands in — `render_table_cells`
     /// then reserves a `cols`x`rows` rectangle of blank cells inside the cell and reports a
@@ -6149,6 +6190,7 @@ fn seg_width(seg: &CellSeg) -> usize {
     match seg {
         CellSeg::Text { text, .. } => UnicodeWidthStr::width(text.as_str()),
         CellSeg::Link { label, .. } => UnicodeWidthStr::width(label.as_str()),
+        CellSeg::Math { cols, .. } => *cols as usize,
         CellSeg::Image { alt, .. } => UnicodeWidthStr::width(cell_image_label(alt).as_str()),
     }
 }
@@ -6461,6 +6503,23 @@ fn wrap_segments(segs: &[CellSeg], w: usize) -> Vec<Vec<CellSeg>> {
                     url: url.clone(),
                 });
             }
+            // Atomic like a link label (a split picture is no picture). When even an empty line is
+            // too narrow for it — the column was shaved below the expression's width — it is the
+            // literal `$…$` text again, which wraps like any other text, rather than a reservation
+            // wider than its own column.
+            CellSeg::Math { latex, cols } => {
+                let mw = *cols as usize;
+                if mw > w {
+                    wrap_literal_math(latex, w, &mut lines, &mut cur, &mut cur_w);
+                } else {
+                    if cur_w + mw > w && cur_w > 0 {
+                        lines.push(std::mem::take(&mut cur));
+                        cur_w = 0;
+                    }
+                    cur_w += mw;
+                    cur.push(seg.clone());
+                }
+            }
             // Same atomic-label treatment as `Link` above (a mid-icon split would look worse than
             // just bumping the whole thing to the next line). No separate hidden-target span to
             // preserve here, so on the rare "doesn't fit even alone" branch we can just downgrade
@@ -6497,6 +6556,151 @@ fn wrap_segments(segs: &[CellSeg], w: usize) -> Vec<Vec<CellSeg>> {
         lines.push(Vec::new());
     }
     lines
+}
+
+/// `wrap_segments`' fallback for a [`CellSeg::Math`] wider than its column: the expression as the
+/// literal `$latex$` text, wrapped char by char exactly the way a `CellSeg::Text` is.
+fn wrap_literal_math(
+    latex: &str,
+    w: usize,
+    lines: &mut Vec<Vec<CellSeg>>,
+    cur: &mut Vec<CellSeg>,
+    cur_w: &mut usize,
+) {
+    let text = format!("${latex}$");
+    let mut buf = String::new();
+    for ch in text.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(1);
+        if *cur_w + cw > w && *cur_w > 0 {
+            if !buf.is_empty() {
+                cur.push(CellSeg::plain(std::mem::take(&mut buf)));
+            }
+            lines.push(std::mem::take(cur));
+            *cur_w = 0;
+        }
+        buf.push(ch);
+        *cur_w += cw;
+    }
+    if !buf.is_empty() {
+        cur.push(CellSeg::plain(buf));
+    }
+}
+
+/// Stand-in for the `n`-th LaTeX expression of a cell while [`parse_cell_segments`] reads around it.
+/// NUL for the same reason `code_span_placeholder` uses it: CommonMark forbids it in a document and
+/// `normalize_cell` has already turned any control character into a space, so it cannot collide with
+/// real cell content — and it contains no `*`, `_`, `[`, `!` or backtick for the parser to react to,
+/// which is what keeps the inside of an expression (`$a*b*c$`, `$x_i$`) from being read as emphasis.
+fn cell_math_placeholder(n: usize) -> String {
+    format!("\u{0}x{n}\u{0}")
+}
+
+/// [`parse_cell_segments`] for a cell that may hold LaTeX: every expression the caller can draw right
+/// now becomes a [`CellSeg::Math`] sitting in the text where it was written — inside bold/italic/
+/// strikethrough too (the segment keeps nothing of the style, an image has none) — and everything
+/// else is read exactly as before.
+///
+/// `slot` is `render`'s `Writer::math` (`None` = math is off: this *is* `parse_cell_segments`). Each
+/// expression is asked for at inline size, `display == false`, whatever delimiter it was written
+/// with: a cell has no line of its own to lift a display equation onto, and one row is what lets the
+/// text around it stay on its line. Every expression is asked for — also the ones that are not
+/// drawable yet — because that call is what starts the render and what `collect_math_exprs` records.
+///
+/// The expressions are cut out *before* the cell is parsed (`cell_math_placeholder`) and put back
+/// after, rather than found in the parsed segments: a link's label and URL and an image's alt and URL
+/// may contain a `$`, and the text of a bold run is already cut away from its markers by then. In a
+/// link/image they are restored to `$latex$` (a label is one span — see `render::start_inline_tag`).
+fn parse_cell_segments_with_math(cell: &str, slot: Option<&MathSlotFn>) -> Vec<CellSeg> {
+    let Some(slot) = slot else {
+        return parse_cell_segments(cell);
+    };
+    if !(cell.contains('$') || cell.contains("\\(") || cell.contains("\\[")) {
+        return parse_cell_segments(cell);
+    }
+    let mut parts: Vec<MathPart> = Vec::new();
+    let mut buf = String::new();
+    let mut mask: Vec<bool> = Vec::new();
+    scan_inline_math(cell, &mut parts, &mut buf, &mut mask);
+    if !buf.is_empty() {
+        mask.push(false);
+        parts.push(MathPart::Text(SourceRun::new(buf, mask)));
+    }
+    let mut masked = String::new();
+    let mut drawn: Vec<(String, u16)> = Vec::new();
+    for part in &parts {
+        match part {
+            MathPart::Text(run) => masked.push_str(run.text()),
+            MathPart::Math { latex, display } => match slot(latex, false) {
+                MathSlot::Image { cols, rows: 1 } => {
+                    masked.push_str(&cell_math_placeholder(drawn.len()));
+                    drawn.push((latex.clone(), cols.max(1)));
+                }
+                _ => {
+                    let d = if *display { "$$" } else { "$" };
+                    masked.push_str(&format!("{d}{latex}{d}"));
+                }
+            },
+        }
+    }
+    if drawn.is_empty() {
+        // Nothing to draw: the cell exactly as it was written (`\(x\)` and all), not rebuilt from
+        // the parts.
+        return parse_cell_segments(cell);
+    }
+    let restore = |text: &str| -> String {
+        let mut out = text.to_string();
+        for (i, (latex, _)) in drawn.iter().enumerate() {
+            out = out.replace(&cell_math_placeholder(i), &format!("${latex}$"));
+        }
+        out
+    };
+    let mut out = Vec::new();
+    for seg in parse_cell_segments(&masked) {
+        match seg {
+            CellSeg::Text { text, style } => {
+                let mut rest = text.as_str();
+                while !rest.is_empty() {
+                    let next = drawn
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, _)| {
+                            let ph = cell_math_placeholder(i);
+                            rest.find(&ph).map(|at| (at, i, ph.len()))
+                        })
+                        .min();
+                    let Some((at, i, len)) = next else {
+                        out.push(CellSeg::Text {
+                            text: rest.to_string(),
+                            style,
+                        });
+                        break;
+                    };
+                    if at > 0 {
+                        out.push(CellSeg::Text {
+                            text: rest[..at].to_string(),
+                            style,
+                        });
+                    }
+                    let (latex, cols) = &drawn[i];
+                    out.push(CellSeg::Math {
+                        latex: latex.clone(),
+                        cols: *cols,
+                    });
+                    rest = &rest[at + len..];
+                }
+            }
+            CellSeg::Link { label, url } => out.push(CellSeg::Link {
+                label: restore(&label),
+                url: restore(&url),
+            }),
+            CellSeg::Image { alt, url } => out.push(CellSeg::Image {
+                alt: restore(&alt),
+                url: restore(&url),
+            }),
+            math @ CellSeg::Math { .. } => out.push(math),
+        }
+    }
+    out
 }
 
 /// Prepend the Nerd Font link glyph (`ui.icons`) to every link label in `segs`, in place — the
@@ -6807,8 +7011,30 @@ fn render_table_cells(
                         });
                     }
                 }
+                // Display columns already used on this physical line of the cell, so an in-text
+                // math reservation knows where it starts.
+                let mut used_here = 0usize;
                 for seg in segs {
+                    let seg_start = used_here;
+                    used_here += seg_width(seg);
                     match seg {
+                        // A LaTeX expression drawn in the line: blank reserved cells (the sentinel
+                        // span — deliberately *not* patched with `cell_style`, the sentinel is
+                        // matched by its exact style) and the placement over them.
+                        CellSeg::Math { latex, cols } => {
+                            spans.push(Span::styled(
+                                " ".repeat(*cols as usize),
+                                inline_math_reservation_style(),
+                            ));
+                            images.push(CellImage {
+                                url: math_url(latex, false),
+                                alt: latex.clone(),
+                                row: out.len(),
+                                col: (content_col(c) + lp + seg_start) as u16,
+                                cols: *cols,
+                                rows: 1,
+                            });
+                        }
                         // Styled text (**bold**/*italic*/`code`/~~strike~~ inside the cell).
                         // Layer it on top of the header's bold etc. (cell_style) via patch.
                         CellSeg::Text { text, style } => {
@@ -14977,15 +15203,19 @@ mod fence_and_math_extraction_tests {
             ("empty is not math", "$$\n", vec![]),
             // Structure-mask cases (see `structure_mask`): math inside a construct whose own
             // parser needs line continuity is left literal, never extracted/lifted.
+            // These three used to be left literal (nothing in a quote, an alert or a table cell could
+            // be lifted onto a line of its own). They are now placed *in the running text*
+            // (`render::write_text_with_inline_math`, `parse_cell_segments_with_math`), so they are
+            // extracted — always at inline size, the only size such a place can hold.
             (
                 "inside an alert",
                 "> [!NOTE]\n> here is $x^2$ math\n",
-                vec![],
+                vec![inline("x^2")],
             ),
             (
                 "inside a blockquote",
                 "> plain quote $x^2$ inside\n",
-                vec![],
+                vec![inline("x^2")],
             ),
             (
                 "inside details",
@@ -15024,7 +15254,7 @@ mod fence_and_math_extraction_tests {
             (
                 "inside a table row",
                 "| formula | value |\n|---|---|\n| $x^2$ | 4 |\n",
-                vec![],
+                vec![inline("x^2")],
             ),
             // The mask must not overreach past the end of the table: a paragraph right after it
             // still gets its math extracted normally.

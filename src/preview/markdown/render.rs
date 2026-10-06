@@ -170,7 +170,7 @@ use super::{
     image_placeholder_lines, image_text_fallback, inline_math_reservation_style, is_mermaid_info,
     math_placeholder_lines, math_raw_lines, math_url, mermaid_diagram_col, mermaid_fence_url,
     mermaid_placeholder_lines, next_details_open, normalize_cell, pad_to_width,
-    parse_cell_segments, prefix_link_icons, render_html_block, render_mermaid_block,
+    parse_cell_segments_with_math, prefix_link_icons, render_html_block, render_mermaid_block,
     render_table_cells, scan_inline_math, task_prefix_state, BlockAligns, CellAttrs, CellImage,
     CellSeg, CodeStyle, ColAlign, ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot,
     MermaidSlot, SourceRun, TableCells,
@@ -1496,7 +1496,11 @@ fn walk_inline<'a>(
         match ev {
             Event::End(e) if Some(e) == stop => return,
             Event::Start(tag) => start_inline_tag(events, w, tag),
-            Event::Text(t) => w.write_text(&t),
+            // Inline math reaches here from every context that can *not* lift an expression onto
+            // a line of its own: a heading, the inside of bold/italic/strikethrough, and a quote's,
+            // alert's or `<details>`' own paragraphs. `write_text_with_inline_math` is `write_text`
+            // itself whenever the text holds no math (or `w.math` is `None`).
+            Event::Text(t) => write_text_with_inline_math(w, &t),
             Event::Code(c) => w.write_code_span(&c),
             Event::SoftBreak => w.join_with_space(),
             Event::HardBreak => w.end_row(),
@@ -1560,10 +1564,21 @@ fn start_inline_tag<'a>(
         ),
         Tag::Link { dest_url, .. } => {
             w.enter_link(dest_url.into_string());
+            // A link label must stay **one** span: `collapse_links` folds `label (URL)` only when
+            // the label is a single span, and a math reservation in the middle of it would leave the
+            // link half-collapsed with a broken target. So math inside a label is not placed — it
+            // stays the literal `$…$` text, exactly as before inline math existed.
+            let math = w.math.take();
             walk_inline(events, w, Some(TagEnd::Link));
+            w.math = math;
             w.leave_link();
         }
-        Tag::Image { .. } => walk_inline(events, w, Some(TagEnd::Image)),
+        // An image's alt text is a caption, not running text: no picture is drawn inside it.
+        Tag::Image { .. } => {
+            let math = w.math.take();
+            walk_inline(events, w, Some(TagEnd::Image));
+            w.math = math;
+        }
         other => skip_balanced(events, other.to_end()),
     }
 }
@@ -1642,6 +1657,122 @@ fn events_iter<'a, 'e>(
     events.iter().map(|(ev, _)| ev.clone())
 }
 
+/// Whether the byte at `pos` of `src` is escaped by a backslash — an odd run of `\` right before it.
+fn escaped_at(src: &str, pos: usize) -> bool {
+    let b = src.as_bytes();
+    let mut i = pos.min(b.len());
+    let mut run = 0usize;
+    while i > 0 && b[i - 1] == b'\\' {
+        run += 1;
+        i -= 1;
+    }
+    run % 2 == 1
+}
+
+/// Merges runs of adjacent `Event::Text` into one event, ranges included. pulldown-cmark cuts a text
+/// run wherever a delimiter character *might* have opened emphasis and did not — `$x_i$` arrives as
+/// `"$x"`, `"_"`, `"i$"` — so an expression with an `_` or `*` in it is never inside one event, and
+/// scanning event by event would never see it whole. Events are merged only when their ranges touch
+/// (nothing between them in the source).
+///
+/// A backslash escape needs care in both directions: pulldown-cmark drops the `\` and starts the next
+/// event on the escaped character itself (`\$a` arrives as `"$a"`, its range beginning one byte
+/// after the backslash). That event does not touch the text before it, so it is never merged *into* a
+/// run — and its first character is split off as an event of its own (`escaped_at`), so the `$` of
+/// `\$b$ here` can never be read as the opener of the expression `$b$`.
+///
+/// Used only where math is placed in running text (`write_text_with_inline_math`); the lifting
+/// paragraph path has its own event-spanning logic (`render_dollar_math_tail`).
+struct MergedText<'s, 'a, I: Iterator<Item = (Event<'a>, Range<usize>)>> {
+    inner: std::iter::Peekable<I>,
+    src: &'s str,
+    /// The already-merged remainder of an escape-led event, whose first character was just returned.
+    stash: Option<(Event<'a>, Range<usize>)>,
+    /// How many links/images the stream is inside of. Their text is left exactly as pulldown-cmark
+    /// cut it: no math is placed in a label or alt text (`start_inline_tag`), so there is nothing to
+    /// gain by merging, and merging would change how a label is split into spans.
+    label_depth: usize,
+}
+
+impl<'s, 'a, I: Iterator<Item = (Event<'a>, Range<usize>)>> MergedText<'s, 'a, I> {
+    fn new(inner: I, src: &'s str) -> Self {
+        MergedText {
+            inner: inner.peekable(),
+            src,
+            stash: None,
+            label_depth: 0,
+        }
+    }
+}
+
+impl<'s, 'a, I: Iterator<Item = (Event<'a>, Range<usize>)>> Iterator for MergedText<'s, 'a, I> {
+    type Item = (Event<'a>, Range<usize>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(rest) = self.stash.take() {
+            return Some(rest);
+        }
+        let (ev, range) = self.inner.next()?;
+        match &ev {
+            Event::Start(Tag::Link { .. } | Tag::Image { .. }) => self.label_depth += 1,
+            Event::End(TagEnd::Link | TagEnd::Image) => {
+                self.label_depth = self.label_depth.saturating_sub(1)
+            }
+            _ => {}
+        }
+        let Event::Text(first) = &ev else {
+            return Some((ev, range));
+        };
+        if self.label_depth > 0 {
+            return Some((ev, range));
+        }
+        let mut text = first.to_string();
+        let mut start = range.start;
+        let mut end = range.end;
+        let mut lead: Option<(Event<'a>, Range<usize>)> = None;
+        if escaped_at(self.src, start) {
+            let n = text.chars().next().map_or(0, char::len_utf8);
+            if n == 0 || n == text.len() {
+                // Nothing but the escaped character: it stands alone, and nothing merges into it.
+                return Some((ev, range));
+            }
+            lead = Some((Event::Text(text[..n].to_string().into()), start..start + n));
+            text.drain(..n);
+            start += n;
+        }
+        while let Some((Event::Text(next), next_range)) = self.inner.peek() {
+            if next_range.start != end {
+                break;
+            }
+            text.push_str(next);
+            end = next_range.end;
+            self.inner.next();
+        }
+        let merged = (Event::Text(text.into()), start..end);
+        match lead {
+            Some(lead) => {
+                self.stash = Some(merged);
+                Some(lead)
+            }
+            None => Some(merged),
+        }
+    }
+}
+
+/// `events_iter` for a walk that may place math in its text: with `math_on` the adjacent text events
+/// are merged first (`MergedText`); without it, exactly `events_iter`.
+fn inline_events<'a, 'e>(
+    math_on: bool,
+    src: &'e str,
+    events: &'e [(Event<'a>, Range<usize>)],
+) -> Box<dyn Iterator<Item = Event<'a>> + 'e> {
+    if math_on {
+        Box::new(MergedText::new(events.iter().cloned(), src).map(|(ev, _)| ev))
+    } else {
+        Box::new(events_iter(events))
+    }
+}
+
 /// Renders one `Heading` block into `w`, in place. `inline` is `Doc.events[block's own inline range]`,
 /// read directly (no second parse — see the module doc comment).
 ///
@@ -1679,7 +1810,11 @@ fn render_heading(
         Some((text_range, images)) => (text_range, images),
         None => (inline, Vec::new()),
     };
-    walk_inline(&mut events_iter(&doc.events[text_range]), w, None);
+    walk_inline(
+        &mut inline_events(w.math.is_some(), src, &doc.events[text_range]),
+        w,
+        None,
+    );
     if let Some(suffix) = meta.to_suffix() {
         w.append_span(Span::styled(suffix, w.styles.heading_meta()));
     }
@@ -1698,13 +1833,17 @@ fn render_heading(
 /// the item's bullet/number). Never called for a **tight** list item's own first (synthetic)
 /// paragraph — see `render_item`, which renders that one's inline content directly via `walk_inline`
 /// instead, with no blank-line bookkeeping of its own at all.
-fn render_paragraph(w: &mut Writer<'_>, doc: &Doc<'_>, inline: Range<usize>) {
+fn render_paragraph(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, inline: Range<usize>) {
     if w.pending_block_gap {
         w.emit_blank_row();
     }
     w.emit_blank_row();
     w.pending_block_gap = false;
-    walk_inline(&mut events_iter(&doc.events[inline]), w, None);
+    walk_inline(
+        &mut inline_events(w.math.is_some(), src, &doc.events[inline]),
+        w,
+        None,
+    );
     w.pending_block_gap = true;
 }
 
@@ -2638,7 +2777,7 @@ fn render_paragraph_dispatch(
             if math_here && w.math.is_some() {
                 render_paragraph_math(w, doc, src, text_range, block_start);
             } else {
-                render_paragraph(w, doc, text_range);
+                render_paragraph(w, doc, src, text_range);
             }
             render_image_group(w, &images);
             return;
@@ -2660,7 +2799,7 @@ fn render_paragraph_dispatch(
             if math_here && w.math.is_some() {
                 render_paragraph_math(w, doc, src, text_range, block_start);
             } else {
-                render_paragraph(w, doc, text_range);
+                render_paragraph(w, doc, src, text_range);
             }
             return;
         }
@@ -2668,7 +2807,7 @@ fn render_paragraph_dispatch(
     if math_here && w.math.is_some() {
         render_paragraph_math(w, doc, src, inline, block_start);
     } else {
-        render_paragraph(w, doc, inline);
+        render_paragraph(w, doc, src, inline);
     }
 }
 
@@ -2968,10 +3107,19 @@ fn walk_inline_math<'a>(
                 // this drops the range from here on; `prev_end` still has to keep advancing while
                 // nested content is consumed, so whatever *follows* the whole nested construct gets
                 // its own gap computed correctly, not one measured from before it even started.
-                let mut inner = events.by_ref().map(|(ev, r)| {
-                    prev_end = Some(r.end);
-                    ev
-                });
+                // A link's or image's own content is left as cut (see `MergedText::label_depth`).
+                let in_label = matches!(tag, Tag::Link { .. } | Tag::Image { .. });
+                let mut inner: Box<dyn Iterator<Item = Event<'a>> + '_> = if in_label {
+                    Box::new(events.by_ref().map(|(ev, r)| {
+                        prev_end = Some(r.end);
+                        ev
+                    }))
+                } else {
+                    Box::new(MergedText::new(events.by_ref(), src).map(|(ev, r)| {
+                        prev_end = Some(r.end);
+                        ev
+                    }))
+                };
                 start_inline_tag(&mut inner, w, tag);
             }
             // Mirrors `walk_inline`'s own defensive catch-all — see that function's own doc comment.
@@ -4132,13 +4280,75 @@ fn render_inline_math(w: &mut Writer<'_>, latex: &str, cols: u16) {
     ));
     w.images.push(ImagePlacement {
         url: math_url(latex, false),
-        alt: "math".into(),
+        // The LaTeX source, not a caption: an in-text expression leaves only blank cells in the
+        // line, so a consumer that needs the line's *text* (a heading's slug and outline entry —
+        // `heading_text_restoring_math`) gets the expression back from here.
+        alt: latex.to_string(),
         line: placement_line,
         col,
         cols,
         rows: 1,
         fence_ord: None,
     });
+}
+
+/// `Writer::write_text` for a context that cannot lift math onto a line of its own — a heading, the
+/// inside of bold/italic/strikethrough, a quote/alert/`<details>` paragraph — placing every
+/// expression **in the running text** (`render_inline_math`) instead of dropping the `$…$` source
+/// into the line.
+///
+/// Reuses the one detector (`scan_inline_math`) and the one placement (`render_inline_math`) the
+/// lifting paragraph path already uses, so what counts as math, and what an in-text placement is,
+/// cannot differ between the two. Every expression is asked for at **inline** size
+/// (`display == false`) even when it was written `$$…$$`: there is no line of its own to give it
+/// here, and `math_cells` answers exactly one row for an inline expression — which is what makes a
+/// reservation inside a line possible at all. An expression that has no picture yet (`Loading`), no
+/// picture at all (`Raw`), or one wider than the line stays as its literal `$…$` text, which is what
+/// these contexts drew before.
+///
+/// No whitespace is trimmed around an expression (the lifting path trims because a lift splits the
+/// paragraph; this one never does — text keeps flowing right up to the reservation).
+fn write_text_with_inline_math(w: &mut Writer<'_>, text: &str) {
+    if w.math.is_none() || !(text.contains('$') || text.contains("\\(") || text.contains("\\[")) {
+        w.write_text(text);
+        return;
+    }
+    for (i, line) in text.lines().enumerate() {
+        if i > 0 {
+            w.emit_blank_row();
+        }
+        let mut parts: Vec<MathPart> = Vec::new();
+        let mut buf = String::new();
+        let mut mask: Vec<bool> = Vec::new();
+        scan_inline_math(line, &mut parts, &mut buf, &mut mask);
+        if !buf.is_empty() {
+            mask.push(false);
+            parts.push(MathPart::Text(SourceRun::new(buf, mask)));
+        }
+        for part in parts {
+            match part {
+                MathPart::Text(run) => {
+                    let style = w.cur_style();
+                    w.append_span(Span::styled(run.text().to_string(), style));
+                }
+                MathPart::Math { latex, display } => {
+                    let fits = match resolve_math_slot(w, &latex, false) {
+                        Some(MathSlot::Image { cols, rows: 1 }) if cols <= w.width => Some(cols),
+                        _ => None,
+                    };
+                    match fits {
+                        Some(cols) => render_inline_math(w, &latex, cols),
+                        None => {
+                            let (open, close) = if display { ("$$", "$$") } else { ("$", "$") };
+                            let style = w.cur_style();
+                            w.append_span(Span::styled(format!("{open}{latex}{close}"), style));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    w.pending_block_gap = false;
 }
 
 /// Renders a `ThematicBreak` into `w`, in place — a literal `Line::from("---")`. `decorate_extras`
@@ -4509,7 +4719,10 @@ fn render_table_from_model(
         .map(|row| {
             row.iter()
                 .map(|range| {
-                    let mut segs = parse_cell_segments(&normalize_cell(&src[range.clone()]));
+                    let mut segs = parse_cell_segments_with_math(
+                        &normalize_cell(&src[range.clone()]),
+                        w.math.as_ref().map(|m| m.slot),
+                    );
                     prefix_link_icons(&mut segs, w.icons);
                     segs
                 })
@@ -4656,8 +4869,10 @@ fn render_html_table_from_model(
             row.iter()
                 .map(|cell| {
                     let raw = html_body_text_in(body_spans, src, &cell.inner);
-                    let mut segs =
-                        parse_cell_segments(&normalize_cell(&html_cell_to_markdown(&raw)));
+                    let mut segs = parse_cell_segments_with_math(
+                        &normalize_cell(&html_cell_to_markdown(&raw)),
+                        w.math.as_ref().map(|m| m.slot),
+                    );
                     prefix_link_icons(&mut segs, w.icons);
                     segs
                 })
@@ -5268,7 +5483,11 @@ fn render_item(
                         first.src.start,
                     );
                 } else {
-                    walk_inline(&mut events_iter(&doc.events[inline.clone()]), w, None);
+                    walk_inline(
+                        &mut inline_events(w.math.is_some(), src, &doc.events[inline.clone()]),
+                        w,
+                        None,
+                    );
                 }
                 // `loose_first == true`: this was a *real* paragraph — `end_paragraph()`'s own
                 // unconditional `pending_block_gap = true` applies, exactly as it would via
@@ -5423,7 +5642,11 @@ fn render_bare_paragraph(
                     block_start,
                 );
             } else {
-                walk_inline(&mut events_iter(&doc.events[text_range]), w, None);
+                walk_inline(
+                    &mut inline_events(w.math.is_some(), src, &doc.events[text_range]),
+                    w,
+                    None,
+                );
             }
             render_image_group(w, &images);
             return;
@@ -5442,7 +5665,11 @@ fn render_bare_paragraph(
                     block_start,
                 );
             } else {
-                walk_inline(&mut events_iter(&doc.events[text_range]), w, None);
+                walk_inline(
+                    &mut inline_events(w.math.is_some(), src, &doc.events[text_range]),
+                    w,
+                    None,
+                );
             }
             return;
         }
@@ -5455,7 +5682,11 @@ fn render_bare_paragraph(
             block_start,
         );
     } else {
-        walk_inline(&mut events_iter(&doc.events[inline]), w, None);
+        walk_inline(
+            &mut inline_events(w.math.is_some(), src, &doc.events[inline]),
+            w,
+            None,
+        );
     }
 }
 
@@ -5567,7 +5798,14 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
         link: None,
         styles: w.styles,
         pending_block_gap: false,
-        math: None,
+        // In-text math only: this body's own `child_ctx` keeps `math_here: false`, so nothing is
+        // *lifted* out of a quote (see below), but a paragraph, heading or table cell in it can
+        // still place an expression in its running text (`write_text_with_inline_math`), against
+        // this body's own, narrower width.
+        math: w.math.as_ref().map(|m| MathCtx {
+            slot: m.slot,
+            width: w.width.saturating_sub(2),
+        }),
         mermaid: MermaidCtx {
             slot: w.mermaid.slot,
             caption: w.mermaid.caption,
@@ -6083,9 +6321,10 @@ fn render_details_from_model(
 /// continuation of whatever came before the alert/`<details>` — but **inherits** `w`'s own
 /// `styles`/`code`/`theme`/`icons` (display configuration, not position) and renders at `w.width - 2`
 /// (the two columns `render_alert_from_model`/`render_details_from_model` reserve for the bar).
-/// `math: None`: math is never lifted inside either body (`structure_mask`'s own exclusion — the same
-/// reason `render_quote` forces `math_here: false` for a plain quote's own children), so there is
-/// nothing to share across the isolation boundary; `body_ctx` below (`math_here: false,
+/// `math`: shared with the body at its own, narrower width, for *in-text* placement only
+/// (`write_text_with_inline_math`). Nothing is ever **lifted** out of either body (`structure_mask`'s
+/// own exclusion — the same reason `render_quote` forces `math_here: false` for a plain quote's own
+/// children); `body_ctx` below (`math_here: false,
 /// extract_here: false, details_interactive: false, list_depth: 0`) is what `children` actually
 /// renders with, unconditionally, regardless of what was in scope at the call site — see
 /// `render_details_from_model`'s own doc comment for why *this* block's own interactivity is a
@@ -6132,7 +6371,14 @@ fn render_bar_prefixed_body(
         link: None,
         styles: w.styles,
         pending_block_gap: false,
-        math: None,
+        // In-text math only, for the same reason as `render_quote`'s own sub-`Writer`: `body_ctx`
+        // below keeps `math_here: false` (nothing is lifted out of an alert's or `<details>`' body),
+        // yet an expression in that body's own text, heading or table cells is placed in the line.
+        // A closed `<details>` never reaches here at all, so nothing in it is ever asked for.
+        math: w.math.as_ref().map(|m| MathCtx {
+            slot: m.slot,
+            width: w.width.saturating_sub(2),
+        }),
         // `body_ctx.extract_here: false` (below) keeps both mermaid-fence extraction
         // (`render_code_block_dispatch`) and standalone-image extraction
         // (`try_render_paragraph_as_image`) from ever actually consulting `mermaid`/`slot_of` at all
@@ -10688,25 +10934,23 @@ mod tests {
         );
     }
 
-    /// Requirement 9 (regression, D5): inline placement must never reach *inside* a blockquote — the
-    /// same `structure_mask`-driven exclusion `math_inside_blockquote_is_left_literal` already pins
-    /// for the lift path (in `preview::markdown::fence_and_math_extraction_tests`) — checked here with
-    /// a `math_slot` that would answer `rows: 1` if it were ever consulted at all, so a regression that
-    /// widened the exclusion's scope would show up as the literal `$x$` disappearing (replaced by a
-    /// placement), not merely as a differently-shaped placement.
+    /// Requirement 9 (regression, D5), as it stands now: nothing is ever **lifted** out of a
+    /// blockquote — that part of the old exclusion is unchanged (`math_inside_blockquote_is_left_
+    /// literal` pins it for a tall slot). An expression small enough to sit in a line (`rows: 1`) is
+    /// now placed *in the quote's running text* instead (`write_text_with_inline_math`): the quote
+    /// stays one block (`> ` on its own line, one placement, the text around it intact), where the
+    /// old behavior was the literal `$x$`.
     #[test]
-    fn inline_math_slot_is_never_reached_inside_a_blockquote() {
+    fn inline_math_in_a_blockquote_is_placed_in_its_text_never_lifted() {
         let math_slot = |_: &str, _: bool| MathSlot::Image { cols: 3, rows: 1 };
         let out = render_math("> before $x$ after\n", 80, &math_slot);
+        assert_eq!(out.images.len(), 1, "{:?}", out.images);
+        let text = lines_text(&out);
         assert!(
-            out.images.is_empty(),
-            "math inside a quote is never extracted at all"
+            text.iter().any(|l| l == "> before     after"),
+            "one quoted line, the picture's cells blank in it: {text:?}"
         );
-        assert!(
-            lines_text(&out).iter().any(|l| l.contains("$x$")),
-            "the literal source text stays untouched: {:?}",
-            lines_text(&out)
-        );
+        assert!(!text.iter().any(|l| l.contains("$x$")), "{text:?}");
     }
 
     /// Regression (coordinator-reported, reproduced on real terminal output —

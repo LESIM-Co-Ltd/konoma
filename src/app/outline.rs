@@ -13,11 +13,13 @@ impl App {
         let Some(c) = &self.md_cache else {
             return Vec::new();
         };
+        let math = super::md_text::math_sources_by_line(&c.images);
         c.anchors
             .iter()
             .filter_map(|(_slug, line)| {
                 let l = c.lines.get(*line)?;
-                let text = crate::preview::markdown::heading_text(l)?;
+                let sources = math.get(line).map(Vec::as_slice).unwrap_or(&[]);
+                let text = crate::preview::markdown::heading_text_restoring_math(l, sources)?;
                 let level = crate::preview::markdown::heading_level_hint(l, c.lines.get(*line + 1));
                 Some((level, text, *line))
             })
