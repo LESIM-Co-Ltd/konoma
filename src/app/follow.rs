@@ -4,11 +4,14 @@ use super::*;
 /// An Office suite's owner/lock file (`~$report.docx`, written next to a document while Word,
 /// Excel or PowerPoint has it open; LibreOffice's `.~lock.*#` is a dot file and is already
 /// excluded as hidden). It changes on every open/close and holds a user name, not content, so
-/// following it would jump to a few bytes of binary. The tree still lists it.
+/// following it would jump to a few bytes of binary. The tree still lists it. Only names with an
+/// Office document extension count: `~$notes.md` is an ordinary file.
 pub(super) fn is_office_owner_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with("~$"))
+    super::office_open::office_kind(path).is_some()
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("~$"))
 }
 
 impl App {
@@ -694,5 +697,20 @@ mod tests {
         );
         assert!(app.follow_baseline_diff(&path).is_none());
         w.release();
+    }
+}
+
+#[cfg(test)]
+mod owner_file_tests {
+    use super::*;
+
+    #[test]
+    fn only_office_documents_with_the_owner_prefix_are_owner_files() {
+        for n in ["~$a.docx", "~$a.XLSX", "~$a.pptx", "~$a.odt", "~$a.xlsb"] {
+            assert!(is_office_owner_file(Path::new(n)), "{n}");
+        }
+        for n in ["~$notes.md", "~$a.txt", "~$a", "report.docx", "a~$b.docx"] {
+            assert!(!is_office_owner_file(Path::new(n)), "{n}");
+        }
     }
 }

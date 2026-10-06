@@ -178,4 +178,8 @@ fn sigterm_exits_143_and_restores_the_terminal() {
         text.contains("\x1b[?1049l"),
         "the alternate screen was not left: {text:?}"
     );
+    assert!(
+        text.contains("\x1b[?25h"),
+        "the cursor was not shown again: {text:?}"
+    );
 }

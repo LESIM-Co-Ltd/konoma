@@ -67,23 +67,13 @@ fn is_ours_and_private(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Creates `path` as a fresh private directory this process owns. Err when something is in the
-/// way that is not safe to take over.
+/// Creates `path` as a fresh private directory this process owns. Err when anything is already
+/// there: an existing entry cannot be proven to be this process's own leftover (a same-named
+/// directory may belong to another live konoma whose pid namespace differs but shares this
+/// `/tmp`), so it is never adopted and never removed; the caller moves on to an unpredictable
+/// name instead.
 fn create_fresh(path: &Path) -> io::Result<()> {
-    match mkdir_private(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            // Only a real, private, self-owned directory (a stale leftover of ours) is cleared
-            // and recreated; `remove_dir_all` does not follow links, and a planted symlink,
-            // foreign-owned or group/other-accessible entry fails `is_ours_and_private`.
-            if is_ours_and_private(path) && std::fs::remove_dir_all(path).is_ok() {
-                mkdir_private(path)
-            } else {
-                Err(e)
-            }
-        }
-        Err(e) => Err(e),
-    }
+    mkdir_private(path)
 }
 
 /// The private directories this process has chosen, by kind.
@@ -259,17 +249,22 @@ mod tests {
     }
 
     #[test]
-    fn stale_private_leftover_of_ours_is_replaced_by_an_empty_directory() {
+    fn live_private_directory_of_another_process_is_never_removed() {
+        // Same name, same owner, 0700, with content: indistinguishable from another konoma's live
+        // directory (a container sharing /tmp with its own pid namespace).
         let base = unique_tmp("pd_stale");
         std::fs::create_dir_all(&base).unwrap();
-        let stale = base.join(format!("konoma-cmd-{}", std::process::id()));
-        std::fs::create_dir(&stale).unwrap();
-        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::write(stale.join("out-0"), b"old").unwrap();
+        let other = base.join(format!("konoma-cmd-{}", std::process::id()));
+        std::fs::create_dir(&other).unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(other.join("out-0"), b"theirs").unwrap();
         let mut d = PrivateDirs::new();
         let got = d.ensure(&base, "cmd").unwrap();
-        assert_eq!(got, stale);
-        assert!(!stale.join("out-0").exists());
+        assert_ne!(got, other);
+        assert!(got.starts_with(&base));
+        assert_eq!(mode(&got), 0o700);
+        assert_eq!(std::fs::read(other.join("out-0")).unwrap(), b"theirs");
+        assert_eq!(std::fs::read_dir(&got).unwrap().count(), 0);
     }
 
     #[test]

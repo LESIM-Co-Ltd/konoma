@@ -129,9 +129,10 @@ pub fn remove_private_temp_dir() {
 }
 
 /// The bytes that undo what konoma turned on in the terminal: bracketed paste off, alternate
-/// screen left. Raw mode is a termios setting, not an escape sequence (see
+/// screen left, cursor shown (a hidden cursor would otherwise survive a signal or panic exit;
+/// showing an already visible cursor is a no-op, so the normal exit path is unaffected). Raw mode is a termios setting, not an escape sequence (see
 /// `restore_terminal_quietly`).
-pub(crate) const TERMINAL_RESTORE_SEQUENCE: &[u8] = b"\x1b[?2004l\x1b[?1049l";
+pub(crate) const TERMINAL_RESTORE_SEQUENCE: &[u8] = b"\x1b[?2004l\x1b[?1049l\x1b[?25h";
 
 /// Writes the terminal-restore sequence to `w` and flushes, ignoring every error: a terminal that
 /// is already gone (SIGHUP: the pty's other end is closed, every write fails with `EIO`) leaves
@@ -1052,6 +1053,7 @@ mod tests {
         let text = String::from_utf8(buf).unwrap();
         assert!(text.contains("\x1b[?2004l"), "{text:?}");
         assert!(text.contains("\x1b[?1049l"), "{text:?}");
+        assert!(text.contains("\x1b[?25h"), "{text:?}");
     }
 
     /// The bytes match what crossterm's own commands emit (so they cannot drift from what
@@ -1066,6 +1068,7 @@ mod tests {
         crossterm::terminal::LeaveAlternateScreen
             .write_ansi(&mut want)
             .unwrap();
+        crossterm::cursor::Show.write_ansi(&mut want).unwrap();
         assert_eq!(TERMINAL_RESTORE_SEQUENCE, want.as_bytes());
     }
 
