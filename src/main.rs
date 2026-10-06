@@ -33,8 +33,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
+    self, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 };
 use ratatui_image::errors::Errors;
 use ratatui_image::picker::Picker;
@@ -276,7 +275,9 @@ fn main() -> Result<()> {
         std::thread::spawn(move || preview::code::warm_dir(root));
     }
 
-    let mut terminal = ratatui::init();
+    // Installed before the terminal is touched, so a signal arriving at any point after the
+    // terminal changes (even during startup) is cleaned up; the teardown ignores write failures,
+    // so running it before the terminal was initialized is harmless.
     // Remove the private temp directory (converted documents' raw views, delegated commands'
     // output) on every way out: after the run loop below, on a panic, and on SIGTERM/SIGHUP/SIGINT.
     {
@@ -287,11 +288,14 @@ fn main() -> Result<()> {
                 preview::markdown::panic_is_caught_here(),
             ) {
                 preview::command::remove_private_temp_dir();
+                // Before the previous hook prints the message, so it lands on the normal screen.
+                preview::command::restore_terminal_quietly();
             }
             hook(info);
         }));
     }
     preview::command::install_exit_cleanup_signals();
+    let mut terminal = init_terminal();
     // Enable bracketed paste: so a file drag & drop (the terminal delivers the path as a paste) is
     // received as `Event::Paste` and wired into the copy/move dialog. Ignored harmlessly on
     // unsupported terminals.
@@ -442,8 +446,7 @@ fn main() -> Result<()> {
     app.save_session();
     preview::command::remove_private_temp_dir();
 
-    let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
-    ratatui::restore();
+    preview::command::restore_terminal_quietly();
 
     // Fold up App, dropping every Sender, so the workers terminate.
     app.detach_image_backend();
@@ -455,6 +458,26 @@ fn main() -> Result<()> {
 
 /// Handle resize requests on a current-thread tokio runtime on a dedicated thread.
 /// `resize_encode()` is CPU-heavy, but running it on this dedicated thread keeps the UI thread unblocked.
+/// Enters raw mode and the alternate screen and returns the terminal. Unlike `ratatui::init` it
+/// installs no panic hook: ratatui's hook restores through `ratatui::restore`, whose `eprintln!`
+/// panics when the tty is gone, and a panic inside a panic hook aborts the process (SIGABRT on a
+/// closed terminal). `main` installs its own hook that tears the terminal down quietly, and only
+/// for a panic that ends the process.
+fn init_terminal() -> ratatui::DefaultTerminal {
+    let started = crossterm::terminal::enable_raw_mode().and_then(|()| {
+        crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)
+    });
+    if let Err(e) = started {
+        preview::command::restore_terminal_quietly();
+        panic!("failed to initialize terminal: {e}");
+    }
+    ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(std::io::stdout()))
+        .unwrap_or_else(|e| {
+            preview::command::restore_terminal_quietly();
+            panic!("failed to initialize terminal: {e}")
+        })
+}
+
 fn resize_worker(mut rx: UnboundedReceiver<ResizeRequest>, tx: UnboundedSender<ResizeResult>) {
     let Ok(rt) = tokio::runtime::Builder::new_current_thread().build() else {
         return;
@@ -2608,11 +2631,11 @@ mod tests {
             .find("resolve_startup(")
             .expect("main の本体が resolve_startup を呼んでいない");
         let init_at = body
-            .find("let mut terminal = ratatui::init();")
-            .expect("main の本体が ratatui::init を呼んでいない");
+            .find("let mut terminal = init_terminal();")
+            .expect("main の本体が init_terminal を呼んでいない");
         assert!(
             resolve_at < init_at,
-            "resolve_startup の呼び出しは ratatui::init() より前でなければならない\
+            "resolve_startup の呼び出しは init_terminal() より前でなければならない\
              (不正なパスで端末(raw mode + alt screen)を触る前に落とすため)"
         );
     }

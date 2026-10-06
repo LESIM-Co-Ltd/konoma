@@ -85,49 +85,16 @@ pub(crate) fn calls_for_test() -> u64 {
     CALLS.with(|c| c.get())
 }
 
-/// Lazily creates (once per process), and returns the path to, a private `0700` (owner-only)
-/// subdirectory under the system temp dir for delegated commands' `{out}` files.
-/// `std::env::temp_dir()` is world-writable/world-readable on Linux (`/tmp` is mode `1777`) — a
-/// delegated command's output would otherwise briefly sit at a pid-and-counter-predictable path
-/// readable by any other local user on a shared box, regardless of whether *konoma itself* wrote
-/// the file (the `uses_out=false` capture path, below — see also `write_private`) or an
-/// arbitrary user-configured external command wrote `{out}` itself under whatever mode it happens
-/// to pick (the `uses_out=true` path). Restricting the *directory* is what closes this uniformly
-/// for both cases: POSIX requires execute/search permission on every ancestor directory to open a
-/// file by path, so `0700` here blocks other users regardless of who created the file or what mode
-/// they used for it.
+/// The private `0700` (owner-only) subdirectory under the system temp dir for delegated
+/// commands' `{out}` files, created on demand by the shared `private_dir` implementation (which
+/// refuses planted directories and symlinks, see there). `std::env::temp_dir()` is
+/// world-writable/world-readable on Linux (`/tmp` is mode `1777`), so a delegated command's output
+/// would otherwise briefly sit at a predictable path readable by any other local user. Restricting
+/// the *directory* closes this uniformly for files konoma writes itself (`write_private`) and for
+/// files an arbitrary external command writes as `{out}`: POSIX requires search permission on every
+/// ancestor directory to open a file by path.
 fn private_temp_dir() -> PathBuf {
-    let dir = private_temp_dir_path();
-    register_test_exit_cleanup();
-    // Created on every call (not once): the exit cleanup may have removed it, and a missing
-    // directory would otherwise fail the write.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-        // The mode is applied atomically by `mkdir(2)` itself (masked by umask, but `0o700`
-        // has no group/other bits for umask to strip), so there's no "create, then chmod" gap
-        // where a wider-permission window briefly exists.
-        let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
-        // Defense-in-depth for the unlikely case the directory already existed with looser
-        // permissions (e.g. a stale leftover from an earlier process that reused this pid).
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = std::fs::create_dir(&dir);
-    }
-    dir
-}
-
-/// The path of this process's private temp directory (not created here).
-fn private_temp_dir_path() -> PathBuf {
-    pid_temp_dir_path("cmd")
-}
-
-/// `<temp>/konoma-<kind>-<pid>`: the per-process private directory of one module (`cmd` here,
-/// `pdf` and `vthumb` for the PDF / video thumbnail renderers). Not created here.
-pub(crate) fn pid_temp_dir_path(kind: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("konoma-{kind}-{}", std::process::id()))
+    super::private_dir::private_dir("cmd")
 }
 
 /// The unit-test process never reaches `main`'s exit cleanup, so it removes its own private
@@ -156,11 +123,31 @@ pub(crate) fn register_test_exit_cleanup() {}
 /// leaving its preview, so a quit from a raw view (or an inactive tab's, or a signal) would
 /// otherwise leave a converted document's full text in `$TMPDIR`. Never creates the directory.
 pub fn remove_private_temp_dir() {
-    remove_dir_quietly(&private_temp_dir_path());
-    // The PDF page and video thumbnail renderers keep sibling per-process directories (rasterized
-    // pages, extracted frames) that need the same removal on every exit path.
-    remove_dir_quietly(&pid_temp_dir_path("pdf"));
-    remove_dir_quietly(&pid_temp_dir_path("vthumb"));
+    // Removes the directories this process chose (delegated commands, PDF pages, video
+    // thumbnails) and nothing else.
+    super::private_dir::remove_all_private_dirs();
+}
+
+/// The bytes that undo what konoma turned on in the terminal: bracketed paste off, alternate
+/// screen left. Raw mode is a termios setting, not an escape sequence (see
+/// `restore_terminal_quietly`).
+pub(crate) const TERMINAL_RESTORE_SEQUENCE: &[u8] = b"\x1b[?2004l\x1b[?1049l";
+
+/// Writes the terminal-restore sequence to `w` and flushes, ignoring every error: a terminal that
+/// is already gone (SIGHUP: the pty's other end is closed, every write fails with `EIO`) leaves
+/// nothing to restore. Never panics and never prints (`eprintln!` itself panics on a failed
+/// write, and a panic inside a panic hook aborts the process).
+pub(crate) fn write_terminal_restore(w: &mut dyn std::io::Write) {
+    let _ = w.write_all(TERMINAL_RESTORE_SEQUENCE);
+    let _ = w.flush();
+}
+
+/// The one terminal teardown shared by every way out of the TUI (normal exit, SIGTERM / SIGHUP /
+/// SIGINT, a fatal panic): raw mode off first (it has more side effects than the screen switch),
+/// then the restore sequence on stdout. Every failure is dropped, nothing is printed.
+pub fn restore_terminal_quietly() {
+    let _ = crossterm::terminal::disable_raw_mode();
+    write_terminal_restore(&mut std::io::stdout());
 }
 
 /// Whether a panic on a thread named `thread_name` ends the process, so the panic hook may remove
@@ -171,10 +158,6 @@ pub fn remove_private_temp_dir() {
 /// `catch_silent` section (which can also run on the main thread in the synchronous fallbacks).
 pub(crate) fn panic_ends_process(thread_name: Option<&str>, caught: bool) -> bool {
     thread_name == Some("main") && !caught
-}
-
-fn remove_dir_quietly(dir: &Path) {
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// True while a foreground child (`$EDITOR`, a git tool, a pager) owns the terminal.
@@ -209,7 +192,7 @@ pub(crate) fn ignore_signal(sig: i32, child_running: bool) -> bool {
 
 /// Arranges for the private temp directory to be removed when the process is killed by SIGTERM,
 /// SIGHUP or SIGINT (it has no signal handling otherwise, so those left the files behind). A helper
-/// thread waits for the signal, restores the terminal (the same call `main` makes on a normal
+/// thread waits for the signal, restores the terminal (the same teardown `main` makes on a normal
 /// exit), removes the directory and exits with the conventional `128 + signal` (SIGINT is ignored
 /// while a foreground child runs, see `ignore_signal`).
 #[cfg(unix)]
@@ -227,7 +210,7 @@ pub fn install_exit_cleanup_signals() {
                     continue;
                 }
                 remove_private_temp_dir();
-                ratatui::restore();
+                restore_terminal_quietly();
                 std::process::exit(128 + sig);
             }
         });
@@ -260,29 +243,13 @@ pub fn write_private_temp(data: &[u8]) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Writes `data` to `path`, creating it with owner-only (`0600`) permissions **at creation time**
-/// (not via a separate `set_permissions` afterward, which would leave — however briefly — a window
-/// where the file exists at a wider mode). This is the one case in this module where konoma itself
-/// creates the output file (`run_capture`'s `uses_out=false` branch, capturing a delegated
-/// command's stdout) — unlike the `uses_out=true` case where an external command writes `{out}`
-/// itself and we don't control its `open()` call at all, here we do, so this is defense-in-depth on
-/// top of `private_temp_dir`'s already-`0700` parent directory.
-#[cfg(unix)]
+/// Writes `data` to a new file at `path`, created exclusively with owner-only (`0600`)
+/// permissions at creation time and without following a symlink at `path` (see
+/// `private_dir::create_private_file`). This is the one case in this module where konoma itself
+/// creates the output file (`run_capture`'s `uses_out=false` branch); it is defense-in-depth on top
+/// of the `0700` private directory.
 fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    f.write_all(data)
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, data)
+    super::private_dir::create_private_file(path, data)
 }
 
 /// Spawns `argv` and does not wait for it — `detached = true` (a video player, etc.). stdio is
@@ -1051,22 +1018,55 @@ mod tests {
     #[test]
     fn exit_cleanup_targets_the_directory_temp_files_live_in() {
         let p = write_private_temp(b"secret converted text").unwrap();
-        assert!(p.starts_with(private_temp_dir_path()));
-        assert_eq!(p.parent(), Some(private_temp_dir_path().as_path()));
+        let dir = private_temp_dir();
+        assert!(p.starts_with(&dir));
+        assert_eq!(p.parent(), Some(dir.as_path()));
         let _ = std::fs::remove_file(p);
     }
 
-    /// `remove_private_temp_dir`'s removal is a no-op on a missing directory and recursive on a
-    /// populated one (checked on a private stand-in path, same call).
+    /// A writer whose every write and flush fails with `EIO`, like a pty whose other end closed.
+    struct DeadTty;
+    impl std::io::Write for DeadTty {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from_raw_os_error(5))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::from_raw_os_error(5))
+        }
+    }
+
+    /// The teardown must survive a dead terminal: it runs inside signal handling and panic hooks,
+    /// where a panic aborts the process.
     #[test]
-    fn remove_dir_helper_is_recursive_and_idempotent() {
-        let d = crate::test_support::unique_tmp("cmd_cleanup");
-        let dir = d.join("konoma-cmd-fake");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("out-0"), b"x").unwrap();
-        remove_dir_quietly(&dir);
-        assert!(!dir.exists());
-        remove_dir_quietly(&dir);
+    fn terminal_restore_never_panics_on_a_dead_tty() {
+        let r = std::panic::catch_unwind(|| write_terminal_restore(&mut DeadTty));
+        assert!(r.is_ok());
+    }
+
+    /// It undoes bracketed paste and the alternate screen (a normal exit used to leave paste mode
+    /// on, the signal path both).
+    #[test]
+    fn terminal_restore_turns_off_paste_mode_and_leaves_the_alt_screen() {
+        let mut buf = Vec::new();
+        write_terminal_restore(&mut buf);
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("\x1b[?2004l"), "{text:?}");
+        assert!(text.contains("\x1b[?1049l"), "{text:?}");
+    }
+
+    /// The bytes match what crossterm's own commands emit (so they cannot drift from what
+    /// `EnableBracketedPaste` / `EnterAlternateScreen` turned on).
+    #[test]
+    fn terminal_restore_sequence_matches_crossterm_commands() {
+        use crossterm::Command;
+        let mut want = String::new();
+        crossterm::event::DisableBracketedPaste
+            .write_ansi(&mut want)
+            .unwrap();
+        crossterm::terminal::LeaveAlternateScreen
+            .write_ansi(&mut want)
+            .unwrap();
+        assert_eq!(TERMINAL_RESTORE_SEQUENCE, want.as_bytes());
     }
 
     #[cfg(unix)]

@@ -15,6 +15,7 @@ pub mod media_diff;
 pub mod mermaid;
 pub mod office;
 pub mod pdf;
+pub(crate) mod private_dir;
 pub mod svg;
 pub mod table;
 pub mod text;

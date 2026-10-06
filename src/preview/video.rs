@@ -97,7 +97,6 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use image::DynamicImage;
@@ -1572,28 +1571,7 @@ fn out_is_nonempty(out: &Path) -> bool {
 /// directory to open a file by path, so `0700` here blocks other users regardless of the mode the
 /// external tool used for the file itself.
 fn private_temp_dir() -> PathBuf {
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = crate::preview::command::pid_temp_dir_path("vthumb");
-        crate::preview::command::register_test_exit_cleanup();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-            // The mode is applied atomically by `mkdir(2)` itself (masked by umask, but `0o700`
-            // has no group/other bits for umask to strip), so there's no "create, then chmod" gap
-            // where a wider-permission window briefly exists.
-            let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
-            // Defense-in-depth for the unlikely case the directory already existed with looser
-            // permissions (e.g. a stale leftover from an earlier process that reused this pid).
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = std::fs::create_dir(&dir);
-        }
-        dir
-    })
-    .clone()
+    crate::preview::private_dir::private_dir("vthumb")
 }
 
 /// Return a temp PNG path that does not collide within the process. Made unique with pid + an atomic counter (no dependence on randomness/time).
