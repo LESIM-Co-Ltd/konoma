@@ -9,6 +9,7 @@
 
 use super::*;
 use crate::preview::markdown::{collect_math_exprs, is_math_url, math_url, ImagePlacement};
+use ratatui::style::Color;
 use ratatui::text::Line;
 
 fn plain(line: &Line<'_>) -> String {
@@ -648,6 +649,332 @@ fn extraction_finds_expressions_in_cells_headings_emphasis_and_quotes() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// A heading the expression wraps; the width a row has once its links are folded
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_heading_wrapped_by_an_expression_keeps_picture_rule_and_style_on_the_right_rows() {
+    // `Energy ` and the 8-cell expression do not fit one 14-cell row: the heading goes on over two
+    // rows. The rule of an H1/H2 belongs under the *last* of them, the expression's picture is on the
+    // second one, and both rows are the heading's (colour, outline, anchor).
+    for level in 1..=6usize {
+        let md = format!(
+            "{} Energy $E=mc^2$ rule\n\n[go](#energy-emc2-rule)\n",
+            "#".repeat(level)
+        );
+        let (mut s, _d) = open_cfg(&format!("mc_wrap_h{level}"), &md, 16, Config::default());
+        let (lines, placements) = view(&mut s);
+        let m = math_placements(&placements);
+        assert_eq!(m.len(), 1, "h{level}: {placements:?}");
+        let rows: Vec<String> = lines.iter().map(plain).collect();
+        assert_eq!(
+            m[0].line, 1,
+            "h{level}: the picture is on the second row: {rows:?}"
+        );
+        let (before, after) = around(&lines, &m[0]);
+        assert_eq!(before, "", "h{level}: {rows:?}");
+        assert_eq!(after, " rule", "h{level}");
+        assert_eq!(rows[0].trim_end(), "Energy", "h{level}: {rows:?}");
+        for row in [0, 1] {
+            assert_eq!(
+                lines[row].style.fg,
+                Some(Color::Cyan),
+                "h{level}: row {row} keeps the heading colour: {rows:?}"
+            );
+        }
+        if level <= 2 {
+            let ch = if level == 1 { '━' } else { '─' };
+            assert!(
+                rows[2].chars().all(|c| c == ch) && !rows[2].is_empty(),
+                "h{level}: the rule is right under the heading's last row: {rows:?}"
+            );
+        } else {
+            assert!(
+                !rows[2].contains('━') && !rows[2].contains('─'),
+                "h{level}: {rows:?}"
+            );
+        }
+        // One heading, not two: one outline entry holding the whole text, and its anchor resolves.
+        let outline = s.app.md_outline();
+        assert_eq!(outline.len(), 1, "h{level}: {outline:?}");
+        assert_eq!(outline[0].1, "Energy $E=mc^2$ rule", "h{level}");
+        assert_eq!(
+            outline[0].2, 0,
+            "h{level}: the outline points at the first row"
+        );
+        assert_eq!(
+            outline[0].0,
+            level.min(4) as u8,
+            "h{level}: the level is read from the rule under the *last* row"
+        );
+        s.tab();
+        s.enter();
+        assert!(s.app.flash.is_none(), "h{level}: {:?}", s.app.flash);
+    }
+}
+
+#[test]
+fn a_heading_wrapped_several_times_puts_every_picture_on_its_own_heading_row() {
+    let md = "## One $a$ two $b$ three $c$ four $d$ five\n\nafter\n";
+    let (mut s, _d) = open_cfg("mc_wrap_many", md, 14, Config::default());
+    let (lines, placements) = view(&mut s);
+    let m = math_placements(&placements);
+    assert_eq!(m.len(), 4, "{placements:?}");
+    let rows: Vec<String> = lines.iter().map(plain).collect();
+    for p in &m {
+        around(&lines, p);
+        assert!(
+            crate::preview::markdown::is_heading_continuation(&lines[p.line]) || p.line == 0,
+            "{rows:?}"
+        );
+        assert_eq!(lines[p.line].style.fg, Some(Color::Cyan), "{rows:?}");
+    }
+    // The rule is below the row of the last picture (and of its trailing text).
+    let last = m.iter().map(|p| p.line).max().unwrap();
+    assert!(rows[last + 1].starts_with('─'), "{rows:?}");
+    assert_eq!(
+        rows.iter().filter(|r| r.starts_with('─')).count(),
+        1,
+        "{rows:?}"
+    );
+    let outline = s.app.md_outline();
+    assert_eq!(outline.len(), 1, "{outline:?}");
+    assert_eq!(outline[0].1, "One $a$ two $b$ three $c$ four $d$ five");
+}
+
+#[test]
+fn a_heading_after_a_wrapped_one_is_still_placed_on_its_own_row() {
+    // The rule of the first heading comes after its *last* row; every later placement is counted
+    // against exactly one rule.
+    let md = "# Energy $E=mc^2$ rule\n\n## Next $a$ end\n\npara $b$ end\n";
+    let (mut s, _d) = open_cfg("mc_wrap_next", md, 16, Config::default());
+    let (lines, placements) = view(&mut s);
+    let m = math_placements(&placements);
+    assert_eq!(m.len(), 3, "{placements:?}");
+    let expect = [("", " rule"), ("Next ", " end"), ("para ", " end")];
+    for (p, (b, a)) in m.iter().zip(expect) {
+        let (before, after) = around(&lines, p);
+        assert_eq!((before.as_str(), after.as_str()), (b, a), "{p:?}");
+    }
+}
+
+#[test]
+fn a_link_before_an_expression_does_not_count_its_folded_url_towards_the_row() {
+    // The row holds `label (URL)` while the document is rendered and `label` once the link is
+    // folded. The expression fits in what the folded row leaves, so it stays on the row — in a
+    // heading and in a paragraph alike.
+    let url =
+        "https://example.com/a/very/long/path/that/goes/on/and/on/and/on/and/on/and/on/forever/x";
+    let md = format!(
+        "# Heading with [a link]({url}) and $y$ tail\n\nPara with [a link]({url}) and $y$ tail\n"
+    );
+    let (mut s, _d) = open_cfg("mc_fold_width", &md, 102, Config::default());
+    let (lines, placements) = view(&mut s);
+    let m = math_placements(&placements);
+    assert_eq!(m.len(), 2, "{placements:?}");
+    let rows: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(m[0].line, 0, "the heading is one row: {rows:?}");
+    assert!(
+        rows[1].starts_with('━'),
+        "the rule is right under it: {rows:?}"
+    );
+    for p in &m {
+        let (before, after) = around(&lines, p);
+        assert!(before.ends_with("and "), "{before:?} {rows:?}");
+        assert_eq!(after, " tail");
+    }
+}
+
+#[test]
+fn an_expression_that_does_not_fit_the_folded_row_still_wraps() {
+    // The other side of the test above: the folded row is measured, not ignored.
+    let md = "Para with [a link](https://example.com/x) and then some more words $y$ tail\n";
+    let (mut s, _d) = open_cfg("mc_fold_wrap", md, 34, Config::default());
+    let (lines, placements) = view(&mut s);
+    let m = math_placements(&placements);
+    assert_eq!(m.len(), 1, "{placements:?}");
+    let (before, after) = around(&lines, &m[0]);
+    assert_eq!(
+        before,
+        "",
+        "{:?}",
+        lines.iter().map(plain).collect::<Vec<_>>()
+    );
+    assert_eq!(after, " tail");
+}
+
+// ---------------------------------------------------------------------------------------------
+// What an expression is: the source between its delimiters, in every context
+// ---------------------------------------------------------------------------------------------
+
+/// Expressions whose source holds what CommonMark would read as an escape or as emphasis.
+const SOURCE_EXPRS: [&str; 9] = [
+    r"\{a,b\}",
+    r"a\,b",
+    r"a\\b",
+    r"\%",
+    r"x\_i",
+    "a*b*c",
+    "f^*(x)+g^*(y)",
+    "x_i*y_j",
+    r"\left\{a,b\right\}",
+];
+
+/// One document per context, the expression written between the same words.
+fn contexts(e: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("h1", format!("# h ${e}$ end\n")),
+        ("h3", format!("### h ${e}$ end\n")),
+        ("bold", format!("**b ${e}$ end**\n")),
+        ("quote", format!("> q ${e}$ end\n")),
+        ("nested quote", format!("> > q ${e}$ end\n")),
+        ("alert", format!("> [!NOTE]\n> a ${e}$ end\n")),
+        (
+            "details",
+            format!("<details open>\n<summary>s</summary>\n\nd ${e}$ end\n\n</details>\n"),
+        ),
+        ("list", format!("- l ${e}$ end\n")),
+        ("loose list", format!("- l ${e}$ end\n\n- m\n")),
+        ("task", format!("- [ ] t ${e}$ end\n")),
+        ("paragraph", format!("p ${e}$ end\n")),
+        ("table", format!("| a |\n|--|\n| c ${e}$ end |\n")),
+    ]
+}
+
+#[test]
+fn an_expression_is_its_source_in_every_context() {
+    // Heading, bold, quote, alert, `<details>`, list item, paragraph and table cell alike: the
+    // LaTeX handed to the renderer is exactly what is between the `$`s — backslashes and stars
+    // included. (Contexts used to read it from the text after CommonMark had run, so `\{` lost its
+    // backslash and `a*b*c` became `abc`.)
+    for (i, e) in SOURCE_EXPRS.iter().enumerate() {
+        for (name, md) in contexts(e) {
+            let (mut s, _d) = open(&format!("mc_src_{i}_{}", name.replace(' ', "_")), &md);
+            let (lines, placements) = view(&mut s);
+            let m = math_placements(&placements);
+            let rows: Vec<String> = lines.iter().map(plain).collect();
+            assert_eq!(m.len(), 1, "{name} {e}: {placements:?} {rows:?}");
+            assert_eq!(m[0].alt, *e, "{name}: {rows:?}");
+            let (_, after) = around(&lines, &m[0]);
+            assert!(after.starts_with(" end"), "{name} {e}: {after:?} {rows:?}");
+            assert!(
+                rows.iter().all(|r| !r.contains('$')),
+                "{name} {e}: no source left on screen: {rows:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_expression_with_delimiters_other_than_dollars_is_cut_the_same_way() {
+    let md = "# h \\(x^2\\) and $$z$$ end\n\n**b \\[y_1\\] end**\n\n> q \\(a\\,b\\) end\n";
+    let (mut s, _d) = open("mc_src_delims", md);
+    let (lines, placements) = view(&mut s);
+    let alts: Vec<String> = math_placements(&placements)
+        .iter()
+        .map(|p| p.alt.clone())
+        .collect();
+    assert_eq!(alts, ["x^2", "z", "y_1", r"a\,b"], "{placements:?}");
+    for p in math_placements(&placements) {
+        around(&lines, &p);
+    }
+}
+
+#[test]
+fn text_around_an_expression_keeps_its_entities_escapes_and_cjk() {
+    let md = "# a &amp; $x$ &lt; \\*b\\* と $y$ です\n";
+    let (mut s, _d) = open("mc_src_text", md);
+    let (lines, placements) = view(&mut s);
+    let m = math_placements(&placements);
+    assert_eq!(m.len(), 2, "{placements:?}");
+    let (before, _) = around(&lines, &m[0]);
+    assert!(before.ends_with("a & "), "{before:?}");
+    let (before, after) = around(&lines, &m[1]);
+    assert!(before.ends_with("< *b* と "), "{before:?}");
+    assert_eq!(after, " です");
+}
+
+#[test]
+fn an_expression_the_events_cannot_hold_whole_stays_literal() {
+    // `*a $b* c$`: the emphasis closes inside the expression, so the expression cannot be cut out
+    // without unbalancing it. Left as the text it was — never half cut.
+    for md in ["# *a $b* c$ d\n", "> *a $b* c$ d\n", "**a $b** c$ d\n"] {
+        let (mut s, _d) = open("mc_src_straddle", md);
+        let (lines, placements) = view(&mut s);
+        let rows: Vec<String> = lines.iter().map(plain).collect();
+        assert!(math_placements(&placements).is_empty(), "{md:?}: {rows:?}");
+        assert!(rows.iter().any(|r| r.contains('d')), "{md:?}: {rows:?}");
+    }
+}
+
+#[test]
+fn an_expression_holding_a_link_is_math_and_one_inside_a_link_label_is_not() {
+    let md = "# h $[x](https://e.example/a)$ end\n\n# [l $y$ m](https://e.example/b)\n";
+    let (mut s, _d) = open("mc_src_link", md);
+    let (lines, placements) = view(&mut s);
+    let m = math_placements(&placements);
+    assert_eq!(m.len(), 1, "{placements:?}");
+    assert_eq!(m[0].alt, "[x](https://e.example/a)");
+    around(&lines, &m[0]);
+    s.see("l $y$ m");
+}
+
+#[test]
+fn currency_and_unclosed_dollars_stay_text_in_every_context() {
+    for text in [
+        "pay $5 or $10 now",
+        "$3 to $4",
+        "a $ b and $ c",
+        "cost $5 and $x",
+        "ends with a dollar$",
+    ] {
+        for (name, md) in [
+            ("h1", format!("# {text}\n")),
+            ("bold", format!("**{text}**\n")),
+            ("quote", format!("> {text}\n")),
+            ("list", format!("- {text}\n")),
+            ("table", format!("| a |\n|--|\n| {text} |\n")),
+        ] {
+            let (mut s, _d) = open("mc_src_cur", &md);
+            let (lines, placements) = view(&mut s);
+            let rows: Vec<String> = lines.iter().map(plain).collect();
+            assert!(
+                math_placements(&placements).is_empty(),
+                "{name} {text:?}: {rows:?}"
+            );
+            assert!(
+                rows.iter().any(|r| r.contains(text)),
+                "{name} {text:?}: {rows:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_expression_that_is_not_drawn_yet_keeps_its_markup_literal() {
+    // The picture is still rendering (`Loading`): the cell, the heading and the bold run show the
+    // source — what is between the `$`s is never link or bold markup of the surrounding text.
+    let dir = sandbox("mc_lit_loading");
+    let md = "| a |\n|--|\n| $[x](https://evil.example/a)$ and $**b**$ and $\\{c\\}$ |\n\n# H $[x](https://evil.example/a)$ and $a*b*c$\n\n**s $**b**$ t**\n";
+    std::fs::write(dir.join("d.md"), md).unwrap();
+    let root = canon(&dir);
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    s.see("$[x](https://evil.example/a)$ and $**b**$ and $\\{c\\}$");
+    s.see("H $[x](https://evil.example/a)$ and $a*b*c$");
+    s.see("s $**b**$ t");
+    let (_, _) = view(&mut s);
+    // No link was made of any of it. (The bare URL inside the source is still autolinked, as it is
+    // in any text — but with the `)$` that follows it, not as the destination of `[x](…)`.)
+    let targets = s.app.md_link_targets();
+    assert!(
+        !targets.iter().any(|t| t == "https://evil.example/a"),
+        "{targets:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
 // The renderer on its own, with a stub slot
 // ---------------------------------------------------------------------------------------------
 
@@ -662,6 +989,16 @@ mod stub {
         math: &dyn Fn(&str, bool) -> MathSlot,
         on: bool,
     ) -> (Vec<String>, Vec<ImagePlacement>) {
+        render_icons(md, width, math, on, false)
+    }
+
+    fn render_icons(
+        md: &str,
+        width: u16,
+        math: &dyn Fn(&str, bool) -> MathSlot,
+        on: bool,
+        icons: bool,
+    ) -> (Vec<String>, Vec<ImagePlacement>) {
         let slot_of = |_: &str, _: Option<u16>| ImageSlot::Unavailable;
         let ms = |_: &str| MermaidSlot::Text;
         let (lines, pl, _) = render_markdown_with_images(
@@ -669,7 +1006,7 @@ mod stub {
             width,
             Default::default(),
             "TwoDark",
-            false,
+            icons,
             &[' ', 'x'],
             &slot_of,
             &ms,
@@ -748,5 +1085,150 @@ mod stub {
         let (text, pl) = render("# H $h$\n", 10, &image(30), true);
         assert!(pl.is_empty());
         assert!(text.iter().any(|l| l.contains("$h$")));
+    }
+
+    /// The row holding `needle`, and the row the (first) placement is on.
+    fn rows_apart(text: &[String], pl: &[ImagePlacement], needle: &str) -> (usize, usize) {
+        let at = text
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} not in {text:?}"));
+        (at, pl[0].line)
+    }
+
+    #[test]
+    fn a_body_wraps_an_expression_at_its_own_narrower_width() {
+        // 20 cells wide; a quote, an alert or a `<details>` body leaves 18 after its bar (16 for a quote in
+        // a quote). `k` letters, a space and the 3-cell expression fit while `k + 4 <= inner`.
+        type Shape = fn(&str) -> String;
+        let shapes: [(&str, Shape, u16); 4] = [
+            ("quote", |t| format!("> {t} $h$ r\n"), 18),
+            ("nested quote", |t| format!("> > {t} $h$ r\n"), 16),
+            ("alert", |t| format!("> [!NOTE]\n> {t} $h$ r\n"), 18),
+            (
+                "details",
+                |t| format!("<details open>\n<summary>s</summary>\n\n{t} $h$ r\n\n</details>\n"),
+                18,
+            ),
+        ];
+        for (name, shape, inner) in shapes {
+            let fits = "a".repeat(inner as usize - 4);
+            let (text, pl) = render(&shape(&fits), 20, &image(3), true);
+            assert_eq!(pl.len(), 1, "{name}: {pl:?}");
+            let (at, on) = rows_apart(&text, &pl, &fits);
+            assert_eq!(at, on, "{name}: exactly fitting stays on the row: {text:?}");
+            let wraps = "a".repeat(inner as usize - 3);
+            let (text, pl) = render(&shape(&wraps), 20, &image(3), true);
+            let (at, on) = rows_apart(&text, &pl, &wraps);
+            assert_eq!(on, at + 1, "{name}: one cell too many wraps: {text:?}");
+        }
+    }
+
+    #[test]
+    fn a_link_in_a_cell_or_heading_keeps_a_dollar_pair_in_its_label_and_alt_text() {
+        // The text of a label is never math: it comes back as written, `$` pairs and all.
+        let md = "| a |\n|--|\n| [x $h$ y](u.md) and ![p $h$ q](i.png) |\n";
+        for slot in [
+            MathSlot::Image { cols: 3, rows: 1 },
+            MathSlot::Loading,
+            MathSlot::Raw,
+        ] {
+            let s = slot.clone();
+            let (text, pl) = render(md, 60, &move |_, _| s.clone(), true);
+            let cell = text.iter().find(|l| l.contains("and")).unwrap();
+            assert!(cell.contains("x $h$ y"), "{slot:?}: {text:?}");
+            assert!(cell.contains("p $h$ q"), "{slot:?}: {text:?}");
+            // The two expressions inside labels are the only ones; none of them is drawn.
+            assert!(pl.iter().all(|p| p.alt != "h"), "{slot:?}: {pl:?}");
+        }
+    }
+
+    #[test]
+    fn display_math_that_is_not_drawn_in_text_keeps_both_dollar_pairs() {
+        let md = "# H $$z$$ e\n\n**b $$z$$ e**\n\n> q $$z$$ e\n\n| a |\n|--|\n| c $$z$$ e |\n";
+        for slot in [
+            MathSlot::Loading,
+            MathSlot::Raw,
+            MathSlot::Image { cols: 3, rows: 2 },
+            MathSlot::Image { cols: 90, rows: 1 },
+        ] {
+            let s = slot.clone();
+            let (text, pl) = render(md, 60, &move |_, _| s.clone(), true);
+            assert!(pl.is_empty(), "{slot:?}: {pl:?}");
+            for lead in ["H ", "b ", "q ", "c "] {
+                let row = text.iter().find(|l| l.contains(lead)).unwrap();
+                assert!(row.contains("$$z$$ e"), "{slot:?} {lead:?}: {text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_expression_alone_in_a_block_leaves_the_same_blank_rows_as_a_word_would() {
+        // An expression that is a block's only content writes no text, so it has to clear the owed
+        // blank row itself — or a nested block after it gets a blank row the same document with a
+        // word in its place does not have.
+        for shape in [
+            "intro\n\n- {c}\n  - child\n\nafter\n",
+            "intro\n\n1. {c}\n   - child\n",
+            "intro\n\n- [ ] {c}\n  - child\n",
+            "intro\n\n> {c}\n> - child\n",
+            "intro\n\n- **{c}**\n  - child\n",
+            "intro\n\n- {c}\n\n  - child\n",
+        ] {
+            let blanks = |c: &str| -> Vec<usize> {
+                let (text, _) = render(&shape.replace("{c}", c), 40, &image(3), true);
+                text.iter()
+                    .enumerate()
+                    .filter(|(_, l)| l.is_empty())
+                    .map(|(i, _)| i)
+                    .collect()
+            };
+            assert_eq!(blanks("$h$"), blanks("hhh"), "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn markup_inside_an_expression_that_is_not_drawn_is_never_markup() {
+        let md = "| a |\n|--|\n| $[x](https://evil.example/a)$ and **$**b**$** and $\\{c\\}$ |\n\n# H $[x](https://evil.example/a)$ and $**b**$\n";
+        for slot in [
+            MathSlot::Loading,
+            MathSlot::Raw,
+            MathSlot::Image { cols: 3, rows: 2 },
+        ] {
+            let s = slot.clone();
+            let (text, _) = render(md, 80, &move |_, _| s.clone(), true);
+            let cell = text.iter().find(|l| l.contains("and")).unwrap();
+            assert!(
+                cell.contains("$[x](https://evil.example/a)$ and $**b**$ and $\\{c\\}$")
+                    || cell.contains("$[x](https://evil.example/a)$ and $**b**$"),
+                "{slot:?}: {text:?}"
+            );
+            assert!(cell.contains("$\\{c\\}$"), "{slot:?}: {text:?}");
+            let head = text.iter().find(|l| l.contains("H ")).unwrap();
+            assert!(
+                head.contains("$[x](https://evil.example/a)$ and $**b**$"),
+                "{slot:?}: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_is_measured_with_its_links_folded_up_to_the_icon() {
+        // The row `Para [l](URL) …` is `Para l …` once the link is folded (`l` with the link icon and a
+        // space in front of it with `ui.icons`). `n` letters after it: the 3-cell expression fits the
+        // 30-cell row while the folded row is at most 27 wide.
+        let url = "https://example.com/some/long/path";
+        for icons in [false, true] {
+            // folded width = "Para " (5) + label (1) [+ icon and space (2)] + " " + n letters + " "
+            let line_with = |n: usize| format!("Para [l]({url}) {} $h$ r\n", "x".repeat(n));
+            let fold = if icons { 2 } else { 0 };
+            let fits = 30 - 3 - (5 + 1 + fold + 1 + 1);
+            let (text, pl) = render_icons(&line_with(fits), 30, &image(3), true, icons);
+            let (at, on) = rows_apart(&text, &pl, "Para");
+            assert_eq!(at, on, "icons={icons}: fits exactly: {text:?}");
+            let (text, pl) = render_icons(&line_with(fits + 1), 30, &image(3), true, icons);
+            let (at, on) = rows_apart(&text, &pl, "Para");
+            assert_eq!(on, at + 1, "icons={icons}: one cell more wraps: {text:?}");
+        }
     }
 }

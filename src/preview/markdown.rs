@@ -21,6 +21,7 @@
 // (e.g. a state diagram), show the raw source full-screen in a dim color (never crash).
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -881,10 +882,35 @@ fn math_raw_lines(latex: &str, display: bool) -> Vec<Line<'static>> {
 /// be visible regardless) — it exists purely so `Color::Magenta` + `HIDDEN` together can never collide
 /// with `is_hidden_link_target`'s own `Color::Blue` + `UNDERLINED` + `HIDDEN` combination, nor with any
 /// other sentinel in this file.
-fn inline_math_reservation_style() -> Style {
+pub(crate) fn inline_math_reservation_style() -> Style {
     Style::default()
         .fg(Color::Magenta)
         .add_modifier(Modifier::HIDDEN)
+}
+
+/// Sentinel of a **continuation row of a heading**: an empty span put first on the row a heading's
+/// text was wrapped onto (`render::render_inline_math` starts one when an in-text expression would
+/// not fit in what is left of the heading's row). `decorate_headings` reads it to put the H1/H2 rule
+/// under the heading's *last* row rather than its first, and the anchor/outline readers
+/// (`heading_text_at`) join such rows back into the one heading they belong to. Zero-width, so it
+/// draws nothing.
+fn heading_continuation_style() -> Style {
+    Style::default()
+        .fg(Color::Magenta)
+        .add_modifier(Modifier::HIDDEN | Modifier::DIM)
+}
+
+/// The sentinel span itself (see [`heading_continuation_style`]).
+pub(crate) fn heading_continuation_span() -> Span<'static> {
+    Span::styled("", heading_continuation_style())
+}
+
+/// Whether `line` is a continuation row of a heading (see [`heading_continuation_style`]). Looks at
+/// every span, not only the first: a heading inside a quote or alert has its bar span in front.
+pub(crate) fn is_heading_continuation(line: &Line<'_>) -> bool {
+    line.spans
+        .iter()
+        .any(|s| s.content.is_empty() && s.style == heading_continuation_style())
 }
 
 /// Whether `span` is an inline math reservation span produced by `render::render_inline_math` — style
@@ -2677,11 +2703,17 @@ fn wrap_spans_by_width(spans: Vec<Span<'static>>, maxw: usize) -> Vec<Vec<Span<'
     rows
 }
 
-/// Remove the leading `#` span from heading lines, and lay a full-width rule directly below H1/H2.
+/// Remove the leading `#` span from heading lines, and lay a full-width rule directly below H1/H2 —
+/// below the heading's *last* row: a heading wrapped by `render_inline_math` has continuation rows
+/// ([`is_heading_continuation`]) that belong above its rule.
 fn decorate_headings(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
     let w = width as usize;
     let mut out = Vec::with_capacity(lines.len());
+    let mut rule: Option<Line<'static>> = None;
     for line in lines {
+        if !is_heading_continuation(&line) {
+            out.extend(rule.take());
+        }
         if let Some(level) = heading_level(&line) {
             let style = line.style;
             let mut spans = line.spans;
@@ -2689,7 +2721,7 @@ fn decorate_headings(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>
             out.push(Line::from(spans).style(style));
             if level <= 2 {
                 let ch = if level == 1 { "━" } else { "─" };
-                out.push(Line::from(Span::styled(
+                rule = Some(Line::from(Span::styled(
                     ch.repeat(w),
                     Style::new().fg(HEAD_FG).add_modifier(Modifier::DIM),
                 )));
@@ -2698,6 +2730,7 @@ fn decorate_headings(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>
             out.push(line);
         }
     }
+    out.extend(rule);
     out
 }
 
@@ -2707,16 +2740,54 @@ fn decorate_headings(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>
 /// both excluded here). Used to build in-page anchor (`[x](#slug)`) jump targets from what's drawn.
 #[cfg(test)]
 pub(crate) fn heading_text(line: &Line<'_>) -> Option<String> {
-    heading_text_restoring_math(line, &[])
+    if is_heading_continuation(line) {
+        return None; // a row a heading wrapped onto belongs to the heading above it
+    }
+    heading_row_text(line, &[]).map(|t| trim_heading_text(&t))
 }
 
-/// [`heading_text`] for a heading that holds in-text LaTeX: each math reservation span (blank cells —
-/// the picture is overlaid on them) is read back as `$latex$`, taking the sources in order from
-/// `math` (the `ImagePlacement::alt` of the heading line's own one-row math placements). The slug
-/// and the outline entry of a heading must not depend on whether its expressions happen to be drawn
-/// as pictures right now, or `[x](#energy-emc2)` would stop resolving the moment an equation loaded.
-/// A reservation with no source to give (`math` shorter than the spans) is read as blank cells.
-pub(crate) fn heading_text_restoring_math(line: &Line<'_>, math: &[&str]) -> Option<String> {
+/// The text of the heading starting at row `i` of decorated `lines`, with the rows a wrapped heading
+/// continues on ([`is_heading_continuation`]) joined to it. Each math reservation span (blank cells —
+/// the picture is overlaid on them) is read back as `$latex$`, taking the sources in order from `math`
+/// (the `ImagePlacement::alt` of each row's one-row math placements, by row). The slug and the outline
+/// entry of a heading must not depend on whether its expressions happen to be drawn as pictures right
+/// now, or `[x](#energy-emc2)` would stop resolving the moment an equation loaded. A reservation with
+/// no source to give is read as blank cells. `None` when row `i` is not the first row of a heading.
+pub(crate) fn heading_text_at(
+    lines: &[Line<'static>],
+    i: usize,
+    math: &HashMap<usize, Vec<&str>>,
+) -> Option<String> {
+    let rows_math = |k: usize| math.get(&k).map(Vec::as_slice).unwrap_or(&[]);
+    let first = lines.get(i)?;
+    if is_heading_continuation(first) {
+        return None;
+    }
+    let mut text = heading_row_text(first, rows_math(i))?;
+    let mut k = i + 1;
+    while let Some(next) = lines.get(k).filter(|l| is_heading_continuation(l)) {
+        text.push_str(&heading_row_text(next, rows_math(k)).unwrap_or_default());
+        k += 1;
+    }
+    Some(trim_heading_text(&text))
+}
+
+/// The row after the heading that starts at row `i` — its rule for an H1/H2 — skipping the rows the
+/// heading continues on.
+pub(crate) fn row_after_heading<'a>(
+    lines: &'a [Line<'static>],
+    i: usize,
+) -> Option<&'a Line<'static>> {
+    lines
+        .iter()
+        .skip(i + 1)
+        .find(|l| !is_heading_continuation(l))
+}
+
+/// What `heading_text_restoring_math` and `heading_text_at` share: the untrimmed text of one heading
+/// row, `None` for a row that is not part of a heading. The first row of a heading and its
+/// continuation rows ([`is_heading_continuation`]) both qualify; telling them apart is the caller's.
+fn heading_row_text(line: &Line<'_>, math: &[&str]) -> Option<String> {
     // tui-markdown puts the heading color on the LINE style (the spans keep fg=None). The full-width
     // rule under an H1/H2 is the opposite (span fg = HEAD_FG, line fg = None), so keying off the line
     // fg selects headings and excludes the rule.
@@ -2741,14 +2812,20 @@ pub(crate) fn heading_text_restoring_math(line: &Line<'_>, math: &[&str]) -> Opt
     if text.starts_with('▎') {
         return None; // a code line
     }
-    let t = text.trim();
     // A heading inside a GitHub alert carries the "▌ " callout bar as its first span; drop it so the
     // slug is the heading's own text (otherwise the space after the bar yields a leading "-").
-    let t = t.strip_prefix('▌').map(str::trim_start).unwrap_or(t);
+    let body = text.trim_start();
+    let body = body.strip_prefix('▌').map(str::trim_start).unwrap_or(body);
+    let t = body.trim();
     if t.is_empty() || t.chars().all(|c| c == '━' || c == '─') {
         return None;
     }
-    Some(t.to_string())
+    Some(body.to_string())
+}
+
+/// A heading's text as slug and outline read it: no leading or trailing blanks.
+fn trim_heading_text(text: &str) -> String {
+    text.trim().to_string()
 }
 
 /// Best-effort heading level (1–4) of a decorated heading line, for outline indentation. After
@@ -3625,77 +3702,106 @@ fn rewrite_masking_code_spans(line: &str, edit: impl FnOnce(&str) -> String) -> 
     out
 }
 
-/// Scan one line for inline / single-line math, appending literal text to `buf` and lifting each math
-/// expression via `flush_math`. Skips `` `code spans` `` (their `$` is literal) and honors `\$` escapes.
-/// `mask` is passed straight through to [`flush_math`], which can fire mid-line here — see its doc
-/// comment for why the partial line that leaves behind is always non-code.
-fn scan_inline_math(line: &str, out: &mut Vec<MathPart>, buf: &mut String, mask: &mut Vec<bool>) {
+/// One math expression found in a single source line: where it sits (delimiters included), what is
+/// between the delimiters, and whether it was written as display math (`$$…$$` / `\[…\]`).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MathSpan {
+    /// Byte range of the whole expression in the scanned line, opening and closing delimiter included.
+    pub range: Range<usize>,
+    /// Byte range of what is between the delimiters, untrimmed.
+    pub content: Range<usize>,
+    pub display: bool,
+}
+
+/// The one scanner that decides which parts of a line are math: `$…$` (with the currency guard of
+/// [`find_inline_dollar`]), `$$…$$`, `\(…\)` and `\[…\]`. Skips `` `code spans` `` (their `$` is
+/// literal) and honors `\$` escapes. Everything else is not math. Reads the **source** line, so a
+/// backslash or `*` inside an expression is exactly what the author wrote.
+pub(crate) fn scan_math_spans(line: &str) -> Vec<MathSpan> {
+    let mut spans = Vec::new();
     let bytes = line.as_bytes();
     let n = line.len();
     let mut i = 0;
     while i < n {
         let c = bytes[i];
-        // Inline code span: copy the whole `…` region literally (a `$` inside is not math).
+        // Inline code span: skip the whole `…` region (a `$` inside is not math).
         if c == b'`' {
             // Shared rule (`inline_code_span_end`); an unclosed run is literal and scanning
             // resumes right after it, so a `$` further along the line is still seen.
-            let end = inline_code_span_end(line, i).unwrap_or(i + backtick_run_len(bytes, i));
-            buf.push_str(&line[i..end]);
-            i = end;
+            i = inline_code_span_end(line, i).unwrap_or(i + backtick_run_len(bytes, i));
             continue;
         }
         if c == b'\\' && i + 1 < n {
             match bytes[i + 1] {
                 b'(' => {
                     if let Some((content, end)) = find_close(line, i + 2, "\\)") {
-                        flush_math(out, buf, mask, content, false);
+                        spans.push(span_of(i, end, content, line, false));
                         i = end;
                         continue;
                     }
                 }
                 b'[' => {
                     if let Some((content, end)) = find_close(line, i + 2, "\\]") {
-                        flush_math(out, buf, mask, content, true);
+                        spans.push(span_of(i, end, content, line, true));
                         i = end;
                         continue;
                     }
                 }
                 _ => {}
             }
-            // Escaped char (`\$`, `\\`, `\あ`, …): keep the backslash + the WHOLE next char literally.
+            // Escaped char (`\$`, `\\`, `\あ`, …): skip the backslash + the WHOLE next char.
             // Advancing a fixed 2 bytes would split a multibyte char (`\あ`) and panic on a non-boundary
-            // slice — and leave `i` mid-char so the tail slice below panics next iteration too.
-            let end = (i + 1 + utf8_len(bytes[i + 1])).min(n);
-            buf.push_str(&line[i..end]);
-            i = end;
+            // slice — and leave `i` mid-char so the next iteration panics too.
+            i = (i + 1 + utf8_len(bytes[i + 1])).min(n);
             continue;
         }
         if c == b'$' {
             if i + 1 < n && bytes[i + 1] == b'$' {
                 if let Some((content, end)) = find_close(line, i + 2, "$$") {
                     if !content.trim().is_empty() {
-                        flush_math(out, buf, mask, content, true);
+                        spans.push(span_of(i, end, content, line, true));
                         i = end;
                         continue;
                     }
                 }
-                buf.push('$');
                 i += 1;
                 continue;
             }
             if let Some((content, end)) = find_inline_dollar(line, i + 1) {
-                flush_math(out, buf, mask, content, false);
+                spans.push(span_of(i, end, content, line, false));
                 i = end;
                 continue;
             }
-            buf.push('$');
             i += 1;
             continue;
         }
-        let len = utf8_len(c);
-        buf.push_str(&line[i..(i + len).min(n)]);
-        i += len;
+        i += utf8_len(c);
     }
+    spans
+}
+
+/// A [`MathSpan`] from its bounds and `content`, which must be a subslice of `line`.
+fn span_of(start: usize, end: usize, content: &str, line: &str, display: bool) -> MathSpan {
+    let c0 = content.as_ptr() as usize - line.as_ptr() as usize;
+    MathSpan {
+        range: start..end,
+        content: c0..c0 + content.len(),
+        display,
+    }
+}
+
+/// Scan one line for inline / single-line math, appending literal text to `buf` and lifting each math
+/// expression via `flush_math` (the spans come from [`scan_math_spans`]). `mask` is passed straight
+/// through to [`flush_math`], which can fire mid-line here — see its doc comment for why the partial
+/// line that leaves behind is always non-code.
+fn scan_inline_math(line: &str, out: &mut Vec<MathPart>, buf: &mut String, mask: &mut Vec<bool>) {
+    let mut cursor = 0;
+    for sp in scan_math_spans(line) {
+        buf.push_str(&line[cursor..sp.range.start]);
+        flush_math(out, buf, mask, &line[sp.content.clone()], sp.display);
+        cursor = sp.range.end;
+    }
+    buf.push_str(&line[cursor..]);
 }
 
 /// Find `needle` starting at byte `from`; return (content before it, index past it). ASCII needle.
@@ -6127,9 +6233,12 @@ enum CellSeg {
     ///
     /// Only built when the app can draw the expression right now (`MathSlot::Image`); anything else
     /// stays the literal `$…$` text of a plain `Text` segment. Atomic when wrapping, and degrades to
-    /// that same literal text when its column is shaved narrower than `cols`.
+    /// that same literal text (`source`, as written: `$$z$$` stays `$$z$$`) when its column is shaved
+    /// narrower than `cols`.
     Math {
         latex: String,
+        /// The expression as it was written, delimiters included.
+        source: String,
         cols: u16,
     },
     /// An image reference. Drawn as **real pixels** when the caller's own `slot_of` answers
@@ -6507,10 +6616,10 @@ fn wrap_segments(segs: &[CellSeg], w: usize) -> Vec<Vec<CellSeg>> {
             // too narrow for it — the column was shaved below the expression's width — it is the
             // literal `$…$` text again, which wraps like any other text, rather than a reservation
             // wider than its own column.
-            CellSeg::Math { latex, cols } => {
+            CellSeg::Math { source, cols, .. } => {
                 let mw = *cols as usize;
                 if mw > w {
-                    wrap_literal_math(latex, w, &mut lines, &mut cur, &mut cur_w);
+                    wrap_literal_math(source, w, &mut lines, &mut cur, &mut cur_w);
                 } else {
                     if cur_w + mw > w && cur_w > 0 {
                         lines.push(std::mem::take(&mut cur));
@@ -6559,15 +6668,14 @@ fn wrap_segments(segs: &[CellSeg], w: usize) -> Vec<Vec<CellSeg>> {
 }
 
 /// `wrap_segments`' fallback for a [`CellSeg::Math`] wider than its column: the expression as the
-/// literal `$latex$` text, wrapped char by char exactly the way a `CellSeg::Text` is.
+/// literal text it was written as, wrapped char by char exactly the way a `CellSeg::Text` is.
 fn wrap_literal_math(
-    latex: &str,
+    text: &str,
     w: usize,
     lines: &mut Vec<Vec<CellSeg>>,
     cur: &mut Vec<CellSeg>,
     cur_w: &mut usize,
 ) {
-    let text = format!("${latex}$");
     let mut buf = String::new();
     for ch in text.chars() {
         let cw = UnicodeWidthChar::width(ch).unwrap_or(1);
@@ -6617,40 +6725,35 @@ fn parse_cell_segments_with_math(cell: &str, slot: Option<&MathSlotFn>) -> Vec<C
     if !(cell.contains('$') || cell.contains("\\(") || cell.contains("\\[")) {
         return parse_cell_segments(cell);
     }
-    let mut parts: Vec<MathPart> = Vec::new();
-    let mut buf = String::new();
-    let mut mask: Vec<bool> = Vec::new();
-    scan_inline_math(cell, &mut parts, &mut buf, &mut mask);
-    if !buf.is_empty() {
-        mask.push(false);
-        parts.push(MathPart::Text(SourceRun::new(buf, mask)));
-    }
-    let mut masked = String::new();
-    let mut drawn: Vec<(String, u16)> = Vec::new();
-    for part in &parts {
-        match part {
-            MathPart::Text(run) => masked.push_str(run.text()),
-            MathPart::Math { latex, display } => match slot(latex, false) {
-                MathSlot::Image { cols, rows: 1 } => {
-                    masked.push_str(&cell_math_placeholder(drawn.len()));
-                    drawn.push((latex.clone(), cols.max(1)));
-                }
-                _ => {
-                    let d = if *display { "$$" } else { "$" };
-                    masked.push_str(&format!("{d}{latex}{d}"));
-                }
-            },
-        }
-    }
-    if drawn.is_empty() {
-        // Nothing to draw: the cell exactly as it was written (`\(x\)` and all), not rebuilt from
-        // the parts.
+    let spans = scan_math_spans(cell);
+    if spans.is_empty() {
         return parse_cell_segments(cell);
     }
+    // Every expression becomes a placeholder, drawn or not: what is between the delimiters is never
+    // the cell's own markup (`$[x](u)$`, `$**b**$`), so an expression that is not drawn comes back as
+    // the exact source text it was, not as something `parse_cell_segments` has made a link or bold of.
+    let mut masked = String::new();
+    // The LaTeX, the expression as written, and `Some(cols)` when it is drawn in place (`None`:
+    // written back as it was).
+    let mut exprs: Vec<(String, String, Option<u16>)> = Vec::new();
+    let mut cursor = 0;
+    for sp in &spans {
+        masked.push_str(&cell[cursor..sp.range.start]);
+        cursor = sp.range.end;
+        let latex = cell[sp.content.clone()].trim();
+        let drawn = match slot(latex, false) {
+            MathSlot::Image { cols, rows: 1 } => Some(cols.max(1)),
+            _ => None,
+        };
+        masked.push_str(&cell_math_placeholder(exprs.len()));
+        exprs.push((latex.to_string(), cell[sp.range.clone()].to_string(), drawn));
+    }
+    masked.push_str(&cell[cursor..]);
+    // A label or a URL is one span: whatever is in it is text, drawn or not — the source as written.
     let restore = |text: &str| -> String {
         let mut out = text.to_string();
-        for (i, (latex, _)) in drawn.iter().enumerate() {
-            out = out.replace(&cell_math_placeholder(i), &format!("${latex}$"));
+        for (i, (_, source, _)) in exprs.iter().enumerate() {
+            out = out.replace(&cell_math_placeholder(i), source);
         }
         out
     };
@@ -6658,11 +6761,20 @@ fn parse_cell_segments_with_math(cell: &str, slot: Option<&MathSlotFn>) -> Vec<C
     for seg in parse_cell_segments(&masked) {
         match seg {
             CellSeg::Text { text, style } => {
+                // The expressions that are not drawn go back into the text first; a drawn one is cut
+                // out into a segment of its own.
+                let mut text = text;
+                for (i, (_, source, drawn)) in exprs.iter().enumerate() {
+                    if drawn.is_none() {
+                        text = text.replace(&cell_math_placeholder(i), source);
+                    }
+                }
                 let mut rest = text.as_str();
                 while !rest.is_empty() {
-                    let next = drawn
+                    let next = exprs
                         .iter()
                         .enumerate()
+                        .filter(|(_, (_, _, drawn))| drawn.is_some())
                         .filter_map(|(i, _)| {
                             let ph = cell_math_placeholder(i);
                             rest.find(&ph).map(|at| (at, i, ph.len()))
@@ -6681,10 +6793,11 @@ fn parse_cell_segments_with_math(cell: &str, slot: Option<&MathSlotFn>) -> Vec<C
                             style,
                         });
                     }
-                    let (latex, cols) = &drawn[i];
+                    let (latex, source, cols) = &exprs[i];
                     out.push(CellSeg::Math {
                         latex: latex.clone(),
-                        cols: *cols,
+                        source: source.clone(),
+                        cols: cols.unwrap_or(1),
                     });
                     rest = &rest[at + len..];
                 }
@@ -7021,7 +7134,7 @@ fn render_table_cells(
                         // A LaTeX expression drawn in the line: blank reserved cells (the sentinel
                         // span — deliberately *not* patched with `cell_style`, the sentinel is
                         // matched by its exact style) and the placement over them.
-                        CellSeg::Math { latex, cols } => {
+                        CellSeg::Math { latex, cols, .. } => {
                             spans.push(Span::styled(
                                 " ".repeat(*cols as usize),
                                 inline_math_reservation_style(),
@@ -15205,7 +15318,7 @@ mod fence_and_math_extraction_tests {
             // parser needs line continuity is left literal, never extracted/lifted.
             // These three used to be left literal (nothing in a quote, an alert or a table cell could
             // be lifted onto a line of its own). They are now placed *in the running text*
-            // (`render::write_text_with_inline_math`, `parse_cell_segments_with_math`), so they are
+            // (`render::write_in_text_math`, `parse_cell_segments_with_math`), so they are
             // extracted — always at inline size, the only size such a place can hold.
             (
                 "inside an alert",

@@ -171,9 +171,9 @@ use super::{
     math_placeholder_lines, math_raw_lines, math_url, mermaid_diagram_col, mermaid_fence_url,
     mermaid_placeholder_lines, next_details_open, normalize_cell, pad_to_width,
     parse_cell_segments_with_math, prefix_link_icons, render_html_block, render_mermaid_block,
-    render_table_cells, scan_inline_math, task_prefix_state, BlockAligns, CellAttrs, CellImage,
-    CellSeg, CodeStyle, ColAlign, ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot,
-    MermaidSlot, SourceRun, TableCells,
+    render_table_cells, scan_inline_math, scan_math_spans, task_prefix_state, BlockAligns,
+    CellAttrs, CellImage, CellSeg, CodeStyle, ColAlign, ImagePlacement, ImageSlot, KonomaStyles,
+    MathPart, MathSlot, MermaidSlot, SourceRun, TableCells,
 };
 
 /// What `render_doc` produced: the decorated lines (same shape `render_markdown_with_images`
@@ -471,6 +471,7 @@ fn new_top_writer<'m>(
         fresh_boundary: false,
         pending_para_start: None,
         heading_rule_shift: 0,
+        heading_row_style: None,
         code,
         theme: theme.to_string(),
         width,
@@ -1247,6 +1248,11 @@ struct Writer<'m> {
     /// children unconditionally — see that field's own doc comment) — there is nothing on the
     /// *outer* `Writer`'s own placements this inner counter would ever need to influence.
     heading_rule_shift: usize,
+    /// The row style of the heading being written (`Some` only while `render_heading` walks its
+    /// text). `render_inline_math` reads it to start a wrapped heading's next row as a *continuation
+    /// row* — same row style, plus the zero-width sentinel `decorate_headings` and the anchor/outline
+    /// readers recognize — instead of an unstyled row that would end up under the heading's rule.
+    heading_row_style: Option<Style>,
 }
 
 impl<'m> Writer<'m> {
@@ -1498,13 +1504,16 @@ fn walk_inline<'a>(
             Event::Start(tag) => start_inline_tag(events, w, tag),
             // Inline math reaches here from every context that can *not* lift an expression onto
             // a line of its own: a heading, the inside of bold/italic/strikethrough, and a quote's,
-            // alert's or `<details>`' own paragraphs. `write_text_with_inline_math` is `write_text`
-            // itself whenever the text holds no math (or `w.math` is `None`).
-            Event::Text(t) => write_text_with_inline_math(w, &t),
+            // alert's or `<details>`' own paragraphs. It arrives as `InlineMath`/`DisplayMath`
+            // events that `cut_math_events` made from the *source* (pulldown-cmark itself never
+            // emits them: `ENABLE_MATH` is off), so the text of every other event is literal.
+            Event::Text(t) => w.write_text(&t),
+            Event::InlineMath(latex) => write_in_text_math(w, &latex, false),
+            Event::DisplayMath(latex) => write_in_text_math(w, &latex, true),
             Event::Code(c) => w.write_code_span(&c),
             Event::SoftBreak => w.join_with_space(),
             Event::HardBreak => w.end_row(),
-            // `Html`/`InlineHtml`/`FootnoteReference`/`InlineMath`/`DisplayMath`: none of these produce
+            // `Html`/`InlineHtml`/`FootnoteReference`: none of these produce
             // any output — silently dropped.
             // `TaskListMarker`/`Rule`/a mismatched `Event::End` cannot legitimately occur inside a
             // `Heading`'s or `Paragraph`'s own inline content at all (`Doc::parse`'s own walk already
@@ -1670,19 +1679,19 @@ fn escaped_at(src: &str, pos: usize) -> bool {
 }
 
 /// Merges runs of adjacent `Event::Text` into one event, ranges included. pulldown-cmark cuts a text
-/// run wherever a delimiter character *might* have opened emphasis and did not — `$x_i$` arrives as
-/// `"$x"`, `"_"`, `"i$"` — so an expression with an `_` or `*` in it is never inside one event, and
-/// scanning event by event would never see it whole. Events are merged only when their ranges touch
-/// (nothing between them in the source).
+/// run wherever a delimiter character *might* have opened emphasis and did not (`a_b` arrives as
+/// `"a"`, `"_"`, `"b"`); a context that places math in running text reads the text after
+/// `cut_math_events` has taken the expressions out, and draws what is left as the same few spans it
+/// always has. Events are merged only when their ranges touch (nothing between them in the source).
 ///
-/// A backslash escape needs care in both directions: pulldown-cmark drops the `\` and starts the next
-/// event on the escaped character itself (`\$a` arrives as `"$a"`, its range beginning one byte
-/// after the backslash). That event does not touch the text before it, so it is never merged *into* a
-/// run — and its first character is split off as an event of its own (`escaped_at`), so the `$` of
-/// `\$b$ here` can never be read as the opener of the expression `$b$`.
+/// A backslash escape needs care: pulldown-cmark drops the `\` and starts the next event on the
+/// escaped character itself (`\$a` arrives as `"$a"`, its range beginning one byte after the
+/// backslash). That event does not touch the text before it, so it is never merged *into* a run — and
+/// its first character is split off as an event of its own (`escaped_at`), so an escaped character
+/// stays a piece of its own.
 ///
-/// Used only where math is placed in running text (`write_text_with_inline_math`); the lifting
-/// paragraph path has its own event-spanning logic (`render_dollar_math_tail`).
+/// Used only where math is placed in running text (`math_text_events`); the lifting paragraph path
+/// has its own event-spanning logic (`render_dollar_math_tail`).
 struct MergedText<'s, 'a, I: Iterator<Item = (Event<'a>, Range<usize>)>> {
     inner: std::iter::Peekable<I>,
     src: &'s str,
@@ -1760,17 +1769,259 @@ impl<'s, 'a, I: Iterator<Item = (Event<'a>, Range<usize>)>> Iterator for MergedT
 }
 
 /// `events_iter` for a walk that may place math in its text: with `math_on` the adjacent text events
-/// are merged first (`MergedText`); without it, exactly `events_iter`.
+/// are merged (`MergedText`) and the math expressions cut out of them (`cut_math_events`); without
+/// it, exactly `events_iter`.
 fn inline_events<'a, 'e>(
     math_on: bool,
     src: &'e str,
     events: &'e [(Event<'a>, Range<usize>)],
 ) -> Box<dyn Iterator<Item = Event<'a>> + 'e> {
     if math_on {
-        Box::new(MergedText::new(events.iter().cloned(), src).map(|(ev, _)| ev))
+        Box::new(math_text_events(src, events.to_vec()).into_iter())
     } else {
         Box::new(events_iter(events))
     }
+}
+
+/// The events `walk_inline` reads when math is placed in running text: the expressions cut out of
+/// `events` (`cut_math_events`), then the text around them merged (`MergedText`).
+fn math_text_events<'a>(src: &str, events: Vec<(Event<'a>, Range<usize>)>) -> Vec<Event<'a>> {
+    MergedText::new(cut_math_events(src, events).into_iter(), src)
+        .map(|(ev, _)| ev)
+        .collect()
+}
+
+/// Whether a source line region may hold math at all — the quick test that keeps every inline walk
+/// without an expression exactly as cheap as it was.
+fn may_hold_math(region: &str) -> bool {
+    region.contains('$') || region.contains("\\(") || region.contains("\\[")
+}
+
+/// Cuts the math expressions out of an inline event stream and replaces each with one
+/// `Event::InlineMath`/`DisplayMath` carrying its LaTeX — for the contexts that place math in running
+/// text (a heading, the inside of emphasis, a quote's, alert's, `<details>` body's or list item's text).
+///
+/// **Where an expression begins and ends is decided on the source, not on the events.**
+/// pulldown-cmark has already run CommonMark's inline rules over the text by the time the events
+/// exist: it dropped the backslash of `\{`, `\,`, `\%`, `\_`; it cut `a*b*c` into text, emphasis
+/// and text. Reading `$…$` from the events therefore corrupts any expression that contains one of
+/// those, and the contexts that did so drew `\{a,b\}` as `{a,b}` and `$a*b*c$` as `$abc$`. The
+/// source is what the author wrote, and a table cell and a top-level paragraph already read it:
+/// every physical line the events cover goes through [`scan_math_spans`], the one scanner that owns
+/// konoma's delimiter rules (the currency guard, `\$`, code spans, `$$`, `\(…\)`, `\[…\]`), and the
+/// LaTeX is `src[span]` itself.
+///
+/// A span is only cut when the events agree with it, and is otherwise left as the literal text it was
+/// before (never a half-cut stream):
+///
+/// * every event the span overlaps lies wholly inside it — an emphasis or a code span *inside* the
+///   expression is part of it — except a text event the span starts or ends in, which is split there
+///   (only when its payload is the source text: an entity or an escape cannot be cut by byte offset);
+/// * an emphasis, link or image that merely *encloses* the span is fine for emphasis and strikethrough,
+///   and rules the span out for a link or image — the text of a label is never math (the label is one
+///   span, see `start_inline_tag`);
+/// * an element that only partly overlaps the span (`*a $b* c$`) rules it out: cutting it would leave
+///   the stream unbalanced.
+///
+/// An opening `\(`/`\[` may sit in a gap before its first event (the backslash is in no event's
+/// range); that is the one gap allowed.
+fn cut_math_events<'a>(
+    src: &str,
+    events: Vec<(Event<'a>, Range<usize>)>,
+) -> Vec<(Event<'a>, Range<usize>)> {
+    let spans = math_spans_of_events(src, &events);
+    let cuts: Vec<MathCut> = spans
+        .into_iter()
+        .filter_map(|sp| math_cut(src, &events, sp))
+        .collect();
+    if cuts.is_empty() {
+        return events;
+    }
+    let mut out: Vec<(Event<'a>, Range<usize>)> = Vec::with_capacity(events.len());
+    let mut next_cut = 0usize;
+    for (idx, (ev, r)) in events.into_iter().enumerate() {
+        // The cuts that overlap this event, in source order (the cuts are disjoint and sorted, and
+        // so are their event runs: `next_cut` skips the ones that ended before this event).
+        while next_cut < cuts.len() && cuts[next_cut].last < idx {
+            next_cut += 1;
+        }
+        let here: Vec<&MathCut> = cuts[next_cut..]
+            .iter()
+            .take_while(|c| c.first <= idx)
+            .filter(|c| c.last >= idx)
+            .collect();
+        if here.is_empty() {
+            out.push((ev, r));
+            continue;
+        }
+        if matches!(ev, Event::Text(_)) {
+            // The text before, between and after the cuts stays text (sliced from the source: a
+            // text event that a cut only partly covers is one whose payload *is* the source text,
+            // see `math_cut`); each cut's event goes where its expression starts.
+            let mut p = r.start;
+            for c in &here {
+                if c.first == idx {
+                    if c.range.start > p {
+                        let piece = src[p..c.range.start].to_string();
+                        out.push((Event::Text(piece.into()), p..c.range.start));
+                    }
+                    out.push((c.event(), c.range.clone()));
+                }
+                p = p.max(c.range.end.min(r.end));
+            }
+            if p < r.end {
+                out.push((Event::Text(src[p..r.end].to_string().into()), p..r.end));
+            }
+        } else if let Some(c) = here.iter().find(|c| c.first == idx) {
+            // A non-text event inside an expression: part of it, dropped with it.
+            out.push((c.event(), c.range.clone()));
+        }
+    }
+    out
+}
+
+/// One math expression `cut_math_events` will replace: where it is in the source, its LaTeX, and the
+/// run of events (`first..=last`) that make it up.
+struct MathCut {
+    range: Range<usize>,
+    latex: String,
+    display: bool,
+    first: usize,
+    last: usize,
+}
+
+impl MathCut {
+    fn event<'a>(&self) -> Event<'a> {
+        if self.display {
+            Event::DisplayMath(self.latex.clone().into())
+        } else {
+            Event::InlineMath(self.latex.clone().into())
+        }
+    }
+}
+
+/// A [`scan_math_spans`] span in whole-source byte offsets.
+struct SourceMath {
+    range: Range<usize>,
+    content: Range<usize>,
+    display: bool,
+}
+
+/// Every math span on the physical source lines `events` cover, in source order.
+fn math_spans_of_events(src: &str, events: &[(Event<'_>, Range<usize>)]) -> Vec<SourceMath> {
+    let (Some(lo), Some(hi)) = (
+        events.iter().map(|(_, r)| r.start).min(),
+        events.iter().map(|(_, r)| r.end).max(),
+    ) else {
+        return Vec::new();
+    };
+    let lo = src[..lo.min(src.len())].rfind('\n').map_or(0, |i| i + 1);
+    let hi = hi.min(src.len());
+    let hi = src[hi..].find('\n').map_or(src.len(), |i| hi + i);
+    let region = &src[lo..hi];
+    if !may_hold_math(region) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut off = lo;
+    for line in region.split('\n') {
+        for sp in scan_math_spans(line) {
+            out.push(SourceMath {
+                range: off + sp.range.start..off + sp.range.end,
+                content: off + sp.content.start..off + sp.content.end,
+                display: sp.display,
+            });
+        }
+        off += line.len() + 1;
+    }
+    out
+}
+
+/// The cut for `sp`, or `None` when the events do not agree with the span — see
+/// [`cut_math_events`] for the rules.
+fn math_cut(src: &str, events: &[(Event<'_>, Range<usize>)], sp: SourceMath) -> Option<MathCut> {
+    let (s, e) = (sp.range.start, sp.range.end);
+    let inside = |r: &Range<usize>| r.start >= s && r.end <= e;
+    let overlaps = |r: &Range<usize>| r.end > s && r.start < e;
+    let mut first = None;
+    let mut last = 0;
+    for (idx, (ev, r)) in events.iter().enumerate() {
+        if !overlaps(r) {
+            continue;
+        }
+        if !inside(r) {
+            match ev {
+                // A text event the span starts or ends in: cut by byte offset, so its payload has
+                // to be exactly the source text.
+                Event::Text(t) => {
+                    if t.as_ref() != src.get(r.clone())? {
+                        return None;
+                    }
+                }
+                // The text of a label is never math.
+                Event::Start(Tag::Link { .. } | Tag::Image { .. })
+                | Event::End(TagEnd::Link | TagEnd::Image) => return None,
+                // Emphasis and the like around the whole expression: not part of it.
+                Event::Start(_) | Event::End(_) if r.start <= s && r.end >= e => continue,
+                _ => return None,
+            }
+        }
+        first.get_or_insert(idx);
+        last = idx;
+    }
+    let first = first?;
+    // The run is unbroken: nothing in it is an enclosing element or a stranger.
+    for (ev, r) in &events[first..=last] {
+        if !overlaps(r) || !(inside(r) || matches!(ev, Event::Text(_))) {
+            return None;
+        }
+    }
+    let fr = &events[first].1;
+    if fr.start > s && !src.as_bytes()[s..fr.start].iter().all(|&b| b == b'\\') {
+        return None;
+    }
+    if events[last].1.end < e {
+        return None;
+    }
+    Some(MathCut {
+        range: s..e,
+        latex: src.get(sp.content)?.trim().to_string(),
+        display: sp.display,
+        first,
+        last,
+    })
+}
+
+/// An expression `cut_math_events` cut out, placed **in the running text** of a context that cannot lift
+/// math onto a line of its own — a heading, the inside of bold/italic/strikethrough, a quote/alert/
+/// `<details>`/list-item paragraph.
+///
+/// Every expression is asked for at **inline** size (`display == false`) even when it was written
+/// `$$…$$`: there is no line of its own to give it here, and `math_cells` answers exactly one row for
+/// an inline expression — which is what makes a reservation inside a line possible at all. An
+/// expression that has no picture yet (`Loading`), no picture at all (`Raw`), or one wider than the
+/// line stays as its literal `$…$` text, which is what these contexts drew before.
+///
+/// No whitespace is trimmed around an expression (the lifting path trims because a lift splits the
+/// paragraph; this one never does — text keeps flowing right up to the reservation).
+fn write_in_text_math(w: &mut Writer<'_>, latex: &str, display: bool) {
+    let fits = if w.math.is_some() {
+        match resolve_math_slot(w, latex, false) {
+            Some(MathSlot::Image { cols, rows: 1 }) if cols <= w.width => Some(cols),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    match fits {
+        Some(cols) => render_inline_math(w, latex, cols),
+        None => {
+            let (open, close) = if display { ("$$", "$$") } else { ("$", "$") };
+            let style = w.cur_style();
+            w.append_span(Span::styled(format!("{open}{latex}{close}"), style));
+        }
+    }
+    w.pending_block_gap = false;
 }
 
 /// Renders one `Heading` block into `w`, in place. `inline` is `Doc.events[block's own inline range]`,
@@ -1810,6 +2061,7 @@ fn render_heading(
         Some((text_range, images)) => (text_range, images),
         None => (inline, Vec::new()),
     };
+    w.heading_row_style = Some(heading_style);
     walk_inline(
         &mut inline_events(w.math.is_some(), src, &doc.events[text_range]),
         w,
@@ -1818,6 +2070,7 @@ fn render_heading(
     if let Some(suffix) = meta.to_suffix() {
         w.append_span(Span::styled(suffix, w.styles.heading_meta()));
     }
+    w.heading_row_style = None;
     if level <= 2 {
         w.heading_rule_shift += 1;
     }
@@ -3115,10 +3368,24 @@ fn walk_inline_math<'a>(
                         ev
                     }))
                 } else {
-                    Box::new(MergedText::new(events.by_ref(), src).map(|(ev, r)| {
+                    // Everything up to the matching `End`, so the expressions inside can be cut
+                    // from the source (`cut_math_events`).
+                    let mut nested = Vec::new();
+                    let mut depth = 0usize;
+                    for (ev, r) in events.by_ref() {
                         prev_end = Some(r.end);
-                        ev
-                    }))
+                        match &ev {
+                            Event::Start(_) => depth += 1,
+                            Event::End(_) if depth == 0 => {
+                                nested.push((ev, r));
+                                break;
+                            }
+                            Event::End(_) => depth -= 1,
+                            _ => {}
+                        }
+                        nested.push((ev, r));
+                    }
+                    Box::new(math_text_events(src, nested).into_iter())
                 };
                 start_inline_tag(&mut inner, w, tag);
             }
@@ -4261,16 +4528,60 @@ fn render_math_slot(w: &mut Writer<'_>, latex: &str, display: bool, slot: Option
 /// exactly the trick `is_task_span`/`is_hidden_link_target`/`is_mermaid_header_span` already use for
 /// other post-decoration lookups. `App::resolve_inline_math_cols` (`app/md_items.rs`) is where that
 /// happens, called once, right after `postprocess_md`, before the cache is stored.
+/// The display width `line` will have once `App::postprocess_md`'s `collapse_links` has folded each
+/// link's ` (URL)` away: `label (URL)` becomes the label alone — or the link icon, a space and the
+/// label with `icons` — so the URL's cells are never on screen. `render_inline_math` decides whether a
+/// reservation fits in what is left of the row; measuring the row as it stands now (URL included)
+/// made an expression after a link wrap although it would have fitted. Mirrors `collapse_links`'s own
+/// span pattern (label, `" ("`, link-styled URL, a span starting with `)`); every other change
+/// `postprocess_md` makes to a row (a bare URL's icon, an emoji shortcode) stays unseen here, as it
+/// always was.
+fn width_once_decorated(line: &Line<'_>, icons: bool) -> usize {
+    let spans = &line.spans;
+    let is_link = |s: &Span<'_>| {
+        s.style.add_modifier.contains(Modifier::UNDERLINED) && s.style.fg == Some(Color::Blue)
+    };
+    let mut width = 0usize;
+    let mut i = 0usize;
+    while i < spans.len() {
+        let folds = i + 3 < spans.len()
+            && spans[i + 1].content.as_ref() == " ("
+            && is_link(&spans[i + 2])
+            && spans[i + 3].content.starts_with(')');
+        if folds {
+            width += spans[i].width();
+            if icons {
+                width += unicode_width::UnicodeWidthChar::width(crate::ui::icons::link_icon())
+                    .unwrap_or(1)
+                    + 1;
+            }
+            width += unicode_width::UnicodeWidthStr::width(&spans[i + 3].content[1..]);
+            i += 4;
+        } else {
+            width += spans[i].width();
+            i += 1;
+        }
+    }
+    width
+}
+
 fn render_inline_math(w: &mut Writer<'_>, latex: &str, cols: u16) {
     ensure_fresh_after_math(w);
     let width = w.width;
     let mut col = w
         .lines
         .last()
-        .and_then(|l| u16::try_from(l.width()).ok())
+        .and_then(|l| u16::try_from(width_once_decorated(l, w.icons)).ok())
         .unwrap_or(u16::MAX);
     if col > 0 && col.saturating_add(cols) > width {
-        w.lines.push(Line::default());
+        w.lines.push(match w.heading_row_style {
+            // A heading wrapped here is still one heading: the next row keeps its style and says
+            // which heading it belongs to (the rule goes under the last row, not the first).
+            Some(style) => {
+                Line::from(crate::preview::markdown::heading_continuation_span()).style(style)
+            }
+            None => Line::default(),
+        });
         col = 0;
     }
     let placement_line = w.lines.len().saturating_sub(1) + w.heading_rule_shift;
@@ -4282,7 +4593,7 @@ fn render_inline_math(w: &mut Writer<'_>, latex: &str, cols: u16) {
         url: math_url(latex, false),
         // The LaTeX source, not a caption: an in-text expression leaves only blank cells in the
         // line, so a consumer that needs the line's *text* (a heading's slug and outline entry —
-        // `heading_text_restoring_math`) gets the expression back from here.
+        // `heading_text_at`) gets the expression back from here.
         alt: latex.to_string(),
         line: placement_line,
         col,
@@ -4290,65 +4601,6 @@ fn render_inline_math(w: &mut Writer<'_>, latex: &str, cols: u16) {
         rows: 1,
         fence_ord: None,
     });
-}
-
-/// `Writer::write_text` for a context that cannot lift math onto a line of its own — a heading, the
-/// inside of bold/italic/strikethrough, a quote/alert/`<details>` paragraph — placing every
-/// expression **in the running text** (`render_inline_math`) instead of dropping the `$…$` source
-/// into the line.
-///
-/// Reuses the one detector (`scan_inline_math`) and the one placement (`render_inline_math`) the
-/// lifting paragraph path already uses, so what counts as math, and what an in-text placement is,
-/// cannot differ between the two. Every expression is asked for at **inline** size
-/// (`display == false`) even when it was written `$$…$$`: there is no line of its own to give it
-/// here, and `math_cells` answers exactly one row for an inline expression — which is what makes a
-/// reservation inside a line possible at all. An expression that has no picture yet (`Loading`), no
-/// picture at all (`Raw`), or one wider than the line stays as its literal `$…$` text, which is what
-/// these contexts drew before.
-///
-/// No whitespace is trimmed around an expression (the lifting path trims because a lift splits the
-/// paragraph; this one never does — text keeps flowing right up to the reservation).
-fn write_text_with_inline_math(w: &mut Writer<'_>, text: &str) {
-    if w.math.is_none() || !(text.contains('$') || text.contains("\\(") || text.contains("\\[")) {
-        w.write_text(text);
-        return;
-    }
-    for (i, line) in text.lines().enumerate() {
-        if i > 0 {
-            w.emit_blank_row();
-        }
-        let mut parts: Vec<MathPart> = Vec::new();
-        let mut buf = String::new();
-        let mut mask: Vec<bool> = Vec::new();
-        scan_inline_math(line, &mut parts, &mut buf, &mut mask);
-        if !buf.is_empty() {
-            mask.push(false);
-            parts.push(MathPart::Text(SourceRun::new(buf, mask)));
-        }
-        for part in parts {
-            match part {
-                MathPart::Text(run) => {
-                    let style = w.cur_style();
-                    w.append_span(Span::styled(run.text().to_string(), style));
-                }
-                MathPart::Math { latex, display } => {
-                    let fits = match resolve_math_slot(w, &latex, false) {
-                        Some(MathSlot::Image { cols, rows: 1 }) if cols <= w.width => Some(cols),
-                        _ => None,
-                    };
-                    match fits {
-                        Some(cols) => render_inline_math(w, &latex, cols),
-                        None => {
-                            let (open, close) = if display { ("$$", "$$") } else { ("$", "$") };
-                            let style = w.cur_style();
-                            w.append_span(Span::styled(format!("{open}{latex}{close}"), style));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    w.pending_block_gap = false;
 }
 
 /// Renders a `ThematicBreak` into `w`, in place — a literal `Line::from("---")`. `decorate_extras`
@@ -5800,7 +6052,7 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
         pending_block_gap: false,
         // In-text math only: this body's own `child_ctx` keeps `math_here: false`, so nothing is
         // *lifted* out of a quote (see below), but a paragraph, heading or table cell in it can
-        // still place an expression in its running text (`write_text_with_inline_math`), against
+        // still place an expression in its running text (`write_in_text_math`), against
         // this body's own, narrower width.
         math: w.math.as_ref().map(|m| MathCtx {
             slot: m.slot,
@@ -5830,6 +6082,7 @@ fn render_quote(w: &mut Writer<'_>, doc: &Doc<'_>, src: &str, children: &[Block]
         fresh_boundary: false,
         pending_para_start: None,
         heading_rule_shift: 0,
+        heading_row_style: None,
         code: w.code,
         theme: w.theme.clone(),
         // `w.width - 2`, always — not some tighter reduction computed from how many quote levels
@@ -6322,7 +6575,7 @@ fn render_details_from_model(
 /// `styles`/`code`/`theme`/`icons` (display configuration, not position) and renders at `w.width - 2`
 /// (the two columns `render_alert_from_model`/`render_details_from_model` reserve for the bar).
 /// `math`: shared with the body at its own, narrower width, for *in-text* placement only
-/// (`write_text_with_inline_math`). Nothing is ever **lifted** out of either body (`structure_mask`'s
+/// (`write_in_text_math`). Nothing is ever **lifted** out of either body (`structure_mask`'s
 /// own exclusion — the same reason `render_quote` forces `math_here: false` for a plain quote's own
 /// children); `body_ctx` below (`math_here: false,
 /// extract_here: false, details_interactive: false, list_depth: 0`) is what `children` actually
@@ -6402,6 +6655,7 @@ fn render_bar_prefixed_body(
         fresh_boundary: false,
         pending_para_start: None,
         heading_rule_shift: 0,
+        heading_row_style: None,
         code: w.code,
         theme: w.theme.clone(),
         width: w.width.saturating_sub(2),
@@ -6499,6 +6753,7 @@ mod tests {
             fresh_boundary: false,
             pending_para_start: None,
             heading_rule_shift: 0,
+            heading_row_style: None,
             code: CodeStyle::default(),
             theme: String::new(),
             width: 80,
@@ -10937,7 +11192,7 @@ mod tests {
     /// Requirement 9 (regression, D5), as it stands now: nothing is ever **lifted** out of a
     /// blockquote — that part of the old exclusion is unchanged (`math_inside_blockquote_is_left_
     /// literal` pins it for a tall slot). An expression small enough to sit in a line (`rows: 1`) is
-    /// now placed *in the quote's running text* instead (`write_text_with_inline_math`): the quote
+    /// now placed *in the quote's running text* instead (`write_in_text_math`): the quote
     /// stays one block (`> ` on its own line, one placement, the text around it intact), where the
     /// old behavior was the literal `$x$`.
     #[test]

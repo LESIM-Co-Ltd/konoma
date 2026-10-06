@@ -733,4 +733,37 @@ mod opener_tests {
     fn spawn_opener_returns_err_for_a_missing_binary() {
         assert!(spawn_opener("konoma-definitely-not-a-real-binary-xyz-42", "x").is_err());
     }
+
+    /// `resolve_inline_math_cols` hands the k-th reservation sentinel on a row to the k-th **one-row**
+    /// math placement on it. A taller math placement naming the same row (a block expression — it has
+    /// no sentinel of its own) must not take one, or the in-text expression after it loses its column.
+    #[test]
+    fn a_taller_math_placement_on_the_same_row_does_not_take_a_reservation() {
+        use crate::preview::markdown::{inline_math_reservation_style, math_url, ImagePlacement};
+        let place = |latex: &str, rows: u16, col: u16| ImagePlacement {
+            url: math_url(latex, false),
+            alt: latex.to_string(),
+            line: 0,
+            col,
+            cols: 3,
+            rows,
+            fence_ord: None,
+        };
+        let lines = vec![Line::from(vec![
+            Span::raw("ab"),
+            Span::styled("   ", inline_math_reservation_style()),
+            Span::raw(" end"),
+        ])];
+        // The tall one comes first in the list, as a block placement recorded earlier would.
+        let mut images = vec![place("tall", 2, 40), place("small", 1, 0)];
+        App::resolve_inline_math_cols(&lines, &mut images);
+        assert_eq!(
+            images[0].col, 40,
+            "the tall placement keeps the column it was recorded at"
+        );
+        assert_eq!(
+            images[1].col, 2,
+            "the one-row expression is found after \"ab\""
+        );
+    }
 }

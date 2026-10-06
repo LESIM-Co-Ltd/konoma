@@ -37,7 +37,7 @@ pub(super) fn compute_md_anchors(lines: &[Line<'static>]) -> Vec<(String, usize)
 }
 
 /// The in-text LaTeX sources on each decorated line, in left-to-right order — what a heading's
-/// math reservation spans stand for (`heading_text_restoring_math`). Keyed by line index.
+/// math reservation spans stand for (`heading_text_at`). Keyed by line index.
 pub(super) fn math_sources_by_line(
     images: &[crate::preview::markdown::ImagePlacement],
 ) -> std::collections::HashMap<usize, Vec<&str>> {
@@ -61,10 +61,8 @@ pub(super) fn compute_md_anchors_with_math(
     let mut anchors = Vec::new();
     let mut counts: HashMap<String, usize> = HashMap::new();
     let math = math_sources_by_line(images);
-    for (i, line) in lines.iter().enumerate() {
-        let sources = math.get(&i).map(Vec::as_slice).unwrap_or(&[]);
-        let Some(text) = crate::preview::markdown::heading_text_restoring_math(line, sources)
-        else {
+    for i in 0..lines.len() {
+        let Some(text) = crate::preview::markdown::heading_text_at(lines, i, &math) else {
             continue;
         };
         let base = github_slug(&text);

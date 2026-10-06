@@ -18,9 +18,11 @@ impl App {
             .iter()
             .filter_map(|(_slug, line)| {
                 let l = c.lines.get(*line)?;
-                let sources = math.get(line).map(Vec::as_slice).unwrap_or(&[]);
-                let text = crate::preview::markdown::heading_text_restoring_math(l, sources)?;
-                let level = crate::preview::markdown::heading_level_hint(l, c.lines.get(*line + 1));
+                let text = crate::preview::markdown::heading_text_at(&c.lines, *line, &math)?;
+                let level = crate::preview::markdown::heading_level_hint(
+                    l,
+                    crate::preview::markdown::row_after_heading(&c.lines, *line),
+                );
                 Some((level, text, *line))
             })
             .collect()
