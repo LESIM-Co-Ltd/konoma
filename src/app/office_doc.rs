@@ -144,6 +144,13 @@ impl App {
         self.document_markdown()
     }
 
+    /// Test-only: forgets why the document failed (the state of a worker whose job produced
+    /// neither a document nor a reason).
+    #[cfg(test)]
+    pub fn forget_document_error_for_test(&mut self) {
+        self.document_error = None;
+    }
+
     /// Test-only: the temp file the raw (`R`) view reads, while it exists.
     #[cfg(test)]
     pub fn document_raw_file_for_test(&self) -> Option<PathBuf> {

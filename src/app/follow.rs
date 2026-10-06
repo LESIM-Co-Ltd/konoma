@@ -110,6 +110,11 @@ impl App {
     #[cfg(feature = "git")]
     pub(super) fn follow_baseline_diff(&self, path: &Path) -> Option<Vec<crate::git::DiffLine>> {
         let baseline = self.follow_baseline_contents(path)?;
+        // Check the size before reading: never slurp a device / FIFO / huge file whole.
+        let meta = std::fs::metadata(path).ok()?;
+        if !meta.is_file() || meta.len() > FOLLOW_BASELINE_FILE_CAP as u64 {
+            return None;
+        }
         let current = std::fs::read(path).ok()?;
         if current.len() > FOLLOW_BASELINE_FILE_CAP {
             return None;

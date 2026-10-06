@@ -146,6 +146,8 @@ mod tests_review_fix;
 #[cfg(test)]
 mod tests_survivors;
 #[cfg(test)]
+mod tests_word_survivors;
+#[cfg(test)]
 mod tests_xls;
 #[cfg(test)]
 mod tests_xlsb;

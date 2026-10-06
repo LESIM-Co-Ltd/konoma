@@ -549,7 +549,8 @@ mod macos {
     fn private_temp_dir() -> PathBuf {
         static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
         DIR.get_or_init(|| {
-            let dir = std::env::temp_dir().join(format!("konoma-pdf-{}", std::process::id()));
+            let dir = crate::preview::command::pid_temp_dir_path("pdf");
+            crate::preview::command::register_test_exit_cleanup();
             use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
             // The mode is applied atomically by `mkdir(2)` itself (masked by umask, but `0o700`
             // has no group/other bits for umask to strip), so there's no "create, then chmod" gap

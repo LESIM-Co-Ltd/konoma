@@ -167,7 +167,7 @@ fn options(resources_dir: Option<PathBuf>) -> usvg::Options<'static> {
 }
 
 /// Read an SVG file: a regular file of bounded size only (never a device or FIFO).
-fn read_svg_file(path: &Path) -> Option<Vec<u8>> {
+pub fn read_svg_file(path: &Path) -> Option<Vec<u8>> {
     let m = std::fs::metadata(path).ok()?;
     if !m.is_file() || m.len() > MAX_LINKED_IMAGE_BYTES {
         return None;

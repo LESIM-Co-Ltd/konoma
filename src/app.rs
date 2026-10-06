@@ -850,7 +850,7 @@ impl MediaJob {
     ) -> Option<MediaPayload> {
         match self {
             MediaJob::Svg(p, max_px) => {
-                let data = std::fs::read(&p).ok()?;
+                let data = crate::preview::svg::read_svg_file(&p)?;
                 let img = crate::preview::svg::rasterize_bytes(&data, &p, max_px)?;
                 Some(MediaPayload::Vector {
                     img,

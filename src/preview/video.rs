@@ -1574,7 +1574,8 @@ fn out_is_nonempty(out: &Path) -> bool {
 fn private_temp_dir() -> PathBuf {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("konoma-vthumb-{}", std::process::id()));
+        let dir = crate::preview::command::pid_temp_dir_path("vthumb");
+        crate::preview::command::register_test_exit_cleanup();
         #[cfg(unix)]
         {
             use std::os::unix::fs::{DirBuilderExt, PermissionsExt};

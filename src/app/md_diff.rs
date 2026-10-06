@@ -213,6 +213,11 @@ impl App {
                 Err(_) => return MdDiffOutcome::Unavailable,
             },
             MdDiffKind::Rendered => {
+                // Check the size before reading: never slurp a device / FIFO / huge file whole.
+                match std::fs::metadata(&req.path) {
+                    Ok(m) if m.is_file() && m.len() <= FOLLOW_BASELINE_FILE_CAP as u64 => {}
+                    _ => return MdDiffOutcome::Unavailable,
+                }
                 let bytes = match std::fs::read(&req.path) {
                     Ok(b) => b,
                     Err(_) => return MdDiffOutcome::Unavailable,

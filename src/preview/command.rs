@@ -98,21 +98,7 @@ pub(crate) fn calls_for_test() -> u64 {
 /// they used for it.
 fn private_temp_dir() -> PathBuf {
     let dir = private_temp_dir_path();
-    // The unit-test process never reaches `main`'s exit cleanup, so it removes its own directory
-    // when the process exits (libtest ends through `process::exit`).
-    #[cfg(all(test, unix))]
-    {
-        static REGISTERED: std::sync::Once = std::sync::Once::new();
-        REGISTERED.call_once(|| {
-            extern "C" fn at_exit() {
-                remove_private_temp_dir();
-            }
-            // SAFETY: registers a plain `extern "C" fn()` that only removes a directory.
-            unsafe {
-                libc::atexit(at_exit);
-            }
-        });
-    }
+    register_test_exit_cleanup();
     // Created on every call (not once): the exit cleanup may have removed it, and a missing
     // directory would otherwise fail the write.
     #[cfg(unix)]
@@ -135,8 +121,34 @@ fn private_temp_dir() -> PathBuf {
 
 /// The path of this process's private temp directory (not created here).
 fn private_temp_dir_path() -> PathBuf {
-    std::env::temp_dir().join(format!("konoma-cmd-{}", std::process::id()))
+    pid_temp_dir_path("cmd")
 }
+
+/// `<temp>/konoma-<kind>-<pid>`: the per-process private directory of one module (`cmd` here,
+/// `pdf` and `vthumb` for the PDF / video thumbnail renderers). Not created here.
+pub(crate) fn pid_temp_dir_path(kind: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("konoma-{kind}-{}", std::process::id()))
+}
+
+/// The unit-test process never reaches `main`'s exit cleanup, so it removes its own private
+/// directories when the process exits (libtest ends through `process::exit`). Every module that
+/// creates a `konoma-<kind>-<pid>` directory calls this first.
+#[cfg(all(test, unix))]
+pub(crate) fn register_test_exit_cleanup() {
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| {
+        extern "C" fn at_exit() {
+            remove_private_temp_dir();
+        }
+        // SAFETY: registers a plain `extern "C" fn()` that only removes directories.
+        unsafe {
+            libc::atexit(at_exit);
+        }
+    });
+}
+
+#[cfg(not(all(test, unix)))]
+pub(crate) fn register_test_exit_cleanup() {}
 
 /// Removes this process's whole private temp directory (every delegated command's `{out}` and every
 /// converted document's raw view). Called on every exit path — after the run loop, from the panic
@@ -145,6 +157,10 @@ fn private_temp_dir_path() -> PathBuf {
 /// otherwise leave a converted document's full text in `$TMPDIR`. Never creates the directory.
 pub fn remove_private_temp_dir() {
     remove_dir_quietly(&private_temp_dir_path());
+    // The PDF page and video thumbnail renderers keep sibling per-process directories (rasterized
+    // pages, extracted frames) that need the same removal on every exit path.
+    remove_dir_quietly(&pid_temp_dir_path("pdf"));
+    remove_dir_quietly(&pid_temp_dir_path("vthumb"));
 }
 
 fn remove_dir_quietly(dir: &Path) {

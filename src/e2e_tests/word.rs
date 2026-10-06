@@ -1607,3 +1607,372 @@ fn e2e_word_a_real_old_binary_file_named_docx_says_so() {
     s.see("an old .doc");
     s.dont_see("damaged");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Tests added after a mutation audit of the Word preview's App-level rules: each one pins a branch
+// that a mutated build (a dropped reset, a skipped prune, an inverted guard) used to get away with.
+// ---------------------------------------------------------------------------------------------
+
+/// A real (decodable) PNG of one flat colour.
+fn png_bytes(rgb: [u8; 3]) -> Vec<u8> {
+    use image::{ImageFormat, Rgba, RgbaImage};
+    let img = RgbaImage::from_pixel(24, 16, Rgba([rgb[0], rgb[1], rgb[2], 255]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+/// A docx with the text `text` and one picture `media/<name>` holding `bytes`.
+fn build_docx_with_picture(path: &std::path::Path, text: &str, name: &str, bytes: &[u8]) {
+    use std::io::Write;
+    let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let f = std::fs::File::create(path).unwrap();
+    let mut zw = zip::ZipWriter::new(f);
+    let o = zip::write::SimpleFileOptions::default();
+    let mut put = |n: &str, t: &[u8]| {
+        zw.start_file(n, o).unwrap();
+        zw.write_all(t).unwrap();
+    };
+    put(
+        "[Content_Types].xml",
+        br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"#,
+    );
+    put(
+        "_rels/.rels",
+        format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{rel}/officeDocument" Target="word/document.xml"/></Relationships>"#).as_bytes(),
+    );
+    put(
+        "word/_rels/document.xml.rels",
+        format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdP" Type="{rel}/image" Target="media/{name}"/></Relationships>"#).as_bytes(),
+    );
+    put(&format!("word/media/{name}"), bytes);
+    put(
+        "word/document.xml",
+        format!(r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="{rel}" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p><w:p><w:r><w:drawing><wp:inline><wp:docPr id="1" name="x" descr="the picture"/><a:graphic><a:graphicData><a:blip r:embed="rIdP"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#).as_bytes(),
+    );
+    zw.finish().unwrap();
+}
+
+/// Opens `docx` (already in `dir`) with the real workers in a 100x30 terminal.
+fn open_with_media(dir: &crate::test_support::TmpDir, file: &str) -> Sim {
+    let mut s = Sim::with_config_sized(&canon(dir), cfg_en(), 100, 30).with_media();
+    s.select(file);
+    s.enter();
+    s
+}
+
+fn office_placements(s: &Sim) -> Vec<crate::preview::markdown::ImagePlacement> {
+    s.app
+        .md_images()
+        .into_iter()
+        .filter(|p| crate::preview::markdown::is_office_image_url(&p.url))
+        .collect()
+}
+
+/// The converted text exists only while the preview is a document: with the kind moved away
+/// (state the other paths keep from existing), `document_markdown` answers nothing instead of the
+/// stale text (catches the `is_document` guard being dropped).
+#[test]
+fn e2e_word_the_converted_text_is_only_offered_for_a_document() {
+    let Some((mut s, _d)) = open_doc("w_md_guard", EN) else {
+        return;
+    };
+    assert!(s.app.document_markdown_for_test().is_some());
+    let path = s.app.tab.preview_path.clone().unwrap();
+    s.app.tab.preview_kind = Some(crate::preview::PreviewKind::Text(path));
+    assert_eq!(s.app.document_markdown_for_test(), None);
+}
+
+/// A conversion that lands after the preview moved on to something that is not a document is
+/// dropped, not kept (catches the late-arrival guard in `land_document`; the media generation
+/// check upstream is bypassed here by moving the kind without a new load).
+#[test]
+fn e2e_word_a_document_landing_on_a_non_document_preview_is_dropped() {
+    let Some((dir, root)) = doc_sandbox("w_late", EN) else {
+        return;
+    };
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 100, 30).with_media();
+    s.select(EN);
+    s.enter();
+    let path = s.app.tab.preview_path.clone().unwrap();
+    s.app.tab.preview_kind = Some(crate::preview::PreviewKind::Text(path));
+    let res = s
+        .media_rx
+        .as_ref()
+        .unwrap()
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the worker answers");
+    let _ = s.app.apply_media(res);
+    assert_eq!(s.app.document_picture_count_for_test(), 0);
+    assert_eq!(s.app.document_markdown_for_test(), None);
+    drop(dir);
+}
+
+/// Reloading a document with another picture reclaims the old picture's cache entry (catches the
+/// prune of unreferenced `office-img://` entries being skipped).
+#[test]
+fn e2e_word_a_reload_drops_the_cache_entry_of_a_picture_that_is_gone() {
+    let dir = sandbox("w_prune");
+    let root = canon(&dir);
+    let docx = root.join("p.docx");
+    build_docx_with_picture(&docx, "one", "a.png", &png_bytes([220, 20, 20]));
+    let mut s = open_with_media(&dir, "p.docx");
+    s.drain_media();
+    settle_images(&mut s);
+    let old = s.app.document_first_picture_url_for_test().unwrap();
+    assert!(s.app.office_picture_started_for_test(&old));
+
+    build_docx_with_picture(&docx, "two", "b.png", &png_bytes([20, 20, 220]));
+    touch_later(&docx, 1_900_000_600);
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&docx));
+    s.draw();
+    drain_media_until_current(&mut s);
+    let new = s.app.document_first_picture_url_for_test().unwrap();
+    assert_ne!(old, new, "different bytes, different key");
+    assert!(
+        !s.app.office_picture_started_for_test(&old),
+        "the old picture's entry is reclaimed"
+    );
+}
+
+/// After a reload the *new* text is drawn, not the cached rendering of the old one (catches
+/// `md_cache` surviving `land_document`).
+#[test]
+fn e2e_word_a_reload_draws_the_new_text_not_the_cached_old_one() {
+    let dir = sandbox("w_cache");
+    let root = canon(&dir);
+    let docx = root.join("c.docx");
+    build_docx(&docx, &para("OLDTEXT here"));
+    let mut s = open_with_media(&dir, "c.docx");
+    s.drain_media();
+    s.see("OLDTEXT");
+    build_docx(&docx, &para("NEWTEXT here"));
+    touch_later(&docx, 1_900_000_700);
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&docx));
+    s.draw();
+    drain_media_until_current(&mut s);
+    s.see("NEWTEXT");
+    s.dont_see("OLDTEXT");
+}
+
+/// A document that failed and is then replaced by a good file shows no error any more (catches
+/// the error not being cleared when the new document lands).
+#[test]
+fn e2e_word_a_fixed_file_clears_the_earlier_error() {
+    let dir = sandbox("w_fixed");
+    let root = canon(&dir);
+    let docx = root.join("f.docx");
+    std::fs::write(&docx, b"broken").unwrap();
+    let mut s = open_with_media(&dir, "f.docx");
+    s.drain_media();
+    assert!(s.app.document_error().is_some());
+    s.see("[document] cannot preview");
+    build_docx(&docx, &para("REPAIRED text"));
+    touch_later(&docx, 1_900_000_800);
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&docx));
+    s.draw();
+    drain_media_until_current(&mut s);
+    assert!(s.app.document_ready());
+    assert!(s.app.document_error().is_none());
+    s.see("REPAIRED");
+    s.dont_see("[document] cannot preview");
+}
+
+/// While the worker has not answered yet, the screen is the loading spinner and nothing about a
+/// damaged file (catches the loading screen not being taken for a document).
+#[test]
+fn e2e_word_a_converting_document_shows_the_spinner_not_a_failure() {
+    let Some((mut s, _d)) = open_doc_with_media("w_spin", EN, (100, 30)) else {
+        return;
+    };
+    assert!(s.app.is_document_loading());
+    s.see("loading…");
+    s.dont_see("cannot preview");
+    s.dont_see("damaged");
+    s.drain_media();
+    s.dont_see("loading…");
+}
+
+/// A failure with no recorded reason (the state of a job that produced nothing) reads as a damaged
+/// file, not as "an old format" (catches the `None` arm of the reason text).
+#[test]
+fn e2e_word_a_failure_without_a_reason_reads_as_damaged() {
+    let (mut s, _d) = open_bad("w_noreason", |p| std::fs::write(p, b"not a zip").unwrap());
+    s.app.forget_document_error_for_test();
+    s.draw();
+    s.see("damaged");
+    s.dont_see("old .doc");
+}
+
+/// A picture konoma cannot size is drawn as its alt text, with no image box at all (catches the
+/// unsizable picture getting a 1x1 box instead).
+#[test]
+fn e2e_word_an_unsizable_picture_gets_no_image_box() {
+    let dir = sandbox("w_nobox");
+    let docx = canon(&dir).join("n.docx");
+    build_docx_with_picture(&docx, "before", "a.png", b"this is not a png");
+    let mut s = open_with_media(&dir, "n.docx");
+    s.drain_media();
+    settle_images(&mut s);
+    s.see("before");
+    s.see("the picture");
+    assert!(office_placements(&s).is_empty(), "{:?}", s.app.md_images());
+}
+
+/// An SVG picture is sized from its own header (no raster size exists), so it gets an image box
+/// (catches the SVG size lookup being skipped).
+#[test]
+fn e2e_word_an_svg_picture_gets_an_image_box() {
+    let dir = sandbox("w_svg");
+    let docx = canon(&dir).join("s.docx");
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40" fill="#c00"/></svg>"##;
+    build_docx_with_picture(&docx, "before", "a.svg", svg);
+    let mut s = open_with_media(&dir, "s.docx");
+    s.drain_media();
+    settle_images(&mut s);
+    assert_eq!(office_placements(&s).len(), 1, "{:?}", s.app.md_images());
+}
+
+/// An animated GIF in a document is decoded with all its frames and cycles (catches the `GIF8`
+/// signature test, which would hand it to the still decoder: one frame, no animation).
+#[test]
+fn e2e_word_an_animated_gif_picture_animates() {
+    let dir = sandbox("w_gif");
+    let gif = dir.join("anim.gif");
+    write_animated_gif(&gif, &[[220, 20, 20], [20, 20, 220]]);
+    let docx = canon(&dir).join("g.docx");
+    build_docx_with_picture(&docx, "before", "a.gif", &std::fs::read(&gif).unwrap());
+    let mut s = open_with_media(&dir, "g.docx");
+    s.drain_media();
+    settle_images(&mut s);
+    assert_eq!(office_placements(&s).len(), 1);
+    assert!(
+        s.app.md_gif_poll_timeout().is_some(),
+        "an animated picture asks for the frame timer"
+    );
+}
+
+/// Moving from a document shown raw to another document starts the new one decorated, also on the
+/// synchronous path (no media worker): the previous file's `R` must not carry over (catches the
+/// `md_raw` reset in the new-target path being dropped).
+#[test]
+fn e2e_word_the_next_document_starts_decorated_not_raw() {
+    let dir = sandbox("w_next_raw");
+    let root = canon(&dir);
+    build_docx(&root.join("a.docx"), &para("FIRSTDOC text"));
+    build_docx(&root.join("b.docx"), &para("SECONDDOC text"));
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 100, 30);
+    s.select("a.docx");
+    s.enter();
+    s.key('R');
+    assert!(s.app.is_md_raw());
+    s.ctrl('n');
+    assert!(s.app.tab.preview_path.clone().unwrap().ends_with("b.docx"));
+    assert!(
+        !s.app.is_md_raw(),
+        "the new document is not in the raw view"
+    );
+    // Nor is a reader on the previous raw text left behind (it would be built when the new document
+    // lands on the synchronous path, before the flag is reset).
+    assert!(!s.app.is_windowed(), "no windowed reader");
+    assert_eq!(s.app.document_raw_file_for_test(), None, "no raw temp file");
+    s.see("SECONDDOC");
+}
+
+/// With an explicit `[editor] ext` entry for docx, `e` goes to the editor, and the editor is
+/// never asked for a line: the raw view's caret line is a line of the converted text, not of the
+/// file (catches the Document guard in `preview_edit_line`).
+#[test]
+fn e2e_word_the_editor_is_not_given_a_line_of_the_converted_text() {
+    let dir = sandbox("w_edit_line");
+    let root = canon(&dir);
+    let long: String = (0..60).map(|i| para(&format!("line {i}"))).collect();
+    build_docx(&root.join("e.docx"), &long);
+    let mut cfg = cfg_en();
+    cfg.editor.ext.insert("docx".into(), "myeditor".into());
+    let mut s = Sim::with_config_sized(&root, cfg, 100, 30);
+    s.select("e.docx");
+    s.enter();
+    s.key('R');
+    for _ in 0..8 {
+        s.key('j');
+    }
+    s.key('e');
+    let (p, line) = s.app.take_pending_edit().expect("the editor was asked");
+    assert!(p.ends_with("e.docx"));
+    assert_eq!(line, None, "no line of the converted text");
+}
+
+/// The raw view of a document is coloured as Markdown: a heading line's text differs in colour
+/// from a plain paragraph's (catches the raw view not being highlighted at all, and the grammar
+/// being picked from anything but Markdown).
+#[test]
+fn e2e_word_the_raw_view_is_highlighted_as_markdown() {
+    let dir = sandbox("w_hl");
+    let root = canon(&dir);
+    let body = "<w:p><w:pPr><w:pStyle w:val=\"Heading1\"/></w:pPr><w:r><w:t>HEADWORD</w:t></w:r></w:p><w:p><w:r><w:t>PLAINWORD body</w:t></w:r></w:p>";
+    build_docx_with_styles_heading(&root.join("h.docx"), body);
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 100, 30);
+    s.select("h.docx");
+    s.enter();
+    s.key('R');
+    s.see("# HEADWORD");
+    let fg_of = |s: &Sim, needle: &str| {
+        let buf = s.term.backend().buffer();
+        let w = buf.area.width as usize;
+        for y in 0..buf.area.height as usize {
+            let row: String = (0..w)
+                .map(|x| buf.cell((x as u16, y as u16)).unwrap().symbol().to_string())
+                .collect();
+            if let Some(i) = row.find(needle) {
+                let col = row[..i].chars().count();
+                return buf.cell((col as u16, y as u16)).unwrap().style().fg;
+            }
+        }
+        panic!("{needle} not on screen:\n{}", s.screen());
+    };
+    let head = fg_of(&s, "HEADWORD");
+    let plain = fg_of(&s, "PLAINWORD");
+    assert_ne!(head, plain, "the heading is coloured as Markdown");
+}
+
+/// A docx whose styles part defines `Heading1`.
+fn build_docx_with_styles_heading(path: &std::path::Path, body: &str) {
+    use std::io::Write;
+    let ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let f = std::fs::File::create(path).unwrap();
+    let mut zw = zip::ZipWriter::new(f);
+    let o = zip::write::SimpleFileOptions::default();
+    let mut put = |n: &str, t: &str| {
+        zw.start_file(n, o).unwrap();
+        zw.write_all(t.as_bytes()).unwrap();
+    };
+    put(
+        "[Content_Types].xml",
+        r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"#,
+    );
+    put(
+        "_rels/.rels",
+        &format!(
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{rel}/officeDocument" Target="word/document.xml"/></Relationships>"#
+        ),
+    );
+    put(
+        "word/_rels/document.xml.rels",
+        &format!(
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdS" Type="{rel}/styles" Target="styles.xml"/></Relationships>"#
+        ),
+    );
+    put(
+        "word/styles.xml",
+        &format!(
+            r#"<w:styles xmlns:w="{ns}"><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style></w:styles>"#
+        ),
+    );
+    put(
+        "word/document.xml",
+        &format!(r#"<w:document xmlns:w="{ns}"><w:body>{body}</w:body></w:document>"#),
+    );
+    zw.finish().unwrap();
+}
