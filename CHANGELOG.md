@@ -17,7 +17,10 @@ All notable changes to konoma are documented in this file. The format is based o
   Markdown, selectable with `v`/`V` and copyable with `y` (handy for handing a document to an AI). The file is never
   written, so checkbox toggling is off. Password-protected, damaged or too-large files say why they cannot be shown;
   a conversion cut at its limits (1,000,000 bytes / 5,000 lines of Markdown, 300 pictures, 16 MiB per picture, 96 MiB
-  of pictures, 20,000 table cells) says so in the title. New `builtin = "document"` and a default rule for the six
+  of pictures, 20,000 table cells) says so in the title. Superscript and subscript, characters of Symbol / Wingdings /
+  Webdings fonts (check boxes, ticks, bullets, Greek letters), legacy form fields (check box, drop-down, text) and ruby
+  readings (after their base, `漢字（かんじ）`) are shown; charts, SmartArt and embedded documents leave a placeholder
+  such as `[chart: Sales]`; a formula that cannot be drawn keeps its structure as text (`(1)/(x^2)`, `√(x)`). New `builtin = "document"` and a default rule for the six
   extensions. The old binary `.doc` is not previewed (`e` opens it). Known limit: inside a table cell, `*`, `` ` ``
   and `~~` that appear two or more times are replaced by look-alike characters. Checked against LibreOffice-made
   files, not yet against files made by Microsoft Word.
@@ -45,6 +48,26 @@ All notable changes to konoma are documented in this file. The format is based o
   pptx/pptm/ppsx/potx/ppt/odp) instead of handing the zip to `$EDITOR`: Microsoft Office (macOS only), then
   LibreOffice, then the OS default (`open` / `xdg-open`). The launch runs off the UI thread and the footer says
   which app opened it. `[external] office_apps = false` opens nothing (and the footer no longer offers `e` there); an explicit `[editor.ext]` entry wins.
+
+### Changed
+- **Math in table cells, headings, emphasis and quotes is drawn**: `$…$` inside a table cell (GFM or HTML), a heading,
+  a bold / italic / strikethrough run, or a quote, alert or open `<details>` body was left as literal LaTeX; it is now
+  placed in the running text at inline size like other inline math. A heading's anchor and outline entry still read the
+  `$…$` source, so `[x](#slug)` links do not change. Math inside a link label or an image's alt text stays literal.
+- The busy indicator names what is being read ("loading document" / "loading spreadsheet" instead of "loading media").
+- In Markdown, `\<` is a literal `<` and never the start of an HTML tag.
+- An SVG's `<image href>` reads only regular files of at most 64 MiB, and an SVG downloaded for a remote Markdown image
+  reads no local file at all.
+- Ctrl-C while `e`'s editor or another program konoma started is running goes to that program; konoma keeps running.
+
+### Fixed
+- **Private temp directories could be taken over** (command output `{out}`, PDF pages, video thumbnails): their names
+  are predictable, an existing directory was used as found and symlinks were followed, so on a shared `/tmp` another
+  user could read or redirect what konoma wrote there. A directory is now used only when konoma created it (an existing
+  one must be the user's own, a real directory and private, else a fresh unpredictable name is taken), files are created
+  with `O_EXCL`/`O_NOFOLLOW` and mode 0600, and the directories are removed on every way out (normal exit, a fatal
+  panic, SIGTERM / SIGHUP / SIGINT), never through a symlink. Closing the terminal ends konoma cleanly.
+- Follow (`F`) no longer jumps to an Office owner file (`~$report.docx`) that Word or Excel creates while a file is open.
 
 ## [0.30.0] - 2026-09-28
 

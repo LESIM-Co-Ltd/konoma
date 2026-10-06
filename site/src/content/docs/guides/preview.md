@@ -52,8 +52,8 @@ as real pixels).
   `ui.mermaid_routing = "konoma-orthogonal"`.
 - **LaTeX math**: `$…$` and `$$…$$` (or `\(…\)` / `\[…\]`) are typeset in pure
   Rust and drawn as images — no browser, no Node, no TeX installation. An
-  inline formula is always drawn in the running text, like ordinary Markdown;
-  one too wide for the line shrinks to fit instead of being lifted onto a line
+  inline formula is always drawn in the running text, like ordinary Markdown,
+  also inside table cells, headings and quotes; one too wide for the line shrinks to fit instead of being lifted onto a line
   of its own. A display formula is centered. `$5` and anything inside code
   stays literal. Set `ui.math = "text"` to keep the raw LaTeX instead, and
   `ui.math_color` to match your terminal's foreground.
