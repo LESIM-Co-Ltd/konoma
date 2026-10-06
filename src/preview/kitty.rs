@@ -69,10 +69,16 @@ pub fn next_id() -> u32 {
     }
 }
 
+/// Compression level for the `o=z` payload. flate2 is backed by zlib-rs here (pulled in through the
+/// zip/calamine features), whose level 6 produces ~1.6x larger output than miniz_oxide's level 6 on
+/// flat images (screenshots, diagrams). Level 7 matches the old size at about the same time, and
+/// photos are unaffected.
+const ZLIB_LEVEL: u32 = 7;
+
 /// zlib-compress `raw` at a middle level (fast enough on the worker thread, near-max ratio for the
 /// flat regions typical of screenshots/diagrams). Returns the RFC 1950 zlib stream `o=z` expects.
 fn zlib_compress(raw: &[u8]) -> Vec<u8> {
-    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(6));
+    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::new(ZLIB_LEVEL));
     // Writing to a Vec never fails; keep the payload even if flush somehow errs (worst case the
     // terminal rejects it and the image simply does not show — never a crash).
     let _ = enc.write_all(raw);
