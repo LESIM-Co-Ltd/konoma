@@ -133,6 +133,8 @@ mod tests_docx_robust;
 #[cfg(test)]
 mod tests_fidelity;
 #[cfg(test)]
+mod tests_fx34b;
+#[cfg(test)]
 mod tests_limits;
 #[cfg(test)]
 mod tests_math_fx;

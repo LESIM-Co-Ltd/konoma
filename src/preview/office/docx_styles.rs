@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 
-use super::docx_symbols::{symbol_font, Font};
+use super::docx_symbols::{symbol_font, Font, Fonts, Hint};
 use super::docx_xml::{read_element, Budget, Node, Tree};
 use super::fmt_xlsx::{xml_err, XmlReader};
 use super::OfficeError;
@@ -41,7 +41,7 @@ pub(crate) struct Fmt {
     /// `w:vanish` (Word only; OpenDocument keeps hidden text in its own field).
     pub hidden: Option<bool>,
     /// The run's font when it is a symbol font (a run in Wingdings shows pictures for letters).
-    pub font: Option<Font>,
+    pub font: Fonts,
 }
 
 impl Fmt {
@@ -53,7 +53,7 @@ impl Fmt {
             strike: over.strike.or(self.strike),
             vert: over.vert.or(self.vert),
             hidden: over.hidden.or(self.hidden),
-            font: over.font.or(self.font),
+            font: self.font.over(over.font),
         }
     }
 
@@ -80,27 +80,32 @@ impl Fmt {
             strike,
             vert,
             hidden: rpr.toggle("vanish"),
-            font: rpr.child("rFonts").and_then(font_of_rfonts),
+            font: rpr.child("rFonts").map(fonts_of_rfonts).unwrap_or_default(),
         }
     }
 }
 
-/// The font a `w:rFonts` selects for the characters a symbol font draws: a symbol font when any of
-/// its slots names one, else a plain font (so a style's symbol font can be switched off by a run).
-fn font_of_rfonts(f: &Node) -> Option<Font> {
-    let names: Vec<&str> = ["ascii", "hAnsi", "cs", "eastAsia"]
-        .iter()
-        .filter_map(|k| f.attr(k))
-        .collect();
-    if names.is_empty() {
-        return None;
+/// The four slots of a `w:rFonts`. A theme font (`w:asciiTheme` ...) replaces the named one of its
+/// slot and is never a symbol font.
+fn fonts_of_rfonts(f: &Node) -> Fonts {
+    let slot = |name: &str, theme: &str| -> Option<Font> {
+        if f.attr(theme).is_some() {
+            return Some(Font::Plain);
+        }
+        f.attr(name).map(|n| symbol_font(n).unwrap_or(Font::Plain))
+    };
+    Fonts {
+        ascii: slot("ascii", "asciiTheme"),
+        hansi: slot("hAnsi", "hAnsiTheme"),
+        cs: slot("cs", "cstheme"),
+        east: slot("eastAsia", "eastAsiaTheme"),
+        hint: f.attr("hint").and_then(|h| match h.trim() {
+            "default" => Some(Hint::Default),
+            "eastAsia" => Some(Hint::EastAsia),
+            "cs" => Some(Hint::Cs),
+            _ => None,
+        }),
     }
-    Some(
-        names
-            .iter()
-            .find_map(|n| symbol_font(n))
-            .unwrap_or(Font::Plain),
-    )
 }
 
 #[derive(Debug, Default, Clone)]

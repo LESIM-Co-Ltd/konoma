@@ -422,6 +422,11 @@ struct Field {
     form: Option<String>,
     /// `inl.segs.len()` when the result began (a result that added nothing leaves the field empty).
     result_from: usize,
+    /// The result already held something in an earlier paragraph (a field can span paragraphs, and
+    /// `result_from` is a position in the paragraph being read only).
+    has_result: bool,
+    /// The run that began the field is hidden (`w:vanish`): so is its form data.
+    hidden: bool,
 }
 
 /// What a legacy form field (`FORMCHECKBOX`, `FORMDROPDOWN`, `FORMTEXT`) shows, from the
@@ -497,6 +502,10 @@ struct Conv<'a> {
     images: Vec<DocImage>,
     image_by_part: HashMap<String, Option<String>>,
     image_total: u64,
+    /// Chart titles by part: a chart drawn many times is read once.
+    chart_titles: HashMap<String, Option<String>>,
+    /// Bytes of chart parts read so far (see `CHART_READ_BUDGET`).
+    chart_read: u64,
     note_labels: Vec<(bool, i64)>,
     note_index: HashMap<(bool, i64), usize>,
     in_note: bool,
@@ -507,6 +516,10 @@ struct Conv<'a> {
     anchor_index: HashMap<String, usize>,
     fields: Vec<Field>,
     carry: Vec<Seg>,
+    /// How much of `carry` is already known to hold something besides spaces: `(length scanned,
+    /// it does)`. A deletion that spans many paragraphs would otherwise rescan the whole carry
+    /// at each one.
+    carry_seen: (usize, bool),
     truncated: bool,
     math_total: usize,
     math_latex: usize,
@@ -547,6 +560,8 @@ impl<'a> Conv<'a> {
             images: Vec::new(),
             image_by_part: HashMap::new(),
             image_total: 0,
+            chart_titles: HashMap::new(),
+            chart_read: 0,
             note_labels: Vec::new(),
             note_index: HashMap::new(),
             in_note: false,
@@ -557,6 +572,7 @@ impl<'a> Conv<'a> {
             anchor_index: HashMap::new(),
             fields: Vec::new(),
             carry: Vec::new(),
+            carry_seen: (0, false),
             truncated: false,
             math_total: 0,
             math_latex: 0,
@@ -935,7 +951,13 @@ fn guard_rule(text: String) -> String {
 }
 
 fn guard_rule_line(text: String) -> String {
-    let core: String = text
+    // The renderer strips `<sup>`/`<sub>` before it reads blocks.
+    let bare = text
+        .replace("<sup>", "")
+        .replace("</sup>", "")
+        .replace("<sub>", "")
+        .replace("</sub>", "");
+    let core: String = bare
         .chars()
         .filter(|c| !c.is_whitespace() && *c != '\\')
         .collect();
@@ -1271,7 +1293,12 @@ fn emit_plain(segs: &[Seg], line_start: bool, ce: Option<CellEsc>, label: bool) 
                     Vert::Base => ("", ""),
                 };
                 out.push_str(open);
-                out.push_str(&esc(core, false));
+                // The renderer strips `<sup>`/`<sub>` before it reads blocks, so the first
+                // character inside a tag at a line start begins the line: it gets the same
+                // line-start escapes as plain text (emphasis markers hide it from block parsing).
+                // (With no marks, a line-start `ls` leaves nothing before the tag.)
+                let core_ls = ls && marks.is_empty() && f.v != Vert::Base;
+                out.push_str(&esc(core, core_ls));
                 out.push_str(close);
                 out.push_str(&marks.chars().rev().collect::<String>());
                 let plain_trail = format!("{trail_extra}{trail_ws}");
@@ -1519,6 +1546,9 @@ fn blk_strings(blks: &[Blk], br: &str, note: bool) -> Vec<(String, bool)> {
 fn cell_math(latex: &str) -> String {
     latex.replace('|', "\u{2223}")
 }
+
+/// The most bytes of chart parts read for titles over a whole document.
+const CHART_READ_BUDGET: u64 = 4 * 1024 * 1024;
 
 // Test probe: the most bytes any buffer that gathers a document's text before it is written
 // (code paragraphs, note definitions, table cells) held at once. The budget tests assert on it:
@@ -1997,6 +2027,7 @@ impl<'a> Conv<'a> {
             return;
         }
         let segs = std::mem::take(&mut self.carry);
+        self.carry_seen = (0, false);
         let role = Role {
             heading: None,
             code: false,
@@ -2125,7 +2156,8 @@ impl<'a> Conv<'a> {
                     row.push(String::new());
                 }
             }
-            if !row.is_empty() {
+            // A row of no cells is no row, whatever columns `w:gridBefore` skips.
+            if row.len() > before {
                 rows.push(row);
             }
         }
@@ -2169,7 +2201,20 @@ impl<'a> Conv<'a> {
             segs: std::mem::take(&mut self.carry),
             ..Inl::default()
         };
+        // A field open from an earlier paragraph measures its result from this paragraph's start.
+        let saved: Vec<usize> = self.fields.iter().map(|f| f.result_from).collect();
+        for f in &mut self.fields {
+            f.result_from = inl.segs.len();
+        }
         self.inline_children(p, base, &mut inl, depth);
+        for (i, f) in self.fields.iter_mut().enumerate() {
+            if f.phase == Phase::Result && inl.segs.len() > f.result_from {
+                f.has_result = true;
+            }
+            if let Some(old) = saved.get(i) {
+                f.result_from = *old;
+            }
+        }
         for f in &mut self.fields {
             if f.link_open {
                 inl.segs.push(Seg::LinkClose);
@@ -2642,7 +2687,7 @@ impl<'a> Conv<'a> {
                         }
                     }
                 }
-                "fldChar" => self.fld_char(c, inl),
+                "fldChar" => self.fld_char(c, inl, hidden),
                 "instrText" => {
                     if let Some(f) = self.fields.last_mut() {
                         if f.phase == Phase::Instr && f.instr.len() < 4000 {
@@ -2689,7 +2734,7 @@ impl<'a> Conv<'a> {
         }
     }
 
-    fn fld_char(&mut self, c: &Node, inl: &mut Inl) {
+    fn fld_char(&mut self, c: &Node, inl: &mut Inl, hidden: bool) {
         match c.attr("fldCharType") {
             Some("begin") => {
                 if self.fields.len() < 64 {
@@ -2699,6 +2744,8 @@ impl<'a> Conv<'a> {
                         link_open: false,
                         form: c.child("ffData").and_then(form_field_text),
                         result_from: 0,
+                        has_result: false,
+                        hidden,
                     });
                 }
             }
@@ -2724,8 +2771,9 @@ impl<'a> Conv<'a> {
                     }
                     // A form field with no result of its own is drawn from its form data: a check
                     // box as its box, a drop-down as the chosen entry.
-                    let empty = f.phase == Phase::Instr || inl.segs.len() <= f.result_from;
-                    if let (true, Some(text)) = (empty, &f.form) {
+                    let empty = f.phase == Phase::Instr
+                        || !(f.has_result || inl.segs.len() > f.result_from);
+                    if let (true, false, Some(text)) = (empty, f.hidden || hidden, &f.form) {
                         self.push_text(inl, text, Fmt::default());
                     }
                 }
@@ -2783,15 +2831,36 @@ impl<'a> Conv<'a> {
         }
     }
 
-    /// The title of the chart stored in the part `rid` names (`c:title` text), bounded.
+    /// The title of the chart stored in the part `rid` names (`c:title` text), bounded: each part
+    /// is read once (a chart drawn many times shares the answer) and a document's chart parts
+    /// together are read up to [`CHART_READ_BUDGET`] bytes.
     fn chart_title(&mut self, rid: &str) -> Option<String> {
         let rel = self.rels.get(rid)?;
         if rel.external {
             return None;
         }
         let part = rel.target.clone();
-        let r = self.media.part(&part, 512 * 1024).ok()??;
-        let mut rd = XmlReader::new(r.take(512 * 1024));
+        if let Some(t) = self.chart_titles.get(&part) {
+            return t.clone();
+        }
+        let t = self.read_chart_title(&part);
+        self.chart_titles.insert(part, t.clone());
+        t
+    }
+
+    fn read_chart_title(&mut self, part: &str) -> Option<String> {
+        let left = CHART_READ_BUDGET.saturating_sub(self.chart_read);
+        if left == 0 || self.cancelled() {
+            return None;
+        }
+        let limit = left.min(512 * 1024);
+        let mut bytes = Vec::new();
+        {
+            let r = self.media.part(part, limit).ok()??;
+            r.take(limit).read_to_end(&mut bytes).ok()?;
+        }
+        self.chart_read += bytes.len() as u64;
+        let mut rd = XmlReader::new(&bytes[..]);
         let mut buf = Vec::new();
         // Elements open: `c:chartSpace` (1) > `c:chart` (2) > `c:title`: the chart's own title, not
         // the title of an axis or a series.

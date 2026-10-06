@@ -39,6 +39,67 @@ pub(crate) fn symbol_font(name: &str) -> Option<Font> {
     }
 }
 
+/// `w:hint` of `w:rFonts`: which slot Word uses for a character that several scripts share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hint {
+    Default,
+    EastAsia,
+    Cs,
+}
+
+/// The four font slots of a `w:rFonts`. A slot is `None` when it is not set (inherited from the
+/// style below); `Some(Font::Plain)` is a font that is not a symbol font.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Fonts {
+    pub ascii: Option<Font>,
+    pub hansi: Option<Font>,
+    pub cs: Option<Font>,
+    pub east: Option<Font>,
+    pub hint: Option<Hint>,
+}
+
+impl Fonts {
+    /// `self` with every slot `over` sets replaced.
+    pub fn over(self, over: Fonts) -> Fonts {
+        Fonts {
+            ascii: over.ascii.or(self.ascii),
+            hansi: over.hansi.or(self.hansi),
+            cs: over.cs.or(self.cs),
+            east: over.east.or(self.east),
+            hint: over.hint.or(self.hint),
+        }
+    }
+
+    /// The font Word draws `c` in (ECMA-376 17.3.2.26): the `ascii` slot for U+0000..=U+007F, the
+    /// `eastAsia` slot for East Asian characters, `cs` for complex scripts, `hAnsi` for the rest (the
+    /// symbol-font private-use codes follow `ascii`);
+    /// a character both Latin and East Asian by use (`°`, `§`, `×` ...) follows `w:hint`.
+    fn of_char(&self, c: char) -> Option<Font> {
+        let v = c as u32;
+        let ambiguous = matches!(v, 0xA1 | 0xA4 | 0xA7 | 0xA8 | 0xAA | 0xAD | 0xAF | 0xB0..=0xB4
+            | 0xB6..=0xBA | 0xBC..=0xBF | 0xD7 | 0xF7 | 0x2010..=0x2027 | 0x2030..=0x203B);
+        if ambiguous && self.hint == Some(Hint::EastAsia) {
+            return self.east;
+        }
+        if ambiguous && self.hint == Some(Hint::Cs) {
+            return self.cs;
+        }
+        match v {
+            0..=0x7F => self.ascii,
+            // Word draws the private-use codes of a symbol font (`U+F0xx`) with the font of the
+            // `ascii` slot (a style that names only that slot still works), else `hAnsi`.
+            0xF000..=0xF0FF => self.ascii.or(self.hansi),
+            0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF => self.cs,
+            0x2E80..=0x9FFF
+            | 0xAC00..=0xD7AF
+            | 0xF900..=0xFAFF
+            | 0xFF00..=0xFFEF
+            | 0x20000..=0x3FFFF => self.east,
+            _ => self.hansi,
+        }
+    }
+}
+
 /// The 8-bit code a character of a symbol-font run stands for: `U+F0xx` and the bare code `xx`.
 fn code_of(c: char) -> Option<u8> {
     match c as u32 {
@@ -50,22 +111,16 @@ fn code_of(c: char) -> Option<u8> {
 
 /// The text of a run set in `font`: every character that is a code of the font is replaced by
 /// what it draws. Other characters (real Unicode text) are kept.
-pub(crate) fn map_run_text(s: &str, font: Option<Font>) -> String {
-    match font {
-        Some(f) if f != Font::Plain => s.chars().map(|c| map_char(f, c)).collect(),
-        // No symbol font known for the run: a private-use code of the `F0xx` block is a symbol of
-        // some symbol font; show that one stood there.
-        _ => s
-            .chars()
-            .map(|c| {
-                if (0xF020..=0xF0FF).contains(&(c as u32)) {
-                    FALLBACK
-                } else {
-                    c
-                }
-            })
-            .collect(),
-    }
+pub(crate) fn map_run_text(s: &str, fonts: Fonts) -> String {
+    s.chars()
+        .map(|c| match fonts.of_char(c) {
+            Some(f) if f != Font::Plain => map_char(f, c),
+            // No symbol font known for the character: a private-use code of the `F0xx` block is a
+            // symbol of some symbol font; show that one stood there.
+            _ if (0xF020..=0xF0FF).contains(&(c as u32)) => FALLBACK,
+            _ => c,
+        })
+        .collect()
 }
 
 /// `w:sym`: the character `c` (`w:char`) of the font named `font` (`w:font`).

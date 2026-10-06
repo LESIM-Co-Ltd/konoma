@@ -1326,13 +1326,18 @@ impl<'a> Od<'a> {
         // The text of a paragraph whose end was inside a deleted range (the break between the two
         // paragraphs was deleted) goes on in this one.
         let carried = std::mem::take(&mut self.c.carry);
-        let mut ps = Ps {
-            prev_ws: true,
-            other: carried.iter().any(|g| match g {
+        let (seen, was) = self.c.carry_seen;
+        let from = if seen <= carried.len() { seen } else { 0 };
+        let carry_other = (from > 0 && was)
+            || carried[from..].iter().any(|g| match g {
                 Seg::Text(t, _) => t.chars().any(|c| !c.is_whitespace()),
                 Seg::Raw(_) | Seg::Math(_) | Seg::Display(_) => true,
                 _ => false,
-            }),
+            });
+        self.c.carry_seen = (carried.len(), carry_other);
+        let mut ps = Ps {
+            prev_ws: true,
+            other: carry_other,
             ..Ps::default()
         };
         let mut inl = Inl {
@@ -1345,6 +1350,8 @@ impl<'a> Od<'a> {
             self.c.carry = inl.segs;
             return;
         }
+        // The carry ended here: the next one starts from nothing.
+        self.c.carry_seen = (0, false);
         let Inl {
             mut segs,
             extras,
