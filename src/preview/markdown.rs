@@ -3519,6 +3519,35 @@ fn next_inline_code_span(line: &str, from: usize) -> Option<(usize, usize)> {
     None
 }
 
+/// Stand-in for a backslash-escaped `<` while the inline-HTML pass runs (NUL cannot occur in a
+/// document, and its letter keeps it apart from a code span's `NUL digits NUL`).
+const ESCAPED_LT: &str = "\u{0}e\u{0}";
+
+/// `line` with every backslash-escaped `<` (`\<`, the backslash itself not escaped) replaced by
+/// [`ESCAPED_LT`], so no tag rewrite can see it.
+fn mask_escaped_lt(line: &str) -> String {
+    if !line.contains("\\<") {
+        return line.to_string();
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut it = line.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('<') => out.push_str(ESCAPED_LT),
+            Some(n) => {
+                out.push(c);
+                out.push(n);
+            }
+            None => out.push(c),
+        }
+    }
+    out
+}
+
 /// Stand-in for the `n`-th code span of a line while a pass rewrites around it. NUL is used because
 /// CommonMark forbids it in a document at all ("the character U+0000 must be replaced with the
 /// REPLACEMENT CHARACTER"), so it cannot collide with real content, and because it carries no
@@ -5434,13 +5463,16 @@ pub(crate) fn process_inline_html_traced(
             }
         };
         let s = rewrite_masking_code_spans(line, |masked| {
-            let mut s = replace_tag_pair(masked, "kbd", |i| format!("`{i}`"));
+            // A backslash-escaped `\<` is a literal `<` (CommonMark), never the start of a tag:
+            // `x\<br># h` must not become a line break that opens a heading.
+            let masked = mask_escaped_lt(masked);
+            let mut s = replace_tag_pair(&masked, "kbd", |i| format!("`{i}`"));
             s = replace_tag_pair(&s, "del", |i| format!("~~{i}~~"));
             s = replace_tag_pair(&s, "s", |i| format!("~~{i}~~"));
             s = replace_tag_pair(&s, "strike", |i| format!("~~{i}~~"));
             s = replace_tag_pair(&s, "sup", |i| map_all_or_keep(i, sup_char));
             s = replace_tag_pair(&s, "sub", |i| map_all_or_keep(i, sub_char));
-            rewrite_br(&s, &mode)
+            rewrite_br(&s, &mode).replace(ESCAPED_LT, "\\<")
         });
         // `BrMode::HtmlBody` drops the blank lines it would have produced, so a line that was
         // nothing but the tag comes back empty: emit nothing for it. Every line reaching here

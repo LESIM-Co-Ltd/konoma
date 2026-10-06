@@ -142,6 +142,8 @@ mod tests_odt;
 #[cfg(test)]
 mod tests_odt_more;
 #[cfg(test)]
+mod tests_review_fix;
+#[cfg(test)]
 mod tests_survivors;
 #[cfg(test)]
 mod tests_xls;

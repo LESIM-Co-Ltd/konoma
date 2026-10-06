@@ -7,7 +7,7 @@
 // on every zoom) is future work. So that a small-intrinsic-size SVG doesn't look blocky in the
 // terminal, we upscale it to draw at up to the target px on the max side.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use image::DynamicImage;
@@ -129,6 +129,52 @@ fn install_fallback_sans_serif(db: &mut usvg::fontdb::Database) -> bool {
     true
 }
 
+/// Largest local file an SVG may be, and the largest an SVG's `<image href="...">` may pull in.
+const MAX_LINKED_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// How an SVG may reach for other files through `<image href>`.
+///
+/// usvg's default string resolver does `std::fs::read` on whatever path the document names, so an
+/// SVG saying `href="/dev/zero"` (or a FIFO, or a 10 GB file) hangs or aborts the process, and
+/// one naming a private image paints it into a document the user merely opened. Both are
+/// closed here: an SVG that is not a file on disk (embedded in an Office document, synthesized by
+/// mermaid or math) reads **no** file; one that is a real file may read only **regular files** of
+/// bounded size (a relative picture next to the `.svg` still shows).
+fn image_href_resolver(resources_dir: Option<&Path>) -> usvg::ImageHrefResolver<'static> {
+    let mut resolver = usvg::ImageHrefResolver::default();
+    if !resources_dir.is_some_and(Path::is_dir) {
+        resolver.resolve_string = Box::new(|_, _| None);
+        return resolver;
+    }
+    let default = usvg::ImageHrefResolver::default_string_resolver();
+    resolver.resolve_string = Box::new(move |href, opts| {
+        let path = opts.get_abs_path(Path::new(href));
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_file() && m.len() <= MAX_LINKED_IMAGE_BYTES => default(href, opts),
+            _ => None,
+        }
+    });
+    resolver
+}
+
+fn options(resources_dir: Option<PathBuf>) -> usvg::Options<'static> {
+    usvg::Options {
+        image_href_resolver: image_href_resolver(resources_dir.as_deref()),
+        resources_dir,
+        fontdb: shared_fontdb(),
+        ..usvg::Options::default()
+    }
+}
+
+/// Read an SVG file: a regular file of bounded size only (never a device or FIFO).
+fn read_svg_file(path: &Path) -> Option<Vec<u8>> {
+    let m = std::fs::metadata(path).ok()?;
+    if !m.is_file() || m.len() > MAX_LINKED_IMAGE_BYTES {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
 /// **Warm up** the system font DB in advance (call from a separate thread at startup).
 /// Hides the tens-of-ms font-enumeration freeze on the first SVG display behind startup.
 pub fn warm_fontdb() {
@@ -138,7 +184,7 @@ pub fn warm_fontdb() {
 /// Rasterize the SVG at `path` with a max side of `max_px` and return an RGBA image. Returns None on parse/render failure
 /// (the caller falls back to text (raw XML) display).
 pub fn rasterize(path: &Path, max_px: u32) -> Option<DynamicImage> {
-    let data = std::fs::read(path).ok()?;
+    let data = read_svg_file(path)?;
     rasterize_bytes(&data, path, max_px)
 }
 
@@ -146,12 +192,8 @@ pub fn rasterize(path: &Path, max_px: u32) -> Option<DynamicImage> {
 /// Cheap enough for the UI thread (no pixmap allocation / rendering) — used to reserve layout rows for
 /// an inline SVG image and to validate that a fetched remote file is really an SVG. None if not an SVG.
 pub fn intrinsic_size(path: &Path) -> Option<(u32, u32)> {
-    let data = std::fs::read(path).ok()?;
-    let opt = usvg::Options {
-        resources_dir: path.parent().map(Path::to_path_buf),
-        fontdb: shared_fontdb(),
-        ..usvg::Options::default()
-    };
+    let data = read_svg_file(path)?;
+    let opt = options(path.parent().map(Path::to_path_buf));
     let tree = usvg::Tree::from_data(&data, &opt).ok()?;
     let size = tree.size();
     let (w, h) = (size.width(), size.height());
@@ -164,10 +206,8 @@ pub fn intrinsic_size(path: &Path) -> Option<(u32, u32)> {
 /// Intrinsic size (rounded up) of an in-memory SVG, without rasterizing. Same as `intrinsic_size` but
 /// from bytes — used for a synthesized SVG (e.g. a RaTeX math render) whose em units drive layout.
 pub fn intrinsic_size_bytes(data: &[u8]) -> Option<(u32, u32)> {
-    let opt = usvg::Options {
-        fontdb: shared_fontdb(),
-        ..usvg::Options::default()
-    };
+    // No path: the bytes are not a file on disk, so they may not read any (see `image_href_resolver`).
+    let opt = options(None);
     let tree = usvg::Tree::from_data(data, &opt).ok()?;
     let size = tree.size();
     let (w, h) = (size.width(), size.height());
@@ -179,13 +219,9 @@ pub fn intrinsic_size_bytes(data: &[u8]) -> Option<(u32, u32)> {
 
 /// Rasterize directly from a byte slice (for tests / future embedding). `max_px` = target px for the max side.
 pub fn rasterize_bytes(data: &[u8], path: &Path, max_px: u32) -> Option<DynamicImage> {
-    let opt = usvg::Options {
-        // Base directory for relative references (external images etc.) is the SVG's parent.
-        resources_dir: path.parent().map(Path::to_path_buf),
-        // fontdb is a public field (Arc<Database>). Plug in the shared DB to avoid re-enumerating every time.
-        fontdb: shared_fontdb(),
-        ..usvg::Options::default()
-    };
+    // Base directory for relative references (external images etc.) is the SVG's parent; a
+    // placeholder `path` (no real parent directory) means the bytes are embedded and read no file.
+    let opt = options(path.parent().map(Path::to_path_buf));
 
     let tree = usvg::Tree::from_data(data, &opt).ok()?;
     let size = tree.size();
@@ -496,5 +532,85 @@ mod tests {
             rasterize_bytes(with_text, Path::new("t.svg"), 200).is_some(),
             "フォント DB 準備後はテキスト SVG も描ける"
         );
+    }
+
+    // ---- an SVG may not read files (review of the Word preview, 2026-10) ---------------------
+
+    /// A 20x20 solid-red PNG written to `dir/name`.
+    fn red_png(dir: &Path, name: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([255, 0, 0, 255]))
+            .save(&path)
+            .unwrap();
+        path
+    }
+
+    /// An SVG that draws the image at `href` over a 20x20 canvas.
+    fn svg_with_image(href: &str) -> String {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20" height="20"><image xlink:href="{href}" width="20" height="20"/></svg>"#
+        )
+    }
+
+    fn center_alpha(img: &image::DynamicImage) -> u8 {
+        let rgba = img.to_rgba8();
+        rgba.get_pixel(rgba.width() / 2, rgba.height() / 2)[3]
+    }
+
+    #[test]
+    fn an_svg_from_memory_reads_no_file() {
+        let dir = crate::test_support::unique_tmp("konoma_svg_nofile");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = red_png(&dir, "secret.png");
+        let svg = svg_with_image(&png.display().to_string());
+        // An Office picture: the caller's path is a placeholder with no directory.
+        let img = rasterize_bytes(svg.as_bytes(), Path::new("image.svg"), 100).unwrap();
+        assert_eq!(center_alpha(&img), 0, "the local picture must not be drawn");
+        // The same for a placeholder that names a directory that does not exist.
+        let img =
+            rasterize_bytes(svg.as_bytes(), Path::new("office-img://abc/e.svg"), 100).unwrap();
+        assert_eq!(center_alpha(&img), 0);
+        // The size query of bytes reads nothing either (it must not even try `/dev/zero`).
+        let zero = svg_with_image("/dev/zero");
+        assert_eq!(intrinsic_size_bytes(zero.as_bytes()), Some((20, 20)));
+    }
+
+    #[test]
+    fn an_svg_file_reads_a_regular_picture_beside_it_but_no_device() {
+        let dir = crate::test_support::unique_tmp("konoma_svg_file");
+        std::fs::create_dir_all(&dir).unwrap();
+        red_png(&dir, "red.png");
+        // The usual case still works: a relative picture next to the file.
+        let ok = dir.join("ok.svg");
+        std::fs::write(&ok, svg_with_image("red.png")).unwrap();
+        assert_eq!(center_alpha(&rasterize(&ok, 100).unwrap()), 255);
+        // A device, read to the end, would never finish: it is skipped (and quickly).
+        let bad = dir.join("bad.svg");
+        std::fs::write(&bad, svg_with_image("/dev/zero")).unwrap();
+        let t = std::time::Instant::now();
+        assert_eq!(center_alpha(&rasterize(&bad, 100).unwrap()), 0);
+        assert_eq!(intrinsic_size(&bad), Some((20, 20)));
+        assert!(t.elapsed() < std::time::Duration::from_secs(20));
+    }
+
+    #[test]
+    fn an_svg_file_reads_no_picture_over_the_size_limit_and_is_itself_bounded() {
+        let dir = crate::test_support::unique_tmp("konoma_svg_big");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A sparse file: the length is over the limit, nothing is written.
+        let big = dir.join("big.png");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(MAX_LINKED_IMAGE_BYTES + 1).unwrap();
+        let svg = dir.join("t.svg");
+        std::fs::write(&svg, svg_with_image("big.png")).unwrap();
+        assert_eq!(center_alpha(&rasterize(&svg, 100).unwrap()), 0);
+        // An SVG file over the limit is not read at all; a directory is not a file.
+        let huge = dir.join("huge.svg");
+        let f = std::fs::File::create(&huge).unwrap();
+        f.set_len(MAX_LINKED_IMAGE_BYTES + 1).unwrap();
+        assert!(rasterize(&huge, 100).is_none());
+        assert!(intrinsic_size(&huge).is_none());
+        assert!(rasterize(&dir, 100).is_none());
+        assert!(rasterize(Path::new("/dev/null"), 100).is_none());
     }
 }

@@ -135,6 +135,25 @@ impl Budget {
     }
 }
 
+/// Takes the bytes an element's names and attributes hold out of the block's byte budget (the
+/// same budget as its text: a document of few elements with 48 attributes of 4 KiB each must not
+/// cost more memory than one of text). Returns false once the budget is spent.
+fn charge(n: &Node, budget: &mut Budget) -> bool {
+    let cost = n.name.len()
+        + n.prefix.len()
+        + n.attrs
+            .iter()
+            .map(|(k, v)| k.len() + v.len())
+            .sum::<usize>();
+    if budget.text_bytes < cost {
+        budget.text_bytes = 0;
+        budget.text_over = true;
+        return false;
+    }
+    budget.text_bytes -= cost;
+    true
+}
+
 fn start_to_node(e: &BytesStart<'_>) -> Node {
     let qn = e.name();
     let full = String::from_utf8_lossy(qn.as_ref()).into_owned();
@@ -196,6 +215,12 @@ pub(crate) fn read_element<R: BufRead>(
     budget: &mut Budget,
 ) -> Result<Tree, OfficeError> {
     let root = start_to_node(start);
+    if !charge(&root, budget) {
+        if !empty {
+            skip_rest(rd)?;
+        }
+        return Ok(Tree::TooBig);
+    }
     if budget.nodes == 0 {
         if !empty {
             skip_rest(rd)?;
@@ -208,27 +233,33 @@ pub(crate) fn read_element<R: BufRead>(
     }
     let mut stack: Vec<Node> = vec![root];
     let mut buf = Vec::new();
-    let mut over = false;
     loop {
         buf.clear();
         match rd.read_event_into(&mut buf).map_err(xml_err)? {
             Event::Start(e) => {
+                // Over budget the tree is of no use: stop building it (what is built so far is
+                // dropped) and just read to the end of the element.
                 if budget.nodes == 0 {
-                    over = true;
-                } else {
-                    budget.nodes -= 1;
+                    return skip_depth(rd, stack.len() + 1).map(|()| Tree::TooBig);
                 }
-                stack.push(start_to_node(&e));
+                budget.nodes -= 1;
+                let n = start_to_node(&e);
+                if !charge(&n, budget) {
+                    return skip_depth(rd, stack.len() + 1).map(|()| Tree::TooBig);
+                }
+                stack.push(n);
             }
             Event::Empty(e) => {
                 if budget.nodes == 0 {
-                    over = true;
-                } else {
-                    budget.nodes -= 1;
-                    let n = start_to_node(&e);
-                    if let Some(top) = stack.last_mut() {
-                        top.kids.push(Kid::N(n));
-                    }
+                    return skip_depth(rd, stack.len()).map(|()| Tree::TooBig);
+                }
+                budget.nodes -= 1;
+                let n = start_to_node(&e);
+                if !charge(&n, budget) {
+                    return skip_depth(rd, stack.len()).map(|()| Tree::TooBig);
+                }
+                if let Some(top) = stack.last_mut() {
+                    top.kids.push(Kid::N(n));
                 }
             }
             Event::End(_) => {
@@ -238,7 +269,7 @@ pub(crate) fn read_element<R: BufRead>(
                 match stack.last_mut() {
                     Some(parent) => parent.kids.push(Kid::N(done)),
                     None => {
-                        return Ok(if over || budget.text_over {
+                        return Ok(if budget.text_over {
                             Tree::TooBig
                         } else {
                             Tree::Ok(done)
@@ -317,7 +348,12 @@ fn push_ref(e: &quick_xml::events::BytesRef<'_>, out: &mut String) {
 
 /// Consumes events to the end tag that closes the element already opened.
 pub(crate) fn skip_rest<R: BufRead>(rd: &mut XmlReader<R>) -> Result<(), OfficeError> {
-    let mut depth = 1usize;
+    skip_depth(rd, 1)
+}
+
+/// Reads on until `depth` more end tags have been seen.
+fn skip_depth<R: BufRead>(rd: &mut XmlReader<R>, depth: usize) -> Result<(), OfficeError> {
+    let mut depth = depth;
     let mut buf = Vec::new();
     loop {
         buf.clear();

@@ -6,6 +6,7 @@
 //! [`MAX_CHAIN`] steps (a cyclic `basedOn` stops at the first repeat), and counts of styles, lists
 //! and levels are capped.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 
@@ -335,6 +336,11 @@ pub(crate) struct Numbering {
     nums: HashMap<u32, NumInst>,
 }
 
+/// Most characters of a level's text kept.
+const MAX_LEVEL_TEXT_CHARS: usize = 64;
+/// Most characters of a rendered label (`%1` repeated with long counters would otherwise multiply).
+const MAX_LABEL_CHARS: usize = 128;
+
 fn parse_level(l: &Node) -> LevelDef {
     let mut d = LevelDef {
         start: 1,
@@ -347,10 +353,12 @@ fn parse_level(l: &Node) -> LevelDef {
         d.start = v.trim().parse().unwrap_or(1);
     }
     if let Some(v) = l.child("numFmt").and_then(|c| c.attr("val")) {
-        d.fmt = v.trim().to_string();
+        d.fmt = v.trim().chars().take(40).collect();
     }
     if let Some(v) = l.child("lvlText").and_then(|c| c.attr("val")) {
-        d.text = v.to_string();
+        // Level text is a few symbols and `%1`..`%9`; a real one is under 20 characters. The cap
+        // keeps one tiny `lvlText` from becoming a label of tens of kilobytes on every paragraph.
+        d.text = v.chars().take(MAX_LEVEL_TEXT_CHARS).collect();
     }
     d.legal = l.toggle("isLgl").unwrap_or(false);
     d.pstyle = l
@@ -470,19 +478,23 @@ impl Numbering {
     }
 
     /// The definition of `lvl` for `num_id` (the instance's own override wins).
-    pub fn level(&self, num_id: u32, abstract_id: u32, lvl: u8) -> LevelDef {
+    pub fn level(&self, num_id: u32, abstract_id: u32, lvl: u8) -> Cow<'_, LevelDef> {
         if let Some(l) = self
             .nums
             .get(&num_id)
             .and_then(|n| n.level_override.get(&lvl))
         {
-            return l.clone();
+            return Cow::Borrowed(l);
         }
-        self.abstracts
+        match self
+            .abstracts
             .get(&abstract_id)
             .and_then(|a| a.levels.get(usize::from(lvl)))
-            .and_then(Clone::clone)
-            .unwrap_or_else(|| LevelDef::default_for(usize::from(lvl)))
+            .and_then(Option::as_ref)
+        {
+            Some(l) => Cow::Borrowed(l),
+            None => Cow::Owned(LevelDef::default_for(usize::from(lvl))),
+        }
     }
 
     /// The level of `abstract_id` whose `pStyle` names one of `ids` (a heading style that carries
@@ -690,6 +702,9 @@ pub(crate) fn render_label(text: &str, value_of: impl Fn(usize) -> String) -> St
     let mut out = String::new();
     let mut it = text.chars().peekable();
     while let Some(c) = it.next() {
+        if out.chars().count() >= MAX_LABEL_CHARS {
+            break;
+        }
         if c == '%' {
             if let Some(&d) = it.peek() {
                 if let Some(k) = d.to_digit(10).filter(|k| (1..=9).contains(k)) {

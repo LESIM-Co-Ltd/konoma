@@ -329,8 +329,10 @@ struct F {
 #[derive(Debug, Clone)]
 enum Seg {
     Text(String, F),
-    /// Already Markdown (an image, a footnote mark, inline math).
+    /// Already Markdown (an image, a footnote mark).
     Raw(String),
+    /// Inline math: its LaTeX.
+    Math(String),
     Break,
     PageBreak,
     LinkOpen(String),
@@ -461,6 +463,9 @@ struct Conv<'a> {
     last_list: Option<(u32, bool)>,
     stack: Vec<(u8, usize)>,
     pending_code: Option<String>,
+    /// Bytes of the note definitions held until the end of the document (they are written after
+    /// the body, so the body's own budget does not see them).
+    defs_bytes: usize,
     body_bytes: usize,
     body_lines: usize,
     full: bool,
@@ -507,6 +512,7 @@ impl<'a> Conv<'a> {
             last_list: None,
             stack: Vec::new(),
             pending_code: None,
+            defs_bytes: 0,
             body_bytes: opts
                 .max_markdown_bytes
                 .saturating_sub((opts.max_markdown_bytes / 8).min(256 * 1024)),
@@ -645,6 +651,8 @@ fn clean(s: &str) -> String {
         .filter_map(|c| match c {
             '\n' | '\r' => Some(' '),
             '\t' => Some(' '),
+            // Unicode line separators (NEL, LS, PS): a line end for some readers, never ours.
+            '\u{85}' | '\u{2028}' | '\u{2029}' => Some(' '),
             '\u{E000}'..='\u{E002}' => Some('\u{FFFD}'),
             c if (c as u32) < 0x20 || c == '\u{7F}' || c == '\u{FFFE}' || c == '\u{FFFF}' => None,
             // zero-width and bidi controls Word writes around some text
@@ -843,9 +851,23 @@ fn guard_rule(text: String) -> String {
     }
 }
 
+/// A heading's text with a closing `#` sequence made literal: `Chapter #` would be read as the
+/// heading `Chapter` with an ATX closing sequence (a run of `#` after a space at the end).
+fn guard_atx_close(text: &str) -> String {
+    let body = text.trim_end_matches('#');
+    let hashes = text.len() - body.len();
+    if hashes == 0 || body.ends_with('\\') {
+        return text.to_string();
+    }
+    if body.is_empty() || body.ends_with([' ', '\t']) {
+        return format!("{body}\\{}", &text[body.len()..]);
+    }
+    text.to_string()
+}
+
 /// Escapes text for a heading (also `{` `}`: heading attributes).
 fn escape_heading(s: &str) -> String {
-    escape_braces(&escape(s, true))
+    guard_atx_close(&escape_braces(&escape(s, true)))
 }
 
 /// `{` and `}` of already-escaped heading text made literal (a heading may end in `{#id}`), except
@@ -964,7 +986,7 @@ enum It<'a> {
 fn first_char_class(next: Option<&It<'_>>) -> Option<char> {
     match next {
         Some(It::T(s, _)) => s.chars().next(),
-        Some(It::O(Seg::Raw(_))) => Some('!'),
+        Some(It::O(Seg::Raw(_) | Seg::Math(_))) => Some('!'),
         _ => None,
     }
 }
@@ -1061,6 +1083,11 @@ fn emit_plain(segs: &[Seg], line_start: bool, ce: Option<CellEsc>, label: bool) 
         let ls = !cell && (line_start && out.is_empty() || out.ends_with('\n'));
         match it {
             It::O(Seg::Raw(r)) => out.push_str(r),
+            It::O(Seg::Math(l)) => {
+                out.push('$');
+                out.push_str(&if cell { cell_math(l) } else { l.clone() });
+                out.push('$');
+            }
             It::O(Seg::Break) => {
                 while out.ends_with(' ') {
                     out.pop();
@@ -1072,7 +1099,7 @@ fn emit_plain(segs: &[Seg], line_start: bool, ce: Option<CellEsc>, label: bool) 
                 let marks = marks_of(*f, cell);
                 if marks.is_empty() {
                     let text = if ls {
-                        raw.trim_start_matches([' ', '\t'])
+                        raw.trim_start_matches(char::is_whitespace)
                     } else {
                         raw.as_str()
                     };
@@ -1085,7 +1112,7 @@ fn emit_plain(segs: &[Seg], line_start: bool, ce: Option<CellEsc>, label: bool) 
                 let (core, trail_ws) = rest.split_at(core_end);
                 if core.is_empty() {
                     let t = if ls {
-                        raw.trim_start_matches([' ', '\t'])
+                        raw.trim_start_matches(char::is_whitespace)
                     } else {
                         raw.as_str()
                     };
@@ -1093,7 +1120,7 @@ fn emit_plain(segs: &[Seg], line_start: bool, ce: Option<CellEsc>, label: bool) 
                     continue;
                 }
                 let lead_ws = if ls {
-                    lead_ws.trim_start_matches([' ', '\t'])
+                    lead_ws.trim_start_matches(char::is_whitespace)
                 } else {
                     lead_ws
                 };
@@ -1175,7 +1202,34 @@ fn marks_of(f: F, cell: bool) -> &'static str {
     }
 }
 
+/// The text of `segs` as konoma will draw it in a heading, which is what its `#anchor` slug is
+/// made of: a footnote mark `[^3]` is drawn as a superscript digit (a digit to the slug), a
+/// formula as its LaTeX source (konoma draws it raw in a heading, and the slug drops the
+/// punctuation).
 fn plain_of(segs: &[Seg]) -> String {
+    let mut s = String::new();
+    for g in segs {
+        match g {
+            Seg::Text(t, _) | Seg::Math(t) => s.push_str(t),
+            Seg::Break => s.push(' '),
+            Seg::Raw(r) => {
+                if let Some(n) = r
+                    .strip_prefix("[^")
+                    .and_then(|r| r.strip_suffix(']'))
+                    .and_then(|n| n.parse::<usize>().ok())
+                {
+                    s.push_str(&superscript(n));
+                }
+            }
+            _ => {}
+        }
+    }
+    s
+}
+
+/// The text of `segs` without anything that is not a character of the heading (a note mark, a
+/// formula): the name an OpenDocument cross reference gives the heading (`#Title|outline`).
+fn outline_text(segs: &[Seg]) -> String {
     let mut s = String::new();
     for g in segs {
         match g {
@@ -1185,6 +1239,18 @@ fn plain_of(segs: &[Seg]) -> String {
         }
     }
     s
+}
+
+/// `12` as superscript digits (what the renderer draws for the footnote mark `[^12]`).
+fn superscript(n: usize) -> String {
+    const SUP: [char; 10] = [
+        '\u{2070}', '\u{b9}', '\u{b2}', '\u{b3}', '\u{2074}', '\u{2075}', '\u{2076}', '\u{2077}',
+        '\u{2078}', '\u{2079}',
+    ];
+    n.to_string()
+        .chars()
+        .map(|c| SUP[c.to_digit(10).unwrap_or(0) as usize])
+        .collect()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1243,6 +1309,41 @@ fn cell_text(blks: &[Blk], br: &str) -> String {
     parts.join(br)
 }
 
+/// A formula for a table cell: no `|` (the converters write `\vert`; this is the net for what
+/// they pass through, such as a `|` of a `\text{}` that has none).
+fn cell_math(latex: &str) -> String {
+    latex.replace('|', "\u{2223}")
+}
+
+// Test probe: the most bytes any buffer that gathers a document's text before it is written
+// (code paragraphs, note definitions, table cells) held at once. The budget tests assert on it:
+// the output of a document does not change when such a buffer is bounded, only the memory does.
+#[cfg(test)]
+thread_local! {
+    pub(super) static PEAK_HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Records `_bytes` held by a gathering buffer (a no-op outside tests).
+#[inline]
+pub(super) fn held(_bytes: usize) {
+    #[cfg(test)]
+    PEAK_HELD.with(|p| p.set(p.get().max(_bytes)));
+}
+
+/// The length of the longest run of consecutive backticks in `s`.
+fn longest_backtick_run(s: &str) -> usize {
+    let (mut best, mut cur) = (0usize, 0usize);
+    for c in s.chars() {
+        if c == '`' {
+            cur += 1;
+            best = best.max(cur);
+        } else {
+            cur = 0;
+        }
+    }
+    best
+}
+
 fn render_table(rows: &[Vec<String>]) -> String {
     let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
     if cols == 0 {
@@ -1272,7 +1373,7 @@ fn render_table(rows: &[Vec<String>]) -> String {
 }
 
 impl<'a> Conv<'a> {
-    fn cancelled(&self) -> bool {
+    pub(super) fn cancelled(&self) -> bool {
         self.cancel.is_some_and(Cancel::is_cancelled)
     }
 
@@ -1405,6 +1506,9 @@ impl<'a> Conv<'a> {
             }
             // A note must stay one Markdown line.
             let text = text.replace('\n', " ");
+            if !self.keep_note(text.len()) {
+                break;
+            }
             defs.push((pos + 1, text));
             if self.cancelled() {
                 self.truncated = true;
@@ -1416,17 +1520,28 @@ impl<'a> Conv<'a> {
         result
     }
 
+    /// Whether a note definition of `len` bytes may be held (all of them together stay within the
+    /// output's own limit: 5,000 notes of 40 KB each would otherwise be 200 MB that the end of the
+    /// document throws away). The conversion is marked truncated once it says no.
+    pub(super) fn keep_note(&mut self, len: usize) -> bool {
+        if self.defs_bytes.saturating_add(len) > self.opts.max_markdown_bytes {
+            self.truncated = true;
+            return false;
+        }
+        self.defs_bytes += len;
+        held(self.defs_bytes);
+        true
+    }
+
     // -----------------------------------------------------------------------------------------
     // writer
     // -----------------------------------------------------------------------------------------
 
     fn flush_code(&mut self) {
         if let Some(code) = self.pending_code.take() {
-            let longest = code
-                .lines()
-                .map(|l| l.chars().take_while(|&c| c == '`').count())
-                .max()
-                .unwrap_or(0);
+            // The longest run of backticks anywhere (a closing fence may be indented up to three
+            // spaces, so a run is a danger wherever it stands on its line).
+            let longest = longest_backtick_run(&code);
             let fence = "`".repeat((longest + 1).max(3));
             let piece = format!("{fence}\n{code}\n{fence}");
             self.push_piece(piece, Last::Other, "\n\n");
@@ -1445,12 +1560,26 @@ impl<'a> Conv<'a> {
     fn write_block(&mut self, b: Blk) {
         if let Blk::Code(t) = &b {
             let t = t.replace(NBSP, " ");
+            // The code paragraphs wait here until the run ends: they count against the output
+            // budget like anything written (a document of a million code paragraphs must not be
+            // held whole).
+            let waiting = self.pending_code.as_ref().map_or(0, |c| c.len() + 1);
+            if self.out.len() + waiting + t.len() > self.body_bytes {
+                self.flush_code();
+                self.full = true;
+                self.truncated = true;
+                return;
+            }
             match &mut self.pending_code {
                 Some(c) => {
                     c.push('\n');
                     c.push_str(&t);
+                    held(c.len());
                 }
-                None => self.pending_code = Some(t),
+                None => {
+                    held(t.len());
+                    self.pending_code = Some(t);
+                }
             }
             return;
         }
@@ -1922,6 +2051,11 @@ impl<'a> Conv<'a> {
             match part {
                 Err(d) => match d {
                     Ok(latex) => out.push(if ctx.flat() {
+                        let latex = if ctx == Ctx::Cell {
+                            cell_math(&latex)
+                        } else {
+                            latex
+                        };
                         Blk::Para(format!("${latex}$"))
                     } else {
                         Blk::Math(latex)
@@ -1963,6 +2097,7 @@ impl<'a> Conv<'a> {
                             plain = format!("{l} {plain}");
                             text = format!("{} {text}", escape_heading(&l));
                         }
+                        let text = guard_atx_close(&text);
                         if ctx.flat() {
                             out.push(Blk::Heading {
                                 level,
@@ -2082,10 +2217,15 @@ impl<'a> Conv<'a> {
             return;
         }
         self.math_total += 1;
-        let latex = to_xml(n, self.opts.max_math_xml)
-            .and_then(|x| (self.opts.math)(&x, display))
-            .map(|l| l.replace(['\n', '\r'], " ").trim().to_string())
-            .filter(|l| !l.is_empty() && !l.contains('$') && !l.contains(NBSP));
+        // The converter's check cannot be interrupted, so a cancelled load tries no more of them.
+        let latex = if self.cancelled() {
+            None
+        } else {
+            to_xml(n, self.opts.max_math_xml)
+                .and_then(|x| (self.opts.math)(&x, display))
+                .map(|l| l.replace(['\n', '\r'], " ").trim().to_string())
+                .filter(|l| !l.is_empty() && !l.contains('$') && !l.contains(NBSP))
+        };
         let text = clean(&math_text(n, 0));
         if latex.is_some() {
             self.math_latex += 1;
@@ -2094,7 +2234,7 @@ impl<'a> Conv<'a> {
             inl.segs.push(Seg::Display(latex.ok_or(text)));
         } else {
             match latex {
-                Some(l) => inl.segs.push(Seg::Raw(format!("${l}$"))),
+                Some(l) => inl.segs.push(Seg::Math(l)),
                 None => inl.segs.push(Seg::Text(text, F::default())),
             }
         }

@@ -286,7 +286,7 @@ fn fences() {
     );
     assert_eq!(
         tex("<mfenced open=\"|\" close=\"|\"><mi>x</mi></mfenced>"),
-        "\\left| x \\right|"
+        "\\left\\vert x \\right\\vert"
     );
     assert_eq!(
         tex("<mfenced open=\"\u{27E8}\" close=\"\u{27E9}\" separators=\"|\"><mi>a</mi><mi>b</mi></mfenced>"),
@@ -562,8 +562,8 @@ fn limits() {
     assert_eq!(fallback_text(&wrap(&big)), "");
     // A very long token is cut, the formula still converts.
     let long = format!("<mn>{}</mn>", "1".repeat(20_000));
-    let l = to_latex(&wrap(&long), false).unwrap();
-    assert!(l.len() <= 64 * 1024);
+    // (Over the size RaTeX is asked to lay out, it is shown as characters: `None`.)
+    assert!(to_latex(&wrap(&long), false).is_none_or(|l| l.len() <= 64 * 1024));
     // Many scripts are bounded.
     let ms = format!(
         "<mmultiscripts><mi>x</mi>{}</mmultiscripts>",

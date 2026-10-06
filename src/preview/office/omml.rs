@@ -202,8 +202,34 @@ fn collect_maths<'a>(n: &'a Node, out: &mut Vec<&'a Node>) {
     }
 }
 
+/// Longest LaTeX [`drawable`] lays out. The check runs RaTeX's whole layout and render on the
+/// converter's thread and cannot be interrupted (a 65 KB formula took 1.2 s and 800 MB); a real
+/// formula is a few hundred bytes, so a larger one is shown as its characters instead.
+pub(super) const MAX_DRAWABLE_BYTES: usize = 4096;
+
+thread_local! {
+    /// Answers of [`drawable`] by formula (a document repeats its formulas). Bounded.
+    static DRAWABLE: std::cell::RefCell<std::collections::HashMap<String, bool>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Whether RaTeX can draw `latex` (a formula over [`MAX_DRAWABLE_BYTES`] is not tried).
 pub(super) fn drawable(latex: &str) -> bool {
-    crate::preview::math::latex_to_svg(latex, true, "#000000").is_some()
+    if latex.len() > MAX_DRAWABLE_BYTES {
+        return false;
+    }
+    if let Some(known) = DRAWABLE.with(|c| c.borrow().get(latex).copied()) {
+        return known;
+    }
+    let ok = crate::preview::math::latex_to_svg(latex, true, "#000000").is_some();
+    DRAWABLE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() >= 256 {
+            c.clear();
+        }
+        c.insert(latex.to_string(), ok);
+    });
+    ok
 }
 
 fn conv_seq(kids: &[Node], cx: Ctx) -> String {
@@ -401,10 +427,11 @@ pub(super) fn delim_cmd(c: &str) -> Option<String> {
     Some(
         match c {
             "" => ".",
-            "(" | ")" | "[" | "]" | "|" | "/" => c,
+            "(" | ")" | "[" | "]" | "/" => c,
+            "|" => r"\vert",
             "{" => r"\{",
             "}" => r"\}",
-            "\u{2016}" => r"\|",
+            "\u{2016}" => r"\Vert",
             "\u{27E8}" | "\u{3008}" | "\u{2329}" | "<" => r"\langle",
             "\u{27E9}" | "\u{3009}" | "\u{232A}" | ">" => r"\rangle",
             "\u{230A}" => r"\lfloor",
@@ -624,6 +651,8 @@ pub(super) fn escape_text(t: &str) -> String {
                 s.push(' ');
             }
             '\n' | '\r' | '\t' => s.push(' '),
+            // A bare `|` would be a column separator wherever the formula lands in a table cell.
+            '|' => s.push_str(r"\textbar{}"),
             c => s.push(c),
         }
     }
@@ -645,6 +674,9 @@ pub(super) fn map_chars(text: &str, amp: bool) -> String {
                 s.push('\\');
                 s.push(c);
             }
+            // `|` as a command: the formula may end up in a table cell, where a bare pipe would
+            // split the column.
+            '|' => s.push_str(r"\vert "),
             '&' if amp => s.push('&'),
             '&' => s.push_str(r"\&"),
             '^' => s.push_str(r"\wedge "),
@@ -1144,12 +1176,12 @@ mod tests {
         add(
             "d bars",
             om(&d(r#"<m:begChr m:val="|"/><m:endChr m:val="|"/>"#, &[&x])),
-            r"\left| x \right|",
+            r"\left\vert x \right\vert",
         );
         add(
             "d norm",
             om(&d(r#"<m:begChr m:val="‖"/><m:endChr m:val="‖"/>"#, &[&x])),
-            r"\left\| x \right\|",
+            r"\left\Vert x \right\Vert",
         );
         add(
             "d angle",

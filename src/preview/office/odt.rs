@@ -529,6 +529,9 @@ struct Od<'a> {
     outline: [Option<i64>; 10],
     /// `text:change-id`s of deletion regions.
     del_ids: HashSet<String>,
+    /// Bytes of the table being read (cell text + separators, repeats counted), against the
+    /// output budget: a repeat attribute makes a few bytes of XML stand for many copies.
+    tbl_bytes: usize,
     /// Depth of deleted ranges being read (text is dropped while > 0).
     hidden: usize,
     defs: Vec<(usize, String)>,
@@ -631,6 +634,7 @@ pub(super) fn convert(
         last_by_style: HashMap::new(),
         outline: [None; 10],
         del_ids: HashSet::new(),
+        tbl_bytes: 0,
         hidden: 0,
         defs: Vec::new(),
         math_objects: 0,
@@ -747,6 +751,8 @@ impl<'a> Od<'a> {
             match read_element(&mut rd, &e, empty, &mut budget)? {
                 Tree::Ok(node) => {
                     if hidden_section {
+                        // Not shown, but a deletion range may end in it.
+                        self.skip(&node, 0);
                         continue;
                     }
                     let mut blks = Vec::new();
@@ -796,6 +802,7 @@ impl<'a> Od<'a> {
             "change-start" | "change-end" | "change" => self.change(n),
             name if BLOCK_CONTAINERS.contains(&name) => {
                 if n.attr("display").is_some_and(|v| v.trim() == "none") && name == "section" {
+                    self.skip(n, depth);
                     return;
                 }
                 self.blocks(&n.kids, ctx, depth + 1, out)
@@ -828,7 +835,11 @@ impl<'a> Od<'a> {
 
     /// The paragraphs of a drawing shape (a custom shape, a group ..), in document order.
     fn shape(&mut self, n: &Node, ctx: Ctx, depth: usize, out: &mut Vec<Blk>) {
-        if depth > 30 || self.hidden > 0 {
+        if depth > 30 {
+            return;
+        }
+        if self.hidden > 0 {
+            self.skip(n, depth);
             return;
         }
         for k in n.nodes() {
@@ -848,6 +859,21 @@ impl<'a> Od<'a> {
                         self.del_ids.insert(id.to_string());
                     }
                 }
+            }
+        }
+    }
+
+    /// A subtree that is not shown (a hidden paragraph or section, anything inside a deletion):
+    /// its text is dropped, but the marks of a deletion range are still read -- a `change-end`
+    /// in it would otherwise leave every later paragraph hidden.
+    fn skip(&mut self, n: &Node, depth: usize) {
+        if depth > 60 {
+            return;
+        }
+        for k in n.nodes() {
+            match k.name.as_str() {
+                "change-start" | "change-end" => self.change(k),
+                _ => self.skip(k, depth + 1),
             }
         }
     }
@@ -877,7 +903,10 @@ impl<'a> Od<'a> {
         }
         let mut rows: Vec<Vec<String>> = Vec::new();
         let mut cells = 0usize;
+        // Each table has its own byte count; an enclosing table sees a nested one as cell text.
+        let outer_bytes = std::mem::take(&mut self.tbl_bytes);
         self.table_rows(t, &mut rows, &mut cells, depth, 0);
+        self.tbl_bytes = outer_bytes;
         // A table inside a deleted range has its cells read (the range may end in one) but empty.
         let blank = rows.iter().all(|r| r.iter().all(String::is_empty));
         (!rows.is_empty() && !(blank && self.hidden > 0)).then_some(Blk::Table(rows))
@@ -907,6 +936,8 @@ impl<'a> Od<'a> {
                         .unwrap_or(1)
                         .clamp(1, 10_000);
                     let mut row: Vec<String> = Vec::new();
+                    let mut row_bytes = 0usize;
+                    let mut row_over = false;
                     for cell in c.nodes() {
                         let covered = match cell.name.as_str() {
                             "table-cell" => false,
@@ -925,28 +956,58 @@ impl<'a> Od<'a> {
                             self.blocks(&cell.kids, Ctx::Cell, depth + 1, &mut blks);
                             cell_text(&blks, "<br>")
                         };
-                        for _ in 0..crep {
+                        // The copies are made only once they are known to fit the output budget
+                        // (a repeat count is a few bytes of XML standing for that many cells).
+                        let room = self.c.body_bytes.saturating_sub(self.tbl_bytes + row_bytes);
+                        let each = text.len() + 3;
+                        let fit = crep.min(room / each);
+                        for _ in 0..fit {
                             row.push(text.clone());
+                        }
+                        row_bytes += each * fit;
+                        held(self.tbl_bytes + row_bytes);
+                        if fit < crep {
+                            self.c.truncated = true;
+                            row_over = true;
+                            break;
                         }
                         if row.len() > 16_384 {
                             break;
                         }
                     }
                     // A run of empty repeated rows (a sheet-like table padded to its size) is one row.
-                    let rep = if row.iter().all(String::is_empty) {
+                    let mut rep = if row.iter().all(String::is_empty) {
                         1
                     } else {
                         rep
                     };
+                    let wanted = rep;
+                    // As many repeats as the budget has room for (a row that was cut is kept once).
+                    let room = self.c.body_bytes.saturating_sub(self.tbl_bytes);
+                    if let Some(fit) = room.checked_div(row_bytes) {
+                        rep = rep.min(fit);
+                    }
+                    if row_over {
+                        rep = rep.min(1);
+                    }
+                    let over = row_over || rep < wanted;
+                    if over {
+                        self.c.truncated = true;
+                    }
                     *cells += row.len() * rep;
                     if *cells > self.c.opts.max_table_cells {
                         self.c.truncated = true;
                         return false;
                     }
+                    self.tbl_bytes += row_bytes.saturating_mul(rep);
                     if !row.is_empty() {
                         for _ in 0..rep {
                             rows.push(row.clone());
                         }
+                    }
+                    held(self.tbl_bytes);
+                    if over {
+                        return false;
                     }
                 }
                 "table-header-rows" | "table-rows" | "table-row-group" => {
@@ -1202,6 +1263,8 @@ impl<'a> Od<'a> {
         }
         let ps_style = self.st.para(p.attr("style-name"));
         if ps_style.hidden {
+            // Not shown, but a deletion range may start or end inside it.
+            self.skip(p, depth);
             return;
         }
         let heading = if p.name == "h" {
@@ -1232,7 +1295,7 @@ impl<'a> Od<'a> {
         } = inl;
         // A heading is also what a LibreOffice cross reference `#Text|outline` names.
         if p.name == "h" && bookmarks.len() < 64 {
-            let text = plain_of(&segs);
+            let text = outline_text(&segs);
             if !text.trim().is_empty() {
                 bookmarks.push(format!("{}|outline", text.trim()));
             }
@@ -1328,7 +1391,9 @@ impl<'a> Od<'a> {
                     Some(s) => self.st.char_style(s),
                     None => (Fmt::default(), false),
                 };
-                if !hidden {
+                if hidden {
+                    self.skip(n, depth);
+                } else {
                     self.inline_kids(n, base.over(f), ctx, inl, ps, depth + 1);
                 }
             }
@@ -1392,9 +1457,11 @@ impl<'a> Od<'a> {
                     }
                 }
             }
-            // Comments, the pronunciation of a ruby, text that is not shown, a note's own label.
-            "annotation" | "annotation-end" | "ruby-text" | "hidden-text" | "hidden-paragraph"
-            | "soft-page-break" | "bookmark-end" | "note-citation" => {}
+            // Text that is not shown (its deletion marks still count).
+            "hidden-text" | "hidden-paragraph" => self.skip(n, depth),
+            // Comments, the pronunciation of a ruby, a note's own label.
+            "annotation" | "annotation-end" | "ruby-text" | "soft-page-break" | "bookmark-end"
+            | "note-citation" => {}
             // `svg:title` / `svg:desc` describe a frame (read by it); `text:title` is a field.
             "title" | "desc" if n.prefix != "text" => {}
             // Fields and any other wrapper: their stored text.
@@ -1427,6 +1494,7 @@ impl<'a> Od<'a> {
     fn note(&mut self, n: &Node, ctx: Ctx, inl: &mut Inl, ps: &mut Ps, depth: usize) {
         let _ = ctx;
         if self.hidden > 0 || self.c.in_note {
+            self.skip(n, depth);
             return;
         }
         let Some(body) = n.child("note-body") else {
@@ -1450,7 +1518,10 @@ impl<'a> Od<'a> {
         if text.trim().is_empty() {
             text = "\u{2014}".into();
         }
-        self.defs.push((pos, text.replace('\n', " ")));
+        let text = text.replace('\n', " ");
+        if self.c.keep_note(text.len()) {
+            self.defs.push((pos, text));
+        }
         inl.segs.push(Seg::Raw(format!("[^{pos}]")));
         ps.other = true;
     }
@@ -1460,7 +1531,11 @@ impl<'a> Od<'a> {
     // -----------------------------------------------------------------------------------------
 
     fn frame(&mut self, f: &Node, ctx: Ctx, inl: &mut Inl, ps: &mut Ps, depth: usize) {
-        if self.hidden > 0 || depth > 40 {
+        if depth > 40 {
+            return;
+        }
+        if self.hidden > 0 {
+            self.skip(f, depth);
             return;
         }
         self.c.cur_ctx = ctx;
@@ -1551,14 +1626,18 @@ impl<'a> Od<'a> {
         }
         self.math_objects += 1;
         self.c.math_total += 1;
-        let latex = (self.c.opts.mathml)(&xml, false)
-            .map(|l| l.replace(['\n', '\r'], " ").trim().to_string())
-            .filter(|l| !l.is_empty() && !l.contains('$') && !l.contains(NBSP));
+        let latex = if self.c.cancelled() {
+            None
+        } else {
+            (self.c.opts.mathml)(&xml, false)
+                .map(|l| l.replace(['\n', '\r'], " ").trim().to_string())
+                .filter(|l| !l.is_empty() && !l.contains('$') && !l.contains(NBSP))
+        };
         match latex {
             Some(l) => {
                 self.c.math_latex += 1;
                 ps.math.push((inl.segs.len(), l.clone()));
-                inl.segs.push(Seg::Raw(format!("${l}$")));
+                inl.segs.push(Seg::Math(l));
             }
             None => {
                 // The StarMath source reads like the formula; failing that, its characters.
