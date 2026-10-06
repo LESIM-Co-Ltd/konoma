@@ -2027,6 +2027,7 @@ fn cfg_external_defaults_all_true() {
     assert!(d.video);
     assert!(d.remote_images);
     assert!(d.open_links);
+    assert!(d.office_apps);
     assert!(d.preview_commands);
 
     let e = Config::default().external;
@@ -2036,6 +2037,7 @@ fn cfg_external_defaults_all_true() {
     assert!(e.video);
     assert!(e.remote_images);
     assert!(e.open_links);
+    assert!(e.office_apps);
     assert!(e.preview_commands);
 
     // No `[external]` section at all in the file.
@@ -2046,6 +2048,7 @@ fn cfg_external_defaults_all_true() {
     assert!(cfg.external.video);
     assert!(cfg.external.remote_images);
     assert!(cfg.external.open_links);
+    assert!(cfg.external.office_apps);
     assert!(cfg.external.preview_commands);
 
     // An empty `[external]` table (present but nothing set).
@@ -2056,6 +2059,7 @@ fn cfg_external_defaults_all_true() {
     assert!(cfg2.external.video);
     assert!(cfg2.external.remote_images);
     assert!(cfg2.external.open_links);
+    assert!(cfg2.external.office_apps);
     assert!(cfg2.external.preview_commands);
 }
 
@@ -2105,6 +2109,7 @@ fn cfg_external_each_field_parses_independently() {
         ("video", |e| e.video),
         ("remote_images", |e| e.remote_images),
         ("open_links", |e| e.open_links),
+        ("office_apps", |e| e.office_apps),
         ("preview_commands", |e| e.preview_commands),
     ];
     for (field, getter) in cases {
@@ -2134,6 +2139,7 @@ pdf = false
 video = false
 remote_images = false
 open_links = false
+office_apps = false
 preview_commands = false
 ";
     let cfg: Config = toml::from_str(toml).unwrap();
@@ -2145,6 +2151,7 @@ preview_commands = false
             && !e.video
             && !e.remote_images
             && !e.open_links
+            && !e.office_apps
             && !e.preview_commands
     );
 }

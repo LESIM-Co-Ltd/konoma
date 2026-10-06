@@ -36,6 +36,8 @@ mod md_tasks;
 mod md_text;
 mod media_diff;
 mod media_load;
+mod office_open;
+pub use office_open::OfficeOpenResult;
 mod outline;
 mod paste_jump;
 mod preview_visual;
@@ -745,13 +747,31 @@ pub enum MediaPayload {
     /// `apply_payload` turns it into `App::command_err` for the render side's `[can not preview]`
     /// fallback (`ui/preview.rs`).
     CommandFailed(String),
+    /// An opened spreadsheet (`PreviewKind::Spreadsheet`: its sheet list and the cells of the one
+    /// sheet that was asked for) → goes to `App::workbook`.
+    Workbook(Box<crate::preview::office::Workbook>),
+    /// A spreadsheet that could not be loaded; the reason is mapped to a translated message by the
+    /// render side. Carried as a payload (not the plain `None` failure) so the *reason* travels
+    /// through the same generation-checked channel as success.
+    WorkbookFailed(crate::preview::office::OfficeError),
 }
 
 /// Result of media loading from another thread. Matched by generation via `gen`; results made stale by navigation are discarded.
 pub struct MediaResult {
     gen: u64,
+    /// The result of the (single) workbook load thread: its slot is free again, whatever `gen` is.
+    wb_worker: bool,
     /// None = decode/rasterize failure (the render side shows a fallback).
     payload: Option<MediaPayload>,
+}
+
+/// A workbook load waiting for the running one to end (`App::wb_queued`).
+struct WbRequest {
+    path: PathBuf,
+    locale: crate::preview::office::Locale,
+    sheet: usize,
+    /// The `media_gen` it was asked under; stale (dropped) if that moved on.
+    gen: u64,
 }
 
 /// The geometry a kitty image targets: `(crop rect (x,y,w,h) in source px, display cols, rows)`.
@@ -788,6 +808,11 @@ enum MediaJob {
     /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom). The path is only
     /// the base for relative resources inside the SVG (mermaid output has none).
     SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32),
+    /// Open a spreadsheet and read one sheet of it (path, the display locale that decides
+    /// locale-dependent built-in formats, the 0-based visible sheet to read). Always yields a
+    /// payload: a workbook (every visible sheet listed, the requested one's cells loaded), or the
+    /// reason it could not be opened.
+    Workbook(PathBuf, crate::preview::office::Locale, usize),
     /// Run a non-detached `PreviewKind::Command` delegation (`preview::command::run_capture`).
     /// `as_image` (the resolved `render_as == Some("image")`) decides whether the produced artifact
     /// is decoded as an image (`MediaPayload::Static`) or shown as text (`MediaPayload::CommandText`).
@@ -804,6 +829,14 @@ enum MediaJob {
 impl MediaJob {
     /// Load the actual data (called on a separate thread or via the synchronous fallback). None on failure.
     fn run(self) -> Option<MediaPayload> {
+        self.run_cancellable(None)
+    }
+
+    /// [`Self::run`]; `cancel` is honoured by the workbook load (the other kinds are short).
+    fn run_cancellable(
+        self,
+        cancel: Option<crate::preview::office::Cancel>,
+    ) -> Option<MediaPayload> {
         match self {
             MediaJob::Svg(p, max_px) => {
                 let data = std::fs::read(&p).ok()?;
@@ -842,6 +875,25 @@ impl MediaJob {
             MediaJob::SvgReraster(svg, p, max_px) => {
                 let img = crate::preview::svg::rasterize_bytes(&svg, &p, max_px)?;
                 Some(MediaPayload::Vector { img, svg })
+            }
+            MediaJob::Workbook(p, locale, sheet) => {
+                use crate::preview::office::{
+                    load_workbook_sheet_cancellable, LoadOptions, OfficeError,
+                };
+                let opts = LoadOptions {
+                    locale,
+                    ..LoadOptions::default()
+                };
+                // The readers sit on third-party parsers: a panic on a pathological file becomes a
+                // "corrupt" reason instead of killing the thread (principle #3).
+                let loaded = crate::preview::markdown::catch_silent(|| {
+                    load_workbook_sheet_cancellable(&p, &opts, sheet, cancel)
+                })
+                .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
+                Some(match loaded {
+                    Ok(wb) => MediaPayload::Workbook(Box::new(wb)),
+                    Err(e) => MediaPayload::WorkbookFailed(e),
+                })
             }
             MediaJob::Command {
                 argv,
@@ -1472,10 +1524,6 @@ pub struct App {
     /// Absent = the default (from the `open` attribute + `ui.md_details`). Reset on file/tab change.
     details_open: std::collections::HashMap<usize, bool>,
 
-    /// The matching table cells as a set, for O(1) lookup while rendering (mirrors `tab.search_matches`).
-    /// Kept separate so a large result set does not turn cell drawing into a linear scan.
-    table_search_hits: std::collections::HashSet<(usize, usize)>,
-
     /// Image backend (M2). None if the terminal is unsupported or uninitialized, in which case images fall back to text.
     /// For rendering, ui::preview passes `image` by &mut to StatefulImage. Resize/encode is
     /// offloaded to a separate thread via `img_tx`, and the result is applied in apply_image_resize.
@@ -1556,6 +1604,16 @@ pub struct App {
     /// Parsed CSV/TSV table (Some while a table preview is active and parsing succeeded).
     /// None while not a table, or when parsing failed (then the preview degrades to raw text).
     table_data: Option<crate::preview::table::TableData>,
+    /// The opened spreadsheet while a `PreviewKind::Spreadsheet` preview is active and its worker
+    /// finished successfully: every visible sheet by name, and the cells of **the one sheet on
+    /// screen** (`PerTab::sheet_idx`) — moving to another sheet loads that one and drops this one.
+    /// Lives on `App` (like `table_data`), not on `PerTab`: a sheet can hold up to 4M cells, so
+    /// cloning it into every tab snapshot is not an option — a tab switch re-reads it on the worker
+    /// instead (the sheet number and cursor are `PerTab` state and survive).
+    workbook: Option<Box<crate::preview::office::Workbook>>,
+    /// Why the last spreadsheet load failed (`Some` only while `workbook` is `None`). Drives the
+    /// reason shown on the "can not preview" screen.
+    workbook_error: Option<crate::preview::office::OfficeError>,
     /// Per-tab bundle — see `PerTab` (root/mode/preview target/scroll, table cursor/scroll, git-view
     /// overlay, windowed-preview scroll/caret, image/PDF pan-page, Markdown raw/focus/fence-zoom,
     /// selection/filter/search). `pub(crate)` because ui/main read the 13 fields that used to be
@@ -1677,8 +1735,20 @@ pub struct App {
     md_enc_tx: Option<std::sync::mpsc::Sender<MdEncodeRequest>>,
     /// Media-load generation. Incremented in enter_preview/clear to make old thread results stale.
     media_gen: u64,
+    /// `media_gen`, shared with the running workbook load so it can see that it was superseded
+    /// (every change of `media_gen` goes through `bump_media_gen`).
+    media_gen_shared: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Whether waiting on another thread's media load (used by the render side to show "Loading…").
     media_loading: bool,
+    /// A workbook load is running on its thread. **At most one at a time**: a spreadsheet is read
+    /// in one pass of a parser that can hold gigabytes, so `J` held down must not start one per
+    /// press (see `spawn_workbook_job`).
+    wb_worker_busy: bool,
+    /// The newest workbook load asked for while one was running; it starts when that one ends.
+    wb_queued: Option<WbRequest>,
+    /// Test-only: workbook loads started on a thread.
+    #[cfg(test)]
+    wb_dispatches: u32,
 
     /// Run2 keymap (Surface × key → Action). Built from the config at startup.
     pub keymaps: crate::keymap::KeyMap,
@@ -1870,6 +1940,10 @@ pub struct App {
     /// (paste/duplicate/trash/permanent-delete/drop-transfer). If not attached (tests), `start_file_op`
     /// falls back to computing synchronously, exactly like `spawn_or_sync_statuses`/`_ignored`.
     fileop_tx: Option<std::sync::mpsc::Sender<FileOpResult>>,
+    /// `e` on an Office document: where the background launch chain reports (see `office_open`).
+    office_tx: Option<std::sync::mpsc::Sender<OfficeOpenResult>>,
+    /// How the launch chain starts processes (production = real; tests install a fake).
+    office_runner: office_open::Runner,
     /// Generation of the current/most recent background file operation. Incremented on dispatch;
     /// a result is applied only if it still matches (guards against a stray stale send).
     fileop_gen: u64,
@@ -2806,6 +2880,9 @@ pub(crate) struct PerTab {
     table_cur_col: usize,
     table_top_row: usize,
     table_left_col: usize,
+    /// Which visible sheet (0-based) a spreadsheet preview shows. Clamped to the workbook's sheet
+    /// count whenever a (re)load lands.
+    sheet_idx: usize,
     // The git overlay is also kept per tab (still in git mode after viewing a doc in another tab and coming back).
     git_view: bool,
     git_view_sel: usize,
@@ -2963,7 +3040,13 @@ pub(crate) struct PerTab {
     preview_search: Option<String>,
     search_input: Option<String>,
     search_matches: Vec<(u64, usize, usize)>,
+    /// The search that filled `search_matches` found more hits than it kept (the cap).
+    search_truncated: bool,
     search_idx: usize,
+    /// A table search was confirmed while the spreadsheet it is for was still loading, so it found
+    /// nothing yet: when the sheet arrives it is run and the cursor goes to the first hit (the
+    /// same as confirming it on a loaded sheet). Cleared with the search.
+    search_pending: bool,
 }
 
 impl Default for PerTab {
@@ -2992,6 +3075,7 @@ impl Default for PerTab {
             table_cur_col: 0,
             table_top_row: 0,
             table_left_col: 0,
+            sheet_idx: 0,
             git_view: false,
             git_view_sel: 0,
             git_view_entries: Vec::new(),
@@ -3059,7 +3143,9 @@ impl Default for PerTab {
             preview_search: None,
             search_input: None,
             search_matches: Vec::new(),
+            search_truncated: false,
             search_idx: 0,
+            search_pending: false,
         }
     }
 }
@@ -3122,7 +3208,6 @@ impl App {
             gutter_cache: None,
             md_items: Vec::new(),
             details_open: std::collections::HashMap::new(),
-            table_search_hits: std::collections::HashSet::new(),
             picker: None,
             img_tx: None,
             image: None,
@@ -3146,6 +3231,8 @@ impl App {
             command_err: None,
             media_cache: None,
             table_data: None,
+            workbook: None,
+            workbook_error: None,
             tab: PerTab {
                 id: 1,
                 root: root.clone(),
@@ -3177,7 +3264,12 @@ impl App {
             md_remote_tx: None,
             md_enc_tx: None,
             media_gen: 0,
+            media_gen_shared: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             media_loading: false,
+            wb_worker_busy: false,
+            wb_queued: None,
+            #[cfg(test)]
+            wb_dispatches: 0,
             keymaps,
             pending_leader: None,
             flash: None,
@@ -3228,6 +3320,8 @@ impl App {
             git_graph_picker_set: std::collections::HashSet::new(),
             git_graph_reordered: false,
             fileop_tx: None,
+            office_tx: None,
+            office_runner: office_open::real_runner(),
             fileop_gen: 0,
             fileop_pending: None,
             fileop_total: 0,
@@ -3915,6 +4009,8 @@ impl App {
         self.tab.visual_anchor = None;
         self.clear_filter_state();
         self.search_clear();
+        // A spreadsheet's sheet number belongs to the file shown under the old root.
+        self.tab.sheet_idx = 0;
     }
 
     /// Move to the parent directory (raise the root). For `h`. While filtering, first clear the filter (the normal tree of the current root).
@@ -4067,6 +4163,12 @@ impl App {
         self.tab.diff_scroll_pending = None;
         // Reset image state every time. SVG/GIF start loading on a separate thread (doesn't block the UI).
         self.clear_image();
+        // A new preview target: the previous spreadsheet (if any) and its sheet number are done
+        // for. Must precede `start_media_load` below, whose synchronous fallback can land the new
+        // workbook right away.
+        self.set_workbook(None);
+        self.workbook_error = None;
+        self.tab.sheet_idx = 0;
         // For a PDF, get the page count first (hayro-syntax, pure Rust, no external process, ~a
         // few ms). Now that `hayro` is the first-choice renderer, it can draw any page without an
         // external tool, so "can count ⟹ can draw" holds almost universally (there is no
@@ -4085,7 +4187,7 @@ impl App {
         // that call, and a text-mode `PreviewKind::Command`'s `apply_payload` handler calls
         // `setup_windowed`, which decides whether to open the windowed reader by reading
         // `self.tab.preview_kind` — it must already be the new kind, not whatever was showing before.
-        self.tab.preview_kind = Some(kind.clone());
+        self.set_preview_kind(Some(kind.clone()));
         self.start_media_load(&kind, path);
         self.tab.fence_return = None; // A normal preview transition means the fence-return info is no longer needed
         self.tab.fence_zoom = 1.0;
@@ -4112,8 +4214,8 @@ impl App {
         self.tab.preview_search = None;
         self.tab.search_input = None;
         self.tab.search_matches.clear();
-        self.table_search_hits.clear();
         self.tab.search_idx = 0;
+        self.tab.search_pending = false;
         self.setup_windowed(); // Switches to less-style windowed reading for a large Code/Text
                                // Reset the windowed preview's 2D caret/selection to the start.
         self.tab.preview_cursor_line = 0;
@@ -4324,6 +4426,7 @@ impl App {
             Mode::Preview => self.tab.preview_path.clone(),
         };
         match target {
+            Some(p) if self.try_open_in_office(&p) => {}
             Some(p) => self.pending_edit = Some((p, self.preview_edit_line())),
             None => self.flash = Some(tr(self.lang, crate::i18n::Msg::NoFileToEdit).into()),
         }
@@ -4705,7 +4808,7 @@ impl App {
         self.git_status_for = None;
         self.git_status_dirty = true;
         self.tab.preview_path = None;
-        self.tab.preview_kind = None;
+        self.set_preview_kind(None);
         self.clear_command_out(); // release any delegated-command temp output
         self.clear_image(); // release the graphics state
                             // Leaving the diff surface altogether: nothing will ever poll/land a media diff again until
@@ -4726,10 +4829,13 @@ impl App {
         self.tab.preview_search = None;
         self.tab.search_input = None;
         self.tab.search_matches.clear();
-        self.table_search_hits.clear();
         self.tab.search_idx = 0;
+        self.tab.search_pending = false;
         self.tab.came_from_git_view = false;
         self.table_data = None;
+        self.set_workbook(None);
+        self.workbook_error = None;
+        self.tab.sheet_idx = 0;
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
@@ -4845,6 +4951,9 @@ impl App {
                 | PreviewKind::Svg(_)
                 | PreviewKind::Video(_)
                 | PreviewKind::Pdf(_)
+                // A spreadsheet is parsed on the media worker: a tab switch / mtime-changed
+                // reload must re-read it exactly like the image kinds.
+                | PreviewKind::Spreadsheet(_)
         ) || (matches!(kind, PreviewKind::Mermaid(_) | PreviewKind::MermaidFence(_))
             && self.mermaid_image_mode())
             // A non-detached delegated command (image or text render_as): its output is a
@@ -4879,7 +4988,8 @@ impl App {
         self.tab.pdf_page = 1;
         self.tab.pdf_pages = None;
         // Advance the generation, so an old file's media result that arrives while loading a different file is treated as stale.
-        self.media_gen = self.media_gen.wrapping_add(1);
+        self.bump_media_gen();
+        self.wb_queued = None;
         self.media_loading = false;
         self.vector_reraster_inflight = false;
         // When image state is discarded, also discard the mtime claim (an invariant). Leaving it
@@ -6846,3 +6956,6 @@ mod md_snapshot_tests;
 // directly (a sibling, not a descendant, so those are `pub(super)` there).
 #[cfg(test)]
 mod md_model_snapshot_tests;
+
+#[cfg(test)]
+mod survivor_tests;

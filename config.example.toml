@@ -390,7 +390,7 @@ code_theme = "TwoDark"
 
 # Preview rules are evaluated top to bottom; the first match wins.
 # builtin: a built-in renderer ("markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "csv" | "tsv" |
-#          "archive" | "code" | "text")
+#          "archive" | "spreadsheet" | "code" | "text")
 #   markdown = decorated by konoma's own renderer (code is syntect-highlighted). ```mermaid inside md is composited as a diagram.
 #   mermaid  = a standalone .mmd/.mermaid shown as a diagram. Default is an image (mermaid-rs-renderer → resvg,
 #              pure Rust, full-screen zoom/pan). Set [ui] mermaid="text" for the Unicode box-drawing (mermaid-text).
@@ -410,6 +410,9 @@ code_theme = "TwoDark"
 #   tsv      = tab-separated. Same display/keys as csv (only the delimiter is a tab). Color via [ui] csv_rainbow.
 #   archive  = .zip/.tar/.tar.gz/.tgz listed in the same table renderer (entry name / size / modified date).
 #              Metadata only — nothing is ever extracted. Same hjkl / y→ keys as csv.
+#   spreadsheet = .xlsx/.xlsm/.xltx/.xltm/.xlsb/.xls/.ods shown as a table with each cell in its Excel number
+#              format (dates, currency, percent, ...). Column letters + row numbers; J/K = next/previous sheet.
+#              Same hjkl / y→ keys as csv. Formulas are never evaluated and macros never run.
 # command:  delegate to an external command. {path}=the target file, {out}=an output path (temp file).
 #           An empty (or whitespace-only) command means "no command to delegate to" — the rule
 #           degrades to `[can not preview: <ext>]`, exactly like an unmatched rule. It never falls
@@ -444,6 +447,10 @@ builtin = "csv"
 [[preview.rules]]
 glob = "*.tsv"             # Tab-separated variant.
 builtin = "tsv"
+
+[[preview.rules]]
+glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # Spreadsheet as a table (cells in their Excel formats). J/K = sheet.
+builtin = "spreadsheet"
 
 [[preview.rules]]
 glob = "*.{zip,tar,tgz}"   # Archive listing (name/size/modified) — never extracts anything.
@@ -528,6 +535,7 @@ builtin = "pdf"
 #                    = file paging. Directories are skipped; wraps at the ends.)
 #                  "toggle_outline" (o: open the heading outline of a Markdown preview; Enter jumps to a heading)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
+#                  "sheet_next" "sheet_prev" (J/K on a spreadsheet table: next/previous sheet; only with 2+ visible sheets)
 #   Table        : "table_copy_cell" "table_copy_row" "table_copy_column" (y → c/r/C: copy from a CSV/TSV/archive table)
 #                  "toggle_table_cell" (Enter in a table preview: full-text popup for the cursor cell — the grid
 #                    truncates wide cells with "…", this shows the untruncated value, wrapped and scrollable with
@@ -672,6 +680,10 @@ video            = true   # The external fallback thumbnail extractors (ffmpegth
 remote_images    = true   # Fetching http(s) images referenced from Markdown — the only outbound network call konoma makes.
                            # Done in-process via ureq (rustls), not an external tool.
 open_links       = true   # Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.
+office_apps      = true   # `e` on an Office document (Word/Excel/PowerPoint/ODF: docx xlsx pptx odt ods odp ...) opens it in a GUI app —
+                           # Microsoft Office (macOS only), then LibreOffice, then the OS default (`open`/`xdg-open`) —
+                           # instead of handing the zip to $EDITOR. false opens nothing and says so. An explicit
+                           # `[editor.ext]` entry for the extension always wins.
 preview_commands = true   # Running a `[[preview.rules]] command = "..."` delegation. false makes that rule shape behave
                            # like no rule matched (falls through to `[can not preview]`); builtin renderers are unaffected.
 

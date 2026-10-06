@@ -1,5 +1,11 @@
 use super::*;
 
+/// Most matches an in-preview search records (windowed text and tables alike). A table of
+/// millions of cells can match in all of them: 4 million hits are ~96 MB of positions, copied at
+/// every tab switch. The first hits in reading order are kept; a search collects one hit more than
+/// this to know it was cut (`PerTab::search_truncated`).
+pub(super) const SEARCH_MATCH_CAP: usize = 5000;
+
 impl App {
     /// Whether in-preview search input mode is active (intercepting keys).
     pub fn is_searching(&self) -> bool {
@@ -25,13 +31,19 @@ impl App {
         }
     }
 
+    /// Whether the active search stopped collecting at [`SEARCH_MATCH_CAP`]: the true number of
+    /// matches is then *at least* the one shown.
+    pub fn search_capped(&self) -> bool {
+        self.search_status().is_some() && self.tab.search_truncated
+    }
+
     /// Which preview the in-preview search (`/`) runs against. Each target has its own way of
     /// locating matches and of moving to one, so `search_commit` / `jump_to_match` branch on this.
     fn search_target(&self) -> SearchTarget {
         if self.preview_win.is_some() {
             // Code/Text and the raw Markdown from `R` (the window moves via byte offset).
             SearchTarget::Windowed
-        } else if self.table_data.is_some() {
+        } else if self.grid().is_some() || self.sheet_load_in_flight() {
             SearchTarget::Table
         } else if self.md_cache.is_some() {
             // Decorated Markdown / Mermaid. The search target is **the decorated lines shown on
@@ -51,6 +63,7 @@ impl App {
     /// matching `highlight_query_in_line` so the highlight and the match list never disagree.
     fn md_search_scan(&mut self, q: &str) {
         self.tab.search_matches.clear();
+        self.tab.search_truncated = false;
         let needle = q.to_lowercase();
         let Some(c) = self.md_cache.as_ref() else {
             return;
@@ -64,6 +77,10 @@ impl App {
             let mut i = 0usize;
             while let Some(rel) = lower[i..].find(&needle) {
                 let s = i + rel;
+                if self.tab.search_matches.len() >= SEARCH_MATCH_CAP {
+                    self.tab.search_truncated = true;
+                    return;
+                }
                 self.tab.search_matches.push((0, li, s));
                 i = s + needle.len().max(1);
                 if i >= lower.len() {
@@ -117,27 +134,41 @@ impl App {
     /// Confirm input (Enter): run the query (collect all matching lines) and jump to the first match at or after the current position.
     pub fn search_commit(&mut self) {
         let q = self.tab.search_input.take().unwrap_or_default();
+        // Whatever was waiting for a sheet to arrive is replaced by this confirmation (or, with no
+        // query, by no search at all): an old wait must not run when the sheet lands.
+        self.tab.search_pending = false;
         if q.is_empty() {
             self.tab.preview_search = None;
             self.tab.search_matches.clear();
-            self.table_search_hits.clear();
             return;
         }
-        const CAP: usize = 5000;
+        let cap = SEARCH_MATCH_CAP;
         let target = self.search_target();
+        // A sheet that is being (re)loaded has nothing to search yet (or only cells that are about
+        // to be replaced): remember the query and let the arrival run it (`apply_payload`),
+        // instead of reporting "no match" for a sheet nobody has looked at.
+        if matches!(target, SearchTarget::Table) && self.sheet_load_in_flight() {
+            self.tab.search_matches.clear();
+            self.tab.search_idx = 0;
+            self.tab.preview_search = Some(q);
+            self.tab.search_pending = true;
+            return;
+        }
         match target {
             SearchTarget::Table => self.table_search_scan(&q),
             SearchTarget::Markdown => {
-                self.table_search_hits.clear();
                 self.md_search_scan(&q);
             }
             _ => {
-                self.table_search_hits.clear();
-                self.tab.search_matches = self
+                // One past the cap, to tell a cut-off search from one with exactly the cap.
+                let mut found = self
                     .preview_win
                     .as_mut()
-                    .and_then(|w| w.find_all_matches(&q, CAP).ok())
+                    .and_then(|w| w.find_all_matches(&q, cap + 1).ok())
                     .unwrap_or_default();
+                self.tab.search_truncated = found.len() > cap;
+                found.truncate(cap);
+                self.tab.search_matches = found;
             }
         }
         self.tab.preview_search = Some(q);
@@ -148,14 +179,7 @@ impl App {
         self.tab.search_idx = match target {
             // Table: to the first match at or after the current cell (reading order). Wrap to
             // the top if there is none.
-            SearchTarget::Table => {
-                let (cr, cc) = (self.tab.table_cur_row, self.tab.table_cur_col);
-                self.tab
-                    .search_matches
-                    .iter()
-                    .position(|(_, r, c)| (*r, *c) >= (cr, cc))
-                    .unwrap_or(0)
-            }
+            SearchTarget::Table => self.first_table_match_from_cursor(),
             // Decorated md: to the first match at or after the currently visible top logical
             // line. Wrap to the top if there is none.
             SearchTarget::Markdown => {
@@ -180,6 +204,17 @@ impl App {
         self.jump_to_match();
     }
 
+    /// The index of the first table match at or after the cell cursor (reading order); the first
+    /// one when there is none after it (wraps to the top).
+    pub(super) fn first_table_match_from_cursor(&self) -> usize {
+        let (cr, cc) = (self.tab.table_cur_row, self.tab.table_cur_col);
+        self.tab
+            .search_matches
+            .iter()
+            .position(|(_, r, c)| (*r, *c) >= (cr, cc))
+            .unwrap_or(0)
+    }
+
     /// `n`/`N`: to the next/previous match (cyclic).
     pub fn search_next(&mut self, dir: i32) {
         if self.tab.search_matches.is_empty() {
@@ -195,13 +230,13 @@ impl App {
         self.tab.preview_search = None;
         self.tab.search_input = None;
         self.tab.search_matches.clear();
-        self.table_search_hits.clear();
         self.tab.search_idx = 0;
+        self.tab.search_pending = false;
     }
 
     /// Bring the line of the current occurrence to the top of the display (updates the line-head byte and line number). For moves within the same line,
     /// the top does not change, and only the highlight color (orange) moves to that occurrence (the column is referenced by the render side).
-    fn jump_to_match(&mut self) {
+    pub(super) fn jump_to_match(&mut self) {
         let Some(&(off, a, b)) = self.tab.search_matches.get(self.tab.search_idx) else {
             return;
         };

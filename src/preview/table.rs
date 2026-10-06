@@ -5,9 +5,12 @@
 //! Parsing goes through the `csv` crate so quoted commas, embedded newlines, and
 //! ragged (variable-column) rows are handled correctly instead of a naive split.
 
+use std::borrow::Cow;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+
+use crate::preview::office::Sheet;
 
 /// Cap on the number of data rows read for the preview. CSVs can be arbitrarily large;
 /// we bound memory/parse time and mark the table `truncated` so the UI can say so.
@@ -46,6 +49,86 @@ impl TableData {
     pub fn nrows(&self) -> usize {
         self.rows.len()
     }
+}
+
+/// A read-only view of whatever the table renderer is showing: a parsed CSV/TSV/archive listing
+/// ([`TableData`]) or one sheet of a workbook ([`Sheet`]). Both are borrowed, never converted into
+/// each other (a sheet can hold 4M cells — copying it into `TableData` would double that).
+///
+/// "Rows" always means data rows: a CSV's header record is exposed through [`Grid::header`], and a
+/// sheet has no header record (its header is the column letters, see [`column_letters`]).
+#[derive(Debug, Clone, Copy)]
+pub enum Grid<'a> {
+    /// CSV/TSV or an archive listing.
+    Csv(&'a TableData),
+    /// One sheet of a spreadsheet.
+    Sheet(&'a Sheet),
+}
+
+impl<'a> Grid<'a> {
+    /// Number of data rows.
+    pub fn nrows(&self) -> usize {
+        match self {
+            Grid::Csv(t) => t.nrows(),
+            Grid::Sheet(s) => s.nrows,
+        }
+    }
+
+    /// Number of columns.
+    pub fn ncols(&self) -> usize {
+        match self {
+            Grid::Csv(t) => t.ncols,
+            Grid::Sheet(s) => s.ncols,
+        }
+    }
+
+    /// The header text of `col`: the CSV header cell, or the spreadsheet column letters (`A`, `B`, .. `AA`).
+    pub fn header(&self, col: usize) -> Cow<'a, str> {
+        match self {
+            Grid::Csv(t) => Cow::Borrowed(t.header(col)),
+            Grid::Sheet(_) => Cow::Owned(column_letters(col)),
+        }
+    }
+
+    /// The text shown in a data cell (`""` for an empty/out-of-range cell). For a sheet this is the
+    /// cell as Excel displays it (number format applied).
+    pub fn cell(&self, row: usize, col: usize) -> &'a str {
+        match self {
+            Grid::Csv(t) => t.cell(row, col),
+            Grid::Sheet(s) => s.display(row, col),
+        }
+    }
+
+    /// True when the source was cut off at a limit (CSV row cap; sheet row/column cap).
+    pub fn truncated(&self) -> bool {
+        match self {
+            Grid::Csv(t) => t.truncated,
+            Grid::Sheet(s) => s.rows_truncated || s.cols_truncated,
+        }
+    }
+
+    /// Whether this is a spreadsheet sheet (row-number gutter, cell addresses, no header record).
+    pub fn is_sheet(&self) -> bool {
+        matches!(self, Grid::Sheet(_))
+    }
+}
+
+/// Spreadsheet column letters for a 0-based column: `0 -> A`, `25 -> Z`, `26 -> AA`, `16383 -> XFD`.
+pub fn column_letters(col: usize) -> String {
+    let mut n = col + 1;
+    let mut out = Vec::new();
+    while n > 0 {
+        n -= 1;
+        out.push(b'A' + (n % 26) as u8);
+        n /= 26;
+    }
+    out.reverse();
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// The A1-style address of a 0-based cell (`(2, 1) -> "B3"`).
+pub fn cell_address(row: usize, col: usize) -> String {
+    format!("{}{}", column_letters(col), row + 1)
 }
 
 // Test-only counter of full-file parses, **thread-local** so tests running in parallel don't see each
@@ -110,6 +193,60 @@ pub fn parse(path: &Path, delimiter: u8) -> Result<TableData> {
 mod tests {
     use super::*;
     use crate::test_support::unique_tmp;
+
+    #[test]
+    fn column_letters_follow_the_spreadsheet_scheme() {
+        let cases = [
+            (0, "A"),
+            (1, "B"),
+            (25, "Z"),
+            (26, "AA"),
+            (27, "AB"),
+            (51, "AZ"),
+            (52, "BA"),
+            (701, "ZZ"),
+            (702, "AAA"),
+            (16_383, "XFD"),
+        ];
+        for (col, want) in cases {
+            assert_eq!(column_letters(col), want, "col {col}");
+        }
+    }
+
+    #[test]
+    fn cell_address_is_column_letters_then_one_based_row() {
+        assert_eq!(cell_address(0, 0), "A1");
+        assert_eq!(cell_address(2, 1), "B3");
+        assert_eq!(cell_address(99, 26), "AA100");
+    }
+
+    #[test]
+    fn grid_over_csv_exposes_header_and_data_rows() {
+        let t = TableData {
+            headers: vec!["h1".into(), "h2".into()],
+            rows: vec![vec!["a".into(), "b".into()]],
+            ncols: 2,
+            truncated: true,
+        };
+        let g = Grid::Csv(&t);
+        assert_eq!((g.nrows(), g.ncols()), (1, 2));
+        assert_eq!(g.header(1), "h2");
+        assert_eq!(g.cell(0, 1), "b");
+        assert_eq!(g.cell(5, 5), "");
+        assert!(g.truncated());
+        assert!(!g.is_sheet());
+    }
+
+    #[test]
+    fn grid_over_an_empty_sheet_is_empty_with_letter_headers() {
+        let s = Sheet::default();
+        let g = Grid::Sheet(&s);
+        assert_eq!((g.nrows(), g.ncols()), (0, 0));
+        assert_eq!(g.header(0), "A");
+        assert_eq!(g.cell(0, 0), "");
+        assert!(!g.truncated());
+        assert!(g.is_sheet());
+    }
     use std::io::Write;
 
     /// Returns the sandbox guard alongside the file path — the directory must outlive the

@@ -64,6 +64,10 @@ pub struct ExternalConfig {
     pub remote_images: bool,
     /// Opening URLs/files with the OS handler (`open` on macOS, `xdg-open` elsewhere) — Markdown links, `P`, etc.
     pub open_links: bool,
+    /// `e` on an Office document (Word/Excel/PowerPoint/ODF) opens it in a GUI app — Microsoft Office,
+    /// then LibreOffice, then the OS default — instead of handing the zip to `$EDITOR`. `false` opens
+    /// nothing and says so. An explicit `[editor.ext]` entry for the extension always wins.
+    pub office_apps: bool,
     /// Running a `[[preview.rules]] command = "..."` delegation. `false` makes that rule shape behave
     /// like no rule matched (falls through to `[can not preview]`).
     pub preview_commands: bool,
@@ -79,6 +83,7 @@ impl Default for ExternalConfig {
             video: true,
             remote_images: true,
             open_links: true,
+            office_apps: true,
             preview_commands: true,
         }
     }
@@ -792,7 +797,7 @@ pub struct PreviewConfig {
 pub struct Rule {
     pub glob: Option<String>,
     pub mime: Option<String>,
-    pub builtin: Option<String>, // "markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "archive" | "text"
+    pub builtin: Option<String>, // "markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "archive" | "spreadsheet" | "text"
     pub command: Option<String>, // template: {path} {out}
     pub render_as: Option<String>, // how to treat the command's output: "image" | "text"
     pub detached: bool, // opens in a separate process so it doesn't block the TUI (video, etc.)
@@ -889,6 +894,14 @@ impl Default for PreviewConfig {
                 Rule {
                     glob: Some("*.tsv".into()),
                     builtin: Some("tsv".into()),
+                    ..Rule::empty()
+                },
+                Rule {
+                    // Spreadsheets (Excel / OpenDocument) are shown as a table with the cells formatted
+                    // the way the application shows them. A glob (not a mime) so a deleted file's diff
+                    // still resolves the kind by name.
+                    glob: Some("*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}".into()),
+                    builtin: Some("spreadsheet".into()),
                     ..Rule::empty()
                 },
                 Rule {

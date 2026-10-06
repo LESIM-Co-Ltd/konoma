@@ -126,7 +126,14 @@ you came from, since a worktree's directory rarely does.
   **PDF** (multi-page, navigate with `J`/`K`) rendered to fill the screen.
 - **Table preview**: CSV/TSV render as an aligned, rainbow-column table with a cell cursor;
   **archives** (`.zip`/`.tar`/`.tar.gz`) list their entries — name, size, modified date — in the
-  same grid, without extracting anything.
+  same grid, without extracting anything. **Spreadsheets** (`.xlsx`/`.xlsm`/`.xltx`/`.xltm`/`.xlsb`/
+  `.xls`/`.ods`) open in the same grid with every cell shown in its Excel number format (thousands
+  separators, percent, currency, dates, times), column letters and row numbers; `J`/`K` switch sheets.
+  Rows and columns hidden in Excel are still shown (hidden sheets are not); Excel 365 error values and
+  pivot-table totals appear as saved, and formulas are never recalculated.
+- **Open Office documents in their app**: `e` on a Word / Excel / PowerPoint / OpenDocument file opens it
+  in Microsoft Office, LibreOffice or the OS default instead of handing the zip to `$EDITOR`.
+  (Only spreadsheets have an in-terminal preview so far; Word and PowerPoint files are open-with-`e` only.)
 - **Config-driven delegation**: declare how each format is previewed in TOML — delegate to a
   built-in renderer or an external command. Unsupported formats safely show `[can not preview]`
   full-screen instead of crashing.
@@ -147,7 +154,7 @@ you came from, since a worktree's directory rarely does.
 - **Drag & drop**: drop files from your desktop or another terminal onto the tree and konoma asks
   whether to copy (`c`) or move (`m`) them into the directory under the cursor.
 - **Optional dependencies**: nothing but a plain `cargo install` is required. The tools konoma can
-  use — `git`, `ffmpeg`, `lazygit`, and `jj`/`lazyjj` for the jj backend — are each optional, and a
+  use — `git`, `ffmpeg`, `lazygit`, `jj`/`lazyjj` for the jj backend, and an Office app (Microsoft Office or LibreOffice) for `e` on Office files — are each optional, and a
   missing one costs you that one feature, never the app.
 
 ## Status
@@ -259,7 +266,11 @@ instructions](https://docs.jj-vcs.dev/latest/install-and-setup/) (a prebuilt bin
 - **lazyjj** — the external tool `!` launches inside a jj repository, the way lazygit is for git.
   Any other TUI works too: set `[jj] tool` (e.g. `"jjui"`).
 
-Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV and code need nothing extra — konoma renders
+- **Microsoft Office / LibreOffice** — what `e` launches on a Word, Excel, PowerPoint or OpenDocument file
+  (macOS: Microsoft Office, then LibreOffice, then the default app via `open`; Linux: `libreoffice`, then
+  `soffice`, then `xdg-open`). Optional and only for `e`: the spreadsheet preview itself needs no Office app.
+
+Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets and code need nothing extra — konoma renders
 them itself, in pure Rust. (On macOS only, a PDF the built-in renderer cannot draw falls back to the
 system's own `qlmanage`/`sips` for its first page — already installed, nothing to add.)
 

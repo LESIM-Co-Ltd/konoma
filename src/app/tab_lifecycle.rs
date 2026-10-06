@@ -50,6 +50,14 @@ impl App {
         // the whole bundle at the end — hoist this tab's own saved value first so that happens
         // against the *target* tab's leftover output, not whatever tab was live a moment ago.
         self.tab.command_out = t.command_out.clone();
+        // A spreadsheet's worker reads the sheet this tab was showing, so its sheet number is
+        // needed by `start_media_load` below (the bulk restore at the end comes too late).
+        self.tab.sheet_idx = t.sheet_idx;
+        // The parsed spreadsheet is App-level (too big to clone into every tab snapshot): drop the
+        // previous tab's and let the media block below re-read this tab's on the worker. The sheet
+        // number and cursor come back with `self.tab = t` and are clamped when the workbook lands.
+        self.set_workbook(None);
+        self.workbook_error = None;
         // root/open_dir/entries/selected/show_hidden/tree_viewport/mode/preview_scroll/
         // preview_hscroll/preview_viewport/preview_byte_top/preview_top_line/selection/visual_anchor/
         // tree_filter/filter_input/filter_pool/changed_filter/preview_search/search_input/search_idx:
@@ -70,21 +78,6 @@ impl App {
         self.table_cell_open = false;
         // The <details> open/closed state is also per-document = not carried across tabs.
         self.details_open.clear();
-        // `table_search_hits` is a display-only set derived from `search_matches`. It isn't held in
-        // PerTab (to avoid dual bookkeeping); rebuild it from the restored `search_matches` (still
-        // sitting on `t`) (`self.tab` itself keeps the previous tab's values until `self.tab = t`
-        // at the end, so read `t` directly here — a borrow only, `t` isn't consumed). Empty it for
-        // anything but a table — otherwise another tab's matched-cell coordinates would linger and
-        // the table renderer (which refers to `table_cell_is_hit` unconditionally) would highlight
-        // them by mistake.
-        self.table_search_hits = if matches!(
-            self.tab.preview_kind,
-            Some(PreviewKind::Table { .. }) | Some(PreviewKind::Archive { .. })
-        ) {
-            t.search_matches.iter().map(|&(_, r, c)| (r, c)).collect()
-        } else {
-            std::collections::HashSet::new()
-        };
         // The decoration cache isn't carried over (decorated_lines regenerates it).
         self.md_cache = None;
         // A filter-pool scan started by the tab we are leaving must not land in this one:
@@ -141,6 +134,8 @@ impl App {
                 // revert it to this tab's stale pre-restore leftover — same reasoning as the
                 // `t.pdf_page` clamp above.
                 t.command_out = self.tab.command_out.clone();
+                // Likewise a synchronously landed workbook may have clamped the sheet number.
+                t.sheet_idx = self.tab.sheet_idx;
                 if reused {
                     // Restore doesn't go through apply_payload, so the sharp reraster that would
                     // normally fire there doesn't run. This prevents an SVG/mermaid that left its
@@ -297,7 +292,7 @@ impl App {
         self.tab.mode = Mode::Tree;
         self.clear_image();
         self.tab.preview_path = None;
-        self.tab.preview_kind = None;
+        self.set_preview_kind(None);
         self.tab.preview_scroll = 0;
         self.tab.preview_hscroll = 0;
         self.tab.preview_byte_top = 0;
@@ -323,6 +318,11 @@ impl App {
         self.tab.git_view_sel = 0;
         self.tab.git_view_entries.clear();
         self.tab.came_from_git_view = false;
+        // A new tab shows no spreadsheet (the source tab's was snapshotted by save_active; its
+        // workbook is re-read on the worker when that tab is activated again).
+        self.set_workbook(None);
+        self.workbook_error = None;
+        self.tab.sheet_idx = 0;
         // A new tab also starts the diff-view state from scratch (part of the PerTab duplication
         // set) — otherwise it would silently inherit whichever presentation the tab it was opened
         // from happened to be showing, despite having no diff of its own open at all yet.
