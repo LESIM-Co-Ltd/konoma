@@ -844,7 +844,7 @@ fn footnotes_and_endnotes_are_numbered_in_order_of_reference() {
 }
 
 #[test]
-fn a_note_body_keeps_its_formatting_and_several_paragraphs_become_one_line() {
+fn a_note_body_keeps_its_formatting_and_each_paragraph_is_a_line() {
     let auto = text_style("B", BOLD, None);
     let body = p(&format!(
         r#"x<text:note text:note-class="footnote"><text:note-body><text:p>a {} *s*</text:p><text:p>second</text:p></text:note-body></text:note>"#,
@@ -852,7 +852,7 @@ fn a_note_body_keeps_its_formatting_and_several_paragraphs_become_one_line() {
     ));
     assert_eq!(
         md_auto(&body, &auto),
-        "x[^1]\n\n[^1]: a **bold** \\*s\\* second"
+        "x[^1]\n\n[^1]: a **bold** \\*s\\*\\\n    second"
     );
 }
 
@@ -1051,11 +1051,11 @@ fn text_a_conditional_or_hidden_field_does_not_leak_its_condition() {
 }
 
 #[test]
-fn ruby_shows_the_base_text_only() {
+fn ruby_shows_the_base_text_and_its_reading() {
     let body = p(
         r#"<text:ruby><text:ruby-base>漢字</text:ruby-base><text:ruby-text>かんじ</text:ruby-text></text:ruby>です"#,
     );
-    assert_eq!(md(&body), "漢字です");
+    assert_eq!(md(&body), "漢字（かんじ）です");
 }
 
 #[test]

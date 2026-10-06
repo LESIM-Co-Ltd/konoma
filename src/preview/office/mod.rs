@@ -13,6 +13,7 @@
 pub mod container;
 pub mod docx;
 mod docx_styles;
+mod docx_symbols;
 mod docx_xml;
 pub mod fmt_ods;
 pub mod fmt_xls;
@@ -129,6 +130,8 @@ mod tests_docx_lists;
 mod tests_docx_more;
 #[cfg(test)]
 mod tests_docx_robust;
+#[cfg(test)]
+mod tests_fidelity;
 #[cfg(test)]
 mod tests_limits;
 #[cfg(test)]

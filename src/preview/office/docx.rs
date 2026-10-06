@@ -7,25 +7,31 @@
 //! | Word | Markdown |
 //! |---|---|
 //! | paragraph style with `outlineLvl` (or named `Heading n` / `見出し n`), direct `outlineLvl` | `#` .. `######` |
-//! | bold / italic / strike (`w:b` `w:i` `w:strike` `w:dstrike`, character and paragraph styles, `val=0`) | `**` `*` `~~` |
+//! | bold / italic / strike (`w:b` `w:i` `w:strike` `w:dstrike`, character and paragraph styles, document defaults, `val=0`) | `**` `*` `~~` |
+//! | superscript / subscript (`w:vertAlign`, inherited like bold) | `<sup>` / `<sub>` (konoma draws `x²`, `H₂O`) |
 //! | `w:br` / `w:cr` | hard line break; a page / column break ends the paragraph |
 //! | `w:tab` | four no-break spaces |
 //! | bullets | a real `- ` list (nested by indentation) |
 //! | decimal `%N.` numbering | a real `N. ` list, **with the number Word shows** |
 //! | every other number format (letters, roman, kana, `①`, `第1条`, `(a)`, multi-level `1.1`) | a paragraph that starts with Word's own label text |
-//! | `w:tbl` | GFM table (merged cells: value top-left, covered cells empty; nested tables flattened) |
+//! | `w:tbl` | GFM table (merged cells: value top-left, covered cells empty; a row that starts late (`w:gridBefore`) starts with empty cells; nested tables flattened) |
 //! | pictures (`a:blip`, VML `v:imagedata`) | `![alt](office-img://<hash>/<name>)` + [`DocImage`] |
-//! | footnotes / endnotes | `[^n]` + `[^n]: text` |
+//! | footnotes / endnotes | `[^n]` + `[^n]: text` (the paragraphs of a note are lines of it) |
+//! | symbol fonts (`w:sym`, runs in Symbol / Wingdings ..) | the Unicode character they draw (`☑`, `✓`, `α`); a code the tables do not know is `•` |
+//! | legacy form fields (`FORMCHECKBOX`, `FORMDROPDOWN`, `FORMTEXT`) | `☒` / `☐`, the chosen entry, the default text |
+//! | charts, SmartArt | `[chart: title]`, `[SmartArt]` (the file has no picture of them) |
+//! | `w:altChunk` (embedded HTML / RTF) | `[embedded document: name]` |
 //! | hyperlinks, `HYPERLINK` fields, bookmarks | `[text](url)` / `[text](#heading-slug)` |
 //! | fields (`fldSimple`, `fldChar`) | the stored result text |
 //! | text boxes / shapes | their paragraphs, after the paragraph holding them |
 //! | `mc:AlternateContent` | the `Choice` (never the `Fallback`) |
-//! | `w:sdt`, `w:smartTag`, `w:customXml`, `w:ruby` | their content (ruby: the base text) |
+//! | `w:sdt`, `w:smartTag`, `w:customXml` | their content |
+//! | `w:ruby` | the base text, then its reading in brackets (`漢字（かんじ）`) |
 //! | `m:oMath` / `m:oMathPara` | `$latex$` / `$$latex$$` via `omml::to_latex`; the formula's characters when it cannot convert |
 //!
 //! Tracked changes are shown as the **final** version (`w:ins` / `w:moveTo` kept; `w:del` /
-//! `w:moveFrom` dropped). Comments, headers and footers are not shown. Hidden text (`w:vanish`) is
-//! not shown.
+//! `w:moveFrom` dropped). Comments, headers and footers are not shown. Hidden text (`w:vanish`, also from a
+//! character style, a paragraph style or the document defaults) is not shown.
 //!
 //! # Why a list label is the document's own text (design decision)
 //!
@@ -54,7 +60,8 @@ use quick_xml::events::Event;
 use zip::ZipArchive;
 
 use super::container::{self, Limits};
-use super::docx_styles::{direct_num, format_number, render_label, Fmt, Numbering, Styles};
+use super::docx_styles::{direct_num, format_number, render_label, Fmt, Numbering, Styles, Vert};
+use super::docx_symbols::{map_run_text, map_sym};
 use super::docx_xml::{read_element, to_xml, Budget, Kid, Node, Tree};
 use super::fmt_xlsx::{attr, resolve_target, xml_err, XmlReader};
 use super::workbook::Cancel;
@@ -324,6 +331,9 @@ struct F {
     b: bool,
     i: bool,
     s: bool,
+    /// Superscript / subscript: written as `<sup>` / `<sub>`, which konoma draws as Unicode
+    /// super- / subscript characters when it can.
+    v: Vert,
 }
 
 #[derive(Debug, Clone)]
@@ -407,6 +417,50 @@ struct Field {
     instr: String,
     phase: Phase,
     link_open: bool,
+    /// A legacy form field (`w:ffData` of the `begin` mark): what Word shows when the field holds
+    /// no result text of its own.
+    form: Option<String>,
+    /// `inl.segs.len()` when the result began (a result that added nothing leaves the field empty).
+    result_from: usize,
+}
+
+/// What a legacy form field (`FORMCHECKBOX`, `FORMDROPDOWN`, `FORMTEXT`) shows, from the
+/// `w:ffData` of its `begin` mark.
+fn form_field_text(ff: &Node) -> Option<String> {
+    if let Some(cb) = ff.child("checkBox") {
+        // The state: `w:checked` when present (a bare element is true), else `w:default`.
+        let on = cb
+            .toggle("checked")
+            .or_else(|| {
+                cb.child("default")
+                    .map(|_| cb.toggle("default").unwrap_or(false))
+            })
+            .unwrap_or(false);
+        return Some(if on { "\u{2612}" } else { "\u{2610}" }.to_string());
+    }
+    if let Some(dd) = ff.child("ddList") {
+        let pick = |name: &str| {
+            dd.child(name)
+                .and_then(|n| n.attr("val"))
+                .and_then(|v| v.trim().parse::<usize>().ok())
+        };
+        let idx = pick("result").or_else(|| pick("default")).unwrap_or(0);
+        return dd
+            .nodes()
+            .filter(|n| n.name == "listEntry")
+            .nth(idx)
+            .and_then(|n| n.attr("val"))
+            .map(clean)
+            .filter(|t| !t.trim().is_empty());
+    }
+    if let Some(ti) = ff.child("textInput") {
+        return ti
+            .child("default")
+            .and_then(|n| n.attr("val"))
+            .map(clean)
+            .filter(|t| !t.trim().is_empty());
+    }
+    None
 }
 
 /// What a paragraph is.
@@ -610,7 +664,8 @@ impl Conv<'_> {
         for (n, text) in &defs {
             let line = format!("[^{n}]: {text}");
             if md.len() + line.len() + 2 > opts.max_markdown_bytes
-                || md.matches('\n').count() + 2 > opts.max_markdown_lines
+                || md.matches('\n').count() + line.matches('\n').count() + 2
+                    > opts.max_markdown_lines
             {
                 conv.truncated = true;
                 break;
@@ -660,6 +715,13 @@ fn clean(s: &str) -> String {
             c => Some(c),
         })
         .collect()
+}
+
+/// Whether `c` is written full-width (kanji, kana, hangul, full-width forms): what takes full-width
+/// brackets.
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x2E80..=0x9FFF | 0xAC00..=0xD7AF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF | 0x20000..=0x2FFFF)
 }
 
 fn is_punct(c: char) -> bool {
@@ -857,9 +919,22 @@ fn guard_display(latex: &str) -> String {
     }
 }
 
-/// A paragraph that is only `---` / `***` / `___` would be drawn as a rule whatever its escapes;
-/// a zero-width space in front keeps it text.
+/// A line that is only `---` / `***` / `___` would be drawn as a rule whatever its escapes; a
+/// zero-width space in front keeps it text. Applied to **every line** of a paragraph (the first and
+/// each one after a hard line break): all of them begin a line for the Markdown reader, and the
+/// other block markers (`#`, `>`, `-`, `+`, `1.`, `=`) are escaped at every line start by
+/// [`emit`] already.
 fn guard_rule(text: String) -> String {
+    if !text.contains('\n') {
+        return guard_rule_line(text);
+    }
+    text.split('\n')
+        .map(|l| guard_rule_line(l.to_string()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn guard_rule_line(text: String) -> String {
     let core: String = text
         .chars()
         .filter(|c| !c.is_whitespace() && *c != '\\')
@@ -1125,7 +1200,7 @@ fn emit_plain(segs: &[Seg], line_start: bool, ce: Option<CellEsc>, label: bool) 
             It::O(_) => {}
             It::T(raw, f) => {
                 let marks = marks_of(*f, cell);
-                if marks.is_empty() {
+                if marks.is_empty() && f.v == Vert::Base {
                     let text = if ls {
                         raw.trim_start_matches(char::is_whitespace)
                     } else {
@@ -1160,7 +1235,8 @@ fn emit_plain(segs: &[Seg], line_start: bool, ce: Option<CellEsc>, label: bool) 
                 } else {
                     None
                 };
-                if lead_ws.is_empty() {
+                // (Punctuation is moved out of the emphasis markers only; a bare `<sup>` has none.)
+                if lead_ws.is_empty() && !marks.is_empty() {
                     if let (Some(p), Some(c)) = (prev, core.chars().next()) {
                         if !p.is_whitespace() && !is_punct(p) && is_punct(c) {
                             lead_extra = &core[..c.len_utf8()];
@@ -1168,7 +1244,7 @@ fn emit_plain(segs: &[Seg], line_start: bool, ce: Option<CellEsc>, label: bool) 
                         }
                     }
                 }
-                if trail_ws.is_empty() {
+                if trail_ws.is_empty() && !marks.is_empty() {
                     let next = first_char_class(items.get(idx + 1));
                     if let (Some(n), Some(c)) = (next, core.chars().next_back()) {
                         if !n.is_whitespace() && !is_punct(n) && is_punct(c) && !core.is_empty() {
@@ -1189,7 +1265,14 @@ fn emit_plain(segs: &[Seg], line_start: bool, ce: Option<CellEsc>, label: bool) 
                     out.push_str(&esc(&plain_lead, ls));
                 }
                 out.push_str(marks);
+                let (open, close) = match f.v {
+                    Vert::Sup => ("<sup>", "</sup>"),
+                    Vert::Sub => ("<sub>", "</sub>"),
+                    Vert::Base => ("", ""),
+                };
+                out.push_str(open);
                 out.push_str(&esc(core, false));
+                out.push_str(close);
                 out.push_str(&marks.chars().rev().collect::<String>());
                 let plain_trail = format!("{trail_extra}{trail_ws}");
                 if !plain_trail.is_empty() {
@@ -1246,7 +1329,13 @@ fn plain_of(segs: &[Seg]) -> String {
     let mut s = String::new();
     for g in segs {
         match g {
-            Seg::Text(t, _) | Seg::Math(t) => s.push_str(t),
+            Seg::Text(t, f) => match f.v {
+                // What the renderer draws for `<sup>2</sup>` is `²` (a different letter to the slug).
+                Vert::Sup => s.push_str(&vertical_chars(t, sup_char)),
+                Vert::Sub => s.push_str(&vertical_chars(t, sub_char)),
+                Vert::Base => s.push_str(t),
+            },
+            Seg::Math(t) => s.push_str(t),
             Seg::Break => s.push(' '),
             Seg::Raw(r) => {
                 if let Some(n) = r
@@ -1261,6 +1350,59 @@ fn plain_of(segs: &[Seg]) -> String {
         }
     }
     s
+}
+
+/// Superscript form of a character, as konoma's renderer draws `<sup>` (kept in step with
+/// `markdown.rs::sup_char` by a test).
+fn sup_char(c: char) -> Option<char> {
+    Some(match c {
+        '0'..='9' => [
+            '\u{2070}', '\u{b9}', '\u{b2}', '\u{b3}', '\u{2074}', '\u{2075}', '\u{2076}',
+            '\u{2077}', '\u{2078}', '\u{2079}',
+        ][c as usize - '0' as usize],
+        '+' => '\u{207a}',
+        '-' => '\u{207b}',
+        '=' => '\u{207c}',
+        '(' => '\u{207d}',
+        ')' => '\u{207e}',
+        'n' => '\u{207f}',
+        'i' => '\u{2071}',
+        _ => return None,
+    })
+}
+
+/// Subscript form of a character (see [`sup_char`]).
+fn sub_char(c: char) -> Option<char> {
+    Some(match c {
+        '0'..='9' => [
+            '\u{2080}', '\u{2081}', '\u{2082}', '\u{2083}', '\u{2084}', '\u{2085}', '\u{2086}',
+            '\u{2087}', '\u{2088}', '\u{2089}',
+        ][c as usize - '0' as usize],
+        '+' => '\u{208a}',
+        '-' => '\u{208b}',
+        '=' => '\u{208c}',
+        '(' => '\u{208d}',
+        ')' => '\u{208e}',
+        _ => return None,
+    })
+}
+
+/// `t` in the vertical form when every character has one, else unchanged (what the renderer does).
+fn vertical_chars(t: &str, f: impl Fn(char) -> Option<char>) -> String {
+    // (Whitespace around the text is written outside the tags, so it is not part of the match.)
+    let core = t.trim();
+    let lead = &t[..t.len() - t.trim_start().len()];
+    let trail = &t[t.trim_end().len()..];
+    match core.chars().map(f).collect::<Option<String>>() {
+        Some(m) if !core.is_empty() => format!("{lead}{m}{trail}"),
+        _ => t.to_string(),
+    }
+}
+
+/// Test hook: the vertical form of `t` the slug computation uses.
+#[cfg(test)]
+pub(super) fn vertical_for_test(t: &str, sup: bool) -> String {
+    vertical_chars(t, if sup { sup_char } else { sub_char })
 }
 
 /// The text of `segs` without anything that is not a character of the heading (a note mark, a
@@ -1307,7 +1449,32 @@ fn code_span(t: &str) -> String {
 
 /// A block as one inline string (a table cell or a footnote). `br` joins lines.
 fn cell_text(blks: &[Blk], br: &str) -> String {
-    let mut parts: Vec<String> = Vec::new();
+    blk_strings(blks, br, false)
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect::<Vec<_>>()
+        .join(br)
+}
+
+/// The body of a footnote / endnote as the text after `[^n]: `. konoma's footnote reader takes a
+/// definition of one paragraph with indented continuation lines (a blank line followed by an
+/// indented paragraph is drawn as code and the whole note is left unnumbered), so the paragraphs
+/// of a note are lines of it, each on its own line: a backslash hard break (the reader trims the
+/// two spaces of the other kind off the first line) and the four-space indent.
+fn note_text(blks: &[Blk]) -> String {
+    const BREAK: &str = "\\\n    ";
+    blk_strings(blks, "\n", true)
+        .into_iter()
+        .map(|(s, _)| s.replace('\n', BREAK))
+        .collect::<Vec<_>>()
+        .join(BREAK)
+}
+
+/// The blocks as inline strings, one per non-empty block (`br` joins the lines of a block); the
+/// flag says the block is a list item. `note`: the text goes to a footnote, whose lines the
+/// Markdown reader parses (a `1.` at a line start is escaped), not to a table cell.
+fn blk_strings(blks: &[Blk], br: &str, note: bool) -> Vec<(String, bool)> {
+    let mut parts: Vec<(String, bool)> = Vec::new();
     for b in blks {
         let s = match b {
             Blk::Heading { text, .. } => format!("**{}**", text.replace('\n', " ")),
@@ -1316,7 +1483,9 @@ fn cell_text(blks: &[Blk], br: &str) -> String {
                 let text = it.text.replace('\n', br);
                 match &it.marker {
                     Marker::Bullet => format!("\u{2022} {text}"),
+                    Marker::Ordered(n) if note => format!("{n}\\. {text}"),
                     Marker::Ordered(n) => format!("{n}. {text}"),
+                    Marker::Literal if note => format!("{} {text}", escape(&it.label, true)),
                     Marker::Literal => format!(
                         "{} {text}",
                         esc_text(&it.label, false, true, CellEsc::default())
@@ -1339,10 +1508,10 @@ fn cell_text(blks: &[Blk], br: &str) -> String {
             Blk::Math(l) => format!("${l}$"),
         };
         if !s.trim().is_empty() {
-            parts.push(s.trim().to_string());
+            parts.push((s.trim().to_string(), matches!(b, Blk::Item(_))));
         }
     }
-    parts.join(br)
+    parts
 }
 
 /// A formula for a table cell: no `|` (the converters write `\vert`; this is the net for what
@@ -1536,12 +1705,10 @@ impl<'a> Conv<'a> {
             let mut blks = Vec::new();
             self.blocks(&node.kids, Ctx::Note, 0, &mut blks);
             self.flush_carry(&mut blks, Ctx::Note);
-            let mut text = cell_text(&blks, " ");
+            let mut text = note_text(&blks);
             if text.trim().is_empty() {
                 text = "\u{2014}".into();
             }
-            // A note must stay one Markdown line.
-            let text = text.replace('\n', " ");
             if !self.keep_note(text.len()) {
                 break;
             }
@@ -1875,6 +2042,24 @@ impl<'a> Conv<'a> {
                     self.blocks(&c.kids, ctx, depth + 1, out);
                 }
             }
+            // An embedded document (HTML, RTF, another docx) that Word merges into the page: not
+            // read here, so say that it stood here.
+            "altChunk" => {
+                self.flush_carry(out, ctx);
+                let name = n
+                    .rel_attr("id")
+                    .and_then(|id| self.rels.get(id))
+                    .map(|r| r.target.rsplit('/').next().unwrap_or("").to_string())
+                    .unwrap_or_default();
+                let name: String = clean(&name).chars().take(80).collect();
+                self.cur_ctx = ctx;
+                let label = if name.trim().is_empty() {
+                    "embedded document".to_string()
+                } else {
+                    format!("embedded document: {}", name.trim())
+                };
+                out.push(Blk::Para(self.placeholder(&label)));
+            }
             _ => {}
         }
     }
@@ -1892,6 +2077,22 @@ impl<'a> Conv<'a> {
                 continue;
             }
             let mut row: Vec<String> = Vec::new();
+            // `w:gridBefore`: the row starts that many grid columns in (no cells before it). The
+            // columns are empty cells so the others stay under their own columns. (`w:gridAfter`
+            // needs nothing: a short row is padded when the table is written.)
+            let before = tr
+                .child("trPr")
+                .and_then(|p| p.child("gridBefore"))
+                .and_then(|g| g.attr("val"))
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(0)
+                .min(64);
+            cells += before;
+            if cells > self.opts.max_table_cells {
+                self.truncated = true;
+                break 'rows;
+            }
+            row.resize(before, String::new());
             let mut tcs: Vec<&Node> = Vec::new();
             collect_cells(tr, &mut tcs, 0);
             for tc in tcs {
@@ -2191,6 +2392,7 @@ impl<'a> Conv<'a> {
             b: f.bold.unwrap_or(false),
             i: f.italic.unwrap_or(false),
             s: f.strike.unwrap_or(false),
+            v: f.vert.unwrap_or_default(),
         };
         inl.segs.push(Seg::Text(s.to_string(), fmt));
     }
@@ -2227,8 +2429,10 @@ impl<'a> Conv<'a> {
                     inl.segs.push(Seg::LinkClose);
                 }
             }
-            "ins" | "moveTo" | "smartTag" | "customXml" | "dir" | "bdo" | "sdtContent" | "ruby"
-            | "rubyBase" => self.inline_children(n, base, inl, depth + 1),
+            "ruby" => self.ruby(n, base, inl, depth + 1),
+            "ins" | "moveTo" | "smartTag" | "customXml" | "dir" | "bdo" | "sdtContent" => {
+                self.inline_children(n, base, inl, depth + 1)
+            }
             "sdt" => {
                 if let Some(c) = n.child("sdtContent") {
                     self.inline_children(c, base, inl, depth + 1);
@@ -2250,6 +2454,42 @@ impl<'a> Conv<'a> {
             "oMathPara" => self.math(n, true, inl),
             _ => {}
         }
+    }
+
+    /// `w:ruby`: the base text, then its reading in brackets (full-width after a CJK base, so
+    /// `漢字（かんじ）`; the reading is text the reader would otherwise lose).
+    fn ruby(&mut self, n: &Node, fmt: Fmt, inl: &mut Inl, depth: usize) {
+        if depth > 60 {
+            return;
+        }
+        let start = inl.segs.len();
+        if let Some(b) = n.child("rubyBase") {
+            self.inline_children(b, fmt, inl, depth + 1);
+        }
+        let mut reading = String::new();
+        if let Some(rt) = n.child("rt") {
+            collect_t_text(rt, &mut reading, 0);
+        }
+        let last = inl.segs[start..].iter().rev().find_map(|g| match g {
+            Seg::Text(t, _) => t.chars().next_back(),
+            _ => None,
+        });
+        self.push_reading(inl, &reading, last, fmt);
+    }
+
+    /// The reading of a ruby, bracketed after its base text (`last`: the base's last character).
+    fn push_reading(&self, inl: &mut Inl, reading: &str, last: Option<char>, fmt: Fmt) {
+        let reading = clean(reading);
+        let reading = reading.trim();
+        if reading.is_empty() || self.in_instr() {
+            return;
+        }
+        let text = if last.is_some_and(is_cjk) {
+            format!("\u{FF08}{reading}\u{FF09}")
+        } else {
+            format!(" ({reading})")
+        };
+        self.push_text(inl, &text, fmt);
     }
 
     fn math(&mut self, n: &Node, display: bool, inl: &mut Inl) {
@@ -2328,9 +2568,6 @@ impl<'a> Conv<'a> {
 
     fn run(&mut self, r: &Node, base: Fmt, inl: &mut Inl, depth: usize) {
         let rpr = r.child("rPr");
-        let hidden = rpr.is_some_and(|p| {
-            p.toggle("vanish").unwrap_or(false) || p.toggle("specVanish").unwrap_or(false)
-        });
         let mut fmt = base;
         if let Some(rpr) = rpr {
             if let Some(id) = rpr.child("rStyle").and_then(|s| s.attr("val")) {
@@ -2338,6 +2575,10 @@ impl<'a> Conv<'a> {
             }
             fmt = fmt.over(Fmt::from_rpr(rpr));
         }
+        // Hidden by the run itself, its character style, its paragraph style or the document
+        // defaults (`w:vanish`, with `w:val="0"` switching an inherited one off).
+        let hidden = fmt.hidden.unwrap_or(false)
+            || rpr.is_some_and(|p| p.toggle("specVanish").unwrap_or(false));
         self.run_children(r, fmt, hidden, inl, depth);
     }
 
@@ -2357,7 +2598,7 @@ impl<'a> Conv<'a> {
                     } else {
                         raw.trim().to_string()
                     };
-                    let t = clean(&t);
+                    let t = clean(&map_run_text(&t, fmt.font));
                     self.push_text(inl, &t, fmt);
                 }
                 "tab" | "ptab" => {
@@ -2387,12 +2628,15 @@ impl<'a> Conv<'a> {
                 }
                 "sym" => {
                     if !hidden {
+                        // `w:sym`: a character of a (symbol) font. Mapped to what it draws; one the
+                        // tables do not know is a visible substitute, never nothing.
                         if let Some(ch) = c
                             .attr("char")
                             .and_then(|v| u32::from_str_radix(v.trim(), 16).ok())
                             .and_then(char::from_u32)
-                            .filter(|&ch| (' '..'\u{E000}').contains(&ch))
+                            .filter(|&ch| ch >= ' ')
                         {
+                            let ch = map_sym(c.attr("font").unwrap_or(""), ch);
                             let s = clean(&ch.to_string());
                             self.push_text(inl, &s, fmt);
                         }
@@ -2439,13 +2683,7 @@ impl<'a> Conv<'a> {
                         self.run_children(ch, fmt, hidden, inl, depth + 1);
                     }
                 }
-                "ruby" => {
-                    if let Some(b) = c.child("rubyBase") {
-                        for rr in b.nodes() {
-                            self.inline_node(rr, fmt, inl, depth + 1);
-                        }
-                    }
-                }
+                "ruby" if !hidden => self.ruby(c, fmt, inl, depth + 1),
                 _ => {}
             }
         }
@@ -2459,6 +2697,8 @@ impl<'a> Conv<'a> {
                         instr: String::new(),
                         phase: Phase::Instr,
                         link_open: false,
+                        form: c.child("ffData").and_then(form_field_text),
+                        result_from: 0,
                     });
                 }
             }
@@ -2470,6 +2710,7 @@ impl<'a> Conv<'a> {
                 let dest = dest.map(|h| self.field_dest(h));
                 if let Some(f) = self.fields.last_mut() {
                     f.phase = Phase::Result;
+                    f.result_from = inl.segs.len();
                     if let Some(d) = dest {
                         f.link_open = true;
                         inl.segs.push(Seg::LinkOpen(d));
@@ -2480,6 +2721,12 @@ impl<'a> Conv<'a> {
                 if let Some(f) = self.fields.pop() {
                     if f.link_open {
                         inl.segs.push(Seg::LinkClose);
+                    }
+                    // A form field with no result of its own is drawn from its form data: a check
+                    // box as its box, a drop-down as the chosen entry.
+                    let empty = f.phase == Phase::Instr || inl.segs.len() <= f.result_from;
+                    if let (true, Some(text)) = (empty, &f.form) {
+                        self.push_text(inl, text, Fmt::default());
                     }
                 }
             }
@@ -2506,6 +2753,24 @@ impl<'a> Conv<'a> {
         {
             let md = self.placeholder(&alt);
             inl.segs.push(Seg::Raw(md));
+        } else if found.embeds.is_empty() && found.textboxes.is_empty() {
+            // A chart or a SmartArt graphic has no picture in the file and often no description:
+            // show that something stood here (the chart's title when it has one).
+            let label = match found.graphic {
+                Some(Graphic::Chart) => {
+                    let title = found.chart_rid.as_deref().and_then(|r| self.chart_title(r));
+                    Some(match title {
+                        Some(t) => format!("chart: {t}"),
+                        None => "chart".to_string(),
+                    })
+                }
+                Some(Graphic::SmartArt) => Some("SmartArt".to_string()),
+                _ => None,
+            };
+            if let Some(l) = label {
+                let md = self.placeholder(&l);
+                inl.segs.push(Seg::Raw(md));
+            }
         }
         for tb in &found.textboxes {
             if depth > 30 {
@@ -2515,6 +2780,53 @@ impl<'a> Conv<'a> {
             let ctx = self.cur_ctx;
             self.blocks(&tb.kids, ctx, depth + 8, &mut blks);
             inl.extras.append(&mut blks);
+        }
+    }
+
+    /// The title of the chart stored in the part `rid` names (`c:title` text), bounded.
+    fn chart_title(&mut self, rid: &str) -> Option<String> {
+        let rel = self.rels.get(rid)?;
+        if rel.external {
+            return None;
+        }
+        let part = rel.target.clone();
+        let r = self.media.part(&part, 512 * 1024).ok()??;
+        let mut rd = XmlReader::new(r.take(512 * 1024));
+        let mut buf = Vec::new();
+        // Elements open: `c:chartSpace` (1) > `c:chart` (2) > `c:title`: the chart's own title, not
+        // the title of an axis or a series.
+        let mut depth = 0usize;
+        loop {
+            buf.clear();
+            let ev = rd.read_event_into(&mut buf).ok()?;
+            let (e, empty) = match ev {
+                Event::Start(e) => (e.into_owned(), false),
+                Event::Empty(e) => (e.into_owned(), true),
+                Event::End(_) => {
+                    depth = depth.saturating_sub(1);
+                    continue;
+                }
+                Event::Eof => return None,
+                _ => continue,
+            };
+            if e.local_name().as_ref() != b"title" || depth != 2 {
+                if !empty {
+                    depth += 1;
+                }
+                continue;
+            }
+            let mut budget = Budget::new(5_000, 16 * 1024);
+            let Ok(Tree::Ok(node)) = read_element(&mut rd, &e, empty, &mut budget) else {
+                return None;
+            };
+            let mut text = String::new();
+            collect_t_text(&node, &mut text, 0);
+            let text: String = clean(&text)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let text: String = text.chars().take(200).collect();
+            return (!text.is_empty()).then_some(text);
         }
     }
 
@@ -2623,6 +2935,20 @@ impl<'a> Conv<'a> {
 // free helpers
 // ---------------------------------------------------------------------------------------------
 
+/// The `t` text (`w:t`, `a:t`) under `n`, in order.
+fn collect_t_text(n: &Node, out: &mut String, depth: usize) {
+    if depth > 64 || out.len() > 4096 {
+        return;
+    }
+    for k in &n.kids {
+        match k {
+            Kid::T(t) if n.name == "t" => out.push_str(t),
+            Kid::T(_) => {}
+            Kid::N(c) => collect_t_text(c, out, depth + 1),
+        }
+    }
+}
+
 fn plain_code(segs: &[Seg]) -> String {
     let mut s = String::new();
     for g in segs {
@@ -2702,6 +3028,30 @@ struct Media<'n> {
     /// Pictures that point outside the package (never fetched).
     linked: usize,
     textboxes: Vec<&'n Node>,
+    /// The `a:graphicData` kinds found (a chart, SmartArt ...).
+    graphic: Option<Graphic>,
+    /// The relationship of the chart part (`c:chart r:id`).
+    chart_rid: Option<String>,
+}
+
+/// What a `drawing`'s `a:graphicData` holds when it is not a picture.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Graphic {
+    Chart,
+    SmartArt,
+    Other,
+}
+
+fn graphic_of(uri: &str) -> Graphic {
+    let u = uri.to_ascii_lowercase();
+    // `.../drawingml/2006/chart`, and the 2014 `chartex` (waterfall, funnel ...).
+    if u.contains("/chart") {
+        Graphic::Chart
+    } else if u.ends_with("/diagram") {
+        Graphic::SmartArt
+    } else {
+        Graphic::Other
+    }
 }
 
 fn scan_media<'n>(n: &'n Node, m: &mut Media<'n>, depth: usize) {
@@ -2715,6 +3065,19 @@ fn scan_media<'n>(n: &'n Node, m: &mut Media<'n>, depth: usize) {
                     let d = c.attr("descr").filter(|d| !d.trim().is_empty());
                     let t = c.attr("title").filter(|d| !d.trim().is_empty());
                     m.alt = d.or(t).unwrap_or("").to_string();
+                }
+            }
+            "graphicData" => {
+                if let Some(g) = c.attr("uri").map(graphic_of) {
+                    if m.graphic.is_none() || g != Graphic::Other {
+                        m.graphic = Some(g);
+                    }
+                }
+                scan_media(c, m, depth + 1);
+            }
+            "chart" => {
+                if m.chart_rid.is_none() {
+                    m.chart_rid = c.rel_attr("id").map(str::to_string);
                 }
             }
             "blip" => {

@@ -10,6 +10,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 
+use super::docx_symbols::{symbol_font, Font};
 use super::docx_xml::{read_element, Budget, Node, Tree};
 use super::fmt_xlsx::{xml_err, XmlReader};
 use super::OfficeError;
@@ -20,12 +21,27 @@ const MAX_CHAIN: usize = 32;
 /// Most styles / abstract lists / list instances kept.
 const MAX_ENTRIES: usize = 20_000;
 
+/// Vertical position of a run (`w:vertAlign`, ODF `style:text-position`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Vert {
+    #[default]
+    Base,
+    Sup,
+    Sub,
+}
+
 /// Character formatting that Markdown can express. `None` = not set (inherit).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Fmt {
     pub bold: Option<bool>,
     pub italic: Option<bool>,
     pub strike: Option<bool>,
+    /// Superscript / subscript.
+    pub vert: Option<Vert>,
+    /// `w:vanish` (Word only; OpenDocument keeps hidden text in its own field).
+    pub hidden: Option<bool>,
+    /// The run's font when it is a symbol font (a run in Wingdings shows pictures for letters).
+    pub font: Option<Font>,
 }
 
 impl Fmt {
@@ -35,22 +51,56 @@ impl Fmt {
             bold: over.bold.or(self.bold),
             italic: over.italic.or(self.italic),
             strike: over.strike.or(self.strike),
+            vert: over.vert.or(self.vert),
+            hidden: over.hidden.or(self.hidden),
+            font: over.font.or(self.font),
         }
     }
 
-    /// Reads `w:b` / `w:i` / `w:strike` / `w:dstrike` from an `rPr`.
+    /// Reads `w:b` / `w:i` / `w:strike` / `w:dstrike` / `w:vertAlign` / `w:vanish` / `w:rFonts`
+    /// from an `rPr`.
     pub fn from_rpr(rpr: &Node) -> Fmt {
         let strike = match (rpr.toggle("strike"), rpr.toggle("dstrike")) {
             (Some(true), _) | (_, Some(true)) => Some(true),
             (Some(false), _) | (_, Some(false)) => Some(false),
             _ => None,
         };
+        let vert = rpr
+            .child("vertAlign")
+            .and_then(|v| v.attr("val"))
+            .and_then(|v| match v.trim() {
+                "superscript" => Some(Vert::Sup),
+                "subscript" => Some(Vert::Sub),
+                "baseline" => Some(Vert::Base),
+                _ => None,
+            });
         Fmt {
             bold: rpr.toggle("b"),
             italic: rpr.toggle("i"),
             strike,
+            vert,
+            hidden: rpr.toggle("vanish"),
+            font: rpr.child("rFonts").and_then(font_of_rfonts),
         }
     }
+}
+
+/// The font a `w:rFonts` selects for the characters a symbol font draws: a symbol font when any of
+/// its slots names one, else a plain font (so a style's symbol font can be switched off by a run).
+fn font_of_rfonts(f: &Node) -> Option<Font> {
+    let names: Vec<&str> = ["ascii", "hAnsi", "cs", "eastAsia"]
+        .iter()
+        .filter_map(|k| f.attr(k))
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    Some(
+        names
+            .iter()
+            .find_map(|n| symbol_font(n))
+            .unwrap_or(Font::Plain),
+    )
 }
 
 #[derive(Debug, Default, Clone)]
@@ -79,6 +129,10 @@ pub(crate) struct ParaStyle {
 #[derive(Debug, Default)]
 pub(crate) struct Styles {
     defs: HashMap<String, StyleDef>,
+    /// `w:docDefaults/w:rPrDefault`: the bottom layer of every run's formatting.
+    doc_fmt: Fmt,
+    /// The paragraph style Word applies to a paragraph that names none (`w:default="1"`).
+    default_para: Option<String>,
 }
 
 impl Styles {
@@ -86,6 +140,8 @@ impl Styles {
         let mut rd = XmlReader::new(src);
         let mut buf = Vec::new();
         let mut defs: HashMap<String, StyleDef> = HashMap::new();
+        let mut doc_fmt = Fmt::default();
+        let mut default_para: Option<String> = None;
         loop {
             buf.clear();
             let ev = rd.read_event_into(&mut buf).map_err(xml_err)?;
@@ -95,6 +151,15 @@ impl Styles {
                 Event::Eof => break,
                 _ => continue,
             };
+            if e.local_name().as_ref() == b"docDefaults" {
+                let mut budget = Budget::new(2_000, 16 * 1024);
+                if let Tree::Ok(node) = read_element(&mut rd, &e, empty, &mut budget)? {
+                    if let Some(rpr) = node.child("rPrDefault").and_then(|d| d.child("rPr")) {
+                        doc_fmt = Fmt::from_rpr(rpr);
+                    }
+                }
+                continue;
+            }
             if e.local_name().as_ref() != b"style" {
                 continue;
             }
@@ -131,9 +196,21 @@ impl Styles {
             if let Some(rpr) = node.child("rPr") {
                 d.fmt = Fmt::from_rpr(rpr);
             }
+            if d.kind == "paragraph"
+                && default_para.is_none()
+                && node
+                    .attr("default")
+                    .is_some_and(|v| matches!(v.trim(), "1" | "true" | "on"))
+            {
+                default_para = Some(id.clone());
+            }
             defs.insert(id, d);
         }
-        Ok(Styles { defs })
+        Ok(Styles {
+            defs,
+            doc_fmt,
+            default_para,
+        })
     }
 
     /// The styles of the chain starting at `id`, most derived first (a cycle ends the chain).
@@ -157,12 +234,16 @@ impl Styles {
     /// The paragraph style `id` resolved. An unknown or absent id gives the empty style (but the
     /// id's own spelling is still tried as a heading name, e.g. `Heading1`).
     pub fn para(&self, id: Option<&str>) -> ParaStyle {
-        let Some(id) = id else {
-            return ParaStyle::default();
+        // A paragraph that names no style has the document's default one (`Normal`).
+        let Some(id) = id.or(self.default_para.as_deref()) else {
+            return ParaStyle {
+                fmt: self.doc_fmt,
+                ..ParaStyle::default()
+            };
         };
         let chain = self.chain(id);
         let mut ps = ParaStyle::default();
-        let mut fmt = Fmt::default();
+        let mut fmt = self.doc_fmt;
         for (k, d) in chain.iter().rev() {
             fmt = fmt.over(d.fmt);
             let _ = k;
@@ -526,13 +607,11 @@ impl Numbering {
 pub(crate) fn format_number(fmt: &str, n: u32) -> String {
     let n = n.min(999_999_999);
     match fmt {
-        "decimal" | "cardinalText" | "ordinalText" | "hex" | "numberInDash" => {
-            if fmt == "numberInDash" {
-                format!("- {n} -")
-            } else {
-                n.to_string()
-            }
-        }
+        "decimal" => n.to_string(),
+        "numberInDash" => format!("- {n} -"),
+        "hex" => format!("{n:X}"),
+        "cardinalText" => english_words(n, false),
+        "ordinalText" => english_words(n, true),
         "decimalZero" => format!("{n:02}"),
         "ordinal" => {
             let suffix = match (n % 10, n % 100) {
@@ -568,28 +647,34 @@ pub(crate) fn format_number(fmt: &str, n: u32) -> String {
             1..=20 => char::from_u32(0x2488 + n - 1).map_or_else(|| n.to_string(), String::from),
             _ => format!("{n}."),
         },
-        "ideographDigital" | "chineseCounting" | "japaneseDigitalTenThousand" => n
+        "ideographDigital" | "japaneseDigitalTenThousand" => n
             .to_string()
             .chars()
             .map(|c| IDEOGRAPH_DIGITS[(c as u8 - b'0') as usize])
             .collect(),
-        "japaneseCounting"
+        // Chinese counting: 十, 十一, 二十, 一百, 一百零一 ...
+        "chineseCounting"
         | "chineseCountingThousand"
         | "taiwaneseCounting"
-        | "taiwaneseCountingThousand"
-        | "ideographTraditional"
-        | "ideographLegalTraditional"
-        | "chineseLegalSimplified"
-        | "koreanCounting"
-        | "koreanDigital"
-        | "koreanLegal" => cjk_counting(n, false),
+        | "taiwaneseCountingThousand" => chinese_counting(n, ChineseDigits::Plain),
+        // Financial numerals: 壹, 貳 / 贰, 參 / 叁 ... 拾.
+        "ideographLegalTraditional" => chinese_counting(n, ChineseDigits::LegalTraditional),
+        "chineseLegalSimplified" => chinese_counting(n, ChineseDigits::LegalSimplified),
+        // The ten heavenly stems, the twelve earthly branches, and their sexagenary pairs.
+        "ideographTraditional" => cycle_of(n, STEMS),
+        "ideographZodiac" => cycle_of(n, BRANCHES),
+        "ideographZodiacTraditional" => sexagenary(n),
+        // Ideographs in a circle: ㊀ .. ㊉.
+        "ideographEnclosedCircle" => match n {
+            1..=10 => char::from_u32(0x3280 + n - 1).map_or_else(|| n.to_string(), String::from),
+            _ => n.to_string(),
+        },
+        "japaneseCounting" | "koreanCounting" | "koreanDigital" | "koreanLegal" => {
+            cjk_counting(n, false)
+        }
         "japaneseLegal" | "ideographLegal" => cjk_counting(n, true),
         "aiueo" | "aiueoFullWidth" => kana(n, AIUEO),
         "iroha" | "irohaFullWidth" => kana(n, IROHA),
-        "ideographZodiac" | "ideographEnclosedCircle" => match n {
-            1..=10 => char::from_u32(0x3220 + n - 1).map_or_else(|| n.to_string(), String::from),
-            _ => n.to_string(),
-        },
         _ => n.to_string(),
     }
 }
@@ -599,6 +684,201 @@ const IDEOGRAPH_DIGITS: [char; 10] = ['〇', '一', '二', '三', '四', '五', 
 const AIUEO: &str =
     "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン";
 const IROHA: &str = "イロハニホヘトチリヌルヲワカヨタレソツネナラムウヰノオクヤマケフコエテアサキユメミシヱヒモセス";
+
+const STEMS: &str = "甲乙丙丁戊己庚辛壬癸";
+const BRANCHES: &str = "子丑寅卯辰巳午未申酉戌亥";
+
+/// The `n`th character of `alphabet`, cycling.
+fn cycle_of(n: u32, alphabet: &str) -> String {
+    let cs: Vec<char> = alphabet.chars().collect();
+    if n == 0 || cs.is_empty() {
+        return n.to_string();
+    }
+    cs[((n - 1) as usize) % cs.len()].to_string()
+}
+
+/// 甲子, 乙丑, 丙寅 ... (stem and branch advance together; 60 pairs, then again).
+fn sexagenary(n: u32) -> String {
+    if n == 0 {
+        return n.to_string();
+    }
+    format!("{}{}", cycle_of(n, STEMS), cycle_of(n, BRANCHES))
+}
+
+#[derive(Clone, Copy)]
+enum ChineseDigits {
+    Plain,
+    LegalTraditional,
+    LegalSimplified,
+}
+
+/// Chinese counting numerals (`十`, `十一`, `二十一`, `一百`, `一百零一`, `一千二百三十四`, `一万`),
+/// below 100,000,000 (more is written in digits). `一十` is `十` only for 10..=19.
+fn chinese_counting(n: u32, kind: ChineseDigits) -> String {
+    let (digits, ten, hundred, thousand): ([&str; 10], &str, &str, &str) = match kind {
+        ChineseDigits::Plain => (
+            ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"],
+            "十",
+            "百",
+            "千",
+        ),
+        ChineseDigits::LegalTraditional => (
+            ["零", "壹", "貳", "參", "肆", "伍", "陸", "柒", "捌", "玖"],
+            "拾",
+            "佰",
+            "仟",
+        ),
+        ChineseDigits::LegalSimplified => (
+            ["零", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖"],
+            "拾",
+            "佰",
+            "仟",
+        ),
+    };
+    if n == 0 {
+        return digits[0].to_string();
+    }
+    if n >= 100_000_000 {
+        return n.to_string();
+    }
+    // One section of four digits (0..=9999), `lead_zero`: a gap before it needs a 零.
+    let section = |v: u32| -> String {
+        let places = [
+            (v / 1000, thousand),
+            ((v / 100) % 10, hundred),
+            ((v / 10) % 10, ten),
+        ];
+        let mut s = String::new();
+        let mut zero = false;
+        for (d, unit) in places {
+            if d == 0 {
+                zero = !s.is_empty() || zero;
+                continue;
+            }
+            if zero {
+                s.push_str(digits[0]);
+                zero = false;
+            }
+            s.push_str(digits[d as usize]);
+            s.push_str(unit);
+        }
+        let o = v % 10;
+        if o > 0 {
+            if zero {
+                s.push_str(digits[0]);
+            }
+            s.push_str(digits[o as usize]);
+        }
+        s
+    };
+    let (high, low) = (n / 10_000, n % 10_000);
+    let mut out = String::new();
+    if high > 0 {
+        out.push_str(&section(high));
+        out.push('万');
+        if low > 0 && low < 1000 {
+            out.push_str(digits[0]);
+        }
+    }
+    if low > 0 {
+        out.push_str(&section(low));
+    }
+    // 10..=19 (and 100,000..=199,999) start `十`, not `一十`.
+    let one_ten = format!("{}{}", digits[1], ten);
+    if out.starts_with(&one_ten) {
+        out = out[digits[1].len()..].to_string();
+    }
+    out
+}
+
+const ONES: [&str; 20] = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+];
+const TENS: [&str; 10] = [
+    "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+];
+
+/// `cardinalText` (`One`, `Twenty-one`) and `ordinalText` (`First`, `Twenty-first`): the number in
+/// English words, first letter capital. Above 999,999 the number stays in digits.
+fn english_words(n: u32, ordinal: bool) -> String {
+    if n > 999_999 {
+        return n.to_string();
+    }
+    fn below_100(n: u32) -> String {
+        if n < 20 {
+            ONES[n as usize].to_string()
+        } else if n.is_multiple_of(10) {
+            TENS[(n / 10) as usize].to_string()
+        } else {
+            format!("{}-{}", TENS[(n / 10) as usize], ONES[(n % 10) as usize])
+        }
+    }
+    fn below_1000(n: u32) -> String {
+        let (h, r) = (n / 100, n % 100);
+        match (h, r) {
+            (0, r) => below_100(r),
+            (h, 0) => format!("{} hundred", ONES[h as usize]),
+            (h, r) => format!("{} hundred {}", ONES[h as usize], below_100(r)),
+        }
+    }
+    let words = if n == 0 {
+        ONES[0].to_string()
+    } else if n < 1000 {
+        below_1000(n)
+    } else if n.is_multiple_of(1000) {
+        format!("{} thousand", below_1000(n / 1000))
+    } else {
+        format!("{} thousand {}", below_1000(n / 1000), below_1000(n % 1000))
+    };
+    let words = if ordinal {
+        to_ordinal_words(&words)
+    } else {
+        words
+    };
+    let mut cs = words.chars();
+    match cs.next() {
+        Some(c) => c.to_uppercase().collect::<String>() + cs.as_str(),
+        None => words,
+    }
+}
+
+/// The last word of cardinal words made ordinal (`twenty-one` -> `twenty-first`).
+fn to_ordinal_words(words: &str) -> String {
+    let split = words.rfind(['-', ' ']).map_or(0, |i| i + 1);
+    let (head, last) = words.split_at(split);
+    let ord = match last {
+        "zero" => "zeroth",
+        "one" => "first",
+        "two" => "second",
+        "three" => "third",
+        "five" => "fifth",
+        "eight" => "eighth",
+        "nine" => "ninth",
+        "twelve" => "twelfth",
+        l if l.ends_with('y') => return format!("{head}{}ieth", &l[..l.len() - 1]),
+        l => return format!("{head}{l}th"),
+    };
+    format!("{head}{ord}")
+}
 
 /// Sequence labels over a fixed alphabet: after the last character they continue as two (`アア`).
 fn kana(n: u32, alphabet: &str) -> String {

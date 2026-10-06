@@ -278,10 +278,10 @@ fn endnotes_share_the_numbering() {
 }
 
 #[test]
-fn a_note_with_several_paragraphs_and_formatting_is_one_line() {
+fn a_note_with_several_paragraphs_and_formatting_keeps_each_paragraph_on_its_own_line() {
     let n = r#"<w:footnote w:id="1"><w:p><w:r><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> first </w:t></w:r><w:r><w:rPr><w:b/></w:rPr><w:t>bold</w:t></w:r></w:p><w:p><w:r><w:t>second</w:t></w:r></w:p></w:footnote>"#;
     let d = conv(&Dx::new(&para(&(run("x") + &fn_ref(1)))).footnotes(n));
-    assert_eq!(d.markdown, "x[^1]\n\n[^1]: first **bold** second");
+    assert_eq!(d.markdown, "x[^1]\n\n[^1]: first **bold**\\\n    second");
 }
 
 #[test]

@@ -543,11 +543,12 @@ fn no_break_hyphen_and_soft_hyphen() {
 }
 
 #[test]
-fn symbols_in_the_private_use_area_are_dropped_and_plain_ones_kept() {
+fn symbols_of_a_symbol_font_are_what_they_draw_and_plain_ones_kept() {
+    // (Wingdings F0A8 is the empty ballot box; see `tests_fidelity.rs` for the tables.)
     let body = para(
         r#"<w:r><w:sym w:font="Wingdings" w:char="F0A8"/><w:t>x</w:t><w:sym w:font="Arial" w:char="00A9"/></w:r>"#,
     );
-    assert_eq!(md(&body), "x©");
+    assert_eq!(md(&body), "\u{2610}x©");
 }
 
 #[test]
@@ -569,11 +570,11 @@ fn hidden_text_is_not_shown() {
 }
 
 #[test]
-fn ruby_shows_the_base_text() {
+fn ruby_shows_the_base_text_and_its_reading() {
     let body = para(
         r#"<w:r><w:ruby><w:rubyPr/><w:rt><w:r><w:t>かん</w:t></w:r></w:rt><w:rubyBase><w:r><w:t>漢</w:t></w:r></w:rubyBase></w:ruby></w:r>"#,
     );
-    assert_eq!(md(&body), "漢");
+    assert_eq!(md(&body), "漢（かん）");
 }
 
 #[test]

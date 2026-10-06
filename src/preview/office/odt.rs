@@ -10,6 +10,8 @@
 //! |---|---|
 //! | `text:h` (`text:outline-level`), a `text:p` whose style (chain) has `style:default-outline-level` or is named `Heading n` / `Title` | `#` .. `######` |
 //! | bold / italic / strike (`fo:font-weight`, `fo:font-style`, `style:text-line-through-*`, through `style:parent-style-name`) | `**` `*` `~~` |
+//! | superscript / subscript (`style:text-position`: `super 58%`, `sub`, a raise in percent) | `<sup>` / `<sub>` |
+//! | `text:ruby` | the base text, then its reading in brackets |
 //! | `text:line-break`, `text:tab`, `text:s`, `text:soft-page-break` | hard break, four no-break spaces, spaces, nothing |
 //! | `text:list` with a bullet level | a real `- ` list (nested) |
 //! | `text:list` with decimal `N.` numbering | a real `N. ` list **with the number the document shows** (`text:start-value`, continued lists) |
@@ -26,6 +28,8 @@
 //! Tracked changes are shown as the **final** version: LibreOffice keeps deleted text inside
 //! `text:tracked-changes` (never read) and leaves a `text:change` mark in the body; text between
 //! `text:change-start` and `text:change-end` of a *deletion* region (other producers) is dropped.
+//! A deletion that runs from the end of one paragraph into the next (the break between them was deleted)
+//! joins the two, as LibreOffice shows them.
 //! Comments (`office:annotation`), headers and footers (master pages in `styles.xml`, never read) and
 //! hidden text (`text:display="none"`) are not shown.
 //!
@@ -47,7 +51,7 @@
 //! entered, not held) with a node and text budget per block, and all the Markdown / picture / table
 //! budgets of [`DocOptions`] apply. A damaged `styles.xml` costs the styles, not the document.
 
-use super::super::docx_styles::{heading_from_name, is_code_name};
+use super::super::docx_styles::{heading_from_name, is_code_name, Vert};
 use super::super::docx_xml::skip_rest;
 use super::*;
 use crate::preview::office::{mathml, omml};
@@ -179,9 +183,30 @@ fn text_props(tp: &Node) -> (Fmt, Option<bool>) {
             bold,
             italic,
             strike,
+            vert: tp.attr("text-position").and_then(vert_of),
+            ..Fmt::default()
         },
         hidden,
     )
+}
+
+/// `style:text-position`: `super 58%`, `sub 58%`, or a raise in percent (`33% 58%`, `-25%`):
+/// above the baseline is superscript, below it subscript, `0%` the baseline itself.
+fn vert_of(v: &str) -> Option<Vert> {
+    let first = v.split_whitespace().next()?;
+    match first {
+        "super" => return Some(Vert::Sup),
+        "sub" => return Some(Vert::Sub),
+        _ => {}
+    }
+    let pct: f64 = first.strip_suffix('%')?.trim().parse().ok()?;
+    Some(if pct > 0.0 {
+        Vert::Sup
+    } else if pct < 0.0 {
+        Vert::Sub
+    } else {
+        Vert::Base
+    })
 }
 
 fn level_def(l: &Node) -> LevelDef {
@@ -539,6 +564,19 @@ struct Od<'a> {
     note_counter: i64,
 }
 
+/// All the text under `n` (OpenDocument keeps the text of every element), bounded.
+fn node_text(n: &Node, out: &mut String, depth: usize) {
+    if depth > 32 || out.len() > 4096 {
+        return;
+    }
+    for k in &n.kids {
+        match k {
+            Kid::T(t) => out.push_str(t),
+            Kid::N(c) => node_text(c, out, depth + 1),
+        }
+    }
+}
+
 /// `Pictures/x.png`, `./Pictures/x.png` -> the part name.
 fn part_of(href: &str) -> Option<String> {
     let h = href.trim();
@@ -646,6 +684,7 @@ pub(super) fn convert(
         };
         od.read_content(r)?;
     }
+    od.c.flush_carry_top();
     od.c.flush_code();
     let Od { c, defs, .. } = od;
     Ok(c.assemble(defs))
@@ -794,6 +833,7 @@ impl<'a> Od<'a> {
             "p" | "h" => self.para(n, ctx, None, depth, out),
             "list" => self.list(n, ctx, None, depth, out),
             "table" => {
+                self.c.flush_carry(out, ctx);
                 if let Some(t) = self.table(n, depth) {
                     out.push(t);
                 }
@@ -954,6 +994,7 @@ impl<'a> Od<'a> {
                         } else {
                             let mut blks = Vec::new();
                             self.blocks(&cell.kids, Ctx::Cell, depth + 1, &mut blks);
+                            self.c.flush_carry(&mut blks, Ctx::Cell);
                             cell_text(&blks, "<br>")
                         };
                         // The copies are made only once they are known to fit the output budget
@@ -1282,12 +1323,28 @@ impl<'a> Od<'a> {
             base.bold = None;
             base.italic = None;
         }
-        let mut inl = Inl::default();
+        // The text of a paragraph whose end was inside a deleted range (the break between the two
+        // paragraphs was deleted) goes on in this one.
+        let carried = std::mem::take(&mut self.c.carry);
         let mut ps = Ps {
             prev_ws: true,
+            other: carried.iter().any(|g| match g {
+                Seg::Text(t, _) => t.chars().any(|c| !c.is_whitespace()),
+                Seg::Raw(_) | Seg::Math(_) | Seg::Display(_) => true,
+                _ => false,
+            }),
             ..Ps::default()
         };
+        let mut inl = Inl {
+            segs: carried,
+            ..Inl::default()
+        };
         self.inline_kids(p, base, ctx, &mut inl, &mut ps, depth);
+        if self.hidden > 0 && inl.extras.is_empty() {
+            // The deletion range runs past this paragraph's end: its break is deleted.
+            self.c.carry = inl.segs;
+            return;
+        }
         let Inl {
             mut segs,
             extras,
@@ -1451,11 +1508,20 @@ impl<'a> Od<'a> {
             }
             "change-start" | "change-end" | "change" => self.change(n),
             "ruby" => {
+                let start = inl.segs.len();
+                let mut reading = String::new();
                 for k in n.nodes() {
                     if k.name == "ruby-base" {
                         self.inline_kids(k, base, ctx, inl, ps, depth + 1);
+                    } else if k.name == "ruby-text" && self.hidden == 0 {
+                        node_text(k, &mut reading, 0);
                     }
                 }
+                let last = inl.segs[start..].iter().rev().find_map(|g| match g {
+                    Seg::Text(t, _) => t.chars().next_back(),
+                    _ => None,
+                });
+                self.c.push_reading(inl, &reading, last, base);
             }
             // Text that is not shown (its deletion marks still count).
             "hidden-text" | "hidden-paragraph" => self.skip(n, depth),
@@ -1514,11 +1580,11 @@ impl<'a> Od<'a> {
         let mut blks = Vec::new();
         self.blocks(&body.kids, Ctx::Note, depth + 8, &mut blks);
         self.c.in_note = false;
-        let mut text = cell_text(&blks, " ");
+        self.c.flush_carry(&mut blks, Ctx::Note);
+        let mut text = note_text(&blks);
         if text.trim().is_empty() {
             text = "\u{2014}".into();
         }
-        let text = text.replace('\n', " ");
         if self.c.keep_note(text.len()) {
             self.defs.push((pos, text));
         }

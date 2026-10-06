@@ -381,7 +381,7 @@ fn lists_inside_cells_and_notes_are_flat() {
         r#"<text:p>x<text:note text:note-class="footnote"><text:note-body>{}</text:note-body></text:note></text:p>"#,
         lst("N", &(li("a") + &li("b")))
     );
-    assert_eq!(md_auto(&body, &auto), "x[^1]\n\n[^1]: 1. a 2. b");
+    assert_eq!(md_auto(&body, &auto), "x[^1]\n\n[^1]: 1\\. a\\\n    2\\. b");
 }
 
 #[test]
