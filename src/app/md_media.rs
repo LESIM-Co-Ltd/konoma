@@ -695,6 +695,13 @@ impl App {
             };
             p
         };
+        // A picture of a Word document: decode it from the bytes held in memory (never a file).
+        if crate::preview::markdown::is_office_image_url(url)
+            && !self.md_image_cache.contains_key(&path)
+        {
+            self.spawn_office_picture_decode(url, path);
+            return;
+        }
         // Kick off a one-time background decode.
         if !self.md_image_cache.contains_key(&path) {
             // A synthetic key (fence diagram / math expression) cannot be built here (the original
@@ -798,6 +805,48 @@ impl App {
             cols,
             rows,
             kitty,
+        });
+    }
+
+    /// Starts the one-time background decode of a Word document's picture from its in-memory
+    /// bytes. The cache entry is placed first (its presence is the "decode in flight" marker, as
+    /// for a file image); a picture the document does not hold is left uncached (nothing to draw).
+    fn spawn_office_picture_decode(&mut self, url: &str, key: PathBuf) {
+        let Some(bytes) = self.document_picture_bytes(url) else {
+            return;
+        };
+        self.md_image_cache
+            .insert(key.clone(), MdImgEntry::default());
+        let Some(tx) = self.md_img_tx.clone() else {
+            return;
+        };
+        let svg_max_px = self.cfg.ui.svg_max_px;
+        std::thread::spawn(move || {
+            // Same contract as the file decode: a panic on a pathological picture is a failed
+            // decode, and a result is always sent (not sending would latch the busy indicator).
+            let (still, frames) = crate::preview::markdown::catch_silent(|| {
+                if bytes.starts_with(b"GIF8") {
+                    if let Some((frames, _)) =
+                        crate::preview::image::decode_gif_bytes_inline(&bytes)
+                    {
+                        let first = frames[0].0.clone();
+                        return (Some(first), Some(frames));
+                    }
+                }
+                let img = crate::preview::image::decode_static_bytes(&bytes).or_else(|| {
+                    crate::preview::svg::rasterize_bytes(&bytes, Path::new("image.svg"), svg_max_px)
+                });
+                (img, None)
+            })
+            .unwrap_or((None, None));
+            let image = still.ok_or_else(|| "decode failed".to_string());
+            let _ = tx.send(MdImageResult {
+                path: key,
+                image,
+                svg: None,
+                reraster: false,
+                frames,
+            });
         });
     }
 

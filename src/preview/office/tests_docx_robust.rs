@@ -397,9 +397,15 @@ fn libreoffice_english_document() {
         assert!(!m.contains(hidden), "{hidden}");
     }
     assert!(m.contains("Text with a comment"));
-    // formulas (the converter is a stub here: their characters)
-    assert_eq!(d.math_total, 2);
-    assert!(m.contains("Inline formula: E=mc2"), "{m}");
+    // formulas: both became LaTeX through the real OMML converter
+    assert_eq!((d.math_total, d.math_latex), (2, 2));
+    assert!(
+        m.contains(
+            "Inline formula: $E=m{c}^{2}$ and a fraction \
+             $\\frac{a+b}{c}=\\sqrt{{x}_{1}^{2}+{y}_{1}^{2}}$"
+        ),
+        "{m}"
+    );
     // text box, table of contents, code, page break
     assert!(
         m.contains("Paragraph that holds a text box.\n\nTEXTBOX-TEXT inside a frame"),
@@ -523,4 +529,38 @@ fn libreoffice_japanese_document_through_the_renderer() {
         "{all}"
     );
     assert!(all.contains("脚注つきの文¹"), "{all}");
+}
+
+/// The LaTeX the converter makes of the sample's two formulas is drawn by konoma's math engine
+/// (RaTeX), not just well-formed text: the whole point of converting to LaTeX.
+#[test]
+fn libreoffice_formulas_are_drawn_by_the_math_engine() {
+    let Some(d) = read_lo("word.docx") else {
+        return;
+    };
+    for latex in [
+        "E=m{c}^{2}",
+        "\\frac{a+b}{c}=\\sqrt{{x}_{1}^{2}+{y}_{1}^{2}}",
+    ] {
+        assert!(
+            d.markdown.contains(&format!("${latex}$")),
+            "{latex}\n{}",
+            d.markdown
+        );
+        let svg = crate::preview::math::latex_to_svg(latex, false, "#d0d0d0");
+        assert!(svg.is_some_and(|s| s.contains("<svg")), "{latex}");
+    }
+}
+
+/// A package whose main part is not a Word document (an xlsx renamed .docx) is `Unsupported`, not
+/// an empty document: the user must be told the file is not what its name says.
+#[test]
+fn a_package_whose_main_part_is_not_a_document_is_unsupported() {
+    let Some(p) = lo("formats.xlsx") else {
+        return;
+    };
+    assert_eq!(
+        load_document(&p, &DocOptions::default()).unwrap_err(),
+        OfficeError::Unsupported
+    );
 }

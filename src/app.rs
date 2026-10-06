@@ -36,6 +36,7 @@ mod md_tasks;
 mod md_text;
 mod media_diff;
 mod media_load;
+mod office_doc;
 mod office_open;
 pub use office_open::OfficeOpenResult;
 mod outline;
@@ -754,6 +755,12 @@ pub enum MediaPayload {
     /// render side. Carried as a payload (not the plain `None` failure) so the *reason* travels
     /// through the same generation-checked channel as success.
     WorkbookFailed(crate::preview::office::OfficeError),
+    /// An opened Word document (`PreviewKind::Document`): its Markdown and pictures → goes to
+    /// `App::document`.
+    Document(Box<office_doc::LoadedDocument>),
+    /// A Word document that could not be loaded (the reason maps to a translated message on the
+    /// render side), carried like [`MediaPayload::WorkbookFailed`].
+    DocumentFailed(crate::preview::office::OfficeError),
 }
 
 /// Result of media loading from another thread. Matched by generation via `gen`; results made stale by navigation are discarded.
@@ -765,11 +772,11 @@ pub struct MediaResult {
     payload: Option<MediaPayload>,
 }
 
-/// A workbook load waiting for the running one to end (`App::wb_queued`).
+/// An Office load (a workbook or a Word document) waiting for the running one to end
+/// (`App::wb_queued`). Both kinds share the one Office worker slot.
 struct WbRequest {
-    path: PathBuf,
-    locale: crate::preview::office::Locale,
-    sheet: usize,
+    /// `MediaJob::Workbook` or `MediaJob::Document`.
+    job: MediaJob,
     /// The `media_gen` it was asked under; stale (dropped) if that moved on.
     gen: u64,
 }
@@ -813,6 +820,10 @@ enum MediaJob {
     /// payload: a workbook (every visible sheet listed, the requested one's cells loaded), or the
     /// reason it could not be opened.
     Workbook(PathBuf, crate::preview::office::Locale, usize),
+    /// Open a Word document and convert it to Markdown (+ its pictures). Always yields a payload:
+    /// the document, or the reason it could not be opened. Runs on the Office worker slot, so it
+    /// is serialised with workbook loads and stops when its generation is superseded.
+    Document(PathBuf),
     /// Run a non-detached `PreviewKind::Command` delegation (`preview::command::run_capture`).
     /// `as_image` (the resolved `render_as == Some("image")`) decides whether the produced artifact
     /// is decoded as an image (`MediaPayload::Static`) or shown as text (`MediaPayload::CommandText`).
@@ -893,6 +904,23 @@ impl MediaJob {
                 Some(match loaded {
                     Ok(wb) => MediaPayload::Workbook(Box::new(wb)),
                     Err(e) => MediaPayload::WorkbookFailed(e),
+                })
+            }
+            MediaJob::Document(p) => {
+                use crate::preview::office::docx::{load_document_cancellable, DocOptions};
+                use crate::preview::office::OfficeError;
+                let opts = DocOptions::default();
+                // The reader sits on third-party parsers: a panic on a pathological file becomes a
+                // "corrupt" reason instead of killing the thread (principle #3).
+                let loaded = crate::preview::markdown::catch_silent(|| {
+                    load_document_cancellable(&p, &opts, cancel.as_ref())
+                })
+                .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
+                Some(match loaded {
+                    Ok(doc) => MediaPayload::Document(Box::new(
+                        office_doc::LoadedDocument::from_document(doc),
+                    )),
+                    Err(e) => MediaPayload::DocumentFailed(e),
                 })
             }
             MediaJob::Command {
@@ -1614,6 +1642,13 @@ pub struct App {
     /// Why the last spreadsheet load failed (`Some` only while `workbook` is `None`). Drives the
     /// reason shown on the "can not preview" screen.
     workbook_error: Option<crate::preview::office::OfficeError>,
+    /// The opened Word document while a `PreviewKind::Document` preview is active and its worker
+    /// finished: the converted Markdown and the pictures it refers to. App-level (not `PerTab`) for
+    /// the same reason as `workbook`; a tab switch re-reads it on the worker. Assigned only through
+    /// `set_document`, which frees the old one off the UI thread.
+    document: Option<Box<office_doc::LoadedDocument>>,
+    /// Why the last Word document load failed (`Some` only while `document` is `None`).
+    document_error: Option<crate::preview::office::OfficeError>,
     /// Per-tab bundle — see `PerTab` (root/mode/preview target/scroll, table cursor/scroll, git-view
     /// overlay, windowed-preview scroll/caret, image/PDF pan-page, Markdown raw/focus/fence-zoom,
     /// selection/filter/search). `pub(crate)` because ui/main read the 13 fields that used to be
@@ -3233,6 +3268,8 @@ impl App {
             table_data: None,
             workbook: None,
             workbook_error: None,
+            document: None,
+            document_error: None,
             tab: PerTab {
                 id: 1,
                 root: root.clone(),
@@ -4168,6 +4205,8 @@ impl App {
         // workbook right away.
         self.set_workbook(None);
         self.workbook_error = None;
+        self.set_document(None);
+        self.document_error = None;
         self.tab.sheet_idx = 0;
         // For a PDF, get the page count first (hayro-syntax, pure Rust, no external process, ~a
         // few ms). Now that `hayro` is the first-choice renderer, it can draw any page without an
@@ -4187,6 +4226,9 @@ impl App {
         // that call, and a text-mode `PreviewKind::Command`'s `apply_payload` handler calls
         // `setup_windowed`, which decides whether to open the windowed reader by reading
         // `self.tab.preview_kind` — it must already be the new kind, not whatever was showing before.
+        // A new file starts decorated, and this must hold *before* the load: a Word document that
+        // lands synchronously (no media_tx) decides there whether to build its raw view.
+        self.tab.md_raw = false;
         self.set_preview_kind(Some(kind.clone()));
         self.start_media_load(&kind, path);
         self.tab.fence_return = None; // A normal preview transition means the fence-return info is no longer needed
@@ -4442,6 +4484,10 @@ impl App {
     /// - Otherwise (tree edits, Mermaid, images): None (open at the top).
     fn preview_edit_line(&self) -> Option<usize> {
         if self.tab.mode != Mode::Preview {
+            return None;
+        }
+        // The converted Markdown of a Word document has no line in the .docx to open at.
+        if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
             return None;
         }
         if self.is_windowed() {
@@ -4713,7 +4759,9 @@ impl App {
         self.tab.md_raw
             && matches!(
                 self.tab.preview_kind,
-                Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Mermaid(_))
+                Some(PreviewKind::Markdown(_))
+                    | Some(PreviewKind::Mermaid(_))
+                    | Some(PreviewKind::Document(_))
             )
     }
 
@@ -4721,7 +4769,9 @@ impl App {
     pub fn is_decorated_kind(&self) -> bool {
         matches!(
             self.tab.preview_kind,
-            Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Mermaid(_))
+            Some(PreviewKind::Markdown(_))
+                | Some(PreviewKind::Mermaid(_))
+                | Some(PreviewKind::Document(_))
         )
     }
 
@@ -4735,6 +4785,14 @@ impl App {
     pub fn toggle_md_raw(&mut self) {
         if !self.is_decorated_kind() {
             return;
+        }
+        if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+            if self.tab.md_raw {
+                // Leaving the raw view: the converted-Markdown temp file is done for.
+                self.clear_command_out();
+            } else if !self.write_document_raw() {
+                return; // nothing converted yet (still loading / failed): there is no raw view
+            }
         }
         self.tab.md_raw = !self.tab.md_raw;
         // A view switch = start from the top. Rebuild the windowed reader (raw) / decoration (rendered).
@@ -4835,6 +4893,8 @@ impl App {
         self.table_data = None;
         self.set_workbook(None);
         self.workbook_error = None;
+        self.set_document(None);
+        self.document_error = None;
         self.tab.sheet_idx = 0;
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
@@ -4954,6 +5014,9 @@ impl App {
                 // A spreadsheet is parsed on the media worker: a tab switch / mtime-changed
                 // reload must re-read it exactly like the image kinds.
                 | PreviewKind::Spreadsheet(_)
+                // A Word document is converted on the same worker; a tab switch / mtime-changed
+                // reload re-reads it exactly like a spreadsheet.
+                | PreviewKind::Document(_)
         ) || (matches!(kind, PreviewKind::Mermaid(_) | PreviewKind::MermaidFence(_))
             && self.mermaid_image_mode())
             // A non-detached delegated command (image or text render_as): its output is a
@@ -5025,7 +5088,13 @@ impl App {
     /// unchanged (`ui/preview.rs::render_windowed` builds the title from that field, not from this
     /// one), so the temp path never leaks into the UI.
     pub fn windowed_src(&self) -> Option<&Path> {
-        if matches!(self.tab.preview_kind, Some(PreviewKind::Command { .. })) {
+        // A Word document's raw view is the converted Markdown, written to a private temp file
+        // (`App::write_document_raw`) so the less-style reader can window it; the .docx itself is a
+        // zip and never readable as text.
+        if matches!(
+            self.tab.preview_kind,
+            Some(PreviewKind::Command { .. } | PreviewKind::Document(_))
+        ) {
             return self.tab.command_out.as_deref();
         }
         self.tab.preview_path.as_deref()
@@ -5253,7 +5322,16 @@ impl App {
             Some(PreviewKind::Markdown(p)) | Some(PreviewKind::Mermaid(p)) if self.tab.md_raw => {
                 crate::preview::code::has_named_syntax(p)
             }
+            // The converted Markdown of a Word document (`R`): colored as Markdown.
+            Some(PreviewKind::Document(_)) if self.tab.md_raw => true,
             _ => false,
+        };
+        // The grammar is picked from the path's name: a Word document's raw view is Markdown, but
+        // its own name says .docx.
+        let hl_path = if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+            PathBuf::from("document.md")
+        } else {
+            path.clone()
         };
         let want_syntax = self.cfg.ui.syntax_highlight
             && syntax_kind
@@ -5277,7 +5355,7 @@ impl App {
                     .unwrap_or_default();
                 let lines = if want_syntax {
                     let src = raw.join("\n");
-                    crate::preview::code::highlight(&src, &path, &self.cfg.ui.theme.code_theme)
+                    crate::preview::code::highlight(&src, &hl_path, &self.cfg.ui.theme.code_theme)
                 } else {
                     raw.into_iter().map(Line::from).collect()
                 };

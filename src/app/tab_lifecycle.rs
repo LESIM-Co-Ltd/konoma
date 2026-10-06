@@ -58,6 +58,8 @@ impl App {
         // number and cursor come back with `self.tab = t` and are clamped when the workbook lands.
         self.set_workbook(None);
         self.workbook_error = None;
+        self.set_document(None);
+        self.document_error = None;
         // root/open_dir/entries/selected/show_hidden/tree_viewport/mode/preview_scroll/
         // preview_hscroll/preview_viewport/preview_byte_top/preview_top_line/selection/visual_anchor/
         // tree_filter/filter_input/filter_pool/changed_filter/preview_search/search_input/search_idx:
@@ -322,6 +324,8 @@ impl App {
         // workbook is re-read on the worker when that tab is activated again).
         self.set_workbook(None);
         self.workbook_error = None;
+        self.set_document(None);
+        self.document_error = None;
         self.tab.sheet_idx = 0;
         // A new tab also starts the diff-view state from scratch (part of the PerTab duplication
         // set) — otherwise it would silently inherit whichever presentation the tab it was opened

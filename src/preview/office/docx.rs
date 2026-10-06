@@ -125,11 +125,14 @@ pub struct Document {
     /// The conversion stopped at a budget: the end of the document, some pictures, or part of a
     /// table is missing.
     pub truncated: bool,
-    /// Distinct footnotes and endnotes shown.
+    /// Distinct footnotes and endnotes shown (read by tests).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub notes: usize,
     /// Formulas found, and how many became LaTeX (the rest are shown as plain characters).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub math_total: usize,
     /// See [`Document::math_total`].
+    #[cfg_attr(not(test), allow(dead_code))]
     pub math_latex: usize,
 }
 
@@ -146,6 +149,7 @@ pub struct DocImage {
 }
 
 /// Loads and converts a Word document.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn load_document(path: &Path, opts: &DocOptions) -> Result<Document, OfficeError> {
     load_document_cancellable(path, opts, None)
 }
@@ -1203,9 +1207,18 @@ impl<'a> Conv<'a> {
     fn read_body(&mut self, src: impl BufRead) -> Result<(), OfficeError> {
         let mut rd = XmlReader::new(src);
         let mut buf = Vec::new();
+        // The main part's root must be `w:document`: a package whose officeDocument relationship
+        // names something else (an xlsx / pptx renamed .docx) is not a Word document.
+        let mut root_seen = false;
         loop {
             buf.clear();
             match rd.read_event_into(&mut buf).map_err(xml_err)? {
+                Event::Start(e) | Event::Empty(e) if !root_seen => {
+                    root_seen = true;
+                    if e.local_name().as_ref() != b"document" {
+                        return Err(OfficeError::Unsupported);
+                    }
+                }
                 Event::Start(e) if e.local_name().as_ref() == b"body" => break,
                 Event::Eof => return Ok(()),
                 _ => {}

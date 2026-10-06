@@ -116,6 +116,11 @@ impl App {
                 };
                 self.spawn_workbook_job(path.to_path_buf(), locale, self.tab.sheet_idx);
             }
+            // A Word document: converted to Markdown on the same worker (no graphics backend
+            // needed to read it; the pictures it holds are decoded later, when drawn).
+            PreviewKind::Document(_) => {
+                self.spawn_office_job(MediaJob::Document(path.to_path_buf()));
+            }
             // A standalone .mmd/.mermaid: in image mode, convert to SVG in pure Rust → rasterize
             // (on a separate thread). In text mode / with no backend, do nothing — the decorated
             // text path draws it instead (principle #3).
@@ -292,8 +297,15 @@ impl App {
         locale: crate::preview::office::Locale,
         sheet: usize,
     ) {
+        self.spawn_office_job(MediaJob::Workbook(path, locale, sheet));
+    }
+
+    /// The one entry of the Office worker slot: a workbook sheet or a Word document (`job` is
+    /// `MediaJob::Workbook` or `MediaJob::Document`), with the one-at-a-time / newest-only rule
+    /// described on [`Self::spawn_workbook_job`].
+    fn spawn_office_job(&mut self, job: MediaJob) {
         let Some(_) = self.media_tx else {
-            if let Some(payload) = MediaJob::Workbook(path, locale, sheet).run() {
+            if let Some(payload) = job.run() {
                 self.apply_payload(payload);
             }
             return;
@@ -301,9 +313,7 @@ impl App {
         self.bump_media_gen();
         self.media_loading = true;
         let req = WbRequest {
-            path,
-            locale,
-            sheet,
+            job,
             gen: self.media_gen,
         };
         if self.wb_worker_busy {
@@ -331,18 +341,12 @@ impl App {
         }
         let cancel =
             crate::preview::office::Cancel::generation(self.media_gen_shared.clone(), req.gen);
-        let WbRequest {
-            path,
-            locale,
-            sheet,
-            gen,
-        } = req;
+        let WbRequest { job, gen } = req;
         std::thread::spawn(move || {
             // Always answers (even a panic): the slot is only freed by the answer.
-            let payload = crate::preview::markdown::catch_silent(move || {
-                MediaJob::Workbook(path, locale, sheet).run_cancellable(Some(cancel))
-            })
-            .flatten();
+            let payload =
+                crate::preview::markdown::catch_silent(move || job.run_cancellable(Some(cancel)))
+                    .flatten();
             let _ = tx.send(MediaResult {
                 gen,
                 wb_worker: true,
@@ -367,8 +371,12 @@ impl App {
         if result.gen != self.media_gen {
             // Stale: we've already moved on to another file. A workbook nobody wants is freed off
             // the UI thread like any other (see `set_workbook`).
-            if let Some(MediaPayload::Workbook(wb)) = result.payload {
-                super::table_actions::discard_in_background(wb);
+            match result.payload {
+                Some(MediaPayload::Workbook(wb)) => super::table_actions::discard_in_background(wb),
+                Some(MediaPayload::Document(doc)) => {
+                    super::table_actions::discard_in_background(doc)
+                }
+                _ => {}
             }
             return false;
         }
@@ -440,6 +448,14 @@ impl App {
                     self.set_workbook(None);
                     self.workbook_error = Some(e);
                     self.tab.search_pending = false;
+                }
+            }
+            MediaPayload::Document(doc) => self.land_document(doc),
+            MediaPayload::DocumentFailed(e) => {
+                if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+                    self.set_document(None);
+                    self.document_error = Some(e);
+                    self.md_cache = None;
                 }
             }
         }

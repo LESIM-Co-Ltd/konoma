@@ -11,12 +11,8 @@
 //! (the caller maps each variant to a translated message).
 
 pub mod container;
-// The Word reader (docx -> Markdown) is not wired into the app yet (a later stage uses it).
-#[allow(dead_code)]
 pub mod docx;
-#[allow(dead_code)]
 mod docx_styles;
-#[allow(dead_code)]
 mod docx_xml;
 pub mod fmt_ods;
 pub mod fmt_xls;
@@ -24,7 +20,6 @@ pub mod fmt_xlsb;
 pub mod fmt_xlsx;
 pub mod numfmt;
 mod ods_formula;
-#[allow(dead_code)]
 pub(crate) mod omml;
 pub mod workbook;
 pub(crate) mod xlsx;

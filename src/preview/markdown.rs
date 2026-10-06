@@ -3264,6 +3264,14 @@ pub fn is_synthetic_md_url(url: &str) -> bool {
     is_mermaid_fence_url(url)
         || is_math_url(url)
         || crate::preview::media_diff::is_media_diff_url(url)
+        || is_office_image_url(url)
+}
+
+/// Whether an inline-image URL names a picture of the open Word document
+/// (`office-img://<hash>/<name>`, made by `preview::office::docx`). Its bytes live in memory on
+/// `App::document`, never in a file, so it is a synthetic key like the others.
+pub fn is_office_image_url(url: &str) -> bool {
+    url.starts_with("office-img://")
 }
 
 /// All math expressions in `src`, in document order, as (latex, display). Mirrors the render path

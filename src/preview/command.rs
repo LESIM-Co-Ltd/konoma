@@ -135,6 +135,15 @@ pub fn temp_out_path() -> PathBuf {
     private_temp_dir().join(format!("out-{n}"))
 }
 
+/// Writes `data` to a fresh file in konoma's private temp directory (owner-only, no extension) and
+/// returns its path. For text konoma generates itself that the less-style reader should window
+/// (a Word document's converted Markdown); the caller deletes it (`App::clear_command_out`).
+pub fn write_private_temp(data: &[u8]) -> std::io::Result<PathBuf> {
+    let path = temp_out_path();
+    write_private(&path, data)?;
+    Ok(path)
+}
+
 /// Writes `data` to `path`, creating it with owner-only (`0600`) permissions **at creation time**
 /// (not via a separate `set_permissions` afterward, which would leave — however briefly — a window
 /// where the file exists at a wider mode). This is the one case in this module where konoma itself

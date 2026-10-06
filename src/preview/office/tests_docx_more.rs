@@ -845,10 +845,10 @@ fn a_formula_that_cannot_be_converted_shows_its_characters() {
 }
 
 #[test]
-fn the_default_converter_is_the_stub_that_never_converts() {
+fn the_default_converter_is_the_real_omml_converter() {
     let d = conv(&Dx::new(&para(&omml("q"))));
-    assert_eq!(d.markdown, "q");
-    assert_eq!((d.math_total, d.math_latex), (1, 0));
+    assert_eq!(d.markdown, "$q$");
+    assert_eq!((d.math_total, d.math_latex), (1, 1));
 }
 
 #[test]

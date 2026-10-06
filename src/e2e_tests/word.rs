@@ -1,0 +1,1097 @@
+//! End-to-end tests of the Word document preview (`PreviewKind::Document`): `testdata/office/word.docx`
+//! and `word-ja.docx` opened through the real key path.
+
+use super::*;
+
+const EN: &str = "word.docx";
+const JA: &str = "word-ja.docx";
+
+/// A tall terminal, so most of the sample document is on one screen.
+const TALL: (u16, u16) = (110, 150);
+
+fn testdata(file: &str) -> Option<std::path::PathBuf> {
+    let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata/office")
+        .join(file);
+    if !src.exists() {
+        eprintln!("SKIP: testdata/office/{file} not found — this test verifies nothing this run");
+        return None;
+    }
+    Some(src)
+}
+
+/// A sandbox holding `file` (copied from testdata) with a `z.txt` after it in tree order.
+fn doc_sandbox(
+    name: &str,
+    file: &str,
+) -> Option<(crate::test_support::TmpDir, std::path::PathBuf)> {
+    let src = testdata(file)?;
+    let dir = sandbox(name);
+    std::fs::copy(&src, dir.join(file)).unwrap();
+    std::fs::write(dir.join("z.txt"), "after the document\n").unwrap();
+    let root = canon(&dir);
+    Some((dir, root))
+}
+
+/// Opens `file` through the tree in an English-UI sim of `size`, without media workers (the
+/// document is converted inline, no pictures are drawn).
+fn open_doc_sized(
+    name: &str,
+    file: &str,
+    size: (u16, u16),
+    cfg: Config,
+) -> Option<(Sim, crate::test_support::TmpDir)> {
+    let (dir, root) = doc_sandbox(name, file)?;
+    let mut s = Sim::with_config_sized(&root, cfg, size.0, size.1);
+    s.select(file);
+    s.enter();
+    Some((s, dir))
+}
+
+fn open_doc(name: &str, file: &str) -> Option<(Sim, crate::test_support::TmpDir)> {
+    open_doc_sized(name, file, TALL, cfg_en())
+}
+
+/// Opens `file` with the real media workers (the Office worker, the picture decoder and encoder),
+/// the way the run loop does. The conversion is still on its thread on return (`drain_media`
+/// applies it).
+fn open_doc_with_media(
+    name: &str,
+    file: &str,
+    size: (u16, u16),
+) -> Option<(Sim, crate::test_support::TmpDir)> {
+    let (dir, root) = doc_sandbox(name, file)?;
+    let mut s = Sim::with_config_sized(&root, cfg_en(), size.0, size.1).with_media();
+    s.select(file);
+    s.enter();
+    Some((s, dir))
+}
+
+fn same_bytes_after(path: &std::path::Path, f: impl FnOnce()) -> bool {
+    let before = std::fs::read(path).unwrap();
+    f();
+    std::fs::read(path).unwrap() == before
+}
+
+/// A minimal docx (three parts) whose body is `body` (the content of `<w:body>`).
+fn build_docx(path: &std::path::Path, body: &str) {
+    use std::io::Write;
+    let ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
+    let f = std::fs::File::create(path).unwrap();
+    let mut zw = zip::ZipWriter::new(f);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut put = |name: &str, text: &str| {
+        zw.start_file(name, opts).unwrap();
+        zw.write_all(text.as_bytes()).unwrap();
+    };
+    put(
+        "[Content_Types].xml",
+        r#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"#,
+    );
+    put(
+        "_rels/.rels",
+        &format!(
+            r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{rel}" Target="word/document.xml"/></Relationships>"#
+        ),
+    );
+    put(
+        "word/document.xml",
+        &format!(
+            r#"<?xml version="1.0"?><w:document xmlns:w="{ns}"><w:body>{body}</w:body></w:document>"#
+        ),
+    );
+    zw.finish().unwrap();
+}
+
+fn para(text: &str) -> String {
+    format!("<w:p><w:r><w:t>{text}</w:t></w:r></w:p>")
+}
+
+/// Applies every pending inline-image decode / encode result (the run loop's draining steps),
+/// redrawing after each batch, until the pipeline has gone quiet.
+#[track_caller]
+fn settle_images(s: &mut Sim) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let imgs: Vec<_> = s.md_img_rx.as_ref().unwrap().try_iter().collect();
+        let encs: Vec<_> = s.md_enc_rx.as_ref().unwrap().try_iter().collect();
+        let any = !imgs.is_empty() || !encs.is_empty();
+        for r in imgs {
+            s.app.apply_md_image(r);
+        }
+        for r in encs {
+            s.app.apply_md_encode(r);
+        }
+        s.draw();
+        if !any && !s.app.md_images_loading() {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "images never settled");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Moves the Tab focus forward until `want` is the focused kind (at most `max` presses).
+#[track_caller]
+fn tab_to(s: &mut Sim, want: crate::app::MdFocus, max: usize) {
+    for _ in 0..max {
+        s.tab();
+        if s.app.md_focused_kind() == Some(want) {
+            return;
+        }
+    }
+    panic!("Tab never reached {want:?}:\n{}", s.screen());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Opening and the decorated view
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn e2e_word_docx_opens_as_decorated_markdown() {
+    let Some((s, _d)) = open_doc("w_open", EN) else {
+        return;
+    };
+    assert!(s.app.is_document() && s.app.document_ready());
+    assert!(!s.app.is_table_preview() && !s.app.is_windowed() && !s.app.is_md_raw());
+    // Headings are drawn as headings (decorated), not as `#` source.
+    s.see("Word reader sample");
+    s.dont_see("# Word reader sample");
+    s.dont_see("can not preview");
+    // Emphasis is applied; the literal marks the author typed survive as text.
+    s.see("*star* _under_");
+    s.dont_see("**bold**");
+    s.see("PREVIEW");
+}
+
+#[test]
+fn e2e_word_the_structure_of_the_document_reaches_the_screen() {
+    let Some((s, _d)) = open_doc("w_structure", EN) else {
+        return;
+    };
+    // Headings, a table of contents made of links, bullets and nested bullets.
+    for want in [
+        "Contents",
+        "Lists",
+        "Bullets and numbers",
+        "- bullet one",
+        "- bullet nested",
+    ] {
+        s.see(want);
+    }
+    // Numbered lists keep the numbers the document showed; other number formats are literal text.
+    for want in [
+        "1. first",
+        "2. second",
+        "1. second-a",
+        "3. third",
+        "a. alpha",
+        "II. two",
+    ] {
+        s.see(want);
+    }
+    // The table (a merged header cell, an escaped pipe, a two-line cell), drawn as a grid.
+    for want in [
+        "┌",
+        "Merged across two columns",
+        "a|b",
+        "two lines",
+        "tall cell",
+    ] {
+        s.see(want);
+    }
+    // Footnotes and endnotes: superscript references and a section at the end.
+    for want in [
+        "footnote¹",
+        "endnote²",
+        "1. Footnote text with *star*.",
+        "2. Endnote text.",
+    ] {
+        s.see(want);
+    }
+    // Links collapse to their label; the tracked-change insertion is in, the deletion is out.
+    s.see("example site");
+    s.see("Kept text. This sentence is inserted.");
+    s.dont_see("deleted");
+    // Comments, headers and footers are not shown.
+    for hidden in ["SECRET-COMMENT", "RUNNING-HEADER", "RUNNING-FOOTER"] {
+        s.dont_see(hidden);
+    }
+    s.see("Text with a comment");
+    // A text box's text is in the flow; a code paragraph is a code block.
+    s.see("TEXTBOX-TEXT inside a frame");
+    s.see("def f(x):");
+    s.see("code");
+}
+
+#[test]
+fn e2e_word_a_picture_has_its_alt_text_where_images_cannot_be_drawn() {
+    let Some((s, _d)) = open_doc("w_alt", EN) else {
+        return;
+    };
+    // No graphics backend in this sim: the picture degrades to its description, never to the
+    // synthetic URL alone or to a blank.
+    s.see("Gradient A small gradient picture");
+}
+
+#[test]
+fn e2e_word_a_japanese_document_opens_and_reads_in_japanese() {
+    let Some((mut s, _d)) = open_doc("w_ja", JA) else {
+        return;
+    };
+    for want in ["Word 読み込みサンプル", "はじめに", "リスト", "図と脚注"] {
+        see_cjk(&mut s, want);
+    }
+    s.dont_see("can not preview");
+    // The outline (`o`) lists the Japanese headings.
+    s.key('o');
+    assert!(s.app.is_outline());
+    see_cjk(&mut s, "図と脚注");
+}
+
+#[test]
+fn e2e_word_the_docx_is_never_written_by_any_key() {
+    let Some((dir, root)) = doc_sandbox("w_never_written", EN) else {
+        return;
+    };
+    let docx = root.join(EN);
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 90, 26);
+    s.select(EN);
+    assert!(same_bytes_after(&docx, || {
+        s.enter();
+        // Every focusable item, with the keys that would toggle a checkbox / details / open a link
+        // (links go nowhere: opening is switched off in this sim's config below).
+        s.app.cfg.external.open_links = false;
+        for _ in 0..40 {
+            s.tab();
+            s.key(' ');
+            s.enter();
+        }
+        s.key('R');
+        s.keys("jjjV");
+        s.key('y');
+        s.key('R');
+        s.keys("o");
+        s.esc();
+    }));
+    // The mtime did not move either (nothing rewrote it).
+    drop(dir);
+}
+
+#[test]
+fn e2e_word_checkbox_like_text_is_text_and_toggling_cannot_write_the_docx() {
+    let dir = sandbox("w_checkbox");
+    let docx = canon(&dir).join("t.docx");
+    build_docx(
+        &docx,
+        &format!(
+            "{}{}{}",
+            para("[ ] not a task"),
+            para("- [x] also text"),
+            para("tail")
+        ),
+    );
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("t.docx");
+    assert!(same_bytes_after(&docx, || {
+        s.enter();
+        assert!(s.app.document_ready());
+        assert!(!s.app.md_has_tasks(), "no focusable checkbox in a document");
+        s.see("not a task");
+        s.see("also text");
+        for _ in 0..4 {
+            s.tab();
+            assert!(!s.app.md_focused_task());
+            s.key(' ');
+            s.enter();
+        }
+    }));
+    assert!(s.app.flash.is_none() || !s.app.flash.clone().unwrap().contains("checkbox"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pictures and formulas (real decode / encode workers, halfblocks picker)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn e2e_word_pictures_and_formulas_are_drawn_as_images() {
+    let Some((mut s, _d)) = open_doc_with_media("w_images", EN, TALL) else {
+        return;
+    };
+    // The conversion arrives from the Office worker; until then nothing but the spinner.
+    assert!(s.app.is_document_loading());
+    s.see("loading");
+    s.drain_media();
+    assert!(s.app.document_ready());
+    assert_eq!(s.app.document_picture_count_for_test(), 1);
+    settle_images(&mut s);
+
+    let placements = s.app.md_images();
+    let office: Vec<_> = placements
+        .iter()
+        .filter(|p| crate::preview::markdown::is_office_image_url(&p.url))
+        .collect();
+    let math: Vec<_> = placements
+        .iter()
+        .filter(|p| crate::preview::markdown::is_math_url(&p.url))
+        .collect();
+    assert_eq!(office.len(), 1, "{placements:?}");
+    assert_eq!(
+        math.len(),
+        2,
+        "two formulas became math images: {placements:?}"
+    );
+    // Every one of them has an encoded picture for its own box (nothing left on the loading row).
+    for p in &placements {
+        assert!(
+            s.app
+                .md_image_proto(&p.url, p.cols, p.rows, 0, p.rows)
+                .is_some(),
+            "no picture for {}",
+            p.url
+        );
+    }
+    // The picture is on screen instead of its alt text and URL; the formulas' LaTeX is not.
+    s.dont_see("office-img://");
+    s.dont_see("Gradient A small gradient picture");
+    s.dont_see("\\frac");
+    // Real ink reached the buffer (the gradient is coloured, the formulas are light on dark).
+    let ink = drawn_rgb_fgs(&s.term)
+        .into_iter()
+        .filter(|&(r, g, b)| r > 20 || g > 20 || b > 20)
+        .count();
+    assert!(ink > 20, "ink: {ink}");
+}
+
+#[test]
+fn e2e_word_pictures_are_drawn_on_a_kitty_terminal_too() {
+    let Some((dir, root)) = doc_sandbox("w_kitty", EN) else {
+        return;
+    };
+    let mut s = Sim::with_config_sized(&root, cfg_en(), TALL.0, TALL.1).with_media_kitty();
+    s.select(EN);
+    s.enter();
+    s.drain_media();
+    settle_images(&mut s);
+    let placement = s
+        .app
+        .md_images()
+        .into_iter()
+        .find(|p| crate::preview::markdown::is_office_image_url(&p.url))
+        .expect("the picture has a placement");
+    assert!(s
+        .app
+        .md_image_proto(
+            &placement.url,
+            placement.cols,
+            placement.rows,
+            0,
+            placement.rows
+        )
+        .is_some());
+    drop(dir);
+}
+
+#[test]
+fn e2e_word_an_undecodable_picture_degrades_to_its_alt_text() {
+    let dir = sandbox("w_badpic");
+    let docx = canon(&dir).join("p.docx");
+    {
+        use std::io::Write;
+        // Build a docx whose only picture is not an image at all.
+        let f = std::fs::File::create(&docx).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let o = zip::write::SimpleFileOptions::default();
+        let mut put = |n: &str, t: &[u8]| {
+            zw.start_file(n, o).unwrap();
+            zw.write_all(t).unwrap();
+        };
+        let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        put(
+            "[Content_Types].xml",
+            br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"#,
+        );
+        put("_rels/.rels", format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{rel}/officeDocument" Target="word/document.xml"/></Relationships>"#).as_bytes());
+        put("word/_rels/document.xml.rels", format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdP" Type="{rel}/image" Target="media/a.png"/></Relationships>"#).as_bytes());
+        put("word/media/a.png", b"this is not a png");
+        put("word/document.xml", format!(r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="{rel}" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><w:body><w:p><w:r><w:t>before</w:t></w:r><w:r><w:drawing><wp:inline><wp:docPr id="1" name="x" descr="the broken picture"/><a:graphic><a:graphicData><a:blip r:embed="rIdP"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p></w:body></w:document>"#).as_bytes());
+        zw.finish().unwrap();
+    }
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("p.docx");
+    s.enter();
+    s.drain_media();
+    assert!(s.app.document_ready());
+    settle_images(&mut s);
+    // No size can be read from it: it is drawn as text, and nothing hangs or panics.
+    s.see("before");
+    s.see("the broken picture");
+}
+
+// ---------------------------------------------------------------------------------------------
+// `R`: the converted Markdown (windowed, selectable, copyable)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn e2e_word_r_shows_the_converted_markdown_and_r_again_returns() {
+    let Some((mut s, _d)) = open_doc("w_raw", EN) else {
+        return;
+    };
+    assert_eq!(s.app.document_raw_file_for_test(), None);
+    s.key('R');
+    assert!(s.app.is_md_raw() && s.app.is_windowed());
+    s.see("raw source");
+    s.see("# Word reader sample");
+    s.see("**Contents**");
+    s.see("\\*star\\*");
+    // The converted text lives in a private temp file, not in the .docx.
+    let tmp = s.app.document_raw_file_for_test().expect("a temp file");
+    assert!(tmp != s.app.tab.preview_path.clone().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(&tmp).unwrap(),
+        s.app.document_markdown_for_test().unwrap()
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&tmp).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "owner-only: {mode:o}");
+    }
+    // Back to the rendered view: the temp file is gone, the decorated text is back.
+    s.key('R');
+    assert!(!s.app.is_md_raw() && !s.app.is_windowed());
+    assert!(!tmp.exists(), "the raw view's temp file is deleted");
+    s.dont_see("# Word reader sample");
+    s.see("Word reader sample");
+}
+
+#[test]
+fn e2e_word_the_raw_view_selects_and_copies_the_converted_text() {
+    let Some((mut s, _d)) = open_doc("w_raw_copy", EN) else {
+        return;
+    };
+    s.key('R');
+    // V = the line under the caret.
+    crate::test_support::clear_test_clipboard();
+    s.keys("V");
+    s.key('y');
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some("# Word reader sample"),
+        "the copied text is the converted Markdown, not the .docx"
+    );
+    // V over three lines.
+    crate::test_support::clear_test_clipboard();
+    s.keys("Vjjy");
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some("# Word reader sample\n\n**Contents**")
+    );
+    // v = a character range.
+    crate::test_support::clear_test_clipboard();
+    s.keys("g0vllllly");
+    assert_eq!(
+        crate::test_support::get_test_clipboard().as_deref(),
+        Some("# Word")
+    );
+    // Y has no line range to speak of for a converted document: the file reference only.
+    crate::test_support::clear_test_clipboard();
+    s.key('Y');
+    let y = crate::test_support::get_test_clipboard().unwrap();
+    assert!(y.ends_with("word.docx") && !y.contains("#L"), "{y}");
+}
+
+#[test]
+fn e2e_word_the_raw_view_searches_the_converted_text() {
+    let Some((mut s, _d)) = open_doc_sized("w_raw_search", EN, (100, 30), cfg_en()) else {
+        return;
+    };
+    s.key('R');
+    s.key('/');
+    s.keys("Kept text");
+    s.enter();
+    assert_eq!(
+        s.app.search_status(),
+        Some((1, 1)),
+        "found in the converted text"
+    );
+    s.see("Kept text. This sentence is inserted.");
+    // The raw view is the converted Markdown: markup that the decorated view hides is searchable.
+    s.key('/');
+    s.keys("[^1]");
+    s.enter();
+    assert!(s.app.search_status().is_some_and(|(_, n)| n >= 2));
+}
+
+#[test]
+fn e2e_word_the_raw_view_survives_a_reload_with_the_new_text() {
+    let Some((dir, root)) = doc_sandbox("w_raw_reload", EN) else {
+        return;
+    };
+    let Some(ja) = testdata(JA) else {
+        return;
+    };
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 100, 30).with_media();
+    s.select(EN);
+    s.enter();
+    s.drain_media();
+    s.key('R');
+    let old_tmp = s.app.document_raw_file_for_test().unwrap();
+    s.see("# Word reader sample");
+    // The file is replaced by the Japanese sample (a later mtime).
+    let docx = root.join(EN);
+    std::fs::copy(&ja, &docx).unwrap();
+    let f = std::fs::OpenOptions::new().write(true).open(&docx).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_900_000_100))
+        .unwrap();
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&docx));
+    s.draw();
+    drain_media_until_current(&mut s);
+    assert!(
+        s.app.is_md_raw() && s.app.is_windowed(),
+        "still the raw view"
+    );
+    see_cjk(&mut s, "# Word 読み込みサンプル");
+    assert!(!old_tmp.exists(), "the stale temp file was replaced");
+    assert!(s.app.document_raw_file_for_test().unwrap().exists());
+    drop(dir);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Outline, search, links, copy of a code block, paging
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn e2e_word_the_outline_lists_the_headings_and_jumps() {
+    let Some((mut s, _d)) = open_doc_sized("w_outline", EN, (90, 26), cfg_en()) else {
+        return;
+    };
+    s.key('o');
+    assert!(s.app.is_outline());
+    for h in [
+        "Word reader sample",
+        "Introduction",
+        "Lists",
+        "Bullets and numbers",
+        "Pictures and notes",
+    ] {
+        s.see(h);
+    }
+    // Down to "Pictures and notes" and jump: the view scrolls there.
+    let before = s.app.tab.preview_scroll;
+    for _ in 0..4 {
+        s.key('j');
+    }
+    s.enter();
+    assert!(!s.app.is_outline());
+    assert!(s.app.tab.preview_scroll > before, "scrolled to the section");
+    s.see("Pictures and notes");
+}
+
+#[test]
+fn e2e_word_search_finds_text_in_the_decorated_view() {
+    let Some((mut s, _d)) = open_doc_sized("w_search", EN, (90, 26), cfg_en()) else {
+        return;
+    };
+    s.key('/');
+    s.keys("footnote");
+    s.enter();
+    let (cur, total) = s.app.search_status().expect("hits");
+    assert_eq!(cur, 1);
+    assert!(total >= 2, "{total}");
+    s.key('n');
+    assert_eq!(s.app.search_status().unwrap().0, 2);
+    s.key('N');
+    assert_eq!(s.app.search_status().unwrap().0, 1);
+    // A miss says so.
+    s.key('/');
+    s.keys("zzzzqqqq");
+    s.enter();
+    assert!(s
+        .app
+        .flash
+        .clone()
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("no match"));
+}
+
+#[test]
+fn e2e_word_links_are_focusable_and_follow_the_markdown_rules() {
+    let Some((mut s, _d)) = open_doc_sized("w_links", EN, (90, 26), cfg_en()) else {
+        return;
+    };
+    s.app.cfg.external.open_links = false; // never start the OS opener from a test
+    let targets = s.app.md_link_targets();
+    assert!(
+        targets.iter().any(|t| t == "https://example.com/a?x=1&y=2"),
+        "{targets:?}"
+    );
+    assert!(targets.iter().any(|t| t == "#introduction"), "{targets:?}");
+    // No link goes to a local path: a document cannot open files next to it by relative path.
+    for t in &targets {
+        assert!(
+            t.starts_with('#') || t.starts_with("http") || t.starts_with("mailto:"),
+            "{t}"
+        );
+    }
+    // An in-document link scrolls in place; the footer says "jump" for it.
+    tab_to(&mut s, crate::app::MdFocus::AnchorLink, 30);
+    s.see("↵:jump");
+    s.dont_see("C-t:new tab");
+    s.enter();
+    // An external link goes to the OS (here: switched off, so it says so) and the footer says "browser".
+    s.key('g');
+    tab_to(&mut s, crate::app::MdFocus::ExternalLink, 40);
+    s.see("↵:browser");
+    s.enter();
+    let flash = s.app.flash.clone().unwrap_or_default();
+    assert!(flash.contains("open_links"), "{flash}");
+    // Ctrl-t on a link in a document never makes a tab either.
+    let tabs = s.app.tab_count();
+    s.ctrl('t');
+    assert_eq!(s.app.tab_count(), tabs);
+}
+
+#[test]
+fn e2e_word_an_anchor_link_to_a_heading_scrolls_to_it() {
+    let Some((mut s, _d)) = open_doc_sized("w_anchor", EN, (90, 26), cfg_en()) else {
+        return;
+    };
+    // Focus the table-of-contents link "Pictures and notes" and press Enter.
+    let mut found = false;
+    for _ in 0..12 {
+        s.tab();
+        if s.app.md_focused_kind() == Some(crate::app::MdFocus::AnchorLink)
+            && s.screen().contains("Pictures and notes")
+        {
+            let idx = s.app.focused_item().unwrap();
+            if s.app.md_link_targets().get(idx).map(String::as_str) == Some("#pictures-and-notes") {
+                found = true;
+                break;
+            }
+        }
+    }
+    assert!(found, "TOC link not reached:\n{}", s.screen());
+    let before = s.app.tab.preview_scroll;
+    s.enter();
+    assert!(s.app.tab.preview_scroll > before, "jumped to the heading");
+}
+
+#[test]
+fn e2e_word_y_c_copies_the_code_block_from_the_converted_text() {
+    let Some((mut s, _d)) = open_doc("w_codecopy", EN) else {
+        return;
+    };
+    tab_to(&mut s, crate::app::MdFocus::CodeBlock, 40);
+    s.see("y c:copy code");
+    crate::test_support::clear_test_clipboard();
+    s.keys("yc");
+    let copied = crate::test_support::get_test_clipboard().unwrap();
+    assert!(
+        copied.starts_with("def f(x):") && copied.contains("return x * 2"),
+        "{copied:?}"
+    );
+}
+
+#[test]
+fn e2e_word_ctrl_n_pages_to_the_next_file_and_releases_the_document() {
+    let Some((mut s, _d)) = open_doc("w_ctrl_n", EN) else {
+        return;
+    };
+    assert!(s.app.document_ready());
+    s.ctrl('n');
+    assert!(s.app.tab.preview_path.clone().unwrap().ends_with("z.txt"));
+    assert!(!s.app.is_document() && !s.app.document_ready());
+    assert_eq!(
+        s.app.document_picture_count_for_test(),
+        0,
+        "pictures released"
+    );
+    s.see("after the document");
+    // And back: the document is converted again.
+    s.ctrl('p');
+    assert!(s.app.document_ready());
+    s.see("Word reader sample");
+}
+
+#[test]
+fn e2e_word_the_title_names_the_file_and_the_footer_offers_e_as_open() {
+    let Some((s, _d)) = open_doc_sized("w_title", EN, (200, 40), cfg_en()) else {
+        return;
+    };
+    s.see("word.docx");
+    // `e` opens an Office app for a document (never an editor): the footer says "open".
+    s.see("e:open");
+    s.dont_see("e:edit");
+}
+
+#[test]
+fn e2e_word_e_opens_the_office_app_in_both_views_and_never_the_editor() {
+    let Some((mut s, _d)) = open_doc("w_e", EN) else {
+        return;
+    };
+    let log = office_recorder(&mut s, 0);
+    s.key('e');
+    assert!(
+        s.app.take_pending_edit().is_none(),
+        "must not reach the editor"
+    );
+    assert_eq!(log.lock().unwrap().len(), 1);
+    assert!(log.lock().unwrap()[0]
+        .1
+        .last()
+        .unwrap()
+        .ends_with("word.docx"));
+    // The raw view's caret line is a line of the converted text: it is never a target either.
+    s.key('R');
+    s.key('e');
+    assert!(s.app.take_pending_edit().is_none());
+    assert_eq!(log.lock().unwrap().len(), 2);
+    assert!(log.lock().unwrap()[1]
+        .1
+        .last()
+        .unwrap()
+        .ends_with("word.docx"));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Hints appear only for keys that act ([[hint-shown-iff-key-acts]])
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn e2e_word_help_lists_only_keys_that_act_on_a_document() {
+    let Some((mut s, _d)) = open_doc_sized("w_help", EN, (120, 60), cfg_en()) else {
+        return;
+    };
+    s.key('?');
+    let doc_help = s.screen();
+    // Keys that act on a converted document.
+    assert!(doc_help.contains("Tab / ⇧Tab"), "{doc_help}");
+    assert!(doc_help.contains("R"), "{doc_help}");
+    // Keys with nothing to act on in a document: no checkbox / <details> / diagram rows.
+    assert!(!doc_help.contains("toggle focused checkbox"), "{doc_help}");
+    assert!(
+        !doc_help.contains("expand/collapse the focused <details>"),
+        "{doc_help}"
+    );
+    assert!(!doc_help.contains("zoom the focused diagram"), "{doc_help}");
+}
+
+#[test]
+fn e2e_word_help_of_a_plain_markdown_file_still_lists_them() {
+    // The contrast of the test above: the same help for a .md keeps those rows.
+    let dir = sandbox("w_help_md");
+    std::fs::write(dir.join("a.md"), "# t\n\n- [ ] x\n").unwrap();
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 120, 60);
+    s.select("a.md");
+    s.enter();
+    s.key('?');
+    let help = s.screen();
+    assert!(help.contains("toggle focused checkbox"), "{help}");
+    assert!(help.contains("zoom the focused diagram"), "{help}");
+}
+
+#[test]
+fn e2e_word_the_raw_view_help_and_footer_are_the_text_ones() {
+    let Some((mut s, _d)) = open_doc_sized("w_raw_help", EN, (200, 60), cfg_en()) else {
+        return;
+    };
+    s.key('R');
+    s.see("v/V:select");
+    s.see("R:rendered");
+    s.see("e:open");
+    s.key('?');
+    let help = s.screen();
+    assert!(help.contains("v / V → y"), "{help}");
+    // `Y` is the file reference only (the converted text has no lines in the .docx).
+    assert!(help.contains("copy the @path reference"), "{help}");
+    assert!(!help.contains("@path#L reference of caret"), "{help}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Failures: a reason, never a crash or raw bytes
+// ---------------------------------------------------------------------------------------------
+
+fn open_bad(name: &str, make: impl FnOnce(&std::path::Path)) -> (Sim, crate::test_support::TmpDir) {
+    let dir = sandbox(name);
+    let p = canon(&dir).join("bad.docx");
+    make(&p);
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("bad.docx");
+    s.enter();
+    (s, dir)
+}
+
+#[test]
+fn e2e_word_a_corrupt_file_says_so() {
+    let (s, _d) = open_bad("w_corrupt", |p| {
+        std::fs::write(p, b"this is not a zip at all").unwrap()
+    });
+    assert!(s.app.is_document() && !s.app.document_ready());
+    s.see("[document] cannot preview");
+    s.see("damaged or not a valid Word document");
+    s.see("bad.docx");
+    s.dont_see("this is not a zip");
+}
+
+#[test]
+fn e2e_word_an_empty_file_says_so() {
+    let (s, _d) = open_bad("w_empty", |p| std::fs::write(p, b"").unwrap());
+    s.see("[document] cannot preview");
+}
+
+#[test]
+fn e2e_word_an_encrypted_document_says_so() {
+    let Some(enc) = testdata("encrypted.xlsx") else {
+        return;
+    };
+    // An encrypted package is a CFB container, whatever the extension says.
+    let (s, _d) = open_bad("w_encrypted", |p| {
+        std::fs::copy(&enc, p).unwrap();
+    });
+    s.see("password-protected");
+}
+
+#[test]
+fn e2e_word_a_zip_that_is_not_a_word_document_says_so() {
+    let Some(book) = testdata("formats.xlsx") else {
+        return;
+    };
+    let (s, _d) = open_bad("w_notword", |p| {
+        std::fs::copy(&book, p).unwrap();
+    });
+    s.see("[document] cannot preview");
+    s.dont_see("[spreadsheet]");
+}
+
+#[test]
+fn e2e_word_an_oversized_file_names_the_limit() {
+    let (s, _d) = open_bad("w_huge", |p| {
+        let f = std::fs::File::create(p).unwrap();
+        f.set_len(300 * 1024 * 1024).unwrap(); // sparse: no real disk
+    });
+    s.see("[document] too large to preview");
+    s.see("256 MiB");
+}
+
+#[test]
+fn e2e_word_failures_are_japanese_in_a_japanese_ui() {
+    let dir = sandbox("w_fail_ja");
+    std::fs::write(dir.join("bad.docx"), b"nope").unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.lang = "ja".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("bad.docx");
+    s.enter();
+    see_cjk(&mut s, "[文書] 表示不可");
+}
+
+#[test]
+fn e2e_word_a_failure_has_no_raw_view_and_r_does_nothing() {
+    let (mut s, _d) = open_bad("w_fail_r", |p| std::fs::write(p, b"nope").unwrap());
+    s.key('R');
+    assert!(!s.app.is_md_raw() && !s.app.is_windowed());
+    assert_eq!(s.app.document_raw_file_for_test(), None);
+    s.see("[document] cannot preview");
+}
+
+#[test]
+fn e2e_word_a_very_long_document_is_cut_and_the_title_says_so() {
+    let dir = sandbox("w_long");
+    let docx = canon(&dir).join("long.docx");
+    let body: String = (0..6000)
+        .map(|i| para(&format!("paragraph number {i}")))
+        .collect();
+    build_docx(&docx, &body);
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 120, 30);
+    s.select("long.docx");
+    s.enter();
+    assert!(s.app.document_ready() && s.app.document_truncated());
+    s.see("truncated");
+    s.see("paragraph number 0");
+    s.key('G');
+    s.dont_see("paragraph number 5999");
+    // The raw view says so too.
+    s.key('R');
+    s.see("truncated");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The Office worker: loading screen, staleness, tab switches, reloads, serialisation
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn e2e_word_the_worker_shows_loading_then_the_document() {
+    let Some((mut s, _d)) = open_doc_with_media("w_worker", EN, (100, 30)) else {
+        return;
+    };
+    // Converted on a thread, not inline: the spinner first, the document when the result lands.
+    assert!(s.app.is_document_loading() && !s.app.document_ready());
+    s.see("loading");
+    s.dont_see("Word reader sample");
+    s.drain_media();
+    assert_eq!(s.app.workbook_loads_started(), 1);
+    assert!(s.app.document_ready() && !s.app.is_document_loading());
+    s.see("Word reader sample");
+    s.dont_see("loading");
+}
+
+#[test]
+fn e2e_word_a_result_for_a_file_left_behind_is_dropped() {
+    let Some((dir, root)) = doc_sandbox("w_stale", EN) else {
+        return;
+    };
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 100, 30).with_media();
+    s.select(EN);
+    s.enter();
+    assert!(s.app.is_document_loading());
+    // Leave for another file before the conversion lands.
+    s.ctrl('n');
+    assert!(s.app.tab.preview_path.clone().unwrap().ends_with("z.txt"));
+    let res = s
+        .media_rx
+        .as_ref()
+        .unwrap()
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the worker answers");
+    assert!(!s.app.apply_media(res), "stale");
+    assert!(!s.app.document_ready());
+    s.see("after the document");
+    drop(dir);
+}
+
+#[test]
+fn e2e_word_the_newest_of_several_requests_wins_and_loads_are_serialised() {
+    let Some((dir, root)) = doc_sandbox("w_serial", EN) else {
+        return;
+    };
+    std::fs::copy(testdata(JA).unwrap(), root.join("zz-ja.docx")).unwrap();
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 100, 30).with_media();
+    s.select(EN);
+    s.enter(); // asked: word.docx
+    s.ctrl('n'); // z.txt
+    s.ctrl('n'); // zz-ja.docx  (asked while the first may still run)
+    assert!(s
+        .app
+        .tab
+        .preview_path
+        .clone()
+        .unwrap()
+        .ends_with("zz-ja.docx"));
+    drain_media_until_current(&mut s);
+    assert!(s.app.document_ready());
+    see_cjk(&mut s, "Word 読み込みサンプル");
+    assert!(
+        s.app.workbook_loads_started() <= 2,
+        "at most one load per request"
+    );
+    drop(dir);
+}
+
+#[test]
+fn e2e_word_switching_tabs_reloads_the_document_on_the_worker() {
+    let Some((mut s, _d)) = open_doc_with_media("w_tabs", EN, (100, 30)) else {
+        return;
+    };
+    s.drain_media();
+    assert!(s.app.document_ready());
+    s.key('t'); // a second tab (a tree)
+    assert!(!s.app.is_document() && !s.app.document_ready(), "released");
+    assert_eq!(s.app.document_picture_count_for_test(), 0);
+    s.key('1'); // back to the first tab
+    assert!(s.app.is_document());
+    assert!(s.app.is_document_loading() || s.app.document_ready());
+    drain_media_until_current(&mut s);
+    assert!(s.app.document_ready());
+    s.see("Word reader sample");
+}
+
+#[test]
+fn e2e_word_an_outside_edit_reloads_the_document_keeping_the_scroll() {
+    let Some((dir, root)) = doc_sandbox("w_reload", EN) else {
+        return;
+    };
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 90, 20).with_media();
+    s.select(EN);
+    s.enter();
+    s.drain_media();
+    s.key('G');
+    let scrolled = s.app.tab.preview_scroll;
+    assert!(scrolled > 0);
+    // The same document, saved again by an outside program (a later mtime).
+    let docx = root.join(EN);
+    let f = std::fs::OpenOptions::new().write(true).open(&docx).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_900_000_200))
+        .unwrap();
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&docx));
+    s.draw();
+    // Until the new text arrives the old stays on screen (no flash of a spinner).
+    assert!(s.app.document_ready());
+    drain_media_until_current(&mut s);
+    assert!(s.app.document_ready());
+    assert_eq!(
+        s.app.tab.preview_scroll, scrolled,
+        "the view stays where it was"
+    );
+    drop(dir);
+}
+
+#[test]
+fn e2e_word_a_document_replaced_by_a_broken_file_shows_the_reason() {
+    let Some((dir, root)) = doc_sandbox("w_reload_bad", EN) else {
+        return;
+    };
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 90, 20).with_media();
+    s.select(EN);
+    s.enter();
+    s.drain_media();
+    let docx = root.join(EN);
+    std::fs::write(&docx, b"broken now").unwrap();
+    let f = std::fs::OpenOptions::new().write(true).open(&docx).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_900_000_300))
+        .unwrap();
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&docx));
+    drain_media_until_current(&mut s);
+    assert!(!s.app.document_ready());
+    s.see("[document] cannot preview");
+    drop(dir);
+}
+
+#[test]
+fn e2e_word_the_default_rule_covers_the_word_extensions_and_a_user_rule_wins() {
+    let dir = sandbox("w_rules");
+    for n in ["a.docx", "b.DOCX", "c.docm", "d.dotx", "e.dotm"] {
+        build_docx(&dir.join(n), &para("hello word"));
+    }
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    for n in ["a.docx", "b.DOCX", "c.docm", "d.dotx", "e.dotm"] {
+        s.select(n);
+        s.enter();
+        assert!(s.app.document_ready(), "{n}");
+        s.see("hello word");
+        s.key('q');
+    }
+    // `.doc` is not previewed (it opens in an Office app with `e`).
+    std::fs::write(dir.join("old.doc"), b"\xd0\xcf\x11\xe0 old binary").unwrap();
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("old.doc");
+    s.enter();
+    assert!(!s.app.is_document());
+    // A user rule placed first replaces the built-in.
+    let mut cfg = cfg_en();
+    cfg.preview.rules.insert(
+        0,
+        crate::config::Rule {
+            glob: Some("*.docx".into()),
+            builtin: Some("text".into()),
+            ..crate::config::Rule::default()
+        },
+    );
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("a.docx");
+    s.enter();
+    assert!(!s.app.is_document());
+}

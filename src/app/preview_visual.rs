@@ -67,7 +67,9 @@ impl App {
     /// (charwise, end-inclusive). Uses the file's unwrapped/logical lines so a paste keeps the original layout.
     /// Empty when there is no path or the range is out of bounds.
     pub(super) fn preview_selection_text(&self) -> String {
-        let Some(path) = self.tab.preview_path.as_ref() else {
+        // The text the reader shows: the file itself, or — for a delegated command's output or a
+        // Word document's converted Markdown — the generated temp file (`windowed_src`).
+        let Some(path) = self.windowed_src().or(self.tab.preview_path.as_deref()) else {
             return String::new();
         };
         let bytes = match std::fs::read(path) {
@@ -115,7 +117,8 @@ impl App {
     pub(super) fn preview_selection_ref_text(&self) -> Option<String> {
         let path = self.tab.preview_path.as_ref()?;
         let base = at_ref_text(&self.tab.open_dir, path);
-        if !self.is_windowed() {
+        // The lines of a Word document's converted Markdown are not lines of the .docx.
+        if !self.is_windowed() || self.is_document() {
             return Some(base);
         }
         let (lo, hi) = match self.preview_selection() {
