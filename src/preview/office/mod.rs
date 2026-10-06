@@ -132,6 +132,8 @@ mod tests_docx_robust;
 #[cfg(test)]
 mod tests_limits;
 #[cfg(test)]
+mod tests_math_fx;
+#[cfg(test)]
 mod tests_mathml;
 #[cfg(test)]
 mod tests_numfmt;

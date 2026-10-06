@@ -832,6 +832,31 @@ fn label_fix(escaped: &str, cell: bool) -> String {
     }
 }
 
+/// A display formula is written on a line of its own between two `$$` lines, where a first
+/// character that starts a Markdown block (`> quote`, `---` rule, a code fence, a list marker, a
+/// heading, a table row, HTML, a link definition) would make the formula that block. An empty
+/// group in front is invisible in LaTeX and keeps it a formula.
+fn guard_display(latex: &str) -> String {
+    let mut cs = latex.chars();
+    let digits = latex.chars().take_while(char::is_ascii_digit).count();
+    let block_start = match cs.next() {
+        Some('>' | '#' | '-' | '+' | '*' | '_' | '=' | '`' | '~' | '|' | '<' | ':' | '[' | '!') => {
+            true
+        }
+        // `1.` / `1)` starts a numbered list.
+        Some(c) if c.is_ascii_digit() => {
+            let mut rest = latex[digits..].chars();
+            matches!(rest.next(), Some('.' | ')')) && rest.next().is_none_or(char::is_whitespace)
+        }
+        _ => false,
+    };
+    if block_start {
+        format!("{{}}{latex}")
+    } else {
+        latex.to_string()
+    }
+}
+
 /// A paragraph that is only `---` / `***` / `___` would be drawn as a rule whatever its escapes;
 /// a zero-width space in front keeps it text.
 fn guard_rule(text: String) -> String {
@@ -1079,6 +1104,8 @@ fn emit_plain(segs: &[Seg], line_start: bool, ce: Option<CellEsc>, label: bool) 
         }
     };
     let mut out = String::new();
+    // Where each inline formula's closing `$` ends (see the digit guard after the loop).
+    let mut math_ends: Vec<usize> = Vec::new();
     for (idx, it) in items.iter().enumerate() {
         let ls = !cell && (line_start && out.is_empty() || out.ends_with('\n'));
         match it {
@@ -1087,6 +1114,7 @@ fn emit_plain(segs: &[Seg], line_start: bool, ce: Option<CellEsc>, label: bool) 
                 out.push('$');
                 out.push_str(&if cell { cell_math(l) } else { l.clone() });
                 out.push('$');
+                math_ends.push(out.len());
             }
             It::O(Seg::Break) => {
                 while out.ends_with(' ') {
@@ -1168,6 +1196,14 @@ fn emit_plain(segs: &[Seg], line_start: bool, ce: Option<CellEsc>, label: bool) 
                     out.push_str(&esc(&plain_trail, false));
                 }
             }
+        }
+    }
+    // The renderer takes `$...$` for a price (`$5 and $10`), not a formula, when a digit follows the
+    // closing `$`: a zero-width space keeps the formula a formula. Last to first, so the offsets
+    // stay valid.
+    for &pos in math_ends.iter().rev() {
+        if out[pos..].starts_with(|c: char| c.is_ascii_digit()) {
+            out.insert(pos, '\u{200B}');
         }
     }
     // Spaces before a line end would turn into a hard break.
@@ -1607,7 +1643,11 @@ impl<'a> Conv<'a> {
             Blk::Math(l) => {
                 self.stack.clear();
                 self.last_list = None;
-                self.push_piece(format!("$$\n{l}\n$$"), Last::Other, "\n\n");
+                self.push_piece(
+                    format!("$$\n{}\n$$", guard_display(&l)),
+                    Last::Other,
+                    "\n\n",
+                );
             }
             Blk::Table(rows) => {
                 self.stack.clear();
@@ -2218,15 +2258,24 @@ impl<'a> Conv<'a> {
         }
         self.math_total += 1;
         // The converter's check cannot be interrupted, so a cancelled load tries no more of them.
-        let latex = if self.cancelled() {
+        let xml = if self.cancelled() {
             None
         } else {
             to_xml(n, self.opts.max_math_xml)
-                .and_then(|x| (self.opts.math)(&x, display))
-                .map(|l| l.replace(['\n', '\r'], " ").trim().to_string())
-                .filter(|l| !l.is_empty() && !l.contains('$') && !l.contains(NBSP))
         };
-        let text = clean(&math_text(n, 0));
+        let latex = xml
+            .as_deref()
+            .and_then(|x| (self.opts.math)(x, display))
+            .map(|l| omml::tidy(&l.replace(['\n', '\r'], " ")))
+            .filter(|l| !l.is_empty() && !omml::has_bare_dollar(l) && !l.contains(NBSP));
+        // What shows when it cannot be drawn: the formula in a linear form (fractions, scripts,
+        // operators with limits keep their shape); the bare characters when it is too big to read.
+        let text = clean(
+            &xml.as_deref()
+                .map(omml::fallback_text)
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| math_text(n, 0)),
+        );
         if latex.is_some() {
             self.math_latex += 1;
         }

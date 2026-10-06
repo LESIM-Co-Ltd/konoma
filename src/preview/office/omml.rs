@@ -156,6 +156,9 @@ struct Ctx {
     eq: bool,
     /// Inside a function name / limit base: a run that spells a function name becomes `\sin`...
     fname: bool,
+    /// Inside a superscript: a prime is `\prime` (a bare `'` is itself a superscript in TeX, so
+    /// `^{'}` would be raised twice).
+    sup: bool,
 }
 
 /// Convert one `<m:oMath>` / `<m:oMathPara>` fragment to LaTeX. `None` when the fragment is not
@@ -169,7 +172,7 @@ pub fn to_latex(fragment: &str, _display: bool) -> Option<String> {
     collect_maths(&root, &mut maths);
     let rows: Vec<String> = maths
         .iter()
-        .map(|m| conv_seq(&m.kids, Ctx::default()).trim().to_string())
+        .map(|m| tidy(&conv_seq(&m.kids, Ctx::default())))
         .filter(|s| !s.is_empty())
         .collect();
     let out = match rows.len() {
@@ -184,6 +187,209 @@ pub fn to_latex(fragment: &str, _display: bool) -> Option<String> {
         return None;
     }
     Some(out)
+}
+
+/// A readable linear form of a fragment that could not be drawn (too big, or LaTeX RaTeX
+/// rejects): the characters with the structure kept as plain text, `(a)/(b)` for a fraction,
+/// `x^2` / `x_(i+1)` for scripts, `∑_(i=1)^n (a)` for an operator with limits, `√(x)` for a root,
+/// `[a, b; c, d]` for a matrix. Empty when the fragment is not well-formed or too big.
+pub fn fallback_text(fragment: &str) -> String {
+    if fragment.len() > MAX_INPUT {
+        return String::new();
+    }
+    let Some(root) = parse(fragment) else {
+        return String::new();
+    };
+    let mut maths: Vec<&Node> = Vec::new();
+    collect_maths(&root, &mut maths);
+    let rows: Vec<String> = maths
+        .iter()
+        .map(|m| lin_seq(&m.kids).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut out = rows.join("  ");
+    if out.len() > MAX_OUTPUT {
+        let mut cut = MAX_OUTPUT;
+        while !out.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.truncate(cut);
+    }
+    out
+}
+
+fn lin_seq(kids: &[Node]) -> String {
+    let mut s = String::new();
+    for k in kids {
+        s.push_str(&lin(k));
+        if s.len() > MAX_OUTPUT {
+            break;
+        }
+    }
+    s
+}
+
+fn lin_arg(n: &Node, name: &str) -> String {
+    n.child(name)
+        .map(|c| lin_seq(&c.kids).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// `s` as one unit of a linear formula: a single character stays as it is, anything longer is
+/// parenthesised (`x^2`, `x^(n+1)`).
+fn lin_unit(s: &str) -> String {
+    if s.chars().count() <= 1 {
+        s.to_string()
+    } else {
+        format!("({s})")
+    }
+}
+
+fn lin(n: &Node) -> String {
+    let arg = |name: &str| lin_arg(n, name);
+    match n.name.as_str() {
+        "r" => n
+            .kids
+            .iter()
+            .filter(|k| k.name == "t")
+            .map(|k| k.text.as_str())
+            .collect(),
+        "f" => format!("({})/({})", arg("num"), arg("den")),
+        "sSup" => format!("{}^{}", lin_unit(&arg("e")), lin_unit(&arg("sup"))),
+        "sSub" => format!("{}_{}", lin_unit(&arg("e")), lin_unit(&arg("sub"))),
+        "sSubSup" => format!(
+            "{}_{}^{}",
+            lin_unit(&arg("e")),
+            lin_unit(&arg("sub")),
+            lin_unit(&arg("sup"))
+        ),
+        "sPre" => format!(
+            "_{}^{}{}",
+            lin_unit(&arg("sub")),
+            lin_unit(&arg("sup")),
+            lin_unit(&arg("e"))
+        ),
+        "rad" => {
+            let deg = arg("deg");
+            if n.flag("radPr", "degHide") || deg.is_empty() {
+                format!("\u{221A}({})", arg("e"))
+            } else {
+                format!("\u{221A}[{deg}]({})", arg("e"))
+            }
+        }
+        "nary" => {
+            let op = match n.prop("naryPr", "chr").flatten() {
+                None => "\u{222B}".to_string(),
+                Some(c) => c.to_string(),
+            };
+            let mut s = op;
+            if !n.flag("naryPr", "subHide") {
+                let sub = arg("sub");
+                if !sub.is_empty() {
+                    s.push_str(&format!("_{}", lin_unit(&sub)));
+                }
+            }
+            if !n.flag("naryPr", "supHide") {
+                let sup = arg("sup");
+                if !sup.is_empty() {
+                    s.push_str(&format!("^{}", lin_unit(&sup)));
+                }
+            }
+            s.push(' ');
+            s.push_str(&lin_unit(&arg("e")));
+            s
+        }
+        "d" => {
+            let get = |name: &str, dflt: &str| match n.prop("dPr", name) {
+                None => dflt.to_string(),
+                Some(v) => v.unwrap_or("").to_string(),
+            };
+            let rows: Vec<String> = n
+                .kids
+                .iter()
+                .filter(|k| k.name == "e")
+                .map(|k| lin_seq(&k.kids).trim().to_string())
+                .collect();
+            let sep = get("sepChr", "|");
+            format!(
+                "{}{}{}",
+                get("begChr", "("),
+                rows.join(&format!(" {sep} ")),
+                get("endChr", ")")
+            )
+        }
+        "m" => {
+            let rows: Vec<String> = n
+                .kids
+                .iter()
+                .filter(|k| k.name == "mr")
+                .map(|mr| {
+                    mr.kids
+                        .iter()
+                        .filter(|k| k.name == "e")
+                        .map(|k| lin_seq(&k.kids).trim().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .collect();
+            format!("[{}]", rows.join("; "))
+        }
+        "eqArr" => n
+            .kids
+            .iter()
+            .filter(|k| k.name == "e")
+            .map(|k| lin_seq(&k.kids).trim().to_string())
+            .collect::<Vec<_>>()
+            .join("; "),
+        "func" => {
+            let e = arg("e");
+            format!("{} {}", arg("fName"), lin_unit(&e))
+        }
+        "acc" => {
+            let chr = n.prop("accPr", "chr").flatten().unwrap_or("\u{0302}");
+            let e = arg("e");
+            if chr
+                .chars()
+                .next()
+                .is_some_and(|c| ('\u{0300}'..='\u{036F}').contains(&c))
+            {
+                format!("{e}{chr}")
+            } else if chr.is_empty() {
+                e
+            } else {
+                format!("{chr}({e})")
+            }
+        }
+        "bar" => {
+            let e = arg("e");
+            if n.prop("barPr", "pos").flatten() == Some("top") {
+                format!("\u{00AF}({e})")
+            } else {
+                format!("_({e})")
+            }
+        }
+        "groupChr" => {
+            let e = arg("e");
+            let chr = n.prop("groupChrPr", "chr").flatten().unwrap_or("\u{23DF}");
+            if chr.is_empty() {
+                e
+            } else {
+                format!("{chr}({e})")
+            }
+        }
+        "limLow" => format!("{}_{}", lin_unit(&arg("e")), lin_unit(&arg("lim"))),
+        "limUpp" => format!("{}^{}", lin_unit(&arg("e")), lin_unit(&arg("lim"))),
+        "borderBox" => format!("\u{25AD}({})", arg("e")),
+        "phant" => {
+            if n.prop("phantPr", "show").is_none() || n.flag("phantPr", "show") {
+                arg("e")
+            } else {
+                String::new()
+            }
+        }
+        name if is_pr(name) => String::new(),
+        _ => lin_seq(&n.kids),
+    }
 }
 
 /// The `oMath` elements of a fragment, in order (the fragment root may be an `oMathPara`, an
@@ -243,6 +449,37 @@ fn conv_seq(kids: &[Node], cx: Ctx) -> String {
     s
 }
 
+/// A formula fragment without the whitespace at its ends, safe to put in a group or between `$`.
+/// LaTeX spaces are written `\ `: a plain `trim` turns a trailing one into a lone `\`, which
+/// escapes the `}` or `$` that follows (RaTeX then fails and the whole formula falls back to its
+/// characters). The trimmed-off space is put back after an odd run of backslashes, with an empty
+/// group so that no real whitespace ends the fragment.
+pub(super) fn tidy(s: &str) -> String {
+    let t = s.trim();
+    let slashes = t.bytes().rev().take_while(|&b| b == b'\\').count();
+    if slashes % 2 == 1 {
+        format!("{t} {{}}")
+    } else {
+        t.to_string()
+    }
+}
+
+/// Whether `latex` holds a `$` that is not escaped (`\$`): the Markdown around the formula would
+/// end the formula there. An escaped one is skipped by the renderer, so it is no problem.
+pub(super) fn has_bare_dollar(latex: &str) -> bool {
+    let mut it = latex.chars();
+    while let Some(c) = it.next() {
+        match c {
+            '\\' => {
+                it.next();
+            }
+            '$' => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn is_pr(name: &str) -> bool {
     name.ends_with("Pr")
 }
@@ -253,17 +490,25 @@ fn arg(n: &Node, name: &str, cx: Ctx) -> String {
         .child(name)
         .map(|c| conv_seq(&c.kids, cx))
         .unwrap_or_default();
-    format!("{{{}}}", body.trim())
+    format!("{{{}}}", tidy(&body))
 }
 
 fn arg_raw(n: &Node, name: &str, cx: Ctx) -> String {
     n.child(name)
-        .map(|c| conv_seq(&c.kids, cx).trim().to_string())
+        .map(|c| tidy(&conv_seq(&c.kids, cx)))
         .unwrap_or_default()
 }
 
 fn conv(n: &Node, cx: Ctx) -> String {
-    let inner = Ctx { eq: false, ..cx };
+    // The context of a structural child. `fname` is not inherited: only a run directly in a
+    // function name / limit base is a function name; `base` keeps it for the base of a script.
+    let inner = Ctx {
+        eq: false,
+        fname: false,
+        ..cx
+    };
+    let base = Ctx { eq: false, ..cx };
+    let sup = Ctx { sup: true, ..inner };
     match n.name.as_str() {
         "r" => conv_run(n, cx),
         "f" => {
@@ -274,13 +519,13 @@ fn conv(n: &Node, cx: Ctx) -> String {
                 _ => format!(r"\frac{num}{den}"),
             }
         }
-        "sSup" => format!("{}^{}", arg(n, "e", inner), arg(n, "sup", inner)),
-        "sSub" => format!("{}_{}", arg(n, "e", inner), arg(n, "sub", inner)),
+        "sSup" => format!("{}^{}", arg(n, "e", base), arg(n, "sup", sup)),
+        "sSub" => format!("{}_{}", arg(n, "e", base), arg(n, "sub", inner)),
         "sSubSup" => format!(
             "{}_{}^{}",
-            arg(n, "e", inner),
+            arg(n, "e", base),
             arg(n, "sub", inner),
-            arg(n, "sup", inner)
+            arg(n, "sup", sup)
         ),
         "sPre" => format!(
             "{{}}_{}^{}{}",
@@ -305,7 +550,7 @@ fn conv(n: &Node, cx: Ctx) -> String {
                 .kids
                 .iter()
                 .filter(|k| k.name == "e")
-                .map(|k| conv_seq(&k.kids, Ctx { eq: true, ..cx }).trim().to_string())
+                .map(|k| tidy(&conv_seq(&k.kids, Ctx { eq: true, ..cx })))
                 .collect();
             format!(r"\begin{{aligned}} {} \end{{aligned}}", rows.join(r" \\ "))
         }
@@ -323,7 +568,11 @@ fn conv(n: &Node, cx: Ctx) -> String {
         }
         "acc" => {
             let e = arg(n, "e", inner);
+            // An empty `chr` is "no accent mark" (an absent one is the default hat).
             let chr = n.prop("accPr", "chr").flatten().unwrap_or("\u{0302}");
+            if chr.is_empty() {
+                return e;
+            }
             match accent_cmd(chr) {
                 Some(cmd) => format!(r"{cmd}{e}"),
                 None => format!(r"\overset{{{}}}{e}", map_chars(chr, false)),
@@ -339,9 +588,9 @@ fn conv(n: &Node, cx: Ctx) -> String {
             }
         }
         "groupChr" => conv_group(n, inner),
-        "limLow" | "limUpp" => conv_lim(n, inner),
+        "limLow" | "limUpp" => conv_lim(n, base),
         "box" => arg(n, "e", inner),
-        "borderBox" => format!(r"\boxed{}", arg(n, "e", inner)),
+        "borderBox" => conv_border_box(n, inner),
         "phant" => {
             let e = arg(n, "e", inner);
             // `show` defaults to true; a hidden phantom keeps the size only.
@@ -362,20 +611,81 @@ fn conv(n: &Node, cx: Ctx) -> String {
     }
 }
 
-fn conv_nary(n: &Node, cx: Ctx) -> String {
-    let chr = n.prop("naryPr", "chr").flatten();
-    // ECMA-376: the default operator is the integral.
-    let ch = match chr {
-        None => '\u{222B}',
-        Some(c) => c.chars().next().unwrap_or('\u{222B}'),
+/// The frame of an `m:borderBox`: which sides are drawn (`hideTop` ... default to drawn) and which
+/// strike lines cross it (`strikeH`, `strikeBLTR`, `strikeTLBR`; a vertical strike has no form
+/// RaTeX draws and is left out).
+fn conv_border_box(n: &Node, cx: Ctx) -> String {
+    let e = arg_raw(n, "e", cx);
+    let f = |name: &str| n.flag("borderBoxPr", name);
+    let body = strikes(&e, f("strikeBLTR"), f("strikeTLBR"), f("strikeH"));
+    frame(
+        &body,
+        !f("hideTop"),
+        !f("hideBot"),
+        !f("hideLeft"),
+        !f("hideRight"),
+    )
+}
+
+/// `inner` crossed by the strike lines: `/` (`\cancel`), `\` (`\bcancel`), both (`\xcancel`), a
+/// horizontal one (`\sout`).
+pub(super) fn strikes(inner: &str, up: bool, down: bool, horizontal: bool) -> String {
+    let b = match (up, down) {
+        (true, true) => format!(r"\xcancel{{{inner}}}"),
+        (true, false) => format!(r"\cancel{{{inner}}}"),
+        (false, true) => format!(r"\bcancel{{{inner}}}"),
+        _ => inner.to_string(),
     };
-    let op = nary_cmd(ch)
-        .map(str::to_string)
-        .unwrap_or_else(|| map_chars(&ch.to_string(), false));
+    if horizontal {
+        format!(r"\sout{{{b}}}")
+    } else {
+        b
+    }
+}
+
+/// `inner` with the chosen sides drawn: all four are a box, otherwise the top and the bottom are
+/// rules and the left and the right are fences of `\left` / `\right`.
+pub(super) fn frame(inner: &str, top: bool, bottom: bool, left: bool, right: bool) -> String {
+    if top && bottom && left && right {
+        return format!(r"\boxed{{{inner}}}");
+    }
+    let mut s = inner.to_string();
+    if top {
+        s = format!(r"\overline{{{s}}}");
+    }
+    if bottom {
+        s = format!(r"\underline{{{s}}}");
+    }
+    match (left, right) {
+        (false, false) => s,
+        (l, r) => format!(
+            r"\left{} {s} \right{}",
+            if l { r"\vert" } else { "." },
+            if r { r"\vert" } else { "." }
+        ),
+    }
+}
+
+fn conv_nary(n: &Node, cx: Ctx) -> String {
+    // ECMA-376: an absent `chr` is the integral; one present with an empty value is no operator
+    // character at all (the limits then sit on an empty base).
+    let ch = match n.prop("naryPr", "chr").flatten() {
+        None => Some('\u{222B}'),
+        Some(c) => c.chars().next(),
+    };
+    let op = match ch {
+        None => "{}".to_string(),
+        Some(ch) => nary_cmd(ch)
+            .map(str::to_string)
+            .unwrap_or_else(|| map_chars(&ch.to_string(), false)),
+    };
     let loc = n.prop("naryPr", "limLoc").flatten();
-    let op = match loc {
-        Some("undOvr") => format!(r"{op}\limits"),
-        Some("subSup") if !matches!(ch, '\u{222B}'..='\u{2233}') => format!(r"{op}\nolimits"),
+    let op = match (loc, ch) {
+        (_, None) => op,
+        (Some("undOvr"), _) => format!(r"{op}\limits"),
+        (Some("subSup"), Some(ch)) if !matches!(ch, '\u{222B}'..='\u{2233}') => {
+            format!(r"{op}\nolimits")
+        }
         _ => op,
     };
     let sub = if n.flag("naryPr", "subHide") {
@@ -458,7 +768,7 @@ fn conv_delim(n: &Node, cx: Ctx) -> String {
         .kids
         .iter()
         .filter(|k| k.name == "e")
-        .map(|k| conv_seq(&k.kids, cx).trim().to_string())
+        .map(|k| tidy(&conv_seq(&k.kids, cx)))
         .collect();
     let sep_tex = match sep.as_str() {
         "|" => r"\mid".to_string(),
@@ -490,7 +800,7 @@ fn conv_matrix(n: &Node, cx: Ctx) -> String {
             mr.kids
                 .iter()
                 .filter(|k| k.name == "e")
-                .map(|k| conv_seq(&k.kids, cx).trim().to_string())
+                .map(|k| tidy(&conv_seq(&k.kids, cx)))
                 .collect::<Vec<_>>()
                 .join(" & ")
         })
@@ -518,6 +828,10 @@ pub(super) fn accent_cmd(chr: &str) -> Option<&'static str> {
 fn conv_group(n: &Node, cx: Ctx) -> String {
     let e = arg(n, "e", cx);
     let chr = n.prop("groupChrPr", "chr").flatten().unwrap_or("\u{23DF}");
+    if chr.is_empty() {
+        // An empty `chr` is "no character": the content alone.
+        return e;
+    }
     // ECMA-376 default `pos` is "bot".
     let top = n.prop("groupChrPr", "pos").flatten() == Some("top");
     match chr.chars().next() {
@@ -537,19 +851,21 @@ fn conv_group(n: &Node, cx: Ctx) -> String {
 fn conv_lim(n: &Node, cx: Ctx) -> String {
     let upper = n.name == "limUpp";
     let base_node = n.child("e");
-    let base = base_node
-        .map(|c| {
-            conv_seq(&c.kids, Ctx { fname: true, ..cx })
-                .trim()
-                .to_string()
-        })
-        .unwrap_or_default();
-    let lim = arg_raw(n, "lim", cx);
     // A base that is a function name (lim, max, log ...) takes the limit as a script.
     let is_func = base_node.is_some_and(|c| {
         let t = flat_text(c);
         FUNCS.contains(&t.trim())
     });
+    // Only a function name (or the name part of an `m:func`) is read as one: the base of any other
+    // limit is made of variables, so `ab` stays two italic letters.
+    let name = Ctx {
+        fname: is_func || cx.fname,
+        ..cx
+    };
+    let base = base_node
+        .map(|c| tidy(&conv_seq(&c.kids, name)))
+        .unwrap_or_default();
+    let lim = arg_raw(n, "lim", Ctx { fname: false, ..cx });
     if is_func {
         let mark = if upper { '^' } else { '_' };
         return format!("{base}{mark}{{{lim}}}");
@@ -617,25 +933,77 @@ fn conv_run(n: &Node, cx: Ctx) -> String {
             return format!(r"\operatorname{{{t}}}");
         }
     }
-    let body = map_chars(&text, cx.eq);
     let has_letter = text.chars().any(|c| c.is_alphabetic());
     // Style: `scr` picks the alphabet, `sty` bold / plain / italic within it.
     let sty = rpr("sty").unwrap_or("i");
-    let wrapped = match rpr("scr") {
-        Some("script") => format!(r"\mathcal{{{body}}}"),
-        Some("fraktur") => format!(r"\mathfrak{{{body}}}"),
-        Some("double-struck") => format!(r"\mathbb{{{body}}}"),
-        Some("sans-serif") => format!(r"\mathsf{{{body}}}"),
-        Some("monospace") => format!(r"\mathtt{{{body}}}"),
-        _ if !has_letter => body,
-        _ => match sty {
-            "p" => format!(r"\mathrm{{{body}}}"),
-            "b" => format!(r"\mathbf{{{body}}}"),
-            "bi" => format!(r"\boldsymbol{{{body}}}"),
-            _ => body,
-        },
+    let bold = matches!(sty, "b" | "bi");
+    let body = || map_chars_ex(&text, cx.eq, cx.sup);
+    let alphabet = |cmd: &str| {
+        let w = format!("{cmd}{{{}}}", body());
+        // Bold within the alphabet (RaTeX draws a bold script / fraktur / double-struck).
+        if bold && has_letter && cmd != r"\mathsf" && cmd != r"\mathtt" {
+            format!(r"\boldsymbol{{{w}}}")
+        } else {
+            w
+        }
     };
-    wrapped
+    match rpr("scr") {
+        Some("script") => alphabet(r"\mathcal"),
+        Some("fraktur") => alphabet(r"\mathfrak"),
+        Some("double-struck") => alphabet(r"\mathbb"),
+        Some("sans-serif") => alphabet(r"\mathsf"),
+        Some("monospace") => alphabet(r"\mathtt"),
+        _ => match sty {
+            "p" if has_letter => format!(r"\mathrm{{{}}}", body()),
+            // `\mathbf` leaves the lower-case Greek letters light (and a symbol is never bold in
+            // it): the letters it covers go in it, the rest is `\boldsymbol`.
+            "b" => bold_segments(&text, cx),
+            "bi" => format!(r"\boldsymbol{{{}}}", body()),
+            _ => body(),
+        },
+    }
+}
+
+/// A bold (not italic) run: ASCII letters and digits in `\mathbf`, Greek letters and symbols in
+/// `\boldsymbol` (`\mathbf{\alpha}` is not bold).
+fn bold_segments(text: &str, cx: Ctx) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    // A decimal separator between two digits belongs to the number.
+    let covered = |i: usize| {
+        let c = chars[i];
+        c.is_ascii_alphanumeric()
+            || (matches!(c, ',' | '.')
+                && i > 0
+                && chars[i - 1].is_ascii_digit()
+                && chars.get(i + 1).is_some_and(char::is_ascii_digit))
+    };
+    let flush = |seg: &str, kind: bool, out: &mut String| {
+        if seg.is_empty() {
+            return;
+        }
+        let body = map_chars_ex(seg, cx.eq, cx.sup);
+        if kind {
+            out.push_str(&format!(r"\mathbf{{{body}}}"));
+        } else if seg.chars().all(char::is_whitespace) {
+            out.push_str(&body);
+        } else {
+            out.push_str(&format!(r"\boldsymbol{{{body}}}"));
+        }
+    };
+    let mut out = String::new();
+    let mut seg = String::new();
+    let mut cur = false;
+    for (i, &c) in chars.iter().enumerate() {
+        let k = covered(i);
+        if k != cur {
+            flush(&seg, cur, &mut out);
+            seg.clear();
+            cur = k;
+        }
+        seg.push(c);
+    }
+    flush(&seg, cur, &mut out);
+    out
 }
 
 pub(super) fn escape_text(t: &str) -> String {
@@ -647,9 +1015,8 @@ pub(super) fn escape_text(t: &str) -> String {
                 s.push('\\');
                 s.push(c);
             }
-            '^' | '~' => {
-                s.push(' ');
-            }
+            '^' => s.push_str(r"\^{}"),
+            '~' => s.push_str(r"\~{}"),
             '\n' | '\r' | '\t' => s.push(' '),
             // A bare `|` would be a column separator wherever the formula lands in a table cell.
             '|' => s.push_str(r"\textbar{}"),
@@ -661,8 +1028,15 @@ pub(super) fn escape_text(t: &str) -> String {
 
 /// Characters of a math run as LaTeX. `amp`: a `&` is an alignment point (eqArr row).
 pub(super) fn map_chars(text: &str, amp: bool) -> String {
+    map_chars_ex(text, amp, false)
+}
+
+/// [`map_chars`]; `sup`: the text is (inside) a superscript, where a prime is `\prime` (TeX reads
+/// a bare `'` as a superscript itself, so `^{'}` would sit twice as high).
+pub(super) fn map_chars_ex(text: &str, amp: bool, sup: bool) -> String {
     let mut s = String::new();
-    for c in text.chars() {
+    let chars: Vec<char> = text.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
         if s.len() > MAX_OUTPUT {
             break;
         }
@@ -679,8 +1053,22 @@ pub(super) fn map_chars(text: &str, amp: bool) -> String {
             '|' => s.push_str(r"\vert "),
             '&' if amp => s.push('&'),
             '&' => s.push_str(r"\&"),
-            '^' => s.push_str(r"\wedge "),
-            '~' => s.push_str(r"\sim "),
+            // The characters themselves (Word draws a caret and a tilde); `\wedge` / `\sim` are
+            // other symbols.
+            '^' => s.push_str(r"\^{}"),
+            '~' => s.push_str(r"\~{}"),
+            // A backtick is markup in the Markdown around the formula: the left quote instead.
+            '`' => s.push_str(r"\lq "),
+            // A decimal comma (`3,14`) takes no space after it.
+            ',' if i > 0
+                && chars[i - 1].is_ascii_digit()
+                && chars.get(i + 1).is_some_and(char::is_ascii_digit) =>
+            {
+                s.push_str("{,}")
+            }
+            '\u{2032}' | '\'' if sup => s.push_str(r"\prime "),
+            '\u{2033}' if sup => s.push_str(r"\prime\prime "),
+            '\u{2034}' if sup => s.push_str(r"\prime\prime\prime "),
             ' ' | '\u{00A0}' => s.push_str(r"\ "),
             '\u{2009}' | '\u{200A}' | '\u{2006}' => s.push_str(r"\, "),
             '\u{2003}' | '\u{2002}' => s.push_str(r"\quad "),
@@ -824,6 +1212,7 @@ pub(super) fn char_cmd(c: char) -> Option<&'static str> {
         '∵' => r"\because",
         '′' => "'",
         '″' => "''",
+        '\u{2034}' => "'''",
         '°' => r"^\circ",
         'ℏ' => r"\hbar",
         'ℓ' => r"\ell",
@@ -1421,7 +1810,7 @@ mod tests {
             r"\overrightarrow{x}",
         );
         add("box", om(&format!("<m:box><m:e>{x}</m:e></m:box>")), "{x}");
-        add("borderBox", om(&format!("<m:borderBox><m:borderBoxPr><m:hideTop m:val=\"1\"/></m:borderBoxPr><m:e>{x}</m:e></m:borderBox>")), r"\boxed{x}");
+        add("borderBox", om(&format!("<m:borderBox><m:borderBoxPr><m:hideTop m:val=\"1\"/></m:borderBoxPr><m:e>{x}</m:e></m:borderBox>")), r"\left\vert \underline{x} \right\vert");
         add(
             "phant show",
             om(&format!("<m:phant><m:e>{x}</m:e></m:phant>")),

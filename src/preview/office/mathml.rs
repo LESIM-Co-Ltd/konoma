@@ -20,7 +20,7 @@
 //! | `munder` `mover` `munderover` | accents (`\hat` `\bar` `\vec` `\dot` ..), `\overline` `\underline` `\overbrace` `\underbrace`, limits of `\sum` / `\lim`, else `\overset` / `\underset` |
 //! | `mfenced`, an `mrow` with stretchy fences | `\left( .. \right)` |
 //! | `mtable` `mtr` `mtd` | `\begin{matrix} .. \end{matrix}` |
-//! | `menclose` | `\boxed` `\overline` `\underline` `\sqrt` `\cancel` (what RaTeX draws); the content alone otherwise |
+//! | `menclose` | `\boxed`, `\overline` / `\underline` / `\left\vert` for the sides, `\sqrt`, `\cancel` `\bcancel` `\xcancel` `\sout` for strikes (what RaTeX draws); the content alone otherwise |
 //! | `mphantom` | `\phantom{..}` |
 //! | `mstyle` `mrow` `mpadded` `merror` `semantics` `maction` | transparent (`mathvariant` is inherited) |
 //! | `annotation` (StarMath) | not converted; [`fallback_text`] offers it when the conversion fails |
@@ -29,7 +29,8 @@ use quick_xml::events::{BytesStart, Event};
 
 use super::fmt_xlsx::{XmlReader, MAX_XML_DEPTH};
 use super::omml::{
-    accent_cmd, delim_cmd, drawable, escape_text, map_chars, nary_cmd, FUNCS, MAX_OUTPUT,
+    accent_cmd, delim_cmd, drawable, escape_text, frame, map_chars, map_chars_ex, nary_cmd,
+    strikes, tidy, FUNCS, MAX_OUTPUT,
 };
 
 /// Longest MathML accepted (bytes).
@@ -208,7 +209,7 @@ pub fn to_latex(xml: &str, _display: bool) -> Option<String> {
     }
     let root = parse(xml)?;
     let math = math_root(&root);
-    let out = seq(&math.kids, Cx::default()).trim().to_string();
+    let out = tidy(&seq(&math.kids, Cx::default()));
     if out.is_empty() || out.len() > MAX_OUTPUT || !drawable(&out) {
         return None;
     }
@@ -238,9 +239,18 @@ pub fn fallback_text(xml: &str) -> String {
     if !ann.is_empty() {
         return ann;
     }
-    let mut s = String::new();
-    token_text(math, &mut s, 0);
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
+    let mut out = lin_seq(&math.kids, 0)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if out.len() > MAX_OUTPUT {
+        let mut cut = MAX_OUTPUT;
+        while !out.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        out.truncate(cut);
+    }
+    out
 }
 
 fn find_annotation(n: &Node, out: &mut String, depth: usize) {
@@ -256,19 +266,107 @@ fn find_annotation(n: &Node, out: &mut String, depth: usize) {
     }
 }
 
-fn token_text(n: &Node, out: &mut String, depth: usize) {
-    if depth > MAX_XML_DEPTH || out.len() > MAX_TOKEN_TEXT {
-        return;
+/// The children of a row as linear text: the tokens next to each other, an operator with a space
+/// on each side (a fence or a separator without).
+fn lin_seq(kids: &[Node], depth: usize) -> String {
+    let mut s = String::new();
+    for k in kids {
+        if s.len() > MAX_OUTPUT {
+            break;
+        }
+        let t = lin(k, depth + 1);
+        if t.is_empty() {
+            continue;
+        }
+        let spaced = |n: &Node| {
+            n.is("mo")
+                && !matches!(
+                    n.text.trim(),
+                    "(" | ")" | "[" | "]" | "{" | "}" | "," | ";" | "|"
+                )
+        };
+        if spaced(k) && !s.is_empty() && !s.ends_with(' ') {
+            s.push(' ');
+        }
+        s.push_str(&t);
+        if spaced(k) {
+            s.push(' ');
+        }
     }
-    if matches!(n.name.as_str(), "annotation" | "annotation-xml") {
-        return;
+    s
+}
+
+/// `t` as one unit of a linear formula (a single character stays, anything longer in parentheses).
+fn lin_unit(t: &str) -> String {
+    let t = t.trim();
+    if t.chars().count() <= 1 {
+        t.to_string()
+    } else {
+        format!("({t})")
     }
-    if keeps_text(&n.name) {
-        out.push_str(n.text.trim());
-        out.push(' ');
+}
+
+/// Linear text of one element: `(a)/(b)`, `x^2`, `x_(i+1)`, `\u{221A}(x)`, `[a, b; c, d]`.
+fn lin(n: &Node, depth: usize) -> String {
+    if depth > MAX_XML_DEPTH {
+        return String::new();
     }
-    for k in &n.kids {
-        token_text(k, out, depth + 1);
+    let kid = |i: usize| {
+        n.content()
+            .nth(i)
+            .map(|k| lin(k, depth + 1))
+            .unwrap_or_default()
+    };
+    match n.name.as_str() {
+        "annotation" | "annotation-xml" | "mprescripts" | "none" => String::new(),
+        "mi" | "mn" | "mo" | "mtext" => n.text.trim().to_string(),
+        "ms" => n.text.trim().to_string(),
+        "mspace" => " ".to_string(),
+        "mfrac" => format!("({})/({})", kid(0), kid(1)),
+        "msqrt" => format!("\u{221A}({})", lin_seq(&n.kids, depth)),
+        "mroot" => format!("\u{221A}[{}]({})", kid(1), kid(0)),
+        "msub" | "munder" => format!("{}_{}", lin_unit(&kid(0)), lin_unit(&kid(1))),
+        "msup" | "mover" => format!("{}^{}", lin_unit(&kid(0)), lin_unit(&kid(1))),
+        "msubsup" | "munderover" => format!(
+            "{}_{}^{}",
+            lin_unit(&kid(0)),
+            lin_unit(&kid(1)),
+            lin_unit(&kid(2))
+        ),
+        "mfenced" => {
+            let open = n.attr("open").unwrap_or("(").trim();
+            let close = n.attr("close").unwrap_or(")").trim();
+            let seps = separators(n.attr("separators").unwrap_or(","));
+            let mut body = String::new();
+            for (i, k) in n.content().take(MAX_KIDS).enumerate() {
+                if i > 0 {
+                    if let Some(c) = seps.get(i - 1).or(seps.last()) {
+                        body.push(*c);
+                    }
+                    body.push(' ');
+                }
+                body.push_str(&lin(k, depth + 1));
+            }
+            format!("{open}{body}{close}")
+        }
+        "mtable" => {
+            let rows: Vec<String> = n
+                .content()
+                .take(MAX_KIDS)
+                .filter(|r| r.is("mtr") || r.is("mlabeledtr"))
+                .map(|r| {
+                    r.content()
+                        .skip(usize::from(r.is("mlabeledtr")))
+                        .take(MAX_KIDS)
+                        .map(|c| lin_seq(&c.kids, depth + 1).trim().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .collect();
+            format!("[{}]", rows.join("; "))
+        }
+        "semantics" => kid(0),
+        _ => lin_seq(&n.kids, depth),
     }
 }
 
@@ -280,6 +378,8 @@ fn token_text(n: &Node, out: &mut String, depth: usize) {
 #[derive(Clone, Copy, Default)]
 struct Cx {
     variant: Option<&'static str>,
+    /// Inside a superscript: a prime is `\prime` (a bare `'` would be raised twice).
+    sup: bool,
 }
 
 fn seq(kids: &[Node], cx: Cx) -> String {
@@ -295,13 +395,13 @@ fn seq(kids: &[Node], cx: Cx) -> String {
 
 /// The children of `n` as one braced group (an implicit `mrow`).
 fn group(n: &Node, cx: Cx) -> String {
-    format!("{{{}}}", seq(&n.kids, cx).trim())
+    format!("{{{}}}", tidy(&seq(&n.kids, cx)))
 }
 
 /// One child as a braced group.
 fn arg(n: Option<&Node>, cx: Cx) -> String {
     match n {
-        Some(n) => format!("{{{}}}", conv(n, cx).trim()),
+        Some(n) => format!("{{{}}}", tidy(&conv(n, cx))),
         None => "{}".to_string(),
     }
 }
@@ -313,6 +413,7 @@ fn conv(n: &Node, cx: Cx) -> String {
         "mstyle" => {
             let cx = Cx {
                 variant: n.attr("mathvariant").and_then(variant_of).or(cx.variant),
+                ..cx
             };
             conv_row(n, cx)
         }
@@ -320,7 +421,12 @@ fn conv(n: &Node, cx: Cx) -> String {
         "maction" => n.kids.first().map(|k| conv(k, cx)).unwrap_or_default(),
         "annotation" | "annotation-xml" | "mprescripts" | "none" | "mglyph" => String::new(),
         "mi" => conv_ident(n, cx),
-        "mn" => styled(&map_chars(n.text.trim(), false), n.text.trim(), n, cx),
+        "mn" => styled(
+            &map_chars_ex(n.text.trim(), false, cx.sup),
+            n.text.trim(),
+            n,
+            cx,
+        ),
         "mo" => conv_op(n, cx),
         "mtext" => text_cmd(&n.text),
         "ms" => {
@@ -336,7 +442,7 @@ fn conv(n: &Node, cx: Cx) -> String {
             let base = it.next();
             let idx = it.next();
             match idx {
-                Some(i) => format!(r"\sqrt[{}]{}", conv(i, cx).trim(), arg(base, cx)),
+                Some(i) => format!(r"\sqrt[{}]{}", tidy(&conv(i, cx)), arg(base, cx)),
                 None => format!(r"\sqrt{}", arg(base, cx)),
             }
         }
@@ -427,7 +533,7 @@ fn conv_ident(n: &Node, cx: Cx) -> String {
         }
         return format!(r"\operatorname{{{t}}}");
     }
-    styled(&map_chars(t, false), t, n, cx)
+    styled(&map_chars_ex(t, false, cx.sup), t, n, cx)
 }
 
 /// Whether `n` is a `mo` holding one big operator (a sum, an integral, a union ...).
@@ -453,7 +559,7 @@ fn func_of(n: &Node) -> Option<&'static str> {
     FUNCS.iter().copied().find(|f| *f == t)
 }
 
-fn conv_op(n: &Node, _cx: Cx) -> String {
+fn conv_op(n: &Node, cx: Cx) -> String {
     let t = n.text.trim();
     if t.is_empty() {
         return String::new();
@@ -465,7 +571,7 @@ fn conv_op(n: &Node, _cx: Cx) -> String {
     if let Some(cmd) = nary_of(n) {
         return format!("{cmd} ");
     }
-    map_chars(t, false)
+    map_chars_ex(t, false, cx.sup)
 }
 
 fn conv_space(n: &Node) -> String {
@@ -551,12 +657,13 @@ fn conv_scripts(n: &Node, cx: Cx) -> String {
     let mut it = n.content();
     let base = it.next();
     let b = script_base(base, cx);
+    let sup_cx = Cx { sup: true, ..cx };
     match n.name.as_str() {
         "msub" => format!("{b}_{}", arg(it.next(), cx)),
-        "msup" => format!("{b}^{}", arg(it.next(), cx)),
+        "msup" => format!("{b}^{}", arg(it.next(), sup_cx)),
         _ => {
             let sub = arg(it.next(), cx);
-            let sup = arg(it.next(), cx);
+            let sup = arg(it.next(), sup_cx);
             format!("{b}_{sub}^{sup}")
         }
     }
@@ -733,7 +840,7 @@ fn conv_fenced(n: &Node, cx: Cx) -> String {
     let items: Vec<String> = n
         .content()
         .take(MAX_KIDS)
-        .map(|k| conv(k, cx).trim().to_string())
+        .map(|k| tidy(&conv(k, cx)))
         .collect();
     let mut body = String::new();
     for (i, it) in items.iter().enumerate() {
@@ -837,7 +944,7 @@ fn conv_row(n: &Node, cx: Cx) -> String {
     }
     let l = opener.map(|k| k.text.trim()).unwrap_or("");
     let r = closer.map(|k| k.text.trim()).unwrap_or("");
-    wrap_fence(l, r, body.trim())
+    wrap_fence(l, r, &tidy(&body))
 }
 
 fn conv_table(n: &Node, cx: Cx) -> String {
@@ -851,7 +958,7 @@ fn conv_table(n: &Node, cx: Cx) -> String {
             .content()
             .skip(skip)
             .take(MAX_KIDS)
-            .map(|c| conv(c, cx).trim().to_string())
+            .map(|c| tidy(&conv(c, cx)))
             .collect();
         rows.push(cells.join(" & "));
     }
@@ -862,25 +969,22 @@ fn conv_table(n: &Node, cx: Cx) -> String {
 }
 
 fn conv_enclose(n: &Node, cx: Cx) -> String {
-    let body = group(n, cx);
+    let inner = tidy(&seq(&n.kids, cx));
+    // `longdiv` is the default notation and has no drawn form here: the content alone.
     let notation = n.attr("notation").unwrap_or("longdiv");
     let has = |w: &str| notation.split_whitespace().any(|t| t == w);
-    if has("box") || has("roundedbox") || has("circle") {
-        format!(r"\boxed{body}")
-    } else if has("top") {
-        format!(r"\overline{body}")
-    } else if has("bottom") {
-        format!(r"\underline{body}")
-    } else if has("radical") {
-        format!(r"\sqrt{body}")
-    } else if has("updiagonalstrike") && has("downdiagonalstrike") || has("cross") {
-        format!(r"\xcancel{body}")
-    } else if has("updiagonalstrike") {
-        format!(r"\cancel{body}")
-    } else if has("downdiagonalstrike") {
-        format!(r"\bcancel{body}")
-    } else {
-        // Strikes and long division have no drawn form here: the content alone.
-        body[1..body.len() - 1].to_string()
+    if has("radical") {
+        return format!(r"\sqrt{{{inner}}}");
     }
+    let cross = has("cross");
+    let body = strikes(
+        &inner,
+        has("updiagonalstrike") || cross,
+        has("downdiagonalstrike") || cross,
+        has("horizontalstrike"),
+    );
+    if has("box") || has("roundedbox") || has("circle") {
+        return format!(r"\boxed{{{body}}}");
+    }
+    frame(&body, has("top"), has("bottom"), has("left"), has("right"))
 }

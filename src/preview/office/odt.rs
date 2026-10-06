@@ -50,7 +50,7 @@
 use super::super::docx_styles::{heading_from_name, is_code_name};
 use super::super::docx_xml::skip_rest;
 use super::*;
-use crate::preview::office::mathml;
+use crate::preview::office::{mathml, omml};
 
 /// Longest object directory name followed (bytes).
 const OBJECT_DIR_MAX: usize = 512;
@@ -1630,8 +1630,8 @@ impl<'a> Od<'a> {
             None
         } else {
             (self.c.opts.mathml)(&xml, false)
-                .map(|l| l.replace(['\n', '\r'], " ").trim().to_string())
-                .filter(|l| !l.is_empty() && !l.contains('$') && !l.contains(NBSP))
+                .map(|l| omml::tidy(&l.replace(['\n', '\r'], " ")))
+                .filter(|l| !l.is_empty() && !omml::has_bare_dollar(l) && !l.contains(NBSP))
         };
         match latex {
             Some(l) => {
