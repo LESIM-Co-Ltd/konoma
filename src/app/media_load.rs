@@ -456,6 +456,14 @@ impl App {
                     self.set_document(None);
                     self.document_error = Some(e);
                     self.md_cache = None;
+                    // A raw (`R`) view of the previous text must not outlive the document it came
+                    // from: drop the temp file and the reader so the reason is what is shown.
+                    self.clear_command_out();
+                    self.tab.md_raw = false;
+                    self.preview_win = None;
+                    self.win_cache = None;
+                    self.preview_total_lines = None;
+                    self.preview_visual_anchor = None;
                 }
             }
         }

@@ -277,6 +277,16 @@ fn main() -> Result<()> {
     }
 
     let mut terminal = ratatui::init();
+    // Remove the private temp directory (converted documents' raw views, delegated commands'
+    // output) on every way out: after the run loop below, on a panic, and on SIGTERM/SIGHUP/SIGINT.
+    {
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            preview::command::remove_private_temp_dir();
+            hook(info);
+        }));
+    }
+    preview::command::install_exit_cleanup_signals();
     // Enable bracketed paste: so a file drag & drop (the terminal delivers the path as a paste) is
     // received as `Event::Paste` and wired into the copy/move dialog. Ignored harmlessly on
     // unsupported terminals.
@@ -425,6 +435,7 @@ fn main() -> Result<()> {
 
     // Save the tab session on exit (the state at exit time is the final form. no-op when restore_tabs=false).
     app.save_session();
+    preview::command::remove_private_temp_dir();
 
     let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();

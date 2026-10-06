@@ -1410,3 +1410,200 @@ fn e2e_odt_a_very_long_document_is_cut_and_the_title_says_so() {
     s.key('G');
     s.dont_see("paragraph number 8999");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Review fixes: footer hints, the old binary format, raw-view reloads, paste-jump, decode cap
+// ---------------------------------------------------------------------------------------------
+
+fn footer_text(s: &Sim) -> String {
+    crate::ui::preview::footer_hints(&s.app).join(" | ")
+}
+
+#[test]
+fn e2e_word_a_failed_document_footer_offers_no_dead_keys() {
+    let (s, _d) = open_bad("w_fail_footer", |p| std::fs::write(p, b"nope").unwrap());
+    let f = footer_text(&s);
+    for dead in ["R:", "/:", "hl:", "v/V", "0/$", "g/G", "o:"] {
+        assert!(!f.contains(dead), "{dead} must not be offered: {f}");
+    }
+    assert!(f.contains("q:") && f.contains("?:"), "{f}");
+}
+
+#[test]
+fn e2e_word_a_loading_document_footer_offers_no_dead_keys() {
+    let Some((s, _d)) = open_doc_with_media("w_load_footer", EN, TALL) else {
+        return;
+    };
+    assert!(s.app.is_document_loading());
+    let f = footer_text(&s);
+    assert!(
+        !f.contains("R:") && !f.contains("/:") && !f.contains("hl:"),
+        "{f}"
+    );
+}
+
+#[test]
+fn e2e_word_a_ready_document_footer_still_offers_r() {
+    let Some((mut s, _d)) = open_doc("w_ready_footer", EN) else {
+        return;
+    };
+    s.draw();
+    assert!(s.app.document_ready());
+    assert!(footer_text(&s).contains("R:"), "{}", footer_text(&s));
+}
+
+#[test]
+fn e2e_word_an_old_binary_document_named_docx_says_so() {
+    // The OLE / compound-file signature, then junk: an old `.doc`, not a damaged zip.
+    let (s, _d) = open_bad("w_legacy", |p| {
+        let mut b = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+        b.extend_from_slice(&[0u8; 600]);
+        std::fs::write(p, b).unwrap();
+    });
+    s.see("[document] cannot preview");
+    s.see("an old .doc");
+    s.dont_see("damaged");
+}
+
+#[test]
+fn e2e_word_a_damaged_zip_keeps_the_damaged_message() {
+    // Not the CFB signature: still "damaged" (the sniff must not swallow the other reasons).
+    let (s, _d) = open_bad("w_notlegacy", |p| {
+        std::fs::write(p, b"PK\x03\x04junkjunk").unwrap()
+    });
+    s.see("damaged");
+}
+
+#[test]
+fn e2e_word_an_old_binary_document_is_japanese_in_a_japanese_ui() {
+    let dir = sandbox("w_legacy_ja");
+    let mut b = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+    b.extend_from_slice(&[0u8; 600]);
+    std::fs::write(dir.join("old.docx"), b).unwrap();
+    let mut cfg = Config::default();
+    cfg.ui.lang = "ja".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("old.docx");
+    s.enter();
+    see_cjk(&mut s, "古い .doc");
+}
+
+fn long_docx(path: &std::path::Path, paras: usize) {
+    let body: String = (0..paras)
+        .map(|i| para(&format!("line number {i}")))
+        .collect();
+    build_docx(path, &body);
+}
+
+fn touch_later(path: &std::path::Path, secs: u64) {
+    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+        .unwrap();
+}
+
+#[test]
+fn e2e_word_the_raw_view_keeps_its_place_across_a_reload() {
+    let dir = sandbox("w_raw_keep");
+    let root = canon(&dir);
+    let docx = root.join("long.docx");
+    long_docx(&docx, 200);
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 90, 20).with_media();
+    s.select("long.docx");
+    s.enter();
+    s.drain_media();
+    s.key('R');
+    for _ in 0..40 {
+        s.key('j');
+    }
+    let (byte, line) = (s.app.preview_byte_top_for_test(), s.app.preview_top_line());
+    assert!(line > 10 && byte > 0, "scrolled: {line} {byte}");
+    // Saved again with one more paragraph at the end (the lines above are unchanged).
+    long_docx(&docx, 201);
+    touch_later(&docx, 1_900_000_400);
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&docx));
+    s.draw();
+    drain_media_until_current(&mut s);
+    assert!(s.app.is_md_raw() && s.app.is_windowed());
+    assert_eq!(s.app.preview_top_line(), line, "top line kept");
+    assert_eq!(s.app.preview_byte_top_for_test(), byte, "byte offset kept");
+    // The reload really delivered the new text (one more paragraph), and the view did not jump.
+    assert!(s
+        .app
+        .document_markdown_for_test()
+        .is_some_and(|m| m.contains("line number 200")));
+    s.dont_see("line number 0");
+}
+
+#[test]
+fn e2e_word_a_raw_view_replaced_by_a_broken_file_shows_the_reason_not_old_text() {
+    let Some((dir, root)) = doc_sandbox("w_raw_bad", EN) else {
+        return;
+    };
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 100, 30).with_media();
+    s.select(EN);
+    s.enter();
+    s.drain_media();
+    s.key('R');
+    s.see("# Word reader sample");
+    let old_tmp = s.app.document_raw_file_for_test().unwrap();
+    let docx = root.join(EN);
+    std::fs::write(&docx, b"broken now").unwrap();
+    touch_later(&docx, 1_900_000_500);
+    s.app.refresh_fs_watched(false, std::slice::from_ref(&docx));
+    drain_media_until_current(&mut s);
+    s.see("[document] cannot preview");
+    s.dont_see("Word reader sample");
+    assert!(!s.app.is_windowed() && !s.app.is_md_raw());
+    assert!(!old_tmp.exists(), "the old raw text is deleted");
+    assert_eq!(s.app.document_raw_file_for_test(), None);
+    let f = footer_text(&s);
+    assert!(!f.contains("R:") && !f.contains("hl:"), "{f}");
+    drop(dir);
+}
+
+#[test]
+fn e2e_word_paste_jump_with_a_line_number_does_not_open_the_raw_view() {
+    let Some((dir, root)) = doc_sandbox("w_paste_line", EN) else {
+        return;
+    };
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 100, 30);
+    let target = format!("{}:12", root.join(EN).display());
+    s.app.paste_jump_from(&target);
+    s.draw();
+    assert!(s.app.is_document());
+    assert!(!s.app.is_md_raw(), "a line number means nothing in a docx");
+    assert!(!s.app.is_windowed());
+    assert_eq!(s.app.document_raw_file_for_test(), None);
+    drop(dir);
+}
+
+#[test]
+fn e2e_word_picture_decodes_in_flight_are_capped() {
+    let Some((mut s, _d)) = open_doc_with_media("w_cap", EN, TALL) else {
+        return;
+    };
+    s.drain_media();
+    let url = s.app.document_first_picture_url_for_test().unwrap();
+    s.app.forget_office_picture_for_test(&url);
+    s.app.fake_office_decodes_in_flight_for_test(16);
+    s.app.ensure_md_image(&url, 10, 5, 0, 5);
+    assert!(
+        !s.app.office_picture_started_for_test(&url),
+        "no 17th decode while 16 are in flight"
+    );
+    s.app.clear_fake_office_decodes_for_test();
+    s.app.ensure_md_image(&url, 10, 5, 0, 5);
+    assert!(s.app.office_picture_started_for_test(&url));
+}
+
+#[test]
+fn e2e_word_a_real_old_binary_file_named_docx_says_so() {
+    let Some(xls) = testdata("formats.xls") else {
+        return;
+    };
+    let (s, _d) = open_bad("w_legacy_real", |p| {
+        std::fs::copy(&xls, p).unwrap();
+    });
+    s.see("an old .doc");
+    s.dont_see("damaged");
+}

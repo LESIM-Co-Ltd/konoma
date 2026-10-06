@@ -920,7 +920,7 @@ impl MediaJob {
                     Ok(doc) => MediaPayload::Document(Box::new(
                         office_doc::LoadedDocument::from_document(doc),
                     )),
-                    Err(e) => MediaPayload::DocumentFailed(e),
+                    Err(e) => MediaPayload::DocumentFailed(office_doc::legacy_binary_reason(&p, e)),
                 })
             }
             MediaJob::Command {

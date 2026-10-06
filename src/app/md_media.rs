@@ -699,6 +699,13 @@ impl App {
         if crate::preview::markdown::is_office_image_url(url)
             && !self.md_image_cache.contains_key(&path)
         {
+            // At most MAX_SYNTHETIC_RENDERS_IN_FLIGHT decodes at once, like the fence/math renders:
+            // a tall terminal over a picture-heavy document would otherwise start one thread per
+            // visible picture. Skipping leaves no entry, so the next draw (a landed decode always
+            // causes one) asks again.
+            if self.office_pictures_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
+                return;
+            }
             self.spawn_office_picture_decode(url, path);
             return;
         }
@@ -806,6 +813,19 @@ impl App {
             rows,
             kitty,
         });
+    }
+
+    /// How many pictures of the open document are being decoded right now (cached, not yet decoded
+    /// and not failed).
+    pub(super) fn office_pictures_in_flight(&self) -> usize {
+        self.md_image_cache
+            .iter()
+            .filter(|(k, e)| {
+                e.decoded.is_none()
+                    && !e.failed
+                    && crate::preview::markdown::is_office_image_url(&k.to_string_lossy())
+            })
+            .count()
     }
 
     /// Starts the one-time background decode of a Word document's picture from its in-memory

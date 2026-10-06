@@ -262,6 +262,23 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         ]);
         return v;
     }
+    // A Word/OpenDocument file that is still loading or failed to convert has no text yet: `R`,
+    // `/`, scrolling and the like do nothing, so only the keys that still act are listed
+    // ([[hint-shown-iff-key-acts]]).
+    if app.is_document() && !app.document_ready() && !app.is_raw_source() {
+        let mut v = vec![
+            hint(lang, "F", crate::i18n::Msg::StFollow),
+            hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
+            hint(lang, "q", crate::i18n::Msg::GitBack),
+            hint(lang, "?", crate::i18n::Msg::HintHelp),
+        ];
+        v.extend(edit_footer_hint(app));
+        v.extend([
+            hint(lang, "[/]", crate::i18n::Msg::HintTab),
+            hint(lang, "p", crate::i18n::Msg::HintPath),
+        ]);
+        return v;
+    }
     if (matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))) || app.document_ready())
         && !app.is_raw_source()
     {

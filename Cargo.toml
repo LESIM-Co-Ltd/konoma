@@ -296,6 +296,12 @@ ignore = "0.4.33"
 # there. No new package: `log` is already in Cargo.lock via symphonia/ignore.
 log = "0.4"
 
+# Exit-time cleanup of the private temp dir (`preview::command`): `libc::atexit` for the test
+# process, `signal-hook` to catch SIGTERM/SIGHUP/SIGINT on a thread. Both already in the tree.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+signal-hook = "0.3"
+
 [dev-dependencies]
 # Only the mermaid layout cross-validation test (`src/preview/mermaid/layout/
 # cross_validate.rs`) reads JSON: it parses `cross-validate/reference_data.json`,

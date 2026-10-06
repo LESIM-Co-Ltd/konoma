@@ -65,6 +65,33 @@ fn picture_dims(bytes: &[u8]) -> Option<(u32, u32)> {
         .or_else(|| crate::preview::svg::intrinsic_size_bytes(bytes))
 }
 
+/// An old binary Office file (`.doc`, OLE/CFB) opened as a `.docx` is not a damaged zip, but when
+/// its compound-file structure cannot be read the zip reader reports it as `Corrupt` (a valid one
+/// is already `Unsupported`), which says "damaged". Looks at the first 8 bytes (the CFB signature)
+/// and reports `Unsupported` ("not a Word format konoma reads, an old .doc for one") instead.
+/// Every other error is returned as it came.
+pub(super) fn legacy_binary_reason(
+    path: &Path,
+    err: crate::preview::office::OfficeError,
+) -> crate::preview::office::OfficeError {
+    use crate::preview::office::OfficeError;
+    use std::io::Read as _;
+    const CFB_MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+    if !matches!(err, OfficeError::Corrupt(_)) {
+        return err;
+    }
+    let mut head = [0u8; 8];
+    let is_cfb = std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .is_ok()
+        && head == CFB_MAGIC;
+    if is_cfb {
+        OfficeError::Unsupported
+    } else {
+        err
+    }
+}
+
 impl App {
     /// Replaces the open Word document. **The one place a document is dropped**: its pictures can
     /// total ~100 MiB, so the old one is freed off the UI thread (`discard_in_background`).
@@ -127,6 +154,50 @@ impl App {
     #[cfg(test)]
     pub fn document_picture_count_for_test(&self) -> usize {
         self.document.as_ref().map_or(0, |d| d.pictures.len())
+    }
+
+    /// Test-only: the windowed reader's top byte offset.
+    #[cfg(test)]
+    pub fn preview_byte_top_for_test(&self) -> u64 {
+        self.tab.preview_byte_top
+    }
+
+    /// Test-only: the url of the first picture of the open document.
+    #[cfg(test)]
+    pub fn document_first_picture_url_for_test(&self) -> Option<String> {
+        let mut urls: Vec<_> = self.document.as_ref()?.pictures.keys().cloned().collect();
+        urls.sort();
+        urls.into_iter().next()
+    }
+
+    /// Test-only: pretends `n` more picture decodes are in flight (placeholders that never land).
+    #[cfg(test)]
+    pub fn fake_office_decodes_in_flight_for_test(&mut self, n: usize) {
+        for i in 0..n {
+            self.md_image_cache.insert(
+                PathBuf::from(format!("office-img://fake-{i}")),
+                MdImgEntry::default(),
+            );
+        }
+    }
+
+    /// Test-only: drops the placeholders `fake_office_decodes_in_flight_for_test` made.
+    #[cfg(test)]
+    pub fn clear_fake_office_decodes_for_test(&mut self) {
+        self.md_image_cache
+            .retain(|k, _| !k.to_string_lossy().starts_with("office-img://fake-"));
+    }
+
+    /// Test-only: forgets the cache entry of picture `url`.
+    #[cfg(test)]
+    pub fn forget_office_picture_for_test(&mut self, url: &str) {
+        self.md_image_cache.remove(&PathBuf::from(url));
+    }
+
+    /// Test-only: whether the picture `url` has a cache entry (its decode was started).
+    #[cfg(test)]
+    pub fn office_picture_started_for_test(&self, url: &str) -> bool {
+        self.md_image_cache.contains_key(&PathBuf::from(url))
     }
 
     /// Pixel size of one picture of the open document.

@@ -345,6 +345,10 @@ impl App {
         let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
+        // A document's changed lines are those of a zip, not of its converted text.
+        if self.is_document() {
+            return;
+        }
         if !self.is_windowed() {
             if self.is_decorated_kind() && !self.is_raw_source() {
                 self.tab.diff_scroll_pending = Some(path);

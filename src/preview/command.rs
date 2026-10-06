@@ -97,28 +97,83 @@ pub(crate) fn calls_for_test() -> u64 {
 /// file by path, so `0700` here blocks other users regardless of who created the file or what mode
 /// they used for it.
 fn private_temp_dir() -> PathBuf {
-    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("konoma-cmd-{}", std::process::id()));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-            // The mode is applied atomically by `mkdir(2)` itself (masked by umask, but `0o700`
-            // has no group/other bits for umask to strip), so there's no "create, then chmod" gap
-            // where a wider-permission window briefly exists.
-            let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
-            // Defense-in-depth for the unlikely case the directory already existed with looser
-            // permissions (e.g. a stale leftover from an earlier process that reused this pid).
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = std::fs::create_dir(&dir);
-        }
-        dir
-    })
-    .clone()
+    let dir = private_temp_dir_path();
+    // The unit-test process never reaches `main`'s exit cleanup, so it removes its own directory
+    // when the process exits (libtest ends through `process::exit`).
+    #[cfg(all(test, unix))]
+    {
+        static REGISTERED: std::sync::Once = std::sync::Once::new();
+        REGISTERED.call_once(|| {
+            extern "C" fn at_exit() {
+                remove_private_temp_dir();
+            }
+            // SAFETY: registers a plain `extern "C" fn()` that only removes a directory.
+            unsafe {
+                libc::atexit(at_exit);
+            }
+        });
+    }
+    // Created on every call (not once): the exit cleanup may have removed it, and a missing
+    // directory would otherwise fail the write.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        // The mode is applied atomically by `mkdir(2)` itself (masked by umask, but `0o700`
+        // has no group/other bits for umask to strip), so there's no "create, then chmod" gap
+        // where a wider-permission window briefly exists.
+        let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
+        // Defense-in-depth for the unlikely case the directory already existed with looser
+        // permissions (e.g. a stale leftover from an earlier process that reused this pid).
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::fs::create_dir(&dir);
+    }
+    dir
 }
+
+/// The path of this process's private temp directory (not created here).
+fn private_temp_dir_path() -> PathBuf {
+    std::env::temp_dir().join(format!("konoma-cmd-{}", std::process::id()))
+}
+
+/// Removes this process's whole private temp directory (every delegated command's `{out}` and every
+/// converted document's raw view). Called on every exit path — after the run loop, from the panic
+/// hook, and from the signal thread — because `App::clear_command_out` only covers the active tab
+/// leaving its preview, so a quit from a raw view (or an inactive tab's, or a signal) would
+/// otherwise leave a converted document's full text in `$TMPDIR`. Never creates the directory.
+pub fn remove_private_temp_dir() {
+    remove_dir_quietly(&private_temp_dir_path());
+}
+
+fn remove_dir_quietly(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Arranges for the private temp directory to be removed when the process is killed by SIGTERM,
+/// SIGHUP or SIGINT (it has no signal handling otherwise, so those left the files behind). A helper
+/// thread waits for the signal, restores the terminal (the same call `main` makes on a normal
+/// exit), removes the directory and exits with the conventional `128 + signal`.
+#[cfg(unix)]
+pub fn install_exit_cleanup_signals() {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP, SIGINT]) else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("konoma-signals".into())
+        .spawn(move || {
+            if let Some(sig) = signals.forever().next() {
+                remove_private_temp_dir();
+                ratatui::restore();
+                std::process::exit(128 + sig);
+            }
+        });
+}
+
+#[cfg(not(unix))]
+pub fn install_exit_cleanup_signals() {}
 
 /// A fresh temp path for a delegated command's `{out}`, unique within this process (pid + an
 /// atomic counter — no dependence on randomness/time, matching `preview::video::temp_png_path`'s
@@ -890,6 +945,29 @@ mod tests {
     /// *exact* wall-clock durations (a prior CI break — see `docs/STATUS.md`), so the bound below
     /// is a large, deliberately loose multiple of the injected timeout: it exists only so a real
     /// regression (no timeout at all) fails this test instead of hanging the whole test run.
+    /// The exit cleanup removes exactly the directory documents/outputs are written into (the
+    /// real call is not exercised here: it would delete files other parallel tests are using).
+    #[test]
+    fn exit_cleanup_targets_the_directory_temp_files_live_in() {
+        let p = write_private_temp(b"secret converted text").unwrap();
+        assert!(p.starts_with(private_temp_dir_path()));
+        assert_eq!(p.parent(), Some(private_temp_dir_path().as_path()));
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// `remove_private_temp_dir`'s removal is a no-op on a missing directory and recursive on a
+    /// populated one (checked on a private stand-in path, same call).
+    #[test]
+    fn remove_dir_helper_is_recursive_and_idempotent() {
+        let d = crate::test_support::unique_tmp("cmd_cleanup");
+        let dir = d.join("konoma-cmd-fake");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("out-0"), b"x").unwrap();
+        remove_dir_quietly(&dir);
+        assert!(!dir.exists());
+        remove_dir_quietly(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn run_capture_returns_promptly_for_a_hanging_command() {
