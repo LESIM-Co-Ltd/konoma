@@ -1976,3 +1976,356 @@ fn build_docx_with_styles_heading(path: &std::path::Path, body: &str) {
     );
     zw.finish().unwrap();
 }
+
+// ---------------------------------------------------------------------------------------------
+// A document without text on screen (loading / failed): footer, `?` help and keys agree
+// ([[hint-shown-iff-key-acts]])
+// ---------------------------------------------------------------------------------------------
+
+/// The CFB signature then junk: an old `.doc` named `.docx` (reported as an unsupported format).
+fn legacy_doc(p: &std::path::Path) {
+    let mut b = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+    b.extend_from_slice(&[0u8; 600]);
+    std::fs::write(p, b).unwrap();
+}
+
+fn open_bad_cfg(
+    name: &str,
+    cfg: Config,
+    size: (u16, u16),
+    make: impl FnOnce(&std::path::Path),
+) -> (Sim, crate::test_support::TmpDir) {
+    let dir = sandbox(name);
+    let root = canon(&dir);
+    make(&root.join("bad.docx"));
+    std::fs::write(root.join("z.txt"), "after\n").unwrap();
+    let mut s = Sim::with_config_sized(&root, cfg, size.0, size.1);
+    s.select("bad.docx");
+    s.enter();
+    (s, dir)
+}
+
+/// Every state in which a document has no text on screen, as (label, sim, keep-alive).
+fn missing_text_states() -> Vec<(&'static str, Sim, crate::test_support::TmpDir)> {
+    let mut v = Vec::new();
+    let (s, d) = open_bad_cfg("w_mt_corrupt", cfg_en(), (120, 40), |p| {
+        std::fs::write(p, b"not a zip").unwrap()
+    });
+    v.push(("corrupt", s, d));
+    let (s, d) = open_bad_cfg("w_mt_legacy", cfg_en(), (120, 40), legacy_doc);
+    v.push(("old format", s, d));
+    if let Some((s, d)) = open_doc_with_media("w_mt_loading", EN, (120, 40)) {
+        assert!(s.app.is_document_loading());
+        v.push(("loading", s, d));
+    }
+    // Raw view, then another tab and back: the worker re-reads the document while the tab's saved
+    // raw state is still set.
+    if let Some((mut s, d)) = open_doc_with_media("w_mt_rawload", EN, (120, 40)) {
+        s.drain_media();
+        s.key('R');
+        assert!(s.app.is_raw_source());
+        s.key('t');
+        s.key('1');
+        s.draw();
+        assert!(s.app.is_document_loading() && s.app.is_md_raw());
+        v.push(("raw view, reloading after a tab switch", s, d));
+    }
+    let mut cfg = cfg_en();
+    cfg.external.office_apps = false;
+    let (s, d) = open_bad_cfg("w_mt_noapps", cfg, (120, 40), legacy_doc);
+    v.push(("office_apps = false", s, d));
+    v
+}
+
+#[test]
+fn e2e_word_without_text_the_footer_and_help_offer_only_keys_that_act() {
+    for (label, mut s, _d) in missing_text_states() {
+        s.draw();
+        assert!(s.app.document_text_missing(), "{label}");
+        let f = footer_text(&s);
+        for dead in [
+            "R:", "/:", "hl:", "v/V", "0/$", "g/G", "o:", "Y:", "Tab:", "jk:",
+        ] {
+            assert!(!f.contains(dead), "[{label}] footer offers {dead}: {f}");
+        }
+        s.key('?');
+        let help = s.screen();
+        for dead in [
+            "v / V",
+            "Tab / ⇧Tab",
+            "Enter",
+            "n / N",
+            "j / k",
+            "g / G",
+            "h / l",
+            "0 / $",
+            "Ctrl-t",
+            "outline",
+            "Space",
+        ] {
+            assert!(!help.contains(dead), "[{label}] help lists {dead}:\n{help}");
+        }
+        assert!(help.contains("Ctrl-n / Ctrl-p"), "[{label}] {help}");
+        assert!(help.contains("q / Esc"), "[{label}] {help}");
+        // The help row for `e` is the footer's `e` hint, both worded by `edit_label`.
+        let e_in_footer = f.contains("e:");
+        let e_in_help = help.contains("Office app") || help.contains("editor");
+        assert_eq!(e_in_footer, label != "office_apps = false", "[{label}] {f}");
+        assert_eq!(e_in_help, e_in_footer, "[{label}] help vs footer:\n{help}");
+    }
+}
+
+#[test]
+fn e2e_word_without_text_the_text_keys_do_nothing() {
+    for (label, mut s, _d) in missing_text_states() {
+        s.draw();
+        let raw_before = s.app.is_md_raw();
+        s.key('/');
+        assert!(
+            s.app.search_input().is_none(),
+            "[{label}] `/` opened a search nobody can see"
+        );
+        s.key('v');
+        s.key('V');
+        assert!(
+            !s.app.is_preview_visual(),
+            "[{label}] v/V started a selection"
+        );
+        s.key('R');
+        assert_eq!(
+            s.app.is_md_raw(),
+            raw_before,
+            "[{label}] R toggled the view"
+        );
+        // What the footer does list still acts: Ctrl-n pages to the next file.
+        s.ctrl('n');
+        assert!(
+            s.app.tab.preview_path.clone().unwrap().ends_with("z.txt"),
+            "[{label}] Ctrl-n did not page"
+        );
+    }
+}
+
+#[test]
+fn e2e_word_the_raw_view_reloading_after_a_tab_switch_shows_the_loading_footer() {
+    let Some((mut s, _d)) = open_doc_with_media("w_raw_footer", EN, (200, 30)) else {
+        return;
+    };
+    s.drain_media();
+    s.key('R');
+    s.see("R:rendered");
+    s.key('t');
+    s.key('1');
+    s.draw();
+    assert!(s.app.is_document_loading() && s.app.is_md_raw());
+    s.see("loading");
+    s.dont_see("R:rendered");
+    s.dont_see("/:search");
+    s.dont_see("v/V:select");
+    // When the text arrives the raw view (the user's choice) is back, with its own footer.
+    drain_media_until_current(&mut s);
+    assert!(s.app.is_md_raw() && s.app.is_windowed());
+    s.see("R:rendered");
+    s.see("v/V:select");
+}
+
+#[test]
+fn e2e_word_help_tab_and_enter_rows_name_only_what_a_document_has() {
+    let Some((mut s, _d)) = open_doc_sized("w_help_tab", EN, (140, 60), cfg_en()) else {
+        return;
+    };
+    s.key('?');
+    let help = s.screen();
+    assert!(help.contains("focus a link / code block"), "{help}");
+    assert!(
+        help.contains("open the focused link (URL / local / anchor)"),
+        "{help}"
+    );
+    for gone in ["checkbox", "diagram", "<details>"] {
+        assert!(!help.contains(gone), "{gone}:\n{help}");
+    }
+}
+
+#[test]
+fn e2e_word_help_tab_row_of_a_markdown_file_keeps_the_whole_list() {
+    let dir = sandbox("w_help_tab_md");
+    std::fs::write(dir.join("a.md"), "# t\n\n- [ ] x\n").unwrap();
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 140, 60);
+    s.select("a.md");
+    s.enter();
+    s.key('?');
+    s.see("focus md link / checkbox / code block");
+}
+
+#[test]
+fn e2e_word_help_tab_row_is_japanese_too() {
+    let Some((dir, root)) = doc_sandbox("w_help_tab_ja", EN) else {
+        return;
+    };
+    let mut s = Sim::with_config_sized(&root, cfg_ja(), 140, 60);
+    s.select(EN);
+    s.enter();
+    s.key('?');
+    see_cjk(&mut s, "リンク/コードブロックをフォーカス");
+    drop(dir);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Error wording: the `e` hint follows `e`, the sentence wraps
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn e2e_word_an_old_format_error_offers_e_only_while_e_opens_an_office_app() {
+    let (s, _d) = open_bad_cfg("w_err_e_on", cfg_en(), (100, 30), legacy_doc);
+    s.see("an old .doc, for one)");
+    s.see("Press `e` to open it in an Office app");
+    // Office apps switched off: `e` only explains that, so the screen does not promise it.
+    let mut cfg = cfg_en();
+    cfg.external.office_apps = false;
+    let (s, _d) = open_bad_cfg("w_err_e_off", cfg, (100, 30), legacy_doc);
+    s.see("an old .doc, for one)");
+    s.dont_see("Press `e`");
+    // An explicit `[editor] ext` rule for docx makes `e` open an editor, not an Office app.
+    let mut cfg = cfg_en();
+    cfg.editor.ext.insert("docx".into(), "vim".into());
+    let (s, _d) = open_bad_cfg("w_err_e_editor", cfg, (100, 30), legacy_doc);
+    s.dont_see("Press `e`");
+}
+
+#[test]
+fn e2e_word_the_error_sentence_wraps_in_a_narrow_window_whatever_wrap_says() {
+    for wrap in [true, false] {
+        let mut cfg = cfg_en();
+        cfg.ui.wrap = wrap;
+        let (s, _d) = open_bad_cfg("w_err_wrap", cfg, (70, 30), legacy_doc);
+        // The end of the reason (past column 70 on one line) and the `e` line are both visible
+        // (whitespace-insensitive: the wrap may break between words).
+        let mut s = s;
+        see_cjk(&mut s, ".doc, for one)"); // the tail lands on the second row
+        see_cjk(&mut s, "Press `e` to open it in an Office app");
+        see_cjk(&mut s, "bad.docx");
+    }
+    // The same for the other reasons: the whole sentence is readable at 60 columns.
+    let (s, _d) = open_bad_cfg("w_err_wrap_corrupt", cfg_en(), (60, 30), |p| {
+        std::fs::write(p, b"nope").unwrap()
+    });
+    let mut s = s;
+    see_cjk(&mut s, "valid Word document"); // the tail wraps onto row 2
+                                            // And a workbook's reason wraps as well.
+    let dir = sandbox("w_err_wrap_sheet");
+    std::fs::write(dir.join("bad.xlsx"), b"nope").unwrap();
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 60, 30);
+    s.select("bad.xlsx");
+    s.enter();
+    see_cjk(&mut s, "a valid workbook"); // the tail wraps onto row 2
+}
+
+#[test]
+fn e2e_word_the_old_format_error_in_japanese_reads_cleanly() {
+    let (mut s, _d) = open_bad_cfg("w_err_ja", cfg_ja(), (70, 30), legacy_doc);
+    see_cjk(&mut s, "(古い .doc など)");
+    see_cjk(&mut s, "Office アプリで開くには `e` を押してください");
+    let text = s.screen();
+    assert!(!text.contains("（"), "full-width paren left: {text}");
+    // The doubled "で ... で" of the old sentence is gone.
+    let squashed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(!squashed.contains("`e`でOfficeアプリで"), "{squashed}");
+    let mut cfg = cfg_ja();
+    cfg.external.office_apps = false;
+    let (mut s, _d) = open_bad_cfg("w_err_ja_off", cfg, (70, 30), legacy_doc);
+    clean(&mut s);
+    assert!(!s.screen().contains("`e`"), "{}", s.screen());
+}
+
+// ---------------------------------------------------------------------------------------------
+// The busy label names what is being read
+// ---------------------------------------------------------------------------------------------
+
+fn busy_label(s: &Sim) -> String {
+    crate::ui::status::context_spans(&s.app)
+        .iter()
+        .map(|sp| sp.content.as_ref())
+        .collect()
+}
+
+#[test]
+fn e2e_word_a_converting_document_is_not_labelled_media() {
+    let Some((s, _d)) = open_doc_with_media("w_busy_doc", EN, (140, 30)) else {
+        return;
+    };
+    assert!(s.app.is_document_loading());
+    assert!(s.app.busy_jobs().contains(&crate::i18n::Msg::BusyDocument));
+    assert!(!s.app.busy_jobs().contains(&crate::i18n::Msg::BusyMedia));
+    let l = busy_label(&s);
+    assert!(
+        l.contains("loading document") && !l.contains("media"),
+        "{l}"
+    );
+}
+
+#[test]
+fn e2e_word_a_converting_document_label_is_japanese_in_a_japanese_ui() {
+    let Some((dir, root)) = doc_sandbox("w_busy_doc_ja", EN) else {
+        return;
+    };
+    let mut s = Sim::with_config_sized(&root, cfg_ja(), 140, 30).with_media();
+    s.select(EN);
+    s.enter();
+    assert!(s.app.is_document_loading());
+    let l = busy_label(&s);
+    assert!(l.contains("文書読込") && !l.contains("メディア"), "{l}");
+    drop(dir);
+}
+
+#[test]
+fn e2e_sheet_a_loading_workbook_is_not_labelled_media() {
+    let dir = sandbox("w_busy_sheet");
+    build_xlsx(&dir.join("b.xlsx"), &[("S", "visible", "", "")]);
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 140, 30).with_media();
+    s.select("b.xlsx");
+    s.enter();
+    assert!(s.app.is_sheet_loading());
+    assert!(s.app.busy_jobs().contains(&crate::i18n::Msg::BusySheet));
+    assert!(!s.app.busy_jobs().contains(&crate::i18n::Msg::BusyMedia));
+    let l = busy_label(&s);
+    assert!(
+        l.contains("loading spreadsheet") && !l.contains("media"),
+        "{l}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Follow ignores an Office suite's owner file
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn e2e_follow_does_not_chase_an_office_owner_file() {
+    let dir = sandbox("w_follow_lock");
+    let root = canon(&dir);
+    std::fs::write(root.join("~$report.docx"), b"\x10owner").unwrap();
+    std::fs::write(root.join("~$book.xlsx"), b"\x10owner").unwrap();
+    std::fs::write(root.join("~$deck.pptx"), b"\x10owner").unwrap();
+    std::fs::write(root.join("report.docx"), b"x").unwrap();
+    std::fs::write(root.join("a.txt"), b"first\n").unwrap();
+    let mut s = Sim::with_config(&root, cfg_en());
+    s.select("a.txt");
+    s.enter();
+    s.key('q');
+    s.key('F');
+    assert!(s.app.follow_enabled());
+    for lock in ["~$report.docx", "~$book.xlsx", "~$deck.pptx"] {
+        let p = root.join(lock);
+        assert!(!s.app.follow_note_change(&p), "{lock} recorded");
+        s.app.follow_jump(&p);
+        assert!(
+            s.app.tab.preview_path.as_deref() != Some(p.as_path()),
+            "{lock} was followed"
+        );
+    }
+    // The document itself is still a follow target.
+    let doc = root.join("report.docx");
+    assert!(s.app.follow_note_change(&doc));
+    // And the owner file is not hidden from the tree.
+    s.key('F');
+    s.see("~$report.docx");
+}

@@ -51,7 +51,7 @@ impl App {
 
     /// `v` (charwise) / `V` (linewise): start a visual selection at the current 2D caret (windowed previews only).
     pub fn preview_enter_visual(&mut self, linewise: bool) {
-        if self.is_windowed() {
+        if self.is_windowed() && !self.document_text_missing() {
             self.preview_visual_anchor =
                 Some((self.tab.preview_cursor_line, self.tab.preview_cursor_col));
             self.preview_visual_linewise = linewise;

@@ -1,6 +1,16 @@
 use super::git_view::DiffOpen;
 use super::*;
 
+/// An Office suite's owner/lock file (`~$report.docx`, written next to a document while Word,
+/// Excel or PowerPoint has it open; LibreOffice's `.~lock.*#` is a dot file and is already
+/// excluded as hidden). It changes on every open/close and holds a user name, not content, so
+/// following it would jump to a few bytes of binary. The tree still lists it.
+pub(super) fn is_office_owner_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("~$"))
+}
+
 impl App {
     // --- Follow mode (`F`) — Agent Watch ② -------------------------------------
     /// `F`: toggle follow mode (auto-jump to externally changed files; the "watch the AI work" view).
@@ -265,7 +275,11 @@ impl App {
     /// inside a hidden (dot) directory unless hidden files are shown. Shared by the jump and the
     /// session-list recording so both see the same set.
     fn follow_target_ok(&self, path: &Path) -> bool {
-        if !path.starts_with(&self.tab.root) || !path.is_file() || self.is_ignored(path) {
+        if !path.starts_with(&self.tab.root)
+            || !path.is_file()
+            || is_office_owner_file(path)
+            || self.is_ignored(path)
+        {
             return false;
         }
         if !self.tab.show_hidden {

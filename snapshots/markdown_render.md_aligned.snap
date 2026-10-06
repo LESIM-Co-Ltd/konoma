@@ -14075,7 +14075,7 @@ L0021 style=fg=-,bg=-,mod=- align=-
 L0022 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=blue,bg=-,mod=U "\u{f0c1} sample.ja.docx"
-  s02 fg=-,bg=-,mod=- " — Word 文書を整形して表示（見出し・リスト・表・画像・数式）"
+  s02 fg=-,bg=-,mod=- " — Word 文書を整形して表示(見出し・リスト・表・画像・数式)"
 L0023 style=fg=-,bg=-,mod=- align=-
 L0024 style=fg=-,bg=-,mod=- align=-
   s00 fg=white,bg=rgb(43,48,59),mod=- "Tab"
@@ -14362,27 +14362,29 @@ L0080 style=fg=-,bg=-,mod=- align=-
 L0081 style=fg=-,bg=-,mod=- align=-
 L0082 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "画像・SVG・Markdown・Mermaid 図・LaTeX 数式・CSV テーブル・"
-  s01 fg=-,bg=-,mod=B "PDF"
-  s02 fg=-,bg=-,mod=- "・"
-  s03 fg=-,bg=-,mod=- " "
-  s04 fg=-,bg=-,mod=B "H.264/HEVC 動画のサムネイル"
-  s05 fg=-,bg=-,mod=- "・コードは"
-  s06 fg=-,bg=-,mod=B "追加インストール不要"
-  s07 fg=-,bg=-,mod=- "で、konoma 自身が純 Rust で描きます（macOS に限り、"
-  s08 fg=-,bg=-,mod=- " "
-  s09 fg=-,bg=-,mod=- "内蔵レンダラが扱えない PDF は OS 同梱の "
-  s10 fg=white,bg=rgb(43,48,59),mod=- "qlmanage"
-  s11 fg=-,bg=-,mod=- "/"
-  s12 fg=white,bg=rgb(43,48,59),mod=- "sips"
-  s13 fg=-,bg=-,mod=- " に 1 ページ目だけ"
-  s14 fg=-,bg=-,mod=- " "
-  s15 fg=-,bg=-,mod=- "フォールバックします。これも導入不要です）。画像系はグラフィックプロトコルを"
+  s01 fg=-,bg=-,mod=B "表計算と Word 文書"
+  s02 fg=-,bg=-,mod=- "（xlsx/ods・docx/odt）・"
+  s03 fg=-,bg=-,mod=B "PDF"
+  s04 fg=-,bg=-,mod=- "・"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=B "H.264/HEVC 動画のサムネイル"
+  s07 fg=-,bg=-,mod=- "・コードは"
+  s08 fg=-,bg=-,mod=B "追加インストール不要"
+  s09 fg=-,bg=-,mod=- "で、konoma 自身が純 Rust で描きます（macOS に限り、"
+  s10 fg=-,bg=-,mod=- " "
+  s11 fg=-,bg=-,mod=- "内蔵レンダラが扱えない PDF は OS 同梱の "
+  s12 fg=white,bg=rgb(43,48,59),mod=- "qlmanage"
+  s13 fg=-,bg=-,mod=- "/"
+  s14 fg=white,bg=rgb(43,48,59),mod=- "sips"
+  s15 fg=-,bg=-,mod=- " に 1 ページ目だけ"
   s16 fg=-,bg=-,mod=- " "
-  s17 fg=-,bg=-,mod=- "話す端末なら実ピクセルで描かれます — kitty graphics（Ghostty・kitty・WezTerm・"
+  s17 fg=-,bg=-,mod=- "フォールバックします。これも導入不要です）。画像系はグラフィックプロトコルを"
   s18 fg=-,bg=-,mod=- " "
-  s19 fg=-,bg=-,mod=- "Konsole）・iTerm2・sixel。それ以外の端末では粗いながらも見えるハーフブロックの"
+  s19 fg=-,bg=-,mod=- "話す端末なら実ピクセルで描かれます — kitty graphics（Ghostty・kitty・WezTerm・"
   s20 fg=-,bg=-,mod=- " "
-  s21 fg=-,bg=-,mod=- "近似表示に落ちます。テキストのプレビューはどの端末でも動きます。"
+  s21 fg=-,bg=-,mod=- "Konsole）・iTerm2・sixel。それ以外の端末では粗いながらも見えるハーフブロックの"
+  s22 fg=-,bg=-,mod=- " "
+  s23 fg=-,bg=-,mod=- "近似表示に落ちます。テキストのプレビューはどの端末でも動きます。"
 L0083 style=fg=-,bg=-,mod=- align=-
 L0084 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
@@ -14418,11 +14420,11 @@ L0094 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg"
 -- TASKS (5) --
-  t00 state=' ' state_at=2270
-  t01 state=' ' state_at=2309
-  t02 state=' ' state_at=2379
-  t03 state=' ' state_at=6410
-  t04 state=' ' state_at=6824
+  t00 state=' ' state_at=2266
+  t01 state=' ' state_at=2305
+  t02 state=' ' state_at=2375
+  t03 state=' ' state_at=6462
+  t04 state=' ' state_at=6876
 -- DETAILS_OPEN (0) --
 -- ANCHORS (10) --
   a00 line=0000 slug="konoma-チュートリアル--触りながら覚える"
@@ -14443,12 +14445,12 @@ L0094 style=fg=-,bg=-,mod=- align=-
   m04 line=0020 kind=Link{target="./sample.pdf"}
   m05 line=0021 kind=Link{target="./sample.xlsx"}
   m06 line=0022 kind=Link{target="./sample.ja.docx"}
-  m07 line=0031 kind=Task{state=' ',state_at=Some(2270)}
-  m08 line=0032 kind=Task{state=' ',state_at=Some(2309)}
-  m09 line=0033 kind=Task{state=' ',state_at=Some(2379)}
+  m07 line=0031 kind=Task{state=' ',state_at=Some(2266)}
+  m08 line=0032 kind=Task{state=' ',state_at=Some(2305)}
+  m09 line=0033 kind=Task{state=' ',state_at=Some(2375)}
   m10 line=0071 kind=CodeBlock{body=Some("# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg")}
-  m11 line=0084 kind=Task{state=' ',state_at=Some(6410)}
-  m12 line=0094 kind=Task{state=' ',state_at=Some(6824)}
+  m11 line=0084 kind=Task{state=' ',state_at=Some(6462)}
+  m12 line=0094 kind=Task{state=' ',state_at=Some(6876)}
 
 === samples: tutorial.md ===
 -- LINES (95) --
@@ -14860,32 +14862,36 @@ L0080 style=fg=-,bg=-,mod=- align=-
 L0081 style=fg=-,bg=-,mod=- align=-
 L0082 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables, "
-  s01 fg=-,bg=-,mod=B "PDF"
-  s02 fg=-,bg=-,mod=- ", "
-  s03 fg=-,bg=-,mod=B "H.264 and"
-  s04 fg=-,bg=-,mod=- " "
-  s05 fg=-,bg=-,mod=B "HEVC video thumbnails"
-  s06 fg=-,bg=-,mod=- ", and code need "
-  s07 fg=-,bg=-,mod=B "nothing extra"
-  s08 fg=-,bg=-,mod=- " — they are rendered inside"
-  s09 fg=-,bg=-,mod=- " "
-  s10 fg=-,bg=-,mod=- "konoma, in pure Rust."
-  s11 fg=-,bg=-,mod=- " "
-  s12 fg=-,bg=-,mod=- "(On macOS only, a PDF the built-in renderer can't handle falls back to the"
+  s01 fg=-,bg=-,mod=B "spreadsheets and Word"
+  s02 fg=-,bg=-,mod=- " "
+  s03 fg=-,bg=-,mod=B "documents"
+  s04 fg=-,bg=-,mod=- " (xlsx/ods, docx/odt), "
+  s05 fg=-,bg=-,mod=B "PDF"
+  s06 fg=-,bg=-,mod=- ", "
+  s07 fg=-,bg=-,mod=B "H.264 and"
+  s08 fg=-,bg=-,mod=- " "
+  s09 fg=-,bg=-,mod=B "HEVC video thumbnails"
+  s10 fg=-,bg=-,mod=- ", and code need "
+  s11 fg=-,bg=-,mod=B "nothing extra"
+  s12 fg=-,bg=-,mod=- " — they are rendered inside"
   s13 fg=-,bg=-,mod=- " "
-  s14 fg=-,bg=-,mod=- "system's own "
-  s15 fg=white,bg=rgb(43,48,59),mod=- "qlmanage"
-  s16 fg=-,bg=-,mod=- "/"
-  s17 fg=white,bg=rgb(43,48,59),mod=- "sips"
-  s18 fg=-,bg=-,mod=- " for its first page — nothing to install there"
-  s19 fg=-,bg=-,mod=- " "
-  s20 fg=-,bg=-,mod=- "either.) The picture formats are drawn as real pixels in any terminal that"
-  s21 fg=-,bg=-,mod=- " "
-  s22 fg=-,bg=-,mod=- "speaks a graphics protocol — kitty graphics (Ghostty, kitty, WezTerm, Konsole),"
+  s14 fg=-,bg=-,mod=- "konoma, in pure Rust."
+  s15 fg=-,bg=-,mod=- " "
+  s16 fg=-,bg=-,mod=- "(On macOS only, a PDF the built-in renderer can't handle falls back to the"
+  s17 fg=-,bg=-,mod=- " "
+  s18 fg=-,bg=-,mod=- "system's own "
+  s19 fg=white,bg=rgb(43,48,59),mod=- "qlmanage"
+  s20 fg=-,bg=-,mod=- "/"
+  s21 fg=white,bg=rgb(43,48,59),mod=- "sips"
+  s22 fg=-,bg=-,mod=- " for its first page — nothing to install there"
   s23 fg=-,bg=-,mod=- " "
-  s24 fg=-,bg=-,mod=- "iTerm2, or sixel — and degrade to a coarse but visible half-block approximation"
+  s24 fg=-,bg=-,mod=- "either.) The picture formats are drawn as real pixels in any terminal that"
   s25 fg=-,bg=-,mod=- " "
-  s26 fg=-,bg=-,mod=- "anywhere else. Text previews work in any terminal."
+  s26 fg=-,bg=-,mod=- "speaks a graphics protocol — kitty graphics (Ghostty, kitty, WezTerm, Konsole),"
+  s27 fg=-,bg=-,mod=- " "
+  s28 fg=-,bg=-,mod=- "iTerm2, or sixel — and degrade to a coarse but visible half-block approximation"
+  s29 fg=-,bg=-,mod=- " "
+  s30 fg=-,bg=-,mod=- "anywhere else. Text previews work in any terminal."
 L0083 style=fg=-,bg=-,mod=- align=-
 L0084 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
@@ -14924,8 +14930,8 @@ L0094 style=fg=-,bg=-,mod=- align=-
   t00 state=' ' state_at=1786
   t01 state=' ' state_at=1816
   t02 state=' ' state_at=1882
-  t03 state=' ' state_at=5192
-  t04 state=' ' state_at=5511
+  t03 state=' ' state_at=5250
+  t04 state=' ' state_at=5569
 -- DETAILS_OPEN (0) --
 -- ANCHORS (10) --
   a00 line=0000 slug="konoma-tutorial--learn-by-doing"
@@ -14950,8 +14956,8 @@ L0094 style=fg=-,bg=-,mod=- align=-
   m08 line=0032 kind=Task{state=' ',state_at=Some(1816)}
   m09 line=0033 kind=Task{state=' ',state_at=Some(1882)}
   m10 line=0071 kind=CodeBlock{body=Some("# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg")}
-  m11 line=0084 kind=Task{state=' ',state_at=Some(5192)}
-  m12 line=0094 kind=Task{state=' ',state_at=Some(5511)}
+  m11 line=0084 kind=Task{state=' ',state_at=Some(5250)}
+  m12 line=0094 kind=Task{state=' ',state_at=Some(5569)}
 
 === task_corpus: a details nested inside an alert nested inside a closed details hides everything ===
 -- LINES (2) --

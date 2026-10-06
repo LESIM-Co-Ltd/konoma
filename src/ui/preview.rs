@@ -108,6 +108,17 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         }
         return vec![sec.row("q / Esc", l(crate::i18n::Msg::BackToTree))];
     }
+    // A Word/OpenDocument file that is still converting or failed has no text: only the keys the
+    // footer lists act (`footer_hints`' branch for the same predicate).
+    if app.document_text_missing() {
+        let mut sec = HelpSection::new(l(crate::i18n::Msg::PreviewTextMarkdown))
+            .row("Ctrl-n / Ctrl-p", l(crate::i18n::Msg::PreviewFileJumpHelp))
+            .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint));
+        if let Some(msg) = app.edit_help_label(crate::i18n::Msg::EditExternalEnv) {
+            sec = sec.row("e", l(msg));
+        }
+        return vec![sec.row("q / Esc", l(crate::i18n::Msg::BackToTree))];
+    }
     if app.is_image_preview() {
         let mut sec = HelpSection::new(l(crate::i18n::Msg::PreviewImage))
             .row("+ / -", l(crate::i18n::Msg::Zoom))
@@ -159,11 +170,24 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     } else {
         l(crate::i18n::Msg::MdRawToggleHelp)
     };
+    // A Word document has links and code blocks only (no checkboxes, diagrams or `<details>`: see
+    // `ensure_md_cache`), so its Tab/Enter rows name just those.
+    let (tab_msg, enter_msg) = if app.is_document() {
+        (
+            crate::i18n::Msg::FocusDocLink,
+            crate::i18n::Msg::OpenDocLinkHint,
+        )
+    } else {
+        (
+            crate::i18n::Msg::FocusMdLink,
+            crate::i18n::Msg::OpenLinkHint,
+        )
+    };
     sec = sec
         .row("R", r_help)
         .row("o", l(crate::i18n::Msg::HintOutline))
-        .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
-        .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
+        .row("Tab / ⇧Tab", l(tab_msg))
+        .row("Enter", l(enter_msg))
         .row("Ctrl-t", l(crate::i18n::Msg::OpenLinkNewTabHelp));
     // [[hint-shown-iff-key-acts]]: a Word document has no diagrams, checkboxes or `<details>` (and is
     // never written), so those keys have nothing to act on there.
@@ -265,7 +289,7 @@ pub fn footer_hints(app: &App) -> Vec<String> {
     // A Word/OpenDocument file that is still loading or failed to convert has no text yet: `R`,
     // `/`, scrolling and the like do nothing, so only the keys that still act are listed
     // ([[hint-shown-iff-key-acts]]).
-    if app.is_document() && !app.document_ready() && !app.is_raw_source() {
+    if app.document_text_missing() {
         let mut v = vec![
             hint(lang, "F", crate::i18n::Msg::StFollow),
             hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
@@ -668,14 +692,22 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         ),
         // A Word document that did not load: say why (encrypted / too large / corrupt / not a
         // Word format), with the file name. Principle #3: never a crash, never raw bytes.
-        Some(PreviewKind::Document(path)) => (
-            format!(
-                "{}\n{}",
-                doc_error_text(app.lang, app.document_error()),
-                path.display()
-            ),
-            false,
-        ),
+        Some(PreviewKind::Document(path)) => {
+            let mut body = doc_error_text(app.lang, app.document_error());
+            // "Press `e` to open it in an Office app" only while `e` really does that
+            // ([[hint-shown-iff-key-acts]]: the same predicate as the footer's `e` hint, so not
+            // with `[external] office_apps = false` nor with an `[editor] ext` rule for the file).
+            if matches!(
+                app.document_error(),
+                Some(crate::preview::office::OfficeError::Unsupported)
+            ) && app.edit_label(crate::i18n::Msg::HintEdit, crate::i18n::Msg::HintOpen)
+                == Some(crate::i18n::Msg::HintOpen)
+            {
+                body.push('\n');
+                body.push_str(tr(app.lang, crate::i18n::Msg::DocErrUnsupportedOpen));
+            }
+            (format!("{body}\n{}", path.display()), false)
+        }
         // Archives are also already drawn via the dedicated path (is_table_preview) above. Reaching
         // here means listing failed (a corrupted file/unsupported format). Rather than dumping the
         // raw zip/tar byte stream as text, shows the target file + a hint (principle #3).
@@ -700,7 +732,13 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|p| format!(" {} ", app.format_path(&p)))
         .unwrap_or_else(|| " preview ".to_string());
 
-    let wrap = is_text && app.cfg.ui.wrap;
+    // A reason a workbook/document could not be shown is a sentence the user has to read to the
+    // end (it can name the `e` key): it wraps whatever `[ui] wrap` says and the width.
+    let reason_screen = matches!(
+        app.tab.preview_kind,
+        Some(PreviewKind::Spreadsheet(_) | PreviewKind::Document(_))
+    );
+    let wrap = (is_text && app.cfg.ui.wrap) || reason_screen;
 
     // Compute the clamp baselines for vertical/horizontal before moving `body`.
     let logical_lines = body.lines().count();

@@ -111,6 +111,14 @@ impl App {
         self.is_document() && self.document.is_some()
     }
 
+    /// A Word/ODF document whose text is not on screen: its conversion is still running (also
+    /// when the tab came back in the raw `R` view) or it failed. The one predicate the footer, the
+    /// `?` help and the text keys (`/`, `v`, `V`) share, so what is offered is what acts
+    /// ([[hint-shown-iff-key-acts]]). A *re*load keeps the old text and is not "missing".
+    pub fn document_text_missing(&self) -> bool {
+        self.is_document() && !self.document_ready()
+    }
+
     /// True while a Word document's worker has not delivered yet (the "loading" screen). A *re*load
     /// keeps the previous text on screen instead.
     pub fn is_document_loading(&self) -> bool {

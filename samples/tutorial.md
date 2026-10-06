@@ -99,7 +99,8 @@ sudo apt install ffmpeg
   decodes those itself, including what an iPhone records by default.
 - **git** — the whole git suite in section 6. You almost certainly have it already.
 
-Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables, **PDF**, **H.264 and
+Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables, **spreadsheets and Word
+documents** (xlsx/ods, docx/odt), **PDF**, **H.264 and
 HEVC video thumbnails**, and code need **nothing extra** — they are rendered inside
 konoma, in pure Rust.
 (On macOS only, a PDF the built-in renderer can't handle falls back to the

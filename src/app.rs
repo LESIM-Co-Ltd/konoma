@@ -4408,7 +4408,12 @@ impl App {
             v.push(crate::i18n::Msg::BusyFilterScan);
         }
         if self.media_loading {
-            v.push(crate::i18n::Msg::BusyMedia);
+            // Name what is being read: "media" is wrong for a Word document or a workbook.
+            v.push(match self.tab.preview_kind {
+                Some(PreviewKind::Document(_)) => crate::i18n::Msg::BusyDocument,
+                Some(PreviewKind::Spreadsheet(_)) => crate::i18n::Msg::BusySheet,
+                _ => crate::i18n::Msg::BusyMedia,
+            });
         }
         if self.hl_pending || self.hl_warming {
             v.push(crate::i18n::Msg::BusyHighlight);
@@ -4784,6 +4789,11 @@ impl App {
     /// Rebuilds the windowed reader and resets the caret/scroll/selection so the new view starts at the top.
     pub fn toggle_md_raw(&mut self) {
         if !self.is_decorated_kind() {
+            return;
+        }
+        // A document still converting (also in a saved raw view) or failed has no text to switch
+        // between; the footer does not offer `R` then.
+        if self.document_text_missing() {
             return;
         }
         if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
