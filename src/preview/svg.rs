@@ -657,4 +657,64 @@ mod tests {
         std::fs::write(&local, &svg).unwrap();
         assert_eq!(center_alpha(&rasterize(&local, 100).unwrap()), 255);
     }
+
+    /// A FIFO at `path` plus a writer thread that offers `content` to whoever opens it. A build that
+    /// wrongly reads the FIFO gets the content (so its test fails) instead of blocking for ever.
+    /// `release` unblocks a writer nobody read from and joins it, so no thread is left behind.
+    #[cfg(unix)]
+    struct FifoWriter(Option<std::thread::JoinHandle<()>>, PathBuf);
+
+    #[cfg(unix)]
+    impl FifoWriter {
+        fn new(path: &Path, content: Vec<u8>) -> FifoWriter {
+            use std::os::unix::ffi::OsStrExt;
+            let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: `c` is a valid NUL-terminated path.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo");
+            let p = path.to_path_buf();
+            let h = std::thread::spawn(move || {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&p) {
+                    let _ = f.write_all(&content);
+                }
+            });
+            FifoWriter(Some(h), path.to_path_buf())
+        }
+
+        /// Opens the read end without blocking (this lets a still-waiting writer finish), then joins
+        /// the writer, with a bound so a failure here cannot hang the suite.
+        fn release(mut self) {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _reader = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&self.1);
+            let h = self.0.take().unwrap();
+            let t = std::time::Instant::now();
+            while !h.is_finished() {
+                assert!(
+                    t.elapsed() < std::time::Duration::from_secs(10),
+                    "FIFO writer stuck"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            h.join().unwrap();
+        }
+    }
+
+    /// A named pipe is not a regular file: its length reads 0, so a size check alone would let it
+    /// through and the read would take whatever a writer sends (or block for ever without one).
+    /// A valid SVG is on offer in the pipe; none of the entry points may take it.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_never_read_as_an_svg() {
+        let dir = crate::test_support::unique_tmp("konoma_svg_fifo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("pipe.svg");
+        let w = FifoWriter::new(&fifo, svg_with_image("none.png").into_bytes());
+        assert!(read_svg_file(&fifo).is_none());
+        assert!(rasterize(&fifo, 100).is_none());
+        assert!(intrinsic_size(&fifo).is_none());
+        w.release();
+    }
 }

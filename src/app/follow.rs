@@ -583,4 +583,102 @@ mod tests {
             app.flash
         );
     }
+    /// A FIFO at `path` plus a writer thread that offers `content` to whoever opens it. A build that
+    /// wrongly reads the FIFO gets the content (so its test fails) instead of blocking for ever.
+    /// `release` unblocks a writer nobody read from and joins it, so no thread is left behind.
+    #[cfg(unix)]
+    struct FifoWriter(Option<std::thread::JoinHandle<()>>, PathBuf);
+
+    #[cfg(unix)]
+    impl FifoWriter {
+        fn new(path: &Path, content: Vec<u8>) -> FifoWriter {
+            use std::os::unix::ffi::OsStrExt;
+            let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: `c` is a valid NUL-terminated path.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo");
+            let p = path.to_path_buf();
+            let h = std::thread::spawn(move || {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&p) {
+                    let _ = f.write_all(&content);
+                }
+            });
+            FifoWriter(Some(h), path.to_path_buf())
+        }
+
+        /// Opens the read end without blocking (this lets a still-waiting writer finish), then joins
+        /// the writer, with a bound so a failure here cannot hang the suite.
+        fn release(mut self) {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _reader = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&self.1);
+            let h = self.0.take().unwrap();
+            let t = std::time::Instant::now();
+            while !h.is_finished() {
+                assert!(
+                    t.elapsed() < std::time::Duration::from_secs(10),
+                    "FIFO writer stuck"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            h.join().unwrap();
+        }
+    }
+
+    /// A repo with `name` committed small, follow switched on, then `name` rewritten after `F`
+    /// (so its baseline is the pinned HEAD blob).
+    fn follow_app_with_clean_file(
+        tag: &str,
+        name: &str,
+    ) -> (App, PathBuf, crate::test_support::TmpDir) {
+        let dir = unique_tmp(tag);
+        let _ = std::fs::remove_dir_all(&dir);
+        init_git_repo(&dir);
+        let root = dir.canonicalize().unwrap();
+        std::fs::write(root.join(name), b"one\n").unwrap();
+        commit_all(&root, "init");
+        let mut app = App::new(root.clone(), Config::default()).unwrap();
+        app.toggle_follow();
+        assert!(app.follow_enabled());
+        (app, root, dir)
+    }
+
+    /// The size gate is `> cap`: a file of exactly `FOLLOW_BASELINE_FILE_CAP` bytes still gets its
+    /// since-follow-start diff, one byte more does not (catches `>` becoming `>=`, which would
+    /// send an exactly-at-the-limit file to the full git diff).
+    #[test]
+    fn follow_baseline_diff_accepts_a_file_of_exactly_the_cap_and_refuses_one_byte_more() {
+        let (app, root, _dir) = follow_app_with_clean_file("konoma_follow_cap_edge", "edge.txt");
+        let path = root.join("edge.txt");
+        // One long line: exactly at the cap.
+        std::fs::write(&path, vec![b'x'; FOLLOW_BASELINE_FILE_CAP]).unwrap();
+        assert!(
+            app.follow_baseline_diff(&path).is_some(),
+            "a file of exactly the cap is diffed"
+        );
+        std::fs::write(&path, vec![b'x'; FOLLOW_BASELINE_FILE_CAP + 1]).unwrap();
+        assert!(
+            app.follow_baseline_diff(&path).is_none(),
+            "one byte over the cap is not"
+        );
+    }
+
+    /// A path that is not a regular file (a FIFO reports length 0, so the size gate alone passes
+    /// it) is never opened: the diff is `None` and the writer waiting on the pipe is not read.
+    #[cfg(unix)]
+    #[test]
+    fn follow_baseline_diff_never_reads_a_fifo() {
+        let (app, root, _dir) = follow_app_with_clean_file("konoma_follow_fifo", "pipe.txt");
+        let path = root.join("pipe.txt");
+        std::fs::remove_file(&path).unwrap();
+        let w = FifoWriter::new(&path, b"offered\n".to_vec());
+        assert!(
+            app.follow_baseline_contents(&path).is_some(),
+            "the baseline (HEAD blob) is there, so only the file gate can refuse"
+        );
+        assert!(app.follow_baseline_diff(&path).is_none());
+        w.release();
+    }
 }
