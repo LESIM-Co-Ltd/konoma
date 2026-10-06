@@ -24,6 +24,7 @@ walks through every link and checkbox in this document. Try it:
 - [sample.png](./sample.png) — image preview: zoom with `+`/`-`, pan with `h j k l`
 - [sample.pdf](./sample.pdf) — PDF pages: turn with `J`/`K`
 - [sample.xlsx](./sample.xlsx) — a spreadsheet as a table, cells in their Excel formats: switch sheets with `J`/`K`
+- [sample.docx](./sample.docx) — a Word document as formatted text (headings, lists, tables, images, math)
 
 Focus one with `Tab`, press `Enter` to open it, then `q` to come back here.
 

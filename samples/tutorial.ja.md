@@ -24,6 +24,7 @@ Markdown のリンクはフォーカスできます。`Tab` を何度か押す�
 - [sample.png](./sample.png) — 画像プレビュー: `+`/`-` ズーム、`h j k l` パン
 - [sample.pdf](./sample.pdf) — PDF: `J`/`K` でページ送り
 - [sample.xlsx](./sample.xlsx) — 表計算を表で開く(セルは Excel の表示書式どおり): `J`/`K` でシート切替
+- [sample.ja.docx](./sample.ja.docx) — Word 文書を整形して表示（見出し・リスト・表・画像・数式）
 
 `Tab` でフォーカス → `Enter` で開く → `q` でここへ戻る、を一往復してみてください。
 
