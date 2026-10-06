@@ -145,15 +145,44 @@ Press `e` to open the file in an Office app instead — see
 
 ### Open Office documents with `e`
 
-On a Word (`docx docm dotx dotm doc odt`), Excel (the seven spreadsheet types
+On a Word (`docx docm dotx dotm doc odt ott`), Excel (the seven spreadsheet types
 above) or PowerPoint (`pptx pptm ppsx potx ppt odp`) file, `e` opens it in a GUI
 app rather than handing the zip to `$EDITOR`: on macOS Microsoft Office, then
 LibreOffice, then the default app (`open`); on Linux `libreoffice`, then
 `soffice`, then `xdg-open`. The terminal is not blocked. An `[editor] ext` entry
 for the extension takes priority, and `[external] office_apps = false` turns this
-off (it does not fall back to `$EDITOR`). Word and PowerPoint files have no
-in-terminal preview yet — `e` is how you open them. An Office app is optional;
-the spreadsheet preview works without one.
+off (it does not fall back to `$EDITOR`). PowerPoint files have no
+in-terminal preview — `e` is how you open them (and the old binary `.doc`).
+An Office app is optional; the spreadsheet and Word previews work without one.
+
+## Word and OpenDocument documents
+
+`.docx`, `.docm`, `.dotx`, `.dotm`, `.odt` and `.ott` are converted to Markdown by
+konoma itself — no Word, LibreOffice or other tool needed — and drawn like any
+`.md`, so `o` (outline), `Tab` (links), `/` (search) and math all work:
+
+- Headings, **bold** / *italic* / ~~strikethrough~~, bullets and numbering **as the
+  document shows them** (`(a)`, `ア`, `①`, `第1条` ...), tables (a merged cell
+  shows its value in the top-left cell), pictures, footnotes and endnotes, and
+  text boxes.
+- Links work: external URLs open in the browser, and a link to a heading in the
+  document jumps there. Fields such as a table of contents show the text Word
+  saved.
+- **Tracked changes show the final text.** Comments and headers / footers are
+  **not shown**.
+- **Equations become LaTeX and are drawn as math** (Word's OMML, ODF's MathML);
+  one konoma cannot convert stays as text.
+- `R` shows the converted Markdown instead. Select with `v` / `V` and copy with
+  `y` — handy for handing a document to an AI.
+
+Limits worth knowing: the file itself is never written (so checkboxes cannot be
+toggled), a password-protected, damaged or too-large file says why it cannot be
+shown, and a conversion cut at its size limit (1,000,000 bytes / 5,000 lines of
+Markdown, 300 pictures, 20,000 table cells) shows the start and says so in the
+title. Inside a table cell, `*`, `` ` `` and `~~` that appear two or more times are
+replaced by look-alike characters. The old binary `.doc` is not previewed (`e`
+opens it). So far this has been checked against LibreOffice-made files, not files
+made by Microsoft Word.
 
 ## Images, SVG, GIF, video, PDF
 

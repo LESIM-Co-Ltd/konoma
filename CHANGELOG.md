@@ -7,6 +7,20 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- **Word / OpenDocument preview**: `.docx`/`.docm`/`.dotx`/`.dotm`/`.odt`/`.ott` are converted to Markdown by konoma
+  itself (no external tool) and drawn by the Markdown renderer, so `o`, `Tab`, `/` and math all work. Headings, bold /
+  italic / strikethrough, bullets and numbering exactly as the document shows them (`(a)`, `ア`, `①`, `第1条` ...),
+  tables (a merged cell shows its value in the top-left cell), pictures, footnotes / endnotes, links (external URLs
+  and to headings in the document), text boxes, and the saved text of fields such as a table of contents. Tracked
+  changes show the final text; comments and headers / footers are not shown. Equations (Word's OMML, ODF's MathML)
+  are converted to LaTeX and drawn as math (one that cannot be converted stays as text). `R` shows the converted
+  Markdown, selectable with `v`/`V` and copyable with `y` (handy for handing a document to an AI). The file is never
+  written, so checkbox toggling is off. Password-protected, damaged or too-large files say why they cannot be shown;
+  a conversion cut at its limits (1,000,000 bytes / 5,000 lines of Markdown, 300 pictures, 16 MiB per picture, 96 MiB
+  of pictures, 20,000 table cells) says so in the title. New `builtin = "document"` and a default rule for the six
+  extensions. The old binary `.doc` is not previewed (`e` opens it). Known limit: inside a table cell, `*`, `` ` ``
+  and `~~` that appear two or more times are replaced by look-alike characters. Checked against LibreOffice-made
+  files, not yet against files made by Microsoft Word.
 - **Spreadsheet preview**: `.xlsx`/`.xlsm`/`.xltx`/`.xltm`/`.xlsb`/`.xls`/`.ods` open in the table view, read by konoma
   itself (pure Rust, no external tool). Cells are shown the way Excel shows them (thousands separators, percent,
   currency, dates, times, Japanese eras), with column letters and row numbers; the title carries the sheet name
@@ -27,7 +41,7 @@ All notable changes to konoma are documented in this file. The format is based o
   integer IDs keep every digit. Pivot tables show the totals Excel saved in the cells (they are not recalculated). An `.ods` formula is shown in
   Excel's notation (`SUM(B3:B4)` rather than `of:=SUM([.B3:.B4])`). The "too large" messages quote the limits that are
   actually enforced, and the title's `(capped)` / the empty table's `(empty)` are translated on a Japanese screen.
-- **`e` on an Office document opens it in a GUI app** (docx/docm/dotx/dotm/doc/odt, xlsx/xlsm/xltx/xltm/xlsb/xls/ods,
+- **`e` on an Office document opens it in a GUI app** (docx/docm/dotx/dotm/doc/odt/ott, xlsx/xlsm/xltx/xltm/xlsb/xls/ods,
   pptx/pptm/ppsx/potx/ppt/odp) instead of handing the zip to `$EDITOR`: Microsoft Office (macOS only), then
   LibreOffice, then the OS default (`open` / `xdg-open`). The launch runs off the UI thread and the footer says
   which app opened it. `[external] office_apps = false` opens nothing (and the footer no longer offers `e` there); an explicit `[editor.ext]` entry wins.

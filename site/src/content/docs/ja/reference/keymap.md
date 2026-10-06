@@ -56,7 +56,7 @@ sidebar:
 | `Enter` | リンクを開く / チェックボックスをトグル |
 | `Ctrl-t` | フォーカス中の**ローカル**リンクを別タブで開く(アンカーはその場で移動・URL はどちらもブラウザで開く) |
 | `Space` | フォーカス中チェックボックスをトグル |
-| `R` | 装飾表示 ⇄ raw ソース(Markdown/Mermaid)。このプレビューが diff の `preview` 表現である間は、代わりに diff へ戻る |
+| `R` | 装飾表示 ⇄ raw ソース(Markdown/Mermaid と Word/OpenDocument 文書 — raw は変換後の Markdown)。このプレビューが diff の `preview` 表現である間は、代わりに diff へ戻る |
 | `o` | Markdown プレビューの見出しアウトライン(`Enter` で見出しへジャンプ) |
 | `v` / `V` | 文字単位 / 行単位の選択 → `y` でコピー |
 | `y` → `c` | フォーカス中の Markdown コードブロックをコピー(`Tab` でフォーカス。`y` メニューの他の項目はパスコピー) |
