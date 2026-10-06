@@ -229,7 +229,7 @@ pub(crate) fn direct_num(ppr: &Node) -> Option<(u32, Option<u8>)> {
 }
 
 /// `heading 1`, `Heading1`, `見出し 1`, `標題 2` ... -> level (1..=9). `Title` is level 1.
-fn heading_from_name(name: &str) -> Option<u8> {
+pub(crate) fn heading_from_name(name: &str) -> Option<u8> {
     let n = name.trim().to_lowercase();
     if n == "title" {
         return Some(1);
@@ -273,7 +273,7 @@ fn heading_from_name(name: &str) -> Option<u8> {
     None
 }
 
-fn is_code_name(name: &str) -> bool {
+pub(crate) fn is_code_name(name: &str) -> bool {
     matches!(
         name.trim().to_lowercase().as_str(),
         "code"

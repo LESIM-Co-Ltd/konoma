@@ -111,6 +111,9 @@ pub(crate) struct Budget {
     pub text_bytes: usize,
     /// Text was dropped for lack of budget.
     text_over: bool,
+    /// Keep the text of every element (OpenDocument: prose lives directly in `text:p`, `text:span` ..).
+    /// Word keeps only the text of the few elements that hold data (`w:t` ..).
+    all_text: bool,
 }
 
 impl Budget {
@@ -119,6 +122,15 @@ impl Budget {
             nodes,
             text_bytes,
             text_over: false,
+            all_text: false,
+        }
+    }
+
+    /// A budget for an OpenDocument tree: the text of every element is kept.
+    pub fn odf(nodes: usize, text_bytes: usize) -> Budget {
+        Budget {
+            all_text: true,
+            ..Budget::new(nodes, text_bytes)
         }
     }
 }
@@ -236,7 +248,7 @@ pub(crate) fn read_element<R: BufRead>(
             }
             Event::Text(t) => {
                 if let Some(top) = stack.last_mut() {
-                    if keeps_text(&top.name) {
+                    if budget.all_text || keeps_text(&top.name) {
                         let s = match t.xml10_content() {
                             Ok(s) => s.into_owned(),
                             Err(_) => String::from_utf8_lossy(&t).into_owned(),
@@ -247,7 +259,7 @@ pub(crate) fn read_element<R: BufRead>(
             }
             Event::CData(t) => {
                 if let Some(top) = stack.last_mut() {
-                    if keeps_text(&top.name) {
+                    if budget.all_text || keeps_text(&top.name) {
                         let s = String::from_utf8_lossy(&t).into_owned();
                         push_text(top, &s, budget);
                     }
@@ -255,7 +267,7 @@ pub(crate) fn read_element<R: BufRead>(
             }
             Event::GeneralRef(e) => {
                 if let Some(top) = stack.last_mut() {
-                    if keeps_text(&top.name) {
+                    if budget.all_text || keeps_text(&top.name) {
                         let mut s = String::new();
                         push_ref(&e, &mut s);
                         push_text(top, &s, budget);
@@ -304,7 +316,7 @@ fn push_ref(e: &quick_xml::events::BytesRef<'_>, out: &mut String) {
 }
 
 /// Consumes events to the end tag that closes the element already opened.
-fn skip_rest<R: BufRead>(rd: &mut XmlReader<R>) -> Result<(), OfficeError> {
+pub(crate) fn skip_rest<R: BufRead>(rd: &mut XmlReader<R>) -> Result<(), OfficeError> {
     let mut depth = 1usize;
     let mut buf = Vec::new();
     loop {

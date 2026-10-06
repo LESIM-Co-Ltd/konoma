@@ -1095,3 +1095,318 @@ fn e2e_word_the_default_rule_covers_the_word_extensions_and_a_user_rule_wins() {
     s.enter();
     assert!(!s.app.is_document());
 }
+
+// ---------------------------------------------------------------------------------------------
+// OpenDocument text (odt / ott): the same view as a docx
+// ---------------------------------------------------------------------------------------------
+
+const ODT_EN: &str = "word.odt";
+const ODT_JA: &str = "word-ja.odt";
+
+/// A minimal odt (mimetype, manifest, content) whose `office:text` is `body`.
+fn build_odt(path: &std::path::Path, mime: &str, body: &str) {
+    use std::io::Write;
+    let f = std::fs::File::create(path).unwrap();
+    let mut zw = zip::ZipWriter::new(f);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let mut put = |name: &str, text: &str| {
+        zw.start_file(name, opts).unwrap();
+        zw.write_all(text.as_bytes()).unwrap();
+    };
+    put("mimetype", mime);
+    put(
+        "META-INF/manifest.xml",
+        r#"<?xml version="1.0"?><manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"/>"#,
+    );
+    put(
+        "content.xml",
+        &format!(
+            r#"<?xml version="1.0"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"><office:body><office:text>{body}</office:text></office:body></office:document-content>"#
+        ),
+    );
+    zw.finish().unwrap();
+}
+
+const ODT_MIME: &str = "application/vnd.oasis.opendocument.text";
+
+#[test]
+fn e2e_odt_opens_as_decorated_markdown() {
+    let Some((s, _d)) = open_doc("o_open", ODT_EN) else {
+        return;
+    };
+    assert!(s.app.is_document() && s.app.document_ready());
+    assert!(!s.app.is_table_preview() && !s.app.is_windowed() && !s.app.is_md_raw());
+    s.see("Word reader sample");
+    s.dont_see("# Word reader sample");
+    s.dont_see("can not preview");
+    s.see("*star* _under_");
+    s.dont_see("**bold**");
+    s.see("PREVIEW");
+}
+
+#[test]
+fn e2e_odt_the_structure_of_the_document_reaches_the_screen() {
+    let Some((s, _d)) = open_doc("o_structure", ODT_EN) else {
+        return;
+    };
+    for want in [
+        "Contents",
+        "Lists",
+        "Bullets and numbers",
+        "- bullet one",
+        "- bullet nested",
+        "1. first",
+        "2. second",
+        "1. second-a",
+        "3. third",
+        "a. alpha",
+        "II. two",
+        "┌",
+        "Merged across two columns",
+        "a|b",
+        "two lines",
+        "Footnote text",
+        "Endnote text.",
+        "TEXTBOX-TEXT inside a frame",
+        "This sentence is inserted.",
+    ] {
+        s.see(want);
+    }
+    // Not shown: the deleted sentence, the comment, the header and the footer.
+    for not in [
+        "This sentence is deleted",
+        "SECRET-COMMENT",
+        "RUNNING-HEADER",
+        "RUNNING-FOOTER",
+    ] {
+        s.dont_see(not);
+    }
+}
+
+#[test]
+fn e2e_odt_a_japanese_document_opens_and_reads_in_japanese() {
+    let Some((mut s, _d)) = open_doc("o_ja", ODT_JA) else {
+        return;
+    };
+    for want in ["Word 読み込みサンプル", "はじめに", "リスト", "図と脚注"] {
+        see_cjk(&mut s, want);
+    }
+    s.dont_see("can not preview");
+    s.key('o');
+    assert!(s.app.is_outline());
+    see_cjk(&mut s, "図と脚注");
+}
+
+#[test]
+fn e2e_odt_the_odt_is_never_written_by_any_key() {
+    let Some((dir, root)) = doc_sandbox("o_never_written", ODT_EN) else {
+        return;
+    };
+    let odt = root.join(ODT_EN);
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 90, 26);
+    s.select(ODT_EN);
+    assert!(same_bytes_after(&odt, || {
+        s.enter();
+        s.app.cfg.external.open_links = false;
+        for _ in 0..40 {
+            s.tab();
+            s.key(' ');
+            s.enter();
+        }
+        s.key('R');
+        s.keys("jjjV");
+        s.key('y');
+        s.key('R');
+        s.keys("o");
+        s.esc();
+    }));
+    drop(dir);
+}
+
+#[test]
+fn e2e_odt_r_shows_the_converted_markdown_and_r_again_returns() {
+    let Some((mut s, _d)) = open_doc("o_raw", ODT_EN) else {
+        return;
+    };
+    s.key('R');
+    assert!(s.app.is_md_raw() && s.app.is_windowed());
+    s.see("raw source");
+    s.see("# Word reader sample");
+    s.see("**Contents**");
+    s.see("\\*star\\*");
+    let tmp = s.app.document_raw_file_for_test().expect("a temp file");
+    assert_eq!(
+        std::fs::read_to_string(&tmp).unwrap(),
+        s.app.document_markdown_for_test().unwrap()
+    );
+    s.key('R');
+    assert!(!s.app.is_md_raw() && !s.app.is_windowed());
+    assert!(!tmp.exists());
+    s.see("Word reader sample");
+}
+
+#[test]
+fn e2e_odt_the_formulas_and_the_picture_are_drawn_as_images() {
+    let Some((mut s, _d)) = open_doc_with_media("o_images", ODT_EN, TALL) else {
+        return;
+    };
+    assert!(s.app.is_document_loading());
+    s.drain_media();
+    assert!(s.app.document_ready());
+    assert_eq!(s.app.document_picture_count_for_test(), 1);
+    settle_images(&mut s);
+    let placements = s.app.md_images();
+    let office = placements
+        .iter()
+        .filter(|p| crate::preview::markdown::is_office_image_url(&p.url))
+        .count();
+    let math = placements
+        .iter()
+        .filter(|p| crate::preview::markdown::is_math_url(&p.url))
+        .count();
+    assert_eq!(office, 1, "{placements:?}");
+    assert_eq!(math, 2, "two formulas became math images: {placements:?}");
+    for p in &placements {
+        assert!(
+            s.app
+                .md_image_proto(&p.url, p.cols, p.rows, 0, p.rows)
+                .is_some(),
+            "no picture for {}",
+            p.url
+        );
+    }
+    s.dont_see("office-img://");
+    s.dont_see("\\frac");
+}
+
+#[test]
+fn e2e_odt_links_are_focusable_and_the_toc_link_scrolls() {
+    let Some((mut s, _d)) = open_doc_sized("o_links", ODT_EN, (90, 26), cfg_en()) else {
+        return;
+    };
+    s.app.cfg.external.open_links = false;
+    let targets = s.app.md_link_targets();
+    assert!(
+        targets.iter().any(|t| t == "https://example.com/a?x=1&y=2"),
+        "{targets:?}"
+    );
+    assert!(
+        targets.iter().any(|t| t == "#pictures-and-notes"),
+        "{targets:?}"
+    );
+    for t in &targets {
+        assert!(
+            t.starts_with('#') || t.starts_with("http") || t.starts_with("mailto:"),
+            "{t}"
+        );
+    }
+    let mut found = false;
+    for _ in 0..12 {
+        s.tab();
+        if s.app.md_focused_kind() == Some(crate::app::MdFocus::AnchorLink)
+            && s.screen().contains("Pictures and notes")
+        {
+            let idx = s.app.focused_item().unwrap();
+            if s.app.md_link_targets().get(idx).map(String::as_str) == Some("#pictures-and-notes") {
+                found = true;
+                break;
+            }
+        }
+    }
+    assert!(found, "TOC link not reached:\n{}", s.screen());
+    let before = s.app.tab.preview_scroll;
+    s.enter();
+    assert!(s.app.tab.preview_scroll > before, "jumped to the heading");
+}
+
+#[test]
+fn e2e_odt_the_default_rule_covers_odt_and_ott_and_a_user_rule_wins() {
+    let dir = sandbox("o_rules");
+    for n in ["a.odt", "b.ODT", "c.ott"] {
+        build_odt(&dir.join(n), ODT_MIME, "<text:p>hello odf</text:p>");
+    }
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    for n in ["a.odt", "b.ODT", "c.ott"] {
+        s.select(n);
+        s.enter();
+        assert!(s.app.document_ready(), "{n}");
+        s.see("hello odf");
+        s.key('q');
+    }
+    let mut cfg = cfg_en();
+    cfg.preview.rules.insert(
+        0,
+        crate::config::Rule {
+            glob: Some("*.odt".into()),
+            builtin: Some("text".into()),
+            ..crate::config::Rule::default()
+        },
+    );
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("a.odt");
+    s.enter();
+    assert!(!s.app.is_document());
+}
+
+fn open_bad_odt(
+    name: &str,
+    make: impl FnOnce(&std::path::Path),
+) -> (Sim, crate::test_support::TmpDir) {
+    let dir = sandbox(name);
+    let p = canon(&dir).join("bad.odt");
+    make(&p);
+    let mut s = Sim::with_config(&canon(&dir), cfg_en());
+    s.select("bad.odt");
+    s.enter();
+    (s, dir)
+}
+
+#[test]
+fn e2e_odt_failures_say_why() {
+    // Damaged.
+    let (s, _d) = open_bad_odt("o_corrupt", |p| std::fs::write(p, b"not a zip").unwrap());
+    assert!(s.app.is_document() && !s.app.document_ready());
+    s.see("[document] cannot preview");
+    s.see("damaged or not a valid Word document");
+    s.dont_see("not a zip");
+    // A spreadsheet saved under an odt name is not a text.
+    let (s, _d) = open_bad_odt("o_ods", |p| {
+        build_odt(
+            p,
+            "application/vnd.oasis.opendocument.spreadsheet",
+            "<text:p>x</text:p>",
+        )
+    });
+    s.see("[document] cannot preview");
+    // A password-protected one (LibreOffice 25: one `encrypted-package` entry).
+    let (s, _d) = open_bad_odt("o_enc", |p| {
+        use std::io::Write;
+        let f = std::fs::File::create(p).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default();
+        zw.start_file("mimetype", opts).unwrap();
+        zw.write_all(ODT_MIME.as_bytes()).unwrap();
+        zw.start_file("encrypted-package", opts).unwrap();
+        zw.write_all(b"\x01\x02\x03").unwrap();
+        zw.finish().unwrap();
+    });
+    s.see("password-protected");
+}
+
+#[test]
+fn e2e_odt_a_very_long_document_is_cut_and_the_title_says_so() {
+    let dir = sandbox("o_long");
+    let body: String = (0..9_000)
+        .map(|i| format!("<text:p>paragraph number {i}</text:p>"))
+        .collect();
+    build_odt(&dir.join("long.odt"), ODT_MIME, &body);
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 100, 30);
+    s.select("long.odt");
+    s.enter();
+    assert!(s.app.document_ready() && s.app.document_truncated());
+    s.see("truncated");
+    s.see("paragraph number 0");
+    s.key('G');
+    s.dont_see("paragraph number 8999");
+}

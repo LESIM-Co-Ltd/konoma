@@ -413,10 +413,10 @@ code_theme = "TwoDark"
 #   spreadsheet = .xlsx/.xlsm/.xltx/.xltm/.xlsb/.xls/.ods shown as a table with each cell in its Excel number
 #              format (dates, currency, percent, ...). Column letters + row numbers; J/K = next/previous sheet.
 #              Same hjkl / y→ keys as csv. Formulas are never evaluated and macros never run.
-#   document = .docx/.docm/.dotx/.dotm converted to Markdown by konoma itself (headings, lists, tables, footnotes,
+#   document = .docx/.docm/.dotx/.dotm/.odt/.ott converted to Markdown by konoma itself (headings, lists, tables, footnotes,
 #              links, pictures, formulas as LaTeX) and drawn by the Markdown renderer, so o / Tab / / / $…$ all work.
 #              Tracked changes show the final text; comments, headers and footers are not shown. R shows the converted
-#              Markdown (select with v/V, copy with y). The .docx file itself is never written. `.doc` is not previewed
+#              Markdown (select with v/V, copy with y). The document file itself is never written. `.doc` is not previewed
 #              (e opens it in an Office app).
 # command:  delegate to an external command. {path}=the target file, {out}=an output path (temp file).
 #           An empty (or whitespace-only) command means "no command to delegate to" — the rule
@@ -458,7 +458,7 @@ glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # Spreadsheet as a table (cells 
 builtin = "spreadsheet"
 
 [[preview.rules]]
-glob = "*.{docx,docm,dotx,dotm}"   # Word document converted to Markdown and drawn like a .md. R = the converted Markdown.
+glob = "*.{docx,docm,dotx,dotm,odt,ott}"   # Word / OpenDocument text converted to Markdown and drawn like a .md. R = the converted Markdown.
 builtin = "document"
 
 [[preview.rules]]

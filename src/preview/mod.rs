@@ -53,7 +53,7 @@ pub enum PreviewKind {
     /// sheets are shown through the table grid with cells formatted as Excel shows them. The
     /// workbook is parsed on a worker thread (`MediaJob::Workbook`).
     Spreadsheet(PathBuf),
-    /// Built-in Word document preview (docx / docm / dotx / dotm): the document is converted to
+    /// Built-in Word document preview (docx / docm / dotx / dotm, and OpenDocument text odt / ott): the document is converted to
     /// Markdown on a worker thread (`MediaJob::Document`) and drawn by the Markdown renderer. The
     /// converted text lives on `App`, never in the file on disk.
     Document(PathBuf),

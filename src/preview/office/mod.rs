@@ -18,6 +18,7 @@ pub mod fmt_ods;
 pub mod fmt_xls;
 pub mod fmt_xlsb;
 pub mod fmt_xlsx;
+pub(crate) mod mathml;
 pub mod numfmt;
 mod ods_formula;
 pub(crate) mod omml;
@@ -131,9 +132,15 @@ mod tests_docx_robust;
 #[cfg(test)]
 mod tests_limits;
 #[cfg(test)]
+mod tests_mathml;
+#[cfg(test)]
 mod tests_numfmt;
 #[cfg(test)]
 mod tests_ods;
+#[cfg(test)]
+mod tests_odt;
+#[cfg(test)]
+mod tests_odt_more;
 #[cfg(test)]
 mod tests_survivors;
 #[cfg(test)]

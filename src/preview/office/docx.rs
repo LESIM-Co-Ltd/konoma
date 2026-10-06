@@ -60,6 +60,11 @@ use super::fmt_xlsx::{attr, resolve_target, xml_err, XmlReader};
 use super::workbook::Cancel;
 use super::{omml, OfficeError};
 
+// The OpenDocument text reader shares this module's converter (writer, escaping, notes, pictures),
+// so it is a child module: it sees the private items it builds on.
+#[path = "odt.rs"]
+pub mod odt;
+
 /// Limits and options of [`load_document`].
 #[derive(Debug, Clone)]
 pub struct DocOptions {
@@ -92,6 +97,10 @@ pub struct DocOptions {
     pub max_math_xml: usize,
     /// The OMML -> LaTeX converter (`omml::to_latex`; a field so tests can stand in for it).
     pub math: fn(&str, bool) -> Option<String>,
+    /// The MathML -> LaTeX converter of OpenDocument formulas (`mathml::to_latex`).
+    pub mathml: fn(&str, bool) -> Option<String>,
+    /// Most formula objects an OpenDocument text may have converted (each one is a zip part).
+    pub max_math_objects: usize,
 }
 
 impl Default for DocOptions {
@@ -111,6 +120,8 @@ impl Default for DocOptions {
             max_notes: 5_000,
             max_math_xml: 64 * 1024,
             math: omml::to_latex,
+            mathml: super::mathml::to_latex,
+            max_math_objects: 5_000,
         }
     }
 }
@@ -161,8 +172,20 @@ pub fn load_document_cancellable(
     cancel: Option<&Cancel>,
 ) -> Result<Document, OfficeError> {
     let names = container::inspect_word_package(path, &opts.limits)?;
+    // The content decides, not the extension: an OpenDocument package carries `mimetype` first.
+    // (A password-protected `.odt` has no readable `content.xml`; it is told apart here.)
+    let odf = names.iter().any(|n| n == "mimetype");
+    if odf && container::odf_encrypted(path, &names, &opts.limits) {
+        return Err(OfficeError::Encrypted);
+    }
     drop(names);
-    let r = crate::preview::markdown::catch_silent(|| convert(path, opts, cancel));
+    let r = crate::preview::markdown::catch_silent(|| {
+        if odf {
+            odt::convert(path, opts, cancel)
+        } else {
+            convert(path, opts, cancel)
+        }
+    });
     match r {
         Some(r) => r,
         None => Err(OfficeError::Corrupt(
@@ -443,6 +466,58 @@ struct Conv<'a> {
     full: bool,
 }
 
+impl<'a> Conv<'a> {
+    /// A converter with empty output; the reader fills it block by block.
+    fn new(
+        opts: &'a DocOptions,
+        cancel: Option<&'a Cancel>,
+        styles: Styles,
+        numbering: Numbering,
+        rels: HashMap<String, Rel>,
+        media: Pkg,
+    ) -> Conv<'a> {
+        Conv {
+            opts,
+            cancel,
+            styles,
+            numbering,
+            counters: HashMap::new(),
+            seen_nums: HashSet::new(),
+            rels,
+            media,
+            images: Vec::new(),
+            image_by_part: HashMap::new(),
+            image_total: 0,
+            note_labels: Vec::new(),
+            note_index: HashMap::new(),
+            in_note: false,
+            cur_ctx: Ctx::Body,
+            bookmark_slugs: HashMap::new(),
+            slug_counts: HashMap::new(),
+            anchor_names: Vec::new(),
+            anchor_index: HashMap::new(),
+            fields: Vec::new(),
+            carry: Vec::new(),
+            truncated: false,
+            math_total: 0,
+            math_latex: 0,
+            out: String::new(),
+            out_lines: 0,
+            last: Last::None,
+            last_list: None,
+            stack: Vec::new(),
+            pending_code: None,
+            body_bytes: opts
+                .max_markdown_bytes
+                .saturating_sub((opts.max_markdown_bytes / 8).min(256 * 1024)),
+            body_lines: opts
+                .max_markdown_lines
+                .saturating_sub((opts.max_markdown_lines / 10).min(500)),
+            full: false,
+        }
+    }
+}
+
 const TOKEN_OPEN: char = '\u{E000}';
 const TOKEN_CLOSE: char = '\u{E001}';
 const NBSP: char = '\u{00A0}';
@@ -488,45 +563,7 @@ fn convert(
     let endnotes_part = find_part(&rels, "endnotes", "word/endnotes.xml", &pkg);
 
     let media = Pkg::open(path)?;
-    let mut conv = Conv {
-        opts,
-        cancel,
-        styles,
-        numbering,
-        counters: HashMap::new(),
-        seen_nums: HashSet::new(),
-        rels,
-        media,
-        images: Vec::new(),
-        image_by_part: HashMap::new(),
-        image_total: 0,
-        note_labels: Vec::new(),
-        note_index: HashMap::new(),
-        in_note: false,
-        cur_ctx: Ctx::Body,
-        bookmark_slugs: HashMap::new(),
-        slug_counts: HashMap::new(),
-        anchor_names: Vec::new(),
-        anchor_index: HashMap::new(),
-        fields: Vec::new(),
-        carry: Vec::new(),
-        truncated: false,
-        math_total: 0,
-        math_latex: 0,
-        out: String::new(),
-        out_lines: 0,
-        last: Last::None,
-        last_list: None,
-        stack: Vec::new(),
-        pending_code: None,
-        body_bytes: opts
-            .max_markdown_bytes
-            .saturating_sub((opts.max_markdown_bytes / 8).min(256 * 1024)),
-        body_lines: opts
-            .max_markdown_lines
-            .saturating_sub((opts.max_markdown_lines / 10).min(500)),
-        full: false,
-    };
+    let mut conv = Conv::new(opts, cancel, styles, numbering, rels, media);
 
     {
         let Some(r) = pkg.part(&main, cap)? else {
@@ -552,32 +589,42 @@ fn convert(
             }
         }
     }
-    let mut md = std::mem::take(&mut conv.out);
-    defs.sort_by_key(|d| d.0);
-    let mut notes = 0usize;
-    for (n, text) in &defs {
-        let line = format!("[^{n}]: {text}");
-        if md.len() + line.len() + 2 > opts.max_markdown_bytes
-            || md.matches('\n').count() + 2 > opts.max_markdown_lines
-        {
-            conv.truncated = true;
-            break;
+    Ok(conv.assemble(defs))
+}
+
+impl Conv<'_> {
+    /// The finished document: the body, then the notes (`[^n]: text`, in order of reference) when
+    /// they fit the budgets, with the heading anchors resolved.
+    fn assemble(self, mut defs: Vec<(usize, String)>) -> Document {
+        let mut conv = self;
+        let opts = conv.opts;
+        let mut md = std::mem::take(&mut conv.out);
+        defs.sort_by_key(|d| d.0);
+        let mut notes = 0usize;
+        for (n, text) in &defs {
+            let line = format!("[^{n}]: {text}");
+            if md.len() + line.len() + 2 > opts.max_markdown_bytes
+                || md.matches('\n').count() + 2 > opts.max_markdown_lines
+            {
+                conv.truncated = true;
+                break;
+            }
+            if !md.is_empty() {
+                md.push_str(if notes == 0 { "\n\n" } else { "\n" });
+            }
+            md.push_str(&line);
+            notes += 1;
         }
-        if !md.is_empty() {
-            md.push_str(if notes == 0 { "\n\n" } else { "\n" });
+        let md = conv.resolve_anchors(md);
+        Document {
+            markdown: md,
+            images: conv.images,
+            truncated: conv.truncated,
+            notes,
+            math_total: conv.math_total,
+            math_latex: conv.math_latex,
         }
-        md.push_str(&line);
-        notes += 1;
     }
-    let md = conv.resolve_anchors(md);
-    Ok(Document {
-        markdown: md,
-        images: conv.images,
-        truncated: conv.truncated,
-        notes,
-        math_total: conv.math_total,
-        math_latex: conv.math_latex,
-    })
 }
 
 fn read_rels_of_root(pkg: &mut Pkg, cap: u64) -> Result<HashMap<String, Rel>, OfficeError> {
@@ -798,7 +845,36 @@ fn guard_rule(text: String) -> String {
 
 /// Escapes text for a heading (also `{` `}`: heading attributes).
 fn escape_heading(s: &str) -> String {
-    escape(s, true).replace('{', "\\{").replace('}', "\\}")
+    escape_braces(&escape(s, true))
+}
+
+/// `{` and `}` of already-escaped heading text made literal (a heading may end in `{#id}`), except
+/// inside an inline formula `$...$`: its braces are LaTeX. Text never holds a bare `$` (it is
+/// escaped to `\$`), so every unescaped one is a formula delimiter.
+fn escape_braces(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    let mut in_math = false;
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        match c {
+            '\\' => {
+                out.push(c);
+                if let Some(n) = it.next() {
+                    out.push(n);
+                }
+            }
+            '$' => {
+                in_math = !in_math;
+                out.push(c);
+            }
+            '{' | '}' if !in_math => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// `[x](url)` destination: percent-encodes what would end the destination.
@@ -1559,7 +1635,8 @@ impl<'a> Conv<'a> {
                 // character for character (a slug holds only letters, digits, `-` and `_`).
                 match self.bookmark_slugs.get(name) {
                     Some(s) => out.push_str(s),
-                    None => out.push_str(&slug(name)),
+                    // (`|outline`: an OpenDocument cross reference to a heading nobody registered.)
+                    None => out.push_str(&slug(name.strip_suffix("|outline").unwrap_or(name))),
                 }
             }
             rest = &after[j + TOKEN_CLOSE.len_utf8()..];
@@ -1875,7 +1952,7 @@ impl<'a> Conv<'a> {
                             .replace('\n', " ")
                             .trim()
                             .to_string();
-                        text = text.replace('{', "\\{").replace('}', "\\}");
+                        text = escape_braces(&text);
                         let mut label = None;
                         if let Some(l) = &role.list {
                             if l.marker != Marker::Bullet && !l.label.trim().is_empty() {
@@ -2270,6 +2347,12 @@ impl<'a> Conv<'a> {
             // konoma never fetches a picture a document points at.
             return self.placeholder(alt);
         }
+        self.image_md_part(&rel.target, alt)
+    }
+
+    /// `![alt](office-img://..)` for the picture stored at `part` of the package (a placeholder when
+    /// it cannot be shown).
+    fn image_md_part(&mut self, part: &str, alt: &str) -> String {
         let alt_md = alt.replace(
             [
                 '[', ']', '(', ')', '<', '>', '\\', '`', '*', '_', '$', '~', '|', '&', '!',
@@ -2277,11 +2360,11 @@ impl<'a> Conv<'a> {
             " ",
         );
         let alt_md = alt_md.split_whitespace().collect::<Vec<_>>().join(" ");
-        let key = match self.image_by_part.get(&rel.target) {
+        let key = match self.image_by_part.get(part) {
             Some(k) => k.clone(),
             None => {
-                let k = self.load_image(&rel.target);
-                self.image_by_part.insert(rel.target.clone(), k.clone());
+                let k = self.load_image(part);
+                self.image_by_part.insert(part.to_string(), k.clone());
                 k
             }
         };

@@ -1,4 +1,4 @@
-"""word.docx / word-ja.docx: a Word document written by LibreOffice (the only real word processor on
+"""word.docx / word-ja.docx (and word.odt / word-ja.odt, the same documents saved as OpenDocument): a Word document written by LibreOffice (the only real word processor on
 the machine this was built on), for the docx -> Markdown reader tests.
 
 Own content only. Both documents hold the same things (headings, emphasis, bullets and numbered
@@ -339,6 +339,12 @@ def build(ja):
         os.remove(path)
     doc.storeToURL(uno.systemPathToFileUrl(path), (pv("FilterName", "MS Word 2007 XML"),))
     print("saved", path, os.path.getsize(path), "bytes")
+    # The same document as OpenDocument text, for the odt reader (and the docx / odt comparison).
+    opath = os.path.join(OUT, name + ".odt")
+    if os.path.exists(opath):
+        os.remove(opath)
+    doc.storeToURL(uno.systemPathToFileUrl(opath), (pv("FilterName", "writer8"),))
+    print("saved", opath, os.path.getsize(opath), "bytes")
     doc.close(True)
 
 

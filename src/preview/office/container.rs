@@ -169,6 +169,22 @@ fn detect_zip(names: &[String]) -> Result<Detected, OfficeError> {
 /// recognised by `fmt_ods::read`, which looks at the manifest.)
 fn is_encrypted_ods(path: &Path, names: &[String], limits: &Limits) -> bool {
     const ODS_MIME: &[u8] = b"application/vnd.oasis.opendocument.spreadsheet";
+    odf_encrypted_as(path, names, limits, Some(ODS_MIME))
+}
+
+/// An OpenDocument package of any kind (text, spreadsheet, presentation ...) whose content is
+/// encrypted: see [`is_encrypted_ods`] for the two ways LibreOffice stores it.
+pub(crate) fn odf_encrypted(path: &Path, names: &[String], limits: &Limits) -> bool {
+    odf_encrypted_as(path, names, limits, None)
+}
+
+/// [`odf_encrypted`], optionally only when the `mimetype` starts with `mime`.
+fn odf_encrypted_as(
+    path: &Path,
+    names: &[String],
+    limits: &Limits,
+    mime_want: Option<&[u8]>,
+) -> bool {
     let Ok(mut zip) = open_zip(path) else {
         return false;
     };
@@ -182,8 +198,11 @@ fn is_encrypted_ods(path: &Path, names: &[String], limits: &Limits) -> bool {
         }
         _ => return false,
     };
-    if !mime.trim_ascii().starts_with(ODS_MIME) {
-        return false;
+    let mime = mime.trim_ascii();
+    match mime_want {
+        Some(want) if !mime.starts_with(want) => return false,
+        None if !mime.starts_with(b"application/vnd.oasis.opendocument.") => return false,
+        _ => {}
     }
     if names.iter().any(|n| n == "encrypted-package") {
         return true;

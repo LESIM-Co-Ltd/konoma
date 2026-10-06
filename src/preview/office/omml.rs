@@ -16,7 +16,7 @@ const MAX_INPUT: usize = 1 << 20;
 /// Most elements a fragment may hold.
 const MAX_NODES: usize = 100_000;
 /// Longest LaTeX produced (bytes); a bigger expression is not drawn.
-const MAX_OUTPUT: usize = 64 * 1024;
+pub(super) const MAX_OUTPUT: usize = 64 * 1024;
 /// Longest text of one run kept (bytes).
 const MAX_RUN_TEXT: usize = 8 * 1024;
 
@@ -202,7 +202,7 @@ fn collect_maths<'a>(n: &'a Node, out: &mut Vec<&'a Node>) {
     }
 }
 
-fn drawable(latex: &str) -> bool {
+pub(super) fn drawable(latex: &str) -> bool {
     crate::preview::math::latex_to_svg(latex, true, "#000000").is_some()
 }
 
@@ -374,7 +374,7 @@ fn conv_nary(n: &Node, cx: Ctx) -> String {
     s
 }
 
-fn nary_cmd(c: char) -> Option<&'static str> {
+pub(super) fn nary_cmd(c: char) -> Option<&'static str> {
     Some(match c {
         '\u{2211}' => r"\sum",
         '\u{220F}' => r"\prod",
@@ -397,7 +397,7 @@ fn nary_cmd(c: char) -> Option<&'static str> {
     })
 }
 
-fn delim_cmd(c: &str) -> Option<String> {
+pub(super) fn delim_cmd(c: &str) -> Option<String> {
     Some(
         match c {
             "" => ".",
@@ -471,7 +471,7 @@ fn conv_matrix(n: &Node, cx: Ctx) -> String {
     format!(r"\begin{{matrix}} {} \end{{matrix}}", rows.join(r" \\ "))
 }
 
-fn accent_cmd(chr: &str) -> Option<&'static str> {
+pub(super) fn accent_cmd(chr: &str) -> Option<&'static str> {
     Some(match chr.chars().next()? {
         '\u{0302}' | '^' | '\u{02C6}' => r"\hat",
         '\u{0300}' | '`' => r"\grave",
@@ -551,14 +551,14 @@ fn flat_text(n: &Node) -> String {
 }
 
 /// Function names LaTeX has a command for (and RaTeX draws upright).
-const FUNCS: &[&str] = &[
+pub(super) const FUNCS: &[&str] = &[
     "sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
     "coth", "log", "ln", "lg", "exp", "det", "dim", "ker", "gcd", "max", "min", "sup", "inf",
     "lim", "limsup", "liminf", "deg", "arg", "hom", "Pr",
 ];
 
 /// Function names that are never a product of variables.
-const STRICT_FUNCS: &[&str] = &[
+pub(super) const STRICT_FUNCS: &[&str] = &[
     "sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan", "sinh", "cosh", "tanh",
     "coth", "log", "ln", "exp", "lim", "limsup", "liminf",
 ];
@@ -611,7 +611,7 @@ fn conv_run(n: &Node, cx: Ctx) -> String {
     wrapped
 }
 
-fn escape_text(t: &str) -> String {
+pub(super) fn escape_text(t: &str) -> String {
     let mut s = String::new();
     for c in t.chars() {
         match c {
@@ -631,7 +631,7 @@ fn escape_text(t: &str) -> String {
 }
 
 /// Characters of a math run as LaTeX. `amp`: a `&` is an alignment point (eqArr row).
-fn map_chars(text: &str, amp: bool) -> String {
+pub(super) fn map_chars(text: &str, amp: bool) -> String {
     let mut s = String::new();
     for c in text.chars() {
         if s.len() > MAX_OUTPUT {
@@ -669,7 +669,7 @@ fn map_chars(text: &str, amp: bool) -> String {
     s
 }
 
-fn char_cmd(c: char) -> Option<&'static str> {
+pub(super) fn char_cmd(c: char) -> Option<&'static str> {
     Some(match c {
         // Greek (lower case). Word's linear format: \varepsilon = U+03B5, \epsilon = U+03F5,
         // \varphi = U+03C6, \phi = U+03D5.

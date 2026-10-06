@@ -198,6 +198,11 @@ pub(super) fn conv_with(d: &Dx, opts: &DocOptions) -> Result<Document, OfficeErr
     load_document(&p, opts)
 }
 
+/// The bytes of a docx whose body is `body`.
+pub(super) fn conv_bytes(body: &str) -> Vec<u8> {
+    Dx::new(body).bytes()
+}
+
 pub(super) fn conv(d: &Dx) -> Document {
     conv_with(d, &DocOptions::default()).unwrap()
 }

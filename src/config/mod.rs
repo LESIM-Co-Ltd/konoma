@@ -907,8 +907,8 @@ impl Default for PreviewConfig {
                 Rule {
                     // Word documents are converted to Markdown and drawn by the Markdown renderer.
                     // A glob (not a mime) so a deleted file's diff still resolves the kind by name.
-                    // (`.odt` joins when its reader exists; `.doc` is never previewed.)
-                    glob: Some("*.{docx,docm,dotx,dotm}".into()),
+                    // (`.doc` is never previewed.)
+                    glob: Some("*.{docx,docm,dotx,dotm,odt,ott}".into()),
                     builtin: Some("document".into()),
                     ..Rule::empty()
                 },
