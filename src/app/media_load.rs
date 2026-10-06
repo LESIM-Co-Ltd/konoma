@@ -9,7 +9,7 @@ impl App {
             || self
                 .md_image_cache
                 .values()
-                .any(|e| (e.decoded.is_none() && !e.failed) || e.enc_inflight)
+                .any(|e| (e.decoded.is_none() && !e.failed && !e.evicted) || e.enc_inflight)
     }
 
     /// Test-only: whether an inline-image encode request has been sent and its result not yet
@@ -82,9 +82,15 @@ impl App {
             PreviewKind::Image(_) if Self::looks_like_gif(path) => {
                 self.spawn_or_sync_media(MediaJob::Gif(path.to_path_buf()))
             }
-            // Still images (PNG/JPG etc.) decode fast, so this stays synchronous (the encode is
-            // made async by a worker at render time).
-            PreviewKind::Image(_) => self.load_image(path),
+            // Still images: without a worker channel (tests) they decode inline, otherwise on the
+            // worker like every other media kind (the encode is made async at render time).
+            PreviewKind::Image(_) if self.media_tx.is_none() => self.load_image(path),
+            // A very large image decodes for seconds: never on the UI thread.
+            PreviewKind::Image(_) => {
+                if self.picker.is_some() && self.img_tx.is_some() {
+                    self.spawn_or_sync_media(MediaJob::Still(path.to_path_buf()))
+                }
+            }
             PreviewKind::Svg(_) => {
                 self.spawn_or_sync_media(MediaJob::Svg(path.to_path_buf(), self.cfg.ui.svg_max_px))
             }

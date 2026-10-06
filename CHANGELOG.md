@@ -32,6 +32,18 @@ All notable changes to konoma are documented in this file. The format is based o
   LibreOffice, then the OS default (`open` / `xdg-open`). The launch runs off the UI thread and the footer says
   which app opened it. `[external] office_apps = false` opens nothing (and the footer no longer offers `e` there); an explicit `[editor.ext]` entry wins.
 
+### Fixed
+- **A hostile image could crash, freeze or exhaust memory**: an SVG nested a few thousand levels deep overflowed the
+  stack and aborted konoma; a GIF declaring a 65535×65535 screen allocated ~16 GB; filter-heavy SVGs (huge blurs,
+  morphology, turbulence, stacked layers) kept a core busy for minutes or took several GB; `<image href="/dev/zero">`
+  read without end; large still images were cached at full size with no total limit. SVGs now pass one guard before
+  parsing (nesting depth, `<use>` expansion, size) and one after (filter work, live layers, embedded rasters), GIFs and
+  still images are checked against their header before any pixel buffer is allocated, concurrent decodes share a
+  memory budget, Markdown images are kept at most 4096 px on their long side, and decoded Markdown images and rendered
+  formulas share a 512 MiB cache whose least recently used pixels are dropped and rebuilt on demand (positions do not
+  move). A refused image shows the existing "cannot show" fallback. Full-screen still images now decode off the UI
+  thread. Ordinary images, mermaid diagrams and formulas render exactly as before.
+
 ## [0.30.0] - 2026-09-28
 
 ### Added

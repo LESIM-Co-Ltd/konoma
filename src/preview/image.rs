@@ -20,15 +20,155 @@ use image::{AnimationDecoder, DynamicImage, ImageDecoder};
 /// A decoded animated GIF's frames, each paired with its own display time.
 type GifFrames = Vec<(DynamicImage, Duration)>;
 
+/// Largest image side konoma decodes, in pixels. PNG and JPEG can declare up to 2^31 / 65535; real
+/// images top out far below (a 100-megapixel medium-format photo is 11,600 px wide, a stitched
+/// panorama or a map 30,000 px). The image crate checks this against the header **before** it
+/// allocates anything.
+const MAX_IMAGE_SIDE: u32 = 32_768;
+
+/// Largest image area konoma decodes, in pixels. A 48-megapixel photo is 4.8e7 and an 11,000 x
+/// 11,000 screenshot of a wall of monitors 1.2e8 — both must keep working; 1.5e8 (a 12,200 px
+/// square, 600 MB as RGBA) is the line past which a single image is a memory attack rather than a
+/// picture. Checked from the header, before the decode allocates.
+const MAX_IMAGE_PIXELS: u64 = 150_000_000;
+
+/// The decoder's own allocation limit, bytes — the image crate's default, stated here so it is
+/// pinned instead of inherited (a change in the crate must not silently loosen it).
+const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
+
+fn decode_limits() -> image::Limits {
+    let mut l = image::Limits::default();
+    l.max_image_width = Some(MAX_IMAGE_SIDE);
+    l.max_image_height = Some(MAX_IMAGE_SIDE);
+    l.max_alloc = Some(MAX_DECODE_ALLOC);
+    l
+}
+
+/// Total decoded-pixel memory that background decodes may hold at once, in bytes. One 48-megapixel
+/// photo needs about 400 MB while it decodes, so this lets two of those or a few dozen screenshots
+/// run side by side but not sixteen 11,000 px images (the case that used to reach 10 GB). A single
+/// request larger than the budget is let through alone rather than refused.
+const DECODE_MEMORY_BUDGET: u64 = 1024 * 1024 * 1024;
+
+/// A pool of bytes that decodes claim while they run. A struct (not just statics) so tests can
+/// use a small private pool.
+pub(crate) struct DecodeGate {
+    used: std::sync::Mutex<u64>,
+    freed: std::sync::Condvar,
+    budget: u64,
+}
+
+static DECODE_GATE: DecodeGate = DecodeGate::new(DECODE_MEMORY_BUDGET);
+
+thread_local! {
+    /// This thread already holds a reservation (a nested request must not wait on itself).
+    static HOLDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A claim on a `DecodeGate`; the bytes return to the pool when it is dropped.
+pub(crate) struct DecodeReservation {
+    gate: &'static DecodeGate,
+    bytes: u64,
+}
+
+impl DecodeGate {
+    pub(crate) const fn new(budget: u64) -> Self {
+        Self {
+            used: std::sync::Mutex::new(0),
+            freed: std::sync::Condvar::new(),
+            budget,
+        }
+    }
+
+    /// Wait until `bytes` fit and claim them. A request larger than the whole budget waits for an
+    /// empty pool and then runs alone. Only call from a worker thread — it can block.
+    pub(crate) fn reserve(&'static self, bytes: u64) -> DecodeReservation {
+        if HOLDING.with(|h| h.get()) {
+            return DecodeReservation {
+                gate: self,
+                bytes: 0,
+            };
+        }
+        let want = bytes.min(self.budget);
+        let mut used = self.used.lock().unwrap_or_else(|e| e.into_inner());
+        while *used != 0 && *used + want > self.budget {
+            used = self.freed.wait(used).unwrap_or_else(|e| e.into_inner());
+        }
+        *used += want;
+        HOLDING.with(|h| h.set(true));
+        DecodeReservation {
+            gate: self,
+            bytes: want,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn in_use(&self) -> u64 {
+        *self.used.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl Drop for DecodeReservation {
+    fn drop(&mut self) {
+        if self.bytes == 0 {
+            return;
+        }
+        HOLDING.with(|h| h.set(false));
+        let mut used = self.gate.used.lock().unwrap_or_else(|e| e.into_inner());
+        *used = used.saturating_sub(self.bytes);
+        self.gate.freed.notify_all();
+    }
+}
+
+/// Claim `bytes` of the shared decode budget (see `DECODE_MEMORY_BUDGET`).
+pub(crate) fn reserve_decode_memory(bytes: u64) -> DecodeReservation {
+    DECODE_GATE.reserve(bytes)
+}
+
+/// Decode a still image from `reader`. The header is read first: an image whose declared size is
+/// over the limits is refused before anything is allocated, and the shared decode budget is
+/// claimed for the decode. `max_side`, when set, shrinks the result (still inside the claim) so a
+/// caller that keeps many images does not keep their full size.
+fn decode_reader<R: std::io::BufRead + std::io::Seek>(
+    mut reader: image::ImageReader<R>,
+    max_side: Option<u32>,
+) -> Option<DynamicImage> {
+    reader.limits(decode_limits());
+    let decoder = reader.into_decoder().ok()?;
+    let (w, h) = decoder.dimensions();
+    if u64::from(w) * u64::from(h) > MAX_IMAGE_PIXELS {
+        return None;
+    }
+    let _claim = reserve_decode_memory(u64::from(w) * u64::from(h) * 8);
+    let img = DynamicImage::from_decoder(decoder).ok()?;
+    Some(match max_side {
+        Some(m) if img.width().max(img.height()) > m => {
+            img.resize(m, m, image::imageops::FilterType::Triangle)
+        }
+        _ => img,
+    })
+}
+
 /// Decode a still image (PNG/JPG/the first frame of a GIF, etc.). None on failure.
 /// A pure function used both by media loading on a separate thread and by load_image on the UI thread.
 pub fn decode_static(path: &Path) -> Option<DynamicImage> {
-    image::ImageReader::open(path)
+    let reader = image::ImageReader::open(path)
         .ok()?
         .with_guessed_format()
+        .ok()?;
+    decode_reader(reader, None)
+}
+
+/// `decode_static` for an inline Markdown image: the result is shrunk so its longer side is at most
+/// `max_side`. A document keeps every decoded image for as long as it is open, so what is kept is
+/// what a terminal can show (`MD_IMAGE_MAX_SIDE`), not the 100-megapixel original. Images already
+/// within the bound are returned untouched.
+pub fn decode_static_capped(path: &Path, max_side: u32) -> Option<DynamicImage> {
+    let reader = image::ImageReader::open(path)
         .ok()?
-        .decode()
-        .ok()
+        .with_guessed_format()
+        .ok()?;
+    decode_reader(reader, Some(max_side))
 }
 
 /// `decode_static`, from bytes already in memory rather than a path — used by the media-diff worker
@@ -36,7 +176,10 @@ pub fn decode_static(path: &Path) -> Option<DynamicImage> {
 /// the filesystem. Format is guessed from the content, exactly like the path version's
 /// `with_guessed_format` (never from an extension — there may be none to go by).
 pub fn decode_static_bytes(bytes: &[u8]) -> Option<DynamicImage> {
-    image::load_from_memory(bytes).ok()
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    decode_reader(reader, None)
 }
 
 /// Read only the pixel dimensions of an image, sniffing the format from the file's content (not its
@@ -62,6 +205,23 @@ const DEFAULT_FRAME_DELAY: Duration = Duration::from_millis(100);
 /// GIFs are far below the bound and stay untouched; only pathological ones (e.g. 1080p × hundreds
 /// of frames ≈ 500MB+) are reduced instead of ballooning resident memory.
 const MAX_GIF_BYTES: usize = 128 * 1024 * 1024;
+
+/// Largest GIF logical screen, in pixels. A screen recording of a 4K display is 8.3e6; 3.6e7
+/// (6000 x 6000) leaves room, and a crafted header of 65535 x 65535 (4.3e9 px, 17 GB per frame as
+/// RGBA) is far past it.
+const MAX_GIF_CANVAS_PIXELS: u64 = 36_000_000;
+
+/// Whether a GIF logical screen of `(w, h)` is within `MAX_GIF_CANVAS_PIXELS`.
+pub(crate) fn gif_canvas_within_limit((w, h): (u32, u32)) -> bool {
+    u64::from(w) * u64::from(h) <= MAX_GIF_CANVAS_PIXELS
+}
+
+/// Most frames of one GIF konoma expands. Real animations are a few hundred at most.
+const MAX_GIF_FRAMES: usize = 5_000;
+
+/// Frames x canvas pixels konoma will composite for one GIF (about 4e9 pixel writes, several
+/// seconds on a worker thread): a 1080p GIF may run to 1,900 frames, a 4K one to 480.
+const MAX_GIF_WORK_PIXELS: u64 = 4_000_000_000;
 
 /// Expand a GIF into all frames (composited RGBA) plus their display times.
 /// Returns None if it is not a GIF / decoding fails / there is only one frame (= treated as a still image),
@@ -117,13 +277,26 @@ fn decode_gif_from_reader<R: std::io::Read + std::io::BufRead + std::io::Seek>(
     reader: R,
     budget: usize,
 ) -> Option<(GifFrames, (u32, u32))> {
-    let decoder = image::codecs::gif::GifDecoder::new(reader).ok()?;
+    let mut decoder = image::codecs::gif::GifDecoder::new(reader).ok()?;
     let header_px = decoder.dimensions(); // before `into_frames()` consumes `decoder` below.
+                                          // The logical screen is what every frame is composited onto, so it — not the frames' own
+                                          // rectangles — decides the memory. Refuse an oversized one before the first frame allocates.
+    let canvas_px = u64::from(header_px.0) * u64::from(header_px.1);
+    if !gif_canvas_within_limit(header_px) {
+        return None;
+    }
+    decoder.set_limits(decode_limits()).ok()?;
+    // A frame being composited, the previous canvas, and the resized copy.
+    let _claim = reserve_decode_memory(canvas_px * 4 * 3);
     let mut out: GifFrames = Vec::new();
     let mut canvas: Option<(u32, u32)> = None; // original canvas dimensions (baseline for the shrink factor)
     let mut shrink = 1u32;
     let mut bytes = 0usize;
-    for f in decoder.into_frames() {
+    for (n, f) in decoder.into_frames().enumerate() {
+        // Frames x canvas is the compositing work however small the kept copies become.
+        if n >= MAX_GIF_FRAMES || (n as u64 + 1) * canvas_px > MAX_GIF_WORK_PIXELS {
+            return None;
+        }
         // Same as the old collect_frames: if even one frame is corrupt, return None = fall back
         // to a still image.
         let f = f.ok()?;

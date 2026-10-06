@@ -727,16 +727,22 @@ impl App {
             let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(code));
             match self.md_image_cache.get(&key) {
                 Some(e) if e.failed => MermaidSlot::Text,
-                Some(e) => match e.decoded.as_ref() {
-                    Some(img) => {
-                        use image::GenericImageView;
+                // `layout_px` is set when the first result lands and survives eviction of the
+                // pixels, so a picture whose pixels were dropped keeps its reserved size.
+                Some(e) => match e
+                    .decoded
+                    .as_ref()
+                    .map(|i| image::GenericImageView::dimensions(i.as_ref()))
+                    .or(e.layout_px)
+                {
+                    Some(raster_px) => {
                         // The layout is fixed at the **first** result's `layout_px` — the
                         // SVG's intrinsic size (px user units, the domain `mermaid_cells`
                         // sizes text against), not the raster's own pixel dimensions — so a
                         // sharp re-raster on zoom (higher density, same layout_px) never
                         // changes the reserved cell count. Falls back to the raster's
                         // dimensions only if intrinsic-size extraction ever failed.
-                        let (pw, ph) = e.layout_px.unwrap_or_else(|| img.dimensions());
+                        let (pw, ph) = e.layout_px.unwrap_or(raster_px);
                         let (cols, rows) = mermaid_cells(
                             pw,
                             ph,
@@ -765,7 +771,7 @@ impl App {
             let key = PathBuf::from(crate::preview::markdown::math_url(latex, display));
             match self.md_image_cache.get(&key) {
                 Some(e) if e.failed => MathSlot::Raw,
-                Some(e) => match (e.decoded.as_ref(), e.layout_px) {
+                Some(e) => match (Some(()), e.layout_px) {
                     // For math, layout_px holds the SVG's **intrinsic size (in em
                     // units)**, not raster px. Derive rows from the em height and columns
                     // from the intrinsic aspect ratio, for a size balanced against the text.

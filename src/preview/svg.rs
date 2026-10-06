@@ -12,6 +12,8 @@ use std::sync::{Arc, OnceLock};
 
 use image::DynamicImage;
 use resvg::tiny_skia;
+
+use super::svg_guard;
 use resvg::usvg;
 
 /// Safe upper bound (px) for the pixmap. Clamps each side so memory does not explode for SVGs with a huge viewBox.
@@ -135,10 +137,21 @@ pub fn warm_fontdb() {
     let _ = shared_fontdb();
 }
 
+/// Read an SVG file, refusing anything that is not a regular file of at most
+/// `svg_guard::MAX_SVG_BYTES` (an svgz is checked again after decompression). `/dev/zero` or a
+/// multi-gigabyte file named `.svg` must not be read into memory.
+pub(crate) fn read_limited(path: &Path) -> Option<Vec<u8>> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > svg_guard::MAX_SVG_BYTES as u64 {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
 /// Rasterize the SVG at `path` with a max side of `max_px` and return an RGBA image. Returns None on parse/render failure
 /// (the caller falls back to text (raw XML) display).
 pub fn rasterize(path: &Path, max_px: u32) -> Option<DynamicImage> {
-    let data = std::fs::read(path).ok()?;
+    let data = read_limited(path)?;
     rasterize_bytes(&data, path, max_px)
 }
 
@@ -146,13 +159,13 @@ pub fn rasterize(path: &Path, max_px: u32) -> Option<DynamicImage> {
 /// Cheap enough for the UI thread (no pixmap allocation / rendering) — used to reserve layout rows for
 /// an inline SVG image and to validate that a fetched remote file is really an SVG. None if not an SVG.
 pub fn intrinsic_size(path: &Path) -> Option<(u32, u32)> {
-    let data = std::fs::read(path).ok()?;
-    let opt = usvg::Options {
-        resources_dir: path.parent().map(Path::to_path_buf),
-        fontdb: shared_fontdb(),
-        ..usvg::Options::default()
-    };
-    let tree = usvg::Tree::from_data(&data, &opt).ok()?;
+    let data = read_limited(path)?;
+    svg_guard::load_tree(&data, path.parent().map(Path::to_path_buf), |tree| {
+        size_of(&tree)
+    })
+}
+
+fn size_of(tree: &usvg::Tree) -> Option<(u32, u32)> {
     let size = tree.size();
     let (w, h) = (size.width(), size.height());
     if !(w > 0.0 && h > 0.0) {
@@ -164,62 +177,56 @@ pub fn intrinsic_size(path: &Path) -> Option<(u32, u32)> {
 /// Intrinsic size (rounded up) of an in-memory SVG, without rasterizing. Same as `intrinsic_size` but
 /// from bytes — used for a synthesized SVG (e.g. a RaTeX math render) whose em units drive layout.
 pub fn intrinsic_size_bytes(data: &[u8]) -> Option<(u32, u32)> {
-    let opt = usvg::Options {
-        fontdb: shared_fontdb(),
-        ..usvg::Options::default()
-    };
-    let tree = usvg::Tree::from_data(data, &opt).ok()?;
-    let size = tree.size();
-    let (w, h) = (size.width(), size.height());
-    if !(w > 0.0 && h > 0.0) {
-        return None;
-    }
-    Some((w.ceil() as u32, h.ceil() as u32))
+    svg_guard::load_tree(data, None, |tree| size_of(&tree))
 }
 
 /// Rasterize directly from a byte slice (for tests / future embedding). `max_px` = target px for the max side.
+///
+/// Every limit that makes an untrusted SVG safe to draw lives in `svg_guard`: the XML is checked
+/// before usvg sees it, and the converted tree is checked against a memory and work budget before
+/// resvg renders it. A refused SVG is `None`, the same as one that does not parse.
 pub fn rasterize_bytes(data: &[u8], path: &Path, max_px: u32) -> Option<DynamicImage> {
-    let opt = usvg::Options {
-        // Base directory for relative references (external images etc.) is the SVG's parent.
-        resources_dir: path.parent().map(Path::to_path_buf),
-        // fontdb is a public field (Arc<Database>). Plug in the shared DB to avoid re-enumerating every time.
-        fontdb: shared_fontdb(),
-        ..usvg::Options::default()
-    };
+    // Base directory for relative references (external images etc.) is the SVG's parent.
+    svg_guard::load_tree(data, path.parent().map(Path::to_path_buf), |tree| {
+        let size = tree.size();
+        let (w0, h0) = (size.width(), size.height());
+        if !(w0 > 0.0 && h0 > 0.0) {
+            return None;
+        }
+        // A small SVG is upscaled so its max side reaches max_px, for a crisp terminal display. A huge
+        // diagram whose intrinsic size exceeds HARD_MAX is instead **shrunk to fit the whole thing**
+        // (with a per-axis clamp at 1:1 scale, the transform stays 1:1 while only the pixmap is capped
+        // at 4096px, silently cropping off the right/bottom).
+        let target = (max_px.max(1) as f32).min(HARD_MAX_PX as f32);
+        let m = w0.max(h0);
+        let scale = (target / m).max(1.0).min(HARD_MAX_PX as f32 / m);
+        let pw = ((w0 * scale).ceil() as u32).clamp(1, HARD_MAX_PX);
+        let ph = ((h0 * scale).ceil() as u32).clamp(1, HARD_MAX_PX);
 
-    let tree = usvg::Tree::from_data(data, &opt).ok()?;
-    let size = tree.size();
-    let (w0, h0) = (size.width(), size.height());
-    if !(w0 > 0.0 && h0 > 0.0) {
-        return None;
-    }
-    // A small SVG is upscaled so its max side reaches max_px, for a crisp terminal display. A huge
-    // diagram whose intrinsic size exceeds HARD_MAX is instead **shrunk to fit the whole thing**
-    // (with a per-axis clamp at 1:1 scale, the transform stays 1:1 while only the pixmap is capped
-    // at 4096px, silently cropping off the right/bottom).
-    let target = (max_px.max(1) as f32).min(HARD_MAX_PX as f32);
-    let m = w0.max(h0);
-    let scale = (target / m).max(1.0).min(HARD_MAX_PX as f32 / m);
-    let pw = ((w0 * scale).ceil() as u32).clamp(1, HARD_MAX_PX);
-    let ph = ((h0 * scale).ceil() as u32).clamp(1, HARD_MAX_PX);
+        if !svg_guard::check_render_budget(&tree, scale) {
+            return None;
+        }
+        // Pixmap + the straight-alpha copy below; wait here if other decodes already hold the budget.
+        let _mem = super::image::reserve_decode_memory(u64::from(pw) * u64::from(ph) * 8);
 
-    let mut pixmap = tiny_skia::Pixmap::new(pw, ph)?;
-    let transform = tiny_skia::Transform::from_scale(scale, scale);
-    resvg::render(&tree, transform, &mut pixmap.as_mut());
+        let mut pixmap = tiny_skia::Pixmap::new(pw, ph)?;
+        let transform = tiny_skia::Transform::from_scale(scale, scale);
+        resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-    // tiny-skia uses premultiplied alpha. The image crate uses straight alpha, so we demultiply
-    // before handing it over (so semi-transparent edges don't darken). Transparent areas let the
-    // terminal background show through on kitty graphics = follows the theme.
-    let mut rgba = Vec::with_capacity((pw * ph * 4) as usize);
-    for px in pixmap.pixels() {
-        let c = px.demultiply();
-        rgba.push(c.red());
-        rgba.push(c.green());
-        rgba.push(c.blue());
-        rgba.push(c.alpha());
-    }
-    let buf = image::RgbaImage::from_raw(pw, ph, rgba)?;
-    Some(DynamicImage::ImageRgba8(buf))
+        // tiny-skia uses premultiplied alpha. The image crate uses straight alpha, so we demultiply
+        // before handing it over (so semi-transparent edges don't darken). Transparent areas let the
+        // terminal background show through on kitty graphics = follows the theme.
+        let mut rgba = Vec::with_capacity((pw * ph * 4) as usize);
+        for px in pixmap.pixels() {
+            let c = px.demultiply();
+            rgba.push(c.red());
+            rgba.push(c.green());
+            rgba.push(c.blue());
+            rgba.push(c.alpha());
+        }
+        let buf = image::RgbaImage::from_raw(pw, ph, rgba)?;
+        Some(DynamicImage::ImageRgba8(buf))
+    })
 }
 
 #[cfg(test)]

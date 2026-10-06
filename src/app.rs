@@ -788,6 +788,8 @@ pub struct KittyResult {
 enum MediaJob {
     /// Rasterize an SVG (path, max-edge px). Vector-backed: keeps the source for sharp zoom.
     Svg(PathBuf, u32),
+    /// Decode a still image (PNG/JPEG/...). On a worker so that a very large image never stalls the UI.
+    Still(PathBuf),
     /// Expand all GIF frames. Falls back to still-image decode for single-frame/non-animated GIFs.
     Gif(PathBuf),
     /// Extract one representative frame from a video — decoded in pure Rust for H.264 in
@@ -839,12 +841,15 @@ impl MediaJob {
     ) -> Option<MediaPayload> {
         match self {
             MediaJob::Svg(p, max_px) => {
-                let data = std::fs::read(&p).ok()?;
+                let data = crate::preview::svg::read_limited(&p)?;
                 let img = crate::preview::svg::rasterize_bytes(&data, &p, max_px)?;
                 Some(MediaPayload::Vector {
                     img,
                     svg: std::sync::Arc::new(data),
                 })
+            }
+            MediaJob::Still(p) => {
+                crate::preview::image::decode_static(&p).map(MediaPayload::Static)
             }
             MediaJob::Gif(p) => match crate::preview::image::decode_gif(&p) {
                 Some(frames) => Some(MediaPayload::Gif(frames)),
@@ -2365,6 +2370,13 @@ struct MdProtoSlot {
     stale: bool,
 }
 
+/// Most decoded pixels the inline-image cache keeps resident across all pictures of a document, in
+/// bytes. Typical documents are far below it (twenty 1080p screenshots are 160 MB); a document with
+/// hundreds of images or formulas is the case it exists for, where the cache used to grow with the
+/// document (500 formulas at 1024 px were 880 MB, a hundred 4,000 px images 6 GB). Pictures drawn
+/// by the latest overlay pass are never evicted, so a screenful always stays whole.
+const MD_IMAGE_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+
 /// A decoded inline Markdown image plus its background-encoded render protocol(s).
 #[derive(Default)]
 struct MdImgEntry {
@@ -2416,9 +2428,40 @@ struct MdImgEntry {
     /// The time the current frame began showing (mirrors `App::gif_shown_at`). None = before the
     /// first tick (frame 0 is already shown via `decoded`; timing starts on the next tick).
     shown_at: Option<std::time::Instant>,
+    /// `App::md_frame` of the last overlay pass that asked for this picture. The cache evicts the
+    /// pixels of the pictures asked for longest ago first (`App::evict_md_images_over_budget`).
+    last_used: u64,
+    /// The decoded pixels were dropped to stay within `MD_IMAGE_CACHE_BYTES`. The entry itself stays
+    /// (its layout size, SVG source, kitty ids and any finished encodes), so nothing on the page
+    /// moves; the pixels are rebuilt from the file / SVG the next time a placement needs them.
+    evicted: bool,
 }
 
 impl MdImgEntry {
+    /// Bytes of decoded pixels this entry keeps resident (frames of an animated GIF count once;
+    /// the first frame is shared with `decoded`).
+    fn pixel_bytes(&self) -> u64 {
+        use image::GenericImageView;
+        let px = |im: &image::DynamicImage| {
+            let (w, h) = im.dimensions();
+            u64::from(w) * u64::from(h) * 4
+        };
+        if self.frames.is_empty() {
+            self.decoded.as_deref().map_or(0, px)
+        } else {
+            self.frames.iter().map(|(im, _)| px(im)).sum()
+        }
+    }
+
+    /// Drop the decoded pixels (keeping everything that lets them be rebuilt).
+    fn evict_pixels(&mut self) {
+        self.decoded = None;
+        self.frames.clear();
+        self.idx = 0;
+        self.shown_at = None;
+        self.evicted = true;
+    }
+
     /// The slot family a request belongs to (full / clip / zoom — `MdEncodeKey::slot`).
     fn slots(&self, key: &MdEncodeKey) -> &[MdProtoSlot] {
         match key.slot() {
@@ -5872,10 +5915,17 @@ fn md_image_dims(path: &Path) -> Option<(u32, u32)> {
     crate::preview::image::dimensions(path).or_else(|| crate::preview::svg::intrinsic_size(path))
 }
 
+/// Longest side, in pixels, that an inline Markdown image is kept at after decoding. The terminal
+/// never shows more than its own width (a 250-column terminal at 20 px per cell is 5,000 px) and the
+/// in-place zoom of diagrams re-rasterizes from the SVG rather than from this copy, so a larger
+/// decode is memory the user cannot see: an 11,000 x 11,000 screenshot would keep 480 MB, this keeps
+/// 64 MB. Matches the 4096 cap on SVG rasters (`preview::svg::HARD_MAX_PX`).
+const MD_IMAGE_MAX_SIDE: u32 = 4096;
+
 /// Decode a cached inline-image file to an image, rasterizing SVG (at `svg_max_px`) when the raster
 /// decoders reject it (GitHub READMEs are full of SVG badges/logos). None if it is not a decodable image.
 fn md_decode_image(path: &Path, svg_max_px: u32) -> Option<image::DynamicImage> {
-    crate::preview::image::decode_static(path)
+    crate::preview::image::decode_static_capped(path, MD_IMAGE_MAX_SIDE)
         .or_else(|| crate::preview::svg::rasterize(path, svg_max_px))
 }
 

@@ -16,6 +16,7 @@ pub mod mermaid;
 pub mod office;
 pub mod pdf;
 pub mod svg;
+pub(crate) mod svg_guard;
 pub mod table;
 pub mod text;
 pub mod video;
@@ -160,6 +161,9 @@ pub fn is_previewable(path: &Path) -> bool {
         .map(|m| m.is_file())
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod hostile_tests;
 
 #[cfg(test)]
 mod tests {

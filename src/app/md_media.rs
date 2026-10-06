@@ -67,6 +67,12 @@ fn kitty_id_for(
     family.get(slot).copied()
 }
 
+/// Whether a cache key names a picture that can be rebuilt from a file on disk (a regular inline
+/// image, as opposed to a media-diff picture whose bytes came from git).
+fn is_rebuildable_md_key(k: &Path) -> bool {
+    !crate::preview::markdown::is_synthetic_md_url(&k.to_string_lossy())
+}
+
 impl App {
     /// Attach the image backend (terminal Picker and the offload tx) at startup.
     pub fn attach_image_backend(&mut self, picker: Picker, tx: UnboundedSender<ResizeRequest>) {
@@ -182,12 +188,14 @@ impl App {
                 if let Some(svg) = res.svg {
                     entry.svg = Some(svg);
                 }
+                entry.evicted = false;
                 if res.reraster {
                     // Trigger a re-encode with the high-density raster, keeping the old protocol
                     // displayed until the new encode arrives (clearing it would leave a momentary
                     // blank).
                     entry.mark_stale();
                 }
+                self.evict_md_images_over_budget();
             }
             // A re-raster failure leaves the current raster in place (the display stays alive).
             // Only an initial failure degrades to text.
@@ -399,7 +407,7 @@ impl App {
         self.md_image_cache
             .iter()
             .filter(|(k, e)| {
-                if e.decoded.is_some() || e.failed {
+                if e.decoded.is_some() || e.failed || e.evicted {
                     return false; // done (either way) — no longer occupying a slot
                 }
                 let s = k.to_string_lossy();
@@ -657,6 +665,149 @@ impl App {
         false
     }
 
+    /// Start the background decode of the inline image file at `path` (its cache entry already
+    /// exists). Sniffs the format from content (remote-cache files have no extension) and
+    /// rasterizes SVG. With no loader channel attached (tests) nothing is started.
+    fn spawn_md_decode(&mut self, path: PathBuf) {
+        let Some(tx) = self.md_img_tx.clone() else {
+            return;
+        };
+        let svg_max_px = self.cfg.ui.svg_max_px;
+        std::thread::spawn(move || {
+            // Animated GIF: decode all frames so the inline image cycles the same way the
+            // full-screen preview does (App::advance_gif_if_due) — a smaller budget than the
+            // full-screen path bounds memory when a document embeds several GIFs at once.
+            // Anything that doesn't yield ≥2 frames (single-frame GIF, corrupt file, non-GIF)
+            // falls through unchanged to the normal still-image decode.
+            // Catch a panic (pathological image/SVG) too and always return a result
+            // (not returning would latch busy).
+            let p = path;
+            let (still, frames) = crate::preview::markdown::catch_silent(|| {
+                if App::looks_like_gif(&p) {
+                    if let Some(frames) = crate::preview::image::decode_gif_inline(&p) {
+                        let first = frames[0].0.clone();
+                        return (Some(first), Some(frames));
+                    }
+                }
+                (md_decode_image(&p, svg_max_px), None)
+            })
+            .unwrap_or((None, None));
+            let image = still.ok_or_else(|| "decode failed".to_string());
+            let _ = tx.send(MdImageResult {
+                path: p,
+                image,
+                svg: None,
+                reraster: false,
+                frames,
+            });
+        });
+    }
+
+    /// Rebuild the pixels of an entry that `evict_md_images_over_budget` dropped. A regular image
+    /// is decoded from its file again; a mermaid diagram or formula is rasterized again from the
+    /// SVG its entry kept (as a re-raster, so the reserved layout is untouched).
+    pub(super) fn rebuild_evicted_md_image(&mut self, path: PathBuf) {
+        let Some(entry) = self.md_image_cache.get_mut(&path) else {
+            return;
+        };
+        let Some(svg) = entry.svg.clone() else {
+            self.spawn_md_decode(path);
+            return;
+        };
+        entry.reraster_inflight = true;
+        let s = path.to_string_lossy();
+        let max_px = if crate::preview::markdown::is_math_url(&s) {
+            self.math_px()
+        } else {
+            self.mermaid_px()
+        };
+        let Some(tx) = self.md_img_tx.clone() else {
+            if let Some(e) = self.md_image_cache.get_mut(&path) {
+                e.reraster_inflight = false;
+            }
+            return;
+        };
+        let kp = path.clone();
+        std::thread::spawn(move || {
+            let job = {
+                let kp = kp.clone();
+                move || MdImageResult {
+                    path: kp,
+                    image: crate::preview::svg::rasterize_bytes(
+                        &svg,
+                        Path::new("rebuild.svg"),
+                        max_px,
+                    )
+                    .ok_or_else(|| "rasterize failed".to_string()),
+                    svg: None,
+                    reraster: true,
+                    frames: None,
+                }
+            };
+            let res = crate::preview::markdown::compute_or_fallback(job, || MdImageResult {
+                path: kp,
+                image: Err("re-raster panicked".to_string()),
+                svg: None,
+                reraster: true,
+                frames: None,
+            });
+            let _ = tx.send(res);
+        });
+    }
+
+    /// Keep the decoded pixels of the inline-image cache within `MD_IMAGE_CACHE_BYTES`: drop those
+    /// of the pictures asked for longest ago, never one the latest overlay pass drew, and never one
+    /// that cannot be rebuilt (media-diff pictures come from git bytes held nowhere else). Their
+    /// entries stay, so layout does not move; a picture needed again is rebuilt on demand
+    /// (`rebuild_evicted_md_image`).
+    pub(super) fn evict_md_images_over_budget(&mut self) {
+        self.evict_md_images_to(MD_IMAGE_CACHE_BYTES);
+    }
+
+    /// `evict_md_images_over_budget` with the budget as a parameter (tests use a small one).
+    pub(super) fn evict_md_images_to(&mut self, budget: u64) {
+        let mut total: u64 = self
+            .md_image_cache
+            .values()
+            .map(MdImgEntry::pixel_bytes)
+            .sum();
+        if total <= budget {
+            return;
+        }
+        let frame = self.md_frame;
+        let mut candidates: Vec<(u64, PathBuf)> = self
+            .md_image_cache
+            .iter()
+            .filter(|(k, e)| {
+                e.decoded.is_some()
+                    && e.last_used < frame.max(1)
+                    && !e.enc_inflight
+                    && !e.reraster_inflight
+                    && (e.svg.is_some() || is_rebuildable_md_key(k))
+            })
+            .map(|(k, e)| (e.last_used, k.clone()))
+            .collect();
+        candidates.sort();
+        for (_, k) in candidates {
+            if total <= budget {
+                break;
+            }
+            if let Some(e) = self.md_image_cache.get_mut(&k) {
+                total = total.saturating_sub(e.pixel_bytes());
+                e.evict_pixels();
+            }
+        }
+    }
+
+    /// Test-only: total bytes of decoded pixels the inline-image cache holds.
+    #[cfg(test)]
+    pub(crate) fn md_image_cache_pixel_bytes(&self) -> u64 {
+        self.md_image_cache
+            .values()
+            .map(MdImgEntry::pixel_bytes)
+            .sum()
+    }
+
     /// Ensure the inline image for `url` is decoding in the background and that the protocol for the
     /// currently-visible portion (whole image, or a cropped band when partially scrolled) is encoding on
     /// the worker thread. Called from the renderer for each visible inline image. Both decoding and
@@ -705,40 +856,9 @@ impl App {
             if crate::preview::markdown::is_synthetic_md_url(url) {
                 return;
             }
-            self.md_image_cache
-                .insert(path.clone(), MdImgEntry::default());
-            if let Some(tx) = self.md_img_tx.clone() {
-                let p = path.clone();
-                let svg_max_px = self.cfg.ui.svg_max_px;
-                std::thread::spawn(move || {
-                    // Sniff the format from content (remote-cache files have no extension); rasterize SVG.
-                    // Animated GIF: decode all frames so the inline image cycles the same way the
-                    // full-screen preview does (App::advance_gif_if_due) — a smaller budget than the
-                    // full-screen path bounds memory when a document embeds several GIFs at once.
-                    // Anything that doesn't yield ≥2 frames (single-frame GIF, corrupt file, non-GIF)
-                    // falls through unchanged to the normal still-image decode.
-                    // Catch a panic (pathological image/SVG) too and always return a result
-                    // (not returning would latch busy).
-                    let (still, frames) = crate::preview::markdown::catch_silent(|| {
-                        if App::looks_like_gif(&p) {
-                            if let Some(frames) = crate::preview::image::decode_gif_inline(&p) {
-                                let first = frames[0].0.clone();
-                                return (Some(first), Some(frames));
-                            }
-                        }
-                        (md_decode_image(&p, svg_max_px), None)
-                    })
-                    .unwrap_or((None, None));
-                    let image = still.ok_or_else(|| "decode failed".to_string());
-                    let _ = tx.send(MdImageResult {
-                        path: p,
-                        image,
-                        svg: None,
-                        reraster: false,
-                        frames,
-                    });
-                });
-            }
+            let entry = self.md_image_cache.entry(path.clone()).or_default();
+            entry.last_used = self.md_frame;
+            self.spawn_md_decode(path);
             return;
         }
         let Some(enc_tx) = self.md_enc_tx.clone() else {
@@ -773,6 +893,14 @@ impl App {
         // recycling pool, otherwise two placements of one picture at two sizes take turns evicting
         // each other and the draw→request→apply→draw loop never stops.
         let settled = entry.touch(&enc_key, frame);
+        entry.last_used = frame;
+        // The pixels were evicted to keep the cache within budget and a placement now needs a new
+        // encode: rebuild them (the entry keeps its layout, so the page does not move).
+        if entry.evicted && entry.decoded.is_none() && !settled && !entry.failed {
+            entry.evicted = false;
+            self.rebuild_evicted_md_image(path);
+            return;
+        }
         // Wait if it failed, is still decoding, or already has an encode in flight (one at a time).
         if settled || entry.failed || entry.enc_inflight {
             return;

@@ -25029,3 +25029,200 @@ fn a_workbook_result_of_a_superseded_job_is_ignored() {
     assert!(app.workbook.is_none());
     assert!(app.is_sheet_loading(), "still waiting for the current job");
 }
+
+// ---- Inline-image cache budget (LRU eviction of decoded pixels) -----------------------------
+
+fn entry_with_pixels(w: u32, h: u32, last_used: u64) -> MdImgEntry {
+    MdImgEntry {
+        decoded: Some(Arc::new(image::DynamicImage::new_rgba8(w, h))),
+        layout_px: Some((w, h)),
+        last_used,
+        ..Default::default()
+    }
+}
+
+/// Over budget, the pictures asked for longest ago lose their pixels first, down to the budget.
+#[test]
+fn md_cache_evicts_the_least_recently_used_pixels_first() {
+    let dir = unique_tmp("konoma_md_lru_order");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.md_frame = 10;
+    // 4 pictures of 256 KB (256 x 256 x 4) with ascending recency.
+    for i in 0..4u64 {
+        app.md_image_cache.insert(
+            PathBuf::from(format!("/x/img{i}.png")),
+            entry_with_pixels(256, 256, i + 1),
+        );
+    }
+    assert_eq!(app.md_image_cache_pixel_bytes(), 4 * 262_144);
+    app.evict_md_images_to(2 * 262_144);
+    assert_eq!(
+        app.md_image_cache_pixel_bytes(),
+        2 * 262_144,
+        "trimmed to the budget, no further"
+    );
+    for (i, gone) in [(0, true), (1, true), (2, false), (3, false)] {
+        let e = &app.md_image_cache[&PathBuf::from(format!("/x/img{i}.png"))];
+        assert_eq!(e.decoded.is_none(), gone, "img{i}");
+        assert_eq!(e.evicted, gone, "img{i}");
+        assert_eq!(
+            e.layout_px,
+            Some((256, 256)),
+            "the reserved layout size survives"
+        );
+    }
+    // Within budget: a second call changes nothing.
+    app.evict_md_images_to(2 * 262_144);
+    assert_eq!(app.md_image_cache_pixel_bytes(), 2 * 262_144);
+}
+
+/// A picture the latest overlay pass drew is never evicted, however over budget the cache is.
+#[test]
+fn md_cache_never_evicts_what_the_current_frame_draws() {
+    let dir = unique_tmp("konoma_md_lru_visible");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.md_frame = 7;
+    for i in 0..3 {
+        app.md_image_cache.insert(
+            PathBuf::from(format!("/x/v{i}.png")),
+            entry_with_pixels(256, 256, 7),
+        );
+    }
+    app.evict_md_images_to(0);
+    assert_eq!(
+        app.md_image_cache_pixel_bytes(),
+        3 * 262_144,
+        "all three are on screen"
+    );
+}
+
+/// Pictures that cannot be rebuilt (media-diff, whose bytes came from git) are not evicted; ones
+/// with an SVG source (mermaid, math) are, and keep that source.
+#[test]
+fn md_cache_only_evicts_what_it_can_rebuild() {
+    let dir = unique_tmp("konoma_md_lru_rebuildable");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.md_frame = 5;
+    let diff_key = PathBuf::from(crate::preview::media_diff::media_diff_url(
+        crate::preview::media_diff::MediaDiffSide::Old,
+        1,
+        0,
+        None,
+    ));
+    app.md_image_cache
+        .insert(diff_key.clone(), entry_with_pixels(256, 256, 1));
+    let math_key = PathBuf::from(crate::preview::markdown::math_url("x^2", false));
+    let mut math = entry_with_pixels(256, 256, 1);
+    math.svg = Some(Arc::new(b"<svg/>".to_vec()));
+    app.md_image_cache.insert(math_key.clone(), math);
+    app.evict_md_images_to(0);
+    assert!(
+        app.md_image_cache[&diff_key].decoded.is_some(),
+        "a media-diff picture stays"
+    );
+    let m = &app.md_image_cache[&math_key];
+    assert!(m.decoded.is_none() && m.evicted, "a formula's raster goes");
+    assert!(
+        m.svg.is_some(),
+        "but its SVG source is kept so it can be rebuilt"
+    );
+}
+
+/// An evicted regular image is decoded again from its file, and the entry's layout is untouched.
+#[test]
+fn md_cache_rebuilds_an_evicted_image_from_its_file() {
+    let dir = unique_tmp("konoma_md_lru_rebuild_file");
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("a.png");
+    crate::test_support::write_solid_png(&png, 40, 30, [1, 2, 3]);
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_md_image_loader(tx);
+    let mut entry = entry_with_pixels(40, 30, 1);
+    entry.layout_px = Some((40, 30));
+    app.md_image_cache.insert(png.clone(), entry);
+    app.md_frame = 3;
+    app.evict_md_images_to(0);
+    assert!(app.md_image_cache[&png].evicted);
+    app.md_image_cache.get_mut(&png).unwrap().evicted = false;
+    app.rebuild_evicted_md_image(png.clone());
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("decode result");
+    assert!(app.apply_md_image(res));
+    let e = &app.md_image_cache[&png];
+    assert_eq!(
+        e.decoded.as_ref().map(|i| (i.width(), i.height())),
+        Some((40, 30))
+    );
+    assert!(!e.evicted && !e.failed);
+    assert_eq!(e.layout_px, Some((40, 30)));
+}
+
+/// An evicted diagram or formula is rasterized again from its kept SVG, as a re-raster that leaves
+/// the reserved layout alone.
+#[test]
+fn md_cache_rebuilds_an_evicted_formula_from_its_svg() {
+    let dir = unique_tmp("konoma_md_lru_rebuild_svg");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_md_image_loader(tx);
+    let key = PathBuf::from(crate::preview::markdown::math_url("x", false));
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="#f00"/></svg>"##;
+    let mut entry = entry_with_pixels(8, 8, 1);
+    entry.layout_px = Some((20, 10));
+    entry.svg = Some(Arc::new(svg.to_vec()));
+    app.md_image_cache.insert(key.clone(), entry);
+    app.md_frame = 3;
+    app.evict_md_images_to(0);
+    assert!(app.md_image_cache[&key].evicted);
+    app.md_image_cache.get_mut(&key).unwrap().evicted = false;
+    app.rebuild_evicted_md_image(key.clone());
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("raster result");
+    assert!(
+        res.reraster,
+        "applied as a re-raster: layout and decoration cache untouched"
+    );
+    assert!(app.apply_md_image(res));
+    let e = &app.md_image_cache[&key];
+    assert!(e.decoded.is_some() && !e.evicted);
+    assert_eq!(
+        e.layout_px,
+        Some((20, 10)),
+        "the reserved size did not move"
+    );
+}
+
+/// 500 formulas at 1024 px (the document that reached 880 MB) end up within the budget, with every
+/// entry still present so the page layout is unchanged.
+#[test]
+fn md_cache_holds_a_formula_heavy_document_to_the_budget() {
+    let dir = unique_tmp("konoma_md_lru_formulas");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.md_frame = 2;
+    for i in 0..500 {
+        let key = PathBuf::from(crate::preview::markdown::math_url(&format!("x_{i}"), false));
+        let mut e = entry_with_pixels(1024, 440, 0);
+        e.svg = Some(Arc::new(Vec::new()));
+        app.md_image_cache.insert(key, e);
+    }
+    let before = app.md_image_cache_pixel_bytes();
+    assert!(
+        before > 800 * 1024 * 1024,
+        "the scenario really is the 880 MB one: {before}"
+    );
+    app.evict_md_images_over_budget();
+    assert!(app.md_image_cache_pixel_bytes() <= super::MD_IMAGE_CACHE_BYTES);
+    assert_eq!(
+        app.md_image_cache.len(),
+        500,
+        "entries (and so the layout) all remain"
+    );
+}
