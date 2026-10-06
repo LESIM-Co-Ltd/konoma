@@ -282,7 +282,12 @@ fn main() -> Result<()> {
     {
         let hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            preview::command::remove_private_temp_dir();
+            if preview::command::panic_ends_process(
+                std::thread::current().name(),
+                preview::markdown::panic_is_caught_here(),
+            ) {
+                preview::command::remove_private_temp_dir();
+            }
             hook(info);
         }));
     }
@@ -1330,10 +1335,14 @@ fn run_external(
     disable_raw_mode()?;
 
     // --- Run the external command synchronously (inherit stdio and block) ---
-    let status = std::process::Command::new(prog)
-        .args(args)
-        .current_dir(cwd)
-        .status();
+    // SIGINT (Ctrl-C) goes to the child, not to us, while it runs (see `ignore_signal`).
+    let status = {
+        let _child = preview::command::ForegroundChildGuard::new();
+        std::process::Command::new(prog)
+            .args(args)
+            .current_dir(cwd)
+            .status()
+    };
 
     // --- Restore the TUI ---
     // Redraw immediately right after returning to the alternate screen, and further make the

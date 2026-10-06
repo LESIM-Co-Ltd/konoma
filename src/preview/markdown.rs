@@ -199,6 +199,11 @@ pub(crate) fn catch_silent<T>(f: impl FnOnce() -> T) -> Option<T> {
     silence_panics(|| std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok())
 }
 
+/// Whether this thread is inside a `catch_silent` section (a panic here is expected and caught).
+pub(crate) fn panic_is_caught_here() -> bool {
+    PANIC_SILENCED.with(|c| c.get())
+}
+
 /// `catch_silent(f).unwrap_or_else(fallback)` — run `f`, and on a caught panic run `fallback`
 /// instead, so the caller always has *a* value to report back rather than nothing at all. Several
 /// background workers (`App::spawn_or_sync_statuses`/`spawn_or_sync_ignored` in

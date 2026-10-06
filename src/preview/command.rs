@@ -163,14 +163,55 @@ pub fn remove_private_temp_dir() {
     remove_dir_quietly(&pid_temp_dir_path("vthumb"));
 }
 
+/// Whether a panic on a thread named `thread_name` ends the process, so the panic hook may remove
+/// the private temp directory. Only an uncaught panic on the main thread does: worker threads
+/// (syntect, resvg, git scans...) panic inside `catch_silent` and the app carries on, and the
+/// per-process directories are held by `OnceLock`s that are never recreated, so removing them on a
+/// worker's panic would break every later PDF / video thumbnail. `caught` is true inside a
+/// `catch_silent` section (which can also run on the main thread in the synchronous fallbacks).
+pub(crate) fn panic_ends_process(thread_name: Option<&str>, caught: bool) -> bool {
+    thread_name == Some("main") && !caught
+}
+
 fn remove_dir_quietly(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// True while a foreground child (`$EDITOR`, a git tool, a pager) owns the terminal.
+static FOREGROUND_CHILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// RAII marker for "a foreground child is running". The flag is cleared in `Drop`, so it comes
+/// down on every way out of the wait (an error return or a panic included).
+pub struct ForegroundChildGuard;
+
+impl ForegroundChildGuard {
+    pub fn new() -> Self {
+        FOREGROUND_CHILD.store(true, std::sync::atomic::Ordering::SeqCst);
+        ForegroundChildGuard
+    }
+}
+
+impl Drop for ForegroundChildGuard {
+    fn drop(&mut self) {
+        FOREGROUND_CHILD.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Whether a caught signal should be ignored. Like a shell or `system(3)` waiting for a child,
+/// konoma ignores SIGINT while a foreground child runs: Ctrl-C reaches the whole foreground process
+/// group, the child decides what to do with it, and exiting here would tear down the alternate
+/// screen under a child that is still drawing. SIGTERM and SIGHUP still end konoma: SIGHUP means
+/// the terminal is gone, and SIGTERM is an explicit request to stop; leaving without cleaning up
+/// would leak the temp directory.
+pub(crate) fn ignore_signal(sig: i32, child_running: bool) -> bool {
+    sig == signal_hook::consts::SIGINT && child_running
 }
 
 /// Arranges for the private temp directory to be removed when the process is killed by SIGTERM,
 /// SIGHUP or SIGINT (it has no signal handling otherwise, so those left the files behind). A helper
 /// thread waits for the signal, restores the terminal (the same call `main` makes on a normal
-/// exit), removes the directory and exits with the conventional `128 + signal`.
+/// exit), removes the directory and exits with the conventional `128 + signal` (SIGINT is ignored
+/// while a foreground child runs, see `ignore_signal`).
 #[cfg(unix)]
 pub fn install_exit_cleanup_signals() {
     use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
@@ -180,7 +221,11 @@ pub fn install_exit_cleanup_signals() {
     let _ = std::thread::Builder::new()
         .name("konoma-signals".into())
         .spawn(move || {
-            if let Some(sig) = signals.forever().next() {
+            for sig in signals.forever() {
+                let running = FOREGROUND_CHILD.load(std::sync::atomic::Ordering::SeqCst);
+                if ignore_signal(sig, running) {
+                    continue;
+                }
                 remove_private_temp_dir();
                 ratatui::restore();
                 std::process::exit(128 + sig);
@@ -476,6 +521,46 @@ fn first_nonempty_line(bytes: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sigint_is_ignored_only_while_a_foreground_child_runs() {
+        use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+        assert!(ignore_signal(SIGINT, true));
+        assert!(!ignore_signal(SIGINT, false));
+        assert!(
+            !ignore_signal(SIGTERM, true),
+            "a terminate request still ends konoma"
+        );
+        assert!(
+            !ignore_signal(SIGHUP, true),
+            "a closed terminal still ends konoma"
+        );
+    }
+
+    #[test]
+    fn the_foreground_child_flag_comes_down_on_drop_and_on_unwind() {
+        use std::sync::atomic::Ordering::SeqCst;
+        {
+            let _g = ForegroundChildGuard::new();
+            assert!(FOREGROUND_CHILD.load(SeqCst));
+        }
+        assert!(!FOREGROUND_CHILD.load(SeqCst));
+        let r = std::panic::catch_unwind(|| {
+            let _g = ForegroundChildGuard::new();
+            panic!("unwind");
+        });
+        assert!(r.is_err());
+        assert!(!FOREGROUND_CHILD.load(SeqCst));
+    }
+
+    #[test]
+    fn only_an_uncaught_main_thread_panic_removes_the_temp_dir() {
+        assert!(panic_ends_process(Some("main"), false));
+        assert!(!panic_ends_process(Some("main"), true));
+        assert!(!panic_ends_process(Some("konoma-signals"), false));
+        assert!(!panic_ends_process(None, false));
+        assert!(!panic_ends_process(Some("Thread-1"), false));
+    }
+
     use super::*;
     use crate::test_support::unique_tmp;
 

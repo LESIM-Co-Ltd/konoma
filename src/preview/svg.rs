@@ -140,6 +140,11 @@ const MAX_LINKED_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 /// closed here: an SVG that is not a file on disk (embedded in an Office document, synthesized by
 /// mermaid or math) reads **no** file; one that is a real file may read only **regular files** of
 /// bounded size (a relative picture next to the `.svg` still shows).
+///
+/// An SVG that came from the network (a remote Markdown image cached under `remote-images/`) is
+/// treated like an embedded one: it reads **no** file at all, so `href="/Users/x/private.png"` in
+/// a downloaded SVG cannot paint a local picture. Only an SVG the user placed on their own disk
+/// keeps the regular-file, 64 MiB behaviour above.
 fn image_href_resolver(resources_dir: Option<&Path>) -> usvg::ImageHrefResolver<'static> {
     let mut resolver = usvg::ImageHrefResolver::default();
     if !resources_dir.is_some_and(Path::is_dir) {
@@ -164,6 +169,25 @@ fn options(resources_dir: Option<PathBuf>) -> usvg::Options<'static> {
         fontdb: shared_fontdb(),
         ..usvg::Options::default()
     }
+}
+
+/// Whether `path` is a file in the remote-image cache (i.e. downloaded from the network).
+fn is_remote_cache_file(path: &Path) -> bool {
+    let Some(dir) =
+        crate::app::md_remote_cache_path("").and_then(|p| p.parent().map(Path::to_path_buf))
+    else {
+        return false;
+    };
+    path.parent() == Some(dir.as_path())
+}
+
+/// The base directory for an on-disk SVG's relative references; `None` (no file may be read) when
+/// the file is a cached remote download.
+fn resources_dir_of(path: &Path) -> Option<PathBuf> {
+    if is_remote_cache_file(path) {
+        return None;
+    }
+    path.parent().map(Path::to_path_buf)
 }
 
 /// Read an SVG file: a regular file of bounded size only (never a device or FIFO).
@@ -193,7 +217,7 @@ pub fn rasterize(path: &Path, max_px: u32) -> Option<DynamicImage> {
 /// an inline SVG image and to validate that a fetched remote file is really an SVG. None if not an SVG.
 pub fn intrinsic_size(path: &Path) -> Option<(u32, u32)> {
     let data = read_svg_file(path)?;
-    let opt = options(path.parent().map(Path::to_path_buf));
+    let opt = options(resources_dir_of(path));
     let tree = usvg::Tree::from_data(&data, &opt).ok()?;
     let size = tree.size();
     let (w, h) = (size.width(), size.height());
@@ -221,7 +245,7 @@ pub fn intrinsic_size_bytes(data: &[u8]) -> Option<(u32, u32)> {
 pub fn rasterize_bytes(data: &[u8], path: &Path, max_px: u32) -> Option<DynamicImage> {
     // Base directory for relative references (external images etc.) is the SVG's parent; a
     // placeholder `path` (no real parent directory) means the bytes are embedded and read no file.
-    let opt = options(path.parent().map(Path::to_path_buf));
+    let opt = options(resources_dir_of(path));
 
     let tree = usvg::Tree::from_data(data, &opt).ok()?;
     let size = tree.size();
@@ -612,5 +636,25 @@ mod tests {
         assert!(intrinsic_size(&huge).is_none());
         assert!(rasterize(&dir, 100).is_none());
         assert!(rasterize(Path::new("/dev/null"), 100).is_none());
+    }
+
+    #[test]
+    fn a_cached_remote_svg_reads_no_file_but_a_local_one_still_does() {
+        // The cache root is a sandbox directory, never the real ~/.cache.
+        let root = crate::test_support::unique_tmp("konoma_svg_remote");
+        crate::test_support::set_test_cache_root(root.to_path_buf());
+        let cache = root.join("konoma").join("remote-images");
+        std::fs::create_dir_all(&cache).unwrap();
+        let png = red_png(&root, "secret.png");
+        let svg = svg_with_image(&png.display().to_string());
+        // A downloaded SVG (stored in the remote-image cache, no extension) draws nothing.
+        let remote = cache.join("0123456789abcdef");
+        std::fs::write(&remote, &svg).unwrap();
+        assert_eq!(center_alpha(&rasterize(&remote, 100).unwrap()), 0);
+        assert_eq!(intrinsic_size(&remote), Some((20, 20)));
+        // The same bytes as a file the user placed elsewhere still read the picture.
+        let local = root.join("mine.svg");
+        std::fs::write(&local, &svg).unwrap();
+        assert_eq!(center_alpha(&rasterize(&local, 100).unwrap()), 255);
     }
 }

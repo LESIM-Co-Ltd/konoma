@@ -6023,7 +6023,7 @@ fn cache_root() -> PathBuf {
 /// stored without an extension (the content type is unknown until fetched) and read via content sniffing.
 /// Kept `Option`-returning (always `Some` now that `cache_root` is total) because
 /// `app/md_media.rs::ensure_remote_md_fetch` pattern-matches `Some(dest)`.
-fn md_remote_cache_path(url: &str) -> Option<PathBuf> {
+pub(crate) fn md_remote_cache_path(url: &str) -> Option<PathBuf> {
     use std::hash::{Hash, Hasher};
     let root = cache_root();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
