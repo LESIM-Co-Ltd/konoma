@@ -195,6 +195,39 @@ fn is_encrypted_ods(path: &Path, names: &[String], limits: &Limits) -> bool {
     encrypted
 }
 
+/// The Word counterpart of [`inspect`]: opens the file, enforces the file-size limit, scans every
+/// zip entry against the limits (really inflating each) and returns the entry names. A
+/// password-protected OOXML wrapper (a CFB with `/EncryptedPackage`) is
+/// [`OfficeError::Encrypted`]; any other CFB (a legacy `.doc`) and a zip that is not a package are
+/// [`OfficeError::Unsupported`]. Whether the package holds a Word document is the caller's check
+/// (the main part is named by `_rels/.rels`).
+pub(crate) fn inspect_word_package(
+    path: &Path,
+    limits: &Limits,
+) -> Result<Vec<String>, OfficeError> {
+    let mut f = File::open(path).map_err(io_err)?;
+    let len = f.metadata().map_err(io_err)?.len();
+    if len > limits.max_file_bytes {
+        return Err(OfficeError::TooLarge { what: "file" });
+    }
+    let mut head = [0u8; 8];
+    let n = read_up_to(&mut f, &mut head).map_err(io_err)?;
+    if n == 0 {
+        return Err(OfficeError::Corrupt("empty file".into()));
+    }
+    if n >= 2 && head[..2] == ZIP_MAGIC {
+        return scan_zip(path, limits);
+    }
+    if n == 8 && head == CFB_MAGIC {
+        return match inspect_cfb(path) {
+            Err(e) => Err(e),
+            // A BIFF workbook, or a legacy document: not a Word package.
+            Ok(_) => Err(OfficeError::Unsupported),
+        };
+    }
+    Err(OfficeError::Corrupt("not a zip or compound file".into()))
+}
+
 fn inspect_cfb(path: &Path) -> Result<Detected, OfficeError> {
     let cf = cfb::open(path).map_err(|e| OfficeError::Corrupt(format!("compound file: {e}")))?;
     // Password-protected OOXML (any of xlsx/docx/pptx) is wrapped in a CFB with these streams.
