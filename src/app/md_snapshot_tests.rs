@@ -181,11 +181,11 @@ pub(super) fn pre_src_for(cfg: &Config, src: &str) -> String {
 }
 
 /// Everything one case renders to, over the app's real Markdown pipeline.
-struct CaseRender {
-    lines: Vec<Line<'static>>,
-    images: Vec<crate::preview::markdown::ImagePlacement>,
-    items: Vec<MdItem>,
-    anchors: Vec<(String, usize)>,
+pub(super) struct CaseRender {
+    pub(super) lines: Vec<Line<'static>>,
+    pub(super) images: Vec<crate::preview::markdown::ImagePlacement>,
+    pub(super) items: Vec<MdItem>,
+    pub(super) anchors: Vec<(String, usize)>,
     /// The render pass's own record of every code block and task checkbox it drew — **the same
     /// struct production reads** (`app::DecoratedMarkdown::extras`), kept whole rather than unpacked
     /// so `build_md_items_from_render` below can take it directly. This used to be two hand-computed
@@ -211,7 +211,7 @@ struct CaseRender {
 /// depend on a live `Picker` (font metrics) and on-disk file state, neither of which exists in a unit
 /// test and neither of which is deterministic across machines — see [`Slots`], which names the two
 /// sets of answers this harness runs under (the goldens dump [`Slots::Extracted`]).
-fn render_case(cfg: &Config, src: &str) -> CaseRender {
+pub(super) fn render_case(cfg: &Config, src: &str) -> CaseRender {
     render_case_with(cfg, src, Slots::Extracted)
 }
 

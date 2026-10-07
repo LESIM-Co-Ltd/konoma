@@ -13760,12 +13760,15 @@ fn e2e_ui_one_picture_at_one_cell_width_converges_after_a_single_encode() {
 /// encode never matched the box it was drawn in.
 #[test]
 fn e2e_ui_one_picture_at_two_cell_widths_draws_each_at_its_own_size() {
+    // 34 rows, not 30: the blank row a table now owes the block before it pushes the second picture
+    // down, and this test looks the *whole-picture* encode up (`row_off 0, vis_rows == rows`) — a
+    // window too short to show all of it would hold a clipped encode instead.
     let dir = sandbox("inline_image_two_widths_drawn");
     write_solid_png(&dir.join("p.png"), 400, 300, [10, 210, 10]);
     std::fs::write(dir.join("d.md"), TWO_WIDTHS_DOC).unwrap();
     let root = canon(&dir);
 
-    let mut s = Sim::with_config_sized(&root, Config::default(), 40, 30).with_media();
+    let mut s = Sim::with_config_sized(&root, Config::default(), 40, 34).with_media();
     s.select("d.md");
     s.enter();
     s.drain_md_images();

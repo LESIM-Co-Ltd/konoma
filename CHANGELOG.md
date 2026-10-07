@@ -50,6 +50,10 @@ All notable changes to konoma are documented in this file. The format is based o
   which app opened it. `[external] office_apps = false` opens nothing (and the footer no longer offers `e` there); an explicit `[editor.ext]` entry wins.
 
 ### Changed
+- **A table is now spaced like any other block**: a blank row separates a table from the block before it and from the block after it
+  (GFM and HTML tables, also inside quotes, lists, alerts and `<details>`, and in Word / OpenDocument conversions). Until now a
+  table owed no gap, so its top border sat directly under the previous paragraph, list or code block and the next paragraph,
+  heading or list sat directly under its bottom border. The row above the table changes too, not only the one below.
 - **Math in table cells, headings, emphasis and quotes is drawn**: `$…$` inside a table cell (GFM or HTML), a heading,
   a bold / italic / strikethrough run, or a quote, alert or open `<details>` body was left as literal LaTeX; it is now
   placed in the running text at inline size like other inline math. A heading's anchor and outline entry still read the
