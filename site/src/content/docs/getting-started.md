@@ -52,7 +52,7 @@ The gate for konoma's full experience is the **terminal**, not the OS:
 decode itself — VP9, AV1, the older codecs, `.avi`), `jj` if you work in jj
 (preview — without it konoma simply falls back to git), and `lazygit` /
 `lazyjj` only if you want `!` to open a TUI inside the hub. An Office app (Microsoft Office or LibreOffice) only
-if you want `e` to open Word / Excel / PowerPoint files (the spreadsheet preview itself needs none). Images, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, code,
+if you want `e` to open Word / Excel / PowerPoint files (the spreadsheet and Word previews themselves need none). Images, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, Word documents, code,
 **PDF** (any page, via `J`/`K`) and **H.264 / HEVC video thumbnails**
 (`.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm`) render natively in Rust — **nothing else to
 install at all**.

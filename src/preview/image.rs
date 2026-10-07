@@ -700,6 +700,19 @@ pub fn decode_static_bytes(bytes: &[u8]) -> Option<DynamicImage> {
     decode_reader(reader, None).ok()
 }
 
+/// `decode_static_capped_why`, from bytes already in memory (a picture inside a Word /
+/// OpenDocument file): the same header checks, memory claim and shrink to `max_side`, and the
+/// reason when it cannot be shown.
+pub fn decode_static_bytes_capped_why(
+    bytes: &[u8],
+    max_side: u32,
+) -> Result<DynamicImage, ImageFailure> {
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|_| ImageFailure::Corrupt)?;
+    decode_reader(reader, Some(max_side))
+}
+
 /// Read only the pixel dimensions of an image, sniffing the format from the file's content (not its
 /// extension). Used for inline Markdown images — including fetched remote images cached without an
 /// extension — to reserve layout rows without decoding the whole file. None if it is not an image.

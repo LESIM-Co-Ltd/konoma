@@ -545,20 +545,7 @@ mod macos {
     /// a world-writable `/tmp`. It is kept because relying on that being true of every macOS release
     /// and every `TMPDIR` override is exactly the kind of assumption that quietly stops holding.)
     fn private_temp_dir() -> PathBuf {
-        static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-        DIR.get_or_init(|| {
-            let dir = std::env::temp_dir().join(format!("konoma-pdf-{}", std::process::id()));
-            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-            // The mode is applied atomically by `mkdir(2)` itself (masked by umask, but `0o700`
-            // has no group/other bits for umask to strip), so there's no "create, then chmod" gap
-            // where a wider-permission window briefly exists.
-            let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
-            // Defense-in-depth for the unlikely case the directory already existed with looser
-            // permissions (e.g. a stale leftover from an earlier process that reused this pid).
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-            dir
-        })
-        .clone()
+        crate::preview::private_dir::private_dir("pdf")
     }
 
     /// A temp PNG path that does not collide within the process (pid + atomic counter; no randomness/time dependency).

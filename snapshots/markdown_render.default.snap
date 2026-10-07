@@ -11413,7 +11413,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
   m00 line=0002 kind=CodeBlock{body=Some("<br>")}
 
 === samples: README.md ===
--- LINES (18) --
+-- LINES (20) --
 L0000 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Sample files"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -11507,6 +11507,31 @@ L0010 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "long-value truncation)."
 L0011 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
+  s01 fg=white,bg=rgb(43,48,59),mod=- "sample.xlsx"
+  s02 fg=-,bg=-,mod=- " / "
+  s03 fg=white,bg=rgb(43,48,59),mod=- "sample.ods"
+  s04 fg=-,bg=-,mod=- " / "
+  s05 fg=white,bg=rgb(43,48,59),mod=- "sample.xls"
+  s06 fg=-,bg=-,mod=- " — spreadsheets for the spreadsheet preview"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=-,bg=-,mod=- "(one table per sheet, cells shown in their Excel number/date formats)."
+L0012 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=white,bg=rgb(43,48,59),mod=- "sample.docx"
+  s02 fg=-,bg=-,mod=- " / "
+  s03 fg=white,bg=rgb(43,48,59),mod=- "sample.ja.docx"
+  s04 fg=-,bg=-,mod=- " / "
+  s05 fg=white,bg=rgb(43,48,59),mod=- "sample.odt"
+  s06 fg=-,bg=-,mod=- " — original Word and OpenDocument text documents for the"
+  s07 fg=-,bg=-,mod=- " "
+  s08 fg=-,bg=-,mod=- "document preview (headings, lists, tables, images). Written for konoma and exported with LibreOffice;"
+  s09 fg=-,bg=-,mod=- " "
+  s10 fg=white,bg=rgb(43,48,59),mod=- "sample.ja.docx"
+  s11 fg=-,bg=-,mod=- " is the Japanese version ("
+  s12 fg=white,bg=rgb(43,48,59),mod=- ".ja"
+  s13 fg=-,bg=-,mod=- " suffix, like the other walkthrough demos)."
+L0013 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "sample.zip"
   s02 fg=-,bg=-,mod=- " / "
   s03 fg=white,bg=rgb(43,48,59),mod=- "sample.tar.gz"
@@ -11540,7 +11565,7 @@ L0011 style=fg=-,bg=-,mod=- align=-
   s31 fg=-,bg=-,mod=- " "
   s32 fg=white,bg=rgb(43,48,59),mod=- "japanese.txt"
   s33 fg=-,bg=-,mod=- ") — no third-party content, same as everything else here."
-L0012 style=fg=-,bg=-,mod=- align=-
+L0014 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "mermaid.md"
   s02 fg=-,bg=-,mod=- " / "
@@ -11553,7 +11578,7 @@ L0012 style=fg=-,bg=-,mod=- align=-
   s09 fg=-,bg=-,mod=- "journey, timeline, gantt, requirement, gitGraph, C4, block, architecture, and the pie, xy,"
   s10 fg=-,bg=-,mod=- " "
   s11 fg=-,bg=-,mod=- "quadrant, radar, treemap, packet and sankey charts. Written by hand for konoma."
-L0013 style=fg=-,bg=-,mod=- align=-
+L0015 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "sequence.mmd"
   s02 fg=-,bg=-,mod=- ", "
@@ -11571,7 +11596,7 @@ L0013 style=fg=-,bg=-,mod=- align=-
   s14 fg=-,bg=-,mod=- " preview (a whole file rendered as one full-screen"
   s15 fg=-,bg=-,mod=- " "
   s16 fg=-,bg=-,mod=- "diagram, as opposed to the fences above). The five cover different internal layouts."
-L0014 style=fg=-,bg=-,mod=- align=-
+L0016 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "sample.svg"
   s02 fg=-,bg=-,mod=- ", the text / Markdown files, and everything under "
@@ -11579,7 +11604,7 @@ L0014 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- " — written by hand"
   s05 fg=-,bg=-,mod=- " "
   s06 fg=-,bg=-,mod=- "for konoma."
-L0015 style=fg=-,bg=-,mod=- align=-
+L0017 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "The walkthrough demos are "
   s02 fg=-,bg=-,mod=B "English by default"
@@ -11597,15 +11622,17 @@ L0015 style=fg=-,bg=-,mod=- align=-
   s14 fg=white,bg=rgb(43,48,59),mod=- "long-lines.ja.txt"
   s15 fg=-,bg=-,mod=- ", "
   s16 fg=white,bg=rgb(43,48,59),mod=- "tutorial.ja.md"
-  s17 fg=-,bg=-,mod=- "). "
-  s18 fg=white,bg=rgb(43,48,59),mod=- "japanese.txt"
-  s19 fg=-,bg=-,mod=- " and the"
-  s20 fg=-,bg=-,mod=- " "
-  s21 fg=-,bg=-,mod=- "full-width cells in "
-  s22 fg=white,bg=rgb(43,48,59),mod=- "sample.csv"
-  s23 fg=-,bg=-,mod=- " stay as CJK demos (they exercise konoma's CJK-width handling)."
-L0016 style=fg=-,bg=-,mod=- align=-
-L0017 style=fg=-,bg=-,mod=- align=-
+  s17 fg=-,bg=-,mod=- ", "
+  s18 fg=white,bg=rgb(43,48,59),mod=- "sample.ja.docx"
+  s19 fg=-,bg=-,mod=- "). "
+  s20 fg=white,bg=rgb(43,48,59),mod=- "japanese.txt"
+  s21 fg=-,bg=-,mod=- " and the"
+  s22 fg=-,bg=-,mod=- " "
+  s23 fg=-,bg=-,mod=- "full-width cells in "
+  s24 fg=white,bg=rgb(43,48,59),mod=- "sample.csv"
+  s25 fg=-,bg=-,mod=- " stay as CJK demos (they exercise konoma's CJK-width handling)."
+L0018 style=fg=-,bg=-,mod=- align=-
+L0019 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "If you add new sample files, only commit material you have the right to redistribute"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "under MIT (your own work, CC0, or public domain)."
@@ -13558,7 +13585,7 @@ L0146 style=fg=-,bg=-,mod=- align=-
   m13 line=0124 kind=MermaidFence{ordinal=0}
 
 === samples: tutorial.ja.md ===
--- LINES (94) --
+-- LINES (95) --
 L0000 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "konoma チュートリアル — 触りながら覚える"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -13669,20 +13696,24 @@ L0021 style=fg=-,bg=-,mod=- align=-
   s05 fg=white,bg=rgb(43,48,59),mod=- "K"
   s06 fg=-,bg=-,mod=- " でシート切替"
 L0022 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} sample.ja.docx"
+  s02 fg=-,bg=-,mod=- " — Word 文書を整形して表示(見出し・リスト・表・画像・数式)"
 L0023 style=fg=-,bg=-,mod=- align=-
+L0024 style=fg=-,bg=-,mod=- align=-
   s00 fg=white,bg=rgb(43,48,59),mod=- "Tab"
   s01 fg=-,bg=-,mod=- " でフォーカス → "
   s02 fg=white,bg=rgb(43,48,59),mod=- "Enter"
   s03 fg=-,bg=-,mod=- " で開く → "
   s04 fg=white,bg=rgb(43,48,59),mod=- "q"
   s05 fg=-,bg=-,mod=- " でここへ戻る、を一往復してみてください。"
-L0024 style=fg=-,bg=-,mod=- align=-
-L0025 style=fg=cyan,bg=-,mod=B align=-
+L0025 style=fg=-,bg=-,mod=- align=-
+L0026 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "3. このチェックボックスを切り替える"
-L0026 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0027 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0028 style=fg=-,bg=-,mod=- align=-
+L0029 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "チェックボックスは操作できます: "
   s01 fg=white,bg=rgb(43,48,59),mod=- "Tab"
   s02 fg=-,bg=-,mod=- " でフォーカス → "
@@ -13696,15 +13727,15 @@ L0028 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- " — 実際の状態を安全に編集しています"
   s11 fg=-,bg=-,mod=- " "
   s12 fg=-,bg=-,mod=- "（書き込み前にディスク上のファイルを照合し、1文字だけを書き換えます）。"
-L0029 style=fg=-,bg=-,mod=- align=-
 L0030 style=fg=-,bg=-,mod=- align=-
+L0031 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=white,bg=rgb(43,48,59),mod=- "j"
   s03 fg=-,bg=-,mod=- "/"
   s04 fg=white,bg=rgb(43,48,59),mod=- "k"
   s05 fg=-,bg=-,mod=- " でスクロールした"
-L0031 style=fg=-,bg=-,mod=- align=-
+L0032 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=white,bg=rgb(43,48,59),mod=- "Tab"
@@ -13713,19 +13744,19 @@ L0031 style=fg=-,bg=-,mod=- align=-
   s05 fg=-,bg=-,mod=- " でリンクを開いて "
   s06 fg=white,bg=rgb(43,48,59),mod=- "q"
   s07 fg=-,bg=-,mod=- " で戻ってきた"
-L0032 style=fg=-,bg=-,mod=- align=-
+L0033 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "このチェックボックスを "
   s03 fg=white,bg=rgb(43,48,59),mod=- "Space"
   s04 fg=-,bg=-,mod=- " で切り替えた"
-L0033 style=fg=-,bg=-,mod=- align=-
-L0034 style=fg=cyan,bg=-,mod=B align=-
+L0034 style=fg=-,bg=-,mod=- align=-
+L0035 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "4. 検索とコピー"
-L0035 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0036 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0037 style=fg=-,bg=-,mod=- align=-
+L0038 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "/"
   s02 fg=-,bg=-,mod=- " でプレビュー内検索、"
@@ -13733,7 +13764,7 @@ L0037 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- "/"
   s05 fg=white,bg=rgb(43,48,59),mod=- "N"
   s06 fg=-,bg=-,mod=- " で一致間を移動。"
-L0038 style=fg=-,bg=-,mod=- align=-
+L0039 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "R"
   s02 fg=-,bg=-,mod=- " でこのファイルの生 Markdown ソース表示に切替。ソース表示（およびコード/テキスト）では"
@@ -13751,31 +13782,31 @@ L0038 style=fg=-,bg=-,mod=- align=-
   s14 fg=-,bg=-,mod=- " は AI チャット用の "
   s15 fg=white,bg=rgb(43,48,59),mod=- "@path#L12"
   s16 fg=-,bg=-,mod=- " 参照をコピーします。"
-L0039 style=fg=-,bg=-,mod=- align=-
+L0040 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "ツリーでは "
   s02 fg=white,bg=rgb(43,48,59),mod=- "y"
   s03 fg=-,bg=-,mod=- " がコピーメニュー: ファイル名・相対/フルパス・"
   s04 fg=white,bg=rgb(43,48,59),mod=- "@相対パス"
   s05 fg=-,bg=-,mod=- " 参照。"
-L0040 style=fg=-,bg=-,mod=- align=-
-L0041 style=fg=cyan,bg=-,mod=B align=-
+L0041 style=fg=-,bg=-,mod=- align=-
+L0042 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "5. ツリーはファイルマネージャ"
-L0042 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0043 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0044 style=fg=-,bg=-,mod=- align=-
+L0045 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "ツリーに戻って（"
   s01 fg=white,bg=rgb(43,48,59),mod=- "q"
   s02 fg=-,bg=-,mod=- "）:"
-L0045 style=fg=-,bg=-,mod=- align=-
 L0046 style=fg=-,bg=-,mod=- align=-
+L0047 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "/"
   s02 fg=-,bg=-,mod=- " で入力しながら絞り込み、"
   s03 fg=white,bg=rgb(43,48,59),mod=- "Esc"
   s04 fg=-,bg=-,mod=- " で解除。"
-L0047 style=fg=-,bg=-,mod=- align=-
+L0048 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "Space"
   s02 fg=-,bg=-,mod=- " でファイル管理メニュー: 作成 "
@@ -13793,7 +13824,7 @@ L0047 style=fg=-,bg=-,mod=- align=-
   s14 fg=-,bg=-,mod=- "/"
   s15 fg=white,bg=rgb(43,48,59),mod=- "p"
   s16 fg=-,bg=-,mod=- "。"
-L0048 style=fg=-,bg=-,mod=- align=-
+L0049 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "."
   s02 fg=-,bg=-,mod=- " で隠しファイル表示、"
@@ -13801,7 +13832,7 @@ L0048 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- " でソートメニュー、"
   s05 fg=white,bg=rgb(43,48,59),mod=- "i"
   s06 fg=-,bg=-,mod=- " でファイル情報。"
-L0049 style=fg=-,bg=-,mod=- align=-
+L0050 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "m"
   s02 fg=-,bg=-,mod=- " + 英字でカーソル位置をブックマーク（小文字=このプロジェクト内・大文字=グローバル）。"
@@ -13811,13 +13842,13 @@ L0049 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=B "プレビュー中でも使えます"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=-,bg=-,mod=- "（表示中のファイルが登録されます）。"
-L0050 style=fg=-,bg=-,mod=- align=-
-L0051 style=fg=cyan,bg=-,mod=B align=-
+L0051 style=fg=-,bg=-,mod=- align=-
+L0052 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "6. Git をその場で"
-L0052 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0053 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0054 style=fg=-,bg=-,mod=- align=-
+L0055 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "このディレクトリが git リポジトリ内なら: "
   s01 fg=white,bg=rgb(43,48,59),mod=- "o"
   s02 fg=-,bg=-,mod=- " で変更ハブ（stage/unstage/コミット）、"
@@ -13831,16 +13862,16 @@ L0054 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- " でコミットグラフ。"
   s11 fg=-,bg=-,mod=- " "
   s12 fg=-,bg=-,mod=- "変更ファイルはツリーで色付き表示され、コードプレビューにはエディタ風の変更ガターが出ます。"
-L0055 style=fg=-,bg=-,mod=- align=-
-L0056 style=fg=cyan,bg=-,mod=B align=-
+L0056 style=fg=-,bg=-,mod=- align=-
+L0057 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "7. AI エージェントの作業を眺める"
-L0057 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0058 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0059 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "「左に konoma・右にコーディングエージェント」レイアウトのための看板機能:"
 L0060 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "「左に konoma・右にコーディングエージェント」レイアウトのための看板機能:"
 L0061 style=fg=-,bg=-,mod=- align=-
+L0062 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "F"
   s02 fg=-,bg=-,mod=- " — フォローモード: ファイルがディスク上で変わるたび、konoma が自動で"
@@ -13859,7 +13890,7 @@ L0061 style=fg=-,bg=-,mod=- align=-
   s15 fg=-,bg=-,mod=- " では追尾が続き、"
   s16 fg=white,bg=rgb(43,48,59),mod=- "q"
   s17 fg=-,bg=-,mod=- " でやめます。"
-L0062 style=fg=-,bg=-,mod=- align=-
+L0063 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "C"
   s02 fg=-,bg=-,mod=- " — 未コミット変更ファイルのフラット一覧。"
@@ -13867,7 +13898,7 @@ L0062 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- "/"
   s05 fg=white,bg=rgb(43,48,59),mod=- "N"
   s06 fg=-,bg=-,mod=- " で変更間ジャンプ。"
-L0063 style=fg=-,bg=-,mod=- align=-
+L0064 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "y"
   s02 fg=-,bg=-,mod=- " → "
@@ -13879,51 +13910,51 @@ L0063 style=fg=-,bg=-,mod=- align=-
   s08 fg=-,bg=-,mod=- " / "
   s09 fg=white,bg=rgb(43,48,59),mod=- "@path#L12-34"
   s10 fg=-,bg=-,mod=- " 参照をコピーしてエージェントとの会話に貼る。"
-L0064 style=fg=-,bg=-,mod=- align=-
-L0065 style=fg=cyan,bg=-,mod=B align=-
+L0065 style=fg=-,bg=-,mod=- align=-
+L0066 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "8. "
   s01 fg=white,bg=rgb(43,48,59),mod=- "[can not preview]"
   s02 fg=-,bg=-,mod=- " と出たら"
-L0066 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0067 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0068 style=fg=-,bg=-,mod=- align=-
+L0069 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "壊れてはいません。konoma はいくつかの形式を外部ツールに委ねていて、それが無いときは"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "クラッシュせずにそう表示します（他の機能はそのまま動きます）。必要なものだけ入れてください:"
-L0069 style=fg=-,bg=-,mod=- align=-
-L0070 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0070 style=fg=-,bg=-,mod=- align=-
+L0071 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=I "▎ "
   s01 fg=-,bg=rgb(43,48,59),mod=- "                                                                                            "
   s02 fg=white,bg=rgb(70,78,99),mod=B " bash "
-L0071 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0072 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=rgb(92,99,112),bg=rgb(43,48,59),mod=I "#"
   s02 fg=rgb(92,99,112),bg=rgb(43,48,59),mod=I " macOS"
   s03 fg=-,bg=rgb(43,48,59),mod=- "                                                                                           "
-L0072 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0073 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=rgb(224,108,117),bg=rgb(43,48,59),mod=- "brew"
   s02 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- " install ffmpeg"
   s03 fg=-,bg=rgb(43,48,59),mod=- "                                                                               "
-L0073 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0074 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=-,bg=rgb(43,48,59),mod=- "                                                                                                  "
-L0074 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0075 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=rgb(92,99,112),bg=rgb(43,48,59),mod=I "#"
   s02 fg=rgb(92,99,112),bg=rgb(43,48,59),mod=I " Debian / Ubuntu"
   s03 fg=-,bg=rgb(43,48,59),mod=- "                                                                                 "
-L0075 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0076 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=rgb(224,108,117),bg=rgb(43,48,59),mod=- "sudo"
   s02 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- " apt install ffmpeg"
   s03 fg=-,bg=rgb(43,48,59),mod=- "                                                                           "
-L0076 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0077 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=-,bg=rgb(43,48,59),mod=- "                                                                                                  "
-L0077 style=fg=-,bg=-,mod=- align=-
 L0078 style=fg=-,bg=-,mod=- align=-
+L0079 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=B "ffmpeg"
   s02 fg=-,bg=-,mod=- "（または "
@@ -13947,62 +13978,64 @@ L0078 style=fg=-,bg=-,mod=- align=-
   s20 fg=-,bg=-,mod=- " "
   s21 fg=-,bg=-,mod=B "不要"
   s22 fg=-,bg=-,mod=- "です（konoma 自身がデコードします）。"
-L0079 style=fg=-,bg=-,mod=- align=-
+L0080 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=B "git"
   s02 fg=-,bg=-,mod=- " — 6 章の git スイート一式。たいていは既に入っています。"
-L0080 style=fg=-,bg=-,mod=- align=-
 L0081 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "画像・SVG・Markdown・Mermaid 図・LaTeX 数式・CSV テーブル・"
-  s01 fg=-,bg=-,mod=B "PDF"
-  s02 fg=-,bg=-,mod=- "・"
-  s03 fg=-,bg=-,mod=- " "
-  s04 fg=-,bg=-,mod=B "H.264/HEVC 動画のサムネイル"
-  s05 fg=-,bg=-,mod=- "・コードは"
-  s06 fg=-,bg=-,mod=B "追加インストール不要"
-  s07 fg=-,bg=-,mod=- "で、konoma 自身が純 Rust で描きます（macOS に限り、"
-  s08 fg=-,bg=-,mod=- " "
-  s09 fg=-,bg=-,mod=- "内蔵レンダラが扱えない PDF は OS 同梱の "
-  s10 fg=white,bg=rgb(43,48,59),mod=- "qlmanage"
-  s11 fg=-,bg=-,mod=- "/"
-  s12 fg=white,bg=rgb(43,48,59),mod=- "sips"
-  s13 fg=-,bg=-,mod=- " に 1 ページ目だけ"
-  s14 fg=-,bg=-,mod=- " "
-  s15 fg=-,bg=-,mod=- "フォールバックします。これも導入不要です）。画像系はグラフィックプロトコルを"
-  s16 fg=-,bg=-,mod=- " "
-  s17 fg=-,bg=-,mod=- "話す端末なら実ピクセルで描かれます — kitty graphics（Ghostty・kitty・WezTerm・"
-  s18 fg=-,bg=-,mod=- " "
-  s19 fg=-,bg=-,mod=- "Konsole）・iTerm2・sixel。それ以外の端末では粗いながらも見えるハーフブロックの"
-  s20 fg=-,bg=-,mod=- " "
-  s21 fg=-,bg=-,mod=- "近似表示に落ちます。テキストのプレビューはどの端末でも動きます。"
 L0082 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "画像・SVG・Markdown・Mermaid 図・LaTeX 数式・CSV テーブル・"
+  s01 fg=-,bg=-,mod=B "表計算と Word 文書"
+  s02 fg=-,bg=-,mod=- "（xlsx/ods・docx/odt）・"
+  s03 fg=-,bg=-,mod=B "PDF"
+  s04 fg=-,bg=-,mod=- "・"
+  s05 fg=-,bg=-,mod=- " "
+  s06 fg=-,bg=-,mod=B "H.264/HEVC 動画のサムネイル"
+  s07 fg=-,bg=-,mod=- "・コードは"
+  s08 fg=-,bg=-,mod=B "追加インストール不要"
+  s09 fg=-,bg=-,mod=- "で、konoma 自身が純 Rust で描きます（macOS に限り、"
+  s10 fg=-,bg=-,mod=- " "
+  s11 fg=-,bg=-,mod=- "内蔵レンダラが扱えない PDF は OS 同梱の "
+  s12 fg=white,bg=rgb(43,48,59),mod=- "qlmanage"
+  s13 fg=-,bg=-,mod=- "/"
+  s14 fg=white,bg=rgb(43,48,59),mod=- "sips"
+  s15 fg=-,bg=-,mod=- " に 1 ページ目だけ"
+  s16 fg=-,bg=-,mod=- " "
+  s17 fg=-,bg=-,mod=- "フォールバックします。これも導入不要です）。画像系はグラフィックプロトコルを"
+  s18 fg=-,bg=-,mod=- " "
+  s19 fg=-,bg=-,mod=- "話す端末なら実ピクセルで描かれます — kitty graphics（Ghostty・kitty・WezTerm・"
+  s20 fg=-,bg=-,mod=- " "
+  s21 fg=-,bg=-,mod=- "Konsole）・iTerm2・sixel。それ以外の端末では粗いながらも見えるハーフブロックの"
+  s22 fg=-,bg=-,mod=- " "
+  s23 fg=-,bg=-,mod=- "近似表示に落ちます。テキストのプレビューはどの端末でも動きます。"
 L0083 style=fg=-,bg=-,mod=- align=-
+L0084 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "必要になったら何を入れればよいか分かった"
-L0084 style=fg=-,bg=-,mod=- align=-
-L0085 style=fg=cyan,bg=-,mod=B align=-
+L0085 style=fg=-,bg=-,mod=- align=-
+L0086 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "次に読むもの"
-L0086 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0087 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0088 style=fg=-,bg=-,mod=- align=-
+L0089 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "どの画面でも "
   s02 fg=white,bg=rgb(43,48,59),mod=- "?"
   s03 fg=-,bg=-,mod=- " — すべてのビューが自分のキーを説明します。"
-L0089 style=fg=-,bg=-,mod=- align=-
+L0090 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "ガイド・設定・キーマップの完全版は README からリンクされたドキュメントサイトに、"
   s02 fg=-,bg=-,mod=- " "
   s03 fg=-,bg=-,mod=- "全設定項目の逐条解説は "
   s04 fg=white,bg=rgb(43,48,59),mod=- "config.example.toml"
   s05 fg=-,bg=-,mod=- " にあります。"
-L0090 style=fg=-,bg=-,mod=- align=-
 L0091 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "最後のチェックをどうぞ:"
 L0092 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "最後のチェックをどうぞ:"
 L0093 style=fg=-,bg=-,mod=- align=-
+L0094 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "完了! konoma を楽しんでください。"
@@ -14010,39 +14043,40 @@ L0093 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg"
 -- TASKS (5) --
-  t00 state=' ' state_at=2145
-  t01 state=' ' state_at=2184
-  t02 state=' ' state_at=2254
-  t03 state=' ' state_at=6285
-  t04 state=' ' state_at=6699
+  t00 state=' ' state_at=2266
+  t01 state=' ' state_at=2305
+  t02 state=' ' state_at=2375
+  t03 state=' ' state_at=6462
+  t04 state=' ' state_at=6876
 -- DETAILS_OPEN (0) --
 -- ANCHORS (10) --
   a00 line=0000 slug="konoma-チュートリアル--触りながら覚える"
   a01 line=0007 slug="1-スクロールと行き来"
   a02 line=0012 slug="2-tab-でリンクを辿る"
-  a03 line=0025 slug="3-このチェックボックスを切り替える"
-  a04 line=0034 slug="4-検索とコピー"
-  a05 line=0041 slug="5-ツリーはファイルマネージャ"
-  a06 line=0051 slug="6-git-をその場で"
-  a07 line=0056 slug="7-ai-エージェントの作業を眺める"
-  a08 line=0065 slug="8-can-not-preview-と出たら"
-  a09 line=0085 slug="次に読むもの"
--- ITEMS (12) --
+  a03 line=0026 slug="3-このチェックボックスを切り替える"
+  a04 line=0035 slug="4-検索とコピー"
+  a05 line=0042 slug="5-ツリーはファイルマネージャ"
+  a06 line=0052 slug="6-git-をその場で"
+  a07 line=0057 slug="7-ai-エージェントの作業を眺める"
+  a08 line=0066 slug="8-can-not-preview-と出たら"
+  a09 line=0086 slug="次に読むもの"
+-- ITEMS (13) --
   m00 line=0003 kind=Link{target="./tutorial.md"}
   m01 line=0017 kind=Link{target="./markdown.ja.md"}
   m02 line=0018 kind=Link{target="./sample.csv"}
   m03 line=0019 kind=Link{target="./sample.png"}
   m04 line=0020 kind=Link{target="./sample.pdf"}
   m05 line=0021 kind=Link{target="./sample.xlsx"}
-  m06 line=0030 kind=Task{state=' ',state_at=Some(2145)}
-  m07 line=0031 kind=Task{state=' ',state_at=Some(2184)}
-  m08 line=0032 kind=Task{state=' ',state_at=Some(2254)}
-  m09 line=0070 kind=CodeBlock{body=Some("# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg")}
-  m10 line=0083 kind=Task{state=' ',state_at=Some(6285)}
-  m11 line=0093 kind=Task{state=' ',state_at=Some(6699)}
+  m06 line=0022 kind=Link{target="./sample.ja.docx"}
+  m07 line=0031 kind=Task{state=' ',state_at=Some(2266)}
+  m08 line=0032 kind=Task{state=' ',state_at=Some(2305)}
+  m09 line=0033 kind=Task{state=' ',state_at=Some(2375)}
+  m10 line=0071 kind=CodeBlock{body=Some("# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg")}
+  m11 line=0084 kind=Task{state=' ',state_at=Some(6462)}
+  m12 line=0094 kind=Task{state=' ',state_at=Some(6876)}
 
 === samples: tutorial.md ===
--- LINES (94) --
+-- LINES (95) --
 L0000 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "konoma tutorial — learn by doing"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -14152,7 +14186,11 @@ L0021 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- "/"
   s05 fg=white,bg=rgb(43,48,59),mod=- "K"
 L0022 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "- "
+  s01 fg=blue,bg=-,mod=U "\u{f0c1} sample.docx"
+  s02 fg=-,bg=-,mod=- " — a Word document as formatted text (headings, lists, tables, images, math)"
 L0023 style=fg=-,bg=-,mod=- align=-
+L0024 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Focus one with "
   s01 fg=white,bg=rgb(43,48,59),mod=- "Tab"
   s02 fg=-,bg=-,mod=- ", press "
@@ -14160,13 +14198,13 @@ L0023 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- " to open it, then "
   s05 fg=white,bg=rgb(43,48,59),mod=- "q"
   s06 fg=-,bg=-,mod=- " to come back here."
-L0024 style=fg=-,bg=-,mod=- align=-
-L0025 style=fg=cyan,bg=-,mod=B align=-
+L0025 style=fg=-,bg=-,mod=- align=-
+L0026 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "3. Toggle these checkboxes"
-L0026 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0027 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0028 style=fg=-,bg=-,mod=- align=-
+L0029 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Checkboxes are interactive: "
   s01 fg=white,bg=rgb(43,48,59),mod=- "Tab"
   s02 fg=-,bg=-,mod=- " to focus, "
@@ -14178,15 +14216,15 @@ L0028 style=fg=-,bg=-,mod=- align=-
   s08 fg=-,bg=-,mod=- "The change is written back to this file — you are editing real state, safely"
   s09 fg=-,bg=-,mod=- " "
   s10 fg=-,bg=-,mod=- "(konoma verifies the file on disk before writing a single character)."
-L0029 style=fg=-,bg=-,mod=- align=-
 L0030 style=fg=-,bg=-,mod=- align=-
+L0031 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "I scrolled with "
   s03 fg=white,bg=rgb(43,48,59),mod=- "j"
   s04 fg=-,bg=-,mod=- "/"
   s05 fg=white,bg=rgb(43,48,59),mod=- "k"
-L0031 style=fg=-,bg=-,mod=- align=-
+L0032 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "I opened a link with "
@@ -14195,18 +14233,18 @@ L0031 style=fg=-,bg=-,mod=- align=-
   s05 fg=white,bg=rgb(43,48,59),mod=- "Enter"
   s06 fg=-,bg=-,mod=- " and came back with "
   s07 fg=white,bg=rgb(43,48,59),mod=- "q"
-L0032 style=fg=-,bg=-,mod=- align=-
+L0033 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "I toggled this checkbox with "
   s03 fg=white,bg=rgb(43,48,59),mod=- "Space"
-L0033 style=fg=-,bg=-,mod=- align=-
-L0034 style=fg=cyan,bg=-,mod=B align=-
+L0034 style=fg=-,bg=-,mod=- align=-
+L0035 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "4. Search and copy"
-L0035 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0036 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0037 style=fg=-,bg=-,mod=- align=-
+L0038 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "/"
   s02 fg=-,bg=-,mod=- " searches inside a text preview; "
@@ -14214,7 +14252,7 @@ L0037 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- "/"
   s05 fg=white,bg=rgb(43,48,59),mod=- "N"
   s06 fg=-,bg=-,mod=- " jump between matches."
-L0038 style=fg=-,bg=-,mod=- align=-
+L0039 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "R"
   s02 fg=-,bg=-,mod=- " shows this file's raw Markdown source. In raw view (and any code/text file),"
@@ -14233,7 +14271,7 @@ L0038 style=fg=-,bg=-,mod=- align=-
   s15 fg=-,bg=-,mod=- " copies an "
   s16 fg=white,bg=rgb(43,48,59),mod=- "@path#L12"
   s17 fg=-,bg=-,mod=- " reference for AI chats."
-L0039 style=fg=-,bg=-,mod=- align=-
+L0040 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "From the tree, "
   s02 fg=white,bg=rgb(43,48,59),mod=- "y"
@@ -14241,24 +14279,24 @@ L0039 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- " "
   s05 fg=white,bg=rgb(43,48,59),mod=- "@relative/path"
   s06 fg=-,bg=-,mod=- " reference."
-L0040 style=fg=-,bg=-,mod=- align=-
-L0041 style=fg=cyan,bg=-,mod=B align=-
+L0041 style=fg=-,bg=-,mod=- align=-
+L0042 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "5. The tree is a file manager"
-L0042 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0043 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0044 style=fg=-,bg=-,mod=- align=-
+L0045 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Back in the tree ("
   s01 fg=white,bg=rgb(43,48,59),mod=- "q"
   s02 fg=-,bg=-,mod=- "):"
-L0045 style=fg=-,bg=-,mod=- align=-
 L0046 style=fg=-,bg=-,mod=- align=-
+L0047 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "/"
   s02 fg=-,bg=-,mod=- " filters entries as you type; "
   s03 fg=white,bg=rgb(43,48,59),mod=- "Esc"
   s04 fg=-,bg=-,mod=- " clears."
-L0047 style=fg=-,bg=-,mod=- align=-
+L0048 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "Space"
   s02 fg=-,bg=-,mod=- " opens the file-management menu: create ("
@@ -14276,7 +14314,7 @@ L0047 style=fg=-,bg=-,mod=- align=-
   s14 fg=-,bg=-,mod=- "/"
   s15 fg=white,bg=rgb(43,48,59),mod=- "p"
   s16 fg=-,bg=-,mod=- ")."
-L0048 style=fg=-,bg=-,mod=- align=-
+L0049 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "."
   s02 fg=-,bg=-,mod=- " shows dotfiles, "
@@ -14284,7 +14322,7 @@ L0048 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- " opens the sort menu, "
   s05 fg=white,bg=rgb(43,48,59),mod=- "i"
   s06 fg=-,bg=-,mod=- " shows file info."
-L0049 style=fg=-,bg=-,mod=- align=-
+L0050 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "m"
   s02 fg=-,bg=-,mod=- " + a letter bookmarks the cursor item (lowercase = this project, uppercase ="
@@ -14294,13 +14332,13 @@ L0049 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- " opens the bookmark list — press the letter to jump. Both work from"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=-,bg=-,mod=- "previews too, bookmarking the file you are viewing."
-L0050 style=fg=-,bg=-,mod=- align=-
-L0051 style=fg=cyan,bg=-,mod=B align=-
+L0051 style=fg=-,bg=-,mod=- align=-
+L0052 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "6. Git, live"
-L0052 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0053 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0054 style=fg=-,bg=-,mod=- align=-
+L0055 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "If this directory is inside a git repository: "
   s01 fg=white,bg=rgb(43,48,59),mod=- "o"
   s02 fg=-,bg=-,mod=- " opens the changes hub"
@@ -14316,18 +14354,18 @@ L0054 style=fg=-,bg=-,mod=- align=-
   s12 fg=-,bg=-,mod=- " the commit graph. Modified files"
   s13 fg=-,bg=-,mod=- " "
   s14 fg=-,bg=-,mod=- "are colored in the tree, and code previews get an editor-style change gutter."
-L0055 style=fg=-,bg=-,mod=- align=-
-L0056 style=fg=cyan,bg=-,mod=B align=-
+L0056 style=fg=-,bg=-,mod=- align=-
+L0057 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "7. Watch an AI agent work"
-L0057 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0058 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0059 style=fg=-,bg=-,mod=- align=-
+L0060 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "konoma's flagship trick, for the \"konoma on the left, coding agent on the right\""
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "layout:"
-L0060 style=fg=-,bg=-,mod=- align=-
 L0061 style=fg=-,bg=-,mod=- align=-
+L0062 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "F"
   s02 fg=-,bg=-,mod=- " — follow mode: whenever a file changes on disk, konoma automatically shows"
@@ -14348,7 +14386,7 @@ L0061 style=fg=-,bg=-,mod=- align=-
   s17 fg=-,bg=-,mod=- " keep following; "
   s18 fg=white,bg=rgb(43,48,59),mod=- "q"
   s19 fg=-,bg=-,mod=- " stops."
-L0062 style=fg=-,bg=-,mod=- align=-
+L0063 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "C"
   s02 fg=-,bg=-,mod=- " — flat list of every file with uncommitted changes; "
@@ -14356,7 +14394,7 @@ L0062 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- "/"
   s05 fg=white,bg=rgb(43,48,59),mod=- "N"
   s06 fg=-,bg=-,mod=- " jump through them."
-L0063 style=fg=-,bg=-,mod=- align=-
+L0064 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=rgb(43,48,59),mod=- "y"
   s02 fg=-,bg=-,mod=- " → "
@@ -14370,52 +14408,52 @@ L0063 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- " references to paste into the"
   s11 fg=-,bg=-,mod=- " "
   s12 fg=-,bg=-,mod=- "agent conversation."
-L0064 style=fg=-,bg=-,mod=- align=-
-L0065 style=fg=cyan,bg=-,mod=B align=-
+L0065 style=fg=-,bg=-,mod=- align=-
+L0066 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "8. If a preview says "
   s01 fg=white,bg=rgb(43,48,59),mod=- "[can not preview]"
-L0066 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0067 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0068 style=fg=-,bg=-,mod=- align=-
+L0069 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Nothing is broken. konoma hands a few formats to external tools, and when one is"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "missing it says so instead of crashing — everything else keeps working. Install"
   s03 fg=-,bg=-,mod=- " "
   s04 fg=-,bg=-,mod=- "what you actually want:"
-L0069 style=fg=-,bg=-,mod=- align=-
-L0070 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0070 style=fg=-,bg=-,mod=- align=-
+L0071 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=I "▎ "
   s01 fg=-,bg=rgb(43,48,59),mod=- "                                                                                            "
   s02 fg=white,bg=rgb(70,78,99),mod=B " bash "
-L0071 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0072 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=rgb(92,99,112),bg=rgb(43,48,59),mod=I "#"
   s02 fg=rgb(92,99,112),bg=rgb(43,48,59),mod=I " macOS"
   s03 fg=-,bg=rgb(43,48,59),mod=- "                                                                                           "
-L0072 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0073 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=rgb(224,108,117),bg=rgb(43,48,59),mod=- "brew"
   s02 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- " install ffmpeg"
   s03 fg=-,bg=rgb(43,48,59),mod=- "                                                                               "
-L0073 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0074 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=-,bg=rgb(43,48,59),mod=- "                                                                                                  "
-L0074 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0075 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=rgb(92,99,112),bg=rgb(43,48,59),mod=I "#"
   s02 fg=rgb(92,99,112),bg=rgb(43,48,59),mod=I " Debian / Ubuntu"
   s03 fg=-,bg=rgb(43,48,59),mod=- "                                                                                 "
-L0075 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0076 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=rgb(224,108,117),bg=rgb(43,48,59),mod=- "sudo"
   s02 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- " apt install ffmpeg"
   s03 fg=-,bg=rgb(43,48,59),mod=- "                                                                           "
-L0076 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0077 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=-,bg=rgb(43,48,59),mod=- "                                                                                                  "
-L0077 style=fg=-,bg=-,mod=- align=-
 L0078 style=fg=-,bg=-,mod=- align=-
+L0079 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=B "ffmpeg"
   s02 fg=-,bg=-,mod=- " (or "
@@ -14440,67 +14478,71 @@ L0078 style=fg=-,bg=-,mod=- align=-
   s21 fg=-,bg=-,mod=- " — konoma"
   s22 fg=-,bg=-,mod=- " "
   s23 fg=-,bg=-,mod=- "decodes those itself, including what an iPhone records by default."
-L0079 style=fg=-,bg=-,mod=- align=-
+L0080 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=B "git"
   s02 fg=-,bg=-,mod=- " — the whole git suite in section 6. You almost certainly have it already."
-L0080 style=fg=-,bg=-,mod=- align=-
 L0081 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables, "
-  s01 fg=-,bg=-,mod=B "PDF"
-  s02 fg=-,bg=-,mod=- ", "
-  s03 fg=-,bg=-,mod=B "H.264 and"
-  s04 fg=-,bg=-,mod=- " "
-  s05 fg=-,bg=-,mod=B "HEVC video thumbnails"
-  s06 fg=-,bg=-,mod=- ", and code need "
-  s07 fg=-,bg=-,mod=B "nothing extra"
-  s08 fg=-,bg=-,mod=- " — they are rendered inside"
-  s09 fg=-,bg=-,mod=- " "
-  s10 fg=-,bg=-,mod=- "konoma, in pure Rust."
-  s11 fg=-,bg=-,mod=- " "
-  s12 fg=-,bg=-,mod=- "(On macOS only, a PDF the built-in renderer can't handle falls back to the"
-  s13 fg=-,bg=-,mod=- " "
-  s14 fg=-,bg=-,mod=- "system's own "
-  s15 fg=white,bg=rgb(43,48,59),mod=- "qlmanage"
-  s16 fg=-,bg=-,mod=- "/"
-  s17 fg=white,bg=rgb(43,48,59),mod=- "sips"
-  s18 fg=-,bg=-,mod=- " for its first page — nothing to install there"
-  s19 fg=-,bg=-,mod=- " "
-  s20 fg=-,bg=-,mod=- "either.) The picture formats are drawn as real pixels in any terminal that"
-  s21 fg=-,bg=-,mod=- " "
-  s22 fg=-,bg=-,mod=- "speaks a graphics protocol — kitty graphics (Ghostty, kitty, WezTerm, Konsole),"
-  s23 fg=-,bg=-,mod=- " "
-  s24 fg=-,bg=-,mod=- "iTerm2, or sixel — and degrade to a coarse but visible half-block approximation"
-  s25 fg=-,bg=-,mod=- " "
-  s26 fg=-,bg=-,mod=- "anywhere else. Text previews work in any terminal."
 L0082 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables, "
+  s01 fg=-,bg=-,mod=B "spreadsheets and Word"
+  s02 fg=-,bg=-,mod=- " "
+  s03 fg=-,bg=-,mod=B "documents"
+  s04 fg=-,bg=-,mod=- " (xlsx/ods, docx/odt), "
+  s05 fg=-,bg=-,mod=B "PDF"
+  s06 fg=-,bg=-,mod=- ", "
+  s07 fg=-,bg=-,mod=B "H.264 and"
+  s08 fg=-,bg=-,mod=- " "
+  s09 fg=-,bg=-,mod=B "HEVC video thumbnails"
+  s10 fg=-,bg=-,mod=- ", and code need "
+  s11 fg=-,bg=-,mod=B "nothing extra"
+  s12 fg=-,bg=-,mod=- " — they are rendered inside"
+  s13 fg=-,bg=-,mod=- " "
+  s14 fg=-,bg=-,mod=- "konoma, in pure Rust."
+  s15 fg=-,bg=-,mod=- " "
+  s16 fg=-,bg=-,mod=- "(On macOS only, a PDF the built-in renderer can't handle falls back to the"
+  s17 fg=-,bg=-,mod=- " "
+  s18 fg=-,bg=-,mod=- "system's own "
+  s19 fg=white,bg=rgb(43,48,59),mod=- "qlmanage"
+  s20 fg=-,bg=-,mod=- "/"
+  s21 fg=white,bg=rgb(43,48,59),mod=- "sips"
+  s22 fg=-,bg=-,mod=- " for its first page — nothing to install there"
+  s23 fg=-,bg=-,mod=- " "
+  s24 fg=-,bg=-,mod=- "either.) The picture formats are drawn as real pixels in any terminal that"
+  s25 fg=-,bg=-,mod=- " "
+  s26 fg=-,bg=-,mod=- "speaks a graphics protocol — kitty graphics (Ghostty, kitty, WezTerm, Konsole),"
+  s27 fg=-,bg=-,mod=- " "
+  s28 fg=-,bg=-,mod=- "iTerm2, or sixel — and degrade to a coarse but visible half-block approximation"
+  s29 fg=-,bg=-,mod=- " "
+  s30 fg=-,bg=-,mod=- "anywhere else. Text previews work in any terminal."
 L0083 style=fg=-,bg=-,mod=- align=-
+L0084 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "I know what to install if I need it"
-L0084 style=fg=-,bg=-,mod=- align=-
-L0085 style=fg=cyan,bg=-,mod=B align=-
+L0085 style=fg=-,bg=-,mod=- align=-
+L0086 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Where to go next"
-L0086 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0087 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0088 style=fg=-,bg=-,mod=- align=-
+L0089 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "Press "
   s02 fg=white,bg=rgb(43,48,59),mod=- "?"
   s03 fg=-,bg=-,mod=- " on any screen — every view documents its own keys."
-L0089 style=fg=-,bg=-,mod=- align=-
+L0090 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "The full manual (guides, configuration, keymap) lives at the documentation site"
   s02 fg=-,bg=-,mod=- " "
   s03 fg=-,bg=-,mod=- "linked from the README, and "
   s04 fg=white,bg=rgb(43,48,59),mod=- "config.example.toml"
   s05 fg=-,bg=-,mod=- " documents every setting inline."
-L0090 style=fg=-,bg=-,mod=- align=-
 L0091 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "One last box to tick:"
 L0092 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "One last box to tick:"
 L0093 style=fg=-,bg=-,mod=- align=-
+L0094 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "Done! Enjoy konoma."
@@ -14508,36 +14550,37 @@ L0093 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg"
 -- TASKS (5) --
-  t00 state=' ' state_at=1677
-  t01 state=' ' state_at=1707
-  t02 state=' ' state_at=1773
-  t03 state=' ' state_at=5083
-  t04 state=' ' state_at=5402
+  t00 state=' ' state_at=1786
+  t01 state=' ' state_at=1816
+  t02 state=' ' state_at=1882
+  t03 state=' ' state_at=5250
+  t04 state=' ' state_at=5569
 -- DETAILS_OPEN (0) --
 -- ANCHORS (10) --
   a00 line=0000 slug="konoma-tutorial--learn-by-doing"
   a01 line=0007 slug="1-scroll-and-leave"
   a02 line=0012 slug="2-follow-links-with-tab"
-  a03 line=0025 slug="3-toggle-these-checkboxes"
-  a04 line=0034 slug="4-search-and-copy"
-  a05 line=0041 slug="5-the-tree-is-a-file-manager"
-  a06 line=0051 slug="6-git-live"
-  a07 line=0056 slug="7-watch-an-ai-agent-work"
-  a08 line=0065 slug="8-if-a-preview-says-can-not-preview"
-  a09 line=0085 slug="where-to-go-next"
--- ITEMS (12) --
+  a03 line=0026 slug="3-toggle-these-checkboxes"
+  a04 line=0035 slug="4-search-and-copy"
+  a05 line=0042 slug="5-the-tree-is-a-file-manager"
+  a06 line=0052 slug="6-git-live"
+  a07 line=0057 slug="7-watch-an-ai-agent-work"
+  a08 line=0066 slug="8-if-a-preview-says-can-not-preview"
+  a09 line=0086 slug="where-to-go-next"
+-- ITEMS (13) --
   m00 line=0003 kind=Link{target="./tutorial.ja.md"}
   m01 line=0017 kind=Link{target="./markdown.md"}
   m02 line=0018 kind=Link{target="./sample.csv"}
   m03 line=0019 kind=Link{target="./sample.png"}
   m04 line=0020 kind=Link{target="./sample.pdf"}
   m05 line=0021 kind=Link{target="./sample.xlsx"}
-  m06 line=0030 kind=Task{state=' ',state_at=Some(1677)}
-  m07 line=0031 kind=Task{state=' ',state_at=Some(1707)}
-  m08 line=0032 kind=Task{state=' ',state_at=Some(1773)}
-  m09 line=0070 kind=CodeBlock{body=Some("# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg")}
-  m10 line=0083 kind=Task{state=' ',state_at=Some(5083)}
-  m11 line=0093 kind=Task{state=' ',state_at=Some(5402)}
+  m06 line=0022 kind=Link{target="./sample.docx"}
+  m07 line=0031 kind=Task{state=' ',state_at=Some(1786)}
+  m08 line=0032 kind=Task{state=' ',state_at=Some(1816)}
+  m09 line=0033 kind=Task{state=' ',state_at=Some(1882)}
+  m10 line=0071 kind=CodeBlock{body=Some("# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg")}
+  m11 line=0084 kind=Task{state=' ',state_at=Some(5250)}
+  m12 line=0094 kind=Task{state=' ',state_at=Some(5569)}
 
 === task_corpus: a details nested inside an alert nested inside a closed details hides everything ===
 -- LINES (2) --

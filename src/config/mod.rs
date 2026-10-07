@@ -905,6 +905,14 @@ impl Default for PreviewConfig {
                     ..Rule::empty()
                 },
                 Rule {
+                    // Word documents are converted to Markdown and drawn by the Markdown renderer.
+                    // A glob (not a mime) so a deleted file's diff still resolves the kind by name.
+                    // (`.doc` is never previewed.)
+                    glob: Some("*.{docx,docm,dotx,dotm,odt,ott}".into()),
+                    builtin: Some("document".into()),
+                    ..Rule::empty()
+                },
+                Rule {
                     // Archive contents listing (name/size/modified date). Doesn't extract (doesn't read the contents — principle #3).
                     glob: Some("*.{zip,tar,tgz}".into()),
                     builtin: Some("archive".into()),

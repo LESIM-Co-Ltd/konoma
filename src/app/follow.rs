@@ -1,6 +1,19 @@
 use super::git_view::DiffOpen;
 use super::*;
 
+/// An Office suite's owner/lock file (`~$report.docx`, written next to a document while Word,
+/// Excel or PowerPoint has it open; LibreOffice's `.~lock.*#` is a dot file and is already
+/// excluded as hidden). It changes on every open/close and holds a user name, not content, so
+/// following it would jump to a few bytes of binary. The tree still lists it. Only names with an
+/// Office document extension count: `~$notes.md` is an ordinary file.
+pub(super) fn is_office_owner_file(path: &Path) -> bool {
+    super::office_open::office_kind(path).is_some()
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("~$"))
+}
+
 impl App {
     // --- Follow mode (`F`) — Agent Watch ② -------------------------------------
     /// `F`: toggle follow mode (auto-jump to externally changed files; the "watch the AI work" view).
@@ -110,6 +123,11 @@ impl App {
     #[cfg(feature = "git")]
     pub(super) fn follow_baseline_diff(&self, path: &Path) -> Option<Vec<crate::git::DiffLine>> {
         let baseline = self.follow_baseline_contents(path)?;
+        // Check the size before reading: never slurp a device / FIFO / huge file whole.
+        let meta = std::fs::metadata(path).ok()?;
+        if !meta.is_file() || meta.len() > FOLLOW_BASELINE_FILE_CAP as u64 {
+            return None;
+        }
         let current = std::fs::read(path).ok()?;
         if current.len() > FOLLOW_BASELINE_FILE_CAP {
             return None;
@@ -260,7 +278,11 @@ impl App {
     /// inside a hidden (dot) directory unless hidden files are shown. Shared by the jump and the
     /// session-list recording so both see the same set.
     fn follow_target_ok(&self, path: &Path) -> bool {
-        if !path.starts_with(&self.tab.root) || !path.is_file() || self.is_ignored(path) {
+        if !path.starts_with(&self.tab.root)
+            || !path.is_file()
+            || is_office_owner_file(path)
+            || self.is_ignored(path)
+        {
             return false;
         }
         if !self.tab.show_hidden {
@@ -345,6 +367,10 @@ impl App {
         let Some(path) = self.tab.preview_path.clone() else {
             return;
         };
+        // A document's changed lines are those of a zip, not of its converted text.
+        if self.is_document() {
+            return;
+        }
         if !self.is_windowed() {
             if self.is_decorated_kind() && !self.is_raw_source() {
                 self.tab.diff_scroll_pending = Some(path);
@@ -573,5 +599,118 @@ mod tests {
             "1 回目の(誤った scope=false での)判定が立てた stale フラッシュが残っている: {:?}",
             app.flash
         );
+    }
+    /// A FIFO at `path` plus a writer thread that offers `content` to whoever opens it. A build that
+    /// wrongly reads the FIFO gets the content (so its test fails) instead of blocking for ever.
+    /// `release` unblocks a writer nobody read from and joins it, so no thread is left behind.
+    #[cfg(unix)]
+    struct FifoWriter(Option<std::thread::JoinHandle<()>>, PathBuf);
+
+    #[cfg(unix)]
+    impl FifoWriter {
+        fn new(path: &Path, content: Vec<u8>) -> FifoWriter {
+            use std::os::unix::ffi::OsStrExt;
+            let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: `c` is a valid NUL-terminated path.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo");
+            let p = path.to_path_buf();
+            let h = std::thread::spawn(move || {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(&p) {
+                    let _ = f.write_all(&content);
+                }
+            });
+            FifoWriter(Some(h), path.to_path_buf())
+        }
+
+        /// Opens the read end without blocking (this lets a still-waiting writer finish), then joins
+        /// the writer, with a bound so a failure here cannot hang the suite.
+        fn release(mut self) {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _reader = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&self.1);
+            let h = self.0.take().unwrap();
+            let t = std::time::Instant::now();
+            while !h.is_finished() {
+                assert!(
+                    t.elapsed() < std::time::Duration::from_secs(10),
+                    "FIFO writer stuck"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            h.join().unwrap();
+        }
+    }
+
+    /// A repo with `name` committed small, follow switched on, then `name` rewritten after `F`
+    /// (so its baseline is the pinned HEAD blob).
+    fn follow_app_with_clean_file(
+        tag: &str,
+        name: &str,
+    ) -> (App, PathBuf, crate::test_support::TmpDir) {
+        let dir = unique_tmp(tag);
+        let _ = std::fs::remove_dir_all(&dir);
+        init_git_repo(&dir);
+        let root = dir.canonicalize().unwrap();
+        std::fs::write(root.join(name), b"one\n").unwrap();
+        commit_all(&root, "init");
+        let mut app = App::new(root.clone(), Config::default()).unwrap();
+        app.toggle_follow();
+        assert!(app.follow_enabled());
+        (app, root, dir)
+    }
+
+    /// The size gate is `> cap`: a file of exactly `FOLLOW_BASELINE_FILE_CAP` bytes still gets its
+    /// since-follow-start diff, one byte more does not (catches `>` becoming `>=`, which would
+    /// send an exactly-at-the-limit file to the full git diff).
+    #[test]
+    fn follow_baseline_diff_accepts_a_file_of_exactly_the_cap_and_refuses_one_byte_more() {
+        let (app, root, _dir) = follow_app_with_clean_file("konoma_follow_cap_edge", "edge.txt");
+        let path = root.join("edge.txt");
+        // One long line: exactly at the cap.
+        std::fs::write(&path, vec![b'x'; FOLLOW_BASELINE_FILE_CAP]).unwrap();
+        assert!(
+            app.follow_baseline_diff(&path).is_some(),
+            "a file of exactly the cap is diffed"
+        );
+        std::fs::write(&path, vec![b'x'; FOLLOW_BASELINE_FILE_CAP + 1]).unwrap();
+        assert!(
+            app.follow_baseline_diff(&path).is_none(),
+            "one byte over the cap is not"
+        );
+    }
+
+    /// A path that is not a regular file (a FIFO reports length 0, so the size gate alone passes
+    /// it) is never opened: the diff is `None` and the writer waiting on the pipe is not read.
+    #[cfg(unix)]
+    #[test]
+    fn follow_baseline_diff_never_reads_a_fifo() {
+        let (app, root, _dir) = follow_app_with_clean_file("konoma_follow_fifo", "pipe.txt");
+        let path = root.join("pipe.txt");
+        std::fs::remove_file(&path).unwrap();
+        let w = FifoWriter::new(&path, b"offered\n".to_vec());
+        assert!(
+            app.follow_baseline_contents(&path).is_some(),
+            "the baseline (HEAD blob) is there, so only the file gate can refuse"
+        );
+        assert!(app.follow_baseline_diff(&path).is_none());
+        w.release();
+    }
+}
+
+#[cfg(test)]
+mod owner_file_tests {
+    use super::*;
+
+    #[test]
+    fn only_office_documents_with_the_owner_prefix_are_owner_files() {
+        for n in ["~$a.docx", "~$a.XLSX", "~$a.pptx", "~$a.odt", "~$a.xlsb"] {
+            assert!(is_office_owner_file(Path::new(n)), "{n}");
+        }
+        for n in ["~$notes.md", "~$a.txt", "~$a", "report.docx", "a~$b.docx"] {
+            assert!(!is_office_owner_file(Path::new(n)), "{n}");
+        }
     }
 }

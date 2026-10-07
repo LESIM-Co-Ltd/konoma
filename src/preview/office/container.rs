@@ -169,6 +169,22 @@ fn detect_zip(names: &[String]) -> Result<Detected, OfficeError> {
 /// recognised by `fmt_ods::read`, which looks at the manifest.)
 fn is_encrypted_ods(path: &Path, names: &[String], limits: &Limits) -> bool {
     const ODS_MIME: &[u8] = b"application/vnd.oasis.opendocument.spreadsheet";
+    odf_encrypted_as(path, names, limits, Some(ODS_MIME))
+}
+
+/// An OpenDocument package of any kind (text, spreadsheet, presentation ...) whose content is
+/// encrypted: see [`is_encrypted_ods`] for the two ways LibreOffice stores it.
+pub(crate) fn odf_encrypted(path: &Path, names: &[String], limits: &Limits) -> bool {
+    odf_encrypted_as(path, names, limits, None)
+}
+
+/// [`odf_encrypted`], optionally only when the `mimetype` starts with `mime`.
+fn odf_encrypted_as(
+    path: &Path,
+    names: &[String],
+    limits: &Limits,
+    mime_want: Option<&[u8]>,
+) -> bool {
     let Ok(mut zip) = open_zip(path) else {
         return false;
     };
@@ -182,8 +198,11 @@ fn is_encrypted_ods(path: &Path, names: &[String], limits: &Limits) -> bool {
         }
         _ => return false,
     };
-    if !mime.trim_ascii().starts_with(ODS_MIME) {
-        return false;
+    let mime = mime.trim_ascii();
+    match mime_want {
+        Some(want) if !mime.starts_with(want) => return false,
+        None if !mime.starts_with(b"application/vnd.oasis.opendocument.") => return false,
+        _ => {}
     }
     if names.iter().any(|n| n == "encrypted-package") {
         return true;
@@ -193,6 +212,39 @@ fn is_encrypted_ods(path: &Path, names: &[String], limits: &Limits) -> bool {
         _ => false,
     };
     encrypted
+}
+
+/// The Word counterpart of [`inspect`]: opens the file, enforces the file-size limit, scans every
+/// zip entry against the limits (really inflating each) and returns the entry names. A
+/// password-protected OOXML wrapper (a CFB with `/EncryptedPackage`) is
+/// [`OfficeError::Encrypted`]; any other CFB (a legacy `.doc`) and a zip that is not a package are
+/// [`OfficeError::Unsupported`]. Whether the package holds a Word document is the caller's check
+/// (the main part is named by `_rels/.rels`).
+pub(crate) fn inspect_word_package(
+    path: &Path,
+    limits: &Limits,
+) -> Result<Vec<String>, OfficeError> {
+    let mut f = File::open(path).map_err(io_err)?;
+    let len = f.metadata().map_err(io_err)?.len();
+    if len > limits.max_file_bytes {
+        return Err(OfficeError::TooLarge { what: "file" });
+    }
+    let mut head = [0u8; 8];
+    let n = read_up_to(&mut f, &mut head).map_err(io_err)?;
+    if n == 0 {
+        return Err(OfficeError::Corrupt("empty file".into()));
+    }
+    if n >= 2 && head[..2] == ZIP_MAGIC {
+        return scan_zip(path, limits);
+    }
+    if n == 8 && head == CFB_MAGIC {
+        return match inspect_cfb(path) {
+            Err(e) => Err(e),
+            // A BIFF workbook, or a legacy document: not a Word package.
+            Ok(_) => Err(OfficeError::Unsupported),
+        };
+    }
+    Err(OfficeError::Corrupt("not a zip or compound file".into()))
 }
 
 fn inspect_cfb(path: &Path) -> Result<Detected, OfficeError> {

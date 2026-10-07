@@ -257,3 +257,94 @@ fn the_child_does_not_dump_core() {
     assert_eq!(rc, 0);
     assert_eq!(rl.rlim_cur, 0);
 }
+
+// ---- the drawing mode and the rest of konoma ------------------------------------------------
+
+/// A 4x4 solid-red PNG written to `dir/name`.
+fn write_red_png(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let p = dir.join(name);
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]))
+        .save(&p)
+        .unwrap();
+    p
+}
+
+fn center_alpha(out: &[u8]) -> u8 {
+    let w = u32::from_le_bytes(out[5..9].try_into().unwrap()) as usize;
+    let h = u32::from_le_bytes(out[9..13].try_into().unwrap()) as usize;
+    out[13 + ((h / 2) * w + w / 2) * 4 + 3]
+}
+
+/// A picture embedded in a document has no directory (an empty base) and so reads no file, even
+/// when its `<image href>` names a real one; the same SVG as a file beside its picture draws it.
+#[test]
+fn an_svg_with_no_base_directory_reads_no_file() {
+    let dir = std::env::temp_dir().join(format!("konoma-svgchild-nofile-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = write_red_png(&dir, "secret.png");
+    let doc = svg(&format!(
+        r#"<image href="{}" width="20" height="10"/>"#,
+        png.display()
+    ));
+    let (ok, out) = run(&request(doc.as_bytes(), b"", 100));
+    assert!(ok);
+    assert_eq!(&out[..5], b"KSR1\0");
+    assert_eq!(center_alpha(&out), 0, "the local picture must not be drawn");
+    let (ok, out) = run(&request(
+        doc.as_bytes(),
+        dir.to_str().unwrap().as_bytes(),
+        100,
+    ));
+    assert!(ok);
+    assert_eq!(center_alpha(&out), 255, "beside its picture it still draws");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The drawing mode is the first thing `main` does: it never enters the terminal, installs no
+/// signal cleanup and creates no private temp directory (konoma's cleanups of those belong to the
+/// application, and a child that ran them would remove the parent's directory or print escape
+/// sequences into the pictures it answers with).
+#[test]
+fn the_drawing_mode_touches_neither_the_terminal_nor_the_temp_dir() {
+    let tmp = std::env::temp_dir().join(format!("konoma-svgchild-tmp-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let mut child = konoma()
+        .arg(FLAG)
+        .env("TMPDIR", &tmp)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let req = request(
+        svg(r##"<rect width="20" height="10" fill="#f00"/>"##).as_bytes(),
+        b"",
+        40,
+    );
+    std::thread::spawn(move || {
+        let _ = stdin.write_all(&req);
+    });
+    let mut out = Vec::new();
+    child.stdout.take().unwrap().read_to_end(&mut out).unwrap();
+    let mut err = Vec::new();
+    child.stderr.take().unwrap().read_to_end(&mut err).unwrap();
+    assert!(child.wait().unwrap().success());
+    assert_eq!(
+        out.len(),
+        13 + 40 * 20 * 4,
+        "exactly one picture, nothing else"
+    );
+    assert!(
+        !out.windows(2).any(|w| w == b"\x1b["),
+        "no terminal escape sequence in the answer"
+    );
+    assert!(
+        err.is_empty(),
+        "nothing printed: {:?}",
+        String::from_utf8_lossy(&err)
+    );
+    let left: Vec<_> = std::fs::read_dir(&tmp).unwrap().collect();
+    assert!(left.is_empty(), "no private temp directory made: {left:?}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}

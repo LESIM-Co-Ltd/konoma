@@ -15,6 +15,7 @@ pub mod media_diff;
 pub mod mermaid;
 pub mod office;
 pub mod pdf;
+pub(crate) mod private_dir;
 pub mod svg;
 pub(crate) mod svg_guard;
 pub(crate) mod svg_proc;
@@ -58,6 +59,10 @@ pub enum PreviewKind {
     /// sheets are shown through the table grid with cells formatted as Excel shows them. The
     /// workbook is parsed on a worker thread (`MediaJob::Workbook`).
     Spreadsheet(PathBuf),
+    /// Built-in Word document preview (docx / docm / dotx / dotm, and OpenDocument text odt / ott): the document is converted to
+    /// Markdown on a worker thread (`MediaJob::Document`) and drawn by the Markdown renderer. The
+    /// converted text lives on `App`, never in the file on disk.
+    Document(PathBuf),
     /// Built-in archive listing (zip / tar / tar.gz / tgz): entries (name/size/modified) rendered
     /// through the same table grid as CSV/TSV. Metadata only — never extracts/decompresses entry
     /// content (see `preview/archive.rs`'s module docs for the security boundary).
@@ -116,6 +121,7 @@ impl PreviewKind {
                     None => PreviewKind::can_not_preview(path),
                 },
                 "spreadsheet" => PreviewKind::Spreadsheet(p),
+                "document" => PreviewKind::Document(p),
                 "text" => PreviewKind::Text(p),
                 _ => PreviewKind::can_not_preview(path),
             };

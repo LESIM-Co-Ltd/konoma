@@ -7,7 +7,7 @@
 // on every zoom) is future work. So that a small-intrinsic-size SVG doesn't look blocky in the
 // terminal, we upscale it to draw at up to the target px on the max side.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -232,18 +232,55 @@ pub fn rasterize_untrusted(
     max_px: u32,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DynamicImage, SvgFail> {
+    rasterize_untrusted_in(data, resources_dir_of(path).as_deref(), max_px, cancelled)
+}
+
+/// Rasterize SVG bytes that are not a file on disk (a picture embedded in a Word / OpenDocument
+/// file), in a supervised child process. The document has no directory its references could be
+/// relative to, so the drawing reads **no** file (`<image href="/Users/x/private.png">` paints
+/// nothing). Blocks.
+pub fn rasterize_embedded(
+    data: &[u8],
+    max_px: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<DynamicImage, SvgFail> {
+    rasterize_untrusted_in(data, None, max_px, cancelled)
+}
+
+/// Whether `path` is a file in the remote-image cache (i.e. downloaded from the network).
+fn is_remote_cache_file(path: &Path) -> bool {
+    let Some(dir) =
+        crate::app::md_remote_cache_path("").and_then(|p| p.parent().map(Path::to_path_buf))
+    else {
+        return false;
+    };
+    path.parent() == Some(dir.as_path())
+}
+
+/// The base directory for an on-disk SVG's relative references; `None` (no file may be read) when
+/// the file is a cached remote download, so `href="/Users/x/private.png"` in a downloaded SVG
+/// cannot paint a local picture.
+fn resources_dir_of(path: &Path) -> Option<PathBuf> {
+    if is_remote_cache_file(path) {
+        return None;
+    }
+    path.parent().map(Path::to_path_buf)
+}
+
+fn rasterize_untrusted_in(
+    data: &[u8],
+    base: Option<&Path>,
+    max_px: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<DynamicImage, SvgFail> {
     svg_guard::precheck(data)?;
     #[cfg(test)]
     if svg_proc::child_exe().is_none() {
         // Unit tests of the callers run the same guarded drawing in this process; the tests of
         // the child itself start the real binary through `svg_proc::run_with`.
-        return rasterize_guarded(data, path.parent(), max_px);
+        return rasterize_guarded(data, base, max_px);
     }
-    let req = svg_proc::Request {
-        data,
-        base: path.parent(),
-        max_px,
-    };
+    let req = svg_proc::Request { data, base, max_px };
     match svg_proc::run(&req, cancelled) {
         Ok(img) => Ok(img),
         Err(svg_proc::RunError::Failed(f)) => Err(f),
@@ -810,5 +847,104 @@ mod tests {
         );
         // Through the trusted door too: the same guard.
         assert!(rasterize_trusted(doc, Path::new("x.svg"), 800).is_none());
+    }
+
+    // ---- an SVG may not read files it was not given (the Word preview's review, 2026-10) -------
+
+    /// A 20x20 solid-red PNG written to `dir/name`.
+    fn red_png(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        image::RgbaImage::from_pixel(20, 20, image::Rgba([255, 0, 0, 255]))
+            .save(&path)
+            .unwrap();
+        path
+    }
+
+    /// An SVG that draws the image at `href` over a 20x20 canvas.
+    fn svg_with_image(href: &str) -> String {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20" height="20"><image xlink:href="{href}" width="20" height="20"/></svg>"#
+        )
+    }
+
+    fn center_alpha(img: &image::DynamicImage) -> u8 {
+        let rgba = img.to_rgba8();
+        rgba.get_pixel(rgba.width() / 2, rgba.height() / 2)[3]
+    }
+
+    fn never() -> bool {
+        false
+    }
+
+    #[test]
+    fn an_embedded_svg_reads_no_file() {
+        let dir = unique_tmp("konoma_svg_nofile");
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = red_png(&dir, "secret.png");
+        let svg = svg_with_image(&png.display().to_string());
+        // A picture of a Word document: no directory at all.
+        let img = rasterize_embedded(svg.as_bytes(), 100, &never).unwrap();
+        assert_eq!(center_alpha(&img), 0, "the local picture must not be drawn");
+        // A caller's placeholder name with no real directory behind it reads nothing either.
+        for placeholder in ["image.svg", "office-img://abc/e.svg"] {
+            let img =
+                rasterize_untrusted(svg.as_bytes(), Path::new(placeholder), 100, &never).unwrap();
+            assert_eq!(center_alpha(&img), 0, "{placeholder}");
+        }
+        // Sizing from bytes reads nothing (it must not even try `/dev/zero`).
+        let zero = svg_with_image("/dev/zero");
+        assert_eq!(intrinsic_size_bytes(zero.as_bytes()), Some((20, 20)));
+        assert_eq!(
+            center_alpha(&rasterize_embedded(zero.as_bytes(), 100, &never).unwrap()),
+            0
+        );
+    }
+
+    #[test]
+    fn an_svg_file_reads_a_regular_picture_beside_it_but_no_device() {
+        let dir = unique_tmp("konoma_svg_file");
+        std::fs::create_dir_all(&dir).unwrap();
+        red_png(&dir, "red.png");
+        let ok = dir.join("ok.svg");
+        std::fs::write(&ok, svg_with_image("red.png")).unwrap();
+        assert_eq!(center_alpha(&rasterize(&ok, 100, &never).unwrap()), 255);
+        // A device, read to the end, would never finish: it is skipped (and quickly).
+        let bad = dir.join("bad.svg");
+        std::fs::write(&bad, svg_with_image("/dev/zero")).unwrap();
+        let t = std::time::Instant::now();
+        assert_eq!(center_alpha(&rasterize(&bad, 100, &never).unwrap()), 0);
+        assert!(t.elapsed() < std::time::Duration::from_secs(20));
+    }
+
+    #[test]
+    fn a_cached_remote_svg_reads_no_file_but_a_local_one_still_does() {
+        // The cache root is a sandbox directory, never the real ~/.cache.
+        let root = unique_tmp("konoma_svg_remote");
+        crate::test_support::set_test_cache_root(root.to_path_buf());
+        let cache = root.join("konoma").join("remote-images");
+        std::fs::create_dir_all(&cache).unwrap();
+        let png = red_png(&root, "secret.png");
+        let svg = svg_with_image(&png.display().to_string());
+        // A downloaded SVG (stored in the remote-image cache, no extension) draws nothing.
+        let remote = cache.join("0123456789abcdef");
+        std::fs::write(&remote, &svg).unwrap();
+        assert_eq!(center_alpha(&rasterize(&remote, 100, &never).unwrap()), 0);
+        // The same bytes as a file the user placed elsewhere still read the picture.
+        let local = root.join("mine.svg");
+        std::fs::write(&local, &svg).unwrap();
+        assert_eq!(center_alpha(&rasterize(&local, 100, &never).unwrap()), 255);
+    }
+
+    #[test]
+    fn a_fifo_is_never_read_as_an_svg() {
+        let dir = unique_tmp("konoma_svg_fifo");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("pipe.svg");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: `c` is a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo");
+        // Nobody writes: a build that opened the pipe would block here for ever.
+        assert!(rasterize(&fifo, 100, &never).is_err());
+        assert!(intrinsic_size(&fifo).is_err());
     }
 }

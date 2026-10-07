@@ -108,6 +108,17 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
         }
         return vec![sec.row("q / Esc", l(crate::i18n::Msg::BackToTree))];
     }
+    // A Word/OpenDocument file that is still converting or failed has no text: only the keys the
+    // footer lists act (`footer_hints`' branch for the same predicate).
+    if app.document_text_missing() {
+        let mut sec = HelpSection::new(l(crate::i18n::Msg::PreviewTextMarkdown))
+            .row("Ctrl-n / Ctrl-p", l(crate::i18n::Msg::PreviewFileJumpHelp))
+            .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint));
+        if let Some(msg) = app.edit_help_label(crate::i18n::Msg::EditExternalEnv) {
+            sec = sec.row("e", l(msg));
+        }
+        return vec![sec.row("q / Esc", l(crate::i18n::Msg::BackToTree))];
+    }
     if app.is_image_preview() {
         let mut sec = HelpSection::new(l(crate::i18n::Msg::PreviewImage))
             .row("+ / -", l(crate::i18n::Msg::Zoom))
@@ -139,9 +150,16 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     // `preview_enter_visual` requires it. The decorated view still has `Y`, but it only ever
     // copies the whole-file `@path` there (no caret/selection to speak of on a Tab-focused item).
     if app.is_windowed() {
+        // A Word document's converted Markdown has no lines in the .docx: `Y` is the file's
+        // `@path` only (`App::preview_selection_ref_text`).
+        let y = if app.is_document() {
+            crate::i18n::Msg::AtRefPathHelp
+        } else {
+            crate::i18n::Msg::AtRefHelp
+        };
         sec = sec
             .row("v / V → y", l(crate::i18n::Msg::PreviewSelectHelp))
-            .row("Y", l(crate::i18n::Msg::AtRefHelp));
+            .row("Y", l(y));
     } else {
         sec = sec.row("Y", l(crate::i18n::Msg::AtRefPathHelp));
     }
@@ -152,15 +170,34 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     } else {
         l(crate::i18n::Msg::MdRawToggleHelp)
     };
+    // A Word document has links and code blocks only (no checkboxes, diagrams or `<details>`: see
+    // `ensure_md_cache`), so its Tab/Enter rows name just those.
+    let (tab_msg, enter_msg) = if app.is_document() {
+        (
+            crate::i18n::Msg::FocusDocLink,
+            crate::i18n::Msg::OpenDocLinkHint,
+        )
+    } else {
+        (
+            crate::i18n::Msg::FocusMdLink,
+            crate::i18n::Msg::OpenLinkHint,
+        )
+    };
     sec = sec
         .row("R", r_help)
         .row("o", l(crate::i18n::Msg::HintOutline))
-        .row("Tab / ⇧Tab", l(crate::i18n::Msg::FocusMdLink))
-        .row("Enter", l(crate::i18n::Msg::OpenLinkHint))
-        .row("Ctrl-t", l(crate::i18n::Msg::OpenLinkNewTabHelp))
-        .row("+ / - / 0", l(crate::i18n::Msg::MermaidZoomHelp))
-        .row("Space", l(crate::i18n::Msg::MdTaskToggleHelp))
-        .row("Space / ↵", l(crate::i18n::Msg::HintDetailsToggle))
+        .row("Tab / ⇧Tab", l(tab_msg))
+        .row("Enter", l(enter_msg))
+        .row("Ctrl-t", l(crate::i18n::Msg::OpenLinkNewTabHelp));
+    // [[hint-shown-iff-key-acts]]: a Word document has no diagrams, checkboxes or `<details>` (and is
+    // never written), so those keys have nothing to act on there.
+    if !app.is_document() {
+        sec = sec
+            .row("+ / - / 0", l(crate::i18n::Msg::MermaidZoomHelp))
+            .row("Space", l(crate::i18n::Msg::MdTaskToggleHelp))
+            .row("Space / ↵", l(crate::i18n::Msg::HintDetailsToggle));
+    }
+    sec = sec
         .row("Ctrl-n / Ctrl-p", l(crate::i18n::Msg::PreviewFileJumpHelp))
         .row("m / '", l(crate::i18n::Msg::PreviewBookmarkHint));
     // An Office document that has no preview (docx, pptx, ...) still opens in an Office app on `e`.
@@ -249,7 +286,26 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         ]);
         return v;
     }
-    if matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))) && !app.is_raw_source() {
+    // A Word/OpenDocument file that is still loading or failed to convert has no text yet: `R`,
+    // `/`, scrolling and the like do nothing, so only the keys that still act are listed
+    // ([[hint-shown-iff-key-acts]]).
+    if app.document_text_missing() {
+        let mut v = vec![
+            hint(lang, "F", crate::i18n::Msg::StFollow),
+            hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
+            hint(lang, "q", crate::i18n::Msg::GitBack),
+            hint(lang, "?", crate::i18n::Msg::HintHelp),
+        ];
+        v.extend(edit_footer_hint(app));
+        v.extend([
+            hint(lang, "[/]", crate::i18n::Msg::HintTab),
+            hint(lang, "p", crate::i18n::Msg::HintPath),
+        ]);
+        return v;
+    }
+    if (matches!(app.tab.preview_kind, Some(PreviewKind::Markdown(_))) || app.document_ready())
+        && !app.is_raw_source()
+    {
         // Markdown (decorated view): `Tab` always cycles focus; everything else here is
         // focus-dependent (`app.md_focused_kind()`) — a hint is shown iff the key would actually
         // do what the label says right now, mirroring `md_activate_focused` /
@@ -468,7 +524,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // final kind-summary match below instead.
     // A spreadsheet parsing on the worker shows the same spinner (a *re*load keeps the previous
     // sheet on screen instead — `is_sheet_loading` is only true while nothing is showing yet).
-    if app.is_sheet_loading() {
+    if app.is_sheet_loading() || app.is_document_loading() {
         render_media_loading(frame, app, area);
         return;
     }
@@ -545,7 +601,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     if matches!(
         app.tab.preview_kind,
         Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Mermaid(_)) | Some(PreviewKind::Code(_))
-    ) {
+    ) || app.document_ready()
+    {
         render_decorated(frame, app, area);
         return;
     }
@@ -637,6 +694,24 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             false,
         ),
+        // A Word document that did not load: say why (encrypted / too large / corrupt / not a
+        // Word format), with the file name. Principle #3: never a crash, never raw bytes.
+        Some(PreviewKind::Document(path)) => {
+            let mut body = doc_error_text(app.lang, app.document_error());
+            // "Press `e` to open it in an Office app" only while `e` really does that
+            // ([[hint-shown-iff-key-acts]]: the same predicate as the footer's `e` hint, so not
+            // with `[external] office_apps = false` nor with an `[editor] ext` rule for the file).
+            if matches!(
+                app.document_error(),
+                Some(crate::preview::office::OfficeError::Unsupported)
+            ) && app.edit_label(crate::i18n::Msg::HintEdit, crate::i18n::Msg::HintOpen)
+                == Some(crate::i18n::Msg::HintOpen)
+            {
+                body.push('\n');
+                body.push_str(tr(app.lang, crate::i18n::Msg::DocErrUnsupportedOpen));
+            }
+            (format!("{body}\n{}", path.display()), false)
+        }
         // Archives are also already drawn via the dedicated path (is_table_preview) above. Reaching
         // here means listing failed (a corrupted file/unsupported format). Rather than dumping the
         // raw zip/tar byte stream as text, shows the target file + a hint (principle #3).
@@ -661,7 +736,13 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|p| format!(" {} ", app.format_path(&p)))
         .unwrap_or_else(|| " preview ".to_string());
 
-    let wrap = is_text && app.cfg.ui.wrap;
+    // A reason a workbook/document could not be shown is a sentence the user has to read to the
+    // end (it can name the `e` key): it wraps whatever `[ui] wrap` says and the width.
+    let reason_screen = matches!(
+        app.tab.preview_kind,
+        Some(PreviewKind::Spreadsheet(_) | PreviewKind::Document(_))
+    );
+    let wrap = (is_text && app.cfg.ui.wrap) || reason_screen;
 
     // Compute the clamp baselines for vertical/horizontal before moving `body`.
     let logical_lines = body.lines().count();
@@ -706,11 +787,17 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 /// Scroll/wrap/clamp/page-step amounts reuse the same conventions as the text path.
 fn render_decorated(frame: &mut Frame, app: &mut App, area: Rect) {
     render_decorated_body(frame, app, area, |app| {
-        app.tab
+        let mut title = app
+            .tab
             .preview_path
             .clone()
             .map(|p| format!(" {} ", app.format_path(&p)))
-            .unwrap_or_else(|| " preview ".to_string())
+            .unwrap_or_else(|| " preview ".to_string());
+        // A Word document converted only in part says so (the end of the text is missing).
+        if app.document_truncated() {
+            title.push_str(tr(app.lang, crate::i18n::Msg::DocTruncatedTitle));
+        }
+        title
     });
 }
 
@@ -1681,6 +1768,9 @@ fn render_windowed(frame: &mut Frame, app: &mut App, area: Rect) {
             tr(app.lang, crate::i18n::Msg::HintRawSource)
         ));
     }
+    if app.document_truncated() {
+        title.push_str(tr(app.lang, crate::i18n::Msg::DocTruncatedTitle));
+    }
     // While waiting on progressive rendering, add "highlighting" to the title (the body is immediately readable as plain text).
     if app.is_highlight_pending() && !app.loading_is_indicator() {
         title.push_str(tr(app.lang, crate::i18n::Msg::Highlighting));
@@ -1803,10 +1893,12 @@ fn sheet_error_limit(msg: crate::i18n::Msg) -> String {
         }
     };
     match msg {
-        Msg::SheetErrTooLargeFile => bytes(l.max_file_bytes),
-        Msg::SheetErrTooLargeEntries => group_thousands(l.max_entries as u64),
-        Msg::SheetErrTooLargeEntry => bytes(l.max_part_bytes),
-        Msg::SheetErrTooLargePackage => bytes(l.max_total_bytes),
+        Msg::SheetErrTooLargeFile | Msg::DocErrTooLargeFile => bytes(l.max_file_bytes),
+        Msg::SheetErrTooLargeEntries | Msg::DocErrTooLargeEntries => {
+            group_thousands(l.max_entries as u64)
+        }
+        Msg::SheetErrTooLargeEntry | Msg::DocErrTooLargeEntry => bytes(l.max_part_bytes),
+        Msg::SheetErrTooLargePackage | Msg::DocErrTooLargePackage => bytes(l.max_total_bytes),
         Msg::SheetErrTooLargeArea => group_thousands(l.max_dense_cells),
         Msg::SheetErrTooLargeText => bytes(l.max_text_bytes),
         _ => String::new(),
@@ -1824,6 +1916,30 @@ fn group_thousands(n: u64) -> String {
         out.push(ch);
     }
     out
+}
+
+/// The translated, fully formed reason a Word document could not be shown. `None` (no error was
+/// recorded: the worker's job itself failed) reads as a damaged file.
+fn doc_error_text(
+    lang: crate::i18n::Lang,
+    err: Option<&crate::preview::office::OfficeError>,
+) -> String {
+    use crate::i18n::Msg;
+    use crate::preview::office::OfficeError;
+    let msg = match err {
+        None | Some(OfficeError::Corrupt(_)) => Msg::DocErrCorrupt,
+        Some(OfficeError::Encrypted) => Msg::DocErrEncrypted,
+        Some(OfficeError::TooLarge { what }) => match *what {
+            "file" => Msg::DocErrTooLargeFile,
+            "entries" => Msg::DocErrTooLargeEntries,
+            "entry" => Msg::DocErrTooLargeEntry,
+            "package" => Msg::DocErrTooLargePackage,
+            _ => Msg::DocErrTooLargeOther,
+        },
+        Some(OfficeError::Unsupported) => Msg::DocErrUnsupported,
+        Some(OfficeError::Io(_)) => Msg::DocErrIo,
+    };
+    tr(lang, msg).replace("{n}", &sheet_error_limit(msg))
 }
 
 /// The translated, fully formed reason a spreadsheet could not be shown.

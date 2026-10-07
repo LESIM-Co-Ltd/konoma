@@ -40,7 +40,11 @@ impl App {
     /// Which preview the in-preview search (`/`) runs against. Each target has its own way of
     /// locating matches and of moving to one, so `search_commit` / `jump_to_match` branch on this.
     fn search_target(&self) -> SearchTarget {
-        if self.preview_win.is_some() {
+        if self.document_text_missing() {
+            // A document still converting (a raw view's old reader is not on screen) or failed:
+            // there is nothing visible to search.
+            SearchTarget::Unsupported
+        } else if self.preview_win.is_some() {
             // Code/Text and the raw Markdown from `R` (the window moves via byte offset).
             SearchTarget::Windowed
         } else if self.grid().is_some() || self.sheet_load_in_flight() {

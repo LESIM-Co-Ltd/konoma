@@ -210,6 +210,37 @@ pub fn shutdown() {
     kill_live();
 }
 
+/// Test-only: sets or clears the "on the way out" flag without killing anything (the flag is
+/// process-wide and one-way in production). A test that sets it holds the serial lock and clears
+/// it again before it ends.
+#[cfg(test)]
+pub(crate) fn set_shutting_down_for_test(on: bool) {
+    SHUTTING_DOWN.store(on, Ordering::SeqCst);
+}
+
+/// Test-only: whether `shutdown` has run (and not been undone by a test).
+#[cfg(test)]
+pub(crate) fn is_shutting_down() -> bool {
+    SHUTTING_DOWN.load(Ordering::SeqCst)
+}
+
+/// Test-only: starts a child the way a drawing does and hands it back, so a test can see what
+/// `Worker::start` does when it runs while konoma is leaving.
+#[cfg(test)]
+pub(crate) struct TestWorker(Worker);
+
+#[cfg(test)]
+impl TestWorker {
+    pub(crate) fn start(exe: &Path) -> Option<TestWorker> {
+        Worker::start(exe, 1 << 30).ok().map(TestWorker)
+    }
+
+    /// Whether the child has ended (reaped when it has).
+    pub(crate) fn ended(&mut self) -> bool {
+        matches!(self.0.child.try_wait(), Ok(Some(_)))
+    }
+}
+
 /// Kill every child that is alive now. Busy ones are reported as a crash by their supervisor, idle
 /// ones are reaped here.
 pub(crate) fn kill_live() {

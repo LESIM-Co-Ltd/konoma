@@ -525,6 +525,11 @@ impl App {
             self.set_workbook(None);
             self.workbook_error = None;
         }
+        // Likewise the converted Word document: App-level, only while the kind is `Document`.
+        if !matches!(kind, Some(PreviewKind::Document(_))) {
+            self.set_document(None);
+            self.document_error = None;
+        }
         self.tab.preview_kind = kind;
     }
 

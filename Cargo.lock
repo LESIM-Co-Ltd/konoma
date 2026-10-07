@@ -1748,6 +1748,7 @@ dependencies = [
  "rust_h265",
  "serde",
  "serde_json",
+ "signal-hook",
  "similar",
  "skrifa 0.44.0",
  "svgtypes",

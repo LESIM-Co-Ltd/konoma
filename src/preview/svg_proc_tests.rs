@@ -485,6 +485,86 @@ fn killing_the_live_children_stops_them() {
     no_children_left();
 }
 
+/// Clears the "on the way out" flag when a test that set it ends, panicking or not.
+struct ShutdownFlagGuard;
+impl Drop for ShutdownFlagGuard {
+    fn drop(&mut self) {
+        super::svg_proc::set_shutting_down_for_test(false);
+    }
+}
+
+/// `shutdown` (what `exit_cleanup` calls) stops the children that are waiting for work as well as
+/// those drawing, and refuses new drawings from then on. A child also ends by itself when its
+/// parent is gone, so only a test that looks *before* the process exits can see this.
+#[test]
+fn shutdown_stops_idle_children_and_refuses_new_drawings() {
+    let _g = serial();
+    no_children_left();
+    let _reset = ShutdownFlagGuard;
+    let ok = badge(1);
+    let img = run_with(
+        &bin(),
+        limits(),
+        &Request {
+            data: ok.as_bytes(),
+            base: None,
+            max_px: 100,
+        },
+        &never,
+    );
+    assert!(img.is_ok(), "{:?}", img.err());
+    assert_eq!(idle_children(), 1, "the child waits for its next drawing");
+    let pids = live_pids();
+    assert_eq!(pids.len(), 1);
+
+    super::svg_proc::shutdown();
+
+    assert!(super::svg_proc::is_shutting_down());
+    assert_eq!(idle_children(), 0, "the waiting child was dropped");
+    assert_eq!(live_children(), 0, "and left the registry");
+    assert!(gone(pids[0] as i32), "and was killed and reaped");
+    let again = run_with(
+        &bin(),
+        limits(),
+        &Request {
+            data: ok.as_bytes(),
+            base: None,
+            max_px: 100,
+        },
+        &never,
+    );
+    assert_eq!(
+        again.err(),
+        Some(RunError::Cancelled),
+        "no new drawing starts"
+    );
+    assert_eq!(live_children(), 0, "and no child was started for it");
+}
+
+/// A child that is registered after `shutdown` has already looked (the race `Worker::start`
+/// closes) is killed at once, not left to run to its own end.
+#[test]
+fn a_child_started_while_konoma_is_leaving_is_killed_at_once() {
+    let _g = serial();
+    no_children_left();
+    let _reset = ShutdownFlagGuard;
+    let dir = unique_tmp("svg-proc-start-late");
+    let pid_file = dir.join("pid");
+    let exe = script(&dir, "sleeper", "exec sleep 60", &pid_file);
+    super::svg_proc::set_shutting_down_for_test(true);
+    let mut w = super::svg_proc::TestWorker::start(&exe).expect("the child was started");
+    let t = Instant::now();
+    while !w.ended() {
+        assert!(
+            t.elapsed() < Duration::from_secs(10),
+            "a child started during shutdown went on running"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    drop(w);
+    no_children_left();
+}
+
 // ---- one child, many drawings ---------------------------------------------------------------
 
 fn badge(i: usize) -> String {

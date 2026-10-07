@@ -31,12 +31,38 @@ pub(super) fn github_slug(text: &str) -> String {
 
 /// Build the in-page anchor map (slug → decorated logical-line index) from the rendered lines, in
 /// document order, with GitHub's duplicate-slug disambiguation (`slug`, `slug-1`, `slug-2`, …).
+#[cfg(test)]
 pub(super) fn compute_md_anchors(lines: &[Line<'static>]) -> Vec<(String, usize)> {
+    compute_md_anchors_with_math(lines, &[])
+}
+
+/// The in-text LaTeX sources on each decorated line, in left-to-right order — what a heading's
+/// math reservation spans stand for (`heading_text_at`). Keyed by line index.
+pub(super) fn math_sources_by_line(
+    images: &[crate::preview::markdown::ImagePlacement],
+) -> std::collections::HashMap<usize, Vec<&str>> {
+    let mut by_line: std::collections::HashMap<usize, Vec<&str>> = std::collections::HashMap::new();
+    for p in images {
+        if crate::preview::markdown::is_math_url(&p.url) && p.rows == 1 {
+            by_line.entry(p.line).or_default().push(p.alt.as_str());
+        }
+    }
+    by_line
+}
+
+/// [`compute_md_anchors`] for a document whose headings may hold in-text math: the slug is made from
+/// the heading's text *with the `$latex$` source put back* where an expression is drawn as a picture,
+/// so it is the same slug whether or not the pictures have loaded (or image mode is on at all).
+pub(super) fn compute_md_anchors_with_math(
+    lines: &[Line<'static>],
+    images: &[crate::preview::markdown::ImagePlacement],
+) -> Vec<(String, usize)> {
     use std::collections::HashMap;
     let mut anchors = Vec::new();
     let mut counts: HashMap<String, usize> = HashMap::new();
-    for (i, line) in lines.iter().enumerate() {
-        let Some(text) = crate::preview::markdown::heading_text(line) else {
+    let math = math_sources_by_line(images);
+    for i in 0..lines.len() {
+        let Some(text) = crate::preview::markdown::heading_text_at(lines, i, &math) else {
             continue;
         };
         let base = github_slug(&text);

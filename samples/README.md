@@ -21,6 +21,11 @@ and are covered by the project's MIT license.
 - `sample.csv` / `sample.tsv` / `data.csv` — hand-written tables that exercise the CSV/TSV
   table preview (rainbow columns, cell navigation, quoted commas, full-width CJK cells, and
   long-value truncation).
+- `sample.xlsx` / `sample.ods` / `sample.xls` — spreadsheets for the spreadsheet preview
+  (one table per sheet, cells shown in their Excel number/date formats).
+- `sample.docx` / `sample.ja.docx` / `sample.odt` — original Word and OpenDocument text documents for the
+  document preview (headings, lists, tables, images). Written for konoma and exported with LibreOffice;
+  `sample.ja.docx` is the Japanese version (`.ja` suffix, like the other walkthrough demos).
 - `sample.zip` / `sample.tar.gz` — exercise the archive-listing preview (entry name / size /
   modified date in the same table renderer). Built by simply packing a few of this directory's
   *other* sample files with the system `zip`/`tar` tools (`sample.zip` = `code/hello.rs`,
@@ -36,7 +41,7 @@ and are covered by the project's MIT license.
 - `sample.svg`, the text / Markdown files, and everything under `code/` — written by hand
   for konoma.
 - The walkthrough demos are **English by default**; the Japanese versions use a `.ja` suffix
-  (`markdown.ja.md`, `mermaid.ja.md`, `links.ja.md`, `long-lines.ja.txt`, `tutorial.ja.md`). `japanese.txt` and the
+  (`markdown.ja.md`, `mermaid.ja.md`, `links.ja.md`, `long-lines.ja.txt`, `tutorial.ja.md`, `sample.ja.docx`). `japanese.txt` and the
   full-width cells in `sample.csv` stay as CJK demos (they exercise konoma's CJK-width handling).
 
 If you add new sample files, only commit material you have the right to redistribute

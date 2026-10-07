@@ -20212,6 +20212,12 @@ fn e2e_complex_many_sheets_navigate_to_the_end_and_back() {
 #[cfg(test)]
 mod survivors;
 
+#[cfg(test)]
+mod word;
+
+#[cfg(test)]
+mod math_ctx;
+
 // ---- SVG files that cannot be drawn say why ---------------------------------------------------
 
 /// Opening an SVG that nests 1000 levels deep: the real media worker refuses it, and the screen

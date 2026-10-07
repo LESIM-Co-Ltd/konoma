@@ -252,10 +252,21 @@ impl App {
         let items = match cache_source {
             MdCacheSource::Diff => Vec::new(),
             MdCacheSource::File => {
-                build_md_items_from_render(&lines, &targets, &decorated.images, &decorated.extras)
+                let mut items = build_md_items_from_render(
+                    &lines,
+                    &targets,
+                    &decorated.images,
+                    &decorated.extras,
+                );
+                // A Word document is never written: a checkbox glyph in its text is only text, so
+                // it is not a focusable, toggleable item (the toggle would write to the .docx).
+                if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
+                    items.retain(|it| !matches!(it.kind, MdItemKind::Task { .. }));
+                }
+                items
             }
         };
-        let anchors = compute_md_anchors(&lines);
+        let anchors = compute_md_anchors_with_math(&lines, &decorated.images);
         // `lines` was rendered at `render_width` (1 narrower than `width` when `gutter_active` —
         // see this function's own doc comment above). `max_line_cols` measures those lines as
         // rendered, so it must gain the same 1 column back once the gutter is actually prepended
@@ -684,6 +695,49 @@ impl App {
             let Some(font) = font else {
                 return ImageSlot::Unavailable;
             };
+            // A picture of the open Word document: its bytes are in memory and its size was read
+            // when the document was converted, so there is no file to resolve or stat.
+            if crate::preview::markdown::is_office_image_url(url) {
+                let lang = self.lang;
+                // Said once, like a file picture: a decode that failed keeps its reason, and a
+                // picture whose header is already over the limits is refused before any decode.
+                if let Some(e) = self
+                    .md_image_cache
+                    .get(&PathBuf::from(url))
+                    .filter(|e| e.failed)
+                {
+                    return match e.fail.and_then(|f| f.message(lang)) {
+                        Some(why) => ImageSlot::Failed(why),
+                        None => ImageSlot::Unavailable,
+                    };
+                }
+                return match self.document_picture_dims(url) {
+                    // Only a raster is refused from its header: an SVG's intrinsic size is not a
+                    // pixel count (it is drawn at `svg_max_px`, by the supervised process), the
+                    // same as a file SVG.
+                    Some(d)
+                        if self.document_picture_is_raster(url)
+                            && !crate::preview::image::dimensions_within_limits(d) =>
+                    {
+                        match crate::preview::image::ImageFailure::TooLarge.message(lang) {
+                            Some(why) => ImageSlot::Failed(why),
+                            None => ImageSlot::Unavailable,
+                        }
+                    }
+                    Some((pw, ph)) => {
+                        let (cols, rows) = md_image_cells(
+                            pw,
+                            ph,
+                            font.width,
+                            font.height,
+                            max_cols.unwrap_or(avail),
+                            MD_IMAGE_MAX_ROWS,
+                        );
+                        ImageSlot::Inline { cols, rows }
+                    }
+                    None => ImageSlot::Unavailable,
+                };
+            }
             if let Some(p) = resolve_md_image_path(url, base_dir.as_deref()) {
                 let lang = self.lang;
                 // A picture that already failed to decode says why (the entry keeps the reason).
@@ -935,8 +989,15 @@ impl App {
         math_on: bool,
         math_slot: &dyn Fn(&str, bool) -> crate::preview::markdown::MathSlot,
     ) -> DecoratedMarkdown {
-        let src = match crate::preview::text::load(path) {
-            Ok(content) => decorated_file_text(&content),
+        // A Word document draws the Markdown it was converted to, never the .docx on disk.
+        let is_doc = matches!(self.tab.preview_kind, Some(PreviewKind::Document(_)));
+        let loaded = if is_doc {
+            Ok(self.document_markdown().unwrap_or("").to_string())
+        } else {
+            crate::preview::text::load(path).map(|content| decorated_file_text(&content))
+        };
+        let src = match loaded {
+            Ok(src) => src,
             Err(e) => {
                 return DecoratedMarkdown {
                     lines: vec![Line::from(format!("[can not preview: 読み込み失敗] {e}"))],
@@ -955,11 +1016,11 @@ impl App {
         // Source line count, used to map the scroll position back to an approximate source line.
         let src_lines = src.lines().count();
         match &self.tab.preview_kind {
-            Some(PreviewKind::Markdown(_)) => {
+            Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Document(_)) => {
                 let theme = &self.cfg.ui.theme;
                 // Front matter: split the leading `---`…`---` off so the body renders normally; a dim
                 // metadata block is prepended to the result below (and image line indices offset).
-                let (fm_lines, src) = if self.cfg.ui.md_frontmatter {
+                let (fm_lines, src) = if self.cfg.ui.md_frontmatter && !is_doc {
                     match crate::preview::markdown::strip_front_matter(&src) {
                         (Some(fm), body) => (
                             crate::preview::markdown::render_front_matter(&fm, width),

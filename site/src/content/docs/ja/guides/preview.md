@@ -45,7 +45,7 @@ sidebar:
   `ui.mermaid_routing = "konoma-orthogonal"` で設定します。
 - **LaTeX 数式**: `$…$` と `$$…$$`(あるいは `\(…\)` / `\[…\]`)を純 Rust で
   組版して画像として描画します — ブラウザも Node も TeX の導入も不要。
-  **インライン式は常に通常の Markdown と同じく文中に置きます**（幅が広すぎる式は
+  **インライン式は常に通常の Markdown と同じく文中に置きます**（表のセル・見出し・引用の中も同じ。幅が広すぎる式は
   利用可能幅まで縮める・持ち上げません）。ディスプレイ式は中央寄せにします。
   `$5` のような通貨やコード内の `$` はそのままです。`ui.math = "text"` で
   生の LaTeX 表示に、`ui.math_color` で端末の前景色に合わせられます。
@@ -123,13 +123,37 @@ Office アプリで開きたい時は `e` — 下の[Office 文書を `e` で開
 
 ### Office 文書を `e` で開く
 
-Word(`docx docm dotx dotm doc odt`)・Excel(上の 7 種)・PowerPoint(`pptx pptm ppsx potx ppt odp`)
+Word(`docx docm dotx dotm doc odt ott`)・Excel(上の 7 種)・PowerPoint(`pptx pptm ppsx potx ppt odp`)
 のファイルで `e` を押すと、zip を `$EDITOR` に渡さず GUI アプリで開きます。macOS は
 Microsoft Office → LibreOffice → 既定アプリ(`open`)、Linux は `libreoffice` → `soffice` →
 `xdg-open` の順です。端末は止まりません。`[editor] ext` にその拡張子があればそちらが優先、
 `[external] office_apps = false` で無効になります(`$EDITOR` には戻りません)。
-Word と PowerPoint はまだ端末内プレビューが無く、開くには `e` を使います。
-Office アプリは任意で、表計算のプレビューは無くても動きます。
+PowerPoint は端末内プレビューが無く、開くには `e` を使います(古い `.doc` も同じ)。
+Office アプリは任意で、表計算と Word のプレビューは無くても動きます。
+
+## Word・OpenDocument 文書
+
+`.docx`・`.docm`・`.dotx`・`.dotm`・`.odt`・`.ott` は konoma 自身が Markdown に変換して
+`.md` と同じように表示します。Word や LibreOffice などの外部ツールは不要で、
+`o`(アウトライン)・`Tab`(リンク)・`/`(検索)・数式がそのまま使えます:
+
+- 見出し・**太字**・*斜体*・~~取り消し線~~・箇条書きと番号(**文書の見たまま**:
+  `(a)`・`ア`・`①`・`第1条` など)・表(結合セルは左上に値)・画像・脚注/文末脚注・
+  テキストボックスを表示します。
+- リンクも使えます。外部 URL はブラウザで開き、文書内の見出しへのリンクはそこへ
+  ジャンプします。目次などのフィールドは Word が保存した文字を表示します。
+- **変更履歴は最終版**を表示します。コメントとヘッダー/フッターは**出しません**。
+- **数式は LaTeX に変換して数式として描画**します(Word の OMML・ODF の MathML)。
+  変換できない式は文字のままです。
+- `R` で変換後の Markdown を表示します。`v` / `V` で選択して `y` でコピーできます
+  (AI に文書を渡すときに便利です)。
+
+知っておく制限: 元の文書ファイルは書き換えません(チェックボックスのトグルは無効)。
+パスワード付き・壊れた・大きすぎるファイルは理由つきで表示できません。変換が上限
+(Markdown 1,000,000 バイト / 5,000 行・画像 300 枚・表 20,000 セル)で打ち切られたら
+先頭を表示し、タイトルに示します。表のセルの中で 2 つ以上出てくる `*`・`` ` ``・`~~` は
+見た目の似た字に置き換わります。古いバイナリ形式の `.doc` はプレビューしません(`e` で開けます)。
+今のところ LibreOffice 製のファイルで確認しており、Microsoft Word 製のファイルは未確認です。
 
 ## 画像・SVG・GIF・動画・PDF
 

@@ -330,6 +330,11 @@ impl App {
     /// switched to raw source (which is windowed) so the line is addressable. No-op for image / table
     /// / pdf previews (there is no line coordinate to land on).
     fn preview_goto_line(&mut self, line: usize) {
+        // A Word/OpenDocument file has no lines of its own (it is a zip): a line number from a
+        // pasted reference means nothing in its converted Markdown, so the jump stays at the top.
+        if self.is_document() {
+            return;
+        }
         if self.is_decorated_kind() && !self.is_md_raw() {
             self.toggle_md_raw();
         }

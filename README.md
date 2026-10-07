@@ -131,9 +131,20 @@ you came from, since a worktree's directory rarely does.
   separators, percent, currency, dates, times), column letters and row numbers; `J`/`K` switch sheets.
   Rows and columns hidden in Excel are still shown (hidden sheets are not); Excel 365 error values and
   pivot-table totals appear as saved, and formulas are never recalculated.
+- **Word / OpenDocument documents** (`.docx`/`.docm`/`.dotx`/`.dotm`/`.odt`/`.ott`) are converted to Markdown by
+  konoma itself (no external tool) and drawn like any `.md`: headings, bold / italic / strikethrough, bullets and
+  numbering exactly as Word shows them (`(a)`, `ア`, `①`, `第1条` ...), tables (a merged cell shows its value in the
+  top-left cell), pictures, footnotes / endnotes, links (external URLs, and to headings in the document), saved
+  results of fields such as a table of contents, and text boxes. Tracked changes show the final text; comments and
+  headers / footers are not shown. Equations (Word's OMML, ODF's MathML) become LaTeX and are drawn as math (one
+  konoma cannot convert stays as text). `R` shows the converted Markdown — select with `v`/`V`, copy with `y` (handy
+  for handing a document to an AI). The file itself is never written (checkbox toggling is off for these). A
+  password-protected, damaged or too-large file says why it cannot be shown, and a conversion cut at the size limit
+  says so in the title. The old binary `.doc` is not previewed (`e` opens it). Checked against LibreOffice-made files
+  only — not yet against files made by Microsoft Word.
 - **Open Office documents in their app**: `e` on a Word / Excel / PowerPoint / OpenDocument file opens it
   in Microsoft Office, LibreOffice or the OS default instead of handing the zip to `$EDITOR`.
-  (Only spreadsheets have an in-terminal preview so far; Word and PowerPoint files are open-with-`e` only.)
+  (Word and OpenDocument text have an in-terminal preview — see above; PowerPoint files are open-with-`e` only.)
 - **Config-driven delegation**: declare how each format is previewed in TOML — delegate to a
   built-in renderer or an external command. Unsupported formats safely show `[can not preview]`
   full-screen instead of crashing.
@@ -268,9 +279,9 @@ instructions](https://docs.jj-vcs.dev/latest/install-and-setup/) (a prebuilt bin
 
 - **Microsoft Office / LibreOffice** — what `e` launches on a Word, Excel, PowerPoint or OpenDocument file
   (macOS: Microsoft Office, then LibreOffice, then the default app via `open`; Linux: `libreoffice`, then
-  `soffice`, then `xdg-open`). Optional and only for `e`: the spreadsheet preview itself needs no Office app.
+  `soffice`, then `xdg-open`). Optional and only for `e`: the spreadsheet and Word / OpenDocument previews themselves need no Office app.
 
-Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets and code need nothing extra — konoma renders
+Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, Word documents and code need nothing extra — konoma renders
 them itself, in pure Rust. (On macOS only, a PDF the built-in renderer cannot draw falls back to the
 system's own `qlmanage`/`sips` for its first page — already installed, nothing to add.)
 

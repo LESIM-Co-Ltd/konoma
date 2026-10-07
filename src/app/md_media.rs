@@ -67,10 +67,14 @@ fn kitty_id_for(
     family.get(slot).copied()
 }
 
-/// Whether a cache key names a picture that can be rebuilt from a file on disk (a regular inline
-/// image, as opposed to a media-diff picture whose bytes came from git).
+/// Whether a cache key names a picture whose pixels can be made again once dropped: a regular
+/// inline image (read from its file again) or a picture of the open Word/OpenDocument document
+/// (decoded again from the bytes the converted document keeps), as opposed to a media-diff picture
+/// whose bytes came from git and are held nowhere else.
 fn is_rebuildable_md_key(k: &Path) -> bool {
-    !crate::preview::markdown::is_synthetic_md_url(&k.to_string_lossy())
+    let s = k.to_string_lossy();
+    !crate::preview::markdown::is_synthetic_md_url(&s)
+        || crate::preview::markdown::is_office_image_url(&s)
 }
 
 impl App {
@@ -841,6 +845,12 @@ impl App {
             return true;
         };
         let Some(svg) = entry.svg.clone() else {
+            // A picture of the open document: decoded again from the bytes it keeps, through the
+            // same entry as the first decode (the defences of the first decode apply again).
+            let url = path.to_string_lossy().to_string();
+            if crate::preview::markdown::is_office_image_url(&url) {
+                return self.start_office_picture_thread(&url, path);
+            }
             return self.spawn_md_decode(path);
         };
         let s = path.to_string_lossy();
@@ -996,6 +1006,20 @@ impl App {
             };
             p
         };
+        // A picture of a Word document: decode it from the bytes held in memory (never a file).
+        if crate::preview::markdown::is_office_image_url(url)
+            && !self.md_image_cache.contains_key(&path)
+        {
+            // At most MAX_SYNTHETIC_RENDERS_IN_FLIGHT decodes at once, like the fence/math renders:
+            // a tall terminal over a picture-heavy document would otherwise start one thread per
+            // visible picture. Skipping leaves no entry, so the next draw (a landed decode always
+            // causes one) asks again.
+            if self.office_pictures_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
+                return;
+            }
+            self.spawn_office_picture_decode(url, path);
+            return;
+        }
         // Kick off a one-time background decode.
         if !self.md_image_cache.contains_key(&path) {
             // A synthetic key (fence diagram / math expression) cannot be built here (the original
@@ -1079,6 +1103,97 @@ impl App {
             rows,
             kitty,
         });
+    }
+
+    /// How many pictures of the open document are being decoded right now (cached, not yet decoded
+    /// and not failed).
+    pub(super) fn office_pictures_in_flight(&self) -> usize {
+        self.md_image_cache
+            .iter()
+            .filter(|(k, e)| {
+                e.decoded.is_none()
+                    && !e.failed
+                    && crate::preview::markdown::is_office_image_url(&k.to_string_lossy())
+            })
+            .count()
+    }
+
+    /// Starts the one-time background decode of a Word document's picture from its in-memory
+    /// bytes. The cache entry is placed first (its presence is the "decode in flight" marker, as
+    /// for a file image); a picture the document does not hold is left uncached (nothing to draw).
+    fn spawn_office_picture_decode(&mut self, url: &str, key: PathBuf) {
+        if self.document_picture_bytes(url).is_none() {
+            return;
+        }
+        self.md_image_cache
+            .insert(key.clone(), MdImgEntry::default());
+        if !self.start_office_picture_thread(url, key.clone()) {
+            // The thread could not start: end the wait instead of latching "loading".
+            if let Some(e) = self.md_image_cache.get_mut(&key) {
+                e.failed = true;
+            }
+        }
+    }
+
+    /// Starts the thread that decodes picture `url` of the open document into the cache entry
+    /// `key` (which already exists: a first decode just placed it, a rebuild of dropped pixels
+    /// keeps its own). Returns false when there is nothing to decode (the document no longer
+    /// holds the picture) or the thread could not be started; the caller ends the wait.
+    fn start_office_picture_thread(&mut self, url: &str, key: PathBuf) -> bool {
+        let Some(bytes) = self.document_picture_bytes(url) else {
+            return false;
+        };
+        let Some(tx) = self.md_img_tx.clone() else {
+            return true;
+        };
+        let svg_max_px = self.cfg.ui.svg_max_px;
+        let ticket = self
+            .md_image_cache
+            .get(&key)
+            .map(|e| e.wish.ticket())
+            .unwrap_or_default();
+        let (gen, latest) = (self.media_gen, self.media_gen_shared.clone());
+        let stale = ticket.clone();
+        std::thread::Builder::new()
+            .name("konoma-office-pic".into())
+            .spawn(move || {
+                use crate::preview::image::ImageFailure;
+                // The same contract as the file decode: queued in the shared decode gate under the
+                // entry's ticket, an SVG drawn by the supervised child process (stopped when the
+                // document is left), a panic on a pathological picture is a failed decode, and a
+                // result is always sent (not sending would latch the busy indicator).
+                let moved_on =
+                    || latest.load(std::sync::atomic::Ordering::Relaxed) != gen || stale.is_stale();
+                let (still, frames) = crate::preview::markdown::catch_silent(|| {
+                    crate::preview::image::with_decode_ticket(ticket, || {
+                        if bytes.starts_with(b"GIF8") {
+                            if let Some((frames, _)) =
+                                crate::preview::image::decode_gif_bytes_inline(&bytes)
+                            {
+                                let first = frames[0].0.clone();
+                                return (Ok(first), Some(frames));
+                            }
+                        }
+                        (md_decode_bytes_why(&bytes, svg_max_px, &moved_on), None)
+                    })
+                })
+                .unwrap_or((Err(ImageFailure::Corrupt), None));
+                if still.as_ref().err() == Some(&ImageFailure::Cancelled) {
+                    return;
+                }
+                let still = match still {
+                    Err(_) if moved_on() => Err(ImageFailure::Cancelled),
+                    other => other,
+                };
+                let _ = tx.send(MdImageResult {
+                    path: key,
+                    image: still.map_err(|f| f.code().to_string()),
+                    svg: None,
+                    reraster: false,
+                    frames,
+                });
+            })
+            .is_ok()
     }
 
     /// The image to draw for the visible portion of inline image `url`, **at this placement's own

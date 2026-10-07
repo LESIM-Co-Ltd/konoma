@@ -24,6 +24,7 @@ Markdown のリンクはフォーカスできます。`Tab` を何度か押す�
 - [sample.png](./sample.png) — 画像プレビュー: `+`/`-` ズーム、`h j k l` パン
 - [sample.pdf](./sample.pdf) — PDF: `J`/`K` でページ送り
 - [sample.xlsx](./sample.xlsx) — 表計算を表で開く(セルは Excel の表示書式どおり): `J`/`K` でシート切替
+- [sample.ja.docx](./sample.ja.docx) — Word 文書を整形して表示(見出し・リスト・表・画像・数式)
 
 `Tab` でフォーカス → `Enter` で開く → `q` でここへ戻る、を一往復してみてください。
 
@@ -93,7 +94,7 @@ sudo apt install ffmpeg
   不要**です（konoma 自身がデコードします）。
 - **git** — 6 章の git スイート一式。たいていは既に入っています。
 
-画像・SVG・Markdown・Mermaid 図・LaTeX 数式・CSV テーブル・**PDF**・
+画像・SVG・Markdown・Mermaid 図・LaTeX 数式・CSV テーブル・**表計算と Word 文書**（xlsx/ods・docx/odt）・**PDF**・
 **H.264/HEVC 動画のサムネイル**・コードは**追加インストール不要**で、konoma 自身が純 Rust で描きます（macOS に限り、
 内蔵レンダラが扱えない PDF は OS 同梱の `qlmanage`/`sips` に 1 ページ目だけ
 フォールバックします。これも導入不要です）。画像系はグラフィックプロトコルを

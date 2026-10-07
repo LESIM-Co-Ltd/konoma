@@ -85,40 +85,242 @@ pub(crate) fn calls_for_test() -> u64 {
     CALLS.with(|c| c.get())
 }
 
-/// Lazily creates (once per process), and returns the path to, a private `0700` (owner-only)
-/// subdirectory under the system temp dir for delegated commands' `{out}` files.
-/// `std::env::temp_dir()` is world-writable/world-readable on Linux (`/tmp` is mode `1777`) — a
-/// delegated command's output would otherwise briefly sit at a pid-and-counter-predictable path
-/// readable by any other local user on a shared box, regardless of whether *konoma itself* wrote
-/// the file (the `uses_out=false` capture path, below — see also `write_private`) or an
-/// arbitrary user-configured external command wrote `{out}` itself under whatever mode it happens
-/// to pick (the `uses_out=true` path). Restricting the *directory* is what closes this uniformly
-/// for both cases: POSIX requires execute/search permission on every ancestor directory to open a
-/// file by path, so `0700` here blocks other users regardless of who created the file or what mode
-/// they used for it.
+/// The private `0700` (owner-only) subdirectory under the system temp dir for delegated
+/// commands' `{out}` files, created on demand by the shared `private_dir` implementation (which
+/// refuses planted directories and symlinks, see there). `std::env::temp_dir()` is
+/// world-writable/world-readable on Linux (`/tmp` is mode `1777`), so a delegated command's output
+/// would otherwise briefly sit at a predictable path readable by any other local user. Restricting
+/// the *directory* closes this uniformly for files konoma writes itself (`write_private`) and for
+/// files an arbitrary external command writes as `{out}`: POSIX requires search permission on every
+/// ancestor directory to open a file by path.
 fn private_temp_dir() -> PathBuf {
-    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("konoma-cmd-{}", std::process::id()));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-            // The mode is applied atomically by `mkdir(2)` itself (masked by umask, but `0o700`
-            // has no group/other bits for umask to strip), so there's no "create, then chmod" gap
-            // where a wider-permission window briefly exists.
-            let _ = std::fs::DirBuilder::new().mode(0o700).create(&dir);
-            // Defense-in-depth for the unlikely case the directory already existed with looser
-            // permissions (e.g. a stale leftover from an earlier process that reused this pid).
-            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = std::fs::create_dir(&dir);
-        }
-        dir
-    })
-    .clone()
+    super::private_dir::private_dir("cmd")
 }
+
+/// The unit-test process never reaches `main`'s exit cleanup, so it removes its own private
+/// directories when the process exits (libtest ends through `process::exit`). Every module that
+/// creates a `konoma-<kind>-<pid>` directory calls this first.
+#[cfg(all(test, unix))]
+pub(crate) fn register_test_exit_cleanup() {
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| {
+        extern "C" fn at_exit() {
+            remove_private_temp_dir();
+        }
+        // SAFETY: registers a plain `extern "C" fn()` that only removes directories.
+        unsafe {
+            libc::atexit(at_exit);
+        }
+    });
+}
+
+#[cfg(not(all(test, unix)))]
+pub(crate) fn register_test_exit_cleanup() {}
+
+/// Removes this process's whole private temp directory (every delegated command's `{out}` and every
+/// converted document's raw view). Called on every exit path — after the run loop, from the panic
+/// hook, and from the signal thread — because `App::clear_command_out` only covers the active tab
+/// leaving its preview, so a quit from a raw view (or an inactive tab's, or a signal) would
+/// otherwise leave a converted document's full text in `$TMPDIR`. Never creates the directory.
+pub fn remove_private_temp_dir() {
+    // Removes the directories this process chose (delegated commands, PDF pages, video
+    // thumbnails) and nothing else.
+    super::private_dir::remove_all_private_dirs();
+}
+
+/// What every way out of the program that ends it for good does besides the terminal: stop the
+/// SVG drawing processes (a hostile file must not go on burning CPU after konoma is gone) and
+/// remove the private temp directory. Called after the run loop, from the panic hook of a fatal
+/// panic, and from the signal thread.
+pub fn exit_cleanup() {
+    if dry_run() {
+        note_exit_step(ExitStep::StopSvgProcesses);
+    } else {
+        super::svg_proc::shutdown();
+    }
+    if dry_run() {
+        note_exit_step(ExitStep::RemoveTempDir);
+    } else {
+        remove_private_temp_dir();
+    }
+}
+
+/// One thing the exit path does.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExitStep {
+    StopSvgProcesses,
+    RemoveTempDir,
+    RestoreTerminal,
+}
+
+#[cfg(not(test))]
+#[derive(Clone, Copy)]
+enum ExitStep {
+    StopSvgProcesses,
+    RemoveTempDir,
+    RestoreTerminal,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Set by a test (per thread) so that the exit path only records what it would do: the unit
+    /// test process must not stop its parallel tests' drawing processes, remove their
+    /// directories, make `svg_proc` refuse work for good or write to the terminal it runs in. The
+    /// real thing is run in a process of its own (`exit_cleanup_really_*`).
+    static DRY_RUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static EXIT_STEPS: std::cell::RefCell<Vec<ExitStep>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn dry_run() -> bool {
+    DRY_RUN.with(std::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+fn dry_run() -> bool {
+    false
+}
+
+#[cfg(test)]
+fn note_exit_step(step: ExitStep) {
+    EXIT_STEPS.with(|s| s.borrow_mut().push(step));
+}
+
+#[cfg(not(test))]
+fn note_exit_step(_: ExitStep) {}
+
+/// Test-only: runs `f` with the exit path only recording, and returns the steps it took in order.
+#[cfg(test)]
+pub(crate) fn recorded_exit_steps<R>(f: impl FnOnce() -> R) -> (R, Vec<ExitStep>) {
+    DRY_RUN.with(|d| d.set(true));
+    EXIT_STEPS.with(|s| s.borrow_mut().clear());
+    let r = f();
+    DRY_RUN.with(|d| d.set(false));
+    (r, EXIT_STEPS.with(|s| std::mem::take(&mut *s.borrow_mut())))
+}
+
+/// Leaving the program for good: `exit_cleanup`, then the terminal teardown. The one thing the
+/// normal exit, the signal thread and the fatal-panic hook all call, so none of them can stop
+/// short of the SVG drawing processes.
+pub fn leave_for_good() {
+    exit_cleanup();
+    if dry_run() {
+        note_exit_step(ExitStep::RestoreTerminal);
+    } else {
+        restore_terminal_quietly();
+    }
+}
+
+/// The panic hook's part: a panic that ends the process (see `panic_ends_process`) leaves for
+/// good before the previous hook prints its message. Returns whether it did.
+pub fn leave_if_panic_ends_process(thread_name: Option<&str>, caught: bool) -> bool {
+    if panic_ends_process(thread_name, caught) {
+        leave_for_good();
+        true
+    } else {
+        false
+    }
+}
+
+/// The signal thread's part: `Some(exit code)` after leaving for good, `None` for a signal that is
+/// ignored (SIGINT while a foreground child owns the terminal).
+pub(crate) fn leave_on_signal(sig: i32, child_running: bool) -> Option<i32> {
+    if ignore_signal(sig, child_running) {
+        return None;
+    }
+    leave_for_good();
+    Some(128 + sig)
+}
+
+/// The bytes that undo what konoma turned on in the terminal: bracketed paste off, alternate
+/// screen left, cursor shown (a hidden cursor would otherwise survive a signal or panic exit;
+/// showing an already visible cursor is a no-op, so the normal exit path is unaffected). Raw mode is a termios setting, not an escape sequence (see
+/// `restore_terminal_quietly`).
+pub(crate) const TERMINAL_RESTORE_SEQUENCE: &[u8] = b"\x1b[?2004l\x1b[?1049l\x1b[?25h";
+
+/// Writes the terminal-restore sequence to `w` and flushes, ignoring every error: a terminal that
+/// is already gone (SIGHUP: the pty's other end is closed, every write fails with `EIO`) leaves
+/// nothing to restore. Never panics and never prints (`eprintln!` itself panics on a failed
+/// write, and a panic inside a panic hook aborts the process).
+pub(crate) fn write_terminal_restore(w: &mut dyn std::io::Write) {
+    let _ = w.write_all(TERMINAL_RESTORE_SEQUENCE);
+    let _ = w.flush();
+}
+
+/// The one terminal teardown shared by every way out of the TUI (normal exit, SIGTERM / SIGHUP /
+/// SIGINT, a fatal panic): raw mode off first (it has more side effects than the screen switch),
+/// then the restore sequence on stdout. Every failure is dropped, nothing is printed.
+pub fn restore_terminal_quietly() {
+    let _ = crossterm::terminal::disable_raw_mode();
+    write_terminal_restore(&mut std::io::stdout());
+}
+
+/// Whether a panic on a thread named `thread_name` ends the process, so the panic hook may remove
+/// the private temp directory. Only an uncaught panic on the main thread does: worker threads
+/// (syntect, resvg, git scans...) panic inside `catch_silent` and the app carries on, and the
+/// per-process directories are held by `OnceLock`s that are never recreated, so removing them on a
+/// worker's panic would break every later PDF / video thumbnail. `caught` is true inside a
+/// `catch_silent` section (which can also run on the main thread in the synchronous fallbacks).
+pub(crate) fn panic_ends_process(thread_name: Option<&str>, caught: bool) -> bool {
+    thread_name == Some("main") && !caught
+}
+
+/// True while a foreground child (`$EDITOR`, a git tool, a pager) owns the terminal.
+static FOREGROUND_CHILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// RAII marker for "a foreground child is running". The flag is cleared in `Drop`, so it comes
+/// down on every way out of the wait (an error return or a panic included).
+pub struct ForegroundChildGuard;
+
+impl ForegroundChildGuard {
+    pub fn new() -> Self {
+        FOREGROUND_CHILD.store(true, std::sync::atomic::Ordering::SeqCst);
+        ForegroundChildGuard
+    }
+}
+
+impl Drop for ForegroundChildGuard {
+    fn drop(&mut self) {
+        FOREGROUND_CHILD.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Whether a caught signal should be ignored. Like a shell or `system(3)` waiting for a child,
+/// konoma ignores SIGINT while a foreground child runs: Ctrl-C reaches the whole foreground process
+/// group, the child decides what to do with it, and exiting here would tear down the alternate
+/// screen under a child that is still drawing. SIGTERM and SIGHUP still end konoma: SIGHUP means
+/// the terminal is gone, and SIGTERM is an explicit request to stop; leaving without cleaning up
+/// would leak the temp directory.
+pub(crate) fn ignore_signal(sig: i32, child_running: bool) -> bool {
+    sig == signal_hook::consts::SIGINT && child_running
+}
+
+/// Arranges for the private temp directory to be removed when the process is killed by SIGTERM,
+/// SIGHUP or SIGINT (it has no signal handling otherwise, so those left the files behind). A helper
+/// thread waits for the signal, restores the terminal (the same teardown `main` makes on a normal
+/// exit), removes the directory and exits with the conventional `128 + signal` (SIGINT is ignored
+/// while a foreground child runs, see `ignore_signal`).
+#[cfg(unix)]
+pub fn install_exit_cleanup_signals() {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP, SIGINT]) else {
+        return;
+    };
+    let _ = std::thread::Builder::new()
+        .name("konoma-signals".into())
+        .spawn(move || {
+            for sig in signals.forever() {
+                let running = FOREGROUND_CHILD.load(std::sync::atomic::Ordering::SeqCst);
+                if let Some(code) = leave_on_signal(sig, running) {
+                    std::process::exit(code);
+                }
+            }
+        });
+}
+
+#[cfg(not(unix))]
+pub fn install_exit_cleanup_signals() {}
 
 /// A fresh temp path for a delegated command's `{out}`, unique within this process (pid + an
 /// atomic counter — no dependence on randomness/time, matching `preview::video::temp_png_path`'s
@@ -135,29 +337,22 @@ pub fn temp_out_path() -> PathBuf {
     private_temp_dir().join(format!("out-{n}"))
 }
 
-/// Writes `data` to `path`, creating it with owner-only (`0600`) permissions **at creation time**
-/// (not via a separate `set_permissions` afterward, which would leave — however briefly — a window
-/// where the file exists at a wider mode). This is the one case in this module where konoma itself
-/// creates the output file (`run_capture`'s `uses_out=false` branch, capturing a delegated
-/// command's stdout) — unlike the `uses_out=true` case where an external command writes `{out}`
-/// itself and we don't control its `open()` call at all, here we do, so this is defense-in-depth on
-/// top of `private_temp_dir`'s already-`0700` parent directory.
-#[cfg(unix)]
-fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    f.write_all(data)
+/// Writes `data` to a fresh file in konoma's private temp directory (owner-only, no extension) and
+/// returns its path. For text konoma generates itself that the less-style reader should window
+/// (a Word document's converted Markdown); the caller deletes it (`App::clear_command_out`).
+pub fn write_private_temp(data: &[u8]) -> std::io::Result<PathBuf> {
+    let path = temp_out_path();
+    write_private(&path, data)?;
+    Ok(path)
 }
 
-#[cfg(not(unix))]
+/// Writes `data` to a new file at `path`, created exclusively with owner-only (`0600`)
+/// permissions at creation time and without following a symlink at `path` (see
+/// `private_dir::create_private_file`). This is the one case in this module where konoma itself
+/// creates the output file (`run_capture`'s `uses_out=false` branch); it is defense-in-depth on top
+/// of the `0700` private directory.
 fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    std::fs::write(path, data)
+    super::private_dir::create_private_file(path, data)
 }
 
 /// Spawns `argv` and does not wait for it — `detached = true` (a video player, etc.). stdio is
@@ -396,6 +591,46 @@ fn first_nonempty_line(bytes: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sigint_is_ignored_only_while_a_foreground_child_runs() {
+        use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+        assert!(ignore_signal(SIGINT, true));
+        assert!(!ignore_signal(SIGINT, false));
+        assert!(
+            !ignore_signal(SIGTERM, true),
+            "a terminate request still ends konoma"
+        );
+        assert!(
+            !ignore_signal(SIGHUP, true),
+            "a closed terminal still ends konoma"
+        );
+    }
+
+    #[test]
+    fn the_foreground_child_flag_comes_down_on_drop_and_on_unwind() {
+        use std::sync::atomic::Ordering::SeqCst;
+        {
+            let _g = ForegroundChildGuard::new();
+            assert!(FOREGROUND_CHILD.load(SeqCst));
+        }
+        assert!(!FOREGROUND_CHILD.load(SeqCst));
+        let r = std::panic::catch_unwind(|| {
+            let _g = ForegroundChildGuard::new();
+            panic!("unwind");
+        });
+        assert!(r.is_err());
+        assert!(!FOREGROUND_CHILD.load(SeqCst));
+    }
+
+    #[test]
+    fn only_an_uncaught_main_thread_panic_removes_the_temp_dir() {
+        assert!(panic_ends_process(Some("main"), false));
+        assert!(!panic_ends_process(Some("main"), true));
+        assert!(!panic_ends_process(Some("konoma-signals"), false));
+        assert!(!panic_ends_process(None, false));
+        assert!(!panic_ends_process(Some("Thread-1"), false));
+    }
+
     use super::*;
     use crate::test_support::unique_tmp;
 
@@ -881,6 +1116,194 @@ mod tests {
     /// *exact* wall-clock durations (a prior CI break — see `docs/STATUS.md`), so the bound below
     /// is a large, deliberately loose multiple of the injected timeout: it exists only so a real
     /// regression (no timeout at all) fails this test instead of hanging the whole test run.
+    /// The exit cleanup removes exactly the directory documents/outputs are written into (the
+    /// real call is not exercised here: it would delete files other parallel tests are using).
+    #[test]
+    fn exit_cleanup_targets_the_directory_temp_files_live_in() {
+        let p = write_private_temp(b"secret converted text").unwrap();
+        let dir = private_temp_dir();
+        assert!(p.starts_with(&dir));
+        assert_eq!(p.parent(), Some(dir.as_path()));
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// `exit_cleanup` stops the SVG drawing processes and removes the temp directory, in that order.
+    #[test]
+    fn exit_cleanup_stops_the_svg_processes_and_removes_the_temp_dir() {
+        let ((), steps) = recorded_exit_steps(exit_cleanup);
+        assert_eq!(
+            steps,
+            vec![ExitStep::StopSvgProcesses, ExitStep::RemoveTempDir]
+        );
+    }
+
+    /// The real `exit_cleanup`, in a process of its own (it is one-way and process-wide): it kills
+    /// a drawing process that is alive, makes `svg_proc` refuse new work and removes the private
+    /// directory. A child also ends by itself when its parent is gone, so only looking before the
+    /// process exits can tell that `shutdown` was called; the bug this guards was exactly an
+    /// `exit_cleanup` without it that every other test passed.
+    #[cfg(unix)]
+    #[test]
+    fn exit_cleanup_really_stops_the_svg_processes_and_removes_the_temp_dir() {
+        const ENV: &str = "KONOMA_TEST_EXIT_CLEANUP_CHILD";
+        if std::env::var_os(ENV).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "preview::command::tests::exit_cleanup_really_stops_the_svg_processes_and_removes_the_temp_dir",
+                    "--exact",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::test_support::unique_tmp("konoma_exit_cleanup_real");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("sleeper");
+        std::fs::write(&exe, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = super::super::svg_proc::TestWorker::start(&exe).expect("a child");
+        assert!(!child.ended());
+        let temp = write_private_temp(b"converted text").unwrap();
+        assert!(temp.exists());
+
+        exit_cleanup();
+
+        assert!(super::super::svg_proc::is_shutting_down());
+        let t = std::time::Instant::now();
+        while !child.ended() {
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(10),
+                "exit_cleanup left a drawing process running"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!temp.exists(), "the private temp directory was not removed");
+    }
+
+    /// Every way out runs the whole exit cleanup (not just the temp-dir removal), and then the
+    /// terminal teardown.
+    #[test]
+    fn every_way_out_runs_the_whole_exit_cleanup() {
+        let all = vec![
+            ExitStep::StopSvgProcesses,
+            ExitStep::RemoveTempDir,
+            ExitStep::RestoreTerminal,
+        ];
+        let ((), steps) = recorded_exit_steps(leave_for_good);
+        assert_eq!(steps, all, "normal exit");
+        let (r, steps) = recorded_exit_steps(|| leave_if_panic_ends_process(Some("main"), false));
+        assert!(r);
+        assert_eq!(steps, all, "fatal panic");
+        for sig in [
+            signal_hook::consts::SIGTERM,
+            signal_hook::consts::SIGHUP,
+            signal_hook::consts::SIGINT,
+        ] {
+            let (code, steps) = recorded_exit_steps(|| leave_on_signal(sig, false));
+            assert_eq!(code, Some(128 + sig));
+            assert_eq!(steps, all, "signal {sig}");
+        }
+    }
+
+    /// What does not end the process does not clean up: a caught panic or a worker's panic, and
+    /// SIGINT while an editor owns the terminal.
+    #[test]
+    fn exits_that_do_not_end_the_process_run_no_cleanup() {
+        let (r, steps) = recorded_exit_steps(|| {
+            (
+                leave_if_panic_ends_process(Some("main"), true),
+                leave_if_panic_ends_process(Some("konoma-md-decode"), false),
+                leave_on_signal(signal_hook::consts::SIGINT, true),
+            )
+        });
+        assert_eq!(r, (false, false, None));
+        assert!(steps.is_empty());
+    }
+
+    /// `main` reaches the cleanup only through these helpers (a direct `remove_private_temp_dir`
+    /// there would drop the SVG-process shutdown without a test noticing).
+    #[test]
+    fn main_leaves_only_through_the_cleanup_helpers() {
+        let main = include_str!("../main.rs");
+        assert!(
+            main.contains("preview::command::leave_for_good()"),
+            "normal exit"
+        );
+        assert!(
+            main.contains("preview::command::leave_if_panic_ends_process("),
+            "panic hook"
+        );
+        assert!(
+            !main.contains("remove_private_temp_dir"),
+            "main must not remove the temp directory by itself"
+        );
+        let this = include_str!("command.rs");
+        let signal = this
+            .split("pub fn install_exit_cleanup_signals() {\n    use")
+            .nth(1)
+            .and_then(|r| r.split("#[cfg(not(unix))]").next())
+            .expect("signal installer");
+        assert!(signal.contains("leave_on_signal("), "signal thread");
+        assert!(!signal.contains("remove_private_temp_dir"));
+    }
+
+    /// A writer whose every write and flush fails with `EIO`, like a pty whose other end closed.
+    struct DeadTty;
+    impl std::io::Write for DeadTty {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from_raw_os_error(5))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::from_raw_os_error(5))
+        }
+    }
+
+    /// The teardown must survive a dead terminal: it runs inside signal handling and panic hooks,
+    /// where a panic aborts the process.
+    #[test]
+    fn terminal_restore_never_panics_on_a_dead_tty() {
+        let r = std::panic::catch_unwind(|| write_terminal_restore(&mut DeadTty));
+        assert!(r.is_ok());
+    }
+
+    /// It undoes bracketed paste and the alternate screen (a normal exit used to leave paste mode
+    /// on, the signal path both).
+    #[test]
+    fn terminal_restore_turns_off_paste_mode_and_leaves_the_alt_screen() {
+        let mut buf = Vec::new();
+        write_terminal_restore(&mut buf);
+        let text = String::from_utf8(buf).unwrap();
+        assert!(text.contains("\x1b[?2004l"), "{text:?}");
+        assert!(text.contains("\x1b[?1049l"), "{text:?}");
+        assert!(text.contains("\x1b[?25h"), "{text:?}");
+    }
+
+    /// The bytes match what crossterm's own commands emit (so they cannot drift from what
+    /// `EnableBracketedPaste` / `EnterAlternateScreen` turned on).
+    #[test]
+    fn terminal_restore_sequence_matches_crossterm_commands() {
+        use crossterm::Command;
+        let mut want = String::new();
+        crossterm::event::DisableBracketedPaste
+            .write_ansi(&mut want)
+            .unwrap();
+        crossterm::terminal::LeaveAlternateScreen
+            .write_ansi(&mut want)
+            .unwrap();
+        crossterm::cursor::Show.write_ansi(&mut want).unwrap();
+        assert_eq!(TERMINAL_RESTORE_SEQUENCE, want.as_bytes());
+    }
+
     #[cfg(unix)]
     #[test]
     fn run_capture_returns_promptly_for_a_hanging_command() {

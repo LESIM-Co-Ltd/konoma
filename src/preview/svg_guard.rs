@@ -520,6 +520,15 @@ pub(crate) fn options(resources_dir: Option<PathBuf>) -> usvg::Options<'static> 
                 default_data(mime, data, opts)
             }),
             resolve_string: Box::new(move |href, opts| {
+                // An SVG that is not a file in a directory of its own (embedded in a document, a
+                // cached download) reads no file at all.
+                if !opts
+                    .resources_dir
+                    .as_deref()
+                    .is_some_and(std::path::Path::is_dir)
+                {
+                    return None;
+                }
                 let path = opts.get_abs_path(std::path::Path::new(href));
                 match std::fs::metadata(&path) {
                     Ok(m) if m.is_file() && m.len() <= MAX_EXTERNAL_IMAGE_BYTES => {}

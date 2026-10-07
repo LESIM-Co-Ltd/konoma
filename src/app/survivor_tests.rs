@@ -27,9 +27,11 @@ fn app_with_media_channel() -> (
 fn a_waiting_workbook_request_of_an_old_generation_is_dropped_when_the_load_ends() {
     let (mut app, dir, _rx) = app_with_media_channel();
     let ask = |app: &App| WbRequest {
-        path: dir.join("never-there.xlsx"),
-        locale: crate::preview::office::Locale::En,
-        sheet: 0,
+        job: MediaJob::Workbook(
+            dir.join("never-there.xlsx"),
+            crate::preview::office::Locale::En,
+            0,
+        ),
         gen: app.media_gen,
     };
 

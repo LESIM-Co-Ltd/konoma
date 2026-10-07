@@ -25,7 +25,7 @@ pub(crate) enum OfficeKind {
 pub(crate) fn office_kind(path: &Path) -> Option<OfficeKind> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
-        "docx" | "docm" | "dotx" | "dotm" | "doc" | "odt" => Some(OfficeKind::Word),
+        "docx" | "docm" | "dotx" | "dotm" | "doc" | "odt" | "ott" => Some(OfficeKind::Word),
         "xlsx" | "xlsm" | "xltx" | "xltm" | "xlsb" | "xls" | "ods" => Some(OfficeKind::Excel),
         "pptx" | "pptm" | "ppsx" | "potx" | "ppt" | "odp" => Some(OfficeKind::PowerPoint),
         _ => None,
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn kind_covers_every_listed_extension_in_any_case() {
-        let word = ["docx", "docm", "dotx", "dotm", "doc", "odt"];
+        let word = ["docx", "docm", "dotx", "dotm", "doc", "odt", "ott"];
         let excel = ["xlsx", "xlsm", "xltx", "xltm", "xlsb", "xls", "ods"];
         let ppt = ["pptx", "pptm", "ppsx", "potx", "ppt", "odp"];
         for (list, want) in [
