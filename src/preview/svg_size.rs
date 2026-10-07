@@ -2,7 +2,7 @@
 //
 // Laying out a Markdown document needs the pixel size of every picture in it, and it needs it on
 // the UI thread. Asking usvg means parsing the whole file, which for a crafted one takes seconds
-// (a 200 KB `<text>` stalled the UI for six seconds). The size is a function of the root `<svg>`
+// (a 200 KB `<text>` stalled the UI for 16 s on a Mac with 1,000 fonts installed; the time grows with the number of fonts). The size is a function of the root `<svg>`
 // element's `width`, `height` and `viewBox` only, so this reads exactly that and nothing else: one
 // flat pass over the opening tag, no tree, no allocation proportional to the file.
 //

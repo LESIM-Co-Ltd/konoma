@@ -3,6 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -1314,6 +1315,10 @@ pub(crate) struct MediaDiffRequest {
     raster_px: (u32, u32),
     preview_rules: Vec<crate::config::Rule>,
     preview_commands: bool,
+    /// Set by the UI thread when nobody wants this computation any more (the want changed or the
+    /// baseline moved): a drawing of an untrusted SVG then stops at once instead of holding its
+    /// child process for the whole time limit.
+    cancel: Arc<AtomicBool>,
 }
 
 /// Result of a media-diff computation, returned via `App::media_diff_tx`. Staleness is judged by
@@ -1749,6 +1754,8 @@ pub struct App {
     /// `reserve_proto_slot` can tell "wanted by the picture currently being drawn" (never recycle)
     /// from "left over from an earlier position" (fair game).
     md_frame: u64,
+    /// Number of frames `ui::render` has begun (bumped at the top of every one, whatever it draws).
+    draw_seq: u64,
     /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
     /// Filled lazily for visible rows (render pre-pass) and dropped on every tree rebuild, so the
     /// per-row stat (and the `items` column's read_dir) runs once per tree generation instead of
@@ -1898,6 +1905,8 @@ pub struct App {
     /// Generation of the media-diff computation. Mirrors `md_diff_gen`'s own doc comment
     /// (`App::invalidate_media_diff`, called from `App::invalidate_diff_caches`, bumps this).
     media_diff_gen: u64,
+    /// The cancellation flag of the computation in flight (see `MediaDiffRequest::cancel`).
+    media_diff_cancel: Arc<AtomicBool>,
     /// Sender returning `MediaDiffResult`s from the worker computing media diffs in the background.
     /// Mirrors `md_diff_tx`'s own doc comment (no Sender attached = tests fall back to synchronous
     /// computation).
@@ -2491,8 +2500,10 @@ struct MdImgEntry {
     rebuilding: bool,
     /// A placement asked for the evicted pixels but the rebuild limit (`MD_MAX_REBUILDS`) was
     /// reached: ask again on the next frame, and keep the loading indicator (and so the redraw
-    /// loop) alive until it starts.
-    rebuild_wanted: bool,
+    /// loop) alive until it starts. It holds the `App::draw_seq` of the frame that asked and counts
+    /// only while that is the last frame drawn, so a wish nobody renews (the picture scrolled out
+    /// of view, the preview was left) lapses by itself instead of keeping the loop ticking.
+    rebuild_wanted: Option<u64>,
     /// Why the decode failed, for the text that replaces the picture (None = no specific reason).
     fail: Option<crate::preview::image::ImageFailure>,
     /// This entry's place in the decode queue: its priority is the last overlay pass that asked for
@@ -3367,6 +3378,7 @@ impl App {
             md_image_cache: std::collections::HashMap::new(),
             md_kitty_ids: std::collections::HashMap::new(),
             md_frame: 0,
+            draw_seq: 0,
             detail_cells_cache: std::collections::HashMap::new(),
             tree_stale: false,
             md_img_tx: None,
@@ -3410,6 +3422,7 @@ impl App {
             media_diff_worker_busy: false,
             media_diff_queued: None,
             media_diff_gen: 0,
+            media_diff_cancel: Arc::default(),
             media_diff_tx: None,
             media_diff_landed: None,
             diff_target_kind_cache: None,
@@ -6026,7 +6039,8 @@ fn md_decode_image(path: &Path, svg_max_px: u32) -> Option<image::DynamicImage> 
 }
 
 /// `md_decode_image` that says why it failed. An image the raster decoders refuse for being too
-/// large is not offered to the SVG rasterizer (it is not an SVG); any other refusal is, and the
+/// large is not offered to the SVG rasterizer (it is not an SVG), nor is a file that cannot begin
+/// as one (a damaged PNG); any other refusal is, and the
 /// raster decoder's reason stands when the file is not a valid SVG either. An SVG is drawn by a
 /// supervised child process (`svg_proc`), so this blocks for as long as that takes (at most its
 /// time limit): call it from a worker. `cancelled` stops that drawing.
@@ -6040,6 +6054,8 @@ fn md_decode_image_why(
     match crate::preview::image::decode_static_capped_why(path, MD_IMAGE_MAX_SIDE) {
         Ok(img) => Ok(img),
         Err(e @ (ImageFailure::TooLarge | ImageFailure::Cancelled)) => Err(e),
+        // A damaged PNG or JPEG is not an SVG either, and drawing it would cost a process hand-off.
+        Err(e) if !crate::preview::svg::file_can_be_svg(path) => Err(e),
         Err(e) => match crate::preview::svg::rasterize(path, svg_max_px, cancelled) {
             Ok(img) => Ok(img),
             Err(SvgFail::Invalid) => Err(e),

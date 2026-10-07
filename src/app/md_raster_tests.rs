@@ -1006,3 +1006,104 @@ fn markdown_images_are_kept_at_4096_on_the_long_side() {
         "within the cap: untouched"
     );
 }
+
+/// A picture that waited for a rebuild slot and then left the screen must not keep the redraw loop
+/// ticking (`md_images_loading` = a 16 ms poll with no key pressed): the wish lapses with the frame
+/// that made it unless the next frame renews it.
+#[test]
+fn a_rebuild_wish_that_nobody_renews_lapses_and_the_loop_goes_idle() {
+    let (mut app, dir, img_rx, _enc_rx) = setup("konoma_raster_wish_lapses");
+    let mut urls = Vec::new();
+    for i in 0..(MD_MAX_REBUILDS + 3) {
+        let p = dir.join(format!("w{i}.png"));
+        crate::test_support::write_solid_png(&p, 24, 16, [i as u8, 2, 3]);
+        app.md_image_cache.insert(
+            p.clone(),
+            MdImgEntry {
+                decoded: Some(frame_img(24, 16, 1)),
+                layout_px: Some((24, 16)),
+                ..Default::default()
+            },
+        );
+        urls.push(p.to_string_lossy().to_string());
+    }
+    app.md_frame = 5;
+    app.evict_md_images_to(0);
+    // One frame that wants them all: the limit lets some start and makes the rest wait.
+    app.begin_frame();
+    app.md_frame = 6;
+    for u in &urls {
+        app.ensure_md_image(u, 10, 4, 0, 4);
+    }
+    assert_eq!(app.md_rebuilds_running(), MD_MAX_REBUILDS);
+    assert!(app.md_images_loading());
+    // The running ones land.
+    for _ in 0..MD_MAX_REBUILDS {
+        let res = img_rx.recv_timeout(WAIT).expect("a rebuild");
+        app.apply_md_image(res);
+    }
+    assert_eq!(app.md_rebuilds_running(), 0);
+    // The waiting ones are still wished for by the frame that was just drawn...
+    assert!(
+        app.md_images_loading(),
+        "the waiting pictures were forgotten"
+    );
+    // ...but the next frame shows something else (the document was scrolled away, or the preview
+    // was left) and never asks for them again.
+    app.begin_frame();
+    assert!(
+        !app.md_images_loading(),
+        "a wish nobody renewed keeps the redraw loop ticking"
+    );
+    // A frame that does still show them renews the wish.
+    app.begin_frame();
+    app.md_frame = 7;
+    for u in &urls {
+        app.ensure_md_image(u, 10, 4, 0, 4);
+    }
+    assert!(app.md_images_loading());
+}
+
+/// A damaged PNG or JPEG is refused by the raster decoders and is not an SVG either: it must not be
+/// handed to the drawing process (a process hand-off for nothing). The drawing process is pointed
+/// at a program that does not exist, so a hand-off shows as "the renderer stopped".
+#[cfg(unix)]
+#[test]
+fn a_damaged_png_is_not_offered_to_the_svg_process() {
+    use crate::preview::image::ImageFailure;
+    let dir = unique_tmp("konoma_raster_broken_png");
+    std::fs::create_dir_all(&dir).unwrap();
+    let broken = dir.join("broken.png");
+    let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    bytes.extend_from_slice(b"this is not a png after all");
+    std::fs::write(&broken, &bytes).unwrap();
+    let jpeg = dir.join("broken.jpg");
+    std::fs::write(&jpeg, [0xff, 0xd8, 0xff, 0xe0, 0, 4, 1, 2, 3]).unwrap();
+    let svg = dir.join("really.png");
+    std::fs::write(
+        &svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>"#,
+    )
+    .unwrap();
+    let nowhere = PathBuf::from("/nonexistent/konoma-svg-child");
+    crate::preview::svg_proc::with_real_child(nowhere, || {
+        for f in [&broken, &jpeg] {
+            let r = md_decode_image_why(f, 256, &|| false);
+            assert!(
+                matches!(
+                    r,
+                    Err(ImageFailure::Corrupt | ImageFailure::UnsupportedFormat)
+                ),
+                "{f:?}: {:?}",
+                r.err()
+            );
+        }
+        // An SVG that carries a raster name still goes to the drawing process.
+        let r = md_decode_image_why(&svg, 256, &|| false);
+        assert!(
+            matches!(r, Err(ImageFailure::Svg(_))),
+            "an SVG was not offered to the drawing process: {:?}",
+            r.err()
+        );
+    });
+}

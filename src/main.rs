@@ -241,6 +241,13 @@ fn fix_picker_font_size(picker: Picker, window_size: Option<(u16, u16, u16, u16)
     fixed
 }
 
+/// The allocator of every konoma process; it only does anything extra in a drawing child (see
+/// `svg_proc::GuardAlloc`). Under `cargo test` the counting allocator of `mem_tests` takes its
+/// place and wraps this one.
+#[cfg(not(test))]
+#[global_allocator]
+static ALLOC: preview::svg_proc::GuardAlloc = preview::svg_proc::GuardAlloc;
+
 fn main() -> Result<()> {
     // The drawing process of `preview::svg_proc`: konoma started by itself to draw an SVG that came
     // from a file, so that whatever such a file does cannot take the program down. It must run
@@ -250,7 +257,8 @@ fn main() -> Result<()> {
         .nth(1)
         .is_some_and(|a| a == preview::svg_proc::CHILD_FLAG)
     {
-        std::process::exit(preview::svg_proc::child_main());
+        let rest: Vec<_> = std::env::args_os().skip(2).collect();
+        std::process::exit(preview::svg_proc::child_main(&rest));
     }
     let args: Vec<String> = std::env::args().collect();
     // Resolved — and, for `Open`, validated — **before any terminal initialization** below (see

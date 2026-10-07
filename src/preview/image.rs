@@ -30,8 +30,11 @@ pub(crate) const MAX_IMAGE_SIDE: u32 = 32_768;
 
 /// Largest image area konoma decodes, in pixels. A 48-megapixel photo is 4.8e7 and an 11,000 x
 /// 11,000 screenshot of a wall of monitors 1.2e8 — both must keep working; 1.5e8 (a 12,200 px
-/// square, 600 MB as RGBA) is the line past which a single image is a memory attack rather than a
-/// picture. Checked from the header, before the decode allocates.
+/// square) is the line past which a single image is a memory attack rather than a picture. Checked
+/// from the header, before the decode allocates. It is not the only line: the decoded size is
+/// limited too (`MAX_DECODE_ALLOC`, 512 MiB), which for the usual 8-bit RGBA means about 1.34e8
+/// pixels (an 11,500 px square), so this count is what limits 8-bit gray and RGB images, and
+/// RGBA ones are held a little lower by the byte limit.
 pub(crate) const MAX_IMAGE_PIXELS: u64 = 150_000_000;
 
 /// The decoder's own allocation limit, bytes — the image crate's default, stated here so it is
@@ -302,6 +305,10 @@ thread_local! {
 pub(crate) struct DecodeReservation {
     gate: &'static DecodeGate,
     bytes: u64,
+    /// This claim is the one that marked its thread as holding (`HOLDING`), so dropping it
+    /// unmarks it — even when it claimed no bytes (a zero-byte request). A nested claim, which
+    /// waits for nothing, is not.
+    marks_thread: bool,
 }
 
 impl DecodeGate {
@@ -327,6 +334,7 @@ impl DecodeGate {
             Err(_) => DecodeReservation {
                 gate: self,
                 bytes: 0,
+                marks_thread: false,
             },
         }
     }
@@ -342,6 +350,7 @@ impl DecodeGate {
             return Ok(DecodeReservation {
                 gate: self,
                 bytes: 0,
+                marks_thread: false,
             });
         }
         let want = bytes.min(self.budget);
@@ -375,6 +384,7 @@ impl DecodeGate {
                 return Ok(DecodeReservation {
                     gate: self,
                     bytes: want,
+                    marks_thread: true,
                 });
             }
             st = self
@@ -402,10 +412,12 @@ impl DecodeGate {
 
 impl Drop for DecodeReservation {
     fn drop(&mut self) {
+        if self.marks_thread {
+            HOLDING.with(|h| h.set(false));
+        }
         if self.bytes == 0 {
             return;
         }
-        HOLDING.with(|h| h.set(false));
         let mut st = self.gate.state.lock().unwrap_or_else(|e| e.into_inner());
         st.used = st.used.saturating_sub(self.bytes);
         self.gate.freed.notify_all();
@@ -471,6 +483,10 @@ fn decode_reader<R: std::io::BufRead + std::io::Seek>(
 
 /// The size `(w, h)` scaled down to fit a `max_side` square, aspect ratio kept (at least 1 px).
 pub(crate) fn fit_within(w: u32, h: u32, max_side: u32) -> (u32, u32) {
+    if w == 0 || h == 0 {
+        // Nothing to scale (a decoder can hand back an empty picture): the smallest picture.
+        return (1, 1);
+    }
     if w >= h {
         let nh = (u64::from(h) * u64::from(max_side) + u64::from(w) / 2) / u64::from(w);
         (max_side, (nh as u32).max(1))
@@ -545,6 +561,11 @@ impl Samples<'_> {
 pub(crate) fn shrink_exact(img: &DynamicImage, nw: u32, nh: u32) -> DynamicImage {
     let (w, h) = (img.width(), img.height());
     let (nw, nh) = (nw.max(1), nh.max(1));
+    if w == 0 || h == 0 {
+        // No samples to read (the weights below would divide by the empty length): a blank picture
+        // of the size asked for.
+        return DynamicImage::ImageRgba8(image::RgbaImage::new(nw, nh));
+    }
     let (channels, samples) = match img {
         DynamicImage::ImageLuma8(b) => (1, Samples::U8(b.as_raw())),
         DynamicImage::ImageLumaA8(b) => (2, Samples::U8(b.as_raw())),
@@ -730,21 +751,41 @@ pub(crate) const MAX_GIF_WORK_PIXELS: u64 = 400_000_000;
 /// frame of a hostile file takes as long as `MAX_GIF_WORK_PIXELS` allows. Counting stops once it
 /// passes `cap` (the answer is then `cap + 1`). None when the stream is not a GIF or ends early —
 /// the decoder gets to say what is wrong with it. The reader is left at an unspecified position.
-fn count_gif_frames<R: std::io::Read + std::io::Seek>(r: &mut R, cap: usize) -> Option<usize> {
+pub(crate) fn count_gif_frames<R: std::io::Read + std::io::Seek>(
+    r: &mut R,
+    cap: usize,
+    stale: &dyn Fn() -> bool,
+) -> Option<usize> {
     use std::io::SeekFrom;
     fn byte<R: std::io::Read>(r: &mut R) -> Option<u8> {
         let mut b = [0u8; 1];
         r.read_exact(&mut b).ok()?;
         Some(b[0])
     }
-    // Skip a chain of data sub-blocks (each a length byte then that many bytes, ended by 0).
-    fn skip_sub_blocks<R: std::io::Read + std::io::Seek>(r: &mut R) -> Option<()> {
+    // Read and drop `n` bytes. Read, not seek: a `BufReader` throws its buffer away on every seek,
+    // so skipping a million one-byte sub-blocks by seeking re-reads 8 KiB a time (a 20 MB file took
+    // six seconds); reading keeps the buffer and the cost proportional to the file.
+    fn skip<R: std::io::Read>(r: &mut R, n: usize) -> Option<()> {
+        let mut sink = [0u8; 768]; // the largest colour table: 3 << 8
+        r.read_exact(&mut sink[..n]).ok()
+    }
+    // Skip a chain of data sub-blocks (each a length byte then that many bytes, ended by 0). The
+    // caller's `stale` is looked at now and then, so a request that was abandoned stops reading.
+    fn skip_sub_blocks<R: std::io::Read>(
+        r: &mut R,
+        steps: &mut u32,
+        stale: &dyn Fn() -> bool,
+    ) -> Option<()> {
         loop {
             let n = byte(r)?;
             if n == 0 {
                 return Some(());
             }
-            r.seek(SeekFrom::Current(i64::from(n))).ok()?;
+            skip(r, usize::from(n))?;
+            *steps = steps.wrapping_add(1);
+            if (*steps).is_multiple_of(65_536) && stale() {
+                return None;
+            }
         }
     }
     r.seek(SeekFrom::Start(0)).ok()?;
@@ -754,26 +795,25 @@ fn count_gif_frames<R: std::io::Read + std::io::Seek>(r: &mut R, cap: usize) -> 
         return None;
     }
     if head[10] & 0x80 != 0 {
-        let table = 3i64 << ((head[10] & 7) + 1);
-        r.seek(SeekFrom::Current(table)).ok()?;
+        skip(r, 3usize << ((head[10] & 7) + 1))?;
     }
     let mut frames = 0usize;
+    let mut steps = 0u32;
     loop {
         match byte(r)? {
             0x3B => return Some(frames),
             0x21 => {
                 byte(r)?; // extension label
-                skip_sub_blocks(r)?;
+                skip_sub_blocks(r, &mut steps, stale)?;
             }
             0x2C => {
                 let mut desc = [0u8; 9];
                 r.read_exact(&mut desc).ok()?;
                 if desc[8] & 0x80 != 0 {
-                    let table = 3i64 << ((desc[8] & 7) + 1);
-                    r.seek(SeekFrom::Current(table)).ok()?;
+                    skip(r, 3usize << ((desc[8] & 7) + 1))?;
                 }
                 byte(r)?; // LZW minimum code size
-                skip_sub_blocks(r)?;
+                skip_sub_blocks(r, &mut steps, stale)?;
                 frames += 1;
                 if frames > cap {
                     return Some(frames);
@@ -845,7 +885,10 @@ fn decode_gif_from_reader<R: std::io::Read + std::io::BufRead + std::io::Seek>(
     budget: usize,
 ) -> Option<(GifFrames, (u32, u32))> {
     let mut reader = reader;
-    let scanned_frames = count_gif_frames(&mut reader, MAX_GIF_FRAMES)?;
+    let ticket = current_ticket();
+    let scanned_frames = count_gif_frames(&mut reader, MAX_GIF_FRAMES, &|| {
+        ticket.as_ref().is_some_and(|t| t.is_stale())
+    })?;
     reader.seek(std::io::SeekFrom::Start(0)).ok()?;
     let mut decoder = image::codecs::gif::GifDecoder::new(reader).ok()?;
     let header_px = decoder.dimensions(); // before `into_frames()` consumes `decoder` below.
@@ -864,7 +907,6 @@ fn decode_gif_from_reader<R: std::io::Read + std::io::BufRead + std::io::Seek>(
     decoder.set_limits(decode_limits()).ok()?;
     // A frame being composited, the previous canvas, and the resized copy — plus the frames kept
     // so far, which fill up to `budget` before the shrink halves them.
-    let ticket = current_ticket();
     let _claim = try_reserve_decode_memory(canvas_px * 4 * 3 + budget as u64).ok()?;
     let mut out: GifFrames = Vec::new();
     let mut canvas: Option<(u32, u32)> = None; // original canvas dimensions (baseline for the shrink factor)

@@ -748,6 +748,288 @@ fn an_idle_child_that_dies_is_reaped_at_once_not_when_the_next_drawing_comes() {
     no_children_left();
 }
 
+// ---- review fixes: lifetime, protocol, registry ----------------------------------------------
+
+/// What a child sends for a 1x1 picture, in `printf` syntax.
+const PIC: &str = r"KSR1\000\001\000\000\000\001\000\000\000\001\002\003\004";
+
+/// The bytes of `tiny_request()` on the wire: 20 of header and 6 of document.
+const TINY_REQUEST_LEN: usize = 26;
+
+/// On Linux a child used to be killed (`PR_SET_PDEATHSIG`) when the *thread* that started it ended,
+/// and every drawing is started from a short-lived worker thread: the child that was kept for the
+/// next drawing died with its thread, and a drawing that was handed it failed as "stopped".
+#[test]
+fn a_child_outlives_the_thread_that_started_it() {
+    let _g = serial();
+    no_children_left();
+    let doc = badge(1);
+    let d = doc.clone();
+    assert!(
+        std::thread::spawn(move || draw(d.as_bytes(), None, limits(), &never).is_ok())
+            .join()
+            .unwrap(),
+        "the first drawing"
+    );
+    let first = live_pids();
+    assert_eq!(first.len(), 1);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        super::svg_proc::idle_alive_children(),
+        1,
+        "the waiting child died with the thread that started it"
+    );
+    let d = doc.clone();
+    assert!(
+        std::thread::spawn(move || draw(d.as_bytes(), None, limits(), &never).is_ok())
+            .join()
+            .unwrap(),
+        "the second drawing"
+    );
+    assert_eq!(live_pids(), first, "the same process answered both");
+    no_children_left();
+}
+
+/// Many threads that each draw once and end, at the same time (what a document full of badges
+/// does): not one drawing may be reported as stopped.
+#[test]
+fn drawings_from_many_short_lived_threads_are_all_answered() {
+    let _g = serial();
+    no_children_left();
+    let bad = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for t in 0..12usize {
+            let bad = &bad;
+            s.spawn(move || {
+                for i in 0..8 {
+                    let doc = badge(t * 100 + i);
+                    // One thread per drawing, as `md_media` does.
+                    let ok = std::thread::scope(|s2| {
+                        s2.spawn(|| draw(doc.as_bytes(), None, limits(), &never).is_ok())
+                            .join()
+                            .unwrap()
+                    });
+                    if !ok {
+                        bad.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+            });
+        }
+    });
+    assert_eq!(bad.load(std::sync::atomic::Ordering::SeqCst), 0);
+    no_children_left();
+}
+
+/// A fake child that answers its first request, but ends instead of answering the next: every
+/// child that comes from the pool fails the way a child that ended while idle does.
+fn one_shot_child(dir: &Path, delay: &str) -> PathBuf {
+    let pid_file = dir.join("pid-one-shot");
+    script(
+        dir,
+        "one-shot",
+        &format!("head -c {TINY_REQUEST_LEN} >/dev/null\nsleep {delay}\nprintf '{PIC}'\nhead -c {TINY_REQUEST_LEN} >/dev/null\nexit 0"),
+        &pid_file,
+    )
+}
+
+#[test]
+fn a_reused_child_that_is_gone_is_replaced_for_as_long_as_the_pool_has_them() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-regone");
+    let exe = one_shot_child(&dir, "0.4");
+    // Two children, both kept: drawn at the same time.
+    std::thread::scope(|s| {
+        let a = s.spawn(|| run_with(&exe, limits(), &tiny_request(), &never).is_ok());
+        let b = s.spawn(|| run_with(&exe, limits(), &tiny_request(), &never).is_ok());
+        assert!(a.join().unwrap() && b.join().unwrap());
+    });
+    assert_eq!(idle_children(), 2);
+    // Each of them ends when used again; a child started for this drawing answers it. One retry
+    // (as there used to be) would call the second of them a crash.
+    let r = run_with(&exe, limits(), &tiny_request(), &never);
+    assert!(r.is_ok(), "{:?}", r.err());
+    no_children_left();
+}
+
+#[test]
+fn a_fresh_child_that_is_gone_is_a_verdict() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-fresh-gone");
+    let pid_file = dir.join("pid");
+    let exe = script(&dir, "dies", "exit 0", &pid_file);
+    let r = run_with(&exe, limits(), &tiny_request(), &never);
+    assert_eq!(r.err(), Some(RunError::Failed(SvgFail::Crashed)));
+    no_children_left();
+}
+
+/// A child that answers before it has read its request and then sits there used to leave the
+/// supervisor in `writer.join()` for as long as the child lived: the time limit never applied and
+/// the slot was never freed.
+#[test]
+fn a_child_that_answers_without_reading_its_request_cannot_hold_the_supervisor() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-early");
+    let pid_file = dir.join("pid");
+    let exe = script(
+        &dir,
+        "early",
+        "printf 'KSR1\\004'\nexec sleep 60",
+        &pid_file,
+    );
+    let big = vec![b' '; 8 << 20];
+    let (tx, rx) = std::sync::mpsc::channel();
+    let exe2 = exe.clone();
+    std::thread::spawn(move || {
+        let r = run_with(
+            &exe2,
+            limits(),
+            &Request {
+                data: &big,
+                base: None,
+                max_px: 100,
+            },
+            &never,
+        );
+        let _ = tx.send(r.is_ok());
+    });
+    let got = rx.recv_timeout(Duration::from_secs(3));
+    if got.is_err() {
+        // Do not leave the test process with a stuck thread and a sleeping child.
+        super::svg_proc::kill_pid(pid_of(&pid_file) as u32);
+        let _ = rx.recv_timeout(Duration::from_secs(5));
+    }
+    assert!(got.is_ok(), "the supervisor was still waiting after 3 s");
+    assert_eq!(busy_children(), 0, "the slot was not freed");
+    assert!(gone(pid_of(&pid_file)), "the child is left");
+    assert_eq!(idle_children(), 0, "a child that does not read is not kept");
+    no_children_left();
+}
+
+/// A child that goes on sending after its answer (nobody asked) used to be read into an unbounded
+/// channel for as long as it kept at it: 2 GiB in 6 seconds.
+#[test]
+fn a_child_that_keeps_sending_after_its_answer_is_not_read_and_not_kept() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-spam");
+    let pid_file = dir.join("pid");
+    let exe = script(&dir, "spam", "printf 'KSR1\\004'\nexec yes KSR1", &pid_file);
+    let r = run_with(&exe, limits(), &tiny_request(), &never);
+    assert!(matches!(r, Err(RunError::Failed(_))), "{:?}", r.err());
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        super::svg_proc::idle_alive_children(),
+        0,
+        "a child that talks out of turn was kept for the next drawing"
+    );
+    no_children_left();
+}
+
+/// The same, in numbers: the parent must not grow while a child keeps sending big answers.
+#[test]
+fn the_parent_does_not_grow_while_an_idle_child_floods_it() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-flood");
+    let pid_file = dir.join("pid");
+    // One valid 4096x4096 picture per request, then the same again forever, unasked.
+    let one = r"printf 'KSR1\000\000\020\000\000\000\020\000\000'; head -c 67108864 /dev/zero";
+    let exe = script(
+        &dir,
+        "flood",
+        &format!("{one}\nwhile :; do {one}; done"),
+        &pid_file,
+    );
+    let before = own_rss();
+    let r = run_with(&exe, limits(), &tiny_request(), &never);
+    assert!(r.is_ok(), "{:?}", r.err());
+    std::thread::sleep(Duration::from_millis(1500));
+    let grew = own_rss().saturating_sub(before);
+    assert!(grew < 300 << 20, "the parent grew by {} MiB", grew >> 20);
+    no_children_left();
+}
+
+/// A child that has ended is reaped and leaves the registry in one step. It used to stay in the
+/// registry until it was dropped, so a `kill_live` in between signalled a pid that could by then
+/// belong to another process.
+#[test]
+fn a_child_found_to_have_ended_leaves_the_registry_at_once() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-registry");
+    let exe = one_shot_child(&dir, "0");
+    assert!(run_with(&exe, limits(), &tiny_request(), &never).is_ok());
+    assert_eq!(live_children(), 1);
+    let pid = live_pids()[0] as i32;
+    // SAFETY: the pid is this test's own child.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    let t = Instant::now();
+    while super::svg_proc::idle_alive_children() != 0 {
+        assert!(t.elapsed() < Duration::from_secs(5));
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        live_children(),
+        0,
+        "the reaped child is still registered (its pid may be reused)"
+    );
+    no_children_left();
+}
+
+/// `/proc/self/exe` (not `current_exe()`, which names a deleted file) is what starts the child on
+/// Linux when konoma has been replaced while it runs. The test runs a copy of the test executable
+/// that deletes itself.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_replaced_executable_still_starts_children() {
+    let dir = unique_tmp("svg-proc-deleted-exe");
+    let copy = dir.join("copy");
+    std::fs::copy(std::env::current_exe().unwrap(), &copy).unwrap();
+    let out = std::process::Command::new(&copy)
+        .args([
+            "--exact",
+            "preview::svg_proc_tests::deleted_exe_probe",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .env("KONOMA_PROBE_DELETED_EXE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The inner half of the test above: runs only in the copy.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore]
+fn deleted_exe_probe() {
+    if std::env::var_os("KONOMA_PROBE_DELETED_EXE").is_none() {
+        return;
+    }
+    let me = std::env::current_exe().unwrap();
+    std::fs::remove_file(&me).unwrap();
+    // What used to be used: a name that is not there.
+    let old = std::env::current_exe().unwrap();
+    assert!(old.to_string_lossy().ends_with("(deleted)"), "{old:?}");
+    let e = std::process::Command::new(&old).arg("--list").output();
+    assert_eq!(e.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+    // What is used now.
+    let exe = super::svg_proc::self_exe_path().unwrap();
+    let out = std::process::Command::new(exe)
+        .arg("--list")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+}
+
 // ---- memory: the real renderer, a real allocation -------------------------------------------
 
 #[test]
@@ -768,20 +1050,86 @@ fn a_huge_pattern_is_stopped_at_the_memory_limit_not_after_gigabytes() {
             other.map(|i| i.width())
         ),
     }
-    // How far past the limit the child got before it was stopped (the polling interval's worth of
-    // allocation). Printed for the record; bounded so a regression in the watch shows up.
+    // The child counts its own heap and ends itself at the limit, before the parent's look at its
+    // resident size (every 4 ms, while a child allocates several GB/s) could see it pass: the
+    // supervisor never sees the child above the limit (it used to overshoot by 6-10 MiB or more).
     let peak = super::svg_proc::LAST_PEAK_RSS.load(std::sync::atomic::Ordering::SeqCst);
     eprintln!(
-        "memory watch: limit {} MiB, last seen {} MiB",
+        "memory guard: limit {} MiB, last seen {} MiB",
         lim.rss >> 20,
         peak >> 20
     );
-    assert!(peak > lim.rss, "the stop was not because of the limit");
     assert!(
-        peak < lim.rss + (400 << 20),
+        peak <= lim.rss,
         "overshoot {} MiB",
-        (peak - lim.rss) >> 20
+        peak.saturating_sub(lim.rss) >> 20
     );
+}
+
+/// Memory the child's own heap count cannot see (here: a different program's) is still stopped by
+/// the parent's look at the resident size.
+#[test]
+fn memory_outside_the_childs_heap_is_stopped_by_the_resident_size_watch() {
+    let python = [
+        "/usr/bin/python3",
+        "/usr/local/bin/python3",
+        "/opt/homebrew/bin/python3",
+    ]
+    .into_iter()
+    .find(|p| Path::new(p).is_file());
+    let Some(python) = python else {
+        eprintln!("no python3: skipped");
+        return;
+    };
+    let _g = serial();
+    let dir = unique_tmp("svg-proc-rss");
+    let pid_file = dir.join("pid");
+    let body =
+        format!("exec {python} -c \"\nb=[]\nwhile True:\n    b.append(bytes([1])*(32<<20))\n\"");
+    let exe = script(&dir, "eater", &body, &pid_file);
+    let lim = Limits {
+        wall: Duration::from_secs(8),
+        rss: 400 << 20,
+    };
+    let r = run_with(&exe, lim, &tiny_request(), &never);
+    assert_eq!(r.err(), Some(RunError::Failed(SvgFail::Memory)));
+    let peak = super::svg_proc::LAST_PEAK_RSS.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(peak > lim.rss, "the stop was not because of the limit");
+    assert!(gone(pid_of(&pid_file)));
+    no_children_left();
+}
+
+/// Run the real child by hand with a small heap limit and read what it says.
+#[test]
+fn a_child_that_would_pass_its_heap_limit_answers_memory_and_ends_itself() {
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+    let _g = serial();
+    let doc = svg(
+        r#"<defs><pattern id="p" width="30000" height="30000" patternUnits="userSpaceOnUse"><rect width="30000" height="30000" fill="red"/></pattern></defs><rect width="800" height="600" fill="url(#p)"/>"#,
+    );
+    let mut child = Command::new(bin())
+        .arg(super::svg_proc::CHILD_FLAG)
+        .arg((256u64 << 20).to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut wire = Vec::new();
+    wire.extend_from_slice(b"KSV1");
+    wire.extend_from_slice(&800u32.to_le_bytes());
+    wire.extend_from_slice(&0u32.to_le_bytes());
+    wire.extend_from_slice(&(doc.len() as u64).to_le_bytes());
+    wire.extend_from_slice(doc.as_bytes());
+    stdin.write_all(&wire).unwrap();
+    let mut answer = Vec::new();
+    stdout.read_to_end(&mut answer).unwrap();
+    let status = child.wait().unwrap();
+    assert_eq!(answer, [b'K', b'S', b'R', b'1', SvgFail::Memory.code()]);
+    assert_eq!(status.code(), Some(5), "ended by itself, not by a signal");
 }
 
 // ---- the families of hostile files that got past the in-process checks ----------------------
@@ -888,6 +1236,12 @@ fn every_family_of_hostile_svg_costs_only_the_child() {
         );
         // Each of these took tens of seconds, gigabytes or the whole process in the old
         // in-process renderer; here it is stopped (or refused) inside its limits.
+        // How long a `<text>` takes depends on the fonts installed (a system with many fonts needs
+        // seconds, one with a single face draws it in milliseconds): what is required of it is the
+        // containment `contained` checked, not a refusal.
+        if *name == "text_200k" {
+            continue;
+        }
         assert!(
             matches!(o.result, Err(RunError::Failed(_))),
             "{name}: expected the drawing to be stopped or refused"
@@ -1080,4 +1434,29 @@ fn dump_trusted_svgs() {
         let svg = crate::preview::math::latex_to_svg(latex, *display, "#d0d0d0").unwrap();
         std::fs::write(dir.join(format!("math{i}.svg")), svg).unwrap();
     }
+}
+
+/// What parsing a 200 KB `<text>` costs (the old sizing path did exactly this on the UI thread).
+/// Run in an optimised build: `cargo test --release measure_text_200k -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn measure_text_200k() {
+    let doc = svg(&format!(
+        r#"<text x="10" y="50" font-size="12">{}</text>"#,
+        "W".repeat(200_000)
+    ));
+    let db = super::svg::shared_fontdb();
+    eprintln!("fonts: {}", db.len());
+    for round in 0..3 {
+        let opt = resvg::usvg::Options {
+            fontdb: db.clone(),
+            ..resvg::usvg::Options::default()
+        };
+        let t = Instant::now();
+        let ok = resvg::usvg::Tree::from_data(doc.as_bytes(), &opt).is_ok();
+        eprintln!("parse #{round}: ok={ok} {:?}", t.elapsed());
+    }
+    let t = Instant::now();
+    let r = super::svg::rasterize_guarded(doc.as_bytes(), None, 800);
+    eprintln!("guarded drawing: ok={} {:?}", r.is_ok(), t.elapsed());
 }

@@ -813,3 +813,137 @@ fn the_gif_work_limit_admits_exactly_the_limit() {
         "the frame cap and the limit meet here"
     );
 }
+
+// ---- review fixes: GIF block scan, zero-byte claims, empty pictures -------------------------------
+
+/// A reader that counts the bytes pulled out of it, to see how much a `BufReader` over it re-reads.
+struct Counting<R> {
+    inner: R,
+    pulled: Arc<AtomicUsize>,
+}
+
+impl<R: std::io::Read> std::io::Read for Counting<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.pulled.fetch_add(n, Ordering::SeqCst);
+        Ok(n)
+    }
+}
+
+impl<R: std::io::Seek> std::io::Seek for Counting<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
+/// One image whose data is `sub_blocks` sub-blocks of a single byte each (the shape that costs the
+/// most per byte of file to scan: every block is a length byte and one data byte).
+fn gif_of_tiny_sub_blocks(sub_blocks: usize) -> Vec<u8> {
+    let mut out = b"GIF89a".to_vec();
+    out.extend_from_slice(&[1, 0, 1, 0, 0, 0, 0]);
+    out.extend_from_slice(&[0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0]);
+    out.push(0x02);
+    for _ in 0..sub_blocks {
+        out.extend_from_slice(&[0x01, 0xaa]);
+    }
+    out.push(0x00);
+    out.push(0x3b);
+    out
+}
+
+/// Skipping sub-blocks used to be a seek on a `BufReader`, which throws its buffer away every time:
+/// a million one-byte blocks made the scan read 8 KiB a block (a 20 MB file took six seconds, a
+/// 100 MB one half a minute). Counted in bytes pulled from the file, so it does not depend on speed.
+#[test]
+fn scanning_a_gif_of_tiny_sub_blocks_reads_the_file_once() {
+    let bytes = gif_of_tiny_sub_blocks(500_000);
+    let pulled = Arc::new(AtomicUsize::new(0));
+    let mut reader = std::io::BufReader::new(Counting {
+        inner: std::io::Cursor::new(bytes.clone()),
+        pulled: Arc::clone(&pulled),
+    });
+    let frames = crate::preview::image::count_gif_frames(&mut reader, 5_000, &|| false);
+    assert_eq!(frames, Some(1));
+    let total = pulled.load(Ordering::SeqCst);
+    assert!(
+        total <= 2 * bytes.len(),
+        "the scan pulled {total} bytes out of a {} byte file",
+        bytes.len()
+    );
+}
+
+/// A scan whose request was abandoned stops reading (it looks every 64 Ki sub-blocks).
+#[test]
+fn a_stale_request_stops_scanning_a_gif() {
+    let bytes = gif_of_tiny_sub_blocks(300_000);
+    let looks = AtomicUsize::new(0);
+    let stale = || {
+        looks.fetch_add(1, Ordering::SeqCst);
+        true
+    };
+    let got =
+        crate::preview::image::count_gif_frames(&mut std::io::Cursor::new(&bytes), 5_000, &stale);
+    assert_eq!(got, None, "an abandoned scan went on to the end");
+    assert_eq!(
+        looks.load(Ordering::SeqCst),
+        1,
+        "it stopped at the first look"
+    );
+    // The same file for a request that is still wanted.
+    let got =
+        crate::preview::image::count_gif_frames(&mut std::io::Cursor::new(&bytes), 5_000, &|| {
+            false
+        });
+    assert_eq!(got, Some(1));
+}
+
+/// A claim of no bytes used to leave its thread marked as holding for good, so every later
+/// claim of that thread went through the gate unaccounted.
+#[test]
+fn a_claim_of_no_bytes_does_not_leave_the_thread_marked_as_holding() {
+    static GATE: DecodeGate = DecodeGate::new(1000);
+    std::thread::spawn(|| {
+        drop(GATE.reserve(0));
+        let claim = GATE.reserve(400);
+        assert_eq!(
+            GATE.in_use(),
+            400,
+            "the second claim was waved through as nested"
+        );
+        drop(claim);
+        assert_eq!(GATE.in_use(), 0);
+        // And a genuinely nested claim still waits for nothing.
+        let outer = GATE.reserve(900);
+        let inner = GATE.reserve(900);
+        assert_eq!(GATE.in_use(), 900);
+        drop(inner);
+        assert_eq!(
+            GATE.in_use(),
+            900,
+            "the nested claim must not release the outer one"
+        );
+        drop(outer);
+        assert_eq!(GATE.in_use(), 0);
+        let again = GATE.reserve(300);
+        assert_eq!(GATE.in_use(), 300);
+        drop(again);
+    })
+    .join()
+    .unwrap();
+}
+
+/// A picture with no pixels (a decoder can return one) must not panic the shrink.
+#[test]
+fn shrinking_a_picture_with_no_pixels_does_not_panic() {
+    for (w, h) in [(0, 0), (0, 7), (7, 0)] {
+        let img = DynamicImage::new_rgba8(w, h);
+        let out = shrink_exact(&img, 4, 3);
+        assert_eq!(out.dimensions(), (4, 3), "{w}x{h}");
+        let out = shrink_to_fit(&img, 16);
+        assert!(out.width() >= 1 && out.height() >= 1, "{w}x{h}");
+    }
+    let rgb = DynamicImage::new_rgb8(0, 3);
+    assert_eq!(shrink_exact(&rgb, 2, 2).dimensions(), (2, 2));
+    let luma16 = DynamicImage::new_luma16(5, 0);
+    assert_eq!(shrink_exact(&luma16, 2, 2).dimensions(), (2, 2));
+}

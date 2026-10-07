@@ -38,9 +38,9 @@ All notable changes to konoma are documented in this file. The format is based o
   1 GiB and the picture is reported as not drawn, with the reason (nested too deeply / too large / too many
   elements / too much drawing work / took too long / needed too much memory / the renderer stopped / damaged).
   konoma's own mermaid and math SVGs are still drawn in-process. A few children are kept for the next picture, so a
-  README with fifty badges draws as fast as before; they stop after 8 s idle and when konoma exits.
+  README with fifty badges draws as fast as before; they stop after 8 s idle and when konoma exits. A child also counts its own memory and stops itself at the limit, so a drawing that allocates quickly cannot overshoot it, and one that answers out of turn or without reading its request is dropped instead of held.
 - Sizing a Markdown picture that is an SVG now reads only the root element's width, height and viewBox, so the UI
-  thread never parses the file (a 200 KB `<text>` used to freeze it for 16 s).
+  thread never parses the file (a 200 KB `<text>` used to freeze it for 16 s on a Mac with 1,000 fonts installed; the time grows with the number of fonts).
 
 ### Fixed
 - An SVG that references another SVG file through `<image href>` is now checked like an embedded one (nesting depth,

@@ -11,7 +11,7 @@ impl App {
                 // start. An evicted entry nobody asks for is idle, not loading.
                 (e.decoded.is_none()
                     && !e.failed
-                    && (!e.evicted || e.rebuilding || e.rebuild_wanted))
+                    && (!e.evicted || e.rebuilding || e.rebuild_wanted == Some(self.draw_seq)))
                     || e.enc_inflight
             })
     }

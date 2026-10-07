@@ -3,7 +3,7 @@
 // An SVG is a program for usvg and resvg, and no estimate made beforehand can bound what a crafted
 // one costs: a deep nesting overflows the stack (an abort that nothing in the process can catch), a
 // chain of clip paths or a huge pattern allocates gigabytes, thousands of full-canvas fills or a
-// 200 KB `<text>` take minutes. So an SVG that comes from a file (the one the user opens, an image a
+// 200 KB `<text>` take tens of seconds (16 s with a Mac's 1,000 fonts). So an SVG that comes from a file (the one the user opens, an image a
 // Markdown document points at, a side of a media diff) is drawn by a child process — konoma's own
 // binary, started with `--internal-svg-render` — and the parent only supervises it from a worker
 // thread: it kills the child when it runs past a wall-clock limit or grows past a memory limit, and
@@ -23,17 +23,27 @@
 // ends itself after `IDLE_EXIT`.
 //
 // The wire format is a request on the child's stdin and a response on its stdout, repeated; nothing
-// else crosses (stderr is discarded, every other file descriptor is closed by the child).
+// else crosses (stderr is discarded, every other file descriptor is closed by the child). The parent
+// reads exactly one response per request: anything the child sends while nobody asked is a protocol
+// violation and ends the child (see `Link`).
+//
+// Memory is limited twice. The parent watches the child's resident size from outside (`RSS_LIMIT`,
+// every `POLL_INTERVAL`), and the child counts its own heap (`GuardAlloc`, armed by `child_main`)
+// and ends itself with a "memory" answer the moment it would pass the same limit, which also
+// catches what grows between two looks of the parent (a few GB/s) and, on Linux, a refused
+// allocation (`RLIMIT_AS`) that would otherwise abort the process.
 //
 //   request : "KSV1" u32 max_px | u32 base_len, base bytes | u64 data_len, data      (little endian)
 //   response: "KSR1" u8 status (0 = drawn, else `SvgFail::code`) [| u32 w, u32 h, w*h*4 RGBA bytes]
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::Arc;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -168,6 +178,22 @@ pub(crate) fn live_pids() -> Vec<u32> {
     LIVE.lock().map(|l| l.clone()).unwrap_or_default()
 }
 
+/// Number of waiting children that are still running and well-behaved. Looking at them reaps the
+/// ones that have ended, exactly as the next drawing or the reaper would.
+#[cfg(test)]
+pub(crate) fn idle_alive_children() -> usize {
+    IDLE.lock()
+        .ok()
+        .and_then(|mut g| {
+            g.as_mut().map(|m| {
+                m.values_mut()
+                    .map(|l| l.iter_mut().filter_map(|w| w.alive().then_some(())).count())
+                    .sum()
+            })
+        })
+        .unwrap_or(0)
+}
+
 /// Number of children waiting for their next drawing.
 #[cfg(test)]
 pub(crate) fn idle_children() -> usize {
@@ -187,19 +213,29 @@ pub fn shutdown() {
 /// Kill every child that is alive now. Busy ones are reported as a crash by their supervisor, idle
 /// ones are reaped here.
 pub(crate) fn kill_live() {
-    let pids: Vec<u32> = LIVE.lock().map(|l| l.clone()).unwrap_or_default();
-    for pid in pids {
-        kill_pid(pid);
-    }
+    // Under the lock that also guards the removal of a reaped child (`Worker::alive`, `Drop`): a pid
+    // is in `LIVE` exactly as long as it has not been waited for, so it cannot have been handed to
+    // an unrelated process by the time it is signalled.
+    with_live(|live| {
+        for &pid in live.iter() {
+            kill_pid(pid);
+        }
+    });
     // Dropping the idle workers reaps them.
     let idle = IDLE.lock().ok().and_then(|mut g| g.take());
     drop(idle);
 }
 
+/// Run `f` on the registry of live children, holding its lock.
+fn with_live<R>(f: impl FnOnce(&mut Vec<u32>) -> R) -> R {
+    let mut guard = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+    f(&mut guard)
+}
+
 #[cfg(unix)]
 pub(crate) fn kill_pid(pid: u32) {
-    // SAFETY: plain syscall on a pid this process started and has not yet reaped (it is removed
-    // from `LIVE` before `wait` returns).
+    // SAFETY: plain syscall on a pid this process started and has not yet reaped (a pid leaves
+    // `LIVE` in the same critical section that reaps it).
     unsafe {
         libc::kill(pid as libc::pid_t, libc::SIGKILL);
     }
@@ -260,6 +296,18 @@ fn acquire_slot(cancelled: &dyn Fn() -> bool) -> Result<SlotGuard, RunError> {
     }
 }
 
+/// What the reader thread and the supervisor agree on about one child's output.
+#[derive(Default)]
+struct Link {
+    /// A request has been sent whose answer has not been read yet. The supervisor sets it before it
+    /// writes the request; the reader clears it when the first bytes of an answer arrive.
+    expecting: AtomicBool,
+    /// The child sent something nobody asked for (a second answer, or output while idle): it is
+    /// not following the protocol, so it is never used again. The reader stops reading at once
+    /// (a child that keeps talking cannot fill the parent's memory) and closes the pipe.
+    tainted: AtomicBool,
+}
+
 /// A running child and the pipes to it. Whatever happens to the owner, the child is killed,
 /// reaped and removed from the registry when this goes away (no zombie, no orphan).
 struct Worker {
@@ -268,6 +316,7 @@ struct Worker {
     stdin: ChildStdin,
     /// Whole responses, framed by the reader thread. Disconnected = the child's output ended.
     answers: Receiver<Vec<u8>>,
+    link: Arc<Link>,
     /// Drawings this child has answered.
     served: u32,
     /// Since when it has been waiting in the idle pool (None while it is serving a drawing).
@@ -275,9 +324,11 @@ struct Worker {
 }
 
 impl Worker {
-    fn start(exe: &Path) -> Result<Worker, SvgFail> {
+    /// Start a child for `exe` whose heap may not pass `heap_limit` bytes.
+    fn start(exe: &Path, heap_limit: u64) -> Result<Worker, SvgFail> {
         let mut child = Command::new(exe)
             .arg(CHILD_FLAG)
+            .arg(heap_limit.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             // A crash message or a panic report has nowhere to go and nothing to say.
@@ -287,22 +338,28 @@ impl Worker {
             .spawn()
             .map_err(|_| SvgFail::Crashed)?;
         let pid = child.id();
-        if let Ok(mut live) = LIVE.lock() {
-            live.push(pid);
-        }
+        with_live(|live| live.push(pid));
         let (Some(stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
             let _ = child.kill();
             let _ = child.wait();
-            if let Ok(mut live) = LIVE.lock() {
-                live.retain(|&p| p != pid);
-            }
+            with_live(|live| live.retain(|&p| p != pid));
             return Err(SvgFail::Crashed);
         };
         let (tx, answers) = std::sync::mpsc::channel();
+        let link = Arc::new(Link::default());
+        let reader_link = Arc::clone(&link);
         // Answers are read as they are produced, so a large picture cannot fill the pipe and stall
-        // the child, and the supervisor can wait on a channel with a timeout.
+        // the child, and the supervisor can wait on a channel with a timeout. One answer per
+        // request: `read_answer` refuses to read one nobody asked for.
         std::thread::spawn(move || {
-            while let Some(answer) = read_answer(&mut stdout) {
+            let mut asked = || {
+                let ok = reader_link.expecting.swap(false, Ordering::SeqCst);
+                if !ok {
+                    reader_link.tainted.store(true, Ordering::SeqCst);
+                }
+                ok
+            };
+            while let Some(answer) = read_answer_if(&mut stdout, &mut asked) {
                 let complete = answer_is_complete(&answer);
                 if tx.send(answer).is_err() || !complete {
                     break;
@@ -318,24 +375,39 @@ impl Worker {
             pid,
             stdin,
             answers,
+            link,
             served: 0,
             idle_since: None,
         })
     }
 
-    /// Still running (not killed, not ended by its own idle timer).
+    /// Still running (not killed, not ended by its own idle timer) and still following the
+    /// protocol. A child found to be gone is reaped here and leaves the registry in the same
+    /// critical section, so `kill_live` can never signal a pid that has been handed on.
     fn alive(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        if self.link.tainted.load(Ordering::SeqCst) {
+            return false;
+        }
+        let pid = self.pid;
+        with_live(|live| match self.child.try_wait() {
+            Ok(None) => true,
+            _ => {
+                live.retain(|&p| p != pid);
+                false
+            }
+        })
     }
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        if let Ok(mut live) = LIVE.lock() {
-            live.retain(|&p| p != self.pid);
-        }
+        let pid = self.pid;
+        // Killed, reaped and unregistered under one lock (see `alive`).
+        with_live(|live| {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            live.retain(|&p| p != pid);
+        });
     }
 }
 
@@ -465,6 +537,24 @@ pub(crate) fn rss_bytes(_pid: u32) -> Option<u64> {
 /// The binary that is started as the drawing process: konoma itself.
 #[cfg(not(test))]
 pub fn child_exe() -> Option<PathBuf> {
+    self_exe_path()
+}
+
+/// A path that starts the running executable again. On Linux that is `/proc/self/exe`: a konoma
+/// that has been replaced on disk while it runs (an upgrade, a rebuild) has a `current_exe()` that
+/// ends in " (deleted)", which names nothing, whereas this link still reaches the program that is
+/// running. Elsewhere it is `current_exe()` (macOS reports the path the program was started from,
+/// and an upgrade replaces the file there; if it is removed altogether the drawing fails as
+/// "stopped" until konoma restarts).
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn self_exe_path() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let link = PathBuf::from("/proc/self/exe");
+        if std::fs::metadata(&link).is_ok() {
+            return Some(link);
+        }
+    }
     std::env::current_exe().ok()
 }
 
@@ -528,7 +618,10 @@ fn path_from_bytes(b: &[u8]) -> PathBuf {
 
 /// How one supervised request ended.
 enum Ended {
-    Answered(Vec<u8>),
+    /// The child answered. The flag says whether it can be asked again: not when it answered
+    /// before it had read the whole request (it was stopped, since nothing else would end the
+    /// write that is still blocked on a pipe it will never read).
+    Answered(Vec<u8>, bool),
     /// The child's output ended with no (complete) answer: it died.
     Gone,
     Cancelled,
@@ -536,8 +629,12 @@ enum Ended {
     OutOfMemory,
 }
 
+/// How long a child that has already answered may take to finish reading its request.
+const WRITE_GRACE: Duration = Duration::from_millis(250);
+
 /// Send `req` to `worker` and wait for the answer, watching the clock, the memory and `cancelled`.
-/// Does not reap anything: the caller drops a worker whose request did not end in `Answered`.
+/// Does not reap anything: the caller drops a worker whose request did not end in a reusable
+/// `Answered`.
 fn supervise(
     worker: &mut Worker,
     limits: Limits,
@@ -548,7 +645,14 @@ fn supervise(
     let head = header(req);
     let started = Instant::now();
     let pid = worker.pid;
-    let Worker { stdin, answers, .. } = worker;
+    let Worker {
+        stdin,
+        answers,
+        link,
+        ..
+    } = worker;
+    // Set before the request leaves, so the reader never mistakes the answer for unsolicited output.
+    link.expecting.store(true, Ordering::SeqCst);
     std::thread::scope(|s| {
         // The request goes in from its own thread: a child that dies early must not leave the
         // supervisor stuck in a write into a full pipe (the write ends with an error once the
@@ -559,9 +663,10 @@ fn supervise(
                 .and_then(|_| stdin.write_all(req.data))
                 .and_then(|_| stdin.flush());
         });
+        let mut reusable = true;
         let ended = loop {
             match answers.recv_timeout(POLL_INTERVAL) {
-                Ok(bytes) => break Ended::Answered(bytes),
+                Ok(bytes) => break Ended::Answered(bytes, true),
                 Err(RecvTimeoutError::Disconnected) => break Ended::Gone,
                 Err(RecvTimeoutError::Timeout) => {}
             }
@@ -578,12 +683,29 @@ fn supervise(
                 }
             }
         };
-        if !matches!(ended, Ended::Answered(_)) {
+        match &ended {
+            Ended::Answered(..) => {
+                // A child that has really answered has read the whole request, so the writer is
+                // about to be done. If it is not, the child is not reading: stop it, or the join
+                // below waits for as long as the child cares to live.
+                let deadline = Instant::now() + WRITE_GRACE;
+                while !writer.is_finished() {
+                    if Instant::now() >= deadline {
+                        kill_pid(pid);
+                        reusable = false;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
             // Stop it now so a blocked write ends and the writer thread can be joined.
-            kill_pid(pid);
+            _ => kill_pid(pid),
         }
         let _ = writer.join();
-        ended
+        match ended {
+            Ended::Answered(bytes, _) => Ended::Answered(bytes, reusable),
+            other => other,
+        }
     })
 }
 
@@ -598,14 +720,11 @@ pub fn run_with(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DynamicImage, RunError> {
     let _slot = acquire_slot(cancelled)?;
-    let mut attempts = 0;
     loop {
-        attempts += 1;
         let (mut worker, reused) = match take_idle(exe) {
             Some(w) => (w, true),
-            None => (Worker::start(exe)?, false),
+            None => (Worker::start(exe, limits.rss)?, false),
         };
-        let started = Instant::now();
         let mut peak_rss = 0u64;
         let ended = supervise(&mut worker, limits, req, cancelled, &mut peak_rss);
         #[cfg(test)]
@@ -615,18 +734,22 @@ pub fn run_with(
             Ended::TimedOut => Err(SvgFail::Timeout.into()),
             Ended::OutOfMemory => Err(SvgFail::Memory.into()),
             Ended::Gone => {
-                // A reused child that was gone the moment it was used had ended on its own while
-                // idle (its timer): that says nothing about this SVG, so ask a fresh one once.
-                if reused && attempts == 1 && started.elapsed() < Duration::from_millis(500) {
+                // A reused child that was gone when it was used ended while it sat idle (its own
+                // timer, a kill from outside, a thread-bound resource of the system): that says
+                // nothing about this SVG, so ask the next one. Only a child started for this very
+                // request counts as a verdict. (Bounded: the idle pool is.)
+                if reused {
                     continue;
                 }
                 Err(crash_or_memory(peak_rss, limits).into())
             }
-            Ended::Answered(bytes) => match parse_response(&bytes) {
+            Ended::Answered(bytes, reusable) => match parse_response(&bytes) {
                 Some(result) => {
                     worker.served += 1;
                     let big = rss_bytes(worker.pid).is_some_and(|r| r > RECYCLE_RSS);
-                    if !big && worker.served < RECYCLE_AFTER {
+                    // A child that ended itself for memory is on its way out.
+                    let spent = matches!(result, Err(SvgFail::Memory));
+                    if reusable && !big && !spent && worker.served < RECYCLE_AFTER {
                         put_idle(exe, worker);
                     }
                     result.map_err(RunError::Failed)
@@ -660,10 +783,18 @@ pub fn run(req: &Request, cancelled: &dyn Fn() -> bool) -> Result<DynamicImage, 
 /// picture, its header and exactly its pixels. A malformed or cut-off answer is returned as far as
 /// it got (and `answer_is_complete` says it is not); `None` is the end of the output with nothing
 /// read.
+#[cfg(test)]
 fn read_answer(r: &mut impl Read) -> Option<Vec<u8>> {
+    read_answer_if(r, &mut || true)
+}
+
+/// [`read_answer`], except that `asked` is consulted as soon as the first bytes of an answer have
+/// arrived (before any pixel is read, so before anything large is allocated): when it says nobody
+/// asked for one, nothing more is read and the result is `None`.
+fn read_answer_if(r: &mut impl Read, asked: &mut dyn FnMut() -> bool) -> Option<Vec<u8>> {
     let mut out = vec![0u8; 5];
     let got = read_up_to(r, &mut out);
-    if got == 0 {
+    if got == 0 || !asked() {
         return None;
     }
     out.truncate(got);
@@ -731,12 +862,21 @@ fn parse_response(b: &[u8]) -> Option<Result<DynamicImage, SvgFail>> {
 
 // ---- child: the drawing process ----------------------------------------------------------------
 
-/// Entry point of the child (`konoma --internal-svg-render`): read requests from stdin one after
-/// another, draw each with the guarded in-process renderer, write each answer to stdout. Ends when
-/// stdin does. The exit code is 0 after a clean end, 2 on a malformed request.
-pub fn child_main() -> i32 {
+/// Entry point of the child (`konoma --internal-svg-render <heap limit>`): read requests from stdin
+/// one after another, draw each with the guarded in-process renderer, write each answer to stdout.
+/// Ends when stdin does. The exit code is 0 after a clean end, 2 on a malformed request. `args` are
+/// the arguments after the flag.
+pub fn child_main(args: &[std::ffi::OsString]) -> i32 {
     #[cfg(unix)]
     harden();
+    let heap_limit = args
+        .first()
+        .and_then(|a| a.to_str())
+        .and_then(|a| a.parse::<usize>().ok())
+        .unwrap_or(RSS_LIMIT as usize);
+    arm_heap_guard(heap_limit);
+    #[cfg(unix)]
+    watch_parent();
     let mut stdin = std::io::stdin().lock();
     let mut out = answer_sink();
     loop {
@@ -863,7 +1003,7 @@ fn set_alarm(after: Duration) {
 /// other than the three standard ones (it must not hold konoma's terminal, temp files or sockets),
 /// core dumps (a stack-overflow crash must not write a file), scheduling priority (a hostile
 /// drawing must not slow the UI), and — as a backstop under the parent's own watch — on Linux its
-/// address space and its life with the parent's.
+/// address space.
 #[cfg(unix)]
 fn harden() {
     // SAFETY: each call is a plain syscall with valid arguments, made before any other thread
@@ -885,8 +1025,126 @@ fn harden() {
                 rlim_max: CHILD_ADDRESS_SPACE as libc::rlim_t,
             };
             libc::setrlimit(libc::RLIMIT_AS, &cap);
-            // If the parent is killed without a chance to clean up, this ends the child anyway.
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong);
+        }
+    }
+}
+
+/// End this process when its parent is gone. (Not `PR_SET_PDEATHSIG`: on Linux that fires when the
+/// *thread* that started the child exits, not the process, and konoma starts each child from a
+/// short-lived worker thread. A child waiting for its next drawing already ends when the parent's
+/// end of its stdin closes, and one that is drawing ends at its alarm; this ends a drawing sooner,
+/// within a second.)
+#[cfg(unix)]
+fn watch_parent() {
+    // SAFETY: plain syscall.
+    let parent = unsafe { libc::getppid() };
+    let _ = std::thread::Builder::new()
+        .name("svg-parent-watch".into())
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(1));
+            // SAFETY: plain syscalls; `_exit` skips destructors on purpose.
+            unsafe {
+                if libc::getppid() != parent {
+                    libc::_exit(4);
+                }
+            }
+        });
+}
+
+// ---- child: the memory guard ---------------------------------------------------------------------
+
+/// The heap limit of this process in bytes; 0 = no limit (every process but a drawing child).
+static HEAP_LIMIT: AtomicUsize = AtomicUsize::new(0);
+
+/// Heap bytes in use, counted only while `HEAP_LIMIT` is armed (signed: what was allocated before
+/// arming and freed after counts negative, which only makes the limit a little more generous).
+static HEAP_IN_USE: AtomicIsize = AtomicIsize::new(0);
+
+fn arm_heap_guard(limit: usize) {
+    HEAP_IN_USE.store(0, Ordering::SeqCst);
+    HEAP_LIMIT.store(limit, Ordering::SeqCst);
+}
+
+/// The global allocator: the system's, plus — in a drawing child only — a count of the bytes in use.
+/// A drawing child that would go past its limit, or whose allocation the system refuses (Linux's
+/// address-space ceiling), answers "memory" and ends at once instead of growing until the parent
+/// notices (a child allocates several GB/s; the parent looks every 4 ms) or aborting. Everywhere
+/// else the limit is 0 and the whole cost is one relaxed load per call (not measurable: 60 million
+/// allocate/free pairs took the same time with and without it).
+pub struct GuardAlloc;
+
+#[cold]
+fn heap_exhausted() -> ! {
+    // The answer "memory", written by hand: this runs inside the allocator, so nothing here may
+    // allocate, and the parent reads it like any other answer.
+    let reply = [b'K', b'S', b'R', b'1', SvgFail::Memory.code()];
+    // SAFETY: plain syscalls on a static-sized buffer; `_exit` never returns.
+    unsafe {
+        let _ = libc::write(1, reply.as_ptr().cast(), reply.len());
+        libc::_exit(5)
+    }
+}
+
+// SAFETY: every operation is the system allocator's own; the additions are two atomic counters
+// and, on exhaustion, a process exit.
+unsafe impl GlobalAlloc for GuardAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let limit = HEAP_LIMIT.load(Ordering::Relaxed);
+        if limit == 0 {
+            return System.alloc(layout);
+        }
+        self.reserve(layout.size(), limit);
+        let p = System.alloc(layout);
+        if p.is_null() {
+            heap_exhausted();
+        }
+        p
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let limit = HEAP_LIMIT.load(Ordering::Relaxed);
+        if limit == 0 {
+            return System.alloc_zeroed(layout);
+        }
+        self.reserve(layout.size(), limit);
+        let p = System.alloc_zeroed(layout);
+        if p.is_null() {
+            heap_exhausted();
+        }
+        p
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if HEAP_LIMIT.load(Ordering::Relaxed) != 0 {
+            HEAP_IN_USE.fetch_sub(layout.size() as isize, Ordering::Relaxed);
+        }
+        System.dealloc(ptr, layout);
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let limit = HEAP_LIMIT.load(Ordering::Relaxed);
+        if limit == 0 {
+            return System.realloc(ptr, layout, new_size);
+        }
+        if new_size > layout.size() {
+            self.reserve(new_size - layout.size(), limit);
+        } else {
+            HEAP_IN_USE.fetch_sub((layout.size() - new_size) as isize, Ordering::Relaxed);
+        }
+        let p = System.realloc(ptr, layout, new_size);
+        if p.is_null() {
+            heap_exhausted();
+        }
+        p
+    }
+}
+
+impl GuardAlloc {
+    #[inline]
+    fn reserve(&self, bytes: usize, limit: usize) {
+        let now = HEAP_IN_USE.fetch_add(bytes as isize, Ordering::Relaxed) + bytes as isize;
+        if now > 0 && now as usize > limit {
+            heap_exhausted();
         }
     }
 }

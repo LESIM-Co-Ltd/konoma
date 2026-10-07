@@ -112,6 +112,12 @@ impl App {
         self.md_enc_tx = Some(tx);
     }
 
+    /// Begin a frame of any kind (`ui::render`): wishes recorded by an earlier frame
+    /// (`MdImgEntry::rebuild_wanted`) are now history unless this frame renews them.
+    pub fn begin_frame(&mut self) {
+        self.draw_seq = self.draw_seq.wrapping_add(1);
+    }
+
     /// Begin one inline-image overlay pass — see `App::md_frame`. Called by the renderer before it
     /// walks the placements, so that every encode request the pass makes is stamped with the same
     /// number and the slots it is drawing from are protected from being recycled underneath it.
@@ -155,7 +161,7 @@ impl App {
         // Whatever was running for this entry (an initial decode, a sharpening re-raster or a
         // rebuild of evicted pixels) has landed.
         entry.rebuilding = false;
-        entry.rebuild_wanted = false;
+        entry.rebuild_wanted = None;
         if res.reraster {
             entry.reraster_inflight = false;
         }
@@ -788,6 +794,7 @@ impl App {
     /// until a later frame starts it.
     pub(super) fn ensure_md_pixels(&mut self, path: &Path) -> bool {
         let frame = self.md_frame;
+        let seq = self.draw_seq;
         let has_loader = self.md_img_tx.is_some();
         let Some(entry) = self.md_image_cache.get_mut(path) else {
             return false;
@@ -809,10 +816,10 @@ impl App {
             return false;
         };
         if running >= MD_MAX_REBUILDS {
-            entry.rebuild_wanted = true;
+            entry.rebuild_wanted = Some(seq);
             return false;
         }
-        entry.rebuild_wanted = false;
+        entry.rebuild_wanted = None;
         entry.rebuilding = true;
         if !self.rebuild_evicted_md_image(path.to_path_buf()) {
             if let Some(e) = self.md_image_cache.get_mut(path) {

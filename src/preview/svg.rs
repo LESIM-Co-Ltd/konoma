@@ -185,6 +185,30 @@ pub(crate) fn read_limited(path: &Path) -> Result<Vec<u8>, SvgFail> {
 //
 // Both go through the same `rasterize_guarded`, which is also what the child runs.
 
+/// Whether the first bytes of a file (`head`) can begin an SVG document: XML (after an optional
+/// byte-order mark and whitespace, a `<`) or gzip (an `.svgz`). A PNG, JPEG, WebP or any other
+/// binary format never does, so a file that such a decoder refused is not worth a drawing process.
+pub(crate) fn can_begin_svg(head: &[u8]) -> bool {
+    if head.starts_with(&[0x1f, 0x8b]) {
+        return true;
+    }
+    let head = head.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(head);
+    head.iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_some_and(|&b| b == b'<')
+}
+
+/// `can_begin_svg` for the file at `path` (its first 512 bytes; false when it cannot be read).
+pub(crate) fn file_can_be_svg(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 512];
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let n = f.read(&mut head).unwrap_or(0);
+    can_begin_svg(&head[..n])
+}
+
 /// Rasterize the SVG file at `path` with a max side of `max_px` in a supervised child process.
 /// Blocks: call from a worker thread. `cancelled` is polled while waiting; when it turns true the
 /// child is stopped and the result is `Err(Invalid)` (the caller is no longer interested).
@@ -270,7 +294,7 @@ pub fn is_svg(path: &Path) -> bool {
 
 /// Intrinsic size of the SVG file at `path` in pixels (rounded up), read from the root element
 /// only: the start of the file is read and nothing else, so it is cheap enough for the UI thread
-/// whatever the file holds (a 200 KB `<text>` used to stall it for six seconds). Says why there is
+/// whatever the file holds (a 200 KB `<text>` used to stall it for 16 s on a Mac with 1,000 fonts installed, milliseconds with one font). Says why there is
 /// none: too large, not an SVG, or a size that only drawing reveals (see `svg_size`). A document
 /// that is too deeply nested or too heavy still has a size here; the drawing process refuses it.
 pub fn intrinsic_size(path: &Path) -> Result<(u32, u32), SvgFail> {

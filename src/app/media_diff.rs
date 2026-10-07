@@ -125,6 +125,10 @@ impl App {
         let want = (path, page, raster_px);
         if self.media_diff_worker_busy {
             self.media_diff_queued = Some(want);
+            // What is running is no longer what is wanted: let it stop (a hostile SVG would
+            // otherwise keep its child for up to the whole time limit before the want is served).
+            self.media_diff_cancel
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             return;
         }
         self.dispatch_media_diff(want);
@@ -143,7 +147,9 @@ impl App {
         self.media_diff_worker_busy = true;
         let gen = self.media_diff_gen;
         let baseline = self.media_diff_baseline(&path);
+        self.media_diff_cancel = Arc::default();
         let req = MediaDiffRequest {
+            cancel: Arc::clone(&self.media_diff_cancel),
             gen,
             path,
             root: self.tab.root.clone(),
@@ -234,7 +240,11 @@ impl App {
     pub fn apply_media_diff(&mut self, res: MediaDiffResult) -> bool {
         self.media_diff_worker_busy = false;
         self.media_diff_pending = None;
-        let applied = if res.gen != self.media_diff_gen {
+        let applied = if res.gen != self.media_diff_gen
+            || self
+                .media_diff_cancel
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
             false // stale: a newer request/invalidation superseded this one.
         } else {
             let outcome = self.materialize_media_diff(res.computed);
@@ -332,6 +342,8 @@ impl App {
     /// recalled, so the one worker slot stays occupied until it reports back (`App::apply_media_diff`
     /// frees it and dispatches whatever coalesced behind it in the meantime).
     pub(crate) fn invalidate_media_diff(&mut self) {
+        self.media_diff_cancel
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.media_diff_gen = self.media_diff_gen.wrapping_add(1);
         self.media_diff_landed = None;
         self.media_diff_pending = None;
@@ -858,6 +870,7 @@ fn classify_and_decode_media_diff(
         req.page,
         req.raster_px,
         KeySide::Old,
+        &req.cancel,
     );
     let new = decode_side(
         kind,
@@ -866,6 +879,7 @@ fn classify_and_decode_media_diff(
         req.page,
         req.raster_px,
         KeySide::New,
+        &req.cancel,
     );
     MediaDiffComputed::Ready {
         kind,
@@ -900,6 +914,7 @@ fn decode_side(
     page: u32,
     raster_px: (u32, u32),
     side: KeySide,
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> MediaDiffSideDecoded {
     let Some(bytes) = bytes else {
         return MediaDiffSideDecoded::Absent;
@@ -907,7 +922,7 @@ fn decode_side(
     let hash = crate::preview::media_diff::fnv1a64(bytes);
     match kind {
         MediaDiffKind::Image => decode_image_side(bytes, hash, page, side),
-        MediaDiffKind::Svg => decode_svg_side(bytes, path, raster_px, hash, page, side),
+        MediaDiffKind::Svg => decode_svg_side(bytes, path, raster_px, hash, page, side, cancel),
         MediaDiffKind::Pdf => decode_pdf_side(bytes, page, raster_px, hash, side),
     }
 }
@@ -970,10 +985,13 @@ fn decode_svg_side(
     hash: u64,
     page: u32,
     side: KeySide,
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> MediaDiffSideDecoded {
     let max_px = raster_px.0.max(raster_px.1).max(1);
     // Git's old version of a file: drawn by a supervised child process, like any SVG from a file.
-    let img = match crate::preview::svg::rasterize_untrusted(bytes, path, max_px, &|| false) {
+    let img = match crate::preview::svg::rasterize_untrusted(bytes, path, max_px, &|| {
+        cancel.load(std::sync::atomic::Ordering::SeqCst)
+    }) {
         Ok(img) => img,
         Err(why) => {
             return MediaDiffSideDecoded::Failed {
