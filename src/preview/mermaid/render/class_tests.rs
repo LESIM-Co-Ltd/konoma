@@ -848,7 +848,7 @@ fn awkward_sources_produce_a_diagram_or_an_error_and_never_a_panic() {
                     svg::num(d.height)
                 );
                 assert!(
-                    crate::preview::svg::rasterize_bytes(
+                    crate::preview::svg::rasterize_trusted(
                         svg.as_bytes(),
                         std::path::Path::new("m.svg"),
                         300

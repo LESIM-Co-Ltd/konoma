@@ -13684,9 +13684,9 @@ fn mermaid_curve_and_mermaid_rows_are_independent_axes() {
 
 /// Coverage audit follow-up (2026-08-29), item 1 (`svg_max_px` half): `[ui] mermaid_curve` and
 /// `[ui] svg_max_px` are independent the same way `mermaid_rows` is above — `svg_max_px` (`max_px`
-/// in `MediaJob::MermaidSrc`) only ever reaches `preview::svg::rasterize_bytes` *after* the SVG
+/// in `MediaJob::MermaidSrc`) only ever reaches `preview::svg::rasterize_trusted` *after* the SVG
 /// text is already fully generated (`MediaJob::run`'s own body: `mermaid_to_svg_curve` first,
-/// `rasterize_bytes` second), so it can change raster pixel density but never the `d=` path data
+/// `rasterize_trusted` second), so it can change raster pixel density but never the `d=` path data
 /// curve controls, and the reverse: curve can change `d=` but never reaches the rasterization
 /// step's `max_px` at all.
 #[test]
@@ -15352,7 +15352,7 @@ fn stale_md_image_result_is_dropped() {
     );
 }
 
-/// D2 (2026-08-05): `fence_sharpen_if_needed`'s worker thread called `rasterize_bytes` (resvg — the
+/// D2 (2026-08-05): `fence_sharpen_if_needed`'s worker thread called `rasterize_trusted` (resvg — the
 /// exact same panic-prone call `ensure_mermaid_fence_render`/`ensure_math_render` already guard)
 /// completely unguarded, so a panic there killed the thread before it ever sent anything, latching
 /// `reraster_inflight` `true` forever (this fence could never sharpen again). It now catches the
@@ -15380,7 +15380,7 @@ fn apply_md_image_with_a_panic_shaped_reraster_failure_clears_inflight_without_d
         },
     );
 
-    // Mirrors what fence_sharpen_if_needed's worker now sends when rasterize_bytes panics.
+    // Mirrors what fence_sharpen_if_needed's worker now sends when rasterize_trusted panics.
     let panic_fallback = MdImageResult {
         path: key.clone(),
         image: Err("re-raster panicked".to_string()),
@@ -25028,4 +25028,415 @@ fn a_workbook_result_of_a_superseded_job_is_ignored() {
     assert!(!app.apply_media(stale));
     assert!(app.workbook.is_none());
     assert!(app.is_sheet_loading(), "still waiting for the current job");
+}
+
+// ---- Inline-image cache budget (LRU eviction of decoded pixels) -----------------------------
+
+fn entry_with_pixels(w: u32, h: u32, last_used: u64) -> MdImgEntry {
+    MdImgEntry {
+        decoded: Some(Arc::new(image::DynamicImage::new_rgba8(w, h))),
+        layout_px: Some((w, h)),
+        last_used,
+        ..Default::default()
+    }
+}
+
+/// Over budget, the pictures asked for longest ago lose their pixels first, down to the budget.
+#[test]
+fn md_cache_evicts_the_least_recently_used_pixels_first() {
+    let dir = unique_tmp("konoma_md_lru_order");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.md_frame = 10;
+    // 4 pictures of 256 KB (256 x 256 x 4) with ascending recency.
+    for i in 0..4u64 {
+        app.md_image_cache.insert(
+            PathBuf::from(format!("/x/img{i}.png")),
+            entry_with_pixels(256, 256, i + 1),
+        );
+    }
+    assert_eq!(app.md_image_cache_pixel_bytes(), 4 * 262_144);
+    app.evict_md_images_to(2 * 262_144);
+    assert_eq!(
+        app.md_image_cache_pixel_bytes(),
+        2 * 262_144,
+        "trimmed to the budget, no further"
+    );
+    for (i, gone) in [(0, true), (1, true), (2, false), (3, false)] {
+        let e = &app.md_image_cache[&PathBuf::from(format!("/x/img{i}.png"))];
+        assert_eq!(e.decoded.is_none(), gone, "img{i}");
+        assert_eq!(e.evicted, gone, "img{i}");
+        assert_eq!(
+            e.layout_px,
+            Some((256, 256)),
+            "the reserved layout size survives"
+        );
+    }
+    // Within budget: a second call changes nothing.
+    app.evict_md_images_to(2 * 262_144);
+    assert_eq!(app.md_image_cache_pixel_bytes(), 2 * 262_144);
+}
+
+/// A picture the latest overlay pass drew is never evicted, however over budget the cache is.
+#[test]
+fn md_cache_never_evicts_what_the_current_frame_draws() {
+    let dir = unique_tmp("konoma_md_lru_visible");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.md_frame = 7;
+    for i in 0..3 {
+        app.md_image_cache.insert(
+            PathBuf::from(format!("/x/v{i}.png")),
+            entry_with_pixels(256, 256, 7),
+        );
+    }
+    app.evict_md_images_to(0);
+    assert_eq!(
+        app.md_image_cache_pixel_bytes(),
+        3 * 262_144,
+        "all three are on screen"
+    );
+}
+
+/// Pictures that cannot be rebuilt (media-diff, whose bytes came from git) are not evicted; ones
+/// with an SVG source (mermaid, math) are, and keep that source.
+#[test]
+fn md_cache_only_evicts_what_it_can_rebuild() {
+    let dir = unique_tmp("konoma_md_lru_rebuildable");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.md_frame = 5;
+    let diff_key = PathBuf::from(crate::preview::media_diff::media_diff_url(
+        crate::preview::media_diff::MediaDiffSide::Old,
+        1,
+        0,
+        None,
+    ));
+    app.md_image_cache
+        .insert(diff_key.clone(), entry_with_pixels(256, 256, 1));
+    let math_key = PathBuf::from(crate::preview::markdown::math_url("x^2", false));
+    let mut math = entry_with_pixels(256, 256, 1);
+    math.svg = Some(Arc::new(b"<svg/>".to_vec()));
+    app.md_image_cache.insert(math_key.clone(), math);
+    app.evict_md_images_to(0);
+    assert!(
+        app.md_image_cache[&diff_key].decoded.is_some(),
+        "a media-diff picture stays"
+    );
+    let m = &app.md_image_cache[&math_key];
+    assert!(m.decoded.is_none() && m.evicted, "a formula's raster goes");
+    assert!(
+        m.svg.is_some(),
+        "but its SVG source is kept so it can be rebuilt"
+    );
+}
+
+/// An evicted regular image is decoded again from its file, and the entry's layout is untouched.
+#[test]
+fn md_cache_rebuilds_an_evicted_image_from_its_file() {
+    let dir = unique_tmp("konoma_md_lru_rebuild_file");
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("a.png");
+    crate::test_support::write_solid_png(&png, 40, 30, [1, 2, 3]);
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_md_image_loader(tx);
+    let mut entry = entry_with_pixels(40, 30, 1);
+    entry.layout_px = Some((40, 30));
+    app.md_image_cache.insert(png.clone(), entry);
+    app.md_frame = 3;
+    app.evict_md_images_to(0);
+    assert!(app.md_image_cache[&png].evicted);
+    assert!(!app.ensure_md_pixels(&png), "the pixels are being rebuilt");
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("decode result");
+    assert!(app.apply_md_image(res));
+    let e = &app.md_image_cache[&png];
+    assert_eq!(
+        e.decoded.as_ref().map(|i| (i.width(), i.height())),
+        Some((40, 30))
+    );
+    assert!(!e.evicted && !e.failed);
+    assert_eq!(e.layout_px, Some((40, 30)));
+}
+
+/// An evicted diagram or formula is rasterized again from its kept SVG, as a re-raster that leaves
+/// the reserved layout alone.
+#[test]
+fn md_cache_rebuilds_an_evicted_formula_from_its_svg() {
+    let dir = unique_tmp("konoma_md_lru_rebuild_svg");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.attach_md_image_loader(tx);
+    let key = PathBuf::from(crate::preview::markdown::math_url("x", false));
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="#f00"/></svg>"##;
+    let mut entry = entry_with_pixels(8, 8, 1);
+    entry.layout_px = Some((20, 10));
+    entry.svg = Some(Arc::new(svg.to_vec()));
+    app.md_image_cache.insert(key.clone(), entry);
+    app.md_frame = 3;
+    app.evict_md_images_to(0);
+    assert!(app.md_image_cache[&key].evicted);
+    assert!(!app.ensure_md_pixels(&key), "the pixels are being rebuilt");
+    let res = rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("raster result");
+    assert!(
+        res.reraster,
+        "applied as a re-raster: layout and decoration cache untouched"
+    );
+    assert!(app.apply_md_image(res));
+    let e = &app.md_image_cache[&key];
+    assert!(e.decoded.is_some() && !e.evicted);
+    assert_eq!(
+        e.layout_px,
+        Some((20, 10)),
+        "the reserved size did not move"
+    );
+}
+
+/// 500 formulas at 1024 px (the document that reached 880 MB) end up within the budget, with every
+/// entry still present so the page layout is unchanged.
+#[test]
+fn md_cache_holds_a_formula_heavy_document_to_the_budget() {
+    let dir = unique_tmp("konoma_md_lru_formulas");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.md_frame = 2;
+    for i in 0..500 {
+        let key = PathBuf::from(crate::preview::markdown::math_url(&format!("x_{i}"), false));
+        let mut e = entry_with_pixels(1024, 440, 0);
+        e.svg = Some(Arc::new(Vec::new()));
+        app.md_image_cache.insert(key, e);
+    }
+    let before = app.md_image_cache_pixel_bytes();
+    assert!(
+        before > 800 * 1024 * 1024,
+        "the scenario really is the 880 MB one: {before}"
+    );
+    app.evict_md_images_over_budget();
+    assert!(app.md_image_cache_pixel_bytes() <= super::MD_IMAGE_CACHE_BYTES);
+    assert_eq!(
+        app.md_image_cache.len(),
+        500,
+        "entries (and so the layout) all remain"
+    );
+}
+
+// ---- SVG files that could not be drawn: the reason is shown ---------------------------------------
+
+fn md_text(lines: &[ratatui::text::Line<'static>]) -> String {
+    lines
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// An inline SVG whose drawing the supervisor stopped (or that crashed its process) is laid out
+/// again as the text fallback with the reason under it, in the display language — it is never an
+/// unexplained blank, and never blamed on the terminal.
+#[test]
+fn an_inline_svg_that_the_drawing_process_stopped_says_why() {
+    use crate::preview::svg_guard::SvgFail;
+    for (why, needle) in [
+        (SvgFail::Timeout, "took too long"),
+        (SvgFail::Memory, "too much memory"),
+        (SvgFail::Crashed, "renderer stopped"),
+        (SvgFail::TooHeavy, "more drawing work"),
+    ] {
+        let dir = unique_tmp("konoma_svg_fail_inline");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("logo.svg"),
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"/>"#,
+        )
+        .unwrap();
+        let md = dir.join("doc.md");
+        std::fs::write(&md, "before\n\n![the logo](logo.svg)\n\nafter\n").unwrap();
+        let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+        app.picker = Some(test_picker());
+        app.enter_preview(&md);
+        let text = md_text(&app.decorated_lines(80));
+        assert!(!text.contains(needle), "{why:?}: nothing to explain yet");
+        assert_eq!(app.md_images().len(), 1, "sized from its root element");
+
+        // What the worker reports when the supervisor stopped the drawing.
+        let key = app.md_images()[0].url.clone();
+        let path = resolve_md_image_path(&key, Some(&dir)).expect("the cached picture's path");
+        app.md_image_cache
+            .insert(path.clone(), MdImgEntry::default());
+        assert!(app.apply_md_image(MdImageResult {
+            path,
+            image: Err(crate::preview::image::ImageFailure::Svg(why)
+                .code()
+                .to_string()),
+            svg: None,
+            reraster: false,
+            frames: None,
+        }));
+        let text = md_text(&app.decorated_lines(80));
+        assert!(
+            text.contains(needle),
+            "{why:?}: missing {needle:?} in\n{text}"
+        );
+        assert!(text.contains("the logo"), "the alt text stays: {text}");
+        assert!(
+            app.md_images().is_empty(),
+            "no space is reserved for it any more"
+        );
+
+        // The same in Japanese.
+        app.lang = crate::i18n::Lang::Jp;
+        app.md_cache = None;
+        let text = md_text(&app.decorated_lines(80));
+        assert!(text.contains("描画しません"), "{why:?}: {text}");
+    }
+}
+
+/// A file too big to ever draw is refused when the document is laid out, with the reason, without
+/// reading it.
+#[test]
+fn an_oversized_inline_svg_is_refused_at_layout_with_the_reason() {
+    let dir = unique_tmp("konoma_svg_fail_big");
+    std::fs::create_dir_all(&dir).unwrap();
+    // A sparse 33 MiB file: bigger than the 32 MiB limit, free to create, and it must not be read.
+    let big = std::fs::File::create(dir.join("big.svg")).unwrap();
+    big.set_len(33 << 20).unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "![huge](big.svg)\n").unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    let t = std::time::Instant::now();
+    let text = md_text(&app.decorated_lines(80));
+    assert!(t.elapsed() < std::time::Duration::from_secs(1));
+    assert!(text.contains("the file is too large"), "{text}");
+    assert!(app.md_images().is_empty());
+}
+
+/// The bug that stalled the UI for six seconds: sizing a picture parsed the whole SVG. A 200 KB
+/// `<text>` is sized from its root element, so laying the document out is immediate.
+#[test]
+fn laying_out_a_document_with_a_text_heavy_svg_does_not_parse_it() {
+    let dir = unique_tmp("konoma_svg_text_heavy");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("heavy.svg"),
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200"><text x="10" y="50" font-size="12">{}</text></svg>"#,
+            "W".repeat(200_000)
+        ),
+    )
+    .unwrap();
+    let md = dir.join("doc.md");
+    std::fs::write(&md, "![heavy](heavy.svg)\n").unwrap();
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.picker = Some(test_picker());
+    app.enter_preview(&md);
+    let t = std::time::Instant::now();
+    app.decorated_lines(80);
+    assert!(
+        t.elapsed() < std::time::Duration::from_millis(500),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(app.md_images().len(), 1);
+}
+
+/// A drawing that was stopped because the preview moved on leaves no "failed" entry behind: the
+/// picture is asked for again when its document is shown again.
+#[test]
+fn a_cancelled_inline_svg_drawing_leaves_no_failed_entry() {
+    let dir = unique_tmp("konoma_svg_cancelled");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("a.svg");
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    app.md_image_cache.insert(p.clone(), MdImgEntry::default());
+    let redraw = app.apply_md_image(MdImageResult {
+        path: p.clone(),
+        image: Err(crate::preview::image::ImageFailure::Cancelled
+            .code()
+            .to_string()),
+        svg: None,
+        reraster: false,
+        frames: None,
+    });
+    assert!(!redraw);
+    assert!(!app.md_image_cache.contains_key(&p));
+}
+
+/// A full-screen SVG that was refused carries its reason to the screen.
+#[test]
+fn a_full_screen_svg_that_was_refused_records_why() {
+    let dir = unique_tmp("konoma_svg_fail_full");
+    std::fs::create_dir_all(&dir).unwrap();
+    let deep = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{}{}</svg>"#,
+        "<g>".repeat(1000),
+        "</g>".repeat(1000)
+    );
+    let p = dir.join("deep.svg");
+    std::fs::write(&p, deep).unwrap();
+    let payload = MediaJob::Svg(p.clone(), 800).run().expect("a payload");
+    let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    assert!(matches!(
+        payload,
+        MediaPayload::ImageFailed(crate::preview::image::ImageFailure::Svg(
+            crate::preview::svg_guard::SvgFail::TooDeep
+        ))
+    ));
+    app.apply_payload(payload);
+    assert_eq!(
+        app.image_failure(),
+        Some(crate::preview::image::ImageFailure::Svg(
+            crate::preview::svg_guard::SvgFail::TooDeep
+        ))
+    );
+    // Leaving the file clears it.
+    app.clear_image();
+    assert_eq!(app.image_failure(), None);
+}
+
+/// The full-screen job reads the file the bounded way: a 33 MiB `.svg` and a named pipe are refused
+/// with a reason, not read (the pipe would block the worker for good).
+#[test]
+fn the_full_screen_svg_job_refuses_an_oversized_file_and_a_pipe() {
+    let dir = unique_tmp("konoma_svg_job_limits");
+    std::fs::create_dir_all(&dir).unwrap();
+    let big = dir.join("big.svg");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(33 << 20)
+        .unwrap();
+    let t = std::time::Instant::now();
+    assert!(matches!(
+        MediaJob::Svg(big, 800).run(),
+        Some(MediaPayload::ImageFailed(
+            crate::preview::image::ImageFailure::Svg(crate::preview::svg_guard::SvgFail::TooLarge)
+        ))
+    ));
+    #[cfg(unix)]
+    {
+        let fifo = dir.join("pipe.svg");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(matches!(
+            MediaJob::Svg(fifo, 800).run(),
+            Some(MediaPayload::ImageFailed(
+                crate::preview::image::ImageFailure::Svg(
+                    crate::preview::svg_guard::SvgFail::Invalid
+                )
+            ))
+        ));
+    }
+    assert!(t.elapsed() < std::time::Duration::from_secs(2));
 }

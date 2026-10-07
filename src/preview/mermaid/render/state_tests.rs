@@ -779,7 +779,7 @@ fn awkward_sources_produce_a_diagram_or_an_error_and_never_a_panic() {
                     svg::num(d.height)
                 );
                 assert!(
-                    crate::preview::svg::rasterize_bytes(
+                    crate::preview::svg::rasterize_trusted(
                         svg.as_bytes(),
                         std::path::Path::new("m.svg"),
                         300
@@ -1063,7 +1063,7 @@ fn orthogonal_design_reference_dump() {
             .unwrap_or_else(|e| panic!("{name}: must render under konoma-orthogonal: {e}"));
         let svg_path = dir.join(format!("{name}-ours.svg"));
         std::fs::write(&svg_path, &svg).unwrap_or_else(|e| panic!("{name}: write svg: {e}"));
-        let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), &svg_path, 1600)
+        let img = crate::preview::svg::rasterize_trusted(svg.as_bytes(), &svg_path, 1600)
             .unwrap_or_else(|| panic!("{name}: must rasterise"));
         img.save(dir.join(format!("{name}-ours.png")))
             .unwrap_or_else(|e| panic!("{name}: write png: {e}"));
@@ -2877,7 +2877,7 @@ fn state_title_strip_corner_arcs_survive_rasterisation() {
     if !text_metrics::fonts_available() {
         return;
     }
-    // A nominal request, not the scale pixel maths actually use below — `rasterize_bytes` clamps
+    // A nominal request, not the scale pixel maths actually use below — `rasterize_trusted` clamps
     // its own output to `HARD_MAX_PX` (4096), which the tallest source here (`zz-design-4c`, at
     // 960.6 SVG units) would exceed at 8×; the *actual* scale it applied is read back from the
     // image it returns instead of assumed, so this holds for every source regardless of size.
@@ -2896,7 +2896,7 @@ fn state_title_strip_corner_arcs_survive_rasterisation() {
     for (name, src) in orthogonal_design_reference_corpus() {
         let d = laid_out_orthogonal(src);
         let rendered = render_flow(src, "dark", "konoma-orthogonal").expect("renders");
-        let img = crate::preview::svg::rasterize_bytes(
+        let img = crate::preview::svg::rasterize_trusted(
             rendered.as_bytes(),
             std::path::Path::new("title-strip-corner.svg"),
             (d.width.max(d.height) * requested_scale).round() as u32,
@@ -2904,7 +2904,7 @@ fn state_title_strip_corner_arcs_survive_rasterisation() {
         .unwrap_or_else(|| panic!("{name}: must rasterise"));
         let rgba = img.to_rgba8();
         let (w, h) = (rgba.width() as i64, rgba.height() as i64);
-        // The scale `rasterize_bytes` actually used, read back from its own output rather than
+        // The scale `rasterize_trusted` actually used, read back from its own output rather than
         // assumed — see the comment on `requested_scale` above.
         let scale = if d.width >= d.height {
             rgba.width() as f64 / d.width

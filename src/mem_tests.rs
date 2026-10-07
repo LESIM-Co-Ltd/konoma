@@ -12,7 +12,7 @@
 //! Bounds are **relative** where possible (scroll-cost ≪ decorate-cost) so they don't flake on
 //! allocator or platform differences; absolute bounds are generous.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
 use std::path::Path;
 
@@ -31,7 +31,7 @@ struct CountingAlloc;
 // so growth (Vec reallocation) is counted too. `try_with` tolerates thread teardown (returns Err).
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let p = System.alloc(layout);
+        let p = crate::preview::svg_proc::GuardAlloc.alloc(layout);
         if !p.is_null() {
             let _ =
                 THREAD_ALLOCATED.try_with(|c| c.set(c.get().wrapping_add(layout.size() as u64)));
@@ -39,7 +39,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
         p
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        System.dealloc(ptr, layout);
+        crate::preview::svg_proc::GuardAlloc.dealloc(ptr, layout);
     }
 }
 

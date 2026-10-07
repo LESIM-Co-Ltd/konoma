@@ -25,6 +25,7 @@ use crate::app::{App, Mode, StatusbarLayout};
 
 /// Full-screen rendering per mode + status chrome (placement via `ui.statusbar`).
 pub fn render(frame: &mut Frame, app: &mut App) {
+    app.begin_frame();
     // Re-validate git status if the root changed or a re-validation was requested (FR-7). Never
     // blocks (async kick + reuse of the previous frame's data): see `App::refresh_git_if_needed`.
     //

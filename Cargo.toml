@@ -296,6 +296,11 @@ ignore = "0.4.33"
 # there. No new package: `log` is already in Cargo.lock via symphonia/ignore.
 log = "0.4"
 
+# Supervising the SVG drawing process (`preview::svg_proc`): kill, resident-memory reading, the
+# child's own limits. Already in the tree (arboard, crossterm, ...), so no new package.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # Only the mermaid layout cross-validation test (`src/preview/mermaid/layout/
 # cross_validate.rs`) reads JSON: it parses `cross-validate/reference_data.json`,

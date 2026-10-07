@@ -1728,6 +1728,7 @@ dependencies = [
  "ignore",
  "image",
  "infer",
+ "libc",
  "log",
  "mermaid-text",
  "notify",

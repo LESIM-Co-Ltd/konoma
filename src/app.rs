@@ -3,6 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -747,6 +748,10 @@ pub enum MediaPayload {
     /// `apply_payload` turns it into `App::command_err` for the render side's `[can not preview]`
     /// fallback (`ui/preview.rs`).
     CommandFailed(String),
+    /// A still image or GIF that could not be loaded, with the reason (too large, damaged,
+    /// unsupported format) — carried as a payload so the reason travels through the same
+    /// generation-checked channel as success. Goes to `App::image_failure`.
+    ImageFailed(crate::preview::image::ImageFailure),
     /// An opened spreadsheet (`PreviewKind::Spreadsheet`: its sheet list and the cells of the one
     /// sheet that was asked for) → goes to `App::workbook`.
     Workbook(Box<crate::preview::office::Workbook>),
@@ -788,6 +793,8 @@ pub struct KittyResult {
 enum MediaJob {
     /// Rasterize an SVG (path, max-edge px). Vector-backed: keeps the source for sharp zoom.
     Svg(PathBuf, u32),
+    /// Decode a still image (PNG/JPEG/...). On a worker so that a very large image never stalls the UI.
+    Still(PathBuf),
     /// Expand all GIF frames. Falls back to still-image decode for single-frame/non-animated GIFs.
     Gif(PathBuf),
     /// Extract one representative frame from a video — decoded in pure Rust for H.264 in
@@ -807,7 +814,9 @@ enum MediaJob {
     MermaidSrc(String, u32, String, String, String),
     /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom). The path is only
     /// the base for relative resources inside the SVG (mermaid output has none).
-    SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32),
+    /// The `bool` is whether the SVG came from a file (drawn by a supervised child process) rather
+    /// than from konoma's own mermaid renderer.
+    SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32, bool),
     /// Open a spreadsheet and read one sheet of it (path, the display locale that decides
     /// locale-dependent built-in formats, the 0-based visible sheet to read). Always yields a
     /// payload: a workbook (every visible sheet listed, the requested one's cells loaded), or the
@@ -839,17 +848,35 @@ impl MediaJob {
     ) -> Option<MediaPayload> {
         match self {
             MediaJob::Svg(p, max_px) => {
-                let data = std::fs::read(&p).ok()?;
-                let img = crate::preview::svg::rasterize_bytes(&data, &p, max_px)?;
+                // A file the user opened: drawn by a supervised child process (`svg_proc`).
+                let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
+                let data = match crate::preview::svg::read_limited(&p) {
+                    Ok(d) => d,
+                    Err(why) => {
+                        return Some(MediaPayload::ImageFailed(
+                            crate::preview::image::ImageFailure::Svg(why),
+                        ))
+                    }
+                };
+                let img =
+                    match crate::preview::svg::rasterize_untrusted(&data, &p, max_px, &cancelled) {
+                        Ok(img) => img,
+                        Err(why) => {
+                            return Some(MediaPayload::ImageFailed(
+                                crate::preview::image::ImageFailure::Svg(why),
+                            ))
+                        }
+                    };
                 Some(MediaPayload::Vector {
                     img,
                     svg: std::sync::Arc::new(data),
                 })
             }
+            MediaJob::Still(p) => Some(still_payload(&p)),
             MediaJob::Gif(p) => match crate::preview::image::decode_gif(&p) {
                 Some(frames) => Some(MediaPayload::Gif(frames)),
                 // A single-frame / non-animated GIF → display as a still image.
-                None => crate::preview::image::decode_static(&p).map(MediaPayload::Static),
+                None => Some(still_payload(&p)),
             },
             MediaJob::Video(p, allow_external) => {
                 crate::preview::video::thumbnail(&p, allow_external).map(MediaPayload::Static)
@@ -865,15 +892,23 @@ impl MediaJob {
                 let svg =
                     crate::preview::markdown::mermaid_to_svg_flow(&code, &theme, &curve, &routing)?;
                 let data = svg.into_bytes();
-                let img =
-                    crate::preview::svg::rasterize_bytes(&data, Path::new("mermaid.svg"), max_px)?;
+                let img = crate::preview::svg::rasterize_trusted(
+                    &data,
+                    Path::new("mermaid.svg"),
+                    max_px,
+                )?;
                 Some(MediaPayload::Vector {
                     img,
                     svg: std::sync::Arc::new(data),
                 })
             }
-            MediaJob::SvgReraster(svg, p, max_px) => {
-                let img = crate::preview::svg::rasterize_bytes(&svg, &p, max_px)?;
+            MediaJob::SvgReraster(svg, p, max_px, untrusted) => {
+                let img = if untrusted {
+                    let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
+                    crate::preview::svg::rasterize_untrusted(&svg, &p, max_px, &cancelled).ok()?
+                } else {
+                    crate::preview::svg::rasterize_trusted(&svg, &p, max_px)?
+                };
                 Some(MediaPayload::Vector { img, svg })
             }
             MediaJob::Workbook(p, locale, sheet) => {
@@ -903,10 +938,10 @@ impl MediaJob {
             } => match crate::preview::command::run_capture(&argv, &out, uses_out) {
                 Ok(result_path) => {
                     if as_image {
-                        let img = image::ImageReader::open(&result_path)
-                            .ok()
-                            .and_then(|r| r.with_guessed_format().ok())
-                            .and_then(|r| r.decode().ok());
+                        // Same entry as every other image: header checked against the limits, the
+                        // shared decode budget claimed (a delegated tool's output is not trusted
+                        // any more than a file the user opened).
+                        let img = crate::preview::image::decode_static(&result_path);
                         // Consumed immediately, like `preview::video::thumbnail`'s temp PNG — the
                         // image path only needs the decoded pixels from here on.
                         let _ = std::fs::remove_file(&result_path);
@@ -924,6 +959,14 @@ impl MediaJob {
                 Err(e) => Some(MediaPayload::CommandFailed(e.to_string())),
             },
         }
+    }
+}
+
+/// Decode a still image for the full-screen preview: the picture, or why there is none.
+fn still_payload(path: &Path) -> MediaPayload {
+    match crate::preview::image::decode_static_why(path) {
+        Ok(img) => MediaPayload::Static(img),
+        Err(why) => MediaPayload::ImageFailed(why),
     }
 }
 
@@ -1272,6 +1315,10 @@ pub(crate) struct MediaDiffRequest {
     raster_px: (u32, u32),
     preview_rules: Vec<crate::config::Rule>,
     preview_commands: bool,
+    /// Set by the UI thread when nobody wants this computation any more (the want changed or the
+    /// baseline moved): a drawing of an untrusted SVG then stops at once instead of holding its
+    /// child process for the whole time limit.
+    cancel: Arc<AtomicBool>,
 }
 
 /// Result of a media-diff computation, returned via `App::media_diff_tx`. Staleness is judged by
@@ -1592,6 +1639,14 @@ pub struct App {
     /// failure) or via `apply_payload`'s `MediaPayload::CommandFailed`. Read by `ui/preview.rs`'s
     /// `[can not preview]` fallback through `App::command_error`.
     command_err: Option<String>,
+    /// Why the full-screen raster image (a still or a GIF) could not be loaded — too large, damaged,
+    /// an unsupported format — so the fallback says so instead of blaming the terminal. None when
+    /// nothing failed (or it failed for no known reason). Reset by `clear_image`, set by
+    /// `apply_payload`'s `MediaPayload::ImageFailed` and by the synchronous `load_image`.
+    image_failure: Option<crate::preview::image::ImageFailure>,
+    /// Test-only: a small budget for the inline-image cache (the real one is `MD_IMAGE_CACHE_BYTES`).
+    #[cfg(test)]
+    md_cache_budget_for_test: Option<u64>,
     /// The decoded media of the tab we most recently switched **away from**, so switching back does not
     /// redo the work that produced it. That work is not just an image decode: SVG/mermaid/PDF are
     /// rasterized and video shells out to `ffmpeg`, which costs hundreds of
@@ -1699,6 +1754,8 @@ pub struct App {
     /// `reserve_proto_slot` can tell "wanted by the picture currently being drawn" (never recycle)
     /// from "left over from an earlier position" (fair game).
     md_frame: u64,
+    /// Number of frames `ui::render` has begun (bumped at the top of every one, whatever it draws).
+    draw_seq: u64,
     /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
     /// Filled lazily for visible rows (render pre-pass) and dropped on every tree rebuild, so the
     /// per-row stat (and the `items` column's read_dir) runs once per tree generation instead of
@@ -1848,6 +1905,8 @@ pub struct App {
     /// Generation of the media-diff computation. Mirrors `md_diff_gen`'s own doc comment
     /// (`App::invalidate_media_diff`, called from `App::invalidate_diff_caches`, bumps this).
     media_diff_gen: u64,
+    /// The cancellation flag of the computation in flight (see `MediaDiffRequest::cancel`).
+    media_diff_cancel: Arc<AtomicBool>,
     /// Sender returning `MediaDiffResult`s from the worker computing media diffs in the background.
     /// Mirrors `md_diff_tx`'s own doc comment (no Sender attached = tests fall back to synchronous
     /// computation).
@@ -2365,6 +2424,18 @@ struct MdProtoSlot {
     stale: bool,
 }
 
+/// Most decoded pixels the inline-image cache keeps resident across all pictures of a document, in
+/// bytes. Typical documents are far below it (twenty 1080p screenshots are 160 MB); a document with
+/// hundreds of images or formulas is the case it exists for, where the cache used to grow with the
+/// document (500 formulas at 1024 px were 880 MB, a hundred 4,000 px images 6 GB). Pictures drawn
+/// by the latest overlay pass are never evicted, so a screenful always stays whole.
+const MD_IMAGE_CACHE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Most rebuilds of evicted pixels that run at once. A resize makes every evicted picture on the
+/// screen want its pixels back in the same frame; each rebuild is a thread and a decode, so the rest
+/// wait (and ask again) instead of all starting together.
+const MD_MAX_REBUILDS: usize = 4;
+
 /// A decoded inline Markdown image plus its background-encoded render protocol(s).
 #[derive(Default)]
 struct MdImgEntry {
@@ -2416,9 +2487,57 @@ struct MdImgEntry {
     /// The time the current frame began showing (mirrors `App::gif_shown_at`). None = before the
     /// first tick (frame 0 is already shown via `decoded`; timing starts on the next tick).
     shown_at: Option<std::time::Instant>,
+    /// `App::md_frame` of the last overlay pass that asked for this picture. The cache evicts the
+    /// pixels of the pictures asked for longest ago first (`App::evict_md_images_over_budget`).
+    last_used: u64,
+    /// The decoded pixels were dropped to stay within `MD_IMAGE_CACHE_BYTES`. The entry itself stays
+    /// (its layout size, SVG source, kitty ids and any finished encodes), so nothing on the page
+    /// moves; the pixels are rebuilt from the file / SVG the next time a placement needs them.
+    evicted: bool,
+    /// A rebuild of the evicted pixels is running (`App::ensure_md_pixels` started it, its result
+    /// has not landed). Together with `evicted` this is the whole life of a rebuild: waiting
+    /// (`evicted`, not `rebuilding`) -> running (`rebuilding`) -> back (`!evicted`) or `failed`.
+    rebuilding: bool,
+    /// A placement asked for the evicted pixels but the rebuild limit (`MD_MAX_REBUILDS`) was
+    /// reached: ask again on the next frame, and keep the loading indicator (and so the redraw
+    /// loop) alive until it starts. It holds the `App::draw_seq` of the frame that asked and counts
+    /// only while that is the last frame drawn, so a wish nobody renews (the picture scrolled out
+    /// of view, the preview was left) lapses by itself instead of keeping the loop ticking.
+    rebuild_wanted: Option<u64>,
+    /// Why the decode failed, for the text that replaces the picture (None = no specific reason).
+    fail: Option<crate::preview::image::ImageFailure>,
+    /// This entry's place in the decode queue: its priority is the last overlay pass that asked for
+    /// the picture, and dropping the entry (document closed, file changed) withdraws a decode that
+    /// has not run yet.
+    wish: crate::preview::image::DecodeWish,
 }
 
 impl MdImgEntry {
+    /// Bytes of decoded pixels this entry keeps resident (frames of an animated GIF count once;
+    /// the first frame is shared with `decoded`).
+    fn pixel_bytes(&self) -> u64 {
+        use image::GenericImageView;
+        // The picture's own pixel format (3 bytes for an RGB8, 8 for an RGBA16), not an assumed 4.
+        let px = |im: &image::DynamicImage| {
+            let (w, h) = im.dimensions();
+            u64::from(w) * u64::from(h) * u64::from(im.color().bytes_per_pixel())
+        };
+        if self.frames.is_empty() {
+            self.decoded.as_deref().map_or(0, px)
+        } else {
+            self.frames.iter().map(|(im, _)| px(im)).sum()
+        }
+    }
+
+    /// Drop the decoded pixels (keeping everything that lets them be rebuilt).
+    fn evict_pixels(&mut self) {
+        self.decoded = None;
+        self.frames.clear();
+        self.idx = 0;
+        self.shown_at = None;
+        self.evicted = true;
+    }
+
     /// The slot family a request belongs to (full / clip / zoom — `MdEncodeKey::slot`).
     fn slots(&self, key: &MdEncodeKey) -> &[MdProtoSlot] {
         match key.slot() {
@@ -3229,6 +3348,9 @@ impl App {
             md_overlay_moved: false,
             preview_media_mtime: None,
             command_err: None,
+            image_failure: None,
+            #[cfg(test)]
+            md_cache_budget_for_test: None,
             media_cache: None,
             table_data: None,
             workbook: None,
@@ -3256,6 +3378,7 @@ impl App {
             md_image_cache: std::collections::HashMap::new(),
             md_kitty_ids: std::collections::HashMap::new(),
             md_frame: 0,
+            draw_seq: 0,
             detail_cells_cache: std::collections::HashMap::new(),
             tree_stale: false,
             md_img_tx: None,
@@ -3299,6 +3422,7 @@ impl App {
             media_diff_worker_busy: false,
             media_diff_queued: None,
             media_diff_gen: 0,
+            media_diff_cancel: Arc::default(),
             media_diff_tx: None,
             media_diff_landed: None,
             diff_target_kind_cache: None,
@@ -4998,6 +5122,7 @@ impl App {
         // causes behind mermaid degrading to a text diagram on tab return).
         self.preview_media_mtime = None;
         self.command_err = None;
+        self.image_failure = None;
     }
 
     /// Delete the current tab's delegated-command temp output (if any) and clear the reference.
@@ -5029,6 +5154,11 @@ impl App {
             return self.tab.command_out.as_deref();
         }
         self.tab.preview_path.as_deref()
+    }
+
+    /// Why the full-screen raster image could not be loaded, if it is known (see `image_failure`).
+    pub fn image_failure(&self) -> Option<crate::preview::image::ImageFailure> {
+        self.image_failure
     }
 
     /// Failure reason for the current `PreviewKind::Command` attempt, if any (see `command_err`'s
@@ -5869,14 +5999,69 @@ fn resolve_md_image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
 /// Pixel dimensions of a cached inline-image file, accepting both raster formats and SVG (parsed cheaply
 /// via usvg, without rasterizing). None if the file is neither a known raster image nor an SVG.
 fn md_image_dims(path: &Path) -> Option<(u32, u32)> {
-    crate::preview::image::dimensions(path).or_else(|| crate::preview::svg::intrinsic_size(path))
+    md_image_dims_why(path).ok()
 }
+
+/// [`md_image_dims`] that says why an SVG has no size, when there is something to tell: `Err(Some)`
+/// is a refusal (too large, nested too deeply, ...), `Err(None)` is "not an image we can size".
+/// An SVG's size is read from its root element alone (`svg::intrinsic_size`), so this is cheap
+/// whatever the file holds.
+fn md_image_dims_why(
+    path: &Path,
+) -> Result<(u32, u32), Option<crate::preview::svg_guard::SvgFail>> {
+    if let Some(d) = crate::preview::image::dimensions(path) {
+        return Ok(d);
+    }
+    crate::preview::svg::intrinsic_size(path).map_err(refusal_worth_telling)
+}
+
+/// A failure the user should be told about (everything except "this is not a valid SVG", which for
+/// a file that failed as an image too is just a picture that cannot be shown).
+fn refusal_worth_telling(
+    why: crate::preview::svg_guard::SvgFail,
+) -> Option<crate::preview::svg_guard::SvgFail> {
+    use crate::preview::svg_guard::SvgFail;
+    (why != SvgFail::Invalid).then_some(why)
+}
+
+/// Longest side, in pixels, that an inline Markdown image is kept at after decoding. The terminal
+/// never shows more than its own width (a 250-column terminal at 20 px per cell is 5,000 px) and the
+/// in-place zoom of diagrams re-rasterizes from the SVG rather than from this copy, so a larger
+/// decode is memory the user cannot see: an 11,000 x 11,000 screenshot would keep 480 MB, this keeps
+/// 64 MB. Matches the 4096 cap on SVG rasters (`preview::svg::HARD_MAX_PX`).
+const MD_IMAGE_MAX_SIDE: u32 = 4096;
 
 /// Decode a cached inline-image file to an image, rasterizing SVG (at `svg_max_px`) when the raster
 /// decoders reject it (GitHub READMEs are full of SVG badges/logos). None if it is not a decodable image.
+#[cfg(test)]
 fn md_decode_image(path: &Path, svg_max_px: u32) -> Option<image::DynamicImage> {
-    crate::preview::image::decode_static(path)
-        .or_else(|| crate::preview::svg::rasterize(path, svg_max_px))
+    md_decode_image_why(path, svg_max_px, &|| false).ok()
+}
+
+/// `md_decode_image` that says why it failed. An image the raster decoders refuse for being too
+/// large is not offered to the SVG rasterizer (it is not an SVG), nor is a file that cannot begin
+/// as one (a damaged PNG); any other refusal is, and the
+/// raster decoder's reason stands when the file is not a valid SVG either. An SVG is drawn by a
+/// supervised child process (`svg_proc`), so this blocks for as long as that takes (at most its
+/// time limit): call it from a worker. `cancelled` stops that drawing.
+fn md_decode_image_why(
+    path: &Path,
+    svg_max_px: u32,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
+    use crate::preview::image::ImageFailure;
+    use crate::preview::svg_guard::SvgFail;
+    match crate::preview::image::decode_static_capped_why(path, MD_IMAGE_MAX_SIDE) {
+        Ok(img) => Ok(img),
+        Err(e @ (ImageFailure::TooLarge | ImageFailure::Cancelled)) => Err(e),
+        // A damaged PNG or JPEG is not an SVG either, and drawing it would cost a process hand-off.
+        Err(e) if !crate::preview::svg::file_can_be_svg(path) => Err(e),
+        Err(e) => match crate::preview::svg::rasterize(path, svg_max_px, cancelled) {
+            Ok(img) => Ok(img),
+            Err(SvgFail::Invalid) => Err(e),
+            Err(f) => Err(ImageFailure::Svg(f)),
+        },
+    }
 }
 
 /// The source-pixel band `(y0, height)` of an image `dh` pixels tall that corresponds to the visible
@@ -6055,7 +6240,7 @@ fn fetch_remote_image_capped(url: &str, dest: &Path, max_bytes: u64) -> bool {
         return false;
     }
     // Reject non-images (e.g. an HTML error page served with 200) before caching them (accepts SVG).
-    if md_image_dims(&tmp).is_none() {
+    if md_image_dims(&tmp).is_none() && !crate::preview::svg::is_svg(&tmp) {
         let _ = std::fs::remove_file(&tmp);
         return false;
     }
@@ -6959,3 +7144,7 @@ mod md_model_snapshot_tests;
 
 #[cfg(test)]
 mod survivor_tests;
+
+// Inline-image cache behaviour around eviction, failure reasons and the decode queue.
+#[cfg(test)]
+mod md_raster_tests;

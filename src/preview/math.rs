@@ -259,7 +259,7 @@ mod tests {
                 "standalone glyphs (path/image), not webfont <text>: {latex}"
             );
             let img =
-                crate::preview::svg::rasterize_bytes(svg.as_bytes(), Path::new("m.svg"), 1600)
+                crate::preview::svg::rasterize_trusted(svg.as_bytes(), Path::new("m.svg"), 1600)
                     .expect("resvg rasterizes the standalone SVG");
             assert!(
                 img.width() > 0 && img.height() > 0,
@@ -306,7 +306,7 @@ mod tests {
         );
         assert!(svg.contains("#d0d0d0"), "指定色でグリフを塗る");
         // The raster's opaque pixels are the specified light color, not black (0,0,0).
-        let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), Path::new("m.svg"), 1024)
+        let img = crate::preview::svg::rasterize_trusted(svg.as_bytes(), Path::new("m.svg"), 1024)
             .expect("rasterizes");
         let opaque_non_black = img
             .pixels()
@@ -418,8 +418,9 @@ mod tests {
             "\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}",
         ] {
             let svg = latex_to_svg(latex, false, "#d0d0d0").expect("renders");
-            let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), Path::new("m.svg"), 800)
-                .expect("rasterizes");
+            let img =
+                crate::preview::svg::rasterize_trusted(svg.as_bytes(), Path::new("m.svg"), 800)
+                    .expect("rasterizes");
             let (w, h) = img.dimensions();
             let mut min_x = w;
             let mut min_y = h;

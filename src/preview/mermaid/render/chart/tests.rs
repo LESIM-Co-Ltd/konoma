@@ -2298,7 +2298,7 @@ fn every_chart_rasterises_with_ink_in_it() {
     }
     for (name, src) in CASES {
         let svg = rendered(src);
-        let img = crate::preview::svg::rasterize_bytes(
+        let img = crate::preview::svg::rasterize_trusted(
             svg.as_bytes(),
             std::path::Path::new("m.svg"),
             600,
