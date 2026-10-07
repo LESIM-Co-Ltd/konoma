@@ -282,13 +282,16 @@ impl App {
             self.media_gen_shared.clone(),
             gen,
         ));
+        let cancel = crate::preview::office::Cancel::generation(self.media_gen_shared.clone(), gen);
         std::thread::spawn(move || {
             // Even if job.run() panics (a pathological input to the resvg raster / image decode),
             // don't kill the thread — always return a result: without one, `media_loading` would
             // stay stuck at true until the next preview transition, keeping the "Loading…" display
             // and the run loop's 16ms polling going forever (breaking the idle-0% guarantee).
             let payload = crate::preview::markdown::catch_silent(move || {
-                crate::preview::image::with_decode_ticket(ticket, || job.run())
+                crate::preview::image::with_decode_ticket(ticket, || {
+                    job.run_cancellable(Some(cancel))
+                })
             })
             .flatten();
             let _ = tx.send(MediaResult {
@@ -413,7 +416,7 @@ impl App {
         }
     }
 
-    fn apply_payload(&mut self, payload: MediaPayload) {
+    pub(super) fn apply_payload(&mut self, payload: MediaPayload) {
         match payload {
             MediaPayload::Static(img) => self.set_static_image(img),
             MediaPayload::ImageFailed(why) => self.set_image_failure(why),
@@ -755,7 +758,10 @@ impl App {
         if self.media_tx.is_some() {
             self.vector_reraster_inflight = true;
         }
-        self.spawn_or_sync_media(MediaJob::SvgReraster(svg.clone(), base, want));
+        // A file's SVG is drawn by a supervised child process; a mermaid diagram (konoma's own
+        // output) in this one.
+        let untrusted = matches!(self.tab.preview_kind, Some(PreviewKind::Svg(_)));
+        self.spawn_or_sync_media(MediaJob::SvgReraster(svg.clone(), base, want, untrusted));
     }
 
     /// Reset to 1x (fit). Zoom=1 and recenter. Applies to the focused inline diagram when no

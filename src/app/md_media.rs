@@ -130,6 +130,15 @@ impl App {
         if !self.md_image_cache.contains_key(&res.path) {
             return false;
         }
+        // The drawing process was stopped because the preview moved on: forget the entry, so the
+        // picture is asked for again (and drawn) if its document comes back, instead of staying
+        // "failed".
+        if !res.reraster
+            && matches!(&res.image, Err(e) if e == crate::preview::image::ImageFailure::Cancelled.code())
+        {
+            self.md_image_cache.remove(&res.path);
+            return false;
+        }
         // For a fence diagram / math expression (synthetic key), the dimensions are decided here
         // for the first time = the loading row needs to be rebuilt into the real placement, so
         // invalidate the decoration cache (same convention as remote images' apply_remote_fetch).
@@ -338,7 +347,7 @@ impl App {
         let kp_on_panic = kp.clone();
         let job = move || {
             let image =
-                crate::preview::svg::rasterize_bytes(&svg, Path::new("mermaid.svg"), target)
+                crate::preview::svg::rasterize_trusted(&svg, Path::new("mermaid.svg"), target)
                     .ok_or_else(|| "rasterize failed".to_string());
             MdImageResult {
                 path: kp,
@@ -351,7 +360,7 @@ impl App {
         if let Some(tx) = img_tx {
             std::thread::spawn(move || {
                 // Same `compute_or_fallback` safety net as `ensure_mermaid_fence_render`/
-                // `ensure_math_render` (principle #3): `rasterize_bytes` (resvg) is the exact same
+                // `ensure_math_render` (principle #3): `rasterize_trusted` (resvg) is the exact same
                 // panic-prone call those already guard, and the `tx.send(..)` below is unconditional.
                 // Without this, a panic here would kill the thread before it sends anything, leaving
                 // `entry.reraster_inflight` latched `true` forever — this fence could never sharpen
@@ -469,7 +478,7 @@ impl App {
             };
             let data = std::sync::Arc::new(svg.into_bytes());
             let img =
-                crate::preview::svg::rasterize_bytes(&data, Path::new("mermaid.svg"), max_px)
+                crate::preview::svg::rasterize_trusted(&data, Path::new("mermaid.svg"), max_px)
                     .ok_or_else(|| "rasterize failed".to_string());
             (img, Some(data))
         };
@@ -489,7 +498,7 @@ impl App {
             self.md_image_cache
                 .insert(key.clone(), MdImgEntry::default());
             std::thread::spawn(move || {
-                // Even if render() (rasterize_bytes = resvg) panics, don't kill the thread — always
+                // Even if render() (rasterize_trusted = resvg) panics, don't kill the thread — always
                 // return a result: otherwise the entry stays stuck at decoded=None && !failed and
                 // busy latches true forever.
                 let (image, svg) = crate::preview::markdown::catch_silent(render)
@@ -539,7 +548,7 @@ impl App {
                     return (Err("math render failed".to_string()), None);
                 };
                 let data = std::sync::Arc::new(svg.into_bytes());
-                let img = crate::preview::svg::rasterize_bytes(&data, Path::new("math.svg"), max_px)
+                let img = crate::preview::svg::rasterize_trusted(&data, Path::new("math.svg"), max_px)
                     .ok_or_else(|| "rasterize failed".to_string());
                 (img, Some(data))
             };
@@ -712,10 +721,16 @@ impl App {
             .get(&path)
             .map(|e| e.wish.ticket())
             .unwrap_or_default();
+        let (gen, latest) = (self.media_gen, self.media_gen_shared.clone());
+        let stale = ticket.clone();
         std::thread::Builder::new()
             .name("konoma-md-decode".into())
             .spawn(move || {
                 use crate::preview::image::ImageFailure;
+                // An SVG is drawn by a supervised child process that is stopped as soon as the
+                // preview has moved on (the media generation changes on every file/tab change).
+                let moved_on =
+                    || latest.load(std::sync::atomic::Ordering::Relaxed) != gen || stale.is_stale();
                 // Animated GIF: decode all frames so the inline image cycles the same way the
                 // full-screen preview does (App::advance_gif_if_due) — a smaller budget than the
                 // full-screen path bounds memory when a document embeds several GIFs at once.
@@ -732,7 +747,7 @@ impl App {
                                 return (Ok(first), Some(frames));
                             }
                         }
-                        (md_decode_image_why(&p, svg_max_px), None)
+                        (md_decode_image_why(&p, svg_max_px, &moved_on), None)
                     })
                 })
                 .unwrap_or((Err(ImageFailure::Corrupt), None));
@@ -740,6 +755,12 @@ impl App {
                 if still.as_ref().err() == Some(&ImageFailure::Cancelled) {
                     return;
                 }
+                // The preview moved on while the picture was being drawn: the entry stays but is
+                // told so, and is forgotten (see `apply_md_image`) so it is asked for again.
+                let still = match still {
+                    Err(_) if moved_on() => Err(ImageFailure::Cancelled),
+                    other => other,
+                };
                 let image = still.map_err(|f| f.code().to_string());
                 let _ = tx.send(MdImageResult {
                     path: p,
@@ -835,7 +856,7 @@ impl App {
                     let kp = kp.clone();
                     move || MdImageResult {
                         path: kp,
-                        image: crate::preview::svg::rasterize_bytes(
+                        image: crate::preview::svg::rasterize_trusted(
                             &svg,
                             Path::new("rebuild.svg"),
                             max_px,

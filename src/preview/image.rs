@@ -60,6 +60,9 @@ pub enum ImageFailure {
     /// The request was dropped before it ran because nobody wants the result any more (the
     /// document was closed, or the preview moved on). Never shown.
     Cancelled,
+    /// An SVG file that was refused or stopped by the guard or by the supervisor of its drawing
+    /// process (nested too deeply, took too long, ...): one reason type for every picture.
+    Svg(super::svg_guard::SvgFail),
 }
 
 impl ImageFailure {
@@ -70,6 +73,7 @@ impl ImageFailure {
             Self::Corrupt => "corrupt",
             Self::UnsupportedFormat => "unsupported-format",
             Self::Cancelled => "cancelled",
+            Self::Svg(f) => f.code_text(),
         }
     }
 
@@ -82,6 +86,7 @@ impl ImageFailure {
             Self::Cancelled,
         ]
         .into_iter()
+        .chain(super::svg_guard::SvgFail::ALL.into_iter().map(Self::Svg))
         .find(|f| f.code() == s)
     }
 
@@ -96,6 +101,7 @@ impl ImageFailure {
                 Self::Corrupt => Msg::ImageReasonCorrupt,
                 Self::UnsupportedFormat => Msg::ImageReasonUnsupportedFormat,
                 Self::Cancelled => return None,
+                Self::Svg(f) => f.msg(),
             },
         ))
     }

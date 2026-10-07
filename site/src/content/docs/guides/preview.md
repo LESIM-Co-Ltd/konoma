@@ -201,8 +201,17 @@ file cannot crash it, freeze it or fill the memory. What you will see:
   longest ago are dropped and rebuilt from the file when they scroll back into view — the
   layout does not move, and you may see *loading* for a moment. Large images are decoded one
   after another rather than all at once, the ones on screen first.
-- **These limits are fixed** — no setting changes them. SVG images are checked by their own,
-  separate safeguards before they are drawn.
+- **These limits are fixed** — no setting changes them.
+- **An SVG from a file is drawn by a separate process.** konoma starts a helper copy of
+  itself to draw any SVG that comes from a file (the one you open, a picture in a Markdown
+  document, an old version in a diff), checks its nesting depth, size and element count
+  first, and stops the helper if the drawing takes longer than 5 seconds or more than
+  1 GiB of memory — so a crafted SVG can never crash or freeze konoma. The picture is then
+  shown as not drawn, with the reason (nested too deeply, too large, too many elements,
+  too much drawing work, took too long, needed too much memory, the renderer stopped, or
+  damaged) above the XML source in full screen, or under the picture's text in a Markdown
+  document. A few helpers are kept for the next picture and stop when konoma exits.
+  Mermaid diagrams and formulas, which konoma writes itself, are drawn in-process.
 
 ## Everything else
 

@@ -561,7 +561,11 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         }
         Some(PreviewKind::Image(p)) => (format!("[image] {}", p.display()), false),
         // An SVG that failed to rasterize / whose terminal is unsupported. Shows the raw XML as text (a safe fallback).
-        Some(PreviewKind::Svg(p)) => (load_body(p, app.lang), true),
+        // When the cause is known (too deep, too heavy, took too long, ...) a line says so first.
+        Some(PreviewKind::Svg(p)) => match app.image_failure().and_then(|f| f.message(app.lang)) {
+            Some(why) => (format!("{why}\n\n{}", load_body(p, app.lang)), true),
+            None => (load_body(p, app.lang), true),
+        },
         // Rendering failed in the full-screen fence view (an unsupported diagram kind, etc.). Shows guidance (q returns to the md).
         Some(PreviewKind::MermaidFence(_)) => (
             tr(app.lang, crate::i18n::Msg::MermaidUnavailable).to_string(),

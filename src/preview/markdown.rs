@@ -9241,7 +9241,7 @@ plain body
         )
         .expect("mermaid renders to SVG");
         assert!(svg.contains("<svg"), "SVG らしい出力");
-        let img = crate::preview::svg::rasterize_bytes(
+        let img = crate::preview::svg::rasterize_trusted(
             svg.as_bytes(),
             std::path::Path::new("m.svg"),
             400,

@@ -32,7 +32,23 @@ All notable changes to konoma are documented in this file. The format is based o
   LibreOffice, then the OS default (`open` / `xdg-open`). The launch runs off the UI thread and the footer says
   which app opened it. `[external] office_apps = false` opens nothing (and the footer no longer offers `e` there); an explicit `[editor.ext]` entry wins.
 
+### Changed
+- **SVG files are drawn by a supervised child process** (konoma's own binary, started with a hidden internal flag).
+  A crafted SVG can no longer crash, hang or exhaust the memory of the preview: a drawing is stopped after 5 s or
+  1 GiB and the picture is reported as not drawn, with the reason (nested too deeply / too large / too many
+  elements / too much drawing work / took too long / needed too much memory / the renderer stopped / damaged).
+  konoma's own mermaid and math SVGs are still drawn in-process. A few children are kept for the next picture, so a
+  README with fifty badges draws as fast as before; they stop after 8 s idle and when konoma exits.
+- Sizing a Markdown picture that is an SVG now reads only the root element's width, height and viewBox, so the UI
+  thread never parses the file (a 200 KB `<text>` used to freeze it for 16 s).
+
 ### Fixed
+- An SVG that references another SVG file through `<image href>` is now checked like an embedded one (nesting depth,
+  size, svgz bombs, `use` bombs); a 1000-level nested file used to abort konoma.
+- The render budget now counts every link of a chain of clip paths or masks (1,000 chained clip paths used to need
+  4 GB).
+- A full-screen SVG that cannot be drawn says why above its source instead of showing the XML with no explanation, and a
+  Markdown SVG shows the reason in place of the picture (one reason message for every kind of picture).
 - **A hostile image could crash, freeze or exhaust memory**: an SVG nested a few thousand levels deep overflowed the
   stack and aborted konoma; a GIF declaring a 65535×65535 screen allocated ~16 GB; filter-heavy SVGs (huge blurs,
   morphology, turbulence, stacked layers) kept a core busy for minutes or took several GB; `<image href="/dev/zero">`

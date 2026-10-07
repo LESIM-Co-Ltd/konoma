@@ -703,8 +703,8 @@ impl App {
                         };
                     }
                 }
-                match md_image_dims(&p) {
-                    Some((pw, ph)) => {
+                match md_image_dims_why(&p) {
+                    Ok((pw, ph)) => {
                         let (cols, rows) = md_image_cells(
                             pw,
                             ph,
@@ -715,7 +715,14 @@ impl App {
                         );
                         ImageSlot::Inline { cols, rows }
                     }
-                    None => ImageSlot::Unavailable,
+                    // An SVG refused from its size or its file (too large, a pipe): say why.
+                    Err(Some(why)) => {
+                        match crate::preview::image::ImageFailure::Svg(why).message(lang) {
+                            Some(m) => ImageSlot::Failed(m),
+                            None => ImageSlot::Unavailable,
+                        }
+                    }
+                    Err(None) => ImageSlot::Unavailable,
                 }
             } else if crate::preview::markdown::is_remote_image_url(url)
                 && !self.md_remote_failed.contains(url)

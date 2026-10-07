@@ -180,7 +180,7 @@ fn render_page_native_inner_bytes(bytes: &[u8], page: u32) -> Option<DynamicImag
 }
 
 /// `hayro`'s `Pixmap` is premultiplied-alpha RGBA8; `image::DynamicImage` expects straight alpha
-/// (same reason `preview::svg::rasterize_bytes` demultiplies tiny-skia's output).
+/// (same reason `preview::svg::rasterize_trusted` demultiplies tiny-skia's output).
 ///
 /// **Also the point where a technically-successful-but-empty render is caught.** `hayro::render`
 /// returns a `Pixmap`, never a `Result` — there is no separate "I actually failed" signal from this

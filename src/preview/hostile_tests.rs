@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::preview::svg::{intrinsic_size_bytes, rasterize_bytes};
+use crate::preview::svg::{intrinsic_size_bytes, rasterize_trusted as rasterize_bytes};
 use crate::preview::svg_guard::{MAX_SVG_BYTES, MAX_XML_DEPTH};
 
 /// Generous wall-clock bound for "refused immediately". Refusals take milliseconds; the hostile
@@ -112,10 +112,9 @@ fn nesting_limit_boundary_is_exact() {
         ),
     );
     refused(&over);
-    assert!(
-        intrinsic_size_bytes(over.as_bytes()).is_none(),
-        "the size query (UI thread) is refused too"
-    );
+    // The size query (UI thread) reads the root element and nothing else, so it has no opinion on
+    // how deep the rest is: a refused document still has a size, and the drawing refuses it.
+    assert_eq!(intrinsic_size_bytes(over.as_bytes()), Some((100, 100)));
 }
 
 #[test]
@@ -505,7 +504,7 @@ fn too_many_gif_frames_fall_back_to_a_still() {
 }
 
 /// A PNG header that declares `w` x `h` with no pixel data behind it.
-fn png_header_only(w: u32, h: u32) -> Vec<u8> {
+pub(crate) fn png_header_only(w: u32, h: u32) -> Vec<u8> {
     fn chunk(t: &[u8; 4], d: &[u8]) -> Vec<u8> {
         let mut c = Vec::new();
         c.extend_from_slice(&(d.len() as u32).to_be_bytes());
@@ -683,7 +682,7 @@ fn calibrate_filter_costs() {
 
 fn within_budget(doc: &str, scale: f32) -> bool {
     crate::preview::svg_guard::load_tree(doc.as_bytes(), None, |tree| {
-        Some(crate::preview::svg_guard::check_render_budget(&tree, scale))
+        Ok(crate::preview::svg_guard::check_render_budget(&tree, scale))
     })
     .expect("the document parses")
 }

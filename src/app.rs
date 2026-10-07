@@ -813,7 +813,9 @@ enum MediaJob {
     MermaidSrc(String, u32, String, String, String),
     /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom). The path is only
     /// the base for relative resources inside the SVG (mermaid output has none).
-    SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32),
+    /// The `bool` is whether the SVG came from a file (drawn by a supervised child process) rather
+    /// than from konoma's own mermaid renderer.
+    SvgReraster(std::sync::Arc<Vec<u8>>, PathBuf, u32, bool),
     /// Open a spreadsheet and read one sheet of it (path, the display locale that decides
     /// locale-dependent built-in formats, the 0-based visible sheet to read). Always yields a
     /// payload: a workbook (every visible sheet listed, the requested one's cells loaded), or the
@@ -845,8 +847,25 @@ impl MediaJob {
     ) -> Option<MediaPayload> {
         match self {
             MediaJob::Svg(p, max_px) => {
-                let data = crate::preview::svg::read_limited(&p)?;
-                let img = crate::preview::svg::rasterize_bytes(&data, &p, max_px)?;
+                // A file the user opened: drawn by a supervised child process (`svg_proc`).
+                let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
+                let data = match crate::preview::svg::read_limited(&p) {
+                    Ok(d) => d,
+                    Err(why) => {
+                        return Some(MediaPayload::ImageFailed(
+                            crate::preview::image::ImageFailure::Svg(why),
+                        ))
+                    }
+                };
+                let img =
+                    match crate::preview::svg::rasterize_untrusted(&data, &p, max_px, &cancelled) {
+                        Ok(img) => img,
+                        Err(why) => {
+                            return Some(MediaPayload::ImageFailed(
+                                crate::preview::image::ImageFailure::Svg(why),
+                            ))
+                        }
+                    };
                 Some(MediaPayload::Vector {
                     img,
                     svg: std::sync::Arc::new(data),
@@ -872,15 +891,23 @@ impl MediaJob {
                 let svg =
                     crate::preview::markdown::mermaid_to_svg_flow(&code, &theme, &curve, &routing)?;
                 let data = svg.into_bytes();
-                let img =
-                    crate::preview::svg::rasterize_bytes(&data, Path::new("mermaid.svg"), max_px)?;
+                let img = crate::preview::svg::rasterize_trusted(
+                    &data,
+                    Path::new("mermaid.svg"),
+                    max_px,
+                )?;
                 Some(MediaPayload::Vector {
                     img,
                     svg: std::sync::Arc::new(data),
                 })
             }
-            MediaJob::SvgReraster(svg, p, max_px) => {
-                let img = crate::preview::svg::rasterize_bytes(&svg, &p, max_px)?;
+            MediaJob::SvgReraster(svg, p, max_px, untrusted) => {
+                let img = if untrusted {
+                    let cancelled = || cancel.as_ref().is_some_and(|c| c.is_cancelled());
+                    crate::preview::svg::rasterize_untrusted(&svg, &p, max_px, &cancelled).ok()?
+                } else {
+                    crate::preview::svg::rasterize_trusted(&svg, &p, max_px)?
+                };
                 Some(MediaPayload::Vector { img, svg })
             }
             MediaJob::Workbook(p, locale, sheet) => {
@@ -5959,7 +5986,29 @@ fn resolve_md_image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
 /// Pixel dimensions of a cached inline-image file, accepting both raster formats and SVG (parsed cheaply
 /// via usvg, without rasterizing). None if the file is neither a known raster image nor an SVG.
 fn md_image_dims(path: &Path) -> Option<(u32, u32)> {
-    crate::preview::image::dimensions(path).or_else(|| crate::preview::svg::intrinsic_size(path))
+    md_image_dims_why(path).ok()
+}
+
+/// [`md_image_dims`] that says why an SVG has no size, when there is something to tell: `Err(Some)`
+/// is a refusal (too large, nested too deeply, ...), `Err(None)` is "not an image we can size".
+/// An SVG's size is read from its root element alone (`svg::intrinsic_size`), so this is cheap
+/// whatever the file holds.
+fn md_image_dims_why(
+    path: &Path,
+) -> Result<(u32, u32), Option<crate::preview::svg_guard::SvgFail>> {
+    if let Some(d) = crate::preview::image::dimensions(path) {
+        return Ok(d);
+    }
+    crate::preview::svg::intrinsic_size(path).map_err(refusal_worth_telling)
+}
+
+/// A failure the user should be told about (everything except "this is not a valid SVG", which for
+/// a file that failed as an image too is just a picture that cannot be shown).
+fn refusal_worth_telling(
+    why: crate::preview::svg_guard::SvgFail,
+) -> Option<crate::preview::svg_guard::SvgFail> {
+    use crate::preview::svg_guard::SvgFail;
+    (why != SvgFail::Invalid).then_some(why)
 }
 
 /// Longest side, in pixels, that an inline Markdown image is kept at after decoding. The terminal
@@ -5973,21 +6022,29 @@ const MD_IMAGE_MAX_SIDE: u32 = 4096;
 /// decoders reject it (GitHub READMEs are full of SVG badges/logos). None if it is not a decodable image.
 #[cfg(test)]
 fn md_decode_image(path: &Path, svg_max_px: u32) -> Option<image::DynamicImage> {
-    md_decode_image_why(path, svg_max_px).ok()
+    md_decode_image_why(path, svg_max_px, &|| false).ok()
 }
 
 /// `md_decode_image` that says why it failed. An image the raster decoders refuse for being too
 /// large is not offered to the SVG rasterizer (it is not an SVG); any other refusal is, and the
-/// raster decoder's reason stands when the SVG route fails too.
+/// raster decoder's reason stands when the file is not a valid SVG either. An SVG is drawn by a
+/// supervised child process (`svg_proc`), so this blocks for as long as that takes (at most its
+/// time limit): call it from a worker. `cancelled` stops that drawing.
 fn md_decode_image_why(
     path: &Path,
     svg_max_px: u32,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
+    use crate::preview::svg_guard::SvgFail;
     match crate::preview::image::decode_static_capped_why(path, MD_IMAGE_MAX_SIDE) {
         Ok(img) => Ok(img),
         Err(e @ (ImageFailure::TooLarge | ImageFailure::Cancelled)) => Err(e),
-        Err(e) => crate::preview::svg::rasterize(path, svg_max_px).ok_or(e),
+        Err(e) => match crate::preview::svg::rasterize(path, svg_max_px, cancelled) {
+            Ok(img) => Ok(img),
+            Err(SvgFail::Invalid) => Err(e),
+            Err(f) => Err(ImageFailure::Svg(f)),
+        },
     }
 }
 
@@ -6167,7 +6224,7 @@ fn fetch_remote_image_capped(url: &str, dest: &Path, max_bytes: u64) -> bool {
         return false;
     }
     // Reject non-images (e.g. an HTML error page served with 200) before caching them (accepts SVG).
-    if md_image_dims(&tmp).is_none() {
+    if md_image_dims(&tmp).is_none() && !crate::preview::svg::is_svg(&tmp) {
         let _ = std::fs::remove_file(&tmp);
         return false;
     }

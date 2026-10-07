@@ -67,9 +67,9 @@ const MAX_TREE_NODES: usize = 3_000_000;
 /// Largest external image file an SVG may pull in through `<image href="file">`.
 const MAX_EXTERNAL_IMAGE_BYTES: u64 = 64 << 20;
 
-/// Why an SVG was not accepted. Not shown to the user (the caller falls back to "can not
-/// preview"); kept distinct so the `<image>` resolver can tell "this is not XML" (raster data)
-/// from "this is XML we refuse".
+/// Why the structural checks refused an SVG. Kept distinct so the `<image>` resolver can tell
+/// "this is not XML" (raster data) from "this is XML we refuse"; converted to [`SvgFail`] for the
+/// user.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum Reject {
     NotXml,
@@ -77,6 +77,127 @@ pub(crate) enum Reject {
     TooDeep,
     TooManyElements,
     TooManyNodes,
+}
+
+/// Why an SVG could not be drawn, in terms the user can be told. Produced by the pre-checks here,
+/// by the render budget, and by the supervisor of the drawing process (`svg_proc`: time, memory,
+/// a crash of the process).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SvgFail {
+    /// Elements nested deeper than [`MAX_XML_DEPTH`].
+    TooDeep,
+    /// Larger than [`MAX_SVG_BYTES`] (after gunzip for an svgz).
+    TooLarge,
+    /// Too many elements (`<use>` expansion, or the XML node limit).
+    TooComplex,
+    /// The converted tree needs more drawing work or layer memory than the budget allows.
+    TooHeavy,
+    /// The drawing process ran past its wall-clock limit and was stopped.
+    Timeout,
+    /// The drawing process grew past its memory limit and was stopped.
+    Memory,
+    /// The drawing process died by itself (a stack overflow or an allocation failure).
+    Crashed,
+    /// Not an SVG, or one the renderer cannot parse.
+    Invalid,
+}
+
+impl SvgFail {
+    /// Stable one-byte code used on the wire between the parent and the drawing process.
+    pub(crate) fn code(self) -> u8 {
+        match self {
+            SvgFail::TooDeep => 1,
+            SvgFail::TooLarge => 2,
+            SvgFail::TooComplex => 3,
+            SvgFail::TooHeavy => 4,
+            SvgFail::Timeout => 5,
+            SvgFail::Memory => 6,
+            SvgFail::Crashed => 7,
+            SvgFail::Invalid => 8,
+        }
+    }
+
+    pub(crate) fn from_code(c: u8) -> Option<SvgFail> {
+        Some(match c {
+            1 => SvgFail::TooDeep,
+            2 => SvgFail::TooLarge,
+            3 => SvgFail::TooComplex,
+            4 => SvgFail::TooHeavy,
+            5 => SvgFail::Timeout,
+            6 => SvgFail::Memory,
+            7 => SvgFail::Crashed,
+            8 => SvgFail::Invalid,
+            _ => return None,
+        })
+    }
+
+    /// The message the user sees (a catalog entry: the sentence says what the file did, never
+    /// blames the terminal).
+    pub fn msg(self) -> crate::i18n::Msg {
+        use crate::i18n::Msg;
+        match self {
+            SvgFail::TooDeep => Msg::SvgTooDeep,
+            SvgFail::TooLarge => Msg::SvgTooLarge,
+            SvgFail::TooComplex => Msg::SvgTooComplex,
+            SvgFail::TooHeavy => Msg::SvgTooHeavy,
+            SvgFail::Timeout => Msg::SvgTimeout,
+            SvgFail::Memory => Msg::SvgMemory,
+            SvgFail::Crashed => Msg::SvgCrashed,
+            SvgFail::Invalid => Msg::SvgInvalid,
+        }
+    }
+
+    /// A short English phrase for places that carry a plain reason string (the media diff's
+    /// per-side failure), not a translated message.
+    pub fn reason(self) -> &'static str {
+        match self {
+            SvgFail::TooDeep => "svg elements nested too deeply",
+            SvgFail::TooLarge => "svg too large",
+            SvgFail::TooComplex => "svg has too many elements",
+            SvgFail::TooHeavy => "svg needs too much drawing work",
+            SvgFail::Timeout => "svg took too long to draw",
+            SvgFail::Memory => "svg needed too much memory to draw",
+            SvgFail::Crashed => "svg renderer stopped while drawing it",
+            SvgFail::Invalid => "invalid svg",
+        }
+    }
+
+    /// Every reason.
+    pub(crate) const ALL: [SvgFail; 8] = [
+        SvgFail::TooDeep,
+        SvgFail::TooLarge,
+        SvgFail::TooComplex,
+        SvgFail::TooHeavy,
+        SvgFail::Timeout,
+        SvgFail::Memory,
+        SvgFail::Crashed,
+        SvgFail::Invalid,
+    ];
+
+    /// The stable text form used where a failure travels as a string (`ImageFailure::code`).
+    pub(crate) fn code_text(self) -> &'static str {
+        match self {
+            SvgFail::TooDeep => "svg-too-deep",
+            SvgFail::TooLarge => "svg-too-large",
+            SvgFail::TooComplex => "svg-too-complex",
+            SvgFail::TooHeavy => "svg-too-heavy",
+            SvgFail::Timeout => "svg-timeout",
+            SvgFail::Memory => "svg-memory",
+            SvgFail::Crashed => "svg-crashed",
+            SvgFail::Invalid => "svg-invalid",
+        }
+    }
+}
+
+impl From<Reject> for SvgFail {
+    fn from(r: Reject) -> SvgFail {
+        match r {
+            Reject::NotXml => SvgFail::Invalid,
+            Reject::TooLarge => SvgFail::TooLarge,
+            Reject::TooDeep => SvgFail::TooDeep,
+            Reject::TooManyElements | Reject::TooManyNodes => SvgFail::TooComplex,
+        }
+    }
 }
 
 /// Decompress an svgz, bounded. `Err` if the output would exceed `MAX_SVG_BYTES`.
@@ -294,9 +415,11 @@ fn scan_depth(text: &[u8]) -> Result<usize, Reject> {
     Ok(max)
 }
 
-/// Run `f` on a thread with a large stack when `deep`, otherwise inline. A panic in `f` on the
-/// helper thread is reported as `None` (the caller treats it as "can not preview").
-pub(crate) fn with_stack<T: Send>(deep: bool, f: impl FnOnce() -> Option<T> + Send) -> Option<T> {
+/// Run `f` on a thread with a large stack when `deep`, otherwise inline, reporting why it failed. A panic on the helper thread is `Invalid`.
+fn with_stack_why<T: Send>(
+    deep: bool,
+    f: impl FnOnce() -> Result<T, SvgFail> + Send,
+) -> Result<T, SvgFail> {
     if !deep {
         return f();
     }
@@ -307,10 +430,9 @@ pub(crate) fn with_stack<T: Send>(deep: bool, f: impl FnOnce() -> Option<T> + Se
                 BIG_STACK.with(|b| b.set(true));
                 f()
             })
-            .ok()?
+            .map_err(|_| SvgFail::Invalid)?
             .join()
-            .ok()
-            .flatten()
+            .unwrap_or(Err(SvgFail::Invalid))
     })
 }
 
@@ -321,81 +443,137 @@ thread_local! {
     static NESTING: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+/// Whether an SVG document nested inside the one being drawn (a `data:` URL, or a file an
+/// `<image href>` points at) may be handed to usvg: the same flat and structural checks as the
+/// top-level document, one nesting level deeper, on the same thread.
+fn nested_svg_acceptable(data: &[u8]) -> bool {
+    let nested = NESTING.with(|n| n.get());
+    if nested >= 3 {
+        return false;
+    }
+    match plain_bytes(data) {
+        Err(_) => false,
+        Ok(bytes) => match scan_depth(&bytes) {
+            Err(Reject::TooDeep | Reject::TooLarge) => false,
+            // Not markup we can follow: not ours to judge (raster data under text/plain).
+            Err(_) => true,
+            // A nested document deeper than the inline limit needs the large stack.
+            Ok(d) if d > INLINE_DEPTH && !BIG_STACK.with(|b| b.get()) => false,
+            Ok(_) => match std::str::from_utf8(&bytes).map(parse_xml) {
+                Ok(Ok(doc)) => check_xml(&doc).is_ok(),
+                // Not XML: garbage. Not ours to judge.
+                _ => true,
+            },
+        },
+    }
+}
+
+/// Run `f` one SVG-nesting level deeper. The level is restored even if `f` panics (the drawing
+/// process catches the panic and goes on to the next drawing on this thread).
+fn nested<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(u32);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            NESTING.with(|n| n.set(self.0));
+        }
+    }
+    let level = NESTING.with(|n| n.get());
+    NESTING.with(|n| n.set(level + 1));
+    let _restore = Restore(level);
+    f()
+}
+
+/// Does `data` look like a raster image (so it is not an SVG document)? Only the formats usvg
+/// itself sniffs.
+fn looks_raster(data: &[u8]) -> bool {
+    data.starts_with(b"\x89PNG\r\n\x1a\n")
+        || data.starts_with(&[0xff, 0xd8, 0xff])
+        || data.starts_with(b"GIF8")
+        || (data.len() > 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP")
+}
+
 /// `usvg::Options` for untrusted input: the shared font database, a data-URL resolver that runs
 /// embedded SVG through the same XML checks, and a file resolver that refuses anything that is not
-/// a bounded regular file (`/dev/zero` as an image would otherwise be read forever).
+/// a bounded regular file (`/dev/zero` as an image would otherwise be read forever) and runs a
+/// referenced SVG file through those same checks.
+///
+/// The drawing of an untrusted SVG happens in a process of its own (`svg_proc`), so what these
+/// checks protect is that process from dying on the common hostile shapes, with a reason, instead
+/// of by its stack overflowing.
 pub(crate) fn options(resources_dir: Option<PathBuf>) -> usvg::Options<'static> {
     let default_data = usvg::ImageHrefResolver::default_data_resolver();
     let default_string = usvg::ImageHrefResolver::default_string_resolver();
+    // The file resolver hands an SVG file to the data resolver (`image/svg+xml`), so the second
+    // closure needs its own copy of the default.
+    let data_for_files = usvg::ImageHrefResolver::default_data_resolver();
     usvg::Options {
         resources_dir,
         fontdb: super::svg::shared_fontdb(),
         image_href_resolver: usvg::ImageHrefResolver {
             resolve_data: Box::new(move |mime, data, opts| {
-                let maybe_svg = mime == "image/svg+xml" || mime == "text/plain";
-                if maybe_svg {
-                    let nested = NESTING.with(|n| n.get());
-                    if nested >= 3 {
+                if mime == "image/svg+xml" || mime == "text/plain" {
+                    if !nested_svg_acceptable(&data) {
                         return None;
                     }
-                    let rejected = match plain_bytes(&data) {
-                        Err(_) => true,
-                        Ok(bytes) => match scan_depth(&bytes) {
-                            Err(Reject::TooDeep | Reject::TooLarge) => true,
-                            // Not markup we can follow: not ours to judge (raster data under text/plain).
-                            Err(_) => false,
-                            // A nested document deeper than the inline limit needs the large stack.
-                            Ok(d) if d > INLINE_DEPTH && !BIG_STACK.with(|b| b.get()) => true,
-                            Ok(_) => match std::str::from_utf8(&bytes).map(parse_xml) {
-                                Ok(Ok(doc)) => check_xml(&doc).is_err(),
-                                // Not XML: garbage. Not ours to judge.
-                                _ => false,
-                            },
-                        },
-                    };
-                    if rejected {
-                        return None;
-                    }
-                    NESTING.with(|n| n.set(nested + 1));
-                    let kind = default_data(mime, data, opts);
-                    NESTING.with(|n| n.set(nested));
-                    return kind;
+                    return nested(|| default_data(mime, data, opts));
                 }
                 default_data(mime, data, opts)
             }),
             resolve_string: Box::new(move |href, opts| {
                 let path = opts.get_abs_path(std::path::Path::new(href));
                 match std::fs::metadata(&path) {
-                    Ok(m) if m.is_file() && m.len() <= MAX_EXTERNAL_IMAGE_BYTES => {
-                        default_string(href, opts)
-                    }
-                    _ => None,
+                    Ok(m) if m.is_file() && m.len() <= MAX_EXTERNAL_IMAGE_BYTES => {}
+                    _ => return None,
                 }
+                // A referenced SVG is checked like an embedded one (it used to reach usvg
+                // unchecked: 1000 nested groups in a file next to the SVG aborted the process).
+                let bytes = std::fs::read(&path).ok()?;
+                if looks_raster(&bytes) {
+                    return default_string(href, opts);
+                }
+                if !nested_svg_acceptable(&bytes) {
+                    return None;
+                }
+                nested(|| data_for_files("image/svg+xml", std::sync::Arc::new(bytes), opts))
             }),
         },
         ..usvg::Options::default()
     }
 }
 
+/// The flat checks that need no XML parser: the size and the nesting depth. This is the fast
+/// refusal made before a drawing process is started. A compressed document is only size-checked
+/// here (the file's own length): decompressing it is the drawing process's job, where a bomb costs
+/// that process's memory and not this one's.
+pub(crate) fn precheck(data: &[u8]) -> Result<(), SvgFail> {
+    if data.len() > MAX_SVG_BYTES {
+        return Err(SvgFail::TooLarge);
+    }
+    if !data.starts_with(&[0x1f, 0x8b]) {
+        scan_depth(data)?;
+    }
+    Ok(())
+}
+
 /// Parse `data` into a usvg tree after the structural checks, calling `then` with the tree on a
-/// stack large enough for it. `None` when the SVG is refused or does not parse.
+/// stack large enough for it. `Err` says why the SVG was refused or did not parse.
 ///
 /// This is the only place konoma turns untrusted SVG bytes into a `usvg::Tree`.
 pub(crate) fn load_tree<T: Send>(
     data: &[u8],
     resources_dir: Option<PathBuf>,
-    then: impl FnOnce(usvg::Tree) -> Option<T> + Send,
-) -> Option<T> {
+    then: impl FnOnce(usvg::Tree) -> Result<T, SvgFail> + Send,
+) -> Result<T, SvgFail> {
     // roxmltree recurses on nesting, so depth is bounded by a flat scan *before* parsing, and
     // the stack decision comes from it (on the unzipped text for an svgz).
-    let deep = scan_depth(&plain_bytes(data).ok()?).ok()? > INLINE_DEPTH;
-    with_stack(deep, || {
-        let bytes = plain_bytes(data).ok()?;
-        let text = std::str::from_utf8(&bytes).ok()?;
-        let doc = parse_xml(text).ok()?;
-        check_xml(&doc).ok()?;
+    let deep = scan_depth(&plain_bytes(data)?)? > INLINE_DEPTH;
+    with_stack_why(deep, || {
+        let bytes = plain_bytes(data)?;
+        let text = std::str::from_utf8(&bytes).map_err(|_| SvgFail::Invalid)?;
+        let doc = parse_xml(text)?;
+        check_xml(&doc)?;
         let opt = options(resources_dir);
-        let tree = usvg::Tree::from_xmltree(&doc, &opt).ok()?;
+        let tree = usvg::Tree::from_xmltree(&doc, &opt).map_err(|_| SvgFail::Invalid)?;
         then(tree)
     })
 }
@@ -413,7 +591,9 @@ pub(crate) fn check_render_budget(tree: &usvg::Tree, scale: f32) -> bool {
         raster_px: 0.0,
         nodes: 0,
     };
-    cx.group(tree.root(), 0.0, 0) && cx.filter_work <= MAX_FILTER_WORK
+    // The filter work is checked as it is added up (`Budget::filter`), so there is no total to
+    // check again here.
+    cx.group(tree.root(), 0.0, 0)
 }
 
 struct Budget {
@@ -457,14 +637,36 @@ impl Budget {
                     return false;
                 }
             }
-            if let Some(m) = g.mask() {
-                if !self.group(m.root(), live, level + 1) {
+            // A mask is clipped by its own mask, a clip path by its own clip path, and so on: each
+            // link of such a chain is drawn into a layer of its own while the ones before it are
+            // still alive, so a long chain costs a layer per link (a chain of a thousand clip
+            // paths wanted 4 GB).
+            let mut mask = g.mask();
+            let mut chain_live = live;
+            while let Some(m) = mask {
+                if !self.group(m.root(), chain_live, level + 1) {
                     return false;
                 }
+                mask = m.mask();
+                if mask.is_some() {
+                    chain_live += layer * 4.0;
+                    if chain_live > MAX_LIVE_LAYER_BYTES {
+                        return false;
+                    }
+                }
             }
-            if let Some(c) = g.clip_path() {
-                if !self.group(c.root(), live, level + 1) {
+            let mut clip = g.clip_path();
+            let mut chain_live = live;
+            while let Some(c) = clip {
+                if !self.group(c.root(), chain_live, level + 1) {
                     return false;
+                }
+                clip = c.clip_path();
+                if clip.is_some() {
+                    chain_live += layer * 4.0;
+                    if chain_live > MAX_LIVE_LAYER_BYTES {
+                        return false;
+                    }
                 }
             }
         }
@@ -537,3 +739,7 @@ impl Budget {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "svg_guard_tests.rs"]
+mod tests;

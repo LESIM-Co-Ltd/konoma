@@ -992,14 +992,14 @@ fn markdown_images_are_kept_at_4096_on_the_long_side() {
     image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(5000, 10, image::Rgb([1, 2, 3])))
         .save(&wide)
         .unwrap();
-    let img = md_decode_image_why(&wide, 1024).unwrap();
+    let img = md_decode_image_why(&wide, 1024, &|| false).unwrap();
     assert_eq!(img.width(), 4096);
     assert_eq!(img.height(), 8);
     let exact = dir.join("exact.png");
     image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4096, 10, image::Rgb([1, 2, 3])))
         .save(&exact)
         .unwrap();
-    let img = md_decode_image_why(&exact, 1024).unwrap();
+    let img = md_decode_image_why(&exact, 1024, &|| false).unwrap();
     assert_eq!(
         (img.width(), img.height()),
         (4096, 10),

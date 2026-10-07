@@ -166,7 +166,7 @@ fn a_non_picture_kind_degrades_to_summary_with_sizes() {
 /// pixel size must actually reflect the **larger** of the two `raster_px` components, not the
 /// smaller one and not, say, the width component alone. A deliberately non-square, asymmetric
 /// `raster_px` (100×50) against a small (40×20, 2:1) SVG — small enough that any target here is
-/// an upscale, never `rasterize_bytes`'s own "shrink to fit `HARD_MAX_PX`" branch — makes the
+/// an upscale, never `rasterize_trusted`'s own "shrink to fit `HARD_MAX_PX`" branch — makes the
 /// three candidate target values (100, 50, and "width alone" = 100 too, so also cross-checked
 /// against a second, width-larger fixture below) produce three genuinely different pixel sizes,
 /// discriminating a `.max` from a `.min` or an accidental "just use one axis" mutant.
@@ -175,7 +175,7 @@ fn decode_svg_side_rasterizes_to_the_larger_axis_of_raster_px() {
     let dir = unique_tmp("konoma_media_diff_svg_raster_axis");
     std::fs::create_dir_all(&dir).unwrap();
     let svg = dir.join("icon.svg");
-    // A 40x20 (2:1) viewBox — small enough that `rasterize_bytes` always upscales for any
+    // A 40x20 (2:1) viewBox — small enough that `rasterize_trusted` always upscales for any
     // `raster_px` used below (never shrinks below 1:1 scale under `HARD_MAX_PX`).
     std::fs::write(
         &svg,

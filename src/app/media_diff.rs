@@ -961,7 +961,7 @@ fn decode_image_side(bytes: &[u8], hash: u64, page: u32, side: KeySide) -> Media
 
 /// An SVG side: natural size is the intrinsic (viewBox) size, never the raster's — the same
 /// distinction `MdImgEntry::layout_px` already draws for a mermaid/math render. Rasterized at
-/// `raster_px`'s larger side (`preview::svg::rasterize_bytes` takes a single max-side target, same as
+/// `raster_px`'s larger side (`preview::svg::rasterize_trusted` takes a single max-side target, same as
 /// every other SVG call site in this codebase).
 fn decode_svg_side(
     bytes: &[u8],
@@ -971,17 +971,21 @@ fn decode_svg_side(
     page: u32,
     side: KeySide,
 ) -> MediaDiffSideDecoded {
-    let Some(natural_px) = crate::preview::svg::intrinsic_size_bytes(bytes) else {
-        return MediaDiffSideDecoded::Failed {
-            reason: "invalid svg".to_string(),
-        };
-    };
     let max_px = raster_px.0.max(raster_px.1).max(1);
-    let Some(img) = crate::preview::svg::rasterize_bytes(bytes, path, max_px) else {
-        return MediaDiffSideDecoded::Failed {
-            reason: "svg rasterize failed".to_string(),
-        };
+    // Git's old version of a file: drawn by a supervised child process, like any SVG from a file.
+    let img = match crate::preview::svg::rasterize_untrusted(bytes, path, max_px, &|| false) {
+        Ok(img) => img,
+        Err(why) => {
+            return MediaDiffSideDecoded::Failed {
+                reason: why.reason().to_string(),
+            }
+        }
     };
+    // A size that only drawing reveals (no width/height/viewBox) falls back to the raster's.
+    let natural_px = crate::preview::svg::intrinsic_size_bytes(bytes).unwrap_or_else(|| {
+        use image::GenericImageView;
+        img.dimensions()
+    });
     let key = crate::preview::media_diff::media_diff_url(side, hash, page, Some(raster_px));
     MediaDiffSideDecoded::Picture(Box::new(MediaDiffPictureDecoded {
         natural_px,

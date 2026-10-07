@@ -17,6 +17,10 @@ pub mod office;
 pub mod pdf;
 pub mod svg;
 pub(crate) mod svg_guard;
+pub(crate) mod svg_proc;
+#[cfg(test)]
+mod svg_proc_tests;
+pub(crate) mod svg_size;
 pub mod table;
 pub mod text;
 pub mod video;
