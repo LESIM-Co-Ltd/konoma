@@ -685,6 +685,24 @@ impl App {
                 return ImageSlot::Unavailable;
             };
             if let Some(p) = resolve_md_image_path(url, base_dir.as_deref()) {
+                let lang = self.lang;
+                // A picture that already failed to decode says why (the entry keeps the reason).
+                if let Some(e) = self.md_image_cache.get(&p).filter(|e| e.failed) {
+                    return match e.fail.and_then(|f| f.message(lang)) {
+                        Some(why) => ImageSlot::Failed(why),
+                        None => ImageSlot::Unavailable,
+                    };
+                }
+                // One whose header already says it is over the limits is refused here, before a
+                // decode is queued for it (the decoder would refuse it from the same header).
+                if let Some(d) = crate::preview::image::dimensions(&p) {
+                    if !crate::preview::image::dimensions_within_limits(d) {
+                        return match crate::preview::image::ImageFailure::TooLarge.message(lang) {
+                            Some(why) => ImageSlot::Failed(why),
+                            None => ImageSlot::Unavailable,
+                        };
+                    }
+                }
                 match md_image_dims(&p) {
                     Some((pw, ph)) => {
                         let (cols, rows) = md_image_cells(

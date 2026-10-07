@@ -25147,8 +25147,7 @@ fn md_cache_rebuilds_an_evicted_image_from_its_file() {
     app.md_frame = 3;
     app.evict_md_images_to(0);
     assert!(app.md_image_cache[&png].evicted);
-    app.md_image_cache.get_mut(&png).unwrap().evicted = false;
-    app.rebuild_evicted_md_image(png.clone());
+    assert!(!app.ensure_md_pixels(&png), "the pixels are being rebuilt");
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(20))
         .expect("decode result");
@@ -25180,8 +25179,7 @@ fn md_cache_rebuilds_an_evicted_formula_from_its_svg() {
     app.md_frame = 3;
     app.evict_md_images_to(0);
     assert!(app.md_image_cache[&key].evicted);
-    app.md_image_cache.get_mut(&key).unwrap().evicted = false;
-    app.rebuild_evicted_md_image(key.clone());
+    assert!(!app.ensure_md_pixels(&key), "the pixels are being rebuilt");
     let res = rx
         .recv_timeout(std::time::Duration::from_secs(20))
         .expect("raster result");

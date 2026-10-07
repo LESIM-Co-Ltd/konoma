@@ -1463,10 +1463,8 @@ fn thumbnail_external(path: &Path) -> Option<DynamicImage> {
     // Prefer ffmpegthumbnailer (dedicated, fast, auto-picks a representative frame); fall back to ffmpeg.
     let ok = run_ffmpegthumbnailer(path, &out) || run_ffmpeg(path, &out);
     let img = if ok {
-        image::ImageReader::open(&out)
-            .ok()
-            .and_then(|r| r.with_guessed_format().ok())
-            .and_then(|r| r.decode().ok())
+        // The tool's output is untrusted too: same header check and decode budget as any image.
+        crate::preview::image::decode_static(&out)
     } else {
         None
     };

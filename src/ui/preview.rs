@@ -1895,8 +1895,14 @@ fn render_image(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(block, area);
 
     let lang = app.lang;
+    // A load that failed says why (too large / damaged / unsupported format); only when nothing
+    // is known — no image backend, a decode still pending — is the terminal the suspect.
+    let why = app.image_failure().and_then(|f| f.message(lang));
     let fallback = |frame: &mut Frame| {
-        let msg = tr(lang, crate::i18n::Msg::ImageUnsupported);
+        let msg = match why {
+            Some(why) => format!("[image] {why}"),
+            None => tr(lang, crate::i18n::Msg::ImageUnsupported).to_string(),
+        };
         frame.render_widget(Paragraph::new(msg), inner);
     };
 

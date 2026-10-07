@@ -41,8 +41,18 @@ All notable changes to konoma are documented in this file. The format is based o
   still images are checked against their header before any pixel buffer is allocated, concurrent decodes share a
   memory budget, Markdown images are kept at most 4096 px on their long side, and decoded Markdown images and rendered
   formulas share a 512 MiB cache whose least recently used pixels are dropped and rebuilt on demand (positions do not
-  move). A refused image shows the existing "cannot show" fallback. Full-screen still images now decode off the UI
-  thread. Ordinary images, mermaid diagrams and formulas render exactly as before.
+  move). A refused image now says why — too large (with the limits: 32,768 px a side, 150 megapixels, 512 MiB
+  decoded), damaged, or an unsupported format — in the full-screen preview and in place of the picture in a Markdown
+  document, instead of the "this terminal cannot show images" message. Decoding is measured honestly (a resize no
+  longer needs 17 bytes a pixel on top of the decode, and the shared budget is told each format's measured peak), the
+  pictures on screen are decoded before the ones that scrolled away, and a decode whose document was closed never runs.
+  Animated GIFs are limited to 4×10⁸ frame-pixels of compositing (1080p up to about 190 frames; the earlier 4×10⁹ let a
+  crafted file run for a minute) and are refused from their block structure in milliseconds. Full-screen still images
+  now decode off the UI thread, and the images that delegated preview commands, the macOS PDF fallback and the video
+  tools hand back go through the same checks. Images up
+  to 4096 px on the long side, mermaid diagrams and formulas render as before; a larger picture inside a Markdown
+  document is now kept at 4096 px on its long side (a terminal cannot show more detail), and an image opened on its
+  own is not shrunk. The limits are fixed (no setting changes them).
 
 ## [0.30.0] - 2026-09-28
 

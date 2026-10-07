@@ -394,10 +394,8 @@ fn render_page_external(path: &Path, page: u32) -> Option<DynamicImage> {
     let out = macos::temp_png_path();
     let ok = macos::run_qlmanage(path, &out) || macos::run_sips(path, &out);
     let img = if ok {
-        image::ImageReader::open(&out)
-            .ok()
-            .and_then(|r| r.with_guessed_format().ok())
-            .and_then(|r| r.decode().ok())
+        // The tool's output is untrusted too: same header check and decode budget as any image.
+        crate::preview::image::decode_static(&out)
     } else {
         None
     };

@@ -735,6 +735,9 @@ pub enum Msg {
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     NoCommitToCopy,
     ImageUnsupported,
+    ImageReasonTooLarge,
+    ImageReasonCorrupt,
+    ImageReasonUnsupportedFormat,
     PreviewTruncated,
     VideoThumbUnavailable,
     PdfPreviewUnavailable,
@@ -1349,6 +1352,11 @@ fn en(msg: Msg) -> &'static str {
         ImageUnsupported => {
             "[image] cannot display image in this terminal, or failed to load"
         }
+        ImageReasonTooLarge => {
+            "too large to display (limits: 32,768 px per side, 150 megapixels, 512 MiB decoded)"
+        }
+        ImageReasonCorrupt => "the file is damaged or could not be read",
+        ImageReasonUnsupportedFormat => "unsupported image format",
         PreviewTruncated => "\n\n— (truncated: display limit reached) —",
         VideoThumbUnavailable => {
             "[video] no thumbnail — install ffmpegthumbnailer or ffmpeg (and use a kitty-graphics terminal)"
@@ -1909,6 +1917,11 @@ fn jp(msg: Msg) -> &'static str {
         WkDate => "日付",
         NoCommitToCopy => "コピーするコミットがありません",
         ImageUnsupported => "[image] この端末では画像を表示できません、または読み込みに失敗しました",
+        ImageReasonTooLarge => {
+            "大きすぎて表示できません(上限: 1 辺 32,768px、1.5 億画素、展開後 512 MiB)"
+        }
+        ImageReasonCorrupt => "ファイルが壊れているか、読み込めません",
+        ImageReasonUnsupportedFormat => "対応していない画像形式です",
         PreviewTruncated => "\n\n— (省略: 表示上限に達しました) —",
         VideoThumbUnavailable => {
             "[動画] サムネイル不可 — ffmpegthumbnailer か ffmpeg を導入してください(kitty graphics 対応端末が必要)"
@@ -2538,6 +2551,9 @@ mod tests {
         Msg::WkDate,
         Msg::NoCommitToCopy,
         Msg::ImageUnsupported,
+        Msg::ImageReasonTooLarge,
+        Msg::ImageReasonCorrupt,
+        Msg::ImageReasonUnsupportedFormat,
         Msg::PreviewTruncated,
         Msg::VideoThumbUnavailable,
         Msg::PdfPreviewUnavailable,

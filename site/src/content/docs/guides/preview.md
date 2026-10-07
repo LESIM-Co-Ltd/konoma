@@ -179,6 +179,31 @@ approximation.
   falls back to the system's own `qlmanage`/`sips` — already installed —
   though those can only produce the **first** page.
 
+### Images that are too large, damaged or hostile
+
+konoma reads an image's header before it decodes anything, so a crafted or simply enormous
+file cannot crash it, freeze it or fill the memory. What you will see:
+
+- **A reason instead of a picture.** A still image or GIF is refused when it is over 32,768 px
+  on a side, over 150 megapixels, or over 512 MiB once decoded. The preview (and the
+  placeholder line of a Markdown image) then says which — *too large to display (limits …)*,
+  *the file is damaged or could not be read*, or *unsupported image format*. The generic
+  "this terminal cannot show images" message is kept for when nothing more is known (no
+  graphics support).
+- **Long animations are not played.** A GIF whose screen is over 36 megapixels (6000 × 6000),
+  that has more than 5,000 frames, or whose frames × screen is over 400 million pixels
+  (1080p: about 190 frames) is not animated; its first frame is shown as a still image if it
+  can be.
+- **Pictures inside Markdown are kept at most 4096 px on the long side.** A terminal cannot
+  show more detail than that, so a bigger picture is shrunk when the document is opened
+  (the file is untouched, and an image opened on its own is not shrunk).
+- **The pictures and rendered formulas of one document share 512 MiB.** The ones shown
+  longest ago are dropped and rebuilt from the file when they scroll back into view — the
+  layout does not move, and you may see *loading* for a moment. Large images are decoded one
+  after another rather than all at once, the ones on screen first.
+- **These limits are fixed** — no setting changes them. SVG images are checked by their own,
+  separate safeguards before they are drawn.
+
 ## Everything else
 
 Files matching no rule that look like text open as text; anything else shows a

@@ -166,6 +166,9 @@ pub fn is_previewable(path: &Path) -> bool {
 mod hostile_tests;
 
 #[cfg(test)]
+mod raster_limits_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
