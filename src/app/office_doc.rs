@@ -16,6 +16,9 @@ pub struct DocPicture {
     /// Pixel size read from the header (raster) or the intrinsic size (SVG), without decoding.
     /// `None` = not an image konoma can size: it is drawn as its alt text.
     pub(super) dims: Option<(u32, u32)>,
+    /// `dims` came from a raster header (not an SVG's intrinsic size): only those are refused
+    /// from the header alone; an SVG is guarded by its drawing process instead.
+    pub(super) raster: bool,
 }
 
 /// A converted Word document.
@@ -37,12 +40,13 @@ impl LoadedDocument {
             .images
             .into_iter()
             .map(|im| {
-                let dims = picture_dims(&im.bytes);
+                let (dims, raster) = picture_dims(&im.bytes);
                 (
                     im.key,
                     DocPicture {
                         bytes: Arc::new(im.bytes),
                         dims,
+                        raster,
                     },
                 )
             })
@@ -57,12 +61,15 @@ impl LoadedDocument {
 
 /// Pixel size of an in-memory picture without decoding it: raster formats first, then SVG (the same
 /// order as `md_image_dims` for a file).
-fn picture_dims(bytes: &[u8]) -> Option<(u32, u32)> {
-    image::ImageReader::new(std::io::Cursor::new(bytes))
+fn picture_dims(bytes: &[u8]) -> (Option<(u32, u32)>, bool) {
+    let raster = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()
-        .and_then(|r| r.into_dimensions().ok())
-        .or_else(|| crate::preview::svg::intrinsic_size_bytes(bytes))
+        .and_then(|r| r.into_dimensions().ok());
+    match raster {
+        Some(d) => (Some(d), true),
+        None => (crate::preview::svg::intrinsic_size_bytes(bytes), false),
+    }
 }
 
 /// An old binary Office file (`.doc`, OLE/CFB) opened as a `.docx` is not a damaged zip, but when
@@ -232,6 +239,47 @@ impl App {
         self.md_image_cache.get(&PathBuf::from(url))?.fail
     }
 
+    /// Test-only: makes the next layout pass rebuild the page from scratch.
+    #[cfg(test)]
+    pub fn invalidate_md_cache_for_test(&mut self) {
+        self.md_cache = None;
+    }
+
+    /// Test-only: makes the preview "move on" for any decode already started or started from now
+    /// on (the media generation every decode thread compares against changes under it).
+    #[cfg(test)]
+    pub fn make_running_decodes_stale_for_test(&mut self) {
+        self.media_gen_shared.store(
+            self.media_gen.wrapping_add(1000),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Test-only: the inline-image cache's own budget (bytes), applied on every landed decode.
+    #[cfg(test)]
+    pub fn set_md_cache_budget_for_test(&mut self, budget: u64) {
+        self.md_cache_budget_for_test = Some(budget);
+    }
+
+    /// Test-only: how many pictures of the document the cache holds pixels for right now.
+    #[cfg(test)]
+    pub fn office_pictures_with_pixels_for_test(&self) -> usize {
+        self.md_image_cache
+            .iter()
+            .filter(|(k, e)| {
+                crate::preview::markdown::is_office_image_url(&k.to_string_lossy())
+                    && e.decoded.is_some()
+            })
+            .count()
+    }
+
+    /// Test-only: a weak handle on the bytes of picture `url` (alive while the document, or a
+    /// decode of it, still holds them).
+    #[cfg(test)]
+    pub fn document_picture_weak_for_test(&self, url: &str) -> Option<std::sync::Weak<Vec<u8>>> {
+        Some(Arc::downgrade(&self.document_picture_bytes(url)?))
+    }
+
     /// Test-only: the inline-image cache's eviction with a budget of `budget` bytes.
     #[cfg(test)]
     pub fn evict_md_images_to_for_test(&mut self, budget: u64) {
@@ -241,6 +289,14 @@ impl App {
     /// Pixel size of one picture of the open document.
     pub(super) fn document_picture_dims(&self, url: &str) -> Option<(u32, u32)> {
         self.document.as_ref()?.pictures.get(url)?.dims
+    }
+
+    /// Whether the size of picture `url` was read from a raster header (an SVG's is not).
+    pub(super) fn document_picture_is_raster(&self, url: &str) -> bool {
+        self.document
+            .as_ref()
+            .and_then(|d| d.pictures.get(url))
+            .is_some_and(|p| p.raster)
     }
 
     /// The bytes of one picture of the open document (shared, not copied).
@@ -295,5 +351,13 @@ impl App {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+impl MdImageResult {
+    /// Test-only: the failure code the result carries (`None` for a picture).
+    pub fn error_code_for_test(&self) -> Option<&str> {
+        self.image.as_ref().err().map(String::as_str)
     }
 }

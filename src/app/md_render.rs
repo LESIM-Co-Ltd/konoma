@@ -712,7 +712,13 @@ impl App {
                     };
                 }
                 return match self.document_picture_dims(url) {
-                    Some(d) if !crate::preview::image::dimensions_within_limits(d) => {
+                    // Only a raster is refused from its header: an SVG's intrinsic size is not a
+                    // pixel count (it is drawn at `svg_max_px`, by the supervised process), the
+                    // same as a file SVG.
+                    Some(d)
+                        if self.document_picture_is_raster(url)
+                            && !crate::preview::image::dimensions_within_limits(d) =>
+                    {
                         match crate::preview::image::ImageFailure::TooLarge.message(lang) {
                             Some(why) => ImageSlot::Failed(why),
                             None => ImageSlot::Unavailable,

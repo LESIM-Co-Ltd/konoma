@@ -60,7 +60,11 @@ All notable changes to konoma are documented in this file. The format is based o
   64 MiB; an SVG downloaded for a remote Markdown image, and an SVG embedded in a Word document, reads no local file at all.
 - Pictures in a Word / OpenDocument file get the same protection as Markdown pictures: a still image is kept at 4096 px on
   its long side, an animated GIF has the GIF limits, an embedded SVG is drawn by the supervised child process, and a
-  picture that cannot be shown says why in place of the picture. They are never dropped from the cache (they cannot be re-read from the document).
+  picture that cannot be shown says why in place of the picture. They count against the 512 MiB picture cache like any other
+  picture: the least recently shown ones are dropped and decoded again (through the same checks) from the bytes the open document
+  keeps when they scroll back into view, without the page moving; the bytes are freed when the document is closed.
+- A SVG picture in a Word / OpenDocument file is no longer refused as "too large" for a big declared size (only raster pictures are
+  refused from their header); like an SVG file, it is guarded by the drawing process.
 - Ctrl-C while `e`'s editor or another program konoma started is running goes to that program; konoma keeps running.
 - **SVG files are drawn by a supervised child process** (konoma's own binary, started with a hidden internal flag).
   A crafted SVG can no longer crash, hang or exhaust the memory of the preview: a drawing is stopped after 5 s or

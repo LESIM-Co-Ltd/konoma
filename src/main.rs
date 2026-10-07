@@ -301,14 +301,11 @@ fn main() -> Result<()> {
     {
         let hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if preview::command::panic_ends_process(
+            // Before the previous hook prints the message, so it lands on the normal screen.
+            preview::command::leave_if_panic_ends_process(
                 std::thread::current().name(),
                 preview::markdown::panic_is_caught_here(),
-            ) {
-                preview::command::exit_cleanup();
-                // Before the previous hook prints the message, so it lands on the normal screen.
-                preview::command::restore_terminal_quietly();
-            }
+            );
             hook(info);
         }));
     }
@@ -464,9 +461,7 @@ fn main() -> Result<()> {
     app.save_session();
     // Stops any SVG drawing process still running (it must not outlive the program that asked)
     // and removes the private temp directory.
-    preview::command::exit_cleanup();
-
-    preview::command::restore_terminal_quietly();
+    preview::command::leave_for_good();
 
     // Fold up App, dropping every Sender, so the workers terminate.
     app.detach_image_backend();

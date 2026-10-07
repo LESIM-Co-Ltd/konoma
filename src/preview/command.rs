@@ -133,8 +133,104 @@ pub fn remove_private_temp_dir() {
 /// remove the private temp directory. Called after the run loop, from the panic hook of a fatal
 /// panic, and from the signal thread.
 pub fn exit_cleanup() {
-    super::svg_proc::shutdown();
-    remove_private_temp_dir();
+    if dry_run() {
+        note_exit_step(ExitStep::StopSvgProcesses);
+    } else {
+        super::svg_proc::shutdown();
+    }
+    if dry_run() {
+        note_exit_step(ExitStep::RemoveTempDir);
+    } else {
+        remove_private_temp_dir();
+    }
+}
+
+/// One thing the exit path does.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExitStep {
+    StopSvgProcesses,
+    RemoveTempDir,
+    RestoreTerminal,
+}
+
+#[cfg(not(test))]
+#[derive(Clone, Copy)]
+enum ExitStep {
+    StopSvgProcesses,
+    RemoveTempDir,
+    RestoreTerminal,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Set by a test (per thread) so that the exit path only records what it would do: the unit
+    /// test process must not stop its parallel tests' drawing processes, remove their
+    /// directories, make `svg_proc` refuse work for good or write to the terminal it runs in. The
+    /// real thing is run in a process of its own (`exit_cleanup_really_*`).
+    static DRY_RUN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static EXIT_STEPS: std::cell::RefCell<Vec<ExitStep>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn dry_run() -> bool {
+    DRY_RUN.with(std::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+fn dry_run() -> bool {
+    false
+}
+
+#[cfg(test)]
+fn note_exit_step(step: ExitStep) {
+    EXIT_STEPS.with(|s| s.borrow_mut().push(step));
+}
+
+#[cfg(not(test))]
+fn note_exit_step(_: ExitStep) {}
+
+/// Test-only: runs `f` with the exit path only recording, and returns the steps it took in order.
+#[cfg(test)]
+pub(crate) fn recorded_exit_steps<R>(f: impl FnOnce() -> R) -> (R, Vec<ExitStep>) {
+    DRY_RUN.with(|d| d.set(true));
+    EXIT_STEPS.with(|s| s.borrow_mut().clear());
+    let r = f();
+    DRY_RUN.with(|d| d.set(false));
+    (r, EXIT_STEPS.with(|s| std::mem::take(&mut *s.borrow_mut())))
+}
+
+/// Leaving the program for good: `exit_cleanup`, then the terminal teardown. The one thing the
+/// normal exit, the signal thread and the fatal-panic hook all call, so none of them can stop
+/// short of the SVG drawing processes.
+pub fn leave_for_good() {
+    exit_cleanup();
+    if dry_run() {
+        note_exit_step(ExitStep::RestoreTerminal);
+    } else {
+        restore_terminal_quietly();
+    }
+}
+
+/// The panic hook's part: a panic that ends the process (see `panic_ends_process`) leaves for
+/// good before the previous hook prints its message. Returns whether it did.
+pub fn leave_if_panic_ends_process(thread_name: Option<&str>, caught: bool) -> bool {
+    if panic_ends_process(thread_name, caught) {
+        leave_for_good();
+        true
+    } else {
+        false
+    }
+}
+
+/// The signal thread's part: `Some(exit code)` after leaving for good, `None` for a signal that is
+/// ignored (SIGINT while a foreground child owns the terminal).
+pub(crate) fn leave_on_signal(sig: i32, child_running: bool) -> Option<i32> {
+    if ignore_signal(sig, child_running) {
+        return None;
+    }
+    leave_for_good();
+    Some(128 + sig)
 }
 
 /// The bytes that undo what konoma turned on in the terminal: bracketed paste off, alternate
@@ -216,12 +312,9 @@ pub fn install_exit_cleanup_signals() {
         .spawn(move || {
             for sig in signals.forever() {
                 let running = FOREGROUND_CHILD.load(std::sync::atomic::Ordering::SeqCst);
-                if ignore_signal(sig, running) {
-                    continue;
+                if let Some(code) = leave_on_signal(sig, running) {
+                    std::process::exit(code);
                 }
-                exit_cleanup();
-                restore_terminal_quietly();
-                std::process::exit(128 + sig);
             }
         });
 }
@@ -1032,6 +1125,136 @@ mod tests {
         assert!(p.starts_with(&dir));
         assert_eq!(p.parent(), Some(dir.as_path()));
         let _ = std::fs::remove_file(p);
+    }
+
+    /// `exit_cleanup` stops the SVG drawing processes and removes the temp directory, in that order.
+    #[test]
+    fn exit_cleanup_stops_the_svg_processes_and_removes_the_temp_dir() {
+        let ((), steps) = recorded_exit_steps(exit_cleanup);
+        assert_eq!(
+            steps,
+            vec![ExitStep::StopSvgProcesses, ExitStep::RemoveTempDir]
+        );
+    }
+
+    /// The real `exit_cleanup`, in a process of its own (it is one-way and process-wide): it kills
+    /// a drawing process that is alive, makes `svg_proc` refuse new work and removes the private
+    /// directory. A child also ends by itself when its parent is gone, so only looking before the
+    /// process exits can tell that `shutdown` was called; the bug this guards was exactly an
+    /// `exit_cleanup` without it that every other test passed.
+    #[cfg(unix)]
+    #[test]
+    fn exit_cleanup_really_stops_the_svg_processes_and_removes_the_temp_dir() {
+        const ENV: &str = "KONOMA_TEST_EXIT_CLEANUP_CHILD";
+        if std::env::var_os(ENV).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "preview::command::tests::exit_cleanup_really_stops_the_svg_processes_and_removes_the_temp_dir",
+                    "--exact",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::test_support::unique_tmp("konoma_exit_cleanup_real");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("sleeper");
+        std::fs::write(&exe, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = super::super::svg_proc::TestWorker::start(&exe).expect("a child");
+        assert!(!child.ended());
+        let temp = write_private_temp(b"converted text").unwrap();
+        assert!(temp.exists());
+
+        exit_cleanup();
+
+        assert!(super::super::svg_proc::is_shutting_down());
+        let t = std::time::Instant::now();
+        while !child.ended() {
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(10),
+                "exit_cleanup left a drawing process running"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!temp.exists(), "the private temp directory was not removed");
+    }
+
+    /// Every way out runs the whole exit cleanup (not just the temp-dir removal), and then the
+    /// terminal teardown.
+    #[test]
+    fn every_way_out_runs_the_whole_exit_cleanup() {
+        let all = vec![
+            ExitStep::StopSvgProcesses,
+            ExitStep::RemoveTempDir,
+            ExitStep::RestoreTerminal,
+        ];
+        let ((), steps) = recorded_exit_steps(leave_for_good);
+        assert_eq!(steps, all, "normal exit");
+        let (r, steps) = recorded_exit_steps(|| leave_if_panic_ends_process(Some("main"), false));
+        assert!(r);
+        assert_eq!(steps, all, "fatal panic");
+        for sig in [
+            signal_hook::consts::SIGTERM,
+            signal_hook::consts::SIGHUP,
+            signal_hook::consts::SIGINT,
+        ] {
+            let (code, steps) = recorded_exit_steps(|| leave_on_signal(sig, false));
+            assert_eq!(code, Some(128 + sig));
+            assert_eq!(steps, all, "signal {sig}");
+        }
+    }
+
+    /// What does not end the process does not clean up: a caught panic or a worker's panic, and
+    /// SIGINT while an editor owns the terminal.
+    #[test]
+    fn exits_that_do_not_end_the_process_run_no_cleanup() {
+        let (r, steps) = recorded_exit_steps(|| {
+            (
+                leave_if_panic_ends_process(Some("main"), true),
+                leave_if_panic_ends_process(Some("konoma-md-decode"), false),
+                leave_on_signal(signal_hook::consts::SIGINT, true),
+            )
+        });
+        assert_eq!(r, (false, false, None));
+        assert!(steps.is_empty());
+    }
+
+    /// `main` reaches the cleanup only through these helpers (a direct `remove_private_temp_dir`
+    /// there would drop the SVG-process shutdown without a test noticing).
+    #[test]
+    fn main_leaves_only_through_the_cleanup_helpers() {
+        let main = include_str!("../main.rs");
+        assert!(
+            main.contains("preview::command::leave_for_good()"),
+            "normal exit"
+        );
+        assert!(
+            main.contains("preview::command::leave_if_panic_ends_process("),
+            "panic hook"
+        );
+        assert!(
+            !main.contains("remove_private_temp_dir"),
+            "main must not remove the temp directory by itself"
+        );
+        let this = include_str!("command.rs");
+        let signal = this
+            .split("pub fn install_exit_cleanup_signals() {\n    use")
+            .nth(1)
+            .and_then(|r| r.split("#[cfg(not(unix))]").next())
+            .expect("signal installer");
+        assert!(signal.contains("leave_on_signal("), "signal thread");
+        assert!(!signal.contains("remove_private_temp_dir"));
     }
 
     /// A writer whose every write and flush fails with `EIO`, like a pty whose other end closed.

@@ -1107,3 +1107,46 @@ fn a_damaged_png_is_not_offered_to_the_svg_process() {
         );
     });
 }
+
+/// The same for a picture file: a decode that fails after the preview moved on is reported as
+/// cancelled (its entry is forgotten and asked for again), not remembered as a damaged file.
+#[test]
+fn a_file_picture_failing_after_the_preview_moved_on_is_reported_cancelled() {
+    use crate::preview::image::ImageFailure;
+    let mut broken = {
+        let img = image::RgbaImage::from_pixel(64, 64, image::Rgba([1, 2, 3, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    broken.truncate(broken.len() / 2);
+    let (mut app, dir, img_rx, _enc_rx) =
+        setup_with("konoma_raster_moved_on", &[("b.png", broken)]);
+    app.tab.preview_path = Some(dir.join("doc.md"));
+    // Nothing moved on: the failure is a failure.
+    app.ensure_md_image("b.png", 10, 4, 0, 4);
+    let res = img_rx.recv_timeout(WAIT).expect("the decode reports");
+    assert_eq!(
+        res.image.as_ref().err().map(String::as_str),
+        Some(ImageFailure::Corrupt.code())
+    );
+    app.apply_md_image(res);
+    app.md_image_cache.clear();
+    // The preview moves on while it is being drawn: the same failure is a cancellation.
+    app.media_gen_shared.store(
+        app.media_gen.wrapping_add(1000),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    app.ensure_md_image("b.png", 10, 4, 0, 4);
+    let res = img_rx.recv_timeout(WAIT).expect("the decode reports");
+    assert_eq!(
+        res.image.as_ref().err().map(String::as_str),
+        Some(ImageFailure::Cancelled.code())
+    );
+    let key = res.path.clone();
+    app.apply_md_image(res);
+    assert!(
+        !app.md_image_cache.contains_key(&key),
+        "forgotten, asked for again"
+    );
+}

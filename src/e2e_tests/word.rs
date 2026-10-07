@@ -1653,6 +1653,47 @@ fn build_docx_with_picture(path: &std::path::Path, text: &str, name: &str, bytes
     zw.finish().unwrap();
 }
 
+/// Like `build_docx_with_picture` for several pictures, one paragraph each.
+fn build_docx_with_pictures(path: &std::path::Path, pics: &[(String, Vec<u8>)]) {
+    use std::io::Write;
+    let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let f = std::fs::File::create(path).unwrap();
+    let mut zw = zip::ZipWriter::new(f);
+    let o = zip::write::SimpleFileOptions::default();
+    let mut put = |n: &str, t: &[u8]| {
+        zw.start_file(n, o).unwrap();
+        zw.write_all(t).unwrap();
+    };
+    put(
+        "[Content_Types].xml",
+        br#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"#,
+    );
+    put(
+        "_rels/.rels",
+        format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="{rel}/officeDocument" Target="word/document.xml"/></Relationships>"#).as_bytes(),
+    );
+    let mut rels = String::new();
+    let mut body = String::new();
+    for (i, (name, bytes)) in pics.iter().enumerate() {
+        rels +=
+            &format!(r#"<Relationship Id="rIdP{i}" Type="{rel}/image" Target="media/{name}"/>"#);
+        put(&format!("word/media/{name}"), bytes);
+        body += &format!(
+            r#"<w:p><w:r><w:t>photo {i}</w:t></w:r></w:p><w:p><w:r><w:drawing><wp:inline><wp:docPr id="{}" name="x" descr="picture {i}"/><a:graphic><a:graphicData><a:blip r:embed="rIdP{i}"/></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>"#,
+            i + 1
+        );
+    }
+    put(
+        "word/_rels/document.xml.rels",
+        format!(r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{rels}</Relationships>"#).as_bytes(),
+    );
+    put(
+        "word/document.xml",
+        format!(r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="{rel}" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><w:body>{body}</w:body></w:document>"#).as_bytes(),
+    );
+    zw.finish().unwrap();
+}
+
 /// Opens `docx` (already in `dir`) with the real workers in a 100x30 terminal.
 fn open_with_media(dir: &crate::test_support::TmpDir, file: &str) -> Sim {
     let mut s = Sim::with_config_sized(&canon(dir), cfg_en(), 100, 30).with_media();
@@ -2452,10 +2493,11 @@ fn e2e_word_a_use_bomb_svg_is_refused_and_a_normal_one_still_draws() {
     assert_eq!(s.app.office_picture_failure_for_test(&url), None);
 }
 
-/// Word pictures cannot be read again from the document once dropped, so the cache never drops
-/// them, and the other synthetic pictures (math) it can rebuild come back at the same place.
+/// The cache may drop the pixels of a Word picture like any other picture (they are made again
+/// from the bytes the converted document keeps), and the page does not move while they are gone.
+/// Formulas (rebuilt from their SVG) behave the same.
 #[test]
-fn e2e_word_pictures_stay_when_the_cache_is_over_budget_and_formulas_come_back() {
+fn e2e_word_pictures_and_formulas_are_dropped_by_the_cache_and_come_back_in_place() {
     let Some((mut s, _d)) = open_doc_with_media("w_lru", EN, TALL) else {
         return;
     };
@@ -2480,28 +2522,165 @@ fn e2e_word_pictures_stay_when_the_cache_is_over_budget_and_formulas_come_back()
     s.app.evict_md_images_to_for_test(0);
     assert_eq!(
         s.app.office_picture_pixels_for_test(&pic),
-        Some(pic_px),
-        "a Word picture is never given up"
+        None,
+        "a Word picture is rebuildable, so it is dropped"
     );
-    assert!(
-        s.app.md_image_cache_pixel_bytes() > 0,
-        "and it still counts against the budget"
+    assert_eq!(
+        s.app.md_image_cache_pixel_bytes(),
+        0,
+        "nothing stays resident"
     );
     for m in &math {
-        assert_eq!(
-            s.app.office_picture_pixels_for_test(m),
-            None,
-            "a formula is rebuildable, so it is dropped"
-        );
+        assert_eq!(s.app.office_picture_pixels_for_test(m), None, "{m}");
     }
-    // The page does not move: the reserved cells are the same with the pixels gone.
+    // The page does not move: laid out again from scratch with every pixel gone, the reserved
+    // cells (rows, columns) of every picture and formula are the same.
+    s.app.invalidate_md_cache_for_test();
+    s.draw();
     assert_eq!(format!("{:?}", s.app.md_images()), format!("{before:?}"));
 
-    // Drawing again brings the formulas back from the SVG their entries kept.
-    s.draw();
+    // The same draw asked for the pixels back: they arrive, identical, and the page is unchanged.
     settle_images(&mut s);
+    assert_eq!(s.app.office_picture_pixels_for_test(&pic), Some(pic_px));
     for m in &math {
         assert!(s.app.office_picture_pixels_for_test(m).is_some(), "{m}");
     }
     assert_eq!(format!("{:?}", s.app.md_images()), format!("{before:?}"));
+}
+
+/// A document of `n` photographs: the cache keeps only about its budget of them resident however
+/// far the reader scrolls, and the ones scrolled back to are drawn again.
+#[test]
+fn e2e_word_a_picture_heavy_document_stays_within_the_cache_budget() {
+    const N: u32 = 10;
+    let dir = sandbox("w_lru_many");
+    let pics: Vec<(String, Vec<u8>)> = (0..N)
+        .map(|i| (format!("p{i}.png"), flat_png(600 + i, 600)))
+        .collect();
+    build_docx_with_pictures(&canon(&dir).join("many.docx"), &pics);
+    let mut s = open_with_media(&dir, "many.docx");
+    // Room for two of them (600 x 600 x 4 bytes each).
+    s.app.set_md_cache_budget_for_test(2 * 600 * 604 * 4);
+    s.drain_media();
+    assert!(s.app.document_ready());
+    assert_eq!(s.app.document_picture_count_for_test(), N as usize);
+    settle_images(&mut s);
+    // Read the whole document, a screen at a time.
+    for _ in 0..60 {
+        s.key('j');
+        s.key('j');
+        s.key('j');
+        settle_images(&mut s);
+    }
+    let resident = s.app.office_pictures_with_pixels_for_test();
+    assert!(
+        resident < N as usize,
+        "the budget held back some of the {N} pictures: {resident} resident"
+    );
+    // Back at the top the first picture is drawn again.
+    for _ in 0..200 {
+        s.key('k');
+    }
+    settle_images(&mut s);
+    let first = s.app.office_pictures_with_pixels_for_test();
+    assert!(first >= 1, "the pictures in view are drawn again");
+    assert!(first < N as usize, "and the rest are still held back");
+}
+
+/// A dropped picture is made again through the same defences as the first decode.
+#[test]
+fn e2e_word_a_dropped_large_picture_comes_back_capped_at_4096() {
+    let (mut s, _d, url) = open_picture_docx("w_lru_cap", "wide.png", &flat_png(6000, 300));
+    assert_eq!(
+        s.app.office_picture_pixels_for_test(&url),
+        Some((4096, 205))
+    );
+    s.app.begin_md_image_frame();
+    s.app.evict_md_images_to_for_test(0);
+    assert_eq!(s.app.office_picture_pixels_for_test(&url), None);
+    s.draw();
+    settle_images(&mut s);
+    assert_eq!(
+        s.app.office_picture_pixels_for_test(&url),
+        Some((4096, 205))
+    );
+    assert_eq!(s.app.office_picture_failure_for_test(&url), None);
+}
+
+/// The picture bytes are held by the open document only: once it is left (and its decodes are
+/// over) nothing keeps them, so rebuildable pictures do not outlive the document.
+#[test]
+fn e2e_word_the_picture_bytes_are_freed_when_the_document_is_left() {
+    let (mut s, _d, url) = open_picture_docx("w_lru_free", "p.png", &flat_png(300, 200));
+    let weak = s.app.document_picture_weak_for_test(&url).unwrap();
+    assert!(weak.upgrade().is_some(), "the open document holds them");
+    s.app.begin_md_image_frame();
+    s.app.evict_md_images_to_for_test(0);
+    settle_images(&mut s);
+    assert!(
+        weak.strong_count() == 1,
+        "a dropped picture's entry keeps no copy of the bytes: {}",
+        weak.strong_count()
+    );
+    s.key('q');
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while weak.strong_count() > 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the bytes were never freed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// A Word SVG is not refused for its intrinsic size (it is guarded by its drawing process, like a
+/// file SVG), only a raster is refused from its header.
+#[test]
+fn e2e_word_an_svg_with_a_huge_intrinsic_size_is_drawn_not_refused() {
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40000" height="20"><rect width="40000" height="20" fill="#0a0"/></svg>"##;
+    let (s, _d, url) = open_picture_docx("w_hugesvg", "wide.svg", svg);
+    assert!(
+        s.app.office_picture_started_for_test(&url),
+        "its decode was started"
+    );
+    assert_eq!(s.app.office_picture_failure_for_test(&url), None);
+    assert!(s.app.office_picture_pixels_for_test(&url).is_some());
+    s.see("before");
+    assert!(!s.screen().contains("too large"));
+}
+
+/// A picture whose drawing fails after the preview has moved on is not remembered as "damaged": the
+/// thread reports it as cancelled, its entry is forgotten and it is asked for again when the
+/// document is shown again (otherwise a good picture that was being drawn when the document was
+/// closed would stay broken for good).
+#[test]
+fn e2e_word_a_picture_failing_after_the_preview_moved_on_is_asked_for_again() {
+    // A header that passes the size check followed by garbage: the decode fails.
+    let mut broken = flat_png(64, 64);
+    broken.truncate(broken.len() / 2);
+    let (mut s, _d, url) = open_picture_docx("w_moved_on", "b.png", &broken);
+    assert_eq!(
+        s.app.office_picture_failure_for_test(&url),
+        Some(crate::preview::image::ImageFailure::Corrupt),
+        "setup: with nothing moving on, a failed decode is a failure"
+    );
+    s.app.forget_office_picture_for_test(&url);
+    s.app.make_running_decodes_stale_for_test();
+    s.app.ensure_md_image(&url, 10, 5, 0, 5);
+    let res = s
+        .md_img_rx
+        .as_ref()
+        .unwrap()
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the decode reports");
+    assert_eq!(
+        res.error_code_for_test(),
+        Some(crate::preview::image::ImageFailure::Cancelled.code()),
+        "a failure after the preview moved on is a cancellation"
+    );
+    s.app.apply_md_image(res);
+    assert!(
+        !s.app.office_picture_started_for_test(&url),
+        "forgotten, so the next showing asks again"
+    );
 }

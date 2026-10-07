@@ -67,10 +67,14 @@ fn kitty_id_for(
     family.get(slot).copied()
 }
 
-/// Whether a cache key names a picture that can be rebuilt from a file on disk (a regular inline
-/// image, as opposed to a media-diff picture whose bytes came from git).
+/// Whether a cache key names a picture whose pixels can be made again once dropped: a regular
+/// inline image (read from its file again) or a picture of the open Word/OpenDocument document
+/// (decoded again from the bytes the converted document keeps), as opposed to a media-diff picture
+/// whose bytes came from git and are held nowhere else.
 fn is_rebuildable_md_key(k: &Path) -> bool {
-    !crate::preview::markdown::is_synthetic_md_url(&k.to_string_lossy())
+    let s = k.to_string_lossy();
+    !crate::preview::markdown::is_synthetic_md_url(&s)
+        || crate::preview::markdown::is_office_image_url(&s)
 }
 
 impl App {
@@ -841,6 +845,12 @@ impl App {
             return true;
         };
         let Some(svg) = entry.svg.clone() else {
+            // A picture of the open document: decoded again from the bytes it keeps, through the
+            // same entry as the first decode (the defences of the first decode apply again).
+            let url = path.to_string_lossy().to_string();
+            if crate::preview::markdown::is_office_image_url(&url) {
+                return self.start_office_picture_thread(&url, path);
+            }
             return self.spawn_md_decode(path);
         };
         let s = path.to_string_lossy();
@@ -1112,14 +1122,29 @@ impl App {
     /// bytes. The cache entry is placed first (its presence is the "decode in flight" marker, as
     /// for a file image); a picture the document does not hold is left uncached (nothing to draw).
     fn spawn_office_picture_decode(&mut self, url: &str, key: PathBuf) {
-        let Some(bytes) = self.document_picture_bytes(url) else {
+        if self.document_picture_bytes(url).is_none() {
             return;
-        };
+        }
         self.md_image_cache
             .insert(key.clone(), MdImgEntry::default());
-        let key2 = key.clone();
+        if !self.start_office_picture_thread(url, key.clone()) {
+            // The thread could not start: end the wait instead of latching "loading".
+            if let Some(e) = self.md_image_cache.get_mut(&key) {
+                e.failed = true;
+            }
+        }
+    }
+
+    /// Starts the thread that decodes picture `url` of the open document into the cache entry
+    /// `key` (which already exists: a first decode just placed it, a rebuild of dropped pixels
+    /// keeps its own). Returns false when there is nothing to decode (the document no longer
+    /// holds the picture) or the thread could not be started; the caller ends the wait.
+    fn start_office_picture_thread(&mut self, url: &str, key: PathBuf) -> bool {
+        let Some(bytes) = self.document_picture_bytes(url) else {
+            return false;
+        };
         let Some(tx) = self.md_img_tx.clone() else {
-            return;
+            return true;
         };
         let svg_max_px = self.cfg.ui.svg_max_px;
         let ticket = self
@@ -1129,7 +1154,7 @@ impl App {
             .unwrap_or_default();
         let (gen, latest) = (self.media_gen, self.media_gen_shared.clone());
         let stale = ticket.clone();
-        let spawned = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("konoma-office-pic".into())
             .spawn(move || {
                 use crate::preview::image::ImageFailure;
@@ -1168,13 +1193,7 @@ impl App {
                     frames,
                 });
             })
-            .is_ok();
-        if !spawned {
-            // The thread could not start: end the wait instead of latching "loading".
-            if let Some(e) = self.md_image_cache.get_mut(&key2) {
-                e.failed = true;
-            }
-        }
+            .is_ok()
     }
 
     /// The image to draw for the visible portion of inline image `url`, **at this placement's own
