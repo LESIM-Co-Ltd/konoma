@@ -18,6 +18,7 @@ fn req(path: PathBuf, root: PathBuf, baseline: DiffBaseline) -> MediaDiffRequest
         raster_px: (800, 600),
         preview_rules: Config::default().preview.rules,
         preview_commands: true,
+        cancel: Default::default(),
     }
 }
 
@@ -166,7 +167,7 @@ fn a_non_picture_kind_degrades_to_summary_with_sizes() {
 /// pixel size must actually reflect the **larger** of the two `raster_px` components, not the
 /// smaller one and not, say, the width component alone. A deliberately non-square, asymmetric
 /// `raster_px` (100×50) against a small (40×20, 2:1) SVG — small enough that any target here is
-/// an upscale, never `rasterize_bytes`'s own "shrink to fit `HARD_MAX_PX`" branch — makes the
+/// an upscale, never `rasterize_trusted`'s own "shrink to fit `HARD_MAX_PX`" branch — makes the
 /// three candidate target values (100, 50, and "width alone" = 100 too, so also cross-checked
 /// against a second, width-larger fixture below) produce three genuinely different pixel sizes,
 /// discriminating a `.max` from a `.min` or an accidental "just use one axis" mutant.
@@ -175,7 +176,7 @@ fn decode_svg_side_rasterizes_to_the_larger_axis_of_raster_px() {
     let dir = unique_tmp("konoma_media_diff_svg_raster_axis");
     std::fs::create_dir_all(&dir).unwrap();
     let svg = dir.join("icon.svg");
-    // A 40x20 (2:1) viewBox — small enough that `rasterize_bytes` always upscales for any
+    // A 40x20 (2:1) viewBox — small enough that `rasterize_trusted` always upscales for any
     // `raster_px` used below (never shrinks below 1:1 scale under `HARD_MAX_PX`).
     std::fs::write(
         &svg,
@@ -191,6 +192,7 @@ fn decode_svg_side_rasterizes_to_the_larger_axis_of_raster_px() {
         raster_px: (100, 50), // height (50) is the *smaller* component — must not be used alone.
         preview_rules: Config::default().preview.rules,
         preview_commands: true,
+        cancel: Default::default(),
     };
     match App::compute_media_diff(&r) {
         MediaDiffComputed::Ready { new, .. } => match new {
@@ -230,6 +232,7 @@ fn decode_svg_side_rasterizes_to_the_larger_axis_of_raster_px_when_width_is_larg
         raster_px: (50, 100), // width (50) is the *smaller* component this time.
         preview_rules: Config::default().preview.rules,
         preview_commands: true,
+        cancel: Default::default(),
     };
     match App::compute_media_diff(&r) {
         MediaDiffComputed::Ready { new, .. } => match new {
@@ -1405,6 +1408,7 @@ fn a_directory_at_the_new_path_is_treated_as_absent_not_an_existing_unreadable_f
         raster_px: (400, 300),
         preview_rules: Config::default().preview.rules,
         preview_commands: true,
+        cancel: Default::default(),
     };
     match App::compute_media_diff(&r) {
         MediaDiffComputed::Ready { old, new, .. } => {
@@ -1419,4 +1423,65 @@ fn a_directory_at_the_new_path_is_treated_as_absent_not_an_existing_unreadable_f
         }
         other => panic!("旧版が PNG として分類されるので Ready のはず: {other:?}"),
     }
+}
+
+// ---- cancelling a computation nobody wants any more ----
+
+fn app_with_png(name: &str) -> (App, PathBuf, crate::test_support::TmpDir) {
+    let dir = unique_tmp(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("pic.png");
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([1, 1, 1])))
+        .save(&png)
+        .unwrap();
+    let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    (app, png, dir)
+}
+
+fn cancelled(app: &App) -> bool {
+    app.media_diff_cancel
+        .load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[test]
+fn a_new_want_behind_a_running_worker_cancels_the_running_one() {
+    let (mut app, png, _dir) = app_with_png("konoma_media_diff_cancel_queue");
+    // A worker is in flight (an untrusted SVG holding its child process, say).
+    app.media_diff_worker_busy = true;
+    assert!(!cancelled(&app));
+    assert!(app.poll_media_diff(&png, 1, (400, 300)).is_none());
+    assert!(
+        cancelled(&app),
+        "the want that queued behind it did not tell the running drawing to stop"
+    );
+}
+
+#[test]
+fn invalidating_the_diff_cancels_the_running_computation() {
+    let (mut app, _png, _dir) = app_with_png("konoma_media_diff_cancel_invalidate");
+    app.media_diff_worker_busy = true;
+    assert!(!cancelled(&app));
+    app.invalidate_media_diff();
+    assert!(cancelled(&app));
+}
+
+#[test]
+fn every_dispatch_gets_a_fresh_flag_and_a_cancelled_result_is_not_applied() {
+    let (mut app, png, _dir) = app_with_png("konoma_media_diff_cancel_apply");
+    assert!(app.poll_media_diff(&png, 1, (400, 300)).is_some());
+    assert!(!cancelled(&app), "a new computation starts uncancelled");
+    let gen = app.media_diff_gen;
+    app.media_diff_cancel
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let res = MediaDiffResult {
+        gen,
+        path: png.clone(),
+        page: 1,
+        raster_px: (400, 300),
+        computed: MediaDiffComputed::Unavailable,
+    };
+    assert!(
+        !app.apply_media_diff(res),
+        "the result of a cancelled computation is not applied"
+    );
 }

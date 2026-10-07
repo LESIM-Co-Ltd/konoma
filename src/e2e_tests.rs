@@ -12484,7 +12484,7 @@ fn e2e_ui_mermaid_image_mode_shows_caption_text_mode_does_not() {
 
 /// `mermaid_theme`: same driven-encode-worker technique as `math_color`. "dark" paints near-black
 /// low RGB values; "neutral" paints near-white high RGB values — a difference confirmed directly
-/// against `mermaid_to_svg`+`rasterize_bytes` output (204,204,204 vs 212,212,212 at a sample pixel)
+/// against `mermaid_to_svg`+`rasterize_trusted` output (204,204,204 vs 212,212,212 at a sample pixel)
 /// before this test was written, then verified to actually reach the drawn buffer once the diagram
 /// is sized small enough to stay fully inside the viewport (a too-tall diagram gets clipped and its
 /// visible band alone doesn't reach the encode step in this harness — see mermaid_rows below).
@@ -15937,7 +15937,7 @@ fn media_diff_solid_pdf_bytes(w_pt: u32, h_pt: u32, rgb: (u8, u8, u8)) -> Vec<u8
 /// A tiny, self-contained SVG whose entire canvas is one flat-color `<rect>` filling the viewBox —
 /// used by the SVG scale-unit regression test: `layout`'s shared scale must be computed from each
 /// side's own **intrinsic** (viewBox) size, not the rasterized pixel dimensions both sides could
-/// otherwise coincide on (`preview::svg::rasterize_bytes` fits every SVG to the same caller-given
+/// otherwise coincide on (`preview::svg::rasterize_trusted` fits every SVG to the same caller-given
 /// `raster_px` box, regardless of its own viewBox).
 #[cfg(feature = "git")]
 fn media_diff_solid_svg_bytes(w: u32, h: u32, rgb: (u8, u8, u8)) -> Vec<u8> {
@@ -16810,7 +16810,7 @@ fn e2e_media_diff_pdf_scale_uses_page_points_not_raster_px() {
 }
 
 /// SVG's shared scale must be computed from each side's own **intrinsic** (viewBox) size, not the
-/// rasterized pixel dimensions both sides can otherwise coincide on: `rasterize_bytes` fits every
+/// rasterized pixel dimensions both sides can otherwise coincide on: `rasterize_trusted` fits every
 /// SVG to the same caller-given `raster_px` box regardless of its own viewBox, so a 400×300 SVG and
 /// a 200×150 one (exactly half) can decode to near-identical pixel dimensions. Same fix as the PDF
 /// case above (`natural_px` is the viewBox size; the encode step always `Resize::Scale`s to
@@ -20217,3 +20217,68 @@ mod word;
 
 #[cfg(test)]
 mod math_ctx;
+
+// ---- SVG files that cannot be drawn say why ---------------------------------------------------
+
+/// Opening an SVG that nests 1000 levels deep: the real media worker refuses it, and the screen
+/// shows one line saying why with the XML source under it (it used to show the source alone, as if
+/// the terminal could not draw SVG).
+#[test]
+fn e2e_svg_full_screen_refused_shows_the_reason_above_the_source() {
+    let dir = sandbox("svg_refused_full");
+    let deep = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{}{}</svg>"#,
+        "<g>".repeat(1000),
+        "</g>".repeat(1000)
+    );
+    std::fs::write(dir.join("deep.svg"), deep).unwrap();
+    std::fs::write(
+        dir.join("fine.svg"),
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10" fill="#0f0"/></svg>"##,
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("deep.svg");
+    s.enter();
+    s.drain_media();
+    s.see("[svg] not drawn: its elements are nested too deeply");
+    s.see("<svg");
+    s.key('q');
+
+    // A file that draws shows no such line.
+    s.select("fine.svg");
+    s.enter();
+    s.drain_media();
+    s.dont_see("not drawn");
+}
+
+/// A Markdown document with a refused picture: the text fallback names the picture and says why,
+/// and the rest of the document is untouched.
+#[test]
+fn e2e_markdown_inline_svg_refused_shows_the_reason_under_its_fallback() {
+    let dir = sandbox("svg_refused_inline");
+    let deep = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">{}{}</svg>"#,
+        "<g>".repeat(1000),
+        "</g>".repeat(1000)
+    );
+    std::fs::write(dir.join("deep.svg"), deep).unwrap();
+    std::fs::write(
+        dir.join("d.md"),
+        "before\n\n![the deep one](deep.svg)\n\nafter\n",
+    )
+    .unwrap();
+    let root = canon(&dir);
+
+    let mut s = Sim::new(&root).with_media();
+    s.select("d.md");
+    s.enter();
+    // Sized from its root element at layout; the worker's refusal re-lays it out.
+    s.drain_md_images();
+    s.see("the deep one");
+    s.see("nested too deeply");
+    s.see("before");
+    s.see("after");
+}

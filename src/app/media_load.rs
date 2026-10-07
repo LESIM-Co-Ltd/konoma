@@ -6,10 +6,14 @@ impl App {
     /// promptly and the image appears without waiting for the next key press).
     pub fn md_images_loading(&self) -> bool {
         !self.md_remote_inflight.is_empty()
-            || self
-                .md_image_cache
-                .values()
-                .any(|e| (e.decoded.is_none() && !e.failed) || e.enc_inflight)
+            || self.md_image_cache.values().any(|e| {
+                // Waiting for pixels: the first decode, a rebuild running, or one that wants to
+                // start. An evicted entry nobody asks for is idle, not loading.
+                (e.decoded.is_none()
+                    && !e.failed
+                    && (!e.evicted || e.rebuilding || e.rebuild_wanted == Some(self.draw_seq)))
+                    || e.enc_inflight
+            })
     }
 
     /// Test-only: whether an inline-image encode request has been sent and its result not yet
@@ -33,10 +37,18 @@ impl App {
         if self.picker.is_none() || self.img_tx.is_none() {
             return; // no backend: the render side falls back to text
         }
-        let Some(dyn_img) = crate::preview::image::decode_static(path) else {
-            return;
-        };
-        self.set_static_image(dyn_img);
+        match crate::preview::image::decode_static_why(path) {
+            Ok(dyn_img) => self.set_static_image(dyn_img),
+            Err(why) => self.set_image_failure(why),
+        }
+    }
+
+    /// Record why the full-screen image could not be loaded (a request dropped as stale is not a
+    /// failure and says nothing).
+    fn set_image_failure(&mut self, why: crate::preview::image::ImageFailure) {
+        if why != crate::preview::image::ImageFailure::Cancelled {
+            self.image_failure = Some(why);
+        }
     }
 
     /// Common processing to set a still image (including SVG raster results / single-frame GIFs) as the display source.
@@ -82,9 +94,15 @@ impl App {
             PreviewKind::Image(_) if Self::looks_like_gif(path) => {
                 self.spawn_or_sync_media(MediaJob::Gif(path.to_path_buf()))
             }
-            // Still images (PNG/JPG etc.) decode fast, so this stays synchronous (the encode is
-            // made async by a worker at render time).
-            PreviewKind::Image(_) => self.load_image(path),
+            // Still images: without a worker channel (tests) they decode inline, otherwise on the
+            // worker like every other media kind (the encode is made async at render time).
+            PreviewKind::Image(_) if self.media_tx.is_none() => self.load_image(path),
+            // A very large image decodes for seconds: never on the UI thread.
+            PreviewKind::Image(_) => {
+                if self.picker.is_some() && self.img_tx.is_some() {
+                    self.spawn_or_sync_media(MediaJob::Still(path.to_path_buf()))
+                }
+            }
             PreviewKind::Svg(_) => {
                 self.spawn_or_sync_media(MediaJob::Svg(path.to_path_buf(), self.cfg.ui.svg_max_px))
             }
@@ -262,12 +280,25 @@ impl App {
         self.bump_media_gen();
         self.media_loading = true;
         let gen = self.media_gen;
+        // The decode queues in the shared decode gate as the thing on screen (top priority), and
+        // gives up if the preview moves on before its turn.
+        let ticket = std::sync::Arc::new(crate::preview::image::DecodeTicket::for_generation(
+            u64::MAX,
+            self.media_gen_shared.clone(),
+            gen,
+        ));
+        let cancel = crate::preview::office::Cancel::generation(self.media_gen_shared.clone(), gen);
         std::thread::spawn(move || {
             // Even if job.run() panics (a pathological input to the resvg raster / image decode),
             // don't kill the thread — always return a result: without one, `media_loading` would
             // stay stuck at true until the next preview transition, keeping the "Loading…" display
             // and the run loop's 16ms polling going forever (breaking the idle-0% guarantee).
-            let payload = crate::preview::markdown::catch_silent(move || job.run()).flatten();
+            let payload = crate::preview::markdown::catch_silent(move || {
+                crate::preview::image::with_decode_ticket(ticket, || {
+                    job.run_cancellable(Some(cancel))
+                })
+            })
+            .flatten();
             let _ = tx.send(MediaResult {
                 gen,
                 wb_worker: false,
@@ -393,9 +424,10 @@ impl App {
         }
     }
 
-    fn apply_payload(&mut self, payload: MediaPayload) {
+    pub(super) fn apply_payload(&mut self, payload: MediaPayload) {
         match payload {
             MediaPayload::Static(img) => self.set_static_image(img),
+            MediaPayload::ImageFailed(why) => self.set_image_failure(why),
             MediaPayload::Gif(frames) => self.set_gif_frames(frames),
             MediaPayload::Vector { img, svg } => {
                 use image::GenericImageView;
@@ -750,7 +782,10 @@ impl App {
         if self.media_tx.is_some() {
             self.vector_reraster_inflight = true;
         }
-        self.spawn_or_sync_media(MediaJob::SvgReraster(svg.clone(), base, want));
+        // A file's SVG is drawn by a supervised child process; a mermaid diagram (konoma's own
+        // output) in this one.
+        let untrusted = matches!(self.tab.preview_kind, Some(PreviewKind::Svg(_)));
+        self.spawn_or_sync_media(MediaJob::SvgReraster(svg.clone(), base, want, untrusted));
     }
 
     /// Reset to 1x (fit). Zoom=1 and recenter. Applies to the focused inline diagram when no

@@ -698,7 +698,26 @@ impl App {
             // A picture of the open Word document: its bytes are in memory and its size was read
             // when the document was converted, so there is no file to resolve or stat.
             if crate::preview::markdown::is_office_image_url(url) {
+                let lang = self.lang;
+                // Said once, like a file picture: a decode that failed keeps its reason, and a
+                // picture whose header is already over the limits is refused before any decode.
+                if let Some(e) = self
+                    .md_image_cache
+                    .get(&PathBuf::from(url))
+                    .filter(|e| e.failed)
+                {
+                    return match e.fail.and_then(|f| f.message(lang)) {
+                        Some(why) => ImageSlot::Failed(why),
+                        None => ImageSlot::Unavailable,
+                    };
+                }
                 return match self.document_picture_dims(url) {
+                    Some(d) if !crate::preview::image::dimensions_within_limits(d) => {
+                        match crate::preview::image::ImageFailure::TooLarge.message(lang) {
+                            Some(why) => ImageSlot::Failed(why),
+                            None => ImageSlot::Unavailable,
+                        }
+                    }
                     Some((pw, ph)) => {
                         let (cols, rows) = md_image_cells(
                             pw,
@@ -714,8 +733,26 @@ impl App {
                 };
             }
             if let Some(p) = resolve_md_image_path(url, base_dir.as_deref()) {
-                match md_image_dims(&p) {
-                    Some((pw, ph)) => {
+                let lang = self.lang;
+                // A picture that already failed to decode says why (the entry keeps the reason).
+                if let Some(e) = self.md_image_cache.get(&p).filter(|e| e.failed) {
+                    return match e.fail.and_then(|f| f.message(lang)) {
+                        Some(why) => ImageSlot::Failed(why),
+                        None => ImageSlot::Unavailable,
+                    };
+                }
+                // One whose header already says it is over the limits is refused here, before a
+                // decode is queued for it (the decoder would refuse it from the same header).
+                if let Some(d) = crate::preview::image::dimensions(&p) {
+                    if !crate::preview::image::dimensions_within_limits(d) {
+                        return match crate::preview::image::ImageFailure::TooLarge.message(lang) {
+                            Some(why) => ImageSlot::Failed(why),
+                            None => ImageSlot::Unavailable,
+                        };
+                    }
+                }
+                match md_image_dims_why(&p) {
+                    Ok((pw, ph)) => {
                         let (cols, rows) = md_image_cells(
                             pw,
                             ph,
@@ -726,7 +763,14 @@ impl App {
                         );
                         ImageSlot::Inline { cols, rows }
                     }
-                    None => ImageSlot::Unavailable,
+                    // An SVG refused from its size or its file (too large, a pipe): say why.
+                    Err(Some(why)) => {
+                        match crate::preview::image::ImageFailure::Svg(why).message(lang) {
+                            Some(m) => ImageSlot::Failed(m),
+                            None => ImageSlot::Unavailable,
+                        }
+                    }
+                    Err(None) => ImageSlot::Unavailable,
                 }
             } else if crate::preview::markdown::is_remote_image_url(url)
                 && !self.md_remote_failed.contains(url)
@@ -756,16 +800,22 @@ impl App {
             let key = PathBuf::from(crate::preview::markdown::mermaid_fence_url(code));
             match self.md_image_cache.get(&key) {
                 Some(e) if e.failed => MermaidSlot::Text,
-                Some(e) => match e.decoded.as_ref() {
-                    Some(img) => {
-                        use image::GenericImageView;
+                // `layout_px` is set when the first result lands and survives eviction of the
+                // pixels, so a picture whose pixels were dropped keeps its reserved size.
+                Some(e) => match e
+                    .decoded
+                    .as_ref()
+                    .map(|i| image::GenericImageView::dimensions(i.as_ref()))
+                    .or(e.layout_px)
+                {
+                    Some(raster_px) => {
                         // The layout is fixed at the **first** result's `layout_px` — the
                         // SVG's intrinsic size (px user units, the domain `mermaid_cells`
                         // sizes text against), not the raster's own pixel dimensions — so a
                         // sharp re-raster on zoom (higher density, same layout_px) never
                         // changes the reserved cell count. Falls back to the raster's
                         // dimensions only if intrinsic-size extraction ever failed.
-                        let (pw, ph) = e.layout_px.unwrap_or_else(|| img.dimensions());
+                        let (pw, ph) = e.layout_px.unwrap_or(raster_px);
                         let (cols, rows) = mermaid_cells(
                             pw,
                             ph,
@@ -794,7 +844,7 @@ impl App {
             let key = PathBuf::from(crate::preview::markdown::math_url(latex, display));
             match self.md_image_cache.get(&key) {
                 Some(e) if e.failed => MathSlot::Raw,
-                Some(e) => match (e.decoded.as_ref(), e.layout_px) {
+                Some(e) => match (Some(()), e.layout_px) {
                     // For math, layout_px holds the SVG's **intrinsic size (in em
                     // units)**, not raster px. Derive rows from the em height and columns
                     // from the intrinsic aspect ratio, for a size balanced against the text.

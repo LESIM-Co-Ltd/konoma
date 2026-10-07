@@ -297,7 +297,9 @@ ignore = "0.4.33"
 log = "0.4"
 
 # Exit-time cleanup of the private temp dir (`preview::command`): `libc::atexit` for the test
-# process, `signal-hook` to catch SIGTERM/SIGHUP/SIGINT on a thread. Both already in the tree.
+# process, `signal-hook` to catch SIGTERM/SIGHUP/SIGINT on a thread. `libc` is also used to
+# supervise the SVG drawing process (`preview::svg_proc`: kill, resident-memory reading, the
+# child's own limits). Both already in the tree.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 signal-hook = "0.3"

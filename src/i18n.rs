@@ -739,7 +739,18 @@ pub enum Msg {
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     NoCommitToCopy,
     ImageUnsupported,
+    ImageReasonTooLarge,
+    ImageReasonCorrupt,
+    ImageReasonUnsupportedFormat,
     PreviewTruncated,
+    SvgTooDeep,
+    SvgTooLarge,
+    SvgTooComplex,
+    SvgTooHeavy,
+    SvgTimeout,
+    SvgMemory,
+    SvgCrashed,
+    SvgInvalid,
     VideoThumbUnavailable,
     PdfPreviewUnavailable,
     ArchiveListUnavailable,
@@ -1368,7 +1379,20 @@ fn en(msg: Msg) -> &'static str {
         ImageUnsupported => {
             "[image] cannot display image in this terminal, or failed to load"
         }
+        ImageReasonTooLarge => {
+            "too large to display (limits: 32,768 px per side, 150 megapixels, 512 MiB decoded)"
+        }
+        ImageReasonCorrupt => "the file is damaged or could not be read",
+        ImageReasonUnsupportedFormat => "unsupported image format",
         PreviewTruncated => "\n\n— (truncated: display limit reached) —",
+        SvgTooDeep => "[svg] not drawn: its elements are nested too deeply",
+        SvgTooLarge => "[svg] not drawn: the file is too large",
+        SvgTooComplex => "[svg] not drawn: it contains too many elements",
+        SvgTooHeavy => "[svg] not drawn: it asks for more drawing work than is allowed",
+        SvgTimeout => "[svg] not drawn: drawing it took too long",
+        SvgMemory => "[svg] not drawn: drawing it needed too much memory",
+        SvgCrashed => "[svg] not drawn: the renderer stopped while drawing it",
+        SvgInvalid => "[svg] not drawn: the file is damaged or is not a valid SVG",
         VideoThumbUnavailable => {
             "[video] no thumbnail — install ffmpegthumbnailer or ffmpeg (and use a kitty-graphics terminal)"
         }
@@ -1943,7 +1967,20 @@ fn jp(msg: Msg) -> &'static str {
         WkDate => "日付",
         NoCommitToCopy => "コピーするコミットがありません",
         ImageUnsupported => "[image] この端末では画像を表示できません、または読み込みに失敗しました",
+        ImageReasonTooLarge => {
+            "大きすぎて表示できません(上限: 1 辺 32,768px、1.5 億画素、展開後 512 MiB)"
+        }
+        ImageReasonCorrupt => "ファイルが壊れているか、読み込めません",
+        ImageReasonUnsupportedFormat => "対応していない画像形式です",
         PreviewTruncated => "\n\n— (省略: 表示上限に達しました) —",
+        SvgTooDeep => "[svg] 描画しません: 要素の入れ子が深すぎます",
+        SvgTooLarge => "[svg] 描画しません: ファイルが大きすぎます",
+        SvgTooComplex => "[svg] 描画しません: 要素が多すぎます",
+        SvgTooHeavy => "[svg] 描画しません: 描画に必要な処理が上限を超えています",
+        SvgTimeout => "[svg] 描画しません: 描画に時間がかかりすぎました",
+        SvgMemory => "[svg] 描画しません: 描画にメモリを使いすぎました",
+        SvgCrashed => "[svg] 描画しません: 描画の途中で描画処理が止まりました",
+        SvgInvalid => "[svg] 描画しません: ファイルが壊れているか、SVG として正しくありません",
         VideoThumbUnavailable => {
             "[動画] サムネイル不可 — ffmpegthumbnailer か ffmpeg を導入してください(kitty graphics 対応端末が必要)"
         }
@@ -2587,7 +2624,18 @@ mod tests {
         Msg::WkDate,
         Msg::NoCommitToCopy,
         Msg::ImageUnsupported,
+        Msg::ImageReasonTooLarge,
+        Msg::ImageReasonCorrupt,
+        Msg::ImageReasonUnsupportedFormat,
         Msg::PreviewTruncated,
+        Msg::SvgTooDeep,
+        Msg::SvgTooLarge,
+        Msg::SvgTooComplex,
+        Msg::SvgTooHeavy,
+        Msg::SvgTimeout,
+        Msg::SvgMemory,
+        Msg::SvgCrashed,
+        Msg::SvgInvalid,
         Msg::VideoThumbUnavailable,
         Msg::PdfPreviewUnavailable,
         Msg::ArchiveListUnavailable,

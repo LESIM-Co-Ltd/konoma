@@ -240,7 +240,25 @@ fn fix_picker_font_size(picker: Picker, window_size: Option<(u16, u16, u16, u16)
     fixed
 }
 
+/// The allocator of every konoma process; it only does anything extra in a drawing child (see
+/// `svg_proc::GuardAlloc`). Under `cargo test` the counting allocator of `mem_tests` takes its
+/// place and wraps this one.
+#[cfg(not(test))]
+#[global_allocator]
+static ALLOC: preview::svg_proc::GuardAlloc = preview::svg_proc::GuardAlloc;
+
 fn main() -> Result<()> {
+    // The drawing process of `preview::svg_proc`: konoma started by itself to draw an SVG that came
+    // from a file, so that whatever such a file does cannot take the program down. It must run
+    // before anything else is touched (arguments, configuration, the terminal), and it is not an
+    // option a user is meant to pass, so it is not in `--help`.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == preview::svg_proc::CHILD_FLAG)
+    {
+        let rest: Vec<_> = std::env::args_os().skip(2).collect();
+        std::process::exit(preview::svg_proc::child_main(&rest));
+    }
     let args: Vec<String> = std::env::args().collect();
     // Resolved — and, for `Open`, validated — **before any terminal initialization** below (see
     // `resolve_startup`/`validate_root`). `--version`/`--help` print and exit here without ever
@@ -287,7 +305,7 @@ fn main() -> Result<()> {
                 std::thread::current().name(),
                 preview::markdown::panic_is_caught_here(),
             ) {
-                preview::command::remove_private_temp_dir();
+                preview::command::exit_cleanup();
                 // Before the previous hook prints the message, so it lands on the normal screen.
                 preview::command::restore_terminal_quietly();
             }
@@ -444,7 +462,9 @@ fn main() -> Result<()> {
 
     // Save the tab session on exit (the state at exit time is the final form. no-op when restore_tabs=false).
     app.save_session();
-    preview::command::remove_private_temp_dir();
+    // Stops any SVG drawing process still running (it must not outlive the program that asked)
+    // and removes the private temp directory.
+    preview::command::exit_cleanup();
 
     preview::command::restore_terminal_quietly();
 

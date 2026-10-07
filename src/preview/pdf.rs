@@ -180,7 +180,7 @@ fn render_page_native_inner_bytes(bytes: &[u8], page: u32) -> Option<DynamicImag
 }
 
 /// `hayro`'s `Pixmap` is premultiplied-alpha RGBA8; `image::DynamicImage` expects straight alpha
-/// (same reason `preview::svg::rasterize_bytes` demultiplies tiny-skia's output).
+/// (same reason `preview::svg::rasterize_trusted` demultiplies tiny-skia's output).
 ///
 /// **Also the point where a technically-successful-but-empty render is caught.** `hayro::render`
 /// returns a `Pixmap`, never a `Result` — there is no separate "I actually failed" signal from this
@@ -394,10 +394,8 @@ fn render_page_external(path: &Path, page: u32) -> Option<DynamicImage> {
     let out = macos::temp_png_path();
     let ok = macos::run_qlmanage(path, &out) || macos::run_sips(path, &out);
     let img = if ok {
-        image::ImageReader::open(&out)
-            .ok()
-            .and_then(|r| r.with_guessed_format().ok())
-            .and_then(|r| r.decode().ok())
+        // The tool's output is untrusted too: same header check and decode budget as any image.
+        crate::preview::image::decode_static(&out)
     } else {
         None
     };

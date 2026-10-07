@@ -25,6 +25,13 @@ impl Drop for Pty {
 }
 
 fn spawn_konoma(tag: &str) -> Pty {
+    spawn_konoma_with(tag, |work| {
+        std::fs::write(work.join("a.txt"), "hello\n").unwrap();
+    })
+}
+
+/// `spawn_konoma` with the files of the directory it opens chosen by `setup`.
+fn spawn_konoma_with(tag: &str, setup: impl FnOnce(&std::path::Path)) -> Pty {
     let mut master = 0;
     let mut slave = 0;
     let ws = libc::winsize {
@@ -51,7 +58,7 @@ fn spawn_konoma(tag: &str) -> Pty {
     let home = std::env::temp_dir().join(format!("konoma-test-{tag}-{}", std::process::id()));
     let work = home.join("work");
     std::fs::create_dir_all(&work).unwrap();
-    std::fs::write(work.join("a.txt"), "hello\n").unwrap();
+    setup(&work);
 
     // Close-on-exec on both ends: a sibling test's child must not inherit this master (it would
     // keep the terminal open and the hangup would never be delivered). The child gets its own
@@ -182,4 +189,98 @@ fn sigterm_exits_143_and_restores_the_terminal() {
         text.contains("\x1b[?25h"),
         "the cursor was not shown again: {text:?}"
     );
+}
+
+// ---- the SVG drawing processes do not outlive konoma ----------------------------------------
+
+/// `(pid, args)` of every process whose parent is `ppid` (`ps` is the portable way to ask on both
+/// macOS and Linux).
+fn children_of(ppid: u32) -> Vec<(u32, String)> {
+    let out = Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid=,args="])
+        .output()
+        .expect("ps");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let pid: u32 = it.next()?.parse().ok()?;
+            let parent: u32 = it.next()?.parse().ok()?;
+            let args = it.collect::<Vec<_>>().join(" ");
+            (parent == ppid).then_some((pid, args))
+        })
+        .collect()
+}
+
+fn alive(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// Opens an SVG in a konoma on a pseudo-terminal that answers the capability query (so pictures
+/// are on), waits for the drawing process to exist and returns it. The drawing process is kept
+/// for the next picture (it stops after 8 s idle), so it is still there when the signal comes.
+fn konoma_with_a_drawing_process(tag: &str) -> (Pty, u32) {
+    let p = spawn_konoma_with(tag, |work| {
+        std::fs::write(
+            work.join("a.svg"),
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#c00"/></svg>"##,
+        )
+        .unwrap();
+    });
+    let _ = wait_for_alt_screen(p.master.as_ref().unwrap());
+    let master = p.master.as_ref().unwrap();
+    // The terminal's answer to the capability query: sixel, 7x14 px cells.
+    let reply = b"\x1b[?64;4c\x1b[6;14;7t\x1b[6;6R\x1b[7;7R\x1b[6;6R\x1b[0n";
+    // SAFETY: `reply` is valid for its length; `master` is an open descriptor.
+    unsafe { libc::write(master.as_raw_fd(), reply.as_ptr().cast(), reply.len()) };
+    let _ = read_for(master, Duration::from_millis(1500));
+    // Enter on the first (only) entry: the SVG's preview.
+    // SAFETY: as above.
+    unsafe { libc::write(master.as_raw_fd(), b"\r".as_ptr().cast(), 1) };
+    let konoma = p.child.id();
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let _ = read_for(p.master.as_ref().unwrap(), Duration::from_millis(100));
+        if let Some((pid, _)) = children_of(konoma)
+            .into_iter()
+            .find(|(_, a)| a.contains("--internal-svg-render"))
+        {
+            return (p, pid);
+        }
+        assert!(
+            Instant::now() < until,
+            "konoma never started a drawing process"
+        );
+    }
+}
+
+fn assert_gone(pid: u32) {
+    let until = Instant::now() + Duration::from_secs(5);
+    while alive(pid) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!alive(pid), "the drawing process {pid} outlived konoma");
+}
+
+#[test]
+fn sigterm_stops_the_svg_drawing_process() {
+    let (mut p, child) = konoma_with_a_drawing_process("svgterm");
+    // SAFETY: plain kill(2) on our own child.
+    unsafe { libc::kill(p.child.id() as i32, libc::SIGTERM) };
+    // Keep reading: a konoma that has drawn a picture has output queued for the terminal, and a
+    // process cannot finish exiting while its tty still holds unread output.
+    let _ = read_for(p.master.as_ref().unwrap(), Duration::from_millis(1500));
+    let st = wait_exit(&mut p.child);
+    assert_eq!(st.code(), Some(128 + libc::SIGTERM));
+    assert_gone(child);
+}
+
+#[test]
+fn hangup_stops_the_svg_drawing_process() {
+    let (mut p, child) = konoma_with_a_drawing_process("svghup");
+    drop(p.master.take());
+    let st = wait_exit(&mut p.child);
+    assert_eq!(st.code(), Some(128 + libc::SIGHUP));
+    assert_gone(child);
 }

@@ -128,6 +128,15 @@ pub fn remove_private_temp_dir() {
     super::private_dir::remove_all_private_dirs();
 }
 
+/// What every way out of the program that ends it for good does besides the terminal: stop the
+/// SVG drawing processes (a hostile file must not go on burning CPU after konoma is gone) and
+/// remove the private temp directory. Called after the run loop, from the panic hook of a fatal
+/// panic, and from the signal thread.
+pub fn exit_cleanup() {
+    super::svg_proc::shutdown();
+    remove_private_temp_dir();
+}
+
 /// The bytes that undo what konoma turned on in the terminal: bracketed paste off, alternate
 /// screen left, cursor shown (a hidden cursor would otherwise survive a signal or panic exit;
 /// showing an already visible cursor is a no-op, so the normal exit path is unaffected). Raw mode is a termios setting, not an escape sequence (see
@@ -210,7 +219,7 @@ pub fn install_exit_cleanup_signals() {
                 if ignore_signal(sig, running) {
                     continue;
                 }
-                remove_private_temp_dir();
+                exit_cleanup();
                 restore_terminal_quietly();
                 std::process::exit(128 + sig);
             }

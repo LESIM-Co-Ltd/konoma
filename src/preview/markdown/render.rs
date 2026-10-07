@@ -166,14 +166,15 @@ use super::model::{
 };
 use super::{
     alert_bar, alert_header_line, code_header, decorate_headings_and_extras, details_bar,
-    details_marker_line, gutter_span, highlight_body, html_cell_to_markdown, image_loading_line,
-    image_placeholder_lines, image_text_fallback, inline_math_reservation_style, is_mermaid_info,
-    math_placeholder_lines, math_raw_lines, math_url, mermaid_diagram_col, mermaid_fence_url,
-    mermaid_placeholder_lines, next_details_open, normalize_cell, pad_to_width,
-    parse_cell_segments_with_math, prefix_link_icons, render_html_block, render_mermaid_block,
-    render_table_cells, scan_inline_math, scan_math_spans, task_prefix_state, BlockAligns,
-    CellAttrs, CellImage, CellSeg, CodeStyle, ColAlign, ImagePlacement, ImageSlot, KonomaStyles,
-    MathPart, MathSlot, MermaidSlot, SourceRun, TableCells,
+    details_marker_line, gutter_span, highlight_body, html_cell_to_markdown, image_failed_line,
+    image_loading_line, image_placeholder_lines, image_text_fallback,
+    inline_math_reservation_style, is_mermaid_info, math_placeholder_lines, math_raw_lines,
+    math_url, mermaid_diagram_col, mermaid_fence_url, mermaid_placeholder_lines, next_details_open,
+    normalize_cell, pad_to_width, parse_cell_segments_with_math, prefix_link_icons,
+    render_html_block, render_mermaid_block, render_table_cells, scan_inline_math, scan_math_spans,
+    task_prefix_state, BlockAligns, CellAttrs, CellImage, CellSeg, CodeStyle, ColAlign,
+    ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot, MermaidSlot, SourceRun,
+    TableCells,
 };
 
 /// What `render_doc` produced: the decorated lines (same shape `render_markdown_with_images`
@@ -2901,6 +2902,10 @@ fn render_image_group(w: &mut Writer<'_>, images: &[(String, String)]) {
             ImageSlot::Unavailable => {
                 flush_row_group(w, &mut group);
                 w.lines.extend(image_text_fallback(alt, url, w.width));
+            }
+            ImageSlot::Failed(why) => {
+                flush_row_group(w, &mut group);
+                w.lines.extend(image_failed_line(alt, url, why, w.width));
             }
         }
     }

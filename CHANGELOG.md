@@ -56,9 +56,20 @@ All notable changes to konoma are documented in this file. The format is based o
   `$…$` source, so `[x](#slug)` links do not change. Math inside a link label or an image's alt text stays literal.
 - The busy indicator names what is being read ("loading document" / "loading spreadsheet" instead of "loading media").
 - In Markdown, `\<` is a literal `<` and never the start of an HTML tag.
-- An SVG's `<image href>` reads only regular files of at most 64 MiB, and an SVG downloaded for a remote Markdown image
-  reads no local file at all.
+- An SVG's `<image href>` is checked like an embedded SVG (see Fixed) and reads only regular files of at most
+  64 MiB; an SVG downloaded for a remote Markdown image, and an SVG embedded in a Word document, reads no local file at all.
+- Pictures in a Word / OpenDocument file get the same protection as Markdown pictures: a still image is kept at 4096 px on
+  its long side, an animated GIF has the GIF limits, an embedded SVG is drawn by the supervised child process, and a
+  picture that cannot be shown says why in place of the picture. They are never dropped from the cache (they cannot be re-read from the document).
 - Ctrl-C while `e`'s editor or another program konoma started is running goes to that program; konoma keeps running.
+- **SVG files are drawn by a supervised child process** (konoma's own binary, started with a hidden internal flag).
+  A crafted SVG can no longer crash, hang or exhaust the memory of the preview: a drawing is stopped after 5 s or
+  1 GiB and the picture is reported as not drawn, with the reason (nested too deeply / too large / too many
+  elements / too much drawing work / took too long / needed too much memory / the renderer stopped / damaged).
+  konoma's own mermaid and math SVGs are still drawn in-process. A few children are kept for the next picture, so a
+  README with fifty badges draws as fast as before; they stop after 8 s idle and when konoma exits. A child also counts its own memory and stops itself at the limit, so a drawing that allocates quickly cannot overshoot it, and one that answers out of turn or without reading its request is dropped instead of held.
+- Sizing a Markdown picture that is an SVG now reads only the root element's width, height and viewBox, so the UI
+  thread never parses the file (a 200 KB `<text>` used to freeze it for 16 s on a Mac with 1,000 fonts installed; the time grows with the number of fonts).
 
 ### Fixed
 - **Private temp directories could be taken over** (command output `{out}`, PDF pages, video thumbnails): their names
@@ -68,6 +79,32 @@ All notable changes to konoma are documented in this file. The format is based o
   with `O_EXCL`/`O_NOFOLLOW` and mode 0600, and the directories are removed on every way out (normal exit, a fatal
   panic, SIGTERM / SIGHUP / SIGINT), never through a symlink. Closing the terminal ends konoma cleanly.
 - Follow (`F`) no longer jumps to an Office owner file (`~$report.docx`) that Word or Excel creates while a file is open.
+- An SVG that references another SVG file through `<image href>` is now checked like an embedded one (nesting depth,
+  size, svgz bombs, `use` bombs); a 1000-level nested file used to abort konoma.
+- The render budget now counts every link of a chain of clip paths or masks (1,000 chained clip paths used to need
+  4 GB).
+- A full-screen SVG that cannot be drawn says why above its source instead of showing the XML with no explanation, and a
+  Markdown SVG shows the reason in place of the picture (one reason message for every kind of picture).
+- **A hostile image could crash, freeze or exhaust memory**: an SVG nested a few thousand levels deep overflowed the
+  stack and aborted konoma; a GIF declaring a 65535×65535 screen allocated ~16 GB; filter-heavy SVGs (huge blurs,
+  morphology, turbulence, stacked layers) kept a core busy for minutes or took several GB; `<image href="/dev/zero">`
+  read without end; large still images were cached at full size with no total limit. SVGs now pass one guard before
+  parsing (nesting depth, `<use>` expansion, size) and one after (filter work, live layers, embedded rasters), GIFs and
+  still images are checked against their header before any pixel buffer is allocated, concurrent decodes share a
+  memory budget, Markdown images are kept at most 4096 px on their long side, and decoded Markdown images and rendered
+  formulas share a 512 MiB cache whose least recently used pixels are dropped and rebuilt on demand (positions do not
+  move). A refused image now says why — too large (with the limits: 32,768 px a side, 150 megapixels, 512 MiB
+  decoded), damaged, or an unsupported format — in the full-screen preview and in place of the picture in a Markdown
+  document, instead of the "this terminal cannot show images" message. Decoding is measured honestly (a resize no
+  longer needs 17 bytes a pixel on top of the decode, and the shared budget is told each format's measured peak), the
+  pictures on screen are decoded before the ones that scrolled away, and a decode whose document was closed never runs.
+  Animated GIFs are limited to 4×10⁸ frame-pixels of compositing (1080p up to about 190 frames; the earlier 4×10⁹ let a
+  crafted file run for a minute) and are refused from their block structure in milliseconds. Full-screen still images
+  now decode off the UI thread, and the images that delegated preview commands, the macOS PDF fallback and the video
+  tools hand back go through the same checks. Images up
+  to 4096 px on the long side, mermaid diagrams and formulas render as before; a larger picture inside a Markdown
+  document is now kept at 4096 px on its long side (a terminal cannot show more detail), and an image opened on its
+  own is not shrunk. The limits are fixed (no setting changes them).
 
 ## [0.30.0] - 2026-09-28
 

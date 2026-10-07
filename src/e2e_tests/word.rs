@@ -2329,3 +2329,179 @@ fn e2e_follow_does_not_chase_an_office_owner_file() {
     s.key('F');
     s.see("~$report.docx");
 }
+
+// ---------------------------------------------------------------------------------------------
+// A Word / OpenDocument picture gets the same protection as a Markdown picture (the merge of the
+// Word preview with the hostile-image defences): the same size cap, the same SVG drawing process
+// (no files readable), the same reasons, and the same cache.
+// ---------------------------------------------------------------------------------------------
+
+/// A PNG of one flat colour, `w` x `h` (a few hundred bytes whatever the size).
+fn flat_png(w: u32, h: u32) -> Vec<u8> {
+    use image::{ImageFormat, Rgba, RgbaImage};
+    let img = RgbaImage::from_pixel(w, h, Rgba([30, 120, 220, 255]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+/// Opens a docx holding one picture `name` of `bytes`, with the real workers, and lets it settle.
+fn open_picture_docx(
+    tag: &str,
+    name: &str,
+    bytes: &[u8],
+) -> (Sim, crate::test_support::TmpDir, String) {
+    let dir = sandbox(tag);
+    build_docx_with_picture(&canon(&dir).join("p.docx"), "before", name, bytes);
+    let mut s = open_with_media(&dir, "p.docx");
+    s.drain_media();
+    assert!(s.app.document_ready());
+    settle_images(&mut s);
+    let url = s.app.document_first_picture_url_for_test().unwrap();
+    (s, dir, url)
+}
+
+#[test]
+fn e2e_word_a_large_picture_is_kept_at_4096_px_on_its_long_side() {
+    let (s, _d, url) = open_picture_docx("w_cap4096", "wide.png", &flat_png(6000, 300));
+    let (w, h) = s
+        .app
+        .office_picture_pixels_for_test(&url)
+        .expect("the picture was decoded");
+    assert_eq!(w, 4096, "the long side is capped");
+    assert_eq!(h, 205, "the aspect ratio is kept (300 * 4096 / 6000)");
+}
+
+#[test]
+fn e2e_word_a_picture_within_the_cap_is_not_resized() {
+    let (s, _d, url) = open_picture_docx("w_nocap", "ok.png", &flat_png(640, 480));
+    assert_eq!(s.app.office_picture_pixels_for_test(&url), Some((640, 480)));
+}
+
+#[test]
+fn e2e_word_a_picture_over_the_decode_limits_says_it_is_too_large() {
+    // 40,000 px a side is past the 32,768 limit: refused from the header, before any pixel
+    // buffer exists, and the screen says so instead of "damaged" or "terminal cannot".
+    let (s, _d, url) = open_picture_docx("w_toolarge", "huge.png", &flat_png(40_000, 4));
+    assert!(
+        !s.app.office_picture_started_for_test(&url),
+        "refused from the header: no decode was queued"
+    );
+    s.see("before");
+    s.see("too large");
+}
+
+#[test]
+fn e2e_word_a_picture_that_is_no_image_is_its_alt_text() {
+    let (s, _d, url) = open_picture_docx("w_damaged", "a.png", b"this is not a png");
+    assert!(!s.app.office_picture_started_for_test(&url));
+    s.see("before");
+    s.see("the picture");
+}
+
+/// An SVG inside the document is drawn through the guarded path: 1000 nested groups used to
+/// overflow the stack of whatever drew them. Now the picture is refused with its reason, the
+/// document around it is untouched and konoma carries on.
+#[test]
+fn e2e_word_a_deeply_nested_svg_is_refused_with_its_reason() {
+    let deep = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">{}{}</svg>"#,
+        "<g>".repeat(1000),
+        "</g>".repeat(1000)
+    );
+    let (s, _d, url) = open_picture_docx("w_deepsvg", "deep.svg", deep.as_bytes());
+    assert_eq!(s.app.office_picture_pixels_for_test(&url), None);
+    assert_eq!(
+        s.app.office_picture_failure_for_test(&url),
+        Some(crate::preview::image::ImageFailure::Svg(
+            crate::preview::svg_guard::SvgFail::TooDeep
+        ))
+    );
+    s.see("nested too deeply");
+    s.see("before");
+}
+
+/// The same for a picture that expands exponentially (4 million elements from 22 `<use>` levels),
+/// and a normal SVG next to it still draws.
+#[test]
+fn e2e_word_a_use_bomb_svg_is_refused_and_a_normal_one_still_draws() {
+    let mut body = String::from(r#"<defs><rect id="u0" width="2" height="2"/>"#);
+    for i in 0..22 {
+        body += &format!(
+            r##"<g id="u{}"><use href="#u{i}"/><use href="#u{i}" x="1"/></g>"##,
+            i + 1
+        );
+    }
+    body += r##"</defs><use href="#u22"/>"##;
+    let bomb =
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">{body}</svg>"#);
+    let (s, _d, url) = open_picture_docx("w_bombsvg", "bomb.svg", bomb.as_bytes());
+    assert_eq!(s.app.office_picture_pixels_for_test(&url), None);
+    assert_eq!(
+        s.app.office_picture_failure_for_test(&url),
+        Some(crate::preview::image::ImageFailure::Svg(
+            crate::preview::svg_guard::SvgFail::TooComplex
+        ))
+    );
+    s.see("before");
+
+    let fine = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#0a0"/></svg>"##;
+    let (s, _d, url) = open_picture_docx("w_finesvg", "fine.svg", fine);
+    let (w, h) = s.app.office_picture_pixels_for_test(&url).expect("drawn");
+    assert_eq!(w / h, 2, "the 2:1 picture keeps its shape: {w}x{h}");
+    assert_eq!(s.app.office_picture_failure_for_test(&url), None);
+}
+
+/// Word pictures cannot be read again from the document once dropped, so the cache never drops
+/// them, and the other synthetic pictures (math) it can rebuild come back at the same place.
+#[test]
+fn e2e_word_pictures_stay_when_the_cache_is_over_budget_and_formulas_come_back() {
+    let Some((mut s, _d)) = open_doc_with_media("w_lru", EN, TALL) else {
+        return;
+    };
+    s.drain_media();
+    settle_images(&mut s);
+    let before: Vec<_> = s.app.md_images();
+    assert!(before
+        .iter()
+        .any(|p| crate::preview::markdown::is_office_image_url(&p.url)));
+    let math: Vec<_> = before
+        .iter()
+        .filter(|p| crate::preview::markdown::is_math_url(&p.url))
+        .map(|p| p.url.clone())
+        .collect();
+    assert_eq!(math.len(), 2);
+    let pic = s.app.document_first_picture_url_for_test().unwrap();
+    let pic_px = s.app.office_picture_pixels_for_test(&pic).unwrap();
+
+    // A new pass has started (the pictures above were drawn in the previous one), then the cache
+    // is told to hold nothing.
+    s.app.begin_md_image_frame();
+    s.app.evict_md_images_to_for_test(0);
+    assert_eq!(
+        s.app.office_picture_pixels_for_test(&pic),
+        Some(pic_px),
+        "a Word picture is never given up"
+    );
+    assert!(
+        s.app.md_image_cache_pixel_bytes() > 0,
+        "and it still counts against the budget"
+    );
+    for m in &math {
+        assert_eq!(
+            s.app.office_picture_pixels_for_test(m),
+            None,
+            "a formula is rebuildable, so it is dropped"
+        );
+    }
+    // The page does not move: the reserved cells are the same with the pixels gone.
+    assert_eq!(format!("{:?}", s.app.md_images()), format!("{before:?}"));
+
+    // Drawing again brings the formulas back from the SVG their entries kept.
+    s.draw();
+    settle_images(&mut s);
+    for m in &math {
+        assert!(s.app.office_picture_pixels_for_test(m).is_some(), "{m}");
+    }
+    assert_eq!(format!("{:?}", s.app.md_images()), format!("{before:?}"));
+}

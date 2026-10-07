@@ -1502,7 +1502,7 @@ fn every_corpus_diagram_rasterises_with_ink_in_it() {
     }
     for (name, src) in CASES {
         let out = render(src, "dark").expect("renders");
-        let img = crate::preview::svg::rasterize_bytes(out.as_bytes(), FsPath::new("m.svg"), 600)
+        let img = crate::preview::svg::rasterize_trusted(out.as_bytes(), FsPath::new("m.svg"), 600)
             .unwrap_or_else(|| panic!("{name}: konoma's resvg could not rasterise the output"));
         let opaque = img.to_rgba8().pixels().filter(|p| p.0[3] > 32).count();
         assert!(opaque > 500, "{name}: only {opaque} pixels were drawn");
@@ -1887,8 +1887,12 @@ fn awkward_sources_produce_a_diagram_or_an_error_and_never_a_panic() {
                     svg::num(d.height)
                 );
                 assert!(
-                    crate::preview::svg::rasterize_bytes(out.as_bytes(), FsPath::new("m.svg"), 300)
-                        .is_some(),
+                    crate::preview::svg::rasterize_trusted(
+                        out.as_bytes(),
+                        FsPath::new("m.svg"),
+                        300
+                    )
+                    .is_some(),
                     "{src:?}: the output did not rasterise"
                 );
                 check_nodes_do_not_overlap("adversarial", &d);

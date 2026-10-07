@@ -2021,7 +2021,7 @@ fn every_corpus_diagram_rasterises() {
     }
     for (name, src) in CORPUS {
         let svg = render(src, "dark").expect("renders");
-        let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), FsPath::new("m.svg"), 600)
+        let img = crate::preview::svg::rasterize_trusted(svg.as_bytes(), FsPath::new("m.svg"), 600)
             .unwrap_or_else(|| panic!("{name}: konoma's resvg could not rasterise the output"));
         assert!(img.width() > 0 && img.height() > 0, "{name}: empty raster");
     }
@@ -2036,7 +2036,7 @@ fn a_rendered_diagram_actually_has_ink_in_it() {
         return;
     }
     let svg = render("flowchart TD\n  A[Start] --> B{Ready?}", "dark").expect("renders");
-    let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), FsPath::new("m.svg"), 400)
+    let img = crate::preview::svg::rasterize_trusted(svg.as_bytes(), FsPath::new("m.svg"), 400)
         .expect("rasterises");
     let opaque = img.to_rgba8().pixels().filter(|p| p.0[3] > 32).count();
     assert!(
@@ -2631,8 +2631,12 @@ fn awkward_sources_produce_a_diagram_or_an_error_and_never_a_panic() {
                     num(d.height)
                 );
                 assert!(
-                    crate::preview::svg::rasterize_bytes(svg.as_bytes(), FsPath::new("m.svg"), 300)
-                        .is_some(),
+                    crate::preview::svg::rasterize_trusted(
+                        svg.as_bytes(),
+                        FsPath::new("m.svg"),
+                        300
+                    )
+                    .is_some(),
                     "{src:?}: the output did not rasterise"
                 );
             }
@@ -4375,7 +4379,7 @@ fn every_corpus_source_survives_every_curve() {
                 num(d.height)
             );
             assert!(
-                crate::preview::svg::rasterize_bytes(svg.as_bytes(), FsPath::new("m.svg"), 300)
+                crate::preview::svg::rasterize_trusted(svg.as_bytes(), FsPath::new("m.svg"), 300)
                     .is_some(),
                 "{name} under {curve}: the output did not rasterise"
             );
@@ -5803,7 +5807,7 @@ fn orthogonal_arrow_tip_has_a_visible_gap_from_the_node_in_real_pixels() {
 
     let svg = render_flow(src, "dark", "basis", "konoma-orthogonal").expect("must render");
     let scale = 4.0;
-    let img = crate::preview::svg::rasterize_bytes(
+    let img = crate::preview::svg::rasterize_trusted(
         svg.as_bytes(),
         FsPath::new("orthogonal-tip-gap.svg"),
         (d.width.max(d.height) * scale).round() as u32,
@@ -9343,7 +9347,7 @@ fn orthogonal_design_reference_dump() {
                 .unwrap_or_else(|e| panic!("{name}: must render under konoma-orthogonal: {e}"));
         let svg_path = dir.join(format!("{name}-ours.svg"));
         std::fs::write(&svg_path, &svg).unwrap_or_else(|e| panic!("{name}: write svg: {e}"));
-        let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), &svg_path, 1600)
+        let img = crate::preview::svg::rasterize_trusted(svg.as_bytes(), &svg_path, 1600)
             .unwrap_or_else(|| panic!("{name}: must rasterise"));
         img.save(dir.join(format!("{name}-ours.png")))
             .unwrap_or_else(|e| panic!("{name}: write png: {e}"));
@@ -9526,10 +9530,10 @@ fn write_catalog_png(
     let (w, h) = crate::preview::svg::intrinsic_size_bytes(svg.as_bytes())
         .unwrap_or_else(|| panic!("{what}: SVG must have a size"));
     let scale = catalog_scale_for(w);
-    // `rasterize_bytes` takes a target for the *longest* side, so asking for `scale * max(w, h)`
+    // `rasterize_trusted` takes a target for the *longest* side, so asking for `scale * max(w, h)`
     // is exactly a `scale`× device-pixel-ratio raster. The background stays transparent, the same
     // as in the terminal.
-    let img = crate::preview::svg::rasterize_bytes(svg.as_bytes(), &path, scale * w.max(h))
+    let img = crate::preview::svg::rasterize_trusted(svg.as_bytes(), &path, scale * w.max(h))
         .unwrap_or_else(|| panic!("{what}: must rasterise"));
     img.save(&path)
         .unwrap_or_else(|e| panic!("{what}: write {path:?}: {e}"));
@@ -10909,7 +10913,7 @@ fn dump_fences_under_orthogonal(md_path: &str, stem: &str) {
             Some(svg) => {
                 std::fs::write(&path, &svg).unwrap_or_else(|e| panic!("write {path}: {e}"));
                 let png_path = format!("docs/render-check/{stem}-{n:02}-konoma-orthogonal.png");
-                if let Some(img) = crate::preview::svg::rasterize_bytes(
+                if let Some(img) = crate::preview::svg::rasterize_trusted(
                     svg.as_bytes(),
                     std::path::Path::new(&path),
                     2400,

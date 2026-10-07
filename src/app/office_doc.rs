@@ -215,6 +215,29 @@ impl App {
         self.md_image_cache.contains_key(&PathBuf::from(url))
     }
 
+    /// Test-only: the size of the decoded pixels of picture `url`, `None` while there are none.
+    #[cfg(test)]
+    pub fn office_picture_pixels_for_test(&self, url: &str) -> Option<(u32, u32)> {
+        use image::GenericImageView;
+        let e = self.md_image_cache.get(&PathBuf::from(url))?;
+        e.decoded.as_ref().map(|d| d.dimensions())
+    }
+
+    /// Test-only: why picture `url` cannot be shown, if it cannot.
+    #[cfg(test)]
+    pub fn office_picture_failure_for_test(
+        &self,
+        url: &str,
+    ) -> Option<crate::preview::image::ImageFailure> {
+        self.md_image_cache.get(&PathBuf::from(url))?.fail
+    }
+
+    /// Test-only: the inline-image cache's eviction with a budget of `budget` bytes.
+    #[cfg(test)]
+    pub fn evict_md_images_to_for_test(&mut self, budget: u64) {
+        self.evict_md_images_to(budget);
+    }
+
     /// Pixel size of one picture of the open document.
     pub(super) fn document_picture_dims(&self, url: &str) -> Option<(u32, u32)> {
         self.document.as_ref()?.pictures.get(url)?.dims

@@ -435,6 +435,9 @@ pub enum ImageSlot {
     /// The image cannot be shown inline (no backend / missing file / fetch failed / `data:` URL):
     /// degrade to a one-line text placeholder (design principle #3).
     Unavailable,
+    /// The image exists but cannot be shown, and the reason is known (too large, damaged,
+    /// unsupported format — already translated): a one-line placeholder that says so.
+    Failed(&'static str),
 }
 
 /// Where a block-level element sits inside the width it is drawn into — the one rule
@@ -1452,6 +1455,14 @@ fn image_text_fallback(alt: &str, url: &str, width: u16) -> Vec<Line<'static>> {
     } else {
         format!("🖼 {alt} — {url}")
     };
+    vec![Line::from(truncate_width(&s, width as usize)).dim()]
+}
+
+/// One-line fallback for an image that was found but could not be shown, with the reason.
+fn image_failed_line(alt: &str, url: &str, why: &str, width: u16) -> Vec<Line<'static>> {
+    let alt = alt.trim();
+    let what = if alt.is_empty() { url } else { alt };
+    let s = format!("🖼 {what} — {why}");
     vec![Line::from(truncate_width(&s, width as usize)).dim()]
 }
 
@@ -9614,7 +9625,7 @@ plain body
         )
         .expect("mermaid renders to SVG");
         assert!(svg.contains("<svg"), "SVG らしい出力");
-        let img = crate::preview::svg::rasterize_bytes(
+        let img = crate::preview::svg::rasterize_trusted(
             svg.as_bytes(),
             std::path::Path::new("m.svg"),
             400,
