@@ -1140,3 +1140,392 @@ fn e2e_slides_a_word_document_keeps_its_ordinary_scroll_limit() {
     }
     assert_eq!(top_row(&s), top);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Survivors of the mutation review: extensions, footers, wrapped text, the raw view's caret
+// ---------------------------------------------------------------------------------------------
+
+/// A copy of `src` with every entry passed through `f(name, bytes)`.
+fn edit_zip(src: &std::path::Path, dst: &std::path::Path, f: impl Fn(&str, Vec<u8>) -> Vec<u8>) {
+    use std::io::{Read, Write};
+    let mut zr = zip::ZipArchive::new(std::fs::File::open(src).unwrap()).unwrap();
+    let mut zw = zip::ZipWriter::new(std::fs::File::create(dst).unwrap());
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for i in 0..zr.len() {
+        let mut e = zr.by_index(i).unwrap();
+        let name = e.name().to_string();
+        let mut bytes = Vec::new();
+        e.read_to_end(&mut bytes).unwrap();
+        let bytes = f(&name, bytes);
+        zw.start_file(name, opts).unwrap();
+        zw.write_all(&bytes).unwrap();
+    }
+    zw.finish().unwrap();
+}
+
+/// `bytes` with the first `from` replaced by `to` (it must be there).
+fn replace_in(bytes: Vec<u8>, from: &str, to: &str) -> Vec<u8> {
+    let s = String::from_utf8(bytes).unwrap();
+    assert!(s.contains(from), "{from} not in the part");
+    s.replacen(from, to, 1).into_bytes()
+}
+
+/// The 0-based line of slide `k`'s heading in the converted Markdown.
+fn heading_line(s: &Sim, k: usize) -> usize {
+    let md = s.app.document_markdown_for_test().unwrap();
+    md.lines()
+        .position(|l| l.starts_with(&format!("## Slide {k}:")))
+        .unwrap_or_else(|| panic!("no heading for slide {k} in\n{md}"))
+}
+
+#[test]
+fn e2e_slides_every_presentation_extension_in_any_case_gets_the_slide_reader() {
+    let (Some(pptx), Some(odp)) = (testdata(EN), testdata("slides.odp")) else {
+        return;
+    };
+    let dir = sandbox("sl_ext_slide_reader");
+    let cases: Vec<(&str, &std::path::Path)> = vec![
+        ("pptx", &pptx),
+        ("pptm", &pptx),
+        ("ppsx", &pptx),
+        ("ppsm", &pptx),
+        ("potx", &pptx),
+        ("potm", &pptx),
+        ("PPTX", &pptx),
+        ("PpTm", &pptx),
+        ("PPSX", &pptx),
+        ("POTM", &pptx),
+        ("odp", &odp),
+        ("otp", &odp),
+        ("ODP", &odp),
+        ("OtP", &odp),
+    ];
+    // One basename per case: on a case-insensitive file system `d.pptx` and `d.PPTX` are one file.
+    for (i, (ext, src)) in cases.iter().enumerate() {
+        std::fs::copy(src, dir.join(format!("d{i}.{ext}"))).unwrap();
+    }
+    let root = canon(&dir);
+    for (i, (ext, _)) in cases.iter().enumerate() {
+        // Wide: the footer shows every hint.
+        let mut s = Sim::with_config_sized(&root, cfg_en(), 160, 20);
+        s.select(&format!("d{i}.{ext}"));
+        s.enter();
+        assert!(s.app.document_ready(), "{ext}: {}", s.screen());
+        assert_eq!(
+            s.app.slide_position(),
+            Some((1, N)),
+            "{ext}: opened by the slide reader\n{}",
+            s.screen()
+        );
+        assert!(
+            footer_text(&s).contains("J/K:slide"),
+            "{ext}: {}",
+            footer_text(&s)
+        );
+        s.key('J');
+        at_slide_of(&s, 2, N);
+        assert!(top_row(&s).starts_with("Slide 2"), "{ext}\n{}", s.screen());
+    }
+}
+
+#[test]
+fn e2e_slides_an_old_ppt_under_a_document_rule_fails_as_a_presentation() {
+    // `.ppt` is never previewed by default; a rule that sends it to the document reader still gets
+    // the presentation's words on failure (the extension is a presentation's).
+    let dir = sandbox("sl_ppt_rule");
+    let mut old = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+    old.extend_from_slice(&[0u8; 600]);
+    for f in ["old.ppt", "other.PPT"] {
+        std::fs::write(dir.join(f), &old).unwrap();
+    }
+    let root = canon(&dir);
+    for (ja, tag, other) in [
+        (false, "[presentation] cannot preview", "[document]"),
+        (true, "[プレゼン] 表示不可", "[文書]"),
+    ] {
+        for f in ["old.ppt", "other.PPT"] {
+            let mut cfg = if ja { cfg_ja() } else { cfg_en() };
+            cfg.preview.rules.insert(
+                0,
+                crate::config::Rule {
+                    glob: Some("*.{ppt,PPT}".into()),
+                    builtin: Some("document".into()),
+                    ..crate::config::Rule::default()
+                },
+            );
+            let mut s = Sim::with_config_sized(&root, cfg, 140, 20);
+            s.select(f);
+            s.enter();
+            assert!(s.app.is_document() && !s.app.document_ready(), "{f}");
+            if ja {
+                see_cjk(&mut s, tag);
+                assert!(!s.screen().contains(other), "{f}\n{}", s.screen());
+            } else {
+                s.see(tag);
+                s.see("old .ppt");
+                s.dont_see(other);
+            }
+        }
+    }
+}
+
+#[test]
+fn e2e_slides_no_other_preview_offers_the_slide_keys() {
+    let dir = sandbox("sl_others_no_keys");
+    let body: String = (0..80).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(dir.join("a.rs"), format!("fn main() {{}}\n{body}")).unwrap();
+    std::fs::write(dir.join("a.txt"), &body).unwrap();
+    let mut md = String::new();
+    for i in 0..30 {
+        md.push_str(&format!("## Heading {i}\n\ntext {i}\n\n"));
+    }
+    std::fs::write(dir.join("a.md"), &md).unwrap();
+    std::fs::write(dir.join("a.csv"), "a,b\n1,2\n3,4\n").unwrap();
+    for f in ["word.docx", "word.odt"] {
+        if let Some(w) = testdata(f) {
+            std::fs::copy(w, dir.join(f)).unwrap();
+        }
+    }
+    let root = canon(&dir);
+    for f in ["a.rs", "a.txt", "a.md", "a.csv", "word.docx", "word.odt"] {
+        if !dir.join(f).exists() {
+            continue;
+        }
+        // Wide enough that no hint is dropped for room.
+        let mut s = Sim::with_config_sized(&root, cfg_en(), 200, 16);
+        s.select(f);
+        s.enter();
+        for raw in [false, true] {
+            if raw {
+                if !s.app.is_decorated_kind() && !s.app.is_document() {
+                    break;
+                }
+                s.key('R');
+                assert!(s.app.is_md_raw(), "{f}");
+            }
+            assert!(!s.app.slide_can_turn(), "{f} raw={raw}");
+            assert!(s.app.slide_position().is_none(), "{f} raw={raw}");
+            assert!(
+                !footer_text(&s).contains("J/K"),
+                "{f} raw={raw}: {}",
+                footer_text(&s)
+            );
+            assert!(!s.screen().contains("J/K"), "{f} raw={raw}\n{}", s.screen());
+            let (scroll, line) = (s.app.tab.preview_scroll, s.app.preview_top_line());
+            s.key('J');
+            s.key('K');
+            assert_eq!(
+                (s.app.tab.preview_scroll, s.app.preview_top_line()),
+                (scroll, line),
+                "{f} raw={raw}: J/K do not scroll"
+            );
+            s.see_no_help_row();
+            s.dont_see("next / previous slide");
+        }
+    }
+}
+
+#[test]
+fn e2e_slides_the_first_frame_already_shows_the_hint_and_the_chip() {
+    // The status rows are drawn after the body (its layout pass finds the headings): drawn first
+    // they would trail the body by one frame. One draw per key press in the harness, so the screen
+    // right after Enter is the first frame of the deck.
+    for (w, h) in [(160u16, 14u16), (200, 30)] {
+        let Some((s, _d)) = open_deck(&format!("sl_first_{w}"), EN, (w, h)) else {
+            return;
+        };
+        s.see("J/K:slide");
+        s.see("slide 1/7");
+    }
+}
+
+#[test]
+fn e2e_slides_j_and_k_land_on_each_heading_when_the_text_before_it_wraps() {
+    let Some(src) = testdata(EN) else {
+        return;
+    };
+    let dir = sandbox("sl_wrapped");
+    let long = format!(
+        "Own content only {}",
+        "and a long line of words ".repeat(14)
+    );
+    edit_zip(&src, &dir.join("w.pptx"), |name, b| {
+        if name == "ppt/slides/slide1.xml" {
+            replace_in(b, "Own content only", &long)
+        } else {
+            b
+        }
+    });
+    let root = canon(&dir);
+    for wrap in [true, false] {
+        let mut cfg = cfg_en();
+        cfg.ui.wrap = wrap;
+        let mut s = Sim::with_config_sized(&root, cfg, 44, 14);
+        s.select("w.pptx");
+        s.enter();
+        assert!(s.app.document_ready());
+        at_slide(&s, 1);
+        let line2 = heading_line(&s, 2);
+        s.key('J');
+        at_slide(&s, 2);
+        if wrap {
+            assert!(
+                s.app.tab.preview_scroll as usize > line2 + 3,
+                "slide 1 wraps over several rows: row {} vs line {line2}",
+                s.app.tab.preview_scroll
+            );
+        }
+        assert!(
+            top_row(&s).starts_with("Slide 2"),
+            "wrap={wrap}\n{}",
+            s.screen()
+        );
+        for k in 3..=N {
+            s.key('J');
+            at_slide(&s, k);
+            assert!(
+                top_row(&s).starts_with(&format!("Slide {k}")),
+                "wrap={wrap} J to {k}\n{}",
+                s.screen()
+            );
+        }
+        for k in (2..N).rev() {
+            s.key('K');
+            at_slide(&s, k);
+            assert!(
+                top_row(&s).starts_with(&format!("Slide {k}")),
+                "wrap={wrap} K to {k}\n{}",
+                s.screen()
+            );
+        }
+        s.key('K');
+        at_slide(&s, 1);
+        assert_eq!(s.app.tab.preview_scroll, 0);
+        // The chip follows plain scrolling by rows too (not by lines).
+        s.key('J');
+        let head2 = s.app.tab.preview_scroll;
+        s.key('K');
+        for _ in 0..head2 {
+            s.key('j');
+        }
+        at_slide(&s, 2);
+        s.key('K');
+        at_slide(&s, 1);
+    }
+}
+
+#[test]
+fn e2e_slides_the_raw_view_moves_the_caret_with_j_and_k() {
+    let Some((mut s, _d)) = open_deck("sl_raw_caret", EN, (100, 20)) else {
+        return;
+    };
+    s.key('R');
+    assert!(s.app.is_md_raw() && s.app.is_windowed());
+    for k in 2..=N {
+        s.key('J');
+        at_slide(&s, k);
+        let line = heading_line(&s, k);
+        assert_eq!(s.app.preview_top_line(), line, "top line of slide {k}");
+        assert!(
+            s.reversed_cells().iter().any(|&(r, _)| r == 2),
+            "the caret is on the heading row of slide {k}\n{}",
+            s.screen()
+        );
+        assert!(s.app.preview_byte_top_for_test() > 0);
+        assert!(
+            top_row(&s).starts_with(&format!("## Slide {k}")),
+            "{}",
+            s.screen()
+        );
+    }
+    for k in (1..N).rev() {
+        s.key('K');
+        at_slide(&s, k);
+        let line = heading_line(&s, k);
+        assert_eq!(s.app.preview_top_line(), line, "top line of slide {k}");
+        assert!(
+            s.reversed_cells().iter().any(|&(r, _)| r == 2),
+            "the caret is on the heading row of slide {k}\n{}",
+            s.screen()
+        );
+    }
+    assert_eq!(s.app.preview_byte_top_for_test(), 0);
+}
+
+#[test]
+fn e2e_slides_a_hash_tag_in_a_slide_is_not_a_heading_in_either_view() {
+    let Some(src) = testdata(EN) else {
+        return;
+    };
+    let dir = sandbox("sl_hashtag");
+    edit_zip(&src, &dir.join("h.pptx"), |name, b| {
+        if name == "ppt/slides/slide2.xml" {
+            replace_in(b, "<a:t>Plans</a:t>", "<a:t>##hashtag</a:t>")
+        } else {
+            b
+        }
+    });
+    let root = canon(&dir);
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 100, 14);
+    s.select("h.pptx");
+    s.enter();
+    assert!(s.app.document_ready());
+    // It stays in the text (as itself, or escaped), but is no heading.
+    let md = s.app.document_markdown_for_test().unwrap().to_string();
+    assert!(md.contains("hashtag"), "{md}");
+    at_slide(&s, 1);
+    s.key('J');
+    at_slide(&s, 2);
+    s.key('R');
+    assert!(s.app.is_md_raw());
+    // The raw view still knows exactly seven slides (it opens at the top: the escaped text is no
+    // heading, so a count of "## " lines would still be seven).
+    at_slide(&s, 1);
+    assert!(s.app.slide_can_turn());
+    s.key('J');
+    at_slide(&s, 2);
+    s.key('J');
+    at_slide(&s, 3);
+    assert!(top_row(&s).starts_with("## Slide 3"), "{}", s.screen());
+    s.key('G');
+    at_slide(&s, N);
+    s.key('K');
+    at_slide(&s, N - 1);
+}
+
+#[test]
+fn e2e_slides_a_very_tall_deck_scrolls_to_the_u16_limit_and_not_half_of_it() {
+    // One slide of ~100,000 display rows (a 600,000-letter word in a 6-column view): the scroll position (a u16) is capped at 65,535, not
+    // wrapped and not capped lower.
+    let Some(src) = testdata(EN) else {
+        return;
+    };
+    let dir = sandbox("sl_very_tall");
+    let long = "x".repeat(600_000);
+    edit_zip(&src, &dir.join("t.pptx"), |name, b| {
+        if name == "ppt/slides/slide1.xml" {
+            replace_in(b, "Own content only", &long)
+        } else {
+            b
+        }
+    });
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 8, 14);
+    s.select("t.pptx");
+    s.enter();
+    assert!(s.app.document_ready());
+    let md_len = s.app.document_markdown_for_test().unwrap().len();
+    assert!(
+        s.app.md_view_rows > 70_000,
+        "rows: {} md bytes {md_len} truncated {}\n{}",
+        s.app.md_view_rows,
+        s.app.document_truncated(),
+        s.screen()
+    );
+    s.key('G');
+    assert_eq!(s.app.tab.preview_scroll, u16::MAX);
+    s.key('K');
+    s.key('J');
+    // The second heading is beyond the cap: J goes as far as the position can say.
+    assert_eq!(s.app.tab.preview_scroll, u16::MAX);
+}

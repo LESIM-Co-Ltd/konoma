@@ -605,3 +605,862 @@ mod slide_tests {
         assert_eq!(back, [3, 2, 1, 0]);
     }
 }
+
+/// The state of a presentation without the worker: a converted deck put straight into an `App`, the
+/// raw (`R`) view's reader opened on its Markdown. Pins what `slide_view` / `slide_raw_floor` /
+/// `win_max_top` and the key handlers do with exact numbers, including the states the keys cannot
+/// reach one by one (a window that is not open, a Markdown whose headings are not its slides).
+#[cfg(test)]
+mod slide_state_tests {
+    use super::*;
+    use crate::preview::office::docx::pptx::SlideInfo;
+    use crate::preview::office::docx::Document;
+
+    /// Holds the `App` and the temp dir of its raw view; `Drop` deletes the private temp file.
+    struct Rig {
+        app: App,
+        _dir: crate::test_support::TmpDir,
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            self.app.clear_command_out();
+        }
+    }
+
+    fn slides(n: usize) -> Vec<SlideInfo> {
+        (1..=n)
+            .map(|number| SlideInfo {
+                number,
+                title: format!("T{number}"),
+                hidden: false,
+            })
+            .collect()
+    }
+
+    /// `n` slides of 20 lines each: line `20 * k` is `## Slide k+1`, the rest are 19 body lines.
+    fn deck_markdown(n: usize) -> String {
+        let mut md = String::new();
+        for k in 0..n {
+            md.push_str(&format!("## Slide {}: T{}\n", k + 1, k + 1));
+            for j in 1..20 {
+                md.push_str(&format!("body {k}.{j}\n"));
+            }
+        }
+        md
+    }
+
+    /// Byte offset of the start of line `n` (0-based).
+    fn byte_of_line(md: &str, n: usize) -> u64 {
+        md.split_inclusive('\n')
+            .take(n)
+            .map(str::len)
+            .sum::<usize>() as u64
+    }
+
+    /// An `App` that shows `doc` (as a `.pptx` or, with no slides, as a Word file) in the raw view,
+    /// a `vh`-row viewport.
+    fn raw_rig(doc: Document, vh: u16) -> Rig {
+        let dir = crate::test_support::unique_tmp("slide_state");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::new(dir.as_path().to_path_buf(), Config::default()).unwrap();
+        let name = if doc.slides.is_empty() {
+            "d.docx"
+        } else {
+            "d.pptx"
+        };
+        app.tab.preview_kind = Some(PreviewKind::Document(dir.as_path().join(name)));
+        app.set_document(Some(Box::new(LoadedDocument::from_document(doc))));
+        app.tab.md_raw = true;
+        assert!(app.write_document_raw());
+        app.setup_windowed();
+        app.tab.preview_viewport = vh;
+        assert!(app.is_windowed());
+        Rig { app, _dir: dir }
+    }
+
+    fn deck_rig(n: usize, vh: u16) -> Rig {
+        raw_rig(
+            Document {
+                markdown: deck_markdown(n),
+                slides: slides(n),
+                ..Document::default()
+            },
+            vh,
+        )
+    }
+
+    // --- what the worker hands over -----------------------------------------------------------
+
+    #[test]
+    fn the_slide_lines_are_the_level_two_heading_lines_and_nothing_else() {
+        let md = "# Title\n\n## Slide 1: a\n\ntext\n##hashtag\n  ## indented\n\n## Slide 2: b\n\nz\n### Slide 2.1\n";
+        let d = LoadedDocument::from_document(Document {
+            markdown: md.into(),
+            slides: slides(2),
+            ..Document::default()
+        });
+        // "##hashtag" and the indented line are not headings; "### " is level 3.
+        assert_eq!(d.slide_lines, vec![2, 8]);
+        assert_eq!(d.last_slide_byte, byte_of_line(md, 8));
+        assert_eq!(&md[d.last_slide_byte as usize..][..10], "## Slide 2");
+    }
+
+    #[test]
+    fn the_last_slide_byte_counts_bytes_not_characters() {
+        // Multi-byte text before the last heading: the offset is in bytes (the reader's unit).
+        let md = "## スライド 1: 日本語のタイトル\n\n本文です\n\n## スライド 2: 終わり\n";
+        let d = LoadedDocument::from_document(Document {
+            markdown: md.into(),
+            slides: slides(2),
+            ..Document::default()
+        });
+        assert_eq!(d.slide_lines, vec![0, 4]);
+        assert_eq!(
+            d.last_slide_byte as usize,
+            md.find("## スライド 2").unwrap()
+        );
+        assert!(d.last_slide_byte as usize > md[..d.last_slide_byte as usize].chars().count());
+    }
+
+    #[test]
+    fn a_first_slide_heading_is_at_byte_zero_and_one_slide_is_its_own_last() {
+        let md = "## Slide 1: only\n\ntext\n";
+        let d = LoadedDocument::from_document(Document {
+            markdown: md.into(),
+            slides: slides(1),
+            ..Document::default()
+        });
+        assert_eq!((d.slide_lines.clone(), d.last_slide_byte), (vec![0], 0));
+    }
+
+    #[test]
+    fn a_word_document_keeps_no_slide_lines_whatever_its_headings() {
+        let md = "## Chapter 1\n\ntext\n\n## Chapter 2\n";
+        let d = LoadedDocument::from_document(Document {
+            markdown: md.into(),
+            ..Document::default()
+        });
+        assert!(d.slide_lines.is_empty());
+        assert_eq!(d.last_slide_byte, 0);
+    }
+
+    // --- the raw view's furthest top ----------------------------------------------------------
+
+    #[test]
+    fn the_raw_window_may_reach_the_last_slide_past_its_last_page() {
+        // 3 slides x 20 lines = 60 lines; the last heading is line 40.
+        let md = deck_markdown(3);
+        let h40 = byte_of_line(&md, 40);
+        // A 30-row page ends at line 30: the heading (line 40) lies past it.
+        let mut r = deck_rig(3, 30);
+        assert_eq!(r.app.win_max_top(30), Some((h40, Some(40))));
+        // A 20-row page starts exactly at the heading: the ordinary last page (no widened line).
+        assert_eq!(r.app.win_max_top(20), Some((h40, None)));
+        // A 10-row page starts at line 50, past the heading: the last page.
+        assert_eq!(r.app.win_max_top(10), Some((byte_of_line(&md, 50), None)));
+        assert_eq!(r.app.slide_raw_floor(), Some((h40, 40)));
+    }
+
+    #[test]
+    fn g_in_the_raw_view_puts_the_last_slide_at_the_top() {
+        let md = deck_markdown(3);
+        let mut r = deck_rig(3, 30);
+        r.app.preview_to_bottom();
+        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
+        assert_eq!(r.app.tab.preview_top_line, 40);
+        // The caret goes to the last line of the text, as for any text.
+        assert_eq!(r.app.tab.preview_cursor_line, 59);
+        assert_eq!(r.app.slide_position(), Some((3, 3)));
+    }
+
+    #[test]
+    fn scrolling_down_stops_at_the_last_slide_and_knows_its_line() {
+        let md = deck_markdown(3);
+        let mut r = deck_rig(3, 30);
+        r.app.win_scroll_lines(500);
+        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
+        assert_eq!(r.app.tab.preview_top_line, 40);
+        // And it stays there.
+        r.app.win_scroll_lines(5);
+        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
+        assert_eq!(r.app.tab.preview_top_line, 40);
+        // One line short of the end of the range: moves on, one line at a time.
+        let mut s = deck_rig(3, 30);
+        s.app.win_scroll_lines(39);
+        assert_eq!(s.app.tab.preview_top_line, 39);
+        s.app.win_scroll_lines(1);
+        assert_eq!(s.app.tab.preview_top_line, 40);
+        assert_eq!(s.app.tab.preview_byte_top, byte_of_line(&md, 40));
+    }
+
+    #[test]
+    fn a_window_put_past_the_range_is_pulled_back_to_the_last_slide() {
+        let md = deck_markdown(3);
+        let mut r = deck_rig(3, 30);
+        // As after a resize: the top is further down than the range allows.
+        r.app.tab.preview_byte_top = byte_of_line(&md, 55);
+        r.app.tab.preview_top_line = 55;
+        let _ = r.app.windowed_lines(30, 80);
+        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
+        assert_eq!(r.app.tab.preview_top_line, 40);
+        // Exactly at the end of the range is not past it: nothing moves.
+        let _ = r.app.windowed_lines(30, 80);
+        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
+        assert_eq!(r.app.tab.preview_top_line, 40);
+    }
+
+    #[test]
+    fn the_scroll_bar_range_ends_at_the_last_slide() {
+        let md = deck_markdown(3);
+        let mut r = deck_rig(3, 30);
+        let x = r.app.window_scroll_extent(30).unwrap();
+        assert_eq!(x.max, byte_of_line(&md, 40));
+        assert_eq!(x.viewport, md.len() as u64 - byte_of_line(&md, 40));
+    }
+
+    #[test]
+    fn a_word_document_in_the_raw_view_keeps_its_last_page_whatever_its_headings() {
+        let md = deck_markdown(3);
+        let mut r = raw_rig(
+            Document {
+                markdown: md.clone(),
+                ..Document::default()
+            },
+            30,
+        );
+        assert_eq!(r.app.slide_raw_floor(), None);
+        assert_eq!(r.app.win_max_top(30), Some((byte_of_line(&md, 30), None)));
+        assert_eq!(r.app.slide_position(), None);
+        assert!(!r.app.slide_can_turn());
+        r.app.preview_to_bottom();
+        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 30));
+        assert_eq!(r.app.tab.preview_top_line, 30);
+    }
+
+    #[test]
+    fn the_floor_exists_only_in_the_raw_view_of_a_consistent_deck() {
+        // Not the raw view: no floor (the decorated view has its own limit).
+        let mut r = deck_rig(3, 30);
+        r.app.tab.md_raw = false;
+        assert_eq!(r.app.slide_raw_floor(), None);
+        // Not a document at all.
+        let mut r = deck_rig(3, 30);
+        r.app.tab.preview_kind = Some(PreviewKind::Text(PathBuf::from("a.txt")));
+        assert_eq!(r.app.slide_raw_floor(), None);
+        // The deck says 3 slides but its Markdown has 4 level-2 headings: nothing is offered.
+        let mut md = deck_markdown(3);
+        md.push_str("## One too many\n");
+        let r = raw_rig(
+            Document {
+                markdown: md,
+                slides: slides(3),
+                ..Document::default()
+            },
+            30,
+        );
+        assert_eq!(r.app.slide_raw_floor(), None);
+        assert_eq!(r.app.slide_position(), None);
+        assert!(!r.app.slide_can_turn());
+        // ... and one too few.
+        let r = raw_rig(
+            Document {
+                markdown: deck_markdown(2),
+                slides: slides(3),
+                ..Document::default()
+            },
+            30,
+        );
+        assert_eq!(r.app.slide_raw_floor(), None);
+        assert_eq!(r.app.slide_position(), None);
+        assert!(!r.app.slide_can_turn());
+    }
+
+    // --- the slide the raw view is on, and J / K ----------------------------------------------
+
+    #[test]
+    fn the_raw_view_is_on_the_last_heading_at_or_above_its_top_line() {
+        let mut r = deck_rig(3, 30);
+        for (top, want) in [
+            (0, (1, 3)),
+            (19, (1, 3)),
+            (20, (2, 3)),
+            (39, (2, 3)),
+            (40, (3, 3)),
+            (59, (3, 3)),
+        ] {
+            r.app.tab.preview_top_line = top;
+            // The caret and the scroll position are somewhere else: only the top line counts.
+            r.app.tab.preview_cursor_line = 59 - top;
+            r.app.tab.preview_scroll = 7;
+            assert_eq!(r.app.slide_position(), Some(want), "top line {top}");
+        }
+    }
+
+    #[test]
+    fn a_window_that_is_not_open_offers_nothing() {
+        let mut r = deck_rig(3, 30);
+        assert!(r.app.slide_can_turn());
+        r.app.preview_win = None;
+        assert_eq!(r.app.slide_position(), None);
+        assert!(!r.app.slide_can_turn());
+        let line = r.app.tab.preview_top_line;
+        r.app.slide_turn(1);
+        assert_eq!(r.app.tab.preview_top_line, line);
+    }
+
+    #[test]
+    fn j_and_k_in_the_raw_view_move_the_window_the_line_and_the_caret() {
+        let md = deck_markdown(3);
+        let mut r = deck_rig(3, 30);
+        let at = |r: &mut Rig, dir: i32, line: usize| {
+            r.app.slide_turn(dir);
+            assert_eq!(r.app.tab.preview_top_line, line, "top line");
+            assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, line), "byte");
+            assert_eq!(r.app.tab.preview_cursor_line, line, "caret");
+        };
+        at(&mut r, 1, 20);
+        at(&mut r, 1, 40);
+        // Last slide: J does nothing.
+        at(&mut r, 1, 40);
+        at(&mut r, -1, 20);
+        at(&mut r, -1, 0);
+        at(&mut r, -1, 0);
+        // Inside a slide: K goes to its start, J to the next one.
+        r.app.tab.preview_top_line = 25;
+        r.app.tab.preview_byte_top = byte_of_line(&md, 25);
+        at(&mut r, -1, 20);
+        r.app.tab.preview_top_line = 25;
+        r.app.tab.preview_byte_top = byte_of_line(&md, 25);
+        at(&mut r, 1, 40);
+    }
+
+    #[test]
+    fn a_one_slide_deck_has_a_position_but_no_turning() {
+        let mut r = raw_rig(
+            Document {
+                markdown: deck_markdown(1),
+                slides: slides(1),
+                ..Document::default()
+            },
+            30,
+        );
+        assert_eq!(r.app.slide_position(), Some((1, 1)));
+        assert!(!r.app.slide_can_turn());
+        r.app.slide_turn(1);
+        r.app.slide_turn(-1);
+        assert_eq!(r.app.tab.preview_top_line, 0);
+        assert_eq!(r.app.tab.preview_byte_top, 0);
+    }
+
+    #[test]
+    fn a_two_slide_deck_can_turn() {
+        let r = deck_rig(2, 30);
+        assert!(r.app.slide_can_turn());
+        assert_eq!(r.app.slide_position(), Some((1, 2)));
+    }
+
+    #[test]
+    fn no_document_shown_means_no_slides() {
+        let dir = crate::test_support::unique_tmp("slide_none");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::new(dir.as_path().to_path_buf(), Config::default()).unwrap();
+        assert_eq!(app.slide_position(), None);
+        assert!(!app.slide_can_turn());
+        assert_eq!(app.slide_raw_floor(), None);
+        assert_eq!(app.slide_scroll_limit(100, 30), 70);
+        app.slide_turn(1);
+        // A deck that is held but is not what the tab shows.
+        let mut r = deck_rig(3, 30);
+        r.app.tab.preview_kind = Some(PreviewKind::Text(PathBuf::from("a.txt")));
+        assert_eq!(r.app.slide_position(), None);
+        assert!(!r.app.slide_can_turn());
+        r.app.tab.md_raw = false;
+        assert_eq!(r.app.slide_scroll_limit(100, 30), 70);
+    }
+
+    #[test]
+    fn the_decorated_limit_is_the_plain_one_without_a_layout() {
+        // Decorated view of a deck whose layout is not built yet: nothing to widen.
+        let mut r = deck_rig(3, 30);
+        r.app.tab.md_raw = false;
+        assert!(r.app.md_cache.is_none());
+        assert_eq!(r.app.slide_scroll_limit(100, 30), 70);
+        assert_eq!(r.app.slide_scroll_limit(10, 30), 0);
+        assert_eq!(r.app.slide_position(), None);
+        assert!(!r.app.slide_can_turn());
+    }
+
+    // --- the turn targets ---------------------------------------------------------------------
+
+    #[test]
+    fn a_direction_of_zero_reads_as_forward() {
+        // `J` is `dir > 0` ... and anything not negative is forward (nothing sends 0 today).
+        assert_eq!(slide_turn_target(&[0, 10, 20], 0, 0), Some(1));
+        assert_eq!(slide_turn_target(&[0, 10, 20], 20, 0), None);
+    }
+
+    #[test]
+    fn turning_with_no_slides_goes_nowhere() {
+        for dir in [-1, 0, 1] {
+            assert_eq!(slide_turn_target(&[], 0, dir), None);
+            assert_eq!(slide_turn_target(&[], 99, dir), None);
+        }
+        assert_eq!(slide_at(&[], 5), None);
+    }
+
+    #[test]
+    fn one_heading_is_the_slide_everywhere_after_it() {
+        assert_eq!(slide_at(&[4], 3), None);
+        assert_eq!(slide_at(&[4], 4), Some(0));
+        assert_eq!(slide_at(&[4], 400), Some(0));
+        assert_eq!(slide_turn_target(&[4], 0, 1), Some(0));
+        assert_eq!(slide_turn_target(&[4], 4, 1), None);
+        assert_eq!(slide_turn_target(&[4], 4, -1), None);
+        assert_eq!(slide_turn_target(&[4], 9, -1), Some(0));
+    }
+
+    // --- which files are presentations --------------------------------------------------------
+
+    #[test]
+    fn every_presentation_extension_is_one_in_any_case() {
+        for ext in [
+            "pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "odp", "otp",
+        ] {
+            for name in [
+                format!("d.{ext}"),
+                format!("d.{}", ext.to_uppercase()),
+                format!("D.{}", {
+                    let mut c = ext.chars();
+                    c.next()
+                        .unwrap()
+                        .to_uppercase()
+                        .chain(c)
+                        .collect::<String>()
+                }),
+                format!("/some/dir/with.dots/deck.v2.{ext}"),
+            ] {
+                assert!(is_presentation_path(Path::new(&name)), "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_else_is_a_presentation() {
+        for name in [
+            "d.docx",
+            "d.docm",
+            "d.dotx",
+            "d.dotm",
+            "d.odt",
+            "d.ott",
+            "d.doc",
+            "d.xlsx",
+            "d.ods",
+            "d.pptxx",
+            "d.ppt.txt",
+            "d.pdf",
+            "d.txt",
+            "d.md",
+            "d.zip",
+            "pptx",
+            "odp",
+            ".pptx",
+            "d.",
+            "d",
+            "",
+        ] {
+            assert!(!is_presentation_path(Path::new(name)), "{name}");
+        }
+    }
+
+    // --- the decorated view ---------------------------------------------------------------------
+
+    /// A deck in the decorated view (layout built for a `w`-column terminal), a `vh`-row viewport.
+    /// Every slide's body is one long line that wraps over several rows at that width.
+    fn decorated_rig(n: usize, w: u16, vh: u16) -> Rig {
+        let mut md = String::new();
+        for k in 0..n {
+            md.push_str(&format!("## Slide {}: T{}\n\n", k + 1, k + 1));
+            md.push_str(&format!("word{k} ").repeat(20 + 15 * k));
+            md.push_str("\n\n");
+        }
+        let dir = crate::test_support::unique_tmp("slide_deco");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = App::new(dir.as_path().to_path_buf(), Config::default()).unwrap();
+        let path = dir.as_path().join("d.pptx");
+        app.tab.preview_kind = Some(PreviewKind::Document(path.clone()));
+        app.tab.preview_path = Some(path);
+        app.set_document(Some(Box::new(LoadedDocument::from_document(Document {
+            markdown: md,
+            slides: slides(n),
+            ..Document::default()
+        }))));
+        app.tab.preview_viewport = vh;
+        app.ensure_md_cache(w);
+        assert!(app.md_cache.is_some());
+        Rig { app, _dir: dir }
+    }
+
+    /// The display row of each slide's heading, from the layout.
+    fn head_rows(r: &Rig) -> Vec<usize> {
+        let c = r.app.md_cache.as_ref().unwrap();
+        r.app
+            .slide_head_lines(c)
+            .unwrap()
+            .into_iter()
+            .map(|line| r.app.md_visual_span(line).0)
+            .collect()
+    }
+
+    #[test]
+    fn the_headings_are_found_by_display_row_not_by_line() {
+        let r = decorated_rig(4, 40, 10);
+        let rows = head_rows(&r);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0], 0);
+        let c = r.app.md_cache.as_ref().unwrap();
+        let lines = r.app.slide_head_lines(c).unwrap();
+        // Wrapped text pushes every later heading further down than its line number.
+        for k in 1..4 {
+            assert!(
+                rows[k] > lines[k] + k,
+                "slide {k}: row {} line {}",
+                rows[k],
+                lines[k]
+            );
+            assert!(rows[k] > rows[k - 1]);
+        }
+        let (heads, top) = r.app.slide_view().unwrap();
+        assert_eq!(heads, rows);
+        assert_eq!(top, 0);
+    }
+
+    #[test]
+    fn j_and_k_in_the_decorated_view_scroll_to_the_heading_row() {
+        let mut r = decorated_rig(4, 40, 10);
+        let rows = head_rows(&r);
+        for (k, row) in rows.iter().enumerate().skip(1) {
+            r.app.slide_turn(1);
+            assert_eq!(r.app.tab.preview_scroll as usize, *row, "J to {k}");
+            assert_eq!(r.app.slide_position(), Some((k + 1, 4)));
+        }
+        r.app.slide_turn(1);
+        assert_eq!(r.app.tab.preview_scroll as usize, rows[3], "the last stays");
+        for k in (0..3).rev() {
+            r.app.slide_turn(-1);
+            assert_eq!(r.app.tab.preview_scroll as usize, rows[k], "K to {k}");
+        }
+        r.app.slide_turn(-1);
+        assert_eq!(r.app.tab.preview_scroll, 0);
+        // A top that is not on a heading: K goes to the start of the slide it is in.
+        r.app.tab.preview_scroll = (rows[2] + 1) as u16;
+        assert_eq!(r.app.slide_position(), Some((3, 4)));
+        r.app.slide_turn(-1);
+        assert_eq!(r.app.tab.preview_scroll as usize, rows[2]);
+        r.app.tab.preview_scroll = (rows[2] + 1) as u16;
+        r.app.slide_turn(1);
+        assert_eq!(r.app.tab.preview_scroll as usize, rows[3]);
+    }
+
+    #[test]
+    fn the_decorated_scroll_limit_reaches_the_last_heading() {
+        let r = decorated_rig(4, 40, 10);
+        let rows = head_rows(&r);
+        let total = r
+            .app
+            .md_cache
+            .as_ref()
+            .unwrap()
+            .row_prefix
+            .last()
+            .copied()
+            .unwrap();
+        // A viewport shorter than the last slide: the ordinary limit is further down.
+        assert_eq!(r.app.slide_scroll_limit(total, 5), total - 5);
+        // A viewport taller than the last slide: the last heading is the limit.
+        let tall = total - rows[3] + 10;
+        assert_eq!(r.app.slide_scroll_limit(total, tall), rows[3]);
+        // Equal: either way.
+        assert_eq!(r.app.slide_scroll_limit(total, total - rows[3]), rows[3]);
+        // A viewport of 0 rows or a short document: never below the heading.
+        assert_eq!(r.app.slide_scroll_limit(total, 0), total);
+        assert_eq!(r.app.slide_scroll_limit(0, 10), rows[3]);
+    }
+
+    #[test]
+    fn the_decorated_limit_is_the_ordinary_one_for_a_word_document() {
+        let mut r = decorated_rig(4, 40, 10);
+        // The same text as a Word document (no slides): no widening.
+        r.app.document.as_mut().unwrap().slides.clear();
+        let total = r
+            .app
+            .md_cache
+            .as_ref()
+            .unwrap()
+            .row_prefix
+            .last()
+            .copied()
+            .unwrap();
+        assert_eq!(r.app.slide_scroll_limit(total, total + 50), 0);
+        assert_eq!(r.app.slide_scroll_limit(total, 5), total - 5);
+        assert_eq!(r.app.slide_position(), None);
+        assert!(!r.app.slide_can_turn());
+    }
+
+    #[test]
+    fn headings_that_are_not_exactly_the_slides_offer_nothing() {
+        // One slide more than headings, and one fewer.
+        for delta in [1isize, -1] {
+            let mut r = decorated_rig(4, 40, 10);
+            let d = r.app.document.as_mut().unwrap();
+            if delta > 0 {
+                d.slides.push(SlideInfo {
+                    number: 5,
+                    title: "T5".into(),
+                    hidden: false,
+                });
+            } else {
+                d.slides.pop();
+            }
+            assert_eq!(r.app.slide_position(), None, "delta {delta}");
+            assert!(!r.app.slide_can_turn(), "delta {delta}");
+            let total = r
+                .app
+                .md_cache
+                .as_ref()
+                .unwrap()
+                .row_prefix
+                .last()
+                .copied()
+                .unwrap();
+            assert_eq!(
+                r.app.slide_scroll_limit(total, total + 50),
+                0,
+                "delta {delta}"
+            );
+            r.app.slide_turn(1);
+            assert_eq!(r.app.tab.preview_scroll, 0, "delta {delta}");
+        }
+    }
+
+    #[test]
+    fn an_extra_level_two_heading_in_the_text_is_not_a_slide() {
+        // The converter never writes one, but the count guard is what keeps the chip honest if it did.
+        let mut r = decorated_rig(3, 40, 10);
+        let mut md = r.app.document.as_ref().unwrap().markdown.clone();
+        md.push_str("\n## An extra heading\n");
+        r.app.document.as_mut().unwrap().markdown = md;
+        r.app.md_cache = None;
+        r.app.ensure_md_cache(40);
+        assert_eq!(r.app.slide_position(), None);
+        assert!(!r.app.slide_can_turn());
+    }
+
+    #[test]
+    fn a_heading_of_another_level_is_not_a_slide_heading() {
+        // 3 slides and a level-1 and a level-3 heading among them: only the level-2 ones count.
+        let mut r = decorated_rig(3, 40, 10);
+        let mut md = String::from("# A title\n\n");
+        md.push_str(&r.app.document.as_ref().unwrap().markdown);
+        md.push_str("\n### A smaller one\n");
+        r.app.document.as_mut().unwrap().markdown = md;
+        r.app.md_cache = None;
+        r.app.ensure_md_cache(40);
+        assert_eq!(
+            r.app.slide_position(),
+            None,
+            "before the first heading: no slide yet"
+        );
+        assert!(r.app.slide_can_turn());
+        let (heads, _) = r.app.slide_view().unwrap();
+        assert_eq!(heads.len(), 3);
+        r.app.slide_turn(1);
+        assert_eq!(r.app.slide_position(), Some((1, 3)));
+        r.app.slide_turn(1);
+        assert_eq!(r.app.slide_position(), Some((2, 3)));
+    }
+
+    #[test]
+    fn a_scroll_row_past_u16_is_capped_not_wrapped() {
+        let mut r = decorated_rig(3, 40, 10);
+        // Pretend every logical line is 40,000 rows tall.
+        let lines = r.app.md_cache.as_ref().unwrap().lines.len();
+        r.app.md_cache.as_mut().unwrap().row_prefix = (0..=lines).map(|i| i * 40_000).collect();
+        let rows = head_rows(&r);
+        assert!(rows[1] > u16::MAX as usize && rows[2] > rows[1]);
+        r.app.slide_turn(1);
+        assert_eq!(r.app.tab.preview_scroll, u16::MAX);
+    }
+
+    #[test]
+    fn the_decorated_view_without_wrapping_counts_lines() {
+        let dir = crate::test_support::unique_tmp("slide_nowrap");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::default();
+        cfg.ui.wrap = false;
+        let mut app = App::new(dir.as_path().to_path_buf(), cfg).unwrap();
+        let path = dir.as_path().join("d.pptx");
+        app.tab.preview_kind = Some(PreviewKind::Document(path.clone()));
+        app.tab.preview_path = Some(path);
+        let md = deck_markdown(3);
+        app.set_document(Some(Box::new(LoadedDocument::from_document(Document {
+            markdown: md,
+            slides: slides(3),
+            ..Document::default()
+        }))));
+        app.ensure_md_cache(60);
+        let c = app.md_cache.as_ref().unwrap();
+        let lines = app.slide_head_lines(c).unwrap();
+        let (heads, _) = app.slide_view().unwrap();
+        assert_eq!(heads, lines, "one row per line");
+        app.slide_turn(1);
+        assert_eq!(app.tab.preview_scroll as usize, lines[1]);
+    }
+
+    #[test]
+    fn a_deck_that_is_not_what_the_tab_shows_widens_nothing() {
+        let mut r = decorated_rig(4, 40, 10);
+        let total = r
+            .app
+            .md_cache
+            .as_ref()
+            .unwrap()
+            .row_prefix
+            .last()
+            .copied()
+            .unwrap();
+        let tall = total + 50;
+        let rows = head_rows(&r);
+        assert_eq!(r.app.slide_scroll_limit(total, tall), rows[3]);
+        r.app.tab.preview_kind = Some(PreviewKind::Text(PathBuf::from("a.txt")));
+        assert_eq!(r.app.slide_scroll_limit(total, tall), 0);
+    }
+
+    #[test]
+    fn anchors_pointing_past_the_text_are_not_headings() {
+        let mut r = decorated_rig(4, 40, 10);
+        let n = r.app.md_cache.as_ref().unwrap().lines.len();
+        r.app
+            .md_cache
+            .as_mut()
+            .unwrap()
+            .anchors
+            .push(("ghost".into(), n + 5));
+        assert_eq!(r.app.slide_position(), Some((1, 4)));
+        assert!(r.app.slide_can_turn());
+    }
+
+    #[test]
+    fn the_decorated_limit_is_not_used_in_the_raw_view() {
+        // The raw view has its own floor; a layout left over from the decorated view must not
+        // widen anything.
+        let mut r = decorated_rig(4, 40, 10);
+        let total = r
+            .app
+            .md_cache
+            .as_ref()
+            .unwrap()
+            .row_prefix
+            .last()
+            .copied()
+            .unwrap();
+        assert!(r.app.slide_scroll_limit(total, total + 50) > 0);
+        r.app.tab.md_raw = true;
+        assert_eq!(r.app.slide_scroll_limit(total, total + 50), 0);
+        assert_eq!(r.app.slide_scroll_limit(total, 5), total - 5);
+    }
+
+    #[test]
+    fn j_and_k_do_nothing_where_the_keys_are_not_offered() {
+        // One slide and some text before its heading: the view is before the first heading, so J
+        // would have somewhere to go - but the key is not offered for a single slide.
+        let mut r = raw_rig(
+            Document {
+                markdown: "intro\n\n## Slide 1: only\n\nbody\n".into(),
+                slides: slides(1),
+                ..Document::default()
+            },
+            30,
+        );
+        assert_eq!(r.app.slide_position(), None);
+        assert!(!r.app.slide_can_turn());
+        r.app.slide_turn(1);
+        assert_eq!(
+            (r.app.tab.preview_top_line, r.app.tab.preview_byte_top),
+            (0, 0)
+        );
+        r.app.slide_turn(-1);
+        assert_eq!(
+            (r.app.tab.preview_top_line, r.app.tab.preview_byte_top),
+            (0, 0)
+        );
+        // Not a deck at all: nothing happens either.
+        let mut w = raw_rig(
+            Document {
+                markdown: deck_markdown(3),
+                ..Document::default()
+            },
+            30,
+        );
+        w.app.slide_turn(1);
+        assert_eq!(w.app.tab.preview_top_line, 0);
+    }
+
+    #[test]
+    fn the_last_slide_is_the_end_of_the_raw_range_with_line_numbers_on_too() {
+        // With line numbers on, the total line count is known: it must not replace the line of the
+        // last slide's heading.
+        let md = deck_markdown(3);
+        for g_key in [true, false] {
+            let mut r = deck_rig(3, 30);
+            r.app.cfg.ui.line_numbers = true;
+            if g_key {
+                r.app.preview_to_bottom();
+            } else {
+                r.app.win_scroll_lines(500);
+            }
+            assert_eq!(
+                r.app.tab.preview_byte_top,
+                byte_of_line(&md, 40),
+                "g={g_key}"
+            );
+            assert_eq!(r.app.tab.preview_top_line, 40, "g={g_key}");
+            // The ordinary last page keeps the count-based line.
+            let mut w = raw_rig(
+                Document {
+                    markdown: md.clone(),
+                    ..Document::default()
+                },
+                30,
+            );
+            w.app.cfg.ui.line_numbers = true;
+            w.app.win_scroll_lines(500);
+            assert_eq!(w.app.tab.preview_top_line, 30, "word, g={g_key}");
+        }
+    }
+
+    #[test]
+    fn a_window_exactly_at_the_end_of_the_range_is_left_alone() {
+        let md = deck_markdown(3);
+        let mut r = deck_rig(3, 30);
+        r.app.tab.preview_byte_top = byte_of_line(&md, 40);
+        r.app.tab.preview_top_line = 7; // not the true line: a clamp would correct it
+        let _ = r.app.windowed_lines(30, 80);
+        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
+        assert_eq!(r.app.tab.preview_top_line, 7);
+    }
+
+    #[test]
+    fn reaching_the_end_of_the_range_exactly_takes_the_line_of_the_last_slide() {
+        let md = deck_markdown(3);
+        let mut r = deck_rig(3, 30);
+        // One line short of the end of the range, with a line number that is not the true one:
+        // arriving at the end corrects it from the known line of the last heading.
+        r.app.tab.preview_byte_top = byte_of_line(&md, 39);
+        r.app.tab.preview_top_line = 7;
+        r.app.win_scroll_lines(1);
+        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
+        assert_eq!(r.app.tab.preview_top_line, 40);
+    }
+}

@@ -2818,7 +2818,7 @@ mod sheet_error_tests {
 #[cfg(test)]
 mod doc_error_tests {
     use super::doc_error_text;
-    use crate::i18n::Lang;
+    use crate::i18n::{tr, Lang, Msg};
     use crate::preview::office::OfficeError;
 
     fn every_error() -> Vec<Option<OfficeError>> {
@@ -2849,6 +2849,122 @@ mod doc_error_tests {
                 assert!(d.starts_with(doc), "{e:?}: {d}");
                 assert!(p.starts_with(slide), "{e:?}: {p}");
                 assert!(!p.contains("{n}") && !d.contains("{n}"), "{e:?}");
+            }
+        }
+    }
+
+    /// `(error, presentation text, document text, the limit the text names)` for every failure.
+    fn expected() -> Vec<(Option<OfficeError>, Msg, Msg, String)> {
+        use crate::preview::office::container::Limits;
+        let l = Limits::default();
+        const MIB: u64 = 1024 * 1024;
+        const GIB: u64 = 1024 * MIB;
+        let size = |b: u64| {
+            if b.is_multiple_of(GIB) {
+                format!("{} GiB", b / GIB)
+            } else {
+                format!("{} MiB", b / MIB)
+            }
+        };
+        let thousands = |n: u64| format!("{},{:03}", n / 1000, n % 1000);
+        let none = String::new;
+        vec![
+            (None, Msg::DocErrCorruptSlides, Msg::DocErrCorrupt, none()),
+            (
+                Some(OfficeError::Corrupt("x".into())),
+                Msg::DocErrCorruptSlides,
+                Msg::DocErrCorrupt,
+                none(),
+            ),
+            (
+                Some(OfficeError::Encrypted),
+                Msg::DocErrEncryptedSlides,
+                Msg::DocErrEncrypted,
+                none(),
+            ),
+            (
+                Some(OfficeError::Unsupported),
+                Msg::DocErrUnsupportedSlides,
+                Msg::DocErrUnsupported,
+                none(),
+            ),
+            (
+                Some(OfficeError::Io("x".into())),
+                Msg::DocErrIoSlides,
+                Msg::DocErrIo,
+                none(),
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "file" }),
+                Msg::DocErrTooLargeFileSlides,
+                Msg::DocErrTooLargeFile,
+                size(l.max_file_bytes),
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "entries" }),
+                Msg::DocErrTooLargeEntriesSlides,
+                Msg::DocErrTooLargeEntries,
+                thousands(l.max_entries as u64),
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "entry" }),
+                Msg::DocErrTooLargeEntrySlides,
+                Msg::DocErrTooLargeEntry,
+                size(l.max_part_bytes),
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "package" }),
+                Msg::DocErrTooLargePackageSlides,
+                Msg::DocErrTooLargePackage,
+                size(l.max_total_bytes),
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "other" }),
+                Msg::DocErrTooLargeOtherSlides,
+                Msg::DocErrTooLargeOther,
+                none(),
+            ),
+            (
+                Some(OfficeError::TooLarge {
+                    what: "something new",
+                }),
+                Msg::DocErrTooLargeOtherSlides,
+                Msg::DocErrTooLargeOther,
+                none(),
+            ),
+        ]
+    }
+
+    /// Each failure has its own words, with its own limit filled in, in both languages and for
+    /// both kinds of file; and no two different failures read alike.
+    #[test]
+    fn every_failure_reads_as_its_own_text_with_its_own_limit() {
+        for lang in [Lang::En, Lang::Jp] {
+            let mut seen_p: Vec<(Msg, String)> = Vec::new();
+            let mut seen_d: Vec<(Msg, String)> = Vec::new();
+            for (e, ps, ds, limit) in expected() {
+                let p = doc_error_text(lang, e.as_ref(), true);
+                let d = doc_error_text(lang, e.as_ref(), false);
+                assert_eq!(p, tr(lang, ps).replace("{n}", &limit), "{e:?} slides");
+                assert_eq!(d, tr(lang, ds).replace("{n}", &limit), "{e:?} document");
+                if !limit.is_empty() {
+                    assert!(p.contains(&limit) && d.contains(&limit), "{e:?}: {limit}");
+                }
+                if !seen_p.iter().any(|(m, _)| *m == ps) {
+                    seen_p.push((ps, p));
+                }
+                if !seen_d.iter().any(|(m, _)| *m == ds) {
+                    seen_d.push((ds, d));
+                }
+            }
+            // 9 distinct reasons, 9 distinct texts, either kind.
+            for seen in [&seen_p, &seen_d] {
+                assert_eq!(seen.len(), 9);
+                for (i, (_, a)) in seen.iter().enumerate() {
+                    for (_, b) in &seen[i + 1..] {
+                        assert_ne!(a, b);
+                    }
+                }
             }
         }
     }
