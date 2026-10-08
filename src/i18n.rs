@@ -794,6 +794,12 @@ pub enum Msg {
     DocErrTooLargePackage,
     DocErrTooLargeOther,
     DocTruncatedTitle,
+    /// Heading word of a slide in the converted Markdown of a presentation (`Slide 3: Title`).
+    SlideHeading,
+    /// Appended to the heading of a hidden slide.
+    SlideHiddenSuffix,
+    /// Label of the speaker notes under a slide.
+    SlideNotesLabel,
     MermaidUnavailable,
     DiagramOpenFailed,
     /// Preview body for a `detached=true` `[[preview.rules]] command = "..."` delegation, once launched.
@@ -1442,6 +1448,9 @@ fn en(msg: Msg) -> &'static str {
         DocErrTooLargePackage => "[document] too large to preview — the package expands beyond the {n} limit",
         DocErrTooLargeOther => "[document] too large to preview — a safety limit was exceeded",
         DocTruncatedTitle => "· truncated (too large to show in full) ",
+        SlideHeading => "Slide",
+        SlideHiddenSuffix => " (hidden)",
+        SlideNotesLabel => "Notes",
         MermaidUnavailable => "[mermaid] cannot render this diagram as an image — press q to go back",
         DiagramOpenFailed => "diagram not found (file changed?) — reopen the preview",
         CommandOpenedExternally => "opened externally: ",
@@ -2030,6 +2039,9 @@ fn jp(msg: Msg) -> &'static str {
         DocErrTooLargePackage => "[文書] 大きすぎて表示できません — パッケージの展開サイズが上限 {n} を超えています",
         DocErrTooLargeOther => "[文書] 大きすぎて表示できません — 安全のための上限を超えました",
         DocTruncatedTitle => "· 打ち切り(大きすぎて全部は表示していません) ",
+        SlideHeading => "スライド",
+        SlideHiddenSuffix => "（非表示）",
+        SlideNotesLabel => "ノート",
         MermaidUnavailable => "[mermaid] この図は画像化できませんでした — q で戻れます",
         DiagramOpenFailed => "図が見つかりません(ファイルが変更された可能性) — プレビューを開き直してください",
         CommandOpenedExternally => "外部プログラムで開きました: ",
@@ -2679,6 +2691,9 @@ mod tests {
         Msg::DocErrTooLargePackage,
         Msg::DocErrTooLargeOther,
         Msg::DocTruncatedTitle,
+        Msg::SlideHeading,
+        Msg::SlideHiddenSuffix,
+        Msg::SlideNotesLabel,
         Msg::MermaidUnavailable,
         Msg::DiagramOpenFailed,
         Msg::CommandOpenedExternally,

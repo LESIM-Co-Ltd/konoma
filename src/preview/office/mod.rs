@@ -23,6 +23,7 @@ pub(crate) mod mathml;
 pub mod numfmt;
 mod ods_formula;
 pub(crate) mod omml;
+pub(crate) mod slide_order;
 pub mod workbook;
 pub(crate) mod xlsx;
 
@@ -148,6 +149,12 @@ mod tests_ods;
 mod tests_odt;
 #[cfg(test)]
 mod tests_odt_more;
+#[cfg(test)]
+mod tests_pptx;
+#[cfg(test)]
+mod tests_pptx_real;
+#[cfg(test)]
+mod tests_pptx_robust;
 #[cfg(test)]
 mod tests_review_fix;
 #[cfg(test)]

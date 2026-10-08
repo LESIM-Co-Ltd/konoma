@@ -71,6 +71,9 @@ use super::{omml, OfficeError};
 // so it is a child module: it sees the private items it builds on.
 #[path = "odt.rs"]
 pub mod odt;
+// The PowerPoint reader does the same: slides become Markdown through this module's writer.
+#[path = "pptx.rs"]
+pub mod pptx;
 
 /// Limits and options of [`load_document`].
 #[derive(Debug, Clone)]
@@ -108,6 +111,21 @@ pub struct DocOptions {
     pub mathml: fn(&str, bool) -> Option<String>,
     /// Most formula objects an OpenDocument text may have converted (each one is a zip part).
     pub max_math_objects: usize,
+    /// The language of the words konoma writes into a converted presentation (the slide
+    /// heading, the notes label).
+    pub lang: crate::i18n::Lang,
+    /// Most slides of a presentation read. Real decks have tens to a few hundred; every slide is
+    /// at least a heading line and the Markdown view shows 5,000 lines, so more than this could
+    /// never be shown anyway.
+    pub max_slides: usize,
+    /// Most shapes read from one slide (groups count their members). A slide has tens.
+    pub max_slide_shapes: usize,
+    /// Largest XML part of a presentation (slide, layout, master, notes, SmartArt) read at all
+    /// (bytes of the inflated part). A slide of a few MB is a table of thousands of cells.
+    pub max_slide_part_bytes: u64,
+    /// Total bytes of such XML parts read over a whole presentation: a deck of 1,000 slides of
+    /// 100 KB, with room for layouts and masters, and bounded in time (about a second).
+    pub max_pptx_read_total: u64,
 }
 
 impl Default for DocOptions {
@@ -129,6 +147,11 @@ impl Default for DocOptions {
             math: omml::to_latex,
             mathml: super::mathml::to_latex,
             max_math_objects: 5_000,
+            lang: crate::i18n::Lang::En,
+            max_slides: 1_000,
+            max_slide_shapes: 5_000,
+            max_slide_part_bytes: 16 * MIB,
+            max_pptx_read_total: 128 * MIB,
         }
     }
 }
@@ -152,6 +175,9 @@ pub struct Document {
     /// See [`Document::math_total`].
     #[cfg_attr(not(test), allow(dead_code))]
     pub math_latex: usize,
+    /// A presentation: its slides in order (empty for other documents). There is exactly one
+    /// level-2 heading in [`Document::markdown`] per entry, in the same order (and none besides).
+    pub slides: Vec<pptx::SlideInfo>,
 }
 
 /// A picture of the document.
@@ -700,6 +726,7 @@ impl Conv<'_> {
             notes,
             math_total: conv.math_total,
             math_latex: conv.math_latex,
+            slides: Vec::new(),
         }
     }
 }
