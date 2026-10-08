@@ -7252,6 +7252,10 @@ mod md_snapshot_tests;
 // directly (a sibling, not a descendant, so those are `pub(super)` there).
 #[cfg(test)]
 mod md_model_snapshot_tests;
+// Table / neighbouring-block spacing (a table takes part in the ordinary block-gap protocol), and the
+// row-keyed features that must follow the extra row. Reuses `md_snapshot_tests::render_case`.
+#[cfg(test)]
+mod md_table_gap_tests;
 
 #[cfg(test)]
 mod survivor_tests;

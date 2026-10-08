@@ -1410,7 +1410,7 @@ L0007 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   m00 line=0000 kind=CodeBlock{body=Some("let x = 1;\n``` (note)\n\n| a | b |\n|---|---|\n| 1 | 2 |")}
 
 === code_corpus: closing line with trailing text does not close, but the list item ends the block ===
--- LINES (14) --
+-- LINES (15) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -1451,8 +1451,9 @@ L0007 style=fg=-,bg=-,mod=- align=-
 L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "next"
 L0009 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
 L0010 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0011 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "a"
@@ -1462,9 +1463,9 @@ L0010 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "b"
   s07 fg=cyan,bg=-,mod=B " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0011 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
 L0012 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+L0013 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "1"
@@ -1474,7 +1475,7 @@ L0012 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "2"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0013 style=fg=-,bg=-,mod=- align=-
+L0014 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -1486,7 +1487,7 @@ L0013 style=fg=-,bg=-,mod=- align=-
   m00 line=0003 kind=CodeBlock{body=Some("let x = 1;\n``` ([#1](https://example.com/1))\n")}
 
 === code_corpus: closing line with trailing text inside a block quote ===
--- LINES (9) --
+-- LINES (10) --
 L0000 style=fg=green,bg=rgb(43,48,59),mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
@@ -1519,8 +1520,9 @@ L0003 style=fg=green,bg=rgb(43,48,59),mod=I align=-
   s02 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s03 fg=-,bg=rgb(43,48,59),mod=- "                                                                                                "
 L0004 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
 L0005 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0006 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "a"
@@ -1530,9 +1532,9 @@ L0005 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "b"
   s07 fg=cyan,bg=-,mod=B " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0006 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
 L0007 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "1"
@@ -1542,7 +1544,7 @@ L0007 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "2"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0008 style=fg=-,bg=-,mod=- align=-
+L0009 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -1554,7 +1556,7 @@ L0008 style=fg=-,bg=-,mod=- align=-
   m00 line=0000 kind=CodeBlock{body=Some("let x = 1;\n``` (note)")}
 
 === code_corpus: closing line with trailing text inside a list item inside a block quote ===
--- LINES (12) --
+-- LINES (13) --
 L0000 style=fg=green,bg=-,mod=I align=-
   s00 fg=-,bg=-,mod=- ">"
   s01 fg=-,bg=-,mod=- " "
@@ -1598,8 +1600,9 @@ L0006 style=fg=green,bg=rgb(43,48,59),mod=I align=-
   s02 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s03 fg=-,bg=rgb(43,48,59),mod=- "                                                                                                "
 L0007 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
 L0008 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0009 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "a"
@@ -1609,9 +1612,9 @@ L0008 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "b"
   s07 fg=cyan,bg=-,mod=B " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0009 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
 L0010 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+L0011 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "1"
@@ -1621,7 +1624,7 @@ L0010 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "2"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0011 style=fg=-,bg=-,mod=- align=-
+L0012 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -1633,7 +1636,7 @@ L0011 style=fg=-,bg=-,mod=- align=-
   m00 line=0003 kind=CodeBlock{body=Some("let x = 1;\n``` (note)")}
 
 === code_corpus: closing line with trailing text inside a nested list item ===
--- LINES (14) --
+-- LINES (15) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "outer"
@@ -1669,8 +1672,9 @@ L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=-,bg=-,mod=- "after"
 L0009 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
 L0010 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0011 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "a"
@@ -1680,9 +1684,9 @@ L0010 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "b"
   s07 fg=cyan,bg=-,mod=B " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0011 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
 L0012 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+L0013 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "1"
@@ -1692,7 +1696,7 @@ L0012 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "2"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0013 style=fg=-,bg=-,mod=- align=-
+L0014 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -3555,7 +3559,7 @@ L0006 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   m00 line=0002 kind=CodeBlock{body=Some("chunk one\n\nchunk two")}
 
 === code_corpus: unclosed fence in a list item ends with the item, not the document ===
--- LINES (13) --
+-- LINES (14) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -3582,8 +3586,9 @@ L0006 style=fg=-,bg=-,mod=- align=-
 L0007 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "next"
 L0008 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
 L0009 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0010 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "a"
@@ -3593,9 +3598,9 @@ L0009 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "b"
   s07 fg=cyan,bg=-,mod=B " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0010 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
 L0011 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├───┼───┤"
+L0012 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "1"
@@ -3605,7 +3610,7 @@ L0011 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "2"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0012 style=fg=-,bg=-,mod=- align=-
+L0013 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (1) --
@@ -6894,7 +6899,7 @@ L0002 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === html_table_corpus: fence directly after the table ===
--- LINES (6) --
+-- LINES (7) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -6905,11 +6910,12 @@ L0001 style=fg=-,bg=-,mod=- align=-
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
-L0003 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0003 style=fg=-,bg=-,mod=- align=-
+L0004 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=I "▎ "
   s01 fg=-,bg=rgb(43,48,59),mod=- "                                                                                            "
   s02 fg=white,bg=rgb(70,78,99),mod=B " rust "
-L0004 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0005 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=rgb(198,120,221),bg=rgb(43,48,59),mod=- "let"
   s02 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- " x "
@@ -6918,7 +6924,7 @@ L0004 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s05 fg=rgb(209,154,102),bg=rgb(43,48,59),mod=- "1"
   s06 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- ";"
   s07 fg=-,bg=rgb(43,48,59),mod=- "                                                                                        "
-L0005 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0006 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=-,bg=rgb(43,48,59),mod=- "                                                                                                  "
 -- IMAGES (0) --
@@ -6928,7 +6934,7 @@ L0005 style=fg=-,bg=rgb(43,48,59),mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0003 kind=CodeBlock{body=Some("let x = 1;")}
+  m00 line=0004 kind=CodeBlock{body=Some("let x = 1;")}
 
 === html_table_corpus: first row mixing th and td is not a header row ===
 -- LINES (4) --
@@ -6964,7 +6970,7 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === html_table_corpus: gfm table and html table in the same document ===
--- LINES (8) --
+-- LINES (9) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -6992,8 +6998,9 @@ L0003 style=fg=-,bg=-,mod=- align=-
 L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
 L0006 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0007 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "c"
@@ -7003,7 +7010,7 @@ L0006 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "d"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0007 style=fg=-,bg=-,mod=- align=-
+L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
@@ -7143,7 +7150,7 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === html_table_corpus: paragraph after the table across a blank line ===
--- LINES (4) --
+-- LINES (5) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -7155,6 +7162,7 @@ L0001 style=fg=-,bg=-,mod=- align=-
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
 L0003 style=fg=-,bg=-,mod=- align=-
+L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "after"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
@@ -7229,14 +7237,15 @@ L0003 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === html_table_corpus: readme screenshot grid two by two ===
--- LINES (7) --
+-- LINES (9) --
 L0000 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Screenshots"
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0002 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────────────────────────────────┬──────────────────────────────────────────┐"
 L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────────────────────────────────┬──────────────────────────────────────────┐"
+L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=D "🖼 Tree view with git status colors"
@@ -7246,7 +7255,7 @@ L0003 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=D "🖼 Custom git commit-graph renderer"
   s07 fg=-,bg=-,mod=- "       "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0004 style=fg=-,bg=-,mod=- align=-
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- "   "
   s02 fg=-,bg=-,mod=B "Tree view"
@@ -7258,9 +7267,10 @@ L0004 style=fg=-,bg=-,mod=- align=-
   s08 fg=-,bg=-,mod=- " — custom commit-graph renderer"
   s09 fg=-,bg=-,mod=- " "
   s10 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0005 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────────────────────────────────┴──────────────────────────────────────────┘"
 L0006 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────────────────────────────────┴──────────────────────────────────────────┘"
+L0007 style=fg=-,bg=-,mod=- align=-
+L0008 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "after"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
@@ -7382,14 +7392,15 @@ L0002 style=fg=green,bg=-,mod=I align=-
 -- ITEMS (0) --
 
 === html_table_corpus: table inside a list item ===
--- LINES (5) --
+-- LINES (6) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
 L0001 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "item"
 L0002 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
 L0003 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
+L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "a"
@@ -7399,7 +7410,7 @@ L0003 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "b"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0004 style=fg=-,bg=-,mod=- align=-
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
@@ -7653,7 +7664,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === html_table_corpus: two tables in a row ===
--- LINES (6) --
+-- LINES (7) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -7665,14 +7676,15 @@ L0001 style=fg=-,bg=-,mod=- align=-
 L0002 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
 L0003 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
 L0004 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┐"
+L0005 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "b"
   s03 fg=-,bg=-,mod=- " "
   s04 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0005 style=fg=-,bg=-,mod=- align=-
+L0006 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┘"
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
@@ -11645,7 +11657,7 @@ L0019 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === samples: images.md ===
--- LINES (52) --
+-- LINES (58) --
 L0000 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Inline images (Markdown & HTML)"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -11717,8 +11729,9 @@ L0027 style=fg=-,bg=-,mod=- align=-
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "to its own column, so the picture lands inside the box drawing rather than beside it:"
 L0028 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────┬───────────────────┐"
 L0029 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────┬───────────────────┐"
+L0030 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "Format"
@@ -11728,9 +11741,9 @@ L0029 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "Sample"
   s07 fg=cyan,bg=-,mod=B "            "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0030 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├────────┼───────────────────┤"
 L0031 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├────────┼───────────────────┤"
+L0032 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "JPEG"
@@ -11740,7 +11753,7 @@ L0031 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=D "🖼 a raster sample"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0032 style=fg=-,bg=-,mod=- align=-
+L0033 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "SVG"
@@ -11750,17 +11763,19 @@ L0032 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=D "🖼 a vector sample"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0033 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┴───────────────────┘"
 L0034 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┴───────────────────┘"
+L0035 style=fg=-,bg=-,mod=- align=-
+L0036 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "The same thing written as an HTML "
   s01 fg=white,bg=rgb(43,48,59),mod=- "<table>"
   s02 fg=-,bg=-,mod=- " — the screenshot-grid form, pictures on top and a"
   s03 fg=-,bg=-,mod=- " "
   s04 fg=-,bg=-,mod=- "caption row underneath, which is how this repository's own README lays out its screenshots:"
-L0035 style=fg=-,bg=-,mod=- align=-
+L0037 style=fg=-,bg=-,mod=- align=-
+L0038 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────────────────────────┬───────────────────────────┐"
-L0036 style=fg=-,bg=-,mod=- align=-
+L0039 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=D "🖼 a raster sample"
@@ -11770,7 +11785,7 @@ L0036 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=D "🖼 a vector sample"
   s07 fg=-,bg=-,mod=- "         "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0037 style=fg=-,bg=-,mod=- align=-
+L0040 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=B "JPEG"
@@ -11782,13 +11797,15 @@ L0037 style=fg=-,bg=-,mod=- align=-
   s08 fg=-,bg=-,mod=- " — rasterized by resvg"
   s09 fg=-,bg=-,mod=- " "
   s10 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0038 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────────────────────────┴───────────────────────────┘"
-L0039 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "A remote image works in a cell as well, downloaded off-thread like any other:"
-L0040 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────────┬───────────────┐"
 L0041 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└──────────────────────────┴───────────────────────────┘"
+L0042 style=fg=-,bg=-,mod=- align=-
+L0043 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "A remote image works in a cell as well, downloaded off-thread like any other:"
+L0044 style=fg=-,bg=-,mod=- align=-
+L0045 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────────┬───────────────┐"
+L0046 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "Source"
@@ -11798,9 +11815,9 @@ L0041 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "Badge"
   s07 fg=cyan,bg=-,mod=B "         "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0042 style=fg=-,bg=-,mod=- align=-
+L0047 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "├────────────┼───────────────┤"
-L0043 style=fg=-,bg=-,mod=- align=-
+L0048 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "shields.io"
@@ -11810,23 +11827,24 @@ L0043 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=D "🖼 build badge"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0044 style=fg=-,bg=-,mod=- align=-
+L0049 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└────────────┴───────────────┘"
-L0045 style=fg=cyan,bg=-,mod=B align=-
+L0050 style=fg=-,bg=-,mod=- align=-
+L0051 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Safe fallbacks (design principle #3)"
-L0046 style=fg=-,bg=-,mod=- align=-
+L0052 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0047 style=fg=-,bg=-,mod=- align=-
-L0048 style=fg=-,bg=-,mod=- align=-
+L0053 style=fg=-,bg=-,mod=- align=-
+L0054 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "An unreachable remote URL and a missing local file degrade to a text"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "placeholder instead of breaking the preview:"
-L0049 style=fg=-,bg=-,mod=D align=-
+L0055 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 unreachable host — "
   s01 fg=blue,bg=-,mod=U "https://konoma.invalid/nope.png"
-L0050 style=fg=-,bg=-,mod=D align=-
+L0056 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 missing file — does-not-exist.png"
-L0051 style=fg=-,bg=-,mod=- align=-
+L0057 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "End of demo."
 -- IMAGES (0) --
 -- CODE_BLOCKS (0) --
@@ -11839,14 +11857,14 @@ L0051 style=fg=-,bg=-,mod=- align=-
   a03 line=0013 slug="animated-gif"
   a04 line=0018 slug="remote-images-fetched-with-the-system-curl-cached-on-disk"
   a05 line=0024 slug="images-in-a-table-cell"
-  a06 line=0045 slug="safe-fallbacks-design-principle-3"
+  a06 line=0051 slug="safe-fallbacks-design-principle-3"
 -- ITEMS (3) --
   m00 line=0022 kind=Link{target="https://placehold.co/480x160.png"}
   m01 line=0023 kind=Link{target="https://img.shields.io/badge/konoma-preview-brightgreen.svg"}
-  m02 line=0049 kind=Link{target="https://konoma.invalid/nope.png"}
+  m02 line=0055 kind=Link{target="https://konoma.invalid/nope.png"}
 
 === samples: links.ja.md ===
--- LINES (37) --
+-- LINES (39) --
 L0000 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Link navigation demo"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -11914,8 +11932,9 @@ L0023 style=fg=-,bg=-,mod=- align=-
   s03 fg=white,bg=rgb(43,48,59),mod=- "Enter"
   s04 fg=-,bg=-,mod=- " が段落リンクと同じように効く。"
 L0024 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────────┬─────────────────────────────┬───────────────────────────┐"
 L0025 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────────┬─────────────────────────────┬───────────────────────────┐"
+L0026 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "種別"
@@ -11929,9 +11948,9 @@ L0025 style=fg=-,bg=-,mod=- align=-
   s10 fg=cyan,bg=-,mod=B "備考"
   s11 fg=cyan,bg=-,mod=B "                      "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0026 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├─────────────┼─────────────────────────────┼───────────────────────────┤"
 L0027 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├─────────────┼─────────────────────────────┼───────────────────────────┤"
+L0028 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "ローカル"
@@ -11945,7 +11964,7 @@ L0027 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "konoma 内で開く"
   s11 fg=-,bg=-,mod=- "           "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0028 style=fg=-,bg=-,mod=- align=-
+L0029 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "外部"
@@ -11959,7 +11978,7 @@ L0028 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "ブラウザで開く"
   s11 fg=-,bg=-,mod=- "            "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0029 style=fg=-,bg=-,mod=- align=-
+L0030 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "title 付き"
@@ -11973,7 +11992,7 @@ L0029 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "title は URL に混ざらない"
   s11 fg=-,bg=-,mod=- " "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0030 style=fg=-,bg=-,mod=- align=-
+L0031 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "1セルに複数"
@@ -11989,7 +12008,7 @@ L0030 style=fg=-,bg=-,mod=- align=-
   s12 fg=-,bg=-,mod=- "順にフォーカスできる"
   s13 fg=-,bg=-,mod=- "      "
   s14 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0031 style=fg=-,bg=-,mod=- align=-
+L0032 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "CJK 混在"
@@ -12005,14 +12024,15 @@ L0031 style=fg=-,bg=-,mod=- align=-
   s12 fg=-,bg=-,mod=- "桁揃えが崩れない"
   s13 fg=-,bg=-,mod=- "          "
   s14 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0032 style=fg=-,bg=-,mod=- align=-
+L0033 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────────┴─────────────────────────────┴───────────────────────────┘"
-L0033 style=fg=cyan,bg=-,mod=B align=-
-  s00 fg=-,bg=-,mod=- "存在しないリンク（エラー表示）"
 L0034 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0035 style=fg=-,bg=-,mod=- align=-
+L0035 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "存在しないリンク（エラー表示）"
 L0036 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
+L0037 style=fg=-,bg=-,mod=- align=-
+L0038 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=blue,bg=-,mod=U "\u{f0c1} missing"
 -- IMAGES (0) --
@@ -12024,7 +12044,7 @@ L0036 style=fg=-,bg=-,mod=- align=-
   a01 line=0005 slug="ローカルリンクkonoma-内で開く"
   a02 line=0013 slug="外部リンクブラウザで開く"
   a03 line=0020 slug="表の中のリンク"
-  a04 line=0033 slug="存在しないリンクエラー表示"
+  a04 line=0035 slug="存在しないリンクエラー表示"
 -- ITEMS (15) --
   m00 line=0008 kind=Link{target="./code/hello.rs"}
   m01 line=0008 kind=Link{target="./code/config.toml"}
@@ -12034,16 +12054,16 @@ L0036 style=fg=-,bg=-,mod=- align=-
   m05 line=0016 kind=Link{target="https://ratatui.rs"}
   m06 line=0017 kind=Link{target="https://www.rust-lang.org"}
   m07 line=0018 kind=Link{target="https://github.com"}
-  m08 line=0027 kind=Link{target="./code/hello.rs"}
-  m09 line=0028 kind=Link{target="https://ratatui.rs"}
-  m10 line=0029 kind=Link{target="./japanese.txt"}
-  m11 line=0030 kind=Link{target="./markdown.ja.md"}
-  m12 line=0030 kind=Link{target="./code"}
-  m13 line=0031 kind=Link{target="./README.md"}
-  m14 line=0036 kind=Link{target="./does-not-exist.md"}
+  m08 line=0028 kind=Link{target="./code/hello.rs"}
+  m09 line=0029 kind=Link{target="https://ratatui.rs"}
+  m10 line=0030 kind=Link{target="./japanese.txt"}
+  m11 line=0031 kind=Link{target="./markdown.ja.md"}
+  m12 line=0031 kind=Link{target="./code"}
+  m13 line=0032 kind=Link{target="./README.md"}
+  m14 line=0038 kind=Link{target="./does-not-exist.md"}
 
 === samples: links.md ===
--- LINES (37) --
+-- LINES (39) --
 L0000 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Link navigation demo"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -12111,8 +12131,9 @@ L0023 style=fg=-,bg=-,mod=- align=-
   s03 fg=white,bg=rgb(43,48,59),mod=- "Enter"
   s04 fg=-,bg=-,mod=- " work just like paragraph links."
 L0024 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────────────────┬──────────────────────────────┬─────────────────────────────────────┐"
 L0025 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────────────────┬──────────────────────────────┬─────────────────────────────────────┐"
+L0026 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "Kind"
@@ -12126,9 +12147,9 @@ L0025 style=fg=-,bg=-,mod=- align=-
   s10 fg=cyan,bg=-,mod=B "Note"
   s11 fg=cyan,bg=-,mod=B "                                "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0026 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├──────────────────┼──────────────────────────────┼─────────────────────────────────────┤"
 L0027 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├──────────────────┼──────────────────────────────┼─────────────────────────────────────┤"
+L0028 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "local"
@@ -12142,7 +12163,7 @@ L0027 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "opens inside konoma"
   s11 fg=-,bg=-,mod=- "                 "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0028 style=fg=-,bg=-,mod=- align=-
+L0029 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "external"
@@ -12156,7 +12177,7 @@ L0028 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "opens in the browser"
   s11 fg=-,bg=-,mod=- "                "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0029 style=fg=-,bg=-,mod=- align=-
+L0030 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "with title"
@@ -12170,7 +12191,7 @@ L0029 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "the title is not mixed into the URL"
   s11 fg=-,bg=-,mod=- " "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0030 style=fg=-,bg=-,mod=- align=-
+L0031 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "many in one cell"
@@ -12186,7 +12207,7 @@ L0030 style=fg=-,bg=-,mod=- align=-
   s12 fg=-,bg=-,mod=- "focus them in order"
   s13 fg=-,bg=-,mod=- "                 "
   s14 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0031 style=fg=-,bg=-,mod=- align=-
+L0032 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "CJK mix"
@@ -12202,14 +12223,15 @@ L0031 style=fg=-,bg=-,mod=- align=-
   s12 fg=-,bg=-,mod=- "column alignment stays intact"
   s13 fg=-,bg=-,mod=- "       "
   s14 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0032 style=fg=-,bg=-,mod=- align=-
+L0033 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└──────────────────┴──────────────────────────────┴─────────────────────────────────────┘"
-L0033 style=fg=cyan,bg=-,mod=B align=-
-  s00 fg=-,bg=-,mod=- "A broken link (shows an error)"
 L0034 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0035 style=fg=-,bg=-,mod=- align=-
+L0035 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "A broken link (shows an error)"
 L0036 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
+L0037 style=fg=-,bg=-,mod=- align=-
+L0038 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=blue,bg=-,mod=U "\u{f0c1} missing"
 -- IMAGES (0) --
@@ -12221,7 +12243,7 @@ L0036 style=fg=-,bg=-,mod=- align=-
   a01 line=0005 slug="local-links-open-inside-konoma"
   a02 line=0013 slug="external-links-open-in-the-browser"
   a03 line=0020 slug="links-inside-a-table"
-  a04 line=0033 slug="a-broken-link-shows-an-error"
+  a04 line=0035 slug="a-broken-link-shows-an-error"
 -- ITEMS (15) --
   m00 line=0008 kind=Link{target="./code/hello.rs"}
   m01 line=0008 kind=Link{target="./code/config.toml"}
@@ -12231,16 +12253,16 @@ L0036 style=fg=-,bg=-,mod=- align=-
   m05 line=0016 kind=Link{target="https://ratatui.rs"}
   m06 line=0017 kind=Link{target="https://www.rust-lang.org"}
   m07 line=0018 kind=Link{target="https://github.com"}
-  m08 line=0027 kind=Link{target="./code/hello.rs"}
-  m09 line=0028 kind=Link{target="https://ratatui.rs"}
-  m10 line=0029 kind=Link{target="./japanese.txt"}
-  m11 line=0030 kind=Link{target="./markdown.md"}
-  m12 line=0030 kind=Link{target="./code"}
-  m13 line=0031 kind=Link{target="./README.md"}
-  m14 line=0036 kind=Link{target="./does-not-exist.md"}
+  m08 line=0028 kind=Link{target="./code/hello.rs"}
+  m09 line=0029 kind=Link{target="https://ratatui.rs"}
+  m10 line=0030 kind=Link{target="./japanese.txt"}
+  m11 line=0031 kind=Link{target="./markdown.md"}
+  m12 line=0031 kind=Link{target="./code"}
+  m13 line=0032 kind=Link{target="./README.md"}
+  m14 line=0038 kind=Link{target="./does-not-exist.md"}
 
 === samples: markdown.ja.md ===
--- LINES (147) --
+-- LINES (157) --
 L0000 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Markdown プレビューのデモ"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -12339,8 +12361,9 @@ L0027 style=fg=cyan,bg=-,mod=B align=-
 L0028 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0029 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┬──────────────────────────┬────────────────┐"
 L0030 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┬──────────────────────────┬────────────────┐"
+L0031 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "種別"
@@ -12354,9 +12377,9 @@ L0030 style=fg=-,bg=-,mod=- align=-
   s10 fg=cyan,bg=-,mod=B "依存"
   s11 fg=cyan,bg=-,mod=B "           "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0031 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├──────┼──────────────────────────┼────────────────┤"
 L0032 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├──────┼──────────────────────────┼────────────────┤"
+L0033 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "md"
@@ -12370,7 +12393,7 @@ L0032 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "pulldown-cmark"
   s11 fg=-,bg=-,mod=- " "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0033 style=fg=-,bg=-,mod=- align=-
+L0034 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "図"
@@ -12384,21 +12407,23 @@ L0033 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "fontdb"
   s11 fg=-,bg=-,mod=- "         "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0034 style=fg=-,bg=-,mod=- align=-
+L0035 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┴──────────────────────────┴────────────────┘"
-L0035 style=fg=cyan,bg=-,mod=BI align=-
-  s00 fg=-,bg=-,mod=- "表のインライン装飾・整列・エスケープ"
 L0036 style=fg=-,bg=-,mod=- align=-
-L0037 style=fg=-,bg=-,mod=- align=-
+L0037 style=fg=cyan,bg=-,mod=BI align=-
+  s00 fg=-,bg=-,mod=- "表のインライン装飾・整列・エスケープ"
+L0038 style=fg=-,bg=-,mod=- align=-
+L0039 style=fg=-,bg=-,mod=- align=-
   s00 fg=white,bg=rgb(43,48,59),mod=- ":---:"
   s01 fg=-,bg=-,mod=- "=中央 / "
   s02 fg=white,bg=rgb(43,48,59),mod=- "---:"
   s03 fg=-,bg=-,mod=- "=右寄せ、セル内の装飾記法、"
   s04 fg=white,bg=rgb(43,48,59),mod=- "\\|"
   s05 fg=-,bg=-,mod=- "=リテラルの縦棒。"
-L0038 style=fg=-,bg=-,mod=- align=-
+L0040 style=fg=-,bg=-,mod=- align=-
+L0041 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────┬───────┬────────┐"
-L0039 style=fg=-,bg=-,mod=- align=-
+L0042 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "左寄せ"
@@ -12412,9 +12437,9 @@ L0039 style=fg=-,bg=-,mod=- align=-
   s10 fg=cyan,bg=-,mod=B "右寄せ"
   s11 fg=cyan,bg=-,mod=B " "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0040 style=fg=-,bg=-,mod=- align=-
+L0043 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "├────────┼───────┼────────┤"
-L0041 style=fg=-,bg=-,mod=- align=-
+L0044 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=B "太字"
@@ -12428,7 +12453,7 @@ L0041 style=fg=-,bg=-,mod=- align=-
   s10 fg=white,bg=-,mod=- "code"
   s11 fg=-,bg=-,mod=- " "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0042 style=fg=-,bg=-,mod=- align=-
+L0045 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=X "打消し"
@@ -12442,12 +12467,13 @@ L0042 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "123"
   s11 fg=-,bg=-,mod=- " "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0043 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┴───────┴────────┘"
-L0044 style=fg=cyan,bg=-,mod=BI align=-
-  s00 fg=-,bg=-,mod=- "HTML の表"
-L0045 style=fg=-,bg=-,mod=- align=-
 L0046 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┴───────┴────────┘"
+L0047 style=fg=-,bg=-,mod=- align=-
+L0048 style=fg=cyan,bg=-,mod=BI align=-
+  s00 fg=-,bg=-,mod=- "HTML の表"
+L0049 style=fg=-,bg=-,mod=- align=-
+L0050 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "HTML で書かれた "
   s01 fg=white,bg=rgb(43,48,59),mod=- "<table>"
   s02 fg=-,bg=-,mod=- " も本物の表として描かれる。README がこの形を使うのは、GFM の "
@@ -12469,9 +12495,10 @@ L0046 style=fg=-,bg=-,mod=- align=-
   s18 fg=-,bg=-,mod=- "/"
   s19 fg=white,bg=rgb(43,48,59),mod=- "<a>"
   s20 fg=-,bg=-,mod=- " も装飾される。"
-L0047 style=fg=-,bg=-,mod=- align=-
+L0051 style=fg=-,bg=-,mod=- align=-
+L0052 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌───────────────────┬────────────────────┐"
-L0048 style=fg=-,bg=-,mod=- align=-
+L0053 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "工程"
@@ -12481,9 +12508,9 @@ L0048 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "出力"
   s07 fg=cyan,bg=-,mod=B "        "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0049 style=fg=-,bg=-,mod=- align=-
+L0054 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "├───────────────────┼────────────────────┤"
-L0050 style=fg=-,bg=-,mod=- align=-
+L0055 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=B "ブロックモデル"
@@ -12493,7 +12520,7 @@ L0050 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "装飾つきスパン"
   s07 fg=-,bg=-,mod=- "   "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0051 style=fg=-,bg=-,mod=- align=-
+L0056 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=white,bg=-,mod=- "konoma（mermaid）"
@@ -12503,9 +12530,10 @@ L0051 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "SVG を実ピクセルに"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0052 style=fg=-,bg=-,mod=- align=-
+L0057 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───────────────────┴────────────────────┘"
-L0053 style=fg=-,bg=-,mod=- align=-
+L0058 style=fg=-,bg=-,mod=- align=-
+L0059 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "未対応: "
   s01 fg=white,bg=rgb(43,48,59),mod=- "colspan"
   s02 fg=-,bg=-,mod=- "/"
@@ -12519,19 +12547,20 @@ L0053 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- " や"
   s11 fg=-,bg=-,mod=- " "
   s12 fg=-,bg=-,mod=- "地の文）は表にせず素の HTML のまま描く＝その文字が失われないようにするため。"
-L0054 style=fg=-,bg=-,mod=- align=-
-L0055 style=fg=cyan,bg=-,mod=BI align=-
+L0060 style=fg=-,bg=-,mod=- align=-
+L0061 style=fg=cyan,bg=-,mod=BI align=-
   s00 fg=-,bg=-,mod=- "表のセルの中の画像"
-L0056 style=fg=-,bg=-,mod=- align=-
-L0057 style=fg=-,bg=-,mod=- align=-
+L0062 style=fg=-,bg=-,mod=- align=-
+L0063 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "セルは画像を持てる。"
   s01 fg=white,bg=rgb(43,48,59),mod=- "🖼 alt"
   s02 fg=-,bg=-,mod=- " のラベルではなく"
   s03 fg=-,bg=-,mod=B "実ピクセル"
   s04 fg=-,bg=-,mod=- "で描かれる。GFM の表では:"
-L0058 style=fg=-,bg=-,mod=- align=-
+L0064 style=fg=-,bg=-,mod=- align=-
+L0065 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────┬────────────────────┐"
-L0059 style=fg=-,bg=-,mod=- align=-
+L0066 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "形式"
@@ -12541,9 +12570,9 @@ L0059 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "サンプル"
   s07 fg=cyan,bg=-,mod=B "           "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0060 style=fg=-,bg=-,mod=- align=-
+L0067 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "├──────┼────────────────────┤"
-L0061 style=fg=-,bg=-,mod=- align=-
+L0068 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "JPEG"
@@ -12553,7 +12582,7 @@ L0061 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=D "🖼 ラスタのサンプル"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0062 style=fg=-,bg=-,mod=- align=-
+L0069 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "SVG"
@@ -12563,13 +12592,15 @@ L0062 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=D "🖼 ベクタのサンプル"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0063 style=fg=-,bg=-,mod=- align=-
+L0070 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└──────┴────────────────────┘"
-L0064 style=fg=-,bg=-,mod=- align=-
+L0071 style=fg=-,bg=-,mod=- align=-
+L0072 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "HTML の表では、README 自身が使っているスクリーンショットのグリッド — 上に画像、下にキャプションの行:"
-L0065 style=fg=-,bg=-,mod=- align=-
+L0073 style=fg=-,bg=-,mod=- align=-
+L0074 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────────────────────────────┬────────────────────────────┐"
-L0066 style=fg=-,bg=-,mod=- align=-
+L0075 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=D "🖼 ラスタのサンプル"
@@ -12579,7 +12610,7 @@ L0066 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=D "🖼 ベクタのサンプル"
   s07 fg=-,bg=-,mod=- "         "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0067 style=fg=-,bg=-,mod=- align=-
+L0076 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=B "JPEG"
@@ -12591,30 +12622,31 @@ L0067 style=fg=-,bg=-,mod=- align=-
   s08 fg=-,bg=-,mod=- " — resvg でラスタライズ"
   s09 fg=-,bg=-,mod=- " "
   s10 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0068 style=fg=-,bg=-,mod=- align=-
+L0077 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────────────────────────────┴────────────────────────────┘"
-L0069 style=fg=-,bg=-,mod=- align=-
+L0078 style=fg=-,bg=-,mod=- align=-
+L0079 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "行の高さはその行で一番背の高い画像に合わせて伸びる。画像とテキストが同居するセルは、画像が上・"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "テキストが下に積まれる。描けないもの（ファイルが無い・取得中・画像プロトコルの無い端末）は"
   s03 fg=-,bg=-,mod=- " "
   s04 fg=white,bg=rgb(43,48,59),mod=- "🖼 alt"
   s05 fg=-,bg=-,mod=- " のラベルのまま。"
-L0070 style=fg=-,bg=-,mod=- align=-
-L0071 style=fg=cyan,bg=-,mod=B align=-
+L0080 style=fg=-,bg=-,mod=- align=-
+L0081 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "水平線とタスクリスト"
-L0072 style=fg=-,bg=-,mod=- align=-
+L0082 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0073 style=fg=-,bg=-,mod=- align=-
-L0074 style=fg=-,bg=-,mod=- align=-
+L0083 style=fg=-,bg=-,mod=- align=-
+L0084 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "水平線（"
   s01 fg=white,bg=rgb(43,48,59),mod=- "---"
   s02 fg=-,bg=-,mod=- "）は全幅の罫線になる:"
-L0075 style=fg=-,bg=-,mod=- align=-
-L0076 style=fg=-,bg=-,mod=- align=-
+L0085 style=fg=-,bg=-,mod=- align=-
+L0086 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0077 style=fg=-,bg=-,mod=- align=-
-L0078 style=fg=-,bg=-,mod=- align=-
+L0087 style=fg=-,bg=-,mod=- align=-
+L0088 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "未完了タスク（Nerd Font のチェックボックスアイコンで表示。"
@@ -12622,7 +12654,7 @@ L0078 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- " なら "
   s05 fg=white,bg=rgb(43,48,59),mod=- "[ ]"
   s06 fg=-,bg=-,mod=- "）"
-L0079 style=fg=-,bg=-,mod=- align=-
+L0089 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f046} "
   s02 fg=-,bg=-,mod=- "完了タスク（同・チェック済みアイコン。"
@@ -12630,8 +12662,8 @@ L0079 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- " なら "
   s05 fg=white,bg=rgb(43,48,59),mod=- "[x]"
   s06 fg=-,bg=-,mod=- "）"
-L0080 style=fg=-,bg=-,mod=- align=-
-L0081 style=fg=-,bg=-,mod=- align=-
+L0090 style=fg=-,bg=-,mod=- align=-
+L0091 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "チェックボックスは操作できる: "
   s01 fg=white,bg=rgb(43,48,59),mod=- "Tab"
   s02 fg=-,bg=-,mod=- " でフォーカス（リンクと同じ巡回）→ "
@@ -12649,13 +12681,13 @@ L0081 style=fg=-,bg=-,mod=- align=-
   s14 fg=-,bg=-,mod=- "カスタム状態の巡回もできる（"
   s15 fg=white,bg=rgb(43,48,59),mod=- "[/]"
   s16 fg=-,bg=-,mod=- " のままブラケット表示）。"
-L0082 style=fg=-,bg=-,mod=- align=-
-L0083 style=fg=cyan,bg=-,mod=B align=-
+L0092 style=fg=-,bg=-,mod=- align=-
+L0093 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "HTML ブロック"
-L0084 style=fg=-,bg=-,mod=- align=-
+L0094 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0085 style=fg=-,bg=-,mod=- align=-
-L0086 style=fg=-,bg=-,mod=- align=-
+L0095 style=fg=-,bg=-,mod=- align=-
+L0096 style=fg=-,bg=-,mod=- align=-
   s00 fg=white,bg=rgb(43,48,59),mod=- "<details>"
   s01 fg=-,bg=-,mod=- " は折りたたみセクションになる: "
   s02 fg=white,bg=rgb(43,48,59),mod=- "▸"
@@ -12676,60 +12708,60 @@ L0086 style=fg=-,bg=-,mod=- align=-
   s17 fg=-,bg=-,mod=- "（"
   s18 fg=white,bg=rgb(43,48,59),mod=- "[ui] md_details"
   s19 fg=-,bg=-,mod=- " で常時開閉も選べる）。"
-L0087 style=fg=-,bg=-,mod=- align=-
+L0097 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=BI "▸ "
   s01 fg=-,bg=-,mod=B "閉じた details（クリックで開く相当・Tab→Space で開く）"
-L0088 style=fg=-,bg=-,mod=- align=-
+L0098 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=BI "▾ "
   s01 fg=-,bg=-,mod=B "open 属性つき details（最初から開いている）"
-L0089 style=fg=-,bg=-,mod=- align=-
+L0099 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "▏ "
   s01 fg=white,bg=rgb(43,48,59),mod=- "<details open>"
   s02 fg=-,bg=-,mod=- " は既定（"
   s03 fg=white,bg=rgb(43,48,59),mod=- "md_details = \"auto\""
   s04 fg=-,bg=-,mod=- "）で最初から展開表示される。"
-L0090 style=fg=cyan,bg=-,mod=B align=-
+L0100 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "アラート（GitHub 形式）"
-L0091 style=fg=-,bg=-,mod=- align=-
+L0101 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0092 style=fg=-,bg=-,mod=- align=-
-L0093 style=fg=-,bg=-,mod=- align=-
+L0102 style=fg=-,bg=-,mod=- align=-
+L0103 style=fg=-,bg=-,mod=- align=-
   s00 fg=white,bg=rgb(43,48,59),mod=- "> [!TYPE]"
   s01 fg=-,bg=-,mod=- " の引用は、色付きコールアウト箱（アイコン＋ラベル）で描かれる（"
   s02 fg=white,bg=rgb(43,48,59),mod=- "[ui] md_alerts"
   s03 fg=-,bg=-,mod=- "）。"
-L0094 style=fg=-,bg=-,mod=- align=-
+L0104 style=fg=-,bg=-,mod=- align=-
   s00 fg=blue,bg=-,mod=- "▌ "
   s01 fg=blue,bg=-,mod=- "\u{f05a} "
   s02 fg=blue,bg=-,mod=B "Note"
-L0095 style=fg=-,bg=-,mod=- align=-
+L0105 style=fg=-,bg=-,mod=- align=-
   s00 fg=blue,bg=-,mod=- "▌ "
   s01 fg=-,bg=-,mod=- "補足情報。裸 URL も自動リンク化される: "
   s02 fg=blue,bg=-,mod=U "https://github.com/LESIM-Co-Ltd/konoma"
-L0096 style=fg=-,bg=-,mod=- align=-
+L0106 style=fg=-,bg=-,mod=- align=-
   s00 fg=green,bg=-,mod=- "▌ "
   s01 fg=green,bg=-,mod=- "\u{f0eb} "
   s02 fg=green,bg=-,mod=B "Tip — 独自タイトル"
-L0097 style=fg=-,bg=-,mod=- align=-
+L0107 style=fg=-,bg=-,mod=- align=-
   s00 fg=green,bg=-,mod=- "▌ "
   s01 fg=-,bg=-,mod=- "ヒント。本文の中では "
   s02 fg=-,bg=-,mod=B "装飾"
   s03 fg=-,bg=-,mod=- " も "
   s04 fg=blue,bg=-,mod=U "\u{f0c1} リンク"
   s05 fg=-,bg=-,mod=- " も普通に効く。"
-L0098 style=fg=-,bg=-,mod=- align=-
+L0108 style=fg=-,bg=-,mod=- align=-
   s00 fg=yellow,bg=-,mod=- "▌ "
   s01 fg=yellow,bg=-,mod=- "\u{f071} "
   s02 fg=yellow,bg=-,mod=B "Warning"
-L0099 style=fg=-,bg=-,mod=- align=-
+L0109 style=fg=-,bg=-,mod=- align=-
   s00 fg=yellow,bg=-,mod=- "▌ "
   s01 fg=-,bg=-,mod=- "5種類 — NOTE / TIP / IMPORTANT / WARNING / CAUTION（別名も一部対応）。"
-L0100 style=fg=cyan,bg=-,mod=B align=-
+L0110 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "自動リンクと絵文字"
-L0101 style=fg=-,bg=-,mod=- align=-
+L0111 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0102 style=fg=-,bg=-,mod=- align=-
-L0103 style=fg=-,bg=-,mod=- align=-
+L0112 style=fg=-,bg=-,mod=- align=-
+L0113 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "裸の URL・メールは自動でリンクになる（"
   s01 fg=white,bg=rgb(43,48,59),mod=- "[ui] md_autolink"
   s02 fg=-,bg=-,mod=- "）: "
@@ -12747,25 +12779,25 @@ L0103 style=fg=-,bg=-,mod=- align=-
   s14 fg=-,bg=-,mod=- "どちらも "
   s15 fg=white,bg=rgb(43,48,59),mod=- "インラインコード"
   s16 fg=-,bg=-,mod=- " や コードブロック内ではそのまま（GitHub と同じ）。"
-L0104 style=fg=-,bg=-,mod=- align=-
-L0105 style=fg=cyan,bg=-,mod=B align=-
+L0114 style=fg=-,bg=-,mod=- align=-
+L0115 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "ページ内リンク・脚注・インライン HTML"
-L0106 style=fg=-,bg=-,mod=- align=-
+L0116 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0107 style=fg=-,bg=-,mod=- align=-
-L0108 style=fg=-,bg=-,mod=- align=-
+L0117 style=fg=-,bg=-,mod=- align=-
+L0118 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "見出しへのリンクはその位置までスクロールする（既定 ON）: "
   s01 fg=blue,bg=-,mod=U "\u{f0c1} Mermaid の節へ"
   s02 fg=-,bg=-,mod=- "。"
   s03 fg=-,bg=-,mod=- " "
   s04 fg=-,bg=-,mod=- "（GitHub と同じ slug 規則。CJK 見出しもアンカーになる。）"
-L0109 style=fg=-,bg=-,mod=- align=-
-L0110 style=fg=-,bg=-,mod=- align=-
+L0119 style=fg=-,bg=-,mod=- align=-
+L0120 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "脚注（"
   s01 fg=white,bg=rgb(43,48,59),mod=- "[ui] md_footnotes"
   s02 fg=-,bg=-,mod=- "）: 参照は上付き番号になり¹、定義は末尾の脚注節にまとまる。"
-L0111 style=fg=-,bg=-,mod=- align=-
-L0112 style=fg=-,bg=-,mod=- align=-
+L0121 style=fg=-,bg=-,mod=- align=-
+L0122 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "インライン HTML（"
   s01 fg=white,bg=rgb(43,48,59),mod=- "[ui] md_inline_html"
   s02 fg=-,bg=-,mod=- "）: "
@@ -12777,15 +12809,15 @@ L0112 style=fg=-,bg=-,mod=- align=-
   s08 fg=-,bg=-,mod=- "x²、"
   s09 fg=-,bg=-,mod=X "非推奨"
   s10 fg=-,bg=-,mod=- " は打消し線。"
-L0113 style=fg=-,bg=-,mod=- align=-
+L0123 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "で改行も効く。"
-L0114 style=fg=-,bg=-,mod=- align=-
-L0115 style=fg=cyan,bg=-,mod=B align=-
+L0124 style=fg=-,bg=-,mod=- align=-
+L0125 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "画像（インライン表示）"
-L0116 style=fg=-,bg=-,mod=- align=-
+L0126 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0117 style=fg=-,bg=-,mod=- align=-
-L0118 style=fg=-,bg=-,mod=- align=-
+L0127 style=fg=-,bg=-,mod=- align=-
+L0128 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "行単位（画像だけの行）の "
   s01 fg=white,bg=rgb(43,48,59),mod=- "![alt](path)"
   s02 fg=-,bg=-,mod=- " は、文書の流れの中に"
@@ -12797,41 +12829,41 @@ L0118 style=fg=-,bg=-,mod=- align=-
   s08 fg=-,bg=-,mod=- "（"
   s09 fg=white,bg=rgb(43,48,59),mod=- "http(s)://"
   s10 fg=-,bg=-,mod=- "）画像も表示でき、リモートは裏で取得して届くまで「loading」行を出す。"
-L0119 style=fg=-,bg=-,mod=D align=-
+L0129 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 konoma のサンプル画像 — sample.png"
-L0120 style=fg=-,bg=-,mod=- align=-
+L0130 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "リモート画像・SVG バッジ・取得失敗時のテキスト降格まで含む網羅デモは"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=blue,bg=-,mod=U "\u{f0c1} images.md"
   s03 fg=-,bg=-,mod=- " にある。"
-L0121 style=fg=-,bg=-,mod=- align=-
-L0122 style=fg=cyan,bg=-,mod=B align=-
+L0131 style=fg=-,bg=-,mod=- align=-
+L0132 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Mermaid（md 内フェンス→図に合成）"
-L0123 style=fg=-,bg=-,mod=- align=-
+L0133 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0124 style=fg=-,bg=-,mod=- align=-
+L0134 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "                                        "
   s01 fg=cyan,bg=-,mod=I "◇ mermaid — Enter: full screen"
-L0125 style=fg=-,bg=-,mod=- align=-
-L0126 style=fg=-,bg=-,mod=- align=-
-L0127 style=fg=-,bg=-,mod=- align=-
-L0128 style=fg=-,bg=-,mod=- align=-
-L0129 style=fg=-,bg=-,mod=- align=-
-L0130 style=fg=-,bg=-,mod=- align=-
-L0131 style=fg=cyan,bg=-,mod=B align=-
-  s00 fg=-,bg=-,mod=- "数式（LaTeX → 画像）"
-L0132 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0133 style=fg=-,bg=-,mod=- align=-
-L0134 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "インライン数式"
 L0135 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=D "$E = mc^2$"
 L0136 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "や"
 L0137 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=D "$H_2O$"
 L0138 style=fg=-,bg=-,mod=- align=-
+L0139 style=fg=-,bg=-,mod=- align=-
+L0140 style=fg=-,bg=-,mod=- align=-
+L0141 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "数式（LaTeX → 画像）"
+L0142 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
+L0143 style=fg=-,bg=-,mod=- align=-
+L0144 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "インライン数式"
+L0145 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$E = mc^2$"
+L0146 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "や"
+L0147 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$H_2O$"
+L0148 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "は、通常の Markdown と同じく"
   s01 fg=-,bg=-,mod=B "文中"
   s02 fg=-,bg=-,mod=- "に画像で描かれる"
@@ -12841,9 +12873,9 @@ L0138 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "）。幅が広すぎる式は利用可能幅まで縮めて文中に置く（持ち上がらない）。"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=-,bg=-,mod=- "ディスプレイ数式は中央寄せ:"
-L0139 style=fg=-,bg=-,mod=- align=-
+L0149 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=D "$$ \\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi} $$"
-L0140 style=fg=-,bg=-,mod=- align=-
+L0150 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "通貨（"
   s01 fg=white,bg=rgb(43,48,59),mod=- "$5"
   s02 fg=-,bg=-,mod=- " や "
@@ -12858,18 +12890,18 @@ L0140 style=fg=-,bg=-,mod=- align=-
   s11 fg=-,bg=-,mod=- " "
   s12 fg=white,bg=rgb(43,48,59),mod=- "math = \"text\""
   s13 fg=-,bg=-,mod=- " にすると生の LaTeX テキストのまま表示する。"
-L0141 style=fg=-,bg=-,mod=- align=-
-L0142 style=fg=-,bg=-,mod=- align=-
+L0151 style=fg=-,bg=-,mod=- align=-
+L0152 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "終わり。長い段落の折返し確認用にダミーテキストを続けます。あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん。"
-L0143 style=fg=-,bg=-,mod=- align=-
-L0144 style=fg=-,bg=-,mod=- align=-
+L0153 style=fg=-,bg=-,mod=- align=-
+L0154 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0145 style=fg=-,bg=-,mod=- align=-
-L0146 style=fg=-,bg=-,mod=- align=-
+L0155 style=fg=-,bg=-,mod=- align=-
+L0156 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "これが脚注の定義。文書のどこに書いてもよい。"
 -- IMAGES (1) --
-  i00 line=0125 col=040 cols=020 rows=005 fence_ord=Some(0) alt="mermaid" url="mermaid-fence://7be1ad46b06c6205"
+  i00 line=0135 col=040 cols=020 rows=005 fence_ord=Some(0) alt="mermaid" url="mermaid-fence://7be1ad46b06c6205"
 -- CODE_BLOCKS (1) --
   c00 "fn main() {\n    let msg = \"syntect ハイライトが効くはず\";\n    println!(\"{msg}\");\n}"
 -- TASKS (2) --
@@ -12883,35 +12915,35 @@ L0146 style=fg=-,bg=-,mod=- align=-
   a01 line=0005 slug="リスト"
   a02 line=0015 slug="引用とコード"
   a03 line=0027 slug="表"
-  a04 line=0035 slug="表のインライン装飾整列エスケープ"
-  a05 line=0044 slug="html-の表"
-  a06 line=0055 slug="表のセルの中の画像"
-  a07 line=0071 slug="水平線とタスクリスト"
-  a08 line=0083 slug="html-ブロック"
-  a09 line=0090 slug="アラートgithub-形式"
-  a10 line=0100 slug="自動リンクと絵文字"
-  a11 line=0105 slug="ページ内リンク脚注インライン-html"
-  a12 line=0115 slug="画像インライン表示"
-  a13 line=0122 slug="mermaidmd-内フェンス図に合成"
-  a14 line=0131 slug="数式latex--画像"
+  a04 line=0037 slug="表のインライン装飾整列エスケープ"
+  a05 line=0048 slug="html-の表"
+  a06 line=0061 slug="表のセルの中の画像"
+  a07 line=0081 slug="水平線とタスクリスト"
+  a08 line=0093 slug="html-ブロック"
+  a09 line=0100 slug="アラートgithub-形式"
+  a10 line=0110 slug="自動リンクと絵文字"
+  a11 line=0115 slug="ページ内リンク脚注インライン-html"
+  a12 line=0125 slug="画像インライン表示"
+  a13 line=0132 slug="mermaidmd-内フェンス図に合成"
+  a14 line=0141 slug="数式latex--画像"
 -- ITEMS (14) --
   m00 line=0003 kind=Link{target="https://example.com"}
   m01 line=0020 kind=CodeBlock{body=Some("fn main() {\n    let msg = \"syntect ハイライトが効くはず\";\n    println!(\"{msg}\");\n}")}
-  m02 line=0078 kind=Task{state=' ',state_at=Some(3056)}
-  m03 line=0079 kind=Task{state='x',state_at=Some(3179)}
-  m04 line=0087 kind=Details{ordinal=0}
-  m05 line=0088 kind=Details{ordinal=1}
-  m06 line=0095 kind=Link{target="https://github.com/LESIM-Co-Ltd/konoma"}
-  m07 line=0097 kind=Link{target="images.md"}
-  m08 line=0103 kind=Link{target="https://example.com"}
-  m09 line=0103 kind=Link{target="http://www.rust-lang.org"}
-  m10 line=0103 kind=Link{target="mailto:foo@example.com"}
-  m11 line=0108 kind=Link{target="#mermaidmd-内フェンス図に合成"}
-  m12 line=0120 kind=Link{target="images.md"}
-  m13 line=0124 kind=MermaidFence{ordinal=0}
+  m02 line=0088 kind=Task{state=' ',state_at=Some(3056)}
+  m03 line=0089 kind=Task{state='x',state_at=Some(3179)}
+  m04 line=0097 kind=Details{ordinal=0}
+  m05 line=0098 kind=Details{ordinal=1}
+  m06 line=0105 kind=Link{target="https://github.com/LESIM-Co-Ltd/konoma"}
+  m07 line=0107 kind=Link{target="images.md"}
+  m08 line=0113 kind=Link{target="https://example.com"}
+  m09 line=0113 kind=Link{target="http://www.rust-lang.org"}
+  m10 line=0113 kind=Link{target="mailto:foo@example.com"}
+  m11 line=0118 kind=Link{target="#mermaidmd-内フェンス図に合成"}
+  m12 line=0130 kind=Link{target="images.md"}
+  m13 line=0134 kind=MermaidFence{ordinal=0}
 
 === samples: markdown.md ===
--- LINES (147) --
+-- LINES (157) --
 L0000 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Markdown preview demo"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -13010,8 +13042,9 @@ L0027 style=fg=cyan,bg=-,mod=B align=-
 L0028 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
 L0029 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────┬───────────────────────┬────────────────┐"
 L0030 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "┌─────────┬───────────────────────┬────────────────┐"
+L0031 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "Kind"
@@ -13025,9 +13058,9 @@ L0030 style=fg=-,bg=-,mod=- align=-
   s10 fg=cyan,bg=-,mod=B "Depends on"
   s11 fg=cyan,bg=-,mod=B "     "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0031 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "├─────────┼───────────────────────┼────────────────┤"
 L0032 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "├─────────┼───────────────────────┼────────────────┤"
+L0033 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "md"
@@ -13041,7 +13074,7 @@ L0032 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "pulldown-cmark"
   s11 fg=-,bg=-,mod=- " "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0033 style=fg=-,bg=-,mod=- align=-
+L0034 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "diagram"
@@ -13055,21 +13088,23 @@ L0033 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "fontdb"
   s11 fg=-,bg=-,mod=- "         "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0034 style=fg=-,bg=-,mod=- align=-
+L0035 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└─────────┴───────────────────────┴────────────────┘"
-L0035 style=fg=cyan,bg=-,mod=BI align=-
-  s00 fg=-,bg=-,mod=- "Inline styling, alignment, and escapes in tables"
 L0036 style=fg=-,bg=-,mod=- align=-
-L0037 style=fg=-,bg=-,mod=- align=-
+L0037 style=fg=cyan,bg=-,mod=BI align=-
+  s00 fg=-,bg=-,mod=- "Inline styling, alignment, and escapes in tables"
+L0038 style=fg=-,bg=-,mod=- align=-
+L0039 style=fg=-,bg=-,mod=- align=-
   s00 fg=white,bg=rgb(43,48,59),mod=- ":---:"
   s01 fg=-,bg=-,mod=- " = center / "
   s02 fg=white,bg=rgb(43,48,59),mod=- "---:"
   s03 fg=-,bg=-,mod=- " = right-align, inline styling inside cells, "
   s04 fg=white,bg=rgb(43,48,59),mod=- "\\|"
   s05 fg=-,bg=-,mod=- " = a literal pipe."
-L0038 style=fg=-,bg=-,mod=- align=-
+L0040 style=fg=-,bg=-,mod=- align=-
+L0041 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────┬────────┬───────┐"
-L0039 style=fg=-,bg=-,mod=- align=-
+L0042 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "Left"
@@ -13083,9 +13118,9 @@ L0039 style=fg=-,bg=-,mod=- align=-
   s10 fg=cyan,bg=-,mod=B "Right"
   s11 fg=cyan,bg=-,mod=B " "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0040 style=fg=-,bg=-,mod=- align=-
+L0043 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "├────────┼────────┼───────┤"
-L0041 style=fg=-,bg=-,mod=- align=-
+L0044 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=B "bold"
@@ -13099,7 +13134,7 @@ L0041 style=fg=-,bg=-,mod=- align=-
   s10 fg=white,bg=-,mod=- "code"
   s11 fg=-,bg=-,mod=- " "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0042 style=fg=-,bg=-,mod=- align=-
+L0045 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=X "strike"
@@ -13113,12 +13148,13 @@ L0042 style=fg=-,bg=-,mod=- align=-
   s10 fg=-,bg=-,mod=- "123"
   s11 fg=-,bg=-,mod=- " "
   s12 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0043 style=fg=-,bg=-,mod=- align=-
-  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┴────────┴───────┘"
-L0044 style=fg=cyan,bg=-,mod=BI align=-
-  s00 fg=-,bg=-,mod=- "HTML tables"
-L0045 style=fg=-,bg=-,mod=- align=-
 L0046 style=fg=-,bg=-,mod=- align=-
+  s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┴────────┴───────┘"
+L0047 style=fg=-,bg=-,mod=- align=-
+L0048 style=fg=cyan,bg=-,mod=BI align=-
+  s00 fg=-,bg=-,mod=- "HTML tables"
+L0049 style=fg=-,bg=-,mod=- align=-
+L0050 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "A "
   s01 fg=white,bg=rgb(43,48,59),mod=- "<table>"
   s02 fg=-,bg=-,mod=- " written as HTML is drawn as a real table too. READMEs reach for this form because a"
@@ -13142,9 +13178,10 @@ L0046 style=fg=-,bg=-,mod=- align=-
   s20 fg=-,bg=-,mod=- " inside a cell"
   s21 fg=-,bg=-,mod=- " "
   s22 fg=-,bg=-,mod=- "are styled."
-L0047 style=fg=-,bg=-,mod=- align=-
+L0051 style=fg=-,bg=-,mod=- align=-
+L0052 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────────────────┬───────────────┐"
-L0048 style=fg=-,bg=-,mod=- align=-
+L0053 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "Stage"
@@ -13154,9 +13191,9 @@ L0048 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "Output"
   s07 fg=cyan,bg=-,mod=B "     "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0049 style=fg=-,bg=-,mod=- align=-
+L0054 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "├──────────────────┼───────────────┤"
-L0050 style=fg=-,bg=-,mod=- align=-
+L0055 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=B "block model"
@@ -13166,7 +13203,7 @@ L0050 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "styled spans"
   s07 fg=-,bg=-,mod=- "  "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0051 style=fg=-,bg=-,mod=- align=-
+L0056 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=white,bg=-,mod=- "konoma (mermaid)"
@@ -13176,9 +13213,10 @@ L0051 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "SVG to pixels"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0052 style=fg=-,bg=-,mod=- align=-
+L0057 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└──────────────────┴───────────────┘"
-L0053 style=fg=-,bg=-,mod=- align=-
+L0058 style=fg=-,bg=-,mod=- align=-
+L0059 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Not modeled: "
   s01 fg=white,bg=rgb(43,48,59),mod=- "colspan"
   s02 fg=-,bg=-,mod=- "/"
@@ -13190,17 +13228,18 @@ L0053 style=fg=-,bg=-,mod=- align=-
   s08 fg=-,bg=-,mod=- "a "
   s09 fg=white,bg=rgb(43,48,59),mod=- "<caption>"
   s10 fg=-,bg=-,mod=- ", or a stray line -- is left as plain HTML instead, so that text is never lost."
-L0054 style=fg=-,bg=-,mod=- align=-
-L0055 style=fg=cyan,bg=-,mod=BI align=-
+L0060 style=fg=-,bg=-,mod=- align=-
+L0061 style=fg=cyan,bg=-,mod=BI align=-
   s00 fg=-,bg=-,mod=- "Images in table cells"
-L0056 style=fg=-,bg=-,mod=- align=-
-L0057 style=fg=-,bg=-,mod=- align=-
+L0062 style=fg=-,bg=-,mod=- align=-
+L0063 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "A cell can hold an image, drawn in real pixels rather than an "
   s01 fg=white,bg=rgb(43,48,59),mod=- "🖼 alt"
   s02 fg=-,bg=-,mod=- " label. In a GFM table:"
-L0058 style=fg=-,bg=-,mod=- align=-
+L0064 style=fg=-,bg=-,mod=- align=-
+L0065 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌────────┬───────────────────┐"
-L0059 style=fg=-,bg=-,mod=- align=-
+L0066 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=cyan,bg=-,mod=B " "
   s02 fg=cyan,bg=-,mod=B "Format"
@@ -13210,9 +13249,9 @@ L0059 style=fg=-,bg=-,mod=- align=-
   s06 fg=cyan,bg=-,mod=B "Sample"
   s07 fg=cyan,bg=-,mod=B "            "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0060 style=fg=-,bg=-,mod=- align=-
+L0067 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "├────────┼───────────────────┤"
-L0061 style=fg=-,bg=-,mod=- align=-
+L0068 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "JPEG"
@@ -13222,7 +13261,7 @@ L0061 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=D "🖼 a raster sample"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0062 style=fg=-,bg=-,mod=- align=-
+L0069 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "SVG"
@@ -13232,15 +13271,17 @@ L0062 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=D "🖼 a vector sample"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0063 style=fg=-,bg=-,mod=- align=-
+L0070 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└────────┴───────────────────┘"
-L0064 style=fg=-,bg=-,mod=- align=-
+L0071 style=fg=-,bg=-,mod=- align=-
+L0072 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "And in an HTML table — the screenshot grid the README itself is built from, pictures on top and"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "a caption row underneath:"
-L0065 style=fg=-,bg=-,mod=- align=-
+L0073 style=fg=-,bg=-,mod=- align=-
+L0074 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌──────────────────────────┬───────────────────────────┐"
-L0066 style=fg=-,bg=-,mod=- align=-
+L0075 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=D "🖼 a raster sample"
@@ -13250,7 +13291,7 @@ L0066 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=D "🖼 a vector sample"
   s07 fg=-,bg=-,mod=- "         "
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0067 style=fg=-,bg=-,mod=- align=-
+L0076 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "│"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=B "JPEG"
@@ -13262,9 +13303,10 @@ L0067 style=fg=-,bg=-,mod=- align=-
   s08 fg=-,bg=-,mod=- " — rasterized by resvg"
   s09 fg=-,bg=-,mod=- " "
   s10 fg=rgb(90,98,120),bg=-,mod=- "│"
-L0068 style=fg=-,bg=-,mod=- align=-
+L0077 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└──────────────────────────┴───────────────────────────┘"
-L0069 style=fg=-,bg=-,mod=- align=-
+L0078 style=fg=-,bg=-,mod=- align=-
+L0079 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "The row grows to fit the tallest image in it, and a cell holding both an image and text stacks"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=-,bg=-,mod=- "them, image first. Anything that cannot be drawn — a missing file, a fetch still in flight, a"
@@ -13272,21 +13314,21 @@ L0069 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- "terminal with no image protocol — keeps the "
   s05 fg=white,bg=rgb(43,48,59),mod=- "🖼 alt"
   s06 fg=-,bg=-,mod=- " label."
-L0070 style=fg=-,bg=-,mod=- align=-
-L0071 style=fg=cyan,bg=-,mod=B align=-
+L0080 style=fg=-,bg=-,mod=- align=-
+L0081 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Horizontal rule and task list"
-L0072 style=fg=-,bg=-,mod=- align=-
+L0082 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0073 style=fg=-,bg=-,mod=- align=-
-L0074 style=fg=-,bg=-,mod=- align=-
+L0083 style=fg=-,bg=-,mod=- align=-
+L0084 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "A horizontal rule ("
   s01 fg=white,bg=rgb(43,48,59),mod=- "---"
   s02 fg=-,bg=-,mod=- ") becomes a full-width line:"
-L0075 style=fg=-,bg=-,mod=- align=-
-L0076 style=fg=-,bg=-,mod=- align=-
+L0085 style=fg=-,bg=-,mod=- align=-
+L0086 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0077 style=fg=-,bg=-,mod=- align=-
-L0078 style=fg=-,bg=-,mod=- align=-
+L0087 style=fg=-,bg=-,mod=- align=-
+L0088 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "An open task (rendered with the Nerd Font checkbox icon; "
@@ -13294,7 +13336,7 @@ L0078 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- " when "
   s05 fg=white,bg=rgb(43,48,59),mod=- "ui.icons = false"
   s06 fg=-,bg=-,mod=- ")"
-L0079 style=fg=-,bg=-,mod=- align=-
+L0089 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f046} "
   s02 fg=-,bg=-,mod=- "A done task (checked icon; "
@@ -13302,8 +13344,8 @@ L0079 style=fg=-,bg=-,mod=- align=-
   s04 fg=-,bg=-,mod=- " when "
   s05 fg=white,bg=rgb(43,48,59),mod=- "ui.icons = false"
   s06 fg=-,bg=-,mod=- ")"
-L0080 style=fg=-,bg=-,mod=- align=-
-L0081 style=fg=-,bg=-,mod=- align=-
+L0090 style=fg=-,bg=-,mod=- align=-
+L0091 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Checkboxes are interactive: "
   s01 fg=white,bg=rgb(43,48,59),mod=- "Tab"
   s02 fg=-,bg=-,mod=- " to focus (same cycle as links), then "
@@ -13319,13 +13361,13 @@ L0081 style=fg=-,bg=-,mod=- align=-
   s12 fg=-,bg=-,mod=- " (shown as "
   s13 fg=white,bg=rgb(43,48,59),mod=- "[/]"
   s14 fg=-,bg=-,mod=- " in brackets)."
-L0082 style=fg=-,bg=-,mod=- align=-
-L0083 style=fg=cyan,bg=-,mod=B align=-
+L0092 style=fg=-,bg=-,mod=- align=-
+L0093 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "HTML blocks"
-L0084 style=fg=-,bg=-,mod=- align=-
+L0094 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0085 style=fg=-,bg=-,mod=- align=-
-L0086 style=fg=-,bg=-,mod=- align=-
+L0095 style=fg=-,bg=-,mod=- align=-
+L0096 style=fg=-,bg=-,mod=- align=-
   s00 fg=white,bg=rgb(43,48,59),mod=- "<details>"
   s01 fg=-,bg=-,mod=- " becomes a collapsible section with a "
   s02 fg=white,bg=rgb(43,48,59),mod=- "▸"
@@ -13346,61 +13388,61 @@ L0086 style=fg=-,bg=-,mod=- align=-
   s17 fg=-,bg=-,mod=- "GitHub ("
   s18 fg=white,bg=rgb(43,48,59),mod=- "[ui] md_details"
   s19 fg=-,bg=-,mod=- " can force it always open/closed)."
-L0087 style=fg=-,bg=-,mod=- align=-
+L0097 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=BI "▸ "
   s01 fg=-,bg=-,mod=B "Closed details (like \"click to expand\" — open with Tab→Space)"
-L0088 style=fg=-,bg=-,mod=- align=-
+L0098 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=BI "▾ "
   s01 fg=-,bg=-,mod=B "Details with the open attribute (expanded from the start)"
-L0089 style=fg=-,bg=-,mod=- align=-
+L0099 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "▏ "
   s01 fg=white,bg=rgb(43,48,59),mod=- "<details open>"
   s02 fg=-,bg=-,mod=- " starts expanded by default ("
   s03 fg=white,bg=rgb(43,48,59),mod=- "md_details = \"auto\""
   s04 fg=-,bg=-,mod=- ")."
-L0090 style=fg=cyan,bg=-,mod=B align=-
+L0100 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Alerts (GitHub-style)"
-L0091 style=fg=-,bg=-,mod=- align=-
+L0101 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0092 style=fg=-,bg=-,mod=- align=-
-L0093 style=fg=-,bg=-,mod=- align=-
+L0102 style=fg=-,bg=-,mod=- align=-
+L0103 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "A "
   s01 fg=white,bg=rgb(43,48,59),mod=- "> [!TYPE]"
   s02 fg=-,bg=-,mod=- " blockquote renders as a colored callout box (icon + label) ("
   s03 fg=white,bg=rgb(43,48,59),mod=- "[ui] md_alerts"
   s04 fg=-,bg=-,mod=- ")."
-L0094 style=fg=-,bg=-,mod=- align=-
+L0104 style=fg=-,bg=-,mod=- align=-
   s00 fg=blue,bg=-,mod=- "▌ "
   s01 fg=blue,bg=-,mod=- "\u{f05a} "
   s02 fg=blue,bg=-,mod=B "Note"
-L0095 style=fg=-,bg=-,mod=- align=-
+L0105 style=fg=-,bg=-,mod=- align=-
   s00 fg=blue,bg=-,mod=- "▌ "
   s01 fg=-,bg=-,mod=- "Supplementary info. A bare URL is autolinked too: "
   s02 fg=blue,bg=-,mod=U "https://github.com/LESIM-Co-Ltd/konoma"
-L0096 style=fg=-,bg=-,mod=- align=-
+L0106 style=fg=-,bg=-,mod=- align=-
   s00 fg=green,bg=-,mod=- "▌ "
   s01 fg=green,bg=-,mod=- "\u{f0eb} "
   s02 fg=green,bg=-,mod=B "Tip — Custom title"
-L0097 style=fg=-,bg=-,mod=- align=-
+L0107 style=fg=-,bg=-,mod=- align=-
   s00 fg=green,bg=-,mod=- "▌ "
   s01 fg=-,bg=-,mod=- "A tip. "
   s02 fg=-,bg=-,mod=B "Styling"
   s03 fg=-,bg=-,mod=- " and "
   s04 fg=blue,bg=-,mod=U "\u{f0c1} links"
   s05 fg=-,bg=-,mod=- " work normally in the body."
-L0098 style=fg=-,bg=-,mod=- align=-
+L0108 style=fg=-,bg=-,mod=- align=-
   s00 fg=yellow,bg=-,mod=- "▌ "
   s01 fg=yellow,bg=-,mod=- "\u{f071} "
   s02 fg=yellow,bg=-,mod=B "Warning"
-L0099 style=fg=-,bg=-,mod=- align=-
+L0109 style=fg=-,bg=-,mod=- align=-
   s00 fg=yellow,bg=-,mod=- "▌ "
   s01 fg=-,bg=-,mod=- "Five types — NOTE / TIP / IMPORTANT / WARNING / CAUTION (some aliases too)."
-L0100 style=fg=cyan,bg=-,mod=B align=-
+L0110 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Autolinks and emoji"
-L0101 style=fg=-,bg=-,mod=- align=-
+L0111 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0102 style=fg=-,bg=-,mod=- align=-
-L0103 style=fg=-,bg=-,mod=- align=-
+L0112 style=fg=-,bg=-,mod=- align=-
+L0113 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Bare URLs and emails become links ("
   s01 fg=white,bg=rgb(43,48,59),mod=- "[ui] md_autolink"
   s02 fg=-,bg=-,mod=- "): "
@@ -13418,27 +13460,27 @@ L0103 style=fg=-,bg=-,mod=- align=-
   s14 fg=-,bg=-,mod=- "Neither is touched inside "
   s15 fg=white,bg=rgb(43,48,59),mod=- "inline code"
   s16 fg=-,bg=-,mod=- " or code blocks (same as GitHub)."
-L0104 style=fg=-,bg=-,mod=- align=-
-L0105 style=fg=cyan,bg=-,mod=B align=-
+L0114 style=fg=-,bg=-,mod=- align=-
+L0115 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "In-page links, footnotes, inline HTML"
-L0106 style=fg=-,bg=-,mod=- align=-
+L0116 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0107 style=fg=-,bg=-,mod=- align=-
-L0108 style=fg=-,bg=-,mod=- align=-
+L0117 style=fg=-,bg=-,mod=- align=-
+L0118 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "A link to a heading scrolls there (on by default): "
   s01 fg=blue,bg=-,mod=U "\u{f0c1} Jump to the Mermaid section"
   s02 fg=-,bg=-,mod=- "."
   s03 fg=-,bg=-,mod=- " "
   s04 fg=-,bg=-,mod=- "(Same slug rules as GitHub. CJK headings become anchors too.)"
-L0109 style=fg=-,bg=-,mod=- align=-
-L0110 style=fg=-,bg=-,mod=- align=-
+L0119 style=fg=-,bg=-,mod=- align=-
+L0120 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Footnotes ("
   s01 fg=white,bg=rgb(43,48,59),mod=- "[ui] md_footnotes"
   s02 fg=-,bg=-,mod=- "): a reference becomes a superscript number¹, and the"
   s03 fg=-,bg=-,mod=- " "
   s04 fg=-,bg=-,mod=- "definitions are collected into a footnotes section at the end."
-L0111 style=fg=-,bg=-,mod=- align=-
-L0112 style=fg=-,bg=-,mod=- align=-
+L0121 style=fg=-,bg=-,mod=- align=-
+L0122 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Inline HTML ("
   s01 fg=white,bg=rgb(43,48,59),mod=- "[ui] md_inline_html"
   s02 fg=-,bg=-,mod=- "): "
@@ -13450,15 +13492,15 @@ L0112 style=fg=-,bg=-,mod=- align=-
   s08 fg=-,bg=-,mod=- "x², "
   s09 fg=-,bg=-,mod=X "deprecated"
   s10 fg=-,bg=-,mod=- " is struck through. A"
-L0113 style=fg=-,bg=-,mod=- align=-
+L0123 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "line break works too."
-L0114 style=fg=-,bg=-,mod=- align=-
-L0115 style=fg=cyan,bg=-,mod=B align=-
+L0124 style=fg=-,bg=-,mod=- align=-
+L0125 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Images (inline)"
-L0116 style=fg=-,bg=-,mod=- align=-
+L0126 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0117 style=fg=-,bg=-,mod=- align=-
-L0118 style=fg=-,bg=-,mod=- align=-
+L0127 style=fg=-,bg=-,mod=- align=-
+L0128 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "A line that is just "
   s01 fg=white,bg=rgb(43,48,59),mod=- "![alt](path)"
   s02 fg=-,bg=-,mod=- " is drawn "
@@ -13470,41 +13512,41 @@ L0118 style=fg=-,bg=-,mod=- align=-
   s08 fg=-,bg=-,mod=- ")"
   s09 fg=-,bg=-,mod=- " "
   s10 fg=-,bg=-,mod=- "images both work; a remote one shows a \"loading\" line until it arrives in the background."
-L0119 style=fg=-,bg=-,mod=D align=-
+L0129 style=fg=-,bg=-,mod=D align=-
   s00 fg=-,bg=-,mod=- "🖼 konoma sample image — sample.png"
-L0120 style=fg=-,bg=-,mod=- align=-
+L0130 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "A full demo covering remote images, an SVG badge, and text fallback on a failed fetch is in"
   s01 fg=-,bg=-,mod=- " "
   s02 fg=blue,bg=-,mod=U "\u{f0c1} images.md"
   s03 fg=-,bg=-,mod=- "."
-L0121 style=fg=-,bg=-,mod=- align=-
-L0122 style=fg=cyan,bg=-,mod=B align=-
+L0131 style=fg=-,bg=-,mod=- align=-
+L0132 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Mermaid (fenced diagram in Markdown)"
-L0123 style=fg=-,bg=-,mod=- align=-
+L0133 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0124 style=fg=-,bg=-,mod=- align=-
+L0134 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "                                        "
   s01 fg=cyan,bg=-,mod=I "◇ mermaid — Enter: full screen"
-L0125 style=fg=-,bg=-,mod=- align=-
-L0126 style=fg=-,bg=-,mod=- align=-
-L0127 style=fg=-,bg=-,mod=- align=-
-L0128 style=fg=-,bg=-,mod=- align=-
-L0129 style=fg=-,bg=-,mod=- align=-
-L0130 style=fg=-,bg=-,mod=- align=-
-L0131 style=fg=cyan,bg=-,mod=B align=-
-  s00 fg=-,bg=-,mod=- "Math (LaTeX → image)"
-L0132 style=fg=-,bg=-,mod=- align=-
-  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0133 style=fg=-,bg=-,mod=- align=-
-L0134 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "Inline math"
 L0135 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=D "$E = mc^2$"
 L0136 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=- "and"
 L0137 style=fg=-,bg=-,mod=- align=-
-  s00 fg=-,bg=-,mod=D "$H_2O$"
 L0138 style=fg=-,bg=-,mod=- align=-
+L0139 style=fg=-,bg=-,mod=- align=-
+L0140 style=fg=-,bg=-,mod=- align=-
+L0141 style=fg=cyan,bg=-,mod=B align=-
+  s00 fg=-,bg=-,mod=- "Math (LaTeX → image)"
+L0142 style=fg=-,bg=-,mod=- align=-
+  s00 fg=cyan,bg=-,mod=D "────────────────────────────────────────────────────────────────────────────────────────────────────"
+L0143 style=fg=-,bg=-,mod=- align=-
+L0144 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "Inline math"
+L0145 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$E = mc^2$"
+L0146 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=- "and"
+L0147 style=fg=-,bg=-,mod=- align=-
+  s00 fg=-,bg=-,mod=D "$H_2O$"
+L0148 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "are drawn "
   s01 fg=-,bg=-,mod=B "in the running text"
   s02 fg=-,bg=-,mod=- ", like ordinary Markdown"
@@ -13514,9 +13556,9 @@ L0138 style=fg=-,bg=-,mod=- align=-
   s06 fg=-,bg=-,mod=- "). An expression too wide for the line shrinks to fit instead of being lifted onto"
   s07 fg=-,bg=-,mod=- " "
   s08 fg=-,bg=-,mod=- "its own line. Display math is centered:"
-L0139 style=fg=-,bg=-,mod=- align=-
+L0149 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=D "$$ \\int_{-\\infty}^{\\infty} e^{-x^2}\\,dx = \\sqrt{\\pi} $$"
-L0140 style=fg=-,bg=-,mod=- align=-
+L0150 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Currency ("
   s01 fg=white,bg=rgb(43,48,59),mod=- "$5"
   s02 fg=-,bg=-,mod=- " and "
@@ -13532,18 +13574,18 @@ L0140 style=fg=-,bg=-,mod=- align=-
   s12 fg=-,bg=-,mod=- "Set "
   s13 fg=white,bg=rgb(43,48,59),mod=- "math = \"text\""
   s14 fg=-,bg=-,mod=- " to show the raw LaTeX instead."
-L0141 style=fg=-,bg=-,mod=- align=-
-L0142 style=fg=-,bg=-,mod=- align=-
+L0151 style=fg=-,bg=-,mod=- align=-
+L0152 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "That's the end — here is a long paragraph to exercise wrapping: the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog, the quick brown fox jumps over the lazy dog."
-L0143 style=fg=-,bg=-,mod=- align=-
-L0144 style=fg=-,bg=-,mod=- align=-
+L0153 style=fg=-,bg=-,mod=- align=-
+L0154 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "────────────────────────────────────────────────────────────────────────────────────────────────────"
-L0145 style=fg=-,bg=-,mod=- align=-
-L0146 style=fg=-,bg=-,mod=- align=-
+L0155 style=fg=-,bg=-,mod=- align=-
+L0156 style=fg=-,bg=-,mod=- align=-
   s00 fg=lightblue,bg=-,mod=- "1. "
   s01 fg=-,bg=-,mod=- "This is the footnote definition. It can go anywhere in the document."
 -- IMAGES (1) --
-  i00 line=0125 col=040 cols=020 rows=005 fence_ord=Some(0) alt="mermaid" url="mermaid-fence://1aa676ff0a6f3351"
+  i00 line=0135 col=040 cols=020 rows=005 fence_ord=Some(0) alt="mermaid" url="mermaid-fence://1aa676ff0a6f3351"
 -- CODE_BLOCKS (1) --
   c00 "fn main() {\n    let msg = \"syntect highlighting should work\";\n    println!(\"{msg}\");\n}"
 -- TASKS (2) --
@@ -13557,32 +13599,32 @@ L0146 style=fg=-,bg=-,mod=- align=-
   a01 line=0005 slug="lists"
   a02 line=0015 slug="quotes-and-code"
   a03 line=0027 slug="tables"
-  a04 line=0035 slug="inline-styling-alignment-and-escapes-in-tables"
-  a05 line=0044 slug="html-tables"
-  a06 line=0055 slug="images-in-table-cells"
-  a07 line=0071 slug="horizontal-rule-and-task-list"
-  a08 line=0083 slug="html-blocks"
-  a09 line=0090 slug="alerts-github-style"
-  a10 line=0100 slug="autolinks-and-emoji"
-  a11 line=0105 slug="in-page-links-footnotes-inline-html"
-  a12 line=0115 slug="images-inline"
-  a13 line=0122 slug="mermaid-fenced-diagram-in-markdown"
-  a14 line=0131 slug="math-latex--image"
+  a04 line=0037 slug="inline-styling-alignment-and-escapes-in-tables"
+  a05 line=0048 slug="html-tables"
+  a06 line=0061 slug="images-in-table-cells"
+  a07 line=0081 slug="horizontal-rule-and-task-list"
+  a08 line=0093 slug="html-blocks"
+  a09 line=0100 slug="alerts-github-style"
+  a10 line=0110 slug="autolinks-and-emoji"
+  a11 line=0115 slug="in-page-links-footnotes-inline-html"
+  a12 line=0125 slug="images-inline"
+  a13 line=0132 slug="mermaid-fenced-diagram-in-markdown"
+  a14 line=0141 slug="math-latex--image"
 -- ITEMS (14) --
   m00 line=0003 kind=Link{target="https://example.com"}
   m01 line=0020 kind=CodeBlock{body=Some("fn main() {\n    let msg = \"syntect highlighting should work\";\n    println!(\"{msg}\");\n}")}
-  m02 line=0078 kind=Task{state=' ',state_at=Some(2595)}
-  m03 line=0079 kind=Task{state='x',state_at=Some(2689)}
-  m04 line=0087 kind=Details{ordinal=0}
-  m05 line=0088 kind=Details{ordinal=1}
-  m06 line=0095 kind=Link{target="https://github.com/LESIM-Co-Ltd/konoma"}
-  m07 line=0097 kind=Link{target="images.md"}
-  m08 line=0103 kind=Link{target="https://example.com"}
-  m09 line=0103 kind=Link{target="http://www.rust-lang.org"}
-  m10 line=0103 kind=Link{target="mailto:foo@example.com"}
-  m11 line=0108 kind=Link{target="#mermaid-fenced-diagram-in-markdown"}
-  m12 line=0120 kind=Link{target="images.md"}
-  m13 line=0124 kind=MermaidFence{ordinal=0}
+  m02 line=0088 kind=Task{state=' ',state_at=Some(2595)}
+  m03 line=0089 kind=Task{state='x',state_at=Some(2689)}
+  m04 line=0097 kind=Details{ordinal=0}
+  m05 line=0098 kind=Details{ordinal=1}
+  m06 line=0105 kind=Link{target="https://github.com/LESIM-Co-Ltd/konoma"}
+  m07 line=0107 kind=Link{target="images.md"}
+  m08 line=0113 kind=Link{target="https://example.com"}
+  m09 line=0113 kind=Link{target="http://www.rust-lang.org"}
+  m10 line=0113 kind=Link{target="mailto:foo@example.com"}
+  m11 line=0118 kind=Link{target="#mermaid-fenced-diagram-in-markdown"}
+  m12 line=0130 kind=Link{target="images.md"}
+  m13 line=0134 kind=MermaidFence{ordinal=0}
 
 === samples: tutorial.ja.md ===
 -- LINES (95) --
@@ -15193,7 +15235,7 @@ L0000 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === task_corpus: everything ===
--- LINES (17) --
+-- LINES (18) --
 L0000 style=fg=cyan,bg=-,mod=B align=-
   s00 fg=-,bg=-,mod=- "Doc"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -15243,21 +15285,22 @@ L0010 style=fg=-,bg=-,mod=- align=-
   s08 fg=rgb(90,98,120),bg=-,mod=- "│"
 L0011 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
-L0012 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0012 style=fg=-,bg=-,mod=- align=-
+L0013 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=I "▎ "
   s01 fg=-,bg=rgb(43,48,59),mod=- "                                                                                            "
   s02 fg=white,bg=rgb(70,78,99),mod=B " code "
-L0013 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0014 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=rgb(171,178,191),bg=rgb(43,48,59),mod=- "- [ ] fenced"
   s02 fg=-,bg=rgb(43,48,59),mod=- "                                                                                      "
-L0014 style=fg=-,bg=rgb(43,48,59),mod=- align=-
+L0015 style=fg=-,bg=rgb(43,48,59),mod=- align=-
   s00 fg=cyan,bg=rgb(43,48,59),mod=- "▎ "
   s01 fg=-,bg=rgb(43,48,59),mod=- "                                                                                                  "
-L0015 style=fg=-,bg=-,mod=- align=-
+L0016 style=fg=-,bg=-,mod=- align=-
   s00 fg=cyan,bg=-,mod=BI "▸ "
   s01 fg=-,bg=-,mod=B "More"
-L0016 style=fg=-,bg=-,mod=- align=-
+L0017 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f046} "
   s02 fg=-,bg=-,mod=- "bottom"
@@ -15277,9 +15320,9 @@ L0016 style=fg=-,bg=-,mod=- align=-
   m00 line=0003 kind=Task{state=' ',state_at=Some(10)}
   m01 line=0005 kind=Task{state=' ',state_at=Some(42)}
   m02 line=0006 kind=Task{state='x',state_at=Some(59)}
-  m03 line=0012 kind=CodeBlock{body=Some("- [ ] fenced")}
-  m04 line=0015 kind=Details{ordinal=0}
-  m05 line=0016 kind=Task{state='x',state_at=Some(188)}
+  m03 line=0013 kind=CodeBlock{body=Some("- [ ] fenced")}
+  m04 line=0016 kind=Details{ordinal=0}
+  m05 line=0017 kind=Task{state='x',state_at=Some(188)}
 
 === task_corpus: fence backtick ===
 -- LINES (5) --
@@ -15901,7 +15944,7 @@ L0004 style=fg=-,bg=-,mod=- align=-
 -- ITEMS (0) --
 
 === task_corpus: table then task ===
--- LINES (6) --
+-- LINES (7) --
 L0000 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "┌───┬───┐"
 L0001 style=fg=-,bg=-,mod=- align=-
@@ -15929,6 +15972,7 @@ L0003 style=fg=-,bg=-,mod=- align=-
 L0004 style=fg=-,bg=-,mod=- align=-
   s00 fg=rgb(90,98,120),bg=-,mod=- "└───┴───┘"
 L0005 style=fg=-,bg=-,mod=- align=-
+L0006 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=cyan,bg=-,mod=B "\u{f096} "
   s02 fg=-,bg=-,mod=- "after table"
@@ -15939,7 +15983,7 @@ L0005 style=fg=-,bg=-,mod=- align=-
 -- DETAILS_OPEN (0) --
 -- ANCHORS (0) --
 -- ITEMS (1) --
-  m00 line=0005 kind=Task{state=' ',state_at=Some(34)}
+  m00 line=0006 kind=Task{state=' ',state_at=Some(34)}
 
 === task_corpus: task-lookalike in an indented block right after a setext heading underline (no blank) stays literal ===
 -- LINES (8) --

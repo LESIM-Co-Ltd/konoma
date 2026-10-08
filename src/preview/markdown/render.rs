@@ -4957,14 +4957,14 @@ fn render_mermaid_slot(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>
 /// function has already finished producing it (see `Writer::emit_row_prefixed`'s own doc comment on
 /// why no block-rendering function ever runs while a prefix is actually "open").
 ///
-/// No leading-blank-line check and a "fresh boundary" exit (`pending_block_gap = false; after_math
-/// = true; fresh_boundary = true`), matching `render_image_group`'s/`render_mermaid_slot`'s own (see
-/// either's doc comment for why): a table is drawn as its own, self-contained band, with no separator
-/// logic of any kind on either side of it.
-/// `fresh_boundary`, specifically, is what keeps a fence directly following a table (no blank line
-/// between them) from getting a spurious extra blank row of its own — confirmed directly:
-/// `task_corpus`'s own "everything" case (a GFM table immediately followed by a fence with no blank
-/// line) showed exactly this extra row before this field was set here.
+/// Joins the ordinary block-gap protocol, like `render_heading`/`render_paragraph`: a blank row first
+/// when `pending_block_gap` says the page owes one, and `pending_block_gap = true` on the way out so
+/// whatever follows is separated from the bottom border the same way it would be from a paragraph.
+/// (Until 2026-10 a table had neither — "a self-contained band with no separator logic on either
+/// side" — which glued the top border to the previous block and the next block to the bottom
+/// border.) It no longer sets `after_math`/`fresh_boundary` either: those say "nothing precedes
+/// this within the same segment", which is not true after a table, and clearing them is what lets a
+/// fence directly following a table (no blank line in the source) get its usual separator row.
 fn render_table_from_model(
     w: &mut Writer<'_>,
     src: &str,
@@ -5004,10 +5004,11 @@ fn render_table_from_model(
         cell_attrs: Vec::new(),
     };
     let content_w = w.width as usize;
+    if w.pending_block_gap {
+        w.emit_blank_row();
+    }
     emit_table(w, &table, content_w as u16);
-    w.pending_block_gap = false;
-    w.after_math = true;
-    w.fresh_boundary = true;
+    w.pending_block_gap = true;
 }
 
 /// Draws one already-built `TableCells` into `w` and records an `ImagePlacement` for every real-pixel
@@ -5111,9 +5112,9 @@ fn emit_table(w: &mut Writer<'_>, table: &TableCells, width: u16) {
 /// styling instead (`CellAttrs::header`), which is why this is a *count of rows* rather than a search
 /// for every `<th>`.
 ///
-/// Exit state (`pending_block_gap = false`, `after_math = true`, `fresh_boundary = true`) and the
-/// absence of any leading-blank-line check are `render_table_from_model`'s own, for the reasons its
-/// doc comment gives: a table is a self-contained band with no separator logic on either side.
+/// Gap handling is `render_table_from_model`'s own (see its doc comment): a leading blank row when
+/// `pending_block_gap` is set, and `pending_block_gap = true` on exit, so both table kinds are
+/// separated from their neighbours exactly like any other block.
 fn render_html_table_from_model(
     w: &mut Writer<'_>,
     src: &str,
@@ -5164,10 +5165,11 @@ fn render_html_table_from_model(
         aligns: Vec::new(),
         cell_attrs,
     };
+    if w.pending_block_gap {
+        w.emit_blank_row();
+    }
     emit_table(w, &table, w.width);
-    w.pending_block_gap = false;
-    w.after_math = true;
-    w.fresh_boundary = true;
+    w.pending_block_gap = true;
 }
 
 /// Renders an `Html` block's own content directly into `w`, in place — mirroring production's own
@@ -5229,8 +5231,8 @@ fn render_html_table_from_model(
 /// with nothing but such an `<img>` line between them still extracts exactly the same way a single-line
 /// block does.
 ///
-/// No leading-blank-line check, matching `render_table_from_model`'s own (see that function's own doc
-/// comment) — `render_html_block`'s own output already ends with its own trailing blank line
+/// No leading-blank-line check (unlike `render_table_from_model`, which now joins the block-gap protocol)
+/// — `render_html_block`'s own output already ends with its own trailing blank line
 /// (`render_html_block`'s own final `if !out.is_empty() { out.push(Line::from("")) }`), so a second,
 /// separately-pushed one here would be a real, visible double blank row production never shows.
 /// `render_image_group`'s own trailing state (`pending_block_gap = false`/`after_math = true`/
@@ -5239,7 +5241,7 @@ fn render_html_table_from_model(
 /// nothing to reconcile between calls.
 /// `pending_block_gap = false`/`fresh_boundary = true` on the way out means whatever renders *next* does
 /// not add a leading blank line of its own either (`render_code_block`'s own leading-blank check
-/// reads `fresh_boundary` specifically, not `pending_block_gap` — see `render_table_from_model`'s own doc
+/// reads `fresh_boundary` specifically, not `pending_block_gap` — see `render_image_group`'s own doc
 /// comment for the concrete case that caught this), matching that same already-baked-in trailing
 /// blank exactly.
 fn render_html_block_from_model(w: &mut Writer<'_>, src: &str, body_spans: &[Range<usize>]) {
@@ -12651,6 +12653,45 @@ mod cell_image_tests {
                 " ".repeat(p.cols as usize),
                 "引用の予約矩形が空白でない {p:?}: |{line}|"
             );
+        }
+    }
+
+    /// A table with a cell image takes part in the block gap like any other table (one blank row
+    /// above and below), and the placement is reported on the rows the box was actually drawn on —
+    /// the gap row is emitted *before* `emit_table` reads `w.lines.len()` for its base, so it is
+    /// already counted. `assert_reserved` proves the rectangle is where the picture goes, whatever
+    /// precedes the table (a level-1 heading adds a decoration rule row on top of the gap).
+    #[test]
+    fn a_cell_image_table_is_separated_from_its_neighbours_and_stays_placed() {
+        let gfm = "| a |\n|---|\n| ![x](a.png) |\n";
+        let html = "<table><tr><td><img src=\"a.png\" alt=\"A\"></td></tr></table>\n";
+        for table in [gfm, html] {
+            for before in [
+                "para\n",
+                "# H1\n",
+                "## H2\n",
+                "```\ncode\n```\n",
+                "- item\n",
+                gfm,
+                html,
+            ] {
+                let src = format!("{before}\n{table}\nafter\n");
+                let out = render(&src, 70);
+                assert_reserved(&out);
+                let lines = texts(&out);
+                let top = lines.iter().rposition(|l| l.starts_with('┌')).unwrap();
+                let bottom = lines.iter().rposition(|l| l.starts_with('└')).unwrap();
+                assert_eq!(lines[top - 1], "", "表の上は空行 1 つ: {src:?} {lines:?}");
+                assert_ne!(lines[top - 2], "", "空行は 1 つだけ: {src:?} {lines:?}");
+                assert_eq!(
+                    lines[bottom + 1],
+                    "",
+                    "表の下は空行 1 つ: {src:?} {lines:?}"
+                );
+                assert_eq!(lines[bottom + 2], "after", "{src:?} {lines:?}");
+                let last = out.images.last().unwrap();
+                assert!(last.line > top && last.line < bottom, "{last:?} {lines:?}");
+            }
         }
     }
 
