@@ -27,7 +27,7 @@ All notable changes to konoma are documented in this file. The format is based o
 - **Spreadsheet preview**: `.xlsx`/`.xlsm`/`.xltx`/`.xltm`/`.xlsb`/`.xls`/`.ods` open in the table view, read by konoma
   itself (pure Rust, no external tool). Cells are shown the way Excel shows them (thousands separators, percent,
   currency, dates, times, Japanese eras), with column letters and row numbers; the title carries the sheet name
-  `(1/3)`, `+N hidden` and the cursor's address. `J`/`K` (`sheet_next`/`sheet_prev`) switch sheets; the `Enter`
+  `(1/3)`, `+N hidden` and the cursor's address. `J`/`K` (`page_next`/`page_prev`) switch sheets; the `Enter`
   popup shows address, displayed text, raw value, type, formula and format; `/` search and `y` copy use the displayed
   text. Password-protected, oversized (file > 256 MiB) or corrupt files say why they cannot be shown. Formulas are
   not evaluated and macros never run. New `builtin = "spreadsheet"` and a default rule for the seven extensions.
@@ -50,6 +50,10 @@ All notable changes to konoma are documented in this file. The format is based o
   which app opened it. `[external] office_apps = false` opens nothing (and the footer no longer offers `e` there); an explicit `[editor.ext]` entry wins.
 
 ### Changed
+- **One action for "next / previous page"**: `page_next` / `page_prev` now turn a PDF's page, a spreadsheet's sheet and
+  an image/PDF diff's PDF page (what they turn depends on the preview on screen). The old action names
+  (`pdf_next_page`, `pdf_prev_page`, `sheet_next`, `sheet_prev`, `media_diff_page_next`, `media_diff_page_prev`) still
+  work in `[keys]` as aliases, and no default key changes (`J`/`K`, `PageDown`/`PageUp` on an image).
 - **A table is now spaced like any other block**: a blank row separates a table from the block before it and from the block after it
   (GFM and HTML tables, also inside quotes, lists, alerts and `<details>`, and in Word / OpenDocument conversions). Until now a
   table owed no gap, so its top border sat directly under the previous paragraph, list or code block and the next paragraph,

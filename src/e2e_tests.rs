@@ -17730,6 +17730,101 @@ fn e2e_sheet_j_and_k_switch_sheets_and_stop_at_the_ends() {
     s.see("Quarterly");
 }
 
+/// Config with `[keys.<surface>]` entries (old action names included).
+fn cfg_keys(surface: &str, entries: &[(&str, &str)]) -> Config {
+    let mut cfg = cfg_en();
+    let table = entries
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
+    cfg.keys.surfaces.insert(surface.to_string(), table);
+    cfg
+}
+
+/// `[keys]` written with the pre-`page_next` names (`sheet_next` / `sheet_prev`) still rebinds the
+/// spreadsheet's sheet switch, and the new names do the same.
+#[test]
+fn e2e_keys_old_and_new_page_names_rebind_sheet_switching() {
+    for (next, prev) in [("sheet_next", "sheet_prev"), ("page_next", "page_prev")] {
+        let Some((dir, root)) = sheet_sandbox("sheet_alias", "xlsx") else {
+            return;
+        };
+        let cfg = cfg_keys("preview_table", &[("L", next), ("H", prev), ("J", "noop")]);
+        let mut s = Sim::with_config(&root, cfg);
+        s.select("book.xlsx");
+        s.enter();
+        s.see("Sales (1/2)");
+        s.key('J'); // unbound by the config
+        s.see("Sales (1/2)");
+        s.key('L');
+        see_cjk(&mut s, "売上 (2/2)");
+        s.key('H');
+        s.see("Sales (1/2)");
+        drop(dir);
+    }
+}
+
+/// Same for the PDF page keys: `pdf_next_page` / `pdf_prev_page` (and the new names) still turn
+/// the pages, and the default `J`/`K` turn them too.
+#[test]
+fn e2e_keys_old_and_new_page_names_rebind_pdf_paging() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    for (next, prev) in [
+        ("pdf_next_page", "pdf_prev_page"),
+        ("page_next", "page_prev"),
+    ] {
+        let dir = sandbox("pdf_page_alias");
+        std::fs::copy(&pdf, dir.join("doc.pdf")).unwrap();
+        let cfg = cfg_keys("preview_image", &[("L", next), ("H", prev)]);
+        let mut s = Sim::with_config(&canon(&dir), cfg).with_media();
+        s.select("doc.pdf");
+        s.enter();
+        s.drain_media();
+        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        s.key('L');
+        assert_eq!(s.app.pdf_page_indicator(), Some((2, 3)), "{next}");
+        s.key('H');
+        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        s.key('J'); // the default still works
+        assert_eq!(s.app.pdf_page_indicator(), Some((2, 3)), "{next}");
+        s.key('K');
+        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+    }
+}
+
+/// Same for the media diff's PDF page keys (`media_diff_page_next` / `_prev`).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_keys_old_and_new_page_names_rebind_media_diff_paging() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let bytes = std::fs::read(&pdf).unwrap();
+    for (next, prev) in [
+        ("media_diff_page_next", "media_diff_page_prev"),
+        ("page_next", "page_prev"),
+    ] {
+        let dir = sandbox("media_diff_page_alias");
+        init_git_repo(&dir);
+        let doc = dir.join("doc.pdf");
+        std::fs::write(&doc, &bytes).unwrap();
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
+        std::fs::write(&doc, &bytes).unwrap();
+        let cfg = cfg_keys("preview_git_diff", &[("L", next), ("H", prev)]);
+        let mut s = Sim::with_config(&canon(&dir), cfg).with_picker();
+        s.app.open_git_diff(&doc);
+        s.draw();
+        assert_eq!(s.app.diff_media_page(), 1, "{next}");
+        s.key('L');
+        assert_eq!(s.app.diff_media_page(), 2, "{next}");
+        s.key('H');
+        assert_eq!(s.app.diff_media_page(), 1, "{next}");
+    }
+}
+
 #[test]
 fn e2e_sheet_switch_reruns_an_active_search_on_the_new_sheet() {
     let Some((mut s, _dir)) = open_book("sheet_search_switch", "xlsx") else {

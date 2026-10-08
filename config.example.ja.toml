@@ -509,7 +509,10 @@ builtin = "pdf"
 #                    ファイルをプレビュー=ファイル送り。ディレクトリはスキップ・端で wrap)
 #                  "toggle_outline"(o: Markdown プレビューの見出しアウトラインを開く。Enter で見出しへジャンプ)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
-#                  "sheet_next" "sheet_prev"(表計算の表での J/K: 次/前のシート。表示シートが 2 枚以上の時だけ)
+#                  "page_next" "page_prev"(J/K と画像面の PageDown/PageUp: PDF の次/前のページ・表計算の次/前のシート・
+#                    画像/PDF/SVG の diff では複数ページの PDF の両側同時のページ送り。送るものが無い所では何もしない。
+#                    旧名 "pdf_next_page" "pdf_prev_page" "sheet_next" "sheet_prev" "media_diff_page_next"
+#                    "media_diff_page_prev" も別名として使える)
 #   テーブル     : "table_copy_cell" "table_copy_row" "table_copy_column"(y → c/r/C: CSV/TSV/アーカイブ表からコピー)
 #                  "toggle_table_cell"(テーブルプレビューの Enter: カーソルセルの全文ポップアップ。グリッドは
 #                    幅の広いセルを "…" で切り詰めるが、これは切り詰め無しの値を折返し表示し、
@@ -519,8 +522,6 @@ builtin = "pdf"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
 #                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
 #                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "cycle_diff_view" "git_diff_discard"
-#                  "media_diff_page_next" "media_diff_page_prev"(画像/PDF/SVG の diff での J/K: 複数
-#                    ページの PDF なら両側同時にページ送り。それ以外では何もしない)
 #                  "jj_sync"(R= ハブで jj に作業コピーを取り込ませる。konoma が jj リポジトリに
 #                    書き込む唯一の操作で、確認ダイアログが先に出る。git リポジトリでは何もしない)
 #   Git グラフ   : "git_graph_toggle_all"(a= バックエンドの既定範囲でなく全リビジョンを表示。

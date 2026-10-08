@@ -120,7 +120,7 @@ grid, read by konoma itself — no Excel, LibreOffice or other tool needed:
   (konoma shows what is stored); hidden *sheets* are not.
 - `J` / `K` switch to the next / previous sheet (only when the workbook has two
   or more visible sheets). The cursor goes back to `A1` on each sheet. Rebind them
-  with the `sheet_next` / `sheet_prev` actions.
+  with the `page_next` / `page_prev` actions (the old names `sheet_next` / `sheet_prev` still work).
 - `Enter` opens the cell popup: address, displayed text, raw value, type,
   formula and format. `/` search and the `y` copy menu (`c` / `r` / `C`) work on
   the displayed text. Search covers the sheet on screen only, and keeps at most

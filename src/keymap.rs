@@ -159,12 +159,13 @@ pub enum Action {
     ImageZoomIn,
     ImageZoomOut,
     ImageZoomReset,
-    /// PDF: next/previous page (inert for non-PDF image previews; the handler gates on the kind).
-    PdfNextPage,
-    /// Spreadsheet preview: next / previous sheet (`J` / `K` on the table surface).
-    SheetNext,
-    SheetPrev,
-    PdfPrevPage,
+    /// Next / previous "page" of the preview on screen: a PDF page, a spreadsheet sheet, or a media
+    /// diff's PDF page (`J` / `K`, `PageDown` / `PageUp` on the image surface). One action;
+    /// `App::page_turn` picks what it means from the kind of preview. Config names: `page_next` /
+    /// `page_prev` (the former `pdf_next_page`, `sheet_next`, `media_diff_page_next`, ... stay as
+    /// aliases).
+    PageNext,
+    PagePrev,
 
     // --- Preview: file paging (shared across text/image/table) ---
     /// Preview the next/previous **file** in tree display order (directories are skipped,
@@ -188,15 +189,6 @@ pub enum Action {
     /// In a follow-opened diff: toggle between the diff since follow-start and the full git diff.
     #[cfg(feature = "git")]
     ToggleFollowDiffScope,
-    /// `J`/`PageDown` while the media diff's side-by-side view is active
-    /// (`docs/FEATURE-MEDIA-DIFF.md` §1/§6): turn both sides' PDF page forward together. No-op for
-    /// anything but a multi-page PDF diff (`App::media_diff_can_page`).
-    #[cfg(feature = "git")]
-    MediaDiffPageNext,
-    /// `K`/`PageUp`'s counterpart to `MediaDiffPageNext`.
-    #[cfg(feature = "git")]
-    MediaDiffPagePrev,
-
     // --- Git changes hub (o) ---
     #[cfg(feature = "git")]
     GitStage,
@@ -892,10 +884,10 @@ impl KeyMap {
         pimg.insert(KeyPress::ch('j'), nav(Motion::Down));
         // PDF page paging (shared across the image surfaces; the handler no-ops for non-PDF).
         // lowercase jk = pan within the page / uppercase JK = move to the next/previous page.
-        pimg.insert(KeyPress::ch('J'), run(Action::PdfNextPage));
-        pimg.insert(KeyPress::ch('K'), run(Action::PdfPrevPage));
-        pimg.insert(KeyPress::key(KeyCode::PageDown), run(Action::PdfNextPage));
-        pimg.insert(KeyPress::key(KeyCode::PageUp), run(Action::PdfPrevPage));
+        pimg.insert(KeyPress::ch('J'), run(Action::PageNext));
+        pimg.insert(KeyPress::ch('K'), run(Action::PagePrev));
+        pimg.insert(KeyPress::key(KeyCode::PageDown), run(Action::PageNext));
+        pimg.insert(KeyPress::key(KeyCode::PageUp), run(Action::PagePrev));
         pimg.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         pimg.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         // Ctrl-n/Ctrl-p = file paging (J/K are already assigned to PDF page paging, hence Ctrl here).
@@ -924,8 +916,8 @@ impl KeyMap {
         apply_scheme_paging(&mut ptbl, scheme);
         // J/K = next/previous sheet of a spreadsheet (the same keys as the PDF page turn; the
         // handler no-ops unless the workbook has 2+ visible sheets, so CSV/archive tables ignore them).
-        ptbl.insert(KeyPress::ch('J'), run(Action::SheetNext));
-        ptbl.insert(KeyPress::ch('K'), run(Action::SheetPrev));
+        ptbl.insert(KeyPress::ch('J'), run(Action::PageNext));
+        ptbl.insert(KeyPress::ch('K'), run(Action::PagePrev));
         ptbl.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         ptbl.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         // Ctrl-n/Ctrl-p = file paging (same keys as text/image).
@@ -957,8 +949,8 @@ impl KeyMap {
             // *not* rebound here: `dispatch_navigate`'s `PreviewGitDiff` arm reroutes them to the
             // same handler only while the media diff is active, and keeps their ordinary scroll
             // meaning otherwise (`docs/FEATURE-MEDIA-DIFF.md` §6).
-            pgit.insert(KeyPress::ch('J'), run(Action::MediaDiffPageNext));
-            pgit.insert(KeyPress::ch('K'), run(Action::MediaDiffPagePrev));
+            pgit.insert(KeyPress::ch('J'), run(Action::PageNext));
+            pgit.insert(KeyPress::ch('K'), run(Action::PagePrev));
             pgit.insert(KeyPress::ch('j'), nav(Motion::Down));
             pgit.insert(KeyPress::ch('k'), nav(Motion::Up));
             pgit.insert(KeyPress::ch('l'), nav(Motion::Right));
@@ -1945,12 +1937,11 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "image_zoom_in" => Action::ImageZoomIn,
         "image_zoom_out" => Action::ImageZoomOut,
         "image_zoom_reset" => Action::ImageZoomReset,
-        "sheet_next" => Action::SheetNext,
-        "sheet_prev" => Action::SheetPrev,
-        "pdf_next_page" => Action::PdfNextPage,
+        // `page_next` / `page_prev`, plus the names they replaced (kept as aliases).
+        "page_next" | "pdf_next_page" | "sheet_next" | "media_diff_page_next" => Action::PageNext,
+        "page_prev" | "pdf_prev_page" | "sheet_prev" | "media_diff_page_prev" => Action::PagePrev,
         "preview_next_file" => Action::PreviewFileNext,
         "preview_prev_file" => Action::PreviewFilePrev,
-        "pdf_prev_page" => Action::PdfPrevPage,
         // Preview: table (csv/tsv)
         "table_copy_cell" => Action::TableCopy(TableCopyKind::Cell),
         "table_copy_row" => Action::TableCopy(TableCopyKind::Row),
@@ -1983,10 +1974,6 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "cycle_diff_view" => Action::CycleDiffView,
         #[cfg(feature = "git")]
         "toggle_follow_diff_scope" => Action::ToggleFollowDiffScope,
-        #[cfg(feature = "git")]
-        "media_diff_page_next" => Action::MediaDiffPageNext,
-        #[cfg(feature = "git")]
-        "media_diff_page_prev" => Action::MediaDiffPagePrev,
         #[cfg(feature = "git")]
         "git_stage" => Action::GitStage,
         #[cfg(feature = "git")]
@@ -2150,12 +2137,10 @@ pub fn action_name(a: Action) -> String {
         Action::ImageZoomIn => "image_zoom_in",
         Action::ImageZoomOut => "image_zoom_out",
         Action::ImageZoomReset => "image_zoom_reset",
-        Action::SheetNext => "sheet_next",
-        Action::SheetPrev => "sheet_prev",
-        Action::PdfNextPage => "pdf_next_page",
+        Action::PageNext => "page_next",
+        Action::PagePrev => "page_prev",
         Action::PreviewFileNext => "preview_next_file",
         Action::PreviewFilePrev => "preview_prev_file",
-        Action::PdfPrevPage => "pdf_prev_page",
         Action::TableCopy(TableCopyKind::Cell) => "table_copy_cell",
         Action::TableCopy(TableCopyKind::Row) => "table_copy_row",
         Action::TableCopy(TableCopyKind::Column) => "table_copy_column",
@@ -2182,10 +2167,6 @@ pub fn action_name(a: Action) -> String {
         Action::CycleDiffView => "cycle_diff_view",
         #[cfg(feature = "git")]
         Action::ToggleFollowDiffScope => "toggle_follow_diff_scope",
-        #[cfg(feature = "git")]
-        Action::MediaDiffPageNext => "media_diff_page_next",
-        #[cfg(feature = "git")]
-        Action::MediaDiffPagePrev => "media_diff_page_prev",
         #[cfg(feature = "git")]
         Action::GitStage => "git_stage",
         #[cfg(feature = "git")]
@@ -2353,27 +2334,100 @@ mod tests {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
             m.resolve(Surface::PreviewTable, None, KeyPress::ch('J')),
-            Resolution::Action(Action::SheetNext)
+            Resolution::Action(Action::PageNext)
         );
         assert_eq!(
             m.resolve(Surface::PreviewTable, None, KeyPress::ch('K')),
-            Resolution::Action(Action::SheetPrev)
+            Resolution::Action(Action::PagePrev)
         );
         // Neither the text nor the image surface gets the sheet actions (the image surface keeps
         // J/K = PDF pages).
         assert_ne!(
             m.resolve(Surface::PreviewText, None, KeyPress::ch('J')),
-            Resolution::Action(Action::SheetNext)
+            Resolution::Action(Action::PageNext)
         );
         assert_eq!(
             m.resolve(Surface::PreviewImage, None, KeyPress::ch('J')),
-            Resolution::Action(Action::PdfNextPage)
+            Resolution::Action(Action::PageNext)
         );
         // config-string two-way mapping.
-        assert_eq!(action_from_str("sheet_next"), Some(Action::SheetNext));
-        assert_eq!(action_from_str("sheet_prev"), Some(Action::SheetPrev));
-        assert_eq!(action_name(Action::SheetNext), "sheet_next");
-        assert_eq!(action_name(Action::SheetPrev), "sheet_prev");
+        for old in [
+            "page_next",
+            "sheet_next",
+            "pdf_next_page",
+            "media_diff_page_next",
+        ] {
+            assert_eq!(action_from_str(old), Some(Action::PageNext), "{old}");
+        }
+        for old in [
+            "page_prev",
+            "sheet_prev",
+            "pdf_prev_page",
+            "media_diff_page_prev",
+        ] {
+            assert_eq!(action_from_str(old), Some(Action::PagePrev), "{old}");
+        }
+        assert_eq!(action_name(Action::PageNext), "page_next");
+        assert_eq!(action_name(Action::PagePrev), "page_prev");
+    }
+
+    /// The merged page action: the default keys resolve to it on every surface that had a
+    /// page/sheet binding, exactly as before the merge.
+    #[test]
+    fn page_keys_default_bindings_are_unchanged_by_the_merge() {
+        for scheme in [KeyScheme::Vim, KeyScheme::Less] {
+            let m = KeyMap::defaults(scheme);
+            let next = Resolution::Action(Action::PageNext);
+            let prev = Resolution::Action(Action::PagePrev);
+            assert_eq!(
+                m.resolve(Surface::PreviewImage, None, KeyPress::ch('J')),
+                next
+            );
+            assert_eq!(
+                m.resolve(Surface::PreviewImage, None, KeyPress::ch('K')),
+                prev
+            );
+            assert_eq!(
+                m.resolve(
+                    Surface::PreviewImage,
+                    None,
+                    KeyPress::key(KeyCode::PageDown)
+                ),
+                next
+            );
+            assert_eq!(
+                m.resolve(Surface::PreviewImage, None, KeyPress::key(KeyCode::PageUp)),
+                prev
+            );
+            assert_eq!(
+                m.resolve(Surface::PreviewTable, None, KeyPress::ch('J')),
+                next
+            );
+            assert_eq!(
+                m.resolve(Surface::PreviewTable, None, KeyPress::ch('K')),
+                prev
+            );
+            #[cfg(feature = "git")]
+            {
+                assert_eq!(
+                    m.resolve(Surface::PreviewGitDiff, None, KeyPress::ch('J')),
+                    next
+                );
+                assert_eq!(
+                    m.resolve(Surface::PreviewGitDiff, None, KeyPress::ch('K')),
+                    prev
+                );
+                // PageDown/PageUp stay a scroll on the diff surface (rerouted only for media).
+                assert_ne!(
+                    m.resolve(
+                        Surface::PreviewGitDiff,
+                        None,
+                        KeyPress::key(KeyCode::PageDown)
+                    ),
+                    next
+                );
+            }
+        }
     }
 
     #[test]
@@ -2386,11 +2440,11 @@ mod tests {
         assert!(m.warnings.is_empty(), "{:?}", m.warnings);
         assert_eq!(
             m.resolve(Surface::PreviewTable, None, KeyPress::ch('L')),
-            Resolution::Action(Action::SheetNext)
+            Resolution::Action(Action::PageNext)
         );
         assert_eq!(
             m.resolve(Surface::PreviewTable, None, KeyPress::ch('H')),
-            Resolution::Action(Action::SheetPrev)
+            Resolution::Action(Action::PagePrev)
         );
         assert_eq!(
             m.resolve(Surface::PreviewTable, None, KeyPress::ch('J')),
@@ -2717,6 +2771,8 @@ mod tests {
             Action::ResetAnchor,
             Action::OpenGitDiffCursor,
             Action::OpenGitView,
+            Action::PageNext,
+            Action::PagePrev,
             Action::FileDelete,
             Action::SortSet(SortKey::Size),
             Action::SortToggleReverse,
@@ -2729,8 +2785,6 @@ mod tests {
             samples.push(Action::GitOpenGraph);
             samples.push(Action::CycleDiffLayout);
             samples.push(Action::CycleDiffView);
-            samples.push(Action::MediaDiffPageNext);
-            samples.push(Action::MediaDiffPagePrev);
             samples.push(Action::BranchDelete);
             samples.push(Action::GitClose);
         }

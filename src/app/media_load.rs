@@ -700,6 +700,32 @@ impl App {
         matches!(self.tab.pdf_pages, Some(n) if n > 1)
     }
 
+    /// `page_next` / `page_prev` (`J` / `K`): turn the "page" of whatever preview is on screen.
+    /// This `match` is the single place that decides what a page is; each arm's own function
+    /// gates itself, so a preview with nothing to turn is a no-op.
+    /// Extension point: a slide deck adds one arm here (its own `PreviewKind`).
+    pub fn page_turn(&mut self, dir: i32) {
+        match self.tab.preview_kind {
+            Some(PreviewKind::Spreadsheet(_)) => {
+                if dir >= 0 {
+                    self.sheet_next()
+                } else {
+                    self.sheet_prev()
+                }
+            }
+            #[cfg(feature = "git")]
+            Some(PreviewKind::GitDiff(_)) => self.media_diff_page_turn(dir),
+            // Slides: not yet (see the extension point above).
+            _ => {
+                if dir >= 0 {
+                    self.pdf_next_page()
+                } else {
+                    self.pdf_prev_page()
+                }
+            }
+        }
+    }
+
     /// Go to the next PDF page (clamped to the last page). Re-rasterizes that page on demand (one at a time).
     pub fn pdf_next_page(&mut self) {
         self.pdf_goto(self.tab.pdf_page.saturating_add(1));
