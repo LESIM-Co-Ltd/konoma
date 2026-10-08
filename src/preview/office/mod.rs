@@ -162,6 +162,8 @@ mod tests_pptx_robust;
 #[cfg(test)]
 mod tests_review_fix;
 #[cfg(test)]
+mod tests_slides_mut;
+#[cfg(test)]
 mod tests_slides_review;
 #[cfg(test)]
 mod tests_survivors;
