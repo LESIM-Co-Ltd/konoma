@@ -24,7 +24,7 @@
 //! | hyperlinks, `HYPERLINK` fields, bookmarks | `[text](url)` / `[text](#heading-slug)` |
 //! | fields (`fldSimple`, `fldChar`) | the stored result text |
 //! | text boxes / shapes | their paragraphs, after the paragraph holding them |
-//! | `mc:AlternateContent` | the `Choice` (never the `Fallback`) |
+//! | `mc:AlternateContent` | the first `Choice` whose `Requires` namespaces the reader understands (text boxes, groups, formulas ..), else the `Fallback` (a picture of what it cannot show) |
 //! | `w:sdt`, `w:smartTag`, `w:customXml` | their content |
 //! | `w:ruby` | the base text, then its reading in brackets (`漢字（かんじ）`) |
 //! | `m:oMath` / `m:oMathPara` | `$latex$` / `$$latex$$` via `omml::to_latex`; the formula's characters when it cannot convert |
@@ -554,6 +554,11 @@ struct Conv<'a> {
     out_lines: usize,
     last: Last,
     last_list: Option<(u32, bool)>,
+    /// Lists of the same kind with different ids that follow one another are separate lists, not
+    /// one (slides: the bullets of one shape and the bullets of the next).
+    split_bullet_lists: bool,
+    /// The list id of the last item written with a literal label (`a.` `(i)` ..).
+    last_literal: Option<u32>,
     stack: Vec<(u8, usize)>,
     pending_code: Option<String>,
     /// Bytes of the note definitions held until the end of the document (they are written after
@@ -606,6 +611,8 @@ impl<'a> Conv<'a> {
             out_lines: 0,
             last: Last::None,
             last_list: None,
+            split_bullet_lists: false,
+            last_literal: None,
             stack: Vec::new(),
             pending_code: None,
             defs_bytes: 0,
@@ -1893,11 +1900,14 @@ impl<'a> Conv<'a> {
                 let indent: String = std::iter::repeat_n(NBSP, 2 * usize::from(it.level)).collect();
                 let text = it.text.replace('\n', "  \n");
                 let piece = format!("{indent}{} {text}", escape(&it.label, true));
-                let sep = if self.last == Last::Literal {
+                // (Literal items of separate lists of a slide are separate paragraphs.)
+                let same_list = !self.split_bullet_lists || self.last_literal == Some(it.list);
+                let sep = if self.last == Last::Literal && same_list {
                     "  \n"
                 } else {
                     "\n\n"
                 };
+                self.last_literal = Some(it.list);
                 self.push_piece(piece, Last::Literal, sep);
             }
             Marker::Bullet | Marker::Ordered(_) => {
@@ -1919,7 +1929,11 @@ impl<'a> Conv<'a> {
                         Some((l, o)) if l == it.list && o == ordered => "\n",
                         // Two lists of the same kind side by side would be read as one (and
                         // numbered on): an empty HTML comment ends the first.
-                        Some((_, o)) if o == ordered && ordered && indent == 0 => {
+                        Some((_, o))
+                            if o == ordered
+                                && (ordered || self.split_bullet_lists)
+                                && indent == 0 =>
+                        {
                             "\n\n<!-- -->\n\n"
                         }
                         _ => "\n",
@@ -2096,7 +2110,7 @@ impl<'a> Conv<'a> {
                 self.blocks(&n.kids, ctx, depth + 1, out)
             }
             "AlternateContent" => {
-                if let Some(c) = alt_content(n) {
+                if let Some(c) = alt_content(n, DOCX_READS) {
                     self.blocks(&c.kids, ctx, depth + 1, out);
                 }
             }
@@ -2511,7 +2525,7 @@ impl<'a> Conv<'a> {
                 }
             }
             "AlternateContent" => {
-                if let Some(c) = alt_content(n) {
+                if let Some(c) = alt_content(n, DOCX_READS) {
                     self.inline_children(c, base, inl, depth + 1);
                 }
             }
@@ -2751,7 +2765,7 @@ impl<'a> Conv<'a> {
                     }
                 }
                 "AlternateContent" => {
-                    if let Some(ch) = alt_content(c) {
+                    if let Some(ch) = alt_content(c, DOCX_READS) {
                         self.run_children(ch, fmt, hidden, inl, depth + 1);
                     }
                 }
@@ -2840,7 +2854,14 @@ impl<'a> Conv<'a> {
                     })
                 }
                 Some(Graphic::SmartArt) => Some("SmartArt".to_string()),
-                _ => None,
+                // An embedded object whose picture is missing: say what stood here.
+                _ => found.ole.as_deref().map(|id| {
+                    if id.is_empty() {
+                        "object".to_string()
+                    } else {
+                        format!("object: {id}")
+                    }
+                }),
             };
             if let Some(l) = label {
                 let md = self.placeholder(&l);
@@ -3076,9 +3097,28 @@ fn math_text(n: &Node, depth: usize) -> String {
     s
 }
 
-/// The `Choice` of an `mc:AlternateContent` (the `Fallback` only when there is none).
-fn alt_content(n: &Node) -> Option<&Node> {
-    n.child("Choice").or_else(|| n.child("Fallback"))
+/// The namespaces (as the prefixes Word writes them) whose content the Word reader reads inside an
+/// `mc:Choice`: the text boxes, groups and canvases of a drawing (`wps`, `wpg`, `wpc`), the
+/// extensions of the drawing and of the text (`wp14`, `w14`, `w15`, `w16*`), formulas (`m`, `a14`)
+/// and the always-understood ones. Anything else (chart extensions `cx`, ink `p14`, ..) is
+/// something the reader cannot show, so the `Fallback` (usually a picture of it) is read instead.
+const DOCX_READS: &[&str] = &[
+    "w", "wp", "a", "pic", "r", "m", "v", "o", "wps", "wpg", "wpc", "wp14", "w14", "w15", "w16",
+    "w16se", "w16cid", "w16du", "w16sdtdh", "w16sdtfl", "a14",
+];
+
+/// The part of an `mc:AlternateContent` to read (ECMA-376 part 3, Markup Compatibility): the first
+/// `Choice` whose `Requires` namespaces are **all** ones the reader understands (`reads`: their
+/// prefixes, as the producing application writes them), else the `Fallback`; `None` when there is
+/// neither. A `Choice` with no `Requires` requires nothing.
+fn alt_content<'n>(n: &'n Node, reads: &[&str]) -> Option<&'n Node> {
+    let readable = |c: &Node| {
+        c.attr("Requires")
+            .is_none_or(|r| r.split_whitespace().all(|p| reads.contains(&p)))
+    };
+    n.nodes()
+        .find(|c| c.name == "Choice" && readable(c))
+        .or_else(|| n.child("Fallback"))
 }
 
 fn collect_rows<'n>(t: &'n Node, out: &mut Vec<&'n Node>, depth: usize) {
@@ -3128,6 +3168,8 @@ struct Media<'n> {
     graphic: Option<Graphic>,
     /// The relationship of the chart part (`c:chart r:id`).
     chart_rid: Option<String>,
+    /// An embedded object (`o:OLEObject`): its `ProgID` (`Excel.Sheet.12`), empty when it has none.
+    ole: Option<String>,
 }
 
 /// What a `drawing`'s `a:graphicData` holds when it is not a picture.
@@ -3171,6 +3213,12 @@ fn scan_media<'n>(n: &'n Node, m: &mut Media<'n>, depth: usize) {
                 }
                 scan_media(c, m, depth + 1);
             }
+            "OLEObject" => {
+                if m.ole.is_none() {
+                    let id = c.attr("ProgID").map(clean).unwrap_or_default();
+                    m.ole = Some(id.trim().chars().take(80).collect());
+                }
+            }
             "chart" => {
                 if m.chart_rid.is_none() {
                     m.chart_rid = c.rel_attr("id").map(str::to_string);
@@ -3208,7 +3256,7 @@ fn scan_media<'n>(n: &'n Node, m: &mut Media<'n>, depth: usize) {
                 }
             }
             "AlternateContent" => {
-                if let Some(ch) = alt_content(c) {
+                if let Some(ch) = alt_content(c, DOCX_READS) {
                     scan_media(ch, m, depth + 1);
                 }
             }

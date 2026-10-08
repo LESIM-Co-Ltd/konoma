@@ -54,6 +54,7 @@
 use super::super::docx_styles::{heading_from_name, is_code_name, Vert};
 use super::super::docx_xml::skip_rest;
 use super::*;
+use crate::preview::office::slide_order::Rect;
 use crate::preview::office::{mathml, omml};
 
 // The presentation reader builds on this module's walk (lists, paragraphs, tables, frames), so it
@@ -583,6 +584,10 @@ struct Od<'a> {
     note_counter: i64,
     /// A slide's text: nothing in it is a heading (the Markdown's headings are the slides).
     slides: bool,
+    /// The number of the slide being written (0 outside a presentation).
+    slide_no: usize,
+    /// The size of the slide being written, when its page layout says.
+    slide_rect: Option<Rect>,
 }
 
 /// All the text under `n` (OpenDocument keeps the text of every element), bounded.
@@ -714,6 +719,8 @@ impl<'a> Od<'a> {
             math_objects: 0,
             note_counter: 0,
             slides: false,
+            slide_no: 0,
+            slide_rect: None,
         }
     }
 
@@ -1575,6 +1582,15 @@ impl<'a> Od<'a> {
             | "note-citation" => {}
             // `svg:title` / `svg:desc` describe a frame (read by it); `text:title` is a field.
             "title" | "desc" if n.prefix != "text" => {}
+            // In a slide the page number is the slide's number, not the one stored.
+            "page-number" if self.slides && self.slide_no > 0 && n.prefix == "text" => {
+                if self.hidden == 0 {
+                    let no = self.slide_no.to_string();
+                    self.c.push_text(inl, &no, base);
+                    ps.other = true;
+                    ps.prev_ws = false;
+                }
+            }
             // Fields and any other wrapper: their stored text.
             _ => self.inline_kids(n, base, ctx, inl, ps, depth + 1),
         }

@@ -801,12 +801,12 @@ fn line_breaks_and_vertical_tabs() {
 }
 
 #[test]
-fn fields_keep_their_stored_text() {
+fn fields_other_than_the_slide_number_keep_their_stored_text() {
     let tx = paras(&format!(
-        r#"{}<a:fld id="{{1}}" type="slidenum"><a:rPr/><a:t>7</a:t></a:fld>"#,
-        ru("", "page ")
+        r#"{}<a:fld id="{{1}}" type="datetime1"><a:rPr/><a:t>7/4/2026</a:t></a:fld>"#,
+        ru("", "on ")
     ));
-    assert_eq!(body1(&tb(0, 0, I, I, &tx)), "page 7");
+    assert_eq!(body1(&tb(0, 0, I, I, &tx)), "on 7/4/2026");
 }
 
 #[test]
@@ -1098,19 +1098,27 @@ fn a_placeholder_without_xfrm_takes_the_layouts_position() {
     let px = Px::new(vec![sl(&s)]).layout(0, &layout);
     assert_eq!(
         lines(&doc(&px).markdown),
-        vec!["## Slide 1", "- left (idx 2)", "- right (idx 1)"]
+        vec![
+            "## Slide 1",
+            "- left (idx 2)",
+            "<!-- -->",
+            "- right (idx 1)"
+        ]
     );
 }
 
 #[test]
 fn the_position_falls_back_to_the_masters_placeholder_of_that_type() {
+    // The layout has the body placeholder (idx 1) but leaves its position to the master.
+    let layout = ph(r#"type="body" idx="1""#, None, "");
     let s = [
         ph(r#"type="body" idx="1""#, None, &pa("master body")),
         tb(0, 0, I, I, &pa("above the master body")),
     ]
     .concat();
     // The master's body is at y = 2 inches: the text box (y = 0) is first.
-    let m = doc(&Px::new(vec![sl(&s)])).markdown;
+    let px = Px::new(vec![sl(&s)]).layout(0, &layout);
+    let m = doc(&px).markdown;
     assert_eq!(
         lines(&m),
         vec!["## Slide 1", "above the master body", "- master body"]
@@ -1118,6 +1126,15 @@ fn the_position_falls_back_to_the_masters_placeholder_of_that_type() {
     // And with the box below the master's body the order flips: the position was really used.
     let s = [
         ph(r#"type="body" idx="1""#, None, &pa("master body")),
+        tb(0, 5 * I, I, I, &pa("below")),
+    ]
+    .concat();
+    let px = Px::new(vec![sl(&s)]).layout(0, &layout);
+    let m = doc(&px).markdown;
+    assert_eq!(lines(&m), vec!["## Slide 1", "- master body", "below"]);
+    // A placeholder with no `idx` finds the master's body by its type alone, whatever the layout.
+    let s = [
+        ph(r#"type="body""#, None, &pa("master body")),
         tb(0, 5 * I, I, I, &pa("below")),
     ]
     .concat();
@@ -1250,7 +1267,7 @@ fn decoration_connectors_and_empty_shapes_are_not_shown() {
 #[test]
 fn alternate_content_shapes_are_read_from_the_choice() {
     let s = format!(
-        r#"<mc:AlternateContent><mc:Choice Requires="p14">{}</mc:Choice><mc:Fallback>{}</mc:Fallback></mc:AlternateContent>"#,
+        r#"<mc:AlternateContent><mc:Choice Requires="a14">{}</mc:Choice><mc:Fallback>{}</mc:Fallback></mc:AlternateContent>"#,
         tb(0, 0, I, I, &pa("choice")),
         tb(0, 0, I, I, &pa("fallback"))
     );

@@ -33,6 +33,8 @@ pub(super) struct Op {
     pub styles: Option<String>,
     /// Inside `office:master-styles` of `styles.xml`.
     pub master: Option<String>,
+    /// Inside `office:automatic-styles` of `styles.xml` (the page layouts).
+    pub styles_auto: Option<String>,
     pub mime: String,
     pub manifest: Option<String>,
     pub extra: Vec<(String, Vec<u8>)>,
@@ -45,6 +47,7 @@ impl Op {
             auto: String::new(),
             styles: None,
             master: None,
+            styles_auto: None,
             mime: MIME_PRES.to_string(),
             manifest: None,
             extra: Vec::new(),
@@ -60,6 +63,10 @@ impl Op {
     }
     pub fn master(mut self, s: &str) -> Op {
         self.master = Some(s.to_string());
+        self
+    }
+    pub fn styles_auto(mut self, s: &str) -> Op {
+        self.styles_auto = Some(s.to_string());
         self
     }
     pub fn mime(mut self, m: &str) -> Op {
@@ -102,13 +109,14 @@ impl Op {
             ),
             ("content.xml".into(), self.content_xml().into_bytes()),
         ];
-        if self.styles.is_some() || self.master.is_some() {
+        if self.styles.is_some() || self.master.is_some() || self.styles_auto.is_some() {
             e.push((
                 "styles.xml".into(),
                 format!(
-                    r#"<?xml version="1.0" encoding="UTF-8"?><office:document-styles {}><office:styles>{}</office:styles><office:master-styles>{}</office:master-styles></office:document-styles>"#,
+                    r#"<?xml version="1.0" encoding="UTF-8"?><office:document-styles {}><office:styles>{}</office:styles><office:automatic-styles>{}</office:automatic-styles><office:master-styles>{}</office:master-styles></office:document-styles>"#,
                     pns(),
                     self.styles.clone().unwrap_or_default(),
+                    self.styles_auto.clone().unwrap_or_default(),
                     self.master.clone().unwrap_or_default()
                 )
                 .into_bytes(),

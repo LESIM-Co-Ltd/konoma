@@ -39,13 +39,17 @@
 //! | table | GFM table |
 //! | picture | `![alt](office-img://..)` |
 //! | chart | `[chart: title]` |
+//! | embedded object with no picture (`p:oleObj`) | `[object: progId]` |
+//! | slide number field (`a:fld type="slidenum"`) | the slide's number (`firstSlideNum` honoured) |
+//! | `mc:AlternateContent` | the first `Choice` whose `Requires` namespaces are read (`a14`), else the `Fallback` (ink: its picture) |
 //! | SmartArt | the text of its drawing (else of its data), as a list; else `[SmartArt]` |
 //! | `a14:m` math | `$latex$` / `$$latex$$` |
 //! | speaker notes (the notes page's body placeholder) | a quote block under the slide |
 //! | connectors, lines, shapes without text, date / footer / slide number placeholders, comments | nothing |
 //!
 //! Positions are resolved through inheritance (a placeholder with no `a:xfrm` takes the layout's
-//! placeholder, then the master's) and through group transforms (`a:chOff` / `a:chExt`); a rotated
+//! placeholder of its `idx` -- or of its type when it has none -- then the master's; an `idx` the
+//! layout lacks inherits nothing) and through group transforms (`a:chOff` / `a:chExt`); a rotated
 //! shape is approximated by its bounding box.
 //!
 //! # Safety
@@ -85,6 +89,10 @@ const SMART_NODES: usize = 20_000;
 const SMART_SHAPES: usize = 500;
 /// Deepest group nesting followed.
 const MAX_GROUP_DEPTH: usize = 20;
+/// The namespaces (prefixes as PowerPoint writes them) whose content the slide reader reads inside
+/// an `mc:Choice`: the DrawingML ones and the `a14` formulas (`a14:m`). Ink (`p14` content parts),
+/// chart extensions (`cx*`) and the like are not read: their `Fallback` (a picture) is.
+const PPTX_READS: &[&str] = &["a", "p", "r", "c", "dgm", "dsp", "m", "a14"];
 
 /// Loads and converts a presentation.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -236,12 +244,18 @@ fn class_of(typ: Option<&str>) -> Class {
 struct PhKey {
     class: Class,
     idx: String,
+    /// The placeholder states an `idx` other than 0: it stands for the layout's placeholder of that
+    /// `idx` and for no other (one the layout lacks inherits nothing). Without one, the kind of
+    /// placeholder (`type`) finds its layout placeholder.
+    explicit: bool,
 }
 
 fn ph_key(ph: &Node) -> PhKey {
+    let idx = ph.attr("idx").unwrap_or("0").trim().to_string();
     PhKey {
         class: class_of(ph.attr("type")),
-        idx: ph.attr("idx").unwrap_or("0").trim().to_string(),
+        explicit: idx != "0",
+        idx,
     }
 }
 
@@ -268,20 +282,20 @@ struct Inherit {
 }
 
 impl Inherit {
-    /// The layout's placeholder a slide placeholder stands for: the same `idx` and kind, else the
-    /// same non-zero `idx`, else the same kind.
+    /// The layout's placeholder a slide placeholder stands for: with an explicit `idx`, the one of
+    /// that `idx` (of the same kind if there are several), and none when the layout has no such
+    /// `idx`; without one, the same kind.
     fn layout_ph(&self, key: &PhKey) -> Option<&PhInfo> {
         let phs = &self.layout.phs;
-        phs.iter()
+        let same_idx = phs
+            .iter()
             .find(|p| p.idx == key.idx && p.class == key.class)
-            .or_else(|| {
-                if key.idx != "0" {
-                    phs.iter().find(|p| p.idx == key.idx)
-                } else {
-                    None
-                }
-            })
-            .or_else(|| phs.iter().find(|p| p.class == key.class))
+            .or_else(|| phs.iter().find(|p| p.idx == key.idx && key.explicit));
+        if key.explicit {
+            same_idx
+        } else {
+            same_idx.or_else(|| phs.iter().find(|p| p.class == key.class))
+        }
     }
 
     /// The master's placeholder of that kind (a subtitle is a body there).
@@ -310,10 +324,11 @@ fn xfrm_rect(x: &Node) -> Option<Rect> {
     let (mut ox, mut oy) = (int_attr(off, "x"), int_attr(off, "y"));
     let rot = int_attr(x, "rot").rem_euclid(21_600_000);
     if (2_700_000..8_100_000).contains(&rot) || (13_500_000..18_900_000).contains(&rot) {
-        let (cx, cy) = (ox + w / 2, oy + h / 2);
+        // (Attributes are 64-bit: a forged value must not overflow the arithmetic.)
+        let (cx, cy) = (ox.saturating_add(w / 2), oy.saturating_add(h / 2));
         std::mem::swap(&mut w, &mut h);
-        ox = cx - w / 2;
-        oy = cy - h / 2;
+        ox = cx.saturating_sub(w / 2);
+        oy = cy.saturating_sub(h / 2);
     }
     Some(Rect::new(ox, oy, w, h))
 }
@@ -493,11 +508,19 @@ struct Sh<'n> {
 }
 
 enum ShBody<'n> {
-    Text { tx: &'n Node, levels: Box<Levels> },
-    Pic { rid: Option<String>, alt: String },
+    Text {
+        tx: &'n Node,
+        levels: Box<Levels>,
+    },
+    Pic {
+        rid: Option<String>,
+        alt: String,
+    },
     Table(&'n Node),
     Chart(Option<String>),
     Smart(Option<String>),
+    /// An embedded object (`p:oleObj`) with no picture: what it is, by name.
+    Object(String),
     Group(Vec<Sh<'n>>),
 }
 
@@ -510,13 +533,20 @@ struct Build<'a> {
 
 /// The nodes of a shape tree level as shapes, `AlternateContent` unwrapped to its `Choice`.
 fn build<'n>(
-    nodes: impl Iterator<Item = &'n Node>,
+    nodes: impl Iterator<Item = &'n Node> + Clone,
     map: &Map,
     b: &mut Build<'_>,
     depth: usize,
     out: &mut Vec<Sh<'n>>,
 ) {
     if depth > MAX_GROUP_DEPTH {
+        // Shapes below the deepest level followed are left out: say so.
+        if nodes
+            .clone()
+            .any(|n| matches!(n.name.as_str(), "sp" | "pic" | "graphicFrame" | "grpSp"))
+        {
+            b.truncated = true;
+        }
         return;
     }
     for n in nodes {
@@ -558,7 +588,7 @@ fn build<'n>(
                 }
             }
             "AlternateContent" => {
-                if let Some(c) = alt_content(n) {
+                if let Some(c) = alt_content(n, PPTX_READS) {
                     build(c.nodes(), map, b, depth + 1, out);
                 }
             }
@@ -616,9 +646,15 @@ fn position(own: Option<Rect>, map: &Map, ph: Option<&PhKey>, inh: &Inherit) -> 
         return Some(map.apply(r));
     }
     let key = ph?;
-    inh.layout_ph(key)
-        .and_then(|p| p.rect)
-        .or_else(|| inh.master_ph(key.class).and_then(|p| p.rect))
+    match inh.layout_ph(key) {
+        // The layout's placeholder, or the master's when the layout leaves its position to it.
+        Some(p) => p
+            .rect
+            .or_else(|| inh.master_ph(p.class).and_then(|m| m.rect)),
+        // An `idx` the layout does not have inherits no position.
+        None if key.explicit => None,
+        None => inh.master_ph(key.class).and_then(|p| p.rect),
+    }
 }
 
 fn ph_of(nv: Option<&Node>) -> Option<&Node> {
@@ -732,6 +768,28 @@ fn find_blip(n: &Node, depth: usize) -> Option<String> {
     None
 }
 
+/// The name of the first embedded object (`p:oleObj`) under `n`: its `progId` (`Word.Document.12`),
+/// else its `name`, else empty.
+fn find_ole(n: &Node, depth: usize) -> Option<String> {
+    if depth > 12 {
+        return None;
+    }
+    for c in n.nodes() {
+        if c.name == "oleObj" {
+            let id = c
+                .attr("progId")
+                .or_else(|| c.attr("name"))
+                .map(clean)
+                .unwrap_or_default();
+            return Some(id.trim().chars().take(80).collect());
+        }
+        if let Some(r) = find_ole(c, depth + 1) {
+            return Some(r);
+        }
+    }
+    None
+}
+
 fn build_frame<'n>(f: &'n Node, map: &Map, inh: &Inherit) -> Option<Sh<'n>> {
     let nv = f.child("nvGraphicFramePr");
     let ph = ph_of(nv).map(ph_key);
@@ -762,7 +820,8 @@ fn build_frame<'n>(f: &'n Node, map: &Map, inh: &Inherit) -> Option<Sh<'n>> {
     } else if !alt.trim().is_empty() {
         ShBody::Pic { rid: None, alt }
     } else {
-        return None;
+        // (A frame that is none of these and has no object is nothing to show.)
+        ShBody::Object(find_ole(data, 0)?)
     };
     Some(Sh {
         rect,
@@ -792,6 +851,15 @@ struct Rd<'c, 'a> {
     layouts: HashMap<String, Rc<Inherit>>,
     masters: HashMap<String, Rc<PartInfo>>,
     next_list: u32,
+    /// The slide's rectangle (`p:sldSz`): shapes wholly outside it are read last.
+    slide_rect: Option<Rect>,
+    /// `p:presentation firstSlideNum`: what the first slide's number field shows.
+    first_num: i64,
+    /// The number of the slide being written (from 1, its place in the order).
+    cur_slide: usize,
+    /// The slide just written when the next one is the same part (kept to be written again
+    /// without reading its part and relationships again).
+    last: Option<(String, Loaded)>,
 }
 
 fn convert(
@@ -799,9 +867,11 @@ fn convert(
     opts: &DocOptions,
     cancel: Option<&Cancel>,
 ) -> Result<Document, OfficeError> {
-    let cap = opts.limits.max_part_bytes;
+    // The presentation part and its relationships are read under the size of a slide part, not
+    // the package's (256 MiB): a forged 250 MB comment must not be read in.
+    let cap = opts.max_slide_part_bytes.min(opts.limits.max_part_bytes);
     let mut pkg = Pkg::open(path)?;
-    let root_rels = read_rels_of_root(&mut pkg, cap).unwrap_or_default();
+    let root_rels = read_rels_of_root(&mut pkg, REL_CAP).unwrap_or_default();
     let main = root_rels
         .values()
         .find(|r| r.kind == "officeDocument" && !r.external)
@@ -817,6 +887,8 @@ fn convert(
     // The slide order: `p:sldIdLst` of the presentation, resolved through its relationships.
     let mut ids: Vec<String> = Vec::new();
     let mut over = false;
+    let mut slide_rect: Option<Rect> = None;
+    let mut first_num: i64 = 1;
     {
         let Some(r) = pkg.part(&main, cap)? else {
             return Err(OfficeError::Unsupported);
@@ -834,6 +906,15 @@ fn convert(
                         // An xlsx / docx renamed .pptx is not a presentation.
                         if local.as_ref() != b"presentation" {
                             return Err(OfficeError::Unsupported);
+                        }
+                        first_num = attr(&e, b"firstSlideNum", false)
+                            .and_then(|v| v.trim().parse::<i64>().ok())
+                            .unwrap_or(1)
+                            .clamp(0, 1_000_000);
+                    } else if local.as_ref() == b"sldSz" {
+                        let n = |k: &[u8]| attr(&e, k, false).and_then(|v| v.trim().parse().ok());
+                        if let (Some(w), Some(h)) = (n(b"cx"), n(b"cy")) {
+                            slide_rect = Some(Rect::new(0, 0, w, h));
                         }
                     } else if local.as_ref() == b"sldId" {
                         if let Some(id) = attr(&e, b"id", true) {
@@ -861,6 +942,7 @@ fn convert(
         media,
     );
     conv.truncated |= over;
+    conv.split_bullet_lists = true;
     let mut slides: Vec<SlideInfo> = Vec::new();
     {
         let mut rd = Rd {
@@ -869,17 +951,27 @@ fn convert(
             layouts: HashMap::new(),
             masters: HashMap::new(),
             next_list: 0,
+            slide_rect,
+            first_num,
+            cur_slide: 0,
+            last: None,
         };
-        for (i, rid) in ids.iter().enumerate() {
+        let parts: Vec<Option<String>> = ids
+            .iter()
+            .map(|rid| {
+                rels.get(rid)
+                    .filter(|r| r.kind == "slide" && !r.external)
+                    .map(|r| r.target.clone())
+            })
+            .collect();
+        for (i, part) in parts.iter().enumerate() {
             if rd.c.cancelled() || rd.c.full {
                 rd.c.truncated = true;
                 break;
             }
-            let part = rels
-                .get(rid)
-                .filter(|r| r.kind == "slide" && !r.external)
-                .map(|r| r.target.clone());
-            if let Some(info) = rd.slide(i + 1, part) {
+            // A slide listed again right after itself is parsed once.
+            let keep = part.is_some() && parts.get(i + 1) == Some(part);
+            if let Some(info) = rd.slide(i + 1, part.clone(), keep) {
                 slides.push(info);
             }
         }
@@ -893,9 +985,14 @@ impl Rd<'_, '_> {
     /// An XML part of the package, within the per-part and the total read budgets (`None` when it
     /// is missing, unreadable, or over a budget -- the last sets `truncated`).
     fn read_part(&mut self, part: &str) -> Option<Vec<u8>> {
+        self.read_part_capped(part, u64::MAX)
+    }
+
+    /// [`Self::read_part`] with a smaller per-part cap.
+    fn read_part_capped(&mut self, part: &str, cap: u64) -> Option<Vec<u8>> {
         let opts = self.c.opts;
         let left = opts.max_pptx_read_total.saturating_sub(self.read_total);
-        let limit = opts.max_slide_part_bytes.min(left);
+        let limit = opts.max_slide_part_bytes.min(left).min(cap);
         if limit == 0 || self.c.cancelled() {
             self.c.truncated = true;
             return None;
@@ -913,8 +1010,14 @@ impl Rd<'_, '_> {
         Some(bytes)
     }
 
+    /// The relationships of a part, read under the same budgets as any other part of the deck (a
+    /// forged one of megabytes costs as much as a slide of that size).
     fn rels_of(&mut self, part: &str) -> HashMap<String, Rel> {
-        read_rels_of(&mut self.c.media, part, REL_CAP).unwrap_or_default()
+        let (dir, rp) = rels_path(part);
+        match self.read_part_capped(&rp, REL_CAP) {
+            Some(b) => parse_rels(&b[..], &dir).unwrap_or_default(),
+            None => HashMap::new(),
+        }
     }
 
     /// A layout with its master, read once.
@@ -1002,9 +1105,16 @@ impl Rd<'_, '_> {
     }
 
     /// Writes one slide; `None` when not even its heading fit the output budgets.
-    fn slide(&mut self, number: usize, part: Option<String>) -> Option<SlideInfo> {
-        let loaded = part.as_deref().and_then(|p| self.load_slide(p));
-        let Some(l) = loaded else {
+    ///
+    /// `keep`: the next slide is this same part, so the parsed slide is kept for it.
+    fn slide(&mut self, number: usize, part: Option<String>, keep: bool) -> Option<SlideInfo> {
+        self.cur_slide = number;
+        let cached = match (&part, self.last.take()) {
+            (Some(p), Some((lp, l))) if *p == lp => Some(l),
+            _ => None,
+        };
+        let loaded = cached.or_else(|| part.as_deref().and_then(|p| self.load_slide(p)));
+        let Some(mut l) = loaded else {
             // A slide that cannot be read still has its place in the order.
             self.c.truncated = true;
             return self.write_heading(number, "", false);
@@ -1012,7 +1122,16 @@ impl Rd<'_, '_> {
         if l.cut {
             self.c.truncated = true;
         }
-        self.c.rels = l.rels.clone();
+        self.c.rels = std::mem::take(&mut l.rels);
+        let info = self.write_slide(number, &l);
+        l.rels = std::mem::take(&mut self.c.rels);
+        if let (true, Some(p)) = (keep, part) {
+            self.last = Some((p, l));
+        }
+        info
+    }
+
+    fn write_slide(&mut self, number: usize, l: &Loaded) -> Option<SlideInfo> {
         let mut b = Build {
             inh: &l.inh,
             shapes: 0,
@@ -1067,7 +1186,7 @@ impl Rd<'_, '_> {
                 kind: s.kind,
             })
             .collect();
-        for i in reading_order(&shapes) {
+        for i in reading_order(&shapes, self.slide_rect) {
             if Some(i) == skip {
                 continue;
             }
@@ -1106,6 +1225,16 @@ impl Rd<'_, '_> {
                 ShBody::Smart(rid) => {
                     let blks = self.smartart(rid.as_deref());
                     self.c.write_blocks(blks);
+                }
+                ShBody::Object(name) => {
+                    self.c.cur_ctx = Ctx::Body;
+                    let label = if name.is_empty() {
+                        "object".to_string()
+                    } else {
+                        format!("object: {name}")
+                    };
+                    let md = self.c.placeholder(&label);
+                    self.c.write_block(Blk::Para(md));
                 }
                 ShBody::Group(kids) => self.write_items(kids, None, depth + 1),
             }
@@ -1202,7 +1331,7 @@ impl Rd<'_, '_> {
                 inl.segs.push(Seg::Break);
             }
             "AlternateContent" => {
-                if let Some(c) = alt_content(n) {
+                if let Some(c) = alt_content(n, PPTX_READS) {
                     for k in c.nodes() {
                         self.inline(k, inl, link, depth + 1);
                     }
@@ -1253,6 +1382,13 @@ impl Rd<'_, '_> {
                 inl.segs.push(Seg::LinkOpen(u.clone()));
             }
             *link = url;
+        }
+        // A slide-number field shows the number of this slide, not the one stored (`‹#›`, or the
+        // number it had when the file was saved).
+        if r.name == "fld" && r.attr("type").is_some_and(|t| t.trim() == "slidenum") {
+            let n = self.first_num.saturating_add(self.cur_slide as i64 - 1);
+            inl.segs.push(Seg::Text(n.to_string(), f));
+            return;
         }
         for t in r.nodes().filter(|n| n.name == "t") {
             // A vertical tab is a line break (PowerPoint writes one for a soft return in old files).
@@ -1382,7 +1518,7 @@ impl Rd<'_, '_> {
                             kind: Kind::Other,
                         })
                         .collect();
-                    return reading_order(&order)
+                    return reading_order(&order, None)
                         .into_iter()
                         .map(|i| shapes[i].1.clone())
                         .collect();

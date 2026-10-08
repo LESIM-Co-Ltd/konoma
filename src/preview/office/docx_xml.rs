@@ -57,7 +57,7 @@ impl Node {
             .map(|(_, v)| v.as_str())
     }
 
-    pub fn nodes(&self) -> impl Iterator<Item = &Node> {
+    pub fn nodes(&self) -> impl Iterator<Item = &Node> + Clone {
         self.kids.iter().filter_map(|k| match k {
             Kid::N(n) => Some(n),
             Kid::T(_) => None,

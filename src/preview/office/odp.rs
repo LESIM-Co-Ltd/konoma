@@ -21,6 +21,7 @@
 //! | `draw:custom-shape`, `draw:rect` .. that hold text | their paragraphs |
 //! | `draw:g` | its members, as one block placed at their bounding rectangle |
 //! | `presentation:notes` > the frame of `presentation:class="notes"` | a quote block under the slide |
+//! | `text:page-number` in a text | the slide's number |
 //! | header, footer, date and page number frames, page thumbnails, connectors, lines, comments | nothing |
 //!
 //! Positions are `svg:x` / `svg:y` / `svg:width` / `svg:height` (cm, mm, in, pt, pc, px -> EMU,
@@ -367,10 +368,22 @@ fn plain_title(n: &Node) -> String {
 // the package
 // ---------------------------------------------------------------------------------------------
 
-/// The frames of each master page of `styles.xml` (`office:master-styles`), by page name. A
-/// damaged part costs the inherited positions, not the presentation.
-fn read_masters(src: impl BufRead) -> HashMap<String, Master> {
-    let mut out: HashMap<String, Master> = HashMap::new();
+/// What `styles.xml` says about the master pages.
+#[derive(Default)]
+struct Masters {
+    /// The frames of each master page, by page name.
+    frames: HashMap<String, Master>,
+    /// The size of the slides of each master page (its page layout's `fo:page-width` /
+    /// `fo:page-height`), by page name.
+    size: HashMap<String, Rect>,
+}
+
+/// The frames and the page size of each master page of `styles.xml` (`office:master-styles`, and
+/// the `style:page-layout`s of its automatic styles). A damaged part costs the inherited positions,
+/// not the presentation.
+fn read_masters(src: impl BufRead) -> Masters {
+    let mut layouts: HashMap<String, Rect> = HashMap::new();
+    let mut out = Masters::default();
     let mut rd = XmlReader::new(src);
     let mut buf = Vec::new();
     let mut root = false;
@@ -389,6 +402,23 @@ fn read_masters(src: impl BufRead) -> HashMap<String, Master> {
             root = true;
             continue;
         }
+        if e.local_name().as_ref() == b"automatic-styles" {
+            let mut budget = Budget::odf(500_000, 16 * 1024 * 1024);
+            let Ok(Tree::Ok(node)) = read_element(&mut rd, &e, empty, &mut budget) else {
+                return out;
+            };
+            for l in node.nodes().filter(|n| n.name == "page-layout") {
+                let props = l.child("page-layout-properties");
+                let size = props
+                    .and_then(|p| Some((len_attr(p, "page-width")?, len_attr(p, "page-height")?)));
+                if let (Some(name), Some((w, h))) = (l.attr("name"), size) {
+                    if layouts.len() < MAX_MASTERS {
+                        layouts.insert(name.to_string(), Rect::new(0, 0, w as i64, h as i64));
+                    }
+                }
+            }
+            continue;
+        }
         if e.local_name().as_ref() != b"master-styles" {
             if !empty && skip_rest(&mut rd).is_err() {
                 return out;
@@ -403,7 +433,7 @@ fn read_masters(src: impl BufRead) -> HashMap<String, Master> {
             let Some(name) = page.attr("name") else {
                 continue;
             };
-            if out.len() >= MAX_MASTERS {
+            if out.frames.len() >= MAX_MASTERS {
                 break;
             }
             let mut m = Master::new();
@@ -415,7 +445,10 @@ fn read_masters(src: impl BufRead) -> HashMap<String, Master> {
                     m.entry(class.to_string()).or_insert(r);
                 }
             }
-            out.insert(name.to_string(), m);
+            if let Some(r) = page.attr("page-layout-name").and_then(|l| layouts.get(l)) {
+                out.size.insert(name.to_string(), *r);
+            }
+            out.frames.insert(name.to_string(), m);
         }
         return out;
     }
@@ -452,7 +485,7 @@ pub(in super::super) fn convert(
     }
     let masters = match pkg.part("styles.xml", cap)? {
         Some(r) => read_masters(r),
-        None => HashMap::new(),
+        None => Masters::default(),
     };
 
     let media = Pkg::open(path)?;
@@ -466,6 +499,7 @@ pub(in super::super) fn convert(
     );
     let mut od = Od::new(conv, st);
     od.slides = true;
+    od.c.split_bullet_lists = true;
     let mut slides: Vec<SlideInfo> = Vec::new();
     {
         let Some(r) = pkg.part("content.xml", cap)? else {
@@ -486,7 +520,7 @@ impl Od<'_> {
     fn read_slides(
         &mut self,
         src: impl BufRead,
-        masters: &HashMap<String, Master>,
+        masters: &Masters,
         slides: &mut Vec<SlideInfo>,
     ) -> Result<(), OfficeError> {
         let mut rd = XmlReader::new(src);
@@ -549,21 +583,23 @@ impl Od<'_> {
     }
 
     /// Writes one slide; `None` when not even its heading fit the output budgets.
-    fn slide(
-        &mut self,
-        masters: &HashMap<String, Master>,
-        number: usize,
-        page: &Node,
-    ) -> Option<SlideInfo> {
+    fn slide(&mut self, masters: &Masters, number: usize, page: &Node) -> Option<SlideInfo> {
         let hidden = page
             .attr("style-name")
             .is_some_and(|s| self.st.page_hidden(s));
         let mut b = Build {
-            master: page.attr("master-page-name").and_then(|m| masters.get(m)),
+            master: page
+                .attr("master-page-name")
+                .and_then(|m| masters.frames.get(m)),
             shapes: 0,
             max_shapes: self.c.opts.max_slide_shapes,
             truncated: false,
         };
+        self.slide_no = number;
+        self.slide_rect = page
+            .attr("master-page-name")
+            .and_then(|m| masters.size.get(m))
+            .copied();
         let mut items: Vec<Sh<'_>> = Vec::new();
         build(page.nodes(), &mut b, 0, &mut items);
         if b.truncated {
@@ -612,7 +648,7 @@ impl Od<'_> {
                 kind: s.kind,
             })
             .collect();
-        for i in reading_order(&shapes) {
+        for i in reading_order(&shapes, self.slide_rect) {
             if Some(i) == skip {
                 continue;
             }
