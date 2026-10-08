@@ -418,6 +418,9 @@ code_theme = "TwoDark"
 #              Tracked changes show the final text; comments, headers and footers are not shown. R shows the converted
 #              Markdown (select with v/V, copy with y). The document file itself is never written. `.doc` is not previewed
 #              (e opens it in an Office app).
+#              Presentations (.pptx/.pptm/.ppsx/.ppsm/.potx/.potm/.odp/.otp) take the same route, one section per
+#              slide: title first, then text, tables, pictures and formulas in reading order, speaker notes as a quote
+#              under each slide, hidden slides marked. J/K = next/previous slide. A structure view, not a picture of the slide.
 # command:  delegate to an external command. {path}=the target file, {out}=an output path (temp file).
 #           An empty (or whitespace-only) command means "no command to delegate to" — the rule
 #           degrades to `[can not preview: <ext>]`, exactly like an unmatched rule. It never falls
@@ -458,7 +461,7 @@ glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # Spreadsheet as a table (cells 
 builtin = "spreadsheet"
 
 [[preview.rules]]
-glob = "*.{docx,docm,dotx,dotm,odt,ott}"   # Word / OpenDocument text converted to Markdown and drawn like a .md. R = the converted Markdown.
+glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument text and presentations (one section per slide, J/K = slide) converted to Markdown and drawn like a .md. R = the converted Markdown.
 builtin = "document"
 
 [[preview.rules]]
@@ -545,7 +548,7 @@ builtin = "pdf"
 #                  "toggle_outline" (o: open the heading outline of a Markdown preview; Enter jumps to a heading)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
 #                  "page_next" "page_prev" (J/K, and PageDown/PageUp on an image: next/previous PDF page, spreadsheet
-#                    sheet, or — on an image/PDF/SVG diff — PDF page on both sides together; does nothing where
+#                    sheet, presentation slide, or — on an image/PDF/SVG diff — PDF page on both sides together; does nothing where
 #                    there is nothing to turn. The former names "pdf_next_page" "pdf_prev_page" "sheet_next"
 #                    "sheet_prev" "media_diff_page_next" "media_diff_page_prev" still work as aliases.)
 #   Table        : "table_copy_cell" "table_copy_row" "table_copy_column" (y → c/r/C: copy from a CSV/TSV/archive table)

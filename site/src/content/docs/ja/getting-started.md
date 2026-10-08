@@ -49,8 +49,8 @@ konoma の本領を発揮するゲートは OS ではなく **端末** です:
 `ffmpegthumbnailer`/`ffmpeg`(konoma 自身がデコードできない動画=VP9・
 AV1・旧世代コーデック・`.avi` のサムネイル)・jj で作業しているなら `jj`(プレビュー版。無ければ git に
 落ちるだけ)・`!` で TUI を開きたいなら `lazygit` / `lazyjj`・`e` で Word/Excel/PowerPoint を開きたいなら Office アプリ
-(Microsoft Office か LibreOffice。表計算と Word のプレビュー自体には不要)。
-画像・SVG・Markdown・Mermaid・LaTeX 数式・CSV・表計算・Word 文書・コード・**PDF**
+(Microsoft Office か LibreOffice。表計算・Word・プレゼンのプレビュー自体には不要)。
+画像・SVG・Markdown・Mermaid・LaTeX 数式・CSV・表計算・Word 文書・プレゼン・コード・**PDF**
 (`J`/`K` で全ページ)・**H.264/HEVC 動画のサムネイル**
 (`.mp4`/`.m4v`/`.mov` と `.mkv`/`.webm`)は Rust ネイティブで動作 —
 **追加インストールは一切不要**です。

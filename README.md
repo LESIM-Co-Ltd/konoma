@@ -142,9 +142,17 @@ you came from, since a worktree's directory rarely does.
   password-protected, damaged or too-large file says why it cannot be shown, and a conversion cut at the size limit
   says so in the title. The old binary `.doc` is not previewed (`e` opens it). Checked against LibreOffice-made files
   only — not yet against files made by Microsoft Word.
+- **PowerPoint / OpenDocument presentations** (`.pptx`/`.pptm`/`.ppsx`/`.ppsm`/`.potx`/`.potm`/`.odp`/`.otp`) are read by
+  konoma itself (no external tool) into the same Markdown view, one section per slide: the slide's title first, then its
+  text, tables, pictures, equations and `[chart: ...]` markers in reading order (by position on the slide, a two-column
+  slide column by column), speaker notes as a quote under each slide, and hidden slides marked "(hidden)". `J`/`K` jump to
+  the next / previous slide (also in `R`, the converted Markdown) and the status line shows `slide 3/12`. This is a
+  **structure view, not a picture of the slide**: layout, colours, shapes and charts are not drawn, an arrow-linked
+  diagram is not ordered by its arrows, and vertical text is not specially handled. The old binary `.ppt` is not
+  previewed (`e` opens it). Checked against LibreOffice-made files only — not yet against files made by PowerPoint.
 - **Open Office documents in their app**: `e` on a Word / Excel / PowerPoint / OpenDocument file opens it
   in Microsoft Office, LibreOffice or the OS default instead of handing the zip to `$EDITOR`.
-  (Word and OpenDocument text have an in-terminal preview — see above; PowerPoint files are open-with-`e` only.)
+  (Word, spreadsheets, presentations and OpenDocument have an in-terminal preview — see above; only the old binary `.doc` / `.ppt` have none.)
 - **Config-driven delegation**: declare how each format is previewed in TOML — delegate to a
   built-in renderer or an external command. Unsupported formats safely show `[can not preview]`
   full-screen instead of crashing.
@@ -279,9 +287,9 @@ instructions](https://docs.jj-vcs.dev/latest/install-and-setup/) (a prebuilt bin
 
 - **Microsoft Office / LibreOffice** — what `e` launches on a Word, Excel, PowerPoint or OpenDocument file
   (macOS: Microsoft Office, then LibreOffice, then the default app via `open`; Linux: `libreoffice`, then
-  `soffice`, then `xdg-open`). Optional and only for `e`: the spreadsheet and Word / OpenDocument previews themselves need no Office app.
+  `soffice`, then `xdg-open`). Optional and only for `e`: the spreadsheet, Word and presentation previews themselves need no Office app.
 
-Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, Word documents and code need nothing extra — konoma renders
+Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, Word documents, presentations and code need nothing extra — konoma renders
 them itself, in pure Rust. (On macOS only, a PDF the built-in renderer cannot draw falls back to the
 system's own `qlmanage`/`sips` for its first page — already installed, nothing to add.)
 

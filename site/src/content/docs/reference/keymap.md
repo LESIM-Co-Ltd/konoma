@@ -57,7 +57,8 @@ information contextually inside the app.
 | `Enter` | open focused link / toggle focused checkbox |
 | `Ctrl-t` | open the focused **local** link in a new tab (anchors jump in place instead; URLs open in the browser either way) |
 | `Space` | toggle focused checkbox |
-| `R` | toggle rendered ⇄ raw source (Markdown/Mermaid, and Word/OpenDocument documents — raw is the converted Markdown); while this preview *is* a diff's `preview` presentation, returns to that diff instead |
+| `J` `K` | presentations only (PowerPoint / OpenDocument): next / previous slide, also in the `R` converted Markdown (no-op elsewhere and on a one-slide deck; actions `page_next` / `page_prev`) |
+| `R` | toggle rendered ⇄ raw source (Markdown/Mermaid, and Word/OpenDocument documents and presentations — raw is the converted Markdown); while this preview *is* a diff's `preview` presentation, returns to that diff instead |
 | `o` | heading outline of a Markdown preview (`Enter` jumps to a heading) |
 | `v` / `V` | select by character / by line, then `y` copies |
 | `y` → `c` | copy the focused Markdown code block (`Tab` focuses one; the rest of the `y` menu copies paths) |

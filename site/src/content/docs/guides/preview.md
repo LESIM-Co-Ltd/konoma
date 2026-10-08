@@ -146,14 +146,14 @@ Press `e` to open the file in an Office app instead — see
 ### Open Office documents with `e`
 
 On a Word (`docx docm dotx dotm doc odt ott`), Excel (the seven spreadsheet types
-above) or PowerPoint (`pptx pptm ppsx potx ppt odp`) file, `e` opens it in a GUI
+above) or PowerPoint (`pptx pptm ppsx ppsm potx potm ppt odp otp`) file, `e` opens it in a GUI
 app rather than handing the zip to `$EDITOR`: on macOS Microsoft Office, then
 LibreOffice, then the default app (`open`); on Linux `libreoffice`, then
 `soffice`, then `xdg-open`. The terminal is not blocked. An `[editor] ext` entry
 for the extension takes priority, and `[external] office_apps = false` turns this
-off (it does not fall back to `$EDITOR`). PowerPoint files have no
-in-terminal preview — `e` is how you open them (and the old binary `.doc`).
-An Office app is optional; the spreadsheet and Word previews work without one.
+off (it does not fall back to `$EDITOR`). The old binary `.doc` and `.ppt`
+have no in-terminal preview — `e` is how you open them.
+An Office app is optional; the spreadsheet, Word and presentation previews work without one.
 
 ## Word and OpenDocument documents
 
@@ -183,6 +183,35 @@ title. Inside a table cell, `*`, `` ` `` and `~~` that appear two or more times 
 replaced by look-alike characters. The old binary `.doc` is not previewed (`e`
 opens it). So far this has been checked against LibreOffice-made files, not files
 made by Microsoft Word.
+
+## PowerPoint and OpenDocument presentations
+
+`.pptx`, `.pptm`, `.ppsx`, `.ppsm`, `.potx`, `.potm`, `.odp` and `.otp` are read by
+konoma itself — no PowerPoint or LibreOffice needed — into the same Markdown as a
+Word document, **one section per slide** (`Slide 3: Title`), and drawn like any `.md`:
+
+- Each slide starts with its title, then its text, bullets, tables, pictures,
+  equations, `[chart: title]` markers and the text inside SmartArt, in **reading
+  order**: by position on the slide (inherited from its layout and master), rows
+  left to right, and a two-column or side-by-side slide **column by column**. Date,
+  footer and slide-number placeholders are left out.
+- **Speaker notes** follow each slide as a quote labelled `Notes`; **hidden slides**
+  are shown and marked `(hidden)`. Comments are not shown.
+- `J` / `K` jump to the next / previous slide (also in the `R` converted Markdown),
+  and the status line shows `slide 3/12`. On a one-slide deck, or anywhere that is not
+  a presentation, they do nothing (and the footer does not offer them). They are the
+  `page_next` / `page_prev` actions — the same ones that turn a PDF page or a sheet.
+- `R` shows the converted Markdown; select with `v` / `V` and copy with `y`.
+
+This is a **structure view, not a picture of the slide**: layout, colours, shapes and
+charts are not drawn (a chart shows only its title), a diagram linked by arrows is
+not ordered by its arrows, and vertical text is not specially handled. Drawing the
+slide as it looks is planned for a later step. The file itself is never written; a
+password-protected, damaged or too-large file says why it cannot be shown, and a deck
+cut at its limits (1,000 slides, 5,000 shapes on a slide, plus the Word limits) shows
+the start and says so in the title. The old binary `.ppt` is not previewed (`e` opens
+it). So far this has been checked against LibreOffice-made files, not files made by
+PowerPoint.
 
 ## Images, SVG, GIF, video, PDF
 

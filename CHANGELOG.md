@@ -7,6 +7,19 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- **PowerPoint / OpenDocument presentation preview** (structure view): `.pptx`/`.pptm`/`.ppsx`/`.ppsm`/`.potx`/`.potm`/
+  `.odp`/`.otp` are read by konoma itself (no external tool) into the same Markdown as Word documents and drawn by the
+  Markdown renderer, one `##` section per slide (`Slide 3: Title`). A slide's title comes first, then its text,
+  bullets, tables, pictures, equations, `[chart: title]` markers and the text of SmartArt in reading order — by
+  position on the slide (inherited from its layout and master), rows left to right, a two-column slide column by
+  column — not the file's z-order; date / footer / slide-number placeholders are left out. Speaker notes follow each
+  slide as a quote (`Notes`), hidden slides are shown and marked `(hidden)`, comments are not shown. `J` / `K`
+  (`page_next` / `page_prev`) jump to the next / previous slide, also in the `R` converted Markdown, and the status
+  line shows `slide 3/12`; the footer and `?` help offer `J/K:slide` only where it acts. `e` opens a deck in
+  PowerPoint / LibreOffice / the OS default. The default `document` rule now matches these extensions. Known limits:
+  this is a structure view, not a picture of the slide (layout, colours, shapes and charts are drawn in a later step);
+  a diagram linked by arrows is not ordered by its arrows and vertical text is not specially handled; the old binary
+  `.ppt` is not previewed. Checked against LibreOffice-made files, not yet against files made by PowerPoint.
 - **Word / OpenDocument preview**: `.docx`/`.docm`/`.dotx`/`.dotm`/`.odt`/`.ott` are converted to Markdown by konoma
   itself (no external tool) and drawn by the Markdown renderer, so `o`, `Tab`, `/` and math all work. Headings, bold /
   italic / strikethrough, bullets and numbering exactly as the document shows them (`(a)`, `ア`, `①`, `第1条` ...),
@@ -45,13 +58,14 @@ All notable changes to konoma are documented in this file. The format is based o
   Excel's notation (`SUM(B3:B4)` rather than `of:=SUM([.B3:.B4])`). The "too large" messages quote the limits that are
   actually enforced, and the title's `(capped)` / the empty table's `(empty)` are translated on a Japanese screen.
 - **`e` on an Office document opens it in a GUI app** (docx/docm/dotx/dotm/doc/odt/ott, xlsx/xlsm/xltx/xltm/xlsb/xls/ods,
-  pptx/pptm/ppsx/potx/ppt/odp) instead of handing the zip to `$EDITOR`: Microsoft Office (macOS only), then
+  pptx/pptm/ppsx/ppsm/potx/potm/ppt/odp/otp) instead of handing the zip to `$EDITOR`: Microsoft Office (macOS only), then
   LibreOffice, then the OS default (`open` / `xdg-open`). The launch runs off the UI thread and the footer says
   which app opened it. `[external] office_apps = false` opens nothing (and the footer no longer offers `e` there); an explicit `[editor.ext]` entry wins.
 
 ### Changed
 - **One action for "next / previous page"**: `page_next` / `page_prev` now turn a PDF's page, a spreadsheet's sheet and
-  an image/PDF diff's PDF page (what they turn depends on the preview on screen). The old action names
+  an image/PDF diff's PDF page (and, with the presentation preview above, a slide; what they turn depends on the
+  preview on screen). The old action names
   (`pdf_next_page`, `pdf_prev_page`, `sheet_next`, `sheet_prev`, `media_diff_page_next`, `media_diff_page_prev`) still
   work in `[keys]` as aliases, and no default key changes (`J`/`K`, `PageDown`/`PageUp` on an image).
 - **A table is now spaced like any other block**: a blank row separates a table from the block before it and from the block after it
@@ -84,6 +98,8 @@ All notable changes to konoma are documented in this file. The format is based o
   thread never parses the file (a 200 KB `<text>` used to freeze it for 16 s on a Mac with 1,000 fonts installed; the time grows with the number of fonts).
 
 ### Fixed
+- The tab bar and the status rows are drawn after the preview body, so what they show (the `slide 3/12` chip, the
+  busy label) no longer lags the preview by one frame.
 - **Private temp directories could be taken over** (command output `{out}`, PDF pages, video thumbnails): their names
   are predictable, an existing directory was used as found and symlinks were followed, so on a shared `/tmp` another
   user could read or redirect what konoma wrote there. A directory is now used only when konoma created it (an existing
