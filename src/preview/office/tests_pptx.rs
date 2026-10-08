@@ -530,7 +530,7 @@ fn hidden_slides_are_marked_in_both_languages() {
     let d = load_px(&px, &opts).unwrap();
     assert_eq!(
         d.markdown,
-        "## スライド 1: a\n\n## スライド 2: b（非表示）\n\n## スライド 3（非表示）"
+        "## スライド 1: a\n\n## スライド 2: b (非表示)\n\n## スライド 3 (非表示)"
     );
 }
 

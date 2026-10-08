@@ -547,7 +547,8 @@ builtin = "pdf"
 #                    = file paging. Directories are skipped; wraps at the ends.)
 #                  "toggle_outline" (o: open the heading outline of a Markdown preview; Enter jumps to a heading)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
-#                  "page_next" "page_prev" (J/K, and PageDown/PageUp on an image: next/previous PDF page, spreadsheet
+#                  "page_next" "page_prev" (J/K, and PageDown/PageUp on an image and in an image/PDF/SVG diff, where they turn the page
+#                    instead of scrolling: next/previous PDF page, spreadsheet
 #                    sheet, presentation slide, or — on an image/PDF/SVG diff — PDF page on both sides together; does nothing where
 #                    there is nothing to turn. The former names "pdf_next_page" "pdf_prev_page" "sheet_next"
 #                    "sheet_prev" "media_diff_page_next" "media_diff_page_prev" still work as aliases.)

@@ -73,7 +73,7 @@ information contextually inside the app.
 |---|---|
 | `+` `-` / `0` `=` | zoom / reset to fit |
 | `h j k l` | pan |
-| `J` `K` | PDF page down / up (actions `page_next` / `page_prev`; the old `pdf_next_page` / `pdf_prev_page` still work) |
+| `J` `K` (also `PageDown` `PageUp`) | PDF page down / up (actions `page_next` / `page_prev`; the old `pdf_next_page` / `pdf_prev_page` still work) |
 | `R` | back to the diff — only while this preview *is* a diff's `preview` representation (opened from there, or via `n`/`N`); a no-op, and hidden, on an ordinary image/PDF/SVG preview |
 | `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
 | `m` `'` / `e` / `q` | bookmark / editor / back |
@@ -99,7 +99,7 @@ information contextually inside the app.
 | Hub: `c` / `x` / `Enter` | commit / discard file / open diff |
 | Hub: `l` / `g` / `b` / `w` | log / commit graph / branches / worktrees |
 | Diff: `s` / `R` / `n` `N` / `x` | layout unified⇄split⇄auto — or, for a changed image/PDF/SVG (`[ui] diff_view = "rendered"` shows it side by side), auto⇄side⇄stack instead (`[git] media_diff`) / cycle the presentations that file actually has (source⇄rendered⇄preview for Markdown/SVG, rendered⇄preview for an image/PDF — `[ui] diff_view`) / next/prev changed file / discard |
-| Diff (image/PDF/SVG): `J` `K` | turn a multi-page PDF's page, both sides together (no-op on a single-page PDF or any other kind; actions `page_next` / `page_prev`, the old `media_diff_page_next` / `_prev` still work) |
+| Diff (image/PDF/SVG): `J` `K` (also `PageDown` `PageUp`, in place of scrolling) | turn a multi-page PDF's page, both sides together (no-op on a single-page PDF or any other kind; actions `page_next` / `page_prev`, the old `media_diff_page_next` / `_prev` still work) |
 | Follow diff: `f` | toggle scope: since follow-start (default) ⇄ full git diff |
 | Log & graph: `Enter` / `y` | commit detail (full message + diff) / copy commit info |
 | Graph: `s` / `x` `0` / `b` | pin base branch / unpin / branch picker |

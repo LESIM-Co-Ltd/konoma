@@ -77,7 +77,7 @@ fn the_japanese_deck() {
         "| 名前 | 数量 | 備考 |",
         "![グラデーションの画像](office-img://",
         "図1 キャプション\n\nグループ上\n\nグループ下",
-        "## スライド 6: 予備（非表示）",
+        "## スライド 6: 予備 (非表示)",
         "> **ノート**  \n> ここで話す。  \n> \\# 数字を覚えておく",
         "参照: [サイト](https://example.com/slides) を見てください。",
     ] {
@@ -90,7 +90,7 @@ fn the_japanese_deck() {
         markdown: d
             .markdown
             .replace("## スライド", "## Slide")
-            .replace("（非表示）", ""),
+            .replace(" (非表示)", ""),
         ..Document::default()
     });
 }
@@ -133,7 +133,7 @@ fn the_opendocument_decks_read_like_the_powerpoint_ones() {
             markdown: o
                 .markdown
                 .replace("## スライド", "## Slide")
-                .replace("（非表示）", ""),
+                .replace(" (非表示)", ""),
             ..Document::default()
         });
     }

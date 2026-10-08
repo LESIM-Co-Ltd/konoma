@@ -1260,7 +1260,10 @@ fn render_decorated_body(
         }
     }
 
-    let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
+    // The end of the scroll range: the last page, or for a presentation the last slide's heading.
+    let max_v = app
+        .slide_scroll_limit(total_rows, inner.height as usize)
+        .min(u16::MAX as usize) as u16;
     app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
     app.tab.preview_viewport = inner.height;
     // Remember the wrapped-row total so `e` can map the scroll position back to an approximate source
@@ -1915,12 +1918,18 @@ fn sheet_error_limit(msg: crate::i18n::Msg) -> String {
         }
     };
     match msg {
-        Msg::SheetErrTooLargeFile | Msg::DocErrTooLargeFile => bytes(l.max_file_bytes),
-        Msg::SheetErrTooLargeEntries | Msg::DocErrTooLargeEntries => {
-            group_thousands(l.max_entries as u64)
+        Msg::SheetErrTooLargeFile | Msg::DocErrTooLargeFile | Msg::DocErrTooLargeFileSlides => {
+            bytes(l.max_file_bytes)
         }
-        Msg::SheetErrTooLargeEntry | Msg::DocErrTooLargeEntry => bytes(l.max_part_bytes),
-        Msg::SheetErrTooLargePackage | Msg::DocErrTooLargePackage => bytes(l.max_total_bytes),
+        Msg::SheetErrTooLargeEntries
+        | Msg::DocErrTooLargeEntries
+        | Msg::DocErrTooLargeEntriesSlides => group_thousands(l.max_entries as u64),
+        Msg::SheetErrTooLargeEntry | Msg::DocErrTooLargeEntry | Msg::DocErrTooLargeEntrySlides => {
+            bytes(l.max_part_bytes)
+        }
+        Msg::SheetErrTooLargePackage
+        | Msg::DocErrTooLargePackage
+        | Msg::DocErrTooLargePackageSlides => bytes(l.max_total_bytes),
         Msg::SheetErrTooLargeArea => group_thousands(l.max_dense_cells),
         Msg::SheetErrTooLargeText => bytes(l.max_text_bytes),
         _ => String::new(),
@@ -1952,16 +1961,23 @@ fn doc_error_text(
     let msg = match err {
         None | Some(OfficeError::Corrupt(_)) if presentation => Msg::DocErrCorruptSlides,
         None | Some(OfficeError::Corrupt(_)) => Msg::DocErrCorrupt,
+        Some(OfficeError::Encrypted) if presentation => Msg::DocErrEncryptedSlides,
         Some(OfficeError::Encrypted) => Msg::DocErrEncrypted,
-        Some(OfficeError::TooLarge { what }) => match *what {
-            "file" => Msg::DocErrTooLargeFile,
-            "entries" => Msg::DocErrTooLargeEntries,
-            "entry" => Msg::DocErrTooLargeEntry,
-            "package" => Msg::DocErrTooLargePackage,
-            _ => Msg::DocErrTooLargeOther,
+        Some(OfficeError::TooLarge { what }) => match (*what, presentation) {
+            ("file", false) => Msg::DocErrTooLargeFile,
+            ("file", true) => Msg::DocErrTooLargeFileSlides,
+            ("entries", false) => Msg::DocErrTooLargeEntries,
+            ("entries", true) => Msg::DocErrTooLargeEntriesSlides,
+            ("entry", false) => Msg::DocErrTooLargeEntry,
+            ("entry", true) => Msg::DocErrTooLargeEntrySlides,
+            ("package", false) => Msg::DocErrTooLargePackage,
+            ("package", true) => Msg::DocErrTooLargePackageSlides,
+            (_, false) => Msg::DocErrTooLargeOther,
+            (_, true) => Msg::DocErrTooLargeOtherSlides,
         },
         Some(OfficeError::Unsupported) if presentation => Msg::DocErrUnsupportedSlides,
         Some(OfficeError::Unsupported) => Msg::DocErrUnsupported,
+        Some(OfficeError::Io(_)) if presentation => Msg::DocErrIoSlides,
         Some(OfficeError::Io(_)) => Msg::DocErrIo,
     };
     tr(lang, msg).replace("{n}", &sheet_error_limit(msg))
@@ -2796,5 +2812,44 @@ mod sheet_error_tests {
         assert_eq!(group_thousands(1_000), "1,000");
         assert_eq!(group_thousands(8_000_000), "8,000,000");
         assert_eq!(group_thousands(10_000), "10,000");
+    }
+}
+
+#[cfg(test)]
+mod doc_error_tests {
+    use super::doc_error_text;
+    use crate::i18n::Lang;
+    use crate::preview::office::OfficeError;
+
+    fn every_error() -> Vec<Option<OfficeError>> {
+        let mut v = vec![
+            None,
+            Some(OfficeError::Encrypted),
+            Some(OfficeError::Corrupt("x".into())),
+            Some(OfficeError::Unsupported),
+            Some(OfficeError::Io("x".into())),
+        ];
+        for what in ["file", "entries", "entry", "package", "other"] {
+            v.push(Some(OfficeError::TooLarge { what }));
+        }
+        v
+    }
+
+    /// The tag follows the kind of file: a presentation never reads "[document]" (and the other
+    /// way round), whichever way it failed.
+    #[test]
+    fn the_tag_of_every_failure_follows_the_file_kind() {
+        for (lang, doc, slide) in [
+            (Lang::En, "[document]", "[presentation]"),
+            (Lang::Jp, "[文書]", "[プレゼン]"),
+        ] {
+            for e in every_error() {
+                let d = doc_error_text(lang, e.as_ref(), false);
+                let p = doc_error_text(lang, e.as_ref(), true);
+                assert!(d.starts_with(doc), "{e:?}: {d}");
+                assert!(p.starts_with(slide), "{e:?}: {p}");
+                assert!(!p.contains("{n}") && !d.contains("{n}"), "{e:?}");
+            }
+        }
     }
 }

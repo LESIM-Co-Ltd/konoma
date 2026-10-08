@@ -15,7 +15,8 @@ All notable changes to konoma are documented in this file. The format is based o
   column — not the file's z-order; date / footer / slide-number placeholders are left out. Speaker notes follow each
   slide as a quote (`Notes`), hidden slides are shown and marked `(hidden)`, comments are not shown. `J` / `K`
   (`page_next` / `page_prev`) jump to the next / previous slide, also in the `R` converted Markdown, and the status
-  line shows `slide 3/12`; the footer and `?` help offer `J/K:slide` only where it acts. `e` opens a deck in
+  line shows `slide 3/12`; every slide, the last ones too, can be put at the top (the scroll range of a deck runs to
+  the last slide's heading, so `J` / `K` stop on each slide); the footer and `?` help offer `J/K:slide` only where it acts. `e` opens a deck in
   PowerPoint / LibreOffice / the OS default. The default `document` rule now matches these extensions. Known limits:
   this is a structure view, not a picture of the slide (layout, colours, shapes and charts are drawn in a later step);
   a diagram linked by arrows is not ordered by its arrows and vertical text is not specially handled; the old binary
@@ -98,8 +99,8 @@ All notable changes to konoma are documented in this file. The format is based o
   thread never parses the file (a 200 KB `<text>` used to freeze it for 16 s on a Mac with 1,000 fonts installed; the time grows with the number of fonts).
 
 ### Fixed
-- The tab bar and the status rows are drawn after the preview body, so what they show (the `slide 3/12` chip, the
-  busy label) no longer lags the preview by one frame.
+- The tab bar and the status rows are drawn after the preview body, so the busy label (the sign that work is in
+  progress) no longer lags the preview by one frame.
 - **Private temp directories could be taken over** (command output `{out}`, PDF pages, video thumbnails): their names
   are predictable, an existing directory was used as found and symlinks were followed, so on a shared `/tmp` another
   user could read or redirect what konoma wrote there. A directory is now used only when konoma created it (an existing

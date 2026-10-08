@@ -357,7 +357,7 @@ fn headings_are_in_japanese_for_a_japanese_ui() {
     let d = load_op(&Op::new(&pages).auto(HIDDEN), &opts).unwrap();
     assert_eq!(
         heading_lines(&d),
-        ["## スライド 1: 題", "## スライド 2: 予備（非表示）"]
+        ["## スライド 1: 題", "## スライド 2: 予備 (非表示)"]
     );
 }
 

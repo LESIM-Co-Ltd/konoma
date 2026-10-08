@@ -512,7 +512,7 @@ builtin = "pdf"
 #                    ファイルをプレビュー=ファイル送り。ディレクトリはスキップ・端で wrap)
 #                  "toggle_outline"(o: Markdown プレビューの見出しアウトラインを開く。Enter で見出しへジャンプ)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
-#                  "page_next" "page_prev"(J/K と画像面の PageDown/PageUp: PDF の次/前のページ・表計算の次/前のシート・プレゼンの次/前のスライド・
+#                  "page_next" "page_prev"(J/K と、画像面・画像/PDF/SVG の diff 面の PageDown/PageUp(diff ではスクロールの代わりにページを送る): PDF の次/前のページ・表計算の次/前のシート・プレゼンの次/前のスライド・
 #                    画像/PDF/SVG の diff では複数ページの PDF の両側同時のページ送り。送るものが無い所では何もしない。
 #                    旧名 "pdf_next_page" "pdf_prev_page" "sheet_next" "sheet_prev" "media_diff_page_next"
 #                    "media_diff_page_prev" も別名として使える)

@@ -70,6 +70,60 @@ fn at_slide(s: &Sim, n: usize) {
     assert_eq!(s.app.slide_position(), Some((n, N)), "{}", s.screen());
 }
 
+#[track_caller]
+fn at_slide_of(s: &Sim, n: usize, total: usize) {
+    assert_eq!(s.app.slide_position(), Some((n, total)), "{}", s.screen());
+}
+
+/// A deck of `n` slides made from `src`'s seven: the slide list repeats them in turn.
+fn deck_of(src: &std::path::Path, dst: &std::path::Path, n: usize) {
+    use std::io::{Read, Write};
+    let mut zr = zip::ZipArchive::new(std::fs::File::open(src).unwrap()).unwrap();
+    let mut zw = zip::ZipWriter::new(std::fs::File::create(dst).unwrap());
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for i in 0..zr.len() {
+        let mut f = zr.by_index(i).unwrap();
+        let name = f.name().to_string();
+        let mut bytes = Vec::new();
+        f.read_to_end(&mut bytes).unwrap();
+        if name == "ppt/presentation.xml" {
+            let xml = String::from_utf8(bytes).unwrap();
+            let (a, rest) = xml.split_once("<p:sldIdLst>").unwrap();
+            let (_, b) = rest.split_once("</p:sldIdLst>").unwrap();
+            let list: String = (0..n)
+                .map(|i| format!(r#"<p:sldId id="{}" r:id="rId{}"/>"#, 256 + i, 4 + i % 7))
+                .collect();
+            bytes = format!("{a}<p:sldIdLst>{list}</p:sldIdLst>{b}").into_bytes();
+        }
+        zw.start_file(name, opts).unwrap();
+        zw.write_all(&bytes).unwrap();
+    }
+    zw.finish().unwrap();
+}
+
+/// Opens a deck of `n` slides at `size`.
+fn open_deck_of(
+    name: &str,
+    n: usize,
+    size: (u16, u16),
+) -> Option<(Sim, crate::test_support::TmpDir)> {
+    let src = testdata(EN)?;
+    let dir = sandbox(name);
+    deck_of(&src, &dir.join("deck.pptx"), n);
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), size.0, size.1);
+    s.select("deck.pptx");
+    s.enter();
+    assert!(s.app.document_ready(), "{}", s.screen());
+    Some((s, dir))
+}
+
+/// The scroll limit the draw path applies, as the view sees it right now.
+fn scroll_limit(s: &Sim) -> usize {
+    s.app
+        .slide_scroll_limit(s.app.md_view_rows, s.app.tab.preview_viewport as usize)
+}
+
 /// A copy of `src` whose presentation lists only its first `keep` slides.
 fn deck_with_slides(src: &std::path::Path, dst: &std::path::Path, keep: usize) {
     use std::io::{Read, Write};
@@ -156,10 +210,11 @@ fn e2e_slides_walking_to_the_end_reaches_the_last_slide_and_stops() {
     for _ in 0..N + 3 {
         s.key('J');
     }
-    // The last slide is short, so its heading cannot reach the top: it is still "slide 7/7".
+    // The last slide's heading is at the top too (the scroll range reaches it).
     at_slide(&s, N);
     s.see("slide 7/7");
     s.see("the site");
+    assert!(top_row(&s).starts_with("Slide 7"), "{}", s.screen());
     let scroll = s.app.tab.preview_scroll;
     s.key('J');
     at_slide(&s, N);
@@ -422,15 +477,58 @@ fn e2e_slides_a_one_slide_deck_offers_no_slide_keys_and_j_k_do_nothing() {
 }
 
 #[test]
-fn e2e_slides_a_deck_that_fits_the_screen_keeps_the_hint_and_the_chip() {
+fn e2e_slides_a_deck_that_fits_the_screen_keeps_the_hint_and_the_keys_act() {
     let Some((mut s, _d)) = open_deck("sl_tall", EN, (100, 150)) else {
         return;
     };
     at_slide(&s, 1);
     assert!(s.app.slide_can_turn());
-    // Nothing scrolls (the whole deck is on screen), but the keys are still offered and harmless.
+    assert!(footer_text(&s).contains("J/K:slide"), "{}", footer_text(&s));
+    // The whole deck is on screen, and J still moves: the hint is true.
+    s.key('J');
+    assert!(s.app.tab.preview_scroll > 0, "{}", s.screen());
+    at_slide(&s, 2);
+    assert!(top_row(&s).starts_with("Slide 2"), "{}", s.screen());
+    s.key('K');
+    at_slide(&s, 1);
+    assert_eq!(s.app.tab.preview_scroll, 0);
+}
+
+#[test]
+fn e2e_slides_a_three_slide_deck_on_one_screen_moves_with_j_and_k_and_says_so() {
+    let Some((mut s, _d)) = open_deck_of("sl_three", 3, (100, 60)) else {
+        return;
+    };
+    assert!(s.app.slide_can_turn());
+    assert!(footer_text(&s).contains("J/K:slide"), "{}", footer_text(&s));
+    s.key('?');
+    s.see("previous slide");
+    s.key('?');
+    s.key('J');
+    at_slide_of(&s, 2, 3);
+    s.key('J');
+    at_slide_of(&s, 3, 3);
+    let scroll = s.app.tab.preview_scroll;
+    s.key('J');
+    assert_eq!(s.app.tab.preview_scroll, scroll, "the last slide: J stops");
+    s.key('K');
+    at_slide_of(&s, 2, 3);
+    s.key('K');
+    at_slide_of(&s, 1, 3);
+    assert_eq!(s.app.tab.preview_scroll, 0);
+}
+
+#[test]
+fn e2e_slides_a_one_slide_deck_has_no_hint_and_no_help_row_even_on_a_tall_screen() {
+    let Some((mut s, _d)) = open_deck_of("sl_one_tall", 1, (100, 60)) else {
+        return;
+    };
+    assert!(!s.app.slide_can_turn());
+    assert!(!footer_text(&s).contains("J/K"), "{}", footer_text(&s));
     s.key('J');
     assert_eq!(s.app.tab.preview_scroll, 0);
+    s.key('?');
+    s.dont_see("previous slide");
 }
 
 #[test]
@@ -465,8 +563,9 @@ fn e2e_slides_a_broken_deck_says_so_and_j_k_do_nothing() {
     s.enter();
     assert!(s.app.is_document() && !s.app.document_ready());
     s.see("[presentation] cannot preview");
-    s.see("PowerPoint");
+    s.see("not a valid presentation");
     s.dont_see("Word");
+    s.dont_see("PowerPoint");
     assert!(!s.app.slide_can_turn() && s.app.slide_position().is_none());
     assert!(!footer_text(&s).contains("J/K"), "{}", footer_text(&s));
     s.key('J');
@@ -484,7 +583,39 @@ fn e2e_slides_failures_are_japanese_in_a_japanese_ui() {
     s.select("bad.pptx");
     s.enter();
     see_cjk(&mut s, "[プレゼン] 表示不可");
-    see_cjk(&mut s, "PowerPoint");
+    see_cjk(&mut s, "正しいプレゼンテーション");
+}
+
+#[test]
+fn e2e_slides_an_encrypted_deck_is_a_presentation_not_a_document() {
+    let Some(enc) = testdata("encrypted.xlsx") else {
+        return;
+    };
+    for (lang_ja, tag, other) in [
+        (false, "[presentation] cannot preview", "[document]"),
+        (true, "[プレゼン] 表示不可", "[文書]"),
+    ] {
+        let dir = sandbox("sl_enc");
+        // An encrypted package is a CFB container, whatever the extension says.
+        std::fs::copy(&enc, dir.join("locked.pptx")).unwrap();
+        std::fs::copy(&enc, dir.join("locked.odp")).unwrap();
+        let cfg = if lang_ja { cfg_ja() } else { cfg_en() };
+        let mut s = Sim::with_config_sized(&canon(&dir), cfg, 140, 20);
+        for f in ["locked.odp", "locked.pptx"] {
+            s.select(f);
+            s.enter();
+            assert!(s.app.is_document() && !s.app.document_ready());
+            if lang_ja {
+                see_cjk(&mut s, tag);
+                assert!(!s.screen().contains(other), "{}", s.screen());
+            } else {
+                s.see(tag);
+                s.see("password-protected");
+                s.dont_see(other);
+            }
+            s.key('q');
+        }
+    }
 }
 
 #[test]
@@ -497,12 +628,12 @@ fn e2e_slides_an_old_binary_ppt_renamed_pptx_is_told_apart_from_a_damaged_file()
     let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 140, 20);
     s.select("old.pptx");
     s.enter();
-    s.see("not a PowerPoint format konoma reads");
+    s.see("not a presentation format konoma reads");
     s.see("old .ppt");
     s.key('q');
     s.select("old2.pptx");
     s.enter();
-    s.see("damaged or not a valid PowerPoint");
+    s.see("damaged or not a valid presentation");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -724,30 +855,288 @@ fn e2e_slides_an_outside_edit_reloads_the_deck_and_the_chip_stays_true() {
 }
 
 #[test]
-fn e2e_slides_k_never_gets_stuck_when_the_last_slides_share_the_final_screen() {
-    // 20 rows: slides 6 and 7 both fit on the last screen, so neither heading can reach the top.
-    let Some((mut s, _d)) = open_deck("sl_trap", EN, (100, 20)) else {
+fn e2e_slides_every_slide_is_stopped_on_when_the_last_ones_share_the_final_screen() {
+    // Heights at which slides 6 and 7 (or more) both fit the last screen: the heading of each
+    // slide still reaches the top, going forward and going back.
+    for h in [14u16, 20, 30, 40, 60] {
+        let Some((mut s, _d)) = open_deck(&format!("sl_trap{h}"), EN, (100, h)) else {
+            return;
+        };
+        for k in 2..=N {
+            s.key('J');
+            at_slide(&s, k);
+            assert!(
+                top_row(&s).starts_with(&format!("Slide {k}")),
+                "h={h} J to {k}\n{}",
+                s.screen()
+            );
+            assert!(s.app.tab.preview_scroll as usize <= scroll_limit(&s));
+        }
+        let end = s.app.tab.preview_scroll;
+        s.key('J');
+        assert_eq!(s.app.tab.preview_scroll, end, "h={h}: J at the end");
+        for k in (1..N).rev() {
+            s.key('K');
+            at_slide(&s, k);
+            assert!(
+                top_row(&s).starts_with(&format!("Slide {k}")),
+                "h={h} K to {k}\n{}",
+                s.screen()
+            );
+        }
+        s.key('K');
+        assert_eq!(s.app.tab.preview_scroll, 0, "h={h}: K at the start");
+    }
+}
+
+#[test]
+fn e2e_slides_the_outline_puts_any_slide_at_the_top_the_last_ones_too() {
+    let Some((mut s, _d)) = open_deck("sl_outline", EN, (100, 40)) else {
         return;
     };
-    for _ in 0..N + 2 {
+    for target in [5usize, 6, 7, 2] {
+        s.key('o');
+        assert!(s.app.is_outline(), "{}", s.screen());
+        while s.app.outline_sel() + 1 < target {
+            s.key('j');
+        }
+        while s.app.outline_sel() + 1 > target {
+            s.key('k');
+        }
+        s.enter();
+        assert!(!s.app.is_outline());
+        at_slide(&s, target);
+        assert!(
+            top_row(&s).starts_with(&format!("Slide {target}")),
+            "{}",
+            s.screen()
+        );
+    }
+}
+
+#[test]
+fn e2e_slides_g_goes_to_the_last_slide_and_nothing_scrolls_past_the_limit() {
+    let Some((mut s, _d)) = open_deck("sl_limit", EN, (100, 40)) else {
+        return;
+    };
+    s.key('G');
+    at_slide(&s, N);
+    assert!(top_row(&s).starts_with("Slide 7"), "{}", s.screen());
+    let limit = scroll_limit(&s);
+    assert_eq!(s.app.tab.preview_scroll as usize, limit);
+    for _ in 0..12 {
+        s.key('j');
+    }
+    s.press(KeyCode::Char(' '), KeyModifiers::NONE);
+    s.press(KeyCode::PageDown, KeyModifiers::NONE);
+    s.press(KeyCode::Char('d'), KeyModifiers::CONTROL);
+    assert_eq!(s.app.tab.preview_scroll as usize, limit, "{}", s.screen());
+    at_slide(&s, N);
+    // Taller screen: the limit follows the new height, never beyond the last heading.
+    s.resize(100, 60);
+    assert!(s.app.tab.preview_scroll as usize <= scroll_limit(&s));
+    at_slide(&s, N);
+    s.resize(100, 14);
+    s.key('G');
+    assert_eq!(s.app.tab.preview_scroll as usize, scroll_limit(&s));
+    at_slide(&s, N);
+    s.key('g');
+    at_slide(&s, 1);
+}
+
+#[test]
+fn e2e_slides_search_lands_inside_the_limit() {
+    let Some((mut s, _d)) = open_deck("sl_search", EN, (100, 40)) else {
+        return;
+    };
+    s.key('/');
+    s.keys("the site");
+    s.enter();
+    assert!(s.app.search_status().is_some(), "{}", s.screen());
+    assert!(s.app.tab.preview_scroll as usize <= scroll_limit(&s));
+    s.key('n');
+    s.key('N');
+    assert!(s.app.tab.preview_scroll as usize <= scroll_limit(&s));
+}
+
+#[test]
+fn e2e_slides_a_hundred_slides_are_all_stopped_on() {
+    let Some((mut s, _d)) = open_deck_of("sl_100", 100, (100, 40)) else {
+        return;
+    };
+    at_slide_of(&s, 1, 100);
+    for k in 2..=100 {
+        s.key('J');
+        at_slide_of(&s, k, 100);
+    }
+    s.key('J');
+    at_slide_of(&s, 100, 100);
+    for k in (1..100).rev() {
+        s.key('K');
+        at_slide_of(&s, k, 100);
+    }
+    s.key('G');
+    at_slide_of(&s, 100, 100);
+    s.key('K');
+    at_slide_of(&s, 99, 100);
+}
+
+#[test]
+fn e2e_slides_a_two_slide_deck_and_a_one_slide_deck_have_the_ordinary_limit_or_wider() {
+    let Some((mut s, _d)) = open_deck_of("sl_two", 2, (100, 60)) else {
+        return;
+    };
+    s.key('J');
+    at_slide_of(&s, 2, 2);
+    s.key('G');
+    at_slide_of(&s, 2, 2);
+    let Some((mut one, _d1)) = open_deck_of("sl_one_g", 1, (100, 60)) else {
+        return;
+    };
+    one.key('G');
+    at_slide_of(&one, 1, 1);
+}
+
+#[test]
+fn e2e_slides_the_raw_view_stops_on_every_slide_too() {
+    for h in [14u16, 40] {
+        let Some((mut s, _d)) = open_deck(&format!("sl_raw_all{h}"), EN, (100, h)) else {
+            return;
+        };
+        s.key('R');
+        assert!(s.app.is_md_raw() && s.app.is_windowed());
+        s.key('g');
+        for k in 2..=N {
+            s.key('J');
+            at_slide(&s, k);
+            assert!(
+                top_row(&s).starts_with(&format!("## Slide {k}")),
+                "h={h} J to {k}\n{}",
+                s.screen()
+            );
+        }
+        let top = top_row(&s);
+        s.key('J');
+        assert_eq!(top_row(&s), top);
+        for k in (1..N).rev() {
+            s.key('K');
+            at_slide(&s, k);
+            assert!(
+                top_row(&s).starts_with(&format!("## Slide {k}")),
+                "h={h} K to {k}\n{}",
+                s.screen()
+            );
+        }
+        // G goes to the widened end: the last slide at the top.
+        s.key('G');
+        at_slide(&s, N);
+        assert!(top_row(&s).starts_with("## Slide 7"), "{}", s.screen());
+        // j at the end moves the caret within the screen but never the window past the limit.
+        let top = top_row(&s);
+        for _ in 0..30 {
+            s.key('j');
+        }
+        assert_eq!(top_row(&s), top, "{}", s.screen());
+        at_slide(&s, N);
+        // And the resize clamp keeps the last slide on screen.
+        s.resize(100, 60);
+        at_slide(&s, N);
+    }
+}
+
+#[test]
+fn e2e_slides_the_tab_comes_back_at_the_same_slide_even_the_last() {
+    let Some((dir, root)) = deck_sandbox("sl_tabs_last", &[EN]) else {
+        return;
+    };
+    let mut s = Sim::with_config_sized(&root, cfg_en(), 100, 40);
+    s.select(EN);
+    s.enter();
+    for _ in 0..N {
         s.key('J');
     }
     at_slide(&s, N);
-    let mut last = s.app.tab.preview_scroll;
-    assert!(last > 0);
-    for i in 0..N + 2 {
-        s.key('K');
-        let now = s.app.tab.preview_scroll;
-        if last == 0 {
-            break;
-        }
+    let scroll = s.app.tab.preview_scroll;
+    s.key('t');
+    assert!(s.app.slide_position().is_none());
+    s.key('1');
+    at_slide(&s, N);
+    assert_eq!(s.app.tab.preview_scroll, scroll);
+    assert!(top_row(&s).starts_with("Slide 7"), "{}", s.screen());
+    drop(dir);
+}
+
+#[test]
+fn e2e_slides_an_odp_stops_on_every_slide() {
+    let Some((mut s, _d)) = open_deck("sl_odp", "slides.odp", (100, 40)) else {
+        return;
+    };
+    for k in 2..=N {
+        s.key('J');
+        at_slide(&s, k);
         assert!(
-            now < last,
-            "press {i}: K must move up ({last} -> {now})\n{}",
+            top_row(&s).starts_with(&format!("Slide {k}")),
+            "J to {k}\n{}",
             s.screen()
         );
-        last = now;
     }
-    at_slide(&s, 1);
-    assert_eq!(s.app.tab.preview_scroll, 0);
+    for k in (1..N).rev() {
+        s.key('K');
+        at_slide(&s, k);
+    }
+}
+
+#[test]
+fn e2e_slides_a_markdown_file_keeps_its_ordinary_scroll_limit() {
+    let dir = sandbox("sl_md_limit");
+    let mut src = String::new();
+    for i in 0..30 {
+        src.push_str(&format!(
+            "## Heading {i}
+
+body {i}
+
+"
+        ));
+    }
+    std::fs::write(dir.join("doc.md"), &src).unwrap();
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg_en(), 100, 20);
+    s.select("doc.md");
+    s.enter();
+    s.key('G');
+    let vh = s.app.tab.preview_viewport as usize;
+    assert_eq!(
+        s.app.tab.preview_scroll as usize,
+        s.app.md_view_rows - vh,
+        "G stops at the last page, as before"
+    );
+    assert!(s.app.slide_position().is_none() && !s.app.slide_can_turn());
+    assert_eq!(
+        s.app.slide_scroll_limit(s.app.md_view_rows, vh),
+        s.app.md_view_rows - vh
+    );
+    s.key('J');
+    assert_eq!(s.app.tab.preview_scroll as usize, s.app.md_view_rows - vh);
+}
+
+#[test]
+fn e2e_slides_a_word_document_keeps_its_ordinary_scroll_limit() {
+    let Some((mut s, _d)) = open_deck("sl_docx_limit", "word.docx", (100, 12)) else {
+        return;
+    };
+    assert!(s.app.is_document() && !s.app.slide_can_turn());
+    s.key('G');
+    let vh = s.app.tab.preview_viewport as usize;
+    assert_eq!(
+        s.app.tab.preview_scroll as usize,
+        s.app.md_view_rows.saturating_sub(vh)
+    );
+    // And its raw view keeps the last page as the window's end.
+    s.key('R');
+    s.key('G');
+    let top = top_row(&s);
+    for _ in 0..20 {
+        s.key('j');
+    }
+    assert_eq!(top_row(&s), top);
 }

@@ -5330,17 +5330,29 @@ impl App {
         // Always fetch the total line count (it's cached) since clamping the line cursor to the end needs it.
         let total = self.win_total();
         let cur = self.tab.preview_top_line;
-        if let Some(b) = self
-            .preview_win
-            .as_mut()
-            .map(|w| w.last_page_top(vh).unwrap_or(0))
-        {
+        if self.preview_win.is_some() {
+            let (b, line) = self.win_max_top(vh).unwrap_or((0, None));
             self.tab.preview_byte_top = b;
-            self.tab.preview_top_line = total.map(|t| t.saturating_sub(vh)).unwrap_or(cur);
+            self.tab.preview_top_line = line
+                .or_else(|| total.map(|t| t.saturating_sub(vh)))
+                .unwrap_or(cur);
         }
         if let Some(t) = total {
             self.tab.preview_cursor_line = t.saturating_sub(1);
         }
+    }
+
+    /// The furthest line-head byte the window may be scrolled to, and the line number when it is
+    /// known without counting: the last page, or for a presentation in the `R` view the last
+    /// slide's heading when that lies further (`slide_raw_floor`). Returns
+    /// `(top, line_if_widened)`; `line_if_widened` is `None` at the ordinary last page.
+    fn win_max_top(&mut self, vh: usize) -> Option<(u64, Option<usize>)> {
+        let floor = self.slide_raw_floor();
+        let last = self.preview_win.as_mut()?.last_page_top(vh).ok()?;
+        Some(match floor {
+            Some((byte, line)) if byte > last => (byte, Some(line)),
+            _ => (last, None),
+        })
     }
 
     /// Total line count (computed and cached only when line numbers are ON). Scans the whole file, so call it minimally.
@@ -5411,13 +5423,15 @@ impl App {
         } else {
             None
         };
+        let (maxt, widened_line) = self.win_max_top(vh).unwrap_or((top, None));
         let result = self.preview_win.as_mut().map(|w| {
             if delta > 0 {
                 let (adv, moved) = w.advance(top, delta as usize).unwrap_or((top, 0));
-                let maxt = w.last_page_top(vh).unwrap_or(top);
                 if adv >= maxt {
-                    // Reached the last page: derive the line number from the total line count (or simply add, if unavailable).
-                    let bl = total.map(|t| t.saturating_sub(vh)).unwrap_or(line + moved);
+                    // Reached the end of the range: derive the line number from the total line count (or simply add, if unavailable).
+                    let bl = widened_line
+                        .or_else(|| total.map(|t| t.saturating_sub(vh)))
+                        .unwrap_or(line + moved);
                     (maxt, bl)
                 } else {
                     (adv, line + moved)
@@ -5443,17 +5457,15 @@ impl App {
         let h = height.max(1) as usize;
         // If a resize etc. put it past the end, clamp it (also correct the line number from the total line count).
         let top0 = self.tab.preview_byte_top;
-        let maxt = self
-            .preview_win
-            .as_mut()
-            .and_then(|w| w.last_page_top(h).ok());
-        if let Some(maxt) = maxt {
+        if let Some((maxt, widened_line)) = self.win_max_top(h) {
             if top0 > maxt {
                 self.tab.preview_byte_top = maxt;
                 // Even with the line-number gutter OFF, the current search match (orange)
                 // references abs=preview_top_line+i, so when clamping to the last page, always
                 // correct preview_top_line from the total line count regardless of line_numbers (#5).
-                if let Some(t) = self.win_total() {
+                if let Some(l) = widened_line {
+                    self.tab.preview_top_line = l;
+                } else if let Some(t) = self.win_total() {
                     self.tab.preview_top_line = t.saturating_sub(h);
                 }
             }
@@ -5632,9 +5644,8 @@ impl App {
         // `last_page_top` is memoized per count on the FileWindow, so this costs nothing per frame
         // after the first (`preview::window::FileWindow::last_page`).
         let count = rows.max(1) as usize;
-        let w = self.preview_win.as_mut()?;
-        let len = w.len();
-        let max = w.last_page_top(count).unwrap_or(0);
+        let (max, _) = self.win_max_top(count).unwrap_or((0, None));
+        let len = self.preview_win.as_ref()?.len();
         // One screenful measured in bytes = from the last page's first line to EOF, i.e. exactly
         // the part that stays visible once scrolling stops. `max + viewport == len`, so the thumb
         // ends up sized as "what you can see / the whole file" — the same ratio the row-counting

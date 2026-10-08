@@ -35,8 +35,9 @@ pub struct LoadedDocument {
     /// 0-based line of each slide's `## ` heading in `markdown`, in slide order (the reader keeps
     /// exactly one such line per slide). Found once here, on the worker, for the `R` raw view.
     pub(super) slide_lines: Vec<usize>,
-    /// Number of lines of `markdown` (the raw view's extent, known without opening the temp file).
-    pub(super) line_count: usize,
+    /// Byte offset in `markdown` of the last slide's heading line (0 without slides): where the
+    /// raw view's window may be scrolled to, past its usual last page.
+    pub(super) last_slide_byte: u64,
 }
 
 impl LoadedDocument {
@@ -58,7 +59,6 @@ impl LoadedDocument {
                 )
             })
             .collect();
-        let line_count = doc.markdown.lines().count();
         let slide_lines = if doc.slides.is_empty() {
             Vec::new()
         } else {
@@ -69,13 +69,20 @@ impl LoadedDocument {
                 .map(|(i, _)| i)
                 .collect()
         };
+        let last_slide_byte = slide_lines.last().map_or(0, |last| {
+            doc.markdown
+                .split_inclusive('\n')
+                .take(*last)
+                .map(str::len)
+                .sum::<usize>() as u64
+        });
         LoadedDocument {
             markdown: doc.markdown,
             truncated: doc.truncated,
             pictures,
             slides: doc.slides,
             slide_lines,
-            line_count,
+            last_slide_byte,
         }
     }
 }
@@ -95,32 +102,19 @@ pub(crate) fn is_presentation_path(path: &Path) -> bool {
         })
 }
 
-/// The slide the view is on: the last heading at or above the top; at the very end of the text
-/// (scrolled, and nothing more to scroll to) it is the last slide - its heading may never reach the
-/// top. `None` before the first heading. `heads` are the headings' positions in the unit `top` uses.
-pub(super) fn slide_at(heads: &[usize], top: usize, at_bottom: bool) -> Option<usize> {
-    if heads.is_empty() {
-        return None;
-    }
-    if at_bottom && top > 0 {
-        return Some(heads.len() - 1);
-    }
+/// The slide the view is on: the last heading at or above the top. `None` before the first
+/// heading. `heads` are the headings' positions in the unit `top` uses. (Every heading can reach
+/// the top: a presentation's scroll limit is widened to the last heading, `App::slide_scroll_limit`.)
+pub(super) fn slide_at(heads: &[usize], top: usize) -> Option<usize> {
     heads.iter().rposition(|h| *h <= top)
 }
 
 /// Where `J` (`dir > 0`) / `K` (`dir < 0`) goes, as the index of a slide's heading. `J`: the slide
 /// after the one the view is on. `K`: the last heading *above* the top of the view - the start of
-/// the current slide when the view is inside it, else the previous slide's - so it always moves the
-/// view up (a slide that cannot reach the top at the end of the text never traps it). `None` =
-/// nowhere to go.
-pub(super) fn slide_turn_target(
-    heads: &[usize],
-    top: usize,
-    at_bottom: bool,
-    dir: i32,
-) -> Option<usize> {
+/// the current slide when the view is inside it, else the previous slide's. `None` = nowhere to go.
+pub(super) fn slide_turn_target(heads: &[usize], top: usize, dir: i32) -> Option<usize> {
     if dir >= 0 {
-        let next = slide_at(heads, top, at_bottom).map_or(0, |c| c + 1);
+        let next = slide_at(heads, top).map_or(0, |c| c + 1);
         return (next < heads.len()).then_some(next);
     }
     heads.iter().rposition(|h| *h < top)
@@ -399,56 +393,89 @@ impl App {
 
     // --- Slides of a presentation (`J`/`K`, the chip, the hints) -------------------------------
 
-    /// The slides' headings as the view shows them, with the view's top and whether it is at the
-    /// end: `(heads, top, at_bottom)`. Decorated view: display rows (`preview_scroll`); `R` raw
-    /// view: lines of the Markdown (`preview_top_line`). `None` when this is not a presentation on
-    /// screen, or its headings are not exactly its slides (then nothing is offered).
-    fn slide_view(&self) -> Option<(Vec<usize>, usize, bool)> {
+    /// Logical lines of the slides' headings in the decorated view, or `None` when they are not
+    /// exactly the open presentation's slides (then nothing is offered).
+    fn slide_head_lines(&self, c: &MdCache) -> Option<Vec<usize>> {
         let d = self.document.as_ref().filter(|_| self.is_document())?;
         if d.slides.is_empty() {
             return None;
         }
-        let vh = self.tab.preview_viewport.max(1) as usize;
-        let (heads, top, total) = if self.tab.md_raw {
-            if !self.is_windowed() {
+        let heads: Vec<usize> = c
+            .anchors
+            .iter()
+            .filter(|(_, line)| {
+                c.lines.get(*line).is_some_and(|l| {
+                    crate::preview::markdown::heading_level_hint(
+                        l,
+                        crate::preview::markdown::row_after_heading(&c.lines, *line),
+                    ) == 2
+                })
+            })
+            .map(|(_, line)| *line)
+            .collect();
+        (heads.len() == d.slides.len()).then_some(heads)
+    }
+
+    /// The slides' headings as the view shows them, with the view's top: `(heads, top)`. Decorated
+    /// view: display rows (`preview_scroll`); `R` raw view: lines of the Markdown
+    /// (`preview_top_line`). `None` when this is not a presentation on screen, or its headings are
+    /// not exactly its slides.
+    fn slide_view(&self) -> Option<(Vec<usize>, usize)> {
+        let d = self.document.as_ref().filter(|_| self.is_document())?;
+        if d.slides.is_empty() {
+            return None;
+        }
+        if self.tab.md_raw {
+            if !self.is_windowed() || d.slide_lines.len() != d.slides.len() {
                 return None;
             }
-            (
-                d.slide_lines.clone(),
-                self.tab.preview_top_line,
-                d.line_count,
-            )
-        } else {
-            let c = self.md_cache.as_ref()?;
-            let heads: Vec<usize> = c
-                .anchors
-                .iter()
-                .filter(|(_, line)| {
-                    c.lines.get(*line).is_some_and(|l| {
-                        crate::preview::markdown::heading_level_hint(
-                            l,
-                            crate::preview::markdown::row_after_heading(&c.lines, *line),
-                        ) == 2
-                    })
-                })
-                .map(|(_, line)| self.md_visual_span(*line).0)
-                .collect();
-            let total =
-                if self.cfg.ui.wrap && c.width > 0 && c.row_prefix.len() == c.lines.len() + 1 {
-                    c.row_prefix.last().copied().unwrap_or(0)
-                } else {
-                    c.lines.len()
-                };
-            (heads, self.tab.preview_scroll as usize, total)
-        };
-        (heads.len() == d.slides.len()).then_some((heads, top, top + vh >= total))
+            return Some((d.slide_lines.clone(), self.tab.preview_top_line));
+        }
+        let c = self.md_cache.as_ref()?;
+        let heads: Vec<usize> = self
+            .slide_head_lines(c)?
+            .into_iter()
+            .map(|line| self.md_visual_span(line).0)
+            .collect();
+        Some((heads, self.tab.preview_scroll as usize))
+    }
+
+    /// The furthest the decorated view of a document may scroll: `total_rows - viewport` as for any
+    /// text, but for a presentation at least the last slide's heading row, so every slide (the
+    /// last ones too) can be put at the top and `J`/`K` stop on each. Below the last slide is then
+    /// blank, as below the last page of a PDF. The one limit `G`, `j`, `Space`, the outline, the
+    /// search and a resize all end up clamped to (the draw path applies it).
+    pub(crate) fn slide_scroll_limit(&self, total_rows: usize, viewport: usize) -> usize {
+        let base = total_rows.saturating_sub(viewport);
+        let last_head = self
+            .md_cache
+            .as_ref()
+            .filter(|_| !self.tab.md_raw)
+            .and_then(|c| self.slide_head_lines(c))
+            .and_then(|h| h.last().copied())
+            .map(|line| self.md_visual_span(line).0);
+        last_head.map_or(base, |h| base.max(h))
+    }
+
+    /// The raw view's counterpart of `slide_scroll_limit`: `(byte, line)` of the last slide's
+    /// heading when the window may be scrolled to it (a presentation in the `R` view), to be taken
+    /// when it lies past the last page. `None` for everything else, which keeps its last page.
+    pub(crate) fn slide_raw_floor(&self) -> Option<(u64, usize)> {
+        if !self.tab.md_raw || !self.is_document() {
+            return None;
+        }
+        let d = self.document.as_ref()?;
+        if d.slides.is_empty() || d.slide_lines.len() != d.slides.len() {
+            return None;
+        }
+        Some((d.last_slide_byte, *d.slide_lines.last()?))
     }
 
     /// `(n, total)`: the slide at the top of the view (1-based; hidden slides count) of an open
     /// presentation. The chip in the status line.
     pub fn slide_position(&self) -> Option<(usize, usize)> {
-        let (heads, top, at_bottom) = self.slide_view()?;
-        let cur = slide_at(&heads, top, at_bottom)?;
+        let (heads, top) = self.slide_view()?;
+        let cur = slide_at(&heads, top)?;
         Some((cur + 1, heads.len()))
     }
 
@@ -465,10 +492,10 @@ impl App {
         if !self.slide_can_turn() {
             return;
         }
-        let Some((heads, top, at_bottom)) = self.slide_view() else {
+        let Some((heads, top)) = self.slide_view() else {
             return;
         };
-        let Some(i) = slide_turn_target(&heads, top, at_bottom, dir) else {
+        let Some(i) = slide_turn_target(&heads, top, dir) else {
             return;
         };
         let at = heads[i];
@@ -525,49 +552,56 @@ mod slide_tests {
 
     #[test]
     fn the_slide_is_the_last_heading_at_or_above_the_top() {
-        assert_eq!(slide_at(&H, 0, false), Some(0));
-        assert_eq!(slide_at(&H, 9, false), Some(0));
-        assert_eq!(slide_at(&H, 10, false), Some(1));
-        assert_eq!(slide_at(&H, 99, false), Some(3));
-        assert_eq!(slide_at(&[], 0, false), None);
+        assert_eq!(slide_at(&H, 0), Some(0));
+        assert_eq!(slide_at(&H, 9), Some(0));
+        assert_eq!(slide_at(&H, 10), Some(1));
+        assert_eq!(slide_at(&H, 30), Some(3));
+        assert_eq!(slide_at(&H, 99), Some(3));
+        assert_eq!(slide_at(&[], 0), None);
         // Text that starts before its first heading: no slide yet.
-        assert_eq!(slide_at(&[3, 9], 1, false), None);
-    }
-
-    #[test]
-    fn at_the_end_of_the_text_the_last_slide_is_current_unless_nothing_scrolled() {
-        assert_eq!(slide_at(&H, 12, true), Some(3));
-        assert_eq!(
-            slide_at(&H, 0, true),
-            Some(0),
-            "all on one screen: still slide 1"
-        );
+        assert_eq!(slide_at(&[3, 9], 1), None);
     }
 
     #[test]
     fn j_goes_to_the_next_heading_and_stops_after_the_last() {
-        assert_eq!(slide_turn_target(&H, 0, false, 1), Some(1));
-        assert_eq!(slide_turn_target(&H, 15, false, 1), Some(2));
-        assert_eq!(slide_turn_target(&H, 30, false, 1), None);
-        assert_eq!(slide_turn_target(&H, 12, true, 1), None);
-        assert_eq!(slide_turn_target(&[3, 9], 1, false, 1), Some(0));
+        assert_eq!(slide_turn_target(&H, 0, 1), Some(1));
+        assert_eq!(slide_turn_target(&H, 15, 1), Some(2));
+        assert_eq!(slide_turn_target(&H, 20, 1), Some(3));
+        assert_eq!(slide_turn_target(&H, 30, 1), None);
+        assert_eq!(slide_turn_target(&[3, 9], 1, 1), Some(0));
     }
 
     #[test]
     fn k_goes_to_the_last_heading_above_the_top() {
+        assert_eq!(slide_turn_target(&H, 15, -1), Some(1), "inside: its start");
         assert_eq!(
-            slide_turn_target(&H, 15, false, -1),
-            Some(1),
-            "inside: its start"
-        );
-        assert_eq!(
-            slide_turn_target(&H, 10, false, -1),
+            slide_turn_target(&H, 10, -1),
             Some(0),
             "at a heading: the previous"
         );
-        assert_eq!(slide_turn_target(&H, 0, false, -1), None);
-        // At the end the chip says "last", but K still moves the view up from where it is.
-        assert_eq!(slide_turn_target(&H, 22, true, -1), Some(2));
-        assert_eq!(slide_turn_target(&[3, 9], 1, false, -1), None);
+        assert_eq!(
+            slide_turn_target(&H, 30, -1),
+            Some(2),
+            "from the last slide"
+        );
+        assert_eq!(slide_turn_target(&H, 0, -1), None);
+        assert_eq!(slide_turn_target(&[3, 9], 1, -1), None);
+    }
+
+    #[test]
+    fn every_heading_is_stopped_on_in_both_directions() {
+        let mut top = 0;
+        let mut seen = vec![0];
+        while let Some(i) = slide_turn_target(&H, top, 1) {
+            top = H[i];
+            seen.push(i);
+        }
+        assert_eq!(seen, [0, 1, 2, 3]);
+        let mut back = vec![3];
+        while let Some(i) = slide_turn_target(&H, top, -1) {
+            top = H[i];
+            back.push(i);
+        }
+        assert_eq!(back, [3, 2, 1, 0]);
     }
 }
