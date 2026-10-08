@@ -493,6 +493,11 @@ impl<R: BufRead> XmlReader<R> {
         self.rd.config_mut()
     }
 
+    /// How many bytes of the part have been consumed so far.
+    pub(crate) fn position(&self) -> u64 {
+        self.rd.buffer_position()
+    }
+
     pub(crate) fn read_event_into<'b>(
         &mut self,
         buf: &'b mut Vec<u8>,

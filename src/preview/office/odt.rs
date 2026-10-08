@@ -56,6 +56,11 @@ use super::super::docx_xml::skip_rest;
 use super::*;
 use crate::preview::office::{mathml, omml};
 
+// The presentation reader builds on this module's walk (lists, paragraphs, tables, frames), so it
+// is a child: it sees the private items it uses.
+#[path = "odp.rs"]
+pub(super) mod odp;
+
 /// Longest object directory name followed (bytes).
 const OBJECT_DIR_MAX: usize = 512;
 
@@ -64,6 +69,8 @@ const OBJECT_DIR_MAX: usize = 512;
 enum Fam {
     Para,
     Text,
+    /// `drawing-page`: the style of a slide (a presentation reads its `presentation:visibility`).
+    Page,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -266,6 +273,7 @@ impl OdStyles {
                     let fam = match n.attr("family") {
                         Some("paragraph") => Fam::Para,
                         Some("text") => Fam::Text,
+                        Some("drawing-page") => Fam::Page,
                         _ => continue,
                     };
                     let Some(name) = n.attr("name") else { continue };
@@ -288,6 +296,9 @@ impl OdStyles {
                         let (f, h) = text_props(tp);
                         d.fmt = f;
                         d.hidden = h;
+                    }
+                    if let Some(dp) = n.child("drawing-page-properties") {
+                        d.hidden = dp.attr("visibility").map(|v| v.trim() == "hidden");
                     }
                     self.styles.insert((fam, name.to_string()), d);
                 }
@@ -361,6 +372,14 @@ impl OdStyles {
             hidden = d.hidden.or(hidden);
         }
         (fmt, hidden.unwrap_or(false))
+    }
+
+    /// A slide whose style (with everything it is based on) sets `presentation:visibility="hidden"`.
+    fn page_hidden(&self, name: &str) -> bool {
+        self.chain(Fam::Page, name)
+            .iter()
+            .find_map(|(_, d)| d.hidden)
+            .unwrap_or(false)
     }
 
     /// The level `lvl` (0-based) of list style `style`.
@@ -562,6 +581,8 @@ struct Od<'a> {
     defs: Vec<(usize, String)>,
     math_objects: usize,
     note_counter: i64,
+    /// A slide's text: nothing in it is a heading (the Markdown's headings are the slides).
+    slides: bool,
 }
 
 /// All the text under `n` (OpenDocument keeps the text of every element), bounded.
@@ -664,20 +685,7 @@ pub(super) fn convert(
         HashMap::new(),
         media,
     );
-    let mut od = Od {
-        c: conv,
-        st,
-        lists: Vec::new(),
-        list_ids: HashMap::new(),
-        last_by_style: HashMap::new(),
-        outline: [None; 10],
-        del_ids: HashSet::new(),
-        tbl_bytes: 0,
-        hidden: 0,
-        defs: Vec::new(),
-        math_objects: 0,
-        note_counter: 0,
-    };
+    let mut od = Od::new(conv, st);
     {
         let Some(r) = pkg.part("content.xml", cap)? else {
             return Err(OfficeError::Corrupt("missing content.xml".into()));
@@ -691,6 +699,24 @@ pub(super) fn convert(
 }
 
 impl<'a> Od<'a> {
+    fn new(c: Conv<'a>, st: OdStyles) -> Od<'a> {
+        Od {
+            c,
+            st,
+            lists: Vec::new(),
+            list_ids: HashMap::new(),
+            last_by_style: HashMap::new(),
+            outline: [None; 10],
+            del_ids: HashSet::new(),
+            tbl_bytes: 0,
+            hidden: 0,
+            defs: Vec::new(),
+            math_objects: 0,
+            note_counter: 0,
+            slides: false,
+        }
+    }
+
     fn cancelled(&self) -> bool {
         self.c.cancelled()
     }
@@ -699,19 +725,24 @@ impl<'a> Od<'a> {
     // content.xml
     // -----------------------------------------------------------------------------------------
 
-    fn read_content(&mut self, src: impl BufRead) -> Result<(), OfficeError> {
-        let mut rd = XmlReader::new(src);
-        let mut buf = Vec::new();
+    /// Reads up to the start of the body element `body` (`text`, `presentation`), taking the
+    /// automatic styles on the way. `false`: the document has no such body, or an empty one.
+    fn enter_body<R: BufRead>(
+        &mut self,
+        rd: &mut XmlReader<R>,
+        buf: &mut Vec<u8>,
+        body: &str,
+    ) -> Result<bool, OfficeError> {
         let mut root = false;
         let mut in_body = false;
         // The automatic styles come before the body; the body's first child is the document type.
         loop {
             buf.clear();
-            let ev = rd.read_event_into(&mut buf).map_err(xml_err)?;
+            let ev = rd.read_event_into(buf).map_err(xml_err)?;
             let (e, empty) = match ev {
                 Event::Start(e) => (e.into_owned(), false),
                 Event::Empty(e) => (e.into_owned(), true),
-                Event::Eof => return Ok(()),
+                Event::Eof => return Ok(false),
                 _ => continue,
             };
             let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
@@ -723,28 +754,33 @@ impl<'a> Od<'a> {
                 continue;
             }
             if in_body {
-                if name != "text" {
+                if name != body {
                     return Err(OfficeError::Unsupported);
                 }
-                if empty {
-                    return Ok(());
-                }
-                break;
+                return Ok(!empty);
             }
             match name.as_str() {
                 "body" => in_body = !empty,
                 "automatic-styles" => {
                     let mut budget = Budget::odf(500_000, 16 * 1024 * 1024);
-                    if let Tree::Ok(node) = read_element(&mut rd, &e, empty, &mut budget)? {
+                    if let Tree::Ok(node) = read_element(rd, &e, empty, &mut budget)? {
                         self.st.add(&node);
                     }
                 }
                 _ => {
                     if !empty {
-                        skip_rest(&mut rd)?;
+                        skip_rest(rd)?;
                     }
                 }
             }
+        }
+    }
+
+    fn read_content(&mut self, src: impl BufRead) -> Result<(), OfficeError> {
+        let mut rd = XmlReader::new(src);
+        let mut buf = Vec::new();
+        if !self.enter_body(&mut rd, &mut buf, "text")? {
+            return Ok(());
         }
         // Inside `office:text`: its children are the top-level blocks. Sections and indexes are
         // entered (their children are top-level blocks too), so a document wrapped in one section
@@ -1308,7 +1344,9 @@ impl<'a> Od<'a> {
             self.skip(p, depth);
             return;
         }
-        let heading = if p.name == "h" {
+        let heading = if self.slides {
+            None
+        } else if p.name == "h" {
             let lvl = p
                 .attr("outline-level")
                 .and_then(|v| v.trim().parse::<u8>().ok())

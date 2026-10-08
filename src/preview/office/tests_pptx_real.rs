@@ -1,5 +1,5 @@
 //! Presentations written by a real application (LibreOffice Impress, `testdata/office/gen/gen_pptx.py`):
-//! `slides.pptx` and `slides-ja.pptx` (and the same decks as `.odp`, which are not read yet).
+//! `slides.pptx` and `slides-ja.pptx` (and the same decks as `.odp`).
 //! **No file here was made by Microsoft PowerPoint**: PowerPoint-specific structures are covered by
 //! the hand-written packages of `tests_pptx.rs`. The files are skipped when absent.
 
@@ -111,14 +111,31 @@ fn the_decks_render() {
     }
 }
 
+/// The OpenDocument version of a deck reads to the same Markdown as the PowerPoint one (the two
+/// files were made from one description by LibreOffice, `gen_pptx.py`).
 #[test]
-fn the_opendocument_versions_are_not_read_yet() {
-    for name in ["slides.odp", "slides-ja.odp"] {
-        let Some(p) = file(name) else { continue };
-        assert_eq!(
-            load_presentation(&p, &DocOptions::default()).unwrap_err(),
-            OfficeError::Unsupported
-        );
+fn the_opendocument_decks_read_like_the_powerpoint_ones() {
+    for (odp, pptx, lang) in [
+        ("slides.odp", "slides.pptx", Lang::En),
+        ("slides-ja.odp", "slides-ja.pptx", Lang::Jp),
+    ] {
+        let (Some(o), Some(p)) = (load(odp, lang), load(pptx, lang)) else {
+            continue;
+        };
+        // (Only the picture's file name differs: the two applications name it differently.)
+        let unnamed = |m: &str| m.replace("100000000000005000000028919738D5.png", "image1.png");
+        assert_eq!(unnamed(&o.markdown), p.markdown, "{odp}");
+        assert_eq!(o.slides, p.slides, "{odp}");
+        assert_eq!(o.images.len(), p.images.len(), "{odp}");
+        assert_eq!(o.truncated, p.truncated, "{odp}");
+        check_headings(&Document {
+            slides: o.slides.clone(),
+            markdown: o
+                .markdown
+                .replace("## スライド", "## Slide")
+                .replace("（非表示）", ""),
+            ..Document::default()
+        });
     }
 }
 

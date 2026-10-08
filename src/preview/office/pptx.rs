@@ -100,11 +100,19 @@ pub fn load_presentation_cancellable(
 ) -> Result<Document, OfficeError> {
     let names = container::inspect_word_package(path, &opts.limits)?;
     if names.iter().any(|n| n == "mimetype") {
-        // An OpenDocument package: encrypted ones are told apart, the rest is not read yet.
+        // An OpenDocument package: encrypted ones are told apart (`odt::odp` checks the type).
         if container::odf_encrypted(path, &names, &opts.limits) {
             return Err(OfficeError::Encrypted);
         }
-        return Err(OfficeError::Unsupported);
+        drop(names);
+        return match crate::preview::markdown::catch_silent(|| {
+            odt::odp::convert(path, opts, cancel)
+        }) {
+            Some(r) => r,
+            None => Err(OfficeError::Corrupt(
+                "panic while reading the presentation".into(),
+            )),
+        };
     }
     drop(names);
     match crate::preview::markdown::catch_silent(|| convert(path, opts, cancel)) {
@@ -1041,31 +1049,7 @@ impl Rd<'_, '_> {
     }
 
     fn write_heading(&mut self, number: usize, title: &str, hidden: bool) -> Option<SlideInfo> {
-        let lang = self.c.opts.lang;
-        let mut text = format!("{} {number}", tr(lang, Msg::SlideHeading));
-        if !title.is_empty() {
-            text.push_str(": ");
-            text.push_str(&escape_heading(title));
-        }
-        if hidden {
-            text.push_str(tr(lang, Msg::SlideHiddenSuffix));
-        }
-        let before = self.c.out.len();
-        self.c.write_block(Blk::Heading {
-            level: 2,
-            text: text.clone(),
-            plain: format!("{} {number}: {title}", tr(lang, Msg::SlideHeading)),
-            bookmarks: Vec::new(),
-        });
-        self.c.flush_code();
-        if self.c.out.len() == before {
-            return None;
-        }
-        Some(SlideInfo {
-            number,
-            title: title.to_string(),
-            hidden,
-        })
+        write_heading(self.c, number, title, hidden)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1470,16 +1454,57 @@ impl Rd<'_, '_> {
         }
         self.c.cur_ctx = Ctx::Body;
         self.c.rels = slide_rels;
-        if lines.is_empty() {
-            return;
-        }
-        let mut quote = format!("> **{}**", tr(self.c.opts.lang, Msg::SlideNotesLabel));
-        for l in lines {
-            quote.push_str("\n> ");
-            quote.push_str(&l.replace('\n', "\n> "));
-        }
-        self.c.write_block(Blk::Para(quote));
+        write_notes_quote(self.c, lines);
     }
+}
+
+/// Writes the heading of a slide (`## Slide 3: Title`, with the hidden mark): `None` when not
+/// even that fit the output budgets. Shared with the OpenDocument reader.
+pub(super) fn write_heading(
+    c: &mut Conv<'_>,
+    number: usize,
+    title: &str,
+    hidden: bool,
+) -> Option<SlideInfo> {
+    let lang = c.opts.lang;
+    let mut text = format!("{} {number}", tr(lang, Msg::SlideHeading));
+    if !title.is_empty() {
+        text.push_str(": ");
+        text.push_str(&escape_heading(title));
+    }
+    if hidden {
+        text.push_str(tr(lang, Msg::SlideHiddenSuffix));
+    }
+    let before = c.out.len();
+    c.write_block(Blk::Heading {
+        level: 2,
+        text: text.clone(),
+        plain: format!("{} {number}: {title}", tr(lang, Msg::SlideHeading)),
+        bookmarks: Vec::new(),
+    });
+    c.flush_code();
+    if c.out.len() == before {
+        return None;
+    }
+    Some(SlideInfo {
+        number,
+        title: title.to_string(),
+        hidden,
+    })
+}
+
+/// The speaker notes of a slide as a quote block under it (nothing for no lines). Shared with the
+/// OpenDocument reader.
+pub(super) fn write_notes_quote(c: &mut Conv<'_>, lines: Vec<String>) {
+    if lines.is_empty() {
+        return;
+    }
+    let mut quote = format!("> **{}**", tr(c.opts.lang, Msg::SlideNotesLabel));
+    for l in lines {
+        quote.push_str("\n> ");
+        quote.push_str(&l.replace('\n', "\n> "));
+    }
+    c.write_block(Blk::Para(quote));
 }
 
 /// What a layout / master gives its placeholders.

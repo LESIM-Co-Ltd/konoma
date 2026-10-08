@@ -270,18 +270,31 @@ fn an_encrypted_presentation_and_a_legacy_ppt() {
 }
 
 #[test]
-fn an_opendocument_presentation_is_not_read_yet() {
+fn an_opendocument_presentation_is_read_and_other_opendocument_types_are_not() {
     let dir = tmp("pptxodp");
+    let entries = |mime: &'static str| {
+        deflated(&[
+            ("mimetype", mime.as_bytes()),
+            ("content.xml", b"<office:document-content/>"),
+        ])
+    };
+    // (A presentation with nothing in it: no slides.)
     let p = write(
         &dir,
         "x.odp",
-        &deflated(&[
-            (
-                "mimetype",
-                b"application/vnd.oasis.opendocument.presentation",
-            ),
-            ("content.xml", b"<office:document-content/>"),
-        ]),
+        &entries("application/vnd.oasis.opendocument.presentation"),
+    );
+    assert_eq!(
+        load_presentation(&p, &DocOptions::default())
+            .unwrap()
+            .slides
+            .len(),
+        0
+    );
+    let p = write(
+        &dir,
+        "y.odt",
+        &entries("application/vnd.oasis.opendocument.text"),
     );
     assert_eq!(
         load_presentation(&p, &DocOptions::default()).unwrap_err(),

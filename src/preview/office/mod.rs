@@ -144,6 +144,10 @@ mod tests_mathml;
 #[cfg(test)]
 mod tests_numfmt;
 #[cfg(test)]
+mod tests_odp;
+#[cfg(test)]
+mod tests_odp_robust;
+#[cfg(test)]
 mod tests_ods;
 #[cfg(test)]
 mod tests_odt;
