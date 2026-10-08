@@ -240,14 +240,12 @@ fn deep_nesting_is_refused_before_any_process_starts() {
 /// An executable shell script standing in for the child, so the supervisor's behaviour can be
 /// tested without a file that makes the real renderer misbehave. Writes its pid to `pid_file`.
 fn script(dir: &Path, name: &str, body: &str, pid_file: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let p = dir.join(name);
-    std::fs::write(
+    // Not `fs::write` + chmod: that would leave a write fd that a concurrent fork leaks (ETXTBSY).
+    crate::test_support::write_executable(
         &p,
         format!("#!/bin/sh\necho $$ > '{}'\n{body}\n", pid_file.display()),
-    )
-    .unwrap();
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     p
 }
 
@@ -1067,7 +1065,14 @@ fn a_child_found_to_have_ended_leaves_the_registry_at_once() {
 fn a_replaced_executable_still_starts_children() {
     let dir = unique_tmp("svg-proc-deleted-exe");
     let copy = dir.join("copy");
-    std::fs::copy(std::env::current_exe().unwrap(), &copy).unwrap();
+    // Copied by a `cp` child, not `fs::copy`: a write fd held here can leak into a concurrent fork
+    // and make running the copy fail with ETXTBSY.
+    let status = std::process::Command::new("cp")
+        .arg(std::env::current_exe().unwrap())
+        .arg(&copy)
+        .status()
+        .unwrap();
+    assert!(status.success(), "cp failed: {status}");
     let out = std::process::Command::new(&copy)
         .args([
             "--exact",

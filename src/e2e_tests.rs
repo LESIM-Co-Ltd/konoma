@@ -9634,16 +9634,11 @@ fn install_blocking_pre_commit_hook(dir: &std::path::Path) {
     let hooks = dir.join(".git").join("hooks");
     std::fs::create_dir_all(&hooks).unwrap();
     let hook = hooks.join("pre-commit");
-    std::fs::write(
+    // Git execs this hook; see `write_executable` for why it is not `fs::write` + chmod.
+    crate::test_support::write_executable(
         &hook,
         "#!/bin/sh\nn=0\nwhile [ -f \"$(git rev-parse --git-dir)/BLOCK\" ] && [ $n -lt 1000 ]; do\n  sleep 0.02\n  n=$((n+1))\ndone\nexit 0\n",
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    );
 }
 
 /// Stage and commit through the real key path with the background runner attached: `o` `s` `c`

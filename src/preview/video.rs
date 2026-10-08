@@ -3309,7 +3309,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ffmpeg_tools_never_inherit_this_process_stdin() {
-        use std::os::unix::fs::PermissionsExt;
         use std::os::unix::io::AsRawFd;
 
         // No `libc` crate dependency needed: `dup`/`dup2`/`close` are POSIX functions always
@@ -3333,14 +3332,10 @@ mod tests {
 
         for name in ["ffmpeg", "ffmpegthumbnailer"] {
             let script = dir.join(name);
-            std::fs::write(
+            crate::test_support::write_executable(
                 &script,
                 format!("#!/bin/sh\ncat > \"$(dirname \"$0\")/captured_{name}.txt\"\nexit 1\n"),
-            )
-            .unwrap();
-            let mut perms = std::fs::metadata(&script).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&script, perms).unwrap();
+            );
         }
 
         let orig_path = std::env::var("PATH").unwrap_or_default();
