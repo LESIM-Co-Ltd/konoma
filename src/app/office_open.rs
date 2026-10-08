@@ -27,7 +27,9 @@ pub(crate) fn office_kind(path: &Path) -> Option<OfficeKind> {
     match ext.as_str() {
         "docx" | "docm" | "dotx" | "dotm" | "doc" | "odt" | "ott" => Some(OfficeKind::Word),
         "xlsx" | "xlsm" | "xltx" | "xltm" | "xlsb" | "xls" | "ods" => Some(OfficeKind::Excel),
-        "pptx" | "pptm" | "ppsx" | "potx" | "ppt" | "odp" => Some(OfficeKind::PowerPoint),
+        "pptx" | "pptm" | "ppsx" | "ppsm" | "potx" | "potm" | "ppt" | "odp" | "otp" => {
+            Some(OfficeKind::PowerPoint)
+        }
         _ => None,
     }
 }
@@ -345,7 +347,9 @@ mod tests {
     fn kind_covers_every_listed_extension_in_any_case() {
         let word = ["docx", "docm", "dotx", "dotm", "doc", "odt", "ott"];
         let excel = ["xlsx", "xlsm", "xltx", "xltm", "xlsb", "xls", "ods"];
-        let ppt = ["pptx", "pptm", "ppsx", "potx", "ppt", "odp"];
+        let ppt = [
+            "pptx", "pptm", "ppsx", "ppsm", "potx", "potm", "ppt", "odp", "otp",
+        ];
         for (list, want) in [
             (&word[..], OfficeKind::Word),
             (&excel[..], OfficeKind::Excel),

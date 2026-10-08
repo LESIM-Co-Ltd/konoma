@@ -936,7 +936,9 @@ fn e2e_word_the_worker_shows_loading_then_the_document() {
     assert_eq!(s.app.workbook_loads_started(), 1);
     assert!(s.app.document_ready() && !s.app.is_document_loading());
     s.see("Word reader sample");
-    s.dont_see("loading");
+    // The document's own spinner is gone (the status row may already say "loading images": it is
+    // drawn after the body, which has just started the pictures).
+    s.dont_see("loading document");
 }
 
 #[test]

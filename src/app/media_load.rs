@@ -137,7 +137,7 @@ impl App {
             // A Word document: converted to Markdown on the same worker (no graphics backend
             // needed to read it; the pictures it holds are decoded later, when drawn).
             PreviewKind::Document(_) => {
-                self.spawn_office_job(MediaJob::Document(path.to_path_buf()));
+                self.spawn_office_job(MediaJob::Document(path.to_path_buf(), self.lang));
             }
             // A standalone .mmd/.mermaid: in image mode, convert to SVG in pure Rust → rasterize
             // (on a separate thread). In text mode / with no backend, do nothing — the decorated
@@ -715,7 +715,8 @@ impl App {
             }
             #[cfg(feature = "git")]
             Some(PreviewKind::GitDiff(_)) => self.media_diff_page_turn(dir),
-            // Slides: not yet (see the extension point above).
+            // The slides of a presentation (a Word document ignores the keys).
+            Some(PreviewKind::Document(_)) => self.slide_turn(dir),
             _ => {
                 if dir >= 0 {
                     self.pdf_next_page()

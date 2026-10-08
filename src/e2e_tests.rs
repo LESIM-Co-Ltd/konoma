@@ -20314,6 +20314,9 @@ mod survivors;
 mod word;
 
 #[cfg(test)]
+mod slides;
+
+#[cfg(test)]
 mod math_ctx;
 
 // ---- SVG files that cannot be drawn say why ---------------------------------------------------

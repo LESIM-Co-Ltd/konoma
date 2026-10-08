@@ -842,6 +842,10 @@ impl KeyMap {
         ptext.insert(KeyPress::ch('\''), run(Action::MarkJump));
         // Heading outline (Markdown preview). `o` toggles it open/closed.
         ptext.insert(KeyPress::ch('o'), run(Action::ToggleOutline));
+        // J/K = next/previous slide of a presentation (the same keys as the PDF page / sheet turn;
+        // `App::page_turn` does nothing for any other text preview).
+        ptext.insert(KeyPress::ch('J'), run(Action::PageNext));
+        ptext.insert(KeyPress::ch('K'), run(Action::PagePrev));
         per_surface.insert(Surface::PreviewText, ptext);
 
         // --- Preview: text/code visual selection (v charwise / V linewise) ---
@@ -2340,11 +2344,15 @@ mod tests {
             m.resolve(Surface::PreviewTable, None, KeyPress::ch('K')),
             Resolution::Action(Action::PagePrev)
         );
-        // Neither the text nor the image surface gets the sheet actions (the image surface keeps
-        // J/K = PDF pages).
-        assert_ne!(
+        // The text surface turns the slides of a presentation with the same keys (and does nothing
+        // for any other text: `App::page_turn`); the image surface keeps J/K = PDF pages.
+        assert_eq!(
             m.resolve(Surface::PreviewText, None, KeyPress::ch('J')),
             Resolution::Action(Action::PageNext)
+        );
+        assert_eq!(
+            m.resolve(Surface::PreviewText, None, KeyPress::ch('K')),
+            Resolution::Action(Action::PagePrev)
         );
         assert_eq!(
             m.resolve(Surface::PreviewImage, None, KeyPress::ch('J')),

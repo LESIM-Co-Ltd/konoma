@@ -38,6 +38,7 @@ mod md_text;
 mod media_diff;
 mod media_load;
 mod office_doc;
+pub(crate) use office_doc::is_presentation_path;
 mod office_open;
 pub use office_open::OfficeOpenResult;
 mod outline;
@@ -832,7 +833,7 @@ enum MediaJob {
     /// Open a Word document and convert it to Markdown (+ its pictures). Always yields a payload:
     /// the document, or the reason it could not be opened. Runs on the Office worker slot, so it
     /// is serialised with workbook loads and stops when its generation is superseded.
-    Document(PathBuf),
+    Document(PathBuf, crate::i18n::Lang),
     /// Run a non-detached `PreviewKind::Command` delegation (`preview::command::run_capture`).
     /// `as_image` (the resolved `render_as == Some("image")`) decides whether the produced artifact
     /// is decoded as an image (`MediaPayload::Static`) or shown as text (`MediaPayload::CommandText`).
@@ -941,14 +942,23 @@ impl MediaJob {
                     Err(e) => MediaPayload::WorkbookFailed(e),
                 })
             }
-            MediaJob::Document(p) => {
+            MediaJob::Document(p, lang) => {
+                use crate::preview::office::docx::pptx::load_presentation_cancellable;
                 use crate::preview::office::docx::{load_document_cancellable, DocOptions};
                 use crate::preview::office::OfficeError;
-                let opts = DocOptions::default();
+                let opts = DocOptions {
+                    lang,
+                    ..DocOptions::default()
+                };
+                let slides = office_doc::is_presentation_path(&p);
                 // The reader sits on third-party parsers: a panic on a pathological file becomes a
                 // "corrupt" reason instead of killing the thread (principle #3).
                 let loaded = crate::preview::markdown::catch_silent(|| {
-                    load_document_cancellable(&p, &opts, cancel.as_ref())
+                    if slides {
+                        load_presentation_cancellable(&p, &opts, cancel.as_ref())
+                    } else {
+                        load_document_cancellable(&p, &opts, cancel.as_ref())
+                    }
                 })
                 .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
                 Some(match loaded {

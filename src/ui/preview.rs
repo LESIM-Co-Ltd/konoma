@@ -31,6 +31,13 @@ pub fn context(app: &App) -> Vec<Span<'static>> {
     if let Some((cur, total)) = app.pdf_page_indicator() {
         spans.push(Span::from(format!("  {cur}/{total}")).bold());
     }
+    // A presentation shows the slide at the top of the view (hidden slides count).
+    if let Some((cur, total)) = app.slide_position() {
+        let t = tr(app.lang, crate::i18n::Msg::SlideChip)
+            .replace("{cur}", &cur.to_string())
+            .replace("{total}", &total.to_string());
+        spans.push(Span::from(format!("  {t}")).bold());
+    }
     spans
 }
 
@@ -183,6 +190,10 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             crate::i18n::Msg::OpenLinkHint,
         )
     };
+    // Same predicate the `J`/`K` handler gates on ([[hint-shown-iff-key-acts]]).
+    if app.slide_can_turn() {
+        sec = sec.row("J / K", l(crate::i18n::Msg::SlideSwitchHelp));
+    }
     sec = sec
         .row("R", r_help)
         .row("o", l(crate::i18n::Msg::HintOutline))
@@ -316,6 +327,10 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "jk", crate::i18n::Msg::Scroll),
             hint(lang, "Tab", crate::i18n::Msg::HintFocus),
         ];
+        // `J/K` only acts on a presentation of 2+ slides - the same predicate as the handler.
+        if app.slide_can_turn() {
+            v.push(hint(lang, "J/K", crate::i18n::Msg::HintSlide));
+        }
         match app.md_focused_kind() {
             Some(MdFocus::LocalLink) => {
                 v.push(hint(lang, "↵", crate::i18n::Msg::HintOpen));
@@ -375,6 +390,9 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         v.push(status);
     } else if app.preview_search_query().is_some() {
         v.push(format!("n/N:{}", tr(lang, crate::i18n::Msg::Match)));
+    }
+    if app.slide_can_turn() {
+        v.push(hint(lang, "J/K", crate::i18n::Msg::HintSlide));
     }
     v.push(hint(lang, "/", crate::i18n::Msg::HintSearch));
     // Range-selection copy (v=char / V=line) is windowed (Code/Text/raw Markdown) only.
@@ -697,7 +715,11 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         // A Word document that did not load: say why (encrypted / too large / corrupt / not a
         // Word format), with the file name. Principle #3: never a crash, never raw bytes.
         Some(PreviewKind::Document(path)) => {
-            let mut body = doc_error_text(app.lang, app.document_error());
+            let mut body = doc_error_text(
+                app.lang,
+                app.document_error(),
+                crate::app::is_presentation_path(path),
+            );
             // "Press `e` to open it in an Office app" only while `e` really does that
             // ([[hint-shown-iff-key-acts]]: the same predicate as the footer's `e` hint, so not
             // with `[external] office_apps = false` nor with an `[editor] ext` rule for the file).
@@ -1923,10 +1945,12 @@ fn group_thousands(n: u64) -> String {
 fn doc_error_text(
     lang: crate::i18n::Lang,
     err: Option<&crate::preview::office::OfficeError>,
+    presentation: bool,
 ) -> String {
     use crate::i18n::Msg;
     use crate::preview::office::OfficeError;
     let msg = match err {
+        None | Some(OfficeError::Corrupt(_)) if presentation => Msg::DocErrCorruptSlides,
         None | Some(OfficeError::Corrupt(_)) => Msg::DocErrCorrupt,
         Some(OfficeError::Encrypted) => Msg::DocErrEncrypted,
         Some(OfficeError::TooLarge { what }) => match *what {
@@ -1936,6 +1960,7 @@ fn doc_error_text(
             "package" => Msg::DocErrTooLargePackage,
             _ => Msg::DocErrTooLargeOther,
         },
+        Some(OfficeError::Unsupported) if presentation => Msg::DocErrUnsupportedSlides,
         Some(OfficeError::Unsupported) => Msg::DocErrUnsupported,
         Some(OfficeError::Io(_)) => Msg::DocErrIo,
     };
