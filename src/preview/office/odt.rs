@@ -588,6 +588,8 @@ struct Od<'a> {
     slide_no: usize,
     /// The size of the slide being written, when its page layout says.
     slide_rect: Option<Rect>,
+    /// The shapes handed to the reading-order pass so far, over the whole presentation.
+    order_shapes: usize,
 }
 
 /// All the text under `n` (OpenDocument keeps the text of every element), bounded.
@@ -721,6 +723,7 @@ impl<'a> Od<'a> {
             slides: false,
             slide_no: 0,
             slide_rect: None,
+            order_shapes: 0,
         }
     }
 

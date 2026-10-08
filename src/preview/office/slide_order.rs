@@ -8,13 +8,15 @@
 //! 1. title shapes, then subtitle shapes (whatever their position);
 //! 2. the rest by position, with a recursive XY-cut: shapes are split into stripes at empty
 //!    horizontal bands, or into columns at empty vertical bands (a two-column slide, left/right
-//!    comparisons). When both cuts exist, the wider band wins, and columns win a tie. A wide
-//!    empty band separates groups; a narrow one only links the things inside a group. Cards and
-//!    left/right comparisons are groups of columns (the gap between the cards is wider than the
-//!    gap between a card's title and its text); "label | value" pairs are groups of rows (the gap
-//!    between the lines is wider than the gap between a label and its value). What cannot be split
-//!    either way is read as rows: top to bottom, and within a row (tops within [`ROW_TOLERANCE`]
-//!    of the previous shape's top) left to right;
+//!    comparisons). When both cuts exist, the wider band wins, and columns win a tie (bands within
+//!    [`ROW_TOLERANCE`] of each other are a tie: a grid drawn with one gap between rows and columns
+//!    is stored with rounding differences of a few EMU, which must not turn it from columns into
+//!    rows). A wide empty band separates groups; a narrow one only links the things inside a group.
+//!    Cards and left/right comparisons are groups of columns (the gap between the cards is wider
+//!    than the gap between a card's title and its text); "label | value" pairs are groups of rows
+//!    (the gap between the lines is wider than the gap between a label and its value). What cannot
+//!    be split either way is read as rows: top to bottom, and within a row (tops within
+//!    [`ROW_TOLERANCE`] of the previous shape's top) left to right;
 //!
 //!    A shape that holds other shapes entirely (a background picture, a panel, a strip with text
 //!    on it) is an **underlay**, and it is read just before the shapes it holds, as the reader
@@ -220,9 +222,14 @@ fn cut(shapes: &[Shape], idx: &[usize], depth: usize, out: &mut Vec<usize>) {
     }
     let stripes = split(shapes, idx, Axis::Y, 0);
     let columns = split(shapes, idx, Axis::X, MIN_COLUMN_GAP);
-    // The wider empty band separates groups; columns win a tie.
+    // The wider empty band separates groups; columns win a tie, and a tie is bands within the
+    // tolerance of rounding (the same 0.05 inch that makes tops one row).
     let groups = match (stripes, columns) {
-        (Some(s), Some(c)) => Some(if c.1 >= s.1 { c.0 } else { s.0 }),
+        (Some(s), Some(c)) => Some(if c.1.saturating_add(ROW_TOLERANCE) >= s.1 {
+            c.0
+        } else {
+            s.0
+        }),
         (Some(s), None) => Some(s.0),
         (None, Some(c)) => Some(c.0),
         (None, None) => None,
@@ -456,8 +463,17 @@ mod tests {
         assert_eq!(reading_order(&grid(IN + 1, IN), None), vec![0, 2, 1, 3]);
         // Equal: columns.
         assert_eq!(reading_order(&grid(IN, IN), None), vec![0, 2, 1, 3]);
-        // Row band 1 EMU wider: rows (a, b, c, d).
-        assert_eq!(reading_order(&grid(IN, IN + 1), None), vec![0, 1, 2, 3]);
+        // Row band 1 EMU wider is still a tie (rounding): columns. Wider than the tolerance of
+        // rounding: rows (a, b, c, d).
+        assert_eq!(reading_order(&grid(IN, IN + 1), None), vec![0, 2, 1, 3]);
+        assert_eq!(
+            reading_order(&grid(IN, IN + ROW_TOLERANCE), None),
+            vec![0, 2, 1, 3]
+        );
+        assert_eq!(
+            reading_order(&grid(IN, IN + ROW_TOLERANCE + 1), None),
+            vec![0, 1, 2, 3]
+        );
     }
 
     #[test]

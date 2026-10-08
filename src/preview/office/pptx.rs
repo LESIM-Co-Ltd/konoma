@@ -541,10 +541,14 @@ fn build<'n>(
 ) {
     if depth > MAX_GROUP_DEPTH {
         // Shapes below the deepest level followed are left out: say so.
-        if nodes
-            .clone()
-            .any(|n| matches!(n.name.as_str(), "sp" | "pic" | "graphicFrame" | "grpSp"))
-        {
+        // (`AlternateContent` is one of them: its `Choice` holds the shapes, so nesting it past the
+        // limit drops the shapes inside as surely as nesting a group does.)
+        if nodes.clone().any(|n| {
+            matches!(
+                n.name.as_str(),
+                "sp" | "pic" | "graphicFrame" | "grpSp" | "AlternateContent"
+            )
+        }) {
             b.truncated = true;
         }
         return;
@@ -860,6 +864,8 @@ struct Rd<'c, 'a> {
     /// The slide just written when the next one is the same part (kept to be written again
     /// without reading its part and relationships again).
     last: Option<(String, Loaded)>,
+    /// The shapes handed to the reading-order pass so far, over the whole deck.
+    order_shapes: usize,
 }
 
 fn convert(
@@ -913,8 +919,12 @@ fn convert(
                             .clamp(0, 1_000_000);
                     } else if local.as_ref() == b"sldSz" {
                         let n = |k: &[u8]| attr(&e, k, false).and_then(|v| v.trim().parse().ok());
+                        // (A size of zero or less is no size: it would put every shape off
+                        // the slide.)
                         if let (Some(w), Some(h)) = (n(b"cx"), n(b"cy")) {
-                            slide_rect = Some(Rect::new(0, 0, w, h));
+                            if w > 0 && h > 0 {
+                                slide_rect = Some(Rect::new(0, 0, w, h));
+                            }
                         }
                     } else if local.as_ref() == b"sldId" {
                         if let Some(id) = attr(&e, b"id", true) {
@@ -955,6 +965,7 @@ fn convert(
             first_num,
             cur_slide: 0,
             last: None,
+            order_shapes: 0,
         };
         let parts: Vec<Option<String>> = ids
             .iter()
@@ -965,7 +976,7 @@ fn convert(
             })
             .collect();
         for (i, part) in parts.iter().enumerate() {
-            if rd.c.cancelled() || rd.c.full {
+            if rd.c.cancelled() || rd.c.full || rd.order_shapes > opts.max_deck_order_shapes {
                 rd.c.truncated = true;
                 break;
             }
@@ -1179,6 +1190,13 @@ impl Rd<'_, '_> {
         if depth > MAX_GROUP_DEPTH {
             return;
         }
+        // The reading-order pass is paid for per shape over the whole deck: past the budget the
+        // rest of the deck is left out (the slide that crossed it keeps its heading).
+        self.order_shapes = self.order_shapes.saturating_add(items.len());
+        if self.order_shapes > self.c.opts.max_deck_order_shapes {
+            self.c.truncated = true;
+            return;
+        }
         let shapes: Vec<Shape> = items
             .iter()
             .map(|s| Shape {
@@ -1320,6 +1338,14 @@ impl Rd<'_, '_> {
 
     fn inline(&mut self, n: &Node, inl: &mut Inl, link: &mut Option<String>, depth: usize) {
         if depth > 8 {
+            // Content nested past the limit is dropped: say so (an element that is read at no
+            // depth, such as run properties, does not count).
+            if matches!(
+                n.name.as_str(),
+                "r" | "fld" | "br" | "AlternateContent" | "m" | "oMath" | "oMathPara"
+            ) {
+                self.c.truncated = true;
+            }
             return;
         }
         match n.name.as_str() {

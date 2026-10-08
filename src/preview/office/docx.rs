@@ -123,9 +123,20 @@ pub struct DocOptions {
     /// Largest XML part of a presentation (slide, layout, master, notes, SmartArt) read at all
     /// (bytes of the inflated part). A slide of a few MB is a table of thousands of cells.
     pub max_slide_part_bytes: u64,
-    /// Total bytes of such XML parts read over a whole presentation: a deck of 1,000 slides of
-    /// 100 KB, with room for layouts and masters, and bounded in time (about a second).
+    /// Total bytes of such XML parts read over a whole presentation, which bounds the time spent
+    /// parsing one. Measured on a release build (no LTO) on a machine with a load average of
+    /// about 13, with `max_deck_order_shapes` still in force: at 64 MiB, 1,000 slides alternating
+    /// between two slides of 5,000 empty `sp` each load in 0.68 s, 512 nested empty `sp` per slide
+    /// in 0.59 s, and 200 distinct slides repeated 5 times in 0.62 s (32 MiB: 0.3-0.44 s; 128 MiB:
+    /// 1.0-1.4 s). At a load average of 41 it takes about twice as long. 64 MiB because a deck of
+    /// 1,000 slides with 50 text boxes each (about 17 MB of XML) uses only a quarter of it, which
+    /// leaves room for heavy decks full of tables and diagrams to be read whole, at a worst case
+    /// of under a second on this machine. Pictures are not XML parts and do not count.
     pub max_pptx_read_total: u64,
+    /// Most shapes, over a whole presentation, handed to the reading-order pass (one call costs up
+    /// to 3.4 microseconds a shape; the pass gives up above `UNDERLAY_MAX_SHAPES` a call, so this is
+    /// at most about a third of a second). 1,000 slides of 50 shapes is half of it.
+    pub max_deck_order_shapes: usize,
 }
 
 impl Default for DocOptions {
@@ -151,7 +162,8 @@ impl Default for DocOptions {
             max_slides: 1_000,
             max_slide_shapes: 5_000,
             max_slide_part_bytes: 16 * MIB,
-            max_pptx_read_total: 128 * MIB,
+            max_pptx_read_total: 64 * MIB,
+            max_deck_order_shapes: 100_000,
         }
     }
 }
@@ -2080,6 +2092,8 @@ impl<'a> Conv<'a> {
 
     fn blocks(&mut self, kids: &[Kid], ctx: Ctx, depth: usize, out: &mut Vec<Blk>) {
         if depth > 40 {
+            // Whatever stood below the limit is dropped: say so.
+            self.truncated |= kids.iter().any(|k| matches!(k, Kid::N(_)));
             return;
         }
         for k in kids {
@@ -2091,6 +2105,7 @@ impl<'a> Conv<'a> {
 
     fn block_node(&mut self, n: &Node, ctx: Ctx, depth: usize, out: &mut Vec<Blk>) {
         if depth > 40 {
+            self.truncated = true;
             return;
         }
         match n.name.as_str() {
@@ -2138,6 +2153,7 @@ impl<'a> Conv<'a> {
 
     fn table(&mut self, t: &Node, depth: usize) -> Option<Blk> {
         if depth > 12 {
+            self.truncated = true;
             return None;
         }
         let mut rows: Vec<Vec<String>> = Vec::new();
@@ -2485,6 +2501,7 @@ impl<'a> Conv<'a> {
 
     fn inline_children(&mut self, parent: &Node, base: Fmt, inl: &mut Inl, depth: usize) {
         if depth > 60 {
+            self.truncated |= parent.nodes().next().is_some();
             return;
         }
         for n in parent.nodes() {
@@ -2494,6 +2511,7 @@ impl<'a> Conv<'a> {
 
     fn inline_node(&mut self, n: &Node, base: Fmt, inl: &mut Inl, depth: usize) {
         if depth > 60 {
+            self.truncated = true;
             return;
         }
         match n.name.as_str() {
@@ -2546,6 +2564,7 @@ impl<'a> Conv<'a> {
     /// `漢字（かんじ）`; the reading is text the reader would otherwise lose).
     fn ruby(&mut self, n: &Node, fmt: Fmt, inl: &mut Inl, depth: usize) {
         if depth > 60 {
+            self.truncated = true;
             return;
         }
         let start = inl.segs.len();
@@ -2670,6 +2689,7 @@ impl<'a> Conv<'a> {
 
     fn run_children(&mut self, r: &Node, fmt: Fmt, hidden: bool, inl: &mut Inl, depth: usize) {
         if depth > 60 {
+            self.truncated |= r.nodes().next().is_some();
             return;
         }
         for c in r.nodes() {
@@ -2830,6 +2850,7 @@ impl<'a> Conv<'a> {
     fn media_node(&mut self, n: &Node, inl: &mut Inl, depth: usize) {
         let mut found = Media::default();
         scan_media(n, &mut found, 0);
+        self.truncated |= found.cut;
         let alt = clean(&found.alt);
         let alt: String = alt.chars().take(300).collect();
         for rid in &found.embeds {
@@ -3170,6 +3191,8 @@ struct Media<'n> {
     chart_rid: Option<String>,
     /// An embedded object (`o:OLEObject`): its `ProgID` (`Excel.Sheet.12`), empty when it has none.
     ole: Option<String>,
+    /// The scan stopped at the depth limit with elements still unread.
+    cut: bool,
 }
 
 /// What a `drawing`'s `a:graphicData` holds when it is not a picture.
@@ -3194,6 +3217,7 @@ fn graphic_of(uri: &str) -> Graphic {
 
 fn scan_media<'n>(n: &'n Node, m: &mut Media<'n>, depth: usize) {
     if depth > 64 {
+        m.cut |= n.nodes().next().is_some();
         return;
     }
     for c in n.nodes() {

@@ -53,6 +53,9 @@ const TITLE_CHARS: usize = 200;
 const MAX_GROUP_DEPTH: usize = 20;
 /// Most master pages read.
 const MAX_MASTERS: usize = 1_000;
+/// Most nodes / bytes of one `style:page-layout` read (a real one is a handful of elements).
+const PAGE_LAYOUT_NODES: usize = 1_000;
+const PAGE_LAYOUT_BYTES: usize = 1024 * 1024;
 /// Most frames of the notes page read.
 const MAX_NOTE_FRAMES: usize = 8;
 /// Most bytes of a chart object's `content.xml` read to find its title.
@@ -378,6 +381,51 @@ struct Masters {
     size: HashMap<String, Rect>,
 }
 
+/// The size of each `style:page-layout` among the children of the `office:automatic-styles` just
+/// opened, by name, read through the end of that element. Every other child is skipped unread; a
+/// layout over its budget is left out. Fails only when the XML is damaged.
+fn read_page_layouts(
+    rd: &mut XmlReader<impl BufRead>,
+    layouts: &mut HashMap<String, Rect>,
+) -> Result<(), OfficeError> {
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let (e, empty) = match rd.read_event_into(&mut buf).map_err(xml_err)? {
+            Event::Start(e) => (e.into_owned(), false),
+            Event::Empty(e) => (e.into_owned(), true),
+            Event::End(_) => return Ok(()),
+            Event::Eof => {
+                return Err(OfficeError::Corrupt(
+                    "xml: unexpected end of document".into(),
+                ))
+            }
+            _ => continue,
+        };
+        if e.local_name().as_ref() != b"page-layout" {
+            if !empty {
+                skip_rest(rd)?;
+            }
+            continue;
+        }
+        let mut budget = Budget::odf(PAGE_LAYOUT_NODES, PAGE_LAYOUT_BYTES);
+        let Tree::Ok(l) = read_element(rd, &e, empty, &mut budget)? else {
+            continue;
+        };
+        let size = l
+            .child("page-layout-properties")
+            .and_then(|p| Some((len_attr(p, "page-width")?, len_attr(p, "page-height")?)));
+        // (A size of zero or less is no size: it would put every shape off the slide.)
+        if let (Some(name), Some((w, h))) =
+            (l.attr("name"), size.filter(|&(w, h)| w > 0.0 && h > 0.0))
+        {
+            if layouts.len() < MAX_MASTERS {
+                layouts.insert(name.to_string(), Rect::new(0, 0, w as i64, h as i64));
+            }
+        }
+    }
+}
+
 /// The frames and the page size of each master page of `styles.xml` (`office:master-styles`, and
 /// the `style:page-layout`s of its automatic styles). A damaged part costs the inherited positions,
 /// not the presentation.
@@ -403,19 +451,11 @@ fn read_masters(src: impl BufRead) -> Masters {
             continue;
         }
         if e.local_name().as_ref() == b"automatic-styles" {
-            let mut budget = Budget::odf(500_000, 16 * 1024 * 1024);
-            let Ok(Tree::Ok(node)) = read_element(&mut rd, &e, empty, &mut budget) else {
+            // Only the page layouts matter (the size of a slide), and each one is read on its own
+            // under a small budget: a part with a huge pile of other automatic styles, or one
+            // oversized layout, costs that element and not the master pages after it.
+            if !empty && read_page_layouts(&mut rd, &mut layouts).is_err() {
                 return out;
-            };
-            for l in node.nodes().filter(|n| n.name == "page-layout") {
-                let props = l.child("page-layout-properties");
-                let size = props
-                    .and_then(|p| Some((len_attr(p, "page-width")?, len_attr(p, "page-height")?)));
-                if let (Some(name), Some((w, h))) = (l.attr("name"), size) {
-                    if layouts.len() < MAX_MASTERS {
-                        layouts.insert(name.to_string(), Rect::new(0, 0, w as i64, h as i64));
-                    }
-                }
             }
             continue;
         }
@@ -557,6 +597,7 @@ impl Od<'_> {
             if count >= opts.max_slides
                 || self.cancelled()
                 || self.c.full
+                || self.order_shapes > opts.max_deck_order_shapes
                 || rd.position() > opts.max_pptx_read_total
             {
                 self.c.truncated = true;
@@ -639,6 +680,13 @@ impl Od<'_> {
 
     fn write_items(&mut self, items: &[Sh<'_>], skip: Option<usize>, depth: usize) {
         if depth > MAX_GROUP_DEPTH {
+            return;
+        }
+        // The reading-order pass is paid for per shape over the whole presentation: past the
+        // budget the rest of it is left out (the slide that crossed it keeps its heading).
+        self.order_shapes = self.order_shapes.saturating_add(items.len());
+        if self.order_shapes > self.c.opts.max_deck_order_shapes {
+            self.c.truncated = true;
             return;
         }
         let shapes: Vec<Shape> = items
