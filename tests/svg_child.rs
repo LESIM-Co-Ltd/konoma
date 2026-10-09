@@ -13,6 +13,15 @@ use std::time::{Duration, Instant};
 
 const FLAG: &str = "--internal-svg-render";
 
+/// The first thing the child writes, before it has read anything: it is ready for requests.
+const READY: &[u8] = b"KSRDY";
+
+/// `out` without the `READY` the child starts with (which it must have written, first).
+fn after_ready(out: Vec<u8>) -> Vec<u8> {
+    assert!(out.starts_with(READY), "the child did not start with READY");
+    out[READY.len()..].to_vec()
+}
+
 fn konoma() -> Command {
     Command::new(env!("CARGO_BIN_EXE_konoma"))
 }
@@ -45,7 +54,7 @@ fn run(input: &[u8]) -> (bool, Vec<u8>) {
     child.stdout.take().unwrap().read_to_end(&mut out).unwrap();
     let status = child.wait().unwrap();
     let _ = w.join();
-    (status.success(), out)
+    (status.success(), after_ready(out))
 }
 
 fn svg(body: &str) -> String {
@@ -327,6 +336,7 @@ fn the_drawing_mode_touches_neither_the_terminal_nor_the_temp_dir() {
     });
     let mut out = Vec::new();
     child.stdout.take().unwrap().read_to_end(&mut out).unwrap();
+    let out = after_ready(out);
     let mut err = Vec::new();
     child.stderr.take().unwrap().read_to_end(&mut err).unwrap();
     assert!(child.wait().unwrap().success());
