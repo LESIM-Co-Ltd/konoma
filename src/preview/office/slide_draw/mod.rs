@@ -24,6 +24,7 @@ pub mod fonts;
 pub mod geom;
 mod geom_xml;
 pub mod model;
+pub mod odf_geom;
 pub mod path;
 pub mod svg;
 pub mod text;
