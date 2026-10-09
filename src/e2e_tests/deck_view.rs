@@ -731,7 +731,7 @@ fn settle(s: &mut Sim) {
             s.app.apply_md_encode(r);
         }
         s.draw();
-        if !any && !s.app.md_images_loading() {
+        if !any && !s.app.md_pixels_pending() {
             return;
         }
         if any {
@@ -1507,6 +1507,15 @@ fn e2e_deck_a_heavy_slide_on_a_growing_terminal_is_not_redrawn_for_a_size_it_can
     };
     settle(&mut s);
     s.resize(300, 100);
+    // The sharpening redraw for the new frame was started by the resize's own frame and has not
+    // been applied (this thread has not looked at the channel): the old pixels are on screen, so
+    // `md_images_loading` does not count it, but pixel work is pending, which is what `settle`
+    // must wait for. (Waiting on `md_images_loading` alone returned here on a loaded machine.)
+    assert!(
+        s.app.office_picture_reraster_inflight_for_test(&url_of(1)),
+        "the resize starts the redraw"
+    );
+    assert!(s.app.md_pixels_pending());
     // `settle` ends only when nothing is left to draw: a redraw wanted again and again for the
     // frame's size (which the slide cannot have) would never let it end.
     settle(&mut s);

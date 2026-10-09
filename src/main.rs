@@ -698,7 +698,7 @@ struct WorkerRx {
 /// the Markdown-inline animations is sooner), and by a plain idle timeout when nothing is going on.
 fn poll_timeout(app: &App) -> Duration {
     if app.is_media_loading()
-        || app.md_images_loading()
+        || app.md_pixels_pending()
         || app.kitty_build_pending()
         || app.filter_pool_scan_in_flight()
     {

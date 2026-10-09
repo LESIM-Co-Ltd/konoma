@@ -93,20 +93,40 @@ impl Rendered {
     /// bigger the work the smaller the result (monotonic). Memory of pixel layers needs no cap:
     /// the writer nests nothing that isolates deeper than a few levels, far under the process's
     /// limit even at the largest raster; node counts do not depend on the raster size.
+    ///
+    /// A limit that cannot be computed (a NaN or negative input, a result that is NaN) fails
+    /// closed: it counts as the model size, never as "no limit" (`f64::min` would drop the NaN
+    /// and leave the other limit, or none, in charge).
     pub fn max_raster_px(&self) -> u32 {
         let model = self.model_px.max(1.0);
         let work = self.filter_work;
-        let by_filters = if work.is_finite() && work > 0.0 {
+        let by_filters = if work.is_nan() || work < 0.0 {
+            model
+        } else if work.is_finite() && work > 0.0 {
             model * (svg::MAX_FILTER_WORK / work).sqrt()
-        } else {
+        } else if work == 0.0 {
             f64::INFINITY
+        } else {
+            0.0 // infinite work: the floor
         };
         // The time the writer predicted for the drawing grows with the raster too (fills, strokes,
         // pictures and outlines in proportion to its area or side): the raster is kept to what
         // fits the same time budget the writer held the slide to at the model size.
-        let by_time = model * self.features.predict().max_ratio(cost::MAX_CHILD_MS);
+        let predicted = self.features.predict();
+        let sane = |v: f64| !v.is_nan() && v >= 0.0;
+        let by_time = if sane(predicted.fixed) && sane(predicted.edge) && sane(predicted.area) {
+            model * predicted.max_ratio(cost::MAX_CHILD_MS)
+        } else {
+            model
+        };
+        let by_filters = if by_filters.is_nan() {
+            model
+        } else {
+            by_filters
+        };
+        let by_time = if by_time.is_nan() { model } else { by_time };
         let px = by_filters.min(by_time);
-        if px.is_infinite() || px.is_nan() {
+        if px.is_infinite() {
             return u32::MAX;
         }
         // Floor of the model size: below it the drawing process would draw at 1:1 anyway.

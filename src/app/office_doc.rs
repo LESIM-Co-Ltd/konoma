@@ -30,8 +30,67 @@ pub(super) enum PictureSource {
         /// budget (`Rendered::max_raster_px`), stored by the decode thread after it wrote the
         /// slide; 0 until then. The wish for a sharper redraw is cut to it, so a heavy slide on a
         /// huge terminal is not redrawn again and again for a size it cannot have.
-        raster_cap: Arc<std::sync::atomic::AtomicU32>,
+        raster_cap: Arc<SlideRasterCap>,
     },
+}
+
+/// How long a raster size refused for taking too long stays out of reach. A time-out measures the
+/// machine's load as much as the slide, so it is not a fact about the slide: after this long a
+/// revisit tries the sharp size again (a revisit within it does not wait out another time-out).
+/// Refusals for cost or memory are the same on every run and never expire.
+pub(super) const TIMEOUT_CAP_LIFETIME: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The longest raster side, in px, a slide is known to be drawable at, shared by everything that
+/// draws the slide. Two kinds of knowledge with different lifetimes: what the slide's own cost
+/// allows and what the drawing process refused for cost or memory (the same every time, kept for
+/// good), and what it refused only by the clock (expires, see [`TIMEOUT_CAP_LIFETIME`]).
+#[derive(Debug, Default)]
+pub(super) struct SlideRasterCap {
+    /// Permanent limit; 0 = none known yet.
+    permanent: std::sync::atomic::AtomicU32,
+    /// A limit that came from a time-out, with when it was learned.
+    timed_out: std::sync::Mutex<Option<(u32, std::time::Instant)>>,
+}
+
+impl SlideRasterCap {
+    /// The limit in force at `now`; None = nothing known (draw at the wanted size).
+    pub(super) fn get(&self, now: std::time::Instant) -> Option<u32> {
+        let permanent =
+            Some(self.permanent.load(std::sync::atomic::Ordering::Relaxed)).filter(|c| *c > 0);
+        let timed_out = self
+            .timed_out
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .filter(|(_, at)| now.saturating_duration_since(*at) < TIMEOUT_CAP_LIFETIME)
+            .map(|(px, _)| px);
+        match (permanent, timed_out) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// Lowers the permanent limit to `px` (never raises it; at least 1).
+    pub(super) fn lower_permanent(&self, px: u32) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let px = px.max(1);
+        let _ = self
+            .permanent
+            .fetch_update(Relaxed, Relaxed, |c| (c == 0 || px < c).then_some(px));
+    }
+
+    /// Lowers the limit to `px` for [`TIMEOUT_CAP_LIFETIME`] from `now`. A limit that is still
+    /// in force and lower stays (its own clock keeps running); an expired one is replaced.
+    pub(super) fn lower_timed_out(&self, px: u32, now: std::time::Instant) {
+        let px = px.max(1);
+        let mut slot = self
+            .timed_out
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let live = slot.filter(|(_, at)| now.saturating_duration_since(*at) < TIMEOUT_CAP_LIFETIME);
+        if live.is_none_or(|(old, _)| px < old) {
+            *slot = Some((px, now));
+        }
+    }
 }
 
 /// One picture of the open document, held in memory only.
@@ -115,7 +174,7 @@ impl LoadedDocument {
                             scene: Arc::new(scene),
                             media: media.clone(),
                             render_truncated: render_truncated.clone(),
-                            raster_cap: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                            raster_cap: Arc::new(SlideRasterCap::default()),
                         },
                         dims,
                         raster: false,
@@ -482,9 +541,7 @@ impl App {
     /// `PictureSource::Slide::raster_cap`); `None` for anything else or before the first draw.
     pub(super) fn slide_raster_cap(&self, url: &str) -> Option<u32> {
         match &self.document.as_ref()?.pictures.get(url)?.source {
-            PictureSource::Slide { raster_cap, .. } => {
-                Some(raster_cap.load(std::sync::atomic::Ordering::Relaxed)).filter(|c| *c > 0)
-            }
+            PictureSource::Slide { raster_cap, .. } => raster_cap.get(std::time::Instant::now()),
             PictureSource::Bytes(_) => None,
         }
     }

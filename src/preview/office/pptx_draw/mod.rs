@@ -72,6 +72,8 @@ mod tests_frames_dump;
 #[cfg(test)]
 mod tests_g1;
 #[cfg(test)]
+mod tests_names;
+#[cfg(test)]
 mod tests_shared;
 
 pub(super) use table::TableStyles;

@@ -1117,9 +1117,11 @@ fn the_cap_formula_on_given_work() {
         "never below the model size"
     );
     assert_eq!(r(0.0, 1280.0).max_raster_px(), u32::MAX);
-    assert_eq!(r(f64::NAN, 1280.0).max_raster_px(), u32::MAX);
-    assert_eq!(r(f64::INFINITY, 1280.0).max_raster_px(), u32::MAX);
-    assert_eq!(r(-1.0, 1280.0).max_raster_px(), u32::MAX);
+    // Work that cannot be counted (NaN, negative) or has no end fails closed: the model size,
+    // never "no limit".
+    assert_eq!(r(f64::NAN, 1280.0).max_raster_px(), 1280);
+    assert_eq!(r(f64::INFINITY, 1280.0).max_raster_px(), 1280);
+    assert_eq!(r(-1.0, 1280.0).max_raster_px(), 1280);
     // work so small the result passes u32: saturates, does not wrap
     assert_eq!(r(1e-300, 1280.0).max_raster_px(), u32::MAX);
 }

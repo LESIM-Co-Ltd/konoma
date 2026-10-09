@@ -4,14 +4,16 @@
 //! The estimate is the inline size of the item plus, for every `String` / `Vec` it owns, what the
 //! allocator hands out for its capacity (rounded up to 16 bytes; the allocator's own bookkeeping
 //! comes on top, which is why the budget it feeds has a margin). Text shared between items
-//! (`Arc<str>`) costs one pointer pair inline and nothing here: it exists once for the whole deck.
+//! (`Arc<str>`) costs one pointer pair inline and nothing here: it exists once for the whole deck
+//! (a name that only this item holds is counted, see `font_heap`).
 
 use std::mem::size_of;
+use std::sync::Arc;
 
 use super::model::{
-    Arrow, ArrowKind, Bullet, BulletKind, Dash, Fill, FontSpec, GeomPath, Geometry, GroupItem,
-    ImageFill, Item, Line, Paragraph, PathCmd, PicFx, PictureItem, Rgba, Run, ShapeItem, TabStop,
-    TextBody,
+    Arrow, ArrowKind, Bullet, BulletKind, Dash, Fill, FontSpec, GeomPath, Geometry, Gradient,
+    GroupItem, ImageFill, Item, Line, Paragraph, PathCmd, PicFx, PictureItem, Rgba, Run, ShapeItem,
+    TabStop, TextBody,
 };
 
 /// What the allocator really hands out for a request of `n` bytes: the size rounded up to a
@@ -121,6 +123,10 @@ pub fn items_bytes(items: &[Item]) -> usize {
         .fold(0usize, |n, i| n.saturating_add(item_bytes(i)))
 }
 
+// Every walk below destructures its struct with all the fields named (a field that owns nothing
+// is bound to `_`) and matches its enum without a catch-all, so a `Vec` / `String` / `Arc` added
+// to the model is a compile error here until it is counted (or explicitly said to cost nothing).
+
 fn item_heap(item: &Item) -> usize {
     match item {
         Item::Shape(s) => shape_heap(s),
@@ -130,22 +136,44 @@ fn item_heap(item: &Item) -> usize {
 }
 
 fn shape_heap(s: &ShapeItem) -> usize {
-    geometry_heap(&s.geom)
-        .saturating_add(fill_heap(&s.fill))
-        .saturating_add(s.line.as_ref().map_or(0, line_heap))
-        .saturating_add(s.text.as_ref().map_or(0, text_heap))
+    let ShapeItem {
+        xfrm: _,
+        geom,
+        fill,
+        line,
+        text,
+        text_rect: _,
+        effects: _,
+    } = s;
+    geometry_heap(geom)
+        .saturating_add(fill_heap(fill))
+        .saturating_add(line.as_ref().map_or(0, line_heap))
+        .saturating_add(text.as_ref().map_or(0, text_heap))
 }
 
 fn picture_heap(p: &PictureItem) -> usize {
-    image_heap(&p.image)
-        .saturating_add(geometry_heap(&p.geom))
-        .saturating_add(p.line.as_ref().map_or(0, line_heap))
+    let PictureItem {
+        xfrm: _,
+        image,
+        geom,
+        line,
+        effects: _,
+    } = p;
+    image_heap(image)
+        .saturating_add(geometry_heap(geom))
+        .saturating_add(line.as_ref().map_or(0, line_heap))
 }
 
 fn group_heap(g: &GroupItem) -> usize {
+    let GroupItem {
+        xfrm: _,
+        child_off: _,
+        child_ext: _,
+        items,
+    } = g;
     // The children's buffer is sized by capacity; each child adds what it owns.
-    buf(g.items.capacity(), size_of::<Item>()).saturating_add(
-        g.items
+    buf(items.capacity(), size_of::<Item>()).saturating_add(
+        items
             .iter()
             .fold(0usize, |n, i| n.saturating_add(item_heap(i))),
     )
@@ -154,86 +182,208 @@ fn group_heap(g: &GroupItem) -> usize {
 fn geometry_heap(g: &Geometry) -> usize {
     match g {
         Geometry::Paths(p) => paths_heap(p),
-        _ => 0,
+        Geometry::Rect | Geometry::Ellipse | Geometry::Line => 0,
     }
 }
 
 fn paths_heap(paths: &[GeomPath]) -> usize {
     // (A slice has no capacity; the readers build exact vectors for geometry.)
     buf(paths.len(), size_of::<GeomPath>()).saturating_add(paths.iter().fold(0usize, |n, p| {
-        n.saturating_add(buf(p.cmds.capacity(), size_of::<PathCmd>()))
+        let GeomPath {
+            w: _,
+            h: _,
+            fill_mode: _,
+            stroke: _,
+            cmds,
+        } = p;
+        n.saturating_add(buf(cmds.capacity(), size_of::<PathCmd>()))
     }))
 }
 
 fn fill_heap(f: &Fill) -> usize {
     match f {
         Fill::None | Fill::Solid(_) => 0,
-        Fill::Gradient(g) => buf(g.stops.capacity(), size_of::<(f64, Rgba)>()),
-        Fill::Pattern { preset, .. } => alloc(preset.capacity()),
+        Fill::Gradient(g) => {
+            let Gradient {
+                kind: _,
+                stops,
+                fill_to_rect: _,
+                rot_with_shape: _,
+            } = g;
+            buf(stops.capacity(), size_of::<(f64, Rgba)>())
+        }
+        Fill::Pattern {
+            preset,
+            fg: _,
+            bg: _,
+        } => alloc(preset.capacity()),
         Fill::Image(i) => image_heap(i),
     }
 }
 
 fn image_heap(i: &ImageFill) -> usize {
-    alloc(i.key.capacity()).saturating_add(buf(i.fx.capacity(), size_of::<PicFx>()))
+    let ImageFill {
+        key,
+        crop: _,
+        mode: _,
+        alpha: _,
+        fx,
+        pixelated: _,
+    } = i;
+    alloc(key.capacity()).saturating_add(buf(fx.capacity(), size_of::<PicFx>()))
 }
 
 fn line_heap(l: &Line) -> usize {
-    fill_heap(&l.fill)
-        .saturating_add(match &l.dash {
+    let Line {
+        width: _,
+        fill,
+        dash,
+        cap: _,
+        join: _,
+        compound: _,
+        head,
+        tail,
+    } = l;
+    fill_heap(fill)
+        .saturating_add(match dash {
             Dash::Custom(v) => buf(v.capacity(), size_of::<(f64, f64)>()),
-            _ => 0,
+            Dash::Solid
+            | Dash::Dot
+            | Dash::Dash
+            | Dash::LgDash
+            | Dash::DashDot
+            | Dash::LgDashDot
+            | Dash::LgDashDotDot
+            | Dash::SysDash
+            | Dash::SysDot
+            | Dash::SysDashDot
+            | Dash::SysDashDotDot => 0,
         })
-        .saturating_add(l.head.as_ref().map_or(0, arrow_heap))
-        .saturating_add(l.tail.as_ref().map_or(0, arrow_heap))
+        .saturating_add(head.as_ref().map_or(0, arrow_heap))
+        .saturating_add(tail.as_ref().map_or(0, arrow_heap))
 }
 
 fn arrow_heap(a: &Arrow) -> usize {
-    match &a.kind {
+    let Arrow { kind, w: _, len: _ } = a;
+    match kind {
         ArrowKind::Custom(p) => paths_heap(p),
-        _ => 0,
+        ArrowKind::Triangle
+        | ArrowKind::Stealth
+        | ArrowKind::Diamond
+        | ArrowKind::Oval
+        | ArrowKind::Arrow => 0,
     }
 }
 
 fn text_heap(t: &TextBody) -> usize {
-    buf(t.paragraphs.capacity(), size_of::<Paragraph>()).saturating_add(
-        t.paragraphs
+    let TextBody {
+        insets: _,
+        anchor: _,
+        anchor_ctr: _,
+        wrap: _,
+        vert: _,
+        autofit: _,
+        rot_deg: _,
+        upright: _,
+        columns: _,
+        paragraphs,
+    } = t;
+    buf(paragraphs.capacity(), size_of::<Paragraph>()).saturating_add(
+        paragraphs
             .iter()
             .fold(0usize, |n, p| n.saturating_add(paragraph_heap(p))),
     )
 }
 
 fn paragraph_heap(p: &Paragraph) -> usize {
-    buf(p.runs.capacity(), size_of::<Run>())
+    let Paragraph {
+        align: _,
+        level: _,
+        mar_l: _,
+        indent: _,
+        spc_before: _,
+        spc_after: _,
+        line_spacing: _,
+        bullet,
+        runs,
+        end_size_pt: _,
+        rtl: _,
+        tabs,
+        def_tab: _,
+    } = p;
+    buf(runs.capacity(), size_of::<Run>())
         .saturating_add(
-            p.runs
-                .iter()
+            runs.iter()
                 .fold(0usize, |n, r| n.saturating_add(run_heap(r))),
         )
-        .saturating_add(buf(p.tabs.capacity(), size_of::<TabStop>()))
-        .saturating_add(p.bullet.as_ref().map_or(0, bullet_heap))
+        .saturating_add(buf(tabs.capacity(), size_of::<TabStop>()))
+        .saturating_add(bullet.as_ref().map_or(0, bullet_heap))
 }
 
 fn run_heap(r: &Run) -> usize {
-    alloc(r.text.capacity())
-        .saturating_add(fill_heap(&r.fill))
-        .saturating_add(font_heap(&r.font))
+    let Run {
+        text,
+        kind: _,
+        font,
+        size_pt: _,
+        bold: _,
+        italic: _,
+        underline: _,
+        strike: _,
+        fill,
+        highlight: _,
+        baseline_pct: _,
+        spacing_pt: _,
+        caps: _,
+        lang,
+    } = r;
+    alloc(text.capacity())
+        .saturating_add(fill_heap(fill))
+        .saturating_add(font_heap(font))
+        .saturating_add(name_heap(lang))
 }
 
 fn bullet_heap(b: &Bullet) -> usize {
-    (match &b.kind {
+    let Bullet {
+        kind,
+        font,
+        color: _,
+        size: _,
+    } = b;
+    (match kind {
         BulletKind::Char(s) => alloc(s.capacity()),
-        BulletKind::AutoNum { scheme, .. } => alloc(scheme.capacity()),
+        BulletKind::AutoNum { scheme, start: _ } => alloc(scheme.capacity()),
         BulletKind::Picture(i) => image_heap(i),
     })
-    .saturating_add(b.font.as_ref().map_or(0, font_heap))
+    .saturating_add(font.as_ref().map_or(0, font_heap))
 }
 
-/// The names of a run are shared (see `strings`): each costs a pointer pair inline and nothing
-/// here.
-fn font_heap(_: &FontSpec) -> usize {
-    0
+/// The names of a run are shared (see `strings`: every name is interned, cut to a short length):
+/// a shared name costs a pointer pair inline and nothing here, it exists once for the whole deck.
+/// A name nobody else holds (`strong_count == 1`: it was not interned, or the table was cleared
+/// since) is this run's own allocation and is counted, `Arc` counters included.
+fn font_heap(f: &FontSpec) -> usize {
+    let FontSpec {
+        latin,
+        east_asian,
+        complex,
+        symbol,
+    } = f;
+    [latin, east_asian, complex, symbol]
+        .into_iter()
+        .fold(0usize, |n, name| n.saturating_add(name_heap(name)))
 }
+
+/// The heap of one optional shared name when this is its only holder (see [`font_heap`]).
+fn name_heap(name: &Option<Arc<str>>) -> usize {
+    match name {
+        Some(a) if Arc::strong_count(a) == 1 => alloc(ARC_HEADER.saturating_add(a.len())),
+        Some(_) | None => 0,
+    }
+}
+
+/// The two reference counters in front of an `Arc<str>`'s bytes.
+const ARC_HEADER: usize = 2 * size_of::<usize>();
 
 #[cfg(test)]
 mod tests {
@@ -481,5 +631,72 @@ mod tests {
         });
         let inner = item_bytes(&with_text(1, 1, 1));
         assert!(item_bytes(&g) >= size_of::<Item>() + 2 * size_of::<Item>() + inner);
+    }
+
+    #[test]
+    fn a_name_nobody_else_holds_is_counted_with_its_arc_header() {
+        let mut a = with_text(1, 1, 1);
+        let b = item_bytes(&a);
+        let own: Arc<str> = Arc::from("x".repeat(4000));
+        assert_eq!(Arc::strong_count(&own), 1);
+        if let Item::Shape(s) = &mut a {
+            let r = &mut s.text.as_mut().unwrap().paragraphs[0].runs[0];
+            r.font.latin = Some(own);
+        }
+        assert_eq!(item_bytes(&a), b + alloc(ARC_HEADER + 4000));
+        // Each of the four typefaces and the language tag count the same way.
+        if let Item::Shape(s) = &mut a {
+            let r = &mut s.text.as_mut().unwrap().paragraphs[0].runs[0];
+            r.font.east_asian = Some(Arc::from("e".repeat(100)));
+            r.font.complex = Some(Arc::from("c".repeat(100)));
+            r.font.symbol = Some(Arc::from("s".repeat(100)));
+            r.lang = Some(Arc::from("l".repeat(100)));
+        }
+        assert_eq!(
+            item_bytes(&a),
+            b + alloc(ARC_HEADER + 4000) + 4 * alloc(ARC_HEADER + 100)
+        );
+        // A bullet's font counts too.
+        let before_bullet = item_bytes(&a);
+        if let Item::Shape(s) = &mut a {
+            s.text.as_mut().unwrap().paragraphs[0].bullet = Some(Bullet {
+                kind: BulletKind::Char(String::new()),
+                font: Some(FontSpec {
+                    symbol: Some(Arc::from("b".repeat(200))),
+                    ..FontSpec::default()
+                }),
+                color: None,
+                size: BulletSize::FollowText,
+            });
+        }
+        assert_eq!(item_bytes(&a), before_bullet + alloc(ARC_HEADER + 200));
+    }
+
+    #[test]
+    fn names_the_table_forgot_but_runs_still_share_cost_nothing_per_run() {
+        use crate::preview::office::slide_draw::strings::{intern, MAX_NAMES};
+        // The table is cleared after MAX_NAMES distinct names: names handed out before stay
+        // valid and shared by the runs that hold them.
+        let first = intern("first-name");
+        for i in 0..MAX_NAMES + 3 {
+            intern(&format!("n{i}"));
+        }
+        let b = item_bytes(&with_text(1, 2, 2));
+        let mut a = with_text(1, 2, 2);
+        if let Item::Shape(s) = &mut a {
+            for r in &mut s.text.as_mut().unwrap().paragraphs[0].runs {
+                r.font.latin = Some(Arc::clone(&first));
+            }
+        }
+        // Held by two runs and by `first` itself: shared, nothing on top.
+        assert_eq!(item_bytes(&a), b);
+        // Once a name has a single holder it is that holder's own: counted.
+        let lone: Arc<str> = Arc::from("lone-name");
+        let mut c = with_text(1, 1, 1);
+        let c0 = item_bytes(&c);
+        if let Item::Shape(s) = &mut c {
+            s.text.as_mut().unwrap().paragraphs[0].runs[0].lang = Some(lone);
+        }
+        assert_eq!(item_bytes(&c), c0 + alloc(ARC_HEADER + 9));
     }
 }

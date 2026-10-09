@@ -127,7 +127,7 @@ fn settle_images(s: &mut Sim) {
             s.app.apply_md_encode(r);
         }
         s.draw();
-        if !any && !s.app.md_images_loading() {
+        if !any && !s.app.md_pixels_pending() {
             return;
         }
         if any {

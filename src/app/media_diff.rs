@@ -995,8 +995,13 @@ fn decode_svg_side(
         Ok(img) => img,
         Err(why) => {
             return MediaDiffSideDecoded::Failed {
-                reason: why.reason().to_string(),
-            }
+                reason: match why {
+                    crate::preview::svg::RasterError::Failed(f) => f.reason(),
+                    // The request was cancelled: the result is dropped by whoever cancelled it.
+                    crate::preview::svg::RasterError::Cancelled => "cancelled",
+                }
+                .to_string(),
+            };
         }
     };
     // A size that only drawing reveals (no width/height/viewBox) falls back to the raster's.

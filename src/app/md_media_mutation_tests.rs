@@ -67,7 +67,7 @@ fn only_pictures_that_can_be_made_again_may_be_evicted() {
 #[test]
 fn slide_pictures_are_drawn_at_the_frame_size_between_the_floor_and_the_cap() {
     use crate::app::office_doc::{DocPicture, LoadedDocument, PictureSource};
-    use std::sync::{atomic::AtomicBool, atomic::AtomicU32, Arc};
+    use std::sync::{atomic::AtomicBool, Arc};
     let dir = unique_tmp("konoma_mdm_slide_px");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
@@ -80,7 +80,7 @@ fn slide_pictures_are_drawn_at_the_frame_size_between_the_floor_and_the_cap() {
                 scene: Arc::new(Default::default()),
                 media: Arc::new(HashMap::new()),
                 render_truncated: Arc::new(AtomicBool::new(false)),
-                raster_cap: Arc::new(AtomicU32::new(0)),
+                raster_cap: Arc::new(Default::default()),
             },
             dims: Some((1280, 720)),
             raster: false,
@@ -142,11 +142,11 @@ fn slide_pictures_are_drawn_at_the_frame_size_between_the_floor_and_the_cap() {
 #[test]
 fn the_raster_cap_of_a_slide_is_unknown_until_it_was_drawn() {
     use crate::app::office_doc::{DocPicture, LoadedDocument, PictureSource};
-    use std::sync::{atomic::AtomicBool, atomic::AtomicU32, atomic::Ordering, Arc};
+    use std::sync::{atomic::AtomicBool, Arc};
     let dir = unique_tmp("konoma_mdm_slide_cap");
     std::fs::create_dir_all(&dir).unwrap();
     let mut app = App::new(dir.to_path_buf(), Config::default()).unwrap();
-    let cap = Arc::new(AtomicU32::new(0));
+    let cap = Arc::new(crate::app::office_doc::SlideRasterCap::default());
     let mut pictures = HashMap::new();
     pictures.insert(
         "office-img://deck/slide-1".to_string(),
@@ -184,10 +184,10 @@ fn the_raster_cap_of_a_slide_is_unknown_until_it_was_drawn() {
     }));
     let url = "office-img://deck/slide-1";
     assert_eq!(app.slide_raster_cap(url), None, "0 = not drawn yet");
-    cap.store(1, Ordering::Relaxed);
+    cap.lower_permanent(1);
     assert_eq!(app.slide_raster_cap(url), Some(1));
-    cap.store(3000, Ordering::Relaxed);
-    assert_eq!(app.slide_raster_cap(url), Some(3000));
+    cap.lower_permanent(3000);
+    assert_eq!(app.slide_raster_cap(url), Some(1), "a cap is never raised");
     assert_eq!(app.slide_raster_cap("office-img://deck/photo.png"), None);
     assert_eq!(app.slide_raster_cap("office-img://deck/other"), None);
 }

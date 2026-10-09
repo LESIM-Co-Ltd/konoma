@@ -1260,7 +1260,7 @@ mod smaller_retry {
         fail: ImageFailure,
     ) -> (Result<(), ImageFailure>, u32, Vec<u32>) {
         let tried = RefCell::new(Vec::new());
-        let (res, used) = decode_with_smaller_retries(start, floor, shrink, &|| false, |px| {
+        let (res, used, _) = decode_with_smaller_retries(start, floor, shrink, &|| false, |px| {
             tried.borrow_mut().push(px);
             if px <= works_at {
                 Ok(px_image())
@@ -1328,7 +1328,7 @@ mod smaller_retry {
     #[test]
     fn a_request_the_user_moved_on_from_is_not_retried() {
         let n = RefCell::new(0);
-        let (res, _) = decode_with_smaller_retries(4096, 1280, true, &|| true, |_| {
+        let (res, _, _) = decode_with_smaller_retries(4096, 1280, true, &|| true, |_| {
             *n.borrow_mut() += 1;
             Err(ImageFailure::Svg(SvgFail::Timeout))
         });
@@ -1364,7 +1364,7 @@ mod smaller_retry {
         // The premise: at 4096 px this slide is refused, at 1280 it is not.
         assert_eq!(md_decode_bytes_why(&svg, 4096, &never).err(), Some(heavy));
         assert!(md_decode_bytes_why(&svg, 1280, &never).is_ok());
-        let (res, used) = decode_with_smaller_retries(4096, 1280, true, &never, |px| {
+        let (res, used, _) = decode_with_smaller_retries(4096, 1280, true, &never, |px| {
             md_decode_bytes_why(&svg, px, &never)
         });
         let img = res.expect("drawn at a smaller size");

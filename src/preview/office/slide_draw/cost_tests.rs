@@ -508,6 +508,61 @@ fn the_raster_cap_follows_the_predicted_time_and_never_goes_below_the_model_size
 }
 
 #[test]
+fn a_raster_limit_that_cannot_be_computed_is_the_model_size_not_no_limit() {
+    // `f64::min` ignores a NaN, so a NaN limit used to leave the other one (or none) in charge.
+    let model = 1280;
+    let nan = f64::NAN;
+    for features in [
+        Features {
+            grad_px2: nan,
+            ..Default::default()
+        },
+        Features {
+            els: nan,
+            ..Default::default()
+        },
+        Features {
+            edge_px: nan,
+            ..Default::default()
+        },
+        Features {
+            grad_px2: -1e9,
+            ..Default::default()
+        },
+        Features {
+            edge_px: -1e9,
+            ..Default::default()
+        },
+        Features {
+            els: -1e12,
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            rendered_with(features).max_raster_px(),
+            model,
+            "{features:?}"
+        );
+        // ... also when the filter work alone would give a bigger size.
+        let mut r = rendered_with(features);
+        r.filter_work = 1.0;
+        assert_eq!(r.max_raster_px(), model, "{features:?}");
+    }
+    // A NaN or negative filter work.
+    for work in [nan, -1.0, f64::NEG_INFINITY] {
+        let mut r = rendered_with(Features::default());
+        r.filter_work = work;
+        assert_eq!(r.max_raster_px(), model, "{work}");
+    }
+    // Infinite work is the floor as well, not unlimited.
+    let mut r = rendered_with(Features::default());
+    r.filter_work = f64::INFINITY;
+    assert_eq!(r.max_raster_px(), model);
+    // Sane inputs are unchanged: no work at all is no limit.
+    assert_eq!(rendered_with(Features::default()).max_raster_px(), u32::MAX);
+}
+
+#[test]
 fn tiled_fills_over_the_whole_slide_are_budgeted_by_their_area_and_tile_count() {
     // 600 shapes of the whole slide filled with a 1 x 1 px tile: a lot of pixels to fill, and
     // half a million tiles each

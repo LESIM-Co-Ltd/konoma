@@ -16,6 +16,16 @@ impl App {
             })
     }
 
+    /// Whether any inline picture still has pixel work owed to the UI thread: everything
+    /// [`Self::md_images_loading`] covers, **plus a sharpening re-raster in flight** (the old
+    /// pixels are on screen, so the picture is not "loading", but the new ones are on their way
+    /// and applying them is what the next frame needs). The run loop ticks fast while this is
+    /// true so the redraw lands promptly, and the end-to-end tests wait on it: waiting on
+    /// `md_images_loading` alone ends while a redraw started by the last frame is still running.
+    pub fn md_pixels_pending(&self) -> bool {
+        self.md_images_loading() || self.md_image_cache.values().any(|e| e.reraster_inflight)
+    }
+
     /// Test-only: whether an inline-image encode request has been sent and its result not yet
     /// applied. Unlike `md_images_loading` this is *only* about the encode channel, which is what a
     /// test needs to tell "the worker owes me a result, keep waiting however slow this machine is"

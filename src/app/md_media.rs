@@ -1299,17 +1299,15 @@ impl App {
                                     render_truncated
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
                                 }
-                                // The raster size is cut to what the drawing process's work budget
-                                // allows for this slide's effects (they are counted at the square
-                                // of the scale): effects stay, the slide is just drawn smaller. A
-                                // size an earlier attempt found too heavy stays out (see below).
-                                let mut cap = drawn.max_raster_px();
-                                let earlier = raster_cap.load(std::sync::atomic::Ordering::Relaxed);
-                                if earlier > 0 {
-                                    cap = cap.min(earlier);
+                                // The raster size is cut to what the drawing process's work
+                                // budget allows for this slide's effects (they are counted at the
+                                // square of the scale): effects stay, the slide is just drawn
+                                // smaller. A size an earlier attempt found too heavy stays out
+                                // (see below), and one that only timed out stays out for a while.
+                                raster_cap.lower_permanent(drawn.max_raster_px());
+                                if let Some(cap) = raster_cap.get(std::time::Instant::now()) {
+                                    svg_px = svg_px.min(cap);
                                 }
-                                raster_cap.store(cap, std::sync::atomic::Ordering::Relaxed);
-                                svg_px = svg_px.min(cap);
                                 slide_cap = Some(raster_cap);
                                 Arc::new(drawn.svg.into_bytes())
                             }
@@ -1325,27 +1323,14 @@ impl App {
                         // A slide whose picture the drawing process refuses as too heavy or
                         // too slow at this size is drawn again smaller before it is given up on;
                         // the size that worked becomes the slide's raster cap.
-                        let (res, used) = decode_with_smaller_retries(
+                        let res = super::decode_with_cap(
+                            slide_cap.as_deref(),
                             svg_px,
                             retry_floor,
-                            slide_cap.is_some(),
                             &moved_on,
+                            std::time::Instant::now(),
                             |px| md_decode_bytes_why(&bytes, px, &moved_on),
                         );
-                        if let Some(cap) = slide_cap {
-                            // A smaller retry that worked: nothing above it is known to work. A
-                            // failure at every size: only the floor (the raster already shown)
-                            // is trusted, so a sharpening redraw does not ask for more again and
-                            // again. A cancelled request says nothing about the slide.
-                            let known = match &res {
-                                Ok(_) if used < svg_px => Some(used),
-                                Ok(_) | Err(ImageFailure::Cancelled) => None,
-                                Err(_) => Some(retry_floor),
-                            };
-                            if let Some(k) = known {
-                                cap.fetch_min(k.max(1), std::sync::atomic::Ordering::Relaxed);
-                            }
-                        }
                         (res, None)
                     })
                 })
@@ -1607,6 +1592,10 @@ impl App {
 #[cfg(test)]
 #[path = "md_media_mutation_tests.rs"]
 mod mutation_tests;
+
+#[cfg(test)]
+#[path = "md_media_slide_cap_tests.rs"]
+mod slide_cap_tests;
 
 #[cfg(test)]
 mod tmux_detection_tests {

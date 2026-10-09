@@ -873,11 +873,7 @@ impl MediaJob {
                 let img =
                     match crate::preview::svg::rasterize_untrusted(&data, &p, max_px, &cancelled) {
                         Ok(img) => img,
-                        Err(why) => {
-                            return Some(MediaPayload::ImageFailed(
-                                crate::preview::image::ImageFailure::Svg(why),
-                            ))
-                        }
+                        Err(why) => return Some(MediaPayload::ImageFailed(why.into())),
                     };
                 Some(MediaPayload::Vector {
                     img,
@@ -6190,6 +6186,7 @@ fn md_decode_image_why(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
+    use crate::preview::svg::RasterError;
     use crate::preview::svg_guard::SvgFail;
     match crate::preview::image::decode_static_capped_why(path, MD_IMAGE_MAX_SIDE) {
         Ok(img) => Ok(img),
@@ -6198,17 +6195,25 @@ fn md_decode_image_why(
         Err(e) if !crate::preview::svg::file_can_be_svg(path) => Err(e),
         Err(e) => match crate::preview::svg::rasterize(path, svg_max_px, cancelled) {
             Ok(img) => Ok(img),
-            Err(SvgFail::Invalid) => Err(e),
-            Err(f) => Err(ImageFailure::Svg(f)),
+            Err(RasterError::Failed(SvgFail::Invalid)) => Err(e),
+            Err(f) => Err(f.into()),
         },
     }
 }
 
 /// Runs `attempt` at `start_px` and, when `shrink` is set and the drawing process refused the
 /// picture as too heavy, too slow or too memory-hungry (costs that grow with the square of the
-/// raster size), again at half the size, down to `floor_px` (never below it). Any other failure
-/// (crashed, too large, corrupt, cancelled) is final, and so is a request the user moved on from.
-/// Returns the last result and the size it was made at.
+/// raster size), again at a smaller size, never below `floor_px`. Cost and memory refusals are
+/// the same on every run and fail fast, so they halve the side each time. A time-out is the
+/// expensive kind (it holds the decode gate for the whole time limit) and says as much about the
+/// machine's load as about the slide: the first one is retried once at half the side (a quarter
+/// of the work), and a second goes straight to the floor, so a loaded machine is held for at most
+/// three time limits, not one per halving. Any other failure (crashed, too large, corrupt,
+/// cancelled) is final, and so is a request the user moved on from.
+///
+/// Returns the last result, the size it was made at, and the refusals on the way as
+/// `(size, failure)` (the last failure included), which [`record_slide_attempts`] turns into what
+/// the slide remembers.
 fn decode_with_smaller_retries(
     start_px: u32,
     floor_px: u32,
@@ -6218,26 +6223,93 @@ fn decode_with_smaller_retries(
 ) -> (
     Result<image::DynamicImage, crate::preview::image::ImageFailure>,
     u32,
+    Vec<(u32, crate::preview::image::ImageFailure)>,
 ) {
     use crate::preview::image::ImageFailure;
     use crate::preview::svg_guard::SvgFail;
     let floor = floor_px.min(start_px);
     let mut px = start_px;
+    let mut timeouts = 0u32;
+    let mut trail = Vec::new();
     loop {
         let res = attempt(px);
-        let retry = shrink
-            && px > floor
-            && !cancelled()
-            && matches!(
-                res,
-                Err(ImageFailure::Svg(
-                    SvgFail::TooHeavy | SvgFail::Timeout | SvgFail::Memory
-                ))
-            );
-        if !retry {
-            return (res, px);
+        if let Err(f) = &res {
+            trail.push((px, *f));
         }
-        px = (px / 2).max(floor);
+        let refused = match &res {
+            Err(ImageFailure::Svg(
+                f @ (SvgFail::TooHeavy | SvgFail::Timeout | SvgFail::Memory),
+            )) => Some(*f),
+            _ => None,
+        };
+        let Some(why) = refused.filter(|_| shrink && px > floor && !cancelled()) else {
+            return (res, px, trail);
+        };
+        px = if why == SvgFail::Timeout {
+            timeouts += 1;
+            if timeouts == 1 {
+                (px / 2).max(floor)
+            } else {
+                floor
+            }
+        } else {
+            (px / 2).max(floor)
+        };
+    }
+}
+
+/// Decodes a picture with `attempt`, and when it is a slide (`cap` is Some) draws it again
+/// smaller if the drawing process refuses it, then teaches `cap` what happened (see
+/// [`decode_with_smaller_retries`] and [`record_slide_attempts`]). Anything that is not a slide
+/// is attempted once at `start_px`.
+fn decode_with_cap(
+    cap: Option<&crate::app::office_doc::SlideRasterCap>,
+    start_px: u32,
+    floor_px: u32,
+    moved_on: &dyn Fn() -> bool,
+    now: std::time::Instant,
+    attempt: impl FnMut(u32) -> Result<image::DynamicImage, crate::preview::image::ImageFailure>,
+) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
+    let (res, used, trail) =
+        decode_with_smaller_retries(start_px, floor_px, cap.is_some(), moved_on, attempt);
+    if let Some(cap) = cap {
+        record_slide_attempts(cap, &trail, &res, used, floor_px, moved_on(), now);
+    }
+    res
+}
+
+/// Teaches `cap` what the attempts of one slide draw showed. Each refused size lowers the cap to
+/// the size tried next (the one that worked, or the one after it also failed); the last failure
+/// of a draw that never worked caps it at `floor_px` (the raster already shown, or the base
+/// size), so a sharpening redraw does not ask for more again and again. A refusal for time
+/// expires (`SlideRasterCap::lower_timed_out`), any other is kept for good. A cancelled attempt
+/// says nothing about the slide, and neither does a request the user moved on from.
+fn record_slide_attempts(
+    cap: &crate::app::office_doc::SlideRasterCap,
+    trail: &[(u32, crate::preview::image::ImageFailure)],
+    result: &Result<image::DynamicImage, crate::preview::image::ImageFailure>,
+    used: u32,
+    floor_px: u32,
+    moved_on: bool,
+    now: std::time::Instant,
+) {
+    use crate::preview::image::ImageFailure;
+    use crate::preview::svg_guard::SvgFail;
+    if moved_on {
+        return;
+    }
+    let floor = floor_px.min(trail.first().map_or(used, |t| t.0));
+    for (i, (_, failure)) in trail.iter().enumerate() {
+        let next = match trail.get(i + 1) {
+            Some((px, _)) => *px,
+            None if result.is_ok() => used,
+            None => floor,
+        };
+        match failure {
+            ImageFailure::Cancelled => {}
+            ImageFailure::Svg(SvgFail::Timeout) => cap.lower_timed_out(next, now),
+            _ => cap.lower_permanent(next),
+        }
     }
 }
 
@@ -6251,6 +6323,7 @@ fn md_decode_bytes_why(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
+    use crate::preview::svg::RasterError;
     use crate::preview::svg_guard::SvgFail;
     match crate::preview::image::decode_static_bytes_capped_why(bytes, MD_IMAGE_MAX_SIDE) {
         Ok(img) => Ok(img),
@@ -6258,8 +6331,8 @@ fn md_decode_bytes_why(
         Err(e) if !crate::preview::svg::can_begin_svg(bytes) => Err(e),
         Err(e) => match crate::preview::svg::rasterize_embedded(bytes, svg_max_px, cancelled) {
             Ok(img) => Ok(img),
-            Err(SvgFail::Invalid) => Err(e),
-            Err(f) => Err(ImageFailure::Svg(f)),
+            Err(RasterError::Failed(SvgFail::Invalid)) => Err(e),
+            Err(f) => Err(f.into()),
         },
     }
 }

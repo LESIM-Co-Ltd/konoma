@@ -904,7 +904,7 @@ fn the_production_path_refuses_what_it_can_before_starting_a_process_and_draws_t
         let deep = svg(&format!("{}{}", "<g>".repeat(1000), "</g>".repeat(1000)));
         assert_eq!(
             super::svg::rasterize_untrusted(deep.as_bytes(), &path, 100, never).err(),
-            Some(SvgFail::TooDeep)
+            Some(super::svg::RasterError::Failed(SvgFail::TooDeep))
         );
         assert_eq!(
             live_children(),
@@ -915,7 +915,7 @@ fn the_production_path_refuses_what_it_can_before_starting_a_process_and_draws_t
         let big = vec![b' '; super::svg_guard::MAX_SVG_BYTES + 1];
         assert_eq!(
             super::svg::rasterize_untrusted(&big, &path, 100, never).err(),
-            Some(SvgFail::TooLarge)
+            Some(super::svg::RasterError::Failed(SvgFail::TooLarge))
         );
         assert_eq!(live_children(), 0);
         // An ordinary one: drawn by a child.
@@ -942,7 +942,7 @@ fn the_production_path_refuses_what_it_can_before_starting_a_process_and_draws_t
         assert!(super::svg::rasterize_untrusted(&gz(ok.as_bytes()), &path, 100, never).is_ok());
         assert_eq!(
             super::svg::rasterize_untrusted(&gz(deep.as_bytes()), &path, 100, never).err(),
-            Some(SvgFail::TooDeep)
+            Some(super::svg::RasterError::Failed(SvgFail::TooDeep))
         );
         // Refusals that need the parser come back from the child with their reason.
         let bomb = svg(&format!(
@@ -957,7 +957,7 @@ fn the_production_path_refuses_what_it_can_before_starting_a_process_and_draws_t
         ));
         assert_eq!(
             super::svg::rasterize_untrusted(bomb.as_bytes(), &path, 100, never).err(),
-            Some(SvgFail::TooComplex)
+            Some(super::svg::RasterError::Failed(SvgFail::TooComplex))
         );
         assert_eq!(live_children(), 1, "through all of it, one child");
     });
