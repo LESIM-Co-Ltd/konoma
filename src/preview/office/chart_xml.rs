@@ -39,7 +39,7 @@ use super::slide_draw::chart::{
     MarkerSymbol, PointFmt, RadarStyle, ScatterStyle, Series, Stroke, TextStyle, TickLabelPos,
     TickMark, MAX_CATEGORIES, MAX_LABEL_CHARS, MAX_POINTS, MAX_SERIES,
 };
-use super::slide_draw::{Dash, Fill, Gradient, Rgba};
+use super::slide_draw::{Dash, Fill, Gradient, ImageFill, Rgba};
 use super::OfficeError;
 
 /// Most elements the tree of one chart part may hold.
@@ -72,14 +72,31 @@ pub struct ParsedChart {
     pub approximated: bool,
 }
 
-/// Reads a chart part.
+/// Loads the picture of an `a:blipFill` element of the chart part (the caller resolves its
+/// `r:embed` through the chart part's own relationships, `ppt/charts/_rels/chartN.xml.rels`).
+pub type ImageLoader<'a> = &'a dyn Fn(&Node) -> Option<ImageFill>;
+
+/// Reads a chart part. Picture fills (`a:blipFill`) are not available: see [`parse_chart_with`].
 pub fn parse_chart(xml: &[u8], env: &ChartEnv) -> Result<ParsedChart, OfficeError> {
+    parse_chart_with(xml, env, None)
+}
+
+/// Reads a chart part; `images` loads the pictures of its `a:blipFill` fills (chart area, plot
+/// area, series, points), which resolve through the chart part's own relationships. Without it a
+/// picture fill is read as "automatic".
+pub fn parse_chart_with(
+    xml: &[u8],
+    env: &ChartEnv,
+    images: Option<ImageLoader<'_>>,
+) -> Result<ParsedChart, OfficeError> {
     let (root, mut truncated) = build_tree(xml)?;
     if root.name != "chartSpace" || root.prefix == "cx" {
         return Err(OfficeError::Unsupported);
     }
     let mut p = Parser {
         env,
+        images,
+        clr_map: clr_map_override(&root),
         approximated: false,
         truncated: false,
         ja: false,
@@ -317,6 +334,10 @@ fn skip_element<R: BufRead>(rd: &mut XmlReader<R>, name: &[u8]) -> Result<(), Of
 
 struct Parser<'a, 'e> {
     env: &'a ChartEnv<'e>,
+    images: Option<ImageLoader<'a>>,
+    /// `c:clrMapOvr`: the colour map of this chart (scheme name -> theme colour name), which
+    /// replaces the slide's for the chart's colours.
+    clr_map: Option<Vec<(String, String)>>,
     approximated: bool,
     truncated: bool,
     /// Dates and month names are Japanese.
@@ -361,7 +382,29 @@ impl Parser<'_, '_> {
     fn color_in(&self, n: &Node) -> Option<Rgba> {
         n.nodes()
             .find(|c| COLOR_ELEMENTS.contains(&c.name.as_str()))
-            .and_then(|c| (self.env.resolve_color)(c))
+            .and_then(|c| self.resolve(c))
+    }
+
+    /// A colour element through the caller, after the chart's own colour map is applied: a
+    /// `schemeClr` that the map names is rewritten to the theme colour (`dk1`, `lt1` ..) it stands
+    /// for, which the caller's map leaves as it is.
+    fn resolve(&self, c: &Node) -> Option<Rgba> {
+        if let (Some(map), "schemeClr") = (&self.clr_map, c.name.as_str()) {
+            let mapped = c
+                .attr("val")
+                .and_then(|v| map.iter().find(|(k, _)| k == v))
+                .map(|(_, t)| t.clone());
+            if let Some(t) = mapped {
+                let mut c2 = c.clone();
+                for (k, v) in c2.attrs.iter_mut() {
+                    if k == "val" {
+                        *v = t.clone();
+                    }
+                }
+                return (self.env.resolve_color)(&c2);
+            }
+        }
+        (self.env.resolve_color)(c)
     }
 
     fn font(&self, typeface: &str) -> Option<String> {
@@ -382,6 +425,7 @@ impl Parser<'_, '_> {
                 "noFill" => return Some(Fill::None),
                 "solidFill" => return self.color_in(c).map(Fill::Solid),
                 "gradFill" => return self.gradient(c),
+                "blipFill" => return self.images.and_then(|f| f(c)).map(Fill::Image),
                 "pattFill" => {
                     let fg = c.child("fgClr").and_then(|n| self.color_in(n));
                     let bg = c.child("bgClr").and_then(|n| self.color_in(n));
@@ -594,21 +638,47 @@ impl Parser<'_, '_> {
         if let Some(l) = chart.child("legend") {
             m.legend = Some(self.legend(l));
         }
-        // An automatic title is the name of the only series.
-        m.title = match title {
-            Some(mut t) if t.text.trim().is_empty() => {
-                let series: Vec<&Series> = m.groups.iter().flat_map(|g| g.series.iter()).collect();
-                match (series.as_slice(), t.layout.is_some() || !title_deleted) {
-                    ([s], true) => {
-                        t.text = s.name.clone().unwrap_or_default();
-                        (!t.text.is_empty()).then_some(t)
-                    }
-                    _ => None,
-                }
-            }
-            t => t,
-        };
+        m.title = self.auto_title(title, title_deleted, &m);
         m
+    }
+
+    /// The chart title with the automatic one filled in. A `c:title` without text shows what
+    /// Office puts there itself: the name of the series when the chart has exactly one, else the
+    /// placeholder "Chart Title" (`autoTitleDeleted` has no effect on a title element that is
+    /// there; python-pptx's analysis of PowerPoint's behaviour, `cht-chart-title`). Without a
+    /// `c:title`, a chart of exactly one named series and `autoTitleDeleted` not set gets its series
+    /// name as the title (Excel does so; XlsxWriter documents the same for `set_title({'none':
+    /// True})`, which writes `autoTitleDeleted 1`).
+    fn auto_title(
+        &self,
+        title: Option<ChartText>,
+        title_deleted: bool,
+        m: &ChartModel,
+    ) -> Option<ChartText> {
+        let series: Vec<&Series> = m.groups.iter().flat_map(|g| g.series.iter()).collect();
+        let only_name = || match series.as_slice() {
+            [s] => s.name.clone().filter(|n| !n.trim().is_empty()),
+            _ => None,
+        };
+        match title {
+            Some(mut t) if t.text.trim().is_empty() => {
+                t.text = only_name().unwrap_or_else(|| {
+                    if self.ja {
+                        "グラフ タイトル"
+                    } else {
+                        "Chart Title"
+                    }
+                    .to_string()
+                });
+                Some(t)
+            }
+            Some(t) => Some(t),
+            None if !title_deleted => only_name().map(|name| ChartText {
+                text: name,
+                ..ChartText::default()
+            }),
+            None => None,
+        }
     }
 
     fn legend(&self, l: &Node) -> Legend {
@@ -1148,6 +1218,21 @@ fn manual_layout(l: &Node) -> Option<ManualLayout> {
         h_edge: edge("hMode"),
         inner: val(ml, "layoutTarget") == Some("inner"),
     })
+}
+
+/// `c:clrMapOvr/a:overrideClrMapping` of the chart space as `(scheme name, theme name)` pairs;
+/// `None` for `a:masterClrMapping` or when absent (the slide's map applies).
+fn clr_map_override(root: &Node) -> Option<Vec<(String, String)>> {
+    let o = root.child("clrMapOvr")?.child("overrideClrMapping")?;
+    const NAMES: [&str; 12] = [
+        "bg1", "tx1", "bg2", "tx2", "accent1", "accent2", "accent3", "accent4", "accent5",
+        "accent6", "hlink", "folHlink",
+    ];
+    let map: Vec<(String, String)> = NAMES
+        .iter()
+        .filter_map(|k| o.attr(k).map(|v| (k.to_string(), v.to_string())))
+        .collect();
+    (!map.is_empty()).then_some(map)
 }
 
 /// `c:style val` of the chart space, directly or in the fallback of an `mc:AlternateContent`

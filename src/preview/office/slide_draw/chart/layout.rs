@@ -131,6 +131,17 @@ struct Entry {
 }
 
 /// The series' own fill, or the automatic colour of position `i`.
+/// The outline a filled series element (bar, area, slice) has when the file gives it none: the
+/// Office 2007 chart styles 9 to 16 outline them in white (a thin white line separates the
+/// segments of a stacked column; checked against LibreOffice's rendering of `c:style 12` in
+/// `poi/aascu.org_hbcu_leadershipsummit_cooper_.pptx`, which applies the same style table). Every
+/// other style leaves them unoutlined; a `c:spPr/a:ln` of the element always wins.
+pub(super) fn style_outline(m: &ChartModel) -> Option<Line> {
+    (9..=16)
+        .contains(&m.style)
+        .then(|| Line::solid(9525.0, Rgba::WHITE))
+}
+
 pub(super) fn series_fill(m: &ChartModel, s: &Series, i: usize) -> Fill {
     s.fill
         .clone()
@@ -663,7 +674,13 @@ fn plan_legend(
         style,
         key_w,
         fill: l.fill.clone(),
-        line: line_if_set(l.line.as_ref(), Rgba::BLACK, 9525.0),
+        // A legend outline needs a colour of its own: `a:ln` without one is the automatic
+        // outline, which the chart styles leave off.
+        line: line_if_set(
+            l.line.as_ref().filter(|s| s.color.is_some()),
+            Rgba::BLACK,
+            9525.0,
+        ),
     }
 }
 

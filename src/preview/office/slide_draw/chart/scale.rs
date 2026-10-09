@@ -6,8 +6,12 @@
 //! Given the smallest and largest data value `lo`, `hi` (stacked charts pass the stacked totals):
 //!
 //! 1. *Zero.* If `lo >= 0` and `(hi - lo) / hi >= 1/6` the axis starts at 0. If the data sit in the
-//!    top sixth of their range the axis starts at `lo - (hi - lo) / 2` instead (then rounded down to
-//!    a major unit). The same, mirrored, for data at or below 0.
+//!    top sixth of their range the axis starts at `lo - (hi - lo) / 20` instead (rounded down to
+//!    a major unit). The same, mirrored, for data at or below 0. Source: Jon Peltier, "How Excel
+//!    Calculates Automatic Chart Axis Limits" (peltiertech.com), measured on current Excel: "the
+//!    automatic minimum is the first major unit less than or equal to `Ymin - (Ymax - Ymin) / 20`"
+//!    and "the automatic maximum is the first major unit above `Ymax + (Ymax - Ymin) / 20`". (The
+//!    older Microsoft knowledge-base text says `/ 2` for the minimum; Excel 2007 and later do not.)
 //! 2. *Major unit.* The span being drawn is divided by the number of ticks the axis length can hold
 //!    ([`target_ticks`]: one per 32 px of a vertical axis, one per 60 px of a horizontal one,
 //!    between 3 and 10) and the result is rounded **up** to 1, 2 or 5 times a power of ten.
@@ -115,13 +119,13 @@ pub fn auto_range(lo: f64, hi: f64, ticks: f64) -> (f64, f64, f64) {
         if hi > 0.0 && range / hi >= 1.0 / 6.0 || range == 0.0 {
             amin = 0.0;
         } else {
-            amin = lo - range / 2.0;
+            amin = lo - range / 20.0;
         }
     } else if hi <= 0.0 {
         if lo < 0.0 && range / lo.abs() >= 1.0 / 6.0 || range == 0.0 {
             amax = 0.0;
         } else {
-            amax = hi + range / 2.0;
+            amax = hi + range / 20.0;
         }
     }
     let top = if amax == 0.0 && hi <= 0.0 {

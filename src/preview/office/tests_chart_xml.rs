@@ -4,7 +4,7 @@
 use super::chart_xml::*;
 use super::docx_xml::Node;
 use super::slide_draw::chart::*;
-use super::slide_draw::{Fill, Rgba};
+use super::slide_draw::{Fill, ImageFill, Rgba};
 use super::OfficeError;
 
 const NS: &str = r#"xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main""#;
@@ -442,8 +442,54 @@ fn automatic_title_is_the_only_series_name() {
     };
     let one = ser("Only", &["a"], &["1"], "");
     assert_eq!(mk(&one, false).unwrap().text, "Only");
+    // `autoTitleDeleted` has no effect on a title element that is there.
+    assert_eq!(mk(&one, true).unwrap().text, "Only");
+    // Several series, or none: the placeholder Office shows.
     let two = format!("{one}{}", ser("Other", &["a"], &["1"], ""));
-    assert!(mk(&two, false).is_none());
+    assert_eq!(mk(&two, false).unwrap().text, "Chart Title");
+    assert_eq!(mk(&two, true).unwrap().text, "Chart Title");
+    assert_eq!(mk("", false).unwrap().text, "Chart Title");
+    // A single series without a name has no name to show.
+    let unnamed = ser("", &["a"], &["1"], "");
+    assert_eq!(mk(&unnamed, false).unwrap().text, "Chart Title");
+}
+
+#[test]
+fn automatic_title_placeholder_is_japanese_in_a_japanese_chart() {
+    let x = space(
+        r#"<c:lang val="ja-JP"/><c:chart><c:title><c:overlay val="0"/></c:title><c:plotArea/></c:chart>"#,
+    );
+    assert_eq!(parse(&x).model.title.unwrap().text, "グラフ タイトル");
+}
+
+#[test]
+fn a_title_with_text_is_kept_as_it_is() {
+    let x = space(
+        r#"<c:chart><c:title><c:tx><c:rich><a:p><a:r><a:t>Mine</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea/></c:chart>"#,
+    );
+    assert_eq!(parse(&x).model.title.unwrap().text, "Mine");
+}
+
+#[test]
+fn without_a_title_element_a_single_named_series_gives_the_title() {
+    let mk = |series: &str, atd: &str| {
+        parse(&space(&format!(
+            r#"<c:chart>{atd}<c:plotArea><c:pieChart>{series}</c:pieChart></c:plotArea></c:chart>"#
+        )))
+        .model
+        .title
+    };
+    let one = ser("Sales", &["a"], &["1"], "");
+    assert_eq!(
+        mk(&one, r#"<c:autoTitleDeleted val="0"/>"#).unwrap().text,
+        "Sales"
+    );
+    // Not told either way: Office adds the title.
+    assert_eq!(mk(&one, "").unwrap().text, "Sales");
+    assert!(mk(&one, r#"<c:autoTitleDeleted val="1"/>"#).is_none());
+    let two = format!("{one}{}", ser("Other", &["a"], &["1"], ""));
+    assert!(mk(&two, r#"<c:autoTitleDeleted val="0"/>"#).is_none());
+    assert!(mk("", "").is_none());
 }
 
 #[test]
@@ -659,4 +705,101 @@ fn an_automatic_text_rotation_is_not_a_rotation() {
         let m = parse(&x).model;
         assert_eq!(m.title.unwrap().style.rot_deg, want, "{rot}");
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// picture fills (through the chart part's own relationships) and the chart's colour map
+// ---------------------------------------------------------------------------------------------
+
+fn blip_loader(bf: &Node) -> Option<ImageFill> {
+    let rid = bf.child("blip")?.rel_attr("embed")?;
+    Some(ImageFill::stretch(format!("img:{rid}")))
+}
+
+fn parse_with_images(xml: &str) -> ParsedChart {
+    parse_chart_with(xml.as_bytes(), &env(), Some(&blip_loader)).expect("parses")
+}
+
+const BLIP_NS: &str =
+    r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships""#;
+
+#[test]
+fn picture_fills_of_the_chart_plot_series_and_points_go_through_the_loader() {
+    let blip = |id: &str| {
+        format!(
+            r#"<a:blipFill><a:blip {BLIP_NS} r:embed="{id}"/><a:stretch><a:fillRect/></a:stretch></a:blipFill>"#
+        )
+    };
+    let sers = ser(
+        "S",
+        &["a", "b"],
+        &["1", "2"],
+        &format!(
+            r#"<c:spPr>{}</c:spPr><c:dPt><c:idx val="1"/><c:spPr>{}</c:spPr></c:dPt>"#,
+            blip("rS"),
+            blip("rP")
+        ),
+    );
+    let x = space(&format!(
+        r#"<c:chart><c:plotArea><c:barChart>{sers}</c:barChart><c:spPr>{}</c:spPr></c:plotArea></c:chart><c:spPr>{}</c:spPr>"#,
+        blip("rPlot"),
+        blip("rChart")
+    ));
+    let m = parse_with_images(&x).model;
+    let key = |f: &Option<Fill>| match f {
+        Some(Fill::Image(i)) => i.key.clone(),
+        other => panic!("not a picture: {other:?}"),
+    };
+    assert_eq!(key(&m.chart_fill), "img:rChart");
+    assert_eq!(key(&m.plot_fill), "img:rPlot");
+    assert_eq!(key(&m.groups[0].series[0].fill), "img:rS");
+    assert_eq!(key(&m.groups[0].series[0].points[0].fill), "img:rP");
+}
+
+#[test]
+fn a_picture_fill_the_loader_cannot_load_is_automatic_and_without_a_loader_too() {
+    let x = space(&format!(
+        r#"<c:chart><c:plotArea/></c:chart><c:spPr><a:blipFill><a:blip {BLIP_NS} r:embed="gone"/></a:blipFill></c:spPr>"#
+    ));
+    // The loader finds no picture.
+    let none = |_: &Node| None;
+    let m = parse_chart_with(x.as_bytes(), &env(), Some(&none))
+        .unwrap()
+        .model;
+    assert_eq!(m.chart_fill, None);
+    // No loader at all (`parse_chart`).
+    assert_eq!(parse(&x).model.chart_fill, None);
+}
+
+#[test]
+fn the_charts_colour_map_overrides_the_slides_for_its_scheme_colours() {
+    // The resolver only knows accent1 / accent2 / tx1: `tx1` is mapped to `accent2` here.
+    let fill = r#"<c:spPr><a:solidFill><a:schemeClr val="tx1"/></a:solidFill></c:spPr>"#;
+    let plain = space(&format!("<c:chart><c:plotArea/></c:chart>{fill}"));
+    assert_eq!(
+        parse(&plain).model.chart_fill,
+        Some(Fill::Solid(Rgba::rgb(9, 9, 9)))
+    );
+    let over = space(&format!(
+        r#"<c:chart><c:plotArea/></c:chart>{fill}<c:clrMapOvr><a:overrideClrMapping bg1="lt1" tx1="accent2" bg2="lt2" tx2="dk2" accent1="accent1"/></c:clrMapOvr>"#
+    ));
+    assert_eq!(
+        parse(&over).model.chart_fill,
+        Some(Fill::Solid(Rgba::rgb(2, 2, 2)))
+    );
+    // `a:masterClrMapping` changes nothing; a colour the map does not name is untouched.
+    let master = space(&format!(
+        r#"<c:chart><c:plotArea/></c:chart>{fill}<c:clrMapOvr><a:masterClrMapping/></c:clrMapOvr>"#
+    ));
+    assert_eq!(
+        parse(&master).model.chart_fill,
+        Some(Fill::Solid(Rgba::rgb(9, 9, 9)))
+    );
+    let srgb = space(
+        r#"<c:chart><c:plotArea/></c:chart><c:spPr><a:solidFill><a:srgbClr val="102030"/></a:solidFill></c:spPr><c:clrMapOvr><a:overrideClrMapping tx1="accent2"/></c:clrMapOvr>"#,
+    );
+    assert_eq!(
+        parse(&srgb).model.chart_fill,
+        Some(Fill::Solid(Rgba::rgb(0x10, 0x20, 0x30)))
+    );
 }

@@ -16,15 +16,22 @@
 //! axis titles, the chart title, the legend (right, left, top, bottom, top-right; one entry per
 //! series, or per point for vary-colours pie and doughnut charts) and data labels (value,
 //! percentage, category name, series name, in the positions Office offers; best fit is
-//! approximated by outside-end or centre).
+//! inside the slice when the text fits and outside otherwise).
 //!
 //! # Approximations (deliberate)
 //!
 //! * 3-D charts are drawn flat; stock, surface and of-pie charts are not drawn by the OOXML reader.
 //! * Date axes are category axes (the labels are formatted dates but the points are evenly
 //!   spaced); series (depth) axes are not drawn.
-//! * Data labels never avoid each other; "best fit" is outside-end for bars and pies and "right"
-//!   for lines.
+//! * Data labels of pies and doughnuts' outside positions avoid each other: on each side of the
+//!   pie the labels are pushed apart vertically (and kept inside the chart box), a label that had
+//!   to move gets a gray leader line to its slice, and labels centred above or below the pie
+//!   clear the rim along their whole width. Labels of points (line, scatter, bubble charts) that
+//!   would cover one another move up (above-point labels) or down by whole label heights to the
+//!   nearest free spot, without leader lines. Labels of bars stay in their bar; labels of the
+//!   two kinds never avoid each other, and the room made for pie labels is one line's height, so
+//!   a pie with many stacked labels can touch the title. "Best fit" is outside-end for bars and
+//!   "right" for lines.
 //! * `invertIfNegative` is ignored; gradient and pattern fills are used where a shape has a
 //!   bounding box of its own (bars, markers) and approximated elsewhere.
 //! * Text is measured with the faces `resvg` uses (see `fonts`), so label widths follow the
@@ -44,6 +51,9 @@
 //! colourful palette above, 1, 9, ... are grays, and 3..8 (+8k) are monochrome ramps of
 //! `accent1..6`: a single series (or point) gets the accent, several get lightness ramped from a
 //! darker to a lighter tone of it (approximated linearly in HSL).
+//!
+//! `c:style` 9 to 16 outline bars, areas and slices that have no `a:ln` in white (see
+//! `layout::style_outline`); a legend outline is drawn only when the file gives it a colour.
 //!
 //! # Axis scaling
 //!

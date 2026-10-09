@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 
-use crate::preview::office::chart_xml::{parse_chart, ChartEnv};
+use crate::preview::office::chart_xml::{parse_chart_with, ChartEnv};
 use crate::preview::office::slide_draw as sd;
 use crate::preview::office::slide_draw::chart::draw_chart;
 use crate::preview::office::slide_draw::Rgba;
@@ -191,7 +191,12 @@ impl Sb<'_> {
             minor_font: minor.as_deref(),
             major_font: major.as_deref(),
         };
-        let Ok(parsed) = parse_chart(&bytes, &env) else {
+        // Pictures of the chart part resolve through its own relationships.
+        let own = (self.parts.rels)(&part);
+        let this = std::cell::RefCell::new(&mut *self);
+        let images = |bf: &Node| this.borrow_mut().image_fill(bf, &own);
+        let parsed = parse_chart_with(&bytes, &env, Some(&images));
+        let Ok(parsed) = parsed else {
             return;
         };
         let (mut items, cut) = draw_chart(&parsed.model, xfrm.w, xfrm.h);

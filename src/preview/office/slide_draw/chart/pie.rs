@@ -8,7 +8,7 @@
 
 use super::super::model::*;
 use super::labels::{self, Info};
-use super::layout::{point_color, Rect, TEXT_PT};
+use super::layout::{point_color, style_outline, Rect, TEXT_PT};
 use super::shapes::{line_if_set, on_circle, Out};
 use super::text::{line_width, resolve, HAlign, VAlign};
 use super::{ChartGroup, ChartModel, GroupKind, LabelPos, PointFmt};
@@ -63,7 +63,7 @@ pub(super) fn draw(o: &mut Out, m: &ChartModel, rect: Rect) {
     let (cx, cy) = (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
 
     match g.kind {
-        GroupKind::Pie => pie(o, m, g, cx, cy, radius),
+        GroupKind::Pie => pie(o, m, g, cx, cy, radius, &rect),
         _ => doughnut(o, m, g, cx, cy, r_full),
     }
 }
@@ -95,7 +95,7 @@ fn point_fill(
     })
 }
 
-fn pie(o: &mut Out, m: &ChartModel, g: &ChartGroup, cx: f64, cy: f64, radius: f64) {
+fn pie(o: &mut Out, m: &ChartModel, g: &ChartGroup, cx: f64, cy: f64, radius: f64, rect: &Rect) {
     let s = &g.series[0];
     let n = s.values.len().max(s.cats.len());
     let (vals, total) = slices(&s.values, n);
@@ -129,7 +129,8 @@ fn pie(o: &mut Out, m: &ChartModel, g: &ChartGroup, cx: f64, cy: f64, radius: f6
         let (px, py) = (cx + ox, cy + oy);
         let fill = point_fill(m, g, s, pf, i);
         let stroke = pf.and_then(|p| p.line.as_ref()).or(s.line.as_ref());
-        let line = line_if_set(stroke, Rgba::WHITE, 9525.0);
+        let line = line_if_set(stroke, Rgba::WHITE, 9525.0)
+            .or_else(|| stroke.is_none().then(|| style_outline(m)).flatten());
         if sweep >= 359.99 {
             o.ellipse(px, py, radius, radius, &fill, line.as_ref());
         } else {
@@ -160,8 +161,180 @@ fn pie(o: &mut Out, m: &ChartModel, g: &ChartGroup, cx: f64, cy: f64, radius: f6
         }
         a0 += sweep;
     }
+    let mut outside: Vec<OutsideLabel> = Vec::new();
     for (text, st, pos, px, py, r, mid) in reqs {
-        place(o, &text, &st, pos, px, py, r, 0.0, mid);
+        if is_outside(pos) {
+            outside.push(OutsideLabel {
+                text,
+                st,
+                cx: px,
+                cy: py,
+                r,
+                mid,
+            });
+        } else {
+            place(o, &text, &st, pos, px, py, r, 0.0, mid);
+        }
+    }
+    place_outside(o, outside, rect);
+}
+
+/// A label outside its slice, waiting to be placed (see [`place_outside`]).
+struct OutsideLabel {
+    text: String,
+    st: super::text::RStyle,
+    /// The centre of the slice (moved by its explosion) and the radius.
+    cx: f64,
+    cy: f64,
+    r: f64,
+    /// The angle of the slice's bisector, degrees clockwise from 12 o'clock.
+    mid: f64,
+}
+
+/// A label that moved this far (px) from its natural place gets a leader line to its slice.
+const LEADER_MIN_MOVE: f64 = 3.0;
+/// The leader line of a moved label (Office draws them in a mid gray).
+const LEADER_GRAY: u8 = 0x86;
+
+/// Places the labels outside a pie like Office's best fit: each one starts at its slice's
+/// bisector just outside the rim; on each side of the pie the labels are then pushed apart
+/// vertically so that none covers another (and kept inside the chart's box), and a label that had to
+/// move gets a leader line from the slice's rim to the label.
+fn place_outside(o: &mut Out, labels: Vec<OutsideLabel>, rect: &Rect) {
+    struct Placed {
+        l: OutsideLabel,
+        ha: HAlign,
+        x: f64,
+        y_nat: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        right: bool,
+    }
+    let mut items: Vec<Placed> = Vec::with_capacity(labels.len());
+    for l in labels {
+        let (x, y) = on_circle(l.cx, l.cy, l.r + 4.0, l.mid);
+        let dx = l.mid.to_radians().sin();
+        let dy = -l.mid.to_radians().cos();
+        let ha = if dx > 0.25 {
+            HAlign::Left
+        } else if dx < -0.25 {
+            HAlign::Right
+        } else {
+            HAlign::Center
+        };
+        let (tw, th) = super::text::measure(&l.st, &l.text);
+        let rim = l.r + 4.0;
+        // The vertical centre of the label as `place` would anchor it.
+        let mut yc = if dy < -0.25 {
+            y - th / 2.0
+        } else if dy > 0.25 {
+            y + th / 2.0
+        } else {
+            y
+        };
+        // A label centred above (below) the pie must clear the rim along its whole width, not
+        // only at its anchor: the highest (lowest) point of the rim under it is the limit.
+        if ha == HAlign::Center && dy.abs() > 0.25 {
+            let (x0, x1) = (x - (tw + 6.0) / 2.0 - l.cx, x + (tw + 6.0) / 2.0 - l.cx);
+            let d = if x0 <= 0.0 && x1 >= 0.0 {
+                0.0
+            } else {
+                x0.abs().min(x1.abs())
+            };
+            let edge = (rim * rim - d * d).max(0.0).sqrt();
+            yc = if dy < 0.0 {
+                yc.min(l.cy - edge - th / 2.0)
+            } else {
+                yc.max(l.cy + edge + th / 2.0)
+            };
+        }
+        items.push(Placed {
+            ha,
+            x,
+            y_nat: yc,
+            y: yc,
+            w: tw + 6.0,
+            h: th,
+            right: dx >= 0.0,
+            l,
+        });
+    }
+    let (top, bottom) = (rect.y + 1.0, rect.y + rect.h - 1.0);
+    for side in [true, false] {
+        let mut idx: Vec<usize> = (0..items.len())
+            .filter(|&i| items[i].right == side && items[i].ha != HAlign::Center)
+            .collect();
+        idx.sort_by(|&a, &b| items[a].y.total_cmp(&items[b].y));
+        // Downwards: no label starts above the end of the one before it.
+        let mut edge = top;
+        for &i in &idx {
+            let h = items[i].h;
+            items[i].y = items[i].y.max(edge + h / 2.0);
+            edge = items[i].y + h / 2.0;
+        }
+        // Upwards from the bottom edge, when the last one went past it.
+        let mut edge = bottom;
+        for &i in idx.iter().rev() {
+            let h = items[i].h;
+            items[i].y = items[i].y.min(edge - h / 2.0);
+            edge = items[i].y - h / 2.0;
+        }
+    }
+    // The labels centred above or below the pie (nearly straight up or down from the centre)
+    // that overlap in width are stacked outwards, away from the pie.
+    let mut centred: Vec<usize> = (0..items.len())
+        .filter(|&i| items[i].ha == HAlign::Center)
+        .collect();
+    centred.sort_by(|&a, &b| items[a].x.total_cmp(&items[b].x));
+    for (k, &i) in centred.iter().enumerate() {
+        let up = items[i].y < items[i].l.cy;
+        for &j in &centred[..k] {
+            let (a, b) = (&items[i], &items[j]);
+            let wide = (a.x - b.x).abs() < (a.w + b.w) / 2.0 - 0.5;
+            let tall = (a.y - b.y).abs() < (a.h + b.h) / 2.0 - 0.5;
+            if wide && tall && (items[j].y < items[j].l.cy) == up {
+                let h = (a.h + b.h) / 2.0;
+                items[i].y = if up { b.y - h } else { b.y + h };
+            }
+        }
+    }
+    let leader = Line::solid(9525.0, Rgba::rgb(LEADER_GRAY, LEADER_GRAY, LEADER_GRAY));
+    for it in &mut items {
+        // A label that moved along the rim keeps clear of the pie: it sits at least where the rim
+        // is at the nearest point of its box.
+        if (it.y - it.y_nat).abs() > LEADER_MIN_MOVE && it.ha != HAlign::Center {
+            let rim = it.l.r + 4.0;
+            let (top, bot) = (it.y - it.h / 2.0 - it.l.cy, it.y + it.h / 2.0 - it.l.cy);
+            let d = if top <= 0.0 && bot >= 0.0 {
+                0.0
+            } else {
+                top.abs().min(bot.abs())
+            };
+            let reach = (rim * rim - d * d).max(0.0).sqrt();
+            let from_centre = (it.x - it.l.cx).abs().max(reach);
+            it.x = it.l.cx + if it.right { from_centre } else { -from_centre };
+        }
+    }
+    for it in &items {
+        if (it.y - it.y_nat).abs() > LEADER_MIN_MOVE {
+            let (ex, ey) = on_circle(it.l.cx, it.l.cy, it.l.r, it.l.mid);
+            // To the edge of the label's box that faces the pie.
+            let (lx, ly) = match it.ha {
+                HAlign::Left => (it.x - 1.0, it.y),
+                HAlign::Right => (it.x + 1.0, it.y),
+                HAlign::Center => (
+                    it.x,
+                    if it.y > it.l.cy {
+                        it.y - it.h / 2.0
+                    } else {
+                        it.y + it.h / 2.0
+                    },
+                ),
+            };
+            o.seg(ex, ey, lx, ly, &leader);
+        }
+        o.text(it.x, it.y, it.ha, VAlign::Middle, &it.l.text, &it.l.st, 0.0);
     }
 }
 
@@ -309,7 +482,8 @@ fn doughnut(o: &mut Out, m: &ChartModel, g: &ChartGroup, cx: f64, cy: f64, radiu
             let pf = map.get(&i).copied();
             let fill = point_fill(m, g, s, pf, i);
             let stroke = pf.and_then(|p| p.line.as_ref()).or(s.line.as_ref());
-            let line = line_if_set(stroke, Rgba::WHITE, 9525.0);
+            let line = line_if_set(stroke, Rgba::WHITE, 9525.0)
+                .or_else(|| stroke.is_none().then(|| style_outline(m)).flatten());
             if sweep >= 359.99 {
                 // A full ring: two circles, the hole cut out by an even-odd-free trick: draw the
                 // outer disc, then the inner one in the plot's colour is not possible, so draw two

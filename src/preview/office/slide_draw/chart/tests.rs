@@ -772,7 +772,7 @@ fn arcs(s: &ShapeItem) -> Vec<(f64, f64, f64, f64)> {
         .collect()
 }
 
-fn pie_model(vals: &[f64], kind: GroupKind) -> ChartModel {
+pub(super) fn pie_model(vals: &[f64], kind: GroupKind) -> ChartModel {
     let cats: Vec<String> = (0..vals.len()).map(|i| format!("c{i}")).collect();
     let cats: Vec<&str> = cats.iter().map(String::as_str).collect();
     let mut g = grp(kind, vec![ser("s", &cats, vals)]);

@@ -47,6 +47,8 @@ pub(super) mod theme;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_f2_dump;
+#[cfg(test)]
 mod tests_f3_dump;
 #[cfg(test)]
 mod tests_frames;

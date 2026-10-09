@@ -154,3 +154,235 @@ fn the_axis_title_stays_left_of_the_tick_labels() {
     let title_right = title.1 .0 + title.1 .2 / 2.0 + title.1 .3 / 2.0;
     assert!(title_right <= label.1 .0 + 4.0, "{title:?} {label:?}");
 }
+
+// ---- legend frame, style outlines, scale minimum, label placement ----
+
+/// Whether any shape of the drawing has the given outline colour (width ignored).
+fn has_outline(items: &[Item], c: Rgba) -> bool {
+    shapes(items)
+        .iter()
+        .any(|s| s.line.as_ref().is_some_and(|l| l.fill == Fill::Solid(c)))
+}
+
+#[test]
+fn a_legend_outline_without_a_colour_is_not_drawn_but_a_coloured_one_is() {
+    let mut m = model(vec![grp(
+        GroupKind::Bar,
+        vec![ser("First", &["a"], &[1.0]), ser("Second", &["a"], &[2.0])],
+    )]);
+    m.legend = Some(Legend {
+        line: Some(Stroke::default()),
+        ..Legend::default()
+    });
+    // `a:ln` with no fill of its own: the automatic outline, which is none.
+    assert!(!has_outline(&draw(&m), Rgba::BLACK));
+    m.legend.as_mut().unwrap().line = Some(Stroke {
+        color: Some(Rgba::rgb(0x12, 0x34, 0x56)),
+        ..Stroke::default()
+    });
+    assert!(has_outline(&draw(&m), Rgba::rgb(0x12, 0x34, 0x56)));
+    // Explicitly none.
+    m.legend.as_mut().unwrap().line = Some(Stroke {
+        none: true,
+        ..Stroke::default()
+    });
+    let items = draw(&m);
+    assert!(!has_outline(&items, Rgba::BLACK));
+}
+
+#[test]
+fn styles_9_to_16_outline_stacked_segments_in_white_unless_the_file_says_otherwise() {
+    let mk = |style: u8, line: Option<Stroke>| {
+        let mut s = ser("a", &["x", "y"], &[3.0, 4.0]);
+        let mut s2 = ser("b", &["x", "y"], &[1.0, 2.0]);
+        s.line = line.clone();
+        s2.line = line;
+        let mut g = grp(GroupKind::Bar, vec![s, s2]);
+        g.grouping = Grouping::Stacked;
+        let mut m = model(vec![g]);
+        m.style = style;
+        draw(&m)
+    };
+    for style in [9, 12, 16] {
+        assert!(has_outline(&mk(style, None), Rgba::WHITE), "style {style}");
+    }
+    for style in [0, 1, 2, 8, 17, 18, 48] {
+        assert!(!has_outline(&mk(style, None), Rgba::WHITE), "style {style}");
+    }
+    // The file's own `a:ln` wins (no line at all included).
+    let none = Stroke {
+        none: true,
+        ..Stroke::default()
+    };
+    assert!(!has_outline(&mk(12, Some(none)), Rgba::WHITE));
+    let red = Stroke {
+        color: Some(Rgba::rgb(255, 0, 0)),
+        ..Stroke::default()
+    };
+    let items = mk(12, Some(red));
+    assert!(has_outline(&items, Rgba::rgb(255, 0, 0)));
+}
+
+#[test]
+fn styles_9_to_16_outline_pie_slices_and_areas_too() {
+    let mut m = pie_model(&[1.0, 2.0], GroupKind::Pie);
+    m.style = 10;
+    assert!(has_outline(&draw(&m), Rgba::WHITE));
+    m.style = 2;
+    assert!(!has_outline(&draw(&m), Rgba::WHITE));
+    let mut a = model(vec![grp(
+        GroupKind::Area,
+        vec![ser("a", &["x", "y"], &[1.0, 2.0])],
+    )]);
+    a.style = 14;
+    assert!(has_outline(&draw(&a), Rgba::WHITE));
+}
+
+#[test]
+fn data_in_the_top_sixth_starts_the_axis_a_twentieth_of_the_range_below_the_data() {
+    // Peltier: min = first major unit <= Ymin - (Ymax - Ymin) / 20.
+    let (mn, mx, u) = scale::auto_range(100.0, 102.0, 6.0);
+    assert!(
+        mn <= 100.0 - 2.0 / 20.0 && mn > 100.0 - 2.0 / 20.0 - u,
+        "{mn} {u}"
+    );
+    assert!(mx >= 102.0);
+    // A wide spread still starts at zero; mirrored for negative data.
+    assert_eq!(scale::auto_range(6.0, 21.0, 6.0).0, 0.0);
+    let (mn, mx, u) = scale::auto_range(-102.0, -100.0, 6.0);
+    assert!(
+        mx >= -100.0 + 2.0 / 20.0 && mx < -100.0 + 2.0 / 20.0 + u + 1e-9,
+        "{mx} {u}"
+    );
+    assert!(mn <= -102.0);
+}
+
+/// Do any two of the boxes (x, y, w, h) overlap?
+fn any_overlap(boxes: &[(f64, f64, f64, f64)]) -> bool {
+    for (i, a) in boxes.iter().enumerate() {
+        for b in &boxes[i + 1..] {
+            if a.0 < b.0 + b.2 - 0.5
+                && b.0 < a.0 + a.2 - 0.5
+                && a.1 < b.1 + b.3 - 0.5
+                && b.1 < a.1 + a.3 - 0.5
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn pie_with_labels(vals: &[f64]) -> ChartModel {
+    let mut m = pie_model(vals, GroupKind::Pie);
+    m.groups[0].series[0].labels = Some(DataLabels {
+        show_value: true,
+        show_category: true,
+        pos: Some(LabelPos::BestFit),
+        ..DataLabels::default()
+    });
+    m
+}
+
+#[test]
+fn small_pie_slices_next_to_each_other_do_not_have_overlapping_labels_and_get_leader_lines() {
+    // Six slices of one percent in a row: their labels would stack on one another.
+    let m = pie_with_labels(&[60.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 34.0]);
+    let items = draw(&m);
+    let t = texts(&items);
+    let labels: Vec<_> = t
+        .iter()
+        .filter(|t| t.0.starts_with('c'))
+        .map(|t| t.1)
+        .collect();
+    assert_eq!(labels.len(), 8, "{t:?}");
+    assert!(!any_overlap(&labels), "{labels:?}");
+    // At least one label was moved and is joined to its slice by a gray line.
+    let gray = Rgba::rgb(0x86, 0x86, 0x86);
+    assert!(segs(&items).iter().any(|s| s.4 == gray), "no leader line");
+    // Everything stays inside the chart.
+    for l in &labels {
+        assert!(l.1 >= 0.0 && l.1 + l.3 <= H + 0.5, "{l:?}");
+    }
+}
+
+#[test]
+fn pie_labels_that_do_not_collide_get_no_leader_line() {
+    let m = pie_with_labels(&[1.0, 1.0, 1.0, 1.0]);
+    let items = draw(&m);
+    let gray = Rgba::rgb(0x86, 0x86, 0x86);
+    assert!(!segs(&items).iter().any(|s| s.4 == gray));
+}
+
+#[test]
+fn labels_of_points_that_would_cover_each_other_are_moved_apart() {
+    // Two series on top of each other: every point's label sits at the same spot.
+    let mk = || {
+        let mut a = ser("a", &["p", "q"], &[5.0, 6.0]);
+        let mut b = ser("b", &["p", "q"], &[5.0, 6.0]);
+        for s in [&mut a, &mut b] {
+            s.labels = Some(DataLabels {
+                show_value: true,
+                pos: Some(LabelPos::Above),
+                ..DataLabels::default()
+            });
+        }
+        let mut g = grp(GroupKind::Line, vec![a, b]);
+        g.markers = true;
+        model(vec![g])
+    };
+    let items = draw(&mk());
+    let labels: Vec<_> = texts(&items)
+        .into_iter()
+        .filter(|t| (t.0 == "5" || t.0 == "6") && t.1 .0 > 20.0)
+        .map(|t| t.1)
+        .collect();
+    assert_eq!(labels.len(), 4, "{labels:?}");
+    assert!(!any_overlap(&labels), "{labels:?}");
+}
+
+#[test]
+fn centred_pie_labels_near_the_top_do_not_overlap_each_other_or_the_pie_rim() {
+    let m = pie_with_labels(&[40.0, 24.0, 14.0, 9.0, 5.0, 4.0, 3.0, 1.0]);
+    let items = draw(&m);
+    let labels: Vec<_> = texts(&items)
+        .iter()
+        .filter(|t| t.0.starts_with('c'))
+        .map(|t| t.1)
+        .collect();
+    assert_eq!(labels.len(), 8);
+    assert!(!any_overlap(&labels), "{labels:?}");
+}
+
+#[test]
+fn point_labels_below_their_point_move_down_not_up() {
+    let mk = |pos: LabelPos| {
+        let mut a = ser("a", &["p", "q"], &[5.0, 6.0]);
+        let mut b = ser("b", &["p", "q"], &[5.0, 6.0]);
+        for s in [&mut a, &mut b] {
+            s.labels = Some(DataLabels {
+                show_value: true,
+                pos: Some(pos),
+                ..DataLabels::default()
+            });
+        }
+        let mut g = grp(GroupKind::Line, vec![a, b]);
+        g.markers = true;
+        let items = draw(&model(vec![g]));
+        let mut ys: Vec<f64> = texts(&items)
+            .into_iter()
+            .filter(|t| t.0 == "5" && t.1 .0 > 20.0)
+            .map(|t| t.1 .1)
+            .collect();
+        ys.sort_by(f64::total_cmp);
+        ys
+    };
+    let above = mk(LabelPos::Above);
+    let below = mk(LabelPos::Below);
+    assert_eq!(above.len(), 2);
+    assert_eq!(below.len(), 2);
+    // The unmoved label sits at the same place; the other one is one label height away on the
+    // side that leads away from the point.
+    assert!(above[0] < below[0] - 10.0, "{above:?} {below:?}");
+    assert!(below[1] > above[1] + 10.0, "{above:?} {below:?}");
+}

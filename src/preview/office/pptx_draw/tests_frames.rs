@@ -847,3 +847,140 @@ fn an_embedded_object_is_drawn_as_its_preview_picture() {
         "preview.png"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// the chart part's own relationships, the chart's colour map, and the fallback of a failed Choice
+// ---------------------------------------------------------------------------------------------
+
+const CHART_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdP" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/bg.png"/></Relationships>"#;
+
+fn image_fills(items: &[Item]) -> Vec<String> {
+    shapes_of(items)
+        .iter()
+        .filter_map(|s| match &s.fill {
+            Fill::Image(i) => Some(i.key.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_picture_fill_in_a_chart_resolves_through_the_chart_parts_relationships() {
+    let sp = r#"<c:spPr><a:blipFill xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><a:blip r:embed="rIdP"/><a:stretch><a:fillRect/></a:stretch></a:blipFill></c:spPr>"#;
+    let mut d = chart_deck(&chart_frame(0, 0, 4_000_000, 3_000_000));
+    d.media.push(("bg.png".into(), tiny_png(3)));
+    let doc = load(
+        &d,
+        &[
+            ("ppt/charts/chart1.xml", chart_xml(sp, "")),
+            (
+                "ppt/charts/_rels/chart1.xml.rels",
+                CHART_RELS.as_bytes().to_vec(),
+            ),
+        ],
+        &DocOptions::default(),
+    );
+    let g = the_group(&doc.slide_scenes[0]);
+    let keys = image_fills(&g.items);
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert_ne!(keys[0], shapes::MISSING_PICTURE);
+    assert!(doc.images.iter().any(|i| i.key == keys[0]));
+}
+
+#[test]
+fn a_chart_picture_fill_does_not_resolve_through_the_slides_relationships() {
+    // `rIdP` exists on the slide but the chart part has no relationship of that id.
+    let sp = r#"<c:spPr><a:blipFill xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><a:blip r:embed="rIdP"/></a:blipFill></c:spPr>"#;
+    let mut d = chart_deck(&chart_frame(0, 0, 4_000_000, 3_000_000));
+    d.media.push(("bg.png".into(), tiny_png(3)));
+    d.slides[0]
+        .rels
+        .push(("rIdP".into(), "image".into(), "../media/bg.png".into()));
+    let doc = load(
+        &d,
+        &[("ppt/charts/chart1.xml", chart_xml(sp, ""))],
+        &DocOptions::default(),
+    );
+    let g = the_group(&doc.slide_scenes[0]);
+    assert!(image_fills(&g.items).is_empty());
+}
+
+#[test]
+fn a_chart_with_its_own_colour_map_does_not_use_the_slides() {
+    // The chart area is filled with `bg1`; the chart's own map says bg1 = dk1 (black in the
+    // default theme), which is not what the slide's map (bg1 = lt1) gives.
+    let fill = r#"<c:spPr><a:solidFill><a:schemeClr val="bg1"/></a:solidFill></c:spPr>"#;
+    let over = format!(
+        r#"{fill}<c:clrMapOvr><a:overrideClrMapping bg1="dk1" tx1="lt1" bg2="dk2" tx2="lt2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/></c:clrMapOvr>"#
+    );
+    let colour_of = |space: &str| {
+        let d = chart_deck(&chart_frame(0, 0, 4_000_000, 3_000_000));
+        let doc = load(
+            &d,
+            &[("ppt/charts/chart1.xml", chart_xml(space, ""))],
+            &DocOptions::default(),
+        );
+        let g = the_group(&doc.slide_scenes[0]);
+        let first = shapes_of(&g.items)[0].fill.clone();
+        first
+    };
+    let slide_map = colour_of(fill);
+    let chart_map = colour_of(&over);
+    assert_ne!(slide_map, chart_map);
+    assert_eq!(chart_map, Fill::Solid(Rgba::BLACK));
+}
+
+/// A graphic frame in `mc:AlternateContent` whose Choice holds a chart and whose Fallback a picture.
+fn chart_with_fallback(requires: &str) -> String {
+    format!(
+        r#"<mc:AlternateContent><mc:Choice Requires="{requires}">{}</mc:Choice><mc:Fallback><p:pic><p:nvPicPr><p:cNvPr id="5" name="Fb"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rIdFb"/></p:blipFill><p:spPr>{}<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic></mc:Fallback></mc:AlternateContent>"#,
+        chart_frame(10, 20, 3_000_000, 2_000_000),
+        xf(10, 20, 3_000_000, 2_000_000)
+    )
+}
+
+fn fallback_deck(requires: &str) -> D {
+    let mut d = chart_deck(&chart_with_fallback(requires));
+    d.media.push(("fb.png".into(), tiny_png(7)));
+    d.slides[0]
+        .rels
+        .push(("rIdFb".into(), "image".into(), "../media/fb.png".into()));
+    d
+}
+
+#[test]
+fn a_choice_chart_that_does_not_parse_gives_way_to_the_fallback_picture() {
+    let d = fallback_deck("a14");
+    let doc = load(
+        &d,
+        &[("ppt/charts/chart1.xml", b"<not a chart".to_vec())],
+        &DocOptions::default(),
+    );
+    let sc = &doc.slide_scenes[0];
+    assert_eq!(sc.items.len(), 1, "{:?}", sc.items);
+    assert!(
+        matches!(&sc.items[0], Item::Picture(_)),
+        "{:?}",
+        sc.items[0]
+    );
+}
+
+#[test]
+fn a_choice_chart_that_is_missing_gives_way_to_the_fallback_picture() {
+    let d = fallback_deck("a14");
+    let doc = load(&d, &[], &DocOptions::default());
+    assert!(matches!(&doc.slide_scenes[0].items[0], Item::Picture(_)));
+}
+
+#[test]
+fn a_choice_chart_that_draws_keeps_the_choice_and_not_the_fallback() {
+    let d = fallback_deck("a14");
+    let doc = load(
+        &d,
+        &[("ppt/charts/chart1.xml", chart_xml("", ""))],
+        &DocOptions::default(),
+    );
+    let sc = &doc.slide_scenes[0];
+    assert_eq!(sc.items.len(), 1);
+    assert!(matches!(&sc.items[0], Item::Group(_)), "{:?}", sc.items[0]);
+}

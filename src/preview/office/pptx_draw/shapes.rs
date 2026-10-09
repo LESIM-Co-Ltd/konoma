@@ -90,7 +90,22 @@ impl<'a> Sb<'a> {
                     // (`AlternateContent` is a wrapper, not a shape of its own.)
                     self.items -= 1;
                     if let Some(c) = alt_content(n, PPTX_READS) {
+                        let before = out.len();
+                        let truncated = self.truncated;
                         self.build_nodes(c.nodes(), depth + 1, out);
+                        // A `Choice` whose graphic frame could not be drawn (a chart part that
+                        // does not parse, ...) gives way to the `Fallback` (usually a picture).
+                        let is_choice = c.name == "Choice";
+                        if is_choice
+                            && out.len() == before
+                            && !self.truncated
+                            && c.nodes().any(|k| k.name == "graphicFrame")
+                        {
+                            if let Some(fb) = n.child("Fallback") {
+                                self.truncated = truncated;
+                                self.build_nodes(fb.nodes(), depth + 1, out);
+                            }
+                        }
                     }
                 }
             }

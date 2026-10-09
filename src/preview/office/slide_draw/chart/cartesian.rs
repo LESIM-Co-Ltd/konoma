@@ -265,6 +265,7 @@ pub(super) fn draw(o: &mut Out, m: &ChartModel, avail: Rect, manual: Option<Manu
         }
     }
     // Data labels on top of everything but titles and the legend.
+    nudge_point_labels(&mut reqs);
     for r in reqs {
         r.draw(o);
     }
@@ -973,6 +974,70 @@ enum LabelAt {
     },
 }
 
+/// The box `(left, top, right, bottom)` a label next to a point takes (the geometry of
+/// [`labels::at_point`]).
+fn point_label_box(r: &LabelReq) -> Option<(f64, f64, f64, f64)> {
+    let LabelAt::Point { x, y, r: mr } = r.at else {
+        return None;
+    };
+    let (tw, th) = measure(&r.st, &r.text);
+    let w = tw + 6.0;
+    let g = mr + 3.0;
+    Some(match r.pos {
+        LabelPos::Left => (x - g - w, y - th / 2.0, x - g, y + th / 2.0),
+        LabelPos::Above | LabelPos::OutsideEnd | LabelPos::InsideEnd => {
+            (x - w / 2.0, y - g - th, x + w / 2.0, y - g)
+        }
+        LabelPos::Below | LabelPos::InsideBase => (x - w / 2.0, y + g, x + w / 2.0, y + g + th),
+        LabelPos::Center => (x - w / 2.0, y - th / 2.0, x + w / 2.0, y + th / 2.0),
+        LabelPos::Right | LabelPos::BestFit => (x + g, y - th / 2.0, x + g + w, y + th / 2.0),
+    })
+}
+
+/// Most labels of one chart that are checked against each other (the check is quadratic).
+const MAX_NUDGED_LABELS: usize = 600;
+
+/// Simple overlap avoidance for the labels of points (line, scatter, bubble): a label that would
+/// cover one already placed moves up or down by whole label heights to the nearest free spot (it
+/// stays where it is when there is none). Labels of bars are not moved: they sit in their bar.
+fn nudge_point_labels(reqs: &mut [LabelReq]) {
+    let mut placed: Vec<(f64, f64, f64, f64)> = Vec::new();
+    let hit = |a: &(f64, f64, f64, f64), b: &(f64, f64, f64, f64)| {
+        a.0 < b.2 - 0.5 && b.0 < a.2 - 0.5 && a.1 < b.3 - 0.5 && b.1 < a.3 - 0.5
+    };
+    let mut seen = 0usize;
+    for r in reqs.iter_mut() {
+        let Some(b0) = point_label_box(r) else {
+            continue;
+        };
+        seen += 1;
+        if seen > MAX_NUDGED_LABELS {
+            break;
+        }
+        let h = b0.3 - b0.1;
+        let mut chosen = b0;
+        let mut dy_chosen = 0.0;
+        // A label above its point moves further up first, one below it further down.
+        let order: [f64; 5] = match r.pos {
+            LabelPos::Below | LabelPos::InsideBase => [0.0, 1.0, 2.0, -1.0, -2.0],
+            _ => [0.0, -1.0, -2.0, 1.0, 2.0],
+        };
+        for k in order {
+            let dy = k * h;
+            let b = (b0.0, b0.1 + dy, b0.2, b0.3 + dy);
+            if !placed.iter().any(|p| hit(p, &b)) {
+                chosen = b;
+                dy_chosen = dy;
+                break;
+            }
+        }
+        if let LabelAt::Point { y, .. } = &mut r.at {
+            *y += dy_chosen;
+        }
+        placed.push(chosen);
+    }
+}
+
 impl LabelReq {
     fn draw(self, o: &mut Out) {
         match self.at {
@@ -1133,7 +1198,12 @@ fn bars(o: &mut Out, m: &ChartModel, p: &Pair, geo: &Geo, gr: &GroupRef, reqs: &
                     })
                 });
             let stroke = pf.and_then(|pf| pf.line.as_ref()).or(s.line.as_ref());
-            let line = line_if_set(stroke, Rgba::BLACK, 9525.0);
+            let line = line_if_set(stroke, Rgba::BLACK, 9525.0).or_else(|| {
+                stroke
+                    .is_none()
+                    .then(|| super::layout::style_outline(m))
+                    .flatten()
+            });
             o.rect(r.x, r.y, r.w, r.h, &fill, line.as_ref());
             if o.full() {
                 return;
@@ -1325,7 +1395,12 @@ fn areas(o: &mut Out, m: &ChartModel, p: &Pair, geo: &Geo, gr: &GroupRef) {
     for (j, s) in g.series.iter().enumerate() {
         let ord = gr.ord0 + j;
         let fill = series_fill(m, s, ord);
-        let ln = line_if_set(s.line.as_ref(), Rgba::BLACK, 9525.0);
+        let ln = line_if_set(s.line.as_ref(), Rgba::BLACK, 9525.0).or_else(|| {
+            s.line
+                .is_none()
+                .then(|| super::layout::style_outline(m))
+                .flatten()
+        });
         let mut top: Vec<(f64, f64)> = Vec::with_capacity(n);
         let mut bottom: Vec<(f64, f64)> = Vec::with_capacity(n);
         for (i, row) in rows[j].iter().enumerate().take(n) {
