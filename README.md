@@ -147,7 +147,7 @@ you came from, since a worktree's directory rarely does.
   gradients, groups, tables, charts and SmartArt, with the speaker notes under each slide and hidden slides marked.
   `J`/`K` jump to the next / previous slide (status line `slide 3/12`); `R` switches to a **text view** of the slides
   (the default on half-block terminals without a graphics protocol). Office fonts are substituted, so line breaks can differ
-  from PowerPoint; 3-D charts are drawn flat. The old binary `.ppt` is not previewed (`e` opens it). Compared against
+  from PowerPoint; 3-D charts are drawn with depth but without perspective. The old binary `.ppt` is not previewed (`e` opens it). Compared against
   LibreOffice's renderings, not against PowerPoint itself.
 - **Open Office documents in their app**: `e` on a Word / Excel / PowerPoint / OpenDocument file opens it
   in Microsoft Office, LibreOffice or the OS default instead of handing the zip to `$EDITOR`.

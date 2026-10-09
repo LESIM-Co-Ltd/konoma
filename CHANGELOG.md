@@ -12,7 +12,7 @@ All notable changes to konoma are documented in this file. The format is based o
   renderer, drawn by the same supervised drawing process as any untrusted SVG. Shapes (all preset shapes, freeform
   geometry), text (font substitution, bullets, autofit, vertical text), pictures including EMF / WMF, solid / gradient /
   pattern / picture fills, shadows, glow and reflection, groups, connectors, tables, charts (bar, line, pie, area,
-  scatter, radar, bubble ...; 3-D charts are drawn flat), SmartArt (from the drawing PowerPoint saves), backgrounds,
+  scatter, radar, bubble ...; 3-D charts with depth, without perspective), SmartArt (from the drawing PowerPoint saves), backgrounds,
   layouts and masters. Each slide sits under its heading line (`## Slide 3: Title`, hidden slides marked `(hidden)`) with
   the speaker notes as a quote under it. `J` / `K` (`page_next` / `page_prev`) jump to the next / previous slide and the
   status line shows `slide 3/12`; the footer and `?` help offer `J/K:slide` only where it acts. `R` switches between the
@@ -22,7 +22,7 @@ All notable changes to konoma are documented in this file. The format is based o
   the pictures anyway. A deck has no "converted Markdown" source view any more (a Word document's `R` still shows it).
   `e` opens a deck in PowerPoint / LibreOffice / the OS default. The default `document` rule matches these extensions.
   Known limits: Office fonts are substituted (Calibri, Yu Gothic ... by faces that exist on macOS / Linux), so line
-  breaks can differ from PowerPoint; 3-D charts are flat and 3-D shape effects are not drawn; SmartArt is drawn only from
+  breaks can differ from PowerPoint; 3-D charts have depth but no perspective and 3-D shape effects are not drawn; SmartArt is drawn only from
   its saved drawing part (a deck saved by PowerPoint 2007, which does not store that drawing, shows the SmartArt text in the
   text view only); LibreOffice's `svm` metafile and EMF+-only pictures are not drawn; the old binary `.ppt` is not
   previewed. Compared against LibreOffice's renderings of PowerPoint- and LibreOffice-made decks, not against PowerPoint itself.

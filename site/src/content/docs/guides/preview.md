@@ -214,7 +214,7 @@ Limits to know:
 - **Fonts are substituted.** Office fonts (Calibri, Yu Gothic ...) are replaced by faces
   that exist on macOS and Linux, so text can be a little wider or narrower and lines can
   break in a different place than in PowerPoint.
-- 3-D charts are drawn flat and 3-D shape effects are not drawn. A SmartArt diagram is
+- 3-D charts are drawn with depth but without perspective, and 3-D shape effects are not drawn. A SmartArt diagram is
   drawn from the drawing part PowerPoint saves with it; a file without one shows its text
   in the text view only. LibreOffice's own `svm` pictures and EMF+-only pictures are not drawn.
 - The file itself is never written. A password-protected, damaged or too-large file says
