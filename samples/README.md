@@ -29,7 +29,7 @@ and are covered by the project's MIT license.
 - `sample.pptx` / `sample.ja.pptx` / `sample.odp` — original PowerPoint and OpenDocument presentations for the
   slide preview (a title slide, nested bullets, a two-column slide, a table, a picture with a caption, grouped shapes,
   a hidden slide with speaker notes, hyperlinks). Written for konoma and exported with LibreOffice; `sample.ja.pptx`
-  is the Japanese version. Turn slides with `J`/`K`; `R` shows the converted Markdown.
+  is the Japanese version. Turn slides with `J`/`K`; `R` switches to the text view.
 - `sample.zip` / `sample.tar.gz` — exercise the archive-listing preview (entry name / size /
   modified date in the same table renderer). Built by simply packing a few of this directory's
   *other* sample files with the system `zip`/`tar` tools (`sample.zip` = `code/hello.rs`,

@@ -419,8 +419,9 @@ code_theme = "TwoDark"
 #              Markdown (select with v/V, copy with y). The document file itself is never written. `.doc` is not previewed
 #              (e opens it in an Office app).
 #              Presentations (.pptx/.pptm/.ppsx/.ppsm/.potx/.potm/.odp/.otp) take the same route, one section per
-#              slide: title first, then text, tables, pictures and formulas in reading order, speaker notes as a quote
-#              under each slide, hidden slides marked. J/K = next/previous slide. A structure view, not a picture of the slide.
+#              slide, but open as pictures of the slides (drawn by konoma), speaker notes as a quote under each slide,
+#              hidden slides marked. J/K = next/previous slide; R = the text view (title, text, tables ... in reading
+#              order; the default on half-block terminals). Office fonts are substituted, so line breaks can differ.
 # command:  delegate to an external command. {path}=the target file, {out}=an output path (temp file).
 #           An empty (or whitespace-only) command means "no command to delegate to" — the rule
 #           degrades to `[can not preview: <ext>]`, exactly like an unmatched rule. It never falls
@@ -461,7 +462,7 @@ glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # Spreadsheet as a table (cells 
 builtin = "spreadsheet"
 
 [[preview.rules]]
-glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument text and presentations (one section per slide, J/K = slide) converted to Markdown and drawn like a .md. R = the converted Markdown.
+glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument text converted to Markdown and drawn like a .md (R = the converted Markdown); presentations drawn as slide pictures (J/K = slide, R = text view).
 builtin = "document"
 
 [[preview.rules]]

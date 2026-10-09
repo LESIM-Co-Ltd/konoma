@@ -25,7 +25,7 @@ walks through every link and checkbox in this document. Try it:
 - [sample.pdf](./sample.pdf) — PDF pages: turn with `J`/`K`
 - [sample.xlsx](./sample.xlsx) — a spreadsheet as a table, cells in their Excel formats: switch sheets with `J`/`K`
 - [sample.docx](./sample.docx) — a Word document as formatted text (headings, lists, tables, images, math)
-- [sample.pptx](./sample.pptx) — a presentation shown slide by slide as text: turn slides with `J`/`K`
+- [sample.pptx](./sample.pptx) — a presentation drawn as slide pictures: turn slides with `J`/`K`, `R` for the text view
 
 Focus one with `Tab`, press `Enter` to open it, then `q` to come back here.
 

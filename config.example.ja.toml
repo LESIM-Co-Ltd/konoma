@@ -388,9 +388,9 @@ code_theme = "TwoDark"
 #          数式は LaTeX)し、Markdown レンダラで表示する。o / Tab / / 検索 / $…$ の数式画像化がそのまま効く。
 #          変更履歴は最終版を表示し、コメント・ヘッダー・フッターは出さない。R で変換後の Markdown を表示
 #          (v/V で選択・y でコピー)。文書ファイルそのものは書き換えない。`.doc` はプレビューしない(e で Office アプリ)。
-#          プレゼン(.pptx/.pptm/.ppsx/.ppsm/.potx/.potm/.odp/.otp)も同じ経路で、スライドごとに 1 節: タイトルを先頭に、
-#          文字・表・画像・数式を読み順に並べ、発表者ノートは各スライドの下に引用で、非表示スライドは印つきで表示。
-#          J/K で次/前のスライド。構造表示であって、スライドの見た目の描画ではない。
+#          プレゼン(.pptx/.pptm/.ppsx/.ppsm/.potx/.potm/.odp/.otp)も同じ glob だが、スライドを絵として描いて表示する
+#          (konoma 自前の描画)。発表者ノートは各スライドの下に引用で、非表示スライドは印つき。J/K で次/前のスライド、
+#          R で文字表示(タイトル・文字・表などを読み順に。ハーフブロック端末では既定)。Office のフォントは代替されるので改行位置が変わりうる。
 # command: 外部コマンド委譲。{path}=対象ファイル, {out}=出力先(一時パス)
 # render_as: command 出力の扱い ("image" でPNG等を全画面画像表示。それ以外(未指定/"text"/未知の値)は
 #            出力をキャプチャして通常の windowed リーダーでテキスト表示)
@@ -427,7 +427,7 @@ glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # 表計算を表で表示(セ�
 builtin = "spreadsheet"
 
 [[preview.rules]]
-glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument テキストとプレゼン(スライドごとに 1 節・J/K=スライド)を Markdown に変換して .md と同じに表示。R=変換後の Markdown
+glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument テキストを Markdown に変換して .md と同じに表示(R=変換後の Markdown)。プレゼンはスライドの絵で表示(J/K=スライド・R=文字表示)
 builtin = "document"
 
 [[preview.rules]]

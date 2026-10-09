@@ -7,20 +7,25 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
-- **PowerPoint / OpenDocument presentation preview** (structure view): `.pptx`/`.pptm`/`.ppsx`/`.ppsm`/`.potx`/`.potm`/
-  `.odp`/`.otp` are read by konoma itself (no external tool) into the same Markdown as Word documents and drawn by the
-  Markdown renderer, one `##` section per slide (`Slide 3: Title`). A slide's title comes first, then its text,
-  bullets, tables, pictures, equations, `[chart: title]` markers and the text of SmartArt in reading order — by
-  position on the slide (inherited from its layout and master), rows left to right, a two-column slide column by
-  column — not the file's z-order; date / footer / slide-number placeholders are left out. Speaker notes follow each
-  slide as a quote (`Notes`), hidden slides are shown and marked `(hidden)`, comments are not shown. `J` / `K`
-  (`page_next` / `page_prev`) jump to the next / previous slide, also in the `R` converted Markdown, and the status
-  line shows `slide 3/12`; every slide, the last ones too, can be put at the top (the scroll range of a deck runs to
-  the last slide's heading, so `J` / `K` stop on each slide); the footer and `?` help offer `J/K:slide` only where it acts. `e` opens a deck in
-  PowerPoint / LibreOffice / the OS default. The default `document` rule now matches these extensions. Known limits:
-  this is a structure view, not a picture of the slide (layout, colours, shapes and charts are drawn in a later step);
-  a diagram linked by arrows is not ordered by its arrows and vertical text is not specially handled; the old binary
-  `.ppt` is not previewed. Checked against LibreOffice-made files, not yet against files made by PowerPoint.
+- **PowerPoint / OpenDocument presentation preview**: `.pptx`/`.pptm`/`.ppsx`/`.ppsm`/`.potx`/`.potm`/`.odp`/`.otp` open
+  as **pictures of the slides**, drawn by konoma itself (no PowerPoint or LibreOffice needed): its own DrawingML / ODF to SVG
+  renderer, drawn by the same supervised drawing process as any untrusted SVG. Shapes (all preset shapes, freeform
+  geometry), text (font substitution, bullets, autofit, vertical text), pictures including EMF / WMF, solid / gradient /
+  pattern / picture fills, shadows, glow and reflection, groups, connectors, tables, charts (bar, line, pie, area,
+  scatter, radar, bubble ...; 3-D charts are drawn flat), SmartArt (from the drawing PowerPoint saves), backgrounds,
+  layouts and masters. Each slide sits under its heading line (`## Slide 3: Title`, hidden slides marked `(hidden)`) with
+  the speaker notes as a quote under it. `J` / `K` (`page_next` / `page_prev`) jump to the next / previous slide and the
+  status line shows `slide 3/12`; the footer and `?` help offer `J/K:slide` only where it acts. `R` switches between the
+  pictures and the **text view** (the slides as Markdown: title first, then text, bullets, tables, pictures, equations and
+  `[chart: title]` markers in reading order — by position on the slide, a two-column slide column by column), keeping the
+  current slide; on a half-block terminal (no kitty / iTerm2 / sixel graphics) the text view is the default and `R` shows
+  the pictures anyway. A deck has no "converted Markdown" source view any more (a Word document's `R` still shows it).
+  `e` opens a deck in PowerPoint / LibreOffice / the OS default. The default `document` rule matches these extensions.
+  Known limits: Office fonts are substituted (Calibri, Yu Gothic ... by faces that exist on macOS / Linux), so line
+  breaks can differ from PowerPoint; 3-D charts are flat and 3-D shape effects are not drawn; SmartArt is drawn only from
+  its saved drawing part (a deck saved by PowerPoint 2007, which does not store that drawing, shows the SmartArt text in the
+  text view only); LibreOffice's `svm` metafile and EMF+-only pictures are not drawn; the old binary `.ppt` is not
+  previewed. Compared against LibreOffice's renderings of PowerPoint- and LibreOffice-made decks, not against PowerPoint itself.
 - **Word / OpenDocument preview**: `.docx`/`.docm`/`.dotx`/`.dotm`/`.odt`/`.ott` are converted to Markdown by konoma
   itself (no external tool) and drawn by the Markdown renderer, so `o`, `Tab`, `/` and math all work. Headings, bold /
   italic / strikethrough, bullets and numbering exactly as the document shows them (`(a)`, `ア`, `①`, `第1条` ...),

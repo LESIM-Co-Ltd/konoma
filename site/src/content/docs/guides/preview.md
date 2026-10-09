@@ -186,32 +186,43 @@ made by Microsoft Word.
 
 ## PowerPoint and OpenDocument presentations
 
-`.pptx`, `.pptm`, `.ppsx`, `.ppsm`, `.potx`, `.potm`, `.odp` and `.otp` are read by
-konoma itself — no PowerPoint or LibreOffice needed — into the same Markdown as a
-Word document, **one section per slide** (`Slide 3: Title`), and drawn like any `.md`:
+`.pptx`, `.pptm`, `.ppsx`, `.ppsm`, `.potx`, `.potm`, `.odp` and `.otp` open as
+**pictures of the slides**, drawn by konoma itself — no PowerPoint or LibreOffice
+needed. Each slide sits under its heading line (`## Slide 3: Title`), with its
+speaker notes as a quote under the picture:
 
-- Each slide starts with its title, then its text, bullets, tables, pictures,
-  equations, `[chart: title]` markers and the text inside SmartArt, in **reading
-  order**: by position on the slide (inherited from its layout and master), rows
-  left to right, and a two-column or side-by-side slide **column by column**. Date,
-  footer and slide-number placeholders are left out.
-- **Speaker notes** follow each slide as a quote labelled `Notes`; **hidden slides**
-  are shown and marked `(hidden)`. Comments are not shown.
-- `J` / `K` jump to the next / previous slide (also in the `R` converted Markdown),
-  and the status line shows `slide 3/12`. On a one-slide deck, or anywhere that is not
-  a presentation, they do nothing (and the footer does not offer them). They are the
-  `page_next` / `page_prev` actions — the same ones that turn a PDF page or a sheet.
-- `R` shows the converted Markdown; select with `v` / `V` and copy with `y`.
+- **What is drawn**: shapes (all the preset shapes and freeform geometry), text
+  (bullets, autofit, vertical text), pictures including EMF / WMF, solid, gradient,
+  pattern and picture fills, shadows, glow and reflection, groups, connectors,
+  tables, charts (bar, line, pie, area, scatter, radar, bubble ...), SmartArt (from
+  the drawing PowerPoint saves with it), backgrounds, layouts and masters. OpenDocument
+  presentations are drawn the same way. **Hidden slides** are shown and marked `(hidden)`.
+- `J` / `K` jump to the next / previous slide, and the status line shows `slide 3/12`.
+  On a one-slide deck, or anywhere that is not a presentation, they do nothing (and the
+  footer does not offer them). They are the `page_next` / `page_prev` actions — the same
+  ones that turn a PDF page or a sheet.
+- `R` switches between the pictures and the **text view**, keeping the current slide.
+  The text view is the slides as Markdown: the title first, then text, bullets, tables,
+  pictures, equations and `[chart: title]` markers in reading order (by position on the
+  slide, a two-column slide column by column), so `v` / `V` select and `y` copies text
+  (handy for handing a deck to an AI). On a half-block terminal (no kitty, iTerm2 or
+  sixel graphics) a slide picture is unreadable, so the text view is the default there
+  and `R` shows the pictures anyway.
 
-This is a **structure view, not a picture of the slide**: layout, colours, shapes and
-charts are not drawn (a chart shows only its title), a diagram linked by arrows is
-not ordered by its arrows, and vertical text is not specially handled. Drawing the
-slide as it looks is planned for a later step. The file itself is never written; a
-password-protected, damaged or too-large file says why it cannot be shown, and a deck
-cut at its limits (1,000 slides, 5,000 shapes on a slide, plus the Word limits) shows
-the start and says so in the title. The old binary `.ppt` is not previewed (`e` opens
-it). So far this has been checked against LibreOffice-made files, not files made by
-PowerPoint.
+Limits to know:
+
+- **Fonts are substituted.** Office fonts (Calibri, Yu Gothic ...) are replaced by faces
+  that exist on macOS and Linux, so text can be a little wider or narrower and lines can
+  break in a different place than in PowerPoint.
+- 3-D charts are drawn flat and 3-D shape effects are not drawn. A SmartArt diagram is
+  drawn from the drawing part PowerPoint saves with it; a file without one shows its text
+  in the text view only. LibreOffice's own `svm` pictures and EMF+-only pictures are not drawn.
+- The file itself is never written. A password-protected, damaged or too-large file says
+  why it cannot be shown, and a deck cut at its limits (1,000 slides, 5,000 shapes on a
+  slide) shows what it could and says so in the title. The old binary `.ppt` is not
+  previewed (`e` opens it).
+- Compared against LibreOffice's renderings of PowerPoint- and LibreOffice-made decks, not
+  against PowerPoint itself.
 
 ## Images, SVG, GIF, video, PDF
 
