@@ -11185,7 +11185,7 @@ L0013 style=fg=-,bg=-,mod=- align=-
   s16 fg=white,bg=-,mod=- "K"
   s17 fg=-,bg=-,mod=- "; "
   s18 fg=white,bg=-,mod=- "R"
-  s19 fg=-,bg=-,mod=- " shows the converted Markdown."
+  s19 fg=-,bg=-,mod=- " switches to the text view."
 L0014 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=white,bg=-,mod=- "sample.zip"
@@ -13380,11 +13380,13 @@ L0022 style=fg=-,bg=-,mod=- align=-
 L0023 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=blue,bg=-,mod=U "\u{f0c1} sample.ja.pptx"
-  s02 fg=-,bg=-,mod=- " — プレゼンをスライドごとに文字で表示: "
+  s02 fg=-,bg=-,mod=- " — プレゼンをスライドの絵で表示: "
   s03 fg=white,bg=-,mod=- "J"
   s04 fg=-,bg=-,mod=- "/"
   s05 fg=white,bg=-,mod=- "K"
-  s06 fg=-,bg=-,mod=- " でスライド送り"
+  s06 fg=-,bg=-,mod=- " でスライド送り・"
+  s07 fg=white,bg=-,mod=- "R"
+  s08 fg=-,bg=-,mod=- " で文字表示"
 L0024 style=fg=-,bg=-,mod=- align=-
 L0025 style=fg=-,bg=-,mod=- align=-
   s00 fg=white,bg=-,mod=- "Tab"
@@ -13723,11 +13725,11 @@ L0095 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg"
 -- TASKS (5) --
-  t00 state=' ' state_at=2390
-  t01 state=' ' state_at=2429
-  t02 state=' ' state_at=2499
-  t03 state=' ' state_at=6611
-  t04 state=' ' state_at=7025
+  t00 state=' ' state_at=2403
+  t01 state=' ' state_at=2442
+  t02 state=' ' state_at=2512
+  t03 state=' ' state_at=6624
+  t04 state=' ' state_at=7038
 -- DETAILS_OPEN (0) --
 -- ANCHORS (10) --
   a00 line=0000 slug="konoma-チュートリアル--触りながら覚える"
@@ -13749,12 +13751,12 @@ L0095 style=fg=-,bg=-,mod=- align=-
   m05 line=0021 kind=Link{target="./sample.xlsx"}
   m06 line=0022 kind=Link{target="./sample.ja.docx"}
   m07 line=0023 kind=Link{target="./sample.ja.pptx"}
-  m08 line=0032 kind=Task{state=' ',state_at=Some(2390)}
-  m09 line=0033 kind=Task{state=' ',state_at=Some(2429)}
-  m10 line=0034 kind=Task{state=' ',state_at=Some(2499)}
+  m08 line=0032 kind=Task{state=' ',state_at=Some(2403)}
+  m09 line=0033 kind=Task{state=' ',state_at=Some(2442)}
+  m10 line=0034 kind=Task{state=' ',state_at=Some(2512)}
   m11 line=0072 kind=CodeBlock{body=Some("# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg")}
-  m12 line=0085 kind=Task{state=' ',state_at=Some(6611)}
-  m13 line=0095 kind=Task{state=' ',state_at=Some(7025)}
+  m12 line=0085 kind=Task{state=' ',state_at=Some(6624)}
+  m13 line=0095 kind=Task{state=' ',state_at=Some(7038)}
 
 === samples: tutorial.md ===
 -- LINES (96) --
@@ -13873,10 +13875,13 @@ L0022 style=fg=-,bg=-,mod=- align=-
 L0023 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "- "
   s01 fg=blue,bg=-,mod=U "\u{f0c1} sample.pptx"
-  s02 fg=-,bg=-,mod=- " — a presentation shown slide by slide as text: turn slides with "
+  s02 fg=-,bg=-,mod=- " — a presentation drawn as slide pictures: turn slides with "
   s03 fg=white,bg=-,mod=- "J"
   s04 fg=-,bg=-,mod=- "/"
   s05 fg=white,bg=-,mod=- "K"
+  s06 fg=-,bg=-,mod=- ", "
+  s07 fg=white,bg=-,mod=- "R"
+  s08 fg=-,bg=-,mod=- " for the text view"
 L0024 style=fg=-,bg=-,mod=- align=-
 L0025 style=fg=-,bg=-,mod=- align=-
   s00 fg=-,bg=-,mod=- "Focus one with "
@@ -14232,11 +14237,11 @@ L0095 style=fg=-,bg=-,mod=- align=-
 -- CODE_BLOCKS (1) --
   c00 "# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg"
 -- TASKS (5) --
-  t00 state=' ' state_at=1891
-  t01 state=' ' state_at=1921
-  t02 state=' ' state_at=1987
-  t03 state=' ' state_at=5380
-  t04 state=' ' state_at=5699
+  t00 state=' ' state_at=1909
+  t01 state=' ' state_at=1939
+  t02 state=' ' state_at=2005
+  t03 state=' ' state_at=5398
+  t04 state=' ' state_at=5717
 -- DETAILS_OPEN (0) --
 -- ANCHORS (10) --
   a00 line=0000 slug="konoma-tutorial--learn-by-doing"
@@ -14258,12 +14263,12 @@ L0095 style=fg=-,bg=-,mod=- align=-
   m05 line=0021 kind=Link{target="./sample.xlsx"}
   m06 line=0022 kind=Link{target="./sample.docx"}
   m07 line=0023 kind=Link{target="./sample.pptx"}
-  m08 line=0032 kind=Task{state=' ',state_at=Some(1891)}
-  m09 line=0033 kind=Task{state=' ',state_at=Some(1921)}
-  m10 line=0034 kind=Task{state=' ',state_at=Some(1987)}
+  m08 line=0032 kind=Task{state=' ',state_at=Some(1909)}
+  m09 line=0033 kind=Task{state=' ',state_at=Some(1939)}
+  m10 line=0034 kind=Task{state=' ',state_at=Some(2005)}
   m11 line=0072 kind=CodeBlock{body=Some("# macOS\nbrew install ffmpeg\n\n# Debian / Ubuntu\nsudo apt install ffmpeg")}
-  m12 line=0085 kind=Task{state=' ',state_at=Some(5380)}
-  m13 line=0095 kind=Task{state=' ',state_at=Some(5699)}
+  m12 line=0085 kind=Task{state=' ',state_at=Some(5398)}
+  m13 line=0095 kind=Task{state=' ',state_at=Some(5717)}
 
 === task_corpus: a details nested inside an alert nested inside a closed details hides everything ===
 -- LINES (2) --
