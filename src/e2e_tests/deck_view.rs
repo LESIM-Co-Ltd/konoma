@@ -901,53 +901,39 @@ fn e2e_deck_a_scene_naming_a_missing_picture_still_draws() {
     assert!(s.app.office_picture_pixels_for_test(&url).is_some());
 }
 
-/// A PNG that claims `w` x `h` pixels and has no pixel data: its header is all a size check reads.
-fn png_claiming(w: u32, h: u32) -> Vec<u8> {
-    fn crc32(bytes: &[u8]) -> u32 {
-        let mut crc = !0u32;
-        for &b in bytes {
-            crc ^= u32::from(b);
-            for _ in 0..8 {
-                crc = if crc & 1 == 1 {
-                    (crc >> 1) ^ 0xEDB8_8320
-                } else {
-                    crc >> 1
-                };
-            }
-        }
-        !crc
+/// An SVG picture of 40 translucent groups, each as big as the picture is declared to be (100 000
+/// units a side): the drawing process needs a layer of up to 25 canvases for each of them at once and
+/// refuses the slide as too heavy. The writer does not look inside the groups of an SVG picture
+/// for such memory (it counts the work of its filters, the size of its markup and the area it
+/// paints).
+fn svg_of_nested_layers() -> Vec<u8> {
+    let mut s =
+        String::from(r#"<svg xmlns="http://www.w3.org/2000/svg" width="100000" height="100000">"#);
+    for _ in 0..40 {
+        s.push_str(r#"<g opacity="0.5">"#);
     }
-    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
-    let mut chunk = |kind: &[u8; 4], data: &[u8]| {
-        out.extend((data.len() as u32).to_be_bytes());
-        let mut body = kind.to_vec();
-        body.extend_from_slice(data);
-        out.extend(&body);
-        out.extend(crc32(&body).to_be_bytes());
-    };
-    let mut ihdr = Vec::new();
-    ihdr.extend(w.to_be_bytes());
-    ihdr.extend(h.to_be_bytes());
-    ihdr.extend([8, 2, 0, 0, 0]);
-    chunk(b"IHDR", &ihdr);
-    chunk(b"IEND", &[]);
-    out
+    s.push_str(r##"<rect width="100000" height="100000" fill="#ff0000"/>"##);
+    for _ in 0..40 {
+        s.push_str("</g>");
+    }
+    s.push_str("</svg>");
+    s.into_bytes()
 }
 
 #[test]
 fn e2e_deck_a_slide_that_cannot_be_drawn_says_why_and_the_others_still_draw() {
-    // Slide 2 embeds a picture that claims 20,000 x 20,000 pixels: the drawing process refuses to
-    // decode that much, and says so.
+    // Slide 2 embeds a picture the drawing process refuses to draw (layers of 25 canvases, forty
+    // at once), and says so.
     let mut heavy = scene(RED);
     heavy.items.push(Item::Picture(PictureItem::new(
         Xfrm::rect(0.0, 0.0, W_EMU, H_EMU),
-        "office-img://0123456789ab/heavy.png",
+        "office-img://0123456789ab/heavy.svg",
     )));
     let mut doc = deck_doc_with(3, vec![scene(RED), heavy, scene(RED)]);
     doc.images.push(crate::preview::office::docx::DocImage {
-        key: "office-img://0123456789ab/heavy.png".into(),
-        bytes: png_claiming(20_000, 20_000),
-        name: "heavy.png".into(),
+        key: "office-img://0123456789ab/heavy.svg".into(),
+        bytes: svg_of_nested_layers(),
+        name: "heavy.svg".into(),
     });
     let Some((mut s, _d)) = open_with(
         "dv_fail",

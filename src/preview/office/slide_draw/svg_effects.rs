@@ -105,18 +105,12 @@ impl W<'_> {
         x: &Xfrm,
         acc_rot: f64,
     ) {
-        if !Self::has_effects(fx) {
+        if !Self::has_effects(fx) || self.plain {
+            self.flush_cur(1.0);
             self.body.push_str(content);
             return;
         }
-        // The drawing process refuses a picture whose filters add up to too much work (see
-        // `svg_guard`) and spends time in proportion to it: past the slide's allowance the shape
-        // is drawn plain.
-        if self.filter_work > MAX_FILTER_WORK {
-            self.truncated = true;
-            self.body.push_str(content);
-            return;
-        }
+        let (body_at, defs_at) = (self.body.len(), self.defs.len());
         let gid = self.id("fx");
         let _ = write!(self.defs, r#"<g id="{gid}">{content}</g>"#);
         let (bxx, bxy, bw, bh) = bx;
@@ -248,7 +242,26 @@ impl W<'_> {
         } else {
             let _ = write!(self.body, r##"<g filter="url(#{inner})">{layer}</g>"##);
         }
+        // The drawing process refuses a picture whose filters add up to too much work (see
+        // `svg_guard`) and spends time in proportion to it. The work of this shape is known only
+        // once its filters are written: if it takes the slide past the allowance they are taken
+        // back and the shape is drawn plain (the check is on the total *with* this shape, not on
+        // what came before it: one shape with every effect can use up the whole allowance).
+        if self.filter_work + work.get() > MAX_FILTER_WORK {
+            self.body.truncate(body_at);
+            self.defs.truncate(defs_at);
+            self.truncated = true;
+            self.flush_cur(1.0);
+            self.body.push_str(content);
+            return;
+        }
         self.filter_work += work.get();
+        // The effects draw the shape again in each of their layers.
+        let layers = Self::fx_layers(fx) as f64;
+        self.flush_cur(layers);
+        let sc = cost::scan(content);
+        self.feat.els += sc.els * (layers - 1.0);
+        self.feat.segs += sc.segs * (layers - 1.0);
     }
 
     /// The mirrored, faded copy of the shape.

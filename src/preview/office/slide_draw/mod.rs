@@ -22,6 +22,7 @@
 
 pub mod chart;
 pub mod color;
+pub mod cost;
 pub mod fonts;
 pub mod footprint;
 pub mod geom;
@@ -38,6 +39,8 @@ pub mod symbol_font;
 pub mod text;
 pub mod underlay;
 
+#[cfg(test)]
+mod cost_tests;
 #[cfg(test)]
 mod effects_tests;
 #[cfg(test)]
@@ -66,26 +69,44 @@ pub struct Rendered {
     /// The size, on the longer side in px, `filter_work` was measured at: [`svg::MODEL_RASTER_PX`],
     /// or the slide's own size when that is bigger (the drawing process never draws below 1:1).
     pub model_px: f64,
+    /// What the slide costs the drawing process, as the writer counted it (see [`cost`]).
+    pub features: cost::Features,
 }
 
 impl Rendered {
     /// The longest side, in px, this slide can be rasterised at and still be inside the drawing
-    /// process's work budget. The process counts filter work times the square of the scale, so a
-    /// slide whose effects add up to `W` at `model_px` stays within the writer's allowance
-    /// ([`svg::MAX_FILTER_WORK`], the process's limit with a margin) up to
-    /// `model_px * sqrt(MAX_FILTER_WORK / W)`. Never below `model_px` (the writer already kept the
-    /// work at that size under the allowance), the bigger the work the smaller the result
-    /// (monotonic), and no effects at all means no limit (`u32::MAX`). Memory of pixel layers needs
-    /// no such cap: the writer nests nothing that isolates deeper than a few levels, far under the
-    /// process's limit even at the largest raster; pixels of embedded pictures and node counts do
-    /// not depend on the raster size.
+    /// process's work and time budgets. Two limits apply, the smaller wins:
+    ///
+    /// * The process counts filter work times the square of the scale, so a slide whose effects
+    ///   add up to `W` at `model_px` stays within the writer's allowance
+    ///   ([`svg::MAX_FILTER_WORK`], the process's limit with a margin) up to
+    ///   `model_px * sqrt(MAX_FILTER_WORK / W)`.
+    /// * The time the writer predicted for the slide ([`cost::Features::predict`]) has a part that
+    ///   grows with the raster's side (outlines) and one that grows with its area (fills,
+    ///   pictures, filters, tiles, the area SVG pictures paint); the raster is kept to where the
+    ///   prediction reaches [`cost::MAX_CHILD_MS`] (the same budget the writer held the slide to
+    ///   at `model_px`).
+    ///
+    /// Never below `model_px` (the writer already kept the slide inside both at that size), the
+    /// bigger the work the smaller the result (monotonic). Memory of pixel layers needs no cap:
+    /// the writer nests nothing that isolates deeper than a few levels, far under the process's
+    /// limit even at the largest raster; node counts do not depend on the raster size.
     pub fn max_raster_px(&self) -> u32 {
         let model = self.model_px.max(1.0);
         let work = self.filter_work;
-        if !(work.is_finite() && work > 0.0) {
+        let by_filters = if work.is_finite() && work > 0.0 {
+            model * (svg::MAX_FILTER_WORK / work).sqrt()
+        } else {
+            f64::INFINITY
+        };
+        // The time the writer predicted for the drawing grows with the raster too (fills, strokes,
+        // pictures and outlines in proportion to its area or side): the raster is kept to what
+        // fits the same time budget the writer held the slide to at the model size.
+        let by_time = model * self.features.predict().max_ratio(cost::MAX_CHILD_MS);
+        let px = by_filters.min(by_time);
+        if px.is_infinite() || px.is_nan() {
             return u32::MAX;
         }
-        let px = model * (svg::MAX_FILTER_WORK / work).sqrt();
         // Floor of the model size: below it the drawing process would draw at 1:1 anyway.
         px.max(model).min(f64::from(u32::MAX)) as u32
     }

@@ -27,7 +27,7 @@ pub const MAX_FX_SIDE: u32 = 2048;
 /// Decoding limit per side for a picture with effects.
 const MAX_DECODE_SIDE: u32 = 8192;
 /// Decoding memory limit in bytes.
-const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
+const MAX_DECODE_ALLOC: u64 = super::svg::MAX_DECODE_PEAK_BYTES;
 
 /// Decodes `bytes` (a raster picture), applies `fx` in order and re-encodes the result as PNG.
 /// `None` when the picture cannot be decoded under the limits.
@@ -58,7 +58,7 @@ pub fn recolor_png_cancellable(
     if cancel() {
         return None;
     }
-    let mut img = reader.decode().ok()?.to_rgba8();
+    let mut img = reader.decode().ok()?.into_rgba8();
     if cancel() {
         return None;
     }

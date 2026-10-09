@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::tests::{at, e, no_media, png, raster, rect_item, scene, RED};
 use super::*;
 
-type Media = Arc<dyn Fn(&str) -> Option<Arc<Vec<u8>>>>;
+pub(super) type Media = Arc<dyn Fn(&str) -> Option<Arc<Vec<u8>>>>;
 
 /// A picture that is red on the left half and blue on the right half.
 fn halves() -> Vec<u8> {
@@ -23,7 +23,7 @@ fn halves() -> Vec<u8> {
 }
 
 /// Incompressible RGB noise as a PNG of about `w * h * 3` bytes.
-fn noise_png(w: u32, h: u32, seed: u64) -> Vec<u8> {
+pub(super) fn noise_png(w: u32, h: u32, seed: u64) -> Vec<u8> {
     let mut state = seed | 1;
     let mut img = image::RgbImage::new(w, h);
     for p in img.pixels_mut() {
@@ -39,7 +39,7 @@ fn noise_png(w: u32, h: u32, seed: u64) -> Vec<u8> {
     out
 }
 
-fn by_key(files: Vec<(&'static str, Vec<u8>)>) -> Media {
+pub(super) fn by_key(files: Vec<(&'static str, Vec<u8>)>) -> Media {
     let files: Vec<(String, Arc<Vec<u8>>)> = files
         .into_iter()
         .map(|(k, v)| (k.to_string(), Arc::new(v)))
@@ -47,7 +47,7 @@ fn by_key(files: Vec<(&'static str, Vec<u8>)>) -> Media {
     Arc::new(move |k: &str| files.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()))
 }
 
-fn pic(key: &str, x: f64, y: f64, w: f64, h: f64) -> Item {
+pub(super) fn pic(key: &str, x: f64, y: f64, w: f64, h: f64) -> Item {
     Item::Picture(PictureItem::new(
         Xfrm::rect(e(x), e(y), e(w), e(h)),
         key.to_string(),
@@ -731,7 +731,7 @@ fn recolouring_stops_when_cancelled() {
 // ---- the filter model against the drawing process's own count --------------------------------------
 
 /// The drawing process's estimate of the filter work of `r` at the model's raster size.
-fn guard_work(r: &Rendered) -> f64 {
+pub(super) fn guard_work(r: &Rendered) -> f64 {
     let scale = (super::svg::MODEL_RASTER_PX / 960.0) as f32;
     crate::preview::svg_guard::load_tree(r.svg.as_bytes(), None, |tree| {
         Ok(crate::preview::svg_guard::filter_work_estimate(
@@ -743,12 +743,12 @@ fn guard_work(r: &Rendered) -> f64 {
 
 /// Whether the drawing process would draw `r` at the model's raster size (its work and memory
 /// budget accepts the tree).
-fn guard_accepts(r: &Rendered) -> bool {
+pub(super) fn guard_accepts(r: &Rendered) -> bool {
     guard_accepts_at(r, super::svg::MODEL_RASTER_PX)
 }
 
 /// [`guard_accepts`] with the slide (960 px wide) rasterised at `px` on its longer side.
-fn guard_accepts_at(r: &Rendered, px: f64) -> bool {
+pub(super) fn guard_accepts_at(r: &Rendered, px: f64) -> bool {
     let scale = (px / 960.0) as f32;
     crate::preview::svg_guard::load_tree(r.svg.as_bytes(), None, |tree| {
         Ok(crate::preview::svg_guard::check_render_budget(&tree, scale))
@@ -756,18 +756,18 @@ fn guard_accepts_at(r: &Rendered, px: f64) -> bool {
     .expect("the SVG loads")
 }
 
-fn model_work() -> f64 {
+pub(super) fn model_work() -> f64 {
     super::svg::LAST_FILTER_WORK.with(|c| c.get())
 }
 
-fn fx_shape(w: f64, h: f64, effects: Effects) -> Item {
+pub(super) fn fx_shape(w: f64, h: f64, effects: Effects) -> Item {
     let mut s = ShapeItem::new(Xfrm::rect(e(20.0), e(20.0), e(w), e(h)), Geometry::Rect);
     s.fill = Fill::Solid(RED);
     s.effects = effects;
     Item::Shape(s)
 }
 
-fn shadow(blur: f64) -> Effects {
+pub(super) fn shadow(blur: f64) -> Effects {
     Effects {
         outer_shadow: Some(Shadow {
             blur_rad: e(blur),
@@ -956,7 +956,14 @@ fn a_picture_inside_effects_is_counted_once_per_layer_like_the_drawing_process_d
 
 // ---- compound-line masks and big SVG pictures -------------------------------------------------------------
 
-fn compound_line(x: f64, y: f64, w: f64, h: f64, width_px: f64, compound: Compound) -> Item {
+pub(super) fn compound_line(
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    width_px: f64,
+    compound: Compound,
+) -> Item {
     let mut s = ShapeItem::new(Xfrm::rect(e(x), e(y), e(w), e(h)), Geometry::Line);
     let mut l = Line::solid(e(width_px), Rgba::BLACK);
     l.compound = compound;
@@ -973,13 +980,12 @@ fn compound_lines_past_the_work_allowance_are_drawn_as_plain_lines() {
     let r = render_svg(&scene(items), &no_media);
     assert!(r.truncated);
     let masks = r.svg.matches("<mask ").count();
-    assert!((20..=200).contains(&masks), "{masks} masks");
-    // the background, three strokes inside each mask, and one stroke per line
-    assert_eq!(
-        r.svg.matches("<path ").count(),
-        1 + 3 * masks + 400,
-        "every line is still drawn"
-    );
+    assert!((10..=200).contains(&masks), "{masks} masks");
+    // the lines past the allowance are plain lines (one stroke each, no mask), as many as the
+    // time budget leaves room for
+    let lines = r.svg.matches("stroke-linecap").count();
+    assert!(lines >= masks && lines <= 400, "{lines} lines");
+    assert!(lines > masks, "plain lines follow the masked ones");
     assert!(
         model_work() <= super::svg::MAX_FILTER_WORK * 1.3,
         "{:.3e}",
@@ -1048,7 +1054,9 @@ fn a_slide_without_effects_has_no_raster_limit() {
         &no_media,
     );
     assert_eq!(r.filter_work, 0.0);
-    assert_eq!(r.max_raster_px(), u32::MAX);
+    // The filters give no limit; the time the fills take gives one far above any frame (the
+    // drawing process draws at most 4096 px wide).
+    assert!(r.max_raster_px() >= 4096, "{}", r.max_raster_px());
 }
 
 #[test]
@@ -1098,6 +1106,7 @@ fn the_cap_formula_on_given_work() {
         cancelled: false,
         filter_work,
         model_px,
+        features: Default::default(),
     };
     let w = super::svg::MAX_FILTER_WORK;
     assert_eq!(r(w, 1280.0).max_raster_px(), 1280);

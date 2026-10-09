@@ -92,6 +92,24 @@ pub fn resolve_path(p: &GeomPath, x: f64, y: f64, w: f64, h: f64) -> Resolved {
 /// segment: an `arcTo` is up to eight, so counting commands alone would let a file of arcs
 /// expand to a multiple of the limit.
 pub fn resolve_path_capped(p: &GeomPath, x: f64, y: f64, w: f64, h: f64, cap: usize) -> Resolved {
+    resolve_path_polled(p, x, y, w, h, cap, &|| false)
+}
+
+/// Commands resolved between two looks at the cancellation callback of [`resolve_path_polled`] (a
+/// few ms of work: an `arcTo` is up to four cubic pieces).
+const POLL_EVERY_CMDS: usize = 2048;
+
+/// [`resolve_path_capped`] that polls `stop` every [`POLL_EVERY_CMDS`] commands and, once it says
+/// yes, stops with what is resolved so far (marked truncated).
+pub fn resolve_path_polled(
+    p: &GeomPath,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    cap: usize,
+    stop: &dyn Fn() -> bool,
+) -> Resolved {
     let sx = if p.w > 0.0 && p.w.is_finite() {
         w / p.w
     } else {
@@ -108,6 +126,10 @@ pub fn resolve_path_capped(p: &GeomPath, x: f64, y: f64, w: f64, h: f64, cap: us
     let mut start = cur;
     for (i, cmd) in p.cmds.iter().enumerate() {
         if i >= cap || out.segs.len() >= cap {
+            out.truncated = true;
+            break;
+        }
+        if i % POLL_EVERY_CMDS == POLL_EVERY_CMDS - 1 && stop() {
             out.truncated = true;
             break;
         }
@@ -216,9 +238,20 @@ pub fn ellipse_segs(x: f64, y: f64, w: f64, h: f64) -> Vec<Seg> {
 
 /// Resolves a geometry for a box. A `Paths` geometry yields one entry per path with its
 /// `(fill_mode, stroke)`; the other kinds yield one filled and stroked entry.
+#[cfg(test)]
 pub fn resolve_geometry(
     g: &Geometry,
     xf: &Xfrm,
+) -> (Vec<(Resolved, super::model::PathFill, bool)>, bool) {
+    resolve_geometry_polled(g, xf, &|| false)
+}
+
+/// [`resolve_geometry`] that polls `stop` while it resolves long paths (see
+/// [`resolve_path_polled`]) and between paths.
+pub fn resolve_geometry_polled(
+    g: &Geometry,
+    xf: &Xfrm,
+    stop: &dyn Fn() -> bool,
 ) -> (Vec<(Resolved, super::model::PathFill, bool)>, bool) {
     use super::model::PathFill;
     let (x, y, w, h) = (xf.x, xf.y, xf.w, xf.h);
@@ -263,7 +296,10 @@ pub fn resolve_geometry(
             let mut left = MAX_PATH_CMDS;
             let mut v = Vec::with_capacity(ps.len().min(256));
             for p in ps {
-                let r = resolve_path_capped(p, x, y, w, h, left);
+                if stop() {
+                    return (v, true);
+                }
+                let r = resolve_path_polled(p, x, y, w, h, left, stop);
                 trunc |= r.truncated;
                 left = left.saturating_sub(r.segs.len());
                 v.push((r, p.fill_mode, p.stroke));
