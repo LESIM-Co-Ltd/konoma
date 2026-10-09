@@ -44,17 +44,46 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 /// The konoma binary: `KONOMA_TEST_BIN` when set (used to measure a release build), else the one
 /// Cargo placed next to the test executable.
 fn bin() -> PathBuf {
-    if let Ok(p) = std::env::var("KONOMA_TEST_BIN") {
-        return PathBuf::from(p);
-    }
-    let exe = std::env::current_exe().unwrap();
-    let p = exe.parent().unwrap().parent().unwrap().join("konoma");
-    assert!(
-        p.is_file(),
-        "{} is missing: run `cargo build` (or `cargo test`, which builds it for tests/)",
-        p.display()
-    );
-    p
+    static BIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        let p = if let Ok(p) = std::env::var("KONOMA_TEST_BIN") {
+            PathBuf::from(p)
+        } else {
+            let exe = std::env::current_exe().unwrap();
+            let p = exe.parent().unwrap().parent().unwrap().join("konoma");
+            assert!(
+                p.is_file(),
+                "{} is missing: run `cargo build` (or `cargo test`, which builds it for tests/)",
+                p.display()
+            );
+            p
+        };
+        warm_up(&p, &[super::svg_proc::CHILD_FLAG, "1073741824"]);
+        p
+    })
+    .clone()
+}
+
+/// Run `exe` once to completion, outside any limit under test.
+///
+/// The first time the operating system runs an executable it has not seen (a binary Cargo has just
+/// linked, a script a test has just written) it vets it first. On macOS that costs from a few
+/// tenths of a second to several seconds, more the busier the machine (the vetting is shared by
+/// every process on it, e.g. other builds). That time is not the supervisor's to bound: inside the
+/// limits under test (a wall of a few seconds) it would fail a test that asserts something else
+/// entirely, whichever test happened to run first. The second run of the same file starts in
+/// milliseconds. So every file a test is about to supervise is run once here first. `exe` must
+/// exit at once when run like this (the children end when their stdin does; the scripts check
+/// `KONOMA_TEST_WARMUP`).
+fn warm_up(exe: &Path, args: &[&str]) {
+    let status = std::process::Command::new(exe)
+        .args(args)
+        .env("KONOMA_TEST_WARMUP", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    assert!(status.is_ok(), "{} cannot be started", exe.display());
 }
 
 /// Nothing is running and, once the idle children are stopped too, nothing is left alive (none
@@ -242,10 +271,16 @@ fn deep_nesting_is_refused_before_any_process_starts() {
 fn script(dir: &Path, name: &str, body: &str, pid_file: &Path) -> PathBuf {
     let p = dir.join(name);
     // Not `fs::write` + chmod: that would leave a write fd that a concurrent fork leaks (ETXTBSY).
+    // The line after the shebang ends the warm-up run (see `warm_up`) before it does anything a
+    // test looks at.
     crate::test_support::write_executable(
         &p,
-        format!("#!/bin/sh\necho $$ > '{}'\n{body}\n", pid_file.display()),
+        format!(
+            "#!/bin/sh\n[ -n \"$KONOMA_TEST_WARMUP\" ] && exit 0\necho $$ > '{}'\n{body}\n",
+            pid_file.display()
+        ),
     );
+    warm_up(&p, &[]);
     p
 }
 
