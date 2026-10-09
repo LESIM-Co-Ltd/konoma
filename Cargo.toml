@@ -239,6 +239,9 @@ tar = { version = "0.4.45", default-features = false }
 # the oracle the xlsx reader is compared with. No optional features (chrono is not needed: date
 # arithmetic lives in konoma's own numfmt).
 calamine = { version = "0.36", default-features = false }
+# Text of the character set a metafile font declares (Shift_JIS, GBK, ...). Already in the graph
+# through calamine; the PowerPoint EMF/WMF pictures need it directly.
+encoding_rs = "0.8"
 # Compound File Binary reader: used to detect a password-protected OOXML package (an
 # `/EncryptedPackage` stream inside a CFB container) and, in later stages, by the xls format pass.
 # Already in the graph through `infer`; named here because konoma reads it directly.

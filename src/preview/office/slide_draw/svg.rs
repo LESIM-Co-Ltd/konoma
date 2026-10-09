@@ -28,8 +28,9 @@
 //! * **Fill modes** `lighten`/`darken` mix the fill colour 40 % (`...Less`: 20 %) towards white
 //!   or black.
 //! * **Pictures**: PNG, JPEG, GIF and WebP are embedded as they are; BMP and TIFF are decoded and
-//!   re-embedded as PNG; SVG is embedded as `image/svg+xml`. EMF / WMF and anything unrecognised
-//!   become a light grey placeholder box (a later stage draws metafiles).
+//!   re-embedded as PNG; SVG is embedded as `image/svg+xml`. EMF / WMF are converted to SVG
+//!   ([`super::metafile`]) and embedded the same way; a metafile that cannot be converted and
+//!   anything unrecognised become a light grey placeholder box.
 //! * Tiled images ignore the crop.
 //!
 //! # Budgets
@@ -700,7 +701,12 @@ impl<'a> W<'a> {
             Sniffed::Webp => ("image/webp", bytes.to_vec()),
             Sniffed::Svg => ("image/svg+xml", bytes.to_vec()),
             Sniffed::Bmp | Sniffed::Tiff => ("image/png", to_png(&bytes)?),
-            Sniffed::Emf | Sniffed::Wmf | Sniffed::Unknown => return None,
+            Sniffed::Emf | Sniffed::Wmf => {
+                let m = super::metafile::to_svg(&bytes)?;
+                self.truncated |= m.truncated;
+                ("image/svg+xml", m.svg.into_bytes())
+            }
+            Sniffed::Unknown => return None,
         };
         if self.embedded_raw + data.len() > MAX_EMBEDDED_IMAGE_BYTES {
             self.truncated = true;
@@ -720,7 +726,10 @@ impl<'a> W<'a> {
             Sniffed::Svg => {
                 crate::preview::svg::intrinsic_size_bytes(&bytes).map(|(w, h)| (w as f64, h as f64))
             }
-            Sniffed::Emf | Sniffed::Wmf | Sniffed::Unknown => None,
+            Sniffed::Emf | Sniffed::Wmf => {
+                super::metafile::to_svg(&bytes).map(|m| (m.width_px, m.height_px))
+            }
+            Sniffed::Unknown => None,
             _ => {
                 let r = image::ImageReader::new(Cursor::new(&bytes[..]))
                     .with_guessed_format()

@@ -6,6 +6,7 @@
 //! * [`text`] -- text layout (measuring with the faces resvg will really use, wrapping, bullets,
 //!   alignment, spacing, autofit, vertical text).
 //! * [`fonts`] -- the Office-font substitution table and measurement.
+//! * [`metafile`] -- EMF / WMF pictures as SVG.
 //! * [`path`] -- `arcTo` and path-space scaling.
 //! * `svg` -- the writer behind [`render_svg`].
 //!
@@ -23,6 +24,7 @@ pub mod color;
 pub mod fonts;
 pub mod geom;
 mod geom_xml;
+pub mod metafile;
 pub mod model;
 pub mod odf_geom;
 pub mod path;
@@ -52,7 +54,7 @@ pub struct Rendered {
 /// Implemented: backgrounds, shapes with solid / gradient / pattern / image fills, lines (dash,
 /// cap, join, compound, arrow heads), pictures with crop and clip, groups with rotation and
 /// flips, text, and the outer shadow. Not drawn (present in the model): inner shadow, glow, soft
-/// edge, reflection; EMF / WMF pictures (placeholder). See the `svg` module for how each
+/// edge, reflection. EMF / WMF pictures are converted to SVG. See the `svg` module for how each
 /// approximation is made.
 pub fn render_svg(scene: &SlideScene, media: &dyn Fn(&str) -> Option<Arc<Vec<u8>>>) -> Rendered {
     svg::render(scene, media)
