@@ -984,3 +984,79 @@ fn a_choice_chart_that_draws_keeps_the_choice_and_not_the_fallback() {
     assert_eq!(sc.items.len(), 1);
     assert!(matches!(&sc.items[0], Item::Group(_)), "{:?}", sc.items[0]);
 }
+
+const THEME_OVERRIDE_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/themeOverride" Target="../theme/themeOverride1.xml"/></Relationships>"#;
+
+fn theme_override(accent1: &str, font: &str) -> Vec<u8> {
+    format!(
+        r#"<a:themeOverride xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:clrScheme name="o"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="1F497D"/></a:dk2><a:lt2><a:srgbClr val="EEECE1"/></a:lt2><a:accent1><a:srgbClr val="{accent1}"/></a:accent1><a:accent2><a:srgbClr val="C0504D"/></a:accent2><a:accent3><a:srgbClr val="9BBB59"/></a:accent3><a:accent4><a:srgbClr val="8064A2"/></a:accent4><a:accent5><a:srgbClr val="4BACC6"/></a:accent5><a:accent6><a:srgbClr val="F79646"/></a:accent6><a:hlink><a:srgbClr val="0000FF"/></a:hlink><a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme><a:fontScheme name="o"><a:majorFont><a:latin typeface="{font}"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="{font}"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme></a:themeOverride>"#
+    )
+    .into_bytes()
+}
+
+fn has_fill(g: &sd::GroupItem, c: Rgba) -> bool {
+    shapes_of(&g.items)
+        .iter()
+        .any(|s| matches!(&s.fill, Fill::Solid(x) if *x == c))
+}
+
+#[test]
+fn a_chart_with_a_theme_override_takes_its_colours_not_the_slides() {
+    // The slide's theme gives accent1 4472C4; the chart's own theme says FF0000.
+    let d = chart_deck(&chart_frame(0, 0, 4_000_000, 3_000_000));
+    let doc = load(
+        &d,
+        &[
+            ("ppt/charts/chart1.xml", chart_xml("", "")),
+            (
+                "ppt/charts/_rels/chart1.xml.rels",
+                THEME_OVERRIDE_RELS.as_bytes().to_vec(),
+            ),
+            (
+                "ppt/theme/themeOverride1.xml",
+                theme_override("FF0000", "Arial"),
+            ),
+        ],
+        &DocOptions::default(),
+    );
+    let g = the_group(&doc.slide_scenes[0]);
+    assert!(
+        has_fill(g, Rgba::rgb(0xFF, 0, 0)),
+        "override accent1 missing"
+    );
+    assert!(
+        !has_fill(g, Rgba::rgb(0x44, 0x72, 0xC4)),
+        "slide accent1 used"
+    );
+}
+
+#[test]
+fn a_chart_whose_theme_override_part_is_missing_keeps_the_slides_theme() {
+    let d = chart_deck(&chart_frame(0, 0, 4_000_000, 3_000_000));
+    let doc = load(
+        &d,
+        &[
+            ("ppt/charts/chart1.xml", chart_xml("", "")),
+            (
+                "ppt/charts/_rels/chart1.xml.rels",
+                THEME_OVERRIDE_RELS.as_bytes().to_vec(),
+            ),
+        ],
+        &DocOptions::default(),
+    );
+    let g = the_group(&doc.slide_scenes[0]);
+    assert!(has_fill(g, Rgba::rgb(0x44, 0x72, 0xC4)));
+}
+
+#[test]
+fn a_chart_without_a_theme_override_is_unchanged() {
+    let d = chart_deck(&chart_frame(0, 0, 4_000_000, 3_000_000));
+    let doc = load(
+        &d,
+        &[("ppt/charts/chart1.xml", chart_xml("", ""))],
+        &DocOptions::default(),
+    );
+    let g = the_group(&doc.slide_scenes[0]);
+    assert!(has_fill(g, Rgba::rgb(0x44, 0x72, 0xC4)));
+    assert!(!has_fill(g, Rgba::rgb(0xFF, 0, 0)));
+}

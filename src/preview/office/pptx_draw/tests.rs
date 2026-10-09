@@ -2424,3 +2424,40 @@ fn damaged_decks_never_panic() {
     d.master_shapes = "<p:sp><a:oops>".into();
     let _ = d.load();
 }
+
+#[test]
+fn a_bullet_font_that_is_a_theme_reference_is_resolved() {
+    // `buFont typeface="+mj-lt"` is the theme's major font (Calibri Light here), `+mn-lt` the
+    // minor one; a reference the theme does not name leaves the bullet in the text's font.
+    let mut d = D::new("");
+    let ppr = |font: &str| {
+        format!(r#"<a:pPr><a:buFont typeface="{font}"/><a:buAutoNum type="arabicPeriod"/></a:pPr>"#)
+    };
+    let paras = [
+        para_with(&ppr("+mj-lt"), "", "a"),
+        para_with(&ppr("+mn-lt"), "", "b"),
+        para_with(&ppr("+mj-xx"), "", "c"),
+        para_with(&ppr("Arial"), "", "d"),
+    ]
+    .concat();
+    d.slides = vec![slide(&tbox(0, 0, 1000, 1000, &paras))];
+    let doc = d.load();
+    let ps = &first_shape(&doc.slide_scenes[0])
+        .text
+        .as_ref()
+        .unwrap()
+        .paragraphs;
+    let font = |i: usize| {
+        ps[i]
+            .bullet
+            .as_ref()
+            .unwrap()
+            .font
+            .as_ref()
+            .and_then(|f| f.latin.clone())
+    };
+    assert_eq!(font(0).as_deref(), Some("Calibri Light"));
+    assert_eq!(font(1).as_deref(), Some("Calibri"));
+    assert_eq!(font(2), None);
+    assert_eq!(font(3).as_deref(), Some("Arial"));
+}

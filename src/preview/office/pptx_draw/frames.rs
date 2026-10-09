@@ -211,8 +211,19 @@ impl Sb<'_> {
         let chart_map = chart_clr_ovr(&bytes)
             .map(|n| ClrMap::from_node(&n))
             .unwrap_or_else(|| self.master_map.clone());
+        // Pictures of the chart part resolve through its own relationships.
+        let own = (self.parts.rels)(&part);
+        // A chart may carry its own theme (`c:themeOverride`, the part its relationships name):
+        // its colours and fonts replace the slide's theme for this chart only.
+        let theme_part = own
+            .values()
+            .find(|r| r.kind == "themeOverride" && !r.external)
+            .map(|r| r.target.clone());
+        let override_theme = theme_part
+            .and_then(|t| (self.parts.read)(&t))
+            .map(|b| Theme::parse(&b, &DocOptions::default(), HashMap::new()));
         let col = Colors {
-            theme: self.col.theme,
+            theme: override_theme.as_ref().unwrap_or(self.col.theme),
             map: &chart_map,
         };
         let palette: Vec<Rgba> = (1..=6)
@@ -220,15 +231,18 @@ impl Sb<'_> {
             .collect();
         let resolve = move |n: &Node| col.elem(n, None);
         let font = |f: &theme::ThemeFonts| (!f.latin.is_empty()).then(|| f.latin.clone());
-        let (minor, major) = (font(&self.theme.minor), font(&self.theme.major));
+        let chart_theme = override_theme.as_ref().unwrap_or(self.theme);
+        let pick = |own: Option<String>, slide: &theme::ThemeFonts| own.or_else(|| font(slide));
+        let (minor, major) = (
+            pick(font(&chart_theme.minor), &self.theme.minor),
+            pick(font(&chart_theme.major), &self.theme.major),
+        );
         let env = ChartEnv {
             resolve_color: &resolve,
             palette: &palette,
             minor_font: minor.as_deref(),
             major_font: major.as_deref(),
         };
-        // Pictures of the chart part resolve through its own relationships.
-        let own = (self.parts.rels)(&part);
         let this = std::cell::RefCell::new(&mut *self);
         let images = |bf: &Node| this.borrow_mut().image_fill(bf, &own);
         let parsed = parse_chart_with(&bytes, &env, Some(&images));

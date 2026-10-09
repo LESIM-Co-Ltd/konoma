@@ -1384,3 +1384,104 @@ fn anchor_ctr_centres_a_turned_latin_column_too() {
         ctr[0].y
     );
 }
+
+fn run_in(font: FontSpec, text: &str) -> Layout {
+    let mut r = Run::text(text, 20.0);
+    r.font = font;
+    lay(
+        vec![Paragraph {
+            runs: vec![r],
+            ..Default::default()
+        }],
+        600.0,
+        100.0,
+    )
+}
+
+fn latin(f: &str) -> FontSpec {
+    FontSpec {
+        latin: Some(f.into()),
+        ..Default::default()
+    }
+}
+
+fn frag_family(l: &Layout) -> String {
+    l.lines[0].frags[0].style.family.to_string()
+}
+
+#[test]
+fn a_private_use_code_in_a_run_with_a_symbol_sym_font_shows_its_look_alike() {
+    // `a:sym typeface="Symbol"` and U+F0DE: the double arrow, drawn in the stand-in font.
+    let f = FontSpec {
+        latin: Some("Calibri".into()),
+        symbol: Some("Symbol".into()),
+        ..Default::default()
+    };
+    let l = run_in(f, "x\u{F0DE}y");
+    assert_eq!(texts(&l), vec!["x\u{21D2}y".to_string()]);
+    let frags = &l.lines[0].frags;
+    assert!(frags
+        .iter()
+        .any(|f| f.text == "\u{21D2}" && f.style.family.contains("Arial Unicode MS")));
+    assert!(frags
+        .iter()
+        .filter(|f| f.text != "\u{21D2}")
+        .all(|f| !f.style.family.contains("Arial Unicode MS")));
+}
+
+#[test]
+fn ascii_in_a_run_with_only_a_sym_font_keeps_the_latin_font() {
+    // `a:sym` applies to the private-use codes only; "x+z" is drawn in the Latin font.
+    let f = FontSpec {
+        latin: Some("Calibri".into()),
+        symbol: Some("Symbol".into()),
+        ..Default::default()
+    };
+    let l = run_in(f, "x+z p");
+    assert_eq!(texts(&l), vec!["x+z p".to_string()]);
+}
+
+#[test]
+fn ascii_in_a_symbol_latin_run_shows_symbol_glyphs() {
+    // PowerPoint shows 'p' in a Symbol run as pi; digits and punctuation stay as they are.
+    let l = run_in(latin("Symbol"), "p a 1");
+    assert_eq!(texts(&l), vec!["\u{3C0} \u{3B1} 1".to_string()]);
+}
+
+#[test]
+fn a_wingdings_run_maps_private_use_codes() {
+    let l = run_in(latin("Wingdings"), "\u{F0A7}");
+    assert_eq!(texts(&l), vec!["\u{25AA}".to_string()]);
+    assert!(frag_family(&l).contains("Arial Unicode MS"));
+}
+
+#[test]
+fn a_private_use_code_in_an_ordinary_font_is_left_alone() {
+    let l = run_in(latin("Arial"), "a\u{F0DE}");
+    assert_eq!(texts(&l), vec!["a\u{F0DE}".to_string()]);
+    assert!(!frag_family(&l).contains("Arial Unicode MS"));
+}
+
+#[test]
+fn non_ascii_text_in_a_symbol_latin_run_is_not_remapped() {
+    // Only ASCII graphic characters and the private-use window are symbol codes.
+    let l = run_in(latin("Symbol"), "\u{e9}\u{3042}");
+    assert_eq!(texts(&l), vec!["\u{e9}\u{3042}".to_string()]);
+}
+
+#[test]
+fn symbol_and_plain_runs_keep_separate_styles_in_one_line() {
+    let mut a = Run::text("ab ", 20.0);
+    a.font = latin("Arial");
+    let mut b = Run::text("p", 20.0);
+    b.font = latin("Symbol");
+    let l = lay(
+        vec![Paragraph {
+            runs: vec![a, b],
+            ..Default::default()
+        }],
+        600.0,
+        100.0,
+    );
+    assert_eq!(texts(&l), vec!["ab \u{3C0}".to_string()]);
+}

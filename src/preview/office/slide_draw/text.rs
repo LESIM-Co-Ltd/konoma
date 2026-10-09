@@ -217,6 +217,29 @@ fn font_name(f: &FontSpec, sc: Script) -> Option<&str> {
     }
 }
 
+/// Set in the style key of characters drawn in the symbol stand-in font (run keys never reach it).
+const SYMBOL_KEY_BIT: usize = 1 << (usize::BITS - 2);
+
+/// The font that draws characters taken from a symbol font.
+const SYMBOL_STAND_IN: &str = "Arial Unicode MS";
+
+/// The Unicode character a run shows for `c` when the font that applies to `c` is a symbol font:
+/// a private-use code (`U+F020..=U+F0FF`) takes the `a:sym` font (else the Latin one), any other
+/// character the Latin font (so 'p' in a `Symbol` run is a pi). `None` for other fonts.
+fn symbol_run_char(f: &FontSpec, c: char) -> Option<char> {
+    let pua = ('\u{F020}'..='\u{F0FF}').contains(&c);
+    let font = if pua {
+        f.symbol.as_deref().or(f.latin.as_deref())?
+    } else {
+        f.latin.as_deref()?
+    };
+    super::symbol_font::symbol_font(font)?;
+    if !pua && !c.is_ascii_graphic() {
+        return None;
+    }
+    Some(super::symbol_font::map(font, c))
+}
+
 fn clean_size(pt: f64, default_pt: f64) -> f64 {
     if pt.is_finite() && pt > 0.0 {
         pt.clamp(0.5, 3000.0)
@@ -272,6 +295,14 @@ impl Ctx {
         id
     }
 
+    /// The style of a run's characters that were mapped out of a symbol font: the run's style in
+    /// a font that has the look-alike Unicode characters.
+    fn symbol_style_id(&mut self, run_key: usize, run: &Run, small: bool) -> usize {
+        let mut r = run.clone();
+        r.font.latin = Some(SYMBOL_STAND_IN.to_string());
+        self.style_id(run_key | SYMBOL_KEY_BIT, &r, Script::Latin, small)
+    }
+
     fn atom(&mut self, text: String, style: usize, kind: Kind) -> Atom {
         let e = &self.styles[style];
         let n = text.chars().count() as f64;
@@ -315,14 +346,18 @@ fn build_atoms(para: &Paragraph, run_base: usize, ctx: &mut Ctx) -> Vec<Atom> {
         }
         // Group consecutive characters into (kind, script, small-caps) pieces.
         let mut buf = String::new();
-        let mut cur: Option<(Kind, Script, bool)> = None;
+        let mut cur: Option<(Kind, Script, bool, bool)> = None;
         let flush = |buf: &mut String,
-                     cur: &mut Option<(Kind, Script, bool)>,
+                     cur: &mut Option<(Kind, Script, bool, bool)>,
                      out: &mut Vec<Atom>,
                      ctx: &mut Ctx| {
-            if let Some((kind, sc, small)) = cur.take() {
+            if let Some((kind, sc, small, sym)) = cur.take() {
                 if !buf.is_empty() {
-                    let st = ctx.style_id(key, run, sc, small);
+                    let st = if sym {
+                        ctx.symbol_style_id(key, run, small)
+                    } else {
+                        ctx.style_id(key, run, sc, small)
+                    };
                     let a = ctx.atom(std::mem::take(buf), st, kind);
                     out.push(a);
                 }
@@ -362,8 +397,15 @@ fn build_atoms(para: &Paragraph, run_base: usize, ctx: &mut Ctx) -> Vec<Atom> {
                 Caps::All => (c0.to_uppercase().next().unwrap_or(c0), false),
                 Caps::Small => (c0.to_uppercase().next().unwrap_or(c0), lower),
             };
+            // A character the run shows in a symbol font (Symbol, Wingdings, ...) is replaced by
+            // the Unicode character of the same look and drawn in a font that has it.
+            let mapped = symbol_run_char(&run.font, c);
+            let sym = mapped.is_some();
+            let c = mapped.unwrap_or(c);
             let (kind, sc) = if c == ' ' {
                 (Kind::Space, Script::Latin)
+            } else if sym {
+                (Kind::Word, Script::Latin)
             } else {
                 let sc = fonts::script_of(c);
                 (
@@ -375,7 +417,7 @@ fn build_atoms(para: &Paragraph, run_base: usize, ctx: &mut Ctx) -> Vec<Atom> {
                     sc,
                 )
             };
-            let this = (kind, sc, small);
+            let this = (kind, sc, small, sym);
             let same = cur == Some(this) && kind != Kind::Cjk;
             if !same {
                 flush(&mut buf, &mut cur, &mut out, ctx);

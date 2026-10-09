@@ -445,6 +445,24 @@ impl Sb<'_> {
             .map_or(sd::Fill::Solid(Rgba::BLACK), sd::Fill::Solid)
     }
 
+    /// A typeface name with a theme reference (`+mj-lt`, `+mn-ea` ..) replaced by the theme's font;
+    /// `None` when the theme names none for it.
+    fn resolve_typeface(&self, tf: &str) -> Option<String> {
+        let th = self.theme;
+        let (fonts, kind) = match tf.get(..4) {
+            Some("+mj-") => (&th.major, tf.get(4..)?),
+            Some("+mn-") => (&th.minor, tf.get(4..)?),
+            _ => return Some(tf.to_string()),
+        };
+        let f = match kind {
+            "lt" => &fonts.latin,
+            "ea" => &fonts.ea,
+            "cs" => &fonts.cs,
+            _ => return None,
+        };
+        (!f.is_empty()).then(|| f.clone())
+    }
+
     /// The typefaces of a run: the first named one, theme references (`+mj-lt` ..) resolved.
     fn font_spec(&self, rprs: &[&Node], lang: Option<&str>) -> sd::FontSpec {
         let th = self.theme;
@@ -455,20 +473,7 @@ impl Sb<'_> {
                 .map(str::trim)
                 .find(|t| !t.is_empty())
         };
-        let resolve = |tf: &str| -> Option<String> {
-            let (fonts, kind) = match tf.get(..4) {
-                Some("+mj-") => (&th.major, tf.get(4..)?),
-                Some("+mn-") => (&th.minor, tf.get(4..)?),
-                _ => return Some(tf.to_string()),
-            };
-            let f = match kind {
-                "lt" => &fonts.latin,
-                "ea" => &fonts.ea,
-                "cs" => &fonts.cs,
-                _ => return None,
-            };
-            (!f.is_empty()).then(|| f.clone())
-        };
+        let resolve = |tf: &str| self.resolve_typeface(tf);
         let by_script = |fonts: &theme::ThemeFonts, scripts: &[&str]| -> Option<String> {
             scripts.iter().find_map(|s| {
                 fonts
@@ -549,8 +554,9 @@ impl Sb<'_> {
                 .attr("typeface")
                 .map(str::trim)
                 .filter(|t| !t.is_empty())
+                .and_then(|t| self.resolve_typeface(t))
                 .map(|t| sd::FontSpec {
-                    latin: Some(t.to_string()),
+                    latin: Some(t),
                     ..sd::FontSpec::default()
                 }),
             _ => None,
