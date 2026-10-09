@@ -24,8 +24,8 @@ use std::time::Instant;
 
 use image::{imageops, DynamicImage, Rgba as Px, RgbaImage};
 
-use super::docx::{DocOptions, Document};
 use super::docx::pptx::load_presentation;
+use super::docx::{DocOptions, Document};
 use crate::preview::office::slide_draw as sd;
 
 const CACHE: &str = "/Users/shuhei/work/NoCode/.cache";
