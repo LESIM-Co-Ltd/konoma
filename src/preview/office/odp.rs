@@ -386,6 +386,9 @@ struct Masters {
     /// The size of the slides of each master page (its page layout's `fo:page-width` /
     /// `fo:page-height`), by page name.
     size: HashMap<String, Rect>,
+    /// The margins (left, top, right, bottom) of each master page's page layout, in EMU, by page
+    /// name; `draw:background-size="border"` keeps the background inside them.
+    margins: HashMap<String, [i64; 4]>,
     /// The `style:master-page` elements themselves, by name, for the drawing (their shapes and
     /// their background style).
     pages: HashMap<String, Node>,
@@ -397,6 +400,7 @@ struct Masters {
 fn read_page_layouts(
     rd: &mut XmlReader<impl BufRead>,
     layouts: &mut HashMap<String, Rect>,
+    margins: &mut HashMap<String, [i64; 4]>,
 ) -> Result<(), OfficeError> {
     let mut buf = Vec::new();
     loop {
@@ -431,6 +435,22 @@ fn read_page_layouts(
         {
             if layouts.len() < MAX_MASTERS {
                 layouts.insert(name.to_string(), Rect::new(0, 0, w as i64, h as i64));
+                let props = l.child("page-layout-properties");
+                let margin = |side: &str| {
+                    props
+                        .and_then(|p| len_attr(p, side))
+                        .filter(|m| m.is_finite())
+                        .map_or(0, |m| m.clamp(0.0, w.max(h)) as i64)
+                };
+                margins.insert(
+                    name.to_string(),
+                    [
+                        margin("margin-left"),
+                        margin("margin-top"),
+                        margin("margin-right"),
+                        margin("margin-bottom"),
+                    ],
+                );
             }
         }
     }
@@ -441,6 +461,7 @@ fn read_page_layouts(
 /// not the presentation.
 fn read_masters(src: impl BufRead) -> Masters {
     let mut layouts: HashMap<String, Rect> = HashMap::new();
+    let mut layout_margins: HashMap<String, [i64; 4]> = HashMap::new();
     let mut out = Masters::default();
     let mut rd = XmlReader::new(src);
     let mut buf = Vec::new();
@@ -464,7 +485,7 @@ fn read_masters(src: impl BufRead) -> Masters {
             // Only the page layouts matter (the size of a slide), and each one is read on its own
             // under a small budget: a part with a huge pile of other automatic styles, or one
             // oversized layout, costs that element and not the master pages after it.
-            if !empty && read_page_layouts(&mut rd, &mut layouts).is_err() {
+            if !empty && read_page_layouts(&mut rd, &mut layouts, &mut layout_margins).is_err() {
                 return out;
             }
             continue;
@@ -501,6 +522,12 @@ fn read_masters(src: impl BufRead) -> Masters {
             }
             if let Some(r) = page.attr("page-layout-name").and_then(|l| layouts.get(l)) {
                 out.size.insert(name.clone(), *r);
+            }
+            if let Some(m) = page
+                .attr("page-layout-name")
+                .and_then(|l| layout_margins.get(l))
+            {
+                out.margins.insert(name.clone(), *m);
             }
             out.frames.insert(name.clone(), m);
             out.pages.insert(name, page);

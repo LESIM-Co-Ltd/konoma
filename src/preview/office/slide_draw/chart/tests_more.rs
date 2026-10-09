@@ -437,3 +437,21 @@ fn triangle_markers_point_the_way_their_symbol_says() {
         }
     }
 }
+
+#[test]
+fn libre_scaling_changes_the_automatic_ranges_of_a_scatter_chart() {
+    let mut s = ser("y", &[], &[1.0, 2.0, 3.0, 4.0, 9.8]);
+    s.x_values = (1..=5).map(|v| Some(f64::from(v))).collect();
+    let mut g = grp(GroupKind::Scatter, vec![s]);
+    g.scatter_style = ScatterStyle::LineMarker;
+    let mut m = model(vec![g]);
+    m.axes[0].kind = AxisKind::Val;
+    let excel = text_strings(&draw(&m));
+    m.libre_scaling = true;
+    let libre = text_strings(&draw(&m));
+    // LibreOffice: x from 0.5 to 5.5 in half units, y to 11 (the data reach 98 % of 10)
+    for want in ["0.5", "1.5", "5.5", "11"] {
+        assert!(libre.iter().any(|t| t == want), "{want}: {libre:?}");
+    }
+    assert!(!excel.iter().any(|t| t == "5.5"), "{excel:?}");
+}

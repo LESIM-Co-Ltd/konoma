@@ -115,6 +115,38 @@ fn page_size_comes_from_the_master_pages_layout() {
 }
 
 #[test]
+fn a_border_sized_background_stays_inside_the_layouts_margins() {
+    // 28 x 15.75 cm with 2 cm at the left and top, 1 cm at the right, none at the bottom
+    let layout = r#"<style:page-layout style:name="PM1"><style:page-layout-properties fo:page-width="28cm" fo:page-height="15.75cm" fo:margin-left="2cm" fo:margin-top="2cm" fo:margin-right="1cm" fo:margin-bottom="0cm"/></style:page-layout>"#;
+    let dp = |size: &str| {
+        format!(
+            r##"<style:style style:name="dp1" style:family="drawing-page"><style:drawing-page-properties draw:background-size="{size}" draw:fill="solid" draw:fill-color="#729fcf"/></style:style>"##
+        )
+    };
+    let o = op(&slide_page("")).styles_auto(layout).auto(&dp("border"));
+    let sc = scene(&o);
+    // the page itself is white, the colour is a rectangle inside the margins, first of all
+    assert_eq!(sc.background, Fill::Solid(Rgba::WHITE));
+    let Some(sd::Item::Shape(s)) = sc.items.first() else {
+        panic!("{:?}", sc.items.first())
+    };
+    assert_eq!(s.fill, Fill::Solid(Rgba::rgb(0x72, 0x9f, 0xcf)));
+    assert!(close(s.xfrm.x, 2.0 * EMU_CM) && close(s.xfrm.y, 2.0 * EMU_CM));
+    assert!(close(s.xfrm.w, 25.0 * EMU_CM) && close(s.xfrm.h, 13.75 * EMU_CM));
+    // "full" (and a layout without margins) colours the whole page
+    let o = op(&slide_page("")).styles_auto(layout).auto(&dp("full"));
+    assert_eq!(
+        scene(&o).background,
+        Fill::Solid(Rgba::rgb(0x72, 0x9f, 0xcf))
+    );
+    let o = op(&slide_page("")).auto(&dp("border"));
+    assert_eq!(
+        scene(&o).background,
+        Fill::Solid(Rgba::rgb(0x72, 0x9f, 0xcf))
+    );
+}
+
+#[test]
 fn a_page_without_a_master_gets_the_default_size() {
     let sc = scene(&Op::new(&crate::preview::office::tests_odp::page("")));
     assert_eq!((sc.width, sc.height), DEFAULT_SIZE);
@@ -174,6 +206,22 @@ fn background_from_the_master_then_the_slide() {
     let auto = r##"<style:style style:name="dp1" style:family="drawing-page"><style:drawing-page-properties draw:fill="solid" draw:fill-color="#0000ff"/></style:style>"##;
     let o = o.auto(auto);
     assert_eq!(scene(&o).background, Fill::Solid(Rgba::rgb(0, 0, 255)));
+}
+
+#[test]
+fn a_translucent_background_lies_over_white() {
+    // 58 % of #729fcf over white (measured against LibreOffice's picture of such a page)
+    let auto = r##"<style:style style:name="dp1" style:family="drawing-page"><style:drawing-page-properties draw:fill="solid" draw:fill-color="#729fcf" draw:opacity="58%"/></style:style>"##;
+    assert_eq!(
+        scene(&op(&slide_page("")).auto(auto)).background,
+        Fill::Solid(Rgba::rgb(173, 199, 227))
+    );
+    // fully transparent: white
+    let auto = r##"<style:style style:name="dp1" style:family="drawing-page"><style:drawing-page-properties draw:fill="solid" draw:fill-color="#729fcf" draw:opacity="0%"/></style:style>"##;
+    assert_eq!(
+        scene(&op(&slide_page("")).auto(auto)).background,
+        Fill::Solid(Rgba::WHITE)
+    );
 }
 
 #[test]
@@ -521,6 +569,69 @@ fn bitmap_fills_stretch_or_tile() {
             .auto(&gr(r##"draw:fill="bitmap" draw:fill-image-name="B" draw:fill-color="#336699" draw:stroke="solid""##)),
     );
     assert_eq!(s.fill, Fill::Solid(Rgba::rgb(0x33, 0x66, 0x99)));
+}
+
+#[test]
+fn bitmap_fills_are_enlarged_without_smoothing() {
+    let res = r#"<draw:fill-image draw:name="B" xlink:href="Pictures/a.png"/>"#;
+    for repeat in ["stretch", "repeat", "no-repeat"] {
+        let g = format!(
+            r#"draw:fill="bitmap" draw:fill-image-name="B" style:repeat="{repeat}" draw:fill-image-width="1cm" draw:fill-image-height="1cm""#
+        );
+        let s = only_shape(
+            &op(&slide_page(&rect("")))
+                .styles(res)
+                .auto(&gr(&g))
+                .part("Pictures/a.png", &png(16, 8)),
+        );
+        let Fill::Image(i) = s.fill else {
+            panic!("{repeat}")
+        };
+        assert!(i.pixelated, "{repeat}");
+    }
+}
+
+#[test]
+fn a_no_repeat_bitmap_is_one_copy_at_the_reference_point() {
+    let res = r#"<draw:fill-image draw:name="B" xlink:href="Pictures/a.png"/>"#;
+    // The shape is 6 cm x 3 cm; the picture 2 cm x 1 cm.
+    let fill_rect = |extra: &str| {
+        let g = format!(
+            r##"draw:fill="bitmap" draw:fill-image-name="B" style:repeat="no-repeat" draw:fill-image-width="2cm" draw:fill-image-height="1cm" draw:fill-color="#336699" {extra}"##
+        );
+        let s = only_shape(
+            &op(&slide_page(&rect("")))
+                .styles(res)
+                .auto(&gr(&g))
+                .part("Pictures/a.png", &png(16, 8)),
+        );
+        let Fill::Image(i) = s.fill else { panic!() };
+        let sd::ImageMode::Stretch { fill_rect } = i.mode else {
+            panic!("{:?}", i.mode)
+        };
+        fill_rect
+    };
+    let close4 = |a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)| {
+        (a.0 - b.0).abs() < 1e-6
+            && (a.1 - b.1).abs() < 1e-6
+            && (a.2 - b.2).abs() < 1e-6
+            && (a.3 - b.3).abs() < 1e-6
+    };
+    // top-left (the default): the picture occupies the left third and the top third
+    let r = fill_rect("");
+    assert!(close4(r, (0.0, 0.0, 2.0 / 3.0, 2.0 / 3.0)), "{r:?}");
+    let r = fill_rect(r#"draw:fill-image-ref-point="center""#);
+    assert!(
+        close4(r, (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)),
+        "{r:?}"
+    );
+    let r = fill_rect(r#"draw:fill-image-ref-point="bottom-right""#);
+    assert!(close4(r, (2.0 / 3.0, 2.0 / 3.0, 0.0, 0.0)), "{r:?}");
+    let r = fill_rect(r#"draw:fill-image-ref-point="top""#);
+    assert!(close4(r, (1.0 / 3.0, 0.0, 1.0 / 3.0, 2.0 / 3.0)), "{r:?}");
+    // an offset of 50 % of the picture's width moves it 1 cm right
+    let r = fill_rect(r#"draw:fill-image-ref-point-x="50%""#);
+    assert!(close4(r, (1.0 / 6.0, 0.0, 0.5, 2.0 / 3.0)), "{r:?}");
 }
 
 #[test]

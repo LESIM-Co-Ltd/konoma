@@ -271,6 +271,7 @@ impl Sb<'_> {
             mode,
             alpha,
             fx: self.picture_fx(blip, ph),
+            pixelated: false,
         })
     }
 

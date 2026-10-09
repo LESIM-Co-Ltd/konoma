@@ -15,9 +15,11 @@
 //!   varying alpha, otherwise its mean is the alpha.
 //! * **Hatches** are the model's 8 x 8 patterns: the direction is snapped to
 //!   horizontal / vertical / the two diagonals / their crossings, the spacing to three densities.
-//! * **Bitmaps**: `stretch` and `no-repeat` are stretched; `repeat` is tiled at the stated tile
-//!   size (percentages of the filled shape), or at the picture's own size (its pixels over its dpi,
-//!   96 when it states none).
+//! * **Bitmaps**: `stretch` is stretched; `no-repeat` is one copy at the stated size (else its own)
+//!   at the reference point, clipped by the shape, the rest unfilled (as LibreOffice draws it);
+//!   `repeat` is tiled at the stated tile size (percentages of the filled shape), or at the
+//!   picture's own size (its pixels over its dpi, 96 when it states none). A bitmap is enlarged
+//!   without smoothing (`pixelated`), as LibreOffice does.
 //! * **Dashes** are in multiples of the line width; a zero-length dot is one line width.
 //! * **Markers** are exact in size (see [`Sb::arrow`]) but the model has no way to say "the line
 //!   ends where the marker's base is": the line is trimmed by the renderer's own rule.
@@ -463,7 +465,9 @@ impl Sb<'_> {
         let repeat = v.g("repeat").map_or("repeat", str::trim);
         let mut img = sd::ImageFill::stretch(key.clone());
         img.alpha = alpha;
-        if repeat != "repeat" {
+        // LibreOffice enlarges a bitmap fill without smoothing.
+        img.pixelated = true;
+        if repeat != "repeat" && repeat != "no-repeat" {
             return Some(sd::Fill::Image(img));
         }
         // The picture's own size: its pixels over its resolution (a 300 dpi tile is a third of
@@ -504,6 +508,30 @@ impl Sb<'_> {
         let tile_w = tw.unwrap_or(0.0);
         let tile_h = th.unwrap_or(0.0);
         let off = |attr: &str, whole: f64| v.g(attr).and_then(pct).map_or(0.0, |p| p * whole);
+        if repeat == "no-repeat" {
+            // One copy of the picture (its stated or own size) at the reference point, clipped
+            // by the shape; the rest of the shape is not filled (not even by the fill colour).
+            if !(tile_w > 0.0 && tile_h > 0.0 && w > 0.0 && h > 0.0) {
+                return Some(sd::Fill::Image(img));
+            }
+            let (fx, fy) = match align {
+                sd::RectAlign::TopLeft => (0.0, 0.0),
+                sd::RectAlign::Top => (0.5, 0.0),
+                sd::RectAlign::TopRight => (1.0, 0.0),
+                sd::RectAlign::Left => (0.0, 0.5),
+                sd::RectAlign::Center => (0.5, 0.5),
+                sd::RectAlign::Right => (1.0, 0.5),
+                sd::RectAlign::BottomLeft => (0.0, 1.0),
+                sd::RectAlign::Bottom => (0.5, 1.0),
+                sd::RectAlign::BottomRight => (1.0, 1.0),
+            };
+            let left = ((w - tile_w) * fx + off("fill-image-ref-point-x", tile_w)) / w;
+            let top = ((h - tile_h) * fy + off("fill-image-ref-point-y", tile_h)) / h;
+            img.mode = sd::ImageMode::Stretch {
+                fill_rect: (left, top, 1.0 - left - tile_w / w, 1.0 - top - tile_h / h),
+            };
+            return Some(sd::Fill::Image(img));
+        }
         img.mode = sd::ImageMode::Tile {
             sx: sx.clamp(1e-4, 1e4),
             sy: sy.clamp(1e-4, 1e4),

@@ -861,6 +861,72 @@ fn all_54_pattern_presets_have_a_tile_and_the_percent_ones_get_darker() {
 }
 
 #[test]
+fn a_pixelated_image_fill_is_enlarged_without_smoothing() {
+    // left half red, right half blue, 8 x 4 pixels, shown at 400 x 200 px
+    let pic = png(8, 4, |x, _| {
+        if x < 4 {
+            [255, 0, 0, 255]
+        } else {
+            [0, 0, 255, 255]
+        }
+    });
+    let media = media_of(pic);
+    let shape = |f: ImageFill| {
+        let mut s = ShapeItem::new(
+            Xfrm::rect(e(100.0), e(100.0), e(400.0), e(200.0)),
+            Geometry::Rect,
+        );
+        s.fill = Fill::Image(f);
+        scene(vec![Item::Shape(s)])
+    };
+    let smooth = render_svg(&shape(ImageFill::stretch("k")), &media);
+    assert!(!smooth.svg.contains("image-rendering"));
+    let mut f = ImageFill::stretch("k");
+    f.pixelated = true;
+    let sharp = render_svg(&shape(f.clone()), &media);
+    assert!(sharp.svg.contains("image-rendering"));
+    // Pixels next to the edge of the two colours stay pure (the smooth one blends them).
+    let img = raster(&sharp);
+    assert!(is_red(at(&img, 295, 200)), "{:?}", at(&img, 295, 200));
+    assert!(is_blue(at(&img, 305, 200)), "{:?}", at(&img, 305, 200));
+    let img = raster(&smooth);
+    assert!(!is_red(at(&img, 299, 200)) || !is_blue(at(&img, 301, 200)));
+    // A picture shrunk below its own pixels is smoothed whatever the flag says.
+    let small = {
+        let mut s = ShapeItem::new(
+            Xfrm::rect(e(100.0), e(100.0), e(4.0), e(2.0)),
+            Geometry::Rect,
+        );
+        s.fill = Fill::Image(f.clone());
+        render_svg(&scene(vec![Item::Shape(s)]), &media)
+    };
+    assert!(!small.svg.contains("image-rendering"));
+    // Tiles drawn larger than their pixels are sharp too, native-size tiles are not.
+    let tiled = |sx: f64| {
+        let mut f = f.clone();
+        f.mode = ImageMode::Tile {
+            sx,
+            sy: sx,
+            tx: 0.0,
+            ty: 0.0,
+            align: RectAlign::TopLeft,
+            flip: TileFlip::None,
+        };
+        render_svg(&shape(f), &media)
+    };
+    assert!(tiled(4.0).svg.contains("image-rendering"));
+    assert!(!tiled(1.0).svg.contains("image-rendering"));
+    // a little larger than its pixels is still smoothed
+    assert!(!tiled(1.5).svg.contains("image-rendering"));
+    assert!(tiled(2.0).svg.contains("image-rendering"));
+    // A vector image has no pixels to show.
+    let svg_media = media_of(br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>"#.to_vec());
+    assert!(!render_svg(&shape(f), &svg_media)
+        .svg
+        .contains("image-rendering"));
+}
+
+#[test]
 fn image_fill_stretch_crop_and_tile() {
     // left half red, right half blue
     let pic = png(8, 4, |x, _| {

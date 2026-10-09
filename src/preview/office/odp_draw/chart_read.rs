@@ -704,6 +704,7 @@ fn build(cx: &mut Cx<'_>, chart: &Node) -> Option<ch::ChartModel> {
     let chart_view = cx.view(chart);
     let mut m = ch::ChartModel {
         palette: LO_PALETTE[..6].to_vec(),
+        libre_scaling: true,
         text: ch::TextStyle {
             size_pt: Some(TEXT_PT),
             ..text_style(&chart_view)

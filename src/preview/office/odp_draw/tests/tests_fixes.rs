@@ -641,8 +641,9 @@ fn time_styles_and_the_twelve_hour_clock() {
 }
 
 #[test]
-fn a_current_date_declaration_shows_today_in_the_declarations_format() {
+fn a_current_date_declaration_shows_today_in_the_systems_short_form() {
     dates::set_now_for_tests(None);
+    dates::set_system_locale_for_tests(Some("ja_JP.UTF-8"));
     let decl = r#"<presentation:date-time-decl presentation:name="dtd1" presentation:source="current-date" style:data-style-name="D1"/>"#;
     let page = r#"<draw:page draw:name="p" draw:style-name="dp1" draw:master-page-name="Default" presentation:use-date-time-name="dtd1"></draw:page>"#;
     let dp = r#"<style:style style:name="dp1" style:family="drawing-page"><style:drawing-page-properties presentation:display-date-time="true"/></style:style>"#;
@@ -656,7 +657,10 @@ fn a_current_date_declaration_shows_today_in_the_declarations_format() {
         .auto(&format!("{}{dp}", filled()));
     let sc = scene(&o);
     let texts: Vec<String> = shapes_of(&sc).iter().map(|s| text_of_shape(s)).collect();
-    assert!(texts.contains(&"09.10.2026".to_string()), "{texts:?}");
+    // not the declaration's own format (D1 writes 09.10.2026): LibreOffice ignores it
+    assert!(texts.contains(&"26/10/9".to_string()), "{texts:?}");
+    assert!(!texts.contains(&"09.10.2026".to_string()), "{texts:?}");
+    dates::set_system_locale_for_tests(None);
     // a fixed declaration still shows its text
     let fixed = r#"<presentation:date-time-decl presentation:name="dtd1" presentation:source="fixed">Autumn</presentation:date-time-decl>"#;
     let o = Op::new(&format!("{fixed}{page}"))
@@ -858,4 +862,25 @@ fn automatic_text_colour_reads_on_the_highlight_it_is_on() {
         run_colour(r#"text:style-name="T1""#, own),
         Fill::Solid(Rgba::rgb(255, 0, 0))
     );
+}
+
+#[test]
+fn the_systems_short_date_follows_the_locale() {
+    dates::set_now_for_tests(None);
+    let m = dates::now();
+    let short = |tag: &str| {
+        dates::set_system_locale_for_tests(Some(tag));
+        dates::system_short(&m)
+    };
+    assert_eq!(short("ja_JP.UTF-8"), "26/10/9");
+    assert_eq!(short("zh-CN"), "2026/10/9");
+    assert_eq!(short("ko_KR"), "26. 10. 9.");
+    assert_eq!(short("en_US"), "10/9/26");
+    assert_eq!(short("en"), "10/9/26");
+    assert_eq!(short("en_GB"), "09/10/2026");
+    assert_eq!(short("de_DE"), "09.10.2026");
+    assert_eq!(short("sv_SE"), "2026-10-09");
+    assert_eq!(short("fr_FR"), "09/10/2026");
+    assert_eq!(short("C"), "10/9/26");
+    dates::set_system_locale_for_tests(None);
 }

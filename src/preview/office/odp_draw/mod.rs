@@ -307,15 +307,39 @@ pub(super) fn build_scene(inp: PageInput<'_>, media: &mut dyn Media) -> sd::Slid
     let truthy = |v: Option<&str>, default: bool| v.map_or(default, |s| s.trim() == "true");
     let bg_visible = truthy(page_view.g("background-visible"), true);
     let objects_visible = truthy(page_view.g("background-objects-visible"), true);
+    // `draw:background-size="border"`: the background stays inside the page layout's margins
+    // (LibreOffice leaves the margins white).
+    let margins = master_name
+        .and_then(|m| inp.masters.margins.get(m))
+        .copied()
+        .unwrap_or([0; 4]);
+    let inset = |v: &View| {
+        (v.g("background-size").map(str::trim) == Some("border") && margins != [0; 4]).then(|| {
+            let [l, t, r, b] = margins.map(|m| m as f64);
+            (l, t, (size.0 - l - r).max(1.0), (size.1 - t - b).max(1.0))
+        })
+    };
+    let mut border_fill: Option<((f64, f64, f64, f64), sd::Fill)> = None;
     scene.background = if bg_visible {
-        let own = sb.page_fill(&page_view, size.0, size.1);
-        let fill = match own {
-            Some(f) => Some(f),
-            None => sb.page_fill(&master_view, size.0, size.1),
+        let (view, own) = match sb.page_fill(&page_view, size.0, size.1) {
+            Some(f) => (&page_view, Some(f)),
+            None => (&master_view, sb.page_fill(&master_view, size.0, size.1)),
         };
-        match fill {
+        match own {
             Some(sd::Fill::None) | None => sd::Fill::Solid(Rgba::WHITE),
-            Some(f) => f,
+            Some(f) => match inset(view) {
+                Some(r) => {
+                    let f = sb.page_fill(view, r.2, r.3).unwrap_or(f);
+                    border_fill = Some((r, f));
+                    sd::Fill::Solid(Rgba::WHITE)
+                }
+                // A translucent page colour lies over the white page (the picture of the slide
+                // has no other backdrop).
+                None => match f {
+                    sd::Fill::Solid(c) => sd::Fill::Solid(over_white(c)),
+                    f => f,
+                },
+            },
         }
     } else {
         sd::Fill::Solid(Rgba::WHITE)
@@ -337,12 +361,12 @@ pub(super) fn build_scene(inp: PageInput<'_>, media: &mut dyn Media) -> sd::Slid
     sb.footer = decl("use-footer-name", &inp.decls.footer);
     sb.header = decl("use-header-name", &inp.decls.header);
     sb.date_time = decl("use-date-time-name", &inp.decls.date_time).or_else(|| {
-        // A current-date declaration shows today's date in the declaration's format.
+        // A current-date declaration shows today's date in the system's short form: LibreOffice
+        // does not use the declaration's data style for it.
         let name = qattr(page, "presentation:use-date-time-name")
             .or_else(|| page_view.g("use-date-time-name"))?;
-        let style = inp.decls.current.get(name.trim())?;
-        let node = style.as_deref().and_then(|s| inp.book.date_styles.get(s));
-        Some(dates::format(node, &dates::now()))
+        inp.decls.current.get(name.trim())?;
+        Some(dates::system_short(&dates::now()))
     });
     let show = |key: &str| truthy(page_view.g(key), true);
     let flags = shapes::Furniture {
@@ -352,6 +376,11 @@ pub(super) fn build_scene(inp: PageInput<'_>, media: &mut dyn Media) -> sd::Slid
         header: show("display-header"),
     };
 
+    if let Some(((x, y, w, h), fill)) = border_fill {
+        let mut shape = sd::ShapeItem::new(sd::Xfrm::rect(x, y, w, h), sd::Geometry::Rect);
+        shape.fill = fill;
+        scene.items.push(sd::Item::Shape(shape));
+    }
     // A background picture placed once goes over the background colour, under everything.
     if bg_visible {
         let v = if page_view.g("fill").is_some() {
@@ -595,3 +624,18 @@ pub(super) fn legacy_preset(name: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod dump;
+
+/// `c` over a white backdrop (opaque).
+fn over_white(c: Rgba) -> Rgba {
+    let a = if c.a.is_finite() {
+        c.a.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let mix = |v: u8| {
+        (f64::from(v) * a + 255.0 * (1.0 - a))
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Rgba::rgb(mix(c.r), mix(c.g), mix(c.b))
+}

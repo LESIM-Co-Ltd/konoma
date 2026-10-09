@@ -155,6 +155,9 @@ pub struct ChartModel {
     pub default_font: Option<String>,
     /// Display language of dates / month names in number formats.
     pub locale_ja: bool,
+    /// Automatic axis ranges follow LibreOffice's rules (an OpenDocument chart) instead of
+    /// Excel's (see `scale::libre_range`).
+    pub libre_scaling: bool,
 }
 
 /// `c:view3D`: the view of a 3-D chart.

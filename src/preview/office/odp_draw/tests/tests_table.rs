@@ -224,7 +224,7 @@ fn a_cell_style_fill_border_and_text_size_are_read() {
     assert_eq!(ls.len(), 4, "{ls:?}");
     for l in &ls {
         let line = l.line.as_ref().unwrap();
-        assert!((line.width - 12_700.0).abs() < 1.0);
+        assert!((line.width - 12_700.0 * 1.8).abs() < 1.0);
         assert_eq!(line.fill, Fill::Solid(Rgba::BLACK));
     }
 }
@@ -260,7 +260,7 @@ fn borders_are_read_from_the_cell_properties_and_none_removes_them() {
     // the left edge: vertical, at the table's left
     assert!((l.xfrm.x - 2.0 * EMU_CM).abs() < 1.0 && l.xfrm.w == 0.0);
     let line = l.line.as_ref().unwrap();
-    assert!((line.width - 25_400.0).abs() < 1.0);
+    assert!((line.width - 25_400.0 * 1.8).abs() < 1.0);
     assert_eq!(line.fill, Fill::Solid(Rgba::rgb(0, 255, 0)));
 }
 

@@ -15,7 +15,7 @@ use super::layout::{
     apply_manual, draw_marker, is_cartesian, marker_of, point_color, series_color, series_fill,
     Rect, AXIS_COLOR, AXIS_W, TEXT_PT,
 };
-use super::scale::{Opts, Scale};
+use super::scale::{LibreOpts, Opts, Scale};
 use super::shapes::{line_if_set, line_of, Out};
 use super::text::{line_width, measure, resolve, HAlign, RStyle, VAlign};
 use super::three_d::{self, Depth};
@@ -466,29 +466,45 @@ fn make_pair<'a>(
         }
     }
     let span = have.then_some((span_lo, span_hi));
-    let mut val_scale = Scale::new(
-        val_axis,
-        span,
-        Opts {
-            len_px: val_len,
-            horizontal: !cat_h,
-            percent,
-        },
-    );
+    // LibreOffice's automatic ranges depend on the size of the tick labels.
+    let libre = |axis: Option<&Axis>, y_axis: bool| {
+        let st = resolve(
+            m,
+            &axis.map(|a| a.text.clone()).unwrap_or_default(),
+            TEXT_PT,
+            false,
+        );
+        LibreOpts {
+            y_axis,
+            label_h: st.line_h(),
+            digit_w: line_width(&st, "0"),
+        }
+    };
+    let val_opts = Opts {
+        len_px: val_len,
+        horizontal: !cat_h,
+        percent,
+    };
+    let mut val_scale = if m.libre_scaling {
+        Scale::new_libre(val_axis, span, val_opts, libre(val_axis, true))
+    } else {
+        Scale::new(val_axis, span, val_opts)
+    };
     if percent {
         val_scale.minor = val_scale.major / 5.0;
     }
     let cat = if xy {
         let sp = x_have.then_some((x_lo, x_hi));
-        Dim::Num(Scale::new(
-            cat_axis,
-            sp,
-            Opts {
-                len_px: cat_len,
-                horizontal: true,
-                percent: false,
-            },
-        ))
+        let o = Opts {
+            len_px: cat_len,
+            horizontal: true,
+            percent: false,
+        };
+        Dim::Num(if m.libre_scaling {
+            Scale::new_libre(cat_axis, sp, o, libre(cat_axis, false))
+        } else {
+            Scale::new(cat_axis, sp, o)
+        })
     } else {
         // Only bars force the points to sit between the ticks.
         let has_bar = groups.iter().any(|g| g.g.kind == GroupKind::Bar);
@@ -598,6 +614,10 @@ fn plan_axis(m: &ChartModel, p: &Pair, rect: Rect, cat: bool) -> AxisPlan {
                 _ if p.percent && !cat => Some("0%".into()),
                 _ => p.source_fmt.clone().filter(|_| !cat || true),
             };
+            // A whole-number format would print LibreOffice's half-unit ticks (0.5, 1.5, ...)
+            // as repeated integers: the numbers are written plainly then.
+            let code = code
+                .filter(|c| !(m.libre_scaling && s.major.fract().abs() > 1e-9 && !c.contains('.')));
             for v in s.major_ticks() {
                 let f = s.frac(v);
                 major.push(f);

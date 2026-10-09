@@ -147,9 +147,154 @@ pub fn auto_range(lo: f64, hi: f64, ticks: f64) -> (f64, f64, f64) {
     (min, max, unit)
 }
 
+/// What LibreOffice's automatic scaling needs besides [`Opts`].
+#[derive(Debug, Clone, Copy)]
+pub struct LibreOpts {
+    /// The value (y) axis; an x axis of a scatter chart is not widened to zero.
+    pub y_axis: bool,
+    /// Height of one tick label line, px.
+    pub label_h: f64,
+    /// Width of one digit, px.
+    pub digit_w: f64,
+}
+
+/// Most main intervals LibreOffice allows an automatic axis to start with.
+const LIBRE_MAX_INTERVALS: u32 = 10;
+
+/// The smallest of 1, 2, 5 times a power of ten that is at least `raw`.
+fn libre_step(raw: f64) -> f64 {
+    nice_unit(raw)
+}
+
+/// The number of decimals a tick label needs to show multiples of `step`.
+fn decimals_of(step: f64) -> usize {
+    (0..=8)
+        .find(|d| {
+            let v = step * 10f64.powi(*d);
+            (v - v.round()).abs() < 1e-6 * v.abs().max(1.0)
+        })
+        .unwrap_or(8) as usize
+}
+
+/// LibreOffice's automatic linear range `(min, max, major unit)` for data between `lo` and `hi`
+/// (`amin` / `amax`: limits the file fixes). In words, after
+/// `chart2/source/view/axes/ScaleAutomatism.cxx`:
+///
+/// 1. Data that are all at or below zero are negated, scaled, and negated back.
+/// 2. A y axis whose smallest value is positive starts at 0 when the smallest value is under
+///    5/6 of the largest (or all values are equal); data that sit closer together start half
+///    their span below the smallest value instead. An x axis starts at the smallest value.
+/// 3. The major unit is the smallest of 1, 2, 5 times a power of ten that makes at most N
+///    intervals, N being 10 at first. The axis is then rounded outward to multiples of the
+///    unit, and an end that the data nearly reach (within 1/21 of the axis) gets one more unit.
+/// 4. The labels must not overlap: when they would (a tick label line is taller than the
+///    spacing, or a label is wider than it), N is lowered by one and the steps are redone.
+fn libre_range(
+    lo: f64,
+    hi: f64,
+    amin: Option<f64>,
+    amax: Option<f64>,
+    o: Opts,
+    l: LibreOpts,
+) -> (f64, f64, f64) {
+    let (lo, hi) = (lo.min(hi), lo.max(hi));
+    // Negative data: mirror (the roles of minimum and maximum swap).
+    if hi <= 0.0 && lo < 0.0 {
+        let (a, b, u) = libre_range(-hi, -lo, amax.map(|v| -v), amin.map(|v| -v), o, l);
+        return (tidy(-b), tidy(-a), u);
+    }
+    let mut result = (0.0, 1.0, 1.0);
+    for n in (2..=LIBRE_MAX_INTERVALS).rev() {
+        result = libre_pass(lo, hi, amin, amax, f64::from(n), l);
+        let (min, max, step) = result;
+        let intervals = ((max - min) / step).round().max(1.0);
+        let pitch = o.len_px / intervals;
+        let extent = if o.horizontal {
+            let d = decimals_of(step);
+            let widest = format!("{:.d$}", min.abs().max(max.abs()));
+            let neg = usize::from(min < 0.0);
+            (widest.chars().count() + neg) as f64 * l.digit_w
+        } else {
+            l.label_h
+        };
+        if pitch >= extent || pitch.is_nan() {
+            break;
+        }
+    }
+    result
+}
+
+/// One pass of [`libre_range`] with at most `n` intervals.
+fn libre_pass(
+    lo: f64,
+    hi: f64,
+    amin: Option<f64>,
+    amax: Option<f64>,
+    n: f64,
+    l: LibreOpts,
+) -> (f64, f64, f64) {
+    let (mut tmin, mut tmax) = (amin.unwrap_or(lo), amax.unwrap_or(hi));
+    if tmax < tmin {
+        std::mem::swap(&mut tmin, &mut tmax);
+    }
+    if amin.is_none() && tmin > 0.0 && l.y_axis {
+        if tmin == tmax || tmin / tmax < 5.0 / 6.0 {
+            tmin = 0.0;
+        } else {
+            tmin -= (tmax - tmin) / 2.0;
+        }
+    }
+    if tmin == tmax {
+        if amax.is_none() {
+            tmax = if tmax == 0.0 { 1.0 } else { tmax * 2.0 };
+        } else if amin.is_none() {
+            tmin = if tmin == 0.0 { -1.0 } else { tmin / 2.0 };
+        } else {
+            tmax = tmin + 1.0;
+        }
+    }
+    let range = tmax - tmin;
+    let step = libre_step(range / n);
+    let mut min = amin.unwrap_or_else(|| tidy((tmin / step).floor() * step));
+    let mut max = amax.unwrap_or_else(|| tidy((tmax / step).ceil() * step));
+    if max <= min {
+        max = tidy(min + step);
+    }
+    // An end the data nearly reach gets one more unit (both tests use the rounded axis).
+    let (min0, max0) = (min, max);
+    let span = max0 - min0;
+    if amin.is_none() && min0 != 0.0 && (max0 - lo) / span > 20.0 / 21.0 {
+        min = tidy(min0 - step);
+    }
+    if amax.is_none() && max0 != 0.0 && (hi - min0) / span > 20.0 / 21.0 {
+        max = tidy(max0 + step);
+    }
+    (min, max, step)
+}
+
 impl Scale {
     /// The scale of `axis` (`None` = all defaults) for data spanning `data` (`None` = no data).
     pub fn new(axis: Option<&Axis>, data: Option<(f64, f64)>, o: Opts) -> Scale {
+        Scale::build(axis, data, o, None)
+    }
+
+    /// Like [`Scale::new`], but the automatic range follows LibreOffice's rules
+    /// ([`libre_range`]) instead of Excel's.
+    pub fn new_libre(
+        axis: Option<&Axis>,
+        data: Option<(f64, f64)>,
+        o: Opts,
+        lo: LibreOpts,
+    ) -> Scale {
+        Scale::build(axis, data, o, Some(lo))
+    }
+
+    fn build(
+        axis: Option<&Axis>,
+        data: Option<(f64, f64)>,
+        o: Opts,
+        libre: Option<LibreOpts>,
+    ) -> Scale {
         let ticks = target_ticks(o.len_px, o.horizontal);
         let reversed = axis.is_some_and(|a| a.reversed);
         let amin = axis.and_then(|a| a.min).and_then(clean);
@@ -167,7 +312,10 @@ impl Scale {
             }
             _ => {
                 let (lo, hi) = data.unwrap_or((0.0, 1.0));
-                let (a, b, u) = auto_range(lo, hi, ticks);
+                let (a, b, u) = match libre {
+                    Some(l) => libre_range(lo, hi, amin, amax, o, l),
+                    None => auto_range(lo, hi, ticks),
+                };
                 Scale::linear(a, b, u)
             }
         };
@@ -210,7 +358,9 @@ impl Scale {
             let user = axis.and_then(|a| a.major_unit).filter(|u| *u > 0.0);
             s.major = match user {
                 Some(u) if span / u <= MAX_TICKS as f64 => u,
-                _ if amin.is_some() || amax.is_some() => nice_unit(span / ticks),
+                _ if (amin.is_some() || amax.is_some()) && libre.is_none() => {
+                    nice_unit(span / ticks)
+                }
                 _ => s.major,
             };
             if !(s.major > 0.0 && span / s.major <= MAX_TICKS as f64) {
@@ -635,5 +785,107 @@ mod tests {
     fn span_of_values() {
         assert_eq!(span([3.0, -1.0, 7.0].into_iter()), Some((-1.0, 7.0)));
         assert_eq!(span(std::iter::empty()), None);
+    }
+
+    fn lo(lo: f64, hi: f64, y_axis: bool, len_px: f64, horizontal: bool) -> (f64, f64, f64) {
+        libre_range(
+            lo,
+            hi,
+            None,
+            None,
+            Opts {
+                len_px,
+                horizontal,
+                percent: false,
+            },
+            LibreOpts {
+                y_axis,
+                label_h: 18.0,
+                digit_w: 9.0,
+            },
+        )
+    }
+
+    #[test]
+    fn libre_examples_of_the_measured_charts() {
+        // The self-made scatter chart: y values 1..9.8 on an axis too short for 11 labels.
+        assert_eq!(lo(1.0, 9.8, true, 169.0, false), (0.0, 12.0, 2.0));
+        // ... on a tall axis the unit stays 1 (the end is nudged because the data reach it).
+        assert_eq!(lo(1.0, 9.8, true, 600.0, false), (0.0, 11.0, 1.0));
+        // x values 1..5: not widened to zero, half-unit steps, one more unit at both ends.
+        assert_eq!(lo(1.0, 5.0, false, 367.0, true), (0.5, 5.5, 0.5));
+        // columns up to 21 / 52
+        assert_eq!(lo(6.0, 21.0, true, 150.0, false), (0.0, 25.0, 5.0));
+        assert_eq!(lo(0.0, 52.0, true, 150.0, false), (0.0, 60.0, 10.0));
+    }
+
+    #[test]
+    fn libre_y_axis_rules() {
+        // wide data start at zero, narrow data (min above 5/6 of max) half a span below the min
+        assert_eq!(lo(10.0, 100.0, true, 400.0, false).0, 0.0);
+        let (mn, _, u) = lo(100.0, 105.0, true, 400.0, false);
+        assert!(mn < 100.0 && mn > 96.0 && u > 0.0, "{mn} {u}");
+        // all values equal: the axis starts at zero and goes past the value
+        let (mn, mx, _) = lo(5.0, 5.0, true, 400.0, false);
+        assert_eq!(mn, 0.0);
+        assert!(mx > 5.0, "{mx}");
+        // ... an x axis (not widened to zero) doubles the maximum instead
+        let (mn, mx, _) = lo(5.0, 5.0, false, 400.0, true);
+        assert!(mn <= 5.0 && mx >= 10.0, "{mn} {mx}");
+        let (mn, mx, _) = lo(0.0, 0.0, true, 400.0, false);
+        assert!(mn <= 0.0 && mx >= 1.0, "{mn} {mx}");
+        // an x axis is not widened to zero
+        assert!(lo(100.0, 200.0, false, 400.0, true).0 >= 90.0);
+        // negative data mirror the positive ones
+        let (mn, mx, u) = lo(-9.8, -1.0, true, 169.0, false);
+        assert_eq!((mn, mx, u), (-12.0, 0.0, 2.0));
+        // mixed signs: rounded outward to multiples of the unit
+        let (mn, mx, u) = lo(-3.0, 7.0, true, 400.0, false);
+        assert!(mn <= -3.0 && mx >= 7.0 && (mn / u).fract() == 0.0 && (mx / u).fract() == 0.0);
+    }
+
+    #[test]
+    fn libre_fixed_limits_are_kept() {
+        let o = Opts {
+            len_px: 300.0,
+            horizontal: false,
+            percent: false,
+        };
+        let l = LibreOpts {
+            y_axis: true,
+            label_h: 18.0,
+            digit_w: 9.0,
+        };
+        let (mn, mx, u) = libre_range(0.0, 7.0, Some(2.0), Some(9.0), o, l);
+        assert_eq!((mn, mx), (2.0, 9.0));
+        assert!(u > 0.0);
+        let (mn, mx, _) = libre_range(0.0, 7.0, None, Some(8.0), o, l);
+        assert_eq!((mn, mx), (0.0, 8.0));
+        // fixed values flow through Scale::new_libre too
+        let axis = Axis {
+            min: Some(1.0),
+            max: Some(11.0),
+            ..Axis::default()
+        };
+        let s = Scale::new_libre(Some(&axis), Some((2.0, 8.0)), o, l);
+        assert_eq!((s.min, s.max), (1.0, 11.0));
+        assert!(s.major > 0.0);
+        // percent and logarithmic axes keep the shared rules
+        let p = Scale::new_libre(None, Some((0.2, 0.4)), Opts { percent: true, ..o }, l);
+        assert_eq!((p.min, p.max), (0.0, 1.0));
+        let g = Axis {
+            log_base: Some(10.0),
+            ..Axis::default()
+        };
+        let s = Scale::new_libre(Some(&g), Some((3.0, 700.0)), o, l);
+        assert_eq!((s.min, s.max), (1.0, 1000.0));
+    }
+
+    #[test]
+    fn libre_decimals_of_a_step() {
+        assert_eq!(decimals_of(1.0), 0);
+        assert_eq!(decimals_of(0.5), 1);
+        assert_eq!(decimals_of(0.25), 2);
+        assert_eq!(decimals_of(0.2), 1);
     }
 }

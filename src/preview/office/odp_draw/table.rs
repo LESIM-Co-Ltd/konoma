@@ -116,6 +116,11 @@ const MAX_REPEAT: usize = 1_000_000;
 /// Width of a border that states none (1 pt).
 const DEFAULT_BORDER_W: f64 = 12_700.0;
 
+/// LibreOffice draws a table cell border 1.8 times as wide as the style states (measured with
+/// `fo:border` widths of 0.5 pt to 10 pt, whose drawn widths were 1.8 times the stated ones all
+/// the way; the page's size does not matter). The border is drawn at that width to match it.
+const LIBRE_BORDER_SCALE: f64 = 1.8;
+
 const NONE: usize = usize::MAX;
 /// The four sides in the order the arrays of a cell hold them.
 const SIDES: [&str; 4] = ["left", "right", "top", "bottom"];
@@ -216,7 +221,10 @@ fn parse_border(v: &str) -> Option<Option<sd::Line>> {
     if w <= 0.0 {
         return Some(None);
     }
-    let mut line = sd::Line::solid(w, col.unwrap_or(Rgba::BLACK));
+    let mut line = sd::Line::solid(
+        (w * LIBRE_BORDER_SCALE).min(1.0e8),
+        col.unwrap_or(Rgba::BLACK),
+    );
     match style {
         "double" => line.compound = sd::Compound::Dbl,
         "dotted" => line.dash = sd::Dash::SysDot,

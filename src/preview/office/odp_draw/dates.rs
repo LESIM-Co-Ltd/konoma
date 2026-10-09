@@ -245,6 +245,27 @@ fn two(v: u32) -> String {
     format!("{v:02}")
 }
 
+/// `m` in the short date form of the system locale. LibreOffice shows a `current-date` footer
+/// that way and ignores the data style of its declaration (measured on a Japanese system with
+/// `slide-tile-background.odp`, whose style would write `09.10.26`: it shows `26/10/9`).
+/// Only the Japanese form was measured; the others are the common short forms of each language.
+pub(super) fn system_short(m: &Moment) -> String {
+    let loc = system_locale();
+    let yy = two(m.year.rem_euclid(100) as u32);
+    let (d, mo) = (m.day, m.month);
+    match (loc.language.as_str(), loc.country.as_str()) {
+        ("ja", _) => format!("{yy}/{mo}/{d}"),
+        ("zh", _) => format!("{}/{mo}/{d}", m.year),
+        ("ko", _) => format!("{yy}. {mo}. {d}."),
+        ("en", "" | "US" | "PH") => format!("{mo}/{d}/{yy}"),
+        ("de" | "ru" | "pl" | "cs" | "tr" | "fi" | "nb" | "no" | "da", _) => {
+            format!("{}.{}.{}", two(d), two(mo), m.year)
+        }
+        ("sv" | "lt" | "hu", _) => format!("{}-{}-{}", m.year, two(mo), two(d)),
+        _ => format!("{}/{}/{}", two(d), two(mo), m.year),
+    }
+}
+
 /// `m` as the date style `style` writes it (`None`: the ISO date).
 pub(super) fn format(style: Option<&Node>, m: &Moment) -> String {
     let Some(style) = style else {

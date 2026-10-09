@@ -151,6 +151,15 @@ pub(crate) fn num(v: f64) -> String {
 }
 
 /// EMU to px, printed.
+/// How many times larger than its own pixels a pixelated image fill ([`ImageFill::pixelated`])
+/// must be drawn to lose its smoothing. LibreOffice smooths a tile that is merely a little
+/// larger than its picture (1.2 times, measured) and shows a fill enlarged about 10 times as
+/// blocks; where it switches is not known, 2 is a guess between the two.
+const NEAREST_MIN_ENLARGEMENT: f64 = 2.0;
+
+/// How far (px) a tiled picture spills over the edge of its tile.
+const TILE_OVERSCAN_PX: f64 = 0.5;
+
 fn px(v: f64) -> String {
     num(v / EMU_PER_PX)
 }
@@ -942,6 +951,15 @@ impl<'a> W<'a> {
     }
 
     /// Natural pixel size of the image `key` (for tiling), 96 dpi.
+    /// The pixel size of a raster image (`None` for vector images and unknown bytes).
+    fn raster_size(&self, key: &str) -> Option<(f64, f64)> {
+        let bytes = (self.media)(key)?;
+        match sniff(&bytes) {
+            Sniffed::Svg | Sniffed::Emf | Sniffed::Wmf | Sniffed::Unknown => None,
+            _ => self.natural_size(key),
+        }
+    }
+
     fn natural_size(&self, key: &str) -> Option<(f64, f64)> {
         let bytes = (self.media)(key)?;
         match sniff(&bytes) {
@@ -972,6 +990,7 @@ impl<'a> W<'a> {
         fill_rect: Rect4,
         alpha: f64,
         clip: Option<&str>,
+        nearest: bool,
     ) {
         let (x, y, w, h) = area;
         let f = |v: f64| if v.is_finite() { v } else { 0.0 };
@@ -1005,9 +1024,14 @@ impl<'a> W<'a> {
         let clip_attr = clip
             .map(|c| format!(r#" clip-path="url(#{c})""#))
             .unwrap_or_default();
+        let rendering = if nearest {
+            r#" image-rendering="optimizeSpeed""#
+        } else {
+            ""
+        };
         let _ = write!(
             self.body,
-            r#"<image x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="none" href="{uri}"{op}{clip_attr}/>"#,
+            r#"<image x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="none" href="{uri}"{op}{clip_attr}{rendering}/>"#,
             px(ix),
             px(iy),
             px(fw),
@@ -1048,7 +1072,24 @@ impl<'a> W<'a> {
                     return;
                 };
                 let clip = self.clip_def(d);
-                self.image_el(&uri, bx, img.crop, fill_rect, img.alpha, Some(&clip));
+                // Enlarged enough that LibreOffice stops smoothing it.
+                let nearest = img.pixelated
+                    && self.raster_size(&img.key).is_some_and(|(nw, nh)| {
+                        let kw = (1.0 - img.crop.0 - img.crop.2).max(0.001);
+                        let kh = (1.0 - img.crop.1 - img.crop.3).max(0.001);
+                        let dw = bx.2 / EMU_PER_PX * (1.0 - fill_rect.0 - fill_rect.2) / kw;
+                        let dh = bx.3 / EMU_PER_PX * (1.0 - fill_rect.1 - fill_rect.3) / kh;
+                        dw >= nw * NEAREST_MIN_ENLARGEMENT || dh >= nh * NEAREST_MIN_ENLARGEMENT
+                    });
+                self.image_el(
+                    &uri,
+                    bx,
+                    img.crop,
+                    fill_rect,
+                    img.alpha,
+                    Some(&clip),
+                    nearest,
+                );
             }
             ImageMode::Tile {
                 sx,
@@ -1099,6 +1140,18 @@ impl<'a> W<'a> {
                     tw * if fh { 2.0 } else { 1.0 },
                     th * if fv { 2.0 } else { 1.0 },
                 );
+                let rendering = if img.pixelated
+                    && self.raster_size(&img.key).is_some_and(|(nw, nh)| {
+                        tw >= nw * NEAREST_MIN_ENLARGEMENT || th >= nh * NEAREST_MIN_ENLARGEMENT
+                    }) {
+                    r#" image-rendering="optimizeSpeed""#
+                } else {
+                    ""
+                };
+                // A tile that is not a whole number of pixels would leave a faint seam of the
+                // page behind at its edge; a picture a little larger than the tile (the pattern
+                // clips it) covers that. Flipped tiles are mirrored about their edges: no spill.
+                let over = if fh || fv { 0.0 } else { TILE_OVERSCAN_PX };
                 let mut cells = String::new();
                 for iy in 0..(if fv { 2 } else { 1 }) {
                     for ix in 0..(if fh { 2 } else { 1 }) {
@@ -1112,10 +1165,11 @@ impl<'a> W<'a> {
                         );
                         let _ = write!(
                             cells,
-                            r#"<image x="{}" y="0" width="{}" height="{}" preserveAspectRatio="none" href="{uri}" transform="{t}"/>"#,
-                            num(0.0),
-                            num(tw),
-                            num(th),
+                            r#"<image x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="none" href="{uri}" transform="{t}"{rendering}/>"#,
+                            num(-over),
+                            num(-over),
+                            num(tw + 2.0 * over),
+                            num(th + 2.0 * over),
                         );
                     }
                 }
@@ -1164,10 +1218,10 @@ impl<'a> W<'a> {
                     && c == (0.0, 0.0, 0.0, 0.0)
                     && fill_rect == (0.0, 0.0, 0.0, 0.0);
                 if plain_rect {
-                    self.image_el(&uri, bx, c, fill_rect, p.image.alpha, None);
+                    self.image_el(&uri, bx, c, fill_rect, p.image.alpha, None, false);
                 } else {
                     let clip = self.clip_def(&d);
-                    self.image_el(&uri, bx, c, fill_rect, p.image.alpha, Some(&clip));
+                    self.image_el(&uri, bx, c, fill_rect, p.image.alpha, Some(&clip), false);
                 }
             }
             None => self.placeholder(&d, bx),

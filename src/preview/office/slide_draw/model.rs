@@ -430,6 +430,10 @@ pub struct ImageFill {
     /// Colour effects of the picture (`a:blip` children), applied in order to the decoded
     /// pixels before the picture is embedded (see [`super::pic_fx`]).
     pub fx: Vec<PicFx>,
+    /// Enlarged without smoothing (nearest-neighbour): LibreOffice draws an upscaled bitmap
+    /// *fill* that way (a picture item is smoothed). PowerPoint smooths, so the pptx reader
+    /// leaves this off. Has no effect on a picture that is shrunk.
+    pub pixelated: bool,
 }
 
 /// A colour effect of a picture (a child of DrawingML `a:blip`).
@@ -468,6 +472,7 @@ impl ImageFill {
             },
             alpha: 1.0,
             fx: Vec::new(),
+            pixelated: false,
         }
     }
 }
