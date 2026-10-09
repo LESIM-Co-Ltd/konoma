@@ -124,12 +124,12 @@ impl<'a> Sb<'a> {
         chain
     }
 
-    fn rels_at(&self, part: usize) -> &'a HashMap<String, Rel> {
+    pub(super) fn rels_at(&self, part: usize) -> &'a HashMap<String, Rel> {
         self.rels[part.min(2)]
     }
 
     /// A `p:sp` or `p:cxnSp`.
-    fn build_sp(&mut self, sp: &Node, connector: bool) -> Option<sd::Item> {
+    pub(super) fn build_sp(&mut self, sp: &Node, connector: bool) -> Option<sd::Item> {
         let nvn = if connector { "nvCxnSpPr" } else { "nvSpPr" };
         if hidden(sp.child(nvn)) {
             return None;
@@ -193,7 +193,7 @@ impl<'a> Sb<'a> {
             None => style.map(|s| self.style_effects(s)).unwrap_or_default(),
         };
 
-        let text = if connector {
+        let mut text = if connector {
             None
         } else {
             sp.child("txBody").and_then(|tx| {
@@ -201,6 +201,13 @@ impl<'a> Sb<'a> {
                 self.text_body(tx, &tc)
             })
         };
+        // A SmartArt shape (`dsp:sp`) carries its own text box, apart from the shape's.
+        let mut text_rect = text_rect;
+        if let (Some(t), Some(tx)) = (text.as_mut(), sp.child("txXfrm").and_then(xfrm_of)) {
+            let (rect, turn) = super::frames::text_box(&xfrm, &tx);
+            text_rect = Some(rect);
+            t.rot_deg += turn;
+        }
 
         if !fill.is_visible()
             && line.is_none()
@@ -390,12 +397,4 @@ impl<'a> Sb<'a> {
     /// A table (`a:tbl`) as scene items. A later task fills this in (the cell fills, borders and
     /// text become shapes of the scene); until then a table is not drawn.
     fn frame_table(&mut self, _frame: &Node, _xfrm: sd::Xfrm, _out: &mut Vec<sd::Item>) {}
-
-    /// A chart (`c:chart`) as scene items. A later task fills this in; until then a chart is not
-    /// drawn.
-    fn frame_chart(&mut self, _frame: &Node, _xfrm: sd::Xfrm, _out: &mut Vec<sd::Item>) {}
-
-    /// A SmartArt diagram (`dgm:relIds`) as scene items (from its saved drawing part). A later task
-    /// fills this in; until then a diagram is not drawn.
-    fn frame_diagram(&mut self, _frame: &Node, _xfrm: sd::Xfrm, _out: &mut Vec<sd::Item>) {}
 }

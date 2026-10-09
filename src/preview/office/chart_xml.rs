@@ -459,7 +459,10 @@ impl Parser<'_, '_> {
     fn text_style(&self, body: &Node) -> TextStyle {
         let mut st = TextStyle::default();
         if let Some(bp) = body.child("bodyPr") {
-            st.rot_deg = attr_num(bp, "rot").map(|r| r / 60_000.0);
+            // Office writes `rot="-60000000"` (a turn far outside +-360 degrees) for "automatic".
+            st.rot_deg = attr_num(bp, "rot")
+                .filter(|r| r.abs() <= 21_600_000.0)
+                .map(|r| r / 60_000.0);
         }
         let Some(p) = body.child("p") else { return st };
         let mut layers: Vec<&Node> = Vec::new();

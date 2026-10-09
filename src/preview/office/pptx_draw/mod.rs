@@ -36,6 +36,7 @@ use crate::preview::office::slide_draw::Rgba;
 
 use super::*;
 
+mod frames;
 mod geom;
 mod shapes;
 mod style;
@@ -44,6 +45,10 @@ pub(super) mod theme;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_frames;
+#[cfg(test)]
+mod tests_frames_dump;
 
 pub(super) use theme::Theme;
 
@@ -52,6 +57,17 @@ use theme::{ClrMap, Colors};
 /// Most shapes kept of one layout or master (a forged one must not hold unbounded memory for the
 /// whole conversion).
 pub(super) const MAX_PART_SHAPES: usize = 2_000;
+
+/// How the scene builder reads further parts of the package (a chart, a SmartArt data model and
+/// drawing): through the deck reader, so they are read once, under the same per-part and total
+/// read budgets as every other part (a part over a budget reads as `None`, and the reader marks
+/// the document truncated).
+pub(super) struct Parts<'a> {
+    /// The bytes of a package part, or `None` (missing, unreadable, over a budget).
+    pub read: &'a mut dyn FnMut(&str) -> Option<Vec<u8>>,
+    /// The relationships of a part (empty when it has none).
+    pub rels: &'a mut dyn FnMut(&str) -> HashMap<String, Rel>,
+}
 
 /// What the scene builder needs of the deck as a whole.
 #[derive(Default)]
@@ -80,6 +96,7 @@ pub(super) struct SceneInput<'a> {
     /// What the first slide's number field shows (`firstSlideNum`), and this slide's place.
     pub first_num: i64,
     pub number: usize,
+    pub parts: Parts<'a>,
 }
 
 /// The state of building one scene.
@@ -88,6 +105,11 @@ pub(super) struct Sb<'a> {
     pub theme: &'a Theme,
     /// Loads the picture at a package part into the document and returns its `office-img://` key.
     pub loader: &'a mut dyn FnMut(&str) -> Option<String>,
+    /// Reads further parts (charts, SmartArt).
+    pub parts: Parts<'a>,
+    /// Relationships that exist only while one SmartArt drawing is built: the ids its pictures
+    /// were given in place of the drawing part's own (see `frames`).
+    pub extra_rels: HashMap<String, Rel>,
     /// The relationships of the slide, the layout and the master.
     pub rels: [&'a HashMap<String, Rel>; 3],
     /// The part whose shapes are being built (an index into `rels`).
@@ -128,6 +150,11 @@ pub(super) fn build_scene(
         col: Colors { theme, map: &map },
         theme,
         loader,
+        parts: Parts {
+            read: &mut *inp.parts.read,
+            rels: &mut *inp.parts.rels,
+        },
+        extra_rels: HashMap::new(),
         rels: [inp.rels, &inh.layout.rels, &inh.master.rels],
         cur: 0,
         inh: None,

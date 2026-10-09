@@ -251,8 +251,12 @@ impl Sb<'_> {
 
     /// The `office-img://` key of the picture a `a:blip` points at (see [`Self::image_fill`]).
     pub(super) fn blip_key(&mut self, blip: &Node, rels: &HashMap<String, Rel>) -> Option<String> {
+        let extra = &self.extra_rels;
         let mut load = |rid: &str| -> Option<String> {
-            let rel = rels.get(rid).filter(|r| !r.external)?;
+            let rel = rels
+                .get(rid)
+                .or_else(|| extra.get(rid))
+                .filter(|r| !r.external)?;
             (self.loader)(&rel.target)
         };
         if let Some(k) = blip.rel_attr("embed").and_then(&mut load) {

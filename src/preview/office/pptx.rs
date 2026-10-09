@@ -1356,8 +1356,14 @@ impl Rd<'_, '_> {
         }
         let rels = self.c.rels.clone();
         let opts = self.c.opts;
-        let conv = &mut *self.c;
-        let mut loader = |part: &str| conv.image_key_for_part(part);
+        let default_text = self.draw.default_text.take();
+        let first_num = self.first_num;
+        // The three ways the builder reaches the package (a picture, a part, a part's
+        // relationships) all go through this reader; they are called one at a time.
+        let rd = std::cell::RefCell::new(&mut *self);
+        let mut loader = |part: &str| rd.borrow_mut().c.image_key_for_part(part);
+        let mut read = |part: &str| rd.borrow_mut().read_part(part);
+        let mut rels_of = |part: &str| rd.borrow_mut().rels_of_present(part);
         let scene = pptx_draw::build_scene(
             SceneInput {
                 opts,
@@ -1369,12 +1375,17 @@ impl Rd<'_, '_> {
                 cut: l.cut,
                 rels: &rels,
                 inh: &l.inh,
-                default_text: self.draw.default_text.as_ref(),
-                first_num: self.first_num,
+                default_text: default_text.as_ref(),
+                first_num,
                 number,
+                parts: pptx_draw::Parts {
+                    read: &mut read,
+                    rels: &mut rels_of,
+                },
             },
             &mut loader,
         );
+        self.draw.default_text = default_text;
         if scene.truncated {
             self.c.truncated = true;
         }

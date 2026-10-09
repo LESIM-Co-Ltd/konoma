@@ -642,3 +642,21 @@ fn every_parsed_chart_type_draws() {
         assert!(!trunc, "{tag}");
     }
 }
+
+#[test]
+fn an_automatic_text_rotation_is_not_a_rotation() {
+    // Office writes -60000000 for "automatic" (and 0 for "none"); neither turns the text.
+    for (rot, want) in [
+        ("-60000000", None),
+        ("60000000", None),
+        ("0", Some(0.0)),
+        ("-5400000", Some(-90.0)),
+        ("21600000", Some(360.0)),
+    ] {
+        let x = space(&format!(
+            r#"<c:chart><c:title><c:tx><c:rich><a:bodyPr rot="{rot}"/><a:p><a:r><a:t>T</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea/></c:chart>"#
+        ));
+        let m = parse(&x).model;
+        assert_eq!(m.title.unwrap().style.rot_deg, want, "{rot}");
+    }
+}
