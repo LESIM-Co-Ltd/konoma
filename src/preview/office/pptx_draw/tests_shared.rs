@@ -189,7 +189,8 @@ fn a_part_of_only_slide_number_shapes_is_all_the_slides_own() {
 }
 
 #[test]
-fn the_slide_number_shapes_cost_the_deck_for_every_slide() {
+fn the_slide_number_shapes_cost_the_copies_pool_for_every_slide() {
+    // The copies have a quarter of the items: 10 / 4 = 2.
     let opts = DocOptions {
         max_deck_items: 10,
         ..DocOptions::default()
@@ -202,9 +203,185 @@ fn the_slide_number_shapes_cost_the_deck_for_every_slide() {
         .iter()
         .filter(|s| !s.underlay.is_empty())
         .count();
-    assert_eq!(shown, 10);
+    assert_eq!(shown, 2);
+    assert!(!doc.slide_scenes[1].truncated);
+    assert!(doc.slide_scenes[2].truncated);
     assert!(doc.slide_scenes[12].truncated);
     assert!(doc.truncated);
+    // Every slide is still there.
+    assert_eq!(doc.slides.len(), 15);
+    assert_eq!(doc.slide_scenes.len(), 15);
+}
+
+/// A master of `n` shapes that each show the slide's number: every slide builds its own copy.
+fn number_shapes(n: usize) -> String {
+    (0..n)
+        .map(|k| tbox(0, 300_000 * k as i64, 900_000, 200_000, &number_para()))
+        .collect()
+}
+
+fn drawn(sc: &sd::SlideScene) -> usize {
+    sc.underlay.iter().map(|u| count(u)).sum()
+}
+
+#[test]
+fn copies_of_a_masters_number_shapes_do_not_starve_the_slides_own_items() {
+    // 15 slides of 2 own shapes over a master of 3 number shapes, 40 items in all: before the
+    // copies had a pool of their own, the 45 copies used the budget up and the later slides lost
+    // their own shapes.
+    let opts = DocOptions {
+        max_deck_items: 40,
+        ..DocOptions::default()
+    };
+    let d = deck(&number_shapes(3), "", &boxes(2, "own"), 15);
+    let doc = d.load_with(&opts);
+    assert_eq!(doc.slide_scenes.len(), 15);
+    for (i, sc) in doc.slide_scenes.iter().enumerate() {
+        assert_eq!(count(&sc.items), 2, "slide {i} keeps its own shapes");
+    }
+    // The copies: a quarter of 40 is 10 -- three slides get all three, the fourth one, then none.
+    let numbers: Vec<usize> = doc.slide_scenes.iter().map(drawn).collect();
+    assert_eq!(&numbers[..5], &[3, 3, 3, 1, 0], "{numbers:?}");
+    assert!(numbers[5..].iter().all(|&n| n == 0));
+    // ...and the slides that lost some say so; the ones that did not, do not.
+    let cut: Vec<bool> = doc.slide_scenes.iter().map(|s| s.truncated).collect();
+    assert_eq!(&cut[..3], &[false, false, false]);
+    assert!(cut[3..].iter().all(|&c| c));
+    assert!(doc.truncated);
+    // The number each slide has is its own.
+    assert!(svg_of(&doc.slide_scenes[1]).contains(">2<"));
+}
+
+#[test]
+fn a_master_full_of_number_shapes_is_cut_at_the_copies_pool_even_on_its_first_build() {
+    // The first slide builds the master before it knows which shapes are the slide's own: what
+    // does not fit the copies' pool is dropped, not kept.
+    let opts = DocOptions {
+        max_deck_items: 40,
+        ..DocOptions::default()
+    };
+    let d = deck(&number_shapes(30), "", &boxes(2, "own"), 3);
+    let doc = d.load_with(&opts);
+    for sc in &doc.slide_scenes {
+        assert!(drawn(sc) <= 10, "{}", drawn(sc));
+        assert_eq!(count(&sc.items), 2);
+        assert!(sc.truncated);
+    }
+    assert!(doc.truncated);
+}
+
+#[test]
+fn the_bytes_of_the_scenes_are_budgeted_not_only_their_number() {
+    // Plenty of items, a budget of 40 assumed items' bytes: the slides stop when the bytes do.
+    let opts = DocOptions {
+        max_deck_bytes: 40 * sd::underlay::BYTES_PER_ITEM,
+        ..DocOptions::default()
+    };
+    let d = deck("", "", &boxes(10, "own"), 20);
+    let doc = d.load_with(&opts);
+    let est: Vec<usize> = doc
+        .slide_scenes
+        .iter()
+        .map(|s| sd::footprint::items_bytes(&s.items))
+        .collect();
+    let total: usize = est.iter().sum();
+    // (Small items: the slides before the line are whole, the ones after it are cut or empty.)
+    assert!(doc.slide_scenes[0].items.len() == 10 && !doc.slide_scenes[0].truncated);
+    assert!(doc.slide_scenes.iter().any(|s| s.truncated));
+    assert!(doc.slide_scenes[19].items.is_empty());
+    // Held: the budget plus at most the slide that crossed it.
+    let slide = est.iter().copied().max().unwrap();
+    assert!(
+        total <= 40 * sd::underlay::BYTES_PER_ITEM + slide,
+        "{total} held, {slide} a slide"
+    );
+    assert!(doc.truncated);
+    assert_eq!(doc.slides.len(), 20, "every slide is still there");
+    // The same deck with the default budget is whole.
+    let all = d.load();
+    assert!(!all.truncated);
+    assert!(all.slide_scenes.iter().all(|s| s.items.len() == 10));
+}
+
+#[test]
+fn the_parsed_part_budget_is_a_total_over_the_layouts_and_masters() {
+    // Each of the layout and the master is under the budget, both together are not: the layout
+    // (read first) is drawn, the master is not.
+    let (master, layout) = (boxes(50, "MASTERMARK"), boxes(50, "LAYOUTMARK"));
+    let opts = DocOptions {
+        max_master_xml: (master.len() + master.len() / 2) as u64,
+        ..DocOptions::default()
+    };
+    let d = deck(&master, &layout, &boxes(1, "own"), 2);
+    let doc = d.load_with(&opts);
+    assert!(doc.truncated);
+    for sc in &doc.slide_scenes {
+        assert_eq!(drawn(sc), 50, "the layout only");
+        let svg = svg_of(sc);
+        assert!(svg.contains("LAYOUTMARK") && !svg.contains("MASTERMARK"));
+    }
+}
+
+#[test]
+fn the_items_of_a_scene_hold_no_room_they_do_not_use() {
+    // Master (shared), a shape that shows the slide's number (built per slide) and the slide's own.
+    let master = format!("{}{}", boxes(3, "M"), number_shapes(1));
+    let d = deck(&master, &boxes(2, "L"), &boxes(4, "own"), 3);
+    let doc = d.load();
+    for sc in &doc.slide_scenes {
+        assert!(!sc.underlay.is_empty() && !sc.items.is_empty());
+        assert!(!sd::footprint::has_slack(&sc.items));
+        for u in &sc.underlay {
+            assert!(!sd::footprint::has_slack(u));
+        }
+    }
+}
+
+#[test]
+fn the_typefaces_and_languages_of_the_runs_of_a_deck_are_shared() {
+    let d = deck(&boxes(5, "x"), "", &boxes(5, "y"), 4);
+    let doc = d.load();
+    let mut seen: Vec<std::sync::Arc<str>> = Vec::new();
+    let mut runs = 0;
+    for sc in &doc.slide_scenes {
+        for it in sc.drawn_items() {
+            let Item::Shape(s) = it else { continue };
+            for p in s.text.iter().flat_map(|t| &t.paragraphs) {
+                for r in &p.runs {
+                    runs += 1;
+                    if let Some(f) = &r.font.latin {
+                        seen.push(Arc::clone(f));
+                    }
+                }
+            }
+        }
+    }
+    assert!(runs >= 40, "{runs}");
+    assert!(!seen.is_empty());
+    assert!(
+        seen.iter().all(|f| Arc::ptr_eq(f, &seen[0])),
+        "one allocation for the one name"
+    );
+}
+
+#[test]
+fn a_master_over_the_parsed_part_budget_is_not_read_and_the_deck_says_so() {
+    let opts = DocOptions {
+        max_master_xml: 2_000,
+        ..DocOptions::default()
+    };
+    let d = deck(&boxes(60, "MASTERMARK"), "", &boxes(1, "own"), 3);
+    let doc = d.load_with(&opts);
+    assert!(doc.truncated);
+    assert_eq!(doc.slide_scenes.len(), 3);
+    for sc in &doc.slide_scenes {
+        assert_eq!(drawn(sc), 0, "no master drawn");
+        assert_eq!(count(&sc.items), 1, "the slide is");
+    }
+    // Inside the budget it is drawn.
+    let ok = d.load();
+    assert!(!ok.truncated);
+    assert_eq!(drawn(&ok.slide_scenes[0]), 60);
 }
 
 #[test]

@@ -444,13 +444,19 @@ pub(super) fn build_scene(inp: PageInput<'_>, media: &mut dyn Media) -> sd::Slid
     // master page's drawing is the same for every slide with the same footer line and page colour:
     // built once per deck and shared, unless it shows this slide's own page number or name.
     let early = std::mem::take(&mut scene.items);
+    let (early_items, early_bytes) = (early.len(), sd::footprint::items_bytes(&early));
     if !early.is_empty() {
         scene.underlay.push(Arc::new(early));
     }
-    let deck = inp
-        .shared
-        .items
-        .get_or_insert_with(|| DeckItems::new(inp.opts.max_deck_items));
+    let deck = inp.shared.items.get_or_insert_with(|| {
+        DeckItems::with_bytes(
+            inp.opts.max_deck_items,
+            inp.opts.max_deck_bytes,
+            inp.opts.max_copy_bytes,
+        )
+    });
+    // (The background items are the slide's own: they are charged to the deck like the rest.)
+    deck.spend(early_items, early_bytes);
     if let (true, Some(m), Some(name)) = (objects_visible, master, master_name) {
         let key = MasterKey {
             master: name.to_string(),
@@ -490,7 +496,11 @@ pub(super) fn build_scene(inp: PageInput<'_>, media: &mut dyn Media) -> sd::Slid
         .max_slide_shapes
         .min(base_items.saturating_add(deck.left()));
     sb.build_nodes(page.nodes(), 0, &mut scene.items, None);
-    deck.spend(sb.items.saturating_sub(base_items));
+    sd::footprint::compact(&mut scene.items);
+    deck.spend(
+        sb.items.saturating_sub(base_items),
+        sd::footprint::items_bytes(&scene.items),
+    );
     scene.truncated = sb.truncated;
     scene
 }

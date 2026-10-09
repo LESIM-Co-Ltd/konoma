@@ -117,18 +117,39 @@ impl<'a> Sb<'a> {
         // (The master page has Fontwork budgets of its own: the slides that share it all see it
         // the same.)
         let fw = (self.fw_chars, self.fw_points);
-        let mut one = |sb: &mut Self, n: &'a Node| -> (Vec<sd::Item>, bool, usize, usize) {
-            let was_dep = std::mem::replace(&mut sb.slide_dep, false);
-            let (items0, chars0) = (sb.items, sb.chars);
-            sb.max_items = cap.min(sb.items.saturating_add(deck.left()));
-            let mut out = Vec::new();
-            sb.build_list(&[n], 0, &mut out, Some(f));
-            let dep = sb.slide_dep;
-            sb.slide_dep = was_dep;
-            let count = sb.items.saturating_sub(items0);
-            deck.spend(count);
-            (out, dep, count, sb.chars.saturating_sub(chars0))
-        };
+        let mut one =
+            |sb: &mut Self, n: &'a Node, copy: bool| -> (Vec<sd::Item>, bool, usize, usize) {
+                let was_dep = std::mem::replace(&mut sb.slide_dep, false);
+                let (items0, chars0) = (sb.items, sb.chars);
+                let room = if copy {
+                    deck.copies_left()
+                } else {
+                    deck.left()
+                };
+                sb.max_items = cap.min(sb.items.saturating_add(room));
+                let mut out = Vec::new();
+                sb.build_list(&[n], 0, &mut out, Some(f));
+                sd::footprint::compact(&mut out);
+                let dep = sb.slide_dep;
+                sb.slide_dep = was_dep;
+                let count = sb.items.saturating_sub(items0);
+                let mut bytes = sd::footprint::items_bytes(&out);
+                if dep || copy {
+                    // (The first build of a shape that shows the slide's own page number could not
+                    // know it would be charged to the copies' pool: if it does not fit what is left
+                    // there it is not kept, and the slide says something is missing.)
+                    let mut kept = count;
+                    if !copy && (count > deck.copies_left() || bytes > deck.copies_bytes_left()) {
+                        out.clear();
+                        (kept, bytes) = (0, 0);
+                        sb.truncated = true;
+                    }
+                    deck.spend_copies(kept, bytes);
+                } else {
+                    deck.spend(count, bytes);
+                }
+                (out, dep, count, sb.chars.saturating_sub(chars0))
+            };
         if !new {
             self.items += draw.count;
             self.chars += draw.chars;
@@ -139,7 +160,7 @@ impl<'a> Sb<'a> {
                     Seg::Own(i) => {
                         self.fw_chars = fontwork::SLIDE_CHARS;
                         self.fw_points = fontwork::SLIDE_POINTS;
-                        let (items, ..) = one(self, list[*i]);
+                        let (items, ..) = one(self, list[*i], true);
                         if !items.is_empty() {
                             underlay.push(Arc::new(items));
                         }
@@ -155,7 +176,7 @@ impl<'a> Sb<'a> {
         let mut b = PartBuilder::default();
         let mut owned: Vec<Vec<sd::Item>> = Vec::new();
         for (i, n) in list.iter().enumerate() {
-            let (items, dep, count, chars) = one(self, n);
+            let (items, dep, count, chars) = one(self, n, false);
             if dep {
                 b.own(i);
                 owned.push(items);

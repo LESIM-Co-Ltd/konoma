@@ -1031,6 +1031,45 @@ fn a_chart_with_a_theme_override_takes_its_colours_not_the_slides() {
 }
 
 #[test]
+fn a_chart_theme_override_is_parsed_under_the_callers_node_budget() {
+    // The override is parsed under the same node budget as every other theme: with a budget its
+    // colour scheme does not fit, it is not applied (it used to be parsed under the default
+    // options, whatever the caller had said).
+    let d = chart_deck(&chart_frame(0, 0, 4_000_000, 3_000_000));
+    let parts = [
+        ("ppt/charts/chart1.xml", chart_xml("", "")),
+        (
+            "ppt/charts/_rels/chart1.xml.rels",
+            THEME_OVERRIDE_RELS.as_bytes().to_vec(),
+        ),
+        (
+            "ppt/theme/themeOverride1.xml",
+            theme_override("FF0000", "Arial"),
+        ),
+    ];
+    let whole = load(&d, &parts, &DocOptions::default());
+    assert!(has_fill(
+        the_group(&whole.slide_scenes[0]),
+        Rgba::rgb(0xFF, 0, 0)
+    ));
+    let tight = DocOptions {
+        max_block_nodes: 12,
+        ..DocOptions::default()
+    };
+    let doc = load(&d, &parts, &tight);
+    if let Some(sc) = doc.slide_scenes.first() {
+        for it in sc.drawn_items() {
+            if let Item::Group(g) = it {
+                assert!(
+                    !has_fill(g, Rgba::rgb(0xFF, 0, 0)),
+                    "override read past the budget"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_chart_whose_theme_override_part_is_missing_keeps_the_slides_theme() {
     let d = chart_deck(&chart_frame(0, 0, 4_000_000, 3_000_000));
     let doc = load(

@@ -299,7 +299,7 @@ impl Ctx {
     /// a font that has the look-alike Unicode characters.
     fn symbol_style_id(&mut self, run_key: usize, run: &Run, small: bool) -> usize {
         let mut r = run.clone();
-        r.font.latin = Some(SYMBOL_STAND_IN.to_string());
+        r.font.latin = Some(SYMBOL_STAND_IN.into());
         self.style_id(run_key | SYMBOL_KEY_BIT, &r, Script::Latin, small)
     }
 

@@ -135,13 +135,27 @@ pub struct DocOptions {
     pub max_pptx_read_total: u64,
     /// Most shapes, over a whole presentation, handed to the reading-order pass (one call costs up
     /// to 3.4 microseconds a shape; the pass gives up above `UNDERLAY_MAX_SHAPES` a call, so this is
-    /// at most about a third of a second). 1,000 slides of 50 shapes is half of it.
+    /// at most about a third of a second). 1,000 slides of 50 shapes is half of it. The slides
+    /// after the budget are still read: each keeps its heading, its place in the order and its
+    /// drawing, and only its text is left out (the document is marked truncated).
     pub max_deck_order_shapes: usize,
     /// Most scene items (the drawing of the slides) a presentation keeps over all its slides; a
     /// master's or a layout's drawing counts once however many slides show it, a slide's own items
     /// each. The slides after the limit are drawn partly or not at all and the document is marked
     /// truncated. See `slide_draw::underlay::MAX_DECK_ITEMS` for how the default was chosen.
     pub max_deck_items: usize,
+    /// Most estimated bytes of scene items (`slide_draw::footprint`) a presentation keeps over all
+    /// its slides, the copies of a master's shapes that show the slide's number excluded. See
+    /// `slide_draw::underlay::MAX_DECK_BYTES`.
+    pub max_deck_bytes: usize,
+    /// Most estimated bytes of those copies. See `slide_draw::underlay::MAX_COPY_BYTES`.
+    pub max_copy_bytes: usize,
+    /// Total bytes of XML of the slide layouts and masters a presentation may have parsed and
+    /// kept (they stay for the slides that show them, and a parsed part is several times its XML
+    /// in memory: measured about 8 times for shapes with text and effects, so 16 MiB is about
+    /// 130 MB). A layout or master that would go over is not read (its slides are drawn without
+    /// it, and the document is marked truncated). A real master is tens of KB.
+    pub max_master_xml: u64,
 }
 
 impl Default for DocOptions {
@@ -170,6 +184,9 @@ impl Default for DocOptions {
             max_pptx_read_total: 64 * MIB,
             max_deck_order_shapes: 100_000,
             max_deck_items: super::slide_draw::underlay::MAX_DECK_ITEMS,
+            max_deck_bytes: super::slide_draw::underlay::MAX_DECK_BYTES,
+            max_copy_bytes: super::slide_draw::underlay::MAX_COPY_BYTES,
+            max_master_xml: 16 * MIB,
         }
     }
 }

@@ -23,6 +23,7 @@
 pub mod chart;
 pub mod color;
 pub mod fonts;
+pub mod footprint;
 pub mod geom;
 mod geom_xml;
 pub mod metafile;
@@ -31,6 +32,7 @@ pub mod odf_geom;
 pub mod path;
 mod patterns;
 pub mod pic_fx;
+pub mod strings;
 pub mod svg;
 pub mod symbol_font;
 pub mod text;

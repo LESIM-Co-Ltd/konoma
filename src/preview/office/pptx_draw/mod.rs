@@ -31,7 +31,10 @@
 //!
 //! Items per slide ([`DocOptions::max_slide_shapes`], master and layout shapes included), items
 //! over the whole deck ([`DocOptions::max_deck_items`]: a master's list counts once, the slides'
-//! own items each), group nesting ([`MAX_GROUP_DEPTH`]), text characters per slide ([`text::MAX_TEXT_CHARS`]), gradient
+//! own items each) and the estimated bytes they hold ([`DocOptions::max_deck_bytes`]; the
+//! per-slide copies of a master's shapes that show the slide's number have a pool of their own,
+//! [`DocOptions::max_copy_bytes`], so they cannot starve the slides' content), the XML of the
+//! layouts and masters kept parsed ([`DocOptions::max_master_xml`]), group nesting ([`MAX_GROUP_DEPTH`]), text characters per slide ([`text::MAX_TEXT_CHARS`]), gradient
 //! stops ([`style::MAX_GRAD_STOPS`]), custom dash entries ([`style::MAX_CUST_DASH`]), colour
 //! transforms ([`theme::MAX_COLOR_MODS`]), adjust values of a preset, and the shapes kept of a
 //! layout or master ([`MAX_PART_SHAPES`]). Going over any of them sets
@@ -176,6 +179,8 @@ pub(super) struct Sb<'a> {
     pub first_num: i64,
     pub slide_no: usize,
     pub size: (f64, f64),
+    /// The reader's options (a chart's theme override is parsed under the same node budget).
+    pub opts: &'a DocOptions,
     pub items: usize,
     pub max_items: usize,
     pub chars: usize,
@@ -293,6 +298,7 @@ pub(super) fn build_scene(
         first_num: inp.first_num,
         slide_no: inp.number,
         size: inp.size,
+        opts: inp.opts,
         items: 0,
         max_items: inp.opts.max_slide_shapes,
         chars: 0,
@@ -310,10 +316,13 @@ pub(super) fn build_scene(
     // Back to front: the master's shapes, the layout's, the slide's. The first two are the same
     // drawing for every slide that shows them: built once per deck (under the colour map they are
     // seen through) and shared; only a shape that shows this slide's number is built again.
-    let deck = inp
-        .shared
-        .items
-        .get_or_insert_with(|| DeckItems::new(inp.opts.max_deck_items));
+    let deck = inp.shared.items.get_or_insert_with(|| {
+        DeckItems::with_bytes(
+            inp.opts.max_deck_items,
+            inp.opts.max_deck_bytes,
+            inp.opts.max_copy_bytes,
+        )
+    });
     let master_shown = inp.show_master_sp && inh.layout.show_master_sp;
     for (kind, shown, part) in [
         (PART_MASTER, master_shown, &*inh.master),
@@ -352,7 +361,11 @@ pub(super) fn build_scene(
         .max_slide_shapes
         .min(base_items.saturating_add(deck.left()));
     sb.build_nodes(inp.nodes.iter(), 0, &mut scene.items);
-    deck.spend(sb.items.saturating_sub(base_items));
+    sd::footprint::compact(&mut scene.items);
+    deck.spend(
+        sb.items.saturating_sub(base_items),
+        sd::footprint::items_bytes(&scene.items),
+    );
     scene.truncated = sb.truncated;
     scene
 }
@@ -389,7 +402,7 @@ impl Sb<'_> {
                 match seg {
                     Seg::Shared(list) => underlay.push(Arc::clone(list)),
                     Seg::Own(i) => {
-                        let built = self.build_one(nodes[*i], cap, deck);
+                        let built = self.build_one(nodes[*i], cap, deck, true);
                         if !built.items.is_empty() {
                             underlay.push(Arc::new(built.items));
                         }
@@ -402,7 +415,7 @@ impl Sb<'_> {
         let mut b = PartBuilder::default();
         let mut owned: Vec<Vec<sd::Item>> = Vec::new();
         for (i, n) in nodes.iter().enumerate() {
-            let built = self.build_one(n, cap, deck);
+            let built = self.build_one(n, cap, deck, false);
             if built.dep {
                 b.own(i);
                 owned.push(built.items);
@@ -430,17 +443,39 @@ impl Sb<'_> {
 
     /// Builds one top-level shape of a master or layout. The shape is the slide's own when it
     /// shows the slide's number; its items and characters are in the slide's counters, and it is
-    /// charged to the deck's items.
-    fn build_one(&mut self, n: &Node, cap: usize, deck: &mut DeckItems) -> Built {
+    /// charged to the deck's pool for such copies; any other shape to the deck's items.
+    /// `copy`: this is a slide's further copy of a shape already built (it can only draw what is
+    /// left of the copies' pool).
+    fn build_one(&mut self, n: &Node, cap: usize, deck: &mut DeckItems, copy: bool) -> Built {
         let was_dep = std::mem::replace(&mut self.slide_dep, false);
         let (items0, chars0) = (self.items, self.chars);
-        self.max_items = cap.min(self.items.saturating_add(deck.left()));
+        let room = if copy {
+            deck.copies_left()
+        } else {
+            deck.left()
+        };
+        self.max_items = cap.min(self.items.saturating_add(room));
         let mut out = Vec::new();
         self.build_nodes(std::iter::once(n), 0, &mut out);
+        sd::footprint::compact(&mut out);
         let dep = self.slide_dep;
         self.slide_dep = was_dep;
         let count = self.items.saturating_sub(items0);
-        deck.spend(count);
+        let mut bytes = sd::footprint::items_bytes(&out);
+        if dep || copy {
+            // (The first build of a shape that shows the slide's number could not know it would
+            // be charged to the copies' pool: if it does not fit what is left there it is not
+            // kept, and the slide says something is missing.)
+            let mut kept = count;
+            if !copy && (count > deck.copies_left() || bytes > deck.copies_bytes_left()) {
+                out.clear();
+                (kept, bytes) = (0, 0);
+                self.truncated = true;
+            }
+            deck.spend_copies(kept, bytes);
+        } else {
+            deck.spend(count, bytes);
+        }
         Built {
             items: out,
             dep,

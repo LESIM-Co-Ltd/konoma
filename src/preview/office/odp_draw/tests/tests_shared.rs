@@ -193,6 +193,48 @@ fn the_deck_budget_counts_a_master_once_and_every_slides_own_items() {
 }
 
 #[test]
+fn the_items_of_a_scene_hold_no_room_they_do_not_use() {
+    let own: String = (0..3).map(|_| rect("")).collect();
+    // (A master with text in it: its paragraphs and runs are what keeps room.)
+    let master = format!(
+        "{}{}",
+        master_rects(2),
+        r#"<draw:rect draw:style-name="gr1" svg:x="0cm" svg:y="1cm" svg:width="5cm" svg:height="1cm"><text:p>M</text:p></draw:rect>"#
+    );
+    let o = op_with_master(&pages(3, &own), &master, "");
+    for sc in scenes(&o) {
+        assert!(!sc.items.is_empty() && !sc.underlay.is_empty());
+        assert!(!crate::preview::office::slide_draw::footprint::has_slack(
+            &sc.items
+        ));
+        for u in &sc.underlay {
+            assert!(!crate::preview::office::slide_draw::footprint::has_slack(u));
+        }
+    }
+}
+
+#[test]
+fn the_page_background_items_are_charged_to_the_deck() {
+    // Each page has a background rectangle of its own (inside the margins) before anything else:
+    // it is built for the page, so it costs the deck's items like the page's shapes.
+    let layout = r#"<style:page-layout style:name="PM1"><style:page-layout-properties fo:page-width="28cm" fo:page-height="15.75cm" fo:margin-left="2cm" fo:margin-top="2cm" fo:margin-right="1cm" fo:margin-bottom="0cm"/></style:page-layout>"#;
+    let dp = r##"<style:style style:name="dp1" style:family="drawing-page"><style:drawing-page-properties draw:background-size="border" draw:fill="solid" draw:fill-color="#729fcf"/></style:style>"##;
+    let opts = DocOptions {
+        max_deck_items: 5,
+        ..DocOptions::default()
+    };
+    let own: String = (0..2).map(|_| rect("")).collect();
+    let o = op_with_master(&pages(4, &own), &master_rects(1), dp).styles_auto(layout);
+    let d = load_op(&o, &opts).unwrap();
+    // The master's one item and page 1's background and two shapes are 4 of the 5; page 2's
+    // background is the fifth, and it has no room for its shapes.
+    let kept: Vec<usize> = d.slide_scenes.iter().map(|s| count(&s.items)).collect();
+    assert_eq!(kept, vec![2, 0, 0, 0]);
+    assert!(d.truncated);
+    assert_eq!(d.slides.len(), 4);
+}
+
+#[test]
 fn the_slide_cap_still_counts_the_master() {
     let opts = DocOptions {
         max_slide_shapes: 10,

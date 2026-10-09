@@ -137,8 +137,8 @@ impl Out {
             HAlign::Right => Align::Right,
         };
         let font = FontSpec {
-            latin: st.font.clone(),
-            east_asian: st.font.clone(),
+            latin: st.font.as_deref().map(super::super::strings::intern),
+            east_asian: st.font.as_deref().map(super::super::strings::intern),
             complex: None,
             symbol: None,
         };

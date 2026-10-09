@@ -221,7 +221,7 @@ impl Sb<'_> {
             .map(|r| r.target.clone());
         let override_theme = theme_part
             .and_then(|t| (self.parts.read)(&t))
-            .map(|b| Theme::parse(&b, &DocOptions::default(), HashMap::new()));
+            .map(|b| Theme::parse(&b, self.opts, HashMap::new()));
         let col = Colors {
             theme: override_theme.as_ref().unwrap_or(self.col.theme),
             map: &chart_map,

@@ -967,6 +967,9 @@ struct Rd<'c, 'a> {
     draw: DeckDraw,
     /// The last [`PartInfo::uid`] given.
     last_uid: u64,
+    /// Bytes of XML of the layouts and masters parsed and kept so far
+    /// ([`DocOptions::max_master_xml`]).
+    parts_xml: u64,
 }
 
 fn convert(
@@ -1081,6 +1084,7 @@ fn convert(
             cur_slide: 0,
             last: None,
             order_shapes: 0,
+            parts_xml: 0,
             draw: DeckDraw {
                 default_text,
                 ..DeckDraw::default()
@@ -1107,8 +1111,9 @@ fn convert(
             })
             .collect();
         for (i, part) in parts.iter().enumerate() {
-            if rd.c.cancelled() || rd.c.heading_full || rd.order_shapes > opts.max_deck_order_shapes
-            {
+            // (Past the reading-order budget a slide is still read: it keeps its heading, its
+            // picture and its drawing, and only its text is left out -- see `write_items`.)
+            if rd.c.cancelled() || rd.c.heading_full {
                 rd.c.truncated = true;
                 break;
             }
@@ -1183,6 +1188,20 @@ impl Rd<'_, '_> {
         }
     }
 
+    /// The XML of a layout or a master, which is parsed and kept for the whole deck: within the
+    /// total such parts may take ([`DocOptions::max_master_xml`]); over it the part is not read
+    /// (`None`) and the document is marked truncated.
+    fn read_kept_part(&mut self, part: &str) -> Option<Vec<u8>> {
+        let bytes = self.read_part(part)?;
+        let total = self.parts_xml.saturating_add(bytes.len() as u64);
+        if total > self.c.opts.max_master_xml {
+            self.c.truncated = true;
+            return None;
+        }
+        self.parts_xml = total;
+        Some(bytes)
+    }
+
     /// A layout with its master, read once.
     fn inherit(&mut self, layout_part: &str) -> Rc<Inherit> {
         if let Some(i) = self.layouts.get(layout_part) {
@@ -1190,7 +1209,7 @@ impl Rd<'_, '_> {
         }
         let lrels = self.rels_of(layout_part);
         let mut layout = self
-            .read_part(layout_part)
+            .read_kept_part(layout_part)
             .and_then(|b| part_info(&b, "sldLayout", self.c.opts).ok())
             .unwrap_or_default();
         layout.rels = lrels.clone();
@@ -1205,7 +1224,7 @@ impl Rd<'_, '_> {
                 Some(m) => Rc::clone(m),
                 None => {
                     let mut info = self
-                        .read_part(&mp)
+                        .read_kept_part(&mp)
                         .and_then(|b| part_info(&b, "sldMaster", self.c.opts).ok())
                         .unwrap_or_default();
                     info.rels = self.rels_of_present(&mp);
@@ -1445,7 +1464,8 @@ impl Rd<'_, '_> {
             return;
         }
         // The reading-order pass is paid for per shape over the whole deck: past the budget the
-        // rest of the deck is left out (the slide that crossed it keeps its heading).
+        // text of the slides is left out and the document says so; every slide keeps its heading
+        // (written before this), its place in the order and its drawing.
         self.order_shapes = self.order_shapes.saturating_add(items.len());
         if self.order_shapes > self.c.opts.max_deck_order_shapes {
             self.c.truncated = true;

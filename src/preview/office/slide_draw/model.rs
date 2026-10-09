@@ -879,13 +879,14 @@ pub enum RunKind {
 }
 
 /// The typefaces of a run, per script. `None` inherits the default (the reader resolves theme
-/// fonts to names before building the model).
+/// fonts to names before building the model). The names are shared `Arc<str>`s
+/// ([`super::strings::intern`]): a deck uses a handful of them on thousands of runs.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FontSpec {
-    pub latin: Option<String>,
-    pub east_asian: Option<String>,
-    pub complex: Option<String>,
-    pub symbol: Option<String>,
+    pub latin: Option<Arc<str>>,
+    pub east_asian: Option<Arc<str>>,
+    pub complex: Option<Arc<str>>,
+    pub symbol: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -931,7 +932,8 @@ pub struct Run {
     /// Extra spacing between characters (pt).
     pub spacing_pt: f64,
     pub caps: Caps,
-    pub lang: Option<String>,
+    /// The language tag (`en-US`), shared like the font names.
+    pub lang: Option<Arc<str>>,
 }
 
 impl Default for Run {

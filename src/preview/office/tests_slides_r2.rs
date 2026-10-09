@@ -41,6 +41,13 @@ fn the_defaults_bound_the_work_of_a_deck() {
     // Parsing runs at 35-40 MB/s: this is about a second, not five.
     assert_eq!(o.max_pptx_read_total, 64 * MIB);
     assert_eq!(o.max_deck_order_shapes, 100_000);
+    // The scenes of a deck: 192 MiB of items and 64 MiB of copies of a master's number shapes
+    // (the stated bound is their sum), 16 MiB of XML of the layouts and masters kept parsed.
+    assert_eq!(o.max_deck_bytes, 192 << 20);
+    assert_eq!(o.max_copy_bytes, 64 << 20);
+    assert_eq!(o.max_deck_bytes + o.max_copy_bytes, 256 << 20);
+    assert_eq!(o.max_master_xml, 16 * MIB);
+    assert_eq!(o.max_deck_items, 100_000);
 }
 
 #[test]
@@ -142,8 +149,16 @@ fn the_reading_order_work_is_bounded_over_the_deck_and_says_so() {
         !d.markdown.contains("s5 t0"),
         "slide 6 crossed the bound: no body"
     );
-    assert!(!d.markdown.contains("s9 t0"), "the rest is not read");
-    assert!(d.slides.len() <= 7, "{:?}", d.slides.len());
+    assert!(!d.markdown.contains("s9 t0"), "the rest has no body");
+    // The slides after the bound keep their place and their heading (and their drawing): only the
+    // text is left out.
+    assert_eq!(d.slides.len(), 10);
+    assert_eq!(d.slide_scenes.len(), 10);
+    assert_eq!(d.slide_scenes[9].items.len(), 20, "the drawing is whole");
+    assert_eq!(
+        d.markdown.lines().filter(|l| l.starts_with("## ")).count(),
+        10
+    );
     px::check_headings(&d);
     // Inside the bound nothing is cut.
     let all = px::load_px(&p, &DocOptions::default()).unwrap();
@@ -187,6 +202,8 @@ fn odp_reading_order_work_is_bounded_over_the_deck_and_says_so() {
     assert!(d.truncated);
     assert!(d.markdown.contains("s4 t19"));
     assert!(!d.markdown.contains("s9 t0"));
+    assert_eq!(d.slides.len(), 10, "every slide keeps its heading");
+    assert_eq!(d.slide_scenes.len(), 10);
     px::check_headings(&d);
     let all = od::load_op(&o, &DocOptions::default()).unwrap();
     assert!(!all.truncated);

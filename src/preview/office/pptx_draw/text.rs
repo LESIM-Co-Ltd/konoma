@@ -408,7 +408,7 @@ impl Sb<'_> {
                 Some("small") => sd::Caps::Small,
                 _ => sd::Caps::None,
             },
-            lang,
+            lang: lang.as_deref().map(sd::strings::intern),
         }
     }
 
@@ -512,10 +512,10 @@ impl Sb<'_> {
             .and_then(resolve)
             .or_else(|| Some(th.minor.cs.clone()).filter(|f| !f.is_empty()));
         sd::FontSpec {
-            latin,
-            east_asian,
-            complex,
-            symbol: named("sym").map(str::to_string),
+            latin: latin.as_deref().map(sd::strings::intern),
+            east_asian: east_asian.as_deref().map(sd::strings::intern),
+            complex: complex.as_deref().map(sd::strings::intern),
+            symbol: named("sym").map(sd::strings::intern),
         }
     }
 
@@ -557,7 +557,7 @@ impl Sb<'_> {
                 .filter(|t| !t.is_empty())
                 .and_then(|t| self.resolve_typeface(t))
                 .map(|t| sd::FontSpec {
-                    latin: Some(t),
+                    latin: Some(sd::strings::intern(&t)),
                     ..sd::FontSpec::default()
                 }),
             _ => None,

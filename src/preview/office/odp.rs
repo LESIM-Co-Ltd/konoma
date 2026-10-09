@@ -670,7 +670,6 @@ impl Od<'_> {
             if count >= opts.max_slides
                 || self.cancelled()
                 || self.c.heading_full
-                || self.order_shapes > opts.max_deck_order_shapes
                 || rd.position() > opts.max_pptx_read_total
             {
                 self.c.truncated = true;
@@ -803,7 +802,8 @@ impl Od<'_> {
             return;
         }
         // The reading-order pass is paid for per shape over the whole presentation: past the
-        // budget the rest of it is left out (the slide that crossed it keeps its heading).
+        // budget the text of the slides is left out and the document says so; every slide keeps
+        // its heading (written before this), its place in the order and its drawing.
         self.order_shapes = self.order_shapes.saturating_add(items.len());
         if self.order_shapes > self.c.opts.max_deck_order_shapes {
             self.c.truncated = true;

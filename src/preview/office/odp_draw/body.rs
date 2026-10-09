@@ -717,9 +717,15 @@ impl<'a> Sb<'a> {
                 .filter(|s| !s.is_empty())
         };
         r.font = sd::FontSpec {
-            latin: fam("font-name", "font-family"),
-            east_asian: fam("font-name-asian", "font-family-asian"),
-            complex: fam("font-name-complex", "font-family-complex"),
+            latin: fam("font-name", "font-family")
+                .as_deref()
+                .map(sd::strings::intern),
+            east_asian: fam("font-name-asian", "font-family-asian")
+                .as_deref()
+                .map(sd::strings::intern),
+            complex: fam("font-name-complex", "font-family-complex")
+                .as_deref()
+                .map(sd::strings::intern),
             symbol: None,
         };
         let line = |style: &str, ty: &str| -> Option<bool> {
