@@ -38,6 +38,19 @@ const GLOW_FALLOFF: [f64; 21] = [
     0.955, 0.968, 0.978, 0.986, 0.992, 0.996, 0.999,
 ];
 
+// Work per device pixel of each filter written here, in the drawing process's own units
+// (`svg_guard`: a Gaussian blur is 12, any other primitive 3): the primitives of the filter added up.
+/// Outer shadow: blur, flood, composite.
+const UNITS_SHADOW: f64 = 12.0 + 3.0 + 3.0;
+/// Glow: blur, two transfers, flood, composite.
+const UNITS_GLOW: f64 = 12.0 + 3.0 + 3.0 + 3.0 + 3.0;
+/// Soft edge: blur, transfer, composite.
+const UNITS_SOFT_EDGE: f64 = 12.0 + 3.0 + 3.0;
+/// Inner shadow: flood, composite, blur, offset, composite, merge.
+const UNITS_INNER_SHADOW: f64 = 3.0 + 3.0 + 12.0 + 3.0 + 3.0 + 3.0;
+/// Reflection blur.
+const UNITS_BLUR: f64 = 12.0;
+
 /// Largest padding of a filter region around the shape's box, px.
 const MAX_REGION_PAD: f64 = 600.0;
 /// Largest filter radius or blur deviation written, px (the filters are costly beyond this).
@@ -69,6 +82,18 @@ impl W<'_> {
             || fx.reflection.is_some()
     }
 
+    /// How many times a shape with effects `fx` paints what it contains: once for itself and
+    /// once more for each layer drawn under it (shadow, glow, reflection). Pictures inside it are
+    /// decoded that many times by the drawing process.
+    pub(super) fn fx_layers(fx: &Effects) -> u64 {
+        if !Self::has_effects(fx) {
+            return 1;
+        }
+        1 + u64::from(fx.outer_shadow.is_some_and(|s| s.color.a > 0.0))
+            + u64::from(fx.glow.is_some_and(|g| g.color.a > 0.0 && g.rad > 0.0))
+            + u64::from(fx.reflection.is_some())
+    }
+
     /// Writes the painted shape `content` (markup in slide coordinates) with its effects. `bx` is
     /// the shape's box, `x` its transform (for the shadow direction), `acc_rot` the rotation of
     /// its ancestors.
@@ -84,6 +109,14 @@ impl W<'_> {
             self.body.push_str(content);
             return;
         }
+        // The drawing process refuses a picture whose filters add up to too much work (see
+        // `svg_guard`) and spends time in proportion to it: past the slide's allowance the shape
+        // is drawn plain.
+        if self.filter_work > MAX_FILTER_WORK {
+            self.truncated = true;
+            self.body.push_str(content);
+            return;
+        }
         let gid = self.id("fx");
         let _ = write!(self.defs, r#"<g id="{gid}">{content}</g>"#);
         let (bxx, bxy, bw, bh) = bx;
@@ -94,8 +127,14 @@ impl W<'_> {
             bh / EMU_PER_PX,
         );
         let (ax, ay) = (l + w / 2.0, t + h); // bottom centre
-        let region = |pad: f64| -> String {
+                                             // The work of a filter the way the drawing process counts it: its region (never more than
+                                             // 25 canvases) in device px, times the work per pixel of its primitives (`units`).
+        let work = Cell::new(0.0f64);
+        let k2 = self.raster_scale * self.raster_scale;
+        let layer_max = 25.0 * self.slide_px.0 * self.slide_px.1;
+        let region = |pad: f64, units: f64| -> String {
             let pad = pad.clamp(0.0, MAX_REGION_PAD) + 2.0;
+            work.set(work.get() + ((w + 2.0 * pad) * (h + 2.0 * pad)).min(layer_max) * k2 * units);
             format!(
                 r#"filterUnits="userSpaceOnUse" x="{}" y="{}" width="{}" height="{}" color-interpolation-filters="sRGB""#,
                 num(l - pad),
@@ -140,7 +179,7 @@ impl W<'_> {
             let _ = write!(
                 self.defs,
                 r#"<filter id="{fid}" {}><feGaussianBlur in="SourceAlpha" stdDeviation="{}" result="b"/><feFlood flood-color="{}" flood-opacity="{}"/><feComposite in2="b" operator="in"/></filter>"#,
-                region(blur * 3.0 + dist.abs() + h * sy.abs()),
+                region(blur * 3.0 + dist.abs() + h * sy.abs(), UNITS_SHADOW),
                 num(sigma),
                 hex(sh.color),
                 num(alpha_of(sh.color)),
@@ -165,7 +204,7 @@ impl W<'_> {
             let _ = write!(
                 self.defs,
                 r#"<filter id="{fid}" {}><feGaussianBlur in="SourceAlpha" stdDeviation="{}" result="b"/><feComponentTransfer in="b" result="s"><feFuncA type="linear" slope="5"/></feComponentTransfer><feComponentTransfer in="s" result="d"><feFuncA type="table" tableValues="{}"/></feComponentTransfer><feFlood flood-color="{}" flood-opacity="{}"/><feComposite in2="d" operator="in"/></filter>"#,
-                region(sigma * 4.0),
+                region(sigma * 4.0, UNITS_GLOW),
                 num(sigma),
                 table.join(" "),
                 hex(g.color),
@@ -182,7 +221,7 @@ impl W<'_> {
             let _ = write!(
                 self.defs,
                 r#"<filter id="{fid}" {}><feGaussianBlur in="SourceAlpha" stdDeviation="{}" result="b"/><feComponentTransfer in="b" result="e"><feFuncA type="linear" slope="2" intercept="-1"/></feComponentTransfer><feComposite in="SourceGraphic" in2="e" operator="in"/></filter>"#,
-                region(r),
+                region(r, UNITS_SOFT_EDGE),
                 num((r * 2.0 / 3.0).min(MAX_FX_PX)),
             );
             layer = format!(r##"<use href="#{gid}" filter="url(#{fid})"/>"##);
@@ -195,7 +234,7 @@ impl W<'_> {
             let _ = write!(
                 self.defs,
                 r#"<filter id="{fid}" {}><feFlood flood-color="{}" flood-opacity="{}" result="c"/><feComposite in="c" in2="SourceAlpha" operator="out" result="i"/><feGaussianBlur in="i" stdDeviation="{}" result="b"/><feOffset in="b" dx="{}" dy="{}" result="o"/><feComposite in="o" in2="SourceAlpha" operator="in" result="s"/><feMerge><feMergeNode in="SourceGraphic"/><feMergeNode in="s"/></feMerge></filter>"#,
-                region(blur * 2.0 + dist.abs()),
+                region(blur * 2.0 + dist.abs(), UNITS_INNER_SHADOW),
                 hex(sh.color),
                 num(alpha_of(sh.color)),
                 num((blur / 2.0).min(MAX_FX_PX)),
@@ -209,6 +248,7 @@ impl W<'_> {
         } else {
             let _ = write!(self.body, r##"<g filter="url(#{inner})">{layer}</g>"##);
         }
+        self.filter_work += work.get();
     }
 
     /// The mirrored, faded copy of the shape.
@@ -218,7 +258,7 @@ impl W<'_> {
         r: &Reflection,
         (l, t, w, h): (f64, f64, f64, f64),
         (ax, ay): (f64, f64),
-        region: &dyn Fn(f64) -> String,
+        region: &dyn Fn(f64, f64) -> String,
     ) {
         let dist = px_clamped(r.dist);
         let dir = fnum(r.dir_deg).to_radians();
@@ -272,7 +312,7 @@ impl W<'_> {
             let _ = write!(
                 self.defs,
                 r#"<filter id="{fid}" {}><feGaussianBlur stdDeviation="{}"/></filter>"#,
-                region(blur * 3.0 + h * sy.abs() + dist.abs()),
+                region(blur * 3.0 + h * sy.abs() + dist.abs(), UNITS_BLUR),
                 num((blur / 2.0).min(MAX_FX_PX)),
             );
             format!(r##" filter="url(#{fid})""##)

@@ -180,8 +180,42 @@ pub(super) fn decode(bmi: &[u8], bits: &[u8], budget: &mut u64, opts: Opts) -> O
     decode_with(bmi, bits, budget, opts, &[])
 }
 
+/// What one decode attempt costs the caller's pixel allowance whether or not it succeeds. A
+/// metafile can ask for a bitmap a hundred thousand times; without a price on the failures, a
+/// file whose every bitmap is refused would cost unbounded work for a budget that never moves.
+/// (A success is charged its pixels instead.) 4096 pixels is a 64 x 64 bitmap: the allowance
+/// ([`super::gdi::PIXEL_BUDGET`]) then pays for at most 16 384 failed attempts.
+pub(super) const ATTEMPT_PIXELS: u64 = 4096;
+
 /// [`decode`], with the logical palette to use when the DIB carries no colour table.
+///
+/// Every call is charged: [`ATTEMPT_PIXELS`] when it fails, the bitmap's pixels when it succeeds
+/// (a call with less than [`ATTEMPT_PIXELS`] left is refused at once).
 pub(super) fn decode_with(
+    bmi: &[u8],
+    bits: &[u8],
+    budget: &mut u64,
+    opts: Opts,
+    fallback: &[[u8; 3]],
+) -> Option<Bitmap> {
+    let start = *budget;
+    if start < ATTEMPT_PIXELS {
+        return None;
+    }
+    let r = decode_checked(bmi, bits, budget, opts, fallback);
+    if r.is_none() {
+        *budget = start - ATTEMPT_PIXELS;
+    }
+    r
+}
+
+/// The most pixels a run-length bitmap may hold per byte of its data. A run is two bytes for up to
+/// 255 pixels, so a file honest about its size stays far below this; a header that promises
+/// millions of pixels over a few bytes is refused before the bitmap is allocated. (Pixels a
+/// delta jump skips stay transparent, so a very sparse picture over few bytes is refused too.)
+const MAX_RLE_PIXELS_PER_BYTE: u64 = 128;
+
+fn decode_checked(
     bmi: &[u8],
     bits: &[u8],
     budget: &mut u64,
@@ -200,6 +234,20 @@ pub(super) fn decode_with(
         return encoded(&hd, bits, budget);
     }
     let (w, h) = (hd.w as usize, hd.h as usize);
+    // The data must be there before anything proportional to the header's claim is allocated.
+    match (hd.compression, hd.bpp) {
+        (BI_RLE8, 8) | (BI_RLE4, 4) => {
+            if pixels > (bits.len() as u64).saturating_mul(MAX_RLE_PIXELS_PER_BYTE) {
+                return None;
+            }
+        }
+        (BI_RGB | BI_BITFIELDS | BI_ALPHABITFIELDS, 1 | 4 | 8 | 16 | 24 | 32) => {
+            if uncompressed_len(&hd)? > bits.len() {
+                return None;
+            }
+        }
+        _ => return None,
+    }
     let (entries, _) = layout(&hd);
     let table_off = hd.size
         + if hd.size == 40 && hd.compression == BI_BITFIELDS {

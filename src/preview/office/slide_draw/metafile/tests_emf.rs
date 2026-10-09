@@ -1945,13 +1945,82 @@ fn dib_refuses_nonsense() {
 
 #[test]
 fn dib_budget_is_charged_and_enforced() {
+    use super::dib::ATTEMPT_PIXELS;
     let b = bmi(10, 10, 24, 0, &[], &[]);
     let bits = vec![0u8; 10 * 32];
-    let mut budget = 150;
+    // A success costs its pixels.
+    let mut budget = ATTEMPT_PIXELS + 150;
     assert!(super::dib::decode(&b, &bits, &mut budget, Default::default()).is_some());
-    assert_eq!(budget, 50);
+    assert_eq!(budget, ATTEMPT_PIXELS + 50);
+    // Another success, then too little is left to make an attempt at all.
+    let mut budget = 50 + ATTEMPT_PIXELS;
+    assert!(super::dib::decode(&b, &bits, &mut budget, Default::default()).is_some());
+    assert_eq!(budget, ATTEMPT_PIXELS - 50);
     assert!(super::dib::decode(&b, &bits, &mut budget, Default::default()).is_none());
-    assert_eq!(budget, 50, "a refused bitmap costs nothing");
+    assert_eq!(
+        budget,
+        ATTEMPT_PIXELS - 50,
+        "below the price of an attempt: refused, free"
+    );
+    // A bitmap bigger than the allowance is refused and pays for the attempt.
+    let big = bmi(100, 100, 24, 0, &[], &[]);
+    let bits = vec![0u8; 100 * 300];
+    let mut budget = ATTEMPT_PIXELS + 99;
+    assert!(super::dib::decode(&big, &bits, &mut budget, Default::default()).is_none());
+    assert_eq!(budget, 99, "a refused bitmap pays for the attempt");
+}
+
+#[test]
+fn failed_attempts_drain_the_budget_and_cost_no_allocation() {
+    use super::dib::ATTEMPT_PIXELS;
+    // A header that promises 16 Mpx over 64 bytes of data: refused before the 64 MiB RGBA buffer
+    // exists, and each refusal is charged, so the allowance ends the storm.
+    let b = bmi(4096, 4096, 24, 0, &[], &[]);
+    let bits = [0u8; 64];
+    let mut budget = super::gdi::PIXEL_BUDGET;
+    let mut charged = 0u64;
+    let t = std::time::Instant::now();
+    loop {
+        let before = budget;
+        assert!(super::dib::decode(&b, &bits, &mut budget, Default::default()).is_none());
+        if budget == before {
+            break;
+        }
+        charged += 1;
+        assert!(charged <= 100_000, "the storm never ended");
+    }
+    assert_eq!(charged, super::gdi::PIXEL_BUDGET / ATTEMPT_PIXELS);
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        t.elapsed()
+    );
+    // the same for run-length data and for 32-bit data
+    for (bpp, comp) in [(8, 1), (4, 2), (32, 0), (1, 0)] {
+        let b = bmi(4096, 4096, bpp, comp, &[], &[]);
+        let mut budget = ATTEMPT_PIXELS * 3;
+        for _ in 0..3 {
+            assert!(super::dib::decode(&b, &bits, &mut budget, Default::default()).is_none());
+        }
+        assert_eq!(budget, 0, "bpp {bpp} comp {comp}");
+    }
+}
+
+#[test]
+fn run_length_data_must_be_able_to_fill_the_bitmap() {
+    // 32 x 32 pixels over 2 bytes cannot be real run-length data (a run is 255 pixels at most per
+    // two bytes), so it is refused without allocating; honest data of the same size decodes.
+    let b = bmi(32, 32, 8, 1, &[], &[]);
+    let mut budget = 1 << 20;
+    assert!(super::dib::decode(&b, &[0, 0], &mut budget, Default::default()).is_none());
+    // 16 runs of 64 pixels, each followed by an end-of-line marker
+    let mut honest = Vec::new();
+    for _ in 0..32 {
+        honest.extend_from_slice(&[32, 7, 0, 0]);
+    }
+    honest.extend_from_slice(&[0, 1]);
+    let mut budget = 1 << 20;
+    assert!(super::dib::decode(&b, &honest, &mut budget, Default::default()).is_some());
 }
 
 #[test]

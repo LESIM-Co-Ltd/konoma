@@ -265,6 +265,48 @@ fn deep_nesting_is_refused_before_any_process_starts() {
     no_children_left();
 }
 
+#[test]
+fn a_request_over_what_the_child_reads_is_too_large_not_a_crash() {
+    let _g = serial();
+    // The child ends instead of answering when a request is over its limit, which would be
+    // reported as a crash: the supervisor says what it is, without starting a process.
+    let big = vec![b' '; super::svg_guard::MAX_SVG_BYTES + 1];
+    let t = Instant::now();
+    let r = run_with(
+        &bin(),
+        limits(),
+        &Request {
+            data: &big,
+            base: None,
+            max_px: 800,
+        },
+        &never,
+    );
+    assert_eq!(r.err(), Some(RunError::Failed(SvgFail::TooLarge)));
+    assert!(
+        t.elapsed() < Duration::from_millis(200),
+        "{:?}",
+        t.elapsed()
+    );
+    no_children_left();
+    // a gzip stream gets the request limit (its size after decompression is what the SVG limit is
+    // about) and a stream over that is refused too
+    let mut gz = vec![0x1f, 0x8b];
+    gz.resize(super::svg_guard::MAX_SVG_BYTES + (1 << 20) + 1, 0);
+    let r = run_with(
+        &bin(),
+        limits(),
+        &Request {
+            data: &gz,
+            base: None,
+            max_px: 800,
+        },
+        &never,
+    );
+    assert_eq!(r.err(), Some(RunError::Failed(SvgFail::TooLarge)));
+    no_children_left();
+}
+
 // ---- stopping, crashing, cancelling ------------------------------------------------------------
 
 /// What a child writes when it is ready for its first request, in `printf` syntax.

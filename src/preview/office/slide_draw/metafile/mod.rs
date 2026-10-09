@@ -36,6 +36,8 @@ mod wmf;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_cancel;
+#[cfg(test)]
 mod tests_emf;
 #[cfg(test)]
 mod tests_hostile;
@@ -58,15 +60,34 @@ pub struct MetaSvg {
 
 /// Converts an EMF or WMF file; `None` when `bytes` is neither, is empty of any usable header, or
 /// is an EMF+-only file.
+#[cfg(test)]
 pub fn to_svg(bytes: &[u8]) -> Option<MetaSvg> {
+    to_svg_cancellable(bytes, &|| false)
+}
+
+/// [`to_svg`] that polls `cancel` every [`CANCEL_EVERY`] records and gives up (`None`) once it
+/// says yes.
+pub fn to_svg_cancellable(bytes: &[u8], cancel: &dyn Fn() -> bool) -> Option<MetaSvg> {
+    #[cfg(test)]
+    CONVERSIONS.with(|c| c.set(c.get() + 1));
     if emf::is_emf(bytes) {
-        emf::convert(bytes)
+        emf::convert(bytes, cancel)
     } else if wmf::is_wmf(bytes) {
-        wmf::convert(bytes)
+        wmf::convert(bytes, cancel)
     } else {
         None
     }
 }
+
+#[cfg(test)]
+thread_local! {
+    /// How many conversions this thread has started (the tests count them to see that a metafile
+    /// used many times in one render is converted once).
+    pub(super) static CONVERSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Records between two looks at the cancellation callback.
+pub(super) const CANCEL_EVERY: usize = 1024;
 
 /// Most records one metafile may hold before the rest is ignored.
 pub(super) const MAX_RECORDS: usize = 500_000;

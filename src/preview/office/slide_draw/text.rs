@@ -42,9 +42,9 @@
 //! * `lnSpcReduction` lowers percentage line spacing and percentage paragraph spacing; point
 //!   spacings are left alone.
 //! * Multiple columns are filled top to bottom with no gutter and always top-anchored.
-//! * `normAutofit` with no stored scales (or 100 % / 0 %) on text that overflows shrinks like
-//!   PowerPoint's recompute: see [`autofit_step`] (font scale in 7.5 % steps, line spacing
-//!   reduced 10 % then 20 %). Stored scales are used as they are.
+//! * `normAutofit` uses the stored `fontScale` / `lnSpcReduction` and nothing else. A file without
+//!   them (or with 100 % / 0 %) is drawn at full size even when the text overflows: PowerPoint
+//!   recomputes the scales only while the text is being edited, not when a file is opened.
 //! * `spAutoFit` (shape grows) does nothing: the text is laid out in the box it has.
 //! * East-Asian vertical text keeps punctuation where it is (no vertical glyph forms) and
 //!   rotates Latin words a quarter turn clockwise.
@@ -800,65 +800,10 @@ pub fn layout(body: &TextBody, width_px: f64, height_px: f64) -> Layout {
         ),
         _ => (1.0, 0.0),
     };
-    let mut out = layout_at(body, frame, fw, fh, font_scale, red);
-    if matches!(body.autofit, AutoFit::Normal { .. })
-        && font_scale == 1.0
-        && red == 0.0
-        && overflows(body, &out, fw, fh)
-    {
-        out = autofit_search(body, frame, fw, fh);
-    }
-    out
-}
-
-/// PowerPoint's autofit steps when it recomputes (`normAutofit` with no stored scales and text
-/// that does not fit): step `k` (1-based) scales the fonts to `1 - 0.075 k` of their size
-/// (down to [`AUTOFIT_MIN_SCALE`]) and takes `lnSpcReduction` 10 % at the first step and 20 % from
-/// the second on. These are the pairs PowerPoint writes: 92.5 % / 10 %, 85 % / 20 %, 77.5 % /
-/// 20 %, 70 % / 20 %, ... 25 % / 20 %.
-pub const AUTOFIT_STEPS: usize = 10;
-/// The smallest scale the autofit steps reach.
-pub const AUTOFIT_MIN_SCALE: f64 = 0.25;
-
-/// The `(font scale, line spacing reduction)` of autofit step `k` (`1..=`[`AUTOFIT_STEPS`]).
-pub fn autofit_step(k: usize) -> (f64, f64) {
-    let scale = (1.0 - 0.075 * k as f64).max(AUTOFIT_MIN_SCALE);
-    (scale, if k <= 1 { 0.1 } else { 0.2 })
-}
-
-/// Whether the laid-out text is larger than the frame.
-fn overflows(body: &TextBody, lay: &Layout, fw: f64, fh: f64) -> bool {
-    if body.vert == Vert::EaVert {
-        lay.content_w > fw + 0.5
-    } else {
-        lay.content_h > fh + 0.5
-    }
-}
-
-/// The first autofit step whose layout fits (binary search: a smaller scale never needs more
-/// room); the smallest step when none does.
-fn autofit_search(body: &TextBody, frame: Frame, fw: f64, fh: f64) -> Layout {
-    let at = |k: usize| {
-        let (s, r) = autofit_step(k);
-        layout_at(body, frame, fw, fh, s, r)
-    };
-    let last = at(AUTOFIT_STEPS);
-    if overflows(body, &last, fw, fh) {
-        return last;
-    }
-    let (mut lo, mut hi) = (1usize, AUTOFIT_STEPS); // hi fits
-    let mut best = last;
-    while lo < hi {
-        let mid = (lo + hi) / 2;
-        let l = at(mid);
-        if overflows(body, &l, fw, fh) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-            best = l;
-        }
-    }
-    best
+    // `normAutofit` is drawn with the scales the file stores and no others: PowerPoint does not
+    // recompute them when it opens a file (it does so while the text is edited), so a file
+    // without stored scales is shown at full size, overflow or not.
+    layout_at(body, frame, fw, fh, font_scale, red)
 }
 
 fn layout_at(body: &TextBody, frame: Frame, fw: f64, fh: f64, font_scale: f64, red: f64) -> Layout {

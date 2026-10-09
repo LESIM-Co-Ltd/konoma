@@ -63,6 +63,18 @@ fn arc_cubics(
     }
 }
 
+/// A sweep angle (degrees) with every whole turn but the first dropped: `+-(360 + r)` for a sweep
+/// of more than a turn, where `r` is what remains after the whole turns, `+-360` for an exact
+/// multiple. The end point is unchanged (turns do not move it), the cubics are at most 8.
+fn clamp_sweep(sw: f64) -> f64 {
+    let a = sw.abs();
+    if a <= 360.0 {
+        return sw;
+    }
+    let rem = a % 360.0;
+    sw.signum() * (360.0 + rem)
+}
+
 /// The parametric angle of the ellipse point seen at visual angle `deg` (DrawingML's angles are
 /// visual: 45 degrees points at the corner of the bounding box of a stretched ellipse).
 fn param_angle(deg: f64, wr: f64, hr: f64) -> f64 {
@@ -70,8 +82,16 @@ fn param_angle(deg: f64, wr: f64, hr: f64) -> f64 {
     (wr * a.sin()).atan2(hr * a.cos())
 }
 
-/// Resolves one custom-geometry path inside the box `x`, `y`, `w`, `h`.
+/// Resolves one custom-geometry path inside the box `x`, `y`, `w`, `h` (at most
+/// [`MAX_PATH_CMDS`] segments).
 pub fn resolve_path(p: &GeomPath, x: f64, y: f64, w: f64, h: f64) -> Resolved {
+    resolve_path_capped(p, x, y, w, h, MAX_PATH_CMDS)
+}
+
+/// [`resolve_path`] that stops (and says so) once `cap` *segments* exist. A command is not a
+/// segment: an `arcTo` is up to eight, so counting commands alone would let a file of arcs
+/// expand to a multiple of the limit.
+pub fn resolve_path_capped(p: &GeomPath, x: f64, y: f64, w: f64, h: f64, cap: usize) -> Resolved {
     let sx = if p.w > 0.0 && p.w.is_finite() {
         w / p.w
     } else {
@@ -87,7 +107,7 @@ pub fn resolve_path(p: &GeomPath, x: f64, y: f64, w: f64, h: f64) -> Resolved {
     let mut cur = Pt::new(0.0, 0.0); // current point in path space
     let mut start = cur;
     for (i, cmd) in p.cmds.iter().enumerate() {
-        if i >= MAX_PATH_CMDS {
+        if i >= cap || out.segs.len() >= cap {
             out.truncated = true;
             break;
         }
@@ -118,7 +138,11 @@ pub fn resolve_path(p: &GeomPath, x: f64, y: f64, w: f64, h: f64) -> Resolved {
                 sw_deg,
             } => {
                 let (wr, hr) = (finite(wr).abs(), finite(hr).abs());
-                let (st, sw) = (finite(st_deg), finite(sw_deg).clamp(-3600.0, 3600.0));
+                // A sweep of more than one turn draws the circle again over itself and ends where
+                // the remainder after the whole turns ends (PowerPoint and LibreOffice both paint
+                // the same ellipse): one turn is kept so a stroke still goes round once, the rest
+                // would only multiply the markup (a hostile file asks for 10 turns a command).
+                let (st, sw) = (finite(st_deg), clamp_sweep(finite(sw_deg)));
                 if wr < 1e-9 || hr < 1e-9 || sw == 0.0 {
                     continue;
                 }
@@ -134,7 +158,7 @@ pub fn resolve_path(p: &GeomPath, x: f64, y: f64, w: f64, h: f64) -> Resolved {
                         dt = 0.0;
                     }
                 }
-                // whole turns
+                // whole turns (`clamp_sweep` leaves at most one)
                 let turns = (sw.abs() / 360.0).floor();
                 if turns >= 1.0 {
                     dt += turns * tau * sw.signum();
@@ -145,7 +169,7 @@ pub fn resolve_path(p: &GeomPath, x: f64, y: f64, w: f64, h: f64) -> Resolved {
                 }
                 // split long sweeps in turns of at most 180 degrees so the 90-degree pieces stay
                 // a bounded count
-                let pieces = ((dt.abs() / std::f64::consts::PI).ceil() as usize).clamp(1, 20);
+                let pieces = ((dt.abs() / std::f64::consts::PI).ceil() as usize).clamp(1, 4);
                 let step = dt / pieces as f64;
                 for j in 0..pieces {
                     arc_cubics(&mut out.segs, c, wr, hr, t1 + step * j as f64, step, &map);
@@ -233,15 +257,17 @@ pub fn resolve_geometry(
             false,
         ),
         Geometry::Paths(ps) => {
+            // One allowance for all the paths of the shape: a shape of 256 paths of 200 000
+            // segments each is 50 million segments, not 200 000.
             let mut trunc = false;
-            let v = ps
-                .iter()
-                .map(|p| {
-                    let r = resolve_path(p, x, y, w, h);
-                    trunc |= r.truncated;
-                    (r, p.fill_mode, p.stroke)
-                })
-                .collect();
+            let mut left = MAX_PATH_CMDS;
+            let mut v = Vec::with_capacity(ps.len().min(256));
+            for p in ps {
+                let r = resolve_path_capped(p, x, y, w, h, left);
+                trunc |= r.truncated;
+                left = left.saturating_sub(r.segs.len());
+                v.push((r, p.fill_mode, p.stroke));
+            }
             (v, trunc)
         }
     }
@@ -407,6 +433,69 @@ mod tests {
         // ... and the same from the left with +90 goes through the top
         let r = arc(50.0, 50.0, 180.0, 90.0, p(0.0, 50.0));
         near(end_of(&r), p(50.0, 0.0));
+    }
+
+    #[test]
+    fn a_sweep_keeps_at_most_one_whole_turn() {
+        assert_eq!(clamp_sweep(100.0), 100.0);
+        assert_eq!(clamp_sweep(-100.0), -100.0);
+        assert_eq!(clamp_sweep(360.0), 360.0);
+        assert_eq!(clamp_sweep(-360.0), -360.0);
+        assert_eq!(clamp_sweep(450.0), 450.0);
+        assert_eq!(clamp_sweep(720.0), 360.0);
+        assert_eq!(clamp_sweep(-720.0), -360.0);
+        assert_eq!(clamp_sweep(3600.0), 360.0);
+        assert_eq!(clamp_sweep(3600.0 + 90.0), 450.0);
+        assert_eq!(clamp_sweep(-(1080.0 + 45.0)), -405.0);
+        assert_eq!(clamp_sweep(0.0), 0.0);
+    }
+
+    #[test]
+    fn many_turns_cost_a_bounded_number_of_cubics_and_end_where_the_remainder_ends() {
+        for sw in [361.0, 450.0, 720.0, 725.0, 3600.0, 3605.0, -725.0, -3600.0] {
+            let r = arc(50.0, 50.0, 0.0, sw, p(100.0, 50.0));
+            assert!(r.segs.len() <= 1 + 8, "{sw}: {} segments", r.segs.len());
+            // the same end point as the sweep with every whole turn removed
+            let rem = sw % 360.0;
+            let plain = arc(50.0, 50.0, 0.0, rem, p(100.0, 50.0));
+            near(
+                end_of(&r),
+                if rem == 0.0 {
+                    p(100.0, 50.0)
+                } else {
+                    end_of(&plain)
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn the_segment_cap_counts_segments_and_not_commands() {
+        let cmds: Vec<PathCmd> = std::iter::once(PathCmd::MoveTo(p(100.0, 50.0)))
+            .chain((0..1000).map(|_| PathCmd::ArcTo {
+                wr: 50.0,
+                hr: 50.0,
+                st_deg: 0.0,
+                sw_deg: 360.0,
+            }))
+            .collect();
+        let gp = GeomPath {
+            w: 100.0,
+            h: 100.0,
+            cmds,
+            ..Default::default()
+        };
+        // 1000 commands but 4000 segments: a cap of 100 stops after 25 arcs (plus the last one)
+        let r = resolve_path_capped(&gp, 0.0, 0.0, 100.0, 100.0, 100);
+        assert!(r.truncated);
+        assert!(
+            r.segs.len() >= 100 && r.segs.len() <= 100 + 8,
+            "{}",
+            r.segs.len()
+        );
+        let r = resolve_path_capped(&gp, 0.0, 0.0, 100.0, 100.0, 1_000_000);
+        assert!(!r.truncated);
+        assert_eq!(r.segs.len(), 1 + 4 * 1000);
     }
 
     #[test]

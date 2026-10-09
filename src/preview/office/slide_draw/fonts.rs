@@ -217,45 +217,77 @@ pub fn css_family(stack: &[String]) -> String {
 }
 
 type Key = (String, bool, bool);
+/// A face of one particular database (ids are only unique within a database; the fontless
+/// database used for drawing SVG without text has ids of its own).
+type FaceKey = (usize, fontdb::ID);
 
-fn cache() -> &'static Mutex<HashMap<Key, Option<Arc<TextMetrics>>>> {
-    static C: OnceLock<Mutex<HashMap<Key, Option<Arc<TextMetrics>>>>> = OnceLock::new();
-    C.get_or_init(|| Mutex::new(HashMap::new()))
+/// What a family stack resolves to, remembered at two levels. Thousands of distinct family names
+/// resolve to a handful of faces, and opening a face (to read its metrics and kerning) is the
+/// expensive step; the lookup of a name is cheap, so the name table may be emptied when full
+/// without costing much, while the faces are kept (there are only as many as the machine has).
+#[derive(Default)]
+struct FontCaches {
+    /// (css family, bold, italic) -> the face the stack resolves to (`None`: no face at all).
+    by_family: HashMap<Key, Option<fontdb::ID>>,
+    /// face -> its measuring state, filled once outside the lock.
+    by_face: HashMap<FaceKey, Arc<OnceLock<Option<Arc<TextMetrics>>>>>,
+}
+
+/// Most distinct family strings remembered; stacks come from the file.
+const MAX_FAMILY_ENTRIES: usize = 4096;
+
+fn cache() -> &'static Mutex<FontCaches> {
+    static C: OnceLock<Mutex<FontCaches>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(FontCaches::default()))
 }
 
 /// The measuring face for a stack, bold and italic flags (cached per process).
+///
+/// The lock is held only to read and write the tables, never while a face is looked up or opened:
+/// a document with thousands of typefaces does not make every other measurement wait.
 pub fn metrics_for(stack: &[String], bold: bool, italic: bool) -> Option<Arc<TextMetrics>> {
+    let db = shared_fontdb();
+    let db_id = Arc::as_ptr(&db) as usize;
     let key = (css_family(stack), bold, italic);
-    let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(m) = c.get(&key) {
-        return m.clone();
-    }
-    // Bound the cache: stacks come from the file.
-    if c.len() > 512 {
-        c.clear();
-    }
-    let families: Vec<fontdb::Family> = stack
-        .iter()
-        .map(|s| match s.to_ascii_lowercase().as_str() {
-            "serif" => fontdb::Family::Serif,
-            "sans-serif" => fontdb::Family::SansSerif,
-            "monospace" => fontdb::Family::Monospace,
-            "cursive" => fontdb::Family::Cursive,
-            "fantasy" => fontdb::Family::Fantasy,
-            _ => fontdb::Family::Name(s.as_str()),
-        })
-        .chain(std::iter::once(fontdb::Family::Serif))
-        .collect();
-    let weight = if bold {
-        fontdb::Weight::BOLD
-    } else {
-        fontdb::Weight::NORMAL
+    let known = {
+        let c = cache().lock().unwrap_or_else(|e| e.into_inner());
+        c.by_family.get(&key).copied()
     };
-    let m = TextMetrics::resolve_styled(shared_fontdb(), &families, weight, italic)
-        .ok()
-        .map(Arc::new);
-    c.insert(key, m.clone());
-    m
+    let face = match known {
+        Some(f) => f?,
+        None => {
+            let families: Vec<fontdb::Family> = stack
+                .iter()
+                .map(|s| match s.to_ascii_lowercase().as_str() {
+                    "serif" => fontdb::Family::Serif,
+                    "sans-serif" => fontdb::Family::SansSerif,
+                    "monospace" => fontdb::Family::Monospace,
+                    "cursive" => fontdb::Family::Cursive,
+                    "fantasy" => fontdb::Family::Fantasy,
+                    _ => fontdb::Family::Name(s.as_str()),
+                })
+                .chain(std::iter::once(fontdb::Family::Serif))
+                .collect();
+            let weight = if bold {
+                fontdb::Weight::BOLD
+            } else {
+                fontdb::Weight::NORMAL
+            };
+            let face = TextMetrics::query_face(&db, &families, weight, italic);
+            let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
+            if c.by_family.len() >= MAX_FAMILY_ENTRIES {
+                c.by_family.clear();
+            }
+            c.by_family.insert(key, face);
+            face?
+        }
+    };
+    let cell = {
+        let mut c = cache().lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(c.by_face.entry((db_id, face)).or_default())
+    };
+    cell.get_or_init(|| TextMetrics::resolve_face(db, face).ok().map(Arc::new))
+        .clone()
 }
 
 /// Width in px of `text` (one line, no wrapping) at `size_px`.
@@ -286,6 +318,76 @@ pub fn measure(stack: &[String], bold: bool, italic: bool, text: &str, size_px: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn different_names_for_the_same_face_share_one_measuring_state() {
+        let one = metrics_for(&["Zzz Typeface One".to_string()], false, false);
+        let two = metrics_for(&["Zzz Typeface Two".to_string()], false, false);
+        match (one, two) {
+            (Some(a), Some(b)) => assert!(Arc::ptr_eq(&a, &b), "unknown names fall to one face"),
+            (None, None) => {}
+            _ => panic!("the same fallback must give the same answer"),
+        }
+        // bold is another face (when the machine has one); the same stack gives the same state
+        let again = metrics_for(&["Zzz Typeface One".to_string()], false, false);
+        let first = metrics_for(&["Zzz Typeface One".to_string()], false, false);
+        assert_eq!(again.is_some(), first.is_some());
+        if let (Some(a), Some(b)) = (again, first) {
+            assert!(Arc::ptr_eq(&a, &b));
+        }
+    }
+
+    #[test]
+    fn emptying_the_name_table_keeps_the_faces() {
+        let stack = stack_for(Some("Calibri"), Script::Latin);
+        let before = metrics_for(&stack, false, false);
+        for i in 0..MAX_FAMILY_ENTRIES + 20 {
+            let _ = metrics_for(&[format!("Distinct Typeface {i}")], false, false);
+        }
+        let after = metrics_for(&stack, false, false);
+        match (before, after) {
+            (Some(a), Some(b)) => assert!(Arc::ptr_eq(&a, &b), "the state survives the table"),
+            (None, None) => {}
+            _ => panic!("the answer changed"),
+        }
+        let table = cache().lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            table.by_family.len() <= MAX_FAMILY_ENTRIES,
+            "{}",
+            table.by_family.len()
+        );
+        // as many measuring states as there are faces in play, not as many as there were names
+        assert!(table.by_face.len() < 50, "{}", table.by_face.len());
+    }
+
+    #[test]
+    fn a_thousand_distinct_typefaces_are_resolved_without_holding_the_lock() {
+        // Another thread measures while this one resolves new names: neither waits for the other
+        // for longer than a table access (a tight loop here would starve it if the lock were held
+        // across the lookup of every name).
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|s| {
+            let h = s.spawn(|| {
+                let mut n = 0u32;
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = measure(
+                        &stack_for(Some("Arial"), Script::Latin),
+                        false,
+                        false,
+                        "Hello",
+                        16.0,
+                    );
+                    n += 1;
+                }
+                n
+            });
+            for i in 0..1000 {
+                let _ = metrics_for(&[format!("Another Typeface {i}")], i % 2 == 0, false);
+            }
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+            assert!(h.join().unwrap() > 0, "the other thread made progress");
+        });
+    }
 
     #[test]
     fn script_classes() {

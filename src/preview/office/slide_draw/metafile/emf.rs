@@ -81,7 +81,7 @@ struct Player {
     truncated: bool,
 }
 
-pub(super) fn convert(b: &[u8]) -> Option<MetaSvg> {
+pub(super) fn convert(b: &[u8], cancel: &dyn Fn() -> bool) -> Option<MetaSvg> {
     let bounds = rect(b, 8)?;
     let frame = rect(b, 24)?;
     let dev = (i32le(b, 72)? as f64, i32le(b, 76)? as f64);
@@ -118,6 +118,9 @@ pub(super) fn convert(b: &[u8]) -> Option<MetaSvg> {
         if count > MAX_RECORDS || p.g.stopped() {
             p.truncated = true;
             break;
+        }
+        if count.is_multiple_of(super::CANCEL_EVERY) && cancel() {
+            return None;
         }
         let r = &b[off..off + size];
         if ty == 14 {
@@ -166,10 +169,8 @@ impl Player {
     fn bitmap_fill(&mut self, r: &[u8], parts: Option<(&[u8], &[u8])>) -> Option<[u8; 3]> {
         let _ = r;
         let (bmi, bits) = parts?;
-        let mut budget = self.g.pixels_left;
         let pal = self.g.dc.palette.clone();
-        let bmp = dib::decode_with(bmi, bits, &mut budget, Opts::default(), &pal)?;
-        self.g.pixels_left = budget;
+        let bmp = dib::decode_with(bmi, bits, &mut self.g.pixels_left, Opts::default(), &pal)?;
         bmp.average()
     }
 
@@ -603,12 +604,11 @@ impl Player {
         opacity: f64,
         dib_origin: bool,
     ) {
-        let mut budget = self.g.pixels_left;
         let pal = self.g.dc.palette.clone();
-        let Some(bmp) = dib::decode_with(parts.0, parts.1, &mut budget, opts, &pal) else {
+        let Some(bmp) = dib::decode_with(parts.0, parts.1, &mut self.g.pixels_left, opts, &pal)
+        else {
             return;
         };
-        self.g.pixels_left = budget;
         // `ySrc` of the DIB functions counts from the bottom row of a bottom-up bitmap.
         let src = src.map(|(x, y, w, h)| {
             if dib_origin && !bmp.top_down {

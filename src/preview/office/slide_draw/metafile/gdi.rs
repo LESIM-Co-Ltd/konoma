@@ -18,8 +18,15 @@ use crate::preview::office::slide_draw::svg::esc;
 pub(super) type P = (f64, f64);
 pub(super) type Rgb = [u8; 3];
 
-/// Largest markup (everything except embedded image data) one metafile may write, bytes.
-pub(super) const MAX_MARKUP_BYTES: usize = 8 * 1024 * 1024;
+/// Largest markup (everything except embedded image data) one metafile may write, bytes. The
+/// drawing process needs about 0.6 s per MiB of path markup (measured on the worst shapes: a
+/// quarter of a million one-segment strokes, or a million polygon points, in 8 MiB took it over
+/// its 5 s), so 3 MiB keeps one metafile near 2 s even there; ordinary metafiles (a pasted chart,
+/// a Visio page) are a few hundred KiB.
+pub(super) const MAX_MARKUP_BYTES: usize = 3 * 1024 * 1024;
+/// Most shapes, texts and bitmaps one metafile may draw: the drawing process needs about 20 us
+/// for each, so 50 000 is about a second.
+pub(super) const MAX_DRAWN: u64 = 50_000;
 /// Largest total of embedded image data (base64), bytes.
 pub(super) const MAX_IMAGE_BYTES: usize = 24 * 1024 * 1024;
 /// Largest path (`BEGINPATH` ... `ENDPATH`) description, bytes.
@@ -383,6 +390,7 @@ impl Gdi {
     pub fn stopped(&self) -> bool {
         self.body.len() - self.img_len + self.defs.len() > MAX_MARKUP_BYTES
             || self.img_len > MAX_IMAGE_BYTES
+            || self.drawn > MAX_DRAWN
     }
 
     // ----- mapping --------------------------------------------------------------------------

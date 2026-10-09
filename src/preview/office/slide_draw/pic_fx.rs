@@ -15,7 +15,9 @@
 
 use std::io::Cursor;
 
-use image::{imageops, RgbaImage};
+use image::imageops;
+#[cfg(test)]
+use image::RgbaImage;
 
 use super::color::{hsl_to_rgb, rgb_to_hsl};
 use super::model::PicFx;
@@ -29,7 +31,22 @@ const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
 
 /// Decodes `bytes` (a raster picture), applies `fx` in order and re-encodes the result as PNG.
 /// `None` when the picture cannot be decoded under the limits.
+#[cfg(test)]
 pub fn recolor_png(bytes: &[u8], fx: &[PicFx]) -> Option<Vec<u8>> {
+    recolor_png_cancellable(bytes, fx, &|| false)
+}
+
+/// Pixels between two looks at the cancellation callback while the effects are applied (about
+/// 1 ms of work).
+const CANCEL_EVERY_PX: usize = 1 << 20;
+
+/// [`recolor_png`] that stops (`None`) between steps and every [`CANCEL_EVERY_PX`] pixels once
+/// `cancel` says so.
+pub fn recolor_png_cancellable(
+    bytes: &[u8],
+    fx: &[PicFx],
+    cancel: &dyn Fn() -> bool,
+) -> Option<Vec<u8>> {
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
@@ -38,7 +55,13 @@ pub fn recolor_png(bytes: &[u8], fx: &[PicFx]) -> Option<Vec<u8>> {
     limits.max_image_height = Some(MAX_DECODE_SIDE);
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
     reader.limits(limits);
+    if cancel() {
+        return None;
+    }
     let mut img = reader.decode().ok()?.to_rgba8();
+    if cancel() {
+        return None;
+    }
     let longest = img.width().max(img.height());
     if longest > MAX_FX_SIDE {
         let k = f64::from(MAX_FX_SIDE) / f64::from(longest);
@@ -46,7 +69,17 @@ pub fn recolor_png(bytes: &[u8], fx: &[PicFx]) -> Option<Vec<u8>> {
         let h = ((f64::from(img.height()) * k).round() as u32).max(1);
         img = imageops::resize(&img, w, h, imageops::FilterType::Triangle);
     }
-    apply(&mut img, fx);
+    for e in fx {
+        for chunk in img.chunks_mut(CANCEL_EVERY_PX * 4) {
+            if cancel() {
+                return None;
+            }
+            let (pixels, _) = chunk.as_chunks_mut::<4>();
+            for p in pixels {
+                apply_px(p, e);
+            }
+        }
+    }
     let mut out = Vec::new();
     let enc = image::codecs::png::PngEncoder::new_with_quality(
         &mut out,
@@ -65,6 +98,7 @@ pub fn recolor_png(bytes: &[u8], fx: &[PicFx]) -> Option<Vec<u8>> {
 }
 
 /// Applies the effects in order to every pixel.
+#[cfg(test)]
 pub fn apply(img: &mut RgbaImage, fx: &[PicFx]) {
     for e in fx {
         for p in img.pixels_mut() {

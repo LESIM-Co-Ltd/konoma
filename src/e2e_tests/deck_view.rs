@@ -827,6 +827,51 @@ fn e2e_deck_a_picture_in_a_scene_is_resolved_from_the_documents_media() {
 }
 
 #[test]
+fn e2e_deck_a_slide_the_writer_had_to_cut_short_says_so_in_the_title() {
+    // A picture of 13 MiB that is a PNG by its signature only: it does not fit the slide's
+    // embedding budget and cannot be reduced, so it is a placeholder and the result is truncated.
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.resize(13 * 1024 * 1024, 7);
+    let mut sc = scene(Rgba::WHITE);
+    sc.items.push(Item::Picture(PictureItem::new(
+        Xfrm::rect(0.0, 0.0, W_EMU, H_EMU),
+        "office-img://0123456789ab/big.png",
+    )));
+    let mut doc = deck_doc_with(1, vec![sc]);
+    doc.images.push(crate::preview::office::docx::DocImage {
+        key: "office-img://0123456789ab/big.png".into(),
+        bytes,
+        name: "big.png".into(),
+    });
+    let Some((mut s, _d)) = open_with(
+        "dv_cut",
+        Some(ProtocolType::Kitty),
+        (100, 40),
+        doc,
+        cfg_en(),
+    ) else {
+        return;
+    };
+    settle(&mut s);
+    assert!(s.app.document_truncated());
+    s.draw();
+    assert!(
+        s.screen().contains("truncated (too large to show in full)"),
+        "{}",
+        s.screen()
+    );
+}
+
+#[test]
+fn e2e_deck_a_slide_drawn_in_full_does_not_say_truncated() {
+    let Some((mut s, _d)) = open_kitty("dv_full", 2, (100, 30)) else {
+        return;
+    };
+    settle(&mut s);
+    assert!(!s.app.document_truncated());
+}
+
+#[test]
 fn e2e_deck_a_scene_naming_a_missing_picture_still_draws() {
     let mut sc = scene(RED);
     sc.items.push(Item::Picture(PictureItem::new(

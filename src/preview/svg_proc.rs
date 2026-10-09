@@ -816,6 +816,9 @@ pub fn run_with(
     req: &Request,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DynamicImage, RunError> {
+    if request_too_large(req.data) {
+        return Err(SvgFail::TooLarge.into());
+    }
     let _slot = acquire_slot(cancelled)?;
     loop {
         let (mut worker, reused) = match take_idle(exe) {
@@ -868,6 +871,21 @@ fn crash_or_memory(peak_rss: u64, limits: Limits) -> SvgFail {
     } else {
         SvgFail::Crashed
     }
+}
+
+/// Whether `data` is more than the child would read. The child ends instead of answering when a
+/// request is over [`MAX_REQUEST_BYTES`], which the parent would report as a crash; the
+/// application's own entry points refuse such an SVG first (`svg_guard::precheck`), this keeps
+/// the supervisor honest for any other caller. A plain SVG over `MAX_SVG_BYTES` is refused by the
+/// child's own check anyway; a gzip stream (whose size after decompression is what that limit is
+/// about) gets the request limit.
+fn request_too_large(data: &[u8]) -> bool {
+    let limit = if data.starts_with(&[0x1f, 0x8b]) {
+        MAX_REQUEST_BYTES
+    } else {
+        super::svg_guard::MAX_SVG_BYTES as u64
+    };
+    data.len() as u64 > limit
 }
 
 /// [`run_with`] with the default limits and konoma's own binary.

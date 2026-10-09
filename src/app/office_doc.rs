@@ -22,6 +22,10 @@ pub(super) enum PictureSource {
     Slide {
         scene: Arc<crate::preview::office::slide_draw::SlideScene>,
         media: Arc<HashMap<String, Arc<Vec<u8>>>>,
+        /// Set by the decode thread when drawing the slide had to leave something out (a size
+        /// budget of the writer); shared by all the slides of the deck and read by
+        /// `App::document_truncated`, so the title says so like it does for a reader's budget.
+        render_truncated: Arc<std::sync::atomic::AtomicBool>,
     },
 }
 
@@ -46,6 +50,8 @@ pub struct LoadedDocument {
     /// The conversion stopped at one of its budgets (the end, some pictures, or part of a table is
     /// missing).
     pub(super) truncated: bool,
+    /// A slide was drawn with something left out (see `PictureSource::Slide`).
+    pub(super) render_truncated: Arc<std::sync::atomic::AtomicBool>,
     /// Pictures by their `office-img://...` URL (the slides' pictures included).
     pub(super) pictures: HashMap<String, DocPicture>,
     /// A presentation: its slides in order (empty for a Word document).
@@ -73,6 +79,7 @@ impl LoadedDocument {
     pub(super) fn from_document(doc: crate::preview::office::docx::Document) -> Self {
         let mut media: HashMap<String, Arc<Vec<u8>>> = HashMap::new();
         let mut pictures: HashMap<String, DocPicture> = HashMap::new();
+        let render_truncated = Arc::new(std::sync::atomic::AtomicBool::new(false));
         for im in doc.images {
             let (dims, raster) = picture_dims(&im.bytes);
             let bytes = Arc::new(im.bytes);
@@ -102,6 +109,7 @@ impl LoadedDocument {
                         source: PictureSource::Slide {
                             scene: Arc::new(scene),
                             media: media.clone(),
+                            render_truncated: render_truncated.clone(),
                         },
                         dims,
                         raster: false,
@@ -116,6 +124,7 @@ impl LoadedDocument {
             markdown: doc.markdown,
             picture_markdown,
             truncated: doc.truncated,
+            render_truncated,
             pictures,
             slides: doc.slides,
         }
@@ -236,9 +245,14 @@ impl App {
         self.document_error.as_ref()
     }
 
-    /// Whether the conversion stopped at a budget (the title says so).
+    /// Whether the conversion stopped at a budget, or drawing a slide had to leave something out
+    /// (the title says so).
     pub fn document_truncated(&self) -> bool {
-        self.document.as_ref().is_some_and(|d| d.truncated)
+        self.document.as_ref().is_some_and(|d| {
+            d.truncated
+                || d.render_truncated
+                    .load(std::sync::atomic::Ordering::Relaxed)
+        })
     }
 
     /// The Markdown the decorated view draws, when there is one for the document on screen: a

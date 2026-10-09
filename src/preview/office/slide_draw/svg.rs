@@ -33,12 +33,38 @@
 //!   anything unrecognised become a light grey placeholder box.
 //! * Tiled images ignore the crop.
 //!
+//! * Every picture is written **once**, as an `<image>` of one unit square in `<defs>`; each use
+//!   (a picture item, an image fill, a tile, a bullet) is a `<use>` of it with a matrix that
+//!   places it, so a picture shown a thousand times costs its bytes once. Colour effects are
+//!   baked into the pixels, so a picture with other effects is another entry.
+//!
 //! # Budgets
 //!
-//! [`MAX_SVG_TEXT_BYTES`] bounds the markup (embedded image data excluded) and
-//! [`MAX_EMBEDDED_IMAGE_BYTES`] the image bytes embedded in one slide. When either is reached the
-//! remaining items are not drawn and the result is marked truncated.
+//! The SVG that leaves here must fit what the drawing process accepts
+//! ([`crate::preview::svg_guard::MAX_SVG_BYTES`], 32 MiB) and be drawn well inside its time limit:
+//!
+//! * [`MAX_SVG_TEXT_BYTES`] bounds the markup (embedded image data excluded) and
+//!   [`MAX_EMBEDDED_IMAGE_BYTES`] the image bytes embedded in one slide; together (the images
+//!   as base64) they are under the process's limit with a margin (checked at compile time).
+//!   A picture that does not fit is reduced (see `shrink_to_fit`) and, if that is not enough,
+//!   drawn as a placeholder.
+//! * [`MAX_USED_RASTER_PX`]: the pixels of raster pictures counted once per *use*; the drawing
+//!   process refuses an SVG whose pictures add up to more than it can decode.
+//! * [`MAX_DECODE_PX`]: pixels decoded by the writer itself (colour effects, BMP / TIFF
+//!   conversion, reducing a picture), each picture once.
+//! * [`MAX_FILTER_WORK`]: the work of the filters of the effects of one slide (and of the masks
+//!   of its compound lines), estimated the way the drawing process does (region area times work
+//!   per pixel); it refuses a picture whose filters pass its own limit, and a filter or a mask
+//!   costs it time in proportion.
+//! * [`MAX_SVG_PICTURE_BYTES`]: an SVG picture is embedded as it is only up to this size.
+//! * Paths are cut once their markup would pass the remaining text budget.
+//!
+//! When any of them is reached what is left is not drawn (or is drawn without the effect or as a
+//! placeholder) and the result is marked truncated. A render also stops, marked cancelled, as soon
+//! as its caller says it is not wanted.
 
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -46,6 +72,7 @@ use std::sync::Arc;
 use base64::Engine as _;
 
 use super::color::mix;
+use super::metafile::MetaSvg;
 use super::model::*;
 use super::path::{self, Resolved, Seg};
 use super::patterns::pattern_pixels;
@@ -55,10 +82,46 @@ use super::text::{self, BulletDraw, Frag, Frame, ASCENT, LINE_HEIGHT};
 #[path = "svg_effects.rs"]
 mod effects;
 
-/// Largest SVG markup written for one slide, in bytes, not counting embedded image data.
-pub const MAX_SVG_TEXT_BYTES: usize = 16 * 1024 * 1024;
-/// Largest total of embedded image bytes (before base64) in one slide.
-pub const MAX_EMBEDDED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+/// Largest SVG markup written for one slide, in bytes, not counting embedded image data. Measured
+/// with the drawing process: shadowed text of this much markup takes it 1.5-2 s, twice that much
+/// 3-4 s of its 5 s.
+pub const MAX_SVG_TEXT_BYTES: usize = 8 * 1024 * 1024;
+/// Largest total of embedded image bytes (before base64) in one slide: 12 MiB, 16 MiB as base64.
+pub const MAX_EMBEDDED_IMAGE_BYTES: usize = 12 * 1024 * 1024;
+/// The SVG at its largest (markup plus base64 pictures, 24 MiB) is a quarter under the limit of
+/// the drawing process, which refuses anything bigger.
+const _: () = assert!(
+    MAX_SVG_TEXT_BYTES + MAX_EMBEDDED_IMAGE_BYTES.div_ceil(3) * 4
+        <= crate::preview::svg_guard::MAX_SVG_BYTES / 4 * 3
+);
+/// Largest SVG picture embedded as it is, bytes. What an SVG holds is up to its author (the
+/// drawing process needs about 0.4 s per MiB of path-heavy markup and the slide's own markup comes
+/// on top), so a bigger one is not embedded: the picture is a placeholder and the result says so.
+/// (Metafiles are converted under their own, smaller budgets.)
+pub const MAX_SVG_PICTURE_BYTES: usize = 4 * 1024 * 1024;
+/// Most pixels of raster pictures a slide may draw, counted once per use (a picture drawn three
+/// times counts three times, the way the drawing process counts: it refuses an SVG over 64 Mpx).
+pub const MAX_USED_RASTER_PX: u64 = 48 * 1000 * 1000;
+/// Most pixels the writer itself decodes for one slide (colour effects, BMP / TIFF conversion,
+/// reducing a picture), each picture once.
+pub const MAX_DECODE_PX: u64 = 96 * 1000 * 1000;
+/// Largest side a picture is reduced to when it does not fit the embedding budget.
+const SHRUNK_SIDES: [u32; 3] = [2048, 1280, 640];
+/// JPEG quality of a reduced picture without transparency.
+const SHRUNK_JPEG_QUALITY: u8 = 82;
+/// Most filter work a slide's effects (and compound-line masks) may add up to, counted the way the
+/// drawing process counts it (`svg_guard`'s `MAX_FILTER_WORK`, 6e8, refuses the whole picture
+/// beyond it; this is 75 % of that, a margin for what the model leaves out). Measured: this much
+/// work in shadows, glows, soft edges and reflections takes the drawing process 0.8-1.1 s (the
+/// guard's own 7 ns per unit is a ceiling, about 2 ns is what the filters cost).
+pub const MAX_FILTER_WORK: f64 = 4.5e8;
+/// Work per device pixel of the mask of a compound line, in the units of [`MAX_FILTER_WORK`]
+/// (a blur is 12). Measured: a full-slide compound line costs the drawing process 6.6 ms, which
+/// is 3.6 million units at the 1.8 ns a unit costs for filters, over 0.92 million device pixels.
+const MASK_UNITS: f64 = 4.0;
+/// The size the drawing process rasterizes a slide at, on its longer side, in the model of the
+/// filter work (the application's default `svg_max_px`).
+pub const MODEL_RASTER_PX: f64 = 1280.0;
 /// Deepest group nesting that is drawn.
 pub const MAX_GROUP_DEPTH: usize = 64;
 /// Largest picture, in pixels per side, that BMP / TIFF conversion decodes.
@@ -218,6 +281,15 @@ fn axis_aligned_segs(segs: &[Seg]) -> bool {
     true
 }
 
+/// A picture written into `<defs>`: what a use refers to.
+#[derive(Clone)]
+struct Pic {
+    /// The `id` of its `<image>`.
+    id: String,
+    /// Pixels it decodes to (0 for a vector picture).
+    px: u64,
+}
+
 struct W<'a> {
     body: String,
     defs: String,
@@ -226,12 +298,49 @@ struct W<'a> {
     embedded_raw: usize,
     truncated: bool,
     media: &'a dyn Fn(&str) -> Option<Arc<Vec<u8>>>,
+    /// Says the render is not wanted any more (see [`W::halt`]).
+    cancel: &'a dyn Fn() -> bool,
+    cancelled: bool,
+    /// Pictures already in `<defs>` by (image key, effects); `None` = cannot be shown (kept, so a
+    /// picture that does not fit is not tried again for every use).
+    pics: HashMap<(String, String), Option<Pic>>,
+    /// Metafile conversions by image key.
+    metas: HashMap<String, Option<Arc<MetaSvg>>>,
+    /// Natural sizes by image key.
+    sizes: HashMap<String, Option<(f64, f64)>>,
+    /// Pixels the writer may still decode ([`MAX_DECODE_PX`]).
+    decode_px_left: u64,
+    /// Pixels of raster pictures that may still be used ([`MAX_USED_RASTER_PX`]).
+    used_px_left: u64,
+    /// Filter work written so far ([`MAX_FILTER_WORK`]).
+    filter_work: f64,
+    /// Slide size in px.
+    slide_px: (f64, f64),
+    /// Device px per slide px in the model of the filter work.
+    raster_scale: f64,
+    /// How many times the effects of the shape being drawn repeat what it paints (see
+    /// [`W::fx_layers`]): a use of a raster picture inside it is counted that many times.
+    use_mult: u64,
 }
 
-/// Renders a scene; see the module documentation.
+/// Renders a scene; see the module documentation. `cancel` is polled between items and inside
+/// the long loops; once it says yes the render stops and the result says it was cancelled.
 pub(super) fn render(
     scene: &SlideScene,
     media: &dyn Fn(&str) -> Option<Arc<Vec<u8>>>,
+    cancel: &dyn Fn() -> bool,
+) -> super::Rendered {
+    render_with(scene, media, cancel, MAX_DECODE_PX, MAX_USED_RASTER_PX)
+}
+
+/// [`render`] with the two pixel allowances given (the tests use small ones: a picture big enough
+/// to exhaust the real ones takes seconds to build and decode).
+pub(super) fn render_with(
+    scene: &SlideScene,
+    media: &dyn Fn(&str) -> Option<Arc<Vec<u8>>>,
+    cancel: &dyn Fn() -> bool,
+    decode_px: u64,
+    used_px: u64,
 ) -> super::Rendered {
     let (sw, sh) = (clamp_dim(scene.width), clamp_dim(scene.height));
     let mut w = W {
@@ -242,6 +351,17 @@ pub(super) fn render(
         embedded_raw: 0,
         truncated: scene.truncated,
         media,
+        cancel,
+        cancelled: false,
+        pics: HashMap::new(),
+        metas: HashMap::new(),
+        sizes: HashMap::new(),
+        decode_px_left: decode_px,
+        used_px_left: used_px,
+        filter_work: 0.0,
+        slide_px: (sw / EMU_PER_PX, sh / EMU_PER_PX),
+        raster_scale: MODEL_RASTER_PX / (sw.max(sh) / EMU_PER_PX).max(1.0),
+        use_mult: 1,
     };
     // Background.
     let bg_box: Bx = (0.0, 0.0, sw, sh);
@@ -258,6 +378,9 @@ pub(super) fn render(
         f => w.paint(&d, f, bg_box, "", PathFill::Norm),
     }
     for item in scene.drawn_items() {
+        if w.halt() {
+            break;
+        }
         if w.over_budget() {
             w.truncated = true;
             break;
@@ -280,10 +403,20 @@ pub(super) fn render(
     }
     svg.push_str(&w.body);
     svg.push_str("</svg>");
+    #[cfg(test)]
+    LAST_FILTER_WORK.with(|c| c.set(w.filter_work));
     super::Rendered {
         svg,
         truncated: w.truncated,
+        cancelled: w.cancelled,
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The filter work the last render on this thread added up (the tests compare it with the
+    /// drawing process's own estimate).
+    pub(super) static LAST_FILTER_WORK: Cell<f64> = const { Cell::new(0.0) };
 }
 
 fn clamp_dim(v: f64) -> f64 {
@@ -296,9 +429,20 @@ fn clamp_dim(v: f64) -> f64 {
 }
 
 fn path_d(segs: &[Seg]) -> String {
-    let mut d = String::with_capacity(segs.len() * 24);
+    path_d_capped(segs, usize::MAX).0
+}
+
+/// [`path_d`] that stops at a segment boundary once the markup is `limit` bytes long; the flag says
+/// it stopped.
+fn path_d_capped(segs: &[Seg], limit: usize) -> (String, bool) {
+    let mut d = String::with_capacity(segs.len().min(limit / 24 + 1) * 24);
     let p = |q: Pt| format!("{} {}", px(q.x), px(q.y));
+    let mut cut = false;
     for s in segs {
+        if d.len() >= limit {
+            cut = true;
+            break;
+        }
         match *s {
             Seg::M(a) => {
                 let _ = write!(d, "M{} ", p(a));
@@ -316,7 +460,7 @@ fn path_d(segs: &[Seg]) -> String {
         }
     }
     d.truncate(d.trim_end().len());
-    d
+    (d, cut)
 }
 
 fn has_transform(x: &Xfrm) -> bool {
@@ -359,6 +503,25 @@ impl<'a> W<'a> {
 
     fn over_budget(&self) -> bool {
         self.text_len() > MAX_SVG_TEXT_BYTES || self.embedded_raw > MAX_EMBEDDED_IMAGE_BYTES
+    }
+
+    /// Whether the render has been told it is not wanted. Once it has, it stays so (the caller's
+    /// answer only ever turns from no to yes), and the loops stop at their next check.
+    fn halt(&mut self) -> bool {
+        if !self.cancelled && (self.cancel)() {
+            self.cancelled = true;
+        }
+        self.cancelled
+    }
+
+    /// The markup of `segs` as a path's `d`, cut at a segment boundary once it would use up the
+    /// text budget that is left (a hostile path of a hundred thousand arcs is tens of megabytes
+    /// before the next check between items could see it); a cut sets `truncated`.
+    fn path_text(&mut self, segs: &[Seg]) -> String {
+        let room = MAX_SVG_TEXT_BYTES.saturating_sub(self.text_len());
+        let (d, cut) = path_d_capped(segs, room);
+        self.truncated |= cut;
+        d
     }
 
     // ----- items -----------------------------------------------------------------------------
@@ -455,6 +618,9 @@ impl<'a> W<'a> {
             depth: cx.depth + 1,
         };
         for it in &g.items {
+            if self.halt() {
+                break;
+            }
             if self.over_budget() {
                 self.truncated = true;
                 break;
@@ -472,13 +638,15 @@ impl<'a> W<'a> {
         let (paths, trunc) = path::resolve_geometry(&s.geom, x);
         self.truncated |= trunc;
         let start = self.body.len();
+        self.use_mult = Self::fx_layers(&s.effects);
         let filled_geom = !matches!(s.geom, Geometry::Line);
         // All the fills first, then all the outlines: a later path's fill must not cover an
         // earlier path's outline (`chartPlus` / `chartX` draw their cross first, the box second).
         if filled_geom && s.fill.is_visible() {
             for (r, mode, _) in &paths {
                 if *mode != PathFill::None {
-                    self.paint(&path_d(&r.segs), &s.fill, bx, "", *mode);
+                    let d = self.path_text(&r.segs);
+                    self.paint(&d, &s.fill, bx, "", *mode);
                 }
             }
         }
@@ -489,6 +657,7 @@ impl<'a> W<'a> {
                 }
             }
         }
+        self.use_mult = 1;
         let content = self.body.split_off(start);
         self.with_effects(&content, bx, &s.effects, x, cx.rot);
         if let Some(t) = &s.text {
@@ -899,13 +1068,44 @@ impl<'a> W<'a> {
 
     // ----- images ----------------------------------------------------------------------------
 
-    /// The data URI of the image `key`, or `None` when it is missing, unusable or over budget.
+    /// The picture `key` with colour effects `fx`, written into `<defs>` once, for **one use**
+    /// (see [`W::embed_uses`]); `None` when it is missing, unusable or over a budget.
+    fn embed(&mut self, key: &str, fx: &[PicFx]) -> Option<Pic> {
+        self.embed_uses(key, fx, 1)
+    }
+
+    /// [`W::embed`] for a picture that is placed `uses` times by one drawing instruction (the
+    /// cells of a flipped tile). Every use is charged against [`MAX_USED_RASTER_PX`], multiplied
+    /// by the number of layers the effects of the shape being drawn repeat it in.
     ///
-    /// `fx` are the picture's colour effects; they are applied to raster pictures (the result is a
-    /// PNG; vector pictures keep their colours, see [`super::pic_fx`]).
-    fn embed(&mut self, key: &str, fx: &[PicFx]) -> Option<(String, Sniffed)> {
+    /// `fx` are the picture's colour effects; they are applied to raster pictures (the result is
+    /// a PNG; vector pictures keep their colours, see [`super::pic_fx`]).
+    fn embed_uses(&mut self, key: &str, fx: &[PicFx], uses: u64) -> Option<Pic> {
+        let ck = (key.to_string(), format!("{fx:?}"));
+        let pic = match self.pics.get(&ck) {
+            Some(p) => p.clone(),
+            None => {
+                let p = self.embed_new(key, fx);
+                if self.cancelled {
+                    return None;
+                }
+                self.pics.insert(ck, p.clone());
+                p
+            }
+        }?;
+        let cost = pic.px.saturating_mul(uses.saturating_mul(self.use_mult));
+        if cost > self.used_px_left {
+            self.truncated = true;
+            return None;
+        }
+        self.used_px_left -= cost;
+        Some(pic)
+    }
+
+    /// Writes the picture into `<defs>`: effects applied, converted or reduced as needed.
+    fn embed_new(&mut self, key: &str, fx: &[PicFx]) -> Option<Pic> {
         let bytes = (self.media)(key)?;
-        if bytes.is_empty() {
+        if bytes.is_empty() || self.halt() {
             return None;
         }
         let kind = sniff(&bytes);
@@ -918,41 +1118,148 @@ impl<'a> W<'a> {
                 | Sniffed::Bmp
                 | Sniffed::Tiff
         );
-        // A picture the effects cannot be applied to (undecodable, over the limits) is shown as it is.
-        let recolored = if raster && !fx.is_empty() {
-            pic_fx::recolor_png(&bytes, fx)
-        } else {
-            None
-        };
-        let (mime, data): (&str, Vec<u8>) = match kind {
-            _ if recolored.is_some() => ("image/png", recolored.unwrap_or_default()),
-            Sniffed::Png => ("image/png", bytes.to_vec()),
-            Sniffed::Jpeg => ("image/jpeg", bytes.to_vec()),
-            Sniffed::Gif => ("image/gif", bytes.to_vec()),
-            Sniffed::Webp => ("image/webp", bytes.to_vec()),
-            Sniffed::Svg => ("image/svg+xml", bytes.to_vec()),
-            Sniffed::Bmp | Sniffed::Tiff => ("image/png", to_png(&bytes)?),
+        // A picture the effects cannot be applied to (undecodable, over the limits) is shown as it
+        // is; one whose decoding the slide cannot afford is shown as it is too, and says so.
+        let mut baked: Option<Vec<u8>> = None;
+        if raster && !fx.is_empty() {
+            if let Some(cost) = raster_dims(&bytes).map(|(w, h)| u64::from(w) * u64::from(h)) {
+                if self.take_decode_px(cost) {
+                    baked = pic_fx::recolor_png_cancellable(&bytes, fx, self.cancel);
+                    if self.halt() {
+                        return None;
+                    }
+                }
+            }
+        }
+        let (mime, data): (&'static str, std::borrow::Cow<'_, [u8]>) = match kind {
+            _ if baked.is_some() => ("image/png", baked.unwrap_or_default().into()),
+            Sniffed::Png => ("image/png", (&bytes[..]).into()),
+            Sniffed::Jpeg => ("image/jpeg", (&bytes[..]).into()),
+            Sniffed::Gif => ("image/gif", (&bytes[..]).into()),
+            Sniffed::Webp => ("image/webp", (&bytes[..]).into()),
+            Sniffed::Svg => ("image/svg+xml", (&bytes[..]).into()),
+            Sniffed::Bmp | Sniffed::Tiff => {
+                let cost = raster_dims(&bytes).map(|(w, h)| u64::from(w) * u64::from(h))?;
+                if !self.take_decode_px(cost) {
+                    return None;
+                }
+                ("image/png", to_png(&bytes)?.into())
+            }
             Sniffed::Emf | Sniffed::Wmf => {
-                let m = super::metafile::to_svg(&bytes)?;
-                self.truncated |= m.truncated;
-                ("image/svg+xml", m.svg.into_bytes())
+                let m = self.meta(key, &bytes)?;
+                ("image/svg+xml", m.svg.clone().into_bytes().into())
             }
             Sniffed::Unknown => return None,
         };
-        if self.embedded_raw + data.len() > MAX_EMBEDDED_IMAGE_BYTES {
+        if kind == Sniffed::Svg && data.len() > MAX_SVG_PICTURE_BYTES {
             self.truncated = true;
             return None;
         }
+        let room = MAX_EMBEDDED_IMAGE_BYTES - self.embedded_raw.min(MAX_EMBEDDED_IMAGE_BYTES);
+        let (mime, data) = if data.len() > room {
+            // Does not fit next to what is already there: a raster picture is reduced, a vector
+            // one is given up (a placeholder is drawn).
+            self.truncated = true;
+            if !raster {
+                return None;
+            }
+            let (m, d) = self.shrink_to_fit(&data, room)?;
+            (m, std::borrow::Cow::Owned(d))
+        } else {
+            (mime, data)
+        };
+        let px = if raster {
+            raster_dims(&data)
+                .map(|(w, h)| u64::from(w) * u64::from(h))
+                .unwrap_or(0)
+        } else {
+            0
+        };
         self.embedded_raw += data.len();
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+        let id = self.id("im");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&data[..]);
         let uri = format!("data:{mime};base64,{b64}");
         self.embedded_len += uri.len();
-        Some((uri, kind))
+        let _ = write!(
+            self.defs,
+            r#"<image id="{id}" width="1" height="1" preserveAspectRatio="none" href="{uri}"/>"#
+        );
+        Some(Pic { id, px })
     }
 
-    /// Natural pixel size of the image `key` (for tiling), 96 dpi.
+    /// Takes `px` pixels from the allowance for decoding; without enough the picture is used as it
+    /// is (or not at all) and the result is marked truncated.
+    fn take_decode_px(&mut self, px: u64) -> bool {
+        if px > self.decode_px_left {
+            self.truncated = true;
+            return false;
+        }
+        self.decode_px_left -= px;
+        true
+    }
+
+    /// The raster picture `data` re-encoded smaller than `limit` bytes: its longer side is brought
+    /// down to each of [`SHRUNK_SIDES`] in turn (a slide is drawn at about 1280 px wide) and it is
+    /// written as a JPEG, or as a PNG when it has transparency.
+    fn shrink_to_fit(&mut self, data: &[u8], limit: usize) -> Option<(&'static str, Vec<u8>)> {
+        let cost = raster_dims(data).map(|(w, h)| u64::from(w) * u64::from(h))?;
+        if !self.take_decode_px(cost) || self.halt() {
+            return None;
+        }
+        let mut reader = image::ImageReader::new(Cursor::new(data))
+            .with_guessed_format()
+            .ok()?;
+        reader.limits(decode_limits());
+        let img = reader.decode().ok()?;
+        let alpha = img.color().has_alpha();
+        let longest = img.width().max(img.height());
+        for side in SHRUNK_SIDES {
+            if self.halt() {
+                return None;
+            }
+            let small;
+            let cur = if longest > side {
+                small = img.resize(side, side, image::imageops::FilterType::Triangle);
+                &small
+            } else {
+                &img
+            };
+            let mut out = Vec::new();
+            let ok = if alpha {
+                cur.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+                    .is_ok()
+            } else {
+                let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(
+                    &mut out,
+                    SHRUNK_JPEG_QUALITY,
+                );
+                cur.to_rgb8().write_with_encoder(enc).is_ok()
+            };
+            if ok && out.len() <= limit {
+                return Some((if alpha { "image/png" } else { "image/jpeg" }, out));
+            }
+        }
+        None
+    }
+
+    /// The metafile `key` converted to SVG (once per render).
+    fn meta(&mut self, key: &str, bytes: &[u8]) -> Option<Arc<MetaSvg>> {
+        if let Some(m) = self.metas.get(key) {
+            return m.clone();
+        }
+        let m = super::metafile::to_svg_cancellable(bytes, self.cancel).map(Arc::new);
+        if self.halt() {
+            return None;
+        }
+        if let Some(m) = &m {
+            self.truncated |= m.truncated;
+        }
+        self.metas.insert(key.to_string(), m.clone());
+        m
+    }
+
     /// The pixel size of a raster image (`None` for vector images and unknown bytes).
-    fn raster_size(&self, key: &str) -> Option<(f64, f64)> {
+    fn raster_size(&mut self, key: &str) -> Option<(f64, f64)> {
         let bytes = (self.media)(key)?;
         match sniff(&bytes) {
             Sniffed::Svg | Sniffed::Emf | Sniffed::Wmf | Sniffed::Unknown => None,
@@ -960,31 +1267,37 @@ impl<'a> W<'a> {
         }
     }
 
-    fn natural_size(&self, key: &str) -> Option<(f64, f64)> {
+    /// Natural pixel size of the image `key` (for tiling), 96 dpi (once per render).
+    fn natural_size(&mut self, key: &str) -> Option<(f64, f64)> {
+        if let Some(v) = self.sizes.get(key) {
+            return *v;
+        }
+        let v = self.natural_size_uncached(key);
+        self.sizes.insert(key.to_string(), v);
+        v
+    }
+
+    fn natural_size_uncached(&mut self, key: &str) -> Option<(f64, f64)> {
         let bytes = (self.media)(key)?;
         match sniff(&bytes) {
             Sniffed::Svg => {
                 crate::preview::svg::intrinsic_size_bytes(&bytes).map(|(w, h)| (w as f64, h as f64))
             }
             Sniffed::Emf | Sniffed::Wmf => {
-                super::metafile::to_svg(&bytes).map(|m| (m.width_px, m.height_px))
+                self.meta(key, &bytes).map(|m| (m.width_px, m.height_px))
             }
             Sniffed::Unknown => None,
-            _ => {
-                let r = image::ImageReader::new(Cursor::new(&bytes[..]))
-                    .with_guessed_format()
-                    .ok()?;
-                r.into_dimensions().ok().map(|(w, h)| (w as f64, h as f64))
-            }
+            _ => raster_dims(&bytes).map(|(w, h)| (w as f64, h as f64)),
         }
     }
 
     /// An image drawn into the area `(x, y, w, h)` honouring `crop` and `fill_rect`, clipped by
-    /// `clip` (a clipPath id) when given.
+    /// `clip` (a clipPath id) when given. The picture is a `<use>` of its entry in `<defs>`
+    /// (a unit square), placed by a matrix.
     #[allow(clippy::too_many_arguments)]
     fn image_el(
         &mut self,
-        uri: &str,
+        pic: &Pic,
         area: Bx,
         crop: Rect4,
         fill_rect: Rect4,
@@ -1011,6 +1324,11 @@ impl<'a> W<'a> {
         let kh = (1.0 - ct - cb).max(0.001);
         let (fw, fh) = (aw / kw, ah / kh);
         let (ix, iy) = (ax - cl * fw, ay - ct * fh);
+        // A picture of no width or height (or a negative one: an image element of negative size
+        // is not drawn) draws nothing.
+        if !(fw.is_finite() && fh.is_finite() && fw > 0.0 && fh > 0.0) {
+            return;
+        }
         let a = if alpha.is_finite() {
             alpha.clamp(0.0, 1.0)
         } else {
@@ -1021,22 +1339,27 @@ impl<'a> W<'a> {
         } else {
             String::new()
         };
-        let clip_attr = clip
-            .map(|c| format!(r#" clip-path="url(#{c})""#))
-            .unwrap_or_default();
         let rendering = if nearest {
             r#" image-rendering="optimizeSpeed""#
         } else {
             ""
         };
-        let _ = write!(
-            self.body,
-            r#"<image x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="none" href="{uri}"{op}{clip_attr}{rendering}/>"#,
-            px(ix),
-            px(iy),
+        let el = format!(
+            r##"<use href="#{}" transform="matrix({} 0 0 {} {} {})"{op}{rendering}/>"##,
+            pic.id,
             px(fw),
             px(fh),
+            px(ix),
+            px(iy),
         );
+        match clip {
+            // The clip is on a group of its own: on the `<use>` it would be in the coordinate
+            // system its matrix makes.
+            Some(c) => {
+                let _ = write!(self.body, r##"<g clip-path="url(#{c})">{el}</g>"##);
+            }
+            None => self.body.push_str(&el),
+        }
     }
 
     fn clip_def(&mut self, d: &str) -> String {
@@ -1067,7 +1390,7 @@ impl<'a> W<'a> {
     fn image_fill(&mut self, d: &str, img: &ImageFill, bx: Bx) {
         match img.mode {
             ImageMode::Stretch { fill_rect } => {
-                let Some((uri, _)) = self.embed(&img.key, &img.fx) else {
+                let Some(pic) = self.embed(&img.key, &img.fx) else {
                     self.placeholder(d, bx);
                     return;
                 };
@@ -1082,7 +1405,7 @@ impl<'a> W<'a> {
                         dw >= nw * NEAREST_MIN_ENLARGEMENT || dh >= nh * NEAREST_MIN_ENLARGEMENT
                     });
                 self.image_el(
-                    &uri,
+                    &pic,
                     bx,
                     img.crop,
                     fill_rect,
@@ -1103,7 +1426,14 @@ impl<'a> W<'a> {
                     self.placeholder(d, bx);
                     return;
                 };
-                let Some((uri, _)) = self.embed(&img.key, &img.fx) else {
+                let (fh, fv) = match flip {
+                    TileFlip::None => (false, false),
+                    TileFlip::X => (true, false),
+                    TileFlip::Y => (false, true),
+                    TileFlip::Xy => (true, true),
+                };
+                let cell_count = if fh { 2 } else { 1 } * if fv { 2 } else { 1 };
+                let Some(pic) = self.embed_uses(&img.key, &img.fx, cell_count) else {
                     self.placeholder(d, bx);
                     return;
                 };
@@ -1130,12 +1460,6 @@ impl<'a> W<'a> {
                 let ox = x + w * fx - tw * EMU_PER_PX * fx + if tx.is_finite() { tx } else { 0.0 };
                 let oy = y + h * fy - th * EMU_PER_PX * fy + if ty.is_finite() { ty } else { 0.0 };
                 let pid = self.id("pi");
-                let (fh, fv) = match flip {
-                    TileFlip::None => (false, false),
-                    TileFlip::X => (true, false),
-                    TileFlip::Y => (false, true),
-                    TileFlip::Xy => (true, true),
-                };
                 let (pw, ph) = (
                     tw * if fh { 2.0 } else { 1.0 },
                     th * if fv { 2.0 } else { 1.0 },
@@ -1165,11 +1489,12 @@ impl<'a> W<'a> {
                         );
                         let _ = write!(
                             cells,
-                            r#"<image x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="none" href="{uri}" transform="{t}"{rendering}/>"#,
-                            num(-over),
-                            num(-over),
+                            r##"<use href="#{}" transform="{t} matrix({} 0 0 {} {} {})"{rendering}/>"##,
+                            pic.id,
                             num(tw + 2.0 * over),
                             num(th + 2.0 * over),
+                            num(-over),
+                            num(-over),
                         );
                     }
                 }
@@ -1203,12 +1528,16 @@ impl<'a> W<'a> {
         self.truncated |= trunc;
         let d: String = paths
             .iter()
-            .map(|(r, _, _)| path_d(&r.segs))
+            .map(|(r, _, _)| self.path_text(&r.segs))
             .collect::<Vec<_>>()
             .join(" ");
         let start = self.body.len();
-        match self.embed(&p.image.key, &p.image.fx) {
-            Some((uri, _)) => {
+        // The effects draw the picture again in each of their layers (see `Self::fx_layers`).
+        self.use_mult = Self::fx_layers(&p.effects);
+        let embedded = self.embed(&p.image.key, &p.image.fx);
+        self.use_mult = 1;
+        match embedded {
+            Some(pic) => {
                 let fill_rect = match p.image.mode {
                     ImageMode::Stretch { fill_rect } => fill_rect,
                     ImageMode::Tile { .. } => (0.0, 0.0, 0.0, 0.0),
@@ -1218,10 +1547,10 @@ impl<'a> W<'a> {
                     && c == (0.0, 0.0, 0.0, 0.0)
                     && fill_rect == (0.0, 0.0, 0.0, 0.0);
                 if plain_rect {
-                    self.image_el(&uri, bx, c, fill_rect, p.image.alpha, None, false);
+                    self.image_el(&pic, bx, c, fill_rect, p.image.alpha, None, false);
                 } else {
                     let clip = self.clip_def(&d);
-                    self.image_el(&uri, bx, c, fill_rect, p.image.alpha, Some(&clip), false);
+                    self.image_el(&pic, bx, c, fill_rect, p.image.alpha, Some(&clip), false);
                 }
             }
             None => self.placeholder(&d, bx),
@@ -1285,7 +1614,7 @@ impl<'a> W<'a> {
                 }
             }
         }
-        let d = path_d(&segs);
+        let d = self.path_text(&segs);
         let cap = match l.cap {
             Cap::Flat => "butt",
             Cap::Round => "round",
@@ -1326,7 +1655,18 @@ impl<'a> W<'a> {
                     num(w_px)
                 );
             }
+            _ if self.filter_work > MAX_FILTER_WORK => {
+                // A compound line costs the drawing process a mask over its whole extent; past the
+                // slide's allowance it is drawn as one plain line.
+                self.truncated = true;
+                let _ = write!(
+                    self.body,
+                    r#"<path d="{d}" {base} stroke-width="{}"/>"#,
+                    num(w_px)
+                );
+            }
             c => {
+                self.filter_work += self.mask_work(&segs, w_px);
                 let mid = self.id("mk");
                 let (gap, line) = match c {
                     Compound::Tri => (0.6, Some(0.2)),
@@ -1361,6 +1701,40 @@ impl<'a> W<'a> {
             }
         }
         self.body.push_str(&heads);
+    }
+
+    /// The work of the mask a compound line needs, in the units of `MAX_FILTER_WORK`: its extent
+    /// (the path's box and the line's width, never more than 25 canvases) in device px times
+    /// [`MASK_UNITS`].
+    fn mask_work(&self, segs: &[Seg], w_px: f64) -> f64 {
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        let mut see = |p: Pt| {
+            x0 = x0.min(p.x);
+            y0 = y0.min(p.y);
+            x1 = x1.max(p.x);
+            y1 = y1.max(p.y);
+        };
+        for s in segs {
+            match *s {
+                Seg::M(a) | Seg::L(a) => see(a),
+                Seg::Q(a, b) => {
+                    see(a);
+                    see(b);
+                }
+                Seg::C(a, b, c) => {
+                    see(a);
+                    see(b);
+                    see(c);
+                }
+                Seg::Z => {}
+            }
+        }
+        if x0 > x1 {
+            return 0.0;
+        }
+        let (bw, bh) = ((x1 - x0) / EMU_PER_PX + w_px, (y1 - y0) / EMU_PER_PX + w_px);
+        let layer_max = 25.0 * self.slide_px.0 * self.slide_px.1;
+        (bw * bh).min(layer_max) * self.raster_scale * self.raster_scale * MASK_UNITS
     }
 
     // ----- text ------------------------------------------------------------------------------
@@ -1436,20 +1810,33 @@ impl<'a> W<'a> {
                     self.frag_decor(fr);
                 }
                 BulletDraw::Picture { image, x, y, size } => {
-                    if let Some((uri, _)) = self.embed(&image.key, &image.fx) {
+                    if let Some(pic) = self.embed(&image.key, &image.fx) {
+                        // Fitted into the square the way `preserveAspectRatio="xMidYMid meet"`
+                        // would (the picture is a unit square, so the fit is done here).
+                        let (bw, bh) = match self.natural_size(&image.key) {
+                            Some((nw, nh)) if nw > 0.0 && nh > 0.0 => {
+                                let k = (*size / nw).min(*size / nh);
+                                (nw * k, nh * k)
+                            }
+                            _ => (*size, *size),
+                        };
                         let _ = write!(
                             self.body,
-                            r#"<image x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="xMidYMid meet" href="{uri}"/>"#,
-                            num(*x),
-                            num(*y),
-                            num(*size),
-                            num(*size)
+                            r##"<use href="#{}" transform="matrix({} 0 0 {} {} {})"/>"##,
+                            pic.id,
+                            num(bw),
+                            num(bh),
+                            num(*x + (*size - bw) / 2.0),
+                            num(*y + (*size - bh) / 2.0),
                         );
                     }
                 }
             }
         }
         for line in &lay.lines {
+            if self.halt() {
+                break;
+            }
             if self.over_budget() {
                 self.truncated = true;
                 break;
@@ -1762,16 +2149,30 @@ fn arrow_path(a: &Arrow, tip: Pt, dir: Pt, eff: f64, line_w: f64, color: Rgba) -
     }
 }
 
+/// The decoding limits of every conversion the writer does itself.
+fn decode_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_CONVERT_SIDE);
+    limits.max_image_height = Some(MAX_CONVERT_SIDE);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    limits
+}
+
+/// The pixel size of a raster picture, read from its header alone.
+fn raster_dims(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
 /// Re-encodes a BMP or TIFF as PNG with decoding limits; `None` when it cannot be decoded.
 fn to_png(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_CONVERT_SIDE);
-    limits.max_image_height = Some(MAX_CONVERT_SIDE);
-    limits.max_alloc = Some(256 * 1024 * 1024);
-    reader.limits(limits);
+    reader.limits(decode_limits());
     let img = reader.decode().ok()?;
     let mut out = Vec::new();
     img.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)

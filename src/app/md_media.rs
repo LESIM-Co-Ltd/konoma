@@ -1251,13 +1251,27 @@ impl App {
                         // rasterize it like any other untrusted SVG of a document.
                         let bytes = match source {
                             PictureSource::Bytes(b) => b,
-                            PictureSource::Slide { scene, media } => Arc::new(
-                                crate::preview::office::slide_draw::render_svg(&scene, &|k| {
-                                    media.get(k).cloned()
-                                })
-                                .svg
-                                .into_bytes(),
-                            ),
+                            PictureSource::Slide {
+                                scene,
+                                media,
+                                render_truncated,
+                            } => {
+                                let drawn =
+                                    crate::preview::office::slide_draw::render_svg_cancellable(
+                                        &scene,
+                                        &|k| media.get(k).cloned(),
+                                        &moved_on,
+                                    );
+                                // The preview moved on: nothing to show, nothing to remember.
+                                if drawn.cancelled {
+                                    return (Err(ImageFailure::Cancelled), None);
+                                }
+                                if drawn.truncated {
+                                    render_truncated
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                Arc::new(drawn.svg.into_bytes())
+                            }
                         };
                         if bytes.starts_with(b"GIF8") {
                             if let Some((frames, _)) =

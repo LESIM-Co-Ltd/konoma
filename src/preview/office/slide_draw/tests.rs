@@ -75,7 +75,7 @@ fn draw(items: Vec<Item>) -> image::RgbaImage {
     raster(&render_svg(&scene(items), &no_media))
 }
 
-fn png(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
+pub(super) fn png(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
     let mut img = image::RgbaImage::new(w, h);
     for y in 0..h {
         for x in 0..w {
@@ -89,7 +89,7 @@ fn png(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
     out
 }
 
-fn media_of(bytes: Vec<u8>) -> impl Fn(&str) -> Option<Arc<Vec<u8>>> {
+pub(super) fn media_of(bytes: Vec<u8>) -> impl Fn(&str) -> Option<Arc<Vec<u8>>> {
     let a = Arc::new(bytes);
     move |_| Some(a.clone())
 }
@@ -1382,7 +1382,7 @@ fn missing_garbage_and_metafile_pictures_get_a_placeholder() {
 
 // ---- text (pixels) --------------------------------------------------------------------------
 
-fn text_shape(x: f64, y: f64, w: f64, h: f64, text: &str, size_pt: f64) -> ShapeItem {
+pub(super) fn text_shape(x: f64, y: f64, w: f64, h: f64, text: &str, size_pt: f64) -> ShapeItem {
     let mut s = ShapeItem::new(Xfrm::rect(e(x), e(y), e(w), e(h)), Geometry::Rect);
     s.text = Some(TextBody {
         paragraphs: vec![Paragraph {
@@ -1812,25 +1812,55 @@ fn huge_text_is_truncated_not_fatal() {
 
 #[test]
 fn embedded_image_budget() {
-    // three "PNG"s of 22 MiB: two fit under 64 MiB, the third does not
-    let mut bytes = png(2, 2, |_, _| [9, 9, 9, 255]);
-    bytes.resize(22 * 1024 * 1024, 0);
-    let media = media_of(bytes);
+    // three "PNG"s of 5 MiB: two fit under 12 MiB, the third does not and is reduced (it is a
+    // real 2 x 2 picture with padding behind it, so it can be re-encoded small)
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([9, 9, 9])))
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    bytes.resize(5 * 1024 * 1024, 0);
+    let bytes = Arc::new(bytes);
+    let media = |_: &str| Some(bytes.clone());
     let items: Vec<Item> = (0..3)
         .map(|i| {
             Item::Picture(PictureItem::new(
                 Xfrm::rect(e(10.0 + 100.0 * i as f64), e(10.0), e(50.0), e(50.0)),
-                "k",
+                format!("k{i}"),
+            ))
+        })
+        .collect();
+    let r = render_svg(&scene(items), &media);
+    assert!(r.truncated);
+    assert_eq!(r.svg.matches("<image id=").count(), 3, "three pictures");
+    // the third is a small re-encoding (JPEG: the picture has no transparency)
+    assert_eq!(r.svg.matches("data:image/png").count(), 2);
+    assert_eq!(r.svg.matches("data:image/jpeg").count(), 1);
+    assert!(r.svg.len() > 2 * 5 * 1024 * 1024 * 4 / 3);
+    assert!(r.svg.len() < super::svg::MAX_SVG_TEXT_BYTES + 16 * 1024 * 1024 + 1_000_000);
+}
+
+#[test]
+fn a_reduced_picture_with_transparency_stays_a_png() {
+    let mut bytes = png(2, 2, |_, _| [9, 9, 9, 128]);
+    bytes.resize(7 * 1024 * 1024, 0);
+    let bytes = Arc::new(bytes);
+    let media = |_: &str| Some(bytes.clone());
+    let items: Vec<Item> = (0..2)
+        .map(|i| {
+            Item::Picture(PictureItem::new(
+                Xfrm::rect(e(10.0 + 100.0 * i as f64), e(10.0), e(50.0), e(50.0)),
+                format!("k{i}"),
             ))
         })
         .collect();
     let r = render_svg(&scene(items), &media);
     assert!(r.truncated);
     assert_eq!(r.svg.matches("data:image/png").count(), 2);
-    // the third became a placeholder
-    assert!(r.svg.contains("#e6e6e6"));
-    // image data does not count against the markup budget
-    assert!(r.svg.len() > super::svg::MAX_SVG_TEXT_BYTES);
+    assert_eq!(r.svg.matches("data:image/jpeg").count(), 0);
+    assert!(!r.svg.contains("#e6e6e6"));
 }
 
 #[test]

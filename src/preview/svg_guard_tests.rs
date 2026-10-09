@@ -839,6 +839,7 @@ fn filter_work(doc: &str, scale: f32) -> f64 {
         filter_work: 0.0,
         raster_px: 0.0,
         nodes: 0,
+        work_limit: MAX_FILTER_WORK,
     };
     big(move || {
         cx.group(tree.root(), 0.0, 0);

@@ -201,18 +201,37 @@ impl TextMetrics {
         weight: fontdb::Weight,
         italic: bool,
     ) -> Result<Self, FontUnavailable> {
-        let face = db
-            .query(&fontdb::Query {
-                families,
-                weight,
-                stretch: fontdb::Stretch::Normal,
-                style: if italic {
-                    fontdb::Style::Italic
-                } else {
-                    fontdb::Style::Normal
-                },
-            })
-            .ok_or(FontUnavailable::NoMatch)?;
+        let face =
+            Self::query_face(&db, families, weight, italic).ok_or(FontUnavailable::NoMatch)?;
+        Self::resolve_face(db, face)
+    }
+
+    /// The face usvg picks for `families` at `weight` / `italic` (the lookup alone, which is cheap
+    /// next to [`resolve_face`](Self::resolve_face)): callers that see many family names resolve
+    /// to few faces cache the measuring state by the face.
+    pub fn query_face(
+        db: &fontdb::Database,
+        families: &[fontdb::Family],
+        weight: fontdb::Weight,
+        italic: bool,
+    ) -> Option<fontdb::ID> {
+        db.query(&fontdb::Query {
+            families,
+            weight,
+            stretch: fontdb::Stretch::Normal,
+            style: if italic {
+                fontdb::Style::Italic
+            } else {
+                fontdb::Style::Normal
+            },
+        })
+    }
+
+    /// The measuring state for an already chosen `face` of `db`.
+    pub fn resolve_face(
+        db: Arc<fontdb::Database>,
+        face: fontdb::ID,
+    ) -> Result<Self, FontUnavailable> {
         let probed = db
             .with_face_data(face, |data, index| {
                 let font = FontRef::from_index(data, index).ok()?;

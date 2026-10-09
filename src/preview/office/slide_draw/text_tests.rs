@@ -1054,7 +1054,7 @@ fn control_characters_are_dropped() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// autofit recompute, vertical forms, anchorCtr in vertical text
+// stored autofit scales, vertical forms, anchorCtr in vertical text
 // ---------------------------------------------------------------------------------------------
 
 fn long_text() -> String {
@@ -1075,25 +1075,13 @@ fn first_size(l: &Layout) -> f64 {
 }
 
 #[test]
-fn autofit_steps_are_the_pairs_powerpoint_writes() {
-    assert_eq!(autofit_step(1), (0.925, 0.1));
-    let (s, r) = autofit_step(2);
-    assert!((s - 0.85).abs() < 1e-9 && r == 0.2);
-    let (s, r) = autofit_step(3);
-    assert!((s - 0.775).abs() < 1e-9 && r == 0.2);
-    let (s, r) = autofit_step(AUTOFIT_STEPS);
-    assert!((s - AUTOFIT_MIN_SCALE).abs() < 1e-9 && r == 0.2);
-    // never below the smallest scale
-    assert_eq!(autofit_step(1000).0, AUTOFIT_MIN_SCALE);
-}
-
-#[test]
-fn autofit_without_stored_scales_shrinks_overflowing_text_until_it_fits() {
+fn autofit_without_stored_scales_does_not_recompute_them() {
+    // PowerPoint recomputes the scales while the text is edited, never when a file is opened:
+    // text that overflows is drawn at full size when the file stores no scale.
     let text = long_text();
     let plain = layout(&autofit_body(AutoFit::None, &text, 24.0), 300.0, 150.0);
     assert!(plain.content_h > 150.0, "{}", plain.content_h);
-    assert!((first_size(&plain) - 24.0 * PX_PT).abs() < 1e-6);
-    let fit = layout(
+    let norm = layout(
         &autofit_body(
             AutoFit::Normal {
                 font_scale: 1.0,
@@ -1105,29 +1093,10 @@ fn autofit_without_stored_scales_shrinks_overflowing_text_until_it_fits() {
         300.0,
         150.0,
     );
-    assert!(fit.content_h <= 150.5, "{}", fit.content_h);
-    assert!(
-        first_size(&fit) < 24.0 * PX_PT - 1.0,
-        "{}",
-        first_size(&fit)
-    );
-    // The step chosen is the first that fits: the one before it does not.
-    let scale = first_size(&fit) / (24.0 * PX_PT);
-    let k = (1..=AUTOFIT_STEPS)
-        .find(|k| (autofit_step(*k).0 - scale).abs() < 1e-6)
-        .expect("a step of the table");
-    if k > 1 {
-        let (s, r) = autofit_step(k - 1);
-        let prev = layout_at(
-            &autofit_body(AutoFit::None, &text, 24.0),
-            Frame::Normal,
-            300.0,
-            150.0,
-            s,
-            r,
-        );
-        assert!(prev.content_h > 150.5, "{}", prev.content_h);
-    }
+    assert!((first_size(&norm) - 24.0 * PX_PT).abs() < 1e-6);
+    // the very same layout as with no autofit at all, line by line
+    assert_eq!(norm.content_h, plain.content_h);
+    assert_eq!(norm.lines.len(), plain.lines.len());
 }
 
 #[test]
@@ -1184,7 +1153,7 @@ fn stored_autofit_scales_are_used_as_they_are() {
 }
 
 #[test]
-fn autofit_gives_up_at_the_smallest_step() {
+fn a_hugely_overflowing_body_is_still_laid_out_once_at_full_size() {
     let text = long_text().repeat(40);
     let l = layout(
         &autofit_body(
@@ -1198,38 +1167,40 @@ fn autofit_gives_up_at_the_smallest_step() {
         200.0,
         50.0,
     );
-    assert!(
-        (first_size(&l) - 24.0 * PX_PT * AUTOFIT_MIN_SCALE).abs() < 1e-6,
-        "{}",
-        first_size(&l)
-    );
+    assert!((first_size(&l) - 24.0 * PX_PT).abs() < 1e-6);
 }
 
 #[test]
-fn autofit_applies_to_rotated_frames_and_vertical_text_too() {
+fn stored_scales_apply_to_rotated_frames_and_vertical_text_and_missing_ones_do_not_shrink() {
     let text = long_text();
+    let sz = |l: &Layout| {
+        l.lines
+            .iter()
+            .flat_map(|x| &x.frags)
+            .map(|f| f.style.size_px)
+            .fold(f64::MAX, f64::min)
+    };
     for vert in [Vert::Vert, Vert::Vert270, Vert::EaVert] {
         let mut b = autofit_body(
             AutoFit::Normal {
-                font_scale: 1.0,
+                font_scale: 0.5,
                 ln_spc_reduction: 0.0,
             },
             &text,
             24.0,
         );
         b.vert = vert;
-        let l = layout(&b, 150.0, 300.0);
-        let mut none = b.clone();
-        none.autofit = AutoFit::None;
-        let l0 = layout(&none, 150.0, 300.0);
-        let sz = |l: &Layout| {
-            l.lines
-                .iter()
-                .flat_map(|x| &x.frags)
-                .map(|f| f.style.size_px)
-                .fold(f64::MAX, f64::min)
+        let stored = layout(&b, 150.0, 300.0);
+        b.autofit = AutoFit::Normal {
+            font_scale: 1.0,
+            ln_spc_reduction: 0.0,
         };
-        assert!(sz(&l) < sz(&l0), "{vert:?} {} {}", sz(&l), sz(&l0));
+        let missing = layout(&b, 150.0, 300.0);
+        b.autofit = AutoFit::None;
+        let none = layout(&b, 150.0, 300.0);
+        assert!((sz(&stored) - 12.0 * PX_PT).abs() < 1e-6, "{vert:?}");
+        assert!((sz(&missing) - sz(&none)).abs() < 1e-9, "{vert:?}");
+        assert!(sz(&stored) < sz(&missing), "{vert:?}");
     }
 }
 

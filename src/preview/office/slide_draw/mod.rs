@@ -39,6 +39,8 @@ pub mod underlay;
 #[cfg(test)]
 mod effects_tests;
 #[cfg(test)]
+mod hardening_tests;
+#[cfg(test)]
 mod tests;
 
 pub use model::*;
@@ -53,6 +55,9 @@ pub struct Rendered {
     /// Something is missing: the scene itself was truncated by its reader, or the renderer hit a
     /// size budget, a group nesting limit or a path-command limit.
     pub truncated: bool,
+    /// The caller said the render was not wanted any more (see [`render_svg_cancellable`]) and it
+    /// stopped early: `svg` is incomplete and must not be shown or remembered.
+    pub cancelled: bool,
 }
 
 /// Draws a scene as SVG. `media` resolves an image key (as used in [`ImageFill::key`]) to the
@@ -63,6 +68,19 @@ pub struct Rendered {
 /// flips, text, and the effects (outer and inner shadow, glow, soft edge, reflection). EMF / WMF
 /// pictures are converted to SVG. See the `svg` module for how each
 /// approximation is made.
+#[cfg(test)]
 pub fn render_svg(scene: &SlideScene, media: &dyn Fn(&str) -> Option<Arc<Vec<u8>>>) -> Rendered {
-    svg::render(scene, media)
+    svg::render(scene, media, &|| false)
+}
+
+/// [`render_svg`] that polls `cancel` between items and inside its long loops (picture effects,
+/// metafile conversion, the writing of a long path) and stops as soon as it says yes; the result
+/// then has `cancelled` set. The slides of a presentation are drawn on a worker that the preview
+/// leaves behind when the user moves on, and this is what lets it stop.
+pub fn render_svg_cancellable(
+    scene: &SlideScene,
+    media: &dyn Fn(&str) -> Option<Arc<Vec<u8>>>,
+    cancel: &dyn Fn() -> bool,
+) -> Rendered {
+    svg::render(scene, media, cancel)
 }

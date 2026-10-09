@@ -54,7 +54,7 @@ impl Table {
     }
 }
 
-pub(super) fn convert(b: &[u8]) -> Option<MetaSvg> {
+pub(super) fn convert(b: &[u8], cancel: &dyn Fn() -> bool) -> Option<MetaSvg> {
     let (mut off, bbox, inch) = if u32le(b, 0) == Some(PLACEABLE_KEY) {
         let l = i16le(b, 6)? as f64;
         let t = i16le(b, 8)? as f64;
@@ -111,6 +111,9 @@ pub(super) fn convert(b: &[u8]) -> Option<MetaSvg> {
         if count > MAX_RECORDS || g.stopped() {
             truncated = true;
             break;
+        }
+        if count.is_multiple_of(super::CANCEL_EVERY) && cancel() {
+            return None;
         }
         let r = &b[off..off + size];
         if func == 0 {
@@ -217,8 +220,15 @@ fn record(g: &mut Gdi, tbl: &mut Table, func: u16, r: &[u8]) -> Option<bool> {
             }
             let mut at = 8 + np * 2;
             let mut polys = Vec::new();
+            // The points of all the polygons together are bounded like the points of one record
+            // (an EMF says its total up front; here it is added up as the counts are read).
+            let mut total = 0usize;
             for i in 0..np {
                 let c = u16le(r, 8 + i * 2)? as usize;
+                total += c;
+                if total > MAX_POINTS {
+                    return None;
+                }
                 polys.push(points(r, at, c)?);
                 at += c * 4;
             }
@@ -311,15 +321,17 @@ fn record(g: &mut Gdi, tbl: &mut Table, func: u16, r: &[u8]) -> Option<bool> {
         0x0142 => {
             // DIBCREATEPATTERNBRUSH: style, usage, packed DIB.
             let dib_bytes = r.get(10..)?;
-            let mut budget = g.pixels_left;
             let avg = dib::split_packed(dib_bytes)
                 .and_then(|(bmi, bits)| {
-                    dib::decode_with(bmi, bits, &mut budget, Opts::default(), &g.dc.palette)
+                    dib::decode_with(
+                        bmi,
+                        bits,
+                        &mut g.pixels_left,
+                        Opts::default(),
+                        &g.dc.palette,
+                    )
                 })
-                .and_then(|bm| {
-                    g.pixels_left = budget;
-                    bm.average()
-                })
+                .and_then(|bm| bm.average())
                 .unwrap_or([128, 128, 128]);
             return Some(tbl.add(Obj::Brush(Rc::new(Brush::Solid(avg)))));
         }
@@ -467,12 +479,11 @@ fn draw(
         return;
     };
     let (blend, invert) = blend_of(rop);
-    let mut budget = g.pixels_left;
     let pal = g.dc.palette.clone();
     let Some(bmp) = dib::decode_with(
         bmi,
         bits,
-        &mut budget,
+        &mut g.pixels_left,
         Opts {
             invert,
             ..Opts::default()
@@ -481,7 +492,6 @@ fn draw(
     ) else {
         return;
     };
-    g.pixels_left = budget;
     let src = src.map(|(x, y, w, h)| {
         if dib_origin && !bmp.top_down {
             (x, bmp.h as i64 - y - h, w.abs(), h.abs())
