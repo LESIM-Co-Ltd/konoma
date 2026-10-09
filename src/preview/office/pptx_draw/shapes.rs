@@ -394,7 +394,8 @@ impl<'a> Sb<'a> {
         }
     }
 
-    /// A table (`a:tbl`) as scene items. A later task fills this in (the cell fills, borders and
-    /// text become shapes of the scene); until then a table is not drawn.
-    fn frame_table(&mut self, _frame: &Node, _xfrm: sd::Xfrm, _out: &mut Vec<sd::Item>) {}
+    /// A table (`a:tbl`) as scene items: the cell fills and text, the borders (see [`super::table`]).
+    fn frame_table(&mut self, frame: &Node, xfrm: sd::Xfrm, out: &mut Vec<sd::Item>) {
+        self.table_items(frame, xfrm, out);
+    }
 }

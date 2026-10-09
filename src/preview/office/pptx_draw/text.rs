@@ -121,6 +121,17 @@ fn emu(v: f64) -> f64 {
 impl Sb<'_> {
     /// The text of a shape: `None` when it shows no text at all.
     pub(super) fn text_body(&mut self, tx: &Node, chain: &TextChain<'_>) -> Option<sd::TextBody> {
+        let (body, shown) = self.text_body_raw(tx, chain);
+        shown.then_some(body)
+    }
+
+    /// The text of a shape and whether any of it is visible. A body with no visible text still has
+    /// paragraphs with an end-of-paragraph size (an empty table cell is as high as one line of it).
+    pub(super) fn text_body_raw(
+        &mut self,
+        tx: &Node,
+        chain: &TextChain<'_>,
+    ) -> (sd::TextBody, bool) {
         let bp = |name: &str| chain.body_pr.iter().find_map(|b| b.attr(name));
         let ins = |name: &str, d: f64| {
             bp(name)
@@ -188,7 +199,7 @@ impl Sb<'_> {
                 .any(|r| r.kind != sd::RunKind::LineBreak && !r.text.trim().is_empty());
             body.paragraphs.push(para);
         }
-        shown.then_some(body)
+        (body, shown)
     }
 
     fn paragraph(&mut self, p: &Node, chain: &TextChain<'_>) -> sd::Paragraph {

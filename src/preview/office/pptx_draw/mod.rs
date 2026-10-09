@@ -40,6 +40,7 @@ mod frames;
 mod geom;
 mod shapes;
 mod style;
+mod table;
 mod text;
 pub(super) mod theme;
 
@@ -50,6 +51,7 @@ mod tests_frames;
 #[cfg(test)]
 mod tests_frames_dump;
 
+pub(super) use table::TableStyles;
 pub(super) use theme::Theme;
 
 use theme::{ClrMap, Colors};
@@ -76,6 +78,8 @@ pub(super) struct DeckDraw {
     pub scenes: Vec<sd::SlideScene>,
     /// `p:defaultTextStyle` of the presentation.
     pub default_text: Option<Node>,
+    /// `ppt/tableStyles.xml` (the styles a table's `a:tableStyleId` names).
+    pub table_styles: Option<TableStyles>,
 }
 
 /// Everything about one slide the builder reads.
@@ -93,6 +97,7 @@ pub(super) struct SceneInput<'a> {
     pub rels: &'a HashMap<String, Rel>,
     pub inh: &'a Inherit,
     pub default_text: Option<&'a Node>,
+    pub table_styles: Option<&'a TableStyles>,
     /// What the first slide's number field shows (`firstSlideNum`), and this slide's place.
     pub first_num: i64,
     pub number: usize,
@@ -117,6 +122,7 @@ pub(super) struct Sb<'a> {
     /// Placeholder inheritance, for the slide's own shapes only.
     pub inh: Option<&'a Inherit>,
     pub default_text: Option<&'a Node>,
+    pub table_styles: Option<&'a TableStyles>,
     pub tx_styles: Option<&'a Node>,
     pub first_num: i64,
     pub slide_no: usize,
@@ -159,6 +165,7 @@ pub(super) fn build_scene(
         cur: 0,
         inh: None,
         default_text: inp.default_text,
+        table_styles: inp.table_styles,
         tx_styles: inh.master.tx_styles.as_ref(),
         first_num: inp.first_num,
         slide_no: inp.number,

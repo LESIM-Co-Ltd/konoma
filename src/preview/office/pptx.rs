@@ -1069,6 +1069,17 @@ fn convert(
                 ..DeckDraw::default()
             },
         };
+        // The table styles of the deck (`ppt/tableStyles.xml`), read once.
+        if let Some(part) = rels
+            .values()
+            .find(|r| r.kind == "tableStyles" && !r.external)
+            .map(|r| r.target.clone())
+            .filter(|t| rd.c.media.has(t))
+        {
+            if let Some(bytes) = rd.read_part(&part) {
+                rd.draw.table_styles = Some(pptx_draw::TableStyles::parse(&bytes, opts));
+            }
+        }
         let parts: Vec<Option<String>> = ids
             .iter()
             .map(|rid| {
@@ -1357,6 +1368,7 @@ impl Rd<'_, '_> {
         let rels = self.c.rels.clone();
         let opts = self.c.opts;
         let default_text = self.draw.default_text.take();
+        let table_styles = self.draw.table_styles.take();
         let first_num = self.first_num;
         // The three ways the builder reaches the package (a picture, a part, a part's
         // relationships) all go through this reader; they are called one at a time.
@@ -1376,6 +1388,7 @@ impl Rd<'_, '_> {
                 rels: &rels,
                 inh: &l.inh,
                 default_text: default_text.as_ref(),
+                table_styles: table_styles.as_ref(),
                 first_num,
                 number,
                 parts: pptx_draw::Parts {
@@ -1386,6 +1399,7 @@ impl Rd<'_, '_> {
             &mut loader,
         );
         self.draw.default_text = default_text;
+        self.draw.table_styles = table_styles;
         if scene.truncated {
             self.c.truncated = true;
         }
