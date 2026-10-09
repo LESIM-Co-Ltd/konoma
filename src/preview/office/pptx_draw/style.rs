@@ -98,6 +98,16 @@ impl Sb<'_> {
         rels: &HashMap<String, Rel>,
     ) -> Option<FillRes> {
         let e = parent.nodes().find(|c| is_fill_elem(&c.name))?;
+        // A gradient without a single stop says nothing about the colour: the fill the style (or
+        // the placeholder) gives shows, as in LibreOffice (PowerPoint writes stops always; the
+        // file of Apache POI bug 63200 has a bare `a:gradFill` on a shape with `fillRef idx=3`).
+        if e.name == "gradFill"
+            && !e
+                .child("gsLst")
+                .is_some_and(|l| l.nodes().any(|g| g.name == "gs"))
+        {
+            return None;
+        }
         Some(self.fill_elem(e, ph, rels))
     }
 

@@ -511,6 +511,16 @@ fn walk_part(
                     if !empty {
                         path.push(name);
                     }
+                } else if name == "controls" {
+                    // ActiveX controls (`p:controls`, after the shape tree): their pictures are
+                    // shapes drawn over it.
+                    match read_element(&mut rd, &e, empty, budget)? {
+                        Tree::Ok(n) => on_shape(n),
+                        Tree::TooBig => {
+                            out.truncated = true;
+                            return Ok(out);
+                        }
+                    }
                 } else if let (true, Some(f)) = (name == "bg", on_bg.as_mut()) {
                     match read_element(&mut rd, &e, empty, budget)? {
                         Tree::Ok(n) => f(n),

@@ -25,6 +25,22 @@ pub(super) fn is_placeholder(n: &Node) -> bool {
     ph_of(n.child(nv)).is_some()
 }
 
+/// Most `vmlDrawing` parts of a slide looked into for an embedded object's picture.
+const MAX_VML_PARTS: usize = 4;
+
+/// The relationship id of the `v:imagedata` of the VML shape with id `spid` (VML is not always
+/// well-formed XML, so the text is scanned: the shape's start tag up to the next `</v:shape>`).
+fn vml_image_rel(bytes: &[u8], spid: &str) -> Option<String> {
+    let text = String::from_utf8_lossy(bytes);
+    let needle = format!("id=\"{spid}\"");
+    let at = text.find(&needle)?;
+    let rest = &text[at..];
+    let rest = &rest[..rest.find("</v:shape>").unwrap_or(rest.len())];
+    let i = rest.find("relid=\"")? + "relid=\"".len();
+    let id = &rest[i..i + rest[i..].find('"')?];
+    (!id.is_empty()).then(|| id.to_string())
+}
+
 fn emu(v: f64) -> f64 {
     v.clamp(-4.0e9, 4.0e9)
 }
@@ -62,7 +78,13 @@ impl<'a> Sb<'a> {
         let is_shape = |n: &Node| {
             matches!(
                 n.name.as_str(),
-                "sp" | "pic" | "graphicFrame" | "grpSp" | "cxnSp" | "AlternateContent"
+                "sp" | "pic"
+                    | "graphicFrame"
+                    | "grpSp"
+                    | "cxnSp"
+                    | "AlternateContent"
+                    | "controls"
+                    | "control"
             )
         };
         if depth > MAX_GROUP_DEPTH {
@@ -86,6 +108,11 @@ impl<'a> Sb<'a> {
                 "pic" => out.extend(self.build_pic(n)),
                 "grpSp" => out.extend(self.build_group(n, depth)),
                 "graphicFrame" => self.build_frame(n, out),
+                "controls" | "control" => {
+                    // (ActiveX controls: wrappers whose `p:pic` is the picture PowerPoint shows.)
+                    self.items -= 1;
+                    self.build_nodes(n.nodes(), depth + 1, out);
+                }
                 _ => {
                     // (`AlternateContent` is a wrapper, not a shape of its own.)
                     self.items -= 1;
@@ -154,10 +181,11 @@ impl<'a> Sb<'a> {
             .iter()
             .filter_map(|(n, i)| n.child("spPr").map(|p| (p, *i)))
             .collect();
-        let xfrm = sprs
-            .iter()
-            .find_map(|(p, _)| p.child("xfrm"))
-            .and_then(xfrm_of)?;
+        let xfrm = self.map_xfrm(
+            sprs.iter()
+                .find_map(|(p, _)| p.child("xfrm"))
+                .and_then(xfrm_of)?,
+        );
         let (geom, text_rect) = sprs
             .iter()
             .find(|(p, _)| p.child("prstGeom").is_some() || p.child("custGeom").is_some())
@@ -310,10 +338,11 @@ impl<'a> Sb<'a> {
             .iter()
             .filter_map(|(n, i)| n.child("spPr").map(|p| (p, *i)))
             .collect();
-        let xfrm = sprs
-            .iter()
-            .find_map(|(p, _)| p.child("xfrm"))
-            .and_then(xfrm_of)?;
+        let xfrm = self.map_xfrm(
+            sprs.iter()
+                .find_map(|(p, _)| p.child("xfrm"))
+                .and_then(xfrm_of)?,
+        );
         let bf = pic.child("blipFill")?;
         let rels = self.rels_at(self.cur);
         // A picture that cannot be shown (linked, missing, not a kind konoma loads) is drawn as
@@ -356,8 +385,9 @@ impl<'a> Sb<'a> {
         let gpr = g.child("grpSpPr");
         let x = gpr.and_then(|p| p.child("xfrm"));
         let (w, h) = self.size;
-        // A group with no transform maps its members onto themselves.
-        let xfrm = x
+        // The group's box as written, in its parent's child space. A group with no transform maps
+        // its members onto themselves.
+        let raw = x
             .and_then(xfrm_of)
             .unwrap_or(sd::Xfrm::rect(0.0, 0.0, w, h));
         let child_off = x
@@ -368,7 +398,7 @@ impl<'a> Sb<'a> {
                     emu(num(o, "y").unwrap_or(0.0)),
                 )
             })
-            .unwrap_or((xfrm.x, xfrm.y));
+            .unwrap_or((raw.x, raw.y));
         let child_ext = x
             .and_then(|x| x.child("chExt"))
             .map(|e| {
@@ -378,7 +408,12 @@ impl<'a> Sb<'a> {
                 )
             })
             .filter(|(cw, ch)| *cw > 0.0 && *ch > 0.0)
-            .unwrap_or((xfrm.w, xfrm.h));
+            .unwrap_or((raw.w, raw.h));
+        // The box on the group's parent (the parent group's scale applied); the members are
+        // mapped from the child space into it as they are built.
+        let xfrm = self.map_xfrm(raw);
+        self.group_maps
+            .push(GroupMap::new(child_off, child_ext, &xfrm));
         // (`a:grpFill` of a member is the group's own fill.)
         let own_fill = gpr.and_then(|p| {
             let rels = self.rels_at(self.cur);
@@ -392,10 +427,14 @@ impl<'a> Sb<'a> {
         let mut kids = Vec::new();
         self.build_nodes(g.nodes(), depth + 1, &mut kids);
         self.group_fills.pop();
+        self.group_maps.pop();
+        // The members already sit in the group's box, so the drawn group does not scale: a scale
+        // would also scale line widths, effects and the like, which DrawingML keeps at their own
+        // size.
         (!kids.is_empty()).then_some(sd::Item::Group(sd::GroupItem {
+            child_off: (xfrm.x, xfrm.y),
+            child_ext: (xfrm.w, xfrm.h),
             xfrm,
-            child_off,
-            child_ext,
             items: kids,
         }))
     }
@@ -411,6 +450,7 @@ impl<'a> Sb<'a> {
             .iter()
             .find_map(|(n, _)| n.child("xfrm"))
             .and_then(xfrm_of)
+            .map(|x| self.map_xfrm(x))
         else {
             return;
         };
@@ -433,7 +473,43 @@ impl<'a> Sb<'a> {
                 .and_then(|r| (self.loader)(&r.target))
                 .unwrap_or_else(|| MISSING_PICTURE.to_string());
             out.push(sd::Item::Picture(sd::PictureItem::new(xfrm, key)));
+        } else if let Some(key) = data
+            .child("oleObj")
+            .and_then(|o| o.attr("spid"))
+            .and_then(|spid| self.vml_picture(spid))
+        {
+            out.push(sd::Item::Picture(sd::PictureItem::new(xfrm, key)));
         }
+    }
+
+    /// The picture a legacy VML drawing of the slide has for the shape `spid` (an embedded object
+    /// of an older file has no `p:pic`: PowerPoint shows `v:imagedata o:relid` of the
+    /// `vmlDrawing` part, found by the shape id the `p:oleObj` names).
+    fn vml_picture(&mut self, spid: &str) -> Option<String> {
+        let rels = self.rels_at(self.cur);
+        let mut parts: Vec<&str> = rels
+            .values()
+            .filter(|r| r.kind == "vmlDrawing" && !r.external)
+            .map(|r| r.target.as_str())
+            .collect();
+        parts.sort_unstable();
+        for part in parts.into_iter().take(MAX_VML_PARTS) {
+            let Some(bytes) = (self.parts.read)(part) else {
+                continue;
+            };
+            let Some(relid) = vml_image_rel(&bytes, spid) else {
+                continue;
+            };
+            let own = (self.parts.rels)(part);
+            let target = own
+                .get(&relid)
+                .filter(|r| !r.external)
+                .map(|r| r.target.clone());
+            if let Some(key) = target.and_then(|t| (self.loader)(&t)) {
+                return Some(key);
+            }
+        }
+        None
     }
 
     /// A table (`a:tbl`) as scene items: the cell fills and text, the borders (see [`super::table`]).

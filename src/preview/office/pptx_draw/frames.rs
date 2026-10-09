@@ -97,6 +97,31 @@ fn parse_tree(bytes: &[u8]) -> Parsed {
     }
 }
 
+/// The `c:clrMapOvr` element of a chart part, if it has one.
+fn chart_clr_ovr(bytes: &[u8]) -> Option<Node> {
+    if !bytes.windows(9).any(|w| w == b"clrMapOvr") {
+        return None;
+    }
+    let mut budget = Budget::new(64, 4096);
+    let mut rd = XmlReader::new(bytes);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let (e, empty) = match rd.read_event_into(&mut buf).ok()? {
+            Event::Start(e) => (e.into_owned(), false),
+            Event::Empty(e) => (e.into_owned(), true),
+            Event::Eof => return None,
+            _ => continue,
+        };
+        if e.local_name().as_ref() == b"clrMapOvr" {
+            return match read_element(&mut rd, &e, empty, &mut budget) {
+                Ok(Tree::Ok(n)) => Some(n),
+                _ => None,
+            };
+        }
+    }
+}
+
 /// The relationship id (of the slide) of a diagram's drawing part: the `relId` of the
 /// `dsp:dataModelExt` element of the data model part.
 fn drawing_rel_id(data: &[u8]) -> Option<String> {
@@ -178,7 +203,18 @@ impl Sb<'_> {
         let Some(bytes) = (self.parts.read)(&part) else {
             return;
         };
-        let col = self.col;
+        // A chart maps its colours by the master's map, not by the slide's (or the layout's)
+        // override, unless the chart part says otherwise with a `c:clrMapOvr` (LibreOffice's
+        // test for `chart_pt_color_bg1.pptx`, a PowerPoint file: "bg1 is mapped in the slide to
+        // dk1, but in the chart to lt1"). `c:clrMapOvr` carries the mapping in its own
+        // attributes, as `p:clrMap` does.
+        let chart_map = chart_clr_ovr(&bytes)
+            .map(|n| ClrMap::from_node(&n))
+            .unwrap_or_else(|| self.master_map.clone());
+        let col = Colors {
+            theme: self.col.theme,
+            map: &chart_map,
+        };
         let palette: Vec<Rgba> = (1..=6)
             .filter_map(|i| col.scheme(&format!("accent{i}"), None))
             .collect();
@@ -275,7 +311,10 @@ impl Sb<'_> {
             self.extra_rels = extra;
         }
         let mut kids = Vec::new();
+        // (The drawing is in the frame's own space: an enclosing group's map does not apply.)
+        self.group_maps.push(GroupMap::identity());
         self.build_nodes(tree.nodes(), 1, &mut kids);
+        self.group_maps.pop();
         self.extra_rels.clear();
         if kids.is_empty() {
             return;

@@ -31,6 +31,50 @@ impl Rect {
 
 /// Space around the chart's edge, px.
 const PAD: f64 = 8.0;
+
+/// The widest a chart title gets before it wraps, as a share of the chart's width (Office breaks
+/// a long title into lines at about this width).
+const TITLE_MAX_SHARE: f64 = 0.8;
+
+/// `text` with line breaks at word boundaries so that no line is wider than `max_w` px (a word
+/// wider than that stays on a line of its own; text with no spaces, as in Japanese, breaks between
+/// any two characters).
+fn wrap_title(st: &RStyle, text: &str, max_w: f64) -> String {
+    use super::text::line_width;
+    if max_w <= 0.0 || measure(st, text).0 <= max_w {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    for (k, para) in text.split('\n').enumerate() {
+        if k > 0 {
+            out.push('\n');
+        }
+        let spaced = para.contains(' ');
+        let sep = if spaced { " " } else { "" };
+        let units: Vec<String> = if spaced {
+            para.split(' ').map(str::to_string).collect()
+        } else {
+            para.chars().map(String::from).collect()
+        };
+        let mut line = String::new();
+        for u in units {
+            let cand = if line.is_empty() {
+                u.clone()
+            } else {
+                format!("{line}{sep}{u}")
+            };
+            if !line.is_empty() && line_width(st, &cand) > max_w {
+                out.push_str(&line);
+                out.push('\n');
+                line = u;
+            } else {
+                line = cand;
+            }
+        }
+        out.push_str(&line);
+    }
+    out
+}
 /// Default title size (pt) and weight when the chart says nothing (Office 2007 style 2).
 const TITLE_PT: f64 = 18.0;
 /// Default text size (pt).
@@ -320,7 +364,8 @@ pub(super) fn draw(o: &mut Out, m: &ChartModel) {
     let mut title_draw: Option<(f64, f64, RStyle, String)> = None;
     if let Some(t) = title {
         let st = resolve(m, &t.style, TITLE_PT, true);
-        let (tw, th) = measure(&st, &t.text);
+        let wrapped = wrap_title(&st, &t.text, w * TITLE_MAX_SHARE);
+        let (tw, th) = measure(&st, &wrapped);
         let (x, y) = match t.layout {
             Some(l) if l.x.is_some() || l.y.is_some() => (
                 l.x.unwrap_or(0.0).clamp(0.0, 1.0) * w,
@@ -333,7 +378,7 @@ pub(super) fn draw(o: &mut Out, m: &ChartModel) {
             avail.y += used.max(0.0);
             avail.h -= used.max(0.0);
         }
-        title_draw = Some((x, y, st, t.text.clone()));
+        title_draw = Some((x, y, st, wrapped));
     }
 
     // Legend.

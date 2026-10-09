@@ -1586,7 +1586,12 @@ fn long_texts_are_cut() {
     });
     m.legend = Some(Legend::default());
     for t in text_strings(&draw(&m)) {
-        assert!(t.chars().count() <= MAX_LABEL_CHARS + 1, "{}", t.len());
+        // (A title is also broken into lines: the breaks are not characters of the text.)
+        assert!(
+            t.chars().filter(|c| *c != '\n').count() <= MAX_LABEL_CHARS + 1,
+            "{}",
+            t.len()
+        );
     }
 }
 
@@ -1743,4 +1748,42 @@ fn doughnut_counter_clockwise_slices_run_the_other_way_round() {
     let mut one = pie_model(&[5.0], GroupKind::Doughnut);
     one.groups[0].counter_clockwise = true;
     assert!(!draw(&one).is_empty());
+}
+
+#[test]
+fn a_long_chart_title_wraps_at_four_fifths_of_the_chart_width() {
+    // (Slide 8 of the deck aascu 5864: a 20 pt title of 120 characters ran off both sides.)
+    let g = grp(GroupKind::Bar, vec![ser("a", &["p", "q"], &[1.0, 2.0])]);
+    let mut m = model(vec![g]);
+    let long = "Employment of workers with a Bachelor degree or better grew at a 2 percent to 3 percent rate over the past two decades";
+    m.title = Some(ChartText {
+        text: long.into(),
+        style: TextStyle {
+            size_pt: Some(20.0),
+            bold: Some(true),
+            ..TextStyle::default()
+        },
+        ..ChartText::default()
+    });
+    let items = draw(&m);
+    let tx = texts(&items);
+    let title = tx.iter().find(|t| t.0.contains("Employment")).unwrap();
+    assert!(title.0.contains('\n'), "not wrapped: {}", title.0);
+    // The same words in the same order, only the breaks differ.
+    assert_eq!(title.0.replace('\n', " "), long);
+    assert!(title.1 .2 <= W * 0.8 + 1.0, "box {} wide", title.1 .2);
+    assert!(title.1 .0 >= 0.0 && title.1 .0 + title.1 .2 <= W);
+    // A short one stays on one line; an unspaced (CJK) one breaks between characters.
+    m.title.as_mut().unwrap().text = "Short".into();
+    let items = draw(&m);
+    assert!(texts(&items).iter().any(|t| t.0 == "Short"));
+    m.title.as_mut().unwrap().text = "あ".repeat(60);
+    let items = draw(&m);
+    let t = texts(&items)
+        .into_iter()
+        .find(|t| t.0.contains('あ'))
+        .unwrap();
+    assert!(t.0.contains('\n'));
+    assert_eq!(t.0.replace('\n', ""), "あ".repeat(60));
+    assert!(t.1 .2 <= W * 0.8 + 1.0);
 }

@@ -54,6 +54,8 @@ mod tests_f3_dump;
 mod tests_frames;
 #[cfg(test)]
 mod tests_frames_dump;
+#[cfg(test)]
+mod tests_g1;
 
 pub(super) use table::TableStyles;
 pub(super) use theme::Theme;
@@ -112,6 +114,8 @@ pub(super) struct SceneInput<'a> {
 pub(super) struct Sb<'a> {
     col: Colors<'a>,
     pub theme: &'a Theme,
+    /// The master's colour map: what a chart maps its colours by unless the chart says otherwise.
+    master_map: &'a ClrMap,
     /// Loads the picture at a package part into the document and returns its `office-img://` key.
     pub loader: &'a mut dyn FnMut(&str) -> Option<String>,
     /// Reads further parts (charts, SmartArt).
@@ -137,6 +141,61 @@ pub(super) struct Sb<'a> {
     pub truncated: bool,
     /// The fill `a:grpFill` of the group being built stands for.
     pub group_fills: Vec<Option<sd::Fill>>,
+    /// The child-space maps of the groups being built, innermost last.
+    pub group_maps: Vec<GroupMap>,
+}
+
+/// The map from a group's child space onto its box: `p -> to + (p - off) * scale` per axis.
+///
+/// Members are placed through it when they are built (so their boxes, preset geometry, text box
+/// and wrapping are those of the final size); only boxes are scaled, never line widths, text sizes
+/// or effects, which DrawingML keeps at their own size (a scale in the drawing would multiply
+/// them).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct GroupMap {
+    off: (f64, f64),
+    to: (f64, f64),
+    scale: (f64, f64),
+}
+
+impl GroupMap {
+    /// The map of a group with child space `child_off` / `child_ext` (positive extents) onto the
+    /// box `to`.
+    pub(super) fn new(child_off: (f64, f64), child_ext: (f64, f64), to: &sd::Xfrm) -> GroupMap {
+        GroupMap {
+            off: child_off,
+            to: (to.x, to.y),
+            scale: (to.w / child_ext.0, to.h / child_ext.1),
+        }
+    }
+
+    /// A map that leaves boxes where they are (the drawing of a SmartArt frame is in the frame's
+    /// own space).
+    pub(super) fn identity() -> GroupMap {
+        GroupMap {
+            off: (0.0, 0.0),
+            to: (0.0, 0.0),
+            scale: (1.0, 1.0),
+        }
+    }
+}
+
+impl Sb<'_> {
+    /// A member's box in the child space of the group being built, as a box in the space of that
+    /// group's parent; rotation and flips stay as they are.
+    pub(super) fn map_xfrm(&self, x: sd::Xfrm) -> sd::Xfrm {
+        let Some(m) = self.group_maps.last() else {
+            return x;
+        };
+        let lim = |v: f64| v.clamp(-4.0e9, 4.0e9);
+        sd::Xfrm {
+            x: lim(m.to.0 + (x.x - m.off.0) * m.scale.0),
+            y: lim(m.to.1 + (x.y - m.off.1) * m.scale.1),
+            w: lim(x.w * m.scale.0).max(0.0),
+            h: lim(x.h * m.scale.1).max(0.0),
+            ..x
+        }
+    }
 }
 
 /// Builds the scene of a slide.
@@ -158,6 +217,7 @@ pub(super) fn build_scene(
     let map = ClrMap::with_override(&layout_map, inp.clr_ovr);
     let mut sb = Sb {
         col: Colors { theme, map: &map },
+        master_map: &master_map,
         theme,
         loader,
         parts: Parts {
@@ -179,6 +239,7 @@ pub(super) fn build_scene(
         chars: 0,
         truncated: inp.cut || inh.layout.cut || inh.master.cut,
         group_fills: Vec::new(),
+        group_maps: Vec::new(),
     };
     let mut scene = sd::SlideScene {
         width: inp.size.0,

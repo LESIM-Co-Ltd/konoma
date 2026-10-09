@@ -144,6 +144,8 @@ mod tests_fidelity_rank;
 #[cfg(test)]
 mod tests_fx34b;
 #[cfg(test)]
+mod tests_g1_dump;
+#[cfg(test)]
 mod tests_limits;
 #[cfg(test)]
 mod tests_math_fx;

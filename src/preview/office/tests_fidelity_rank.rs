@@ -158,7 +158,7 @@ fn hist(img: &RgbaImage) -> Vec<f64> {
 }
 
 /// `(mad, ssim, hist, aspect_differs)` of ours against the reference.
-fn scores(ours: &RgbaImage, reference: &RgbaImage) -> (f64, f64, f64, bool) {
+pub(super) fn scores(ours: &RgbaImage, reference: &RgbaImage) -> (f64, f64, f64, bool) {
     let h = ((f64::from(SCORE_W) * f64::from(reference.height())
         / f64::from(reference.width().max(1)))
     .round() as u32)
@@ -180,7 +180,7 @@ fn scores(ours: &RgbaImage, reference: &RgbaImage) -> (f64, f64, f64, bool) {
     (mad, s, hd, aspect)
 }
 
-fn combined(mad: f64, ssim: f64, hist: f64) -> f64 {
+pub(super) fn combined(mad: f64, ssim: f64, hist: f64) -> f64 {
     0.35 * (mad / 0.25).min(1.0) + 0.45 * (1.0 - ssim.max(0.0)) + 0.20 * (hist / 0.5).min(1.0)
 }
 

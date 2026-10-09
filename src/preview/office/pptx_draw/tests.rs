@@ -1283,8 +1283,9 @@ fn a_group_keeps_its_child_space_and_nests() {
         panic!()
     };
     assert_eq!(g.xfrm, sd::Xfrm::rect(1000.0, 2000.0, 3000.0, 4000.0));
-    assert_eq!(g.child_off, (100.0, 200.0));
-    assert_eq!(g.child_ext, (600.0, 800.0));
+    // (The members are mapped when read: the drawn group has no scale of its own.)
+    assert_eq!(g.child_off, (1000.0, 2000.0));
+    assert_eq!(g.child_ext, (3000.0, 4000.0));
     let Item::Group(g2) = &g.items[0] else {
         panic!()
     };
@@ -1292,8 +1293,16 @@ fn a_group_keeps_its_child_space_and_nests() {
         (g2.xfrm.rot_deg, g2.xfrm.flip_h, g2.xfrm.flip_v),
         (90.0, true, false)
     );
-    assert_eq!((g2.child_off, g2.child_ext), ((0.0, 0.0), (60.0, 80.0)));
-    assert!(matches!(&g2.items[0], Item::Shape(s) if s.xfrm.x == 5.0));
+    // The inner box (10, 20, 30, 40) of the child space (100, 200, 600, 800) on 3000 x 4000
+    // (factor 5) is (550, 1100, 150, 200); the member at 5 of its 60 x 80 space is at 550 + 5 * 2.5.
+    assert_eq!(g2.xfrm.x, 550.0);
+    assert_eq!(g2.xfrm.y, 1100.0);
+    assert_eq!((g2.xfrm.w, g2.xfrm.h), (150.0, 200.0));
+    assert_eq!(
+        (g2.child_off, g2.child_ext),
+        ((550.0, 1100.0), (150.0, 200.0))
+    );
+    assert!(matches!(&g2.items[0], Item::Shape(s) if s.xfrm.x == 562.5));
     // A group with no child extent maps onto itself.
     let d = D::new(&format!(
         r#"<p:grpSp><p:nvGrpSpPr><p:cNvPr id="3" name="G"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="10" y="20"/><a:ext cx="300" cy="400"/></a:xfrm></p:grpSpPr>{}</p:grpSp>"#,
