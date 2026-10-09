@@ -157,6 +157,8 @@ mod tests_odt_more;
 #[cfg(test)]
 mod tests_pptx;
 #[cfg(test)]
+mod tests_pptx_golden;
+#[cfg(test)]
 mod tests_pptx_real;
 #[cfg(test)]
 mod tests_pptx_robust;

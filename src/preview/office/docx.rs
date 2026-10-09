@@ -3010,24 +3010,22 @@ impl<'a> Conv<'a> {
     /// `![alt](office-img://..)` for the picture stored at `part` of the package (a placeholder when
     /// it cannot be shown).
     fn image_md_part(&mut self, part: &str, alt: &str) -> String {
-        let alt_md = alt.replace(
-            [
-                '[', ']', '(', ')', '<', '>', '\\', '`', '*', '_', '$', '~', '|', '&', '!',
-            ],
-            " ",
-        );
-        let alt_md = alt_md.split_whitespace().collect::<Vec<_>>().join(" ");
-        let key = match self.image_by_part.get(part) {
+        match self.image_key_for_part(part) {
+            Some(k) => format!("![{}]({k})", md_alt(alt)),
+            None => self.placeholder(alt),
+        }
+    }
+
+    /// The `office-img://` key of the picture stored at `part` (loaded once into
+    /// [`Document::images`]; the same bytes give the same key), `None` when it cannot be shown.
+    fn image_key_for_part(&mut self, part: &str) -> Option<String> {
+        match self.image_by_part.get(part) {
             Some(k) => k.clone(),
             None => {
                 let k = self.load_image(part);
                 self.image_by_part.insert(part.to_string(), k.clone());
                 k
             }
-        };
-        match key {
-            Some(k) => format!("![{alt_md}]({k})"),
-            None => self.placeholder(alt),
         }
     }
 
@@ -3090,6 +3088,18 @@ impl<'a> Conv<'a> {
 // ---------------------------------------------------------------------------------------------
 // free helpers
 // ---------------------------------------------------------------------------------------------
+
+/// A text as the alt text of a Markdown image (`![alt](..)`): the characters that mean something
+/// to Markdown become spaces, runs of white space one space.
+fn md_alt(alt: &str) -> String {
+    let alt_md = alt.replace(
+        [
+            '[', ']', '(', ')', '<', '>', '\\', '`', '*', '_', '$', '~', '|', '&', '!',
+        ],
+        " ",
+    );
+    alt_md.split_whitespace().collect::<Vec<_>>().join(" ")
+}
 
 /// The `t` text (`w:t`, `a:t`) under `n`, in order.
 fn collect_t_text(n: &Node, out: &mut String, depth: usize) {

@@ -946,9 +946,10 @@ fn groups_are_followed_twenty_deep_and_a_shape_of_any_kind_below_that_is_reporte
     // A group below the depth followed counts as well (it holds shapes).
     let past = px::doc(&px::Px::new(vec![px::sl(&nest(22, &text))]));
     assert!(past.truncated);
-    // A connector is not a shape of the slide: there is nothing to report.
+    // A connector is not in the text view, but the picture view draws it: one lost below the depth
+    // followed is reported as well.
     let past = px::doc(&px::Px::new(vec![px::sl(&nest(21, &px::connector()))]));
-    assert!(!past.truncated);
+    assert!(past.truncated);
 }
 
 #[test]

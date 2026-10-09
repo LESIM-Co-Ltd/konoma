@@ -68,6 +68,16 @@ use super::*;
 use crate::i18n::{tr, Msg};
 use crate::preview::office::slide_order::{bounding, reading_order, Kind, Rect, Shape};
 
+// The drawing model of the slides (`slide_draw::SlideScene`) is built in the same reading pass.
+#[path = "pptx_draw/mod.rs"]
+mod pptx_draw;
+use crate::preview::office::slide_draw as sd;
+use pptx_draw::{DeckDraw, SceneInput, Theme};
+
+/// A presentation's picture view as Markdown (see [`pptx_draw::picture_markdown`]); also used by
+/// the OpenDocument reader.
+pub(super) use pptx_draw::{picture_markdown, slide_keys};
+
 /// A slide of a presentation, as listed in [`Document::slides`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlideInfo {
@@ -243,6 +253,9 @@ fn class_of(typ: Option<&str>) -> Class {
 #[derive(Debug, Clone)]
 struct PhKey {
     class: Class,
+    /// The `type` attribute (empty for the default `obj`): told apart for the date, footer and
+    /// slide number placeholders, which share a class.
+    typ: String,
     idx: String,
     /// The placeholder states an `idx` other than 0: it stands for the layout's placeholder of that
     /// `idx` and for no other (one the layout lacks inherits nothing). Without one, the kind of
@@ -254,6 +267,7 @@ fn ph_key(ph: &Node) -> PhKey {
     let idx = ph.attr("idx").unwrap_or("0").trim().to_string();
     PhKey {
         class: class_of(ph.attr("type")),
+        typ: ph.attr("type").unwrap_or("").trim().to_string(),
         explicit: idx != "0",
         idx,
     }
@@ -262,16 +276,53 @@ fn ph_key(ph: &Node) -> PhKey {
 #[derive(Debug, Clone)]
 struct PhInfo {
     class: Class,
+    typ: String,
     idx: String,
     rect: Option<Rect>,
     levels: Levels,
+    /// The place of the placeholder's shape in [`PartInfo::nodes`] (past the end when the part
+    /// held more shapes than were kept).
+    at: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct PartInfo {
     phs: Vec<PhInfo>,
     /// `titleStyle`, `bodyStyle`, `otherStyle` of a master.
     styles: [Levels; 3],
+    /// The top-level shapes of the part (at most [`pptx_draw::MAX_PART_SHAPES`]), for the drawing.
+    nodes: Vec<Node>,
+    /// `p:bg`.
+    bg: Option<Node>,
+    /// A master's `p:clrMap`, a layout's `p:clrMapOvr`.
+    clr: Option<Node>,
+    /// A master's `p:txStyles` as read (the drawing needs every property, not just the bullets).
+    tx_styles: Option<Node>,
+    /// A layout's `showMasterSp` (true when absent).
+    show_master_sp: bool,
+    /// The relationships of the part (its pictures).
+    rels: HashMap<String, Rel>,
+    /// A master's theme.
+    theme: Option<Rc<Theme>>,
+    /// Shapes of the part were left unread (the node budget or [`pptx_draw::MAX_PART_SHAPES`]).
+    cut: bool,
+}
+
+impl Default for PartInfo {
+    fn default() -> PartInfo {
+        PartInfo {
+            phs: Vec::new(),
+            styles: Default::default(),
+            nodes: Vec::new(),
+            bg: None,
+            clr: None,
+            tx_styles: None,
+            show_master_sp: true,
+            rels: HashMap::new(),
+            theme: None,
+            cut: false,
+        }
+    }
 }
 
 /// A layout with its master.
@@ -296,6 +347,20 @@ impl Inherit {
         } else {
             same_idx.or_else(|| phs.iter().find(|p| p.class == key.class))
         }
+    }
+
+    /// The master's placeholder a slide placeholder inherits from, for the drawing: as
+    /// [`Self::master_ph`], except that a date, footer or slide number placeholder finds the
+    /// master's of the same `type`.
+    fn master_ph_for(&self, key: &PhKey) -> Option<&PhInfo> {
+        if key.class == Class::Furniture {
+            return self
+                .master
+                .phs
+                .iter()
+                .find(|p| p.class == Class::Furniture && p.typ == key.typ);
+        }
+        self.master_ph(key.class)
     }
 
     /// The master's placeholder of that kind (a subtitle is a body there).
@@ -333,8 +398,9 @@ fn xfrm_rect(x: &Node) -> Option<Rect> {
     Some(Rect::new(ox, oy, w, h))
 }
 
-/// The placeholder information a layout / master shape gives.
-fn ph_info(n: &Node) -> Option<PhInfo> {
+/// The placeholder information a layout / master shape gives (`at`: the shape's place in the
+/// part's kept shapes).
+fn ph_info(n: &Node, at: usize) -> Option<PhInfo> {
     let (nv, xfrm_parent) = match n.name.as_str() {
         "sp" => (n.child("nvSpPr")?, n.child("spPr")),
         "pic" => (n.child("nvPicPr")?, n.child("spPr")),
@@ -353,9 +419,11 @@ fn ph_info(n: &Node) -> Option<PhInfo> {
         .unwrap_or_default();
     Some(PhInfo {
         class: key.class,
+        typ: key.typ,
         idx: key.idx,
         rect,
         levels,
+        at,
     })
 }
 
@@ -372,13 +440,16 @@ fn tx_styles(n: &Node) -> [Levels; 3] {
 struct WalkOut {
     /// The root's `show` attribute.
     show: Option<String>,
+    /// The root's `showMasterSp` attribute.
+    show_master_sp: Option<String>,
     /// The part held more than the node budget allows: the rest of it was not read.
     truncated: bool,
 }
 
 /// Reads the root `root`'s `p:cSld/p:spTree` one shape at a time, handing each to `on_shape`, and
 /// the root's direct children named in `other` to `on_other`. Everything else is skipped without
-/// being built. Stops (`truncated`) when `budget` runs out.
+/// being built. Stops (`truncated`) when `budget` runs out. `on_bg` (when given) takes the part's
+/// `p:cSld/p:bg`.
 fn walk_part(
     bytes: &[u8],
     root: &str,
@@ -386,6 +457,7 @@ fn walk_part(
     on_shape: &mut dyn FnMut(Node),
     on_other: &mut dyn FnMut(Node),
     other: &[&str],
+    mut on_bg: Option<&mut dyn FnMut(Node)>,
 ) -> Result<WalkOut, OfficeError> {
     let mut rd = XmlReader::new(bytes);
     let mut buf = Vec::new();
@@ -411,6 +483,7 @@ fn walk_part(
                     return Err(OfficeError::Unsupported);
                 }
                 out.show = attr(&e, b"show", false);
+                out.show_master_sp = attr(&e, b"showMasterSp", false);
                 if empty {
                     break;
                 }
@@ -437,6 +510,12 @@ fn walk_part(
                 if name == "spTree" {
                     if !empty {
                         path.push(name);
+                    }
+                } else if let (true, Some(f)) = (name == "bg", on_bg.as_mut()) {
+                    match read_element(&mut rd, &e, empty, budget)? {
+                        Tree::Ok(n) => f(n),
+                        // (The element is consumed: the shapes after it are still read.)
+                        Tree::TooBig => out.truncated = true,
                     }
                 } else if !empty {
                     skip_rest(&mut rd)?;
@@ -847,6 +926,10 @@ struct Loaded {
     notes: Option<String>,
     /// Shapes were left unread (the node budget or the shape cap).
     cut: bool,
+    /// `p:bg`, `p:clrMapOvr` and `showMasterSp` of the slide, for the drawing.
+    bg: Option<Node>,
+    clr_ovr: Option<Node>,
+    show_master_sp: bool,
 }
 
 struct Rd<'c, 'a> {
@@ -866,6 +949,8 @@ struct Rd<'c, 'a> {
     last: Option<(String, Loaded)>,
     /// The shapes handed to the reading-order pass so far, over the whole deck.
     order_shapes: usize,
+    /// The drawing models of the slides written so far.
+    draw: DeckDraw,
 }
 
 fn convert(
@@ -895,6 +980,7 @@ fn convert(
     let mut over = false;
     let mut slide_rect: Option<Rect> = None;
     let mut first_num: i64 = 1;
+    let mut default_text: Option<Node> = None;
     {
         let Some(r) = pkg.part(&main, cap)? else {
             return Err(OfficeError::Unsupported);
@@ -904,7 +990,9 @@ fn convert(
         let mut root_seen = false;
         loop {
             buf.clear();
-            match rd.read_event_into(&mut buf).map_err(xml_err)? {
+            let ev = rd.read_event_into(&mut buf).map_err(xml_err)?;
+            let empty_el = matches!(ev, Event::Empty(_));
+            match ev {
                 Event::Start(e) | Event::Empty(e) => {
                     let local = e.local_name();
                     if !root_seen {
@@ -925,6 +1013,15 @@ fn convert(
                             if w > 0 && h > 0 {
                                 slide_rect = Some(Rect::new(0, 0, w, h));
                             }
+                        }
+                    } else if local.as_ref() == b"defaultTextStyle"
+                        && !empty_el
+                        && default_text.is_none()
+                    {
+                        // The text style every level of every shape falls back to (drawing).
+                        let mut b = Budget::new(opts.max_block_nodes.min(50_000), 1 << 20);
+                        if let Ok(Tree::Ok(n)) = read_element(&mut rd, &e, false, &mut b) {
+                            default_text = Some(n);
                         }
                     } else if local.as_ref() == b"sldId" {
                         if let Some(id) = attr(&e, b"id", true) {
@@ -954,6 +1051,7 @@ fn convert(
     conv.truncated |= over;
     conv.split_bullet_lists = true;
     let mut slides: Vec<SlideInfo> = Vec::new();
+    let scenes: Vec<sd::SlideScene>;
     {
         let mut rd = Rd {
             c: &mut conv,
@@ -966,6 +1064,10 @@ fn convert(
             cur_slide: 0,
             last: None,
             order_shapes: 0,
+            draw: DeckDraw {
+                default_text,
+                ..DeckDraw::default()
+            },
         };
         let parts: Vec<Option<String>> = ids
             .iter()
@@ -986,9 +1088,18 @@ fn convert(
                 slides.push(info);
             }
         }
+        scenes = std::mem::take(&mut rd.draw.scenes);
     }
     let mut doc = conv.assemble(Vec::new());
     doc.slides = slides;
+    // The picture view: one scene, one picture URL and one section per slide, in the order of the
+    // slides (a slide whose heading did not fit has neither).
+    if scenes.len() == doc.slides.len() {
+        doc.slide_scenes = scenes;
+        doc.slide_keys = slide_keys(doc.slides.len());
+        doc.picture_markdown =
+            picture_markdown(&doc.markdown, &doc.slides, &doc.slide_keys, opts.lang);
+    }
     Ok(doc)
 }
 
@@ -1031,16 +1142,28 @@ impl Rd<'_, '_> {
         }
     }
 
+    /// [`Self::rels_of`] for a part whose relationships may well not exist (a master's, read only
+    /// for the drawing): a missing part is nothing to read, and costs no budget.
+    fn rels_of_present(&mut self, part: &str) -> HashMap<String, Rel> {
+        let (_, rp) = rels_path(part);
+        if self.c.media.has(&rp) {
+            self.rels_of(part)
+        } else {
+            HashMap::new()
+        }
+    }
+
     /// A layout with its master, read once.
     fn inherit(&mut self, layout_part: &str) -> Rc<Inherit> {
         if let Some(i) = self.layouts.get(layout_part) {
             return Rc::clone(i);
         }
-        let layout = self
+        let lrels = self.rels_of(layout_part);
+        let mut layout = self
             .read_part(layout_part)
             .and_then(|b| part_info(&b, "sldLayout", self.c.opts).ok())
             .unwrap_or_default();
-        let lrels = self.rels_of(layout_part);
+        layout.rels = lrels.clone();
         let master_part = lrels
             .values()
             .find(|r| r.kind == "slideMaster" && !r.external)
@@ -1049,10 +1172,12 @@ impl Rd<'_, '_> {
             Some(mp) => match self.masters.get(&mp) {
                 Some(m) => Rc::clone(m),
                 None => {
-                    let info = self
+                    let mut info = self
                         .read_part(&mp)
                         .and_then(|b| part_info(&b, "sldMaster", self.c.opts).ok())
                         .unwrap_or_default();
+                    info.rels = self.rels_of_present(&mp);
+                    info.theme = self.theme_of(&info.rels);
                     let m = Rc::new(info);
                     self.masters.insert(mp, Rc::clone(&m));
                     m
@@ -1066,6 +1191,20 @@ impl Rd<'_, '_> {
         inh
     }
 
+    /// The theme a master's relationships point at (read once per master).
+    fn theme_of(&mut self, rels: &HashMap<String, Rel>) -> Option<Rc<Theme>> {
+        let part = rels
+            .values()
+            .find(|r| r.kind == "theme" && !r.external)
+            .map(|r| r.target.clone())?;
+        if !self.c.media.has(&part) {
+            return None;
+        }
+        let trels = self.rels_of_present(&part);
+        let bytes = self.read_part(&part)?;
+        Some(Rc::new(Theme::parse(&bytes, self.c.opts, trels)))
+    }
+
     fn load_slide(&mut self, part: &str) -> Option<Loaded> {
         let bytes = self.read_part(part)?;
         let rels = self.rels_of(part);
@@ -1074,6 +1213,8 @@ impl Rd<'_, '_> {
         let mut nodes: Vec<Node> = Vec::new();
         let mut cut = false;
         let max = opts.max_slide_shapes;
+        let mut bg: Option<Node> = None;
+        let mut clr_ovr: Option<Node> = None;
         let walked = walk_part(
             &bytes,
             "sld",
@@ -1085,8 +1226,9 @@ impl Rd<'_, '_> {
                     cut = true;
                 }
             },
-            &mut |_| {},
-            &[],
+            &mut |n| clr_ovr = Some(n),
+            &["clrMapOvr"],
+            Some(&mut |n| bg = Some(n)),
         );
         drop(bytes);
         let walked = walked.ok()?;
@@ -1112,6 +1254,12 @@ impl Rd<'_, '_> {
             inh,
             notes,
             cut: cut || walked.truncated,
+            bg,
+            clr_ovr,
+            show_master_sp: !walked
+                .show_master_sp
+                .as_deref()
+                .is_some_and(|s| matches!(s.trim(), "0" | "false")),
         })
     }
 
@@ -1128,7 +1276,15 @@ impl Rd<'_, '_> {
         let Some(mut l) = loaded else {
             // A slide that cannot be read still has its place in the order.
             self.c.truncated = true;
-            return self.write_heading(number, "", false);
+            let info = self.write_heading(number, "", false)?;
+            let (width, height) = self.slide_size();
+            self.draw.scenes.push(sd::SlideScene {
+                width,
+                height,
+                truncated: true,
+                ..sd::SlideScene::default()
+            });
+            return Some(info);
         };
         if l.cut {
             self.c.truncated = true;
@@ -1175,7 +1331,54 @@ impl Rd<'_, '_> {
         if let Some(np) = l.notes.as_deref() {
             self.write_notes(np);
         }
+        self.draw_slide(number, l);
         Some(info)
+    }
+
+    /// The slide size (EMU): `p:sldSz`, else PowerPoint's 4:3 default.
+    fn slide_size(&self) -> (f64, f64) {
+        self.slide_rect
+            .map_or((9_144_000.0, 6_858_000.0), |r| (r.w as f64, r.h as f64))
+    }
+
+    /// Builds the slide's drawing model from the trees already read (see `pptx_draw`).
+    fn draw_slide(&mut self, number: usize, l: &Loaded) {
+        let size = self.slide_size();
+        if self.c.cancelled() {
+            self.c.truncated = true;
+            self.draw.scenes.push(sd::SlideScene {
+                width: size.0,
+                height: size.1,
+                truncated: true,
+                ..sd::SlideScene::default()
+            });
+            return;
+        }
+        let rels = self.c.rels.clone();
+        let opts = self.c.opts;
+        let conv = &mut *self.c;
+        let mut loader = |part: &str| conv.image_key_for_part(part);
+        let scene = pptx_draw::build_scene(
+            SceneInput {
+                opts,
+                size,
+                nodes: &l.nodes,
+                bg: l.bg.as_ref(),
+                clr_ovr: l.clr_ovr.as_ref(),
+                show_master_sp: l.show_master_sp,
+                cut: l.cut,
+                rels: &rels,
+                inh: &l.inh,
+                default_text: self.draw.default_text.as_ref(),
+                first_num: self.first_num,
+                number,
+            },
+            &mut loader,
+        );
+        if scene.truncated {
+            self.c.truncated = true;
+        }
+        self.draw.scenes.push(scene);
     }
 
     fn write_heading(&mut self, number: usize, title: &str, hidden: bool) -> Option<SlideInfo> {
@@ -1585,6 +1788,7 @@ impl Rd<'_, '_> {
             },
             &mut |_| {},
             &[],
+            None,
         );
         drop(bytes);
         if walked.as_ref().map_or(true, |w| w.truncated) || over {
@@ -1669,32 +1873,56 @@ pub(super) fn write_notes_quote(c: &mut Conv<'_>, lines: Vec<String>) {
     c.write_block(Blk::Para(quote));
 }
 
-/// What a layout / master gives its placeholders.
+/// What a layout / master gives its placeholders (and, for the drawing, its shapes, background,
+/// colour map and text styles).
 fn part_info(bytes: &[u8], root: &str, opts: &DocOptions) -> Result<PartInfo, OfficeError> {
     let mut budget = Budget::new(opts.max_block_nodes, opts.max_block_text_bytes);
     let mut phs: Vec<PhInfo> = Vec::new();
     let mut styles: Option<[Levels; 3]> = None;
-    walk_part(
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut cut = false;
+    let mut bg: Option<Node> = None;
+    let mut clr: Option<Node> = None;
+    let mut tx_styles_node: Option<Node> = None;
+    let walked = walk_part(
         bytes,
         root,
         &mut budget,
         &mut |n| {
             if phs.len() < 200 {
-                if let Some(p) = ph_info(&n) {
+                if let Some(p) = ph_info(&n, nodes.len()) {
                     phs.push(p);
                 }
             }
-        },
-        &mut |n| {
-            if n.name == "txStyles" {
-                styles = Some(tx_styles(&n));
+            if nodes.len() < pptx_draw::MAX_PART_SHAPES {
+                nodes.push(n);
+            } else {
+                cut = true;
             }
         },
-        &["txStyles"],
+        &mut |n| match n.name.as_str() {
+            "txStyles" => {
+                styles = Some(tx_styles(&n));
+                tx_styles_node = Some(n);
+            }
+            _ => clr = Some(n),
+        },
+        &["txStyles", "clrMap", "clrMapOvr"],
+        Some(&mut |n| bg = Some(n)),
     )?;
     Ok(PartInfo {
         phs,
         styles: styles.unwrap_or_default(),
+        nodes,
+        bg,
+        clr,
+        tx_styles: tx_styles_node,
+        show_master_sp: !walked
+            .show_master_sp
+            .as_deref()
+            .is_some_and(|s| matches!(s.trim(), "0" | "false")),
+        cut: cut || walked.truncated,
+        ..PartInfo::default()
     })
 }
 
