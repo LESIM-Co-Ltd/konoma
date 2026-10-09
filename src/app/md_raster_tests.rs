@@ -1150,3 +1150,88 @@ fn a_file_picture_failing_after_the_preview_moved_on_is_reported_cancelled() {
         "forgotten, asked for again"
     );
 }
+
+// ---- decodes in flight versus pictures whose pixels were dropped ------------------------------
+
+/// A picture whose pixels the cache dropped waits for a rebuild; no decode runs for it. Counting it
+/// as "in flight" filled the cap of 16 after enough pictures had been seen, and nothing new was
+/// ever started. The same holds for a formula or a diagram (the other users of the cap).
+#[test]
+fn pictures_with_dropped_pixels_are_not_decodes_in_flight() {
+    let (mut app, _dir, _img_rx, _enc_rx) = setup("konoma_raster_inflight");
+    let dropped = || MdImgEntry {
+        evicted: true,
+        layout_px: Some((10, 10)),
+        ..Default::default()
+    };
+    for i in 0..40 {
+        app.md_image_cache.insert(
+            PathBuf::from(crate::preview::markdown::math_url(&format!("x^{i}"), false)),
+            dropped(),
+        );
+        app.md_image_cache.insert(
+            PathBuf::from(crate::preview::markdown::mermaid_fence_url(&format!(
+                "graph TD; A{i}-->B"
+            ))),
+            dropped(),
+        );
+        app.md_image_cache.insert(
+            PathBuf::from(format!("office-img://abc/p{i}.png")),
+            dropped(),
+        );
+    }
+    assert_eq!(app.synthetic_renders_in_flight(), 0);
+    assert_eq!(app.office_pictures_in_flight(), 0);
+    // A first decode that is really running still counts.
+    app.md_image_cache.insert(
+        PathBuf::from("office-img://abc/new.png"),
+        MdImgEntry::default(),
+    );
+    app.md_image_cache.insert(
+        PathBuf::from(crate::preview::markdown::math_url("new", false)),
+        MdImgEntry::default(),
+    );
+    assert_eq!(app.office_pictures_in_flight(), 1);
+    assert_eq!(app.synthetic_renders_in_flight(), 1);
+    // And one that failed does not.
+    app.md_image_cache.insert(
+        PathBuf::from("office-img://abc/bad.png"),
+        MdImgEntry {
+            failed: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(app.office_pictures_in_flight(), 1);
+}
+
+/// The limits slide pictures are drawn and kept under.
+#[test]
+fn the_slide_raster_limits_are_what_they_are_documented_to_be() {
+    assert_eq!(SLIDE_RASTER_MAX_PX, 4096);
+    assert_eq!(
+        SLIDE_RASTER_MAX_PX, MD_IMAGE_MAX_SIDE,
+        "the decoder's own side limit"
+    );
+    assert_eq!(MD_SLIDE_CACHE_BYTES, 256 * 1024 * 1024);
+    const { assert!(MD_SLIDE_CACHE_BYTES < MD_IMAGE_CACHE_BYTES) };
+}
+
+/// A viewport of 0 rows is a real height once the body has been drawn (a tiny terminal): the slide
+/// gets the least a picture takes, not the ordinary picture cap that stands for "not drawn yet".
+#[test]
+fn slide_fit_rows_tells_a_zero_height_from_not_drawn_yet() {
+    let (mut app, _dir, _img_rx, _enc_rx) = setup("konoma_raster_fit_rows");
+    app.tab.preview_viewport = 0;
+    app.tab.preview_viewport_drawn = false;
+    assert_eq!(
+        app.slide_fit_rows(),
+        MD_IMAGE_MAX_ROWS,
+        "before the first draw"
+    );
+    app.tab.preview_viewport_drawn = true;
+    assert_eq!(app.slide_fit_rows(), 1, "drawn, and no row to spare");
+    for (viewport, rows) in [(1, 1), (2, 1), (3, 1), (4, 2), (30, 28)] {
+        app.tab.preview_viewport = viewport;
+        assert_eq!(app.slide_fit_rows(), rows, "viewport {viewport}");
+    }
+}

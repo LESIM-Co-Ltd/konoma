@@ -2478,6 +2478,19 @@ struct MdProtoSlot {
 /// by the latest overlay pass are never evicted, so a screenful always stays whole.
 const MD_IMAGE_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
+/// The same budget while a presentation shows its slide pictures. A slide is drawn at the size of
+/// its frame (up to `SLIDE_RASTER_MAX_PX` on the long side, 4096 x 2304 x 4 = 38 MB), so a deck
+/// would otherwise keep a dozen of the largest ones; half the general budget still holds more
+/// slides than anyone scrolls back over (the screen's slide is never evicted) and a dropped slide
+/// is drawn again from its scene when it is needed.
+const MD_SLIDE_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The longest edge, in pixels, a slide picture is drawn at. It is the SVG rasterizer's own hard
+/// limit (`svg::HARD_MAX_PX`, 4096), not a second knob: `[ui] svg_max_px` stays the *floor* of a
+/// slide's raster (a user who wants denser slides than their frame needs raises it), the frame's
+/// pixel size (`cells x cell size`) is what a slide is drawn at otherwise, and this caps both.
+const SLIDE_RASTER_MAX_PX: u32 = 4096;
+
 /// Most rebuilds of evicted pixels that run at once. A resize makes every evicted picture on the
 /// screen want its pixels back in the same frame; each rebuild is a thread and a decode, so the rest
 /// wait (and ask again) instead of all starting together.
@@ -2551,6 +2564,10 @@ struct MdImgEntry {
     /// only while that is the last frame drawn, so a wish nobody renews (the picture scrolled out
     /// of view, the preview was left) lapses by itself instead of keeping the loop ticking.
     rebuild_wanted: Option<u64>,
+    /// For a slide picture: the longest edge, in pixels, its frame needs (0 = not asked yet). The
+    /// first decode, a rebuild of evicted pixels and the re-raster of a frame that outgrew the
+    /// raster all draw at this size (`App::note_slide_raster_wish`).
+    want_px: u32,
     /// Why the decode failed, for the text that replaces the picture (None = no specific reason).
     fail: Option<crate::preview::image::ImageFailure>,
     /// This entry's place in the decode queue: its priority is the last overlay pass that asked for
@@ -3177,6 +3194,9 @@ pub(crate) struct PerTab {
     /// The slide (0-based) `R` asked to keep: scrolled to by the next draw, once the other view's
     /// layout exists (`App::apply_pending_slide`).
     deck_pending_slide: Option<usize>,
+    /// Whether the preview body has been drawn for this tab at least once, so `preview_viewport`
+    /// is a measured height (possibly 0 on a tiny terminal) and not the initial "not drawn yet" 0.
+    pub(crate) preview_viewport_drawn: bool,
     focused_item: Option<usize>,
     fence_zoom: f64,
     fence_center: (f64, f64),
@@ -3302,6 +3322,7 @@ impl Default for PerTab {
             md_raw: false,
             deck_text_view: None,
             deck_pending_slide: None,
+            preview_viewport_drawn: false,
             focused_item: None,
             // A fence's in-place zoom starts at 1.0=fit (same as App::new used to set it to 1.0).
             fence_zoom: 1.0,

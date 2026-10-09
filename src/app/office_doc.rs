@@ -396,6 +396,26 @@ impl App {
             .count()
     }
 
+    /// Test-only: how many pictures of the document were drawn once and had their pixels dropped
+    /// by the cache (they wait for a rebuild; no decode runs for them).
+    #[cfg(test)]
+    pub fn office_pictures_evicted_for_test(&self) -> usize {
+        self.md_image_cache
+            .iter()
+            .filter(|(k, e)| {
+                crate::preview::markdown::is_office_image_url(&k.to_string_lossy())
+                    && e.decoded.is_none()
+                    && e.evicted
+            })
+            .count()
+    }
+
+    /// Test-only: pictures of the document being decoded for the first time right now.
+    #[cfg(test)]
+    pub fn office_pictures_in_flight_for_test(&self) -> usize {
+        self.office_pictures_in_flight()
+    }
+
     /// Test-only: a weak handle on the bytes of picture `url` (alive while the document, or a
     /// decode of it, still holds them).
     #[cfg(test)]
@@ -534,6 +554,11 @@ impl App {
     /// screen. The one predicate the footer, the `?` help and `slide_turn` share
     /// ([[hint-shown-iff-key-acts]]).
     pub fn slide_can_turn(&self) -> bool {
+        if self.tab.deck_pending_slide.is_some() {
+            // The view is waiting to be laid out again: the slide to keep is the position, and
+            // the document says how many slides there are.
+            return self.is_deck() && self.document.as_ref().is_some_and(|d| d.slides.len() >= 2);
+        }
         self.slide_view()
             .is_some_and(|(heads, ..)| heads.len() >= 2)
     }
@@ -541,6 +566,22 @@ impl App {
     /// `J`/`K` on a presentation: scrolls the view to the next / previous slide's heading.
     pub(super) fn slide_turn(&mut self, dir: i32) {
         if !self.slide_can_turn() {
+            return;
+        }
+        // Keys of one batch are all handled before the next draw: while the view waits to be laid
+        // out again (`R`, a resize) the slide to keep is the position, so a `J`/`K` that arrives
+        // first moves that slide instead of being lost.
+        if let Some(pending) = self.tab.deck_pending_slide {
+            let last = self
+                .document
+                .as_ref()
+                .map_or(0, |d| d.slides.len())
+                .saturating_sub(1);
+            self.tab.deck_pending_slide = Some(if dir >= 0 {
+                (pending + 1).min(last)
+            } else {
+                pending.saturating_sub(1)
+            });
             return;
         }
         let Some((heads, top)) = self.slide_view() else {
@@ -620,7 +661,12 @@ impl App {
         if !self.deck_has_pictures() {
             return;
         }
-        let slide = self.slide_position().map(|(n, _)| n - 1);
+        // Right after another `R` (or a resize) in the same batch of keys there is no layout to
+        // read the slide from: the one that was asked to be kept is still the current one.
+        let slide = self
+            .slide_position()
+            .map(|(n, _)| n - 1)
+            .or(self.tab.deck_pending_slide);
         self.tab.deck_text_view = Some(self.deck_picture_view());
         self.tab.preview_scroll = 0;
         self.tab.preview_hscroll = 0;
@@ -635,15 +681,34 @@ impl App {
     /// Scrolls to the heading of the slide `R` asked to keep, once the new view's cache exists
     /// (its rows are only known then). Called by the draw path right after the layout.
     pub(crate) fn apply_pending_slide(&mut self) {
-        let Some(slide) = self.tab.deck_pending_slide.take() else {
+        let Some(slide) = self.tab.deck_pending_slide else {
             return;
         };
+        // No layout to read the headings from yet: keep the wish for the draw that has one.
         let Some((heads, _)) = self.slide_view() else {
             return;
         };
+        self.tab.deck_pending_slide = None;
         if let Some(h) = heads.get(slide) {
             self.tab.preview_scroll = (*h).min(u16::MAX as usize) as u16;
         }
+    }
+
+    /// Before a draw that lays the view out again at another size (a resize): remembers the slide
+    /// at the top, so `apply_pending_slide` puts it back at the top of the new layout. The scroll
+    /// is a row number of the old layout and means another slide in the new one. `width` and
+    /// `slide_rows` are what the coming layout will use.
+    pub(crate) fn keep_slide_across_relayout(&mut self, width: u16) {
+        if self.tab.deck_pending_slide.is_some() || !self.deck_picture_view() {
+            return;
+        }
+        let Some(c) = self.md_cache.as_ref() else {
+            return;
+        };
+        if c.width == width && c.slide_rows == self.slide_fit_rows() {
+            return;
+        }
+        self.tab.deck_pending_slide = self.slide_position().map(|(n, _)| n - 1);
     }
 
     /// Test-only: the tab's own choice of view (`Some(true)` = text), `None` = the default.

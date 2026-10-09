@@ -1090,3 +1090,287 @@ fn e2e_deck_an_ordinary_picture_keeps_its_own_size_next_to_the_slides() {
         .unwrap();
     assert_eq!(slide.cols, 96);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Many slides, resizes, batches of keys, the raster size and tiny terminals
+// ---------------------------------------------------------------------------------------------
+
+/// Presses `c` without drawing after it, the way the run loop handles the keys of one batch
+/// (`main.rs` draws once after the last queued key).
+fn press_undrawn(s: &mut Sim, c: char) {
+    let res = handle_key(
+        &mut s.app,
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+    );
+    assert!(res.is_ok());
+}
+
+/// Reads a deck of `n` slides to the end with a cache that holds about one slide, so every slide
+/// that leaves the screen has its pixels dropped. Each slide must be drawn when it comes up, however
+/// many dropped ones piled up before it (they used to count as decodes in flight and stopped
+/// every later slide at the 16th), and the first is rebuilt from its scene when read again.
+fn read_a_long_deck(n: usize) {
+    let Some((mut s, _d)) = open_kitty("dv_long", n, (100, 30)) else {
+        return;
+    };
+    // Room for about one slide: every slide that leaves the screen has its pixels dropped.
+    s.app.set_md_cache_budget_for_test(4 * 1024 * 1024);
+    settle(&mut s);
+    for k in 1..=n {
+        let url = url_of(k);
+        assert!(
+            s.app.office_picture_pixels_for_test(&url).is_some(),
+            "slide {k} was never drawn (evicted: {}, in flight: {})\n{}",
+            s.app.office_pictures_evicted_for_test(),
+            s.app.office_pictures_in_flight_for_test(),
+            s.screen()
+        );
+        at(&s, k, n);
+        s.key('J');
+        settle(&mut s);
+    }
+    // Hundreds of slides have lost their pixels, none of them counts as a decode in flight.
+    assert!(
+        s.app.office_pictures_evicted_for_test() > 16,
+        "the cap of 16 was not even reached: {}",
+        s.app.office_pictures_evicted_for_test()
+    );
+    assert_eq!(s.app.office_pictures_in_flight_for_test(), 0);
+    // Back to the first: it is rebuilt from its scene.
+    assert!(s.app.office_picture_pixels_for_test(&url_of(1)).is_none());
+    s.key('g');
+    settle(&mut s);
+    at(&s, 1, n);
+    assert_eq!(
+        s.app
+            .office_picture_rgba_for_test(&url_of(1), 0.5, 0.5)
+            .expect("slide 1 is drawn again"),
+        [255, 0, 0, 255]
+    );
+    assert!(s.app.office_picture_failure_for_test(&url_of(1)).is_none());
+}
+
+#[test]
+fn e2e_deck_every_slide_of_a_long_deck_is_drawn_after_many_were_dropped() {
+    // 40 slides: more than twice the 16 decodes the renderers may run at once.
+    read_a_long_deck(40);
+}
+
+/// The same for 320 slides (about 3 minutes in a debug build: every slide is encoded for kitty).
+/// `cargo test -- --ignored e2e_deck_every_slide_of_a_deck_of_hundreds`
+#[test]
+#[ignore = "takes about three minutes; run by hand"]
+fn e2e_deck_every_slide_of_a_deck_of_hundreds_is_drawn() {
+    read_a_long_deck(320);
+}
+
+#[test]
+fn e2e_deck_a_resize_keeps_the_current_slide() {
+    let Some((mut s, _d)) = open_kitty("dv_resize", 10, (100, 30)) else {
+        return;
+    };
+    s.key('J');
+    s.key('J');
+    at(&s, 3, 10);
+    // Shrinking, growing, narrowing and widening: the slide at the top stays the third.
+    for (w, h) in [
+        (100, 20),
+        (100, 12),
+        (100, 50),
+        (60, 50),
+        (60, 25),
+        (140, 25),
+        (100, 30),
+    ] {
+        s.resize(w, h);
+        at(&s, 3, 10);
+        // Its heading is the first line of the body (row 0 is the status line, 1 the border).
+        assert_eq!(
+            row_of(&s, "Slide 3: T3"),
+            Some(2),
+            "{w}x{h}\n{}",
+            s.screen()
+        );
+    }
+    // The next slide is the fourth from there, not from some other row.
+    s.key('J');
+    at(&s, 4, 10);
+    s.resize(100, 14);
+    at(&s, 4, 10);
+}
+
+#[test]
+fn e2e_deck_two_r_in_one_batch_keep_the_slide() {
+    let Some((mut s, _d)) = open_kitty("dv_rr", 100, (100, 30)) else {
+        return;
+    };
+    for _ in 0..3 {
+        s.key('J');
+    }
+    at(&s, 4, 100);
+    press_undrawn(&mut s, 'R');
+    press_undrawn(&mut s, 'R');
+    s.draw();
+    assert!(
+        s.app.deck_picture_view(),
+        "two toggles are back to pictures"
+    );
+    at(&s, 4, 100);
+    // Three toggles end in the text view, still on the fourth.
+    for _ in 0..3 {
+        press_undrawn(&mut s, 'R');
+    }
+    s.draw();
+    assert!(!s.app.deck_picture_view());
+    at(&s, 4, 100);
+}
+
+#[test]
+fn e2e_deck_j_and_k_right_after_r_move_the_slide_to_keep() {
+    let Some((mut s, _d)) = open_kitty("dv_rjk", 100, (100, 30)) else {
+        return;
+    };
+    for _ in 0..3 {
+        s.key('J');
+    }
+    at(&s, 4, 100);
+    press_undrawn(&mut s, 'R');
+    press_undrawn(&mut s, 'J');
+    press_undrawn(&mut s, 'J');
+    s.draw();
+    at(&s, 6, 100);
+    press_undrawn(&mut s, 'R');
+    press_undrawn(&mut s, 'K');
+    s.draw();
+    at(&s, 5, 100);
+    // Before the first slide and after the last there is nowhere to go.
+    press_undrawn(&mut s, 'R');
+    for _ in 0..8 {
+        press_undrawn(&mut s, 'K');
+    }
+    s.draw();
+    at(&s, 1, 100);
+    press_undrawn(&mut s, 'R');
+    for _ in 0..150 {
+        press_undrawn(&mut s, 'J');
+    }
+    s.draw();
+    at(&s, 100, 100);
+}
+
+#[test]
+fn e2e_deck_a_resize_and_keys_in_one_batch_do_not_lose_the_slide() {
+    let Some((mut s, _d)) = open_kitty("dv_rsz_batch", 20, (100, 30)) else {
+        return;
+    };
+    for _ in 0..6 {
+        s.key('J');
+    }
+    at(&s, 7, 20);
+    // The terminal changes size and keys follow before the next draw.
+    s.term.backend_mut().resize(80, 18);
+    s.term
+        .resize(ratatui::layout::Rect::new(0, 0, 80, 18))
+        .unwrap();
+    s.draw();
+    at(&s, 7, 20);
+    press_undrawn(&mut s, 'K');
+    s.draw();
+    at(&s, 6, 20);
+}
+
+/// The slide picture placement of slide `k`: `(cols, rows)`.
+fn slide_box(s: &Sim, k: usize) -> (u16, u16) {
+    let p = s
+        .app
+        .md_images()
+        .into_iter()
+        .find(|p| p.url == url_of(k))
+        .expect("the slide is placed");
+    (p.cols, p.rows)
+}
+
+fn longest_edge(s: &Sim, k: usize) -> u32 {
+    let (w, h) = s
+        .app
+        .office_picture_pixels_for_test(&url_of(k))
+        .expect("drawn");
+    w.max(h)
+}
+
+/// The pixel size of slide 1's frame (longest side).
+fn frame_px(s: &Sim) -> u32 {
+    let font = picker_of(ProtocolType::Kitty).font_size();
+    let (cols, rows) = slide_box(s, 1);
+    (u32::from(cols) * u32::from(font.width)).max(u32::from(rows) * u32::from(font.height))
+}
+
+#[test]
+fn e2e_deck_a_slide_is_drawn_at_the_pixel_size_of_its_frame() {
+    for (size, label) in [((120, 40), "120x40"), ((300, 100), "300x100")] {
+        let Some((mut s, _d)) = open_kitty(&format!("dv_sharp_{label}"), 3, size) else {
+            return;
+        };
+        settle(&mut s);
+        let frame = frame_px(&s);
+        let edge = longest_edge(&s, 1);
+        assert!(
+            edge >= frame.min(4096),
+            "{label}: the raster ({edge}) is smaller than its frame ({frame})"
+        );
+        assert!(edge <= 4096, "{label}: {edge}");
+        // The aspect is the slide's.
+        let (w, h) = s.app.office_picture_pixels_for_test(&url_of(1)).unwrap();
+        assert!(
+            (w as f64 / h as f64 - 960.0 / 540.0).abs() < 0.02,
+            "{w}x{h}"
+        );
+    }
+}
+
+#[test]
+fn e2e_deck_a_slide_is_drawn_again_sharper_when_its_frame_grows() {
+    let Some((mut s, _d)) = open_kitty("dv_grow", 3, (60, 20)) else {
+        return;
+    };
+    settle(&mut s);
+    let small = longest_edge(&s, 1);
+    s.resize(300, 100);
+    settle(&mut s);
+    let frame = frame_px(&s);
+    let big = longest_edge(&s, 1);
+    assert!(big > small, "{big} <= {small}");
+    assert!(big >= frame.min(4096), "{big} < frame {frame}");
+    assert!(s.app.office_picture_failure_for_test(&url_of(1)).is_none());
+    // The new pixels are encoded for the new frame (the picture is drawn at its box).
+    let (cols, rows) = slide_box(&s, 1);
+    assert!(s
+        .app
+        .md_image_proto(&url_of(1), cols, rows, 0, rows)
+        .is_some());
+}
+
+#[test]
+fn e2e_deck_the_raster_of_a_huge_frame_is_capped() {
+    let Some((mut s, _d)) = open_kitty("dv_cap", 2, (700, 250)) else {
+        return;
+    };
+    settle(&mut s);
+    let frame = frame_px(&s);
+    assert!(frame > 4096, "the test frame must exceed the cap: {frame}");
+    assert_eq!(longest_edge(&s, 1), 4096);
+}
+
+#[test]
+fn e2e_deck_a_terminal_too_small_for_the_body_draws_a_tiny_frame() {
+    for h in [3u16, 4, 5] {
+        let Some((mut s, _d)) = open_kitty(&format!("dv_tiny_{h}"), 3, (40, h)) else {
+            return;
+        };
+        settle(&mut s);
+        if let Some(p) = s.app.md_images().into_iter().find(|p| p.url == url_of(1)) {
+            assert!(p.rows <= 2, "height {h}: a {}x{} frame", p.cols, p.rows);
+        }
+        assert!(s.app.slide_position().is_some(), "height {h}");
+    }
+}

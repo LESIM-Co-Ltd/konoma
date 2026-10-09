@@ -235,10 +235,11 @@ impl App {
     }
 
     /// Rows a slide picture may be tall: what the viewport leaves after the slide's heading (and
-    /// the blank line between), so a slide and its heading always fit one screen. Viewport 0 (no
-    /// render yet) allows the ordinary picture cap.
+    /// the blank line between), so a slide and its heading always fit one screen. Before the first
+    /// draw (the height is not known) the ordinary picture cap applies; a drawn viewport of 0 rows
+    /// (a terminal too small to show the body) is a real height: one row, the least a picture takes.
     pub(super) fn slide_fit_rows(&self) -> u16 {
-        if self.tab.preview_viewport == 0 {
+        if self.tab.preview_viewport == 0 && !self.tab.preview_viewport_drawn {
             return MD_IMAGE_MAX_ROWS;
         }
         self.tab

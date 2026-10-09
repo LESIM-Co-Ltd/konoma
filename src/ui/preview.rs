@@ -1244,6 +1244,9 @@ fn render_decorated_body(
     // below, only for the visible range — no full-document clone / full reflow every frame.
     // The viewport height is read by the layout itself (a slide picture is sized to fit it).
     app.tab.preview_viewport = inner.height;
+    app.tab.preview_viewport_drawn = true;
+    // A presentation laid out again at another size keeps its slide (not its scroll row).
+    app.keep_slide_across_relayout(inner.width);
     let (total_rows, max_line_cols) = app.md_layout(inner.width);
     let wrap = app.cfg.ui.wrap;
     // `R` on a presentation asked to keep a slide: now the other view's rows exist.

@@ -453,7 +453,7 @@ impl App {
     /// result yet (i.e. a background thread is running for them right now). Both kinds share the
     /// same one-shot-thread-per-request shape and compete for the same `MAX_SYNTHETIC_RENDERS_IN_FLIGHT`
     /// cap.
-    fn synthetic_renders_in_flight(&self) -> usize {
+    pub(super) fn synthetic_renders_in_flight(&self) -> usize {
         self.md_image_cache
             .iter()
             .filter(|(k, e)| {
@@ -850,7 +850,7 @@ impl App {
             // same entry as the first decode (the defences of the first decode apply again).
             let url = path.to_string_lossy().to_string();
             if crate::preview::markdown::is_office_image_url(&url) {
-                return self.start_office_picture_thread(&url, path);
+                return self.start_office_picture_thread(&url, path, false);
             }
             return self.spawn_md_decode(path);
         };
@@ -913,7 +913,12 @@ impl App {
         if let Some(b) = self.md_cache_budget_for_test {
             return self.evict_md_images_to(b);
         }
-        self.evict_md_images_to(MD_IMAGE_CACHE_BYTES);
+        let budget = if self.deck_picture_view() {
+            MD_SLIDE_CACHE_BYTES
+        } else {
+            MD_IMAGE_CACHE_BYTES
+        };
+        self.evict_md_images_to(budget);
     }
 
     /// `evict_md_images_over_budget` with the budget as a parameter (tests use a small one).
@@ -1007,6 +1012,8 @@ impl App {
             };
             p
         };
+        // A slide is drawn at the size of the frame it is placed in (`cols` x `full_rows` cells).
+        let slide_px = self.slide_raster_px(url, cols, full_rows);
         // A picture of a Word document: decode it from the bytes held in memory (never a file).
         if crate::preview::markdown::is_office_image_url(url)
             && !self.md_image_cache.contains_key(&path)
@@ -1018,8 +1025,11 @@ impl App {
             if self.office_pictures_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
                 return;
             }
-            self.spawn_office_picture_decode(url, path);
+            self.spawn_office_picture_decode(url, path, slide_px);
             return;
+        }
+        if let Some(px) = slide_px {
+            self.note_slide_raster_wish(url, &path, px);
         }
         // Kick off a one-time background decode.
         if !self.md_image_cache.contains_key(&path) {
@@ -1106,29 +1116,91 @@ impl App {
         });
     }
 
-    /// How many pictures of the open document are being decoded right now (cached, not yet decoded
-    /// and not failed).
+    /// How many pictures of the open document are being decoded for the first time right now
+    /// (cached, not yet decoded, not failed, pixels never dropped).
     pub(super) fn office_pictures_in_flight(&self) -> usize {
         self.md_image_cache
             .iter()
             .filter(|(k, e)| {
+                // An entry whose pixels the cache dropped (`evicted`) has no decode running for
+                // it: it waits for a rebuild (limited by `MD_MAX_REBUILDS`). Counting it as
+                // "in flight" filled the cap with idle entries after enough pictures had been
+                // seen, and no new picture was ever started.
                 e.decoded.is_none()
                     && !e.failed
+                    && !e.evicted
                     && crate::preview::markdown::is_office_image_url(&k.to_string_lossy())
             })
             .count()
     }
 
+    /// The longest edge, in pixels, slide picture `url` should be drawn at to fill a frame of
+    /// `cols` x `rows` cells without the terminal enlarging it: the frame's pixel size, never below
+    /// `[ui] svg_max_px` and never above `SLIDE_RASTER_MAX_PX`. `None` for anything that is not a
+    /// slide of the open presentation, or while the cell size is unknown (no image backend).
+    pub(super) fn slide_raster_px(&self, url: &str, cols: u16, rows: u16) -> Option<u32> {
+        if !crate::preview::markdown::is_office_image_url(url)
+            || !self.document_picture_is_slide(url)
+        {
+            return None;
+        }
+        let font = self.picker.as_ref()?.font_size();
+        let frame_w = u32::from(cols) * u32::from(font.width.max(1));
+        let frame_h = u32::from(rows) * u32::from(font.height.max(1));
+        Some(
+            frame_w
+                .max(frame_h)
+                .max(self.cfg.ui.svg_max_px)
+                .min(SLIDE_RASTER_MAX_PX),
+        )
+    }
+
+    /// Records the pixel size slide `path` is wanted at and, when its pixels are already there but
+    /// smaller than the frame now needs (the terminal grew, the font shrank), starts a sharper
+    /// redraw of the slide's scene. One redraw at a time per slide; the old pixels keep showing
+    /// until the new ones land, and a failed redraw leaves them.
+    fn note_slide_raster_wish(&mut self, url: &str, path: &Path, px: u32) {
+        use image::GenericImageView;
+        let Some(entry) = self.md_image_cache.get_mut(path) else {
+            return;
+        };
+        entry.want_px = px;
+        let Some(decoded) = entry.decoded.as_ref() else {
+            return; // evicted or still decoding: the rebuild / first decode draws at `want_px`
+        };
+        let (w, h) = decoded.dimensions();
+        let cur = w.max(h);
+        if cur + cur / 8 >= px
+            || entry.reraster_inflight
+            || entry.rebuilding
+            || entry.failed
+            || self.md_img_tx.is_none()
+        {
+            return;
+        }
+        entry.reraster_inflight = true;
+        if !self.start_office_picture_thread(url, path.to_path_buf(), true) {
+            if let Some(e) = self.md_image_cache.get_mut(path) {
+                e.reraster_inflight = false;
+            }
+        }
+    }
+
     /// Starts the one-time background decode of a Word document's picture from its in-memory
     /// bytes. The cache entry is placed first (its presence is the "decode in flight" marker, as
     /// for a file image); a picture the document does not hold is left uncached (nothing to draw).
-    fn spawn_office_picture_decode(&mut self, url: &str, key: PathBuf) {
+    fn spawn_office_picture_decode(&mut self, url: &str, key: PathBuf, slide_px: Option<u32>) {
         if self.document_picture_source(url).is_none() {
             return;
         }
-        self.md_image_cache
-            .insert(key.clone(), MdImgEntry::default());
-        if !self.start_office_picture_thread(url, key.clone()) {
+        self.md_image_cache.insert(
+            key.clone(),
+            MdImgEntry {
+                want_px: slide_px.unwrap_or(0),
+                ..MdImgEntry::default()
+            },
+        );
+        if !self.start_office_picture_thread(url, key.clone(), false) {
             // The thread could not start: end the wait instead of latching "loading".
             if let Some(e) = self.md_image_cache.get_mut(&key) {
                 e.failed = true;
@@ -1140,14 +1212,21 @@ impl App {
     /// `key` (which already exists: a first decode just placed it, a rebuild of dropped pixels
     /// keeps its own). Returns false when there is nothing to decode (the document no longer
     /// holds the picture) or the thread could not be started; the caller ends the wait.
-    fn start_office_picture_thread(&mut self, url: &str, key: PathBuf) -> bool {
+    fn start_office_picture_thread(&mut self, url: &str, key: PathBuf, reraster: bool) -> bool {
         let Some(source) = self.document_picture_source(url) else {
             return false;
         };
         let Some(tx) = self.md_img_tx.clone() else {
             return true;
         };
-        let svg_max_px = self.cfg.ui.svg_max_px;
+        // A slide is drawn at the pixel size its frame needs (never below `svg_max_px`); any other
+        // picture of a document at `svg_max_px`.
+        let want_px = self.md_image_cache.get(&key).map_or(0, |e| e.want_px);
+        let svg_max_px = if want_px > 0 {
+            want_px.max(self.cfg.ui.svg_max_px).min(SLIDE_RASTER_MAX_PX)
+        } else {
+            self.cfg.ui.svg_max_px
+        };
         let ticket = self
             .md_image_cache
             .get(&key)
@@ -1192,7 +1271,9 @@ impl App {
                     })
                 })
                 .unwrap_or((Err(ImageFailure::Corrupt), None));
-                if still.as_ref().err() == Some(&ImageFailure::Cancelled) {
+                // A cancelled first decode is forgotten by nobody waiting; a cancelled re-raster
+                // still reports, or its entry would stay "re-rastering" for good.
+                if still.as_ref().err() == Some(&ImageFailure::Cancelled) && !reraster {
                     return;
                 }
                 let still = match still {
@@ -1203,7 +1284,7 @@ impl App {
                     path: key,
                     image: still.map_err(|f| f.code().to_string()),
                     svg: None,
-                    reraster: false,
+                    reraster,
                     frames,
                 });
             })

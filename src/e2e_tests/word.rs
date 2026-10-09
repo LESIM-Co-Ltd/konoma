@@ -2589,6 +2589,61 @@ fn e2e_word_a_picture_heavy_document_stays_within_the_cache_budget() {
     assert!(first < N as usize, "and the rest are still held back");
 }
 
+/// A document of many pictures read to the end with a cache that holds about one of them: every
+/// picture is drawn when it comes on screen, however many were drawn (and dropped) before. Once
+/// enough dropped pictures had piled up, they used to count as decodes "in flight" and no further
+/// picture was ever started.
+#[test]
+fn e2e_word_every_picture_of_a_long_document_is_drawn_after_many_were_dropped() {
+    const N: u32 = 60;
+    let dir = sandbox("w_lru_long");
+    let pics: Vec<(String, Vec<u8>)> = (0..N)
+        .map(|i| (format!("p{i}.png"), flat_png(200 + i, 200)))
+        .collect();
+    build_docx_with_pictures(&canon(&dir).join("long.docx"), &pics);
+    let mut s = open_with_media(&dir, "long.docx");
+    s.app.set_md_cache_budget_for_test(250 * 250 * 4);
+    s.drain_media();
+    assert!(s.app.document_ready());
+    assert_eq!(s.app.document_picture_count_for_test(), N as usize);
+    settle_images(&mut s);
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..400 {
+        let (top, height) = (
+            s.app.preview_scroll_for_test() as usize,
+            s.app.preview_viewport_for_test() as usize,
+        );
+        let on_screen = |s: &Sim, line: usize| {
+            let (row, rows) = s.app.md_visual_span_for_test(line);
+            row < top + height && row + rows > top
+        };
+        for p in office_placements(&s) {
+            if !on_screen(&s, p.line) {
+                continue;
+            }
+            assert!(
+                s.app.office_picture_pixels_for_test(&p.url).is_some(),
+                "{} is on screen but was not drawn (evicted: {}, in flight: {})",
+                p.url,
+                s.app.office_pictures_evicted_for_test(),
+                s.app.office_pictures_in_flight_for_test()
+            );
+            seen.insert(p.url);
+        }
+        for _ in 0..4 {
+            s.key('j');
+        }
+        settle_images(&mut s);
+    }
+    assert_eq!(seen.len(), N as usize, "every picture was on screen once");
+    assert!(
+        s.app.office_pictures_evicted_for_test() > 16,
+        "the cap was never reached: {}",
+        s.app.office_pictures_evicted_for_test()
+    );
+    assert_eq!(s.app.office_pictures_in_flight_for_test(), 0);
+}
+
 /// A dropped picture is made again through the same defences as the first decode.
 #[test]
 fn e2e_word_a_dropped_large_picture_comes_back_capped_at_4096() {

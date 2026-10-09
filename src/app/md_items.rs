@@ -181,6 +181,10 @@ impl App {
         self.md_visual_span(line)
     }
     #[cfg(test)]
+    pub fn preview_scroll_for_test(&self) -> u16 {
+        self.tab.preview_scroll
+    }
+    #[cfg(test)]
     pub fn preview_viewport_for_test(&self) -> u16 {
         self.tab.preview_viewport
     }
