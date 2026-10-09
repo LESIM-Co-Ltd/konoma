@@ -744,7 +744,12 @@ fn guard_work(r: &Rendered) -> f64 {
 /// Whether the drawing process would draw `r` at the model's raster size (its work and memory
 /// budget accepts the tree).
 fn guard_accepts(r: &Rendered) -> bool {
-    let scale = (super::svg::MODEL_RASTER_PX / 960.0) as f32;
+    guard_accepts_at(r, super::svg::MODEL_RASTER_PX)
+}
+
+/// [`guard_accepts`] with the slide (960 px wide) rasterised at `px` on its longer side.
+fn guard_accepts_at(r: &Rendered, px: f64) -> bool {
+    let scale = (px / 960.0) as f32;
     crate::preview::svg_guard::load_tree(r.svg.as_bytes(), None, |tree| {
         Ok(crate::preview::svg_guard::check_render_budget(&tree, scale))
     })
@@ -1023,4 +1028,105 @@ fn a_big_svg_picture_is_not_embedded() {
     assert!(!r.truncated && r.svg.contains("<image "));
     let r = render_svg(&scene(vec![pic("big", 0.0, 0.0, 100.0, 100.0)]), &*media);
     assert!(r.truncated && r.svg.contains("#e6e6e6") && !r.svg.contains("<image "));
+}
+
+// ---- the raster size against the drawing process's work budget ----------------------------------
+
+/// A 960 x 540 slide with `n` full-slide shadows (about 1.1e8 units of filter work each).
+pub(crate) fn shadowed_slide(n: usize) -> SlideScene {
+    scene(
+        (0..n)
+            .map(|_| fx_shape(900.0, 500.0, shadow(30.0)))
+            .collect(),
+    )
+}
+
+#[test]
+fn a_slide_without_effects_has_no_raster_limit() {
+    let r = render_svg(
+        &scene(vec![rect_item(10.0, 10.0, 100.0, 50.0, RED)]),
+        &no_media,
+    );
+    assert_eq!(r.filter_work, 0.0);
+    assert_eq!(r.max_raster_px(), u32::MAX);
+}
+
+#[test]
+fn the_model_size_of_a_slide_is_its_own_when_it_is_bigger_than_the_model_raster() {
+    let small = render_svg(&scene(Vec::new()), &no_media);
+    assert_eq!(small.model_px, super::svg::MODEL_RASTER_PX);
+    let mut big = scene(Vec::new());
+    big.width = e(2000.0);
+    big.height = e(1000.0);
+    let r = render_svg(&big, &no_media);
+    assert_eq!(r.model_px, 2000.0, "the process never draws below 1:1");
+}
+
+#[test]
+fn the_raster_limit_shrinks_as_the_work_grows_and_never_goes_below_the_model_size() {
+    let mut last = u32::MAX;
+    let mut seen_above_model = false;
+    for n in [1usize, 2, 3, 4, 5, 10, 300] {
+        let r = render_svg(&shadowed_slide(n), &no_media);
+        assert!(r.filter_work > 0.0, "{n}");
+        let cap = r.max_raster_px();
+        assert!(cap <= last, "{n}: {cap} > {last}: not monotonic");
+        assert!(
+            f64::from(cap) >= r.model_px,
+            "{n}: {cap} is below the model size"
+        );
+        // The work at the limit is inside the writer's allowance (scale squared).
+        let at_cap = r.filter_work * (f64::from(cap) / r.model_px).powi(2);
+        assert!(
+            at_cap <= super::svg::MAX_FILTER_WORK * 1.001 || f64::from(cap) == r.model_px,
+            "{n}: {at_cap:.3e} at {cap}"
+        );
+        seen_above_model |= f64::from(cap) > r.model_px + 1.0;
+        last = cap;
+    }
+    assert!(
+        seen_above_model,
+        "a light slide is allowed more than the model size"
+    );
+}
+
+#[test]
+fn the_cap_formula_on_given_work() {
+    let r = |filter_work: f64, model_px: f64| Rendered {
+        svg: String::new(),
+        truncated: false,
+        cancelled: false,
+        filter_work,
+        model_px,
+    };
+    let w = super::svg::MAX_FILTER_WORK;
+    assert_eq!(r(w, 1280.0).max_raster_px(), 1280);
+    assert_eq!(r(w / 4.0, 1280.0).max_raster_px(), 2560);
+    assert_eq!(
+        r(w * 2.0, 1280.0).max_raster_px(),
+        1280,
+        "never below the model size"
+    );
+    assert_eq!(r(0.0, 1280.0).max_raster_px(), u32::MAX);
+    assert_eq!(r(f64::NAN, 1280.0).max_raster_px(), u32::MAX);
+    assert_eq!(r(f64::INFINITY, 1280.0).max_raster_px(), u32::MAX);
+    assert_eq!(r(-1.0, 1280.0).max_raster_px(), u32::MAX);
+    // work so small the result passes u32: saturates, does not wrap
+    assert_eq!(r(1e-300, 1280.0).max_raster_px(), u32::MAX);
+}
+
+#[test]
+fn a_slide_the_process_refuses_at_a_big_raster_is_accepted_at_its_limit() {
+    // Two full-slide shadows pass the process's work limit at 2960 px (the long side of a
+    // 300-column terminal's frame) and not at the limit this slide reports.
+    let r = render_svg(&shadowed_slide(2), &no_media);
+    assert!(!r.truncated);
+    assert!(guard_accepts(&r), "inside the budget at the model size");
+    assert!(
+        !guard_accepts_at(&r, 2960.0),
+        "refused at 2960 px: the problem"
+    );
+    let cap = r.max_raster_px();
+    assert!(f64::from(cap) < 2960.0 && f64::from(cap) > r.model_px);
+    assert!(guard_accepts_at(&r, f64::from(cap)), "accepted at {cap}");
 }

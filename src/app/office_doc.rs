@@ -26,6 +26,11 @@ pub(super) enum PictureSource {
         /// budget of the writer); shared by all the slides of the deck and read by
         /// `App::document_truncated`, so the title says so like it does for a reader's budget.
         render_truncated: Arc<std::sync::atomic::AtomicBool>,
+        /// The longest side, in px, this slide can be drawn at inside the drawing process's work
+        /// budget (`Rendered::max_raster_px`), stored by the decode thread after it wrote the
+        /// slide; 0 until then. The wish for a sharper redraw is cut to it, so a heavy slide on a
+        /// huge terminal is not redrawn again and again for a size it cannot have.
+        raster_cap: Arc<std::sync::atomic::AtomicU32>,
     },
 }
 
@@ -110,6 +115,7 @@ impl LoadedDocument {
                             scene: Arc::new(scene),
                             media: media.clone(),
                             render_truncated: render_truncated.clone(),
+                            raster_cap: Arc::new(std::sync::atomic::AtomicU32::new(0)),
                         },
                         dims,
                         raster: false,
@@ -355,6 +361,14 @@ impl App {
         e.decoded.as_ref().map(|d| d.dimensions())
     }
 
+    /// Test-only: whether a sharper redraw of picture `url` is running.
+    #[cfg(test)]
+    pub fn office_picture_reraster_inflight_for_test(&self, url: &str) -> bool {
+        self.md_image_cache
+            .get(&PathBuf::from(url))
+            .is_some_and(|e| e.reraster_inflight)
+    }
+
     /// Test-only: the RGBA of the decoded picture `url` at the fraction `(fx, fy)` of its size.
     #[cfg(test)]
     pub fn office_picture_rgba_for_test(&self, url: &str, fx: f64, fy: f64) -> Option<[u8; 4]> {
@@ -462,6 +476,17 @@ impl App {
     /// Where the pixels of one picture of the open document come from (shared, not copied).
     pub(super) fn document_picture_source(&self, url: &str) -> Option<PictureSource> {
         Some(self.document.as_ref()?.pictures.get(url)?.source.clone())
+    }
+
+    /// The cap on the raster size of slide picture `url` found when it was last drawn (see
+    /// `PictureSource::Slide::raster_cap`); `None` for anything else or before the first draw.
+    pub(super) fn slide_raster_cap(&self, url: &str) -> Option<u32> {
+        match &self.document.as_ref()?.pictures.get(url)?.source {
+            PictureSource::Slide { raster_cap, .. } => {
+                Some(raster_cap.load(std::sync::atomic::Ordering::Relaxed)).filter(|c| *c > 0)
+            }
+            PictureSource::Bytes(_) => None,
+        }
     }
 
     /// Whether picture `url` is the drawing of a slide (sized and drawn by the slide rules).

@@ -343,6 +343,10 @@ pub(super) fn render_with(
     used_px: u64,
 ) -> super::Rendered {
     let (sw, sh) = (clamp_dim(scene.width), clamp_dim(scene.height));
+    // The drawing process never draws a slide below 1:1, so a slide bigger than the model raster
+    // is measured at its own size.
+    let long_px = (sw.max(sh) / EMU_PER_PX).max(1.0);
+    let model_px = MODEL_RASTER_PX.max(long_px);
     let mut w = W {
         body: String::new(),
         defs: String::new(),
@@ -360,7 +364,7 @@ pub(super) fn render_with(
         used_px_left: used_px,
         filter_work: 0.0,
         slide_px: (sw / EMU_PER_PX, sh / EMU_PER_PX),
-        raster_scale: MODEL_RASTER_PX / (sw.max(sh) / EMU_PER_PX).max(1.0),
+        raster_scale: model_px / long_px,
         use_mult: 1,
     };
     // Background.
@@ -409,6 +413,8 @@ pub(super) fn render_with(
         svg,
         truncated: w.truncated,
         cancelled: w.cancelled,
+        filter_work: w.filter_work,
+        model_px,
     }
 }
 

@@ -354,6 +354,13 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.syntect]
 opt-level = 3
+# The rasterizer: a slide with filters takes the unoptimized build tens of seconds, which is past
+# the drawing process's own 8 s alarm (so tests that draw one through the real child could not
+# run). Optimized, the same draw takes what the budgets in `svg_guard` assume.
+[profile.dev.package.resvg]
+opt-level = 3
+[profile.dev.package.tiny-skia]
+opt-level = 3
 
 # mermaid-text のローカルフォーク（vendor/mermaid-text）。
 # upstream 0.56.0 は CJK(全角)入力で panic していた: strip_keyword_prefix 系が

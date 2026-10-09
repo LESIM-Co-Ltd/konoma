@@ -41,8 +41,79 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     guard
 }
 
+/// How long a test waits on a child it drives by hand (reading its output, waiting for it to end)
+/// before it kills the child and fails. A child that is stale (built before the current wire
+/// protocol) or misbehaving blocks forever in a plain `read_exact` / `wait`, and a whole test run
+/// then hangs for as long as anyone lets it.
+const HAND_DRIVEN_WAIT: Duration = Duration::from_secs(30);
+
+/// Reads from `from` on a helper thread: exactly `len` bytes, or to the end of the stream for
+/// `None`. If that takes longer than `limit`, `child` is killed and reaped and the test fails with
+/// `what` in the message, instead of blocking for good.
+fn read_bounded(
+    child: &mut std::process::Child,
+    mut from: impl std::io::Read + Send + 'static,
+    len: Option<usize>,
+    limit: Duration,
+    what: &str,
+) -> Vec<u8> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let r = match len {
+            Some(n) => {
+                buf.resize(n, 0);
+                from.read_exact(&mut buf)
+            }
+            None => from.read_to_end(&mut buf).map(|_| ()),
+        };
+        let _ = tx.send(r.map(|()| buf));
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Ok(buf)) => buf,
+        Ok(Err(e)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{what}: the child's output ended early or failed: {e}");
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "{what}: no answer from the child within {limit:?} (killed it). Is the konoma \
+                 binary stale? run `cargo build`"
+            );
+        }
+    }
+}
+
+/// Waits for `child` to end for at most `limit`; past that it is killed and the test fails.
+fn wait_bounded(
+    child: &mut std::process::Child,
+    limit: Duration,
+    what: &str,
+) -> std::process::ExitStatus {
+    let t = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if t.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{what}: the child did not end within {limit:?} (killed it)");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// The konoma binary: `KONOMA_TEST_BIN` when set (used to measure a release build), else the one
 /// Cargo placed next to the test executable.
+///
+/// Before any test uses it, it is started once and must say `KSRDY` within a bound: a binary built
+/// before that handshake existed (`cargo test --lib` does not rebuild it) or one that does not
+/// speak the protocol fails every test here with one clear message, in seconds, instead of
+/// blocking whichever test reads from it first.
 fn bin() -> PathBuf {
     static BIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     BIN.get_or_init(|| {
@@ -59,9 +130,37 @@ fn bin() -> PathBuf {
             p
         };
         warm_up(&p, &[super::svg_proc::CHILD_FLAG, "1073741824"]);
+        handshake(&p);
         p
     })
     .clone()
+}
+
+/// How long [`handshake`] waits for `KSRDY`: the binary has just been run once by `warm_up`.
+const HANDSHAKE_WAIT: Duration = Duration::from_secs(10);
+
+/// Starts `exe` as a drawing process and requires its `KSRDY` within [`HANDSHAKE_WAIT`].
+fn handshake(exe: &Path) {
+    let mut child = std::process::Command::new(exe)
+        .arg(super::svg_proc::CHILD_FLAG)
+        .arg("1073741824")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| panic!("{} cannot be started: {e}", exe.display()));
+    let out = child.stdout.take().unwrap();
+    let first = read_bounded(&mut child, out, Some(5), HANDSHAKE_WAIT, "handshake");
+    if first != b"KSRDY" {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "stale konoma binary {}: it wrote {first:?}, not KSRDY. run `cargo build`",
+            exe.display()
+        );
+    }
+    drop(child.stdin.take());
+    wait_bounded(&mut child, HANDSHAKE_WAIT, "handshake");
 }
 
 /// Run `exe` once to completion, outside any limit under test.
@@ -76,14 +175,16 @@ fn bin() -> PathBuf {
 /// exit at once when run like this (the children end when their stdin does; the scripts check
 /// `KONOMA_TEST_WARMUP`).
 fn warm_up(exe: &Path, args: &[&str]) {
-    let status = std::process::Command::new(exe)
+    let child = std::process::Command::new(exe)
         .args(args)
         .env("KONOMA_TEST_WARMUP", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
-    assert!(status.is_ok(), "{} cannot be started", exe.display());
+        .spawn();
+    let mut child = child.unwrap_or_else(|e| panic!("{} cannot be started: {e}", exe.display()));
+    // Bounded: the first run of a file can take seconds (see above), but not for ever.
+    wait_bounded(&mut child, Duration::from_secs(120), "warm-up");
 }
 
 /// Nothing is running and, once the idle children are stopped too, nothing is left alive (none
@@ -1282,7 +1383,7 @@ fn memory_outside_the_childs_heap_is_stopped_by_the_resident_size_watch() {
 /// Run the real child by hand with a small heap limit and read what it says.
 #[test]
 fn a_child_that_would_pass_its_heap_limit_answers_memory_and_ends_itself() {
-    use std::io::{Read, Write};
+    use std::io::Write;
     use std::process::{Command, Stdio};
     let _g = serial();
     let doc = svg(
@@ -1297,7 +1398,7 @@ fn a_child_that_would_pass_its_heap_limit_answers_memory_and_ends_itself() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = child.stdout.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
     let mut wire = Vec::new();
     wire.extend_from_slice(b"KSV1");
     wire.extend_from_slice(&800u32.to_le_bytes());
@@ -1305,9 +1406,14 @@ fn a_child_that_would_pass_its_heap_limit_answers_memory_and_ends_itself() {
     wire.extend_from_slice(&(doc.len() as u64).to_le_bytes());
     wire.extend_from_slice(doc.as_bytes());
     stdin.write_all(&wire).unwrap();
-    let mut answer = Vec::new();
-    stdout.read_to_end(&mut answer).unwrap();
-    let status = child.wait().unwrap();
+    let answer = read_bounded(
+        &mut child,
+        stdout,
+        None,
+        HAND_DRIVEN_WAIT,
+        "heap-limit answer",
+    );
+    let status = wait_bounded(&mut child, HAND_DRIVEN_WAIT, "heap-limit child");
     // `KSRDY` (ready) first, then the answer.
     assert_eq!(
         answer,
@@ -1938,11 +2044,182 @@ fn the_real_child_says_ready_before_it_reads_anything() {
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    let mut out = child.stdout.take().unwrap();
-    let mut first = [0u8; 5];
-    std::io::Read::read_exact(&mut out, &mut first).unwrap();
+    let out = child.stdout.take().unwrap();
+    let first = read_bounded(&mut child, out, Some(5), HAND_DRIVEN_WAIT, "ready");
     assert_eq!(&first, b"KSRDY");
     drop(child.stdin.take());
-    let status = child.wait().unwrap();
+    let status = wait_bounded(&mut child, HAND_DRIVEN_WAIT, "ready child");
     assert!(status.success(), "{status:?}");
+}
+
+// ---- a slide with many effects, at the raster size of a big terminal's frame ---------------------
+
+/// Draws `svg` through the real child at `max_px`.
+fn draw_slide(svg: &str, max_px: u32) -> Result<DynamicImage, RunError> {
+    let lim = Limits {
+        wall: Duration::from_secs(60),
+        rss: 2 << 30,
+        ..Limits::default()
+    };
+    run_with(
+        &bin(),
+        lim,
+        &Request {
+            data: svg.as_bytes(),
+            base: None,
+            max_px,
+        },
+        &never,
+    )
+}
+
+#[test]
+fn a_slide_with_many_effects_is_drawn_by_the_real_child_at_the_size_its_effects_allow() {
+    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    let _g = serial();
+    let r = crate::preview::office::slide_draw::render_svg_cancellable(
+        &shadowed_slide(2),
+        &|_| None,
+        &|| false,
+    );
+    let cap = r.max_raster_px();
+    // The long side of the frame of a 300 x 100 terminal (10 x 20 px cells) is 3000 px, that of a
+    // 120 x 40 one is the configured 1280 or less.
+    for (label, want) in [("300x100", 3000u32), ("120x40", 1280u32)] {
+        let px = want.min(cap);
+        let img = draw_slide(&r.svg, px)
+            .unwrap_or_else(|e| panic!("{label}: refused at {px} (cap {cap}): {e:?}"));
+        assert!(
+            img.width().abs_diff(px) <= 2,
+            "{label}: drawn {}x{}, asked {px}",
+            img.width(),
+            img.height()
+        );
+    }
+    // The premise: asked for the whole frame the child refuses the same slide.
+    assert_eq!(
+        draw_slide(&r.svg, 3000).err(),
+        Some(RunError::Failed(SvgFail::TooHeavy)),
+        "3000 px is past the cap {cap}, so the process refuses it"
+    );
+    no_children_left();
+}
+
+#[test]
+fn a_slide_without_effects_is_drawn_by_the_real_child_at_the_whole_frame() {
+    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    let _g = serial();
+    let mut light = shadowed_slide(0);
+    light.background = crate::preview::office::slide_draw::Fill::Solid(
+        crate::preview::office::slide_draw::Rgba::rgb(200, 30, 30),
+    );
+    let r =
+        crate::preview::office::slide_draw::render_svg_cancellable(&light, &|_| None, &|| false);
+    assert_eq!(r.max_raster_px(), u32::MAX);
+    let img = draw_slide(&r.svg, 3000).expect("a light slide is drawn at the whole frame");
+    assert!(img.width().abs_diff(3000) <= 2, "{}", img.width());
+    no_children_left();
+}
+
+// ---- a stale or misbehaving child fails the tests quickly instead of hanging them ----------------
+
+/// A script standing in for the child, started by the tests below (its pid goes next to it).
+fn stand_in(dir: &Path, name: &str, body: &str) -> PathBuf {
+    script_raw(dir, name, body, &dir.join(format!("{name}.pid")))
+}
+
+/// The message of the panic `f` ended in.
+fn panic_message(f: impl FnOnce() + std::panic::UnwindSafe) -> String {
+    let err = std::panic::catch_unwind(f).expect_err("it should have failed");
+    err.downcast_ref::<String>()
+        .cloned()
+        .or_else(|| err.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_child_that_never_says_ready_fails_the_handshake_within_seconds_and_is_killed() {
+    let dir = unique_tmp("svg-proc-stale");
+    // The stale binary: starts, writes nothing, never ends on its own.
+    let stale = stand_in(&dir, "stale.sh", "exec sleep 600");
+    let t = Instant::now();
+    let msg = panic_message(|| {
+        // Shorter than the real bound so the test itself is quick: the same code path.
+        let mut child = std::process::Command::new(&stale)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        read_bounded(
+            &mut child,
+            out,
+            Some(5),
+            Duration::from_secs(2),
+            "handshake",
+        );
+    });
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+    assert!(
+        msg.contains("no answer from the child") && msg.contains("cargo build"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn a_child_that_writes_something_else_fails_the_handshake_with_the_stale_message() {
+    let dir = unique_tmp("svg-proc-stale-text");
+    let wrong = stand_in(&dir, "wrong.sh", "printf 'hello'; exec sleep 600");
+    let t = Instant::now();
+    let msg = panic_message(|| handshake(&wrong));
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+    assert!(msg.contains("stale konoma binary"), "{msg}");
+    assert!(msg.contains("cargo build"), "{msg}");
+}
+
+#[test]
+fn a_child_that_ends_without_ready_fails_the_handshake_at_once() {
+    let dir = unique_tmp("svg-proc-stale-exit");
+    let gone = stand_in(&dir, "gone.sh", "exit 0");
+    let t = Instant::now();
+    let msg = panic_message(|| handshake(&gone));
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+    assert!(msg.contains("ended early"), "{msg}");
+}
+
+#[test]
+fn a_child_that_does_not_end_is_killed_by_the_bounded_wait() {
+    let dir = unique_tmp("svg-proc-wait");
+    let sleeper = stand_in(&dir, "sleeper.sh", "exec sleep 600");
+    let mut child = std::process::Command::new(&sleeper).spawn().unwrap();
+    let pid = child.id() as i32;
+    let t = Instant::now();
+    let msg = panic_message(std::panic::AssertUnwindSafe(|| {
+        wait_bounded(&mut child, Duration::from_millis(500), "sleeper");
+    }));
+    assert!(t.elapsed() < Duration::from_secs(10));
+    assert!(msg.contains("did not end"), "{msg}");
+    assert!(gone(pid), "the child was killed");
+}
+
+#[test]
+fn the_bounded_readers_return_what_a_healthy_child_wrote() {
+    let dir = unique_tmp("svg-proc-ok");
+    let ok = stand_in(&dir, "ok.sh", "printf 'KSRDYrest'");
+    let mut child = std::process::Command::new(&ok)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let out = child.stdout.take().unwrap();
+    let all = read_bounded(&mut child, out, None, HAND_DRIVEN_WAIT, "all");
+    assert_eq!(all, b"KSRDYrest");
+    assert!(wait_bounded(&mut child, HAND_DRIVEN_WAIT, "ok").success());
+    let mut child = std::process::Command::new(&ok)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let out = child.stdout.take().unwrap();
+    let first = read_bounded(&mut child, out, Some(5), HAND_DRIVEN_WAIT, "five");
+    assert_eq!(first, b"KSRDY");
+    wait_bounded(&mut child, HAND_DRIVEN_WAIT, "ok");
 }

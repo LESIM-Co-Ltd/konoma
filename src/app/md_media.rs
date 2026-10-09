@@ -1161,10 +1161,13 @@ impl App {
     /// until the new ones land, and a failed redraw leaves them.
     fn note_slide_raster_wish(&mut self, url: &str, path: &Path, px: u32) {
         use image::GenericImageView;
+        let cap = self.slide_raster_cap(url);
         let Some(entry) = self.md_image_cache.get_mut(path) else {
             return;
         };
         entry.want_px = px;
+        // A heavy slide cannot be drawn as big as the frame wants (see `Rendered::max_raster_px`).
+        let px = cap.map_or(px, |c| px.min(c));
         let Some(decoded) = entry.decoded.as_ref() else {
             return; // evicted or still decoding: the rebuild / first decode draws at `want_px`
         };
@@ -1246,6 +1249,7 @@ impl App {
                     || latest.load(std::sync::atomic::Ordering::Relaxed) != gen || stale.is_stale();
                 let (still, frames) = crate::preview::markdown::catch_silent(|| {
                     crate::preview::image::with_decode_ticket(ticket, || {
+                        let mut svg_px = svg_max_px;
                         // A slide has no bytes yet: draw its scene to an SVG here (off the UI
                         // thread, under the decode gate) and let the supervised drawing process
                         // rasterize it like any other untrusted SVG of a document.
@@ -1255,6 +1259,7 @@ impl App {
                                 scene,
                                 media,
                                 render_truncated,
+                                raster_cap,
                             } => {
                                 let drawn =
                                     crate::preview::office::slide_draw::render_svg_cancellable(
@@ -1270,6 +1275,12 @@ impl App {
                                     render_truncated
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
                                 }
+                                // The raster size is cut to what the drawing process's work budget
+                                // allows for this slide's effects (they are counted at the square
+                                // of the scale): effects stay, the slide is just drawn smaller.
+                                let cap = drawn.max_raster_px();
+                                raster_cap.store(cap, std::sync::atomic::Ordering::Relaxed);
+                                svg_px = svg_px.min(cap);
                                 Arc::new(drawn.svg.into_bytes())
                             }
                         };
@@ -1281,7 +1292,7 @@ impl App {
                                 return (Ok(first), Some(frames));
                             }
                         }
-                        (md_decode_bytes_why(&bytes, svg_max_px, &moved_on), None)
+                        (md_decode_bytes_why(&bytes, svg_px, &moved_on), None)
                     })
                 })
                 .unwrap_or((Err(ImageFailure::Corrupt), None));

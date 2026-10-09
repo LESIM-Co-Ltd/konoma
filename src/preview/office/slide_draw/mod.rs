@@ -39,9 +39,9 @@ pub mod underlay;
 #[cfg(test)]
 mod effects_tests;
 #[cfg(test)]
-mod hardening_tests;
+pub(crate) mod hardening_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use model::*;
 
@@ -58,6 +58,35 @@ pub struct Rendered {
     /// The caller said the render was not wanted any more (see [`render_svg_cancellable`]) and it
     /// stopped early: `svg` is incomplete and must not be shown or remembered.
     pub cancelled: bool,
+    /// The filter and mask work of the slide's effects, counted the way the drawing process counts
+    /// it, with the slide rasterised at [`Rendered::model_px`] on its longer side.
+    pub filter_work: f64,
+    /// The size, on the longer side in px, `filter_work` was measured at: [`svg::MODEL_RASTER_PX`],
+    /// or the slide's own size when that is bigger (the drawing process never draws below 1:1).
+    pub model_px: f64,
+}
+
+impl Rendered {
+    /// The longest side, in px, this slide can be rasterised at and still be inside the drawing
+    /// process's work budget. The process counts filter work times the square of the scale, so a
+    /// slide whose effects add up to `W` at `model_px` stays within the writer's allowance
+    /// ([`svg::MAX_FILTER_WORK`], the process's limit with a margin) up to
+    /// `model_px * sqrt(MAX_FILTER_WORK / W)`. Never below `model_px` (the writer already kept the
+    /// work at that size under the allowance), the bigger the work the smaller the result
+    /// (monotonic), and no effects at all means no limit (`u32::MAX`). Memory of pixel layers needs
+    /// no such cap: the writer nests nothing that isolates deeper than a few levels, far under the
+    /// process's limit even at the largest raster; pixels of embedded pictures and node counts do
+    /// not depend on the raster size.
+    pub fn max_raster_px(&self) -> u32 {
+        let model = self.model_px.max(1.0);
+        let work = self.filter_work;
+        if !(work.is_finite() && work > 0.0) {
+            return u32::MAX;
+        }
+        let px = model * (svg::MAX_FILTER_WORK / work).sqrt();
+        // Floor of the model size: below it the drawing process would draw at 1:1 anyway.
+        px.max(model).min(f64::from(u32::MAX)) as u32
+    }
 }
 
 /// Draws a scene as SVG. `media` resolves an image key (as used in [`ImageFill::key`]) to the

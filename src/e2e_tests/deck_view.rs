@@ -1420,3 +1420,118 @@ fn e2e_deck_a_terminal_too_small_for_the_body_draws_a_tiny_frame() {
         assert!(s.app.slide_position().is_some(), "height {h}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// The raster size against the drawing process's work budget
+// ---------------------------------------------------------------------------------------------
+
+/// A deck of `n` slides whose effects use a good part of the work budget: at the frame of a big
+/// terminal the drawing process would refuse them, at the size `Rendered::max_raster_px` says it
+/// draws them.
+fn heavy_deck(n: usize) -> Document {
+    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    deck_doc_with(n, (0..n).map(|_| shadowed_slide(2)).collect())
+}
+
+/// The cap the writer reports for [`heavy_deck`]'s slides.
+fn heavy_cap() -> u32 {
+    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    crate::preview::office::slide_draw::render_svg_cancellable(
+        &shadowed_slide(2),
+        &|_| None,
+        &|| false,
+    )
+    .max_raster_px()
+}
+
+#[test]
+fn e2e_deck_a_heavy_slide_is_drawn_at_the_size_its_effects_allow_not_refused() {
+    let cap = heavy_cap();
+    assert!(cap > 1280 && cap < 2900, "the premise: {cap}");
+    for (size, label) in [((120, 40), "120x40"), ((300, 100), "300x100")] {
+        let Some((mut s, _d)) = open_with(
+            &format!("dv_heavy_{label}"),
+            Some(ProtocolType::Kitty),
+            size,
+            heavy_deck(2),
+            cfg_en(),
+        ) else {
+            return;
+        };
+        settle(&mut s);
+        let frame = frame_px(&s);
+        assert!(
+            s.app.office_picture_failure_for_test(&url_of(1)).is_none(),
+            "{label}: the slide is refused (frame {frame}, cap {cap})"
+        );
+        let edge = longest_edge(&s, 1);
+        let want = frame.clamp(800, 4096).min(cap);
+        assert!(
+            edge.abs_diff(want) <= 2,
+            "{label}: drawn at {edge}, wanted {want} (frame {frame}, cap {cap})"
+        );
+        if label == "300x100" {
+            assert!(
+                frame > cap,
+                "the premise: the frame ({frame}) exceeds the cap"
+            );
+        }
+    }
+}
+
+#[test]
+fn e2e_deck_a_heavy_slide_on_a_growing_terminal_is_not_redrawn_for_a_size_it_cannot_have() {
+    let cap = heavy_cap();
+    let Some((mut s, _d)) = open_with(
+        "dv_heavy_grow",
+        Some(ProtocolType::Kitty),
+        (60, 20),
+        heavy_deck(2),
+        cfg_en(),
+    ) else {
+        return;
+    };
+    settle(&mut s);
+    s.resize(300, 100);
+    // `settle` ends only when nothing is left to draw: a redraw wanted again and again for the
+    // frame's size (which the slide cannot have) would never let it end.
+    settle(&mut s);
+    assert!(s.app.office_picture_failure_for_test(&url_of(1)).is_none());
+    let edge = longest_edge(&s, 1);
+    assert!(
+        edge <= cap + 2 && edge + 2 >= cap.min(frame_px(&s)),
+        "{edge} vs cap {cap}"
+    );
+    // Once more: nothing starts again.
+    s.draw();
+    assert!(!s.app.md_images_loading());
+    assert!(
+        !s.app.office_picture_reraster_inflight_for_test(&url_of(1)),
+        "a redraw was started for a size the slide cannot have"
+    );
+}
+
+#[test]
+fn e2e_deck_a_light_slide_keeps_the_full_frame_beside_a_heavy_one() {
+    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    let scenes = vec![shadowed_slide(2), scene(RED)];
+    let Some((mut s, _d)) = open_with(
+        "dv_heavy_and_light",
+        Some(ProtocolType::Kitty),
+        (300, 100),
+        deck_doc_with(2, scenes),
+        cfg_en(),
+    ) else {
+        return;
+    };
+    visit_slides(&mut s, 2);
+    let (cap, frame) = (heavy_cap(), frame_px(&s));
+    assert!(
+        longest_edge(&s, 1).abs_diff(cap) <= 2,
+        "the heavy one is cut"
+    );
+    assert!(
+        longest_edge(&s, 2) >= frame.min(4096),
+        "the light one is drawn at its frame"
+    );
+}
