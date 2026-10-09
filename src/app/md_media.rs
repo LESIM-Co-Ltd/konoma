@@ -1328,7 +1328,7 @@ impl App {
                             svg_px,
                             retry_floor,
                             &moved_on,
-                            std::time::Instant::now(),
+                            &std::time::Instant::now,
                             |px| md_decode_bytes_why(&bytes, px, &moved_on),
                         );
                         (res, None)

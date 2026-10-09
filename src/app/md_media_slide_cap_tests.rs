@@ -37,7 +37,7 @@ fn run(
 ) -> (Vec<u32>, Result<(), ImageFailure>, SlideRasterCap) {
     let cap = SlideRasterCap::default();
     let tried = RefCell::new(Vec::new());
-    let res = decode_with_cap(Some(&cap), start, floor, &|| false, now, |px| {
+    let res = decode_with_cap(Some(&cap), start, floor, &|| false, &|| now, |px| {
         tried.borrow_mut().push(px);
         if px <= works_at {
             Ok(px_image())
@@ -204,12 +204,189 @@ fn failing_at_every_size_records_the_floor() {
             "{f:?}"
         );
     }
-    // A failure that is not a refusal is final at once and caps at the floor too.
-    for f in [fail(SvgFail::Crashed), ImageFailure::Corrupt] {
-        let (tried, res, cap) = run(4096, 1280, 0, f, now);
-        assert_eq!((tried, res), (vec![4096], Err(f)));
-        assert_eq!(cap.get(now), Some(1280), "{f:?}");
+    // A failure that is not a refusal for size is final at once (never retried smaller).
+    let (tried, res, _) = run(4096, 1280, 0, fail(SvgFail::Crashed), now);
+    assert_eq!((tried, res), (vec![4096], Err(fail(SvgFail::Crashed))));
+    let (tried, res, _) = run(4096, 1280, 0, ImageFailure::Corrupt, now);
+    assert_eq!((tried, res), (vec![4096], Err(ImageFailure::Corrupt)));
+}
+
+#[test]
+fn a_crash_gives_a_cap_that_expires() {
+    // Pinned to the old behaviour before: a crash under memory pressure kept the slide blurry for
+    // the rest of the session.
+    let t0 = Instant::now();
+    let life = crate::app::office_doc::TIMEOUT_CAP_LIFETIME;
+    let (_, res, cap) = run(4096, 1280, 0, fail(SvgFail::Crashed), t0);
+    assert!(res.is_err());
+    assert_eq!(cap.get(t0), Some(1280));
+    assert_eq!(cap.get(t0 + life - Duration::from_secs(1)), Some(1280));
+    assert_eq!(cap.get(t0 + life), None, "the pressure may be gone");
+}
+
+#[test]
+fn a_failure_that_does_not_depend_on_the_size_holds_the_floor_for_a_while() {
+    let t0 = Instant::now();
+    let life = crate::app::office_doc::TIMEOUT_CAP_LIFETIME;
+    for f in [
+        fail(SvgFail::TooDeep),
+        fail(SvgFail::TooLarge),
+        fail(SvgFail::TooComplex),
+        fail(SvgFail::Invalid),
+        ImageFailure::TooLarge,
+        ImageFailure::Corrupt,
+        ImageFailure::UnsupportedFormat,
+    ] {
+        // Never retried smaller, and no size is learned from it: the cap is the floor (the size
+        // already shown), so the same request is not made again at once, and only for a while.
+        let (tried, res, cap) = run(4096, 1280, 0, f, t0);
+        assert_eq!((tried, res), (vec![4096], Err(f)), "{f:?}");
+        assert_eq!(cap.get(t0), Some(1280), "{f:?}");
+        assert_eq!(cap.get(t0 + life), None, "{f:?}");
     }
+    // A cancelled draw holds nothing.
+    let (_, _, cap) = run(4096, 1280, 0, ImageFailure::Cancelled, t0);
+    assert_eq!(cap.get(t0), None);
+    // An earlier size-dependent refusal still counts when the next attempt fails otherwise.
+    let far = t0 + life * 100;
+    let cap = SlideRasterCap::default();
+    let res = decode_with_cap(Some(&cap), 4096, 800, &|| false, &|| t0, |px| match px {
+        4096 => Err(fail(SvgFail::TooHeavy)),
+        _ => Err(ImageFailure::Corrupt),
+    });
+    assert_eq!(res.err(), Some(ImageFailure::Corrupt));
+    assert_eq!(cap.get(far), Some(2048));
+    assert_eq!(cap.get(t0), Some(800));
+}
+
+/// What every class of failure leaves behind when a draw at `start` fails at every size with a
+/// floor of `floor` (the raster on screen for a sharpening redraw).
+#[test]
+fn every_failure_class_leaves_the_slide_unable_to_ask_for_the_same_size_at_once() {
+    let t0 = Instant::now();
+    let life = crate::app::office_doc::TIMEOUT_CAP_LIFETIME;
+    // (failure, cap right after, cap long after)
+    let cases: [(ImageFailure, Option<u32>, Option<u32>); 11] = [
+        (fail(SvgFail::TooHeavy), Some(400), Some(400)),
+        (fail(SvgFail::Memory), Some(400), Some(400)),
+        (fail(SvgFail::Timeout), Some(400), None),
+        (fail(SvgFail::Crashed), Some(400), None),
+        (fail(SvgFail::TooDeep), Some(400), None),
+        (fail(SvgFail::TooLarge), Some(400), None),
+        (fail(SvgFail::TooComplex), Some(400), None),
+        (fail(SvgFail::Invalid), Some(400), None),
+        (ImageFailure::TooLarge, Some(400), None),
+        (ImageFailure::Corrupt, Some(400), None),
+        (ImageFailure::UnsupportedFormat, Some(400), None),
+    ];
+    for (f, soon, late) in cases {
+        let (_, res, cap) = run(2000, 400, 0, f, t0);
+        assert_eq!(res, Err(f), "{f:?}");
+        assert_eq!(cap.get(t0), soon, "{f:?}");
+        assert_eq!(cap.get(t0 + life * 100), late, "{f:?}");
+    }
+}
+
+/// Through the real wish path: a sharpening redraw that failed for a reason that has nothing to do
+/// with the size must not be started again by every following frame.
+#[test]
+fn a_failed_sharpening_redraw_is_not_asked_for_again_by_every_frame() {
+    let (mut app, _dir, cap, rx) = app_with_slide(Default::default());
+    let url = "office-img://deck/slide-1";
+    let key = PathBuf::from(url);
+    app.md_image_cache.insert(
+        key.clone(),
+        MdImgEntry {
+            decoded: Some(Arc::new(image::DynamicImage::new_rgba8(400, 225))),
+            ..MdImgEntry::default()
+        },
+    );
+    // The redraw at 2000 fails for good (a panic caught in the drawing, say), as the worker
+    // records it, with the raster on screen as the floor; `apply_md_image` then leaves the entry
+    // alone (a failed re-raster keeps its pixels).
+    let res = decode_with_cap(Some(&cap), 2000, 400, &|| false, &Instant::now, |_| {
+        Err(ImageFailure::Corrupt)
+    });
+    assert_eq!(res.err(), Some(ImageFailure::Corrupt));
+    for _ in 0..5 {
+        app.note_slide_raster_wish(url, &key, 2000);
+        assert!(
+            !app.md_image_cache[&key].reraster_inflight,
+            "a redraw was started again"
+        );
+    }
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "a worker was started"
+    );
+    // The premise: without what the failure recorded, the same wish does start a redraw.
+    let (mut app, _dir, _cap, rx) = app_with_slide(Default::default());
+    app.md_image_cache.insert(
+        key.clone(),
+        MdImgEntry {
+            decoded: Some(Arc::new(image::DynamicImage::new_rgba8(400, 225))),
+            ..MdImgEntry::default()
+        },
+    );
+    app.note_slide_raster_wish(url, &key, 2000);
+    assert!(app.md_image_cache[&key].reraster_inflight);
+    assert!(rx.recv_timeout(Duration::from_secs(60)).is_ok());
+}
+
+#[test]
+fn a_refusal_confirmed_before_a_cancellation_is_kept() {
+    let t0 = Instant::now();
+    let far = t0 + Duration::from_secs(3600);
+    // Too heavy at 4096, then the user moves on while 2048 is being drawn.
+    let moved = Cell::new(false);
+    let cap = SlideRasterCap::default();
+    let res = decode_with_cap(Some(&cap), 4096, 800, &|| moved.get(), &|| t0, |px| {
+        if px == 4096 {
+            Err(fail(SvgFail::TooHeavy))
+        } else {
+            moved.set(true);
+            Err(ImageFailure::Cancelled)
+        }
+    });
+    assert_eq!(res.err(), Some(ImageFailure::Cancelled));
+    assert_eq!(
+        cap.get(far),
+        Some(2048),
+        "4096 was refused, 2048 taught nothing"
+    );
+    // The same when the last attempt came back with a real refusal after the user moved on.
+    let moved = Cell::new(false);
+    let cap = SlideRasterCap::default();
+    let _ = decode_with_cap(Some(&cap), 4096, 800, &|| moved.get(), &|| t0, |px| {
+        if px != 4096 {
+            moved.set(true);
+        }
+        Err(fail(SvgFail::TooHeavy))
+    });
+    assert_eq!(cap.get(far), Some(2048));
+}
+
+#[test]
+fn a_timeout_cap_counts_its_lifetime_from_the_refusal() {
+    let t0 = Instant::now();
+    let life = crate::app::office_doc::TIMEOUT_CAP_LIFETIME;
+    // The drawing takes 15 s before the refusal is known; the clock is read when it is recorded.
+    let elapsed = Cell::new(Duration::ZERO);
+    let cap = SlideRasterCap::default();
+    let _ = decode_with_cap(
+        Some(&cap),
+        4096,
+        800,
+        &|| false,
+        &|| t0 + elapsed.get(),
+        |_| {
+            elapsed.set(Duration::from_secs(15));
+            Err(fail(SvgFail::Timeout))
+        },
+    );
+    let learned = t0 + Duration::from_secs(15);
+    assert_eq!(cap.get(learned + life - Duration::from_secs(1)), Some(800));
+    assert_eq!(cap.get(learned + life), None);
 }
 
 #[test]
@@ -245,7 +422,7 @@ fn a_cap_that_came_from_a_timeout_expires_and_a_deterministic_one_does_not() {
     assert_eq!(cap.get(after), Some(2048));
     // A cost refusal that is followed by a timeout: the first part is kept, the second expires.
     let cap = SlideRasterCap::default();
-    let res = decode_with_cap(Some(&cap), 4096, 800, &|| false, t0, |px| match px {
+    let res = decode_with_cap(Some(&cap), 4096, 800, &|| false, &|| t0, |px| match px {
         4096 => Err(fail(SvgFail::TooHeavy)),
         2048 => Err(fail(SvgFail::Timeout)),
         _ => Ok(px_image()),
@@ -262,7 +439,7 @@ fn a_cap_that_came_from_a_timeout_expires_and_a_deterministic_one_does_not() {
 #[test]
 fn a_picture_that_is_not_a_slide_is_tried_once_and_teaches_nothing() {
     let tried = Cell::new(0);
-    let res = decode_with_cap(None, 4096, 800, &|| false, Instant::now(), |_| {
+    let res = decode_with_cap(None, 4096, 800, &|| false, &|| Instant::now(), |_| {
         tried.set(tried.get() + 1);
         Err(fail(SvgFail::TooHeavy))
     });
@@ -326,7 +503,7 @@ fn a_slide_the_user_moved_on_from_keeps_its_cap_whatever_the_drawing_said() {
     with_unstartable_child(|| {
         let moved = Cell::new(false);
         let cap = SlideRasterCap::default();
-        let res = decode_with_cap(Some(&cap), 4096, 800, &|| moved.get(), now, |px| {
+        let res = decode_with_cap(Some(&cap), 4096, 800, &|| moved.get(), &|| now, |px| {
             moved.set(true); // the user scrolls away while the slide is being drawn
             md_decode_bytes_why(SVG, px, &|| moved.get())
         });
@@ -347,7 +524,7 @@ fn a_slide_the_user_moved_on_from_keeps_its_cap_whatever_the_drawing_said() {
     ] {
         let moved = Cell::new(false);
         let cap = SlideRasterCap::default();
-        let res = decode_with_cap(Some(&cap), 4096, 800, &|| moved.get(), now, |_| {
+        let res = decode_with_cap(Some(&cap), 4096, 800, &|| moved.get(), &|| now, |_| {
             moved.set(true);
             Err(f)
         });
@@ -356,7 +533,7 @@ fn a_slide_the_user_moved_on_from_keeps_its_cap_whatever_the_drawing_said() {
     }
     // A cancelled attempt that nobody asked to stop (the document was closed): nothing either.
     let cap = SlideRasterCap::default();
-    let res = decode_with_cap(Some(&cap), 4096, 800, &|| false, now, |_| {
+    let res = decode_with_cap(Some(&cap), 4096, 800, &|| false, &|| now, |_| {
         Err(ImageFailure::Cancelled)
     });
     assert_eq!(res.err(), Some(ImageFailure::Cancelled));
@@ -364,7 +541,7 @@ fn a_slide_the_user_moved_on_from_keeps_its_cap_whatever_the_drawing_said() {
     // A cap that was already known is left as it was.
     let cap = SlideRasterCap::default();
     cap.lower_permanent(2000);
-    let _ = decode_with_cap(Some(&cap), 4096, 800, &|| true, now, |_| {
+    let _ = decode_with_cap(Some(&cap), 4096, 800, &|| true, &|| now, |_| {
         Err(fail(SvgFail::TooHeavy))
     });
     assert_eq!(cap.get(now), Some(2000));
