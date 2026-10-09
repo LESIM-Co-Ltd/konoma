@@ -1,3 +1,4 @@
+use super::office_doc::PictureSource;
 use super::*;
 
 /// Cap on how many mermaid-fence/math renders may be in flight (spawned, result not yet applied) at
@@ -1122,7 +1123,7 @@ impl App {
     /// bytes. The cache entry is placed first (its presence is the "decode in flight" marker, as
     /// for a file image); a picture the document does not hold is left uncached (nothing to draw).
     fn spawn_office_picture_decode(&mut self, url: &str, key: PathBuf) {
-        if self.document_picture_bytes(url).is_none() {
+        if self.document_picture_source(url).is_none() {
             return;
         }
         self.md_image_cache
@@ -1140,7 +1141,7 @@ impl App {
     /// keeps its own). Returns false when there is nothing to decode (the document no longer
     /// holds the picture) or the thread could not be started; the caller ends the wait.
     fn start_office_picture_thread(&mut self, url: &str, key: PathBuf) -> bool {
-        let Some(bytes) = self.document_picture_bytes(url) else {
+        let Some(source) = self.document_picture_source(url) else {
             return false;
         };
         let Some(tx) = self.md_img_tx.clone() else {
@@ -1166,6 +1167,19 @@ impl App {
                     || latest.load(std::sync::atomic::Ordering::Relaxed) != gen || stale.is_stale();
                 let (still, frames) = crate::preview::markdown::catch_silent(|| {
                     crate::preview::image::with_decode_ticket(ticket, || {
+                        // A slide has no bytes yet: draw its scene to an SVG here (off the UI
+                        // thread, under the decode gate) and let the supervised drawing process
+                        // rasterize it like any other untrusted SVG of a document.
+                        let bytes = match source {
+                            PictureSource::Bytes(b) => b,
+                            PictureSource::Slide { scene, media } => Arc::new(
+                                crate::preview::office::slide_draw::render_svg(&scene, &|k| {
+                                    media.get(k).cloned()
+                                })
+                                .svg
+                                .into_bytes(),
+                            ),
+                        };
                         if bytes.starts_with(b"GIF8") {
                             if let Some((frames, _)) =
                                 crate::preview::image::decode_gif_bytes_inline(&bytes)

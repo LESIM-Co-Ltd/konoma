@@ -345,66 +345,8 @@ fn e2e_slides_the_pptx_is_never_written_by_any_key() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// R: the converted Markdown
+// R: the slide pictures / the text (the picture view itself: `app/deck_view_tests.rs`)
 // ---------------------------------------------------------------------------------------------
-
-#[test]
-fn e2e_slides_r_shows_the_converted_markdown_and_j_k_jump_to_its_headings() {
-    let Some((mut s, _d)) = open_deck("sl_raw", EN, SMALL) else {
-        return;
-    };
-    s.key('J'); // decorated: slide 2
-    s.key('R');
-    assert!(s.app.is_md_raw() && s.app.is_windowed());
-    s.see("raw source");
-    s.see("## Slide ");
-    // The raw view starts where the converted text starts, and has the chip and the hint too.
-    s.key('g');
-    at_slide(&s, 1);
-    assert!(footer_text(&s).contains("J/K:slide"), "{}", footer_text(&s));
-    s.key('J');
-    at_slide(&s, 2);
-    assert_eq!(
-        top_row(&s),
-        "## Slide 2: Agenda \\*and\\* more",
-        "{}",
-        s.screen()
-    );
-    s.key('J');
-    s.key('J');
-    at_slide(&s, 4);
-    assert!(
-        top_row(&s).starts_with("## Slide 4: Numbers"),
-        "{}",
-        s.screen()
-    );
-    s.key('K');
-    at_slide(&s, 3);
-    for _ in 0..N + 3 {
-        s.key('J');
-    }
-    at_slide(&s, N);
-    s.key('J');
-    at_slide(&s, N);
-    for _ in 0..N + 3 {
-        s.key('K');
-    }
-    at_slide(&s, 1);
-    // The text the raw view reads is the converted Markdown, not the pptx.
-    let tmp = s.app.document_raw_file_for_test().expect("a temp file");
-    assert_eq!(
-        std::fs::read_to_string(&tmp).unwrap(),
-        s.app.document_markdown_for_test().unwrap()
-    );
-    // Back to the rendered view: the chip is still there, J/K work on the rendered text again.
-    s.key('R');
-    assert!(!s.app.is_md_raw());
-    assert!(!tmp.exists());
-    at_slide(&s, 1);
-    s.key('J');
-    at_slide(&s, 2);
-    assert!(top_row(&s).starts_with("Slide 2: Agenda"), "{}", s.screen());
-}
 
 // ---------------------------------------------------------------------------------------------
 // Hints appear only for keys that act ([[hint-shown-iff-key-acts]])
@@ -998,53 +940,6 @@ fn e2e_slides_a_two_slide_deck_and_a_one_slide_deck_have_the_ordinary_limit_or_w
 }
 
 #[test]
-fn e2e_slides_the_raw_view_stops_on_every_slide_too() {
-    for h in [14u16, 40] {
-        let Some((mut s, _d)) = open_deck(&format!("sl_raw_all{h}"), EN, (100, h)) else {
-            return;
-        };
-        s.key('R');
-        assert!(s.app.is_md_raw() && s.app.is_windowed());
-        s.key('g');
-        for k in 2..=N {
-            s.key('J');
-            at_slide(&s, k);
-            assert!(
-                top_row(&s).starts_with(&format!("## Slide {k}")),
-                "h={h} J to {k}\n{}",
-                s.screen()
-            );
-        }
-        let top = top_row(&s);
-        s.key('J');
-        assert_eq!(top_row(&s), top);
-        for k in (1..N).rev() {
-            s.key('K');
-            at_slide(&s, k);
-            assert!(
-                top_row(&s).starts_with(&format!("## Slide {k}")),
-                "h={h} K to {k}\n{}",
-                s.screen()
-            );
-        }
-        // G goes to the widened end: the last slide at the top.
-        s.key('G');
-        at_slide(&s, N);
-        assert!(top_row(&s).starts_with("## Slide 7"), "{}", s.screen());
-        // j at the end moves the caret within the screen but never the window past the limit.
-        let top = top_row(&s);
-        for _ in 0..30 {
-            s.key('j');
-        }
-        assert_eq!(top_row(&s), top, "{}", s.screen());
-        at_slide(&s, N);
-        // And the resize clamp keeps the last slide on screen.
-        s.resize(100, 60);
-        at_slide(&s, N);
-    }
-}
-
-#[test]
 fn e2e_slides_the_tab_comes_back_at_the_same_slide_even_the_last() {
     let Some((dir, root)) = deck_sandbox("sl_tabs_last", &[EN]) else {
         return;
@@ -1416,45 +1311,7 @@ fn e2e_slides_j_and_k_land_on_each_heading_when_the_text_before_it_wraps() {
 }
 
 #[test]
-fn e2e_slides_the_raw_view_moves_the_caret_with_j_and_k() {
-    let Some((mut s, _d)) = open_deck("sl_raw_caret", EN, (100, 20)) else {
-        return;
-    };
-    s.key('R');
-    assert!(s.app.is_md_raw() && s.app.is_windowed());
-    for k in 2..=N {
-        s.key('J');
-        at_slide(&s, k);
-        let line = heading_line(&s, k);
-        assert_eq!(s.app.preview_top_line(), line, "top line of slide {k}");
-        assert!(
-            s.reversed_cells().iter().any(|&(r, _)| r == 2),
-            "the caret is on the heading row of slide {k}\n{}",
-            s.screen()
-        );
-        assert!(s.app.preview_byte_top_for_test() > 0);
-        assert!(
-            top_row(&s).starts_with(&format!("## Slide {k}")),
-            "{}",
-            s.screen()
-        );
-    }
-    for k in (1..N).rev() {
-        s.key('K');
-        at_slide(&s, k);
-        let line = heading_line(&s, k);
-        assert_eq!(s.app.preview_top_line(), line, "top line of slide {k}");
-        assert!(
-            s.reversed_cells().iter().any(|&(r, _)| r == 2),
-            "the caret is on the heading row of slide {k}\n{}",
-            s.screen()
-        );
-    }
-    assert_eq!(s.app.preview_byte_top_for_test(), 0);
-}
-
-#[test]
-fn e2e_slides_a_hash_tag_in_a_slide_is_not_a_heading_in_either_view() {
+fn e2e_slides_a_hash_tag_in_a_slide_is_not_a_heading() {
     let Some(src) = testdata(EN) else {
         return;
     };
@@ -1477,17 +1334,11 @@ fn e2e_slides_a_hash_tag_in_a_slide_is_not_a_heading_in_either_view() {
     at_slide(&s, 1);
     s.key('J');
     at_slide(&s, 2);
-    s.key('R');
-    assert!(s.app.is_md_raw());
-    // The raw view still knows exactly seven slides (it opens at the top: the escaped text is no
-    // heading, so a count of "## " lines would still be seven).
-    at_slide(&s, 1);
+    // The deck still knows exactly seven slides: the escaped text is no heading.
     assert!(s.app.slide_can_turn());
     s.key('J');
-    at_slide(&s, 2);
-    s.key('J');
     at_slide(&s, 3);
-    assert!(top_row(&s).starts_with("## Slide 3"), "{}", s.screen());
+    assert!(top_row(&s).starts_with("Slide 3"), "{}", s.screen());
     s.key('G');
     at_slide(&s, N);
     s.key('K');

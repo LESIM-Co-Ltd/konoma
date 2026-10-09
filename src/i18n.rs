@@ -759,6 +759,14 @@ pub enum Msg {
     /// Footer: `J/K:slide` (a presentation).
     HintSlide,
     SlideSwitchHelp,
+    /// Footer `R:text view` while a presentation shows its slide pictures.
+    HintDeckText,
+    /// Footer `R:slides` while a presentation shows its text.
+    HintDeckSlides,
+    /// `?` help of `R` while a presentation shows its slide pictures.
+    DeckTextHelp,
+    /// `?` help of `R` while a presentation shows its text.
+    DeckSlidesHelp,
     /// Chip of the slide at the top of the view: `slide 3/12` (`{cur}` / `{total}`).
     SlideChip,
     DocErrCorruptSlides,
@@ -1428,6 +1436,10 @@ fn en(msg: Msg) -> &'static str {
         SheetSwitchHelp => "next / previous sheet",
         HintSlide => "slide",
         SlideSwitchHelp => "next / previous slide",
+        HintDeckText => "text view",
+        HintDeckSlides => "slides",
+        DeckTextHelp => "show the slides as text",
+        DeckSlidesHelp => "show the slides as pictures",
         SlideChip => "slide {cur}/{total}",
         DocErrCorruptSlides => "[presentation] cannot preview — the file is damaged or not a valid presentation",
         DocErrUnsupportedSlides => "[presentation] cannot preview — not a presentation format konoma reads (an old .ppt, for one)",
@@ -2031,6 +2043,10 @@ fn jp(msg: Msg) -> &'static str {
         SheetSwitchHelp => "次/前のシート",
         HintSlide => "スライド",
         SlideSwitchHelp => "次/前のスライド",
+        HintDeckText => "文字表示",
+        HintDeckSlides => "スライド表示",
+        DeckTextHelp => "スライドを文字で表示",
+        DeckSlidesHelp => "スライドを絵で表示",
         SlideChip => "スライド {cur}/{total}",
         DocErrCorruptSlides => "[プレゼン] 表示不可 — ファイルが壊れているか、正しいプレゼンテーションではありません",
         DocErrUnsupportedSlides => "[プレゼン] 表示不可 — konoma が読めない形式です(古い .ppt など)",
@@ -2695,6 +2711,10 @@ mod tests {
         Msg::SheetSwitchHelp,
         Msg::HintSlide,
         Msg::SlideSwitchHelp,
+        Msg::HintDeckText,
+        Msg::HintDeckSlides,
+        Msg::DeckTextHelp,
+        Msg::DeckSlidesHelp,
         Msg::SlideChip,
         Msg::DocErrCorruptSlides,
         Msg::DocErrUnsupportedSlides,

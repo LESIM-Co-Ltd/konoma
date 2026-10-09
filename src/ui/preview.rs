@@ -172,10 +172,12 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     }
     // While this preview *is* the diff's own `Preview` representation, `R` returns to the diff
     // instead of toggling raw source (`docs/FEATURE-MD-RENDERED-DIFF.md` §4).
-    let r_help = if app.preview_is_diff_representation() {
-        l(crate::i18n::Msg::HintReturnToDiff)
+    let r_help = if app.is_deck() {
+        app.deck_view_help().map(l)
+    } else if app.preview_is_diff_representation() {
+        Some(l(crate::i18n::Msg::HintReturnToDiff))
     } else {
-        l(crate::i18n::Msg::MdRawToggleHelp)
+        Some(l(crate::i18n::Msg::MdRawToggleHelp))
     };
     // A Word document has links and code blocks only (no checkboxes, diagrams or `<details>`: see
     // `ensure_md_cache`), so its Tab/Enter rows name just those.
@@ -194,8 +196,10 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     if app.slide_can_turn() {
         sec = sec.row("J / K", l(crate::i18n::Msg::SlideSwitchHelp));
     }
+    if let Some(r_help) = r_help {
+        sec = sec.row("R", r_help);
+    }
     sec = sec
-        .row("R", r_help)
         .row("o", l(crate::i18n::Msg::HintOutline))
         .row("Tab / ⇧Tab", l(tab_msg))
         .row("Enter", l(enter_msg))
@@ -363,12 +367,19 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         }
         // R normally goes decorated → raw source; while this preview *is* the diff's own `Preview`
         // representation, it instead returns to the diff (`App::diff_preview_raw_hint`, §4).
-        let r_msg = app
-            .diff_preview_raw_hint()
-            .unwrap_or(crate::i18n::Msg::HintRawSource);
+        // A presentation's `R` switches its slide pictures / text (only when it has pictures);
+        // everything else goes to the raw source.
+        let r_msg = if app.is_deck() {
+            app.deck_view_hint()
+        } else {
+            Some(
+                app.diff_preview_raw_hint()
+                    .unwrap_or(crate::i18n::Msg::HintRawSource),
+            )
+        };
+        v.push(hint(lang, "o", crate::i18n::Msg::HintOutline));
+        v.extend(r_msg.map(|m| hint(lang, "R", m)));
         v.extend([
-            hint(lang, "o", crate::i18n::Msg::HintOutline),
-            hint(lang, "R", r_msg),
             hint(lang, "/", crate::i18n::Msg::HintSearch),
             hint(lang, "F", crate::i18n::Msg::StFollow),
             hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
@@ -1231,8 +1242,12 @@ fn render_decorated_body(
     // longest line width (mermaid is already fitted to the inner width, so its rule lines don't
     // break even after wrapping downstream). The line bodies themselves are returned by md_slice
     // below, only for the visible range — no full-document clone / full reflow every frame.
+    // The viewport height is read by the layout itself (a slide picture is sized to fit it).
+    app.tab.preview_viewport = inner.height;
     let (total_rows, max_line_cols) = app.md_layout(inner.width);
     let wrap = app.cfg.ui.wrap;
+    // `R` on a presentation asked to keep a slide: now the other view's rows exist.
+    app.apply_pending_slide();
 
     // A follow jump into a decorated Markdown document, or a fresh `Rendered` diff open/cycle,
     // requested a scroll to its first change-gutter mark (`docs/FEATURE-MD-RENDERED-DIFF.md` §2/§3)

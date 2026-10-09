@@ -1,88 +1,123 @@
-//! Word document preview (`PreviewKind::Document`): the converted Markdown and its pictures live
-//! on `App`, are drawn by the ordinary Markdown pipeline, and are never written back to the file.
+//! Word document and presentation preview (`PreviewKind::Document`): the converted Markdown and its
+//! pictures live on `App`, are drawn by the ordinary Markdown pipeline, and are never written back
+//! to the file.
 //!
 //! The document is converted on the Office worker slot (`MediaJob::Document`); this module holds
-//! what arrives (`LoadedDocument`), the App-level accessors the renderer / key handlers share, and
-//! the `R` raw view (the converted Markdown written to a private temp file so the less-style reader
-//! can window it).
+//! what arrives (`LoadedDocument`), the App-level accessors the renderer / key handlers share, the
+//! `R` raw view of a Word document (the converted Markdown written to a private temp file so the
+//! less-style reader can window it), and the two views of a presentation (slide pictures / text).
 
 use super::*;
 use std::collections::HashMap;
 
+/// Where the pixels of a picture of the open document come from.
+#[derive(Clone)]
+pub(super) enum PictureSource {
+    /// A file inside the package (png, jpeg, gif, bmp, webp, tiff or svg): its bytes, shared with
+    /// decode threads.
+    Bytes(Arc<Vec<u8>>),
+    /// A slide of a presentation: no bytes exist yet. The decode thread draws the scene to an SVG
+    /// (resolving the scene's image keys through `media`) and hands that to the untrusted-SVG
+    /// drawing path.
+    Slide {
+        scene: Arc<crate::preview::office::slide_draw::SlideScene>,
+        media: Arc<HashMap<String, Arc<Vec<u8>>>>,
+    },
+}
+
 /// One picture of the open document, held in memory only.
 pub struct DocPicture {
-    /// The file's bytes (png, jpeg, gif, bmp, webp, tiff or svg), shared with decode threads.
-    pub(super) bytes: Arc<Vec<u8>>,
-    /// Pixel size read from the header (raster) or the intrinsic size (SVG), without decoding.
-    /// `None` = not an image konoma can size: it is drawn as its alt text.
+    pub(super) source: PictureSource,
+    /// Pixel size read from the header (raster) or the intrinsic size (SVG, slide), without
+    /// decoding. `None` = not an image konoma can size: it is drawn as its alt text.
     pub(super) dims: Option<(u32, u32)>,
     /// `dims` came from a raster header (not an SVG's intrinsic size): only those are refused
     /// from the header alone; an SVG is guarded by its drawing process instead.
     pub(super) raster: bool,
 }
 
-/// A converted Word document.
+/// A converted Word document or presentation.
 pub struct LoadedDocument {
-    /// The Markdown the renderer draws (never read from disk).
+    /// The Markdown the text view draws (never read from disk).
     pub(super) markdown: String,
+    /// A presentation's picture view: the same headings with the slide pictures between them.
+    /// Empty for a Word document and for a deck without drawings (it has its text view only).
+    pub(super) picture_markdown: String,
     /// The conversion stopped at one of its budgets (the end, some pictures, or part of a table is
     /// missing).
     pub(super) truncated: bool,
-    /// Pictures by their `office-img://…` URL.
+    /// Pictures by their `office-img://...` URL (the slides' pictures included).
     pub(super) pictures: HashMap<String, DocPicture>,
     /// A presentation: its slides in order (empty for a Word document).
     pub(super) slides: Vec<crate::preview::office::docx::pptx::SlideInfo>,
-    /// 0-based line of each slide's `## ` heading in `markdown`, in slide order (the reader keeps
-    /// exactly one such line per slide). Found once here, on the worker, for the `R` raw view.
-    pub(super) slide_lines: Vec<usize>,
-    /// Byte offset in `markdown` of the last slide's heading line (0 without slides): where the
-    /// raw view's window may be scrolled to, past its usual last page.
-    pub(super) last_slide_byte: u64,
+}
+
+/// Pixels per EMU: slide pictures are SVGs at 96 dpi (1 px = 9525 EMU).
+const EMU_PER_PX: f64 = 9525.0;
+
+/// The pixel size of a slide drawn from `scene`; `None` for a size that is not a positive, finite
+/// number of pixels (such a slide has nothing to size a box by and is drawn as its alt text).
+pub(super) fn slide_px(
+    scene: &crate::preview::office::slide_draw::SlideScene,
+) -> Option<(u32, u32)> {
+    let side = |emu: f64| {
+        let px = (emu / EMU_PER_PX).round();
+        (px.is_finite() && px >= 1.0).then(|| px.min(u32::MAX as f64) as u32)
+    };
+    Some((side(scene.width)?, side(scene.height)?))
 }
 
 impl LoadedDocument {
     /// Builds the App-side form on the worker thread (sizes are read here, so the UI thread never
     /// parses an image header).
     pub(super) fn from_document(doc: crate::preview::office::docx::Document) -> Self {
-        let pictures = doc
-            .images
-            .into_iter()
-            .map(|im| {
-                let (dims, raster) = picture_dims(&im.bytes);
-                (
-                    im.key,
+        let mut media: HashMap<String, Arc<Vec<u8>>> = HashMap::new();
+        let mut pictures: HashMap<String, DocPicture> = HashMap::new();
+        for im in doc.images {
+            let (dims, raster) = picture_dims(&im.bytes);
+            let bytes = Arc::new(im.bytes);
+            media.insert(im.key.clone(), bytes.clone());
+            pictures.insert(
+                im.key,
+                DocPicture {
+                    source: PictureSource::Bytes(bytes),
+                    dims,
+                    raster,
+                },
+            );
+        }
+        // The picture view needs one scene and one key per slide; anything else is a reader that
+        // did not (fully) fill them, and the deck then has its text view only.
+        let consistent = !doc.slides.is_empty()
+            && doc.slide_scenes.len() == doc.slides.len()
+            && doc.slide_keys.len() == doc.slides.len()
+            && !doc.picture_markdown.is_empty();
+        let picture_markdown = if consistent {
+            let media = Arc::new(media);
+            for (key, scene) in doc.slide_keys.into_iter().zip(doc.slide_scenes) {
+                let dims = slide_px(&scene);
+                pictures.insert(
+                    key,
                     DocPicture {
-                        bytes: Arc::new(im.bytes),
+                        source: PictureSource::Slide {
+                            scene: Arc::new(scene),
+                            media: media.clone(),
+                        },
                         dims,
-                        raster,
+                        raster: false,
                     },
-                )
-            })
-            .collect();
-        let slide_lines = if doc.slides.is_empty() {
-            Vec::new()
+                );
+            }
+            doc.picture_markdown
         } else {
-            doc.markdown
-                .lines()
-                .enumerate()
-                .filter(|(_, l)| l.starts_with("## "))
-                .map(|(i, _)| i)
-                .collect()
+            String::new()
         };
-        let last_slide_byte = slide_lines.last().map_or(0, |last| {
-            doc.markdown
-                .split_inclusive('\n')
-                .take(*last)
-                .map(str::len)
-                .sum::<usize>() as u64
-        });
         LoadedDocument {
             markdown: doc.markdown,
+            picture_markdown,
             truncated: doc.truncated,
             pictures,
             slides: doc.slides,
-            slide_lines,
-            last_slide_byte,
         }
     }
 }
@@ -206,8 +241,23 @@ impl App {
         self.document.as_ref().is_some_and(|d| d.truncated)
     }
 
-    /// The converted Markdown, when there is one for the document on screen.
+    /// The Markdown the decorated view draws, when there is one for the document on screen: a
+    /// presentation's picture view or text view, else the converted text.
     pub(super) fn document_markdown(&self) -> Option<&str> {
+        if !self.is_document() {
+            return None;
+        }
+        let d = self.document.as_ref()?;
+        Some(if self.deck_picture_view() {
+            d.picture_markdown.as_str()
+        } else {
+            d.markdown.as_str()
+        })
+    }
+
+    /// The converted text of the document (what the raw `R` view of a Word document shows),
+    /// whatever view is on.
+    fn document_text_source(&self) -> Option<&str> {
         if !self.is_document() {
             return None;
         }
@@ -291,6 +341,18 @@ impl App {
         e.decoded.as_ref().map(|d| d.dimensions())
     }
 
+    /// Test-only: the RGBA of the decoded picture `url` at the fraction `(fx, fy)` of its size.
+    #[cfg(test)]
+    pub fn office_picture_rgba_for_test(&self, url: &str, fx: f64, fy: f64) -> Option<[u8; 4]> {
+        use image::GenericImageView;
+        let e = self.md_image_cache.get(&PathBuf::from(url))?;
+        let d = e.decoded.as_ref()?;
+        let (w, h) = d.dimensions();
+        let x = ((w - 1) as f64 * fx).round() as u32;
+        let y = ((h - 1) as f64 * fy).round() as u32;
+        Some(d.get_pixel(x, y).0)
+    }
+
     /// Test-only: why picture `url` cannot be shown, if it cannot.
     #[cfg(test)]
     pub fn office_picture_failure_for_test(
@@ -338,7 +400,10 @@ impl App {
     /// decode of it, still holds them).
     #[cfg(test)]
     pub fn document_picture_weak_for_test(&self, url: &str) -> Option<std::sync::Weak<Vec<u8>>> {
-        Some(Arc::downgrade(&self.document_picture_bytes(url)?))
+        match self.document_picture_source(url)? {
+            PictureSource::Bytes(b) => Some(Arc::downgrade(&b)),
+            PictureSource::Slide { .. } => None,
+        }
     }
 
     /// Test-only: the inline-image cache's eviction with a budget of `budget` bytes.
@@ -360,9 +425,17 @@ impl App {
             .is_some_and(|p| p.raster)
     }
 
-    /// The bytes of one picture of the open document (shared, not copied).
-    pub(super) fn document_picture_bytes(&self, url: &str) -> Option<Arc<Vec<u8>>> {
-        Some(self.document.as_ref()?.pictures.get(url)?.bytes.clone())
+    /// Where the pixels of one picture of the open document come from (shared, not copied).
+    pub(super) fn document_picture_source(&self, url: &str) -> Option<PictureSource> {
+        Some(self.document.as_ref()?.pictures.get(url)?.source.clone())
+    }
+
+    /// Whether picture `url` is the drawing of a slide (sized and drawn by the slide rules).
+    pub(super) fn document_picture_is_slide(&self, url: &str) -> bool {
+        self.document
+            .as_ref()
+            .and_then(|d| d.pictures.get(url))
+            .is_some_and(|p| matches!(p.source, PictureSource::Slide { .. }))
     }
 
     /// What arrived from the worker for a Word document. Dropped (off the UI thread) if the preview
@@ -416,20 +489,13 @@ impl App {
         (heads.len() == d.slides.len()).then_some(heads)
     }
 
-    /// The slides' headings as the view shows them, with the view's top: `(heads, top)`. Decorated
-    /// view: display rows (`preview_scroll`); `R` raw view: lines of the Markdown
-    /// (`preview_top_line`). `None` when this is not a presentation on screen, or its headings are
-    /// not exactly its slides.
+    /// The slides' headings as the view shows them (display rows), with the view's top:
+    /// `(heads, top)`. `None` when this is not a presentation on screen, or its headings are not
+    /// exactly its slides.
     fn slide_view(&self) -> Option<(Vec<usize>, usize)> {
         let d = self.document.as_ref().filter(|_| self.is_document())?;
         if d.slides.is_empty() {
             return None;
-        }
-        if self.tab.md_raw {
-            if !self.is_windowed() || d.slide_lines.len() != d.slides.len() {
-                return None;
-            }
-            return Some((d.slide_lines.clone(), self.tab.preview_top_line));
         }
         let c = self.md_cache.as_ref()?;
         let heads: Vec<usize> = self
@@ -450,25 +516,10 @@ impl App {
         let last_head = self
             .md_cache
             .as_ref()
-            .filter(|_| !self.tab.md_raw)
             .and_then(|c| self.slide_head_lines(c))
             .and_then(|h| h.last().copied())
             .map(|line| self.md_visual_span(line).0);
         last_head.map_or(base, |h| base.max(h))
-    }
-
-    /// The raw view's counterpart of `slide_scroll_limit`: `(byte, line)` of the last slide's
-    /// heading when the window may be scrolled to it (a presentation in the `R` view), to be taken
-    /// when it lies past the last page. `None` for everything else, which keeps its last page.
-    pub(crate) fn slide_raw_floor(&self) -> Option<(u64, usize)> {
-        if !self.tab.md_raw || !self.is_document() {
-            return None;
-        }
-        let d = self.document.as_ref()?;
-        if d.slides.is_empty() || d.slide_lines.len() != d.slides.len() {
-            return None;
-        }
-        Some((d.last_slide_byte, *d.slide_lines.last()?))
     }
 
     /// `(n, total)`: the slide at the top of the view (1-based; hidden slides count) of an open
@@ -498,18 +549,124 @@ impl App {
         let Some(i) = slide_turn_target(&heads, top, dir) else {
             return;
         };
-        let at = heads[i];
-        if self.tab.md_raw {
-            if let Some(win) = self.preview_win.as_mut() {
-                if let Ok((off, _)) = win.advance(0, at) {
-                    self.tab.preview_byte_top = off;
-                    self.tab.preview_top_line = at;
-                    self.tab.preview_cursor_line = at;
-                }
+        self.tab.preview_scroll = heads[i].min(u16::MAX as usize) as u16;
+    }
+
+    // --- The two views of a presentation (slide pictures / text) --------------------------------
+
+    /// Whether the open document is a presentation (loaded).
+    pub fn is_deck(&self) -> bool {
+        self.is_document() && self.document.as_ref().is_some_and(|d| !d.slides.is_empty())
+    }
+
+    /// Whether the open presentation has a picture view at all (its reader drew the slides).
+    fn deck_has_pictures(&self) -> bool {
+        self.is_deck()
+            && self
+                .document
+                .as_ref()
+                .is_some_and(|d| !d.picture_markdown.is_empty())
+    }
+
+    /// Whether this terminal draws real pixels (kitty, iTerm2 or sixel) rather than half-block
+    /// cells: the one question the default view of a presentation depends on. A picture of a
+    /// slide is unreadable in half blocks, and without an image backend nothing is drawn at all.
+    pub(super) fn terminal_draws_pixels(&self) -> bool {
+        self.picker.as_ref().is_some_and(|p| {
+            !matches!(
+                p.protocol_type(),
+                ratatui_image::picker::ProtocolType::Halfblocks
+            )
+        })
+    }
+
+    /// Whether the presentation on screen is shown as the pictures of its slides: it has them, and
+    /// the tab's choice (`R`) says so, else the terminal's default (pictures where it draws real
+    /// pixels). The one predicate the renderer, the keys and the hints share.
+    pub fn deck_picture_view(&self) -> bool {
+        self.deck_has_pictures()
+            && self
+                .tab
+                .deck_text_view
+                .map_or(self.terminal_draws_pixels(), |text| !text)
+    }
+
+    /// What `R` does on a presentation, as the footer's label: `None` when it does nothing (no
+    /// picture view exists). The `?` help's row and the handler use the same predicate.
+    pub fn deck_view_hint(&self) -> Option<crate::i18n::Msg> {
+        use crate::i18n::Msg;
+        self.deck_has_pictures().then(|| {
+            if self.deck_picture_view() {
+                Msg::HintDeckText
+            } else {
+                Msg::HintDeckSlides
             }
-        } else {
-            self.tab.preview_scroll = at.min(u16::MAX as usize) as u16;
+        })
+    }
+
+    /// `deck_view_hint` for the `?` help.
+    pub fn deck_view_help(&self) -> Option<crate::i18n::Msg> {
+        use crate::i18n::Msg;
+        self.deck_view_hint().map(|m| match m {
+            Msg::HintDeckText => Msg::DeckTextHelp,
+            _ => Msg::DeckSlidesHelp,
+        })
+    }
+
+    /// `R` on a presentation: switches between the slide pictures and the text, keeping the
+    /// current slide (the one whose heading is at or above the top of the view). A no-op when the
+    /// deck has no picture view.
+    pub(super) fn toggle_deck_view(&mut self) {
+        if !self.deck_has_pictures() {
+            return;
         }
+        let slide = self.slide_position().map(|(n, _)| n - 1);
+        self.tab.deck_text_view = Some(self.deck_picture_view());
+        self.tab.preview_scroll = 0;
+        self.tab.preview_hscroll = 0;
+        self.tab.focused_item = None;
+        self.md_items.clear();
+        self.md_cache = None;
+        // The new view is laid out by the next draw (its width is the draw's); that draw puts the
+        // slide's heading at the top (`apply_pending_slide`).
+        self.tab.deck_pending_slide = slide;
+    }
+
+    /// Scrolls to the heading of the slide `R` asked to keep, once the new view's cache exists
+    /// (its rows are only known then). Called by the draw path right after the layout.
+    pub(crate) fn apply_pending_slide(&mut self) {
+        let Some(slide) = self.tab.deck_pending_slide.take() else {
+            return;
+        };
+        let Some((heads, _)) = self.slide_view() else {
+            return;
+        };
+        if let Some(h) = heads.get(slide) {
+            self.tab.preview_scroll = (*h).min(u16::MAX as usize) as u16;
+        }
+    }
+
+    /// Test-only: the tab's own choice of view (`Some(true)` = text), `None` = the default.
+    #[cfg(test)]
+    pub fn deck_view_choice_for_test(&self) -> Option<bool> {
+        self.tab.deck_text_view
+    }
+
+    /// Test-only: the URL of slide `n`'s (1-based) picture, if the open deck has pictures.
+    #[cfg(test)]
+    pub fn deck_slide_url_for_test(&self, n: usize) -> Option<String> {
+        let suffix = format!("/slide-{n}.svg");
+        let d = self.document.as_ref()?;
+        d.pictures
+            .iter()
+            .find(|(k, p)| k.ends_with(&suffix) && matches!(p.source, PictureSource::Slide { .. }))
+            .map(|(k, _)| k.clone())
+    }
+
+    /// Test-only: a converted presentation put straight into the open document.
+    #[cfg(test)]
+    pub fn land_document_for_test(&mut self, doc: crate::preview::office::docx::Document) {
+        self.land_document(Box::new(LoadedDocument::from_document(doc)));
     }
 
     /// Writes the converted Markdown to a private temp file and records it as the windowed reader's
@@ -517,7 +674,7 @@ impl App {
     /// and the write worked. The file is deleted by `clear_command_out` (leaving the raw view, a
     /// new preview target, leaving Preview, closing the tab).
     pub(super) fn write_document_raw(&mut self) -> bool {
-        let Some(md) = self.document_markdown() else {
+        let Some(md) = self.document_text_source() else {
             return false;
         };
         match crate::preview::command::write_private_temp(md.as_bytes()) {
@@ -606,26 +763,20 @@ mod slide_tests {
     }
 }
 
-/// The state of a presentation without the worker: a converted deck put straight into an `App`, the
-/// raw (`R`) view's reader opened on its Markdown. Pins what `slide_view` / `slide_raw_floor` /
-/// `win_max_top` and the key handlers do with exact numbers, including the states the keys cannot
-/// reach one by one (a window that is not open, a Markdown whose headings are not its slides).
+/// The state of a presentation without the worker: a converted deck put straight into an `App`.
+/// Pins what `slide_view` / `slide_scroll_limit` and the key handlers do with exact numbers,
+/// including the states the keys cannot reach one by one (a Markdown whose headings are not its
+/// slides).
 #[cfg(test)]
 mod slide_state_tests {
     use super::*;
     use crate::preview::office::docx::pptx::SlideInfo;
     use crate::preview::office::docx::Document;
 
-    /// Holds the `App` and the temp dir of its raw view; `Drop` deletes the private temp file.
+    /// Holds the `App` and its temp dir.
     struct Rig {
         app: App,
         _dir: crate::test_support::TmpDir,
-    }
-
-    impl Drop for Rig {
-        fn drop(&mut self) {
-            self.app.clear_command_out();
-        }
     }
 
     fn slides(n: usize) -> Vec<SlideInfo> {
@@ -650,314 +801,63 @@ mod slide_state_tests {
         md
     }
 
-    /// Byte offset of the start of line `n` (0-based).
-    fn byte_of_line(md: &str, n: usize) -> u64 {
-        md.split_inclusive('\n')
-            .take(n)
-            .map(str::len)
-            .sum::<usize>() as u64
-    }
-
-    /// An `App` that shows `doc` (as a `.pptx` or, with no slides, as a Word file) in the raw view,
-    /// a `vh`-row viewport.
-    fn raw_rig(doc: Document, vh: u16) -> Rig {
+    /// An `App` that holds a deck of `n` slides (no layout built yet).
+    fn deck_rig(n: usize, vh: u16) -> Rig {
         let dir = crate::test_support::unique_tmp("slide_state");
         std::fs::create_dir_all(&dir).unwrap();
         let mut app = App::new(dir.as_path().to_path_buf(), Config::default()).unwrap();
-        let name = if doc.slides.is_empty() {
-            "d.docx"
-        } else {
-            "d.pptx"
-        };
-        app.tab.preview_kind = Some(PreviewKind::Document(dir.as_path().join(name)));
-        app.set_document(Some(Box::new(LoadedDocument::from_document(doc))));
-        app.tab.md_raw = true;
-        assert!(app.write_document_raw());
-        app.setup_windowed();
+        let path = dir.as_path().join("d.pptx");
+        app.tab.preview_kind = Some(PreviewKind::Document(path.clone()));
+        app.tab.preview_path = Some(path);
+        app.set_document(Some(Box::new(LoadedDocument::from_document(Document {
+            markdown: deck_markdown(n),
+            slides: slides(n),
+            ..Document::default()
+        }))));
         app.tab.preview_viewport = vh;
-        assert!(app.is_windowed());
         Rig { app, _dir: dir }
     }
 
-    fn deck_rig(n: usize, vh: u16) -> Rig {
-        raw_rig(
-            Document {
-                markdown: deck_markdown(n),
-                slides: slides(n),
-                ..Document::default()
-            },
-            vh,
-        )
-    }
-
-    // --- what the worker hands over -----------------------------------------------------------
-
-    #[test]
-    fn the_slide_lines_are_the_level_two_heading_lines_and_nothing_else() {
-        let md = "# Title\n\n## Slide 1: a\n\ntext\n##hashtag\n  ## indented\n\n## Slide 2: b\n\nz\n### Slide 2.1\n";
-        let d = LoadedDocument::from_document(Document {
-            markdown: md.into(),
-            slides: slides(2),
-            ..Document::default()
-        });
-        // "##hashtag" and the indented line are not headings; "### " is level 3.
-        assert_eq!(d.slide_lines, vec![2, 8]);
-        assert_eq!(d.last_slide_byte, byte_of_line(md, 8));
-        assert_eq!(&md[d.last_slide_byte as usize..][..10], "## Slide 2");
-    }
-
-    #[test]
-    fn the_last_slide_byte_counts_bytes_not_characters() {
-        // Multi-byte text before the last heading: the offset is in bytes (the reader's unit).
-        let md = "## スライド 1: 日本語のタイトル\n\n本文です\n\n## スライド 2: 終わり\n";
-        let d = LoadedDocument::from_document(Document {
-            markdown: md.into(),
-            slides: slides(2),
-            ..Document::default()
-        });
-        assert_eq!(d.slide_lines, vec![0, 4]);
-        assert_eq!(
-            d.last_slide_byte as usize,
-            md.find("## スライド 2").unwrap()
-        );
-        assert!(d.last_slide_byte as usize > md[..d.last_slide_byte as usize].chars().count());
-    }
-
-    #[test]
-    fn a_first_slide_heading_is_at_byte_zero_and_one_slide_is_its_own_last() {
-        let md = "## Slide 1: only\n\ntext\n";
-        let d = LoadedDocument::from_document(Document {
-            markdown: md.into(),
-            slides: slides(1),
-            ..Document::default()
-        });
-        assert_eq!((d.slide_lines.clone(), d.last_slide_byte), (vec![0], 0));
-    }
-
-    #[test]
-    fn a_word_document_keeps_no_slide_lines_whatever_its_headings() {
-        let md = "## Chapter 1\n\ntext\n\n## Chapter 2\n";
-        let d = LoadedDocument::from_document(Document {
-            markdown: md.into(),
-            ..Document::default()
-        });
-        assert!(d.slide_lines.is_empty());
-        assert_eq!(d.last_slide_byte, 0);
-    }
-
-    // --- the raw view's furthest top ----------------------------------------------------------
-
-    #[test]
-    fn the_raw_window_may_reach_the_last_slide_past_its_last_page() {
-        // 3 slides x 20 lines = 60 lines; the last heading is line 40.
-        let md = deck_markdown(3);
-        let h40 = byte_of_line(&md, 40);
-        // A 30-row page ends at line 30: the heading (line 40) lies past it.
-        let mut r = deck_rig(3, 30);
-        assert_eq!(r.app.win_max_top(30), Some((h40, Some(40))));
-        // A 20-row page starts exactly at the heading: the ordinary last page (no widened line).
-        assert_eq!(r.app.win_max_top(20), Some((h40, None)));
-        // A 10-row page starts at line 50, past the heading: the last page.
-        assert_eq!(r.app.win_max_top(10), Some((byte_of_line(&md, 50), None)));
-        assert_eq!(r.app.slide_raw_floor(), Some((h40, 40)));
-    }
-
-    #[test]
-    fn g_in_the_raw_view_puts_the_last_slide_at_the_top() {
-        let md = deck_markdown(3);
-        let mut r = deck_rig(3, 30);
-        r.app.preview_to_bottom();
-        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
-        assert_eq!(r.app.tab.preview_top_line, 40);
-        // The caret goes to the last line of the text, as for any text.
-        assert_eq!(r.app.tab.preview_cursor_line, 59);
-        assert_eq!(r.app.slide_position(), Some((3, 3)));
-    }
-
-    #[test]
-    fn scrolling_down_stops_at_the_last_slide_and_knows_its_line() {
-        let md = deck_markdown(3);
-        let mut r = deck_rig(3, 30);
-        r.app.win_scroll_lines(500);
-        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
-        assert_eq!(r.app.tab.preview_top_line, 40);
-        // And it stays there.
-        r.app.win_scroll_lines(5);
-        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
-        assert_eq!(r.app.tab.preview_top_line, 40);
-        // One line short of the end of the range: moves on, one line at a time.
-        let mut s = deck_rig(3, 30);
-        s.app.win_scroll_lines(39);
-        assert_eq!(s.app.tab.preview_top_line, 39);
-        s.app.win_scroll_lines(1);
-        assert_eq!(s.app.tab.preview_top_line, 40);
-        assert_eq!(s.app.tab.preview_byte_top, byte_of_line(&md, 40));
-    }
-
-    #[test]
-    fn a_window_put_past_the_range_is_pulled_back_to_the_last_slide() {
-        let md = deck_markdown(3);
-        let mut r = deck_rig(3, 30);
-        // As after a resize: the top is further down than the range allows.
-        r.app.tab.preview_byte_top = byte_of_line(&md, 55);
-        r.app.tab.preview_top_line = 55;
-        let _ = r.app.windowed_lines(30, 80);
-        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
-        assert_eq!(r.app.tab.preview_top_line, 40);
-        // Exactly at the end of the range is not past it: nothing moves.
-        let _ = r.app.windowed_lines(30, 80);
-        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
-        assert_eq!(r.app.tab.preview_top_line, 40);
-    }
-
-    #[test]
-    fn the_scroll_bar_range_ends_at_the_last_slide() {
-        let md = deck_markdown(3);
-        let mut r = deck_rig(3, 30);
-        let x = r.app.window_scroll_extent(30).unwrap();
-        assert_eq!(x.max, byte_of_line(&md, 40));
-        assert_eq!(x.viewport, md.len() as u64 - byte_of_line(&md, 40));
-    }
-
-    #[test]
-    fn a_word_document_in_the_raw_view_keeps_its_last_page_whatever_its_headings() {
-        let md = deck_markdown(3);
-        let mut r = raw_rig(
-            Document {
-                markdown: md.clone(),
-                ..Document::default()
-            },
-            30,
-        );
-        assert_eq!(r.app.slide_raw_floor(), None);
-        assert_eq!(r.app.win_max_top(30), Some((byte_of_line(&md, 30), None)));
-        assert_eq!(r.app.slide_position(), None);
-        assert!(!r.app.slide_can_turn());
-        r.app.preview_to_bottom();
-        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 30));
-        assert_eq!(r.app.tab.preview_top_line, 30);
-    }
-
-    #[test]
-    fn the_floor_exists_only_in_the_raw_view_of_a_consistent_deck() {
-        // Not the raw view: no floor (the decorated view has its own limit).
-        let mut r = deck_rig(3, 30);
-        r.app.tab.md_raw = false;
-        assert_eq!(r.app.slide_raw_floor(), None);
-        // Not a document at all.
-        let mut r = deck_rig(3, 30);
-        r.app.tab.preview_kind = Some(PreviewKind::Text(PathBuf::from("a.txt")));
-        assert_eq!(r.app.slide_raw_floor(), None);
-        // The deck says 3 slides but its Markdown has 4 level-2 headings: nothing is offered.
-        let mut md = deck_markdown(3);
-        md.push_str("## One too many\n");
-        let r = raw_rig(
-            Document {
-                markdown: md,
-                slides: slides(3),
-                ..Document::default()
-            },
-            30,
-        );
-        assert_eq!(r.app.slide_raw_floor(), None);
-        assert_eq!(r.app.slide_position(), None);
-        assert!(!r.app.slide_can_turn());
-        // ... and one too few.
-        let r = raw_rig(
-            Document {
-                markdown: deck_markdown(2),
-                slides: slides(3),
-                ..Document::default()
-            },
-            30,
-        );
-        assert_eq!(r.app.slide_raw_floor(), None);
-        assert_eq!(r.app.slide_position(), None);
-        assert!(!r.app.slide_can_turn());
-    }
-
-    // --- the slide the raw view is on, and J / K ----------------------------------------------
-
-    #[test]
-    fn the_raw_view_is_on_the_last_heading_at_or_above_its_top_line() {
-        let mut r = deck_rig(3, 30);
-        for (top, want) in [
-            (0, (1, 3)),
-            (19, (1, 3)),
-            (20, (2, 3)),
-            (39, (2, 3)),
-            (40, (3, 3)),
-            (59, (3, 3)),
-        ] {
-            r.app.tab.preview_top_line = top;
-            // The caret and the scroll position are somewhere else: only the top line counts.
-            r.app.tab.preview_cursor_line = 59 - top;
-            r.app.tab.preview_scroll = 7;
-            assert_eq!(r.app.slide_position(), Some(want), "top line {top}");
-        }
-    }
-
-    #[test]
-    fn a_window_that_is_not_open_offers_nothing() {
-        let mut r = deck_rig(3, 30);
-        assert!(r.app.slide_can_turn());
-        r.app.preview_win = None;
-        assert_eq!(r.app.slide_position(), None);
-        assert!(!r.app.slide_can_turn());
-        let line = r.app.tab.preview_top_line;
-        r.app.slide_turn(1);
-        assert_eq!(r.app.tab.preview_top_line, line);
-    }
-
-    #[test]
-    fn j_and_k_in_the_raw_view_move_the_window_the_line_and_the_caret() {
-        let md = deck_markdown(3);
-        let mut r = deck_rig(3, 30);
-        let at = |r: &mut Rig, dir: i32, line: usize| {
-            r.app.slide_turn(dir);
-            assert_eq!(r.app.tab.preview_top_line, line, "top line");
-            assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, line), "byte");
-            assert_eq!(r.app.tab.preview_cursor_line, line, "caret");
-        };
-        at(&mut r, 1, 20);
-        at(&mut r, 1, 40);
-        // Last slide: J does nothing.
-        at(&mut r, 1, 40);
-        at(&mut r, -1, 20);
-        at(&mut r, -1, 0);
-        at(&mut r, -1, 0);
-        // Inside a slide: K goes to its start, J to the next one.
-        r.app.tab.preview_top_line = 25;
-        r.app.tab.preview_byte_top = byte_of_line(&md, 25);
-        at(&mut r, -1, 20);
-        r.app.tab.preview_top_line = 25;
-        r.app.tab.preview_byte_top = byte_of_line(&md, 25);
-        at(&mut r, 1, 40);
-    }
+    // --- the slide the view is on, and J / K ------------------------------------------------
 
     #[test]
     fn a_one_slide_deck_has_a_position_but_no_turning() {
-        let mut r = raw_rig(
-            Document {
-                markdown: deck_markdown(1),
-                slides: slides(1),
-                ..Document::default()
-            },
-            30,
-        );
+        let mut r = deck_rig(1, 30);
+        r.app.ensure_md_cache(60);
         assert_eq!(r.app.slide_position(), Some((1, 1)));
         assert!(!r.app.slide_can_turn());
         r.app.slide_turn(1);
         r.app.slide_turn(-1);
-        assert_eq!(r.app.tab.preview_top_line, 0);
-        assert_eq!(r.app.tab.preview_byte_top, 0);
+        assert_eq!(r.app.tab.preview_scroll, 0);
     }
 
     #[test]
     fn a_two_slide_deck_can_turn() {
-        let r = deck_rig(2, 30);
+        let mut r = deck_rig(2, 30);
+        r.app.ensure_md_cache(60);
         assert!(r.app.slide_can_turn());
         assert_eq!(r.app.slide_position(), Some((1, 2)));
+    }
+
+    #[test]
+    fn j_and_k_do_nothing_where_the_keys_are_not_offered() {
+        // One slide and some text before its heading: the view is before the first heading, so J
+        // would have somewhere to go - but the key is not offered for a single slide.
+        let mut r = deck_rig(1, 30);
+        r.app.document.as_mut().unwrap().markdown = "intro\n\n## Slide 1: only\n\nbody\n".into();
+        r.app.ensure_md_cache(60);
+        assert_eq!(r.app.slide_position(), None);
+        assert!(!r.app.slide_can_turn());
+        r.app.slide_turn(1);
+        assert_eq!(r.app.tab.preview_scroll, 0);
+        r.app.slide_turn(-1);
+        assert_eq!(r.app.tab.preview_scroll, 0);
+        // Not a deck at all: nothing happens either.
+        let mut w = deck_rig(3, 30);
+        w.app.document.as_mut().unwrap().slides.clear();
+        w.app.ensure_md_cache(60);
+        w.app.slide_turn(1);
+        assert_eq!(w.app.tab.preview_scroll, 0);
     }
 
     #[test]
@@ -967,7 +867,6 @@ mod slide_state_tests {
         let mut app = App::new(dir.as_path().to_path_buf(), Config::default()).unwrap();
         assert_eq!(app.slide_position(), None);
         assert!(!app.slide_can_turn());
-        assert_eq!(app.slide_raw_floor(), None);
         assert_eq!(app.slide_scroll_limit(100, 30), 70);
         app.slide_turn(1);
         // A deck that is held but is not what the tab shows.
@@ -975,15 +874,13 @@ mod slide_state_tests {
         r.app.tab.preview_kind = Some(PreviewKind::Text(PathBuf::from("a.txt")));
         assert_eq!(r.app.slide_position(), None);
         assert!(!r.app.slide_can_turn());
-        r.app.tab.md_raw = false;
         assert_eq!(r.app.slide_scroll_limit(100, 30), 70);
     }
 
     #[test]
     fn the_decorated_limit_is_the_plain_one_without_a_layout() {
         // Decorated view of a deck whose layout is not built yet: nothing to widen.
-        let mut r = deck_rig(3, 30);
-        r.app.tab.md_raw = false;
+        let r = deck_rig(3, 30);
         assert!(r.app.md_cache.is_none());
         assert_eq!(r.app.slide_scroll_limit(100, 30), 70);
         assert_eq!(r.app.slide_scroll_limit(10, 30), 0);
@@ -1349,118 +1246,5 @@ mod slide_state_tests {
             .push(("ghost".into(), n + 5));
         assert_eq!(r.app.slide_position(), Some((1, 4)));
         assert!(r.app.slide_can_turn());
-    }
-
-    #[test]
-    fn the_decorated_limit_is_not_used_in_the_raw_view() {
-        // The raw view has its own floor; a layout left over from the decorated view must not
-        // widen anything.
-        let mut r = decorated_rig(4, 40, 10);
-        let total = r
-            .app
-            .md_cache
-            .as_ref()
-            .unwrap()
-            .row_prefix
-            .last()
-            .copied()
-            .unwrap();
-        assert!(r.app.slide_scroll_limit(total, total + 50) > 0);
-        r.app.tab.md_raw = true;
-        assert_eq!(r.app.slide_scroll_limit(total, total + 50), 0);
-        assert_eq!(r.app.slide_scroll_limit(total, 5), total - 5);
-    }
-
-    #[test]
-    fn j_and_k_do_nothing_where_the_keys_are_not_offered() {
-        // One slide and some text before its heading: the view is before the first heading, so J
-        // would have somewhere to go - but the key is not offered for a single slide.
-        let mut r = raw_rig(
-            Document {
-                markdown: "intro\n\n## Slide 1: only\n\nbody\n".into(),
-                slides: slides(1),
-                ..Document::default()
-            },
-            30,
-        );
-        assert_eq!(r.app.slide_position(), None);
-        assert!(!r.app.slide_can_turn());
-        r.app.slide_turn(1);
-        assert_eq!(
-            (r.app.tab.preview_top_line, r.app.tab.preview_byte_top),
-            (0, 0)
-        );
-        r.app.slide_turn(-1);
-        assert_eq!(
-            (r.app.tab.preview_top_line, r.app.tab.preview_byte_top),
-            (0, 0)
-        );
-        // Not a deck at all: nothing happens either.
-        let mut w = raw_rig(
-            Document {
-                markdown: deck_markdown(3),
-                ..Document::default()
-            },
-            30,
-        );
-        w.app.slide_turn(1);
-        assert_eq!(w.app.tab.preview_top_line, 0);
-    }
-
-    #[test]
-    fn the_last_slide_is_the_end_of_the_raw_range_with_line_numbers_on_too() {
-        // With line numbers on, the total line count is known: it must not replace the line of the
-        // last slide's heading.
-        let md = deck_markdown(3);
-        for g_key in [true, false] {
-            let mut r = deck_rig(3, 30);
-            r.app.cfg.ui.line_numbers = true;
-            if g_key {
-                r.app.preview_to_bottom();
-            } else {
-                r.app.win_scroll_lines(500);
-            }
-            assert_eq!(
-                r.app.tab.preview_byte_top,
-                byte_of_line(&md, 40),
-                "g={g_key}"
-            );
-            assert_eq!(r.app.tab.preview_top_line, 40, "g={g_key}");
-            // The ordinary last page keeps the count-based line.
-            let mut w = raw_rig(
-                Document {
-                    markdown: md.clone(),
-                    ..Document::default()
-                },
-                30,
-            );
-            w.app.cfg.ui.line_numbers = true;
-            w.app.win_scroll_lines(500);
-            assert_eq!(w.app.tab.preview_top_line, 30, "word, g={g_key}");
-        }
-    }
-
-    #[test]
-    fn a_window_exactly_at_the_end_of_the_range_is_left_alone() {
-        let md = deck_markdown(3);
-        let mut r = deck_rig(3, 30);
-        r.app.tab.preview_byte_top = byte_of_line(&md, 40);
-        r.app.tab.preview_top_line = 7; // not the true line: a clamp would correct it
-        let _ = r.app.windowed_lines(30, 80);
-        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
-        assert_eq!(r.app.tab.preview_top_line, 7);
-    }
-
-    #[test]
-    fn reaching_the_end_of_the_range_exactly_takes_the_line_of_the_last_slide() {
-        let md = deck_markdown(3);
-        let mut r = deck_rig(3, 30);
-        // One line short of the end of the range, with a line number that is not the true one:
-        // arriving at the end corrects it from the known line of the last heading.
-        r.app.tab.preview_byte_top = byte_of_line(&md, 39);
-        r.app.tab.preview_top_line = 7;
-        r.app.win_scroll_lines(1);
-        assert_eq!(r.app.tab.preview_byte_top, byte_of_line(&md, 40));
-        assert_eq!(r.app.tab.preview_top_line, 40);
     }
 }

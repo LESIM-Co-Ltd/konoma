@@ -2159,6 +2159,8 @@ struct MdCache {
     /// Effective mermaid target rows the cache was built with (fit-to-view). A viewport change
     /// only invalidates documents that actually contain fence diagrams.
     fence_rows: u16,
+    /// Rows a slide picture may be tall (fit-to-view) the cache was built with.
+    slide_rows: u16,
     /// In-page anchor map (GitHub slug → decorated logical-line index) for `[x](#slug)` jumps.
     anchors: Vec<(String, usize)>,
     /// Effective open/closed state of each `<details>` block (document order) as rendered — the base
@@ -3169,6 +3171,12 @@ pub(crate) struct PerTab {
     pdf_pages: Option<u32>,
     // --- Markdown/Mermaid raw-source display (`R`) / Tab focus / inline-diagram in-place zoom & full-screen return ---
     md_raw: bool,
+    /// A presentation's chosen view (`R`): `Some(true)` = the text, `Some(false)` = the slide
+    /// pictures, `None` = the terminal's default (`App::deck_picture_view`). Reset per file.
+    deck_text_view: Option<bool>,
+    /// The slide (0-based) `R` asked to keep: scrolled to by the next draw, once the other view's
+    /// layout exists (`App::apply_pending_slide`).
+    deck_pending_slide: Option<usize>,
     focused_item: Option<usize>,
     fence_zoom: f64,
     fence_center: (f64, f64),
@@ -3292,6 +3300,8 @@ impl Default for PerTab {
             pdf_page: 1,
             pdf_pages: None,
             md_raw: false,
+            deck_text_view: None,
+            deck_pending_slide: None,
             focused_item: None,
             // A fence's in-place zoom starts at 1.0=fit (same as App::new used to set it to 1.0).
             fence_zoom: 1.0,
@@ -4363,6 +4373,8 @@ impl App {
         // A new file starts decorated, and this must hold *before* the load: a Word document that
         // lands synchronously (no media_tx) decides there whether to build its raw view.
         self.tab.md_raw = false;
+        self.tab.deck_text_view = None;
+        self.tab.deck_pending_slide = None;
         self.set_preview_kind(Some(kind.clone()));
         self.start_media_load(&kind, path);
         self.tab.fence_return = None; // A normal preview transition means the fence-return info is no longer needed
@@ -4930,6 +4942,12 @@ impl App {
         if self.document_text_missing() {
             return;
         }
+        // A presentation's `R` switches between its slide pictures and its text; it has no raw
+        // Markdown view (a Word document does).
+        if self.is_deck() {
+            self.toggle_deck_view();
+            return;
+        }
         if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
             if self.tab.md_raw {
                 // Leaving the raw view: the converted-Markdown temp file is done for.
@@ -5330,29 +5348,17 @@ impl App {
         // Always fetch the total line count (it's cached) since clamping the line cursor to the end needs it.
         let total = self.win_total();
         let cur = self.tab.preview_top_line;
-        if self.preview_win.is_some() {
-            let (b, line) = self.win_max_top(vh).unwrap_or((0, None));
+        if let Some(b) = self
+            .preview_win
+            .as_mut()
+            .map(|w| w.last_page_top(vh).unwrap_or(0))
+        {
             self.tab.preview_byte_top = b;
-            self.tab.preview_top_line = line
-                .or_else(|| total.map(|t| t.saturating_sub(vh)))
-                .unwrap_or(cur);
+            self.tab.preview_top_line = total.map(|t| t.saturating_sub(vh)).unwrap_or(cur);
         }
         if let Some(t) = total {
             self.tab.preview_cursor_line = t.saturating_sub(1);
         }
-    }
-
-    /// The furthest line-head byte the window may be scrolled to, and the line number when it is
-    /// known without counting: the last page, or for a presentation in the `R` view the last
-    /// slide's heading when that lies further (`slide_raw_floor`). Returns
-    /// `(top, line_if_widened)`; `line_if_widened` is `None` at the ordinary last page.
-    fn win_max_top(&mut self, vh: usize) -> Option<(u64, Option<usize>)> {
-        let floor = self.slide_raw_floor();
-        let last = self.preview_win.as_mut()?.last_page_top(vh).ok()?;
-        Some(match floor {
-            Some((byte, line)) if byte > last => (byte, Some(line)),
-            _ => (last, None),
-        })
     }
 
     /// Total line count (computed and cached only when line numbers are ON). Scans the whole file, so call it minimally.
@@ -5423,15 +5429,13 @@ impl App {
         } else {
             None
         };
-        let (maxt, widened_line) = self.win_max_top(vh).unwrap_or((top, None));
         let result = self.preview_win.as_mut().map(|w| {
             if delta > 0 {
                 let (adv, moved) = w.advance(top, delta as usize).unwrap_or((top, 0));
+                let maxt = w.last_page_top(vh).unwrap_or(top);
                 if adv >= maxt {
-                    // Reached the end of the range: derive the line number from the total line count (or simply add, if unavailable).
-                    let bl = widened_line
-                        .or_else(|| total.map(|t| t.saturating_sub(vh)))
-                        .unwrap_or(line + moved);
+                    // Reached the last page: derive the line number from the total line count (or simply add, if unavailable).
+                    let bl = total.map(|t| t.saturating_sub(vh)).unwrap_or(line + moved);
                     (maxt, bl)
                 } else {
                     (adv, line + moved)
@@ -5457,15 +5461,17 @@ impl App {
         let h = height.max(1) as usize;
         // If a resize etc. put it past the end, clamp it (also correct the line number from the total line count).
         let top0 = self.tab.preview_byte_top;
-        if let Some((maxt, widened_line)) = self.win_max_top(h) {
+        let maxt = self
+            .preview_win
+            .as_mut()
+            .and_then(|w| w.last_page_top(h).ok());
+        if let Some(maxt) = maxt {
             if top0 > maxt {
                 self.tab.preview_byte_top = maxt;
                 // Even with the line-number gutter OFF, the current search match (orange)
                 // references abs=preview_top_line+i, so when clamping to the last page, always
                 // correct preview_top_line from the total line count regardless of line_numbers (#5).
-                if let Some(l) = widened_line {
-                    self.tab.preview_top_line = l;
-                } else if let Some(t) = self.win_total() {
+                if let Some(t) = self.win_total() {
                     self.tab.preview_top_line = t.saturating_sub(h);
                 }
             }
@@ -5644,8 +5650,9 @@ impl App {
         // `last_page_top` is memoized per count on the FileWindow, so this costs nothing per frame
         // after the first (`preview::window::FileWindow::last_page`).
         let count = rows.max(1) as usize;
-        let (max, _) = self.win_max_top(count).unwrap_or((0, None));
-        let len = self.preview_win.as_ref()?.len();
+        let w = self.preview_win.as_mut()?;
+        let len = w.len();
+        let max = w.last_page_top(count).unwrap_or(0);
         // One screenful measured in bytes = from the last page's first line to EOF, i.e. exactly
         // the part that stays visible once scrolling stops. `max + viewport == len`, so the thumb
         // ends up sized as "what you can see / the whole file" — the same ratio the row-counting
@@ -6061,6 +6068,9 @@ fn centered_rect(cells: (u16, u16), inner: Rect, allow_upscale: bool) -> Rect {
 
 /// Max reserved rows for one inline Markdown image; a taller image is scaled down (keeping aspect) so it never dominates the viewport.
 const MD_IMAGE_MAX_ROWS: u16 = 24;
+/// Rows around a slide picture that are not the picture: its heading line and the blank line
+/// between the heading and the picture.
+const SLIDE_CHROME_ROWS: u16 = 2;
 
 /// Where a Markdown image URL points **in the local filesystem**, without asking whether the file
 /// is actually there. `None` for anything that is not a local file reference: `data:` URLs, and
@@ -6467,6 +6477,24 @@ fn md_image_cells(
         cols = (cols * s).round().max(1.0);
     }
     (cols as u16, rows as u16)
+}
+
+/// Cell box of a slide picture of `pw`x`ph` pixels: the full width `avail_cols` (a slide is a vector
+/// drawing, so it is enlarged or shrunk to the width), with the aspect ratio kept in the terminal's
+/// cells (`fw`x`fh` px each), and no taller than `max_rows` (the width then shrinks to match).
+fn slide_cells(pw: u32, ph: u32, fw: u16, fh: u16, avail_cols: u16, max_rows: u16) -> (u16, u16) {
+    let (fw, fh) = (fw.max(1) as f64, fh.max(1) as f64);
+    let (pw, ph) = (pw.max(1) as f64, ph.max(1) as f64);
+    let avail = avail_cols.max(1) as f64;
+    let maxr = max_rows.max(1) as f64;
+    // Cell rows for a picture `cols` wide: rows * fh / (cols * fw) = ph / pw.
+    let rows_for = |cols: f64| (cols * fw * ph / (pw * fh)).round().max(1.0);
+    let rows = rows_for(avail);
+    if rows <= maxr {
+        return (avail as u16, rows as u16);
+    }
+    let cols = (maxr * fh * pw / (ph * fw)).round().clamp(1.0, avail);
+    (cols as u16, maxr as u16)
 }
 
 /// Cell box for an inline mermaid diagram, sized so the diagram's **own text matches the
@@ -7280,6 +7308,10 @@ mod md_table_gap_tests;
 
 #[cfg(test)]
 mod survivor_tests;
+
+// A presentation's slide pictures: their box, their size and how a converted deck becomes them.
+#[cfg(test)]
+mod deck_view_tests;
 
 // Inline-image cache behaviour around eviction, failure reasons and the decode queue.
 #[cfg(test)]

@@ -234,6 +234,19 @@ impl App {
         }
     }
 
+    /// Rows a slide picture may be tall: what the viewport leaves after the slide's heading (and
+    /// the blank line between), so a slide and its heading always fit one screen. Viewport 0 (no
+    /// render yet) allows the ordinary picture cap.
+    pub(super) fn slide_fit_rows(&self) -> u16 {
+        if self.tab.preview_viewport == 0 {
+            return MD_IMAGE_MAX_ROWS;
+        }
+        self.tab
+            .preview_viewport
+            .saturating_sub(SLIDE_CHROME_ROWS)
+            .max(1)
+    }
+
     /// Effective target rows for an inline diagram: the `mermaid_rows` cap, shrunk so the whole
     /// fence block (caption + diagram + bottom margin) fits the preview viewport — the initial
     /// view shows the entire diagram without scrolling (fit-to-view). Viewport 0 (no render yet /

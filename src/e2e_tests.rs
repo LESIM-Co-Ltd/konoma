@@ -20312,6 +20312,9 @@ mod word;
 mod slides;
 
 #[cfg(test)]
+mod deck_view;
+
+#[cfg(test)]
 mod math_ctx;
 
 // ---- SVG files that cannot be drawn say why ---------------------------------------------------
