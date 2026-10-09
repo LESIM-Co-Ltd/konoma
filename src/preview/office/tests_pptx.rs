@@ -1423,7 +1423,11 @@ fn pictures_that_cannot_be_shown_leave_a_placeholder() {
         .rel("rIdEmf", "image", "../media/m.emf", false)
         .rel("rIdGone", "image", "../media/none.png", false);
     let d = doc(&Px::new(vec![sld]).media("m.emf", vec![1, 2, 3]));
-    assert!(d.images.is_empty());
+    // The metafile is registered for the picture view (the renderer converts it), but the text
+    // view never shows it: its alt text stays.
+    assert_eq!(d.images.len(), 1);
+    assert_eq!(d.images[0].name, "m.emf");
+    assert!(!d.markdown.contains(&d.images[0].key));
     for alt in ["no relationship", "linked", "metafile", "no part"] {
         assert!(
             d.markdown.contains(&format!("\\[{alt}]")),

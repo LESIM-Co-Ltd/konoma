@@ -35,6 +35,9 @@
 //! * `lnSpcReduction` lowers percentage line spacing and percentage paragraph spacing; point
 //!   spacings are left alone.
 //! * Multiple columns are filled top to bottom with no gutter and always top-anchored.
+//! * `normAutofit` with no stored scales (or 100 % / 0 %) on text that overflows shrinks like
+//!   PowerPoint's recompute: see [`autofit_step`] (font scale in 7.5 % steps, line spacing
+//!   reduced 10 % then 20 %). Stored scales are used as they are.
 //! * `spAutoFit` (shape grows) does nothing: the text is laid out in the box it has.
 //! * East-Asian vertical text keeps punctuation where it is (no vertical glyph forms) and
 //!   rotates Latin words a quarter turn clockwise.
@@ -628,44 +631,9 @@ fn suffix(s: &str) -> &str {
     }
 }
 
-/// Unicode look-alikes of the Wingdings / Symbol bullet characters PowerPoint uses.
+/// The character a symbol-font bullet shows (see [`super::symbol_font`]); other fonts keep `ch`.
 fn symbol_bullet(font: &str, ch: char) -> char {
-    let f = font.to_ascii_lowercase().replace(' ', "");
-    let u = ch as u32;
-    let low = if (0xF000..=0xF0FF).contains(&u) {
-        u - 0xF000
-    } else {
-        u
-    };
-    let c = char::from_u32(low).unwrap_or(ch);
-    if f.starts_with("wingdings") {
-        match c {
-            'l' => '●',
-            'n' | 'p' => '■',
-            'o' => '□',
-            'q' => '❑',
-            'r' => '❒',
-            'u' | 'w' => '◆',
-            'v' => '❖',
-            '\u{a7}' => '▪',
-            '\u{d8}' | '\u{f8}' => '➢',
-            '\u{fc}' => '✓',
-            '\u{fb}' => '✗',
-            '\u{e8}' => '➔',
-            'x' => '⌧',
-            _ => '•',
-        }
-    } else if f == "symbol" {
-        match c {
-            '\u{b7}' => '•',
-            'o' | 'n' => '■',
-            _ => '•',
-        }
-    } else if f.starts_with("webdings") {
-        '•'
-    } else {
-        ch
-    }
+    super::symbol_font::map(font, ch)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -758,6 +726,68 @@ pub fn layout(body: &TextBody, width_px: f64, height_px: f64) -> Layout {
         ),
         _ => (1.0, 0.0),
     };
+    let mut out = layout_at(body, frame, fw, fh, font_scale, red);
+    if matches!(body.autofit, AutoFit::Normal { .. })
+        && font_scale == 1.0
+        && red == 0.0
+        && overflows(body, &out, fw, fh)
+    {
+        out = autofit_search(body, frame, fw, fh);
+    }
+    out
+}
+
+/// PowerPoint's autofit steps when it recomputes (`normAutofit` with no stored scales and text
+/// that does not fit): step `k` (1-based) scales the fonts to `1 - 0.075 k` of their size
+/// (down to [`AUTOFIT_MIN_SCALE`]) and takes `lnSpcReduction` 10 % at the first step and 20 % from
+/// the second on. These are the pairs PowerPoint writes: 92.5 % / 10 %, 85 % / 20 %, 77.5 % /
+/// 20 %, 70 % / 20 %, ... 25 % / 20 %.
+pub const AUTOFIT_STEPS: usize = 10;
+/// The smallest scale the autofit steps reach.
+pub const AUTOFIT_MIN_SCALE: f64 = 0.25;
+
+/// The `(font scale, line spacing reduction)` of autofit step `k` (`1..=`[`AUTOFIT_STEPS`]).
+pub fn autofit_step(k: usize) -> (f64, f64) {
+    let scale = (1.0 - 0.075 * k as f64).max(AUTOFIT_MIN_SCALE);
+    (scale, if k <= 1 { 0.1 } else { 0.2 })
+}
+
+/// Whether the laid-out text is larger than the frame.
+fn overflows(body: &TextBody, lay: &Layout, fw: f64, fh: f64) -> bool {
+    if body.vert == Vert::EaVert {
+        lay.content_w > fw + 0.5
+    } else {
+        lay.content_h > fh + 0.5
+    }
+}
+
+/// The first autofit step whose layout fits (binary search: a smaller scale never needs more
+/// room); the smallest step when none does.
+fn autofit_search(body: &TextBody, frame: Frame, fw: f64, fh: f64) -> Layout {
+    let at = |k: usize| {
+        let (s, r) = autofit_step(k);
+        layout_at(body, frame, fw, fh, s, r)
+    };
+    let last = at(AUTOFIT_STEPS);
+    if overflows(body, &last, fw, fh) {
+        return last;
+    }
+    let (mut lo, mut hi) = (1usize, AUTOFIT_STEPS); // hi fits
+    let mut best = last;
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let l = at(mid);
+        if overflows(body, &l, fw, fh) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+            best = l;
+        }
+    }
+    best
+}
+
+fn layout_at(body: &TextBody, frame: Frame, fw: f64, fh: f64, font_scale: f64, red: f64) -> Layout {
     let mut ctx = Ctx {
         styles: Vec::new(),
         index: HashMap::new(),
@@ -824,7 +854,12 @@ fn paragraphs_out(
                         .map(|c| font.map_or(c, |f| symbol_bullet(f, c)))
                         .collect();
                     let s = if s.is_empty() { "•".to_string() } else { s };
-                    let (st, stack) = bullet_style(b, &fr, ctx);
+                    let glyph = s
+                        .chars()
+                        .next()
+                        .zip(font)
+                        .map_or(1.0, |(c, f)| super::symbol_font::glyph_scale(f, c));
+                    let (st, stack) = bullet_style(b, &fr, ctx, glyph);
                     bullet_stack = stack;
                     bullet_text = Some((s, st, 0.0));
                 }
@@ -837,7 +872,7 @@ fn paragraphs_out(
                     for c in counters.iter_mut().skip(lvl + 1) {
                         *c = None;
                     }
-                    let (st, stack) = bullet_style(b, &fr, ctx);
+                    let (st, stack) = bullet_style(b, &fr, ctx, 1.0);
                     bullet_stack = stack;
                     bullet_text = Some((autonum_text(scheme, n), st, 0.0));
                 }
@@ -1128,7 +1163,7 @@ fn explode_chars(atoms: &[Atom], ctx: &Ctx) -> Vec<Atom> {
     v
 }
 
-fn bullet_style(b: &Bullet, first: &Run, ctx: &mut Ctx) -> (FragStyle, Vec<String>) {
+fn bullet_style(b: &Bullet, first: &Run, ctx: &mut Ctx, glyph: f64) -> (FragStyle, Vec<String>) {
     let mut run = first.clone();
     if let Some(f) = &b.font {
         if f.latin.is_some() || f.symbol.is_some() {
@@ -1142,6 +1177,7 @@ fn bullet_style(b: &Bullet, first: &Run, ctx: &mut Ctx) -> (FragStyle, Vec<Strin
         BulletSize::Pts(p) if p.is_finite() && p > 0.0 => p,
         _ => base,
     };
+    run.size_pt *= glyph;
     run.baseline_pct = 0.0;
     run.underline = Underline::None;
     run.strike = Strike::None;
@@ -1155,10 +1191,11 @@ fn bullet_style(b: &Bullet, first: &Run, ctx: &mut Ctx) -> (FragStyle, Vec<Strin
     let mut st = ctx.styles[id].style.clone();
     let mut stack = ctx.styles[id].stack.clone();
     // Symbol-font bullets are drawn in a font that has the look-alike glyphs.
-    let symbolish = run.font.latin.as_deref().is_some_and(|n| {
-        let l = n.to_ascii_lowercase();
-        l.contains("wingdings") || l == "symbol" || l.contains("webdings")
-    });
+    let symbolish = run
+        .font
+        .latin
+        .as_deref()
+        .is_some_and(|n| super::symbol_font::symbol_font(n).is_some());
     if symbolish {
         stack = fonts::stack_for(Some("Arial Unicode MS"), Script::Latin);
         st.family = fonts::css_family(&stack).into();
@@ -1297,6 +1334,31 @@ fn layout_horizontal(body: &TextBody, w: f64, h: f64, ctx: &mut Ctx, red: f64) -
     }
 }
 
+/// How a character of East-Asian vertical text is placed in its cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerticalForm {
+    /// Drawn as it is, upright.
+    Upright,
+    /// Drawn turned a quarter turn clockwise.
+    Rotate,
+    /// Drawn upright, moved to the top right of the cell.
+    TopRight,
+}
+
+/// The placement of `c` in vertical text (the vertical glyph forms the fonts have, made from the
+/// horizontal glyph: SVG text has no vertical writing mode here).
+fn vertical_form(c: char) -> VerticalForm {
+    match c {
+        '、' | '。' | '，' | '．' | '､' | '｡' => VerticalForm::TopRight,
+        '「' | '」' | '『' | '』' | '（' | '）' | '【' | '】' | '〔' | '〕' | '《' | '》'
+        | '〈' | '〉' | '［' | '］' | '｛' | '｝' | '｢' | '｣' | 'ー' | 'ｰ' | '〜' | '～' | '—'
+        | '―' | '…' | '‥' | '－' | '−' | '(' | ')' | '[' | ']' | '{' | '}' | '〝' | '〟' => {
+            VerticalForm::Rotate
+        }
+        _ => VerticalForm::Upright,
+    }
+}
+
 fn layout_ea_vert(body: &TextBody, w: f64, h: f64, ctx: &mut Ctx, red: f64) -> Layout {
     // Lay out as horizontal text of width `h` with East-Asian characters one em wide, then turn
     // each line into a column.
@@ -1316,6 +1378,17 @@ fn layout_ea_vert(body: &TextBody, w: f64, h: f64, ctx: &mut Ctx, red: f64) -> L
     let mut x_right = right;
     let mut lines_out = Vec::new();
     let mut content_h = 0.0f64;
+    // `anchorCtr` in vertical text centres the block along the lines (top to bottom): by the
+    // longest column.
+    let longest = cols
+        .iter()
+        .map(|(l, _)| l.width + l.x_left)
+        .fold(0.0f64, f64::max);
+    let along_shift = if body.anchor_ctr && longest.is_finite() {
+        (h - longest) / 2.0
+    } else {
+        0.0
+    };
     for (l, gap) in cols {
         x_right -= gap;
         let center = x_right - l.height / 2.0;
@@ -1323,21 +1396,37 @@ fn layout_ea_vert(body: &TextBody, w: f64, h: f64, ctx: &mut Ctx, red: f64) -> L
         for f in &l.frags {
             let along = f.x; // distance along the column (from its start)
             let size = f.style.size_px;
-            // Characters of East-Asian text stand upright, one per cell; Latin text is rotated.
-            let upright = f
-                .text
-                .chars()
-                .all(|c| fonts::script_of(c) == Script::EastAsian);
+            // Characters of East-Asian text stand upright, one per cell (so do the punctuation
+            // marks that have a vertical form of their own, whatever their script); Latin text is
+            // rotated.
+            let upright = f.text.chars().all(|c| {
+                fonts::script_of(c) == Script::EastAsian
+                    || vertical_form(c) != VerticalForm::Upright
+            });
             if upright {
-                let mut yy = along;
+                let mut yy = along + along_shift;
                 for ch in f.text.chars() {
+                    let (x, y, rot90) = match vertical_form(ch) {
+                        // Brackets, the long-vowel mark, dashes and the ellipsis are the
+                        // horizontal glyph turned a quarter turn clockwise (the vertical form of
+                        // each is exactly that), about the middle of its cell.
+                        VerticalForm::Rotate => (center - 0.38 * size, yy, true),
+                        // The comma and the full stop sit at the top right of their cell in
+                        // vertical text (bottom left in horizontal text).
+                        VerticalForm::TopRight => (
+                            center - size / 2.0 + 0.55 * size,
+                            yy + 0.88 * size - 0.5 * size,
+                            false,
+                        ),
+                        VerticalForm::Upright => (center - size / 2.0, yy + 0.88 * size, false),
+                    };
                     frags.push(Frag {
                         text: ch.to_string(),
-                        x: center - size / 2.0,
-                        y: yy + 0.88 * size,
+                        x,
+                        y,
                         width: size,
                         style: f.style.clone(),
-                        rot90: false,
+                        rot90,
                     });
                     yy += size + f.style.spacing_px;
                 }
@@ -1345,7 +1434,7 @@ fn layout_ea_vert(body: &TextBody, w: f64, h: f64, ctx: &mut Ctx, red: f64) -> L
                 frags.push(Frag {
                     text: f.text.clone(),
                     x: center - 0.35 * size,
-                    y: along,
+                    y: along + along_shift,
                     width: f.width,
                     style: f.style.clone(),
                     rot90: true,

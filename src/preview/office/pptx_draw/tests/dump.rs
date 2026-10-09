@@ -11,17 +11,17 @@ use image::{imageops, DynamicImage, Rgba as Px, RgbaImage};
 use super::super::super::{load_presentation, DocOptions, Document};
 use crate::preview::office::slide_draw as sd;
 
-const CACHE: &str = "/Users/shuhei/work/NoCode/.cache";
+pub(super) const CACHE: &str = "/Users/shuhei/work/NoCode/.cache";
 const OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/pptx-a";
 const OUT_CORPUS: &str = "/Users/shuhei/work/konoma/docs/render-check/pptx-a-corpus";
 
-fn root() -> PathBuf {
+pub(super) fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 /// Draws every slide of a loaded deck as a 1280 px wide picture (`None` for one that does not
 /// rasterize).
-fn draw_all(doc: &Document, only: Option<usize>) -> Vec<Option<DynamicImage>> {
+pub(super) fn draw_all(doc: &Document, only: Option<usize>) -> Vec<Option<DynamicImage>> {
     let media: HashMap<String, Arc<Vec<u8>>> = doc
         .images
         .iter()
@@ -39,7 +39,7 @@ fn draw_all(doc: &Document, only: Option<usize>) -> Vec<Option<DynamicImage>> {
 }
 
 /// `konoma | reference`, equally high.
-fn side_by_side(ours: Option<&DynamicImage>, reference: Option<&Path>) -> RgbaImage {
+pub(super) fn side_by_side(ours: Option<&DynamicImage>, reference: Option<&Path>) -> RgbaImage {
     let left = ours.map(|i| i.to_rgba8());
     let right = reference
         .and_then(|p| image::open(p).ok())
@@ -67,7 +67,7 @@ fn side_by_side(ours: Option<&DynamicImage>, reference: Option<&Path>) -> RgbaIm
     canvas
 }
 
-fn clear_dir(dir: &Path) {
+pub(super) fn clear_dir(dir: &Path) {
     let _ = std::fs::create_dir_all(dir);
     if let Ok(rd) = std::fs::read_dir(dir) {
         for f in rd.flatten() {
@@ -78,7 +78,7 @@ fn clear_dir(dir: &Path) {
     }
 }
 
-fn dump_deck(name: &str, pptx: &Path, ref_dir: &Path, out: &Path, only: Option<usize>) {
+pub(super) fn dump_deck(name: &str, pptx: &Path, ref_dir: &Path, out: &Path, only: Option<usize>) {
     let t = Instant::now();
     let doc = match load_presentation(pptx, &DocOptions::default()) {
         Ok(d) => d,
@@ -165,7 +165,7 @@ const PICKS: &[(&str, &str)] = &[
     ("poi", "bug62513.pptx"),
 ];
 
-fn corpus_files() -> Vec<(String, PathBuf)> {
+pub(super) fn corpus_files() -> Vec<(String, PathBuf)> {
     let mut v = Vec::new();
     for src in ["poi", "python-pptx", "libreoffice"] {
         let Ok(rd) = std::fs::read_dir(Path::new(CACHE).join("pptx-corpus").join(src)) else {

@@ -1,0 +1,278 @@
+//! Shape effects of the SVG writer: outer shadow, glow, reflection, soft edge and inner shadow.
+//!
+//! The painted shape (fills and outlines, without its text) is written once into `<defs>` as a
+//! `<g id>` and every layer is a `<use>` of it: the layers under the shape (reflection, outer
+//! shadow, glow) each have a filter that keeps only their own part, and the shape itself is drawn
+//! with the soft-edge and inner-shadow filters when it has them. Everything is in px of the slide.
+//!
+//! # Approximations (DrawingML gives no pixel recipe; these are close to what PowerPoint shows)
+//!
+//! * `blurRad` is the radius of the blur; the Gaussian's standard deviation is half of it.
+//! * Shadow and reflection scale (`sx`, `sy`) are applied about the bottom centre of the shape
+//!   (`algn="b"`, the one perspective shadows and reflections use; the model carries no `algn`).
+//!   A shadow with `rotWithShape="0"` keeps its direction on the slide when the shape is rotated.
+//! * The glow is the shape's alpha blurred (deviation: half the radius) and quadrupled, so it is
+//!   opaque at the outline and gone about one radius out. (A dilated copy would be closer, but a
+//!   morphology filter costs the square of its radius: the render budget refuses a glow of any
+//!   size that is worth drawing.)
+//! * The soft edge is the shape's alpha blurred (deviation: two thirds of the radius) and mapped
+//!   through `2 a - 1`: transparent at the outline, opaque about one radius in.
+//! * The reflection is the shape mirrored about its bottom edge (the transform of `sx`/`sy`, then
+//!   moved by `dist` along `dir`), faded from `start_alpha` at `start_pos` to `end_alpha` at
+//!   `end_pos` of its height.
+
+use super::*;
+
+/// Largest padding of a filter region around the shape's box, px.
+const MAX_REGION_PAD: f64 = 600.0;
+/// Largest filter radius or blur deviation written, px (the filters are costly beyond this).
+const MAX_FX_PX: f64 = 200.0;
+
+fn px_clamped(emu: f64) -> f64 {
+    if emu.is_finite() {
+        (emu / EMU_PER_PX).clamp(-MAX_FX_PX * 10.0, MAX_FX_PX * 10.0)
+    } else {
+        0.0
+    }
+}
+
+fn fnum(v: f64) -> f64 {
+    if v.is_finite() {
+        v
+    } else {
+        0.0
+    }
+}
+
+impl W<'_> {
+    /// Whether any effect of `fx` is drawn.
+    pub(super) fn has_effects(fx: &Effects) -> bool {
+        fx.outer_shadow.is_some_and(|s| s.color.a > 0.0)
+            || fx.inner_shadow.is_some_and(|s| s.color.a > 0.0)
+            || fx.glow.is_some_and(|g| g.color.a > 0.0 && g.rad > 0.0)
+            || fx.soft_edge.is_some_and(|r| r > 0.0)
+            || fx.reflection.is_some()
+    }
+
+    /// Writes the painted shape `content` (markup in slide coordinates) with its effects. `bx` is
+    /// the shape's box, `x` its transform (for the shadow direction), `acc_rot` the rotation of
+    /// its ancestors.
+    pub(super) fn with_effects(
+        &mut self,
+        content: &str,
+        bx: Bx,
+        fx: &Effects,
+        x: &Xfrm,
+        acc_rot: f64,
+    ) {
+        if !Self::has_effects(fx) {
+            self.body.push_str(content);
+            return;
+        }
+        let gid = self.id("fx");
+        let _ = write!(self.defs, r#"<g id="{gid}">{content}</g>"#);
+        let (bxx, bxy, bw, bh) = bx;
+        let (l, t, w, h) = (
+            bxx / EMU_PER_PX,
+            bxy / EMU_PER_PX,
+            bw / EMU_PER_PX,
+            bh / EMU_PER_PX,
+        );
+        let (ax, ay) = (l + w / 2.0, t + h); // bottom centre
+        let region = |pad: f64| -> String {
+            let pad = pad.clamp(0.0, MAX_REGION_PAD) + 2.0;
+            format!(
+                r#"filterUnits="userSpaceOnUse" x="{}" y="{}" width="{}" height="{}" color-interpolation-filters="sRGB""#,
+                num(l - pad),
+                num(t - pad),
+                num(w + 2.0 * pad),
+                num(h + 2.0 * pad)
+            )
+        };
+
+        // 1. reflection (under everything)
+        if let Some(r) = fx.reflection {
+            self.reflection_layer(&gid, &r, (l, t, w, h), (ax, ay), &region);
+        }
+        // 2. outer shadow
+        if let Some(sh) = fx.outer_shadow.filter(|s| s.color.a > 0.0) {
+            let blur = px_clamped(sh.blur_rad).max(0.0);
+            let sigma = (blur / 2.0).min(MAX_FX_PX);
+            let dist = px_clamped(sh.dist);
+            let dir = fnum(sh.dir_deg).to_radians();
+            let (mut dx, mut dy) = (dist * dir.cos(), dist * dir.sin());
+            if !sh.rot_with_shape {
+                // The direction is on the slide: undo the shape's own turn and mirroring.
+                let rot = (acc_rot + fnum(x.rot_deg)).to_radians();
+                let (c, s) = (rot.cos(), rot.sin());
+                let (lx, ly) = (dx * c + dy * s, -dx * s + dy * c);
+                dx = if x.flip_h { -lx } else { lx };
+                dy = if x.flip_v { -ly } else { ly };
+            }
+            let (sx, sy) = (
+                if sh.sx.is_finite() {
+                    sh.sx.clamp(-20.0, 20.0)
+                } else {
+                    1.0
+                },
+                if sh.sy.is_finite() {
+                    sh.sy.clamp(-20.0, 20.0)
+                } else {
+                    1.0
+                },
+            );
+            let fid = self.id("sh");
+            let _ = write!(
+                self.defs,
+                r#"<filter id="{fid}" {}><feGaussianBlur in="SourceAlpha" stdDeviation="{}" result="b"/><feFlood flood-color="{}" flood-opacity="{}"/><feComposite in2="b" operator="in"/></filter>"#,
+                region(blur * 3.0 + dist.abs() + h * sy.abs()),
+                num(sigma),
+                hex(sh.color),
+                num(alpha_of(sh.color)),
+            );
+            // (Blur and tint in the filter, offset and scale by the transform.)
+            let _ = write!(
+                self.body,
+                r##"<use href="#{gid}" transform="translate({} {}) scale({} {}) translate({} {})" filter="url(#{fid})"/>"##,
+                num(ax + dx),
+                num(ay + dy),
+                num(sx),
+                num(sy),
+                num(-ax),
+                num(-ay),
+            );
+        }
+        // 3. glow
+        if let Some(g) = fx.glow.filter(|g| g.color.a > 0.0 && g.rad > 0.0) {
+            let sigma = (px_clamped(g.rad) / 2.0).clamp(0.0, MAX_FX_PX);
+            let fid = self.id("gl");
+            let _ = write!(
+                self.defs,
+                r#"<filter id="{fid}" {}><feGaussianBlur in="SourceAlpha" stdDeviation="{}" result="b"/><feComponentTransfer in="b" result="d"><feFuncA type="linear" slope="4"/></feComponentTransfer><feFlood flood-color="{}" flood-opacity="{}"/><feComposite in2="d" operator="in"/></filter>"#,
+                region(sigma * 4.0),
+                num(sigma),
+                hex(g.color),
+                num(alpha_of(g.color)),
+            );
+            let _ = write!(self.body, r##"<use href="#{gid}" filter="url(#{fid})"/>"##);
+        }
+        // 4. the shape itself: soft edge, then inner shadow
+        let mut inner = String::new();
+        let mut layer = format!(r##"<use href="#{gid}"/>"##);
+        if let Some(rad) = fx.soft_edge.filter(|r| *r > 0.0) {
+            let r = px_clamped(rad).clamp(0.0, 2.0 * MAX_FX_PX);
+            let fid = self.id("se");
+            let _ = write!(
+                self.defs,
+                r#"<filter id="{fid}" {}><feGaussianBlur in="SourceAlpha" stdDeviation="{}" result="b"/><feComponentTransfer in="b" result="e"><feFuncA type="linear" slope="2" intercept="-1"/></feComponentTransfer><feComposite in="SourceGraphic" in2="e" operator="in"/></filter>"#,
+                region(r),
+                num((r * 2.0 / 3.0).min(MAX_FX_PX)),
+            );
+            layer = format!(r##"<use href="#{gid}" filter="url(#{fid})"/>"##);
+        }
+        if let Some(sh) = fx.inner_shadow.filter(|s| s.color.a > 0.0) {
+            let blur = px_clamped(sh.blur_rad).max(0.0);
+            let dist = px_clamped(sh.dist);
+            let dir = fnum(sh.dir_deg).to_radians();
+            let fid = self.id("is");
+            let _ = write!(
+                self.defs,
+                r#"<filter id="{fid}" {}><feFlood flood-color="{}" flood-opacity="{}" result="c"/><feComposite in="c" in2="SourceAlpha" operator="out" result="i"/><feGaussianBlur in="i" stdDeviation="{}" result="b"/><feOffset in="b" dx="{}" dy="{}" result="o"/><feComposite in="o" in2="SourceAlpha" operator="in" result="s"/><feMerge><feMergeNode in="SourceGraphic"/><feMergeNode in="s"/></feMerge></filter>"#,
+                region(blur * 2.0 + dist.abs()),
+                hex(sh.color),
+                num(alpha_of(sh.color)),
+                num((blur / 2.0).min(MAX_FX_PX)),
+                num(dist * dir.cos()),
+                num(dist * dir.sin()),
+            );
+            inner = fid;
+        }
+        if inner.is_empty() {
+            self.body.push_str(&layer);
+        } else {
+            let _ = write!(self.body, r##"<g filter="url(#{inner})">{layer}</g>"##);
+        }
+    }
+
+    /// The mirrored, faded copy of the shape.
+    fn reflection_layer(
+        &mut self,
+        gid: &str,
+        r: &Reflection,
+        (l, t, w, h): (f64, f64, f64, f64),
+        (ax, ay): (f64, f64),
+        region: &dyn Fn(f64) -> String,
+    ) {
+        let dist = px_clamped(r.dist);
+        let dir = fnum(r.dir_deg).to_radians();
+        let (dx, dy) = (dist * dir.cos(), dist * dir.sin());
+        let (sx, sy) = (
+            if r.sx.is_finite() {
+                r.sx.clamp(-20.0, 20.0)
+            } else {
+                1.0
+            },
+            if r.sy.is_finite() {
+                r.sy.clamp(-20.0, 20.0)
+            } else {
+                1.0
+            },
+        );
+        let blur = px_clamped(r.blur_rad).max(0.0);
+        // The fade runs over the shape's own height, from its bottom edge upwards in the shape's
+        // coordinates (the mirrored copy shows it from its top edge downwards).
+        let gr = self.id("rg");
+        let mk = self.id("rm");
+        let clamp01 = |v: f64| {
+            if v.is_finite() {
+                v.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+        let (sp, ep) = (clamp01(r.start_pos), clamp01(r.end_pos.max(r.start_pos)));
+        let (sa, ea) = (clamp01(r.start_alpha), clamp01(r.end_alpha));
+        let _ = write!(
+            self.defs,
+            r##"<linearGradient id="{gr}" gradientUnits="userSpaceOnUse" x1="0" y1="{}" x2="0" y2="{}"><stop offset="{}" stop-color="#fff" stop-opacity="{}"/><stop offset="{}" stop-color="#fff" stop-opacity="{}"/></linearGradient><mask id="{mk}" maskUnits="userSpaceOnUse" x="{}" y="{}" width="{}" height="{}"><rect x="{}" y="{}" width="{}" height="{}" fill="url(#{gr})"/></mask>"##,
+            num(t + h),
+            num(t),
+            num(sp),
+            num(sa),
+            num(ep.max(sp + 1e-6)),
+            num(ea),
+            num(l - 10.0),
+            num(t - 10.0),
+            num(w + 20.0),
+            num(h + 20.0),
+            num(l - 10.0),
+            num(t - 10.0),
+            num(w + 20.0),
+            num(h + 20.0),
+        );
+        let filter = if blur > 0.0 {
+            let fid = self.id("rb");
+            let _ = write!(
+                self.defs,
+                r#"<filter id="{fid}" {}><feGaussianBlur stdDeviation="{}"/></filter>"#,
+                region(blur * 3.0 + h * sy.abs() + dist.abs()),
+                num((blur / 2.0).min(MAX_FX_PX)),
+            );
+            format!(r##" filter="url(#{fid})""##)
+        } else {
+            String::new()
+        };
+        // (The mask is in the user space of the element, i.e. the shape's own coordinates; the
+        // transform mirrors both.)
+        let _ = write!(
+            self.body,
+            r##"<g transform="translate({} {}) scale({} {}) translate({} {})"{filter}><use href="#{gid}" mask="url(#{mk})"/></g>"##,
+            num(ax + dx),
+            num(ay + dy),
+            num(sx),
+            num(sy),
+            num(-ax),
+            num(-ay),
+        );
+    }
+}

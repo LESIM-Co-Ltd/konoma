@@ -14,6 +14,8 @@ use crate::preview::office::tests_docx::{tiny_png, REL_BASE};
 use crate::preview::office::tests_pptx::PNS;
 
 mod dump;
+mod dump_e3;
+mod shapes_e3;
 
 // ---------------------------------------------------------------------------------------------
 // the package builder
@@ -1748,7 +1750,7 @@ fn effects() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn preset_geometry_today_knows_a_rectangle_an_ellipse_and_a_line() {
+fn exact_presets_keep_their_cheap_forms_and_the_others_are_evaluated() {
     let g = |prst: &str| {
         let d = D::new(&shape(
             "",
@@ -1767,10 +1769,11 @@ fn preset_geometry_today_knows_a_rectangle_an_ellipse_and_a_line() {
     assert_eq!(g("ellipse"), sd::Geometry::Ellipse);
     assert_eq!(g("line"), sd::Geometry::Line);
     assert_eq!(g("straightConnector1"), sd::Geometry::Line);
-    // Everything else is a rectangle until the preset engine takes over.
-    assert_eq!(g("roundRect"), sd::Geometry::Rect);
+    // Everything else is evaluated by the preset engine; a name that is no preset is the box.
+    assert!(matches!(g("roundRect"), sd::Geometry::Paths(_)));
     assert_eq!(g("nonsense"), sd::Geometry::Rect);
-    // A custom geometry too.
+    // A custom geometry with no path is evaluated too (it draws nothing); one that is not
+    // readable (too many guides) is the box -- see `shapes_e3`.
     let d = D::new(&shape(
         "",
         &format!(
@@ -1782,7 +1785,7 @@ fn preset_geometry_today_knows_a_rectangle_an_ellipse_and_a_line() {
         "",
         "",
     ));
-    assert_eq!(first_shape(&d.scene()).geom, sd::Geometry::Rect);
+    assert_eq!(first_shape(&d.scene()).geom, sd::Geometry::Paths(vec![]));
 }
 
 #[test]
@@ -1896,11 +1899,27 @@ fn a_picture_that_cannot_be_shown_is_drawn_as_a_placeholder() {
         .push(("rIdE".into(), "image".into(), "../media/old.emf".into()));
     let doc = d.load();
     assert_eq!(doc.slide_scenes[0].items.len(), 2);
-    for i in &doc.slide_scenes[0].items {
-        let Item::Picture(p) = i else { panic!() };
-        assert_eq!(p.image.key, shapes::MISSING_PICTURE);
-        assert!(doc.images.iter().all(|im| im.key != p.image.key));
-    }
+    // The picture with no relationship keeps the placeholder key...
+    let Item::Picture(p) = &doc.slide_scenes[0].items[0] else {
+        panic!()
+    };
+    assert_eq!(p.image.key, shapes::MISSING_PICTURE);
+    assert!(doc.images.iter().all(|im| im.key != p.image.key));
+    // ...an EMF has a key of its own (the renderer converts metafiles; bytes it cannot convert
+    // are drawn as the placeholder), and the text view never refers to it.
+    let Item::Picture(p) = &doc.slide_scenes[0].items[1] else {
+        panic!()
+    };
+    let emf = doc.images.iter().find(|im| im.key == p.image.key).unwrap();
+    assert_eq!(emf.name, "old.emf");
+    assert!(!doc.markdown.contains(&emf.key));
+    let r = sd::render_svg(&doc.slide_scenes[0], &|k| {
+        doc.images
+            .iter()
+            .find(|i| i.key == k)
+            .map(|i| std::sync::Arc::new(i.bytes.clone()))
+    });
+    assert!(r.svg.contains("<path"), "{}", r.svg);
 }
 
 #[test]

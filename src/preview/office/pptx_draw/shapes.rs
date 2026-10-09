@@ -5,7 +5,7 @@
 use crate::preview::office::slide_draw as sd;
 
 use super::geom::geometry_of;
-use super::style::{flag, num, FillRes};
+use super::style::{flag, num, FillRes, LineSpec};
 use super::text::TextChain;
 use super::*;
 
@@ -150,9 +150,22 @@ impl<'a> Sb<'a> {
             .unwrap_or((sd::Geometry::Rect, None));
         let style = sp.child("style");
 
-        // Fill: the first of the shape / layout / master `spPr`, else the style's.
+        // Fill: the first of the shape's own `spPr`, the shape's own style (`p:style`), then the
+        // layout's and the master's `spPr` (a placeholder with a style of its own keeps the look
+        // of the style over what the master's placeholder says: PowerPoint and LibreOffice show
+        // the styled box).
         let mut fill: Option<sd::Fill> = None;
-        for (p, i) in &sprs {
+        let mut style_fill_tried = false;
+        // (The shape's own `spPr` leads `sprs` when it has one; what follows is inherited.)
+        let own = usize::from(sp.child("spPr").is_some());
+        for (k, (p, i)) in sprs.iter().enumerate() {
+            if k >= own && !style_fill_tried {
+                style_fill_tried = true;
+                if let Some(f) = style.and_then(|s| self.style_fill(s)) {
+                    fill = Some(f);
+                    break;
+                }
+            }
             let rels = self.rels_at(*i);
             match self.fill_in(p, None, rels) {
                 Some(FillRes::Set(f)) => {
@@ -177,12 +190,26 @@ impl<'a> Sb<'a> {
             None => style.and_then(|s| self.style_fill(s)).unwrap_or_default(),
         };
 
-        // Line: the style's line, laid over by the master's, the layout's and the shape's `a:ln`.
-        let mut line = style.map(|s| self.style_line(s)).unwrap_or_default();
-        for (p, i) in sprs.iter().rev() {
-            if let Some(ln) = p.child("ln") {
-                let rels = self.rels_at(*i);
-                let spec = self.line_spec(ln, None, rels);
+        // Line: the master's and the layout's `a:ln`, laid over by the style's line, laid over by
+        // the shape's own `a:ln` (the style outranks the inherited placeholder, as for the fill).
+        let mut line = LineSpec::default();
+        let spec_of = |sb: &mut Self, p: &Node, i: usize| {
+            p.child("ln").map(|ln| {
+                let rels = sb.rels_at(i);
+                sb.line_spec(ln, None, rels)
+            })
+        };
+        for (p, i) in sprs.iter().skip(own).rev() {
+            if let Some(spec) = spec_of(self, p, *i) {
+                line.over(spec);
+            }
+        }
+        if let Some(s) = style {
+            let spec = self.style_line(s);
+            line.over(spec);
+        }
+        for (p, i) in sprs.iter().take(own) {
+            if let Some(spec) = spec_of(self, p, *i) {
                 line.over(spec);
             }
         }

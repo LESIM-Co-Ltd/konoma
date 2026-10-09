@@ -1373,7 +1373,7 @@ impl Rd<'_, '_> {
         // The three ways the builder reaches the package (a picture, a part, a part's
         // relationships) all go through this reader; they are called one at a time.
         let rd = std::cell::RefCell::new(&mut *self);
-        let mut loader = |part: &str| rd.borrow_mut().c.image_key_for_part(part);
+        let mut loader = |part: &str| rd.borrow_mut().c.image_key_for_drawing(part);
         let mut read = |part: &str| rd.borrow_mut().read_part(part);
         let mut rels_of = |part: &str| rd.borrow_mut().rels_of_present(part);
         let scene = pptx_draw::build_scene(

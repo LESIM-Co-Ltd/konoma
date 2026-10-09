@@ -554,6 +554,9 @@ struct Conv<'a> {
     media: Pkg,
     images: Vec<DocImage>,
     image_by_part: HashMap<String, Option<String>>,
+    /// The metafile pictures (EMF / WMF) loaded for drawing, by part: kept apart from
+    /// `image_by_part` because the text view must never show one (it cannot decode them).
+    meta_by_part: HashMap<String, Option<String>>,
     image_total: u64,
     /// Chart titles by part: a chart drawn many times is read once.
     chart_titles: HashMap<String, Option<String>>,
@@ -617,6 +620,7 @@ impl<'a> Conv<'a> {
             media,
             images: Vec::new(),
             image_by_part: HashMap::new(),
+            meta_by_part: HashMap::new(),
             image_total: 0,
             chart_titles: HashMap::new(),
             chart_read: 0,
@@ -3029,13 +3033,40 @@ impl<'a> Conv<'a> {
         }
     }
 
+    /// [`Self::image_key_for_part`] for the drawing model: a metafile picture (EMF / WMF, which the
+    /// slide renderer converts to SVG) gets a key too; every other picture is the text view's.
+    /// The metafile is registered in [`Document::images`] like any picture, but the text view
+    /// never refers to its key (it asks [`Self::image_key_for_part`], which says `None`).
+    fn image_key_for_drawing(&mut self, part: &str) -> Option<String> {
+        let is_meta = part
+            .rsplit_once('.')
+            .is_some_and(|(_, e)| matches!(e.to_ascii_lowercase().as_str(), "emf" | "wmf"));
+        if !is_meta {
+            return self.image_key_for_part(part);
+        }
+        match self.meta_by_part.get(part) {
+            Some(k) => k.clone(),
+            None => {
+                let k = self.load_image_as(part, true);
+                self.meta_by_part.insert(part.to_string(), k.clone());
+                k
+            }
+        }
+    }
+
     fn load_image(&mut self, part: &str) -> Option<String> {
+        self.load_image_as(part, false)
+    }
+
+    /// Loads the picture at `part`; `meta` also admits EMF / WMF.
+    fn load_image_as(&mut self, part: &str, meta: bool) -> Option<String> {
         let name = part.rsplit('/').next().unwrap_or(part).to_string();
         let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase())?;
-        if !matches!(
+        let ok = matches!(
             ext.as_str(),
             "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "tif" | "tiff"
-        ) {
+        ) || (meta && matches!(ext.as_str(), "emf" | "wmf"));
+        if !ok {
             return None;
         }
         if self.images.len() >= self.opts.max_images {

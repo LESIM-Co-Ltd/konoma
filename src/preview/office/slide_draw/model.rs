@@ -582,6 +582,10 @@ pub struct Reflection {
     pub blur_rad: f64,
     pub start_alpha: f64,
     pub end_alpha: f64,
+    /// Where along the reflection's height (`0..=1`, from the shape's edge) the fade starts
+    /// (`stPos`, default 0) and ends (`endPos`, default 1).
+    pub start_pos: f64,
+    pub end_pos: f64,
     pub dist: f64,
     pub dir_deg: f64,
     pub fade_dir_deg: f64,

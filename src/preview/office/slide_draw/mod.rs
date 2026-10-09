@@ -30,8 +30,11 @@ pub mod model;
 pub mod odf_geom;
 pub mod path;
 pub mod svg;
+pub mod symbol_font;
 pub mod text;
 
+#[cfg(test)]
+mod effects_tests;
 #[cfg(test)]
 mod tests;
 
@@ -54,8 +57,8 @@ pub struct Rendered {
 ///
 /// Implemented: backgrounds, shapes with solid / gradient / pattern / image fills, lines (dash,
 /// cap, join, compound, arrow heads), pictures with crop and clip, groups with rotation and
-/// flips, text, and the outer shadow. Not drawn (present in the model): inner shadow, glow, soft
-/// edge, reflection. EMF / WMF pictures are converted to SVG. See the `svg` module for how each
+/// flips, text, and the effects (outer and inner shadow, glow, soft edge, reflection). EMF / WMF
+/// pictures are converted to SVG. See the `svg` module for how each
 /// approximation is made.
 pub fn render_svg(scene: &SlideScene, media: &dyn Fn(&str) -> Option<Arc<Vec<u8>>>) -> Rendered {
     svg::render(scene, media)

@@ -259,14 +259,25 @@ impl Sb<'_> {
                 .filter(|r| !r.external)?;
             (self.loader)(&rel.target)
         };
-        if let Some(k) = blip.rel_attr("embed").and_then(&mut load) {
-            return Some(k);
+        let embed = blip.rel_attr("embed").and_then(&mut load);
+        // A metafile (EMF / WMF) as the embedded picture gives way to an SVG beside it (PowerPoint
+        // writes the SVG as the sharp version of the picture).
+        let is_meta = |k: &str| {
+            let k = k.to_ascii_lowercase();
+            k.ends_with(".emf") || k.ends_with(".wmf")
+        };
+        if let Some(k) = &embed {
+            if !is_meta(k) {
+                return embed;
+            }
         }
-        let ext = blip.child("extLst")?;
-        ext.nodes()
-            .flat_map(|e| e.nodes())
-            .filter(|n| n.name == "svgBlip")
-            .find_map(|n| n.rel_attr("embed").and_then(&mut load))
+        let svg = blip.child("extLst").and_then(|ext| {
+            ext.nodes()
+                .flat_map(|e| e.nodes())
+                .filter(|n| n.name == "svgBlip")
+                .find_map(|n| n.rel_attr("embed").and_then(&mut load))
+        });
+        svg.or(embed)
     }
 
     /// What an `a:ln` sets. `ph` is the colour `phClr` stands for.
@@ -415,6 +426,8 @@ impl Sb<'_> {
                         blur_rad: num(e, "blurRad").unwrap_or(0.0).clamp(0.0, 1.0e9),
                         start_alpha: p("stA", 1.0).clamp(0.0, 1.0),
                         end_alpha: p("endA", 0.0).clamp(0.0, 1.0),
+                        start_pos: p("stPos", 0.0).clamp(0.0, 1.0),
+                        end_pos: p("endPos", 1.0).clamp(0.0, 1.0),
                         dist: num(e, "dist").unwrap_or(0.0).clamp(-1.0e9, 1.0e9),
                         dir_deg: num(e, "dir").unwrap_or(0.0) / 60_000.0,
                         fade_dir_deg: num(e, "fadeDir").map_or(90.0, |v| v / 60_000.0),

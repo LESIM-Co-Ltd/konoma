@@ -1028,3 +1028,335 @@ fn control_characters_are_dropped() {
     let l = lay(vec![p("a\u{0}\u{1}b\u{200b}c\r", 20.0)], 400.0, 100.0);
     assert_eq!(texts(&l), vec!["abc"]);
 }
+
+// ---------------------------------------------------------------------------------------------
+// autofit recompute, vertical forms, anchorCtr in vertical text
+// ---------------------------------------------------------------------------------------------
+
+fn long_text() -> String {
+    "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma "
+        .repeat(3)
+}
+
+fn autofit_body(autofit: AutoFit, text: &str, pt: f64) -> TextBody {
+    TextBody {
+        autofit,
+        paragraphs: vec![p(text, pt)],
+        ..Default::default()
+    }
+}
+
+fn first_size(l: &Layout) -> f64 {
+    l.lines[0].frags[0].style.size_px
+}
+
+#[test]
+fn autofit_steps_are_the_pairs_powerpoint_writes() {
+    assert_eq!(autofit_step(1), (0.925, 0.1));
+    let (s, r) = autofit_step(2);
+    assert!((s - 0.85).abs() < 1e-9 && r == 0.2);
+    let (s, r) = autofit_step(3);
+    assert!((s - 0.775).abs() < 1e-9 && r == 0.2);
+    let (s, r) = autofit_step(AUTOFIT_STEPS);
+    assert!((s - AUTOFIT_MIN_SCALE).abs() < 1e-9 && r == 0.2);
+    // never below the smallest scale
+    assert_eq!(autofit_step(1000).0, AUTOFIT_MIN_SCALE);
+}
+
+#[test]
+fn autofit_without_stored_scales_shrinks_overflowing_text_until_it_fits() {
+    let text = long_text();
+    let plain = layout(&autofit_body(AutoFit::None, &text, 24.0), 300.0, 150.0);
+    assert!(plain.content_h > 150.0, "{}", plain.content_h);
+    assert!((first_size(&plain) - 24.0 * PX_PT).abs() < 1e-6);
+    let fit = layout(
+        &autofit_body(
+            AutoFit::Normal {
+                font_scale: 1.0,
+                ln_spc_reduction: 0.0,
+            },
+            &text,
+            24.0,
+        ),
+        300.0,
+        150.0,
+    );
+    assert!(fit.content_h <= 150.5, "{}", fit.content_h);
+    assert!(
+        first_size(&fit) < 24.0 * PX_PT - 1.0,
+        "{}",
+        first_size(&fit)
+    );
+    // The step chosen is the first that fits: the one before it does not.
+    let scale = first_size(&fit) / (24.0 * PX_PT);
+    let k = (1..=AUTOFIT_STEPS)
+        .find(|k| (autofit_step(*k).0 - scale).abs() < 1e-6)
+        .expect("a step of the table");
+    if k > 1 {
+        let (s, r) = autofit_step(k - 1);
+        let prev = layout_at(
+            &autofit_body(AutoFit::None, &text, 24.0),
+            Frame::Normal,
+            300.0,
+            150.0,
+            s,
+            r,
+        );
+        assert!(prev.content_h > 150.5, "{}", prev.content_h);
+    }
+}
+
+#[test]
+fn autofit_text_that_fits_is_not_shrunk() {
+    let l = layout(
+        &autofit_body(
+            AutoFit::Normal {
+                font_scale: 1.0,
+                ln_spc_reduction: 0.0,
+            },
+            "short",
+            24.0,
+        ),
+        300.0,
+        150.0,
+    );
+    assert!((first_size(&l) - 24.0 * PX_PT).abs() < 1e-6);
+}
+
+#[test]
+fn stored_autofit_scales_are_used_as_they_are() {
+    let text = long_text();
+    let l = layout(
+        &autofit_body(
+            AutoFit::Normal {
+                font_scale: 0.5,
+                ln_spc_reduction: 0.0,
+            },
+            &text,
+            24.0,
+        ),
+        300.0,
+        40.0,
+    );
+    // 50 % of the size, whether or not it fits: no second round of shrinking
+    assert!(
+        (first_size(&l) - 12.0 * PX_PT).abs() < 1e-6,
+        "{}",
+        first_size(&l)
+    );
+    let l = layout(
+        &autofit_body(
+            AutoFit::Normal {
+                font_scale: 1.0,
+                ln_spc_reduction: 0.1,
+            },
+            &text,
+            24.0,
+        ),
+        300.0,
+        40.0,
+    );
+    assert!((first_size(&l) - 24.0 * PX_PT).abs() < 1e-6);
+}
+
+#[test]
+fn autofit_gives_up_at_the_smallest_step() {
+    let text = long_text().repeat(40);
+    let l = layout(
+        &autofit_body(
+            AutoFit::Normal {
+                font_scale: 1.0,
+                ln_spc_reduction: 0.0,
+            },
+            &text,
+            24.0,
+        ),
+        200.0,
+        50.0,
+    );
+    assert!(
+        (first_size(&l) - 24.0 * PX_PT * AUTOFIT_MIN_SCALE).abs() < 1e-6,
+        "{}",
+        first_size(&l)
+    );
+}
+
+#[test]
+fn autofit_applies_to_rotated_frames_and_vertical_text_too() {
+    let text = long_text();
+    for vert in [Vert::Vert, Vert::Vert270, Vert::EaVert] {
+        let mut b = autofit_body(
+            AutoFit::Normal {
+                font_scale: 1.0,
+                ln_spc_reduction: 0.0,
+            },
+            &text,
+            24.0,
+        );
+        b.vert = vert;
+        let l = layout(&b, 150.0, 300.0);
+        let mut none = b.clone();
+        none.autofit = AutoFit::None;
+        let l0 = layout(&none, 150.0, 300.0);
+        let sz = |l: &Layout| {
+            l.lines
+                .iter()
+                .flat_map(|x| &x.frags)
+                .map(|f| f.style.size_px)
+                .fold(f64::MAX, f64::min)
+        };
+        assert!(sz(&l) < sz(&l0), "{vert:?} {} {}", sz(&l), sz(&l0));
+    }
+}
+
+fn vframes(text: &str, anchor_ctr: bool, w: f64, h: f64) -> Vec<Frag> {
+    let b = TextBody {
+        vert: Vert::EaVert,
+        anchor_ctr,
+        paragraphs: vec![p(text, 20.0)],
+        ..Default::default()
+    };
+    layout(&b, w, h)
+        .lines
+        .into_iter()
+        .flat_map(|l| l.frags)
+        .collect()
+}
+
+#[test]
+fn vertical_text_places_punctuation_in_its_vertical_form() {
+    let fr = vframes("あ、い。う「え」ーお", false, 100.0, 400.0);
+    let by = |c: &str| {
+        fr.iter()
+            .find(|f| f.text == c)
+            .unwrap_or_else(|| panic!("{c}"))
+    };
+    let (a, i) = (by("あ"), by("い"));
+    // plain characters are upright in one column
+    assert!(!a.rot90 && !i.rot90 && (a.x - i.x).abs() < 1e-6);
+    // the comma and the full stop are moved to the top right of their cell
+    let comma = by("、");
+    assert!(!comma.rot90);
+    assert!(comma.x > a.x + 0.4 * a.style.size_px, "{} {}", comma.x, a.x);
+    // ... and higher than the baseline of a plain character in the same row
+    let cell_top = |f: &Frag| f.y - 0.88 * f.style.size_px;
+    let ya = cell_top(by("あ"));
+    assert!(by("、").y - ya > 0.0);
+    assert!(
+        comma.y < ya + a.style.size_px + 0.88 * a.style.size_px - 0.4 * a.style.size_px,
+        "{}",
+        comma.y
+    );
+    // brackets, the long-vowel mark are turned
+    for c in ["「", "」", "ー"] {
+        assert!(by(c).rot90, "{c}");
+    }
+    assert!(!by("お").rot90);
+    // each cell is one em below the previous one
+    let rows: Vec<f64> = fr
+        .iter()
+        .map(|f| {
+            let s = f.style.size_px;
+            if f.rot90 {
+                f.y
+            } else if f.text == "、" || f.text == "。" {
+                f.y - 0.88 * s + 0.5 * s
+            } else {
+                f.y - 0.88 * s
+            }
+        })
+        .collect();
+    for (k, r) in rows.iter().enumerate() {
+        assert!((r - k as f64 * 20.0 * PX_PT).abs() < 1e-6, "{k} {r}");
+    }
+}
+
+#[test]
+fn vertical_punctuation_is_drawn_in_the_cell() {
+    // (the same through the writer: the turned bracket has a transform of its own)
+    let b = TextBody {
+        vert: Vert::EaVert,
+        paragraphs: vec![p("「あ」", 24.0)],
+        ..Default::default()
+    };
+    let s = {
+        let mut sh = ShapeItem::new(
+            Xfrm::rect(0.0, 0.0, 1_000_000.0, 3_000_000.0),
+            Geometry::Rect,
+        );
+        sh.text = Some(b);
+        sh
+    };
+    let sc = SlideScene {
+        width: 9_144_000.0,
+        height: 6_858_000.0,
+        background: Fill::Solid(Rgba::WHITE),
+        items: vec![Item::Shape(s)],
+        truncated: false,
+    };
+    let svg = crate::preview::office::slide_draw::render_svg(&sc, &|_| None).svg;
+    assert_eq!(svg.matches("rotate(90").count(), 2, "{svg}");
+}
+
+#[test]
+fn anchor_ctr_centres_vertical_text_along_its_columns() {
+    let top = vframes("縦書き", false, 100.0, 400.0);
+    let ctr = vframes("縦書き", true, 100.0, 400.0);
+    let (t0, c0) = (top[0].y, ctr[0].y);
+    let column = 3.0 * 20.0 * PX_PT;
+    assert!((c0 - t0 - (400.0 - column) / 2.0).abs() < 1e-6, "{t0} {c0}");
+    // the x position is unchanged
+    assert!((top[0].x - ctr[0].x).abs() < 1e-6);
+    // text longer than the frame wraps into columns that fill it, so there is nothing to shift
+    let long = "縦書きテキストが長い場合は折り返される".repeat(3);
+    let t = vframes(&long, false, 100.0, 120.0);
+    let c = vframes(&long, true, 100.0, 120.0);
+    assert!(c[0].y >= t[0].y - 1e-6);
+}
+
+#[test]
+fn vertical_forms_by_character() {
+    assert_eq!(vertical_form('、'), VerticalForm::TopRight);
+    assert_eq!(vertical_form('。'), VerticalForm::TopRight);
+    assert_eq!(vertical_form('，'), VerticalForm::TopRight);
+    assert_eq!(vertical_form('「'), VerticalForm::Rotate);
+    assert_eq!(vertical_form('』'), VerticalForm::Rotate);
+    assert_eq!(vertical_form('（'), VerticalForm::Rotate);
+    assert_eq!(vertical_form('ー'), VerticalForm::Rotate);
+    assert_eq!(vertical_form('〜'), VerticalForm::Rotate);
+    assert_eq!(vertical_form('…'), VerticalForm::Rotate);
+    assert_eq!(vertical_form('あ'), VerticalForm::Upright);
+    assert_eq!(vertical_form('漢'), VerticalForm::Upright);
+    assert_eq!(vertical_form('！'), VerticalForm::Upright);
+}
+
+#[test]
+fn punctuation_with_a_vertical_form_stays_in_the_cells_of_japanese_text() {
+    // U+2026 is not East-Asian by script, but it belongs to the column of the characters around it.
+    let fr = vframes("終…終", false, 100.0, 400.0);
+    assert_eq!(
+        fr.len(),
+        3,
+        "{:?}",
+        fr.iter().map(|f| &f.text).collect::<Vec<_>>()
+    );
+    assert!(!fr[0].rot90 && fr[1].rot90 && !fr[2].rot90);
+    // a Latin word in vertical text is still turned as a whole
+    let fr = vframes("abc", false, 100.0, 400.0);
+    assert!(fr.iter().all(|f| f.rot90));
+}
+
+#[test]
+fn anchor_ctr_centres_a_turned_latin_column_too() {
+    let top = vframes("vertical", false, 100.0, 400.0);
+    let ctr = vframes("vertical", true, 100.0, 400.0);
+    assert!(top[0].rot90 && ctr[0].rot90);
+    let width = top[0].width;
+    assert!(width > 10.0 && width < 400.0);
+    assert!(
+        (ctr[0].y - top[0].y - (400.0 - width) / 2.0).abs() < 1e-6,
+        "{} {}",
+        top[0].y,
+        ctr[0].y
+    );
+}

@@ -494,7 +494,12 @@ fn a_smartart_shape_without_a_text_box_keeps_the_whole_shape() {
         &DocOptions::default(),
     );
     let s = shapes_of(&the_group(&doc.slide_scenes[0]).items)[0].clone();
-    assert_eq!(s.text_rect, None);
+    // No txXfrm: the text area is the shape's own (the rect preset's text rectangle is the whole box).
+    assert!(
+        s.text_rect.is_none() || s.text_rect == Some((0.0, 0.0, 2_000_000.0, 1_000_000.0)),
+        "{:?}",
+        s.text_rect
+    );
 }
 
 #[test]

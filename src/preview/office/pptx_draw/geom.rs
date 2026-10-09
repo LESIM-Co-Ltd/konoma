@@ -1,8 +1,5 @@
-//! Shape geometry: `a:prstGeom` (preset shapes) and `a:custGeom` (custom paths).
-//!
-//! Both are provisional: the preset engine (`slide_draw::geom`, which evaluates the guide
-//! formulas of `presetShapeDefinitions.xml`) is another task and replaces the bodies of
-//! [`preset_geometry`] and [`custom_geometry`]; the callers do not change.
+//! Shape geometry: `a:prstGeom` (preset shapes) and `a:custGeom` (custom paths). Both go through
+//! the guide-formula engine of `slide_draw::geom`.
 
 use crate::preview::office::slide_draw as sd;
 
@@ -15,32 +12,39 @@ const MAX_ADJ: usize = 32;
 /// adjust values `adj` (`a:gd name="adj1" fmla="val 25000"` -> `("adj1", 25000.0)`), and the text
 /// rectangle the preset defines (`None`: the whole box).
 ///
-/// PROVISIONAL. Today: `rect` -> [`sd::Geometry::Rect`], `ellipse` -> [`sd::Geometry::Ellipse`],
-/// `line` and `straightConnector1` -> [`sd::Geometry::Line`], everything else -> `Rect`. The preset
-/// engine (`slide_draw::geom`) replaces this body so that every preset shape gets its real outline
-/// and text rectangle.
+/// The guide formulas are evaluated by `slide_draw::geom::preset`. Three presets keep the cheap
+/// exact forms of the renderer: `rect` (the box), `ellipse` (the inscribed ellipse, with the
+/// preset's own text rectangle) and `line` / `straightConnector1` (a diagonal). A name that is not
+/// a preset draws as the box.
 pub(super) fn preset_geometry(
     name: &str,
     adj: &[(String, f64)],
     w: f64,
     h: f64,
 ) -> (sd::Geometry, Option<sd::Rect4>) {
-    let _ = (adj, w, h);
-    let g = match name {
-        "ellipse" => sd::Geometry::Ellipse,
-        "line" | "straightConnector1" => sd::Geometry::Line,
-        _ => sd::Geometry::Rect,
-    };
-    (g, None)
+    let ev = sd::geom::preset(name, adj, w, h);
+    let text_rect = ev.as_ref().and_then(|g| g.text_rect);
+    match name {
+        "rect" => return (sd::Geometry::Rect, text_rect),
+        "ellipse" => return (sd::Geometry::Ellipse, text_rect),
+        "line" | "straightConnector1" => return (sd::Geometry::Line, None),
+        _ => {}
+    }
+    match ev {
+        Some(g) => (sd::Geometry::Paths(g.paths), g.text_rect),
+        None => (sd::Geometry::Rect, None),
+    }
 }
 
-/// The geometry of an `a:custGeom` element and its text rectangle (`a:rect`).
-///
-/// PROVISIONAL. Today: always [`sd::Geometry::Rect`]. The preset engine (`slide_draw::geom`) will
-/// evaluate the guide list (`a:gdLst`), the connection sites and the paths (`a:pathLst`) of the
-/// element and replace this body.
-pub(super) fn custom_geometry(_cust: &Node) -> (sd::Geometry, Option<sd::Rect4>) {
-    (sd::Geometry::Rect, None)
+/// The geometry of an `a:custGeom` element and its text rectangle (`a:rect`): its guide list, paths
+/// and text rectangle evaluated for the box of `w` x `h` EMU. One that cannot be read (too many
+/// guides) is the box.
+pub(super) fn custom_geometry(cust: &Node, w: f64, h: f64) -> (sd::Geometry, Option<sd::Rect4>) {
+    let g = sd::geom::custom_from_xml(cust).and_then(|spec| sd::geom::custom(&spec, w, h));
+    match g {
+        Some(g) => (sd::Geometry::Paths(g.paths), g.text_rect),
+        None => (sd::Geometry::Rect, None),
+    }
 }
 
 /// The adjust values of an `a:avLst`: only `val N` formulas (the others are guides of the preset
@@ -73,5 +77,5 @@ pub(super) fn geometry_of(
             h,
         ));
     }
-    sp_pr.child("custGeom").map(custom_geometry)
+    sp_pr.child("custGeom").map(|c| custom_geometry(c, w, h))
 }

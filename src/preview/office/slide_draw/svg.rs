@@ -9,11 +9,12 @@
 //!
 //! * **Gradients**: linear gradients use the exact DrawingML gradient line (the line through the
 //!   box centre at the angle, long enough that the corners get the end colours; `scaled`
-//!   angles are applied in the unit square). `Radial` is an SVG radial gradient centred on the
-//!   focus rectangle; `Rect` and `Path` gradients have no SVG equivalent and are drawn as the same
-//!   radial gradient (the colours run the right way, the iso-lines are ellipses instead of
-//!   rectangles / outlines). `rot_with_shape = false` is ignored (the gradient turns with the
-//!   shape).
+//!   angles are applied in the unit square). `Rect` gradients are concentric rectangles from the
+//!   focus rectangle to the box edges (four linear-gradient wedges in a `<pattern>`, see
+//!   `rect_gradient`). `Radial` is an SVG radial gradient centred on the focus rectangle; `Path`
+//!   (`path="shape"`) has no SVG equivalent and is drawn as the same radial gradient (the colours
+//!   run the right way, the iso-lines are ellipses instead of the shape's outline).
+//!   `rot_with_shape = false` is ignored (the gradient turns with the shape).
 //! * **Patterns**: 8 x 8 px tiles drawn from per-pixel rules (see `pattern_pixels`); the
 //!   percentage patterns use an ordered-dither matrix, line patterns approximate PowerPoint's
 //!   bitmaps. Unknown presets are the 50 % pattern.
@@ -23,8 +24,8 @@
 //!   so heads on hairlines stay visible) for both width and length, the way LibreOffice and
 //!   PowerPoint's dialogs describe them; the line is shortened under a filled head when its last
 //!   segment is straight.
-//! * **Effects**: only the outer shadow is drawn (a blurred, offset, tinted copy of the shape).
-//!   Inner shadow, glow, soft edge and reflection are in the model but not drawn.
+//! * **Effects** (outer shadow, glow, reflection, soft edge, inner shadow): see `svg_effects`; the
+//!   painted shape is defined once and every layer is a filtered `<use>` of it.
 //! * **Fill modes** `lighten`/`darken` mix the fill colour 40 % (`...Less`: 20 %) towards white
 //!   or black.
 //! * **Pictures**: PNG, JPEG, GIF and WebP are embedded as they are; BMP and TIFF are decoded and
@@ -49,6 +50,9 @@ use super::color::mix;
 use super::model::*;
 use super::path::{self, Resolved, Seg};
 use super::text::{self, BulletDraw, Frag, Frame, ASCENT, LINE_HEIGHT};
+
+#[path = "svg_effects.rs"]
+mod effects;
 
 /// Largest SVG markup written for one slide, in bytes, not counting embedded image data.
 pub const MAX_SVG_TEXT_BYTES: usize = 16 * 1024 * 1024;
@@ -426,13 +430,7 @@ impl<'a> W<'a> {
         let opened = self.open_g(x);
         let (paths, trunc) = path::resolve_geometry(&s.geom, x);
         self.truncated |= trunc;
-        // Shadow: a blurred, offset, tinted copy under the shape.
-        let shadow = s.effects.outer_shadow;
-        if let Some(sh) = shadow {
-            if sh.color.a > 0.0 {
-                self.shadow_start(&sh, bx);
-            }
-        }
+        let start = self.body.len();
         let filled_geom = !matches!(s.geom, Geometry::Line);
         // All the fills first, then all the outlines: a later path's fill must not cover an
         // earlier path's outline (`chartPlus` / `chartX` draw their cross first, the box second).
@@ -450,56 +448,14 @@ impl<'a> W<'a> {
                 }
             }
         }
-        if let Some(sh) = shadow {
-            if sh.color.a > 0.0 {
-                self.body.push_str("</g>");
-            }
-        }
+        let content = self.body.split_off(start);
+        self.with_effects(&content, bx, &s.effects, x, cx.rot);
         if let Some(t) = &s.text {
             self.text_body(t, s.text_rect, x, cx);
         }
         if opened {
             self.body.push_str("</g>");
         }
-    }
-
-    fn shadow_start(&mut self, sh: &Shadow, bx: Bx) {
-        let id = self.id("sh");
-        let dir = sh.dir_deg.to_radians();
-        let (dx, dy) = (
-            if sh.dist.is_finite() {
-                sh.dist * dir.cos()
-            } else {
-                0.0
-            },
-            if sh.dist.is_finite() {
-                sh.dist * dir.sin()
-            } else {
-                0.0
-            },
-        );
-        let blur = if sh.blur_rad.is_finite() {
-            sh.blur_rad.max(0.0)
-        } else {
-            0.0
-        };
-        let sigma = (blur / EMU_PER_PX / 2.0).clamp(0.0, 200.0);
-        let pad = blur * 1.5 + sh.dist.abs().min(1e9) + 2.0 * EMU_PER_PX;
-        let (x, y, w, h) = bx;
-        let _ = write!(
-            self.defs,
-            r#"<filter id="{id}" filterUnits="userSpaceOnUse" x="{}" y="{}" width="{}" height="{}" color-interpolation-filters="sRGB"><feGaussianBlur in="SourceAlpha" stdDeviation="{}"/><feOffset dx="{}" dy="{}" result="o"/><feFlood flood-color="{}" flood-opacity="{}"/><feComposite in2="o" operator="in" result="s"/><feMerge><feMergeNode in="s"/><feMergeNode in="SourceGraphic"/></feMerge></filter>"#,
-            px(x - pad),
-            px(y - pad),
-            px(w + 2.0 * pad),
-            px(h + 2.0 * pad),
-            num(sigma),
-            px(dx),
-            px(dy),
-            hex(sh.color),
-            num(alpha_of(sh.color)),
-        );
-        let _ = write!(self.body, r#"<g filter="url(#{id})">"#);
     }
 
     // ----- fills -----------------------------------------------------------------------------
@@ -630,7 +586,8 @@ impl<'a> W<'a> {
                     );
                 }
             }
-            GradKind::Radial | GradKind::Rect | GradKind::Path => {
+            GradKind::Rect => self.rect_gradient(&id, g, &stop_xml),
+            GradKind::Radial | GradKind::Path => {
                 let (l, t, r, b) = g.fill_to_rect;
                 let f = |v: f64| {
                     if v.is_finite() {
@@ -654,6 +611,110 @@ impl<'a> W<'a> {
             }
         }
         id
+    }
+
+    /// A rectangular gradient (`path="rect"`): concentric rectangles from the focus rectangle
+    /// (`fillToRect`, the first stop) out to the box edges (the last stop), as PowerPoint draws
+    /// it. SVG has no such gradient, so it is a `<pattern>` over the box (in bounding-box units)
+    /// of four linear-gradient wedges, one per side, cut along the diagonals from the box corners
+    /// to the focus rectangle's corners, over an elliptical-gradient underlay that hides the
+    /// anti-aliased seams between the wedges.
+    fn rect_gradient(&mut self, id: &str, g: &Gradient, stop_xml: &str) {
+        let f = |v: f64| {
+            if v.is_finite() {
+                v.clamp(0.0, 1.0)
+            } else {
+                0.5
+            }
+        };
+        let (l, t, r, b) = g.fill_to_rect;
+        let (fl, ft) = (f(l), f(t));
+        let (fr, fb) = ((1.0 - f(r)).max(fl), (1.0 - f(b)).max(ft));
+        let first = g.stops.first().map_or(Rgba::BLACK, |s| s.1);
+        let mut inner = String::new();
+        let (cx, cy) = ((fl + fr) / 2.0, (ft + fb) / 2.0);
+        let _ = write!(
+            self.defs,
+            r#"<radialGradient id="{id}u" gradientUnits="userSpaceOnUse" cx="{}" cy="{}" fx="{}" fy="{}" r="{}">{stop_xml}</radialGradient>"#,
+            num(cx),
+            num(cy),
+            num(cx),
+            num(cy),
+            num(cx.max(1.0 - cx).hypot(cy.max(1.0 - cy)).max(0.01)),
+        );
+        let _ = write!(inner, r#"<rect width="1" height="1" fill="url(#{id}u)"/>"#);
+        // (side, vector x1 y1 x2 y2, wedge polygon)
+        type Wedge = ([f64; 4], [(f64, f64); 4]);
+        let wedges: [(&str, Wedge); 4] = [
+            (
+                "l",
+                (
+                    [fl, 0.0, 0.0, 0.0],
+                    [(0.0, 0.0), (fl, ft), (fl, fb), (0.0, 1.0)],
+                ),
+            ),
+            (
+                "t",
+                (
+                    [0.0, ft, 0.0, 0.0],
+                    [(0.0, 0.0), (1.0, 0.0), (fr, ft), (fl, ft)],
+                ),
+            ),
+            (
+                "r",
+                (
+                    [fr, 0.0, 1.0, 0.0],
+                    [(1.0, 0.0), (1.0, 1.0), (fr, fb), (fr, ft)],
+                ),
+            ),
+            (
+                "b",
+                (
+                    [0.0, fb, 0.0, 1.0],
+                    [(0.0, 1.0), (fl, fb), (fr, fb), (1.0, 1.0)],
+                ),
+            ),
+        ];
+        for (side, (v, poly)) in wedges {
+            let len = (v[2] - v[0]).abs() + (v[3] - v[1]).abs();
+            if len < 1e-6 {
+                continue;
+            }
+            let _ = write!(
+                self.defs,
+                r#"<linearGradient id="{id}{side}" gradientUnits="userSpaceOnUse" x1="{}" y1="{}" x2="{}" y2="{}">{stop_xml}</linearGradient>"#,
+                num(v[0]),
+                num(v[1]),
+                num(v[2]),
+                num(v[3]),
+            );
+            let pts: Vec<String> = poly
+                .iter()
+                .map(|(x, y)| format!("{} {}", num(*x), num(*y)))
+                .collect();
+            let _ = write!(
+                inner,
+                r#"<path d="M{} Z" fill="url(#{id}{side})"/>"#,
+                pts.join(" L")
+            );
+        }
+        // The focus rectangle itself is the first colour.
+        if fr > fl && fb > ft {
+            let _ = write!(
+                inner,
+                r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}" fill-opacity="{}"/>"#,
+                num(fl),
+                num(ft),
+                num(fr - fl),
+                num(fb - ft),
+                hex(first),
+                num(alpha_of(first)),
+            );
+        }
+        let _ = write!(
+            self.defs,
+            r#"<pattern id="{id}" patternUnits="objectBoundingBox" patternContentUnits="objectBoundingBox" width="1" height="1">{inner}</pattern>"#
+        );
     }
 
     fn pattern(&mut self, preset: &str, fg: Rgba, bg: Rgba) -> String {
@@ -930,10 +991,7 @@ impl<'a> W<'a> {
             .map(|(r, _, _)| path_d(&r.segs))
             .collect::<Vec<_>>()
             .join(" ");
-        let shadow = p.effects.outer_shadow.filter(|s| s.color.a > 0.0);
-        if let Some(sh) = &shadow {
-            self.shadow_start(sh, bx);
-        }
+        let start = self.body.len();
         match self.embed(&p.image.key) {
             Some((uri, _)) => {
                 let fill_rect = match p.image.mode {
@@ -958,9 +1016,8 @@ impl<'a> W<'a> {
                 self.stroke(r, l, bx);
             }
         }
-        if shadow.is_some() {
-            self.body.push_str("</g>");
-        }
+        let content = self.body.split_off(start);
+        self.with_effects(&content, bx, &p.effects, x, _cx.rot);
         if opened {
             self.body.push_str("</g>");
         }
