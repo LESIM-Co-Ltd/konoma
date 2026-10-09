@@ -10,6 +10,7 @@
 //! This module has no UI, `App` or i18n dependency: [`OfficeError`] carries no user-facing text
 //! (the caller maps each variant to a translated message).
 
+pub(crate) mod chart_xml;
 pub mod container;
 pub mod docx;
 mod docx_styles;
@@ -122,6 +123,10 @@ impl std::error::Error for OfficeError {}
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_chart_dump;
+#[cfg(test)]
+mod tests_chart_xml;
 #[cfg(test)]
 mod tests_complex;
 #[cfg(test)]

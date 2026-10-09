@@ -20,6 +20,7 @@
 // only the tests use most of it.
 #![allow(dead_code)]
 
+pub mod chart;
 pub mod color;
 pub mod fonts;
 pub mod geom;
