@@ -189,12 +189,28 @@ impl TextMetrics {
         db: Arc<fontdb::Database>,
         families: &[fontdb::Family],
     ) -> Result<Self, FontUnavailable> {
+        Self::resolve_styled(db, families, fontdb::Weight::NORMAL, false)
+    }
+
+    /// [`resolve_families`](Self::resolve_families) with a weight and an italic flag: the face
+    /// usvg picks for `font-family: <families>; font-weight: <weight>; font-style: italic|normal`
+    /// (the slide renderer measures bold and italic runs against their own faces).
+    pub fn resolve_styled(
+        db: Arc<fontdb::Database>,
+        families: &[fontdb::Family],
+        weight: fontdb::Weight,
+        italic: bool,
+    ) -> Result<Self, FontUnavailable> {
         let face = db
             .query(&fontdb::Query {
                 families,
-                weight: fontdb::Weight::NORMAL,
+                weight,
                 stretch: fontdb::Stretch::Normal,
-                style: fontdb::Style::Normal,
+                style: if italic {
+                    fontdb::Style::Italic
+                } else {
+                    fontdb::Style::Normal
+                },
             })
             .ok_or(FontUnavailable::NoMatch)?;
         let probed = db

@@ -23,6 +23,7 @@ pub(crate) mod mathml;
 pub mod numfmt;
 mod ods_formula;
 pub(crate) mod omml;
+pub(crate) mod slide_draw;
 pub(crate) mod slide_order;
 pub mod workbook;
 pub(crate) mod xlsx;

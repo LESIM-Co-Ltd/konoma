@@ -190,6 +190,21 @@ pub struct Document {
     /// A presentation: its slides in order (empty for other documents). There is exactly one
     /// level-2 heading in [`Document::markdown`] per entry, in the same order (and none besides).
     pub slides: Vec<pptx::SlideInfo>,
+    /// One drawing model per entry of [`Document::slides`], same order; empty for Word documents
+    /// and until the readers fill it.
+    #[allow(dead_code)] // read by the app once the slide readers fill it
+    pub slide_scenes: Vec<super::slide_draw::SlideScene>,
+    /// A presentation's default view: for each slide, the same level-2 heading line as in
+    /// `markdown` (identical text, same order, exactly one per slide and none besides), then a
+    /// blank line, the slide picture as `![<alt>](<slide_keys[i]>)`, a blank line, and the slide's
+    /// notes exactly as `markdown` writes them. Empty for Word documents and until a reader fills
+    /// it (the app then shows `markdown`).
+    #[allow(dead_code)] // read by the app once the slide readers fill it
+    pub picture_markdown: String,
+    /// The picture URL of each slide (`office-img://<12 hex>/slide-<n>.svg`, unique per conversion
+    /// so two decks never share a cached picture), one per entry of `slide_scenes`, same order.
+    #[allow(dead_code)] // read by the app once the slide readers fill it
+    pub slide_keys: Vec<String>,
 }
 
 /// A picture of the document.
@@ -746,6 +761,9 @@ impl Conv<'_> {
             math_total: conv.math_total,
             math_latex: conv.math_latex,
             slides: Vec::new(),
+            slide_scenes: Vec::new(),
+            picture_markdown: String::new(),
+            slide_keys: Vec::new(),
         }
     }
 }
