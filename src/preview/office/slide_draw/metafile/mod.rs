@@ -38,6 +38,8 @@ mod tests;
 #[cfg(test)]
 mod tests_cancel;
 #[cfg(test)]
+mod tests_dib_mutation;
+#[cfg(test)]
 mod tests_emf;
 #[cfg(test)]
 mod tests_hostile;

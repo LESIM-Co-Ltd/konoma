@@ -1605,6 +1605,10 @@ impl App {
 }
 
 #[cfg(test)]
+#[path = "md_media_mutation_tests.rs"]
+mod mutation_tests;
+
+#[cfg(test)]
 mod tmux_detection_tests {
     use super::is_tmux_from_env;
 

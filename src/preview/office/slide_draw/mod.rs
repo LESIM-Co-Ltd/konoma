@@ -46,6 +46,8 @@ mod effects_tests;
 #[cfg(test)]
 pub(crate) mod hardening_tests;
 #[cfg(test)]
+mod mutation_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 
 pub use model::*;

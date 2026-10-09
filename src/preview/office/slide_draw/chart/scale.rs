@@ -890,3 +890,7 @@ mod tests {
         assert_eq!(decimals_of(0.2), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "scale_mutation_tests.rs"]
+mod mutation_tests;
