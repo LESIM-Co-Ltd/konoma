@@ -25,7 +25,10 @@ All notable changes to konoma are documented in this file. The format is based o
   breaks can differ from PowerPoint; 3-D charts have depth but no perspective and 3-D shape effects are not drawn; SmartArt is drawn only from
   its saved drawing part (a deck saved by PowerPoint 2007, which does not store that drawing, shows the SmartArt text in the
   text view only); LibreOffice's `svm` metafile and EMF+-only pictures are not drawn; the old binary `.ppt` is not
-  previewed. Compared against LibreOffice's renderings of PowerPoint- and LibreOffice-made decks, not against PowerPoint itself.
+  previewed. A slide too heavy to draw within the drawing process's time and memory budgets (huge freeform geometry,
+  thousands of effects) is drawn smaller on a big terminal; effects or shapes past the budget are left out, and the
+  preview's title then says `truncated`; a very large deck keeps every slide's heading and picture but may leave out
+  the text of the later slides in the text view. Compared against LibreOffice's renderings of PowerPoint- and LibreOffice-made decks, not against PowerPoint itself.
 - **Word / OpenDocument preview**: `.docx`/`.docm`/`.dotx`/`.dotm`/`.odt`/`.ott` are converted to Markdown by konoma
   itself (no external tool) and drawn by the Markdown renderer, so `o`, `Tab`, `/` and math all work. Headings, bold /
   italic / strikethrough, bullets and numbering exactly as the document shows them (`(a)`, `ア`, `①`, `第1条` ...),

@@ -219,8 +219,10 @@ Limits to know:
   in the text view only. LibreOffice's own `svm` pictures and EMF+-only pictures are not drawn.
 - The file itself is never written. A password-protected, damaged or too-large file says
   why it cannot be shown, and a deck cut at its limits (1,000 slides, 5,000 shapes on a
-  slide) shows what it could and says so in the title. The old binary `.ppt` is not
-  previewed (`e` opens it).
+  slide) shows what it could and says so in the title. A slide too heavy to draw within the
+  drawing budgets (huge freeform shapes, thousands of effects) is drawn smaller on a big
+  terminal; effects or shapes past the budget are left out, and the title then says so.
+  The old binary `.ppt` is not previewed (`e` opens it).
 - Compared against LibreOffice's renderings of PowerPoint- and LibreOffice-made decks, not
   against PowerPoint itself.
 
