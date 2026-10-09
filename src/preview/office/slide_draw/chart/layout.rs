@@ -234,6 +234,47 @@ pub(super) fn draw_marker(
             &fill,
             outline.as_ref(),
         ),
+        MarkerSymbol::TriangleDown => o.poly(
+            &[(x - r, y - r), (x + r, y - r), (x, y + r)],
+            true,
+            &fill,
+            outline.as_ref(),
+        ),
+        MarkerSymbol::TriangleLeft => o.poly(
+            &[(x - r, y), (x + r, y - r), (x + r, y + r)],
+            true,
+            &fill,
+            outline.as_ref(),
+        ),
+        MarkerSymbol::TriangleRight => o.poly(
+            &[(x + r, y), (x - r, y - r), (x - r, y + r)],
+            true,
+            &fill,
+            outline.as_ref(),
+        ),
+        MarkerSymbol::Bowtie => o.poly(
+            &[
+                (x - r, y - r),
+                (x + r, y + r),
+                (x + r, y - r),
+                (x - r, y + r),
+            ],
+            true,
+            &fill,
+            outline.as_ref(),
+        ),
+        MarkerSymbol::Sandglass => o.poly(
+            &[
+                (x - r, y - r),
+                (x + r, y - r),
+                (x - r, y + r),
+                (x + r, y + r),
+            ],
+            true,
+            &fill,
+            outline.as_ref(),
+        ),
+        MarkerSymbol::VBar => o.rect(x - r / 3.0, y - r, 2.0 * r / 3.0, size, &fill, None),
         MarkerSymbol::X => {
             o.seg(x - r, y - r, x + r, y + r, &stroke);
             o.seg(x - r, y + r, x + r, y - r, &stroke);

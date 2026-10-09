@@ -3,11 +3,12 @@
 //! # Approximations (each one documented where it is made)
 //!
 //! * **Gradients**: `linear` is exact (angle and border); `axial` is a linear gradient mirrored
-//!   about the middle (the start colour in the middle, as LibreOffice draws it); `radial` and
-//!   `ellipsoid` are the model's radial gradient (a circle through the box corners, the end colour
-//!   in the middle); `square` and `rectangular` are the model's rectangular gradient. The angle of
-//!   an `ellipsoid`, `square` or `rectangular` gradient turns it ([`sd::GradKind::RadialRotated`],
-//!   [`sd::GradKind::RectRotated`]); a `radial` one is a circle, which turning does not change.
+//!   about the middle (the start colour in the middle, as LibreOffice draws it); `radial` is the
+//!   model's radial gradient (a circle through the box corners, the end colour in the middle),
+//!   which turning does not change; an `ellipsoid` one is
+//!   LibreOffice's own shape ([`sd::GradKind::Ellipsoid`]: the colour is the distance from a
+//!   segment along the longer side, turned by the angle); `square` and `rectangular` are the
+//!   model's rectangular gradient, turned by the angle ([`sd::GradKind::RectRotated`]).
 //! * **Transparency**: `draw:opacity` is a uniform alpha; a transparency gradient
 //!   (`draw:opacity-name`) of the same style, angle, border and centre as the colour gradient is
 //!   multiplied into its stops, over a solid fill it becomes a gradient of one colour with
@@ -15,7 +16,8 @@
 //! * **Hatches** are the model's 8 x 8 patterns: the direction is snapped to
 //!   horizontal / vertical / the two diagonals / their crossings, the spacing to three densities.
 //! * **Bitmaps**: `stretch` and `no-repeat` are stretched; `repeat` is tiled at the stated tile
-//!   size (percentages of the filled shape), or at the picture's own size at 96 dpi.
+//!   size (percentages of the filled shape), or at the picture's own size (its pixels over its dpi,
+//!   96 when it states none).
 //! * **Dashes** are in multiples of the line width; a zero-length dot is one line width.
 //! * **Markers** are exact in size (see [`Sb::arrow`]) but the model has no way to say "the line
 //!   ends where the marker's base is": the line is trimmed by the renderer's own rule.
@@ -145,15 +147,15 @@ fn to_gradient(s: &Spec) -> Option<Gradient> {
     let turn = (-s.angle).rem_euclid(360.0);
     let turned = turn > 1e-9 && turn < 360.0 - 1e-9;
     let (kind, rect) = match s.style.as_str() {
-        "ellipsoid" if turned => (
-            sd::GradKind::RadialRotated { angle_deg: turn },
+        "ellipsoid" => (
+            sd::GradKind::Ellipsoid { angle_deg: turn },
             (s.cx, s.cy, 1.0 - s.cx, 1.0 - s.cy),
         ),
         "square" | "rectangular" if turned => (
             sd::GradKind::RectRotated { angle_deg: turn },
             (s.cx, s.cy, 1.0 - s.cx, 1.0 - s.cy),
         ),
-        "radial" | "ellipsoid" => (sd::GradKind::Radial, (s.cx, s.cy, 1.0 - s.cx, 1.0 - s.cy)),
+        "radial" => (sd::GradKind::Radial, (s.cx, s.cy, 1.0 - s.cx, 1.0 - s.cy)),
         "square" | "rectangular" => (sd::GradKind::Rect, (s.cx, s.cy, 1.0 - s.cx, 1.0 - s.cy)),
         _ => (
             // LibreOffice measures the angle counter-clockwise from "start at the top"; the
@@ -464,11 +466,13 @@ impl Sb<'_> {
         if repeat != "repeat" {
             return Some(sd::Fill::Image(img));
         }
+        // The picture's own size: its pixels over its resolution (a 300 dpi tile is a third of
+        // the size a 96 dpi one is). The model scales the picture from its 96 dpi size.
+        let own = self.native_emu(&key);
         let dims = self.image_dims(&key);
-        let native = |px: u32| f64::from(px) * sd::EMU_PER_PX;
-        let size = |attr: &str, whole: f64, nat: Option<f64>| -> Option<f64> {
+        let px96 = |px: u32| f64::from(px) * sd::EMU_PER_PX;
+        let size = |attr: &str, whole: f64| -> Option<f64> {
             let a = v.g(attr)?.trim();
-            let _ = nat;
             if let Some(p) = pct(a) {
                 // A negative percentage is LibreOffice's way of writing "relative to the shape".
                 return (p != 0.0).then(|| p.abs() * whole);
@@ -476,14 +480,14 @@ impl Sb<'_> {
             // A size of zero says "the picture's own size".
             emu(a).filter(|e| *e > 0.0)
         };
-        let tw = size("fill-image-width", w, dims.map(|d| native(d.0)));
-        let th = size("fill-image-height", h, dims.map(|d| native(d.1)));
+        let tw = size("fill-image-width", w).or(own.map(|o| o.0));
+        let th = size("fill-image-height", h).or(own.map(|o| o.1));
         let sx = match (tw, dims) {
-            (Some(t), Some(d)) if d.0 > 0 => t / native(d.0),
+            (Some(t), Some(d)) if d.0 > 0 => t / px96(d.0),
             _ => 1.0,
         };
         let sy = match (th, dims) {
-            (Some(t), Some(d)) if d.1 > 0 => t / native(d.1),
+            (Some(t), Some(d)) if d.1 > 0 => t / px96(d.1),
             _ => 1.0,
         };
         let align = match v.g("fill-image-ref-point").map_or("", str::trim) {
@@ -497,8 +501,8 @@ impl Sb<'_> {
             "bottom-right" => sd::RectAlign::BottomRight,
             _ => sd::RectAlign::TopLeft,
         };
-        let tile_w = tw.or(dims.map(|d| native(d.0))).unwrap_or(0.0);
-        let tile_h = th.or(dims.map(|d| native(d.1))).unwrap_or(0.0);
+        let tile_w = tw.unwrap_or(0.0);
+        let tile_h = th.unwrap_or(0.0);
         let off = |attr: &str, whole: f64| v.g(attr).and_then(pct).map_or(0.0, |p| p * whole);
         img.mode = sd::ImageMode::Tile {
             sx: sx.clamp(1e-4, 1e4),

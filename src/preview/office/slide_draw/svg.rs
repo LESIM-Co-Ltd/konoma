@@ -626,37 +626,13 @@ impl<'a> W<'a> {
                 };
                 self.rect_gradient(&id, g, &stop_xml, Some((a, bx)));
             }
-            GradKind::RadialRotated { angle_deg } => {
+            GradKind::Ellipsoid { angle_deg } => {
                 let a = if angle_deg.is_finite() {
                     angle_deg
                 } else {
                     0.0
                 };
-                let f = |v: f64| {
-                    if v.is_finite() {
-                        v.clamp(0.0, 1.0)
-                    } else {
-                        0.5
-                    }
-                };
-                let (l, t, r, b) = g.fill_to_rect;
-                let (l, t, r, b) = (f(l), f(t), f(r), f(b));
-                let (fx, fy) = ((l + (1.0 - r)) / 2.0, (t + (1.0 - b)) / 2.0);
-                let rad = (fx.max(1.0 - fx)).hypot(fy.max(1.0 - fy)).max(0.01);
-                let (bx_c, by_c) = (x + w / 2.0, y + h / 2.0);
-                // The unit circle at the origin, scaled to the ellipse of the box, moved to the
-                // focus and turned about the box's centre.
-                let _ = write!(
-                    self.defs,
-                    r#"<radialGradient id="{id}" gradientUnits="userSpaceOnUse" cx="0" cy="0" fx="0" fy="0" r="1" gradientTransform="rotate({} {} {}) translate({} {}) scale({} {})">{stop_xml}</radialGradient>"#,
-                    num(a),
-                    px(bx_c),
-                    px(by_c),
-                    px(bx_c + (fx - 0.5) * w),
-                    px(by_c + (fy - 0.5) * h),
-                    px(w * rad),
-                    px(h * rad),
-                );
+                self.ellipsoid_gradient(&id, g, &stop_xml, a, bx);
             }
             GradKind::Radial | GradKind::Path => {
                 let (l, t, r, b) = g.fill_to_rect;
@@ -687,6 +663,62 @@ impl<'a> W<'a> {
             }
         }
         id
+    }
+
+    /// An ellipsoid gradient ([`GradKind::Ellipsoid`]): a pattern over the box of a strip (the
+    /// colour is the distance across it) and two end caps (the colour is
+    /// the distance from the segment's end), over the last colour; all turned about the centre
+    /// of the box.
+    fn ellipsoid_gradient(&mut self, id: &str, g: &Gradient, stop_xml: &str, a: f64, bx: Bx) {
+        let (x, y, w, h) = bx;
+        let f = |v: f64| {
+            if v.is_finite() {
+                v.clamp(0.0, 1.0)
+            } else {
+                0.5
+            }
+        };
+        let (l, t, r, b) = g.fill_to_rect;
+        let (fx, fy) = ((f(l) + (1.0 - f(r))) / 2.0, (f(t) + (1.0 - f(b))) / 2.0);
+        // The segment lies along the longer side.
+        let tall = h > w;
+        let (long, short) = if tall { (h, w) } else { (w, h) };
+        let radius = (short * std::f64::consts::SQRT_2 / 2.0).max(1.0);
+        let half = (long - short) * std::f64::consts::SQRT_2 / 2.0;
+        let last = g.stops.last().map_or(Rgba::BLACK, |s| s.1);
+        let (rp, hp) = (px(radius), px(half.max(0.0)));
+        let _ = write!(
+            self.defs,
+            r#"<linearGradient id="{id}s" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="{rp}" spreadMethod="reflect">{stop_xml}</linearGradient><radialGradient id="{id}c" gradientUnits="userSpaceOnUse" cx="0" cy="0" fx="0" fy="0" r="{rp}">{stop_xml}</radialGradient><clipPath id="{id}l"><rect x="-{rp}" y="-{rp}" width="{rl}" height="{d}"/></clipPath><clipPath id="{id}r"><rect x="-1" y="-{rp}" width="{rl}" height="{d}"/></clipPath>"#,
+            d = px(2.0 * radius),
+            // (The caps reach 1 px into the strip: no seam where they meet it, or each other.)
+            rl = num(radius / EMU_PER_PX + 1.0),
+        );
+        let strip = if half > 0.0 {
+            format!(
+                r#"<rect x="-{hp}" y="-{rp}" width="{}" height="{}" fill="url(#{id}s)"/>"#,
+                px(2.0 * half),
+                px(2.0 * radius),
+            )
+        } else {
+            String::new()
+        };
+        let turn = if tall { " rotate(90)" } else { "" };
+        let _ = write!(
+            self.defs,
+            r#"<pattern id="{id}" patternUnits="userSpaceOnUse" patternContentUnits="userSpaceOnUse" x="{}" y="{}" width="{pw}" height="{ph}"><rect width="{pw}" height="{ph}" fill="{}" fill-opacity="{}"/><g transform="rotate({} {} {}) translate({} {}){turn}"><g transform="translate(-{hp} 0)"><circle r="{rp}" fill="url(#{id}c)" clip-path="url(#{id}l)"/></g><g transform="translate({hp} 0)"><circle r="{rp}" fill="url(#{id}c)" clip-path="url(#{id}r)"/></g>{strip}</g></pattern>"#,
+            px(x),
+            px(y),
+            hex(last),
+            num(alpha_of(last)),
+            num(a),
+            px(w / 2.0),
+            px(h / 2.0),
+            px(w / 2.0 + (fx - 0.5) * w),
+            px(h / 2.0 + (fy - 0.5) * h),
+            pw = px(w),
+            ph = px(h),
+        );
     }
 
     /// A rectangular gradient (`path="rect"`): concentric rectangles from the focus rectangle

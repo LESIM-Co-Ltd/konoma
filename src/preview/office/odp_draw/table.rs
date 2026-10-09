@@ -7,7 +7,8 @@
 //!   widths (`style:column-width` of the column's style, `table:number-columns-repeated` expands
 //!   them) and its rows the `table:table-row` heights (`style:row-height` or
 //!   `style:min-row-height` of the row's style) -- not the frame's extent, which LibreOffice keeps
-//!   in step with them. Columns that state no width (or a width of 0) share the width the frame has left, equally.
+//!   in step with them, except that rows taller than the frame are drawn down to what their text
+//!   needs (see [`shrink_to_frame`]). Columns that state no width (or a width of 0) share the width the frame has left, equally.
 //! * A row **grows** to fit its tallest cell: the cell's text is laid out (the same layout the
 //!   renderer will use) at the cell's text width and the row becomes at least text height + top
 //!   and bottom padding. A cell spanning several rows adds what is missing to the last row it spans.
@@ -64,6 +65,41 @@ use super::styles::{StyleBook, View};
 use super::units::{color, pct};
 use super::*;
 
+/// Takes the height the rows have over the frame's (`frame_h`) off them, down to the least each
+/// can be (`least`, what its text needs, or the minimum height it states), in proportion to what each has to give. LibreOffice
+/// fits a table to its frame like this: a row of 4 cm in a frame that is shorter than the rows
+/// are drawn as tall as their text, however tall the file says the row is (measured on
+/// `sample.odp`: rows of 4 / optimal / optimal cm in a 5.92 cm frame came out 3.1 / 2.38 / 0.96
+/// cm, the heights their text needs). A frame the rows do not fill leaves them as they are.
+fn shrink_to_frame(heights: &mut [f64], least: &[f64], frame_h: f64) {
+    if !(frame_h.is_finite() && frame_h > 0.0) {
+        return;
+    }
+    let total: f64 = heights.iter().sum();
+    let excess = total - frame_h;
+    if excess <= 0.0 {
+        return;
+    }
+    // (A row is never made less than a line of the default text, or its declared height when that
+    // is less: LibreOffice's empty cells keep a line too.)
+    let slack: Vec<f64> = heights
+        .iter()
+        .zip(least)
+        .map(|(h, m)| (h - m.max(h.min(MIN_ROW_EMU))).max(0.0))
+        .collect();
+    let slack_total: f64 = slack.iter().sum();
+    if slack_total <= 0.0 {
+        return;
+    }
+    let k = (excess / slack_total).min(1.0);
+    for (h, s) in heights.iter_mut().zip(&slack) {
+        *h -= s * k;
+    }
+}
+
+/// The least a row is shrunk to when its cells hold no text (EMU): a line of the default 18 pt
+/// text and the padding, about 0.9 cm (measured: LibreOffice's one-line rows are 0.96 cm).
+const MIN_ROW_EMU: f64 = 324_000.0;
 /// Most rows of a table that are drawn.
 pub(super) const MAX_TABLE_ROWS: usize = 500;
 /// Most columns of a table that are drawn.
@@ -488,18 +524,29 @@ impl<'a> Sb<'a> {
                 *w = each;
             }
         }
+        // The declared heights; a `style:min-row-height` is a floor the row is never shrunk below.
+        let mut floors: Vec<f64> = Vec::with_capacity(rows.len());
         let mut heights: Vec<f64> = rows
             .iter()
             .map(|r| {
-                qattr(r, "table:style-name")
+                let mut floor = 0.0;
+                let h = qattr(r, "table:style-name")
                     .map(|s| {
                         let mut v = View::default();
                         v.push_chain(book, "table-row", s);
-                        len_prop(&v, "table-row-properties", "row-height")
-                            .or_else(|| len_prop(&v, "table-row-properties", "min-row-height"))
-                            .unwrap_or(0.0)
+                        match len_prop(&v, "table-row-properties", "row-height") {
+                            Some(h) => h,
+                            None => {
+                                let m = len_prop(&v, "table-row-properties", "min-row-height")
+                                    .unwrap_or(0.0);
+                                floor = m;
+                                m
+                            }
+                        }
                     })
-                    .unwrap_or(0.0)
+                    .unwrap_or(0.0);
+                floors.push(floor);
+                h
             })
             .collect();
 
@@ -621,15 +668,22 @@ impl<'a> Sb<'a> {
         }
 
         // Rows grow to what their cells need: single-row cells first, then the spanning ones.
+        // (The same pass from the minimum heights gives the least each row can be.)
         let mut order: Vec<usize> = (0..cells.len()).collect();
         order.sort_by_key(|&i| cells[i].rs);
+        let mut least = floors;
         for i in order {
             let (r, rs, need) = (cells[i].r, cells[i].rs, cells[i].need);
             let have: f64 = heights[r..r + rs].iter().sum();
             if need > have {
                 heights[r + rs - 1] += need - have;
             }
+            let have: f64 = least[r..r + rs].iter().sum();
+            if need > have {
+                least[r + rs - 1] += need - have;
+            }
         }
+        shrink_to_frame(&mut heights, &least, xf.h);
         if over {
             self.truncated = true;
         }

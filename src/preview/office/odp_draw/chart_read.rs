@@ -509,17 +509,23 @@ fn num_prop(v: &View, key: &str) -> Option<f64> {
 }
 
 /// The marker symbol of a name (`named-symbol`).
-fn symbol_named(name: &str) -> ch::MarkerSymbol {
+pub(super) fn symbol_named(name: &str) -> ch::MarkerSymbol {
     use ch::MarkerSymbol as M;
     match name.trim() {
         "square" => M::Square,
         "diamond" => M::Diamond,
-        "arrow-down" | "arrow-up" | "arrow-right" | "arrow-left" => M::Triangle,
+        "arrow-up" => M::Triangle,
+        "arrow-down" => M::TriangleDown,
+        "arrow-left" => M::TriangleLeft,
+        "arrow-right" => M::TriangleRight,
         "circle" => M::Circle,
         "star" | "asterisk" => M::Star,
-        "x" | "bowtie" | "sandglass" => M::X,
+        "x" => M::X,
+        "bowtie" => M::Bowtie,
+        "sandglass" => M::Sandglass,
         "plus" => M::Plus,
-        "horizontal-bar" | "vertical-bar" => M::Dash,
+        "horizontal-bar" => M::Dash,
+        "vertical-bar" => M::VBar,
         _ => M::Diamond,
     }
 }

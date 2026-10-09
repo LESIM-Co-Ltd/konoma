@@ -268,7 +268,25 @@ fn a_long_parent_chain_is_cut_not_followed_forever() {
     let auto =
         r#"<style:style style:name="gr1" style:family="graphic" style:parent-style-name="s0"/>"#;
     let sc = scene(&op(&slide_page(&rect(""))).styles(&styles).auto(auto));
-    // (the chain is longer than MAX_CHAIN: the root's fill is not reached, nothing hangs)
+    // (the chain is longer than MAX_CHAIN: the root's fill is not reached, nothing hangs; the
+    // style says nothing, so the shape has LibreOffice's default fill)
+    let shapes = shapes_of(&sc);
+    assert_eq!(shapes.len(), 1);
+    assert_eq!(shapes[0].fill, Fill::Solid(Rgba::rgb(0x72, 0x9f, 0xcf)));
+}
+
+#[test]
+fn a_style_that_never_says_fill_fills_solid_like_libreoffice() {
+    // no style at all: the default blue
+    let s = only_shape(&op(&slide_page(&rect(""))));
+    assert_eq!(s.fill, Fill::Solid(Rgba::rgb(0x72, 0x9f, 0xcf)));
+    // the default style's colour without a kind: still solid
+    let styles = r##"<style:default-style style:family="graphic"><style:graphic-properties draw:fill-color="#102030"/></style:default-style>"##;
+    let s = only_shape(&op(&slide_page(&rect(""))).styles(styles));
+    assert_eq!(s.fill, Fill::Solid(Rgba::rgb(0x10, 0x20, 0x30)));
+    // an explicit none stays none
+    let styles = r##"<style:default-style style:family="graphic"><style:graphic-properties draw:fill="none"/></style:default-style>"##;
+    let sc = scene(&op(&slide_page(&rect(""))).styles(styles));
     assert!(shapes_of(&sc).is_empty());
 }
 
@@ -324,7 +342,7 @@ fn gradient_intensity_scales_the_colour() {
 fn radial_rect_and_axial_gradients() {
     for (style, expect_radial, expect_rect) in [
         ("radial", true, false),
-        ("ellipsoid", true, false),
+        ("ellipsoid", false, false),
         ("square", false, true),
         ("rectangular", false, true),
     ] {
@@ -1887,21 +1905,6 @@ fn page_name_field_is_the_name_or_slide_n() {
 }
 
 #[test]
-fn fontwork_is_drawn_as_text_in_the_fill_colour_without_the_warp_outline() {
-    let sh = r##"<draw:custom-shape draw:style-name="gr1" svg:x="1cm" svg:y="1cm" svg:width="9cm" svg:height="3cm"><text:p>Word</text:p><draw:enhanced-geometry svg:viewBox="0 0 21600 21600" draw:type="fontwork-arch-up" draw:enhanced-path="M 0 0 L 21600 0 21600 21600 0 21600 Z N"/></draw:custom-shape>"##;
-    let s = only_shape(&op(&slide_page(sh)).auto(&gr(
-        r##"draw:fill="solid" draw:fill-color="#aa0000" draw:stroke="solid""##,
-    )));
-    assert_eq!(s.fill, Fill::None);
-    assert!(s.line.is_none());
-    assert!(matches!(s.geom, Geometry::Rect));
-    assert_eq!(
-        s.text.unwrap().paragraphs[0].runs[0].fill,
-        Fill::Solid(Rgba::rgb(0xaa, 0, 0))
-    );
-}
-
-#[test]
 fn a_tile_size_of_zero_is_the_pictures_own_size() {
     let res = r#"<draw:fill-image draw:name="B" xlink:href="Pictures/a.png"/>"#;
     let s = only_shape(
@@ -1917,6 +1920,33 @@ fn a_tile_size_of_zero_is_the_pictures_own_size() {
         sd::ImageMode::Tile { sx, sy, .. } => assert_eq!((sx, sy), (1.0, 1.0)),
         m => panic!("{m:?}"),
     }
+}
+
+#[test]
+fn a_tile_of_a_300_dpi_picture_is_a_third_of_a_96_dpi_one() {
+    let res = r#"<draw:fill-image draw:name="B" xlink:href="Pictures/a.png"/>"#;
+    let at = |bytes: &[u8]| {
+        let s = only_shape(
+            &op(&slide_page(&rect("")))
+                .styles(res)
+                .auto(&gr(
+                    r#"draw:fill="bitmap" draw:fill-image-name="B" style:repeat="repeat""#,
+                ))
+                .part("Pictures/a.png", bytes),
+        );
+        let Fill::Image(i) = s.fill else { panic!() };
+        match i.mode {
+            sd::ImageMode::Tile { sx, sy, .. } => (sx, sy),
+            m => panic!("{m:?}"),
+        }
+    };
+    let (sx, sy) = at(&with_phys(&png(16, 8), 11_811));
+    assert!(
+        (sx - 0.32).abs() < 0.01 && (sy - 0.32).abs() < 0.01,
+        "{sx} {sy}"
+    );
+    // no resolution: 96 dpi
+    assert_eq!(at(&png(16, 8)), (1.0, 1.0));
 }
 
 #[test]
@@ -2054,4 +2084,5 @@ fn the_preview_picture_beside_a_table_is_not_drawn() {
 
 mod tests_chart;
 mod tests_fixes;
+mod tests_fontwork;
 mod tests_table;

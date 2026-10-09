@@ -354,6 +354,16 @@ pub enum MarkerSymbol {
     Square,
     Diamond,
     Triangle,
+    /// ODF `arrow-down` / `arrow-left` / `arrow-right` (`Triangle` points up).
+    TriangleDown,
+    TriangleLeft,
+    TriangleRight,
+    /// ODF `bowtie` (two triangles meeting at their tips, side by side) and `sandglass` (the same,
+    /// one above the other).
+    Bowtie,
+    Sandglass,
+    /// ODF `vertical-bar` (`Dash` is the horizontal one).
+    VBar,
     X,
     Star,
     Dot,

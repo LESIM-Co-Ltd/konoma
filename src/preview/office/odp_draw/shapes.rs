@@ -9,6 +9,9 @@ use super::styles::View;
 use super::units::{box_under, number, parse_points, parse_svg_path, pct, shift, view_box, Mat};
 use super::*;
 
+/// LibreOffice's default fill colour of a shape (`#729fcf`).
+const DEFAULT_SHAPE_FILL: sd::Rgba = sd::Rgba::rgb(0x72, 0x9f, 0xcf);
+
 /// Which of a master page's footer-line placeholders the slide shows.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Furniture {
@@ -390,7 +393,15 @@ impl<'a> Sb<'a> {
             return;
         };
         let (w, h) = (shape.xfrm.w, shape.xfrm.h);
-        shape.fill = self.fill(&view, w, h).unwrap_or(sd::Fill::None);
+        // A style that never says `draw:fill` fills solid in LibreOffice (its own default, not
+        // ODF's "none"): with the fill colour of the style, else its default blue.
+        shape.fill = self.fill(&view, w, h).unwrap_or_else(|| {
+            sd::Fill::Solid(
+                view.g("fill-color")
+                    .and_then(units::color)
+                    .unwrap_or(DEFAULT_SHAPE_FILL),
+            )
+        });
         // Lines and open paths are not filled.
         if matches!(name, "line" | "measure" | "polyline" | "connector") {
             shape.fill = sd::Fill::None;
@@ -409,24 +420,27 @@ impl<'a> Sb<'a> {
         }
         if name == "custom-shape" && qattr_enh(n).is_some_and(|t| t.starts_with("fontwork-")) {
             // Fontwork: the geometry is the warp the text follows, not an outline. The text is
-            // drawn as ordinary text in the box, in the shape's fill colour.
-            let colour = match &shape.fill {
-                sd::Fill::Solid(c) => Some(*c),
-                sd::Fill::Gradient(g) => g.stops.get(g.stops.len() / 2).map(|s| s.1),
-                sd::Fill::Pattern { fg, .. } => Some(*fg),
-                _ => None,
-            };
-            if let (Some(c), Some(t)) = (colour, shape.text.as_mut()) {
-                for p in &mut t.paragraphs {
-                    for r in &mut p.runs {
-                        r.fill = sd::Fill::Solid(c);
+            // drawn as glyph outlines warped into it; without outlines (no font, no guide curve)
+            // it is ordinary text in the box, in the shape's fill colour.
+            if !self.warp_fontwork(n, &mut shape) {
+                let colour = match &shape.fill {
+                    sd::Fill::Solid(c) => Some(*c),
+                    sd::Fill::Gradient(g) => g.stops.get(g.stops.len() / 2).map(|s| s.1),
+                    sd::Fill::Pattern { fg, .. } => Some(*fg),
+                    _ => None,
+                };
+                if let (Some(c), Some(t)) = (colour, shape.text.as_mut()) {
+                    for p in &mut t.paragraphs {
+                        for r in &mut p.runs {
+                            r.fill = sd::Fill::Solid(c);
+                        }
                     }
                 }
+                shape.fill = sd::Fill::None;
+                shape.line = None;
+                shape.geom = Geometry::Rect;
+                shape.text_rect = None;
             }
-            shape.fill = sd::Fill::None;
-            shape.line = None;
-            shape.geom = Geometry::Rect;
-            shape.text_rect = None;
         }
         if !shape.fill.is_visible() && shape.line.is_none() && shape.text.is_none() {
             return;
@@ -802,6 +816,53 @@ impl<'a> Sb<'a> {
             }
         }
         Some((s, None))
+    }
+
+    /// Fontwork: replaces the shape's geometry by the outlines of its text warped into the
+    /// guide curves ([`super::fontwork`]) and drops the text. `false` when it cannot (nothing
+    /// changes then).
+    fn warp_fontwork(&mut self, n: &Node, shape: &mut sd::ShapeItem) -> bool {
+        let Some(eg) = n.nodes().find(|c| c.name == "enhanced-geometry") else {
+            return false;
+        };
+        let Some((paths, _)) = sd::odf_geom::enhanced_geometry(eg, shape.xfrm.w, shape.xfrm.h)
+        else {
+            return false;
+        };
+        let Some(body) = shape.text.as_ref() else {
+            return false;
+        };
+        let lines: Vec<fontwork::TextLine> = body
+            .paragraphs
+            .iter()
+            .filter_map(|p| {
+                let text: String = p.runs.iter().map(|r| r.text.as_str()).collect();
+                let first = p.runs.iter().find(|r| !r.text.trim().is_empty())?;
+                let script = sd::fonts::script_of(text.trim().chars().next()?);
+                let name = match script {
+                    sd::fonts::Script::EastAsian => first.font.east_asian.as_deref(),
+                    sd::fonts::Script::Complex => first.font.complex.as_deref(),
+                    sd::fonts::Script::Latin => first.font.latin.as_deref(),
+                };
+                Some(fontwork::TextLine {
+                    text,
+                    stack: sd::fonts::stack_for(name, script),
+                    bold: first.bold,
+                    italic: first.italic,
+                })
+            })
+            .collect();
+        let Some((geom, truncated)) = fontwork::warp(&paths, shape.xfrm.w, shape.xfrm.h, &lines)
+        else {
+            return false;
+        };
+        if truncated {
+            self.truncated = true;
+        }
+        shape.geom = Geometry::Paths(geom);
+        shape.text = None;
+        shape.text_rect = None;
+        true
     }
 
     // -----------------------------------------------------------------------------------------

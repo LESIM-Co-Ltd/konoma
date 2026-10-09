@@ -333,9 +333,13 @@ pub enum GradKind {
     Rect,
     /// Follows the shape's outline from the focus rectangle outwards.
     Path,
-    /// [`GradKind::Radial`] with its ellipse turned by `angle_deg` (clockwise) about the centre
-    /// of the box (an OpenDocument `ellipsoid` gradient with an angle).
-    RadialRotated { angle_deg: f64 },
+    /// An OpenDocument `ellipsoid` gradient, turned by `angle_deg` (clockwise) about the centre
+    /// of the box. LibreOffice does not draw a scaled circle: the colour at a point is its
+    /// distance from a segment through the centre (along the longer side of the box, turned),
+    /// over the radius `short side * sqrt(2) / 2`, and the segment is `(long side - short side) *
+    /// sqrt(2) / 2` either side of the centre. A box that is square is a circle. (Measured on
+    /// LibreOffice's renderings at 0, 30, 60 and 90 degrees.)
+    Ellipsoid { angle_deg: f64 },
     /// [`GradKind::Rect`] turned by `angle_deg` (clockwise) about the centre of the box (an
     /// OpenDocument `square` or `rectangular` gradient with an angle); what the turned rectangle
     /// does not reach is the last colour.

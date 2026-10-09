@@ -86,6 +86,7 @@ mod body;
 mod chart;
 mod chart_read;
 mod dates;
+mod fontwork;
 mod paint;
 mod shapes;
 pub(in crate::preview::office) mod styles;

@@ -751,14 +751,20 @@ impl<'a> Sb<'a> {
             }
             _ => sd::Strike::None,
         };
-        let auto = env.auto.unwrap_or(Rgba::BLACK);
+        let highlight = pv.t("background-color").and_then(color);
+        // The automatic colour is the one that reads on what the text is on: a highlight, else
+        // the shape's fill or the slide.
+        let auto = match highlight.filter(|h| h.a > 0.5) {
+            Some(h) => self.auto_color(&sd::Fill::Solid(h)),
+            None => env.auto.unwrap_or(Rgba::BLACK),
+        };
         let colour = match pv.t("color").and_then(color) {
             Some(c) if pv.t("use-window-font-color").map(str::trim) != Some("true") => c,
             Some(c) => c,
             None => auto,
         };
         r.fill = sd::Fill::Solid(colour);
-        r.highlight = pv.t("background-color").and_then(color);
+        r.highlight = highlight;
         r.baseline_pct = match pv
             .t("text-position")
             .and_then(|p| p.split_whitespace().next())

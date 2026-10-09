@@ -812,3 +812,25 @@ fn an_object_path_that_leaves_the_package_is_not_followed() {
         assert!(groups_of(&scene(&o)).is_empty(), "{href}");
     }
 }
+
+#[test]
+fn named_symbols_keep_their_direction_and_shape() {
+    use super::chart_read::symbol_named as named;
+    use ch::MarkerSymbol as M;
+    for (name, want) in [
+        ("arrow-up", M::Triangle),
+        ("arrow-down", M::TriangleDown),
+        ("arrow-left", M::TriangleLeft),
+        ("arrow-right", M::TriangleRight),
+        ("bowtie", M::Bowtie),
+        ("sandglass", M::Sandglass),
+        ("horizontal-bar", M::Dash),
+        ("vertical-bar", M::VBar),
+        ("x", M::X),
+        ("asterisk", M::Star),
+        ("square", M::Square),
+        ("nonsense", M::Diamond),
+    ] {
+        assert_eq!(named(name), want, "{name}");
+    }
+}

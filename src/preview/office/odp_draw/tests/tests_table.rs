@@ -561,3 +561,79 @@ fn the_text_view_of_the_deck_still_has_the_table() {
     let d = doc(&o);
     assert!(d.markdown.contains("r0c0") && d.markdown.contains("r0c1"));
 }
+
+// ---- rows taller than the frame ---------------------------------------------------------------------------------------
+
+const TALL_ROWS: &str = r##"
+<style:style style:name="ro4" style:family="table-row"><style:table-row-properties style:row-height="4cm" style:use-optimal-row-height="false"/></style:style>
+<style:style style:name="ro5" style:family="table-row"><style:table-row-properties style:min-row-height="4cm"/></style:style>"##;
+
+fn tall_row(style: &str, text: &str) -> String {
+    format!(
+        r#"<table:table-row table:style-name="{style}"><table:table-cell table:style-name="c2"><text:p>{text}</text:p></table:table-cell></table:table-row>"#
+    )
+}
+
+#[test]
+fn rows_taller_than_the_frame_are_shrunk_to_fit_it() {
+    // two rows of 4 cm in the 3 cm frame: each gives up the same share of what it can give
+    let inner = format!(
+        "{}{}{}",
+        cols(1),
+        tall_row("ro4", "a"),
+        tall_row("ro4", "b")
+    );
+    let sc = scene(&table_op_with("", &inner, TALL_ROWS));
+    let cs = cells_of(&sc);
+    let (a, b) = (at(&cs[0]), at(&cs[1]));
+    assert!((a.3 - 1.5).abs() < 0.05, "{a:?}");
+    assert!((b.3 - 1.5).abs() < 0.05, "{b:?}");
+    // together they fill the frame
+    assert!((a.3 + b.3 - 3.0).abs() < 0.01);
+}
+
+#[test]
+fn a_row_is_not_shrunk_below_its_text_or_its_minimum_height() {
+    // the text of the first row asks for more than the frame has: it keeps what its text needs
+    // and the other row takes the rest of the shrinking, down to the line it is left with
+    let long = "word ".repeat(60);
+    let inner = format!(
+        "{}{}{}",
+        cols(1),
+        tall_row("ro4", &long),
+        tall_row("ro4", "b")
+    );
+    let cs = cells_of(&scene(&table_op_with("", &inner, TALL_ROWS)));
+    let (a, b) = (at(&cs[0]), at(&cs[1]));
+    assert!(a.3 > 3.0, "{a:?}");
+    assert!(b.3 > 0.5 && b.3 < 4.0, "{b:?}");
+    // a minimum height is a floor: nothing is shrunk below it
+    let inner = format!(
+        "{}{}{}",
+        cols(1),
+        tall_row("ro5", "a"),
+        tall_row("ro5", "b")
+    );
+    let cs = cells_of(&scene(&table_op_with("", &inner, TALL_ROWS)));
+    assert!((at(&cs[0]).3 - 4.0).abs() < 0.01);
+    assert!((at(&cs[1]).3 - 4.0).abs() < 0.01);
+}
+
+#[test]
+fn rows_the_frame_has_room_for_keep_their_height() {
+    // 1 cm rows in a 3 cm frame
+    let sc = scene(&table_op(&(cols(1) + &rows(2, 1, "c2"))));
+    let cs = cells_of(&sc);
+    assert!((at(&cs[0]).3 - 1.0).abs() < 0.01);
+    assert!((at(&cs[1]).3 - 1.0).abs() < 0.01);
+}
+
+#[test]
+fn a_row_with_no_text_is_not_shrunk_to_nothing() {
+    let empty = r#"<table:table-row table:style-name="ro4"><table:table-cell table:style-name="c2"/></table:table-row>"#;
+    let inner = format!("{}{}{}{}", cols(1), empty, empty, empty);
+    let cs = cells_of(&scene(&table_op_with("", &inner, TALL_ROWS)));
+    for c in &cs {
+        assert!(at(c).3 > 0.8, "{:?}", at(c));
+    }
+}

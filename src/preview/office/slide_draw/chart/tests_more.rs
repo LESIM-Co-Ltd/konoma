@@ -90,6 +90,12 @@ fn every_marker_symbol_draws_something() {
         MarkerSymbol::Square,
         MarkerSymbol::Diamond,
         MarkerSymbol::Triangle,
+        MarkerSymbol::TriangleDown,
+        MarkerSymbol::TriangleLeft,
+        MarkerSymbol::TriangleRight,
+        MarkerSymbol::Bowtie,
+        MarkerSymbol::Sandglass,
+        MarkerSymbol::VBar,
         MarkerSymbol::X,
         MarkerSymbol::Star,
         MarkerSymbol::Dot,
@@ -385,4 +391,49 @@ fn point_labels_below_their_point_move_down_not_up() {
     // side that leads away from the point.
     assert!(above[0] < below[0] - 10.0, "{above:?} {below:?}");
     assert!(below[1] > above[1] + 10.0, "{above:?} {below:?}");
+}
+
+#[test]
+fn triangle_markers_point_the_way_their_symbol_says() {
+    for (sym, dx, dy) in [
+        (MarkerSymbol::Triangle, 0.0, -1.0),
+        (MarkerSymbol::TriangleDown, 0.0, 1.0),
+        (MarkerSymbol::TriangleLeft, -1.0, 0.0),
+        (MarkerSymbol::TriangleRight, 1.0, 0.0),
+    ] {
+        let mut s = ser("a", &["p", "q"], &[1.0, 2.0]);
+        s.marker = Some(Marker {
+            symbol: sym,
+            size_pt: Some(12.0),
+            ..Marker::default()
+        });
+        s.line = Some(Stroke {
+            none: true,
+            ..Stroke::default()
+        });
+        let items = draw(&fixed(vec![grp(GroupKind::Line, vec![s])], 3.0, 1.0));
+        let tris: Vec<Vec<(f64, f64)>> = shapes(&items)
+            .iter()
+            .filter(|s| solid(s).is_some())
+            .map(|s| path_pts(s))
+            .filter(|p| p.len() == 3)
+            .collect();
+        assert_eq!(tris.len(), 2, "{sym:?}: one triangle per point");
+        for t in tris {
+            // the apex is the vertex farthest from the middle of the other two
+            let (apex, base) = (0..3)
+                .map(|i| {
+                    let (a, b) = (t[(i + 1) % 3], t[(i + 2) % 3]);
+                    let m = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+                    (t[i], m)
+                })
+                .max_by(|x, y| {
+                    let d = |p: &((f64, f64), (f64, f64))| (p.0 .0 - p.1 .0).hypot(p.0 .1 - p.1 .1);
+                    d(x).total_cmp(&d(y))
+                })
+                .unwrap();
+            let along = (apex.0 - base.0) * dx + (apex.1 - base.1) * dy;
+            assert!(along > 1.0, "{sym:?}: {t:?}");
+        }
+    }
 }
