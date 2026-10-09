@@ -1155,6 +1155,12 @@ impl App {
         )
     }
 
+    /// [`Self::slide_raster_px`] for the end-to-end tests.
+    #[cfg(test)]
+    pub fn slide_raster_px_for_test(&self, url: &str, cols: u16, rows: u16) -> Option<u32> {
+        self.slide_raster_px(url, cols, rows)
+    }
+
     /// Records the pixel size slide `path` is wanted at and, when its pixels are already there but
     /// smaller than the frame now needs (the terminal grew, the font shrank), starts a sharper
     /// redraw of the slide's scene. One redraw at a time per slide; the old pixels keep showing
@@ -1225,6 +1231,23 @@ impl App {
         // A slide is drawn at the pixel size its frame needs (never below `svg_max_px`); any other
         // picture of a document at `svg_max_px`.
         let want_px = self.md_image_cache.get(&key).map_or(0, |e| e.want_px);
+        // The smallest size a failed slide is retried at: the raster already on screen when this
+        // is a sharpening redraw (a retry must never replace it by something smaller), else the
+        // configured base size.
+        let retry_floor = if reraster {
+            use image::GenericImageView;
+            self.md_image_cache
+                .get(&key)
+                .and_then(|e| e.decoded.as_ref())
+                .map(|d| {
+                    let (w, h) = d.dimensions();
+                    w.max(h)
+                })
+                .unwrap_or(0)
+                .max(self.cfg.ui.svg_max_px)
+        } else {
+            self.cfg.ui.svg_max_px
+        };
         let svg_max_px = if want_px > 0 {
             want_px.max(self.cfg.ui.svg_max_px).min(SLIDE_RASTER_MAX_PX)
         } else {
@@ -1250,6 +1273,7 @@ impl App {
                 let (still, frames) = crate::preview::markdown::catch_silent(|| {
                     crate::preview::image::with_decode_ticket(ticket, || {
                         let mut svg_px = svg_max_px;
+                        let mut slide_cap = None;
                         // A slide has no bytes yet: draw its scene to an SVG here (off the UI
                         // thread, under the decode gate) and let the supervised drawing process
                         // rasterize it like any other untrusted SVG of a document.
@@ -1277,10 +1301,16 @@ impl App {
                                 }
                                 // The raster size is cut to what the drawing process's work budget
                                 // allows for this slide's effects (they are counted at the square
-                                // of the scale): effects stay, the slide is just drawn smaller.
-                                let cap = drawn.max_raster_px();
+                                // of the scale): effects stay, the slide is just drawn smaller. A
+                                // size an earlier attempt found too heavy stays out (see below).
+                                let mut cap = drawn.max_raster_px();
+                                let earlier = raster_cap.load(std::sync::atomic::Ordering::Relaxed);
+                                if earlier > 0 {
+                                    cap = cap.min(earlier);
+                                }
                                 raster_cap.store(cap, std::sync::atomic::Ordering::Relaxed);
                                 svg_px = svg_px.min(cap);
+                                slide_cap = Some(raster_cap);
                                 Arc::new(drawn.svg.into_bytes())
                             }
                         };
@@ -1292,7 +1322,31 @@ impl App {
                                 return (Ok(first), Some(frames));
                             }
                         }
-                        (md_decode_bytes_why(&bytes, svg_px, &moved_on), None)
+                        // A slide whose picture the drawing process refuses as too heavy or
+                        // too slow at this size is drawn again smaller before it is given up on;
+                        // the size that worked becomes the slide's raster cap.
+                        let (res, used) = decode_with_smaller_retries(
+                            svg_px,
+                            retry_floor,
+                            slide_cap.is_some(),
+                            &moved_on,
+                            |px| md_decode_bytes_why(&bytes, px, &moved_on),
+                        );
+                        if let Some(cap) = slide_cap {
+                            // A smaller retry that worked: nothing above it is known to work. A
+                            // failure at every size: only the floor (the raster already shown)
+                            // is trusted, so a sharpening redraw does not ask for more again and
+                            // again. A cancelled request says nothing about the slide.
+                            let known = match &res {
+                                Ok(_) if used < svg_px => Some(used),
+                                Ok(_) | Err(ImageFailure::Cancelled) => None,
+                                Err(_) => Some(retry_floor),
+                            };
+                            if let Some(k) = known {
+                                cap.fetch_min(k.max(1), std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        (res, None)
                     })
                 })
                 .unwrap_or((Err(ImageFailure::Corrupt), None));

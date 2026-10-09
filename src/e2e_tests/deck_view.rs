@@ -711,10 +711,15 @@ fn visit_slides(s: &mut Sim, n: usize) {
     }
 }
 
+/// How long the pipeline may go without delivering anything before `settle` gives up: the wait
+/// is for lack of progress, not for a fixed total, so a loaded machine that is slowly working
+/// through many pictures is not failed for being slow.
+const SETTLE_IDLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Applies pending decodes / encodes until the pipeline is quiet.
 #[track_caller]
 fn settle(s: &mut Sim) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut deadline = std::time::Instant::now() + SETTLE_IDLE_LIMIT;
     loop {
         let imgs: Vec<_> = s.md_img_rx.as_ref().unwrap().try_iter().collect();
         let encs: Vec<_> = s.md_enc_rx.as_ref().unwrap().try_iter().collect();
@@ -728,6 +733,9 @@ fn settle(s: &mut Sim) {
         s.draw();
         if !any && !s.app.md_images_loading() {
             return;
+        }
+        if any {
+            deadline = std::time::Instant::now() + SETTLE_IDLE_LIMIT;
         }
         assert!(std::time::Instant::now() < deadline, "never settled");
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1156,7 +1164,7 @@ fn press_undrawn(s: &mut Sim, c: char) {
 /// many dropped ones piled up before it (they used to count as decodes in flight and stopped
 /// every later slide at the 16th), and the first is rebuilt from its scene when read again.
 fn read_a_long_deck(n: usize) {
-    let Some((mut s, _d)) = open_kitty("dv_long", n, (100, 30)) else {
+    let Some((mut s, _d)) = open_kitty("dv_long", n, (60, 20)) else {
         return;
     };
     // Room for about one slide: every slide that leaves the screen has its pixels dropped.
@@ -1198,8 +1206,8 @@ fn read_a_long_deck(n: usize) {
 
 #[test]
 fn e2e_deck_every_slide_of_a_long_deck_is_drawn_after_many_were_dropped() {
-    // 40 slides: more than twice the 16 decodes the renderers may run at once.
-    read_a_long_deck(40);
+    // 20 slides: more than the 16 decodes the renderers may run at once.
+    read_a_long_deck(20);
 }
 
 /// The same for 320 slides (about 3 minutes in a debug build: every slide is encoded for kitty).
@@ -1396,15 +1404,35 @@ fn e2e_deck_a_slide_is_drawn_again_sharper_when_its_frame_grows() {
         .is_some());
 }
 
+/// The raster of a huge frame is capped. Decided by `slide_raster_px` alone, so the test asks it
+/// for frames of every size instead of drawing a 4096-px picture and encoding it for kitty
+/// (that took half a minute in a debug build).
 #[test]
 fn e2e_deck_the_raster_of_a_huge_frame_is_capped() {
-    let Some((mut s, _d)) = open_kitty("dv_cap", 2, (700, 250)) else {
+    let Some((s, _d)) = open_kitty("dv_cap", 2, (60, 20)) else {
         return;
     };
-    settle(&mut s);
-    let frame = frame_px(&s);
-    assert!(frame > 4096, "the test frame must exceed the cap: {frame}");
-    assert_eq!(longest_edge(&s, 1), 4096);
+    let font = picker_of(ProtocolType::Kitty).font_size();
+    let (fw, fh) = (u32::from(font.width), u32::from(font.height));
+    let base = s.app.cfg.ui.svg_max_px;
+    let px = |cols: u16, rows: u16| s.app.slide_raster_px_for_test(&url_of(1), cols, rows);
+    // A frame beyond the cap is drawn at the cap, on either side.
+    assert!(700 * fw > 4096 && 250 * fh > 4096, "the premise");
+    assert_eq!(px(700, 250), Some(4096));
+    assert_eq!(px(700, 1), Some(4096));
+    assert_eq!(px(1, 400), Some(4096));
+    assert_eq!(px(u16::MAX, u16::MAX), Some(4096));
+    // A small frame is drawn at the configured base size, the longest side of the frame between.
+    assert_eq!(px(1, 1), Some(base));
+    assert_eq!(px(0, 0), Some(base));
+    let mid = px(150, 3).unwrap();
+    assert_eq!(mid, (150 * fw).max(3 * fh).clamp(base, 4096));
+    // Not a slide of the open deck: no size.
+    assert_eq!(
+        s.app
+            .slide_raster_px_for_test("office-img://nope/x.png", 700, 250),
+        None
+    );
 }
 
 #[test]

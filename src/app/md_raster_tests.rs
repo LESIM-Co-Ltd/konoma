@@ -1235,3 +1235,142 @@ fn slide_fit_rows_tells_a_zero_height_from_not_drawn_yet() {
         assert_eq!(app.slide_fit_rows(), rows, "viewport {viewport}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// A slide the drawing process refuses at a big raster is drawn smaller, not given up on
+// ---------------------------------------------------------------------------------------------
+
+mod smaller_retry {
+    use super::*;
+    use crate::preview::image::ImageFailure;
+    use crate::preview::svg_guard::SvgFail;
+    use std::cell::RefCell;
+
+    fn px_image() -> image::DynamicImage {
+        image::DynamicImage::new_rgba8(2, 2)
+    }
+
+    /// Runs the retry loop with an `attempt` that fails with `fail` at every size above `works_at`
+    /// (and succeeds at or below it); returns the result's kind and the sizes tried in order.
+    fn run(
+        start: u32,
+        floor: u32,
+        shrink: bool,
+        works_at: u32,
+        fail: ImageFailure,
+    ) -> (Result<(), ImageFailure>, u32, Vec<u32>) {
+        let tried = RefCell::new(Vec::new());
+        let (res, used) = decode_with_smaller_retries(start, floor, shrink, &|| false, |px| {
+            tried.borrow_mut().push(px);
+            if px <= works_at {
+                Ok(px_image())
+            } else {
+                Err(fail)
+            }
+        });
+        (res.map(|_| ()), used, tried.into_inner())
+    }
+
+    #[test]
+    fn a_heavy_or_slow_slide_is_retried_at_half_the_size_until_it_is_drawn() {
+        for fail in [SvgFail::TooHeavy, SvgFail::Timeout, SvgFail::Memory] {
+            let (res, used, tried) = run(4096, 1280, true, 2048, ImageFailure::Svg(fail));
+            assert_eq!(res, Ok(()), "{fail:?}");
+            assert_eq!(tried, [4096, 2048], "{fail:?}");
+            assert_eq!(used, 2048);
+        }
+    }
+
+    #[test]
+    fn the_retries_stop_at_the_floor_and_the_last_failure_is_what_is_reported() {
+        let heavy = ImageFailure::Svg(SvgFail::TooHeavy);
+        let (res, used, tried) = run(4096, 1280, true, 0, heavy);
+        assert_eq!(res, Err(heavy));
+        // Halved, and the last step is the floor itself, never below it.
+        assert_eq!(tried, [4096, 2048, 1280]);
+        assert_eq!(used, 1280);
+    }
+
+    #[test]
+    fn a_slide_that_works_at_the_first_size_is_drawn_once() {
+        let (res, used, tried) = run(3000, 1280, true, u32::MAX, ImageFailure::Cancelled);
+        assert_eq!(res, Ok(()));
+        assert_eq!((used, tried), (3000, vec![3000]));
+    }
+
+    #[test]
+    fn other_failures_are_final() {
+        for fail in [
+            ImageFailure::Svg(SvgFail::Crashed),
+            ImageFailure::Svg(SvgFail::TooLarge),
+            ImageFailure::Svg(SvgFail::TooDeep),
+            ImageFailure::Svg(SvgFail::TooComplex),
+            ImageFailure::Svg(SvgFail::Invalid),
+            ImageFailure::TooLarge,
+            ImageFailure::Corrupt,
+            ImageFailure::UnsupportedFormat,
+            ImageFailure::Cancelled,
+        ] {
+            let (res, used, tried) = run(4096, 1280, true, 0, fail);
+            assert_eq!(res, Err(fail), "{fail:?}");
+            assert_eq!((used, tried), (4096, vec![4096]), "{fail:?}");
+        }
+    }
+
+    #[test]
+    fn a_picture_that_is_not_a_slide_is_never_retried() {
+        let heavy = ImageFailure::Svg(SvgFail::TooHeavy);
+        let (res, _, tried) = run(4096, 1280, false, 0, heavy);
+        assert_eq!(res, Err(heavy));
+        assert_eq!(tried, [4096]);
+    }
+
+    #[test]
+    fn a_request_the_user_moved_on_from_is_not_retried() {
+        let n = RefCell::new(0);
+        let (res, _) = decode_with_smaller_retries(4096, 1280, true, &|| true, |_| {
+            *n.borrow_mut() += 1;
+            Err(ImageFailure::Svg(SvgFail::Timeout))
+        });
+        assert!(res.is_err());
+        assert_eq!(*n.borrow(), 1);
+    }
+
+    #[test]
+    fn a_floor_above_the_start_or_equal_to_it_means_no_retry() {
+        let heavy = ImageFailure::Svg(SvgFail::TooHeavy);
+        // The raster already shown is as big as the wish: nothing smaller is worth drawing.
+        for floor in [1280, 5000, u32::MAX] {
+            let (res, used, tried) = run(1280, floor, true, 0, heavy);
+            assert_eq!(res, Err(heavy));
+            assert_eq!((used, tried), (1280, vec![1280]), "floor {floor}");
+        }
+    }
+
+    /// The real drawing process: a slide refused as too heavy at a big raster is drawn at a
+    /// smaller one by the retry loop (the writer's own cap is bypassed, as if its estimate were
+    /// too generous).
+    #[test]
+    fn a_real_slide_refused_at_a_big_raster_is_drawn_smaller() {
+        use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+        let drawn = crate::preview::office::slide_draw::render_svg_cancellable(
+            &shadowed_slide(2),
+            &|_| None,
+            &|| false,
+        );
+        let svg = drawn.svg.into_bytes();
+        let never = || false;
+        let heavy = ImageFailure::Svg(SvgFail::TooHeavy);
+        // The premise: at 4096 px this slide is refused, at 1280 it is not.
+        assert_eq!(md_decode_bytes_why(&svg, 4096, &never).err(), Some(heavy));
+        assert!(md_decode_bytes_why(&svg, 1280, &never).is_ok());
+        let (res, used) = decode_with_smaller_retries(4096, 1280, true, &never, |px| {
+            md_decode_bytes_why(&svg, px, &never)
+        });
+        let img = res.expect("drawn at a smaller size");
+        assert!((1280..4096).contains(&used), "{used}");
+        use image::GenericImageView;
+        let (w, h) = img.dimensions();
+        assert!(w.max(h) <= used && w.max(h) > 0, "{w}x{h} at {used}");
+    }
+}

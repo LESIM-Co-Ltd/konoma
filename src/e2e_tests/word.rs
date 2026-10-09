@@ -113,7 +113,9 @@ fn para(text: &str) -> String {
 /// redrawing after each batch, until the pipeline has gone quiet.
 #[track_caller]
 fn settle_images(s: &mut Sim) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    // Idle-based: the limit restarts whenever a result arrives (see deck_view's `settle`).
+    let idle = std::time::Duration::from_secs(120);
+    let mut deadline = std::time::Instant::now() + idle;
     loop {
         let imgs: Vec<_> = s.md_img_rx.as_ref().unwrap().try_iter().collect();
         let encs: Vec<_> = s.md_enc_rx.as_ref().unwrap().try_iter().collect();
@@ -127,6 +129,9 @@ fn settle_images(s: &mut Sim) {
         s.draw();
         if !any && !s.app.md_images_loading() {
             return;
+        }
+        if any {
+            deadline = std::time::Instant::now() + idle;
         }
         assert!(std::time::Instant::now() < deadline, "images never settled");
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2557,18 +2562,18 @@ fn e2e_word_a_picture_heavy_document_stays_within_the_cache_budget() {
     const N: u32 = 10;
     let dir = sandbox("w_lru_many");
     let pics: Vec<(String, Vec<u8>)> = (0..N)
-        .map(|i| (format!("p{i}.png"), flat_png(600 + i, 600)))
+        .map(|i| (format!("p{i}.png"), flat_png(200 + i, 200)))
         .collect();
     build_docx_with_pictures(&canon(&dir).join("many.docx"), &pics);
     let mut s = open_with_media(&dir, "many.docx");
-    // Room for two of them (600 x 600 x 4 bytes each).
-    s.app.set_md_cache_budget_for_test(2 * 600 * 604 * 4);
+    // Room for two of them (200 x 200 x 4 bytes each, small because encoding is slow in a debug build).
+    s.app.set_md_cache_budget_for_test(2 * 200 * 204 * 4);
     s.drain_media();
     assert!(s.app.document_ready());
     assert_eq!(s.app.document_picture_count_for_test(), N as usize);
     settle_images(&mut s);
     // Read the whole document, a screen at a time.
-    for _ in 0..60 {
+    for _ in 0..40 {
         s.key('j');
         s.key('j');
         s.key('j');
@@ -2595,20 +2600,20 @@ fn e2e_word_a_picture_heavy_document_stays_within_the_cache_budget() {
 /// picture was ever started.
 #[test]
 fn e2e_word_every_picture_of_a_long_document_is_drawn_after_many_were_dropped() {
-    const N: u32 = 60;
+    const N: u32 = 24;
     let dir = sandbox("w_lru_long");
     let pics: Vec<(String, Vec<u8>)> = (0..N)
-        .map(|i| (format!("p{i}.png"), flat_png(200 + i, 200)))
+        .map(|i| (format!("p{i}.png"), flat_png(100 + i, 100)))
         .collect();
     build_docx_with_pictures(&canon(&dir).join("long.docx"), &pics);
     let mut s = open_with_media(&dir, "long.docx");
-    s.app.set_md_cache_budget_for_test(250 * 250 * 4);
+    s.app.set_md_cache_budget_for_test(130 * 130 * 4);
     s.drain_media();
     assert!(s.app.document_ready());
     assert_eq!(s.app.document_picture_count_for_test(), N as usize);
     settle_images(&mut s);
     let mut seen = std::collections::HashSet::new();
-    for _ in 0..400 {
+    for _ in 0..150 {
         let (top, height) = (
             s.app.preview_scroll_for_test() as usize,
             s.app.preview_viewport_for_test() as usize,

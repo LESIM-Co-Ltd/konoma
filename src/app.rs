@@ -6204,6 +6204,43 @@ fn md_decode_image_why(
     }
 }
 
+/// Runs `attempt` at `start_px` and, when `shrink` is set and the drawing process refused the
+/// picture as too heavy, too slow or too memory-hungry (costs that grow with the square of the
+/// raster size), again at half the size, down to `floor_px` (never below it). Any other failure
+/// (crashed, too large, corrupt, cancelled) is final, and so is a request the user moved on from.
+/// Returns the last result and the size it was made at.
+fn decode_with_smaller_retries(
+    start_px: u32,
+    floor_px: u32,
+    shrink: bool,
+    cancelled: &dyn Fn() -> bool,
+    mut attempt: impl FnMut(u32) -> Result<image::DynamicImage, crate::preview::image::ImageFailure>,
+) -> (
+    Result<image::DynamicImage, crate::preview::image::ImageFailure>,
+    u32,
+) {
+    use crate::preview::image::ImageFailure;
+    use crate::preview::svg_guard::SvgFail;
+    let floor = floor_px.min(start_px);
+    let mut px = start_px;
+    loop {
+        let res = attempt(px);
+        let retry = shrink
+            && px > floor
+            && !cancelled()
+            && matches!(
+                res,
+                Err(ImageFailure::Svg(
+                    SvgFail::TooHeavy | SvgFail::Timeout | SvgFail::Memory
+                ))
+            );
+        if !retry {
+            return (res, px);
+        }
+        px = (px / 2).max(floor);
+    }
+}
+
 /// [`md_decode_image_why`] for a picture held in memory (inside a Word / OpenDocument file):
 /// the same limits and reasons. An embedded SVG is not a file, so it is drawn by the supervised
 /// child process with no directory to read from (`<image href>` inside it paints nothing). Blocks
