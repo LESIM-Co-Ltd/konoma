@@ -1457,3 +1457,110 @@ fn symbol_and_plain_runs_keep_separate_styles_in_one_line() {
     );
     assert_eq!(texts(&l), vec!["ab \u{3C0}".to_string()]);
 }
+
+fn brk(pt: f64) -> Run {
+    Run {
+        kind: RunKind::LineBreak,
+        ..Run::text("", pt)
+    }
+}
+
+fn lines_of(runs: Vec<Run>) -> Paragraph {
+    Paragraph {
+        runs,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn an_empty_run_then_a_break_then_text_is_two_lines_with_the_breaks_height() {
+    // `<a:r><a:t/></a:r><a:br sz=40/><a:r>text</a:r>` (a title typed after a soft return).
+    let para = lines_of(vec![
+        Run::text("", 10.0),
+        brk(40.0),
+        Run::text("Title", 40.0),
+    ]);
+    let l = lay(vec![para], 900.0, 600.0);
+    assert_eq!(texts(&l), vec!["", "Title"]);
+    let h = 1.2 * 40.0 * PX_PT;
+    assert!(
+        (l.lines[0].height - h).abs() < 0.01,
+        "{}",
+        l.lines[0].height
+    );
+    assert!((l.lines[1].top - h).abs() < 0.01);
+    assert!(l.lines[1].baseline > l.lines[1].top);
+    // the same with the empty run absent
+    let para = lines_of(vec![brk(40.0), Run::text("Title", 40.0)]);
+    let l = lay(vec![para], 900.0, 600.0);
+    assert_eq!(texts(&l), vec!["", "Title"]);
+    assert!((l.lines[0].height - h).abs() < 0.01);
+}
+
+#[test]
+fn consecutive_breaks_and_break_only_paragraphs_keep_every_line() {
+    let para = lines_of(vec![
+        Run::text("a", 20.0),
+        brk(20.0),
+        brk(20.0),
+        Run::text("b", 20.0),
+    ]);
+    let l = lay(vec![para], 600.0, 400.0);
+    assert_eq!(texts(&l), vec!["a", "", "b"]);
+    // a paragraph of only breaks: n breaks are n + 1 lines
+    let l = lay(vec![lines_of(vec![brk(20.0), brk(20.0)])], 600.0, 400.0);
+    assert_eq!(l.lines.len(), 3);
+    assert!(l.lines.iter().all(|x| x.frags.is_empty()));
+    let l = lay(vec![lines_of(vec![brk(20.0)])], 600.0, 400.0);
+    assert_eq!(l.lines.len(), 2);
+    // lines of different break sizes each use their own size
+    let l = lay(
+        vec![lines_of(vec![brk(40.0), brk(10.0), Run::text("z", 20.0)])],
+        600.0,
+        400.0,
+    );
+    assert!((l.lines[0].height - 1.2 * 40.0 * PX_PT).abs() < 0.01);
+    assert!((l.lines[1].height - 1.2 * 10.0 * PX_PT).abs() < 0.01);
+}
+
+#[test]
+fn a_break_before_and_after_the_text_centres_the_text_line_when_it_overflows() {
+    // empty line + text + empty line (the trailing break) in a box smaller than the block:
+    // the block overflows equally on both sides, so the middle line sits at the box centre.
+    let para = lines_of(vec![
+        Run::text("", 40.0),
+        brk(40.0),
+        Run::text("Title", 40.0),
+        Run::text("", 40.0),
+        brk(40.0),
+    ]);
+    // the last (empty) line is as tall as the paragraph's end mark
+    let para = Paragraph {
+        end_size_pt: 40.0,
+        ..para
+    };
+    let h = 100.0;
+    let lh = 1.2 * 40.0 * PX_PT;
+    for (anchor, first_top) in [
+        (Anchor::Middle, (h - 3.0 * lh) / 2.0),
+        (Anchor::Top, 0.0),
+        (Anchor::Bottom, h - 3.0 * lh),
+    ] {
+        let mut b = body(vec![para.clone()]);
+        b.anchor = anchor;
+        let l = layout(&b, 900.0, h);
+        assert_eq!(texts(&l), vec!["", "Title", ""], "{anchor:?}");
+        assert!(
+            (l.lines[0].top - first_top).abs() < 0.01,
+            "{anchor:?} {}",
+            l.lines[0].top
+        );
+        assert!((l.lines[1].top - (first_top + lh)).abs() < 0.01);
+        assert!(l.content_h > h);
+    }
+    // centred: the text line's box is centred on the frame
+    let mut b = body(vec![para]);
+    b.anchor = Anchor::Middle;
+    let l = layout(&b, 900.0, h);
+    assert!((l.lines[1].top + l.lines[1].height / 2.0 - h / 2.0).abs() < 0.01);
+}

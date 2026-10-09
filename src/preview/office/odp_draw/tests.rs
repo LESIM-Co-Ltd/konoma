@@ -2221,3 +2221,24 @@ mod tests_fixes;
 mod tests_fontwork;
 mod tests_shared;
 mod tests_table;
+
+#[test]
+fn a_line_break_after_an_empty_span_and_consecutive_breaks_are_kept() {
+    let o = text_op(
+        "<text:p><text:span text:style-name=\"T1\"/><text:line-break/>Title<text:line-break/><text:line-break/>end</text:p>",
+        "",
+    );
+    let p = &only_shape(&o).text.unwrap().paragraphs[0];
+    let kinds: Vec<(sd::RunKind, String)> =
+        p.runs.iter().map(|r| (r.kind, r.text.clone())).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            (sd::RunKind::LineBreak, String::new()),
+            (sd::RunKind::Text, "Title".to_string()),
+            (sd::RunKind::LineBreak, String::new()),
+            (sd::RunKind::LineBreak, String::new()),
+            (sd::RunKind::Text, "end".to_string()),
+        ]
+    );
+}

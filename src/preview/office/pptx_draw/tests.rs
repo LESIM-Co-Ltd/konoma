@@ -2461,3 +2461,28 @@ fn a_bullet_font_that_is_a_theme_reference_is_resolved() {
     assert_eq!(font(2), None);
     assert_eq!(font(3).as_deref(), Some("Arial"));
 }
+
+#[test]
+fn an_empty_run_a_break_and_text_keep_the_empty_first_line() {
+    // The title of a corpus deck: empty run, break, text, empty run, trailing break.
+    let d = D::new(&tbox(
+        0,
+        0,
+        1000,
+        1000,
+        r#"<a:p><a:r><a:rPr lang="en-US" sz="4000"/><a:t/></a:r><a:br><a:rPr lang="en-US" sz="4000"/></a:br><a:r><a:rPr lang="en-US" sz="4000"/><a:t>Standards Revision</a:t></a:r><a:r><a:rPr lang="en-US"/><a:t/></a:r><a:br><a:rPr lang="en-US"/></a:br></a:p>"#,
+    ));
+    let sc = d.scene();
+    let p = &first_shape(&sc).text.as_ref().unwrap().paragraphs[0];
+    let kinds: Vec<(sd::RunKind, &str)> =
+        p.runs.iter().map(|r| (r.kind, r.text.as_str())).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            (sd::RunKind::LineBreak, ""),
+            (sd::RunKind::Text, "Standards Revision"),
+            (sd::RunKind::LineBreak, ""),
+        ]
+    );
+    assert_eq!(p.runs[0].size_pt, 40.0);
+}
