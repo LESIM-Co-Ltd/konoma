@@ -13,6 +13,9 @@ pub(super) const MAX_GRAD_STOPS: usize = 64;
 /// Most `a:ds` entries kept of one custom dash.
 pub(super) const MAX_CUST_DASH: usize = 16;
 
+/// Most colour effects kept of one picture.
+pub(super) const MAX_PIC_FX: usize = 16;
+
 /// What a fill element says.
 pub(super) enum FillRes {
     Set(sd::Fill),
@@ -137,7 +140,7 @@ impl Sb<'_> {
                     bg: c("bgClr", Rgba::WHITE),
                 }
             }
-            "blipFill" => match self.image_fill(e, rels) {
+            "blipFill" => match self.image_fill_ph(e, rels, ph) {
                 Some(i) => sd::Fill::Image(i),
                 None => sd::Fill::None,
             },
@@ -207,6 +210,17 @@ impl Sb<'_> {
         bf: &Node,
         rels: &HashMap<String, Rel>,
     ) -> Option<sd::ImageFill> {
+        self.image_fill_ph(bf, rels, None)
+    }
+
+    /// [`Self::image_fill`] with the colour `phClr` stands for in the picture's colour effects
+    /// (a theme background picture is recoloured with the colour of the style reference).
+    pub(super) fn image_fill_ph(
+        &mut self,
+        bf: &Node,
+        rels: &HashMap<String, Rel>,
+        ph: Option<Rgba>,
+    ) -> Option<sd::ImageFill> {
         let blip = bf.child("blip")?;
         let key = self.blip_key(blip, rels)?;
         let alpha = blip
@@ -256,7 +270,73 @@ impl Sb<'_> {
             ),
             mode,
             alpha,
+            fx: self.picture_fx(blip, ph),
         })
+    }
+
+    /// The colour effects among the children of an `a:blip`, in document order
+    /// (`alphaModFix` is the picture's `alpha`, not listed here).
+    fn picture_fx(&mut self, blip: &Node, ph: Option<Rgba>) -> Vec<sd::PicFx> {
+        let col = self.col;
+        let pct = |n: &Node, k: &str| num(n, k).map_or(0.0, |v| (v / 100_000.0).clamp(-1.0, 1.0));
+        let first_color = |n: &Node| {
+            n.nodes()
+                .find(|c| super::theme::is_color_elem(&c.name))
+                .and_then(|c| col.elem(c, ph))
+        };
+        let mut out = Vec::new();
+        for e in blip.nodes() {
+            if out.len() >= MAX_PIC_FX {
+                self.truncated = true;
+                break;
+            }
+            match e.name.as_str() {
+                "grayscl" => out.push(sd::PicFx::Grayscale),
+                "biLevel" => out.push(sd::PicFx::BiLevel {
+                    thresh: num(e, "thresh").map_or(0.5, |v| (v / 100_000.0).clamp(0.0, 1.0)),
+                }),
+                "duotone" => {
+                    let mut cs = e
+                        .nodes()
+                        .filter(|c| super::theme::is_color_elem(&c.name))
+                        .filter_map(|c| col.elem(c, ph));
+                    if let (Some(dark), Some(light)) = (cs.next(), cs.next()) {
+                        out.push(sd::PicFx::Duotone { dark, light });
+                    }
+                }
+                "clrChange" => {
+                    let from = e.child("clrFrom").and_then(first_color);
+                    let to = e.child("clrTo").and_then(first_color);
+                    if let (Some(from), Some(to)) = (from, to) {
+                        out.push(sd::PicFx::ClrChange {
+                            from,
+                            to,
+                            use_alpha: flag(e, "useA").unwrap_or(true),
+                        });
+                    }
+                }
+                "clrRepl" => {
+                    if let Some(c) = first_color(e) {
+                        out.push(sd::PicFx::ClrRepl(c));
+                    }
+                }
+                "lum" => out.push(sd::PicFx::Lum {
+                    bright: pct(e, "bright"),
+                    contrast: pct(e, "contrast"),
+                }),
+                "hsl" => out.push(sd::PicFx::Hsl {
+                    hue: num(e, "hue").map_or(0.0, |v| v / 60_000.0),
+                    sat: pct(e, "sat"),
+                    lum: pct(e, "lum"),
+                }),
+                "tint" => out.push(sd::PicFx::Tint {
+                    hue: num(e, "hue").map_or(0.0, |v| v / 60_000.0),
+                    amt: pct(e, "amt"),
+                }),
+                _ => {}
+            }
+        }
+        out
     }
 
     /// The `office-img://` key of the picture a `a:blip` points at (see [`Self::image_fill`]).

@@ -124,6 +124,8 @@ impl std::error::Error for OfficeError {}
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_chart_3d;
+#[cfg(test)]
 mod tests_chart_dump;
 #[cfg(test)]
 mod tests_chart_xml;
@@ -145,6 +147,8 @@ mod tests_fidelity_rank;
 mod tests_fx34b;
 #[cfg(test)]
 mod tests_g1_dump;
+#[cfg(test)]
+mod tests_g2_dump;
 #[cfg(test)]
 mod tests_limits;
 #[cfg(test)]

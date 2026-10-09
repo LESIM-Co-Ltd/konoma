@@ -15,7 +15,9 @@ use crate::preview::office::tests_pptx::PNS;
 
 mod dump;
 mod dump_e3;
+mod pic_fx;
 mod shapes_e3;
+mod tabs;
 
 // ---------------------------------------------------------------------------------------------
 // the package builder

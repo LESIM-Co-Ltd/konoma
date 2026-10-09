@@ -10,8 +10,9 @@
 //! Column / bar (clustered, stacked, percent-stacked; gap width and overlap), line (with or without
 //! markers, smooth, stacked), area (standard, stacked, percent), pie (vary colours, first slice
 //! angle, explosion), doughnut (hole size, one ring per series), scatter (markers / lines /
-//! smooth), radar (standard, markers, filled) and bubble charts; every 3-D variant is drawn in its
-//! 2-D form (the flag is kept in the model). Around them: the chart and plot area fills, axes with
+//! smooth), radar (standard, markers, filled) and bubble charts; the 3-D variants of column / bar,
+//! line, area and pie charts get depth (see [`three_d`]: an oblique projection with painted side
+//! and top faces, walls, and a tilted pie). Around them: the chart and plot area fills, axes with
 //! ticks, tick labels (number formats through `numfmt`, category text), major and minor gridlines,
 //! axis titles, the chart title, the legend (right, left, top, bottom, top-right; one entry per
 //! series, or per point for vary-colours pie and doughnut charts) and data labels (value,
@@ -20,13 +21,16 @@
 //!
 //! # Approximations (deliberate)
 //!
-//! * 3-D charts are drawn flat; stock, surface and of-pie charts are not drawn by the OOXML reader.
+//! * 3-D charts use the small oblique projection of [`three_d`] (no perspective, no `hPercent`,
+//!   `rAngAx = 0` drawn like `rAngAx = 1`, 3-D columns with series in depth rows drawn clustered,
+//!   box shapes only); stock, surface and of-pie charts are not drawn by the OOXML reader.
 //! * Date axes are category axes (the labels are formatted dates but the points are evenly
 //!   spaced); series (depth) axes are not drawn.
-//! * Data labels of pies and doughnuts' outside positions avoid each other: on each side of the
-//!   pie the labels are pushed apart vertically (and kept inside the chart box), a label that had
-//!   to move gets a gray leader line to its slice, and labels centred above or below the pie
-//!   clear the rim along their whole width. Labels of points (line, scatter, bubble charts) that
+//! * Data labels of pies' outside positions are in two columns, one on each side of the pie: on a
+//!   side the labels that would cover each other are stacked in blocks centred on where they
+//!   wanted to be (inside the plot's height), they hug the rim at their own height, and a label
+//!   that moved gets a gray leader line to its slice; the labels a leader line reaches past line
+//!   up with the moved ones, so a leader line never crosses a label's text. Labels of points (line, scatter, bubble charts) that
 //!   would cover one another move up (above-point labels) or down by whole label heights to the
 //!   nearest free spot, without leader lines. Labels of bars stay in their bar; labels of the
 //!   two kinds never avoid each other, and the room made for pie labels is one line's height, so
@@ -80,11 +84,16 @@ mod radar;
 pub mod scale;
 mod shapes;
 mod text;
+mod three_d;
 
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_more;
+#[cfg(test)]
+mod tests_pie_labels;
+#[cfg(test)]
+mod tests_three_d;
 
 /// Most series a chart may hold (Excel's own limit per chart is 255). The reader and the drawing
 /// both stop here.
@@ -134,12 +143,55 @@ pub struct ChartModel {
     /// `c:style` (1..=48; 0 = not given, the colourful style 2): decides how series get their
     /// automatic colours (see the module documentation of `layout`).
     pub style: u8,
-    /// The chart was a 3-D one (drawn flat).
+    /// The chart was a 3-D one (see [`three_d`]).
     pub three_d: bool,
+    /// `c:view3D`: how a 3-D chart is turned (`None` = the defaults of [`View3D`]).
+    pub view3d: Option<View3D>,
+    /// The walls and the floor of a 3-D chart (`c:floor`, `c:sideWall`, `c:backWall`).
+    pub floor: Option<Wall>,
+    pub side_wall: Option<Wall>,
+    pub back_wall: Option<Wall>,
     /// The default font (the theme's minor Latin font).
     pub default_font: Option<String>,
     /// Display language of dates / month names in number formats.
     pub locale_ja: bool,
+}
+
+/// `c:view3D`: the view of a 3-D chart.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct View3D {
+    /// Elevation, degrees (`rotX`): how far the chart is tilted toward the viewer.
+    pub rot_x: f64,
+    /// Rotation about the vertical axis, degrees (`rotY`).
+    pub rot_y: f64,
+    /// `rAngAx`: the axes stay at right angles (an oblique projection).
+    pub r_ang_ax: bool,
+    /// `perspective`, degrees x 2 (30 = 15 degrees); not used by the drawing.
+    pub perspective: f64,
+    /// `depthPercent`: depth as a percentage of the base (20..2000, default 100).
+    pub depth_percent: f64,
+    /// `hPercent`: height as a percentage of the base (`None` = automatic); not used.
+    pub h_percent: Option<f64>,
+}
+
+impl Default for View3D {
+    fn default() -> Self {
+        View3D {
+            rot_x: 15.0,
+            rot_y: 20.0,
+            r_ang_ax: false,
+            perspective: 30.0,
+            depth_percent: 100.0,
+            h_percent: None,
+        }
+    }
+}
+
+/// A wall or the floor of a 3-D chart.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Wall {
+    pub fill: Option<Fill>,
+    pub line: Option<Stroke>,
 }
 
 /// The text properties a chart element can set; `None` inherits.
@@ -318,6 +370,9 @@ pub struct ChartGroup {
     /// Group-level data labels, which a series without its own inherits.
     pub labels: Option<DataLabels>,
     pub three_d: bool,
+    /// 3-D bars, lines and areas: the gap between rows in depth, percent of a row's depth
+    /// (`c:gapDepth`, default 150).
+    pub gap_depth: f64,
 }
 
 impl Default for ChartGroup {
@@ -341,6 +396,7 @@ impl Default for ChartGroup {
             series: Vec::new(),
             labels: None,
             three_d: false,
+            gap_depth: 150.0,
         }
     }
 }

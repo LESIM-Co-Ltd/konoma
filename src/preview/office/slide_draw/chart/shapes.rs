@@ -278,3 +278,9 @@ pub(super) fn on_circle(cx: f64, cy: f64, r: f64, deg: f64) -> (f64, f64) {
     let a = deg.to_radians();
     (cx + r * a.sin(), cy - r * a.cos())
 }
+
+/// The point on an ellipse (radii `rx`, `ry`): angle in degrees clockwise from 12 o'clock.
+pub(super) fn on_ellipse(cx: f64, cy: f64, rx: f64, ry: f64, deg: f64) -> (f64, f64) {
+    let a = deg.to_radians();
+    (cx + rx * a.sin(), cy - ry * a.cos())
+}

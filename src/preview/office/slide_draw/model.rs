@@ -427,6 +427,34 @@ pub struct ImageFill {
     pub mode: ImageMode,
     /// Opacity, `0..=1`.
     pub alpha: f64,
+    /// Colour effects of the picture (`a:blip` children), applied in order to the decoded
+    /// pixels before the picture is embedded (see [`super::pic_fx`]).
+    pub fx: Vec<PicFx>,
+}
+
+/// A colour effect of a picture (a child of DrawingML `a:blip`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum PicFx {
+    /// `a:grayscl`.
+    Grayscale,
+    /// `a:biLevel`: luminance at or above `thresh` (`0..=1`) becomes white, below black.
+    BiLevel { thresh: f64 },
+    /// `a:duotone`: the picture's luminance mapped between two colours (`0` = `dark`, `1` = `light`).
+    Duotone { dark: Rgba, light: Rgba },
+    /// `a:clrChange`: pixels of colour `from` become `to` (its alpha only when `use_alpha`).
+    ClrChange {
+        from: Rgba,
+        to: Rgba,
+        use_alpha: bool,
+    },
+    /// `a:clrRepl`: every pixel becomes the colour, the picture's alpha is kept.
+    ClrRepl(Rgba),
+    /// `a:lum`: brightness and contrast, both `-1..=1`.
+    Lum { bright: f64, contrast: f64 },
+    /// `a:hsl`: hue shift in degrees, saturation and luminance offsets `-1..=1`.
+    Hsl { hue: f64, sat: f64, lum: f64 },
+    /// `a:tint`: shift toward (positive `amt`) or away from a hue (degrees), `amt` in `-1..=1`.
+    Tint { hue: f64, amt: f64 },
 }
 
 impl ImageFill {
@@ -439,6 +467,7 @@ impl ImageFill {
                 fill_rect: (0.0, 0.0, 0.0, 0.0),
             },
             alpha: 1.0,
+            fx: Vec::new(),
         }
     }
 }
@@ -739,6 +768,32 @@ pub struct Paragraph {
     pub end_size_pt: f64,
     /// Right-to-left paragraph: `Left`/`Right` are mirrored.
     pub rtl: bool,
+    /// Explicit tab stops, positions in EMU from the left edge of the text rectangle.
+    pub tabs: Vec<TabStop>,
+    /// Distance of the default tab stops (EMU); `0` or less = [`DEFAULT_TAB_EMU`]. They apply
+    /// after the last explicit stop.
+    pub def_tab: f64,
+}
+
+/// The default distance of tab stops: one inch (DrawingML `defTabSz`).
+pub const DEFAULT_TAB_EMU: f64 = 914_400.0;
+
+/// How text at a tab stop is aligned to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabAlign {
+    Left,
+    Center,
+    Right,
+    /// Aligned at the decimal point; drawn like [`TabAlign::Left`].
+    Decimal,
+}
+
+/// An explicit tab stop.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TabStop {
+    /// Position in EMU from the left edge of the text rectangle.
+    pub pos: f64,
+    pub align: TabAlign,
 }
 
 impl Default for Paragraph {
@@ -755,6 +810,8 @@ impl Default for Paragraph {
             runs: Vec::new(),
             end_size_pt: 18.0,
             rtl: false,
+            tabs: Vec::new(),
+            def_tab: DEFAULT_TAB_EMU,
         }
     }
 }

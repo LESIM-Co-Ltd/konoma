@@ -28,6 +28,13 @@
 //! nothing is broken except at forced breaks. Not done: hanging punctuation, hyphenation, bidi
 //! reordering inside a line beyond reversing the atoms of right-to-left paragraphs.
 //!
+//! # Tabs
+//!
+//! A tab character goes to the next tab stop: the paragraph's own stops (left, centre, right;
+//! decimal as left), the hanging-indent position, then the default stops (see `text_tabs`). A
+//! tab at the start of a wrapped line is dropped like any space there; tabs in a distributed
+//! paragraph keep their natural width.
+//!
 //! # Other approximations
 //!
 //! * Small caps: lower-case letters are drawn as capitals at 80 % size.
@@ -48,6 +55,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::fonts::{self, Script};
+#[path = "text_tabs.rs"]
+mod tabs;
 use super::model::{
     Align, Anchor, AutoFit, Bullet, BulletKind, BulletSize, Caps, Fill, FontSpec, ImageFill,
     Paragraph, Rgba, Run, RunKind, Spacing, Strike, TextBody, Underline, Vert, EMU_PER_PX,
@@ -168,6 +177,8 @@ struct Atom {
     no_end: bool,
     /// A break is allowed before this atom whatever precedes it (pieces of an exploded word).
     force_break: bool,
+    /// A tab character: a space whose width is set by the tab stops (see [`tabs`]).
+    tab: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -281,6 +292,7 @@ impl Ctx {
             kind,
             width: w.max(0.0),
             force_break: false,
+            tab: false,
         }
     }
 }
@@ -336,13 +348,21 @@ fn build_atoms(para: &Paragraph, run_base: usize, ctx: &mut Ctx) -> Vec<Atom> {
             {
                 continue;
             }
+            if c0 == '\t' {
+                flush(&mut buf, &mut cur, &mut out, ctx);
+                let st = ctx.style_id(key, run, Script::Latin, false);
+                let mut a = ctx.atom(" ".to_string(), st, Kind::Space);
+                a.tab = true;
+                out.push(a);
+                continue;
+            }
             let lower = c0.is_lowercase();
             let (c, small) = match run.caps {
                 Caps::None => (c0, false),
                 Caps::All => (c0.to_uppercase().next().unwrap_or(c0), false),
                 Caps::Small => (c0.to_uppercase().next().unwrap_or(c0), lower),
             };
-            let (kind, sc) = if c == ' ' || c == '\t' {
+            let (kind, sc) = if c == ' ' {
                 (Kind::Space, Script::Latin)
             } else {
                 let sc = fonts::script_of(c);
@@ -355,7 +375,6 @@ fn build_atoms(para: &Paragraph, run_base: usize, ctx: &mut Ctx) -> Vec<Atom> {
                     sc,
                 )
             };
-            let c = if c == '\t' { ' ' } else { c };
             let this = (kind, sc, small);
             let same = cur == Some(this) && kind != Kind::Cjk;
             if !same {
@@ -428,19 +447,31 @@ fn trim_trailing_spaces(atoms: &mut Vec<Atom>) {
 
 /// Breaks the atoms of one paragraph into lines. `first_w` / `rest_w`: widths available on the
 /// first and later lines (`f64::INFINITY` = never wrap).
-fn break_lines(atoms: Vec<Atom>, first_w: f64, rest_w: f64, ctx: &mut Ctx) -> (Vec<Line>, bool) {
+fn break_lines(
+    atoms: Vec<Atom>,
+    first_w: f64,
+    rest_w: f64,
+    ctx: &mut Ctx,
+    tg: &tabs::TabGeom,
+    x_first: f64,
+    x_rest: f64,
+) -> (Vec<Line>, bool) {
     let mut lines: Vec<Line> = Vec::new();
     let mut cur: Vec<Atom> = Vec::new();
     let mut used = 0.0f64;
     let mut q = clusters(atoms);
     let mut truncated = false;
     let mut ended_with_break = false;
-    while let Some(cl) = q.pop_front() {
+    while let Some(mut cl) = q.pop_front() {
         if lines.len() >= MAX_LINES {
             truncated = true;
             break;
         }
         let avail = if lines.is_empty() { first_w } else { rest_w };
+        if cl.iter().any(|a| a.tab) {
+            let x0 = if lines.is_empty() { x_first } else { x_rest };
+            tabs::resolve_left(&mut cl, x0 + used, tg);
+        }
         ended_with_break = cl.len() == 1 && cl[0].kind == Kind::Break;
         if ended_with_break {
             cur.extend(cl);
@@ -513,6 +544,7 @@ fn break_lines(atoms: Vec<Atom>, first_w: f64, rest_w: f64, ctx: &mut Ctx) -> (V
                     },
                     width: if w > 0.0 { w } else { share },
                     force_break: i > 0 || a.force_break,
+                    tab: false,
                 });
             }
         }
@@ -907,11 +939,15 @@ fn paragraphs_out(
         let indent = emu_px(para.indent);
         let has_bullet = bullet_text.is_some() || bullet_pic.is_some();
         let bullet_x = (mar_l + indent).max(0.0);
+        // Without a bullet the first line starts at `marL + indent` (relative to the margin, as
+        // DrawingML says), never left of the box; a hanging indent (`indent < 0`) leaves room for
+        // a tab to reach `marL` (see `text_tabs`: that position is a tab stop).
         let first_x = if has_bullet {
             mar_l.max(bullet_x + bullet_w + 0.3 * bsize)
         } else {
             (mar_l + indent).max(0.0)
         };
+        let tab_geom = tabs::TabGeom::of(para, mar_l);
         let (first_w, rest_w) = match vertical_measure {
             Some(len) => (len, len),
             None if body.wrap => ((col_w - first_x).max(1.0), (col_w - mar_l).max(1.0)),
@@ -926,7 +962,7 @@ fn paragraphs_out(
                 false,
             )
         } else {
-            break_lines(atoms, first_w, rest_w, ctx)
+            break_lines(atoms, first_w, rest_w, ctx, &tab_geom, first_x, mar_l)
         };
         truncated |= t;
 
@@ -962,8 +998,10 @@ fn paragraphs_out(
                 }
             };
             let baseline = baseline.max(0.0);
-            let natural: f64 = line.atoms.iter().map(|a| a.width).sum();
             let x0 = if li == 0 { first_x } else { mar_l };
+            let mut atoms_v: Vec<Atom> = line.atoms.clone();
+            tabs::fix_line(&mut atoms_v, x0, &tab_geom);
+            let natural: f64 = atoms_v.iter().map(|a| a.width).sum();
             let align = effective_align(para);
             let justify = matches!(para.align, Align::Justify | Align::Distributed)
                 && ((li + 1 < n_lines && !line.forced) || para.align == Align::Distributed)
@@ -975,7 +1013,6 @@ fn paragraphs_out(
                 (col_w - x0).max(0.0)
             };
             let mut extra_gap = 0.0;
-            let mut atoms_v: Vec<Atom> = line.atoms.clone();
             if justify && para.align == Align::Distributed {
                 atoms_v = explode_chars(&atoms_v, ctx);
             }
@@ -1014,6 +1051,7 @@ fn paragraphs_out(
             // the shaper reorders the characters inside a fragment (bidi).
             let order: Vec<usize> = (0..atoms_v.len()).collect();
             let mut x = x_start;
+            let mut after_tab = false;
             for &ai in &order {
                 let a = &atoms_v[ai];
                 let e = &ctx.styles[a.style];
@@ -1021,7 +1059,11 @@ fn paragraphs_out(
                     continue;
                 }
                 let y = baseline - e.shift;
+                // A tab is a fragment of its own: the text after it starts where the stop is,
+                // not where the shaper would put it after a space.
                 let merge = extra_gap == 0.0
+                    && !a.tab
+                    && !after_tab
                     && frags.last().is_some_and(|f: &Frag| {
                         f.style == e.style && (f.x + f.width - x).abs() < 1e-6 && f.y == y
                     });
@@ -1040,6 +1082,7 @@ fn paragraphs_out(
                     });
                 }
                 x += a.width;
+                after_tab = a.tab;
                 if gap_after[ai] {
                     x += extra_gap;
                 }
@@ -1159,6 +1202,7 @@ fn explode_chars(atoms: &[Atom], ctx: &Ctx) -> Vec<Atom> {
                 no_start: false,
                 no_end: false,
                 force_break: true,
+                tab: false,
             });
         }
     }

@@ -49,6 +49,7 @@ use super::color::mix;
 use super::model::*;
 use super::path::{self, Resolved, Seg};
 use super::patterns::pattern_pixels;
+use super::pic_fx;
 use super::text::{self, BulletDraw, Frag, Frame, ASCENT, LINE_HEIGHT};
 
 #[path = "svg_effects.rs"]
@@ -890,13 +891,32 @@ impl<'a> W<'a> {
     // ----- images ----------------------------------------------------------------------------
 
     /// The data URI of the image `key`, or `None` when it is missing, unusable or over budget.
-    fn embed(&mut self, key: &str) -> Option<(String, Sniffed)> {
+    ///
+    /// `fx` are the picture's colour effects; they are applied to raster pictures (the result is a
+    /// PNG; vector pictures keep their colours, see [`super::pic_fx`]).
+    fn embed(&mut self, key: &str, fx: &[PicFx]) -> Option<(String, Sniffed)> {
         let bytes = (self.media)(key)?;
         if bytes.is_empty() {
             return None;
         }
         let kind = sniff(&bytes);
+        let raster = matches!(
+            kind,
+            Sniffed::Png
+                | Sniffed::Jpeg
+                | Sniffed::Gif
+                | Sniffed::Webp
+                | Sniffed::Bmp
+                | Sniffed::Tiff
+        );
+        // A picture the effects cannot be applied to (undecodable, over the limits) is shown as it is.
+        let recolored = if raster && !fx.is_empty() {
+            pic_fx::recolor_png(&bytes, fx)
+        } else {
+            None
+        };
         let (mime, data): (&str, Vec<u8>) = match kind {
+            _ if recolored.is_some() => ("image/png", recolored.unwrap_or_default()),
             Sniffed::Png => ("image/png", bytes.to_vec()),
             Sniffed::Jpeg => ("image/jpeg", bytes.to_vec()),
             Sniffed::Gif => ("image/gif", bytes.to_vec()),
@@ -1023,7 +1043,7 @@ impl<'a> W<'a> {
     fn image_fill(&mut self, d: &str, img: &ImageFill, bx: Bx) {
         match img.mode {
             ImageMode::Stretch { fill_rect } => {
-                let Some((uri, _)) = self.embed(&img.key) else {
+                let Some((uri, _)) = self.embed(&img.key, &img.fx) else {
                     self.placeholder(d, bx);
                     return;
                 };
@@ -1042,7 +1062,7 @@ impl<'a> W<'a> {
                     self.placeholder(d, bx);
                     return;
                 };
-                let Some((uri, _)) = self.embed(&img.key) else {
+                let Some((uri, _)) = self.embed(&img.key, &img.fx) else {
                     self.placeholder(d, bx);
                     return;
                 };
@@ -1133,7 +1153,7 @@ impl<'a> W<'a> {
             .collect::<Vec<_>>()
             .join(" ");
         let start = self.body.len();
-        match self.embed(&p.image.key) {
+        match self.embed(&p.image.key, &p.image.fx) {
             Some((uri, _)) => {
                 let fill_rect = match p.image.mode {
                     ImageMode::Stretch { fill_rect } => fill_rect,
@@ -1362,7 +1382,7 @@ impl<'a> W<'a> {
                     self.frag_decor(fr);
                 }
                 BulletDraw::Picture { image, x, y, size } => {
-                    if let Some((uri, _)) = self.embed(&image.key) {
+                    if let Some((uri, _)) = self.embed(&image.key, &image.fx) {
                         let _ = write!(
                             self.body,
                             r#"<image x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="xMidYMid meet" href="{uri}"/>"#,

@@ -28,6 +28,8 @@ use super::*;
 
 /// Most text characters kept of one slide (over it the rest is dropped and the scene says so).
 pub(super) const MAX_TEXT_CHARS: usize = 100_000;
+/// Most explicit tab stops kept of one paragraph.
+const MAX_TAB_STOPS: usize = 32;
 
 /// The nodes a text body's properties are looked up in.
 pub(super) struct TextChain<'a> {
@@ -243,6 +245,30 @@ impl Sb<'_> {
             spc_after: pspace("spcAft").unwrap_or(sd::Spacing::Pts(0.0)),
             line_spacing: pspace("lnSpc").unwrap_or(sd::Spacing::Pct(1.0)),
             rtl: pattr("rtl").is_some_and(|v| matches!(v.trim(), "1" | "true")),
+            def_tab: pnum("defTabSz")
+                .filter(|v| *v > 0)
+                .map_or(sd::DEFAULT_TAB_EMU, |v| emu(v as f64)),
+            tabs: plist
+                .iter()
+                .find_map(|(n, _)| n.child("tabLst"))
+                .map(|l| {
+                    l.nodes()
+                        .filter(|t| t.name == "tab")
+                        .take(MAX_TAB_STOPS)
+                        .filter_map(|t| {
+                            Some(sd::TabStop {
+                                pos: emu(t.attr("pos")?.trim().parse::<i64>().ok()? as f64),
+                                align: match t.attr("algn") {
+                                    Some("ctr") => sd::TabAlign::Center,
+                                    Some("r") => sd::TabAlign::Right,
+                                    Some("dec") => sd::TabAlign::Decimal,
+                                    _ => sd::TabAlign::Left,
+                                },
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             ..sd::Paragraph::default()
         };
         para.bullet = self.bullet(&plist);
@@ -318,7 +344,9 @@ impl Sb<'_> {
                         ..proto.clone()
                     });
                 }
-                let part = clean(part);
+                // Tabs stay (the layout moves to the next tab stop); the text view's cleaning
+                // would turn them into spaces.
+                let part = part.split('\t').map(clean).collect::<Vec<_>>().join("\t");
                 if part.is_empty() {
                     continue;
                 }

@@ -30,6 +30,7 @@ pub mod model;
 pub mod odf_geom;
 pub mod path;
 mod patterns;
+pub mod pic_fx;
 pub mod svg;
 pub mod symbol_font;
 pub mod text;

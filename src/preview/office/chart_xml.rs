@@ -37,7 +37,7 @@ use super::slide_draw::chart::{
     Axis, AxisKind, AxisPos, BarDir, ChartGroup, ChartModel, ChartText, Crosses, DataLabels,
     DispBlanks, GroupKind, Grouping, LabelPos, Legend, LegendPos, ManualLayout, Marker,
     MarkerSymbol, PointFmt, RadarStyle, ScatterStyle, Series, Stroke, TextStyle, TickLabelPos,
-    TickMark, MAX_CATEGORIES, MAX_LABEL_CHARS, MAX_POINTS, MAX_SERIES,
+    TickMark, View3D, Wall, MAX_CATEGORIES, MAX_LABEL_CHARS, MAX_POINTS, MAX_SERIES,
 };
 use super::slide_draw::{Dash, Fill, Gradient, ImageFill, Rgba};
 use super::OfficeError;
@@ -630,6 +630,32 @@ impl Parser<'_, '_> {
             _ => DispBlanks::Gap,
         };
         m.three_d = chart.child("view3D").is_some();
+        if let Some(v) = chart.child("view3D") {
+            let d = View3D::default();
+            let f = |name: &str, lo: f64, hi: f64, dflt: f64| {
+                num(v, name).map_or(dflt, |x| x.clamp(lo, hi))
+            };
+            m.view3d = Some(View3D {
+                rot_x: f("rotX", -90.0, 90.0, d.rot_x),
+                rot_y: f("rotY", 0.0, 360.0, d.rot_y),
+                r_ang_ax: flag(v, "rAngAx").unwrap_or(d.r_ang_ax),
+                perspective: f("perspective", 0.0, 240.0, d.perspective),
+                depth_percent: f("depthPercent", 20.0, 2000.0, d.depth_percent),
+                h_percent: num(v, "hPercent").map(|x| x.clamp(5.0, 500.0)),
+            });
+        }
+        let wall = |this: &Self, n: Option<&Node>| {
+            n.map(|w| {
+                let sp = w.child("spPr");
+                Wall {
+                    fill: sp.and_then(|sp| this.fill_of(sp)),
+                    line: sp.and_then(|sp| this.stroke_of(sp)),
+                }
+            })
+        };
+        m.floor = wall(self, chart.child("floor"));
+        m.side_wall = wall(self, chart.child("sideWall"));
+        m.back_wall = wall(self, chart.child("backWall"));
         let title = chart.child("title").map(|t| self.title(t));
         let title_deleted = flag(chart, "autoTitleDeleted").unwrap_or(false);
         if let Some(pa) = chart.child("plotArea") {
@@ -782,6 +808,9 @@ impl Parser<'_, '_> {
         }
         if let Some(v) = num(c, "overlap") {
             g.overlap = v;
+        }
+        if let Some(v) = num(c, "gapDepth") {
+            g.gap_depth = v.clamp(0.0, 500.0);
         }
         if let Some(v) = num(c, "holeSize") {
             g.hole_size = v;

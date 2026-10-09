@@ -18,6 +18,7 @@ use super::layout::{
 use super::scale::{Opts, Scale};
 use super::shapes::{line_if_set, line_of, Out};
 use super::text::{line_width, measure, resolve, HAlign, RStyle, VAlign};
+use super::three_d::{self, Depth};
 use super::{
     Axis, AxisKind, AxisPos, BarDir, ChartGroup, ChartModel, Crosses, DispBlanks, GroupKind,
     Grouping, LabelPos, ManualLayout, PointFmt, ScatterStyle, Series, TickLabelPos, TickMark,
@@ -194,28 +195,37 @@ pub(super) fn draw(o: &mut Out, m: &ChartModel, avail: Rect, manual: Option<Manu
         r: 8.0,
         b: 28.0,
     };
-    let rect_of = |mg: &Margins| -> Rect {
-        let base = Rect {
+    // The plot rectangle (the front plane of a 3-D plot, whose depth takes room at the top and on
+    // one side) and the depth, when the plot is a 3-D one.
+    let rect_of = |mg: &Margins| -> (Rect, Option<Depth>) {
+        let mut base = Rect {
             x: avail.x + mg.l,
             y: avail.y + mg.t,
             w: (avail.w - mg.l - mg.r).max(10.0),
             h: (avail.h - mg.t - mg.b).max(10.0),
         };
-        match manual {
+        let d3 = three_d::depth(m, &base);
+        if let Some(d) = &d3 {
+            base = three_d::front_rect(base, d);
+        }
+        let r = match manual {
             Some(l) if l.inner => apply_manual(&l, base, w, h),
             _ => base,
-        }
+        };
+        (r, d3)
     };
     for _ in 0..3 {
-        let rect = rect_of(&mg);
+        let (rect, _) = rect_of(&mg);
         let (pairs, plans) = build(m, &refs, rect);
         mg = margins(&plans, &pairs, avail);
     }
-    let rect = rect_of(&mg);
+    let (rect, d3) = rect_of(&mg);
     let (pairs, plans) = build(m, &refs, rect);
 
-    // Plot area.
-    if m.plot_fill.is_some() || m.plot_line.is_some() {
+    // Plot area (a 3-D plot has walls instead).
+    if let Some(d) = &d3 {
+        three_d::walls(o, m, &rect, d);
+    } else if m.plot_fill.is_some() || m.plot_line.is_some() {
         let ln = line_if_set(m.plot_line.as_ref(), Rgba::BLACK, 9525.0);
         o.rect(
             rect.x,
@@ -230,7 +240,10 @@ pub(super) fn draw(o: &mut Out, m: &ChartModel, avail: Rect, manual: Option<Manu
     for (pi, p) in pairs.iter().enumerate() {
         for (ai, ax) in [p.cat_axis, p.val_axis].into_iter().enumerate() {
             if let Some(a) = ax {
-                draw_grid(o, rect, a, &plans[pi][ai]);
+                match &d3 {
+                    Some(d) => draw_grid3(o, rect, d, a, &plans[pi][ai]),
+                    None => draw_grid(o, rect, a, &plans[pi][ai]),
+                }
             }
         }
     }
@@ -240,6 +253,7 @@ pub(super) fn draw(o: &mut Out, m: &ChartModel, avail: Rect, manual: Option<Manu
         let geo = Geo {
             r: rect,
             cat_h: p.cat_h,
+            d3,
         };
         for gr in &p.groups {
             if o.full() {
@@ -920,6 +934,8 @@ fn add_title_margin(mg: &mut Margins, side: Side, v: f64, ap: &AxisPlan) {
 struct Geo {
     r: Rect,
     cat_h: bool,
+    /// The depth of a 3-D plot (the groups that are 3-D use it).
+    d3: Option<Depth>,
 }
 
 impl Geo {
@@ -1204,7 +1220,16 @@ fn bars(o: &mut Out, m: &ChartModel, p: &Pair, geo: &Geo, gr: &GroupRef, reqs: &
                     .then(|| super::layout::style_outline(m))
                     .flatten()
             });
-            o.rect(r.x, r.y, r.w, r.h, &fill, line.as_ref());
+            let r = match geo.d3.filter(|_| g.three_d) {
+                Some(d) => {
+                    let (thick, z0) = d.thickness(d.d);
+                    three_d::bar_box(o, &d, &r, z0, thick, &fill, line.as_ref())
+                }
+                None => {
+                    o.rect(r.x, r.y, r.w, r.h, &fill, line.as_ref());
+                    r
+                }
+            };
             if o.full() {
                 return;
             }
@@ -1299,7 +1324,9 @@ fn lines(
     let Dim::Cat { n, .. } = p.cat else { return };
     let stacked = matches!(g.grouping, Grouping::Stacked | Grouping::PercentStacked);
     let rows = stacked_values(g, n, m.disp_blanks_as == DispBlanks::Zero);
-    for (j, s) in g.series.iter().enumerate() {
+    let d3 = geo.d3.filter(|_| g.three_d);
+    for j in series_order(g, d3.is_some()) {
+        let s = &g.series[j];
         let ord = gr.ord0 + j;
         let color = s
             .line
@@ -1314,7 +1341,16 @@ fn lines(
             .map(|(i, v)| {
                 v.map(|(lo, hi)| {
                     let val = if stacked { hi } else { hi - lo };
-                    geo.xy(p.cat.cat_frac(i), sc.frac(val).clamp(-0.5, 1.5))
+                    let (x, y) = geo.xy(p.cat.cat_frac(i), sc.frac(val).clamp(-0.5, 1.5));
+                    // A 3-D line runs in its own row in depth.
+                    match &d3 {
+                        Some(d) => {
+                            let (_, z0) = depth_row(d, g, j);
+                            let (ox, oy) = d.off(z0);
+                            (x + ox, y + oy)
+                        }
+                        None => (x, y),
+                    }
                 })
             })
             .collect();
@@ -1323,7 +1359,10 @@ fn lines(
             let mut run: Vec<(f64, f64)> = Vec::new();
             let flush = |o: &mut Out, run: &mut Vec<(f64, f64)>| {
                 if run.len() >= 2 {
-                    if smooth {
+                    if let Some(d) = &d3 {
+                        let (thick, _) = depth_row(d, g, j);
+                        three_d::line_ribbon(o, d, run, 0.0, thick, ln);
+                    } else if smooth {
                         o.smooth(run, &Fill::None, Some(ln));
                     } else {
                         o.poly(run, false, &Fill::None, Some(ln));
@@ -1351,7 +1390,7 @@ fn lines(
             } else {
                 mk
             };
-            if let Some((sym, size, c)) = mk_i {
+            if let Some((sym, size, c)) = mk_i.filter(|_| d3.is_none()) {
                 msize = msize.max(size);
                 if o.full() {
                     return;
@@ -1392,7 +1431,9 @@ fn areas(o: &mut Out, m: &ChartModel, p: &Pair, geo: &Geo, gr: &GroupRef) {
     let stacked = matches!(g.grouping, Grouping::Stacked | Grouping::PercentStacked);
     let rows = stacked_values(g, n, true);
     let base_f = sc.frac(base_value(p, sc)).clamp(0.0, 1.0);
-    for (j, s) in g.series.iter().enumerate() {
+    let d3 = geo.d3.filter(|_| g.three_d);
+    for j in series_order(g, d3.is_some()) {
+        let s = &g.series[j];
         let ord = gr.ord0 + j;
         let fill = series_fill(m, s, ord);
         let ln = line_if_set(s.line.as_ref(), Rgba::BLACK, 9525.0).or_else(|| {
@@ -1417,6 +1458,14 @@ fn areas(o: &mut Out, m: &ChartModel, p: &Pair, geo: &Geo, gr: &GroupRef) {
             bottom.push(geo.xy(c, fl));
         }
         if top.len() < 2 {
+            continue;
+        }
+        if let Some(d) = &d3 {
+            let (thick, z0) = depth_row(d, g, j);
+            three_d::area_ribbon(o, d, &top, &bottom, z0, thick, &fill, ln.as_ref());
+            if o.full() {
+                return;
+            }
             continue;
         }
         let mut poly = top;
@@ -1644,6 +1693,45 @@ fn draw_grid(o: &mut Out, rect: Rect, a: &Axis, ap: &AxisPlan) {
             }
         }
     }
+}
+
+/// The gridlines of an axis on the walls of a 3-D plot.
+fn draw_grid3(o: &mut Out, rect: Rect, d: &Depth, a: &Axis, ap: &AxisPlan) {
+    for (stroke, fracs) in [(&a.major_grid, &ap.major), (&a.minor_grid, &ap.minor)] {
+        let Some(s) = stroke else { continue };
+        let Some(ln) = line_of(Some(s), AXIS_COLOR, AXIS_W) else {
+            continue;
+        };
+        for &f in fracs.iter() {
+            if !(-0.001..=1.001).contains(&f) {
+                continue;
+            }
+            three_d::grid_line(o, &rect, d, ap.horizontal, f, &ln);
+            if o.full() {
+                return;
+            }
+        }
+    }
+}
+
+/// The order series are drawn in: the ones in rows of a 3-D plot go back to front (the first
+/// series is in front), the others in their own order.
+fn series_order(g: &ChartGroup, three_d: bool) -> Vec<usize> {
+    let n = g.series.len();
+    if three_d && three_d::rows_of(g) > 1 {
+        (0..n).rev().collect()
+    } else {
+        (0..n).collect()
+    }
+}
+
+/// `(thickness, z0)` of the ribbon of series `j` in a 3-D plot: the depth is shared by the rows.
+fn depth_row(d: &Depth, g: &ChartGroup, j: usize) -> (f64, f64) {
+    let rows = three_d::rows_of(g);
+    let row = d.d / rows as f64;
+    let (thick, off) = d.thickness(row);
+    let r = if rows > 1 { j.min(rows - 1) } else { 0 };
+    (thick, r as f64 * row + off)
 }
 
 fn draw_axis(
