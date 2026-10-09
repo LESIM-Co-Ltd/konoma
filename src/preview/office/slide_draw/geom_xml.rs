@@ -35,6 +35,7 @@ pub(super) fn preset_spec(name: &str) -> Option<&'static CustomGeomSpec> {
     presets().get(name)
 }
 
+#[cfg(test)]
 pub(super) fn preset_names() -> Vec<&'static str> {
     let mut v: Vec<&'static str> = presets().keys().map(String::as_str).collect();
     v.sort_unstable();

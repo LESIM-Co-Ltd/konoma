@@ -95,6 +95,7 @@ fn scene_of(w: f64, h: f64) -> SlideScene {
         width: w,
         height: h,
         background: Fill::Solid(Rgba::WHITE),
+        underlay: Vec::new(),
         items: Vec::new(),
         truncated: false,
     }

@@ -136,6 +136,7 @@ fn scene_of(slide: &Node, names: &mut Vec<String>) -> SlideScene {
         width: SLIDE_W,
         height: SLIDE_H,
         background: Fill::Solid(Rgba::WHITE),
+        underlay: Vec::new(),
         items,
         truncated: false,
     }
@@ -245,6 +246,7 @@ fn presets_against_libreoffice() {
             width: SLIDE_W,
             height: SLIDE_H,
             background: Fill::Solid(Rgba::WHITE),
+            underlay: Vec::new(),
             items,
             truncated: false,
         };

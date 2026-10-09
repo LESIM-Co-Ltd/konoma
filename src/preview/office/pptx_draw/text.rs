@@ -325,6 +325,7 @@ impl Sb<'_> {
             sd::RunKind::Text
         };
         if slidenum {
+            self.slide_dep = true;
             let num = self.first_num.saturating_add(self.slide_no as i64 - 1);
             self.chars += 8;
             out.push(sd::Run {

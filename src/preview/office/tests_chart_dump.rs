@@ -317,6 +317,7 @@ fn dump_deck(pptx: &Path, refdir: &Path, tag: &str) -> usize {
             width: f.w,
             height: f.h,
             background: Fill::Solid(Rgba::WHITE),
+            underlay: Vec::new(),
             items,
             truncated: trunc,
         };

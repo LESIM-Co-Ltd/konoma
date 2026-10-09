@@ -437,10 +437,6 @@ impl Gdi {
         self.ctm = if m.finite() { m } else { Aff::ID };
     }
 
-    pub fn ctm(&self) -> Aff {
-        self.ctm
-    }
-
     pub fn dev(&self, p: P) -> P {
         self.ctm.apply(p)
     }

@@ -323,8 +323,19 @@ fn the_markdown_budget_cuts_the_deck_and_the_headings_stay_in_step() {
         .collect();
     let d = load_op(&Op::new(&pages), &opts).unwrap();
     assert!(d.truncated);
-    assert!(d.markdown.len() <= 4_000);
-    assert!(d.slides.len() < 200 && !d.slides.is_empty());
+    // The text is cut where the body budget ends; the headings of the later slides go on in the
+    // room kept for them, so every slide keeps its place and its picture.
+    assert!(d.markdown.len() <= 4_000 + opts.max_slides * 1_024);
+    assert_eq!(d.slides.len(), 200);
+    assert_eq!(d.slide_scenes.len(), 200);
+    // (the last slide's text is gone: its section is the heading alone)
+    assert!(!d
+        .markdown
+        .rsplit("## Slide 200")
+        .next()
+        .unwrap()
+        .contains("word"));
+    assert!(d.markdown.contains("## Slide 200: S199"));
     check_headings(&d);
 }
 
@@ -333,8 +344,34 @@ fn the_line_budget_cuts_the_deck() {
     let opts = with_opts(|o| o.max_markdown_lines = 50);
     let d = load_op(&many_slides(100), &opts).unwrap();
     assert!(d.truncated);
-    assert!(d.markdown.lines().count() <= 50);
+    assert!(d.markdown.lines().count() <= 50 + 2 * opts.max_slides);
+    assert_eq!(d.slides.len(), 100);
+    assert_eq!(d.slide_scenes.len(), 100);
     check_headings(&d);
+}
+
+#[test]
+fn a_deck_whose_text_fills_the_budget_keeps_every_slide_in_the_picture_view() {
+    let body: String = (0..40)
+        .map(|k| format!("<text:p>line {k} of the body</text:p>"))
+        .collect();
+    let pages: String = (0..300)
+        .map(|i| page(&(title(&format!("S{i}")) + &tbx_frame(&body))))
+        .collect();
+    let d = load_op(&Op::new(&pages), &with_opts(|_| {})).unwrap();
+    assert!(d.truncated);
+    assert_eq!(d.slides.len(), 300);
+    assert_eq!(d.slide_scenes.len(), 300);
+    assert!(d.markdown.contains("## Slide 300: S299"));
+    assert!(d.markdown.contains("line 39 of the body"));
+    assert_eq!(d.picture_markdown.matches("](office-img://").count(), 300);
+    check_headings(&d);
+}
+
+fn tbx_frame(inner: &str) -> String {
+    format!(
+        r#"<draw:frame svg:x="1cm" svg:y="3cm" svg:width="20cm" svg:height="5cm"><draw:text-box>{inner}</draw:text-box></draw:frame>"#
+    )
 }
 
 #[test]

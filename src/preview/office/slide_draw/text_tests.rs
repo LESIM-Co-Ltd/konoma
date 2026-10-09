@@ -1315,6 +1315,7 @@ fn vertical_punctuation_is_drawn_in_the_cell() {
         width: 9_144_000.0,
         height: 6_858_000.0,
         background: Fill::Solid(Rgba::WHITE),
+        underlay: Vec::new(),
         items: vec![Item::Shape(s)],
         truncated: false,
     };

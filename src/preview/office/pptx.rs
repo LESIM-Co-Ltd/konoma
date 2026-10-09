@@ -306,6 +306,9 @@ struct PartInfo {
     theme: Option<Rc<Theme>>,
     /// Shapes of the part were left unread (the node budget or [`pptx_draw::MAX_PART_SHAPES`]).
     cut: bool,
+    /// Names the part for the deck's shared drawings (a master or a layout read from the package;
+    /// unique over the deck). 0 for a part that is not shared (a missing one, an empty default).
+    uid: u64,
 }
 
 impl Default for PartInfo {
@@ -321,6 +324,7 @@ impl Default for PartInfo {
             rels: HashMap::new(),
             theme: None,
             cut: false,
+            uid: 0,
         }
     }
 }
@@ -961,6 +965,8 @@ struct Rd<'c, 'a> {
     order_shapes: usize,
     /// The drawing models of the slides written so far.
     draw: DeckDraw,
+    /// The last [`PartInfo::uid`] given.
+    last_uid: u64,
 }
 
 fn convert(
@@ -1060,6 +1066,7 @@ fn convert(
     );
     conv.truncated |= over;
     conv.split_bullet_lists = true;
+    conv.reserve_slide_headings();
     let mut slides: Vec<SlideInfo> = Vec::new();
     let scenes: Vec<sd::SlideScene>;
     {
@@ -1078,6 +1085,7 @@ fn convert(
                 default_text,
                 ..DeckDraw::default()
             },
+            last_uid: 0,
         };
         // The table styles of the deck (`ppt/tableStyles.xml`), read once.
         if let Some(part) = rels
@@ -1099,7 +1107,8 @@ fn convert(
             })
             .collect();
         for (i, part) in parts.iter().enumerate() {
-            if rd.c.cancelled() || rd.c.full || rd.order_shapes > opts.max_deck_order_shapes {
+            if rd.c.cancelled() || rd.c.heading_full || rd.order_shapes > opts.max_deck_order_shapes
+            {
                 rd.c.truncated = true;
                 break;
             }
@@ -1185,6 +1194,8 @@ impl Rd<'_, '_> {
             .and_then(|b| part_info(&b, "sldLayout", self.c.opts).ok())
             .unwrap_or_default();
         layout.rels = lrels.clone();
+        self.last_uid += 1;
+        layout.uid = self.last_uid;
         let master_part = lrels
             .values()
             .find(|r| r.kind == "slideMaster" && !r.external)
@@ -1199,6 +1210,8 @@ impl Rd<'_, '_> {
                         .unwrap_or_default();
                     info.rels = self.rels_of_present(&mp);
                     info.theme = self.theme_of(&info.rels);
+                    self.last_uid += 1;
+                    info.uid = self.last_uid;
                     let m = Rc::new(info);
                     self.masters.insert(mp, Rc::clone(&m));
                     m
@@ -1379,6 +1392,7 @@ impl Rd<'_, '_> {
         let opts = self.c.opts;
         let default_text = self.draw.default_text.take();
         let table_styles = self.draw.table_styles.take();
+        let mut shared = std::mem::take(&mut self.draw.shared);
         let first_num = self.first_num;
         // The three ways the builder reaches the package (a picture, a part, a part's
         // relationships) all go through this reader; they are called one at a time.
@@ -1401,6 +1415,7 @@ impl Rd<'_, '_> {
                 table_styles: table_styles.as_ref(),
                 first_num,
                 number,
+                shared: &mut shared,
                 parts: pptx_draw::Parts {
                     read: &mut read,
                     rels: &mut rels_of,
@@ -1410,6 +1425,7 @@ impl Rd<'_, '_> {
         );
         self.draw.default_text = default_text;
         self.draw.table_styles = table_styles;
+        self.draw.shared = shared;
         if scene.truncated {
             self.c.truncated = true;
         }
@@ -1877,12 +1893,16 @@ pub(super) fn write_heading(
         text.push_str(tr(lang, Msg::SlideHiddenSuffix));
     }
     let before = c.out.len();
+    // (Code waiting from the slide before is written under the body budget, not this room.)
+    c.flush_code();
+    c.heading_force = true;
     c.write_block(Blk::Heading {
         level: 2,
         text: text.clone(),
         plain: format!("{} {number}: {title}", tr(lang, Msg::SlideHeading)),
         bookmarks: Vec::new(),
     });
+    c.heading_force = false;
     c.flush_code();
     if c.out.len() == before {
         return None;

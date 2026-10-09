@@ -23,9 +23,6 @@
 //! points that are really there, up to [`MAX_POINTS`]). Anything dropped sets
 //! [`ParsedChart::truncated`].
 
-// The pptx reader that consumes this module arrives in a later task; until then only the tests use it.
-#![allow(dead_code)]
-
 use std::io::BufRead;
 
 use quick_xml::events::{BytesStart, Event};
@@ -77,6 +74,8 @@ pub struct ParsedChart {
 pub type ImageLoader<'a> = &'a dyn Fn(&Node) -> Option<ImageFill>;
 
 /// Reads a chart part. Picture fills (`a:blipFill`) are not available: see [`parse_chart_with`].
+/// (The tests' entry point; the readers load pictures and call `parse_chart_with`.)
+#[cfg(test)]
 pub fn parse_chart(xml: &[u8], env: &ChartEnv) -> Result<ParsedChart, OfficeError> {
     parse_chart_with(xml, env, None)
 }

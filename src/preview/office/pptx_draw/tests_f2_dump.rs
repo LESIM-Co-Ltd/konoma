@@ -219,6 +219,7 @@ fn f2_synthetic_label_charts() {
             width: w,
             height: h,
             background: Fill::Solid(Rgba::WHITE),
+            underlay: Vec::new(),
             items,
             truncated: false,
         };

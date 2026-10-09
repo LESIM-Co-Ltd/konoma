@@ -8,6 +8,10 @@
 //! * [`fonts`] -- the Office-font substitution table and measurement.
 //! * [`metafile`] -- EMF / WMF pictures as SVG.
 //! * [`path`] -- `arcTo` and path-space scaling.
+//! * [`geom`] / [`odf_geom`] -- preset and custom geometry of the two formats as paths.
+//! * [`chart`] -- a chart model lowered to shapes; [`pic_fx`] -- picture colour effects;
+//!   [`symbol_font`] -- Symbol / Wingdings characters.
+//! * [`underlay`] -- what the slides of a deck share (a master's drawing, the item budget).
 //! * `svg` -- the writer behind [`render_svg`].
 //!
 //! The renderer is deliberately dumb about file formats and *never trusts* its input: numbers
@@ -15,10 +19,6 @@
 //! [`svg::MAX_SVG_TEXT_BYTES`] and [`svg::MAX_EMBEDDED_IMAGE_BYTES`]). The SVG still embeds
 //! pictures that came from a file, so it is to be drawn by the supervised drawing process like any
 //! untrusted SVG.
-
-// The readers and the app wiring that consume this module arrive in the next tasks; until then
-// only the tests use most of it.
-#![allow(dead_code)]
 
 pub mod chart;
 pub mod color;
@@ -34,6 +34,7 @@ pub mod pic_fx;
 pub mod svg;
 pub mod symbol_font;
 pub mod text;
+pub mod underlay;
 
 #[cfg(test)]
 mod effects_tests;

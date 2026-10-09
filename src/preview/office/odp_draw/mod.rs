@@ -65,9 +65,19 @@
 //!   `draw:transform` rotation (about the same centre).
 //! * An `ellipsoid`, `square` or `rectangular` gradient is turned by its `draw:angle`.
 //!
+//! # Shared master pages
+//!
+//! The shapes of a master page are the same for every slide with the same footer line (which
+//! placeholders, with which texts) and page colour, so they are built once per deck
+//! ([`Shared`]) and each slide's scene holds the lists ([`sd::SlideScene::underlay`]). A
+//! top-level shape that shows the slide's own page number or name is built again for every slide
+//! and takes its place between the shared stretches.
+//!
 //! # Budgets
 //!
-//! Items per slide ([`DocOptions::max_slide_shapes`], master shapes included), group depth
+//! Items per slide ([`DocOptions::max_slide_shapes`], master shapes included), items over the
+//! deck ([`DocOptions::max_deck_items`]: a master page counts once), Fontwork characters and
+//! points over a slide ([`fontwork::SLIDE_CHARS`], [`fontwork::SLIDE_POINTS`]), group depth
 //! ([`MAX_GROUP_DEPTH`]), characters per slide ([`body::MAX_SLIDE_CHARS`]), paragraphs per text
 //! body, list depth, `svg:d` size and commands ([`units::MAX_PATH_BYTES`], [`units::MAX_PATH_CMDS`]),
 //! gradient stops, dash pairs, styles ([`styles::MAX_STYLES`]), resources
@@ -76,8 +86,10 @@
 //! [`Document::truncated`]); nothing is dropped silently.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::preview::office::slide_draw as sd;
+use sd::underlay::{DeckItems, PartBuilder, PartDraw, Seg};
 use sd::Rgba;
 
 use super::*;
@@ -229,6 +241,31 @@ pub(super) struct PageInput<'a> {
     pub page: &'a Node,
     /// 1-based.
     pub number: usize,
+    /// What the slides share.
+    pub shared: &'a mut Shared,
+}
+
+/// What a master page's drawing depends on besides the master page itself: the footer line the
+/// slide shows (which of the placeholders, with which texts) and the colour automatic text is
+/// drawn in over the page. Slides with the same key share one drawing.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct MasterKey {
+    master: String,
+    /// `Furniture` as footer, date/time, page number, header.
+    furniture: [bool; 4],
+    footer: Option<String>,
+    header: Option<String>,
+    date_time: Option<String>,
+    /// The page colour: red, green, blue and the bits of the alpha.
+    page_bg: (u8, u8, u8, u64),
+}
+
+/// The drawings of a deck's master pages, built once, and the items left to the deck.
+#[derive(Default)]
+pub(super) struct Shared {
+    masters: HashMap<MasterKey, PartDraw>,
+    /// `None` until the first slide.
+    items: Option<DeckItems>,
 }
 
 /// The state of building one scene.
@@ -241,6 +278,13 @@ pub(super) struct Sb<'a> {
     pub max_items: usize,
     pub chars: usize,
     pub truncated: bool,
+    /// A page number or page name field was built (the part being built shows this slide's own,
+    /// so its drawing cannot be shared).
+    pub slide_dep: bool,
+    /// What is left of the Fontwork budgets of this slide ([`fontwork::SLIDE_CHARS`],
+    /// [`fontwork::SLIDE_POINTS`]): the sum over all its shapes.
+    pub fw_chars: usize,
+    pub fw_points: usize,
     /// The slide's footer / header / date texts (what the master's fields show).
     pub footer: Option<String>,
     pub header: Option<String>,
@@ -281,6 +325,9 @@ pub(super) fn build_scene(inp: PageInput<'_>, media: &mut dyn Media) -> sd::Slid
         max_items: inp.opts.max_slide_shapes,
         chars: 0,
         truncated: false,
+        slide_dep: false,
+        fw_chars: fontwork::SLIDE_CHARS,
+        fw_points: fontwork::SLIDE_POINTS,
         footer: None,
         header: None,
         date_time: None,
@@ -393,13 +440,57 @@ pub(super) fn build_scene(inp: PageInput<'_>, media: &mut dyn Media) -> sd::Slid
             scene.items.push(sd::Item::Picture(p));
         }
     }
-    // Back to front: the master page's shapes, then the slide's.
-    if objects_visible {
-        if let Some(m) = master {
-            sb.build_master(m, &flags, &mut scene.items);
+    // Back to front: the slide's background items, the master page's shapes, the slide's. The
+    // master page's drawing is the same for every slide with the same footer line and page colour:
+    // built once per deck and shared, unless it shows this slide's own page number or name.
+    let early = std::mem::take(&mut scene.items);
+    if !early.is_empty() {
+        scene.underlay.push(Arc::new(early));
+    }
+    let deck = inp
+        .shared
+        .items
+        .get_or_insert_with(|| DeckItems::new(inp.opts.max_deck_items));
+    if let (true, Some(m), Some(name)) = (objects_visible, master, master_name) {
+        let key = MasterKey {
+            master: name.to_string(),
+            furniture: [
+                flags.footer,
+                flags.date_time,
+                flags.page_number,
+                flags.header,
+            ],
+            footer: sb.footer.clone(),
+            header: sb.header.clone(),
+            date_time: sb.date_time.clone(),
+            page_bg: (
+                sb.page_bg.r,
+                sb.page_bg.g,
+                sb.page_bg.b,
+                sb.page_bg.a.to_bits(),
+            ),
+        };
+        let cached = inp.shared.masters.get(&key).cloned();
+        let new = cached.is_none();
+        let drawn = sb.master_segments(
+            m,
+            &flags,
+            cached.unwrap_or_default(),
+            new,
+            deck,
+            &mut scene.underlay,
+        );
+        if let Some(d) = drawn {
+            inp.shared.masters.insert(key, d);
         }
     }
+    let base_items = sb.items;
+    sb.max_items = inp
+        .opts
+        .max_slide_shapes
+        .min(base_items.saturating_add(deck.left()));
     sb.build_nodes(page.nodes(), 0, &mut scene.items, None);
+    deck.spend(sb.items.saturating_sub(base_items));
     scene.truncated = sb.truncated;
     scene
 }
@@ -421,6 +512,19 @@ fn page_display_name(page: &Node, number: usize) -> String {
 
 /// Replaces the page-count marker of the fields in `scenes` with `total`.
 pub(super) fn patch_page_count(scenes: &mut [sd::SlideScene], total: usize) {
+    fn has_mark(list: &[sd::Item]) -> bool {
+        list.iter().any(|it| match it {
+            sd::Item::Shape(s) => s.text.as_ref().is_some_and(|t| {
+                t.paragraphs.iter().any(|p| {
+                    p.runs.iter().any(|r| {
+                        r.kind == sd::RunKind::Field && r.text.contains(body::PAGE_COUNT_MARK)
+                    })
+                })
+            }),
+            sd::Item::Group(g) => has_mark(&g.items),
+            sd::Item::Picture(_) => false,
+        })
+    }
     fn items(list: &mut [sd::Item], total: &str) {
         for it in list {
             match it {
@@ -443,8 +547,30 @@ pub(super) fn patch_page_count(scenes: &mut [sd::SlideScene], total: usize) {
         }
     }
     let t = total.to_string();
+    // A shared list is patched once (a copy that every slide holding it then takes). The old list
+    // is kept in the map so its address cannot be reused by a later one.
+    type Pair = (Arc<Vec<sd::Item>>, Arc<Vec<sd::Item>>);
+    let mut done: HashMap<usize, Pair> = HashMap::new();
     for s in scenes {
         items(&mut s.items, &t);
+        for u in &mut s.underlay {
+            let key = Arc::as_ptr(u) as usize;
+            let new = match done.get(&key) {
+                Some((_, new)) => Arc::clone(new),
+                None => {
+                    let new = if has_mark(u) {
+                        let mut copy: Vec<sd::Item> = (**u).clone();
+                        items(&mut copy, &t);
+                        Arc::new(copy)
+                    } else {
+                        Arc::clone(u)
+                    };
+                    done.insert(key, (Arc::clone(u), Arc::clone(&new)));
+                    new
+                }
+            };
+            *u = new;
+        }
     }
 }
 
@@ -482,9 +608,6 @@ impl Sb<'_> {
 
     /// (width px, height px, dpi) of a picture.
     fn native_size(&mut self, key: &str) -> Option<(f64, f64, f64)> {
-        if let Some(Some((w, h))) = self.dims.get(key) {
-            let _ = (w, h);
-        }
         let bytes = self.media.bytes(key)?;
         let (w, h) = image_dimensions(bytes)?;
         let dpi = image_dpi(bytes).unwrap_or(96.0);

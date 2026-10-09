@@ -36,6 +36,7 @@ fn scene(color: Rgba) -> SlideScene {
         width: W_EMU,
         height: H_EMU,
         background: Fill::Solid(color),
+        underlay: Vec::new(),
         items: Vec::new(),
         truncated: false,
     }

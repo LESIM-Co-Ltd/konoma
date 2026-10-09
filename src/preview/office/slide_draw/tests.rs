@@ -20,6 +20,7 @@ pub(super) fn scene(items: Vec<Item>) -> SlideScene {
         width: e(W_PX),
         height: e(H_PX),
         background: Fill::Solid(Rgba::WHITE),
+        underlay: Vec::new(),
         items,
         truncated: false,
     }

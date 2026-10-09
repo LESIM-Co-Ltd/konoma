@@ -402,9 +402,8 @@ pub fn footer_hints(app: &App) -> Vec<String> {
     } else if app.preview_search_query().is_some() {
         v.push(format!("n/N:{}", tr(lang, crate::i18n::Msg::Match)));
     }
-    if app.slide_can_turn() {
-        v.push(hint(lang, "J/K", crate::i18n::Msg::HintSlide));
-    }
+    // (No `J/K` here: a presentation is always on the decorated branch above, and `J`/`K` do not act
+    // in a raw view -- `slide_can_turn` needs the decorated cache.)
     v.push(hint(lang, "/", crate::i18n::Msg::HintSearch));
     // Range-selection copy (v=char / V=line) is windowed (Code/Text/raw Markdown) only.
     // Short label on purpose: the footer is one line shared with every other hint, so the

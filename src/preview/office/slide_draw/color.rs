@@ -148,7 +148,9 @@ fn to_byte(v: f64) -> u8 {
     }
 }
 
-/// Applies one transform to a colour (see the module documentation for the spaces used).
+/// Applies one transform to a colour (see the module documentation for the spaces used). Only
+/// the tests apply a single transform; the readers apply the whole list ([`apply_mods`]).
+#[cfg(test)]
 pub fn apply_mod(c: Rgba, m: ColorMod) -> Rgba {
     apply_mods(c, &[m])
 }

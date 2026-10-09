@@ -1674,6 +1674,7 @@ fn rendering_the_items_makes_a_valid_svg() {
         width: emu(W),
         height: emu(H),
         background: Fill::Solid(Rgba::WHITE),
+        underlay: Vec::new(),
         items,
         truncated: trunc,
     };

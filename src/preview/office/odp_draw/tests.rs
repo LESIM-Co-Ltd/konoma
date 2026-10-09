@@ -63,6 +63,9 @@ fn shapes_of(sc: &sd::SlideScene) -> Vec<&ShapeItem> {
         }
     }
     let mut v = Vec::new();
+    for u in &sc.underlay {
+        walk(u, &mut v);
+    }
     walk(&sc.items, &mut v);
     v
 }
@@ -127,8 +130,8 @@ fn a_border_sized_background_stays_inside_the_layouts_margins() {
     let sc = scene(&o);
     // the page itself is white, the colour is a rectangle inside the margins, first of all
     assert_eq!(sc.background, Fill::Solid(Rgba::WHITE));
-    let Some(sd::Item::Shape(s)) = sc.items.first() else {
-        panic!("{:?}", sc.items.first())
+    let Some(sd::Item::Shape(s)) = sc.drawn_items().next() else {
+        panic!("{:?}", sc.drawn_items().next())
     };
     assert_eq!(s.fill, Fill::Solid(Rgba::rgb(0x72, 0x9f, 0xcf)));
     assert!(close(s.xfrm.x, 2.0 * EMU_CM) && close(s.xfrm.y, 2.0 * EMU_CM));
@@ -1665,8 +1668,7 @@ fn pic(inner: &str) -> String {
 }
 
 fn pictures_of(sc: &sd::SlideScene) -> Vec<&sd::PictureItem> {
-    sc.items
-        .iter()
+    sc.drawn_items()
         .filter_map(|i| match i {
             Item::Picture(p) => Some(p),
             _ => None,
@@ -1919,6 +1921,27 @@ fn too_much_text_is_cut_and_flagged() {
     assert!(d.slide_scenes[0].truncated);
     let s = shapes_of(&d.slide_scenes[0])[0];
     assert!(text_of_shape(s).len() <= body::MAX_SLIDE_CHARS);
+}
+
+#[test]
+fn the_text_budget_counts_characters_not_bytes() {
+    // 100,000 Japanese characters are 300,000 bytes but half of the 200,000-character budget.
+    let fits = "あ".repeat(100_000);
+    let d = doc(&text_op(&format!("<text:p>{fits}</text:p>"), ""));
+    let sc = &d.slide_scenes[0];
+    assert!(!sc.truncated);
+    assert_eq!(text_of_shape(shapes_of(sc)[0]).chars().count(), 100_000);
+    // Over the budget in characters: cut at it, to the character.
+    let big = "あ".repeat(body::MAX_SLIDE_CHARS + 7);
+    let d = doc(&text_op(&format!("<text:p>{big}</text:p>"), ""));
+    let sc = &d.slide_scenes[0];
+    assert!(sc.truncated);
+    assert_eq!(
+        text_of_shape(shapes_of(sc)[0]).chars().count(),
+        body::MAX_SLIDE_CHARS
+    );
+    // The two readers agree on the limit.
+    assert_eq!(body::MAX_SLIDE_CHARS, sd::text::MAX_TEXT_CHARS);
 }
 
 #[test]
@@ -2196,4 +2219,5 @@ fn the_preview_picture_beside_a_table_is_not_drawn() {
 mod tests_chart;
 mod tests_fixes;
 mod tests_fontwork;
+mod tests_shared;
 mod tests_table;

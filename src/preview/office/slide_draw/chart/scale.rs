@@ -503,6 +503,7 @@ fn default_minor(major: f64) -> f64 {
 }
 
 /// The data range a category-less list of values spans, ignoring blanks.
+#[cfg(test)]
 pub fn span(values: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
     let mut r: Option<(f64, f64)> = None;
     for v in values {

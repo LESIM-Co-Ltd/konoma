@@ -585,12 +585,13 @@ impl<'a> Sb<'a> {
                     "covered-table-cell" => true,
                     _ => continue,
                 };
-                for _ in 0..repeat(k, "number-columns-repeated") {
-                    if covered {
-                        // (The slot belongs to the cell that spans it.)
-                        c += 1;
-                        continue;
-                    }
+                let times = repeat(k, "number-columns-repeated");
+                if covered {
+                    // (The slots belong to the cells that span them.)
+                    c = c.saturating_add(times);
+                    continue;
+                }
+                for _ in 0..times {
                     // A cell on a slot another cell took moves on to the next free one.
                     while c < nc && owner[r * nc + c] != NONE {
                         c += 1;

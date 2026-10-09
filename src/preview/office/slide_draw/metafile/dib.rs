@@ -175,6 +175,7 @@ fn uncompressed_len(hd: &Header) -> Option<usize> {
 ///
 /// `budget` is the caller's remaining pixel allowance; a bitmap over it, over the per-bitmap
 /// limit or over konoma's image limits is refused (`None`) before anything is allocated.
+#[cfg(test)]
 pub(super) fn decode(bmi: &[u8], bits: &[u8], budget: &mut u64, opts: Opts) -> Option<Bitmap> {
     decode_with(bmi, bits, budget, opts, &[])
 }

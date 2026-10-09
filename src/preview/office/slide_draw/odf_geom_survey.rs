@@ -346,6 +346,7 @@ fn compare(odp: &Path, ref_dir: &Path, stem: &str) -> (usize, usize) {
             width: sw,
             height: sh,
             background: Fill::Solid(Rgba::WHITE),
+            underlay: Vec::new(),
             items: p.items,
             truncated: false,
         };

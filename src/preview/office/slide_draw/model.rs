@@ -22,6 +22,8 @@
 //! Every type derives `Debug`/`Clone`/`PartialEq`; nothing here holds a reference, so a scene can
 //! be built on one thread and drawn on another (or in a child process).
 
+use std::sync::Arc;
+
 /// EMU per pixel at 96 dpi: the scale between the model and the SVG the renderer writes.
 pub const EMU_PER_PX: f64 = 9525.0;
 /// EMU per point.
@@ -54,7 +56,8 @@ impl Rgba {
         Rgba { r, g, b, a: 1.0 }
     }
 
-    /// A colour with an alpha.
+    /// A colour with an alpha (the tests; the readers build the struct directly).
+    #[cfg(test)]
     pub const fn new(r: u8, g: u8, b: u8, a: f64) -> Rgba {
         Rgba { r, g, b, a }
     }
@@ -136,10 +139,25 @@ pub struct SlideScene {
     pub height: f64,
     /// Painted first, over the whole slide.
     pub background: Fill,
+    /// Lists of items shared with other slides (the drawing of a master and of a layout), painted
+    /// after the background and before `items`, in this order (back to front). The writer draws
+    /// them like `items`; the readers build each one once per deck.
+    pub underlay: Vec<Arc<Vec<Item>>>,
     /// In paint order, back to front.
     pub items: Vec<Item>,
-    /// The reader stopped at a budget of its own: something is missing from `items`.
+    /// The reader stopped at a budget of its own: something is missing from `items` (or from an
+    /// `underlay` list).
     pub truncated: bool,
+}
+
+impl SlideScene {
+    /// Every item in paint order: the shared lists first, then the slide's own.
+    pub fn drawn_items(&self) -> impl Iterator<Item = &Item> {
+        self.underlay
+            .iter()
+            .flat_map(|u| u.iter())
+            .chain(self.items.iter())
+    }
 }
 
 /// One thing on a slide.

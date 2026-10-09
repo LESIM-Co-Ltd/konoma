@@ -19,8 +19,9 @@
 //!   applied; `draw:text-path-same-letter-heights` is not read; a glyph the stack's face lacks
 //!   comes from the system fallback face; the shape's fill (a gradient too) covers the shape's
 //!   box, where LibreOffice's covers the text's bounds.
-//! * **Budget**: [`MAX_CHARS`] characters, [`MAX_POINTS`] points per shape (over it the rest is
-//!   left out and the caller sets `truncated`).
+//! * **Budget**: [`MAX_CHARS`] characters, [`MAX_POINTS`] points per shape, and [`SLIDE_CHARS`]
+//!   characters, [`SLIDE_POINTS`] points over all the Fontwork shapes of a slide (over it the rest
+//!   is left out and the caller sets `truncated`).
 
 use resvg::usvg::fontdb;
 use skrifa::instance::{LocationRef, Size};
@@ -36,6 +37,11 @@ use sd::{GeomPath, PathCmd, PathFill, Pt};
 pub(super) const MAX_CHARS: usize = 400;
 /// Most points one warped shape may have.
 pub(super) const MAX_POINTS: usize = 400_000;
+/// Most characters warped over all the Fontwork shapes of a slide: three full shapes. A slide
+/// repeating a maximal shape thousands of times would otherwise cost seconds of outline work.
+pub(super) const SLIDE_CHARS: usize = 3 * MAX_CHARS;
+/// Most points over all the Fontwork shapes of a slide (about 20 MB of SVG path text).
+pub(super) const SLIDE_POINTS: usize = 1_000_000;
 /// A segment of a glyph is cut so that no piece spans more than this fraction of the text width
 /// (the warp is not linear along the curve).
 const MAX_STEP: f64 = 1.0 / 300.0;
@@ -369,11 +375,16 @@ fn lerp(a: Pt, b: Pt, t: f64) -> Pt {
 /// shape of `w` x `h` EMU. The paths are in the shape's box (EMU, origin at its corner), without
 /// a scale of their own, each one a filled and stroked closed outline. `None` when the geometry
 /// has no guide curve or there is nothing to draw. The flag says a budget cut the text.
+///
+/// `slide_chars` and `slide_points` are what is left of the slide's budgets
+/// ([`SLIDE_CHARS`], [`SLIDE_POINTS`]); what this shape uses is taken off them.
 pub(super) fn warp(
     paths: &[GeomPath],
     w: f64,
     h: f64,
     lines: &[TextLine],
+    slide_chars: &mut usize,
+    slide_points: &mut usize,
 ) -> Option<(Vec<GeomPath>, bool)> {
     let mut polys = guide_polys(paths, w, h).into_iter();
     let guides = match (polys.next(), polys.next()) {
@@ -381,9 +392,18 @@ pub(super) fn warp(
         (Some(a), None) => Guides::Baseline(a),
         _ => return None,
     };
-    let mut budget = MAX_CHARS;
+    let allowed = MAX_CHARS.min(*slide_chars);
+    let wanted: usize = lines
+        .iter()
+        .map(|l| l.text.trim_end())
+        .filter(|t| !t.chars().all(char::is_whitespace))
+        .map(|t| t.chars().count())
+        .sum();
+    let mut budget = allowed;
     let laid: Vec<Option<Laid>> = lines.iter().map(|l| lay_out(l, &mut budget)).collect();
-    let truncated = budget == 0;
+    *slide_chars -= allowed - budget;
+    let truncated = wanted > allowed;
+    let max_points = MAX_POINTS.min(*slide_points);
     let n = laid.len().max(1) as f64;
     let mut cmds: Vec<PathCmd> = Vec::new();
     let mut points = 0usize;
@@ -393,7 +413,7 @@ pub(super) fn warp(
         for contour in &l.contours {
             let mapped = map_contour(contour, l, &guides, band, h);
             points += mapped.len();
-            if points > MAX_POINTS {
+            if points > max_points {
                 break 'lines;
             }
             for (k, p) in mapped.into_iter().enumerate() {
@@ -406,6 +426,7 @@ pub(super) fn warp(
             cmds.push(PathCmd::Close);
         }
     }
+    *slide_points -= points.min(max_points);
     if cmds.is_empty() {
         return None;
     }
@@ -417,7 +438,7 @@ pub(super) fn warp(
             stroke: true,
             cmds,
         }],
-        truncated || points > MAX_POINTS,
+        truncated || points > max_points,
     ))
 }
 

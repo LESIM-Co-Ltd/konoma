@@ -67,6 +67,12 @@ pub(super) const MAX_TABLE_ROWS: usize = 20_000;
 pub(super) const MAX_TABLE_COLS: usize = 256;
 /// Most cells (repeat counts included) of the local table that are kept.
 pub(super) const MAX_TABLE_CELLS: usize = 200_000;
+/// Most values a chart makes of the local table over all its series (cells read as numbers or
+/// labels, and the category labels each series holds a copy of). One series is at most
+/// [`ch::MAX_POINTS`]; without this a chart of [`ch::MAX_SERIES`] series of that many points,
+/// each with its own copy of the labels, is gigabytes. The table itself has at most
+/// [`MAX_TABLE_CELLS`] cells, so a chart that plots each cell once is never cut.
+pub(super) const MAX_CHART_POINTS: usize = 200_000;
 /// Deepest nesting of row / column groups of the local table followed.
 const MAX_TABLE_NEST: usize = 4;
 /// LibreOffice's default series colours, in order (`004586 ff420e ffd320 579d1c 7e0021 83caff
@@ -240,51 +246,73 @@ fn ranges(addr: &str) -> Vec<Rng> {
         .collect()
 }
 
+/// A slot outside the table.
+static EMPTY_CELL: Cell = Cell {
+    num: None,
+    text: String::new(),
+};
+
 impl Grid {
-    /// The cells of the ranges, in reading order (a single row left to right, otherwise down
-    /// each column); a slot outside the table is an empty cell. At most [`ch::MAX_POINTS`].
-    fn cells(&self, addr: Option<&str>) -> Vec<Cell> {
-        let mut out = Vec::new();
-        for (c0, r0, c1, r1) in addr.map(ranges).unwrap_or_default() {
-            let at = |c: usize, r: usize| {
-                self.rows
+    /// `f` of the cells of the ranges, in reading order (a single row left to right, otherwise
+    /// down each column); a slot outside the table is an empty cell. At most `limit` values
+    /// (and [`ch::MAX_POINTS`]) are made, and no more is looked at: a range of a million slots
+    /// costs `limit` steps. The flag says the ranges held more than that.
+    fn map_cells<T>(
+        &self,
+        addr: Option<&str>,
+        limit: usize,
+        mut f: impl FnMut(&Cell) -> T,
+    ) -> (Vec<T>, bool) {
+        let limit = limit.min(ch::MAX_POINTS);
+        let ranges = addr.map(ranges).unwrap_or_default();
+        // The exact size of the result: the vector never holds spare capacity.
+        let wanted = ranges.iter().fold(0usize, |n, &(c0, r0, c1, r1)| {
+            let cols = c1 - c0 + 1;
+            let cols = if r0 == r1 {
+                cols
+            } else {
+                cols.min(MAX_TABLE_COLS + 1)
+            };
+            n.saturating_add(cols.saturating_mul(r1 - r0 + 1))
+        });
+        let mut out = Vec::with_capacity(wanted.min(limit));
+        let mut cut = false;
+        'ranges: for (c0, r0, c1, r1) in ranges {
+            let mut push = |c: usize, r: usize, out: &mut Vec<T>| {
+                if out.len() >= limit {
+                    return false;
+                }
+                let cell = self
+                    .rows
                     .get(r)
                     .and_then(|row| row.get(c))
-                    .cloned()
-                    .unwrap_or_default()
+                    .unwrap_or(&EMPTY_CELL);
+                out.push(f(cell));
+                true
             };
             if r0 == r1 {
-                for c in c0..=c1.min(c0 + ch::MAX_POINTS) {
-                    out.push(at(c, r0));
+                for c in c0..=c1 {
+                    if !push(c, r0, &mut out) {
+                        cut = true;
+                        break 'ranges;
+                    }
                 }
             } else {
+                // (Columns past the table's width are all empty: only that many are walked.)
+                if c1 - c0 > MAX_TABLE_COLS {
+                    cut = true;
+                }
                 for c in c0..=c1.min(c0 + MAX_TABLE_COLS) {
-                    for r in r0..=r1.min(r0 + ch::MAX_POINTS) {
-                        out.push(at(c, r));
+                    for r in r0..=r1 {
+                        if !push(c, r, &mut out) {
+                            cut = true;
+                            break 'ranges;
+                        }
                     }
                 }
             }
-            if out.len() >= ch::MAX_POINTS {
-                out.truncate(ch::MAX_POINTS);
-                break;
-            }
         }
-        out
-    }
-
-    fn numbers(&self, addr: Option<&str>) -> Vec<Option<f64>> {
-        self.cells(addr).into_iter().map(|c| c.num).collect()
-    }
-
-    fn texts(&self, addr: Option<&str>) -> Vec<String> {
-        self.cells(addr)
-            .into_iter()
-            .map(|c| {
-                let mut t = c.text;
-                ch::cut_chars(&mut t, ch::MAX_LABEL_CHARS);
-                t
-            })
-            .collect()
+        (out, cut)
     }
 }
 
@@ -582,9 +610,63 @@ struct Cx<'a> {
     formats: HashMap<String, String>,
     grid: Grid,
     truncated: bool,
+    /// How many values (cells made into numbers or labels, and the category labels each series
+    /// holds a copy of) the chart may still make: [`MAX_CHART_POINTS`] over all its series.
+    points_left: usize,
 }
 
 impl<'a> Cx<'a> {
+    /// `f` of the cells of `addr`, within what is left of the chart's points.
+    fn cells_with<T>(&mut self, addr: Option<&str>, f: impl FnMut(&Cell) -> T) -> Vec<T> {
+        let (out, cut) = self.grid.map_cells(addr, self.points_left, f);
+        self.points_left -= out.len();
+        if cut {
+            self.truncated = true;
+        }
+        out
+    }
+
+    /// The name of a series: the text of the first cell of its label address (a longer range is
+    /// not an error, the rest is just not used).
+    fn series_label(&mut self, addr: Option<&str>) -> Option<String> {
+        let limit = self.points_left.min(1);
+        let (first, _) = self.grid.map_cells(addr, limit, |c| {
+            let mut t = c.text.clone();
+            ch::cut_chars(&mut t, ch::MAX_LABEL_CHARS);
+            t
+        });
+        self.points_left -= first.len();
+        first.into_iter().next().filter(|t| !t.trim().is_empty())
+    }
+
+    /// The category labels and the numbers the same cells hold, one value each against the budget.
+    fn categories(&mut self, addr: Option<&str>) -> (Vec<String>, Vec<Option<f64>>) {
+        let both = self.cells_with(addr, |c| {
+            let mut t = c.text.clone();
+            ch::cut_chars(&mut t, ch::MAX_LABEL_CHARS);
+            (t, c.num)
+        });
+        both.into_iter().unzip()
+    }
+
+    fn numbers(&mut self, addr: Option<&str>) -> Vec<Option<f64>> {
+        self.cells_with(addr, |c| c.num)
+    }
+
+    /// The first `cats.len()` category labels a series holds a copy of, within the chart's points.
+    fn copy_cats(
+        &mut self,
+        cats: &[String],
+        nums: &[Option<f64>],
+    ) -> (Vec<String>, Vec<Option<f64>>) {
+        let n = cats.len().min(self.points_left);
+        if n < cats.len() {
+            self.truncated = true;
+        }
+        self.points_left -= n;
+        (cats[..n].to_vec(), nums[..n.min(nums.len())].to_vec())
+    }
+
     fn view(&self, n: &Node) -> View<'a> {
         let mut v = View::default();
         if let Some(def) = self.book.default_style("chart") {
@@ -693,6 +775,7 @@ pub(super) fn parse(content: &Node, styles: Option<&Node>) -> Option<Parsed> {
         formats,
         truncated: grid.truncated,
         grid,
+        points_left: MAX_CHART_POINTS,
     };
     let model = build(&mut cx, chart)?;
     let truncated = cx.truncated || book.truncated;
@@ -785,9 +868,7 @@ fn build(cx: &mut Cx<'_>, chart: &Node) -> Option<ch::ChartModel> {
     let cat_addr = x_axis
         .and_then(|a| a.child("categories"))
         .and_then(|c| qattr(c, "table:cell-range-address"));
-    let cats = cx.grid.texts(cat_addr);
-    let cat_cells = cx.grid.cells(cat_addr);
-    let cat_nums: Vec<Option<f64>> = cat_cells.iter().map(|c| c.num).collect();
+    let (cats, cat_nums) = cx.categories(cat_addr);
 
     // Series -> groups (one per class and axis, in order of first appearance).
     let vertical = truthy(cp(&plot_view, "vertical")).unwrap_or(false);
@@ -995,12 +1076,7 @@ fn series_of(
     let v = cx.view(s);
     let mut out = ch::Series::default();
     let addr = |key: &str| qattr(s, &format!("chart:{key}"));
-    let name = cx
-        .grid
-        .texts(addr("label-cell-address"))
-        .into_iter()
-        .next()
-        .filter(|t| !t.trim().is_empty());
+    let name = cx.series_label(addr("label-cell-address"));
     out.name = name;
     let domains: Vec<Option<&str>> = s
         .nodes()
@@ -1011,19 +1087,18 @@ fn series_of(
     let values_addr = addr("values-cell-range-address");
     match kind {
         ch::GroupKind::Scatter => {
-            out.x_values = cx.grid.numbers(domains.first().copied().flatten());
-            out.values = cx.grid.numbers(values_addr);
+            out.x_values = cx.numbers(domains.first().copied().flatten());
+            out.values = cx.numbers(values_addr);
         }
         ch::GroupKind::Bubble => {
             // Values are the bubble sizes, the first domain the x values, the second the y values.
-            out.sizes = cx.grid.numbers(values_addr);
-            out.x_values = cx.grid.numbers(domains.first().copied().flatten());
-            out.values = cx.grid.numbers(domains.get(1).copied().flatten());
+            out.sizes = cx.numbers(values_addr);
+            out.x_values = cx.numbers(domains.first().copied().flatten());
+            out.values = cx.numbers(domains.get(1).copied().flatten());
         }
         _ => {
-            out.values = cx.grid.numbers(values_addr);
-            out.cats = cats.to_vec();
-            out.cat_nums = cat_nums.to_vec();
+            out.values = cx.numbers(values_addr);
+            (out.cats, out.cat_nums) = cx.copy_cats(cats, cat_nums);
         }
     }
     out.format_code = cx.format_of(&v);
@@ -1313,4 +1388,83 @@ fn axis_of(
         }
     }
     ax
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grid(rows: usize, cols: usize) -> Grid {
+        Grid {
+            rows: (0..rows)
+                .map(|r| {
+                    (0..cols)
+                        .map(|c| Cell {
+                            num: Some((r * 1000 + c) as f64),
+                            text: format!("{r}.{c}"),
+                        })
+                        .collect()
+                })
+                .collect(),
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn a_column_range_reads_down_and_a_row_range_across() {
+        let g = grid(3, 3);
+        let (v, cut) = g.map_cells(Some("local-table.$B$1:.$B$3"), 100, |c| c.num);
+        assert_eq!(v, vec![Some(1.0), Some(1001.0), Some(2001.0)]);
+        assert!(!cut);
+        let (v, _) = g.map_cells(Some("local-table.$A$2:.$C$2"), 100, |c| c.num);
+        assert_eq!(v, vec![Some(1000.0), Some(1001.0), Some(1002.0)]);
+        // Several ranges, in order; the slots outside the table are empty.
+        let (v, _) = g.map_cells(Some("local-table.$A$1 local-table.$D$9"), 100, |c| c.num);
+        assert_eq!(v, vec![Some(0.0), None]);
+    }
+
+    #[test]
+    fn a_huge_range_stops_at_the_limit_and_says_so() {
+        let g = grid(2, 2);
+        for limit in [0usize, 1, 7, ch::MAX_POINTS] {
+            let (v, cut) = g.map_cells(Some("local-table.$A$1:.$IV$20000"), limit, |c| c.num);
+            assert_eq!(v.len(), limit, "limit {limit}");
+            assert!(cut, "limit {limit}");
+            // (No spare room: the vector is as long as what it holds.)
+            assert_eq!(v.capacity(), v.len(), "limit {limit}");
+        }
+        // A single row of a million slots too.
+        let (v, cut) = g.map_cells(Some("local-table.$A$1:.$ZZZ$1"), 50, |c| c.num);
+        assert_eq!(v.len(), 50);
+        assert!(cut);
+    }
+
+    #[test]
+    fn the_limit_is_never_above_the_points_of_a_series() {
+        let g = grid(1, 1);
+        let (v, cut) = g.map_cells(Some("local-table.$A$1:.$A$30000"), usize::MAX, |c| c.num);
+        assert_eq!(v.len(), ch::MAX_POINTS);
+        assert!(cut);
+    }
+
+    #[test]
+    fn a_range_that_just_fits_is_not_cut() {
+        let g = grid(1, 1);
+        let (v, cut) = g.map_cells(Some("local-table.$A$1:.$A$5"), 5, |c| c.num);
+        assert_eq!(v.len(), 5);
+        assert!(!cut);
+        let (v, cut) = g.map_cells(None, 5, |c| c.num);
+        assert!(v.is_empty() && !cut);
+        let (v, cut) = g.map_cells(Some("garbage"), 5, |c| c.num);
+        assert!(v.is_empty() && !cut);
+    }
+
+    #[test]
+    fn a_wide_block_is_walked_only_as_wide_as_a_table_can_be() {
+        let g = grid(1, 1);
+        // 3 rows x 18,000 columns: the columns past the table's width are all empty slots.
+        let (v, cut) = g.map_cells(Some("local-table.$A$1:.$ZZ$3"), ch::MAX_POINTS, |c| c.num);
+        assert!(cut);
+        assert_eq!(v.len(), (MAX_TABLE_COLS + 1) * 3);
+    }
 }

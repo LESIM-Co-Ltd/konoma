@@ -38,11 +38,12 @@ use crate::preview::office::slide_draw as sd;
 use sd::Rgba;
 
 use super::styles::{StyleBook, View};
-use super::units::{angle_deg, color, luminance, pct};
+use super::units::{color, luminance, pct};
 use super::*;
 
-/// Most characters of text drawn on one slide (masters and the slide together).
-pub(super) const MAX_SLIDE_CHARS: usize = 200_000;
+/// Most characters (not bytes) of text drawn on one slide (master and slide together): the limit
+/// the PowerPoint reader has, so the two formats agree on what a slide may hold.
+pub(super) const MAX_SLIDE_CHARS: usize = sd::text::MAX_TEXT_CHARS;
 /// Most paragraphs of one text body.
 pub(super) const MAX_PARAGRAPHS: usize = 5_000;
 /// Deepest list nesting followed.
@@ -198,7 +199,7 @@ impl<'a> Sb<'a> {
     ) -> Option<sd::TextBody> {
         let mut paras: Vec<sd::Paragraph> = Vec::new();
         let base_list = shape.list();
-        self.blocks(kids, env, base_list, None, 0, false, &mut paras);
+        self.blocks(kids, env, base_list, 0, false, &mut paras);
         if paras.is_empty() || paras.iter().all(|p| p.runs.is_empty()) && paras.len() == 1 {
             // A single empty paragraph carries no text; an empty text box draws nothing.
             if paras.iter().all(|p| p.runs.is_empty()) {
@@ -262,12 +263,10 @@ impl<'a> Sb<'a> {
         kids: &'a [Kid],
         env: &Env<'a>,
         list: Option<&'a Node>,
-        outer_list: Option<&'a Node>,
         depth: usize,
         header: bool,
         out: &mut Vec<sd::Paragraph>,
     ) {
-        let _ = outer_list;
         for k in kids {
             let Kid::N(n) = k else { continue };
             if out.len() >= MAX_PARAGRAPHS || self.chars >= MAX_SLIDE_CHARS {
@@ -291,12 +290,12 @@ impl<'a> Sb<'a> {
                     for it in n.nodes() {
                         let hdr = it.name == "list-header";
                         if it.name == "list-item" || hdr {
-                            self.blocks(&it.kids, env, style, list, depth + 1, hdr, out);
+                            self.blocks(&it.kids, env, style, depth + 1, hdr, out);
                         }
                     }
                 }
                 ("text", "section" | "index-body") => {
-                    self.blocks(&n.kids, env, list, outer_list, depth, header, out);
+                    self.blocks(&n.kids, env, list, depth, header, out);
                 }
                 _ => {}
             }
@@ -362,7 +361,7 @@ impl<'a> Sb<'a> {
                 indent = -label;
             }
             if !header {
-                bullet = self.bullet(ln, &pv);
+                bullet = self.bullet(ln);
             }
         }
         para.mar_l = mar_l.clamp(-1.0e8, 1.0e8);
@@ -402,7 +401,7 @@ impl<'a> Sb<'a> {
     }
 
     /// The bullet a list level style defines.
-    fn bullet(&mut self, ln: &'a Node, pv: &View) -> Option<sd::Bullet> {
+    fn bullet(&mut self, ln: &'a Node) -> Option<sd::Bullet> {
         let tp = ln.child("text-properties");
         let colour = tp.and_then(|t| {
             if t.attr("use-window-font-color").map(str::trim) == Some("true")
@@ -420,7 +419,6 @@ impl<'a> Sb<'a> {
             },
             None => sd::BulletSize::FollowText,
         };
-        let _ = pv;
         // OpenSymbol's characters are Unicode already, but its black circle is far bigger than the
         // same character in a text face (LibreOffice draws "45 %" of it as a clearly visible dot):
         // the size is scaled to look the same.
@@ -548,11 +546,13 @@ impl<'a> Sb<'a> {
                                     Some("next") => 1,
                                     _ => 0,
                                 };
+                                self.slide_dep = true;
                                 let no = (self.number as i64 + delta).max(0);
                                 self.field(no.to_string(), pv, env, inl);
                             }
                             "page-count" => self.field(PAGE_COUNT_MARK.to_string(), pv, env, inl),
                             "page-name" => {
+                                self.slide_dep = true;
                                 let name = self.page_name.clone();
                                 self.field(name, pv, env, inl);
                             }
@@ -625,7 +625,7 @@ impl<'a> Sb<'a> {
     }
 
     fn field(&mut self, text: String, pv: &View<'a>, env: &Env<'a>, inl: &mut Inl) {
-        self.chars += text.len();
+        self.chars += text.chars().count();
         let mut r = self.run_of(pv, env, &text);
         r.text = text;
         r.kind = sd::RunKind::Field;
@@ -659,10 +659,11 @@ impl<'a> Sb<'a> {
         if pv.t("display").map(str::trim) == Some("none") {
             return;
         }
-        self.chars += s.len();
+        let n = s.chars().count();
+        self.chars += n;
         if self.chars > MAX_SLIDE_CHARS {
             self.truncated = true;
-            let keep = MAX_SLIDE_CHARS.saturating_sub(self.chars - s.len());
+            let keep = MAX_SLIDE_CHARS.saturating_sub(self.chars - n);
             s = s.chars().take(keep).collect();
             if s.is_empty() {
                 return;
@@ -793,7 +794,6 @@ impl<'a> Sb<'a> {
             (_, Some("small-caps")) => sd::Caps::Small,
             _ => sd::Caps::None,
         };
-        let _ = angle_deg;
         r
     }
 

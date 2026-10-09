@@ -219,3 +219,56 @@ fn fontwork_dump() {
             .unwrap();
     }
 }
+
+#[test]
+fn the_fontwork_of_a_slide_shares_one_budget() {
+    // Each shape's text is as long as a shape may warp; the slide warps three of them in full.
+    let long = "W".repeat(fontwork::MAX_CHARS);
+    let shapes: String = (0..5)
+        .map(|_| shape_xml(&long, "fontwork-plain-text", PLAIN))
+        .collect();
+    let o = op(&slide_page(&shapes)).auto(&gr(
+        r##"draw:fill="solid" draw:fill-color="#aa0000" draw:stroke="solid" svg:stroke-color="#00aa00""##,
+    ));
+    let sc = scene(&o);
+    let warped: Vec<bool> = shapes_of(&sc)
+        .iter()
+        .map(|s| matches!(s.geom, Geometry::Paths(_)) && s.text.is_none())
+        .collect();
+    assert_eq!(warped, vec![true, true, true, false, false]);
+    // The slide says it is not drawn as written; the text of the last two is kept as plain text.
+    assert!(sc.truncated);
+    assert!(text_of_shape(shapes_of(&sc)[4]).starts_with("WWW"));
+}
+
+#[test]
+fn a_slide_within_the_fontwork_budget_is_not_marked() {
+    let shapes: String = (0..3)
+        .map(|_| shape_xml("Hello", "fontwork-plain-text", PLAIN))
+        .collect();
+    let o = op(&slide_page(&shapes)).auto(&gr(
+        r##"draw:fill="solid" draw:fill-color="#aa0000" draw:stroke="solid" svg:stroke-color="#00aa00""##,
+    ));
+    let sc = scene(&o);
+    assert!(!sc.truncated);
+    assert!(shapes_of(&sc)
+        .iter()
+        .all(|s| matches!(s.geom, Geometry::Paths(_))));
+}
+
+#[test]
+fn the_fontwork_budget_is_each_slides_own() {
+    let long = "W".repeat(fontwork::MAX_CHARS);
+    let shapes: String = (0..3)
+        .map(|_| shape_xml(&long, "fontwork-plain-text", PLAIN))
+        .collect();
+    let o = op(&format!("{}{}", slide_page(&shapes), slide_page(&shapes))).auto(&gr(
+        r##"draw:fill="solid" draw:fill-color="#aa0000" draw:stroke="solid" svg:stroke-color="#00aa00""##,
+    ));
+    for sc in scenes(&o) {
+        assert!(!sc.truncated);
+        assert!(shapes_of(&sc)
+            .iter()
+            .all(|s| matches!(s.geom, Geometry::Paths(_))));
+    }
+}

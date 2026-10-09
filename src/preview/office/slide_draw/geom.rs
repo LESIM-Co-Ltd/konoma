@@ -368,7 +368,8 @@ impl<'a> Scope<'a> {
 }
 
 /// Evaluates one formula against the built-in guides of a `w` x `h` box and the extra `guides`
-/// (name, value). Mostly for tests and diagnostics; the geometry code uses [`Scope`] directly.
+/// (name, value). For tests; the geometry code uses [`Scope`] directly.
+#[cfg(test)]
 pub fn eval_formula(fmla: &str, w: f64, h: f64, guides: &[(&str, f64)]) -> f64 {
     let mut s = Scope::new(sane_size(w), sane_size(h));
     for (n, v) in guides {
@@ -520,7 +521,8 @@ pub fn preset_adjust_names(name: &str) -> Option<Vec<String>> {
     )
 }
 
-/// The names of all the presets, sorted.
+/// The names of all the presets, sorted (the tests walk them).
+#[cfg(test)]
 pub fn preset_names() -> Vec<&'static str> {
     super::geom_xml::preset_names()
 }

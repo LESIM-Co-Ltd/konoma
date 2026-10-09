@@ -509,8 +509,21 @@ fn the_markdown_budget_cuts_the_deck_at_a_heading_boundary_of_what_fits() {
         .collect();
     let d = load_px(&Px::new(slides), &opts).unwrap();
     assert!(d.truncated);
-    assert!(d.markdown.len() <= 4_000);
-    assert!(d.slides.len() < 200 && !d.slides.is_empty());
+    // The text is cut where the body budget ends; the headings of the later slides go on in the
+    // room kept for them (a heading line and a blank one, 1 KiB, per slide that may be read), so
+    // every slide keeps its place and its picture.
+    assert!(d.markdown.len() <= 4_000 + opts.max_slides * 1_024);
+    assert_eq!(d.slides.len(), 200);
+    assert_eq!(d.slide_scenes.len(), 200);
+    assert_eq!(d.slide_keys.len(), 200);
+    // (the last slide's text is gone: its section is the heading alone)
+    assert!(!d
+        .markdown
+        .rsplit("## Slide 200")
+        .next()
+        .unwrap()
+        .contains("word"));
+    assert!(d.markdown.contains("## Slide 200: S199"));
     check_headings(&d);
 }
 
@@ -522,7 +535,35 @@ fn the_line_budget_cuts_the_deck_and_the_headings_stay_in_step() {
     };
     let d = load_px(&many_slides(100), &opts).unwrap();
     assert!(d.truncated);
-    assert!(d.markdown.lines().count() <= 50);
+    // (The headings of the slides past the body budget use the room kept for them.)
+    assert!(d.markdown.lines().count() <= 50 + 2 * opts.max_slides);
+    assert_eq!(d.slides.len(), 100);
+    assert_eq!(d.slide_scenes.len(), 100);
+    check_headings(&d);
+}
+
+#[test]
+fn a_deck_whose_text_fills_the_budget_keeps_every_slide_in_the_picture_view() {
+    // 300 slides of about 45 lines of text each: the text view stops at its 5,000 lines (about
+    // 100 slides) but no slide is lost, in either view.
+    let body: String = (0..40)
+        .map(|k| pa(&format!("line {k} of the body")))
+        .collect();
+    let slides: Vec<Sl> = (0..300)
+        .map(|i| sl(&[title(&format!("S{i}")), tb(0, I, I, I, &body)].concat()))
+        .collect();
+    let d = load_px(&Px::new(slides), &DocOptions::default()).unwrap();
+    assert!(d.truncated);
+    assert_eq!(d.slides.len(), 300);
+    assert_eq!(d.slide_scenes.len(), 300);
+    assert_eq!(d.slide_keys.len(), 300);
+    assert!(d.markdown.contains("## Slide 300: S299"));
+    // the text of the first slides is there, the last slide's is not
+    assert!(d.markdown.contains("line 39 of the body"));
+    assert!(d.markdown.lines().count() <= 5_000 + 2 * DocOptions::default().max_slides);
+    // The picture view: a heading and a picture line for each of the 300.
+    assert_eq!(d.picture_markdown.matches("\n## Slide ").count() + 1, 300);
+    assert_eq!(d.picture_markdown.matches("](office-img://").count(), 300);
     check_headings(&d);
 }
 

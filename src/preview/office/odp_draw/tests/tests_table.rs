@@ -637,3 +637,47 @@ fn a_row_with_no_text_is_not_shrunk_to_nothing() {
         assert!(at(c).3 > 0.8, "{:?}", at(c));
     }
 }
+
+#[test]
+fn covered_cells_repeated_a_million_times_are_stepped_over_at_once() {
+    // 20,000 covered cells, each repeated a million times: 2e10 steps one by one.
+    let covered =
+        r#"<table:covered-table-cell table:number-columns-repeated="1000000"/>"#.repeat(20_000);
+    let o = table_op(&format!(
+        "{}{}",
+        cols(3),
+        row(&(cell("c1", "A") + &covered + &cell("c2", "B")))
+    ));
+    let t = std::time::Instant::now();
+    let sc = scene(&o);
+    assert!(t.elapsed().as_secs() < 20, "{:?}", t.elapsed());
+    // A is the one cell; B is past the end of the grid (the covered slots took them), so the table
+    // is marked cut rather than B being drawn in a column that does not exist.
+    let texts: Vec<String> = cells_of(&sc).iter().map(text_of_shape).collect();
+    assert!(texts.contains(&"A".to_string()), "{texts:?}");
+    assert!(!texts.contains(&"B".to_string()), "{texts:?}");
+    assert!(sc.truncated);
+}
+
+#[test]
+fn a_covered_run_still_puts_the_next_cell_in_its_column() {
+    let o = table_op(&format!(
+        "{}{}",
+        cols(4),
+        row(&(cell("c1", "A")
+            + r#"<table:covered-table-cell table:number-columns-repeated="2"/>"#
+            + &cell("c2", "B")))
+    ));
+    let sc = scene(&o);
+    let cells = cells_of(&sc);
+    let a = cells.iter().find(|s| text_of_shape(s) == "A").unwrap();
+    let b = cells.iter().find(|s| text_of_shape(s) == "B").unwrap();
+    // 2 cm columns: A in the first, B in the fourth
+    assert!(
+        close(b.xfrm.x - a.xfrm.x, 6.0 * EMU_CM),
+        "{} {}",
+        a.xfrm.x,
+        b.xfrm.x
+    );
+    assert!(!sc.truncated);
+}

@@ -585,6 +585,7 @@ pub(in super::super) fn convert(
     let mut od = Od::new(conv, st);
     od.slides = true;
     od.c.split_bullet_lists = true;
+    od.c.reserve_slide_headings();
     let mut slides: Vec<SlideInfo> = Vec::new();
     let mut scenes: Vec<sd::SlideScene> = Vec::new();
     {
@@ -624,6 +625,7 @@ impl Od<'_> {
         scenes: &mut Vec<sd::SlideScene>,
     ) -> Result<(), OfficeError> {
         let mut decls = odp_draw::Decls::default();
+        let mut shared = odp_draw::Shared::default();
         let mut rd = XmlReader::new(src);
         let mut buf = Vec::new();
         if !self.enter_body(&mut rd, &mut buf, "presentation")? {
@@ -667,7 +669,7 @@ impl Od<'_> {
             // PowerPoint reader has, ends the reading of the slides.)
             if count >= opts.max_slides
                 || self.cancelled()
-                || self.c.full
+                || self.c.heading_full
                 || self.order_shapes > opts.max_deck_order_shapes
                 || rd.position() > opts.max_pptx_read_total
             {
@@ -680,7 +682,7 @@ impl Od<'_> {
                 Tree::Ok(page) => {
                     let info = self.slide(masters, count, &page);
                     if info.is_some() {
-                        scenes.push(self.scene(masters, &decls, count, &page));
+                        scenes.push(self.scene(masters, &decls, count, &page, &mut shared));
                     }
                     info
                 }
@@ -697,7 +699,7 @@ impl Od<'_> {
             if let Some(info) = info {
                 slides.push(info);
             }
-            if self.c.full {
+            if self.c.heading_full {
                 self.c.truncated = true;
                 return Ok(());
             }
@@ -712,6 +714,7 @@ impl Od<'_> {
         decls: &odp_draw::Decls,
         number: usize,
         page: &Node,
+        shared: &mut odp_draw::Shared,
     ) -> sd::SlideScene {
         let size = odp_draw::size_of(masters, page.attr("master-page-name"));
         let Some(book) = self.st.draw.as_ref() else {
@@ -730,6 +733,7 @@ impl Od<'_> {
                 opts,
                 page,
                 number,
+                shared,
             },
             &mut self.c,
         );

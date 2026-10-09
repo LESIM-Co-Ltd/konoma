@@ -905,6 +905,22 @@ mod slide_state_tests {
     }
 
     #[test]
+    fn a_deck_is_never_in_the_raw_view_so_the_text_footer_has_no_slide_keys() {
+        // `R` on a deck switches pictures / text, never to the raw source: the footer's code/text
+        // branch (the only one that could be reached in a raw view) therefore offers no `J/K`.
+        let mut r = deck_rig(3, 30);
+        r.app.ensure_md_cache(60);
+        assert!(r.app.slide_can_turn());
+        r.app.toggle_md_raw();
+        r.app.toggle_md_raw();
+        assert!(!r.app.is_raw_source());
+        // And if a raw view did exist (windowed reader, no decorated cache), `J`/`K` would not act.
+        r.app.tab.md_raw = true;
+        r.app.md_cache = None;
+        assert!(!r.app.slide_can_turn());
+    }
+
+    #[test]
     fn j_and_k_do_nothing_where_the_keys_are_not_offered() {
         // One slide and some text before its heading: the view is before the first heading, so J
         // would have somewhere to go - but the key is not offered for a single slide.

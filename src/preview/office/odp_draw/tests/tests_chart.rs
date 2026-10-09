@@ -834,3 +834,102 @@ fn named_symbols_keep_their_direction_and_shape() {
         assert_eq!(named(name), want, "{name}");
     }
 }
+
+// ---- the point budget -----------------------------------------------------------------------------
+
+fn total_values(m: &ch::ChartModel) -> usize {
+    m.groups
+        .iter()
+        .flat_map(|g| &g.series)
+        .map(|s| s.values.len() + s.x_values.len() + s.sizes.len() + s.cats.len())
+        .sum()
+}
+
+#[test]
+fn a_chart_makes_at_most_its_point_budget_over_all_series() {
+    // 255 series, each a block of 256 columns x 20,000 rows: 1.3 billion slots in all. Without a
+    // budget over the series each one made its own multi-million-cell vector.
+    let mut c = full("bar", "");
+    c.series = (0..ch::MAX_SERIES)
+        .map(|_| {
+            series(
+                "s1",
+                "local-table.$A$1:.$IV$20000",
+                "local-table.$A$1",
+                None,
+            )
+        })
+        .collect();
+    let p = parse(&read_tree(c.xml().as_bytes()).unwrap(), None).unwrap();
+    assert!(p.truncated);
+    assert!(total_values(&p.model) <= super::chart_read::MAX_CHART_POINTS);
+    for s in &p.model.groups[0].series {
+        assert!(s.values.len() <= ch::MAX_POINTS);
+    }
+    // The chart is still a chart: every series is there, the later ones empty.
+    assert_eq!(p.model.groups[0].series.len(), ch::MAX_SERIES);
+}
+
+#[test]
+fn the_series_that_come_first_get_the_points() {
+    let mut c = full("bar", "");
+    c.series = (0..40)
+        .map(|_| series("s1", "local-table.$B$1:.$B$20000", "x", None))
+        .collect();
+    let p = parse(&read_tree(c.xml().as_bytes()).unwrap(), None).unwrap();
+    let lens: Vec<usize> = p.model.groups[0]
+        .series
+        .iter()
+        .map(|s| s.values.len())
+        .collect();
+    // 200,000 points (less the categories): nine series of 20,000, a part of the tenth, then nothing.
+    assert!(lens[..9].iter().all(|n| *n == ch::MAX_POINTS), "{lens:?}");
+    assert!(lens[9] < ch::MAX_POINTS, "{lens:?}");
+    assert!(lens[10..].iter().all(|n| *n == 0), "{lens:?}");
+    assert!(p.truncated);
+}
+
+#[test]
+fn the_category_labels_each_series_copies_count_against_the_budget() {
+    let mut c = full("bar", "");
+    // Categories of 20,000 slots, and a series per copy of them.
+    c.axes = c.axes.replace("$A$2:.$A$4", "$A$2:.$A$20001");
+    c.series = (0..ch::MAX_SERIES)
+        .map(|_| series("s1", "local-table.$B$2:.$B$4", "x", None))
+        .collect();
+    let p = parse(&read_tree(c.xml().as_bytes()).unwrap(), None).unwrap();
+    assert!(p.truncated);
+    assert!(total_values(&p.model) <= super::chart_read::MAX_CHART_POINTS + 20_000 + 20_000);
+    let copies: usize = p.model.groups[0].series.iter().map(|s| s.cats.len()).sum();
+    assert!(copies <= super::chart_read::MAX_CHART_POINTS);
+}
+
+#[test]
+fn a_chart_that_plots_each_cell_once_is_never_cut_by_the_budget() {
+    // 4 series x 20,000 points, with categories: 160,000 values of the 200,000.
+    let mut c = full("bar", "");
+    c.axes = c.axes.replace("$A$2:.$A$4", "$A$2:.$A$20001");
+    c.series = (0..4)
+        .map(|_| series("s1", "local-table.$B$2:.$B$20001", "local-table.$B$1", None))
+        .collect();
+    let p = parse(&read_tree(c.xml().as_bytes()).unwrap(), None).unwrap();
+    assert!(!p.truncated);
+    for s in &p.model.groups[0].series {
+        assert_eq!((s.values.len(), s.cats.len()), (20_000, 20_000));
+    }
+}
+
+#[test]
+fn a_label_range_costs_one_cell_however_long_it_is() {
+    let mut c = full("bar", "");
+    c.series = series(
+        "s1",
+        "local-table.$B$2:.$B$4",
+        "local-table.$A$1:.$IV$20000",
+        None,
+    );
+    let p = parse(&read_tree(c.xml().as_bytes()).unwrap(), None).unwrap();
+    // (The rest of the range is not an error and not a truncation.)
+    assert!(!p.truncated);
+    assert_eq!(p.model.groups[0].series[0].values.len(), 3);
+}

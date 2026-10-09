@@ -137,6 +137,11 @@ pub struct DocOptions {
     /// to 3.4 microseconds a shape; the pass gives up above `UNDERLAY_MAX_SHAPES` a call, so this is
     /// at most about a third of a second). 1,000 slides of 50 shapes is half of it.
     pub max_deck_order_shapes: usize,
+    /// Most scene items (the drawing of the slides) a presentation keeps over all its slides; a
+    /// master's or a layout's drawing counts once however many slides show it, a slide's own items
+    /// each. The slides after the limit are drawn partly or not at all and the document is marked
+    /// truncated. See `slide_draw::underlay::MAX_DECK_ITEMS` for how the default was chosen.
+    pub max_deck_items: usize,
 }
 
 impl Default for DocOptions {
@@ -164,6 +169,7 @@ impl Default for DocOptions {
             max_slide_part_bytes: 16 * MIB,
             max_pptx_read_total: 64 * MIB,
             max_deck_order_shapes: 100_000,
+            max_deck_items: super::slide_draw::underlay::MAX_DECK_ITEMS,
         }
     }
 }
@@ -192,18 +198,15 @@ pub struct Document {
     pub slides: Vec<pptx::SlideInfo>,
     /// One drawing model per entry of [`Document::slides`], same order; empty for Word documents
     /// and until the readers fill it.
-    #[allow(dead_code)] // read by the app once the slide readers fill it
     pub slide_scenes: Vec<super::slide_draw::SlideScene>,
     /// A presentation's default view: for each slide, the same level-2 heading line as in
     /// `markdown` (identical text, same order, exactly one per slide and none besides), then a
     /// blank line, the slide picture as `![<alt>](<slide_keys[i]>)`, a blank line, and the slide's
     /// notes exactly as `markdown` writes them. Empty for Word documents and until a reader fills
     /// it (the app then shows `markdown`).
-    #[allow(dead_code)] // read by the app once the slide readers fill it
     pub picture_markdown: String,
     /// The picture URL of each slide (`office-img://<12 hex>/slide-<n>.svg`, unique per conversion
     /// so two decks never share a cached picture), one per entry of `slide_scenes`, same order.
-    #[allow(dead_code)] // read by the app once the slide readers fill it
     pub slide_keys: Vec<String>,
 }
 
@@ -596,6 +599,15 @@ struct Conv<'a> {
     defs_bytes: usize,
     body_bytes: usize,
     body_lines: usize,
+    /// Room beyond the body budgets that only slide headings may use (a presentation keeps every
+    /// slide's place whatever its text came to: see [`Conv::reserve_slide_headings`]). 0 for a
+    /// document.
+    head_bytes: usize,
+    head_lines: usize,
+    /// A slide heading is being written: it may use the room above.
+    heading_force: bool,
+    /// A slide heading did not fit even the room above: no further slide can be kept.
+    heading_full: bool,
     full: bool,
 }
 
@@ -653,6 +665,10 @@ impl<'a> Conv<'a> {
             body_lines: opts
                 .max_markdown_lines
                 .saturating_sub((opts.max_markdown_lines / 10).min(500)),
+            head_bytes: 0,
+            head_lines: 0,
+            heading_force: false,
+            heading_full: false,
             full: false,
         }
     }
@@ -1849,6 +1865,16 @@ impl<'a> Conv<'a> {
         }
     }
 
+    /// Lets a presentation keep every slide's heading when its text fills the body budget: the
+    /// slides after that are still read (their pictures are drawn, their place in the order stays)
+    /// and only their text is left out, flagged truncated. Without it a deck whose text view
+    /// reached the cap (about 100 slides of 45 lines) lost every later slide from both views.
+    /// The room is a heading line and a blank one, and 1 KiB, per slide that may be read.
+    fn reserve_slide_headings(&mut self) {
+        self.head_lines = self.opts.max_slides.saturating_mul(2);
+        self.head_bytes = self.opts.max_slides.saturating_mul(1024);
+    }
+
     fn write_blocks(&mut self, blks: Vec<Blk>) {
         for b in blks {
             if self.full {
@@ -1985,20 +2011,31 @@ impl<'a> Conv<'a> {
     /// Appends a block, within the budgets. A block that does not fit is cut at a line boundary
     /// (or dropped) and the conversion is over.
     fn push_piece(&mut self, piece: String, kind: Last, sep: &str) {
-        if self.full {
+        // (A slide heading goes on after the body budget is spent, within the room kept for them.)
+        let force = self.heading_force;
+        if self.full && !force {
             return;
         }
+        let (cap_bytes, cap_lines) = if force {
+            (
+                self.body_bytes.saturating_add(self.head_bytes),
+                self.body_lines.saturating_add(self.head_lines),
+            )
+        } else {
+            (self.body_bytes, self.body_lines)
+        };
         let sep = if self.last == Last::None { "" } else { sep };
         let mut text = format!("{sep}{piece}");
         let add_lines = text.matches('\n').count() + usize::from(self.last == Last::None);
-        let over_bytes = self.out.len() + text.len() > self.body_bytes;
-        let over_lines = self.out_lines + add_lines > self.body_lines;
+        let over_bytes = self.out.len() + text.len() > cap_bytes;
+        let over_lines = self.out_lines + add_lines > cap_lines;
         if over_bytes || over_lines {
             self.full = true;
+            self.heading_full |= force;
             self.truncated = true;
             // Keep as much of the block as fits, whole lines only.
-            let room_bytes = self.body_bytes.saturating_sub(self.out.len());
-            let room_lines = self.body_lines.saturating_sub(self.out_lines);
+            let room_bytes = cap_bytes.saturating_sub(self.out.len());
+            let room_lines = cap_lines.saturating_sub(self.out_lines);
             let mut keep = String::new();
             let mut lines = 0usize;
             for (i, l) in text.split('\n').enumerate() {

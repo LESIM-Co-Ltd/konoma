@@ -257,7 +257,7 @@ pub(super) fn render(
         }
         f => w.paint(&d, f, bg_box, "", PathFill::Norm),
     }
-    for item in &scene.items {
+    for item in scene.drawn_items() {
         if w.over_budget() {
             w.truncated = true;
             break;

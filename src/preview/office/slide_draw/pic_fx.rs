@@ -444,6 +444,7 @@ mod tests {
             width: 100.0 * EMU_PER_PX,
             height: 100.0 * EMU_PER_PX,
             background: Fill::Solid(Rgba::BLACK),
+            underlay: Vec::new(),
             items: vec![Item::Shape(sh)],
             truncated: false,
         };
@@ -534,6 +535,7 @@ mod tests {
             width: 50.0 * EMU_PER_PX,
             height: 50.0 * EMU_PER_PX,
             background: Fill::Solid(Rgba::WHITE),
+            underlay: Vec::new(),
             items: vec![Item::Shape(sh)],
             truncated: false,
         };

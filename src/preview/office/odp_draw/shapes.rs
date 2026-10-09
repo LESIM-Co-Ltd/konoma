@@ -12,6 +12,28 @@ use super::*;
 /// LibreOffice's default fill colour of a shape (`#729fcf`).
 const DEFAULT_SHAPE_FILL: sd::Rgba = sd::Rgba::rgb(0x72, 0x9f, 0xcf);
 
+/// The draw shapes among `nodes` in paint order: `draw:z-index` decides when it is there (stable:
+/// shapes without one keep their place relative to one another).
+pub(super) fn ordered_shapes<'a>(nodes: impl Iterator<Item = &'a Node>) -> Vec<&'a Node> {
+    let mut list: Vec<&'a Node> = nodes.filter(|n| n.prefix == "draw").collect();
+    if list.iter().any(|n| n.attr("z-index").is_some()) {
+        let mut keyed: Vec<(i64, usize, &Node)> = list
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let z = n
+                    .attr("z-index")
+                    .and_then(|z| z.trim().parse::<i64>().ok())
+                    .unwrap_or(i as i64);
+                (z, i, *n)
+            })
+            .collect();
+        keyed.sort_by_key(|k| (k.0, k.1));
+        list = keyed.into_iter().map(|k| k.2).collect();
+    }
+    list
+}
+
 /// Which of a master page's footer-line placeholders the slide shows.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Furniture {
@@ -74,9 +96,90 @@ fn pt_attr(n: &Node, q: &str) -> Option<f64> {
 }
 
 impl<'a> Sb<'a> {
-    /// Draws the shapes of a master page.
-    pub(super) fn build_master(&mut self, m: &'a Node, f: &Furniture, out: &mut Vec<sd::Item>) {
-        self.build_nodes(m.nodes(), 0, out, Some(f));
+    /// Adds the shapes of a master page to the slide's `underlay`, back to front.
+    ///
+    /// With `new` false, `draw` is what the first slide with the same footer line and page colour
+    /// built: its shared lists are taken as they are and the shapes that show the slide's own page
+    /// number or name are built again. With `new` true the master page is built shape by shape,
+    /// within what is left of the deck's items, and the drawing to keep for the other slides is
+    /// returned. The slide's counters have the master's items and characters in them after.
+    pub(super) fn master_segments(
+        &mut self,
+        m: &'a Node,
+        f: &Furniture,
+        draw: PartDraw,
+        new: bool,
+        deck: &mut DeckItems,
+        underlay: &mut Vec<Arc<Vec<sd::Item>>>,
+    ) -> Option<PartDraw> {
+        let list = ordered_shapes(m.nodes());
+        let cap = self.max_items;
+        // (The master page has Fontwork budgets of its own: the slides that share it all see it
+        // the same.)
+        let fw = (self.fw_chars, self.fw_points);
+        let mut one = |sb: &mut Self, n: &'a Node| -> (Vec<sd::Item>, bool, usize, usize) {
+            let was_dep = std::mem::replace(&mut sb.slide_dep, false);
+            let (items0, chars0) = (sb.items, sb.chars);
+            sb.max_items = cap.min(sb.items.saturating_add(deck.left()));
+            let mut out = Vec::new();
+            sb.build_list(&[n], 0, &mut out, Some(f));
+            let dep = sb.slide_dep;
+            sb.slide_dep = was_dep;
+            let count = sb.items.saturating_sub(items0);
+            deck.spend(count);
+            (out, dep, count, sb.chars.saturating_sub(chars0))
+        };
+        if !new {
+            self.items += draw.count;
+            self.chars += draw.chars;
+            self.truncated |= draw.truncated;
+            for seg in &draw.segs {
+                match seg {
+                    Seg::Shared(l) => underlay.push(Arc::clone(l)),
+                    Seg::Own(i) => {
+                        self.fw_chars = fontwork::SLIDE_CHARS;
+                        self.fw_points = fontwork::SLIDE_POINTS;
+                        let (items, ..) = one(self, list[*i]);
+                        if !items.is_empty() {
+                            underlay.push(Arc::new(items));
+                        }
+                    }
+                }
+            }
+            (self.fw_chars, self.fw_points) = fw;
+            return None;
+        }
+        self.fw_chars = fontwork::SLIDE_CHARS;
+        self.fw_points = fontwork::SLIDE_POINTS;
+        let was_truncated = std::mem::replace(&mut self.truncated, false);
+        let mut b = PartBuilder::default();
+        let mut owned: Vec<Vec<sd::Item>> = Vec::new();
+        for (i, n) in list.iter().enumerate() {
+            let (items, dep, count, chars) = one(self, n);
+            if dep {
+                b.own(i);
+                owned.push(items);
+            } else {
+                b.shared(items, count, chars);
+            }
+        }
+        let truncated = self.truncated;
+        self.truncated |= was_truncated;
+        (self.fw_chars, self.fw_points) = fw;
+        let draw = b.finish(truncated);
+        let mut own = owned.into_iter();
+        for seg in &draw.segs {
+            match seg {
+                Seg::Shared(l) => underlay.push(Arc::clone(l)),
+                Seg::Own(_) => {
+                    let items = own.next().unwrap_or_default();
+                    if !items.is_empty() {
+                        underlay.push(Arc::new(items));
+                    }
+                }
+            }
+        }
+        Some(draw)
     }
 
     /// The shapes among `nodes`, appended to `out` in paint order (`draw:z-index` decides when it
@@ -89,24 +192,19 @@ impl<'a> Sb<'a> {
         out: &mut Vec<sd::Item>,
         master: Option<&Furniture>,
     ) {
-        let mut list: Vec<&'a Node> = nodes.filter(|n| n.prefix == "draw").collect();
-        if list.iter().any(|n| n.attr("z-index").is_some()) {
-            // Stable: shapes without a z-index keep their place relative to one another.
-            let mut keyed: Vec<(i64, usize, &Node)> = list
-                .iter()
-                .enumerate()
-                .map(|(i, n)| {
-                    let z = n
-                        .attr("z-index")
-                        .and_then(|z| z.trim().parse::<i64>().ok())
-                        .unwrap_or(i as i64);
-                    (z, i, *n)
-                })
-                .collect();
-            keyed.sort_by_key(|k| (k.0, k.1));
-            list = keyed.into_iter().map(|k| k.2).collect();
-        }
-        for n in list {
+        let list = ordered_shapes(nodes);
+        self.build_list(&list, depth, out, master);
+    }
+
+    /// The shapes of `list` (already in paint order), appended to `out`.
+    fn build_list(
+        &mut self,
+        list: &[&'a Node],
+        depth: usize,
+        out: &mut Vec<sd::Item>,
+        master: Option<&Furniture>,
+    ) {
+        for &n in list {
             if self.items >= self.max_items {
                 self.truncated = true;
                 return;
@@ -199,7 +297,7 @@ impl<'a> Sb<'a> {
         }
         let Some(place) = self.place(n) else { return };
         let Some(xf) = place.xfrm() else { return };
-        let (mut view, mut env) = self.look(n);
+        let (view, mut env) = self.look(n);
         let fill = self.fill(&view, place.w, place.h).unwrap_or(sd::Fill::None);
         env.auto = Some(self.auto_color(&fill));
         // A frame's style is a graphic style; the text of a text box is styled by it too.
@@ -247,7 +345,6 @@ impl<'a> Sb<'a> {
                 _ => {}
             }
         }
-        let _ = &mut view;
     }
 
     /// A table (`table:table` in a frame) as scene items (see [`super::table`]).
@@ -743,8 +840,6 @@ impl<'a> Sb<'a> {
             self.truncated = true;
         }
         shift(&mut cmds, vx, vy);
-        let open = !cmds.iter().any(|c| matches!(c, PathCmd::Close));
-        let _ = open;
         Some((
             sd::ShapeItem::new(
                 xf,
@@ -832,6 +927,12 @@ impl<'a> Sb<'a> {
         let Some(body) = shape.text.as_ref() else {
             return false;
         };
+        if self.fw_chars == 0 || self.fw_points == 0 {
+            // The slide's Fontwork budget is spent: the text stays as plain text, and the slide
+            // says something is not as drawn.
+            self.truncated = true;
+            return false;
+        }
         let lines: Vec<fontwork::TextLine> = body
             .paragraphs
             .iter()
@@ -852,8 +953,14 @@ impl<'a> Sb<'a> {
                 })
             })
             .collect();
-        let Some((geom, truncated)) = fontwork::warp(&paths, shape.xfrm.w, shape.xfrm.h, &lines)
-        else {
+        let Some((geom, truncated)) = fontwork::warp(
+            &paths,
+            shape.xfrm.w,
+            shape.xfrm.h,
+            &lines,
+            &mut self.fw_chars,
+            &mut self.fw_points,
+        ) else {
             return false;
         };
         if truncated {
@@ -881,11 +988,10 @@ impl<'a> Sb<'a> {
         if !(stretch || shrink) || body.vert != sd::Vert::Horz {
             return;
         }
-        let (tx, ty, tw, th) = match s.text_rect {
-            Some((l, t, r, b)) => (l, t, r - l, b - t),
-            None => (0.0, 0.0, s.xfrm.w, s.xfrm.h),
+        let (tw, th) = match s.text_rect {
+            Some((l, t, r, b)) => (r - l, b - t),
+            None => (s.xfrm.w, s.xfrm.h),
         };
-        let _ = (tx, ty);
         let w = (tw - body.insets.0 - body.insets.2) / sd::EMU_PER_PX;
         let h = (th - body.insets.1 - body.insets.3) / sd::EMU_PER_PX;
         if !(w > 1.0 && h > 1.0) {

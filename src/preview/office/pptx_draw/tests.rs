@@ -348,7 +348,7 @@ pub(super) fn shapes_of(items: &[Item]) -> Vec<&sd::ShapeItem> {
 }
 
 pub(super) fn first_shape(sc: &sd::SlideScene) -> &sd::ShapeItem {
-    match &sc.items[0] {
+    match sc.drawn_items().next().expect("an item") {
         Item::Shape(s) => s,
         other => panic!("not a shape: {other:?}"),
     }
@@ -1152,7 +1152,8 @@ fn marker(id: &str, x: i64) -> String {
 }
 
 fn fills(sc: &sd::SlideScene) -> Vec<Rgba> {
-    shapes_of(&sc.items)
+    let all: Vec<Item> = sc.drawn_items().cloned().collect();
+    shapes_of(&all)
         .iter()
         .map(|s| match s.fill {
             Fill::Solid(c) => c,
@@ -1949,8 +1950,7 @@ fn master_and_layout_pictures_are_loaded_once_and_shared_with_the_text_view() {
         .push(("rIdP".into(), "image".into(), "../media/logo.png".into()));
     let doc = d.load();
     let keys: Vec<String> = doc.slide_scenes[0]
-        .items
-        .iter()
+        .drawn_items()
         .map(|i| match i {
             Item::Picture(p) => p.image.key.clone(),
             _ => panic!(),
@@ -2319,7 +2319,7 @@ fn a_layout_with_too_many_shapes_keeps_what_fits_and_reports() {
     });
     assert!(doc.slide_scenes[0].truncated);
     assert!(doc.truncated);
-    assert!(doc.slide_scenes[0].items.len() > 100);
+    assert!(doc.slide_scenes[0].drawn_items().count() > 100);
 }
 
 #[test]

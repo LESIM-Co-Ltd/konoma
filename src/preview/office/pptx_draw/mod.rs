@@ -14,14 +14,24 @@
 //! * text with the full property chain ([`text`]), fills, outlines and effects from `spPr` and the
 //!   shape style ([`style`]), pictures, groups, connectors, embedded objects ([`shapes`]).
 //!
-//! Not drawn yet (owned by later tasks, each with one function where it plugs in): preset shapes
-//! other than a rectangle, an ellipse and a straight line, and custom geometry ([`geom`]); tables,
-//! charts and SmartArt (`Sb::frame_table`, `frame_chart`, `frame_diagram` in [`shapes`]).
+//! Also drawn: preset shapes and custom geometry ([`geom`]), tables ([`table`]), charts and
+//! SmartArt (`frames`). Pictures and OLE objects that have no drawing of their own are drawn from
+//! the picture PowerPoint stores beside them.
+//!
+//! # Shared drawings
+//!
+//! The shapes of a master and of a layout are the same for every slide that shows them, so they
+//! are built once per deck ([`Shared`]) and each slide's scene holds the lists
+//! ([`sd::SlideScene::underlay`]). A top-level shape that shows the slide's own number is built
+//! again for every slide and takes its place between the shared stretches. A slide's
+//! `p:clrMapOvr` recolours the shapes of its master and layout, so a drawing is shared only among
+//! slides seen through the same colour map.
 //!
 //! # Budgets
 //!
-//! Items per slide ([`DocOptions::max_slide_shapes`], master and layout shapes included), group
-//! nesting ([`MAX_GROUP_DEPTH`]), text characters per slide ([`text::MAX_TEXT_CHARS`]), gradient
+//! Items per slide ([`DocOptions::max_slide_shapes`], master and layout shapes included), items
+//! over the whole deck ([`DocOptions::max_deck_items`]: a master's list counts once, the slides'
+//! own items each), group nesting ([`MAX_GROUP_DEPTH`]), text characters per slide ([`text::MAX_TEXT_CHARS`]), gradient
 //! stops ([`style::MAX_GRAD_STOPS`]), custom dash entries ([`style::MAX_CUST_DASH`]), colour
 //! transforms ([`theme::MAX_COLOR_MODS`]), adjust values of a preset, and the shapes kept of a
 //! layout or master ([`MAX_PART_SHAPES`]). Going over any of them sets
@@ -29,9 +39,11 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 use crate::preview::office::slide_draw as sd;
+use crate::preview::office::slide_draw::underlay::{DeckItems, PartBuilder, PartDraw, Seg};
 use crate::preview::office::slide_draw::Rgba;
 
 use super::*;
@@ -56,6 +68,8 @@ mod tests_frames;
 mod tests_frames_dump;
 #[cfg(test)]
 mod tests_g1;
+#[cfg(test)]
+mod tests_shared;
 
 pub(super) use table::TableStyles;
 pub(super) use theme::Theme;
@@ -86,6 +100,18 @@ pub(super) struct DeckDraw {
     pub default_text: Option<Node>,
     /// `ppt/tableStyles.xml` (the styles a table's `a:tableStyleId` names).
     pub table_styles: Option<TableStyles>,
+    /// What the slides share: the drawings of the masters and layouts, the deck's item budget.
+    pub shared: Shared,
+}
+
+/// The drawings of a deck's masters and layouts, built once, and the items left to the deck.
+#[derive(Default)]
+pub(super) struct Shared {
+    /// Per part (kind, `PartInfo::uid`): its drawing under each colour map it was built with (a
+    /// slide's `p:clrMapOvr` recolours the master's and the layout's shapes too).
+    parts: HashMap<(u8, u64), Vec<(ClrMap, PartDraw)>>,
+    /// `None` until the first slide.
+    items: Option<DeckItems>,
 }
 
 /// Everything about one slide the builder reads.
@@ -107,7 +133,22 @@ pub(super) struct SceneInput<'a> {
     /// What the first slide's number field shows (`firstSlideNum`), and this slide's place.
     pub first_num: i64,
     pub number: usize,
+    pub shared: &'a mut Shared,
     pub parts: Parts<'a>,
+}
+
+/// The kinds of part whose drawing the slides share (a master's, a layout's).
+const PART_MASTER: u8 = 0;
+const PART_LAYOUT: u8 = 1;
+
+/// One top-level shape of a master or layout, built.
+struct Built {
+    items: Vec<sd::Item>,
+    /// It shows the slide's number: it belongs to the slide it was built for.
+    dep: bool,
+    /// What the reader counted for it (shapes, text characters).
+    count: usize,
+    chars: usize,
 }
 
 /// The state of building one scene.
@@ -139,6 +180,9 @@ pub(super) struct Sb<'a> {
     pub max_items: usize,
     pub chars: usize,
     pub truncated: bool,
+    /// A slide number field was built (the part being built shows this slide's number, so its
+    /// drawing is the slide's own and cannot be shared).
+    pub slide_dep: bool,
     /// The fill `a:grpFill` of the group being built stands for.
     pub group_fills: Vec<Option<sd::Fill>>,
     /// The child-space maps of the groups being built, innermost last.
@@ -159,13 +203,28 @@ pub(super) struct GroupMap {
 }
 
 impl GroupMap {
-    /// The map of a group with child space `child_off` / `child_ext` (positive extents) onto the
-    /// box `to`.
+    /// The map of a group with child space `child_off` / `child_ext` onto the box `to`. An axis
+    /// whose child extent is not a positive number (a group that states none and has no size
+    /// either) cannot be scaled: its members keep their size there (scale 1) and only move with the
+    /// group's offset. (A group with a zero size of its own over a real child extent is scale 0:
+    /// all its members collapse onto the group's line, as PowerPoint draws it.)
     pub(super) fn new(child_off: (f64, f64), child_ext: (f64, f64), to: &sd::Xfrm) -> GroupMap {
+        let axis = |size: f64, child: f64| {
+            if child.is_finite() && child > 0.0 {
+                let k = size / child;
+                if k.is_finite() {
+                    k
+                } else {
+                    1.0
+                }
+            } else {
+                1.0
+            }
+        };
         GroupMap {
             off: child_off,
             to: (to.x, to.y),
-            scale: (to.w / child_ext.0, to.h / child_ext.1),
+            scale: (axis(to.w, child_ext.0), axis(to.h, child_ext.1)),
         }
     }
 
@@ -238,6 +297,7 @@ pub(super) fn build_scene(
         max_items: inp.opts.max_slide_shapes,
         chars: 0,
         truncated: inp.cut || inh.layout.cut || inh.master.cut,
+        slide_dep: false,
         group_fills: Vec::new(),
         group_maps: Vec::new(),
     };
@@ -247,37 +307,148 @@ pub(super) fn build_scene(
         ..sd::SlideScene::default()
     };
     scene.background = sb.background(inp.bg, inh.layout.bg.as_ref(), inh.master.bg.as_ref());
-    // Back to front: the master's shapes, the layout's, the slide's.
-    if inp.show_master_sp && inh.layout.show_master_sp {
-        sb.cur = 2;
-        sb.build_nodes(
-            inh.master
-                .nodes
-                .iter()
-                .filter(|n| !shapes::is_placeholder(n)),
-            0,
-            &mut scene.items,
-        );
-    }
-    if inp.show_master_sp {
-        sb.cur = 1;
-        sb.build_nodes(
-            inh.layout
-                .nodes
-                .iter()
-                .filter(|n| !shapes::is_placeholder(n)),
-            0,
-            &mut scene.items,
-        );
+    // Back to front: the master's shapes, the layout's, the slide's. The first two are the same
+    // drawing for every slide that shows them: built once per deck (under the colour map they are
+    // seen through) and shared; only a shape that shows this slide's number is built again.
+    let deck = inp
+        .shared
+        .items
+        .get_or_insert_with(|| DeckItems::new(inp.opts.max_deck_items));
+    let master_shown = inp.show_master_sp && inh.layout.show_master_sp;
+    for (kind, shown, part) in [
+        (PART_MASTER, master_shown, &*inh.master),
+        (PART_LAYOUT, inp.show_master_sp, &inh.layout),
+    ] {
+        if !shown {
+            continue;
+        }
+        let cached = (part.uid != 0)
+            .then(|| {
+                inp.shared
+                    .parts
+                    .get(&(kind, part.uid))
+                    .and_then(|v| v.iter().find(|(m, _)| *m == map))
+                    .map(|(_, d)| d.clone())
+            })
+            .flatten();
+        let (draw, new) = match cached {
+            Some(d) => (d, false),
+            None => (PartDraw::default(), true),
+        };
+        let draw = sb.part_segments(kind, part, draw, new, deck, &mut scene.underlay);
+        if let (true, Some(d)) = (new && part.uid != 0, draw) {
+            inp.shared
+                .parts
+                .entry((kind, part.uid))
+                .or_default()
+                .push((map.clone(), d));
+        }
     }
     sb.cur = 0;
     sb.inh = Some(inh);
+    let base_items = sb.items;
+    sb.max_items = inp
+        .opts
+        .max_slide_shapes
+        .min(base_items.saturating_add(deck.left()));
     sb.build_nodes(inp.nodes.iter(), 0, &mut scene.items);
+    deck.spend(sb.items.saturating_sub(base_items));
     scene.truncated = sb.truncated;
     scene
 }
 
 impl Sb<'_> {
+    /// Adds the drawing of a master or a layout to the slide's `underlay`, back to front.
+    ///
+    /// With `new` false, `draw` is what the first slide that showed the part built: its shared
+    /// lists are taken as they are and the shapes that show the slide's number are built again.
+    /// With `new` true the part is built shape by shape (placeholders are never drawn), within
+    /// what is left of the deck's items, and the drawing to keep for the other slides is returned.
+    /// The slide's counters have the part's items and characters in them after, as before.
+    fn part_segments(
+        &mut self,
+        kind: u8,
+        part: &PartInfo,
+        draw: PartDraw,
+        new: bool,
+        deck: &mut DeckItems,
+        underlay: &mut Vec<Arc<Vec<sd::Item>>>,
+    ) -> Option<PartDraw> {
+        let nodes: Vec<&Node> = part
+            .nodes
+            .iter()
+            .filter(|n| !shapes::is_placeholder(n))
+            .collect();
+        self.cur = if kind == PART_MASTER { 2 } else { 1 };
+        let cap = self.max_items;
+        if !new {
+            self.items += draw.count;
+            self.chars += draw.chars;
+            self.truncated |= draw.truncated;
+            for seg in &draw.segs {
+                match seg {
+                    Seg::Shared(list) => underlay.push(Arc::clone(list)),
+                    Seg::Own(i) => {
+                        let built = self.build_one(nodes[*i], cap, deck);
+                        if !built.items.is_empty() {
+                            underlay.push(Arc::new(built.items));
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+        let was_truncated = std::mem::replace(&mut self.truncated, false);
+        let mut b = PartBuilder::default();
+        let mut owned: Vec<Vec<sd::Item>> = Vec::new();
+        for (i, n) in nodes.iter().enumerate() {
+            let built = self.build_one(n, cap, deck);
+            if built.dep {
+                b.own(i);
+                owned.push(built.items);
+            } else {
+                b.shared(built.items, built.count, built.chars);
+            }
+        }
+        let truncated = self.truncated;
+        self.truncated |= was_truncated;
+        let draw = b.finish(truncated);
+        let mut own = owned.into_iter();
+        for seg in &draw.segs {
+            match seg {
+                Seg::Shared(list) => underlay.push(Arc::clone(list)),
+                Seg::Own(_) => {
+                    let items = own.next().unwrap_or_default();
+                    if !items.is_empty() {
+                        underlay.push(Arc::new(items));
+                    }
+                }
+            }
+        }
+        Some(draw)
+    }
+
+    /// Builds one top-level shape of a master or layout. The shape is the slide's own when it
+    /// shows the slide's number; its items and characters are in the slide's counters, and it is
+    /// charged to the deck's items.
+    fn build_one(&mut self, n: &Node, cap: usize, deck: &mut DeckItems) -> Built {
+        let was_dep = std::mem::replace(&mut self.slide_dep, false);
+        let (items0, chars0) = (self.items, self.chars);
+        self.max_items = cap.min(self.items.saturating_add(deck.left()));
+        let mut out = Vec::new();
+        self.build_nodes(std::iter::once(n), 0, &mut out);
+        let dep = self.slide_dep;
+        self.slide_dep = was_dep;
+        let count = self.items.saturating_sub(items0);
+        deck.spend(count);
+        Built {
+            items: out,
+            dep,
+            count,
+            chars: self.chars.saturating_sub(chars0),
+        }
+    }
+
     /// The background fill: the slide's `p:bg`, else the layout's, else the master's; the
     /// background colour `bg1` when none says anything.
     fn background(
