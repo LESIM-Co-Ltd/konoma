@@ -419,8 +419,16 @@ fn a_missing_gradient_is_the_default_one() {
     let Fill::Gradient(g) = s.fill else {
         panic!("{:?}", s.fill)
     };
-    assert_eq!(g.stops[0].1, Rgba::rgb(0x12, 0x34, 0x56));
+    // LibreOffice's default: its line blue to white, from the top; the fill colour is not used
+    assert_eq!(g.stops[0].1, Rgba::rgb(0x34, 0x65, 0xa4));
     assert_eq!(g.stops[1].1, Rgba::WHITE);
+    assert_eq!(
+        g.kind,
+        sd::GradKind::Linear {
+            angle_deg: 90.0,
+            scaled: false
+        }
+    );
 }
 
 #[test]
@@ -1473,11 +1481,11 @@ fn outline_levels_use_the_outline_styles_of_the_master() {
 #[test]
 fn page_number_date_and_other_fields() {
     let o = text_op(
-        r#"<text:p>Page <text:page-number>1</text:page-number> of <text:page-count>9</text:page-count>, <text:date>2020-01-02</text:date><text:note><text:note-body><text:p>foot</text:p></text:note-body></text:note></text:p>"#,
+        r#"<text:p>Page <text:page-number>1</text:page-number> of <text:page-count>9</text:page-count>, <text:date text:fixed="true">2020-01-02</text:date><text:note><text:note-body><text:p>foot</text:p></text:note-body></text:note></text:p>"#,
         "",
     );
     let pages = format!("{}{}", slide_page(&tb("<text:p>x</text:p>")), slide_page(&tb(
-        "<text:p>Page <text:page-number>1</text:page-number> of <text:page-count>9</text:page-count>, <text:date>2020-01-02</text:date><text:note><text:note-body><text:p>foot</text:p></text:note-body></text:note></text:p>"
+        "<text:p>Page <text:page-number>1</text:page-number> of <text:page-count>9</text:page-count>, <text:date text:fixed=\"true\">2020-01-02</text:date><text:note><text:note-body><text:p>foot</text:p></text:note-body></text:note></text:p>"
     )));
     let _ = o;
     let d = doc(&op(&pages).auto(&gr(r#"draw:fill="none""#)));
@@ -2041,5 +2049,9 @@ fn the_preview_picture_beside_a_table_is_not_drawn() {
     let o = op(&slide_page(&frame))
         .auto(&gr(""))
         .part("Pictures/TablePreview1.svm", b"VCLMTF");
-    assert!(scene(&o).items.is_empty());
+    assert!(pictures_of(&scene(&o)).is_empty());
 }
+
+mod tests_chart;
+mod tests_fixes;
+mod tests_table;

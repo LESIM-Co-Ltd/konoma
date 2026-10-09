@@ -111,7 +111,9 @@ fn pie(o: &mut Out, m: &ChartModel, g: &ChartGroup, cx: f64, cy: f64, radius: f6
             continue;
         }
         let sweep = 360.0 * v / total;
-        let mid = a0 + sweep / 2.0;
+        // (Counter-clockwise: the slice is the one that ends at the running angle.)
+        let a_s = if g.counter_clockwise { a0 - sweep } else { a0 };
+        let mid = a_s + sweep / 2.0;
         let pf = map.get(&i).copied();
         let exp = pf
             .and_then(|p| p.explosion)
@@ -134,14 +136,14 @@ fn pie(o: &mut Out, m: &ChartModel, g: &ChartGroup, cx: f64, cy: f64, radius: f6
         if sweep >= 359.99 {
             o.ellipse(px, py, radius, radius, &fill, line.as_ref());
         } else {
-            let start = on_circle(px, py, radius, a0);
+            let start = on_circle(px, py, radius, a_s);
             let cmds = [
                 PathCmd::MoveTo(Pt::new(px, py)),
                 PathCmd::LineTo(Pt::new(start.0, start.1)),
                 PathCmd::ArcTo {
                     wr: radius,
                     hr: radius,
-                    st_deg: a0 - 90.0,
+                    st_deg: a_s - 90.0,
                     sw_deg: sweep,
                 },
                 PathCmd::Close,
@@ -159,7 +161,7 @@ fn pie(o: &mut Out, m: &ChartModel, g: &ChartGroup, cx: f64, cy: f64, radius: f6
         if let Some((text, st, pos)) = slice_label(m, g, s, i, *v, total, sweep, radius) {
             reqs.push((text, st, pos, px, py, radius, mid));
         }
-        a0 += sweep;
+        a0 += if g.counter_clockwise { -sweep } else { sweep };
     }
     let mut outside: Vec<OutsideLabel> = Vec::new();
     for (text, st, pos, px, py, r, mid) in reqs {
@@ -479,6 +481,7 @@ fn doughnut(o: &mut Out, m: &ChartModel, g: &ChartGroup, cx: f64, cy: f64, radiu
                 continue;
             }
             let sweep = 360.0 * v / total;
+            let a_s = if g.counter_clockwise { a0 - sweep } else { a0 };
             let pf = map.get(&i).copied();
             let fill = point_fill(m, g, s, pf, i);
             let stroke = pf.and_then(|p| p.line.as_ref()).or(s.line.as_ref());
@@ -488,20 +491,20 @@ fn doughnut(o: &mut Out, m: &ChartModel, g: &ChartGroup, cx: f64, cy: f64, radiu
                 // A full ring: two circles, the hole cut out by an even-odd-free trick: draw the
                 // outer disc, then the inner one in the plot's colour is not possible, so draw two
                 // half rings.
-                ring_slice(o, cx, cy, r_in, r_out, a0, 180.0, &fill, line.as_ref());
+                ring_slice(o, cx, cy, r_in, r_out, a_s, 180.0, &fill, line.as_ref());
                 ring_slice(
                     o,
                     cx,
                     cy,
                     r_in,
                     r_out,
-                    a0 + 180.0,
+                    a_s + 180.0,
                     179.99,
                     &fill,
                     line.as_ref(),
                 );
             } else {
-                ring_slice(o, cx, cy, r_in, r_out, a0, sweep, &fill, line.as_ref());
+                ring_slice(o, cx, cy, r_in, r_out, a_s, sweep, &fill, line.as_ref());
             }
             if o.full() {
                 return;
@@ -527,11 +530,11 @@ fn doughnut(o: &mut Out, m: &ChartModel, g: &ChartGroup, cx: f64, cy: f64, radiu
                         cy,
                         r_out,
                         r_in,
-                        a0 + sweep / 2.0,
+                        a_s + sweep / 2.0,
                     );
                 }
             }
-            a0 += sweep;
+            a0 += if g.counter_clockwise { -sweep } else { sweep };
         }
     }
 }

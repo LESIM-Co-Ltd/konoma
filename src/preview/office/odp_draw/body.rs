@@ -31,8 +31,8 @@
 //!
 //! The right margin of a paragraph, `style:line-spacing` (extra space between lines),
 //! `style:line-height-at-least` (drawn as single spacing), tab stops (a tab is four spaces), the
-//! underline colour and style, columns, text on a path, and `text:date` fields that have no cached
-//! value.
+//! underline colour and style, columns and text on a path. A `text:date` or `text:time` field that is
+//! not fixed shows the current date or time ([`super::dates`]).
 
 use crate::preview::office::slide_draw as sd;
 use sd::Rgba;
@@ -67,6 +67,8 @@ pub(super) struct Env<'a> {
     pub class: Option<&'a str>,
     /// The colour of automatic text.
     pub auto: Option<Rgba>,
+    /// The style layers of a table cell, under the paragraph's own styles.
+    pub cell: Option<View<'a>>,
 }
 
 /// What an inline walk collects.
@@ -171,6 +173,12 @@ impl<'a> Sb<'a> {
         }
         if let Some(g) = env.gfx {
             v.push_chain(book, "graphic", g);
+        }
+        // A table cell's style is over the frame's (the table's) look.
+        if let Some(c) = &env.cell {
+            for l in c.layers() {
+                v.push(l);
+            }
         }
         if let Some(t) = env.text_style {
             v.push_chain(book, "paragraph", t);
@@ -568,6 +576,15 @@ impl<'a> Sb<'a> {
                             | "change-end"
                             | "toc-mark"
                             | "alphabetical-index-mark" => {}
+                            "date" | "time" if n.attr("fixed").map(str::trim) != Some("true") => {
+                                // A date (or time) that is not fixed shows today's, in its own
+                                // format.
+                                let style = n
+                                    .attr("data-style-name")
+                                    .and_then(|s| self.book.date_styles.get(s.trim()));
+                                let t = super::dates::format(style, &super::dates::now());
+                                self.field(t, pv, env, inl);
+                            }
                             "date" | "time" | "file-name" | "title" | "subject" | "author-name"
                             | "author-initials" | "initial-creator" | "creator" | "description"
                             | "keywords" | "modification-date" | "modification-time"

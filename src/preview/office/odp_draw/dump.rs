@@ -15,6 +15,15 @@ use crate::preview::office::slide_draw as sd;
 const CACHE: &str = "/Users/shuhei/work/NoCode/.cache";
 const OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/d1";
 
+/// Where the images go: `ODP_DUMP_OUT` when set (so that parallel work does not overwrite another
+/// dump), else [`OUT`].
+fn out_dir() -> PathBuf {
+    std::env::var("ODP_DUMP_OUT")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| PathBuf::from(OUT), PathBuf::from)
+}
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -29,8 +38,16 @@ fn draw_all(doc: &Document, only: Option<usize>) -> Vec<Option<DynamicImage>> {
     doc.slide_scenes
         .iter()
         .take(only.unwrap_or(usize::MAX))
-        .map(|sc| {
+        .enumerate()
+        .map(|(i, sc)| {
             let r = sd::render_svg(sc, &lookup);
+            if let Some(dir) = selected("ODP_DUMP_SVG") {
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::fs::write(
+                    Path::new(&dir).join(format!("slide-{:03}.svg", i + 1)),
+                    &r.svg,
+                );
+            }
             crate::preview::svg::rasterize_trusted(r.svg.as_bytes(), Path::new("/slide.svg"), 1280)
         })
         .collect()
@@ -110,7 +127,8 @@ fn selected(var: &str) -> Option<String> {
 #[test]
 #[ignore = "writes docs/render-check/d1/*.png for a human to look at"]
 fn odp_dump_own_and_selfmade() {
-    let out = Path::new(OUT);
+    let out_buf = out_dir();
+    let out = out_buf.as_path();
     let only = selected("ODP_DUMP_ONLY");
     if only.is_none() {
         clear_dir(out, false);
@@ -152,9 +170,24 @@ fn odp_dump_own_and_selfmade() {
 }
 
 #[test]
+#[ignore = "writes images for a human to look at: ODP_DUMP_DECK (an .odp) and ODP_DUMP_REF (the directory of the reference slides)"]
+fn odp_dump_custom() {
+    let (Some(deck), Some(refd)) = (selected("ODP_DUMP_DECK"), selected("ODP_DUMP_REF")) else {
+        return;
+    };
+    let out_buf = out_dir();
+    let name = Path::new(&deck)
+        .file_stem()
+        .map_or("custom".to_string(), |s| s.to_string_lossy().to_string());
+    let _ = std::fs::create_dir_all(&out_buf);
+    dump_deck(&name, Path::new(&deck), Path::new(&refd), &out_buf, None);
+}
+
+#[test]
 #[ignore = "writes docs/render-check/d1/*.png for a human to look at"]
 fn odp_dump_corpus() {
-    let out = Path::new(OUT);
+    let out_buf = out_dir();
+    let out = out_buf.as_path();
     let only = selected("ODP_DUMP_ONLY");
     if only.is_none() {
         clear_dir(out, true);

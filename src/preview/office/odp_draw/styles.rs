@@ -53,6 +53,8 @@ fn get<'a>(a: &'a Attrs, key: &str) -> Option<&'a str> {
 #[derive(Debug, Clone, Default)]
 pub(in crate::preview::office) struct StyleDef {
     pub parent: Option<String>,
+    /// `style:data-style-name` (the number format of a chart's axis or series).
+    pub data_style: Option<String>,
     /// `style:graphic-properties` and `style:drawing-page-properties`.
     pub graphic: Attrs,
     /// `style:paragraph-properties`.
@@ -79,6 +81,10 @@ pub(in crate::preview::office) struct StyleBook {
     pub dashes: HashMap<String, Node>,
     pub opacities: HashMap<String, Node>,
     pub list_styles: HashMap<String, Node>,
+    /// `table:table-template`s (`office:styles`), by name.
+    pub templates: HashMap<String, Node>,
+    /// `number:date-style` and `number:time-style` (the formats of date and time fields), by name.
+    pub date_styles: HashMap<String, Node>,
     fonts: HashMap<String, String>,
     /// A budget cut something.
     pub truncated: bool,
@@ -96,6 +102,7 @@ fn put_resource(map: &mut HashMap<String, Node>, n: &Node, truncated: &mut bool)
 fn style_def(n: &Node) -> StyleDef {
     let mut d = StyleDef {
         parent: n.attr("parent-style-name").map(str::to_string),
+        data_style: n.attr("data-style-name").map(str::to_string),
         ..StyleDef::default()
     };
     for k in n.nodes() {
@@ -149,6 +156,20 @@ impl StyleBook {
                 "stroke-dash" => put_resource(&mut self.dashes, n, &mut self.truncated),
                 "opacity" => put_resource(&mut self.opacities, n, &mut self.truncated),
                 "list-style" => put_resource(&mut self.list_styles, n, &mut self.truncated),
+                "date-style" | "time-style" => {
+                    put_resource(&mut self.date_styles, n, &mut self.truncated)
+                }
+                "table-template" => {
+                    // (LibreOffice names a template `table:name`, some writers `text:style-name`.)
+                    let name = n.attr("name").or_else(|| n.attr("style-name"));
+                    if let Some(name) = name {
+                        if self.templates.len() < MAX_RESOURCES {
+                            self.templates.insert(name.to_string(), n.clone());
+                        } else if !self.templates.contains_key(name) {
+                            self.truncated = true;
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -264,6 +285,25 @@ impl<'a> View<'a> {
     /// A property of the text properties.
     pub fn t(&self, key: &str) -> Option<&'a str> {
         self.find(|d| &d.text, key)
+    }
+
+    /// A property of another property element of the styles (`table-cell-properties`,
+    /// `chart-properties`, ..), by the element's local name.
+    pub fn x(&self, element: &str, key: &str) -> Option<&'a str> {
+        self.layers.iter().rev().find_map(|l| {
+            l.extra
+                .iter()
+                .find(|(e, _)| e == element)
+                .and_then(|(_, a)| get(a, key))
+        })
+    }
+
+    /// The strongest `style:data-style-name` of the layers.
+    pub fn data_style(&self) -> Option<&'a str> {
+        self.layers
+            .iter()
+            .rev()
+            .find_map(|l| l.data_style.as_deref())
     }
 
     /// The strongest `text:list-style` a layer carries.

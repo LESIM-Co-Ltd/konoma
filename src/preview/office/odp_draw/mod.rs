@@ -33,7 +33,8 @@
 //! * `draw:connector` uses its `svg:d` when it has one; otherwise a straight line (`line`),
 //!   an elbow of two bends through the middle (`standard`, `lines`) or an S-curve (`curve`) between
 //!   `svg:x1/y1` and `svg:x2/y2`. `draw:measure` is drawn as its line (its text is not).
-//!   `draw:caption` is drawn as its rectangle (the pointer to `draw:caption-point-*` is not).
+//!   `draw:caption` is drawn as its rectangle and the straight pointer to `draw:caption-point-*`
+//!   (see `shapes.rs`).
 //!   `draw:page-thumbnail` (the notes page's slide picture) is not drawn. A Fontwork shape
 //!   (`draw:type="fontwork-*"`, text on a warped path in LibreOffice) is drawn as plain text in the
 //!   box in the shape's fill colour, without the warp outline.
@@ -42,10 +43,27 @@
 //!   corner before it is moved, exactly as LibreOffice writes it.
 //! * Hidden slides (`presentation:visibility="hidden"`) are drawn like any other.
 //!
-//! # Hooks for later tasks
+//! # Tables, charts, fields
 //!
-//! [`Sb::frame_table`] (`table:table` in a frame) and [`Sb::frame_chart`] (`draw:object` that is a
-//! chart) are empty; the frame's stored replacement picture is drawn meanwhile when there is one.
+//! * A `table:table` in a frame is lowered to cell rectangles (fill, text) and border lines
+//!   ([`table`]): spans, row growth, the cell styles' fills / borders / padding, table templates.
+//! * A `draw:object` that is a chart is read from the package part (`Object N/content.xml`) into the
+//!   chart model and drawn by `slide_draw::chart` ([`chart`], [`chart_read`]); any other object, or a
+//!   chart that is not drawn, is the replacement picture stored beside it (told by its bytes: it has
+//!   no file extension), else the placeholder. LibreOffice's own `svm` metafile is not drawn.
+//! * `text:date` that is not fixed, and a `presentation:date-time-decl` of source `current-date`,
+//!   show the current date (UTC) in the field's `number:date-style` ([`dates`]).
+//!
+//! # Where LibreOffice differs from the ODF text (measured on its renderings)
+//!
+//! * An undefined gradient (`draw:fill="gradient"` with no or an unknown name) is its own default:
+//!   black to white on a page, `#3465a4` to white on a shape (the fill colour is not used); an
+//!   undefined hatch is pale horizontal lines (or the background alone with
+//!   `draw:fill-hatch-solid`); an undefined bitmap is no fill on a shape.
+//! * The text of a plain `draw:rect`, `draw:ellipse` and `draw:circle` does not wrap.
+//! * A custom shape mirrored in one direction only is turned by the negative of its
+//!   `draw:transform` rotation (about the same centre).
+//! * An `ellipsoid`, `square` or `rectangular` gradient is turned by its `draw:angle`.
 //!
 //! # Budgets
 //!
@@ -65,9 +83,13 @@ use sd::Rgba;
 use super::*;
 
 mod body;
+mod chart;
+mod chart_read;
+mod dates;
 mod paint;
 mod shapes;
 pub(in crate::preview::office) mod styles;
+mod table;
 mod units;
 
 #[cfg(test)]
@@ -89,8 +111,11 @@ pub(super) const DEFAULT_SIZE: (f64, f64) = (10_080_000.0, 5_670_000.0);
 pub(super) struct Decls {
     pub footer: HashMap<String, String>,
     pub header: HashMap<String, String>,
-    /// Fixed date/time texts (`presentation:source="fixed"`); a current-date declaration has none.
+    /// Fixed date/time texts (`presentation:source="fixed"`).
     pub date_time: HashMap<String, String>,
+    /// Current-date declarations (`presentation:source="current-date"`): the name of the
+    /// `number:date-style` that formats the date, if any.
+    pub current: HashMap<String, Option<String>>,
 }
 
 /// Most declarations of one kind kept.
@@ -108,6 +133,12 @@ impl Decls {
             "header-decl" => &mut self.header,
             "date-time-decl" => {
                 if n.attr("source").map(str::trim) == Some("current-date") {
+                    if self.current.len() < MAX_DECLS {
+                        self.current.insert(
+                            name.to_string(),
+                            n.attr("data-style-name").map(|d| d.trim().to_string()),
+                        );
+                    }
                     return;
                 }
                 &mut self.date_time
@@ -127,6 +158,23 @@ pub(super) trait Media {
     fn load(&mut self, part: &str) -> Option<String>;
     /// The bytes of a loaded picture.
     fn bytes(&self, key: &str) -> Option<&[u8]>;
+    /// The `office-img://` key of the picture at package part `part` that has no file extension
+    /// (an embedded object's replacement image), by what its bytes say it is; `None` for what
+    /// cannot be shown.
+    fn load_sniffed(&mut self, part: &str) -> Option<String>;
+    /// The bytes of the package part `part` (an embedded object's `content.xml`), at most `limit`
+    /// of them, charged to the chart read budget of the document.
+    fn read_part(&mut self, part: &str, limit: u64) -> PartRead;
+}
+
+/// What reading a part of the package gave.
+#[derive(Debug, PartialEq)]
+pub(super) enum PartRead {
+    Bytes(Vec<u8>),
+    /// There is no such part (or the read budget is used up).
+    Missing,
+    /// The part is larger than the limit.
+    Over,
 }
 
 impl Media for Conv<'_> {
@@ -139,6 +187,35 @@ impl Media for Conv<'_> {
             .iter()
             .find(|i| i.key == key)
             .map(|i| i.bytes.as_slice())
+    }
+
+    fn load_sniffed(&mut self, part: &str) -> Option<String> {
+        self.image_key_sniffed(part)
+    }
+
+    fn read_part(&mut self, part: &str, limit: u64) -> PartRead {
+        let left = CHART_READ_BUDGET.saturating_sub(self.chart_read);
+        if left == 0 || self.cancelled() {
+            return PartRead::Missing;
+        }
+        let limit = limit.min(left);
+        let mut bytes = Vec::new();
+        {
+            let Some(r) = self.media.part(part, limit + 1).ok().flatten() else {
+                return PartRead::Missing;
+            };
+            if r.take(limit + 1).read_to_end(&mut bytes).is_err() {
+                return PartRead::Missing;
+            }
+        }
+        // (An object that is not a chart costs the budget as well: a deck of thousands of formulas
+        // is not read thousands of times.)
+        self.chart_read += (bytes.len() as u64).max(1024);
+        if bytes.len() as u64 > limit {
+            PartRead::Over
+        } else {
+            PartRead::Bytes(bytes)
+        }
     }
 }
 
@@ -230,10 +307,10 @@ pub(super) fn build_scene(inp: PageInput<'_>, media: &mut dyn Media) -> sd::Slid
     let bg_visible = truthy(page_view.g("background-visible"), true);
     let objects_visible = truthy(page_view.g("background-objects-visible"), true);
     scene.background = if bg_visible {
-        let own = sb.fill(&page_view, size.0, size.1);
+        let own = sb.page_fill(&page_view, size.0, size.1);
         let fill = match own {
             Some(f) => Some(f),
-            None => sb.fill(&master_view, size.0, size.1),
+            None => sb.page_fill(&master_view, size.0, size.1),
         };
         match fill {
             Some(sd::Fill::None) | None => sd::Fill::Solid(Rgba::WHITE),
@@ -258,7 +335,14 @@ pub(super) fn build_scene(inp: PageInput<'_>, media: &mut dyn Media) -> sd::Slid
     };
     sb.footer = decl("use-footer-name", &inp.decls.footer);
     sb.header = decl("use-header-name", &inp.decls.header);
-    sb.date_time = decl("use-date-time-name", &inp.decls.date_time);
+    sb.date_time = decl("use-date-time-name", &inp.decls.date_time).or_else(|| {
+        // A current-date declaration shows today's date in the declaration's format.
+        let name = qattr(page, "presentation:use-date-time-name")
+            .or_else(|| page_view.g("use-date-time-name"))?;
+        let style = inp.decls.current.get(name.trim())?;
+        let node = style.as_deref().and_then(|s| inp.book.date_styles.get(s));
+        Some(dates::format(node, &dates::now()))
+    });
     let show = |key: &str| truthy(page_view.g(key), true);
     let flags = shapes::Furniture {
         footer: show("display-footer"),

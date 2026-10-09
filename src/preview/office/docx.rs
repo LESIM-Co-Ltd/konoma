@@ -3060,7 +3060,28 @@ impl<'a> Conv<'a> {
 
     /// Loads the picture at `part`; `meta` also admits EMF / WMF.
     fn load_image_as(&mut self, part: &str, meta: bool) -> Option<String> {
-        let name = part.rsplit('/').next().unwrap_or(part).to_string();
+        self.load_image_ext(part, meta, None)
+    }
+
+    /// The picture at `part` (a part without a file extension: an OpenDocument object's
+    /// replacement image) by what its first bytes say it is: PNG, JPEG, GIF, SVG, EMF or WMF.
+    /// `None` for anything else (LibreOffice's own `.svm` metafile, ..).
+    fn image_key_sniffed(&mut self, part: &str) -> Option<String> {
+        let mut head = Vec::new();
+        {
+            let r = self.media.part(part, 4096).ok()??;
+            r.take(4096).read_to_end(&mut head).ok()?;
+        }
+        let ext = sniff_image_ext(&head)?;
+        self.load_image_ext(part, true, Some(ext))
+    }
+
+    /// [`Self::load_image_as`] with the file extension given instead of read from the name.
+    fn load_image_ext(&mut self, part: &str, meta: bool, forced: Option<&str>) -> Option<String> {
+        let mut name = part.rsplit('/').next().unwrap_or(part).to_string();
+        if let Some(e) = forced {
+            name = format!("{}.{e}", name.replace(' ', "_"));
+        }
         let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase())?;
         let ok = matches!(
             ext.as_str(),
@@ -3119,6 +3140,39 @@ impl<'a> Conv<'a> {
 // ---------------------------------------------------------------------------------------------
 // free helpers
 // ---------------------------------------------------------------------------------------------
+
+/// The file extension a picture's first bytes stand for (`png`, `jpg`, `gif`, `svg`, `emf`, `wmf`).
+fn sniff_image_ext(head: &[u8]) -> Option<&'static str> {
+    if head.starts_with(&[0x89, b'P', b'N', b'G']) {
+        return Some("png");
+    }
+    if head.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("jpg");
+    }
+    if head.starts_with(b"GIF8") {
+        return Some("gif");
+    }
+    // EMF: record type 1 (header), and the signature " EMF" at offset 40.
+    if head.len() >= 44 && head.starts_with(&[1, 0, 0, 0]) && &head[40..44] == b" EMF" {
+        return Some("emf");
+    }
+    // WMF: the placeable header, or a plain header (type 1 or 2, header size 9).
+    if head.starts_with(&[0xD7, 0xCD, 0xC6, 0x9A])
+        || (head.len() >= 4
+            && matches!(head[0], 1 | 2)
+            && head[1] == 0
+            && head[2] == 9
+            && head[3] == 0)
+    {
+        return Some("wmf");
+    }
+    let text = String::from_utf8_lossy(head);
+    let t = text.trim_start_matches('\u{feff}').trim_start();
+    if t.starts_with("<svg") || (t.starts_with("<?xml") && text.contains("<svg")) {
+        return Some("svg");
+    }
+    None
+}
 
 /// A text as the alt text of a Markdown image (`![alt](..)`): the characters that mean something
 /// to Markdown become spaces, runs of white space one space.

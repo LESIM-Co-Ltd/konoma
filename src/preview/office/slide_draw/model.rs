@@ -333,6 +333,13 @@ pub enum GradKind {
     Rect,
     /// Follows the shape's outline from the focus rectangle outwards.
     Path,
+    /// [`GradKind::Radial`] with its ellipse turned by `angle_deg` (clockwise) about the centre
+    /// of the box (an OpenDocument `ellipsoid` gradient with an angle).
+    RadialRotated { angle_deg: f64 },
+    /// [`GradKind::Rect`] turned by `angle_deg` (clockwise) about the centre of the box (an
+    /// OpenDocument `square` or `rectangular` gradient with an angle); what the turned rectangle
+    /// does not reach is the last colour.
+    RectRotated { angle_deg: f64 },
 }
 
 /// A gradient fill.

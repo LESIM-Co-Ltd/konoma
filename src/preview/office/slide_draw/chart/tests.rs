@@ -1687,3 +1687,60 @@ fn rendering_the_items_makes_a_valid_svg() {
 }
 
 use super::super::SlideScene;
+
+#[test]
+fn pie_counter_clockwise_slices_run_the_other_way_round() {
+    let mut m = pie_model(&[1.0, 2.0, 3.0, 4.0], GroupKind::Pie);
+    m.groups[0].counter_clockwise = true;
+    let items = draw(&m);
+    let wedges: Vec<_> = shapes(&items)
+        .into_iter()
+        .filter(|s| !arcs(s).is_empty())
+        .collect();
+    assert_eq!(wedges.len(), 4);
+    let sweeps: Vec<f64> = wedges.iter().map(|s| arcs(s)[0].3).collect();
+    assert!(approx(sweeps.iter().sum::<f64>(), 360.0));
+    assert!(approx(sweeps[0], 36.0) && approx(sweeps[3], 144.0));
+    // The first slice ends at 12 o'clock (its 36 degrees lie before it) and the next one ends
+    // where the first one began.
+    assert!(approx(arcs(wedges[0])[0].2, -90.0 - 36.0));
+    assert!(approx(arcs(wedges[1])[0].2, -90.0 - 36.0 - 72.0));
+    // The default is clockwise.
+    assert!(!ChartGroup::default().counter_clockwise);
+}
+
+#[test]
+fn pie_counter_clockwise_from_a_start_angle_and_with_explosion() {
+    let mut m = pie_model(&[1.0, 1.0], GroupKind::Pie);
+    m.groups[0].counter_clockwise = true;
+    m.groups[0].first_slice_ang = 90.0;
+    m.groups[0].series[0].explosion = Some(20.0);
+    let items = draw(&m);
+    let w: Vec<_> = shapes(&items)
+        .into_iter()
+        .filter(|s| !arcs(s).is_empty())
+        .collect();
+    // 3 o'clock, going back: the first slice covers 90 -> -90 degrees
+    assert!(approx(arcs(w[0])[0].2, 90.0 - 180.0 - 90.0));
+    assert!(approx(arcs(w[1])[0].2, 90.0 - 360.0 - 90.0));
+}
+
+#[test]
+fn doughnut_counter_clockwise_slices_run_the_other_way_round() {
+    let mut m = pie_model(&[1.0, 3.0], GroupKind::Doughnut);
+    m.groups[0].counter_clockwise = true;
+    let items = draw(&m);
+    let w: Vec<_> = shapes(&items)
+        .into_iter()
+        .filter(|s| !arcs(s).is_empty())
+        .collect();
+    assert_eq!(w.len(), 2);
+    // the first slice (90 degrees) ends at 12 o'clock
+    assert!(approx(arcs(w[0])[0].2, -90.0 - 90.0));
+    assert!(approx(arcs(w[0])[0].3, 90.0));
+    assert!(approx(arcs(w[1])[0].2, -90.0 - 90.0 - 270.0));
+    // a single slice is the full ring, as before
+    let mut one = pie_model(&[5.0], GroupKind::Doughnut);
+    one.groups[0].counter_clockwise = true;
+    assert!(!draw(&one).is_empty());
+}

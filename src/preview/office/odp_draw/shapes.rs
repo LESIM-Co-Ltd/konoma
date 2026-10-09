@@ -148,6 +148,7 @@ impl<'a> Sb<'a> {
             text_style: qattr(n, "draw:text-style-name"),
             class: qattr(n, "presentation:class"),
             auto: None,
+            cell: None,
         };
         let view = self.shape_view(&env);
         (view, env)
@@ -201,7 +202,6 @@ impl<'a> Sb<'a> {
         // A frame's style is a graphic style; the text of a text box is styled by it too.
         let line = self.line(&view);
         let effects = self.effects(&view);
-        let mut object_seen = false;
         // The picture LibreOffice stores beside a table is a preview of it: the table's own task
         // draws the table, and until then the preview is not drawn as a placeholder.
         let mut picture_done = n.nodes().any(|c| c.name == "table");
@@ -233,8 +233,10 @@ impl<'a> Sb<'a> {
                     picture_done = true;
                 }
                 "object" | "object-ole" => {
-                    object_seen = true;
-                    self.frame_chart(n, c, xf, out);
+                    // A chart that is drawn replaces the picture stored beside it.
+                    if self.frame_chart(n, c, xf, out) {
+                        picture_done = true;
+                    }
                 }
                 "table" => {
                     self.frame_table(n, c, xf, out);
@@ -242,30 +244,29 @@ impl<'a> Sb<'a> {
                 _ => {}
             }
         }
-        let _ = (&mut view, object_seen);
+        let _ = &mut view;
     }
 
-    /// A chart (`draw:object` whose part is a chart) as scene items. A later task fills this in;
-    /// until then the replacement picture stored next to the object (`draw:image` of the frame) is
-    /// what is drawn.
-    fn frame_chart(
-        &mut self,
-        _frame: &Node,
-        _object: &Node,
-        _xf: sd::Xfrm,
-        _out: &mut Vec<sd::Item>,
-    ) {
-    }
-
-    /// A table (`table:table` in a frame) as scene items. A later task fills this in; until then a
-    /// table is not drawn.
+    /// A table (`table:table` in a frame) as scene items (see [`super::table`]).
     fn frame_table(
         &mut self,
-        _frame: &Node,
-        _table: &Node,
-        _xf: sd::Xfrm,
-        _out: &mut Vec<sd::Item>,
+        frame: &'a Node,
+        table: &'a Node,
+        xf: sd::Xfrm,
+        out: &mut Vec<sd::Item>,
     ) {
+        self.table_items(frame, table, xf, out);
+    }
+
+    /// The picture at `href` when the part has no file extension (the replacement image of an
+    /// embedded object), by what its bytes say it is.
+    fn sniffed(&mut self, href: &str) -> Option<String> {
+        let part = part_of(href)?;
+        let name = part.rsplit('/').next().unwrap_or(&part);
+        if name.contains('.') {
+            return None;
+        }
+        self.media.load_sniffed(&part)
     }
 
     /// The picture of a frame: the first `draw:image` that can be shown (LibreOffice writes a PNG
@@ -281,7 +282,7 @@ impl<'a> Sb<'a> {
         let mut key: Option<String> = None;
         for img in frame.nodes().filter(|c| c.name == "image") {
             if let Some(href) = img.attr("href") {
-                if let Some(k) = self.image_for_href(href) {
+                if let Some(k) = self.image_for_href(href).or_else(|| self.sniffed(href)) {
                     key = Some(k);
                     break;
                 }
@@ -376,7 +377,7 @@ impl<'a> Sb<'a> {
         let built = match name {
             "line" | "measure" => self.line_shape(n),
             "connector" => self.connector(n),
-            "caption" => self.rect_shape(n, &view).map(|s| (s, None)),
+            "caption" => self.caption_shape(n, &view),
             "rect" => self.rect_shape(n, &view).map(|s| (s, None)),
             "ellipse" | "circle" => self.ellipse_shape(n),
             "polyline" | "polygon" => self.poly_shape(n, name == "polygon"),
@@ -398,6 +399,14 @@ impl<'a> Sb<'a> {
         shape.effects = self.effects(&view);
         env.auto = Some(self.auto_color(&shape.fill));
         shape.text = self.text_body(&n.kids, &env, &view);
+        // LibreOffice does not wrap the text of a plain rectangle, ellipse or circle (only a
+        // custom shape's and a text box's follows `fo:wrap-option`): a long line overflows the
+        // shape on both sides (centred) or on the right.
+        if matches!(name, "rect" | "ellipse" | "circle") {
+            if let Some(t) = shape.text.as_mut() {
+                t.wrap = false;
+            }
+        }
         if name == "custom-shape" && qattr_enh(n).is_some_and(|t| t.starts_with("fontwork-")) {
             // Fontwork: the geometry is the warp the text follows, not an outline. The text is
             // drawn as ordinary text in the box, in the shape's fill colour.
@@ -424,12 +433,58 @@ impl<'a> Sb<'a> {
         }
         self.fit_text(&mut shape, &view);
         // A caption's pointer is drawn under its box.
-        if let Some(extra) = extra {
+        if let Some(mut extra) = extra {
+            // (The pointer is a line in the caption's own outline.)
+            extra.line = shape.line.clone();
             self.items += 1;
             out.push(sd::Item::Shape(extra));
         }
         self.items += 1;
         out.push(sd::Item::Shape(shape));
+    }
+
+    /// `draw:caption`: its rectangle and the pointer to `draw:caption-point-x/y` (relative to the
+    /// rectangle's top-left corner). The pointer is a straight line from the middle of the side
+    /// that faces the point (the left or right side when the point is beside the rectangle, else
+    /// the top or bottom one), `draw:caption-gap` away from it, to the point. Every
+    /// `draw:caption-type` is drawn so (LibreOffice's angled types differ only when the point is
+    /// far off the sides, which it draws as the same straight line to the point in its renderings).
+    /// A point inside the rectangle has no pointer.
+    fn caption_shape(
+        &mut self,
+        n: &Node,
+        view: &View,
+    ) -> Option<(sd::ShapeItem, Option<sd::ShapeItem>)> {
+        let rect = self.rect_shape(n, view)?;
+        let place = self.place(n)?;
+        let (Some(px), Some(py)) = (
+            pt_attr(n, "draw:caption-point-x"),
+            pt_attr(n, "draw:caption-point-y"),
+        ) else {
+            return Some((rect, None));
+        };
+        let (w, h) = (place.w, place.h);
+        if (0.0..=w).contains(&px) && (0.0..=h).contains(&py) {
+            return Some((rect, None));
+        }
+        let gap = view
+            .g("caption-gap")
+            .and_then(emu)
+            .map_or(0.0, |g| g.clamp(0.0, 1.0e8));
+        let (sx, sy) = if px < 0.0 {
+            (-gap, h / 2.0)
+        } else if px > w {
+            (w + gap, h / 2.0)
+        } else if py < 0.0 {
+            (w / 2.0, -gap)
+        } else {
+            (w / 2.0, h + gap)
+        };
+        let at = |x: f64, y: f64| match place.m {
+            Some(m) => super::units::apply(m, place.x + x, place.y + y),
+            None => (place.x + x, place.y + y),
+        };
+        Some((rect, Some(line_between(at(sx, sy), at(px, py)))))
     }
 
     fn rect_shape(&mut self, n: &Node, _view: &View) -> Option<sd::ShapeItem> {
@@ -696,9 +751,23 @@ impl<'a> Sb<'a> {
     /// [`legacy_preset`]); a shape with neither is a rectangle.
     fn custom_shape(&mut self, n: &Node) -> Option<(sd::ShapeItem, Option<sd::ShapeItem>)> {
         let place = self.place(n)?;
-        let xf = place.xfrm()?;
+        let mut xf = place.xfrm()?;
+        let eg_node = n.nodes().find(|c| c.name == "enhanced-geometry");
+        // A shape mirrored in one direction only is turned the other way round: LibreOffice
+        // applies the rotation of `draw:transform` to the mirrored geometry with its sign
+        // reversed, about the same centre (checked against its renderings of a mirrored and
+        // rotated arrow at several angles; mirrored in both directions it is the plain rotation).
+        if let Some(eg) = eg_node {
+            let mirrored = |k: &str| {
+                eg.attr(k)
+                    .is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
+            };
+            if mirrored("mirror-horizontal") != mirrored("mirror-vertical") {
+                xf.rot_deg = -xf.rot_deg;
+            }
+        }
         let mut s = sd::ShapeItem::new(xf, Geometry::Rect);
-        let Some(eg) = n.nodes().find(|c| c.name == "enhanced-geometry") else {
+        let Some(eg) = eg_node else {
             return Some((s, None));
         };
         if let Some((paths, text)) = sd::odf_geom::enhanced_geometry(eg, xf.w, xf.h) {

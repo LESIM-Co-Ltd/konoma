@@ -6,7 +6,8 @@
 //!   about the middle (the start colour in the middle, as LibreOffice draws it); `radial` and
 //!   `ellipsoid` are the model's radial gradient (a circle through the box corners, the end colour
 //!   in the middle); `square` and `rectangular` are the model's rectangular gradient. The angle of
-//!   an `ellipsoid`, `square` or `rectangular` gradient is not applied.
+//!   an `ellipsoid`, `square` or `rectangular` gradient turns it ([`sd::GradKind::RadialRotated`],
+//!   [`sd::GradKind::RectRotated`]); a `radial` one is a circle, which turning does not change.
 //! * **Transparency**: `draw:opacity` is a uniform alpha; a transparency gradient
 //!   (`draw:opacity-name`) of the same style, angle, border and centre as the colour gradient is
 //!   multiplied into its stops, over a solid fill it becomes a gradient of one colour with
@@ -32,6 +33,9 @@ pub(super) const MAX_GRAD_STOPS: usize = 32;
 /// The width a zero-width line (`svg:stroke-width="0cm"`) is drawn at: 0.6 px, as thin as
 /// LibreOffice draws it.
 pub(super) const HAIRLINE_EMU: f64 = 0.6 * sd::EMU_PER_PX;
+/// The start colour of LibreOffice's default gradient of a shape (and its default hatch colour):
+/// its default line colour.
+pub(super) const DEFAULT_GRADIENT_START: Rgba = Rgba::rgb(0x34, 0x65, 0xa4);
 /// Most dash entries (pairs) of one dash style.
 pub(super) const MAX_DASH_PAIRS: usize = 32;
 
@@ -136,7 +140,19 @@ fn to_gradient(s: &Spec) -> Option<Gradient> {
     if stops.len() < 2 {
         return None;
     }
+    // An ellipse or a rectangle gradient turned by its angle (counter-clockwise in ODF; the
+    // model's is clockwise). A circle is the same turned.
+    let turn = (-s.angle).rem_euclid(360.0);
+    let turned = turn > 1e-9 && turn < 360.0 - 1e-9;
     let (kind, rect) = match s.style.as_str() {
+        "ellipsoid" if turned => (
+            sd::GradKind::RadialRotated { angle_deg: turn },
+            (s.cx, s.cy, 1.0 - s.cx, 1.0 - s.cy),
+        ),
+        "square" | "rectangular" if turned => (
+            sd::GradKind::RectRotated { angle_deg: turn },
+            (s.cx, s.cy, 1.0 - s.cx, 1.0 - s.cy),
+        ),
         "radial" | "ellipsoid" => (sd::GradKind::Radial, (s.cx, s.cy, 1.0 - s.cx, 1.0 - s.cy)),
         "square" | "rectangular" => (sd::GradKind::Rect, (s.cx, s.cy, 1.0 - s.cx, 1.0 - s.cy)),
         _ => (
@@ -267,8 +283,23 @@ impl Sb<'_> {
     /// The fill the style states: `None` when it states nothing, `Some(Fill::None)` for an
     /// explicit `draw:fill="none"`. `w`/`h` is the filled box (EMU), for percentage tile sizes.
     pub(super) fn fill(&mut self, v: &View, w: f64, h: f64) -> Option<sd::Fill> {
+        self.fill_of(v, w, h, false)
+    }
+
+    /// [`Self::fill`] for a drawing page's background (a gradient that is not defined is another
+    /// default there).
+    pub(super) fn page_fill(&mut self, v: &View, w: f64, h: f64) -> Option<sd::Fill> {
+        self.fill_of(v, w, h, true)
+    }
+
+    fn fill_of(&mut self, v: &View, w: f64, h: f64, page: bool) -> Option<sd::Fill> {
         let kind = v.g("fill")?.trim();
-        let opacity = v.g("opacity").and_then(pct).map(clamp01);
+        // An opacity outside 0..100 % is a broken file (LibreOffice writes `-4900%` for some
+        // imported cells): it is ignored, the fill is opaque.
+        let opacity = v
+            .g("opacity")
+            .and_then(pct)
+            .filter(|a| (0.0..=1.0).contains(a));
         let named_opacity = v
             .g("opacity-name")
             .and_then(|n| self.book.opacities.get(n))
@@ -288,12 +319,20 @@ impl Sb<'_> {
                     .g("fill-gradient-name")
                     .and_then(|n| self.book.gradients.get(n));
                 let Some(mut spec) = node.and_then(|n| spec_of(n, false)) else {
-                    // A gradient that is not defined (an empty name): LibreOffice draws its default,
-                    // the fill colour fading to white from the top.
+                    // A gradient that is not defined (an empty or unknown name): LibreOffice draws
+                    // its own default and ignores the fill colour: linear, angle 0 (from the top
+                    // to the bottom), from black to white on a page's background and from its
+                    // default line blue `#3465a4` to white on a shape (measured on its renderings
+                    // of both).
                     let a = opacity.unwrap_or(1.0);
+                    let start = if page {
+                        Rgba::BLACK
+                    } else {
+                        DEFAULT_GRADIENT_START
+                    };
                     return Some(sd::Fill::Gradient(Gradient::linear(
                         90.0,
-                        vec![(0.0, base.with_alpha(a)), (1.0, Rgba::WHITE.with_alpha(a))],
+                        vec![(0.0, start.with_alpha(a)), (1.0, Rgba::WHITE.with_alpha(a))],
                     )));
                 };
                 if let Some(o) = &named_opacity {
@@ -339,7 +378,15 @@ impl Sb<'_> {
                             / sd::EMU_PER_PX,
                         n.attr("color").and_then(color).unwrap_or(Rgba::BLACK),
                     ),
-                    None => ("single".to_string(), 0.0, 4.0, Rgba::BLACK),
+                    // (A hatch that is not defined: thin pale-blue horizontal lines, close
+                    // together, as LibreOffice draws them.)
+                    None => {
+                        // (With `draw:fill-hatch-solid` the background alone is drawn.)
+                        if v.g("fill-hatch-solid").is_some_and(|s| s.trim() == "true") {
+                            return Some(sd::Fill::Solid(base.with_alpha(opacity.unwrap_or(1.0))));
+                        }
+                        ("single".to_string(), 0.0, 4.0, DEFAULT_GRADIENT_START)
+                    }
                 };
                 let solid = v.g("fill-hatch-solid").is_some_and(|s| s.trim() == "true");
                 let a = opacity.unwrap_or(1.0);
@@ -353,9 +400,22 @@ impl Sb<'_> {
                     },
                 })
             }
-            // A bitmap that is not there (an empty or unknown name, a picture that cannot be
-            // shown) leaves the fill colour, as LibreOffice shows it.
+            // A bitmap that is not defined (an empty or unknown name) is no fill at all on a
+            // shape in LibreOffice (not the fill colour); one that is defined but whose picture
+            // cannot be shown keeps the fill colour.
             "bitmap" => {
+                let defined = v
+                    .g("fill-image-name")
+                    .is_some_and(|n| self.book.fill_images.contains_key(n));
+                // (A page's background keeps the fill colour, as the decks of LibreOffice's
+                // own test suite show it.)
+                if !defined {
+                    return Some(if page {
+                        sd::Fill::Solid(base.with_alpha(opacity.unwrap_or(1.0)))
+                    } else {
+                        sd::Fill::None
+                    });
+                }
                 self.bitmap_fill(v, w, h, opacity.unwrap_or(1.0))
                     .or(Some(sd::Fill::Solid(
                         base.with_alpha(opacity.unwrap_or(1.0)),

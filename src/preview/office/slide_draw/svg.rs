@@ -617,7 +617,47 @@ impl<'a> W<'a> {
                     );
                 }
             }
-            GradKind::Rect => self.rect_gradient(&id, g, &stop_xml),
+            GradKind::Rect => self.rect_gradient(&id, g, &stop_xml, None),
+            GradKind::RectRotated { angle_deg } => {
+                let a = if angle_deg.is_finite() {
+                    angle_deg
+                } else {
+                    0.0
+                };
+                self.rect_gradient(&id, g, &stop_xml, Some((a, bx)));
+            }
+            GradKind::RadialRotated { angle_deg } => {
+                let a = if angle_deg.is_finite() {
+                    angle_deg
+                } else {
+                    0.0
+                };
+                let f = |v: f64| {
+                    if v.is_finite() {
+                        v.clamp(0.0, 1.0)
+                    } else {
+                        0.5
+                    }
+                };
+                let (l, t, r, b) = g.fill_to_rect;
+                let (l, t, r, b) = (f(l), f(t), f(r), f(b));
+                let (fx, fy) = ((l + (1.0 - r)) / 2.0, (t + (1.0 - b)) / 2.0);
+                let rad = (fx.max(1.0 - fx)).hypot(fy.max(1.0 - fy)).max(0.01);
+                let (bx_c, by_c) = (x + w / 2.0, y + h / 2.0);
+                // The unit circle at the origin, scaled to the ellipse of the box, moved to the
+                // focus and turned about the box's centre.
+                let _ = write!(
+                    self.defs,
+                    r#"<radialGradient id="{id}" gradientUnits="userSpaceOnUse" cx="0" cy="0" fx="0" fy="0" r="1" gradientTransform="rotate({} {} {}) translate({} {}) scale({} {})">{stop_xml}</radialGradient>"#,
+                    num(a),
+                    px(bx_c),
+                    px(by_c),
+                    px(bx_c + (fx - 0.5) * w),
+                    px(by_c + (fy - 0.5) * h),
+                    px(w * rad),
+                    px(h * rad),
+                );
+            }
             GradKind::Radial | GradKind::Path => {
                 let (l, t, r, b) = g.fill_to_rect;
                 let f = |v: f64| {
@@ -655,7 +695,11 @@ impl<'a> W<'a> {
     /// of four linear-gradient wedges, one per side, cut along the diagonals from the box corners
     /// to the focus rectangle's corners, over an elliptical-gradient underlay that hides the
     /// anti-aliased seams between the wedges.
-    fn rect_gradient(&mut self, id: &str, g: &Gradient, stop_xml: &str) {
+    ///
+    /// With `rot` (an angle in degrees, clockwise, and the box in EMU) the rectangle is turned
+    /// about the box's centre: the pattern then covers the box in user space, the last colour
+    /// under the turned rectangle.
+    fn rect_gradient(&mut self, id: &str, g: &Gradient, stop_xml: &str, rot: Option<(f64, Bx)>) {
         let f = |v: f64| {
             if v.is_finite() {
                 v.clamp(0.0, 1.0)
@@ -747,10 +791,39 @@ impl<'a> W<'a> {
                 num(alpha_of(first)),
             );
         }
-        let _ = write!(
-            self.defs,
-            r#"<pattern id="{id}" patternUnits="objectBoundingBox" patternContentUnits="objectBoundingBox" width="1" height="1">{inner}</pattern>"#
-        );
+        match rot {
+            None => {
+                let _ = write!(
+                    self.defs,
+                    r#"<pattern id="{id}" patternUnits="objectBoundingBox" patternContentUnits="objectBoundingBox" width="1" height="1">{inner}</pattern>"#
+                );
+            }
+            Some((a, (x, y, w, h))) => {
+                // (The content of a pattern is placed from the corner of its tile.)
+                let last = g.stops.last().map_or(Rgba::BLACK, |s| s.1);
+                // The rectangle the gradient is drawn in is the bounding box of the box turned back
+                // (so that, turned, it covers the box), as LibreOffice does.
+                let (c, sn) = (a.to_radians().cos().abs(), a.to_radians().sin().abs());
+                let (gw, gh) = (w * c + h * sn, w * sn + h * c);
+                let _ = write!(
+                    self.defs,
+                    r#"<pattern id="{id}" patternUnits="userSpaceOnUse" patternContentUnits="userSpaceOnUse" x="{}" y="{}" width="{pw}" height="{ph}"><rect width="{pw}" height="{ph}" fill="{}" fill-opacity="{}"/><g transform="rotate({} {} {}) translate({} {}) scale({} {})">{inner}</g></pattern>"#,
+                    px(x),
+                    px(y),
+                    hex(last),
+                    num(alpha_of(last)),
+                    num(a),
+                    px(w / 2.0),
+                    px(h / 2.0),
+                    px((w - gw) / 2.0),
+                    px((h - gh) / 2.0),
+                    px(gw),
+                    px(gh),
+                    pw = px(w),
+                    ph = px(h),
+                );
+            }
+        }
     }
 
     fn pattern(&mut self, preset: &str, fg: Rgba, bg: Rgba) -> String {

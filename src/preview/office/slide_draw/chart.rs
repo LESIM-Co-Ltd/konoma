@@ -301,6 +301,9 @@ pub struct ChartGroup {
     pub hole_size: f64,
     /// Pie / doughnut: degrees clockwise from 12 o'clock where the first slice starts.
     pub first_slice_ang: f64,
+    /// Pie / doughnut: the slices run counter-clockwise from the start (LibreOffice's order;
+    /// Office's is clockwise).
+    pub counter_clockwise: bool,
     pub scatter_style: ScatterStyle,
     pub radar_style: RadarStyle,
     /// Bubble: scale of the biggest bubble, percent (default 100).
@@ -328,6 +331,7 @@ impl Default for ChartGroup {
             overlap: 0.0,
             hole_size: 50.0,
             first_slice_ang: 0.0,
+            counter_clockwise: false,
             scatter_style: ScatterStyle::LineMarker,
             radar_style: RadarStyle::Standard,
             bubble_scale: 100.0,
