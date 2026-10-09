@@ -433,13 +433,18 @@ impl<'a> W<'a> {
             }
         }
         let filled_geom = !matches!(s.geom, Geometry::Line);
-        for (r, mode, stroke) in &paths {
-            let d = path_d(&r.segs);
-            if filled_geom && s.fill.is_visible() && *mode != PathFill::None {
-                self.paint(&d, &s.fill, bx, "", *mode);
+        // All the fills first, then all the outlines: a later path's fill must not cover an
+        // earlier path's outline (`chartPlus` / `chartX` draw their cross first, the box second).
+        if filled_geom && s.fill.is_visible() {
+            for (r, mode, _) in &paths {
+                if *mode != PathFill::None {
+                    self.paint(&path_d(&r.segs), &s.fill, bx, "", *mode);
+                }
             }
-            if *stroke {
-                if let Some(l) = &s.line {
+        }
+        if let Some(l) = &s.line {
+            for (r, _, stroke) in &paths {
+                if *stroke {
                     self.stroke(r, l, bx);
                 }
             }

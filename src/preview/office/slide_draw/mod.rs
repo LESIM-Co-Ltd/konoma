@@ -21,6 +21,8 @@
 
 pub mod color;
 pub mod fonts;
+pub mod geom;
+mod geom_xml;
 pub mod model;
 pub mod path;
 pub mod svg;
