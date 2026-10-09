@@ -848,17 +848,19 @@ fn paragraphs_out(
                         .font
                         .as_ref()
                         .and_then(|f| f.symbol.as_deref().or(f.latin.as_deref()));
+                    // The size factor of the font's own glyph is looked up by the stored code,
+                    // before the code is replaced by the stand-in character.
+                    let glyph = s
+                        .chars()
+                        .next()
+                        .zip(font)
+                        .map_or(1.0, |(c, f)| super::symbol_font::glyph_scale(f, c));
                     let s: String = s
                         .chars()
                         .take(4)
                         .map(|c| font.map_or(c, |f| symbol_bullet(f, c)))
                         .collect();
                     let s = if s.is_empty() { "•".to_string() } else { s };
-                    let glyph = s
-                        .chars()
-                        .next()
-                        .zip(font)
-                        .map_or(1.0, |(c, f)| super::symbol_font::glyph_scale(f, c));
                     let (st, stack) = bullet_style(b, &fr, ctx, glyph);
                     bullet_stack = stack;
                     bullet_text = Some((s, st, 0.0));

@@ -109,6 +109,27 @@ fn a_glow_surrounds_the_shape_and_fades_out() {
 }
 
 #[test]
+fn a_glow_holds_over_two_fifths_of_the_radius_then_falls_to_nothing_at_one_and_a_half() {
+    // radius 30 px, black at full alpha: the profile along a line leaving the right side
+    let fx = Effects {
+        glow: Some(Glow {
+            rad: e(30.0),
+            color: Rgba::new(0, 0, 0, 1.0),
+        }),
+        ..Effects::default()
+    };
+    let img = draw(shape(200.0, 200.0, 100.0, 100.0, fx));
+    let dark = |d: u32| 255 - u32::from(at(&img, 300 + d, 250)[0]);
+    // strong at the outline and 0.4 radius out (plateau), about half at the radius, and
+    // nothing at 1.5 radii (a little tail from the blur is allowed)
+    assert!(dark(2) > 215, "{}", dark(2));
+    assert!(dark(8) > 190, "{}", dark(8));
+    assert!((60..190).contains(&dark(30)), "{}", dark(30));
+    assert!(dark(45) < 30, "{}", dark(45));
+    assert!(dark(60) < 6, "{}", dark(60));
+}
+
+#[test]
 fn a_glow_uses_its_colours_alpha() {
     let glow = |a: f64| Effects {
         glow: Some(Glow {

@@ -8,9 +8,13 @@
 //! Sources: the Adobe Symbol encoding (the `SYMBOL.TXT` mapping Unicode publishes for the Microsoft
 //! Symbol font: `0x2D` is U+2212 MINUS SIGN, `0xB7` U+2022 BULLET, ...) and the Wingdings
 //! mapping of the Unicode "Wingdings and Webdings" proposal (L2/11-052, the basis of the
-//! Unicode 7.0 symbols). Wingdings 2 and Webdings have no table and Wingdings 3 only the triangle bullet of the Office
-//! themes: their other bullets are the plain bullet U+2022 (a documented approximation). Codes of Wingdings outside the shapes listed
-//! are the plain bullet too.
+//! Unicode 7.0 symbols). The same document is the source of the Wingdings 2 and Webdings tables
+//! (`https://www.unicode.org/L2/L2011/11052-wingding.pdf`, glyph ids `w-2NNN` / `w-0NNN`, the
+//! byte code is `NNN` in decimal): only the shapes bullets use are listed (circles, squares,
+//! boxes, rings, rhombuses and lozenges, check and ballot marks, circled digits, crosses and stars,
+//! the Webdings triangles). Wingdings 3 has only the triangle bullet of the Office themes. Codes
+//! of these fonts outside the shapes listed are the plain bullet U+2022 (a documented
+//! approximation).
 
 /// The first and last code of the private-use window the symbol fonts use.
 const PUA_FIRST: u32 = 0xF020;
@@ -83,6 +87,25 @@ pub fn map(font: &str, ch: char) -> char {
 pub fn glyph_scale(font: &str, ch: char) -> f64 {
     match (symbol_font(font), code_of(ch)) {
         (Some(SymbolFont::Wingdings), Some(0x6C | 0x6E | 0x6F | 0x71 | 0x72)) => 1.3,
+        // Wingdings 2 has the circle and the square in a series of 7 sizes (Wingdings' own `l` and
+        // `n` are the 6th). Sizes 1, 3, 5 and 7 are estimated as growing linearly with the series
+        // number, the 7th being 1.2 times the stand-in character; the squares 1.4 times the
+        // circles. Estimates, tuned against LibreOffice's rendering with stand-in characters (no
+        // font at hand).
+        (Some(SymbolFont::Wingdings2), Some(0x95)) => 1.2 / 7.0,
+        (Some(SymbolFont::Wingdings2), Some(0x96)) => 1.2 * 3.0 / 7.0,
+        (Some(SymbolFont::Wingdings2), Some(0x97)) => 1.2 * 5.0 / 7.0,
+        (Some(SymbolFont::Wingdings2), Some(0x98)) => 1.2,
+        (Some(SymbolFont::Wingdings2), Some(0x9F)) => 1.4 * 1.2 / 7.0,
+        (Some(SymbolFont::Wingdings2), Some(0xA0)) => 1.4 * 1.2 * 3.0 / 7.0,
+        (Some(SymbolFont::Wingdings2), Some(0xA1)) => 1.4 * 1.2 * 5.0 / 7.0,
+        (Some(SymbolFont::Wingdings2), Some(0xA2)) => 1.4 * 1.2,
+        (Some(SymbolFont::Wingdings2), Some(0xA3..=0xA6)) => 1.5,
+        // Webdings' "very large" square and circle and its white square fill the line; its
+        // triangles are a little larger than the stand-in (both against LibreOffice's rendering).
+        (Some(SymbolFont::Webdings), Some(0x63 | 0x67 | 0x6E)) => 1.8,
+        (Some(SymbolFont::Webdings), Some(0x33..=0x36)) => 1.2,
+        (Some(SymbolFont::Wingdings3), Some(0x7D)) => 1.25,
         _ => 1.0,
     }
 }
@@ -204,9 +227,36 @@ fn wingdings(c: u8) -> Option<u32> {
     })
 }
 
-/// Wingdings 2: no table (no mapping this module could cite); every code is the plain bullet.
-fn wingdings2(_c: u8) -> Option<u32> {
-    None
+/// Wingdings 2: the shapes bullets use, from the Unicode mapping of the font (L2/11-052).
+fn wingdings2(c: u8) -> Option<u32> {
+    Some(match c {
+        0x4F => 0x2717,                              // ballot x
+        0x50 => 0x2713,                              // check mark
+        0x51 | 0x53 | 0x54 => 0x2612,                // ballot box with x
+        0x52 => 0x2611,                              // ballot box with check
+        0x69 => 0x24EA,                              // circled digit zero
+        0x6A..=0x73 => 0x2460 + u32::from(c - 0x6A), // circled digits one to ten
+        0x74 => 0x24FF,                              // negative circled digit zero
+        0x75..=0x7E => 0x2776 + u32::from(c - 0x75), // negative circled digits one to ten
+        0x85 | 0x86 => 0x271D,                       // latin cross
+        0x95..=0x98 => 0x25CF,                       // black circles 1, 3, 5, 7
+        0x99..=0x9C => 0x25CB,                       // rings 1, 3, 5, 7
+        0x9D | 0x9E => 0x25C9,                       // ring buttons
+        0x9F..=0xA2 => 0x25A0,                       // black squares 1, 3, 5, 7
+        0xA3..=0xA6 => 0x25A1,                       // boxes 1, 5, 6, 7
+        0xA7..=0xAA => 0x25A3,                       // box buttons and box target
+        0xAB..=0xAE => 0x25C6,                       // black rhombuses
+        0xAF => 0x25C7,                              // white rhombus
+        0xB0..=0xB3 => 0x25C8,                       // rhombus buttons and target
+        0xB4..=0xB7 => 0x29EB,                       // black lozenges
+        0xB8 => 0x25CA,                              // white lozenge
+        0xE7 | 0xE8 => 0x2726,                       // four pointed black stars
+        0xE9 | 0xEA => 0x2605,                       // five pointed black stars
+        0xEB | 0xEC => 0x2736,                       // six pointed black stars
+        0xED | 0xEE => 0x2734,                       // eight pointed black stars
+        0xEF..=0xF1 => 0x2739,                       // twelve pointed black stars
+        _ => return None,
+    })
 }
 
 /// Wingdings 3: only the arrow bullet of the Office themes (`}`, a right-pointing triangle; checked
@@ -218,9 +268,23 @@ fn wingdings3(c: u8) -> Option<u32> {
     }
 }
 
-/// Webdings: no table, as for Wingdings 2.
-fn webdings(_c: u8) -> Option<u32> {
-    None
+/// Webdings: the shapes bullets use, from the Unicode mapping of the font (L2/11-052).
+fn webdings(c: u8) -> Option<u32> {
+    Some(match c {
+        0x33 => 0x25C0,        // left-pointing triangle
+        0x34 => 0x25B6,        // right-pointing triangle
+        0x35 => 0x25B2,        // up-pointing triangle
+        0x36 => 0x25BC,        // down-pointing triangle
+        0x37 => 0x23EA,        // double triangle left
+        0x38 => 0x23E9,        // double triangle right
+        0x39 => 0x23EE,        // double triangle left with bar
+        0x3A => 0x23ED,        // double triangle right with bar
+        0x3C | 0x67 => 0x25A0, // black (medium, very large) square
+        0x3D | 0x6E => 0x25CF, // black (medium, very large) circle
+        0x61 => 0x2714,        // heavy check mark
+        0x63 => 0x25A1,        // white square
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

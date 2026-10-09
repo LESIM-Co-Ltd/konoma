@@ -408,6 +408,30 @@ fn bullet_colour_font_and_size() {
         panic!()
     };
     assert_eq!(f.text, "▪");
+    // a bullet's size follows the glyph of the font (looked up by the stored code, not by the
+    // stand-in character)
+    let size_of = |font: &str, ch: char| {
+        let mut pa = p("x", 20.0);
+        pa.bullet = Some(Bullet {
+            kind: BulletKind::Char(ch.to_string()),
+            font: Some(FontSpec {
+                latin: Some(font.into()),
+                ..Default::default()
+            }),
+            color: None,
+            size: BulletSize::FollowText,
+        });
+        let l = lay(vec![pa], 300.0, 100.0);
+        let BulletDraw::Text(f) = &l.bullets[0] else {
+            panic!()
+        };
+        f.style.size_px
+    };
+    let plain = size_of("Arial", 'x');
+    assert!((size_of("Wingdings", '\u{F06C}') / plain - 1.3).abs() < 1e-6);
+    assert!((size_of("Wingdings 2", '\u{F0A3}') / plain - 1.5).abs() < 1e-6);
+    assert!((size_of("Webdings", '\u{F067}') / plain - 1.8).abs() < 1e-6);
+    assert!((size_of("Wingdings", '\u{F0A7}') / plain - 1.0).abs() < 1e-6);
     // picture bullet
     let mut pa = p("x", 20.0);
     pa.bullet = Some(Bullet {

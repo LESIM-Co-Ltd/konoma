@@ -623,6 +623,96 @@ fn radial_rect_and_path_gradients_run_centre_to_edge() {
 }
 
 #[test]
+fn a_radial_gradient_ends_at_half_the_box_diagonal_from_its_focus() {
+    // 400 x 200 box at (100, 100), focus in the top-right corner: the last stop is reached at
+    // half the diagonal (223.6 px) from the focus, not at the farthest corner (447 px); this is
+    // how LibreOffice draws it (measured on a PowerPoint deck with such a background).
+    let g = Gradient {
+        kind: GradKind::Radial,
+        stops: vec![(0.0, RED), (1.0, BLUE)],
+        fill_to_rect: (1.0, 0.0, 0.0, 1.0),
+        rot_with_shape: true,
+    };
+    let img = filled(Fill::Gradient(g));
+    assert!(at(&img, 497, 103)[0] > 240, "{:?}", at(&img, 497, 103)); // at the focus
+                                                                      // halfway (112 px from the corner) along the top edge
+    let mid = at(&img, 388, 102);
+    assert!(
+        mid[0] > 100 && mid[0] < 155 && mid[2] > 100 && mid[2] < 155,
+        "{mid:?}"
+    );
+    // beyond the radius everything is the last colour: the left end of the top edge (400 px away)
+    // and the bottom-left corner
+    assert!(at(&img, 105, 102)[2] > 240, "{:?}", at(&img, 105, 102));
+    assert!(at(&img, 105, 297)[2] > 240, "{:?}", at(&img, 105, 297));
+    // 200 px away along the top edge is still short of the end
+    let near_end = at(&img, 297, 102);
+    assert!(near_end[0] > 10 && near_end[2] > 200, "{near_end:?}");
+}
+
+#[test]
+fn thin_axis_aligned_lines_are_one_crisp_pixel_and_slanted_ones_are_anti_aliased() {
+    // a width-0 line and a 0.25 pt line, both horizontal, between pixel rows
+    for w in [0.0, e(0.33)] {
+        let mut s = ShapeItem::new(
+            Xfrm::rect(e(100.0), e(100.0), e(200.0), 0.0),
+            Geometry::Line,
+        );
+        s.line = Some(Line {
+            width: w,
+            ..Line::solid(e(1.0), Rgba::BLACK)
+        });
+        let r = render_svg(&scene(vec![Item::Shape(s)]), &no_media);
+        assert!(r.svg.contains("crispEdges"), "{}", r.svg);
+        let img = raster(&r);
+        // exactly one full black row, the rows around it are white
+        let dark = (96..105)
+            .filter(|&y| near(at(&img, 200, y), [0, 0, 0], 40))
+            .count();
+        let grey = (96..105).filter(|&y| !is_white(at(&img, 200, y))).count();
+        assert_eq!(dark, 1, "w={w}");
+        assert_eq!(grey, 1, "w={w}");
+    }
+    // a slanted line, a rotated shape and a curve are not snapped
+    let mut s = ShapeItem::new(
+        Xfrm::rect(e(100.0), e(100.0), e(200.0), e(80.0)),
+        Geometry::Line,
+    );
+    s.line = Some(Line::solid(e(1.0), Rgba::BLACK));
+    assert!(!render_svg(&scene(vec![Item::Shape(s)]), &no_media)
+        .svg
+        .contains("crispEdges"));
+    let mut s = ShapeItem::new(
+        Xfrm::rect(e(100.0), e(100.0), e(200.0), 0.0),
+        Geometry::Line,
+    );
+    s.xfrm.rot_deg = 30.0;
+    s.line = Some(Line::solid(e(1.0), Rgba::BLACK));
+    assert!(!render_svg(&scene(vec![Item::Shape(s)]), &no_media)
+        .svg
+        .contains("crispEdges"));
+    // a quarter turn keeps the axes
+    let mut s = ShapeItem::new(
+        Xfrm::rect(e(100.0), e(100.0), e(200.0), 0.0),
+        Geometry::Line,
+    );
+    s.xfrm.rot_deg = 90.0;
+    s.line = Some(Line::solid(e(1.0), Rgba::BLACK));
+    assert!(render_svg(&scene(vec![Item::Shape(s)]), &no_media)
+        .svg
+        .contains("crispEdges"));
+    // a thick line is anti-aliased as before
+    let mut s = ShapeItem::new(
+        Xfrm::rect(e(100.0), e(100.0), e(200.0), 0.0),
+        Geometry::Line,
+    );
+    s.line = Some(Line::solid(e(4.0), Rgba::BLACK));
+    assert!(!render_svg(&scene(vec![Item::Shape(s)]), &no_media)
+        .svg
+        .contains("crispEdges"));
+}
+
+#[test]
 fn one_stop_gradient_is_solid_and_empty_is_nothing() {
     let img = filled(Fill::Gradient(Gradient::linear(0.0, vec![(0.5, RED)])));
     assert!(is_red(at(&img, 300, 200)));
@@ -659,12 +749,12 @@ fn fg_ratio(img: &image::RgbaImage, x0: u32, y0: u32, n: u32, fg: [u8; 3]) -> us
 #[test]
 fn pattern_percentages() {
     for (preset, want) in [
-        ("pct5", 3),
-        ("pct10", 6),
+        ("pct5", 2),
+        ("pct10", 4),
         ("pct25", 16),
         ("pct50", 32),
-        ("pct75", 48),
-        ("pct90", 58),
+        ("pct75", 56),
+        ("pct90", 62),
     ] {
         let img = filled(Fill::Pattern {
             preset: preset.into(),
@@ -674,7 +764,7 @@ fn pattern_percentages() {
         // the 8x8 tile repeats: count dark pixels in an aligned 8x8 window (tile origin is the slide's)
         let n = fg_ratio(&img, 104, 104, 8, [0, 0, 0]);
         assert!(
-            (n as i32 - want).abs() <= 2,
+            n as i32 == want,
             "{preset}: {n} dark of 64, want about {want}"
         );
     }
@@ -739,38 +829,34 @@ fn pattern_lines_and_unknown() {
 }
 
 #[test]
-fn bayer_matrix_is_a_permutation() {
-    let mut seen = [false; 64];
-    for y in 0..8 {
-        for x in 0..8 {
-            let v = super::svg::bayer8(x, y);
-            assert!(v < 64 && !seen[v], "({x},{y}) -> {v} repeats");
-            seen[v] = true;
-        }
+fn all_54_pattern_presets_have_a_tile_and_the_percent_ones_get_darker() {
+    use super::patterns::{names, pattern_pixels};
+    let count = |p: &str| pattern_pixels(p).iter().flatten().filter(|b| **b).count();
+    assert_eq!(names().count(), 54);
+    let mut seen = std::collections::HashSet::new();
+    for n in names() {
+        assert!(seen.insert(n), "{n} twice");
+        let c = count(n);
+        assert!((1..64).contains(&c), "{n}: {c}");
     }
-    assert!(seen.iter().all(|b| *b));
-    // the first thresholds are spread out: the 4 lowest cells are in different quadrants
-    let low: Vec<(usize, usize)> = (0..8)
-        .flat_map(|y| (0..8).map(move |x| (x, y)))
-        .filter(|&(x, y)| super::svg::bayer8(x, y) < 4)
-        .collect();
-    let quads: std::collections::HashSet<_> = low.iter().map(|&(x, y)| (x / 4, y / 4)).collect();
-    assert_eq!(quads.len(), 4, "{low:?}");
-    // pctN has exactly N * 64 / 100 set pixels
-    for n in [5usize, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90] {
-        let p = super::svg::pattern_pixels(&format!("pct{n}"));
-        let set = p.iter().flatten().filter(|b| **b).count();
-        assert_eq!(set, ((64.0 * n as f64 / 100.0).round()) as usize, "pct{n}");
-    }
-    // nested: every pixel of pct25 is also in pct50
-    let (a, b) = (
-        super::svg::pattern_pixels("pct25"),
-        super::svg::pattern_pixels("pct50"),
-    );
-    for y in 0..8 {
-        for x in 0..8 {
-            assert!(!a[y][x] || b[y][x]);
-        }
+    // the percentages grow with the percentage
+    let pcts = [5usize, 10, 20, 25, 30, 40, 50, 60, 70, 75, 80, 90];
+    let counts: Vec<usize> = pcts.iter().map(|n| count(&format!("pct{n}"))).collect();
+    assert!(counts.windows(2).all(|w| w[0] < w[1]), "{counts:?}");
+    // measured: a 50 % pattern is a checkerboard, light/dark horizontal lines are 1 and 4 rows
+    // of 8 (two of each per tile for dark)
+    assert_eq!(count("pct50"), 32);
+    assert_eq!(count("horz"), 8);
+    assert_eq!(count("ltHorz"), 16);
+    assert_eq!(count("dkHorz"), 32);
+    assert_eq!(count("narHorz"), 32);
+    // an unknown name is the 50 % pattern
+    assert_eq!(pattern_pixels("nonsense"), pattern_pixels("pct50"));
+    // diagonals: down-right runs from the top-left, up-right from the top-right
+    let dn = pattern_pixels("dnDiag");
+    let up = pattern_pixels("upDiag");
+    for i in 0..8 {
+        assert!(dn[i][i] && up[i][7 - i], "{i}");
     }
 }
 

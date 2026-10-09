@@ -11,10 +11,15 @@
 //! * Shadow and reflection scale (`sx`, `sy`) are applied about the bottom centre of the shape
 //!   (`algn="b"`, the one perspective shadows and reflections use; the model carries no `algn`).
 //!   A shadow with `rotWithShape="0"` keeps its direction on the slide when the shape is rotated.
-//! * The glow is the shape's alpha blurred (deviation: half the radius) and quadrupled, so it is
-//!   opaque at the outline and gone about one radius out. (A dilated copy would be closer, but a
-//!   morphology filter costs the square of its radius: the render budget refuses a glow of any
-//!   size that is worth drawing.)
+//! * The glow's colour (with its alpha) holds out to 0.4 of `rad` beyond the outline and falls
+//!   smoothly to nothing at 1.5 `rad`: that is the extent LibreOffice draws (it dilates by half
+//!   the radius and blurs by half; measured on its rendering of an 11 pt glow, which is gone
+//!   after about 25 px of 14.7). LibreOffice's glow is also stronger (60 % where the alpha is
+//!   40 %); the alpha is used as written. A dilated copy would
+//!   be exact, but a morphology filter costs the square of its radius (the render budget
+//!   refuses a glow of any size worth drawing), so the shape's alpha is blurred (deviation: half
+//!   the radius) and mapped through `GLOW_FALLOFF`, which turns the Gaussian's edge
+//!   profile into that plateau-and-fall profile.
 //! * The soft edge is the shape's alpha blurred (deviation: two thirds of the radius) and mapped
 //!   through `2 a - 1`: transparent at the outline, opaque about one radius in.
 //! * The reflection is the shape mirrored about its bottom edge (the transform of `sx`/`sy`, then
@@ -22,6 +27,16 @@
 //!   `end_pos` of its height.
 
 use super::*;
+
+/// Alpha of a glow by the blurred alpha `a = i / 100` of the shape (the input is first scaled by
+/// 5 and clamped, so 21 values cover `a` in 0..0.2 and everything above is full strength).
+/// The blur's deviation is half the glow radius, so a straight edge has `a = Phi(-z)` at
+/// `z` deviations outside it; the value is 1 up to `z = 0.8` (0.4 of the radius) and falls
+/// as a smoothstep to 0 at `z = 3` (1.5 radii): `out = smoothstep(1 - (z - 0.8) / 2.2)`.
+const GLOW_FALLOFF: [f64; 21] = [
+    0.0, 0.224, 0.396, 0.513, 0.601, 0.671, 0.728, 0.775, 0.815, 0.848, 0.877, 0.902, 0.923, 0.94,
+    0.955, 0.968, 0.978, 0.986, 0.992, 0.996, 0.999,
+];
 
 /// Largest padding of a filter region around the shape's box, px.
 const MAX_REGION_PAD: f64 = 600.0;
@@ -145,12 +160,14 @@ impl W<'_> {
         // 3. glow
         if let Some(g) = fx.glow.filter(|g| g.color.a > 0.0 && g.rad > 0.0) {
             let sigma = (px_clamped(g.rad) / 2.0).clamp(0.0, MAX_FX_PX);
+            let table: Vec<String> = GLOW_FALLOFF.iter().map(|v| num(*v)).collect();
             let fid = self.id("gl");
             let _ = write!(
                 self.defs,
-                r#"<filter id="{fid}" {}><feGaussianBlur in="SourceAlpha" stdDeviation="{}" result="b"/><feComponentTransfer in="b" result="d"><feFuncA type="linear" slope="4"/></feComponentTransfer><feFlood flood-color="{}" flood-opacity="{}"/><feComposite in2="d" operator="in"/></filter>"#,
+                r#"<filter id="{fid}" {}><feGaussianBlur in="SourceAlpha" stdDeviation="{}" result="b"/><feComponentTransfer in="b" result="s"><feFuncA type="linear" slope="5"/></feComponentTransfer><feComponentTransfer in="s" result="d"><feFuncA type="table" tableValues="{}"/></feComponentTransfer><feFlood flood-color="{}" flood-opacity="{}"/><feComposite in2="d" operator="in"/></filter>"#,
                 region(sigma * 4.0),
                 num(sigma),
+                table.join(" "),
                 hex(g.color),
                 num(alpha_of(g.color)),
             );

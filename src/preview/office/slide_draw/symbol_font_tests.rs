@@ -73,10 +73,73 @@ fn wingdings_bullets() {
     assert_eq!(map("Wingdings", 'l'), '\u{25CF}');
     // unknown codes and the fonts without a table are the plain bullet
     assert_eq!(map("Wingdings", '\u{F0FF}'), '\u{2022}');
-    assert_eq!(map("Wingdings 2", '\u{F06C}'), '\u{2022}');
     assert_eq!(map("Wingdings 3", '\u{F06C}'), '\u{2022}');
     assert_eq!(map("Wingdings 3", '\u{F07D}'), '\u{25B6}');
+}
+
+#[test]
+fn wingdings_2_bullets() {
+    for (code, want) in [
+        (0xF04F, '\u{2717}'),
+        (0xF050, '\u{2713}'),
+        (0xF052, '\u{2611}'),
+        (0xF054, '\u{2612}'),
+        (0xF06A, '\u{2460}'),
+        (0xF073, '\u{2469}'),
+        (0xF075, '\u{2776}'),
+        (0xF07E, '\u{277F}'),
+        (0xF097, '\u{25CF}'),
+        (0xF09B, '\u{25CB}'),
+        (0xF0A2, '\u{25A0}'),
+        (0xF0A3, '\u{25A1}'),
+        (0xF0AB, '\u{25C6}'),
+        (0xF0B4, '\u{29EB}'),
+        (0xF0E9, '\u{2605}'),
+    ] {
+        assert_eq!(
+            map("Wingdings 2", char::from_u32(code).unwrap()),
+            want,
+            "{code:#x}"
+        );
+    }
+    // codes without a shape of their own are the plain bullet
+    assert_eq!(map("Wingdings 2", '\u{F021}'), '\u{2022}');
+    assert_eq!(map("Wingdings 2", '\u{F0FF}'), '\u{2022}');
+    // everything listed is a real character and not the bullet itself
+    for c in 0x20u8..=0xFF {
+        if let Some(u) = wingdings2(c) {
+            assert!(char::from_u32(u).is_some(), "{c:#x}");
+            assert_ne!(u, 0x2022, "{c:#x}");
+        }
+    }
+}
+
+#[test]
+fn webdings_bullets() {
+    for (code, want) in [
+        (0xF033, '\u{25C0}'),
+        (0xF034, '\u{25B6}'),
+        (0xF035, '\u{25B2}'),
+        (0xF036, '\u{25BC}'),
+        (0xF03C, '\u{25A0}'),
+        (0xF03D, '\u{25CF}'),
+        (0xF061, '\u{2714}'),
+        (0xF063, '\u{25A1}'),
+        (0xF067, '\u{25A0}'),
+        (0xF06E, '\u{25CF}'),
+    ] {
+        assert_eq!(
+            map("Webdings", char::from_u32(code).unwrap()),
+            want,
+            "{code:#x}"
+        );
+    }
     assert_eq!(map("Webdings", '\u{F06C}'), '\u{2022}');
+    for c in 0x20u8..=0xFF {
+        if let Some(u) = webdings(c) {
+            assert!(char::from_u32(u).is_some(), "{c:#x}");
+        }
+    }
 }
 
 #[test]
@@ -93,6 +156,23 @@ fn the_glyph_scale_enlarges_only_the_wingdings_shapes() {
     assert_eq!(glyph_scale("Wingdings", '\u{F06C}'), 1.3);
     assert_eq!(glyph_scale("Wingdings", '\u{F06E}'), 1.3);
     assert_eq!(glyph_scale("Wingdings", '\u{F0A7}'), 1.0);
+    // Wingdings 2 circles and squares grow with the series number (7 is larger than 5, ...)
+    let s = |c: char| glyph_scale("Wingdings 2", c);
+    assert!(s('\u{F095}') < s('\u{F096}') && s('\u{F096}') < s('\u{F097}'));
+    assert!(s('\u{F097}') < s('\u{F098}'));
+    assert!((s('\u{F09F}') / s('\u{F095}') - 1.4).abs() < 1e-9);
+    assert!((s('\u{F0A2}') / s('\u{F098}') - 1.4).abs() < 1e-9);
+    assert!(s('\u{F09F}') < s('\u{F0A0}') && s('\u{F0A1}') < s('\u{F0A2}'));
+    assert_eq!(s('\u{F050}'), 1.0);
+    assert!(
+        s('\u{F0A2}') > s('\u{F098}'),
+        "squares are drawn larger than circles"
+    );
+    assert_eq!(s('\u{F0A3}'), 1.5);
+    assert_eq!(glyph_scale("Webdings", '\u{F067}'), 1.8);
+    assert_eq!(glyph_scale("Webdings", '\u{F034}'), 1.2);
+    assert_eq!(glyph_scale("Webdings", '\u{F061}'), 1.0);
+    assert_eq!(glyph_scale("Wingdings 3", '\u{F07D}'), 1.25);
     assert_eq!(glyph_scale("Symbol", '\u{F0B7}'), 1.0);
     assert_eq!(glyph_scale("Arial", '\u{F06C}'), 1.0);
     assert_eq!(glyph_scale("Wingdings", '\u{3042}'), 1.0);

@@ -281,14 +281,16 @@ fn non_finite_sizes_are_zero() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn there_are_186_distinct_presets() {
+fn there_are_187_distinct_presets_one_of_them_made_in_code() {
     let names = preset_names();
-    assert_eq!(names.len(), 186, "{names:?}");
+    // the 186 of the Ecma file plus `upArrow`, which the file lacks
+    assert_eq!(names.len(), 187, "{names:?}");
     for n in [
         "rect",
         "ellipse",
         "line",
         "upDownArrow",
+        "upArrow",
         "wedgeRectCallout",
         "star5",
     ] {
@@ -318,6 +320,145 @@ fn up_down_arrow_keeps_the_first_definition() {
     // the file defines it twice, identically; there is exactly one entry and it works
     let g = geom("upDownArrow", &[], 1000.0, 1000.0);
     assert_eq!(line_pts(&g, 0).len(), 10);
+}
+
+/// Every value of `ST_ShapeType` (ECMA-376 Part 1, 20.1.10.56), as listed in the schema.
+const SCHEMA_SHAPE_TYPES: &str = "line lineInv triangle rtTriangle rect diamond parallelogram trapezoid nonIsoscelesTrapezoid pentagon hexagon heptagon octagon decagon dodecagon star4 star5 star6 star7 star8 star10 star12 star16 star24 star32 roundRect round1Rect round2SameRect round2DiagRect snipRoundRect snip1Rect snip2SameRect snip2DiagRect plaque ellipse teardrop homePlate chevron pieWedge pie blockArc donut noSmoking rightArrow leftArrow upArrow downArrow stripedRightArrow notchedRightArrow bentUpArrow leftRightArrow upDownArrow leftUpArrow leftRightUpArrow quadArrow leftArrowCallout rightArrowCallout upArrowCallout downArrowCallout leftRightArrowCallout upDownArrowCallout quadArrowCallout bentArrow uturnArrow circularArrow leftCircularArrow leftRightCircularArrow curvedRightArrow curvedLeftArrow curvedUpArrow curvedDownArrow swooshArrow cube can lightningBolt heart sun moon smileyFace irregularSeal1 irregularSeal2 foldedCorner bevel frame halfFrame corner diagStripe chord arc leftBracket rightBracket leftBrace rightBrace bracketPair bracePair straightConnector1 bentConnector2 bentConnector3 bentConnector4 bentConnector5 curvedConnector2 curvedConnector3 curvedConnector4 curvedConnector5 callout1 callout2 callout3 accentCallout1 accentCallout2 accentCallout3 borderCallout1 borderCallout2 borderCallout3 accentBorderCallout1 accentBorderCallout2 accentBorderCallout3 wedgeRectCallout wedgeRoundRectCallout wedgeEllipseCallout cloudCallout cloud ribbon ribbon2 ellipseRibbon ellipseRibbon2 leftRightRibbon verticalScroll horizontalScroll wave doubleWave plus flowChartProcess flowChartDecision flowChartInputOutput flowChartPredefinedProcess flowChartInternalStorage flowChartDocument flowChartMultidocument flowChartTerminator flowChartPreparation flowChartManualInput flowChartManualOperation flowChartConnector flowChartPunchedCard flowChartPunchedTape flowChartSummingJunction flowChartOr flowChartCollate flowChartSort flowChartExtract flowChartMerge flowChartOfflineStorage flowChartOnlineStorage flowChartMagneticTape flowChartMagneticDisk flowChartMagneticDrum flowChartDisplay flowChartDelay flowChartAlternateProcess flowChartOffpageConnector actionButtonBlank actionButtonHome actionButtonHelp actionButtonInformation actionButtonForwardNext actionButtonBackPrevious actionButtonEnd actionButtonBeginning actionButtonReturn actionButtonDocument actionButtonSound actionButtonMovie gear6 gear9 funnel mathPlus mathMinus mathMultiply mathDivide mathEqual mathNotEqual cornerTabs squareTabs plaqueTabs chartX chartStar chartPlus";
+
+#[test]
+fn every_value_of_the_schemas_shape_type_is_a_preset() {
+    let names = preset_names();
+    let schema: Vec<&str> = SCHEMA_SHAPE_TYPES.split(' ').collect();
+    assert_eq!(schema.len(), 187);
+    for n in &schema {
+        assert!(names.contains(n), "{n} is not a preset");
+    }
+    assert_eq!(
+        names.len(),
+        schema.len(),
+        "a preset the schema does not know"
+    );
+}
+
+#[test]
+fn up_arrow_is_the_down_arrow_turned_upside_down() {
+    // same adjust names and defaults
+    assert_eq!(
+        preset_adjust_names("upArrow"),
+        preset_adjust_names("downArrow")
+    );
+    for &(w, h) in &[
+        (1_000_000.0, 1_000_000.0),
+        (400_000.0, 1_600_000.0),
+        (1_600_000.0, 400_000.0),
+    ] {
+        for a in [
+            vec![],
+            vec![("adj1", 20_000.0), ("adj2", 80_000.0)],
+            vec![("adj1", 100_000.0), ("adj2", 0.0)],
+            vec![("adj1", 70_000.0), ("adj2", 1e9)],
+        ] {
+            let down = geom("downArrow", &a, w, h);
+            let up = geom("upArrow", &a, w, h);
+            assert_eq!(up.paths.len(), down.paths.len());
+            let (d, u) = (line_pts(&down, 0), line_pts(&up, 0));
+            assert_eq!(d.len(), u.len());
+            for (p, q) in d.iter().zip(&u) {
+                assert!(
+                    close(p.x, q.x) && close(h - p.y, q.y),
+                    "{p:?} {q:?} {w}x{h}"
+                );
+            }
+            // the text rectangle: same left and right, top and bottom swapped about the middle
+            let (dl, dt, dr, db) = down.text_rect.unwrap();
+            let (ul, ut, ur, ub) = up.text_rect.unwrap();
+            assert!(close(dl, ul) && close(dr, ur), "{w}x{h}");
+            assert!(close(h - db, ut) && close(h - dt, ub), "{w}x{h}");
+            // connection sites: mirrored position and angle
+            assert_eq!(down.connections.len(), up.connections.len());
+            for ((dp, da), (upp, ua)) in down.connections.iter().zip(&up.connections) {
+                assert!(close(dp.x, upp.x) && close(h - dp.y, upp.y));
+                assert!(
+                    close((360.0 - da).rem_euclid(360.0), ua.rem_euclid(360.0)),
+                    "{da} {ua}"
+                );
+            }
+        }
+    }
+    // the tip points up: a point at the middle of the top edge, and the shaft reaches the bottom
+    let g = geom("upArrow", &[], 1_000_000.0, 1_000_000.0);
+    let pts = line_pts(&g, 0);
+    assert!(pts.iter().any(|p| pt_close(*p, 500_000.0, 0.0)));
+    assert!(pts.iter().any(|p| close(p.y, 1_000_000.0)));
+}
+
+#[test]
+fn mirroring_a_spec_negates_arc_angles_and_uses_the_path_space() {
+    let spec = CustomGeomSpec {
+        paths: vec![PathSpec {
+            w: 100.0,
+            h: 40.0,
+            cmds: vec![
+                CmdSpec::Move(("0".into(), "10".into())),
+                CmdSpec::Arc {
+                    wr: "20".into(),
+                    hr: "10".into(),
+                    st_ang: "cd2".into(),
+                    sw_ang: "cd4".into(),
+                },
+                CmdSpec::Quad(("5".into(), "5".into()), ("6".into(), "30".into())),
+                CmdSpec::Cubic(
+                    ("1".into(), "2".into()),
+                    ("3".into(), "4".into()),
+                    ("5".into(), "6".into()),
+                ),
+                CmdSpec::Close,
+            ],
+            ..PathSpec::default()
+        }],
+        text_rect: Some(["l".into(), "10".into(), "r".into(), "20".into()]),
+        ..CustomGeomSpec::default()
+    };
+    let mirrored = super::super::geom_xml::mirrored_vertically(&spec);
+    let a = custom(&spec, 1000.0, 400.0).unwrap();
+    let b = custom(&mirrored, 1000.0, 400.0).unwrap();
+    assert_eq!(b.paths[0].cmds.len(), a.paths[0].cmds.len());
+    // path space: y of the move, 10 of 40, becomes 30 of 40
+    match (a.paths[0].cmds[0], b.paths[0].cmds[0]) {
+        (PathCmd::MoveTo(p), PathCmd::MoveTo(q)) => {
+            assert!(close(p.x, q.x) && close(q.y, 40.0 - p.y), "{p:?} {q:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    match (a.paths[0].cmds[1], b.paths[0].cmds[1]) {
+        (
+            PathCmd::ArcTo {
+                st_deg: s1,
+                sw_deg: w1,
+                ..
+            },
+            PathCmd::ArcTo {
+                st_deg: s2,
+                sw_deg: w2,
+                ..
+            },
+        ) => {
+            assert!(close(s1, 180.0) && close(w1, 90.0));
+            assert!(close(s2, -180.0) && close(w2, -90.0), "{s2} {w2}");
+        }
+        other => panic!("{other:?}"),
+    }
+    match (a.paths[0].cmds[3], b.paths[0].cmds[3]) {
+        (PathCmd::CubicTo(a1, a2, a3), PathCmd::CubicTo(b1, b2, b3)) => {
+            for (p, q) in [(a1, b1), (a2, b2), (a3, b3)] {
+                assert!(close(p.x, q.x) && close(40.0 - p.y, q.y));
+            }
+        }
+        other => panic!("{other:?}"),
+    }
+    // text rectangle (box space): top 10 / bottom 20 of 400 become 380 / 390
+    let (_, t, _, bt) = b.text_rect.unwrap();
+    assert!(close(t, 380.0) && close(bt, 390.0), "{t} {bt}");
 }
 
 const SIZES: &[(f64, f64)] = &[

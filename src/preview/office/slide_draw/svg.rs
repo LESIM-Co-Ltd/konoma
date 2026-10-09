@@ -15,9 +15,8 @@
 //!   (`path="shape"`) has no SVG equivalent and is drawn as the same radial gradient (the colours
 //!   run the right way, the iso-lines are ellipses instead of the shape's outline).
 //!   `rot_with_shape = false` is ignored (the gradient turns with the shape).
-//! * **Patterns**: 8 x 8 px tiles drawn from per-pixel rules (see `pattern_pixels`); the
-//!   percentage patterns use an ordered-dither matrix, line patterns approximate PowerPoint's
-//!   bitmaps. Unknown presets are the 50 % pattern.
+//! * **Patterns**: 8 x 8 px tiles drawn from per-pixel rules (see `patterns`: the 54 bitmaps
+//!   measured from PowerPoint, not scaled with the shape). Unknown presets are the 50 % pattern.
 //! * **Compound lines**: `Dbl` and `Tri` are exact (a mask cuts the gaps out of one wide stroke);
 //!   `ThickThin` and `ThinThick` are asymmetric and are drawn like `Dbl`.
 //! * **Arrow heads**: sized `sm/med/lg = 2/3/5 x` the line width (never less than 2 pt of width,
@@ -49,6 +48,7 @@ use base64::Engine as _;
 use super::color::mix;
 use super::model::*;
 use super::path::{self, Resolved, Seg};
+use super::patterns::pattern_pixels;
 use super::text::{self, BulletDraw, Frag, Frame, ASCENT, LINE_HEIGHT};
 
 #[path = "svg_effects.rs"]
@@ -176,6 +176,36 @@ struct Ctx {
     /// Accumulated rotation of the ancestors in degrees (screen angle).
     rot: f64,
     depth: usize,
+}
+
+/// Widest stroke (px) that is drawn without anti-aliasing when it is axis-aligned.
+const CRISP_MAX_PX: f64 = 1.5;
+
+/// Whether a rotation (degrees) leaves the horizontal and vertical directions as they are.
+fn screen_axis_aligned(rot_deg: f64) -> bool {
+    rot_deg.is_finite() && ((rot_deg / 90.0) - (rot_deg / 90.0).round()).abs() < 1e-6
+}
+
+/// Whether every segment is a horizontal or vertical line.
+fn axis_aligned_segs(segs: &[Seg]) -> bool {
+    let mut cur: Option<Pt> = None;
+    for s in segs {
+        match s {
+            Seg::M(p) => cur = Some(*p),
+            Seg::L(p) => {
+                let Some(c) = cur else {
+                    return false;
+                };
+                if (c.x - p.x).abs() > 1e-6 && (c.y - p.y).abs() > 1e-6 {
+                    return false;
+                }
+                cur = Some(*p);
+            }
+            Seg::Z => {}
+            Seg::Q(..) | Seg::C(..) => return false,
+        }
+    }
+    true
 }
 
 struct W<'a> {
@@ -428,6 +458,7 @@ impl<'a> W<'a> {
         let x = &s.xfrm;
         let bx: Bx = (x.x, x.y, x.w, x.h);
         let opened = self.open_g(x);
+        let axis = screen_axis_aligned(cx.rot + x.rot_deg);
         let (paths, trunc) = path::resolve_geometry(&s.geom, x);
         self.truncated |= trunc;
         let start = self.body.len();
@@ -444,7 +475,7 @@ impl<'a> W<'a> {
         if let Some(l) = &s.line {
             for (r, _, stroke) in &paths {
                 if *stroke {
-                    self.stroke(r, l, bx);
+                    self.stroke(r, l, bx, axis);
                 }
             }
         }
@@ -598,15 +629,20 @@ impl<'a> W<'a> {
                 };
                 let (l, t, r, b) = (f(l), f(t), f(r), f(b));
                 let (fx, fy) = ((l + (1.0 - r)) / 2.0, (t + (1.0 - b)) / 2.0);
-                let rad = (fx.max(1.0 - fx)).hypot(fy.max(1.0 - fy));
+                // The circle is centred on the focus rectangle and reaches the last stop at half the
+                // box diagonal (the circle through the corners of a centred focus). Measured on
+                // LibreOffice's rendering of a dark-theme deck: the grey falls to black at
+                // 0.6 of the width from a top-right focus, i.e. at 600 px of 960x720, not at the
+                // farthest corner.
+                let rad = w.hypot(h) / 2.0;
                 let _ = write!(
                     self.defs,
-                    r#"<radialGradient id="{id}" gradientUnits="objectBoundingBox" cx="{}" cy="{}" fx="{}" fy="{}" r="{}">{stop_xml}</radialGradient>"#,
-                    num(fx),
-                    num(fy),
-                    num(fx),
-                    num(fy),
-                    num(rad.max(0.01)),
+                    r#"<radialGradient id="{id}" gradientUnits="userSpaceOnUse" cx="{}" cy="{}" fx="{}" fy="{}" r="{}">{stop_xml}</radialGradient>"#,
+                    px(x + fx * w),
+                    px(y + fy * h),
+                    px(x + fx * w),
+                    px(y + fy * h),
+                    px(rad.max(0.01)),
                 );
             }
         }
@@ -737,7 +773,7 @@ impl<'a> W<'a> {
         }
         let _ = write!(
             self.defs,
-            r#"<pattern id="{id}" patternUnits="userSpaceOnUse" width="8" height="8"><rect width="8" height="8" fill="{}" fill-opacity="{}"/><path d="{fgd}" fill="{}" fill-opacity="{}"/></pattern>"#,
+            r#"<pattern id="{id}" patternUnits="userSpaceOnUse" width="8" height="8"><rect width="8" height="8" fill="{}" fill-opacity="{}"/><path d="{fgd}" fill="{}" fill-opacity="{}" shape-rendering="crispEdges"/></pattern>"#,
             hex(bg),
             num(alpha_of(bg)),
             hex(fg),
@@ -1013,7 +1049,7 @@ impl<'a> W<'a> {
         }
         if let Some(l) = &p.line {
             if let Some((r, _, _)) = paths.first() {
-                self.stroke(r, l, bx);
+                self.stroke(r, l, bx, screen_axis_aligned(_cx.rot + x.rot_deg));
             }
         }
         let content = self.body.split_off(start);
@@ -1025,7 +1061,9 @@ impl<'a> W<'a> {
 
     // ----- lines -----------------------------------------------------------------------------
 
-    fn stroke(&mut self, r: &Resolved, l: &Line, bx: Bx) {
+    /// `axis`: the shape's axes are the slide's (no rotation but a quarter turn), so a path with
+    /// only horizontal and vertical segments is axis-aligned on the slide too.
+    fn stroke(&mut self, r: &Resolved, l: &Line, bx: Bx, axis: bool) {
         let Some(paint) = self.paint_attr(&l.fill, bx, "stroke", PathFill::Norm) else {
             return;
         };
@@ -1034,7 +1072,8 @@ impl<'a> W<'a> {
         } else {
             0.0
         };
-        let w_px = if w_px < 1.0 / 16.0 { 1.0 } else { w_px }; // hairline
+        // PowerPoint draws every line at least one device pixel wide (a width of 0 included).
+        let w_px = w_px.max(1.0);
         let mut segs = r.segs.clone();
         let closed = segs.iter().any(|s| matches!(s, Seg::Z));
         // Arrow heads (open paths only).
@@ -1089,8 +1128,16 @@ impl<'a> W<'a> {
         let dash_attr = dash
             .map(|d| format!(r#" stroke-dasharray="{d}""#))
             .unwrap_or_default();
+        // PowerPoint draws a line of one pixel or less as one crisp device pixel; without
+        // anti-aliasing an axis-aligned thin stroke is a single row or column, not two grey ones
+        // (a stroke centred on a pixel boundary).
+        let crisp = if axis && w_px <= CRISP_MAX_PX && axis_aligned_segs(&segs) {
+            r#" shape-rendering="crispEdges""#
+        } else {
+            ""
+        };
         let base = format!(
-            r#"fill="none" {paint} stroke-linecap="{cap}" stroke-linejoin="{join}"{dash_attr}"#
+            r#"fill="none" {paint} stroke-linecap="{cap}" stroke-linejoin="{join}"{dash_attr}{crisp}"#
         );
         match l.compound {
             Compound::Sng => {
@@ -1551,81 +1598,4 @@ fn to_png(bytes: &[u8]) -> Option<Vec<u8>> {
     img.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
         .ok()?;
     Some(out)
-}
-
-/// The 8 x 8 pixel rule of a pattern preset: `[row][column]` is foreground.
-pub(crate) fn pattern_pixels(preset: &str) -> [[bool; 8]; 8] {
-    let mut out = [[false; 8]; 8];
-    let rule: Box<dyn Fn(usize, usize) -> bool> = match preset {
-        p if p.starts_with("pct") => {
-            let pct: f64 = p[3..].parse().unwrap_or(50.0);
-            let count = ((64.0 * pct / 100.0).round() as usize).min(64);
-            Box::new(move |x, y| bayer8(x, y) < count)
-        }
-        "ltHorz" => Box::new(|_, y| y % 4 == 0),
-        "narHorz" => Box::new(|_, y| y % 2 == 0),
-        "horz" => Box::new(|_, y| y % 8 < 2),
-        "dkHorz" => Box::new(|_, y| y % 8 < 4),
-        "dashHorz" => Box::new(|x, y| (y % 4 == 0) && ((x / 4) % 2 == (y / 4) % 2)),
-        "ltVert" => Box::new(|x, _| x % 4 == 0),
-        "narVert" => Box::new(|x, _| x % 2 == 0),
-        "vert" => Box::new(|x, _| x % 8 < 2),
-        "dkVert" => Box::new(|x, _| x % 8 < 4),
-        "dashVert" => Box::new(|x, y| (x % 4 == 0) && ((y / 4) % 2 == (x / 4) % 2)),
-        "cross" => Box::new(|x, y| x % 8 == 0 || y % 8 == 0),
-        "dnDiag" | "dashDnDiag" => Box::new(|x, y| (x + 8 - y) % 8 == 0),
-        "ltDnDiag" => Box::new(|x, y| (x + 8 - y) % 4 == 0),
-        "dkDnDiag" => Box::new(|x, y| (x + 8 - y) % 4 < 2),
-        "wdDnDiag" => Box::new(|x, y| (x + 8 - y) % 8 < 3),
-        "upDiag" | "dashUpDiag" => Box::new(|x, y| (x + y) % 8 == 7),
-        "ltUpDiag" => Box::new(|x, y| (x + y) % 4 == 3),
-        "dkUpDiag" => Box::new(|x, y| (x + y) % 4 > 1),
-        "wdUpDiag" => Box::new(|x, y| (x + y) % 8 > 4),
-        "diagCross" => Box::new(|x, y| (x + 8 - y) % 8 == 0 || (x + y) % 8 == 7),
-        "smGrid" => Box::new(|x, y| x % 4 == 0 || y % 4 == 0),
-        "lgGrid" => Box::new(|x, y| x % 8 == 0 || y % 8 == 0),
-        "dotGrid" => Box::new(|x, y| x % 4 == 0 && y % 4 == 0),
-        "dotDmnd" => Box::new(|x, y| (x + y) % 4 == 0 && (x + 8 - y) % 4 == 0),
-        "smCheck" => Box::new(|x, y| (x / 2 + y / 2) % 2 == 0),
-        "lgCheck" => Box::new(|x, y| (x / 4 + y / 4) % 2 == 0),
-        "smConfetti" => Box::new(|x, y| bayer8(x, y) < 13),
-        "lgConfetti" => Box::new(|x, y| {
-            bayer8(x / 2 * 2, y / 2 * 2) < 20 && (x + y) % 2 == 0 || bayer8(x, y) < 6
-        }),
-        "horzBrick" => Box::new(|x, y| {
-            y % 4 == 0 || (x + if (y / 4) % 2 == 0 { 0 } else { 4 }) % 8 == 0 && y % 4 != 0
-        }),
-        "diagBrick" => Box::new(|x, y| (x + 8 - y) % 8 == 0 || (x + y) % 8 == 7 && x % 2 == 0),
-        "plaid" => Box::new(|x, y| (x % 8 < 2 && y % 2 == 0) || (y % 8 < 2 && x % 2 == 0)),
-        "weave" => Box::new(|x, y| (x + y) % 4 == 0 || (x + 8 - y) % 4 == 0 && x % 2 == 0),
-        "trellis" => Box::new(|x, y| (x + y) % 4 < 2 && (x + 8 - y) % 4 < 2),
-        "zigZag" => Box::new(|x, y| (x + if y % 4 < 2 { y % 4 } else { 4 - y % 4 }) % 4 == 0),
-        "wave" => Box::new(|x, y| {
-            y % 4 == [1, 0, 0, 1, 2, 3, 3, 2][x % 8] % 4 && y < 4
-                || y % 4 == [1, 0, 0, 1, 2, 3, 3, 2][x % 8] % 4 && y >= 4
-        }),
-        "divot" | "shingle" | "sphere" | "solidDmnd" | "openDmnd" => {
-            Box::new(|x, y| bayer8(x, y) < 32)
-        }
-        _ => Box::new(|x, y| bayer8(x, y) < 32),
-    };
-    for (y, row) in out.iter_mut().enumerate() {
-        for (x, v) in row.iter_mut().enumerate() {
-            *v = rule(x, y);
-        }
-    }
-    out
-}
-
-/// Ordered-dither threshold (0..64) of an 8 x 8 Bayer matrix.
-pub(crate) fn bayer8(x: usize, y: usize) -> usize {
-    // bit-interleave (x ^ y, y) reversed
-    let (x, y) = (x & 7, y & 7);
-    let a = x ^ y;
-    let mut v = 0usize;
-    for i in 0..3 {
-        v |= ((y >> i) & 1) << (2 * (2 - i));
-        v |= ((a >> i) & 1) << (2 * (2 - i) + 1);
-    }
-    v
 }

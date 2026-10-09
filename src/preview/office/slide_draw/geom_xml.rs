@@ -41,6 +41,81 @@ pub(super) fn preset_names() -> Vec<&'static str> {
     v
 }
 
+/// Presets the Ecma file lacks, and the preset each one mirrors vertically. The file defines
+/// `upDownArrow` twice (two identical copies) and has no `upArrow`, which is `downArrow` turned
+/// upside down: same adjust names and defaults, same guides.
+const MIRRORED_PRESETS: [(&str, &str); 1] = [("upArrow", "downArrow")];
+
+/// New guides made while mirroring, one per distinct formula.
+struct Mirror {
+    guides: Vec<(String, String)>,
+}
+
+impl Mirror {
+    fn guide(&mut self, fmla: String) -> String {
+        if let Some((n, _)) = self.guides.iter().find(|(_, f)| *f == fmla) {
+            return n.clone();
+        }
+        let name = format!("mir{}", self.guides.len());
+        self.guides.push((name.clone(), fmla));
+        name
+    }
+
+    /// `Y` mirrored about the middle of the box: `t + b - Y`, or `h - Y` in a path's own space.
+    fn flip_y(&mut self, y: &str, path_h: f64) -> String {
+        if path_h > 0.0 {
+            self.guide(format!("+- {path_h} 0 {y}"))
+        } else {
+            self.guide(format!("+- b t {y}"))
+        }
+    }
+
+    /// `-A` for an angle operand.
+    fn neg(&mut self, a: &str) -> String {
+        self.guide(format!("+- 0 0 {a}"))
+    }
+}
+
+/// The geometry `spec` turned upside down about the middle of its box: every y operand becomes a
+/// new guide (the existing guides and the adjust values are kept, so handles still work), the
+/// text rectangle swaps its top and bottom, and connection and arc angles are negated.
+pub(super) fn mirrored_vertically(spec: &CustomGeomSpec) -> CustomGeomSpec {
+    let mut m = Mirror { guides: Vec::new() };
+    let mut out = spec.clone();
+    if let Some([l, t, r, b]) = &spec.text_rect {
+        out.text_rect = Some([l.clone(), m.flip_y(b, 0.0), r.clone(), m.flip_y(t, 0.0)]);
+    }
+    for c in &mut out.connections {
+        c.ang = m.neg(&c.ang);
+        c.pos.1 = m.flip_y(&c.pos.1, 0.0);
+    }
+    for p in &mut out.paths {
+        let h = p.h;
+        for cmd in &mut p.cmds {
+            let mut flip = |xy: &mut Xy| xy.1 = m.flip_y(&xy.1, h);
+            match cmd {
+                CmdSpec::Move(a) | CmdSpec::Line(a) => flip(a),
+                CmdSpec::Quad(a, b) => {
+                    flip(a);
+                    flip(b);
+                }
+                CmdSpec::Cubic(a, b, c) => {
+                    flip(a);
+                    flip(b);
+                    flip(c);
+                }
+                CmdSpec::Arc { st_ang, sw_ang, .. } => {
+                    *st_ang = m.neg(st_ang);
+                    *sw_ang = m.neg(sw_ang);
+                }
+                CmdSpec::Close => {}
+            }
+        }
+    }
+    out.guides.extend(m.guides);
+    out
+}
+
 /// Parses the embedded file: one child element of the root per preset. **`upDownArrow` is defined
 /// twice in the Ecma file; the first definition is kept** (a later one never replaces an earlier
 /// entry).
@@ -78,6 +153,14 @@ fn load_presets() -> Presets {
             }
             Ok(Tree::TooBig) => {}
             Err(_) => break,
+        }
+    }
+    for (name, base) in MIRRORED_PRESETS {
+        if map.contains_key(name) {
+            continue;
+        }
+        if let Some(spec) = map.get(base).map(mirrored_vertically) {
+            map.insert(name.to_string(), spec);
         }
     }
     map
