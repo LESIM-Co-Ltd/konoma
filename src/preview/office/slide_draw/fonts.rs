@@ -7,11 +7,12 @@
 //! "the face resvg draws" and "the face the line breaking measured" are the same one
 //! (`preview::mermaid::text_metrics` resolves a stack exactly like usvg does).
 //!
-//! Approximation worth knowing: a stack is resolved to its **first installed face** for
-//! measuring. usvg additionally falls back per glyph through the *rest of the stack* when that
-//! face lacks a character; `text_metrics` falls back through usvg's system-wide selector instead.
-//! The two agree whenever the first face covers the text, which is the case for the Latin text
-//! and for the East-Asian text (each is measured with its own stack, see [`Script`]).
+//! A stack is resolved to its **first installed face**, and that is exactly what usvg does too: its
+//! font selector queries the whole `font-family` list and hands harfrust a single face per span.
+//! When that face lacks a character, usvg does *not* walk the rest of the stack; it asks a
+//! system-wide selector (`FontResolver::default_fallback_selector`, database order), and if the
+//! face it names covers the whole run it re-shapes the whole run with it. `text_metrics` follows
+//! that loop (`TextMetrics::measure`), so measuring and drawing agree here as well.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};

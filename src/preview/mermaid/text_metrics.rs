@@ -144,6 +144,25 @@ struct Cache {
     /// Pair kerning in font units, keyed by (left glyph, right glyph). Read from whichever source
     /// [`KernSource`] selected for this face.
     kern: HashMap<(u32, u32), i32>,
+    /// The measuring face's `.notdef` advance in font units, per size key: what usvg leaves in the
+    /// run for a character no face in the database can draw.
+    notdef: HashMap<u32, f32>,
+    /// usvg's fallback selector's answers, keyed by the character **and the exclusion list** it was
+    /// asked with (the faces the run has used so far). The selector walks the whole database and
+    /// opens every face, so each distinct question is put once for the life of the process.
+    select: HashMap<(char, Vec<fontdb::ID>), Option<fontdb::ID>>,
+}
+
+/// How usvg lays out a run in which the measuring face lacks a glyph (`shape_text` in usvg's
+/// `text::layout`), as far as widths go.
+enum FallbackPlan {
+    /// A fallback face covers **every** character of the run, so usvg throws the measuring face's
+    /// shaping away and re-shapes the whole run with it — Latin letters, digits and spaces
+    /// included. The width is that face's own measurement of the whole text.
+    Whole(Arc<TextMetrics>),
+    /// Each missing character is taken from the first fallback face that has it; the rest of the
+    /// run keeps the measuring face. Characters absent from the map stay `.notdef`.
+    Chars(HashMap<char, Arc<TextMetrics>>),
 }
 
 /// Advance-width measurement bound to one resolved face of one font database.
@@ -156,6 +175,9 @@ pub struct TextMetrics {
     /// Whether the face has an `opsz` variation axis, which usvg drives from `font-size`.
     has_opsz: bool,
     cache: Mutex<Cache>,
+    /// Measuring state of the fallback faces usvg has been found to use, by face (`None` = a face
+    /// usvg's `load_font` would refuse). Locked only after `cache`, never before.
+    fallbacks: Mutex<HashMap<fontdb::ID, Option<Arc<TextMetrics>>>>,
     /// How many times the **measuring** face's data has been opened. Only the cold path touches it;
     /// the cache test uses it as a deterministic stand-in for "did this call do real work" (konoma
     /// prefers a structural guard over a wall-clock one — see `speed_tests.rs`).
@@ -255,6 +277,7 @@ impl TextMetrics {
             kern_source,
             has_opsz,
             cache: Mutex::new(Cache::default()),
+            fallbacks: Mutex::new(HashMap::new()),
             face_opens: AtomicUsize::new(0),
             fallback_probes: AtomicUsize::new(0),
         })
@@ -285,9 +308,14 @@ impl TextMetrics {
     /// advance out of that face instead).
     pub fn has_missing_glyph(&self, text: &str) -> bool {
         let chars: Vec<char> = text.chars().collect();
-        let key = self.size_key(FONT_SIZE);
+        self.lacks_glyph(&chars, FONT_SIZE)
+    }
+
+    /// Whether the measuring face lacks a glyph for at least one of `chars`.
+    fn lacks_glyph(&self, chars: &[char], font_size: f32) -> bool {
+        let key = self.size_key(font_size);
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        self.fill(&mut cache, &chars, FONT_SIZE, key);
+        self.fill(&mut cache, chars, font_size, key);
         chars
             .iter()
             .any(|c| cache.chars.get(&(*c, key)).is_none_or(|e| e.gid.is_none()))
@@ -321,7 +349,8 @@ impl TextMetrics {
     ///
     /// **Their advance is read out of the face resvg will actually fall back to**, resolved through
     /// usvg's own `FontResolver::default_fallback_selector` against this same database — not
-    /// guessed. When no face in the database has the character either, the advance is the measuring
+    /// guessed — and following usvg's loop (`shape_text`): when the face chosen for the first
+    /// missing character covers the whole run, the *whole* run is measured in it. When no face in the database has the character either, the advance is the measuring
     /// face's `.notdef` glyph, which is exactly what usvg then leaves in the run.
     ///
     /// This used to be "one em", justified against CJK, where it happens to hold. **It does not
@@ -332,12 +361,11 @@ impl TextMetrics {
     ///
     /// # Known approximations
     ///
-    /// 1. **Kerning is not applied across a fallback seam**, and neither is the re-shaping usvg
-    ///    does when a fallback face happens to cover the *entire* run: in that one case usvg keeps
-    ///    the fallback's shaping for every character, including the ones the measuring face could
-    ///    have drawn, while this sum keeps the measuring face's advances for those. That is the
-    ///    residue the instrument's fallback tolerance covers, and it is why a mixed-script string
-    ///    is judged by that tolerance rather than by the strict one.
+    /// 1. **Kerning is not applied across a fallback seam** (between a glyph from the measuring
+    ///    face and one from a fallback face, or between two fallback faces). A run that one fallback
+    ///    face covers *entirely* has no seam: usvg re-shapes all of it with that face and so does
+    ///    this (`plan_fallbacks`), kerning included. That residue is why a mixed-script string is
+    ///    judged by the loose fallback tolerance rather than the strict one.
     /// 2. On a variable face the advances follow the `opsz` axis (as usvg does) but the kern values
     ///    are read from the default instance, so a face that also varies its kerning is off by a
     ///    fraction of a pixel per pair (≤1.6px on a 12-character label, measured on macOS's system
@@ -377,6 +405,19 @@ impl TextMetrics {
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         self.fill(&mut cache, &chars, font_size, key);
 
+        let has_missing = chars
+            .iter()
+            .any(|c| cache.chars.get(&(*c, key)).is_none_or(|e| e.gid.is_none()));
+        let plan = has_missing.then(|| self.plan_fallbacks(&mut cache, &chars, font_size, key));
+        let mut per_char: Option<&HashMap<char, Arc<TextMetrics>>> = None;
+        match &plan {
+            Some(FallbackPlan::Whole(face)) => {
+                return face.measure_impl(text, font_size, kerning);
+            }
+            Some(FallbackPlan::Chars(map)) => per_char = Some(map),
+            None => {}
+        }
+
         let mut units = 0.0f32;
         let mut prev: Option<u32> = None;
         for &c in &chars {
@@ -397,8 +438,16 @@ impl TextMetrics {
                     prev = Some(gid);
                 }
                 None => {
-                    // Substituted from another face; no kern pair spans the seam.
-                    units += entry.units;
+                    // Substituted from another face; no kern pair spans the seam. usvg scales
+                    // each glyph by its own face's upem, so the fallback's width in px is turned
+                    // back into this face's units to keep one multiply at the end.
+                    units += match per_char.and_then(|m| m.get(&c)) {
+                        Some(face) => {
+                            face.measure_impl(&c.to_string(), font_size, false)
+                                * (self.upem / font_size)
+                        }
+                        None => entry.units,
+                    };
                     prev = None;
                 }
             }
@@ -425,11 +474,6 @@ impl TextMetrics {
         if !need_chars && !need_pairs {
             return;
         }
-        // Characters this pass finds the measuring face has no glyph for. Collected rather than
-        // resolved inline: resolving one means asking usvg's selector, which walks the database and
-        // opens other faces, and doing that while the measuring face is open would nest a scan
-        // inside a borrow for no reason.
-        let mut missing: Vec<char> = Vec::new();
         self.face_opens.fetch_add(1, Ordering::Relaxed);
         let _ = self.db.with_face_data(self.face, |data, index| {
             let Ok(font) = FontRef::from_index(data, index) else {
@@ -449,6 +493,7 @@ impl TextMetrics {
             // shaper maps it to glyph 0 and keeps glyph 0's advance. Read at the same location as
             // the rest, so an optical-size axis moves it too.
             let notdef = metrics.advance_width(GlyphId::new(0)).unwrap_or(0.0);
+            cache.notdef.insert(key, notdef);
             for &c in chars {
                 if cache.chars.contains_key(&(c, key)) {
                     continue;
@@ -458,17 +503,14 @@ impl TextMetrics {
                         gid: Some(gid.to_u32()),
                         units: metrics.advance_width(gid).unwrap_or(0.0),
                     },
-                    // No glyph here. usvg re-shapes the character with a fallback face, so the
-                    // advance has to come out of *that* face; `fill_fallbacks` below goes and gets
-                    // it. `.notdef` is what is left standing when no face in the database has the
-                    // character either — which is also exactly what usvg leaves standing.
-                    _ => {
-                        missing.push(c);
-                        CharAdvance {
-                            gid: None,
-                            units: notdef,
-                        }
-                    }
+                    // No glyph here. usvg re-shapes the run with a fallback face, which depends
+                    // on the whole run, so the advance is decided later by `plan_fallbacks`; the
+                    // entry holds `.notdef`, which is also what is left standing when no face in
+                    // the database has the character — exactly what usvg leaves standing.
+                    _ => CharAdvance {
+                        gid: None,
+                        units: notdef,
+                    },
                 };
                 cache.chars.insert((c, key), entry);
             }
@@ -494,107 +536,101 @@ impl TextMetrics {
                 prev = gid;
             }
         });
-        if !missing.is_empty() {
-            self.fill_fallbacks(cache, &missing, font_size, key);
-        }
     }
 
-    /// Replace the seeded `.notdef` advance of every character in `missing` with the advance of the
-    /// face **usvg will really fall back to** for it.
+    /// Decide, the way usvg's `shape_text` does, which fallback faces a run containing characters
+    /// the measuring face lacks is drawn with.
     ///
-    /// `missing` holds only characters this call newly inserted, so every entry here is a genuine
-    /// first sighting; a character measured a second time is answered out of `cache.chars` and
-    /// never reaches this function. That is what keeps the cost of the walk below off the hot path,
-    /// and the walk is not cheap: measured on macOS (release, ~700 system faces), resolving one
-    /// character costs **0.5 ms for CJK and 12.8 ms for an emoji** — the selector asks every face
-    /// in turn whether it has the character, and each question maps that face's file, so a
-    /// character only the last face can draw pays for all of them. A warm `measure` is unchanged at
-    /// ~340 ns (measured either side of this change; the warm path never gets here). Once per
-    /// character for the life of the process is therefore the only acceptable rate, and
-    /// `a_fallback_face_is_resolved_once_per_character_and_never_again` is what holds it there.
+    /// usvg takes the **first** missing character, asks its selector for a face (excluding every
+    /// face the run has used so far), and re-shapes the whole run with it. If that face has a glyph
+    /// for every character, the new shaping replaces the old one wholesale ([`FallbackPlan::Whole`]
+    /// — this is why a Latin word next to a Japanese one is drawn in the CJK face on a machine
+    /// whose only CJK face also covers Latin). Otherwise only the glyphs the measuring face lacked
+    /// and the new face has are taken from it, and the loop goes on with the next missing
+    /// character. It stops when the selector names nobody or names a face usvg's `load_font`
+    /// refuses; what is still missing then stays `.notdef`.
     ///
-    /// The cache lock is held across the walk, so a second thread measuring at the same moment
-    /// waits for it. That is bounded by the same once-per-character rule, and mermaid rendering is
-    /// always on a worker thread (`docs/FEATURE-MERMAID-RENDERER.md` §1), never the UI one.
-    ///
-    /// # How the face is chosen
-    ///
-    /// By [`Self::fallback_face`], which asks usvg rather than reimplementing it, against the same
-    /// `Arc` the preview draws with — **one database, one lookup path**.
-    ///
-    /// # What is copied out of it
-    ///
-    /// The glyph's horizontal advance, at the same optical size usvg would shape it at, rescaled
-    /// from the fallback face's units-per-em into the measuring face's. usvg scales each glyph by
-    /// its own face's upem, so rescaling here is what lets the caller keep summing in one unit
-    /// system and scale once at the end.
-    ///
-    /// A character is left on `.notdef` when the selector names no face (nothing in the database
-    /// has it — usvg then stops looking too and draws the same `.notdef`), when the named face is
-    /// one usvg would itself refuse for its units-per-em, or when that face turns out to map the
-    /// character to glyph 0 after all.
-    /// The face usvg will fall back to for `c`, or `None` when it would find none.
+    /// The selector itself is usvg's own, asked once per distinct (character, exclusion list) for
+    /// the life of the process (`a_fallback_face_is_resolved_once_per_character_and_never_again`).
+    fn plan_fallbacks(
+        &self,
+        cache: &mut Cache,
+        chars: &[char],
+        font_size: f32,
+        key: u32,
+    ) -> FallbackPlan {
+        let mut used = vec![self.face];
+        let mut remaining: Vec<char> = chars
+            .iter()
+            .copied()
+            .filter(|c| cache.chars.get(&(*c, key)).is_none_or(|e| e.gid.is_none()))
+            .collect();
+        let mut taken: HashMap<char, Arc<TextMetrics>> = HashMap::new();
+        while let Some(&c) = remaining.first() {
+            let Some(id) = self.select_cached(cache, c, &used) else {
+                break;
+            };
+            let Some(face) = self.fallback_metrics(id) else {
+                break;
+            };
+            if !face.lacks_glyph(chars, font_size) {
+                return FallbackPlan::Whole(face);
+            }
+            remaining.retain(|d| {
+                if face.lacks_glyph(&[*d], font_size) {
+                    true
+                } else {
+                    taken.entry(*d).or_insert_with(|| face.clone());
+                    false
+                }
+            });
+            used.push(id);
+        }
+        FallbackPlan::Chars(taken)
+    }
+
+    /// [`Self::select_fallback`] through the per-process answer cache.
+    fn select_cached(&self, cache: &mut Cache, c: char, used: &[fontdb::ID]) -> Option<fontdb::ID> {
+        if let Some(hit) = cache.select.get(&(c, used.to_vec())) {
+            return *hit;
+        }
+        let answer = self.select_fallback(c, used);
+        cache.select.insert((c, used.to_vec()), answer);
+        answer
+    }
+
+    /// The measuring state of fallback face `id`, or `None` for a face usvg's `load_font` would
+    /// refuse (units-per-em outside 16..=16384) or that cannot be read — usvg then gives up on
+    /// falling back at all.
+    fn fallback_metrics(&self, id: fontdb::ID) -> Option<Arc<TextMetrics>> {
+        let mut map = self.fallbacks.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(id)
+            .or_insert_with(|| Self::resolve_face(self.db.clone(), id).ok().map(Arc::new))
+            .clone()
+    }
+
+    /// The face usvg will fall back to for `c` when only the measuring face has been tried, or
+    /// `None` when it would find none.
     ///
     /// **Asked of usvg, not reimplemented.** `FontResolver::default_fallback_selector` is the very
-    /// closure usvg's shaping loop calls when a glyph comes back missing, and the excluded-font
-    /// list is the one usvg passes at that moment: the face that just failed. Anything cleverer
-    /// here would be a second opinion about which face draws the character, which is the mismatch
-    /// this whole module exists to prevent.
+    /// closure usvg's shaping loop calls when a glyph comes back missing; anything cleverer here
+    /// would be a second opinion about which face draws the character, which is the mismatch this
+    /// whole module exists to prevent. Uncached: [`Self::measure`] goes through the cache.
     ///
     /// Public to the crate so the instrument can check konoma reads the same face resvg draws with.
     pub fn fallback_face(&self, c: char) -> Option<fontdb::ID> {
+        self.select_fallback(c, &[self.face])
+    }
+
+    /// usvg's fallback selector for `c`, with `exclude` as the faces already used by the run (the
+    /// measuring face first, as usvg passes them).
+    fn select_fallback(&self, c: char, exclude: &[fontdb::ID]) -> Option<fontdb::ID> {
         self.fallback_probes.fetch_add(1, Ordering::Relaxed);
         // The selector wants `&mut Arc<Database>` so that a *custom* resolver may load fonts on
         // demand. The default one only reads, and this clone points at the same database either
         // way — it is deliberately not a second font database (see the module docs).
         let mut db = self.db.clone();
-        usvg::FontResolver::default_fallback_selector()(c, &[self.face], &mut db)
-    }
-
-    fn fill_fallbacks(&self, cache: &mut Cache, missing: &[char], font_size: f32, key: u32) {
-        // Group by face: a CJK label is a dozen characters that all land on the same fallback, and
-        // opening a face is a file mapping.
-        let mut by_face: HashMap<fontdb::ID, Vec<char>> = HashMap::new();
-        for &c in missing {
-            if let Some(id) = self.fallback_face(c) {
-                by_face.entry(id).or_default().push(c);
-            }
-        }
-        for (id, chars) in by_face {
-            let _ = self.db.with_face_data(id, |data, index| {
-                let Ok(font) = FontRef::from_index(data, index) else {
-                    return;
-                };
-                let fb_upem = font
-                    .metrics(Size::unscaled(), LocationRef::default())
-                    .units_per_em;
-                // usvg's `load_font` rejects this range and then gives up on falling back at all,
-                // leaving the `.notdef` already in the cache.
-                if !(16..=16384).contains(&fb_upem) {
-                    return;
-                }
-                let location: Location = if font.axes().get_by_tag(Tag::new(b"opsz")).is_some() {
-                    font.axes().location([(Tag::new(b"opsz"), font_size)])
-                } else {
-                    font.axes().location::<[(Tag, f32); 0]>([])
-                };
-                let metrics = font.glyph_metrics(Size::unscaled(), &location);
-                let charmap = font.charmap();
-                let rescale = self.upem / fb_upem as f32;
-                for c in chars {
-                    let Some(gid) = charmap.map(c) else { continue };
-                    if gid.to_u32() == 0 {
-                        continue;
-                    }
-                    let Some(advance) = metrics.advance_width(gid) else {
-                        continue;
-                    };
-                    if let Some(entry) = cache.chars.get_mut(&(c, key)) {
-                        entry.units = advance * rescale;
-                    }
-                }
-            });
-        }
+        usvg::FontResolver::default_fallback_selector()(c, exclude, &mut db)
     }
 }
 
@@ -1536,13 +1572,15 @@ mod tests {
         let m = TextMetrics::resolve(db).expect("the staged sans-serif resolves");
         assert_eq!(m.fallback_probes(), 0, "resolving alone probes nothing");
 
-        // Three distinct characters the measuring face lacks, each written twice.
+        // Three distinct characters the measuring face lacks, each written twice. usvg asks its
+        // selector about the first missing character only: the face it names covers the whole run,
+        // so that one answer settles all three.
         let text = "∀ℵ√∀ℵ√";
         let _ = m.measure(text, FONT_SIZE);
         assert_eq!(
             m.fallback_probes(),
-            3,
-            "one probe per distinct character, not per occurrence"
+            1,
+            "one probe for the run, not one per character or per occurrence"
         );
         for _ in 0..500 {
             let _ = m.measure(text, FONT_SIZE);
@@ -1550,8 +1588,79 @@ mod tests {
         }
         assert_eq!(
             m.fallback_probes(),
-            3,
+            1,
             "a warm measurement re-ran usvg's font-book walk = the cache is not holding"
+        );
+    }
+
+    /// **When a fallback face covers the whole run, usvg draws the whole run with it** — the
+    /// Latin letters too, not only the characters the measuring face lacked (`shape_text` in
+    /// usvg's `text::layout`: "Replace all glyphs when all of them were matched").
+    ///
+    /// Measuring those letters in the measuring face was 5% off on a Linux box whose only CJK face
+    /// also covers Latin (`混在 mixed ラベル 123`, Noto Sans CJK next to DejaVu), and invisible on
+    /// CI (no CJK face) and on macOS (Hiragino's Latin happens to match). So the rule is pinned
+    /// here on a database this test builds itself: the measuring face is KaTeX SansSerif, the
+    /// fallback is KaTeX Main, which has the same Latin letters at *different* advances.
+    #[test]
+    fn a_fallback_that_covers_the_whole_run_measures_all_of_it() {
+        let db = katex_db(&["KaTeX_SansSerif-Regular.ttf", "KaTeX_Main-Regular.ttf"]);
+        let m = TextMetrics::resolve(db.clone()).expect("the staged sans-serif resolves");
+        let text = "Wmw ∀ mixed";
+        assert!(
+            m.has_missing_glyph(text),
+            "setup: ∀ is beyond the sans face"
+        );
+        let p = probe_in(db.clone(), FONT_FAMILY, text, FONT_SIZE).expect("resvg draws it");
+        assert_eq!(p.fallbacks.len(), 1, "setup: resvg falls back once");
+
+        let mine = m.measure(text, FONT_SIZE);
+        assert!(
+            (mine - p.width).abs() <= STRICT_TOLERANCE_PX,
+            "konoma={mine} resvg={}",
+            p.width
+        );
+
+        // What the old per-character rule would have said: the Latin part in the sans face.
+        let latin_in_sans = m.measure("Wmw  mixed", FONT_SIZE);
+        let main_face = db
+            .faces()
+            .find(|f| f.families.iter().any(|(n, _)| n == "KaTeX_Main"))
+            .map(|f| f.id)
+            .expect("the staged database holds KaTeX Main");
+        let latin_in_main = TextMetrics::resolve_face(db.clone(), main_face)
+            .expect("Main resolves")
+            .measure("Wmw  mixed", FONT_SIZE);
+        assert!(
+            (latin_in_sans - latin_in_main).abs() > 0.5,
+            "setup: the two faces must disagree about the Latin part or this proves nothing"
+        );
+    }
+
+    /// The other branch of the same loop: the first fallback face does **not** cover the run, so
+    /// usvg keeps the measuring face for what it can draw, takes the characters the new face has
+    /// from it, and goes on to the next face for what is still missing.
+    #[test]
+    fn a_partial_fallback_takes_only_its_own_characters_and_the_loop_goes_on() {
+        let db = katex_db(&[
+            "KaTeX_SansSerif-Regular.ttf",
+            "KaTeX_Main-Regular.ttf",
+            "KaTeX_AMS-Regular.ttf",
+        ]);
+        let m = TextMetrics::resolve(db.clone()).expect("the staged sans-serif resolves");
+        // `∀` is only in Main, `∄` only in AMS, and neither face covers the whole run.
+        let text = "ab∀∄";
+        let p = probe_in(db.clone(), FONT_FAMILY, text, FONT_SIZE).expect("resvg draws it");
+        let mine = m.measure(text, FONT_SIZE);
+        assert!(
+            (mine - p.width).abs() <= STRICT_TOLERANCE_PX,
+            "konoma={mine} resvg={} ({} fallback faces)",
+            p.width,
+            p.fallbacks.len()
+        );
+        assert!(
+            p.fallbacks.len() >= 2,
+            "setup: the loop must go round twice"
         );
     }
 
