@@ -43,9 +43,16 @@
 
 use std::collections::HashMap;
 
-use super::super::pptx::{write_heading, write_notes_quote, SlideInfo};
+use super::super::pptx::{
+    picture_markdown, slide_keys, write_heading, write_notes_quote, SlideInfo,
+};
 use super::*;
+use crate::preview::office::slide_draw as sd;
 use crate::preview::office::slide_order::{bounding, reading_order, Kind, Rect, Shape};
+
+// The drawing of the slides (a scene per page) is built in the same pass: see `odp_draw`.
+#[path = "odp_draw/mod.rs"]
+pub(super) mod odp_draw;
 
 /// Longest slide title kept (characters).
 const TITLE_CHARS: usize = 200;
@@ -379,6 +386,9 @@ struct Masters {
     /// The size of the slides of each master page (its page layout's `fo:page-width` /
     /// `fo:page-height`), by page name.
     size: HashMap<String, Rect>,
+    /// The `style:master-page` elements themselves, by name, for the drawing (their shapes and
+    /// their background style).
+    pages: HashMap<String, Node>,
 }
 
 /// The size of each `style:page-layout` among the children of the `office:automatic-styles` just
@@ -469,8 +479,12 @@ fn read_masters(src: impl BufRead) -> Masters {
         let Ok(Tree::Ok(node)) = read_element(&mut rd, &e, empty, &mut budget) else {
             return out;
         };
-        for page in node.nodes().filter(|n| n.name == "master-page") {
-            let Some(name) = page.attr("name") else {
+        for kid in node.kids {
+            let Kid::N(page) = kid else { continue };
+            if page.name != "master-page" {
+                continue;
+            }
+            let Some(name) = page.attr("name").map(str::to_string) else {
                 continue;
             };
             if out.frames.len() >= MAX_MASTERS {
@@ -486,9 +500,10 @@ fn read_masters(src: impl BufRead) -> Masters {
                 }
             }
             if let Some(r) = page.attr("page-layout-name").and_then(|l| layouts.get(l)) {
-                out.size.insert(name.to_string(), *r);
+                out.size.insert(name.clone(), *r);
             }
-            out.frames.insert(name.to_string(), m);
+            out.frames.insert(name.clone(), m);
+            out.pages.insert(name, page);
         }
         return out;
     }
@@ -519,7 +534,10 @@ pub(in super::super) fn convert(
     }
 
     // A damaged styles part costs the document its styles, not the document.
-    let mut st = OdStyles::default();
+    let mut st = OdStyles {
+        draw: Some(odp_draw::StyleBook::default()),
+        ..OdStyles::default()
+    };
     if let Some(r) = pkg.part("styles.xml", cap)? {
         let _ = st.read(r);
     }
@@ -541,17 +559,31 @@ pub(in super::super) fn convert(
     od.slides = true;
     od.c.split_bullet_lists = true;
     let mut slides: Vec<SlideInfo> = Vec::new();
+    let mut scenes: Vec<sd::SlideScene> = Vec::new();
     {
         let Some(r) = pkg.part("content.xml", cap)? else {
             return Err(OfficeError::Corrupt("missing content.xml".into()));
         };
-        od.read_slides(r, &masters, &mut slides)?;
+        od.read_slides(r, &masters, &mut slides, &mut scenes)?;
     }
     od.c.flush_carry_top();
     od.c.flush_code();
+    if od.st.draw.as_ref().is_some_and(|d| d.truncated) {
+        od.c.truncated = true;
+    }
     let Od { c, defs, .. } = od;
     let mut doc = c.assemble(defs);
     doc.slides = slides;
+    // The picture view: one scene, one picture URL and one section per slide, in the order of the
+    // slides (a slide whose heading did not fit has neither).
+    if scenes.len() == doc.slides.len() {
+        let total = scenes.len();
+        odp_draw::patch_page_count(&mut scenes, total);
+        doc.slide_scenes = scenes;
+        doc.slide_keys = slide_keys(doc.slides.len());
+        doc.picture_markdown =
+            picture_markdown(&doc.markdown, &doc.slides, &doc.slide_keys, opts.lang);
+    }
     Ok(doc)
 }
 
@@ -562,7 +594,9 @@ impl Od<'_> {
         src: impl BufRead,
         masters: &Masters,
         slides: &mut Vec<SlideInfo>,
+        scenes: &mut Vec<sd::SlideScene>,
     ) -> Result<(), OfficeError> {
+        let mut decls = odp_draw::Decls::default();
         let mut rd = XmlReader::new(src);
         let mut buf = Vec::new();
         if !self.enter_body(&mut rd, &mut buf, "presentation")? {
@@ -586,6 +620,16 @@ impl Od<'_> {
                 }
                 _ => continue,
             };
+            if matches!(
+                e.local_name().as_ref(),
+                b"footer-decl" | b"header-decl" | b"date-time-decl"
+            ) {
+                let mut budget = Budget::odf(100, 64 * 1024);
+                if let Tree::Ok(n) = read_element(&mut rd, &e, empty, &mut budget)? {
+                    decls.add(&n);
+                }
+                continue;
+            }
             if e.local_name().as_ref() != b"page" {
                 if !empty {
                     skip_rest(&mut rd)?;
@@ -606,11 +650,21 @@ impl Od<'_> {
             count += 1;
             let mut budget = Budget::odf(opts.max_block_nodes, text_cap);
             let info = match read_element(&mut rd, &e, empty, &mut budget)? {
-                Tree::Ok(page) => self.slide(masters, count, &page),
+                Tree::Ok(page) => {
+                    let info = self.slide(masters, count, &page);
+                    if info.is_some() {
+                        scenes.push(self.scene(masters, &decls, count, &page));
+                    }
+                    info
+                }
                 Tree::TooBig => {
                     // A slide that cannot be read still has its place in the order.
                     self.c.truncated = true;
-                    write_heading(&mut self.c, count, "", false)
+                    let info = write_heading(&mut self.c, count, "", false);
+                    if info.is_some() {
+                        scenes.push(odp_draw::empty_scene(odp_draw::size_of(masters, None)));
+                    }
+                    info
                 }
             };
             if let Some(info) = info {
@@ -621,6 +675,41 @@ impl Od<'_> {
                 return Ok(());
             }
         }
+    }
+
+    /// The drawing model of one slide (see `odp_draw`), built from the page tree the text view
+    /// has just been written from.
+    fn scene(
+        &mut self,
+        masters: &Masters,
+        decls: &odp_draw::Decls,
+        number: usize,
+        page: &Node,
+    ) -> sd::SlideScene {
+        let size = odp_draw::size_of(masters, page.attr("master-page-name"));
+        let Some(book) = self.st.draw.as_ref() else {
+            return odp_draw::empty_scene(size);
+        };
+        if self.cancelled() {
+            self.c.truncated = true;
+            return odp_draw::empty_scene(size);
+        }
+        let opts = self.c.opts;
+        let scene = odp_draw::build_scene(
+            odp_draw::PageInput {
+                book,
+                masters,
+                decls,
+                opts,
+                page,
+                number,
+            },
+            &mut self.c,
+        );
+        if scene.truncated {
+            self.c.truncated = true;
+        }
+        scene
     }
 
     /// Writes one slide; `None` when not even its heading fit the output budgets.

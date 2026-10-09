@@ -507,6 +507,19 @@ pub fn custom(spec: &CustomGeomSpec, w: f64, h: f64) -> Option<ShapeGeom> {
 #[allow(unused_imports)]
 pub use super::geom_xml::custom_from_xml;
 
+/// The names of the adjust values of preset `name` (`adj`, `adj1`, ...), in the order the
+/// definition lists them; `None` for a name that is not a preset. The OpenDocument reader maps the
+/// positional `draw:modifiers` of an `ooxml-*` shape onto these.
+pub fn preset_adjust_names(name: &str) -> Option<Vec<String>> {
+    Some(
+        super::geom_xml::preset_spec(name)?
+            .adjusts
+            .iter()
+            .map(|(n, _)| n.clone())
+            .collect(),
+    )
+}
+
 /// The names of all the presets, sorted.
 pub fn preset_names() -> Vec<&'static str> {
     super::geom_xml::preset_names()

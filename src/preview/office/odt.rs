@@ -105,6 +105,9 @@ struct OdStyles {
     styles: HashMap<(Fam, String), OdStyle>,
     lists: HashMap<String, Vec<Option<LevelDef>>>,
     outline: Vec<Option<LevelDef>>,
+    /// A presentation's drawing styles, collected from the same containers (`None` for other
+    /// documents: the Writer reader does not pay for them).
+    draw: Option<odp::odp_draw::StyleBook>,
 }
 
 /// What a paragraph style (with everything it is based on) amounts to.
@@ -268,6 +271,9 @@ fn levels_of(n: &Node) -> Vec<Option<LevelDef>> {
 impl OdStyles {
     /// Reads the styles of an `office:styles` / `office:automatic-styles` element.
     fn add(&mut self, container: &Node) {
+        if let Some(d) = &mut self.draw {
+            d.add(container);
+        }
         for n in container.nodes() {
             match n.name.as_str() {
                 "style" => {
@@ -410,6 +416,14 @@ impl OdStyles {
                     let mut budget = Budget::odf(500_000, 16 * 1024 * 1024);
                     if let Tree::Ok(node) = read_element(&mut rd, &e, empty, &mut budget)? {
                         self.add(&node);
+                    }
+                }
+                b"font-face-decls" if self.draw.is_some() => {
+                    let mut budget = Budget::odf(100_000, 4 * 1024 * 1024);
+                    if let Tree::Ok(node) = read_element(&mut rd, &e, empty, &mut budget)? {
+                        if let Some(d) = &mut self.draw {
+                            d.add_fonts(&node);
+                        }
                     }
                 }
                 _ => {
@@ -771,6 +785,14 @@ impl<'a> Od<'a> {
             }
             match name.as_str() {
                 "body" => in_body = !empty,
+                "font-face-decls" if self.st.draw.is_some() => {
+                    let mut budget = Budget::odf(100_000, 4 * 1024 * 1024);
+                    if let Tree::Ok(node) = read_element(rd, &e, empty, &mut budget)? {
+                        if let Some(d) = &mut self.st.draw {
+                            d.add_fonts(&node);
+                        }
+                    }
+                }
                 "automatic-styles" => {
                     let mut budget = Budget::odf(500_000, 16 * 1024 * 1024);
                     if let Tree::Ok(node) = read_element(rd, &e, empty, &mut budget)? {
