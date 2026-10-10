@@ -41,20 +41,150 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     guard
 }
 
+/// How long a test waits on a child it drives by hand (reading its output, waiting for it to end)
+/// before it kills the child and fails. A child that is stale (built before the current wire
+/// protocol) or misbehaving blocks forever in a plain `read_exact` / `wait`, and a whole test run
+/// then hangs for as long as anyone lets it.
+const HAND_DRIVEN_WAIT: Duration = Duration::from_secs(30);
+
+/// Reads from `from` on a helper thread: exactly `len` bytes, or to the end of the stream for
+/// `None`. If that takes longer than `limit`, `child` is killed and reaped and the test fails with
+/// `what` in the message, instead of blocking for good.
+fn read_bounded(
+    child: &mut std::process::Child,
+    mut from: impl std::io::Read + Send + 'static,
+    len: Option<usize>,
+    limit: Duration,
+    what: &str,
+) -> Vec<u8> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let r = match len {
+            Some(n) => {
+                buf.resize(n, 0);
+                from.read_exact(&mut buf)
+            }
+            None => from.read_to_end(&mut buf).map(|_| ()),
+        };
+        let _ = tx.send(r.map(|()| buf));
+    });
+    match rx.recv_timeout(limit) {
+        Ok(Ok(buf)) => buf,
+        Ok(Err(e)) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{what}: the child's output ended early or failed: {e}");
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "{what}: no answer from the child within {limit:?} (killed it). Is the konoma \
+                 binary stale? run `cargo build`"
+            );
+        }
+    }
+}
+
+/// Waits for `child` to end for at most `limit`; past that it is killed and the test fails.
+fn wait_bounded(
+    child: &mut std::process::Child,
+    limit: Duration,
+    what: &str,
+) -> std::process::ExitStatus {
+    let t = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if t.elapsed() > limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{what}: the child did not end within {limit:?} (killed it)");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// The konoma binary: `KONOMA_TEST_BIN` when set (used to measure a release build), else the one
 /// Cargo placed next to the test executable.
+///
+/// Before any test uses it, it is started once and must say `KSRDY` within a bound: a binary built
+/// before that handshake existed (`cargo test --lib` does not rebuild it) or one that does not
+/// speak the protocol fails every test here with one clear message, in seconds, instead of
+/// blocking whichever test reads from it first.
 fn bin() -> PathBuf {
-    if let Ok(p) = std::env::var("KONOMA_TEST_BIN") {
-        return PathBuf::from(p);
+    static BIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        let p = if let Ok(p) = std::env::var("KONOMA_TEST_BIN") {
+            PathBuf::from(p)
+        } else {
+            let exe = std::env::current_exe().unwrap();
+            let p = exe.parent().unwrap().parent().unwrap().join("konoma");
+            assert!(
+                p.is_file(),
+                "{} is missing: run `cargo build` (or `cargo test`, which builds it for tests/)",
+                p.display()
+            );
+            p
+        };
+        warm_up(&p, &[super::svg_proc::CHILD_FLAG, "1073741824"]);
+        handshake(&p);
+        p
+    })
+    .clone()
+}
+
+/// How long [`handshake`] waits for `KSRDY`: the binary has just been run once by `warm_up`.
+const HANDSHAKE_WAIT: Duration = Duration::from_secs(10);
+
+/// Starts `exe` as a drawing process and requires its `KSRDY` within [`HANDSHAKE_WAIT`].
+fn handshake(exe: &Path) {
+    let mut child = std::process::Command::new(exe)
+        .arg(super::svg_proc::CHILD_FLAG)
+        .arg("1073741824")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| panic!("{} cannot be started: {e}", exe.display()));
+    let out = child.stdout.take().unwrap();
+    let first = read_bounded(&mut child, out, Some(5), HANDSHAKE_WAIT, "handshake");
+    if first != b"KSRDY" {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "stale konoma binary {}: it wrote {first:?}, not KSRDY. run `cargo build`",
+            exe.display()
+        );
     }
-    let exe = std::env::current_exe().unwrap();
-    let p = exe.parent().unwrap().parent().unwrap().join("konoma");
-    assert!(
-        p.is_file(),
-        "{} is missing: run `cargo build` (or `cargo test`, which builds it for tests/)",
-        p.display()
-    );
-    p
+    drop(child.stdin.take());
+    wait_bounded(&mut child, HANDSHAKE_WAIT, "handshake");
+}
+
+/// Run `exe` once to completion, outside any limit under test.
+///
+/// The first time the operating system runs an executable it has not seen (a binary Cargo has just
+/// linked, a script a test has just written) it vets it first. On macOS that costs from a few
+/// tenths of a second to several seconds, more the busier the machine (the vetting is shared by
+/// every process on it, e.g. other builds). That time is not the supervisor's to bound: inside the
+/// limits under test (a wall of a few seconds) it would fail a test that asserts something else
+/// entirely, whichever test happened to run first. The second run of the same file starts in
+/// milliseconds. So every file a test is about to supervise is run once here first. `exe` must
+/// exit at once when run like this (the children end when their stdin does; the scripts check
+/// `KONOMA_TEST_WARMUP`).
+fn warm_up(exe: &Path, args: &[&str]) {
+    let child = std::process::Command::new(exe)
+        .args(args)
+        .env("KONOMA_TEST_WARMUP", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let mut child = child.unwrap_or_else(|e| panic!("{} cannot be started: {e}", exe.display()));
+    // Bounded: the first run of a file can take seconds (see above), but not for ever.
+    wait_bounded(&mut child, Duration::from_secs(120), "warm-up");
 }
 
 /// Nothing is running and, once the idle children are stopped too, nothing is left alive (none
@@ -69,6 +199,7 @@ fn limits() -> Limits {
     Limits {
         wall: Duration::from_secs(4),
         rss: 700 << 20,
+        ..Limits::default()
     }
 }
 
@@ -235,19 +366,76 @@ fn deep_nesting_is_refused_before_any_process_starts() {
     no_children_left();
 }
 
+#[test]
+fn a_request_over_what_the_child_reads_is_too_large_not_a_crash() {
+    let _g = serial();
+    // The child ends instead of answering when a request is over its limit, which would be
+    // reported as a crash: the supervisor says what it is, without starting a process.
+    let big = vec![b' '; super::svg_guard::MAX_SVG_BYTES + 1];
+    let t = Instant::now();
+    let r = run_with(
+        &bin(),
+        limits(),
+        &Request {
+            data: &big,
+            base: None,
+            max_px: 800,
+        },
+        &never,
+    );
+    assert_eq!(r.err(), Some(RunError::Failed(SvgFail::TooLarge)));
+    assert!(
+        t.elapsed() < Duration::from_millis(200),
+        "{:?}",
+        t.elapsed()
+    );
+    no_children_left();
+    // a gzip stream gets the request limit (its size after decompression is what the SVG limit is
+    // about) and a stream over that is refused too
+    let mut gz = vec![0x1f, 0x8b];
+    gz.resize(super::svg_guard::MAX_SVG_BYTES + (1 << 20) + 1, 0);
+    let r = run_with(
+        &bin(),
+        limits(),
+        &Request {
+            data: &gz,
+            base: None,
+            max_px: 800,
+        },
+        &never,
+    );
+    assert_eq!(r.err(), Some(RunError::Failed(SvgFail::TooLarge)));
+    no_children_left();
+}
+
 // ---- stopping, crashing, cancelling ------------------------------------------------------------
 
-/// An executable shell script standing in for the child, so the supervisor's behaviour can be
-/// tested without a file that makes the real renderer misbehave. Writes its pid to `pid_file`.
+/// What a child writes when it is ready for its first request, in `printf` syntax.
+const READY_PRINTF: &str = "printf 'KSRDY'";
+
+/// An executable shell script standing in for a well-behaved child as far as the start goes: it
+/// writes its pid to `pid_file`, says it is ready, and then runs `body`. The tests of the
+/// handshake itself use [`script_raw`].
 fn script(dir: &Path, name: &str, body: &str, pid_file: &Path) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
+    script_raw(dir, name, &format!("{READY_PRINTF}\n{body}"), pid_file)
+}
+
+/// An executable shell script standing in for the child, so the supervisor's behaviour can be
+/// tested without a file that makes the real renderer misbehave. Writes its pid to `pid_file`,
+/// then runs `body` as it is (no `READY` unless the body writes it).
+fn script_raw(dir: &Path, name: &str, body: &str, pid_file: &Path) -> PathBuf {
     let p = dir.join(name);
-    std::fs::write(
+    // Not `fs::write` + chmod: that would leave a write fd that a concurrent fork leaks (ETXTBSY).
+    // The line after the shebang ends the warm-up run (see `warm_up`) before it does anything a
+    // test looks at.
+    crate::test_support::write_executable(
         &p,
-        format!("#!/bin/sh\necho $$ > '{}'\n{body}\n", pid_file.display()),
-    )
-    .unwrap();
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        format!(
+            "#!/bin/sh\n[ -n \"$KONOMA_TEST_WARMUP\" ] && exit 0\necho $$ > '{}'\n{body}\n",
+            pid_file.display()
+        ),
+    );
+    warm_up(&p, &[]);
     p
 }
 
@@ -294,6 +482,7 @@ fn a_child_that_runs_too_long_is_killed_and_reaped() {
     let lim = Limits {
         wall: Duration::from_millis(2500),
         rss: 1 << 30,
+        ..Limits::default()
     };
     let t = Instant::now();
     let r = run_with(&exe, lim, &tiny_request(), &never);
@@ -401,6 +590,7 @@ fn a_request_cancelled_while_waiting_for_a_slot_never_starts_a_child() {
                     Limits {
                         wall: Duration::from_secs(10),
                         rss: 1 << 30,
+                        ..Limits::default()
                     },
                     &tiny_request(),
                     &|| stop.load(std::sync::atomic::Ordering::SeqCst),
@@ -470,6 +660,7 @@ fn killing_the_live_children_stops_them() {
                 Limits {
                     wall: Duration::from_secs(30),
                     rss: 1 << 30,
+                    ..Limits::default()
                 },
                 &tiny_request(),
                 &never,
@@ -665,6 +856,7 @@ fn a_child_that_had_to_be_stopped_is_never_asked_again() {
     let lim = Limits {
         wall: Duration::from_millis(800),
         rss: 1 << 30,
+        ..Limits::default()
     };
     let r = draw(slow.as_bytes(), None, lim, &never);
     assert_eq!(r.err(), Some(RunError::Failed(SvgFail::Timeout)));
@@ -712,7 +904,7 @@ fn the_production_path_refuses_what_it_can_before_starting_a_process_and_draws_t
         let deep = svg(&format!("{}{}", "<g>".repeat(1000), "</g>".repeat(1000)));
         assert_eq!(
             super::svg::rasterize_untrusted(deep.as_bytes(), &path, 100, never).err(),
-            Some(SvgFail::TooDeep)
+            Some(super::svg::RasterError::Failed(SvgFail::TooDeep))
         );
         assert_eq!(
             live_children(),
@@ -723,7 +915,7 @@ fn the_production_path_refuses_what_it_can_before_starting_a_process_and_draws_t
         let big = vec![b' '; super::svg_guard::MAX_SVG_BYTES + 1];
         assert_eq!(
             super::svg::rasterize_untrusted(&big, &path, 100, never).err(),
-            Some(SvgFail::TooLarge)
+            Some(super::svg::RasterError::Failed(SvgFail::TooLarge))
         );
         assert_eq!(live_children(), 0);
         // An ordinary one: drawn by a child.
@@ -750,7 +942,7 @@ fn the_production_path_refuses_what_it_can_before_starting_a_process_and_draws_t
         assert!(super::svg::rasterize_untrusted(&gz(ok.as_bytes()), &path, 100, never).is_ok());
         assert_eq!(
             super::svg::rasterize_untrusted(&gz(deep.as_bytes()), &path, 100, never).err(),
-            Some(SvgFail::TooDeep)
+            Some(super::svg::RasterError::Failed(SvgFail::TooDeep))
         );
         // Refusals that need the parser come back from the child with their reason.
         let bomb = svg(&format!(
@@ -765,7 +957,7 @@ fn the_production_path_refuses_what_it_can_before_starting_a_process_and_draws_t
         ));
         assert_eq!(
             super::svg::rasterize_untrusted(bomb.as_bytes(), &path, 100, never).err(),
-            Some(SvgFail::TooComplex)
+            Some(super::svg::RasterError::Failed(SvgFail::TooComplex))
         );
         assert_eq!(live_children(), 1, "through all of it, one child");
     });
@@ -1067,7 +1259,14 @@ fn a_child_found_to_have_ended_leaves_the_registry_at_once() {
 fn a_replaced_executable_still_starts_children() {
     let dir = unique_tmp("svg-proc-deleted-exe");
     let copy = dir.join("copy");
-    std::fs::copy(std::env::current_exe().unwrap(), &copy).unwrap();
+    // Copied by a `cp` child, not `fs::copy`: a write fd held here can leak into a concurrent fork
+    // and make running the copy fail with ETXTBSY.
+    let status = std::process::Command::new("cp")
+        .arg(std::env::current_exe().unwrap())
+        .arg(&copy)
+        .status()
+        .unwrap();
+    assert!(status.success(), "cp failed: {status}");
     let out = std::process::Command::new(&copy)
         .args([
             "--exact",
@@ -1121,6 +1320,7 @@ fn a_huge_pattern_is_stopped_at_the_memory_limit_not_after_gigabytes() {
     let lim = Limits {
         wall: Duration::from_secs(8),
         rss: 400 << 20,
+        ..Limits::default()
     };
     let o = contained("pattern_huge", doc.as_bytes(), None, lim);
     match o.result {
@@ -1170,6 +1370,7 @@ fn memory_outside_the_childs_heap_is_stopped_by_the_resident_size_watch() {
     let lim = Limits {
         wall: Duration::from_secs(8),
         rss: 400 << 20,
+        ..Limits::default()
     };
     let r = run_with(&exe, lim, &tiny_request(), &never);
     assert_eq!(r.err(), Some(RunError::Failed(SvgFail::Memory)));
@@ -1182,7 +1383,7 @@ fn memory_outside_the_childs_heap_is_stopped_by_the_resident_size_watch() {
 /// Run the real child by hand with a small heap limit and read what it says.
 #[test]
 fn a_child_that_would_pass_its_heap_limit_answers_memory_and_ends_itself() {
-    use std::io::{Read, Write};
+    use std::io::Write;
     use std::process::{Command, Stdio};
     let _g = serial();
     let doc = svg(
@@ -1197,7 +1398,7 @@ fn a_child_that_would_pass_its_heap_limit_answers_memory_and_ends_itself() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = child.stdout.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
     let mut wire = Vec::new();
     wire.extend_from_slice(b"KSV1");
     wire.extend_from_slice(&800u32.to_le_bytes());
@@ -1205,10 +1406,30 @@ fn a_child_that_would_pass_its_heap_limit_answers_memory_and_ends_itself() {
     wire.extend_from_slice(&(doc.len() as u64).to_le_bytes());
     wire.extend_from_slice(doc.as_bytes());
     stdin.write_all(&wire).unwrap();
-    let mut answer = Vec::new();
-    stdout.read_to_end(&mut answer).unwrap();
-    let status = child.wait().unwrap();
-    assert_eq!(answer, [b'K', b'S', b'R', b'1', SvgFail::Memory.code()]);
+    let answer = read_bounded(
+        &mut child,
+        stdout,
+        None,
+        HAND_DRIVEN_WAIT,
+        "heap-limit answer",
+    );
+    let status = wait_bounded(&mut child, HAND_DRIVEN_WAIT, "heap-limit child");
+    // `KSRDY` (ready) first, then the answer.
+    assert_eq!(
+        answer,
+        [
+            b'K',
+            b'S',
+            b'R',
+            b'D',
+            b'Y',
+            b'K',
+            b'S',
+            b'R',
+            b'1',
+            SvgFail::Memory.code()
+        ]
+    );
     assert_eq!(status.code(), Some(5), "ended by itself, not by a signal");
 }
 
@@ -1303,6 +1524,7 @@ fn every_family_of_hostile_svg_costs_only_the_child() {
     let lim = Limits {
         wall: Duration::from_secs(2),
         rss: 700 << 20,
+        ..Limits::default()
     };
     for (name, doc) in &docs {
         let o = contained(name, doc.as_bytes(), None, lim);
@@ -1539,4 +1761,465 @@ fn measure_text_200k() {
     let t = Instant::now();
     let r = super::svg::rasterize_guarded(doc.as_bytes(), None, 800);
     eprintln!("guarded drawing: ok={} {:?}", r.is_ok(), t.elapsed());
+}
+
+// ---- the start-up handshake: the drawing clock starts when the child says it is ready ----------
+
+/// A fake child that takes `start_secs` to become ready, then answers one request with a picture
+/// (and goes on to wait for the next, as a real one does).
+fn slow_starter(dir: &Path, start_secs: &str, pid_file: &Path) -> PathBuf {
+    script_raw(
+        dir,
+        "slow-starter",
+        &format!(
+            "sleep {start_secs}\n{READY_PRINTF}\nhead -c {TINY_REQUEST_LEN} >/dev/null\nprintf '{PIC}'\nexec sleep 60"
+        ),
+        pid_file,
+    )
+}
+
+#[test]
+fn a_child_that_is_ready_and_draws_within_the_limit_succeeds() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-ready");
+    let exe = slow_starter(&dir, "0", &dir.join("pid"));
+    let r = run_with(&exe, limits(), &tiny_request(), &never);
+    assert!(r.is_ok(), "{:?}", r.err());
+    no_children_left();
+}
+
+#[test]
+fn a_start_slower_than_the_drawing_limit_but_within_the_start_bound_succeeds() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-slow-start");
+    // Takes 1.5 s to say it is ready; the drawing may only take 0.6 s. Before the handshake the
+    // whole 1.5 s counted against the 0.6 s.
+    let exe = slow_starter(&dir, "1.5", &dir.join("pid"));
+    let lim = Limits {
+        wall: Duration::from_millis(600),
+        start: Duration::from_secs(20),
+        rss: 1 << 30,
+    };
+    let t = Instant::now();
+    let r = run_with(&exe, lim, &tiny_request(), &never);
+    assert!(r.is_ok(), "{:?} after {:?}", r.err(), t.elapsed());
+    assert!(
+        t.elapsed() >= Duration::from_millis(1400),
+        "{:?}",
+        t.elapsed()
+    );
+    no_children_left();
+}
+
+#[test]
+fn a_child_that_never_says_it_is_ready_is_stopped_at_the_start_bound_and_reaped() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-never-ready");
+    let pid_file = dir.join("pid");
+    let exe = script_raw(&dir, "mute", "exec sleep 60", &pid_file);
+    // The drawing limit is far shorter than the start bound: it must not apply to the start.
+    let lim = Limits {
+        wall: Duration::from_millis(300),
+        start: Duration::from_millis(1800),
+        rss: 1 << 30,
+    };
+    let t = Instant::now();
+    let r = run_with(&exe, lim, &tiny_request(), &never);
+    let took = t.elapsed();
+    assert_eq!(r.err(), Some(RunError::Failed(SvgFail::Crashed)));
+    assert!(
+        took >= Duration::from_millis(1800) && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+    assert!(gone(pid_of(&pid_file)), "the child is still there");
+    no_children_left();
+}
+
+#[test]
+fn a_child_that_is_ready_but_draws_too_slowly_times_out_as_before() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-ready-slow");
+    let pid_file = dir.join("pid");
+    let exe = script_raw(
+        &dir,
+        "ready-then-silent",
+        &format!("sleep 0.5\n{READY_PRINTF}\nexec sleep 60"),
+        &pid_file,
+    );
+    let lim = Limits {
+        wall: Duration::from_millis(700),
+        start: Duration::from_secs(20),
+        rss: 1 << 30,
+    };
+    let t = Instant::now();
+    let r = run_with(&exe, lim, &tiny_request(), &never);
+    let took = t.elapsed();
+    assert_eq!(r.err(), Some(RunError::Failed(SvgFail::Timeout)));
+    // The 0.5 s of start-up plus the 0.7 s of drawing, not the 0.7 s from the start.
+    assert!(
+        took >= Duration::from_millis(1150) && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+    assert!(gone(pid_of(&pid_file)));
+    no_children_left();
+}
+
+#[test]
+fn something_other_than_ready_first_is_a_crash_and_the_child_is_reaped() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-not-ready");
+    let pid_file = dir.join("pid");
+    let picture_first = format!("printf '{PIC}'\nexec sleep 60");
+    for (name, body) in [
+        ("garbage", "printf 'hello'\nexec sleep 60"),
+        // An answer where `READY` belongs.
+        ("answer-first", "printf 'KSR1\\004'\nexec sleep 60"),
+        ("picture-first", picture_first.as_str()),
+        // Four bytes of `READY` and then the end of the output.
+        ("short", "printf 'KSRD'\nexit 0"),
+        ("nothing", "exit 0"),
+        // The right length, one off.
+        ("lowercase", "printf 'ksrdy'\nexec sleep 60"),
+    ] {
+        let exe = script_raw(&dir, name, body, &pid_file);
+        let t = Instant::now();
+        let r = run_with(&exe, limits(), &tiny_request(), &never);
+        assert_eq!(r.err(), Some(RunError::Failed(SvgFail::Crashed)), "{name}");
+        assert!(
+            t.elapsed() < Duration::from_secs(3),
+            "{name}: {:?}",
+            t.elapsed()
+        );
+        assert!(gone(pid_of(&pid_file)), "{name}: the child is still there");
+    }
+    no_children_left();
+}
+
+#[test]
+fn saying_ready_twice_is_a_crash_and_the_child_is_not_kept() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-ready-twice");
+    let pid_file = dir.join("pid");
+    let exe = script_raw(
+        &dir,
+        "twice",
+        &format!("{READY_PRINTF}\n{READY_PRINTF}\nexec sleep 60"),
+        &pid_file,
+    );
+    let r = run_with(&exe, limits(), &tiny_request(), &never);
+    assert_eq!(r.err(), Some(RunError::Failed(SvgFail::Crashed)));
+    assert_eq!(idle_children(), 0);
+    assert!(gone(pid_of(&pid_file)));
+    no_children_left();
+}
+
+#[test]
+fn saying_ready_again_after_a_drawing_is_not_an_answer_and_the_child_is_not_kept() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-ready-after");
+    let pid_file = dir.join("pid");
+    let exe = script_raw(
+        &dir,
+        "again",
+        &format!(
+            "{READY_PRINTF}\nhead -c {TINY_REQUEST_LEN} >/dev/null\nprintf '{PIC}'\n{READY_PRINTF}\nexec sleep 60"
+        ),
+        &pid_file,
+    );
+    // The picture is delivered; the stray `READY` behind it makes the child unfit for the next.
+    let r = run_with(&exe, limits(), &tiny_request(), &never);
+    assert!(r.is_ok(), "{:?}", r.err());
+    assert!(
+        eventually(5, || super::svg_proc::idle_alive_children() == 0),
+        "a child that talks out of turn was kept"
+    );
+    no_children_left();
+}
+
+#[test]
+fn a_reused_child_does_not_wait_for_ready_again() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-reuse-ready");
+    let pid_file = dir.join("pid");
+    // Says ready once, then answers every request it reads.
+    let exe = script(
+        &dir,
+        "server",
+        &format!("while head -c {TINY_REQUEST_LEN} >/dev/null; do printf '{PIC}'; done"),
+        &pid_file,
+    );
+    let lim = Limits {
+        wall: Duration::from_secs(4),
+        start: Duration::from_secs(10),
+        rss: 1 << 30,
+    };
+    assert!(run_with(&exe, lim, &tiny_request(), &never).is_ok());
+    assert_eq!(idle_children(), 1, "the child was kept");
+    let pid = pid_of(&pid_file);
+    // A start bound of 1 ms: a reused child is ready already, so it does not apply; a second
+    // wait for `READY` would fail every one of these.
+    let lim = Limits {
+        start: Duration::from_millis(1),
+        ..lim
+    };
+    for _ in 0..3 {
+        let r = run_with(&exe, lim, &tiny_request(), &never);
+        assert!(r.is_ok(), "{:?}", r.err());
+    }
+    assert_eq!(pid_of(&pid_file), pid, "the same child served them all");
+    assert_eq!(live_children(), 1);
+    no_children_left();
+}
+
+#[test]
+fn a_drawing_cancelled_while_the_child_is_still_starting_stops_it_at_once() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-cancel-start");
+    let pid_file = dir.join("pid");
+    let exe = script_raw(&dir, "starting", "exec sleep 60", &pid_file);
+    let seen = std::cell::Cell::new(None::<Instant>);
+    let cancelled = || {
+        if seen.get().is_none()
+            && std::fs::read_to_string(&pid_file).is_ok_and(|s| !s.trim().is_empty())
+        {
+            seen.set(Some(Instant::now()));
+        }
+        seen.get()
+            .is_some_and(|t| t.elapsed() > Duration::from_millis(150))
+    };
+    let t = Instant::now();
+    // The default start bound (30 s) is in force: only the cancellation can end this quickly.
+    let r = run_with(&exe, Limits::default(), &tiny_request(), &cancelled);
+    assert_eq!(r.err(), Some(RunError::Cancelled));
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    assert!(gone(pid_of(&pid_file)));
+    no_children_left();
+}
+
+#[test]
+fn killing_the_live_children_stops_one_that_is_still_starting() {
+    let _g = serial();
+    no_children_left();
+    let dir = unique_tmp("svg-proc-leave-start");
+    let pid_file = dir.join("pid");
+    let exe = script_raw(&dir, "starting", "exec sleep 60", &pid_file);
+    std::thread::scope(|s| {
+        let h = s.spawn(|| run_with(&exe, Limits::default(), &tiny_request(), &never));
+        let pid = pid_of(&pid_file);
+        super::svg_proc::kill_live();
+        let r = h.join().unwrap();
+        assert!(r.is_err(), "no picture from a child that was killed");
+        assert!(gone(pid));
+    });
+    no_children_left();
+}
+
+#[test]
+fn the_start_bound_is_finite_and_longer_than_the_drawing_limit() {
+    let d = Limits::default();
+    assert!(d.start > d.wall, "the start-up bound is the generous one");
+    assert!(d.start <= Duration::from_secs(120), "and still a bound");
+}
+
+#[test]
+fn the_real_child_says_ready_before_it_reads_anything() {
+    let _g = serial();
+    no_children_left();
+    // Started the way a drawing starts one, and given no request: the first thing it writes is
+    // `READY`, and it then ends cleanly when its input does.
+    let mut child = std::process::Command::new(bin())
+        .arg(super::svg_proc::CHILD_FLAG)
+        .arg("1073741824")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let out = child.stdout.take().unwrap();
+    let first = read_bounded(&mut child, out, Some(5), HAND_DRIVEN_WAIT, "ready");
+    assert_eq!(&first, b"KSRDY");
+    drop(child.stdin.take());
+    let status = wait_bounded(&mut child, HAND_DRIVEN_WAIT, "ready child");
+    assert!(status.success(), "{status:?}");
+}
+
+// ---- a slide with many effects, at the raster size of a big terminal's frame ---------------------
+
+/// Draws `svg` through the real child at `max_px`.
+fn draw_slide(svg: &str, max_px: u32) -> Result<DynamicImage, RunError> {
+    let lim = Limits {
+        wall: Duration::from_secs(60),
+        rss: 2 << 30,
+        ..Limits::default()
+    };
+    run_with(
+        &bin(),
+        lim,
+        &Request {
+            data: svg.as_bytes(),
+            base: None,
+            max_px,
+        },
+        &never,
+    )
+}
+
+#[test]
+fn a_slide_with_many_effects_is_drawn_by_the_real_child_at_the_size_its_effects_allow() {
+    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    let _g = serial();
+    let r = crate::preview::office::slide_draw::render_svg_cancellable(
+        &shadowed_slide(2),
+        &|_| None,
+        &|| false,
+    );
+    let cap = r.max_raster_px();
+    // The long side of the frame of a 300 x 100 terminal (10 x 20 px cells) is 3000 px, that of a
+    // 120 x 40 one is the configured 1280 or less.
+    for (label, want) in [("300x100", 3000u32), ("120x40", 1280u32)] {
+        let px = want.min(cap);
+        let img = draw_slide(&r.svg, px)
+            .unwrap_or_else(|e| panic!("{label}: refused at {px} (cap {cap}): {e:?}"));
+        assert!(
+            img.width().abs_diff(px) <= 2,
+            "{label}: drawn {}x{}, asked {px}",
+            img.width(),
+            img.height()
+        );
+    }
+    // The premise: asked for the whole frame the child refuses the same slide.
+    assert_eq!(
+        draw_slide(&r.svg, 3000).err(),
+        Some(RunError::Failed(SvgFail::TooHeavy)),
+        "3000 px is past the cap {cap}, so the process refuses it"
+    );
+    no_children_left();
+}
+
+#[test]
+fn a_slide_without_effects_is_drawn_by_the_real_child_at_the_whole_frame() {
+    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    let _g = serial();
+    let mut light = shadowed_slide(0);
+    light.background = crate::preview::office::slide_draw::Fill::Solid(
+        crate::preview::office::slide_draw::Rgba::rgb(200, 30, 30),
+    );
+    let r =
+        crate::preview::office::slide_draw::render_svg_cancellable(&light, &|_| None, &|| false);
+    assert_eq!(r.max_raster_px(), u32::MAX);
+    let img = draw_slide(&r.svg, 3000).expect("a light slide is drawn at the whole frame");
+    assert!(img.width().abs_diff(3000) <= 2, "{}", img.width());
+    no_children_left();
+}
+
+// ---- a stale or misbehaving child fails the tests quickly instead of hanging them ----------------
+
+/// A script standing in for the child, started by the tests below (its pid goes next to it).
+fn stand_in(dir: &Path, name: &str, body: &str) -> PathBuf {
+    script_raw(dir, name, body, &dir.join(format!("{name}.pid")))
+}
+
+/// The message of the panic `f` ended in.
+fn panic_message(f: impl FnOnce() + std::panic::UnwindSafe) -> String {
+    let err = std::panic::catch_unwind(f).expect_err("it should have failed");
+    err.downcast_ref::<String>()
+        .cloned()
+        .or_else(|| err.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_default()
+}
+
+#[test]
+fn a_child_that_never_says_ready_fails_the_handshake_within_seconds_and_is_killed() {
+    let dir = unique_tmp("svg-proc-stale");
+    // The stale binary: starts, writes nothing, never ends on its own.
+    let stale = stand_in(&dir, "stale.sh", "exec sleep 600");
+    let t = Instant::now();
+    let msg = panic_message(|| {
+        // Shorter than the real bound so the test itself is quick: the same code path.
+        let mut child = std::process::Command::new(&stale)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        read_bounded(
+            &mut child,
+            out,
+            Some(5),
+            Duration::from_secs(2),
+            "handshake",
+        );
+    });
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+    assert!(
+        msg.contains("no answer from the child") && msg.contains("cargo build"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn a_child_that_writes_something_else_fails_the_handshake_with_the_stale_message() {
+    let dir = unique_tmp("svg-proc-stale-text");
+    let wrong = stand_in(&dir, "wrong.sh", "printf 'hello'; exec sleep 600");
+    let t = Instant::now();
+    let msg = panic_message(|| handshake(&wrong));
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+    assert!(msg.contains("stale konoma binary"), "{msg}");
+    assert!(msg.contains("cargo build"), "{msg}");
+}
+
+#[test]
+fn a_child_that_ends_without_ready_fails_the_handshake_at_once() {
+    let dir = unique_tmp("svg-proc-stale-exit");
+    let gone = stand_in(&dir, "gone.sh", "exit 0");
+    let t = Instant::now();
+    let msg = panic_message(|| handshake(&gone));
+    assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+    assert!(msg.contains("ended early"), "{msg}");
+}
+
+#[test]
+fn a_child_that_does_not_end_is_killed_by_the_bounded_wait() {
+    let dir = unique_tmp("svg-proc-wait");
+    let sleeper = stand_in(&dir, "sleeper.sh", "exec sleep 600");
+    let mut child = std::process::Command::new(&sleeper).spawn().unwrap();
+    let pid = child.id() as i32;
+    let t = Instant::now();
+    let msg = panic_message(std::panic::AssertUnwindSafe(|| {
+        wait_bounded(&mut child, Duration::from_millis(500), "sleeper");
+    }));
+    assert!(t.elapsed() < Duration::from_secs(10));
+    assert!(msg.contains("did not end"), "{msg}");
+    assert!(gone(pid), "the child was killed");
+}
+
+#[test]
+fn the_bounded_readers_return_what_a_healthy_child_wrote() {
+    let dir = unique_tmp("svg-proc-ok");
+    let ok = stand_in(&dir, "ok.sh", "printf 'KSRDYrest'");
+    let mut child = std::process::Command::new(&ok)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let out = child.stdout.take().unwrap();
+    let all = read_bounded(&mut child, out, None, HAND_DRIVEN_WAIT, "all");
+    assert_eq!(all, b"KSRDYrest");
+    assert!(wait_bounded(&mut child, HAND_DRIVEN_WAIT, "ok").success());
+    let mut child = std::process::Command::new(&ok)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let out = child.stdout.take().unwrap();
+    let first = read_bounded(&mut child, out, Some(5), HAND_DRIVEN_WAIT, "five");
+    assert_eq!(first, b"KSRDY");
+    wait_bounded(&mut child, HAND_DRIVEN_WAIT, "ok");
 }

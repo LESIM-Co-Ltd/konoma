@@ -57,7 +57,7 @@ impl Node {
             .map(|(_, v)| v.as_str())
     }
 
-    pub fn nodes(&self) -> impl Iterator<Item = &Node> {
+    pub fn nodes(&self) -> impl Iterator<Item = &Node> + Clone {
         self.kids.iter().filter_map(|k| match k {
             Kid::N(n) => Some(n),
             Kid::T(_) => None,
@@ -201,9 +201,10 @@ fn cut(mut s: String, max: usize) -> String {
     s
 }
 
-/// Whether the text inside an element of this local name is data.
+/// Whether the text inside an element of this local name is data (`a:tableStyleId` names the style
+/// of a PowerPoint table).
 fn keeps_text(name: &str) -> bool {
-    matches!(name, "t" | "instrText" | "delText")
+    matches!(name, "t" | "instrText" | "delText" | "tableStyleId")
 }
 
 /// Reads the element whose start tag was just read (`start`; `empty` when it was `<x/>`) through its

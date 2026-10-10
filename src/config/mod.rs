@@ -907,8 +907,12 @@ impl Default for PreviewConfig {
                 Rule {
                     // Word documents are converted to Markdown and drawn by the Markdown renderer.
                     // A glob (not a mime) so a deleted file's diff still resolves the kind by name.
-                    // (`.doc` is never previewed.)
-                    glob: Some("*.{docx,docm,dotx,dotm,odt,ott}".into()),
+                    // (`.doc` is never previewed.) Presentations (PowerPoint, OpenDocument) take the
+                    // same route: one `##` heading per slide, `J`/`K` between them.
+                    glob: Some(
+                        "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"
+                            .into(),
+                    ),
                     builtin: Some("document".into()),
                     ..Rule::empty()
                 },

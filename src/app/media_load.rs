@@ -16,6 +16,16 @@ impl App {
             })
     }
 
+    /// Whether any inline picture still has pixel work owed to the UI thread: everything
+    /// [`Self::md_images_loading`] covers, **plus a sharpening re-raster in flight** (the old
+    /// pixels are on screen, so the picture is not "loading", but the new ones are on their way
+    /// and applying them is what the next frame needs). The run loop ticks fast while this is
+    /// true so the redraw lands promptly, and the end-to-end tests wait on it: waiting on
+    /// `md_images_loading` alone ends while a redraw started by the last frame is still running.
+    pub fn md_pixels_pending(&self) -> bool {
+        self.md_images_loading() || self.md_image_cache.values().any(|e| e.reraster_inflight)
+    }
+
     /// Test-only: whether an inline-image encode request has been sent and its result not yet
     /// applied. Unlike `md_images_loading` this is *only* about the encode channel, which is what a
     /// test needs to tell "the worker owes me a result, keep waiting however slow this machine is"
@@ -137,7 +147,7 @@ impl App {
             // A Word document: converted to Markdown on the same worker (no graphics backend
             // needed to read it; the pictures it holds are decoded later, when drawn).
             PreviewKind::Document(_) => {
-                self.spawn_office_job(MediaJob::Document(path.to_path_buf()));
+                self.spawn_office_job(MediaJob::Document(path.to_path_buf(), self.lang));
             }
             // A standalone .mmd/.mermaid: in image mode, convert to SVG in pure Rust → rasterize
             // (on a separate thread). In text mode / with no backend, do nothing — the decorated
@@ -232,6 +242,20 @@ impl App {
             0 => 24,
             v => v,
         }
+    }
+
+    /// Rows a slide picture may be tall: what the viewport leaves after the slide's heading (and
+    /// the blank line between), so a slide and its heading always fit one screen. Before the first
+    /// draw (the height is not known) the ordinary picture cap applies; a drawn viewport of 0 rows
+    /// (a terminal too small to show the body) is a real height: one row, the least a picture takes.
+    pub(super) fn slide_fit_rows(&self) -> u16 {
+        if self.tab.preview_viewport == 0 && !self.tab.preview_viewport_drawn {
+            return MD_IMAGE_MAX_ROWS;
+        }
+        self.tab
+            .preview_viewport
+            .saturating_sub(SLIDE_CHROME_ROWS)
+            .max(1)
     }
 
     /// Effective target rows for an inline diagram: the `mermaid_rows` cap, shrunk so the whole
@@ -698,6 +722,33 @@ impl App {
     /// only, so navigating past page 1 depends on `hayro` alone, never on an installed tool.
     pub fn pdf_can_navigate(&self) -> bool {
         matches!(self.tab.pdf_pages, Some(n) if n > 1)
+    }
+
+    /// `page_next` / `page_prev` (`J` / `K`): turn the "page" of whatever preview is on screen.
+    /// This `match` is the single place that decides what a page is; each arm's own function
+    /// gates itself, so a preview with nothing to turn is a no-op.
+    /// Extension point: a slide deck adds one arm here (its own `PreviewKind`).
+    pub fn page_turn(&mut self, dir: i32) {
+        match self.tab.preview_kind {
+            Some(PreviewKind::Spreadsheet(_)) => {
+                if dir >= 0 {
+                    self.sheet_next()
+                } else {
+                    self.sheet_prev()
+                }
+            }
+            #[cfg(feature = "git")]
+            Some(PreviewKind::GitDiff(_)) => self.media_diff_page_turn(dir),
+            // The slides of a presentation (a Word document ignores the keys).
+            Some(PreviewKind::Document(_)) => self.slide_turn(dir),
+            _ => {
+                if dir >= 0 {
+                    self.pdf_next_page()
+                } else {
+                    self.pdf_prev_page()
+                }
+            }
+        }
     }
 
     /// Go to the next PDF page (clamped to the last page). Re-rasterizes that page on demand (one at a time).

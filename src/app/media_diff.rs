@@ -306,6 +306,7 @@ impl App {
                 // present (its own guard against reviving an evicted entry), so the insert has to
                 // happen here, not inside it.
                 self.md_image_cache.entry(p.cache_key.clone()).or_default();
+                let request = self.begin_md_request(&p.cache_key);
                 // No transparency handling here: each side draws with exactly the same pixels the
                 // ordinary preview would for that kind — a PDF's own renderer composites its pages
                 // onto opaque white before this ever sees them (`preview::pdf::pixmap_to_dynamic_
@@ -318,6 +319,7 @@ impl App {
                     svg: p.svg,
                     reraster: false,
                     frames: p.frames,
+                    request,
                 });
                 MediaDiffSide::Picture(MediaDiffPicture {
                     natural_px: p.natural_px,
@@ -995,8 +997,13 @@ fn decode_svg_side(
         Ok(img) => img,
         Err(why) => {
             return MediaDiffSideDecoded::Failed {
-                reason: why.reason().to_string(),
-            }
+                reason: match why {
+                    crate::preview::svg::RasterError::Failed(f) => f.reason(),
+                    // The request was cancelled: the result is dropped by whoever cancelled it.
+                    crate::preview::svg::RasterError::Cancelled => "cancelled",
+                }
+                .to_string(),
+            };
         }
     };
     // A size that only drawing reveals (no width/height/viewBox) falls back to the raster's.

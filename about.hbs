@@ -113,3 +113,74 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ```
+
+### Preset shape definitions (Ecma International, ECMA-376)
+
+konoma draws the PowerPoint/OpenDocument preset shapes from `presetShapeDefinitions.xml`,
+the machine-readable definition of the DrawingML preset geometries published with
+ECMA-376 Part 1 (5th edition, December 2016;
+https://ecma-international.org/wp-content/uploads/ECMA-376-1_5th_edition_december_2016.zip).
+The file is embedded **unmodified** at `src/preview/office/slide_draw/presets/presetShapeDefinitions.xml`
+and parsed at run time; it is not a Cargo dependency, so `cargo-about` cannot see it and
+this notice is maintained by hand. **It is not under konoma's MIT licence**; it stays under
+the Ecma copyright licence below, which is also kept next to the file in
+`src/preview/office/slide_draw/presets/NOTICE.md`.
+
+```
+COPYRIGHT NOTICE
+
+© Ecma International
+
+By obtaining and/or copying this work, you (the licensee) agree that you have read, understood, and will comply with the following terms and conditions.
+
+This document may be copied, published and distributed to others, and certain derivative works of it may be prepared, copied, published, and distributed, in whole or in part, provided that the above copyright notice and this Copyright License and Disclaimer are included on all such copies and derivative works. The only derivative works that are permissible under this Copyright License and Disclaimer are:
+
+(i) works which incorporate all or portion of this document for the purpose of providing commentary or explanation (such as an annotated version of the document),
+
+(ii) works which incorporate all or portion of this document for the purpose of incorporating features that provide accessibility,
+
+(iii) translations of this document into languages other than English and into different formats and
+
+(iv) works by making use of this specification in standard conformant products by implementing (e.g. by copy and paste wholly or partly) the functionality therein.
+
+However, the content of this document itself may not be modified in any way, including by removing the copyright notice or references to Ecma International, except as required to translate it into languages other than English or into a different format.
+
+The official version of an Ecma International document is the English language version on the Ecma International website. In the event of discrepancies between a translated version and the official version, the official version shall govern.
+
+The limited permissions granted above are perpetual and will not be revoked by Ecma International or its successors or assigns.
+
+This document and the information contained herein is provided on an “AS IS” basis and ECMA INTERNATIONAL DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTY THAT THE USE OF THE INFORMATION HEREIN WILL NOT INFRINGE ANY OWNERSHIP RIGHTS OR ANY IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+```
+
+### Preset pattern bitmaps (OpenPresentation, MIT)
+
+The 54 8 x 8 bitmaps of the DrawingML preset patterns (`a:pattFill`) in
+`src/preview/office/slide_draw/patterns.rs` are the tiles measured from desktop PowerPoint and
+published as `pattern-fills.ts` in https://github.com/OpenPresentation/opf (MIT licence). The
+Wingdings 2 and Webdings code tables in `src/preview/office/slide_draw/symbol_font.rs` were
+read from the Unicode document L2/11-052 (https://www.unicode.org/L2/L2011/11052-wingding.pdf)
+and are konoma's own transcription.
+
+```
+MIT License
+
+Copyright (c) 2026 OpenPresentation contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

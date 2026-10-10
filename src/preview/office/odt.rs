@@ -54,7 +54,13 @@
 use super::super::docx_styles::{heading_from_name, is_code_name, Vert};
 use super::super::docx_xml::skip_rest;
 use super::*;
+use crate::preview::office::slide_order::Rect;
 use crate::preview::office::{mathml, omml};
+
+// The presentation reader builds on this module's walk (lists, paragraphs, tables, frames), so it
+// is a child: it sees the private items it uses.
+#[path = "odp.rs"]
+pub(in crate::preview::office) mod odp;
 
 /// Longest object directory name followed (bytes).
 const OBJECT_DIR_MAX: usize = 512;
@@ -64,6 +70,8 @@ const OBJECT_DIR_MAX: usize = 512;
 enum Fam {
     Para,
     Text,
+    /// `drawing-page`: the style of a slide (a presentation reads its `presentation:visibility`).
+    Page,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -97,6 +105,9 @@ struct OdStyles {
     styles: HashMap<(Fam, String), OdStyle>,
     lists: HashMap<String, Vec<Option<LevelDef>>>,
     outline: Vec<Option<LevelDef>>,
+    /// A presentation's drawing styles, collected from the same containers (`None` for other
+    /// documents: the Writer reader does not pay for them).
+    draw: Option<odp::odp_draw::StyleBook>,
 }
 
 /// What a paragraph style (with everything it is based on) amounts to.
@@ -260,12 +271,16 @@ fn levels_of(n: &Node) -> Vec<Option<LevelDef>> {
 impl OdStyles {
     /// Reads the styles of an `office:styles` / `office:automatic-styles` element.
     fn add(&mut self, container: &Node) {
+        if let Some(d) = &mut self.draw {
+            d.add(container);
+        }
         for n in container.nodes() {
             match n.name.as_str() {
                 "style" => {
                     let fam = match n.attr("family") {
                         Some("paragraph") => Fam::Para,
                         Some("text") => Fam::Text,
+                        Some("drawing-page") => Fam::Page,
                         _ => continue,
                     };
                     let Some(name) = n.attr("name") else { continue };
@@ -288,6 +303,9 @@ impl OdStyles {
                         let (f, h) = text_props(tp);
                         d.fmt = f;
                         d.hidden = h;
+                    }
+                    if let Some(dp) = n.child("drawing-page-properties") {
+                        d.hidden = dp.attr("visibility").map(|v| v.trim() == "hidden");
                     }
                     self.styles.insert((fam, name.to_string()), d);
                 }
@@ -363,6 +381,14 @@ impl OdStyles {
         (fmt, hidden.unwrap_or(false))
     }
 
+    /// A slide whose style (with everything it is based on) sets `presentation:visibility="hidden"`.
+    fn page_hidden(&self, name: &str) -> bool {
+        self.chain(Fam::Page, name)
+            .iter()
+            .find_map(|(_, d)| d.hidden)
+            .unwrap_or(false)
+    }
+
     /// The level `lvl` (0-based) of list style `style`.
     fn level(&self, style: Option<&str>, lvl: usize) -> Option<&LevelDef> {
         self.lists.get(style?)?.get(lvl)?.as_ref()
@@ -390,6 +416,14 @@ impl OdStyles {
                     let mut budget = Budget::odf(500_000, 16 * 1024 * 1024);
                     if let Tree::Ok(node) = read_element(&mut rd, &e, empty, &mut budget)? {
                         self.add(&node);
+                    }
+                }
+                b"font-face-decls" if self.draw.is_some() => {
+                    let mut budget = Budget::odf(100_000, 4 * 1024 * 1024);
+                    if let Tree::Ok(node) = read_element(&mut rd, &e, empty, &mut budget)? {
+                        if let Some(d) = &mut self.draw {
+                            d.add_fonts(&node);
+                        }
                     }
                 }
                 _ => {
@@ -562,6 +596,14 @@ struct Od<'a> {
     defs: Vec<(usize, String)>,
     math_objects: usize,
     note_counter: i64,
+    /// A slide's text: nothing in it is a heading (the Markdown's headings are the slides).
+    slides: bool,
+    /// The number of the slide being written (0 outside a presentation).
+    slide_no: usize,
+    /// The size of the slide being written, when its page layout says.
+    slide_rect: Option<Rect>,
+    /// The shapes handed to the reading-order pass so far, over the whole presentation.
+    order_shapes: usize,
 }
 
 /// All the text under `n` (OpenDocument keeps the text of every element), bounded.
@@ -664,20 +706,7 @@ pub(super) fn convert(
         HashMap::new(),
         media,
     );
-    let mut od = Od {
-        c: conv,
-        st,
-        lists: Vec::new(),
-        list_ids: HashMap::new(),
-        last_by_style: HashMap::new(),
-        outline: [None; 10],
-        del_ids: HashSet::new(),
-        tbl_bytes: 0,
-        hidden: 0,
-        defs: Vec::new(),
-        math_objects: 0,
-        note_counter: 0,
-    };
+    let mut od = Od::new(conv, st);
     {
         let Some(r) = pkg.part("content.xml", cap)? else {
             return Err(OfficeError::Corrupt("missing content.xml".into()));
@@ -691,6 +720,27 @@ pub(super) fn convert(
 }
 
 impl<'a> Od<'a> {
+    fn new(c: Conv<'a>, st: OdStyles) -> Od<'a> {
+        Od {
+            c,
+            st,
+            lists: Vec::new(),
+            list_ids: HashMap::new(),
+            last_by_style: HashMap::new(),
+            outline: [None; 10],
+            del_ids: HashSet::new(),
+            tbl_bytes: 0,
+            hidden: 0,
+            defs: Vec::new(),
+            math_objects: 0,
+            note_counter: 0,
+            slides: false,
+            slide_no: 0,
+            slide_rect: None,
+            order_shapes: 0,
+        }
+    }
+
     fn cancelled(&self) -> bool {
         self.c.cancelled()
     }
@@ -699,19 +749,24 @@ impl<'a> Od<'a> {
     // content.xml
     // -----------------------------------------------------------------------------------------
 
-    fn read_content(&mut self, src: impl BufRead) -> Result<(), OfficeError> {
-        let mut rd = XmlReader::new(src);
-        let mut buf = Vec::new();
+    /// Reads up to the start of the body element `body` (`text`, `presentation`), taking the
+    /// automatic styles on the way. `false`: the document has no such body, or an empty one.
+    fn enter_body<R: BufRead>(
+        &mut self,
+        rd: &mut XmlReader<R>,
+        buf: &mut Vec<u8>,
+        body: &str,
+    ) -> Result<bool, OfficeError> {
         let mut root = false;
         let mut in_body = false;
         // The automatic styles come before the body; the body's first child is the document type.
         loop {
             buf.clear();
-            let ev = rd.read_event_into(&mut buf).map_err(xml_err)?;
+            let ev = rd.read_event_into(buf).map_err(xml_err)?;
             let (e, empty) = match ev {
                 Event::Start(e) => (e.into_owned(), false),
                 Event::Empty(e) => (e.into_owned(), true),
-                Event::Eof => return Ok(()),
+                Event::Eof => return Ok(false),
                 _ => continue,
             };
             let name = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
@@ -723,28 +778,41 @@ impl<'a> Od<'a> {
                 continue;
             }
             if in_body {
-                if name != "text" {
+                if name != body {
                     return Err(OfficeError::Unsupported);
                 }
-                if empty {
-                    return Ok(());
-                }
-                break;
+                return Ok(!empty);
             }
             match name.as_str() {
                 "body" => in_body = !empty,
+                "font-face-decls" if self.st.draw.is_some() => {
+                    let mut budget = Budget::odf(100_000, 4 * 1024 * 1024);
+                    if let Tree::Ok(node) = read_element(rd, &e, empty, &mut budget)? {
+                        if let Some(d) = &mut self.st.draw {
+                            d.add_fonts(&node);
+                        }
+                    }
+                }
                 "automatic-styles" => {
                     let mut budget = Budget::odf(500_000, 16 * 1024 * 1024);
-                    if let Tree::Ok(node) = read_element(&mut rd, &e, empty, &mut budget)? {
+                    if let Tree::Ok(node) = read_element(rd, &e, empty, &mut budget)? {
                         self.st.add(&node);
                     }
                 }
                 _ => {
                     if !empty {
-                        skip_rest(&mut rd)?;
+                        skip_rest(rd)?;
                     }
                 }
             }
+        }
+    }
+
+    fn read_content(&mut self, src: impl BufRead) -> Result<(), OfficeError> {
+        let mut rd = XmlReader::new(src);
+        let mut buf = Vec::new();
+        if !self.enter_body(&mut rd, &mut buf, "text")? {
+            return Ok(());
         }
         // Inside `office:text`: its children are the top-level blocks. Sections and indexes are
         // entered (their children are top-level blocks too), so a document wrapped in one section
@@ -1308,7 +1376,9 @@ impl<'a> Od<'a> {
             self.skip(p, depth);
             return;
         }
-        let heading = if p.name == "h" {
+        let heading = if self.slides {
+            None
+        } else if p.name == "h" {
             let lvl = p
                 .attr("outline-level")
                 .and_then(|v| v.trim().parse::<u8>().ok())
@@ -1537,6 +1607,15 @@ impl<'a> Od<'a> {
             | "note-citation" => {}
             // `svg:title` / `svg:desc` describe a frame (read by it); `text:title` is a field.
             "title" | "desc" if n.prefix != "text" => {}
+            // In a slide the page number is the slide's number, not the one stored.
+            "page-number" if self.slides && self.slide_no > 0 && n.prefix == "text" => {
+                if self.hidden == 0 {
+                    let no = self.slide_no.to_string();
+                    self.c.push_text(inl, &no, base);
+                    ps.other = true;
+                    ps.prev_ws = false;
+                }
+            }
             // Fields and any other wrapper: their stored text.
             _ => self.inline_kids(n, base, ctx, inl, ps, depth + 1),
         }

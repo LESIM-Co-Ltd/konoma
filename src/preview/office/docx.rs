@@ -24,7 +24,7 @@
 //! | hyperlinks, `HYPERLINK` fields, bookmarks | `[text](url)` / `[text](#heading-slug)` |
 //! | fields (`fldSimple`, `fldChar`) | the stored result text |
 //! | text boxes / shapes | their paragraphs, after the paragraph holding them |
-//! | `mc:AlternateContent` | the `Choice` (never the `Fallback`) |
+//! | `mc:AlternateContent` | the first `Choice` whose `Requires` namespaces the reader understands (text boxes, groups, formulas ..), else the `Fallback` (a picture of what it cannot show) |
 //! | `w:sdt`, `w:smartTag`, `w:customXml` | their content |
 //! | `w:ruby` | the base text, then its reading in brackets (`漢字（かんじ）`) |
 //! | `m:oMath` / `m:oMathPara` | `$latex$` / `$$latex$$` via `omml::to_latex`; the formula's characters when it cannot convert |
@@ -71,6 +71,9 @@ use super::{omml, OfficeError};
 // so it is a child module: it sees the private items it builds on.
 #[path = "odt.rs"]
 pub mod odt;
+// The PowerPoint reader does the same: slides become Markdown through this module's writer.
+#[path = "pptx.rs"]
+pub mod pptx;
 
 /// Limits and options of [`load_document`].
 #[derive(Debug, Clone)]
@@ -108,6 +111,54 @@ pub struct DocOptions {
     pub mathml: fn(&str, bool) -> Option<String>,
     /// Most formula objects an OpenDocument text may have converted (each one is a zip part).
     pub max_math_objects: usize,
+    /// The language of the words konoma writes into a converted presentation (the slide
+    /// heading, the notes label).
+    pub lang: crate::i18n::Lang,
+    /// Most slides of a presentation read. Real decks have tens to a few hundred; every slide is
+    /// at least a heading line and the Markdown view shows 5,000 lines, so more than this could
+    /// never be shown anyway.
+    pub max_slides: usize,
+    /// Most shapes read from one slide (groups count their members). A slide has tens.
+    pub max_slide_shapes: usize,
+    /// Largest XML part of a presentation (slide, layout, master, notes, SmartArt) read at all
+    /// (bytes of the inflated part). A slide of a few MB is a table of thousands of cells.
+    pub max_slide_part_bytes: u64,
+    /// Total bytes of such XML parts read over a whole presentation, which bounds the time spent
+    /// parsing one. Measured on a release build (no LTO) on a machine with a load average of
+    /// about 13, with `max_deck_order_shapes` still in force: at 64 MiB, 1,000 slides alternating
+    /// between two slides of 5,000 empty `sp` each load in 0.68 s, 512 nested empty `sp` per slide
+    /// in 0.59 s, and 200 distinct slides repeated 5 times in 0.62 s (32 MiB: 0.3-0.44 s; 128 MiB:
+    /// 1.0-1.4 s). At a load average of 41 it takes about twice as long. 64 MiB because a deck of
+    /// 1,000 slides with 50 text boxes each (about 17 MB of XML) uses only a quarter of it, which
+    /// leaves room for heavy decks full of tables and diagrams to be read whole, at a worst case
+    /// of under a second on this machine. Pictures are not XML parts and do not count.
+    pub max_pptx_read_total: u64,
+    /// Most shapes, over a whole presentation, handed to the reading-order pass (one call costs up
+    /// to 3.4 microseconds a shape; the pass gives up above `UNDERLAY_MAX_SHAPES` a call, so this is
+    /// at most about a third of a second). 1,000 slides of 50 shapes is half of it. The slides
+    /// after the budget are still read: each keeps its heading, its place in the order and its
+    /// drawing, and only its text is left out (the document is marked truncated).
+    pub max_deck_order_shapes: usize,
+    /// Most scene items (the drawing of the slides) a presentation keeps over all its slides; a
+    /// master's or a layout's drawing counts once however many slides show it, a slide's own items
+    /// each. The slides after the limit are drawn partly or not at all and the document is marked
+    /// truncated. See `slide_draw::underlay::MAX_DECK_ITEMS` for how the default was chosen.
+    pub max_deck_items: usize,
+    /// Most estimated bytes of scene items (`slide_draw::footprint`) a presentation keeps over all
+    /// its slides, the copies of a master's shapes that show the slide's number excluded. See
+    /// `slide_draw::underlay::MAX_DECK_BYTES`.
+    pub max_deck_bytes: usize,
+    /// Most estimated bytes of those copies. See `slide_draw::underlay::MAX_COPY_BYTES`.
+    pub max_copy_bytes: usize,
+    /// Total bytes of XML of the slide layouts and masters a presentation may have parsed and
+    /// kept (they stay for the slides that show them, and a parsed part is several times its XML
+    /// in memory: measured about 8 times for shapes with text and effects, so 16 MiB is about
+    /// 130 MB). A layout or master that would go over is not read (its slides are drawn without
+    /// it, and the document is marked truncated). A real master is tens of KB. The same total
+    /// bounds the `style:master-page`s of an OpenDocument presentation (parsed trees of those
+    /// measured about 13 times their XML, so 16 MiB can reach 200 MB there; the node count of
+    /// `odp::MAX_MASTER_NODES` bounds the tiny-element case).
+    pub max_master_xml: u64,
 }
 
 impl Default for DocOptions {
@@ -129,6 +180,16 @@ impl Default for DocOptions {
             math: omml::to_latex,
             mathml: super::mathml::to_latex,
             max_math_objects: 5_000,
+            lang: crate::i18n::Lang::En,
+            max_slides: 1_000,
+            max_slide_shapes: 5_000,
+            max_slide_part_bytes: 16 * MIB,
+            max_pptx_read_total: 64 * MIB,
+            max_deck_order_shapes: 100_000,
+            max_deck_items: super::slide_draw::underlay::MAX_DECK_ITEMS,
+            max_deck_bytes: super::slide_draw::underlay::MAX_DECK_BYTES,
+            max_copy_bytes: super::slide_draw::underlay::MAX_COPY_BYTES,
+            max_master_xml: 16 * MIB,
         }
     }
 }
@@ -152,6 +213,21 @@ pub struct Document {
     /// See [`Document::math_total`].
     #[cfg_attr(not(test), allow(dead_code))]
     pub math_latex: usize,
+    /// A presentation: its slides in order (empty for other documents). There is exactly one
+    /// level-2 heading in [`Document::markdown`] per entry, in the same order (and none besides).
+    pub slides: Vec<pptx::SlideInfo>,
+    /// One drawing model per entry of [`Document::slides`], same order; empty for Word documents
+    /// and until the readers fill it.
+    pub slide_scenes: Vec<super::slide_draw::SlideScene>,
+    /// A presentation's default view: for each slide, the same level-2 heading line as in
+    /// `markdown` (identical text, same order, exactly one per slide and none besides), then a
+    /// blank line, the slide picture as `![<alt>](<slide_keys[i]>)`, a blank line, and the slide's
+    /// notes exactly as `markdown` writes them. Empty for Word documents and until a reader fills
+    /// it (the app then shows `markdown`).
+    pub picture_markdown: String,
+    /// The picture URL of each slide (`office-img://<12 hex>/slide-<n>.svg`, unique per conversion
+    /// so two decks never share a cached picture), one per entry of `slide_scenes`, same order.
+    pub slide_keys: Vec<String>,
 }
 
 /// A picture of the document.
@@ -501,6 +577,9 @@ struct Conv<'a> {
     media: Pkg,
     images: Vec<DocImage>,
     image_by_part: HashMap<String, Option<String>>,
+    /// The metafile pictures (EMF / WMF) loaded for drawing, by part: kept apart from
+    /// `image_by_part` because the text view must never show one (it cannot decode them).
+    meta_by_part: HashMap<String, Option<String>>,
     image_total: u64,
     /// Chart titles by part: a chart drawn many times is read once.
     chart_titles: HashMap<String, Option<String>>,
@@ -528,6 +607,11 @@ struct Conv<'a> {
     out_lines: usize,
     last: Last,
     last_list: Option<(u32, bool)>,
+    /// Lists of the same kind with different ids that follow one another are separate lists, not
+    /// one (slides: the bullets of one shape and the bullets of the next).
+    split_bullet_lists: bool,
+    /// The list id of the last item written with a literal label (`a.` `(i)` ..).
+    last_literal: Option<u32>,
     stack: Vec<(u8, usize)>,
     pending_code: Option<String>,
     /// Bytes of the note definitions held until the end of the document (they are written after
@@ -535,6 +619,15 @@ struct Conv<'a> {
     defs_bytes: usize,
     body_bytes: usize,
     body_lines: usize,
+    /// Room beyond the body budgets that only slide headings may use (a presentation keeps every
+    /// slide's place whatever its text came to: see [`Conv::reserve_slide_headings`]). 0 for a
+    /// document.
+    head_bytes: usize,
+    head_lines: usize,
+    /// A slide heading is being written: it may use the room above.
+    heading_force: bool,
+    /// A slide heading did not fit even the room above: no further slide can be kept.
+    heading_full: bool,
     full: bool,
 }
 
@@ -559,6 +652,7 @@ impl<'a> Conv<'a> {
             media,
             images: Vec::new(),
             image_by_part: HashMap::new(),
+            meta_by_part: HashMap::new(),
             image_total: 0,
             chart_titles: HashMap::new(),
             chart_read: 0,
@@ -580,6 +674,8 @@ impl<'a> Conv<'a> {
             out_lines: 0,
             last: Last::None,
             last_list: None,
+            split_bullet_lists: false,
+            last_literal: None,
             stack: Vec::new(),
             pending_code: None,
             defs_bytes: 0,
@@ -589,6 +685,10 @@ impl<'a> Conv<'a> {
             body_lines: opts
                 .max_markdown_lines
                 .saturating_sub((opts.max_markdown_lines / 10).min(500)),
+            head_bytes: 0,
+            head_lines: 0,
+            heading_force: false,
+            heading_full: false,
             full: false,
         }
     }
@@ -700,6 +800,10 @@ impl Conv<'_> {
             notes,
             math_total: conv.math_total,
             math_latex: conv.math_latex,
+            slides: Vec::new(),
+            slide_scenes: Vec::new(),
+            picture_markdown: String::new(),
+            slide_keys: Vec::new(),
         }
     }
 }
@@ -1781,6 +1885,16 @@ impl<'a> Conv<'a> {
         }
     }
 
+    /// Lets a presentation keep every slide's heading when its text fills the body budget: the
+    /// slides after that are still read (their pictures are drawn, their place in the order stays)
+    /// and only their text is left out, flagged truncated. Without it a deck whose text view
+    /// reached the cap (about 100 slides of 45 lines) lost every later slide from both views.
+    /// The room is a heading line and a blank one, and 1 KiB, per slide that may be read.
+    fn reserve_slide_headings(&mut self) {
+        self.head_lines = self.opts.max_slides.saturating_mul(2);
+        self.head_bytes = self.opts.max_slides.saturating_mul(1024);
+    }
+
     fn write_blocks(&mut self, blks: Vec<Blk>) {
         for b in blks {
             if self.full {
@@ -1866,11 +1980,14 @@ impl<'a> Conv<'a> {
                 let indent: String = std::iter::repeat_n(NBSP, 2 * usize::from(it.level)).collect();
                 let text = it.text.replace('\n', "  \n");
                 let piece = format!("{indent}{} {text}", escape(&it.label, true));
-                let sep = if self.last == Last::Literal {
+                // (Literal items of separate lists of a slide are separate paragraphs.)
+                let same_list = !self.split_bullet_lists || self.last_literal == Some(it.list);
+                let sep = if self.last == Last::Literal && same_list {
                     "  \n"
                 } else {
                     "\n\n"
                 };
+                self.last_literal = Some(it.list);
                 self.push_piece(piece, Last::Literal, sep);
             }
             Marker::Bullet | Marker::Ordered(_) => {
@@ -1892,7 +2009,11 @@ impl<'a> Conv<'a> {
                         Some((l, o)) if l == it.list && o == ordered => "\n",
                         // Two lists of the same kind side by side would be read as one (and
                         // numbered on): an empty HTML comment ends the first.
-                        Some((_, o)) if o == ordered && ordered && indent == 0 => {
+                        Some((_, o))
+                            if o == ordered
+                                && (ordered || self.split_bullet_lists)
+                                && indent == 0 =>
+                        {
                             "\n\n<!-- -->\n\n"
                         }
                         _ => "\n",
@@ -1910,20 +2031,31 @@ impl<'a> Conv<'a> {
     /// Appends a block, within the budgets. A block that does not fit is cut at a line boundary
     /// (or dropped) and the conversion is over.
     fn push_piece(&mut self, piece: String, kind: Last, sep: &str) {
-        if self.full {
+        // (A slide heading goes on after the body budget is spent, within the room kept for them.)
+        let force = self.heading_force;
+        if self.full && !force {
             return;
         }
+        let (cap_bytes, cap_lines) = if force {
+            (
+                self.body_bytes.saturating_add(self.head_bytes),
+                self.body_lines.saturating_add(self.head_lines),
+            )
+        } else {
+            (self.body_bytes, self.body_lines)
+        };
         let sep = if self.last == Last::None { "" } else { sep };
         let mut text = format!("{sep}{piece}");
         let add_lines = text.matches('\n').count() + usize::from(self.last == Last::None);
-        let over_bytes = self.out.len() + text.len() > self.body_bytes;
-        let over_lines = self.out_lines + add_lines > self.body_lines;
+        let over_bytes = self.out.len() + text.len() > cap_bytes;
+        let over_lines = self.out_lines + add_lines > cap_lines;
         if over_bytes || over_lines {
             self.full = true;
+            self.heading_full |= force;
             self.truncated = true;
             // Keep as much of the block as fits, whole lines only.
-            let room_bytes = self.body_bytes.saturating_sub(self.out.len());
-            let room_lines = self.body_lines.saturating_sub(self.out_lines);
+            let room_bytes = cap_bytes.saturating_sub(self.out.len());
+            let room_lines = cap_lines.saturating_sub(self.out_lines);
             let mut keep = String::new();
             let mut lines = 0usize;
             for (i, l) in text.split('\n').enumerate() {
@@ -2039,6 +2171,8 @@ impl<'a> Conv<'a> {
 
     fn blocks(&mut self, kids: &[Kid], ctx: Ctx, depth: usize, out: &mut Vec<Blk>) {
         if depth > 40 {
+            // Whatever stood below the limit is dropped: say so.
+            self.truncated |= kids.iter().any(|k| matches!(k, Kid::N(_)));
             return;
         }
         for k in kids {
@@ -2050,6 +2184,7 @@ impl<'a> Conv<'a> {
 
     fn block_node(&mut self, n: &Node, ctx: Ctx, depth: usize, out: &mut Vec<Blk>) {
         if depth > 40 {
+            self.truncated = true;
             return;
         }
         match n.name.as_str() {
@@ -2069,7 +2204,7 @@ impl<'a> Conv<'a> {
                 self.blocks(&n.kids, ctx, depth + 1, out)
             }
             "AlternateContent" => {
-                if let Some(c) = alt_content(n) {
+                if let Some(c) = alt_content(n, DOCX_READS) {
                     self.blocks(&c.kids, ctx, depth + 1, out);
                 }
             }
@@ -2097,6 +2232,7 @@ impl<'a> Conv<'a> {
 
     fn table(&mut self, t: &Node, depth: usize) -> Option<Blk> {
         if depth > 12 {
+            self.truncated = true;
             return None;
         }
         let mut rows: Vec<Vec<String>> = Vec::new();
@@ -2444,6 +2580,7 @@ impl<'a> Conv<'a> {
 
     fn inline_children(&mut self, parent: &Node, base: Fmt, inl: &mut Inl, depth: usize) {
         if depth > 60 {
+            self.truncated |= parent.nodes().next().is_some();
             return;
         }
         for n in parent.nodes() {
@@ -2453,6 +2590,7 @@ impl<'a> Conv<'a> {
 
     fn inline_node(&mut self, n: &Node, base: Fmt, inl: &mut Inl, depth: usize) {
         if depth > 60 {
+            self.truncated = true;
             return;
         }
         match n.name.as_str() {
@@ -2484,7 +2622,7 @@ impl<'a> Conv<'a> {
                 }
             }
             "AlternateContent" => {
-                if let Some(c) = alt_content(n) {
+                if let Some(c) = alt_content(n, DOCX_READS) {
                     self.inline_children(c, base, inl, depth + 1);
                 }
             }
@@ -2505,6 +2643,7 @@ impl<'a> Conv<'a> {
     /// `漢字（かんじ）`; the reading is text the reader would otherwise lose).
     fn ruby(&mut self, n: &Node, fmt: Fmt, inl: &mut Inl, depth: usize) {
         if depth > 60 {
+            self.truncated = true;
             return;
         }
         let start = inl.segs.len();
@@ -2629,6 +2768,7 @@ impl<'a> Conv<'a> {
 
     fn run_children(&mut self, r: &Node, fmt: Fmt, hidden: bool, inl: &mut Inl, depth: usize) {
         if depth > 60 {
+            self.truncated |= r.nodes().next().is_some();
             return;
         }
         for c in r.nodes() {
@@ -2724,7 +2864,7 @@ impl<'a> Conv<'a> {
                     }
                 }
                 "AlternateContent" => {
-                    if let Some(ch) = alt_content(c) {
+                    if let Some(ch) = alt_content(c, DOCX_READS) {
                         self.run_children(ch, fmt, hidden, inl, depth + 1);
                     }
                 }
@@ -2789,6 +2929,7 @@ impl<'a> Conv<'a> {
     fn media_node(&mut self, n: &Node, inl: &mut Inl, depth: usize) {
         let mut found = Media::default();
         scan_media(n, &mut found, 0);
+        self.truncated |= found.cut;
         let alt = clean(&found.alt);
         let alt: String = alt.chars().take(300).collect();
         for rid in &found.embeds {
@@ -2813,7 +2954,14 @@ impl<'a> Conv<'a> {
                     })
                 }
                 Some(Graphic::SmartArt) => Some("SmartArt".to_string()),
-                _ => None,
+                // An embedded object whose picture is missing: say what stood here.
+                _ => found.ole.as_deref().map(|id| {
+                    if id.is_empty() {
+                        "object".to_string()
+                    } else {
+                        format!("object: {id}")
+                    }
+                }),
             };
             if let Some(l) = label {
                 let md = self.placeholder(&l);
@@ -2923,34 +3071,80 @@ impl<'a> Conv<'a> {
     /// `![alt](office-img://..)` for the picture stored at `part` of the package (a placeholder when
     /// it cannot be shown).
     fn image_md_part(&mut self, part: &str, alt: &str) -> String {
-        let alt_md = alt.replace(
-            [
-                '[', ']', '(', ')', '<', '>', '\\', '`', '*', '_', '$', '~', '|', '&', '!',
-            ],
-            " ",
-        );
-        let alt_md = alt_md.split_whitespace().collect::<Vec<_>>().join(" ");
-        let key = match self.image_by_part.get(part) {
+        match self.image_key_for_part(part) {
+            Some(k) => format!("![{}]({k})", md_alt(alt)),
+            None => self.placeholder(alt),
+        }
+    }
+
+    /// The `office-img://` key of the picture stored at `part` (loaded once into
+    /// [`Document::images`]; the same bytes give the same key), `None` when it cannot be shown.
+    fn image_key_for_part(&mut self, part: &str) -> Option<String> {
+        match self.image_by_part.get(part) {
             Some(k) => k.clone(),
             None => {
                 let k = self.load_image(part);
                 self.image_by_part.insert(part.to_string(), k.clone());
                 k
             }
-        };
-        match key {
-            Some(k) => format!("![{alt_md}]({k})"),
-            None => self.placeholder(alt),
+        }
+    }
+
+    /// [`Self::image_key_for_part`] for the drawing model: a metafile picture (EMF / WMF, which the
+    /// slide renderer converts to SVG) gets a key too; every other picture is the text view's.
+    /// The metafile is registered in [`Document::images`] like any picture, but the text view
+    /// never refers to its key (it asks [`Self::image_key_for_part`], which says `None`).
+    fn image_key_for_drawing(&mut self, part: &str) -> Option<String> {
+        let is_meta = part
+            .rsplit_once('.')
+            .is_some_and(|(_, e)| matches!(e.to_ascii_lowercase().as_str(), "emf" | "wmf"));
+        if !is_meta {
+            return self.image_key_for_part(part);
+        }
+        match self.meta_by_part.get(part) {
+            Some(k) => k.clone(),
+            None => {
+                let k = self.load_image_as(part, true);
+                self.meta_by_part.insert(part.to_string(), k.clone());
+                k
+            }
         }
     }
 
     fn load_image(&mut self, part: &str) -> Option<String> {
-        let name = part.rsplit('/').next().unwrap_or(part).to_string();
+        self.load_image_as(part, false)
+    }
+
+    /// Loads the picture at `part`; `meta` also admits EMF / WMF.
+    fn load_image_as(&mut self, part: &str, meta: bool) -> Option<String> {
+        self.load_image_ext(part, meta, None)
+    }
+
+    /// The picture at `part` (a part without a file extension: an OpenDocument object's
+    /// replacement image) by what its first bytes say it is: PNG, JPEG, GIF, SVG, EMF or WMF.
+    /// `None` for anything else (LibreOffice's own `.svm` metafile, ..).
+    fn image_key_sniffed(&mut self, part: &str) -> Option<String> {
+        let mut head = Vec::new();
+        {
+            let r = self.media.part(part, 4096).ok()??;
+            r.take(4096).read_to_end(&mut head).ok()?;
+        }
+        let ext = sniff_image_ext(&head)?;
+        self.load_image_ext(part, true, Some(ext))
+    }
+
+    /// [`Self::load_image_as`] with the file extension given instead of read from the name.
+    fn load_image_ext(&mut self, part: &str, meta: bool, forced: Option<&str>) -> Option<String> {
+        let mut name = part.rsplit('/').next().unwrap_or(part).to_string();
+        if let Some(e) = forced {
+            name = format!("{}.{e}", name.replace(' ', "_"));
+        }
         let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase())?;
-        if !matches!(
+        let ok = matches!(
             ext.as_str(),
             "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "tif" | "tiff"
-        ) {
+        ) || (meta && matches!(ext.as_str(), "emf" | "wmf"));
+        if !ok {
             return None;
         }
         if self.images.len() >= self.opts.max_images {
@@ -3004,6 +3198,51 @@ impl<'a> Conv<'a> {
 // free helpers
 // ---------------------------------------------------------------------------------------------
 
+/// The file extension a picture's first bytes stand for (`png`, `jpg`, `gif`, `svg`, `emf`, `wmf`).
+fn sniff_image_ext(head: &[u8]) -> Option<&'static str> {
+    if head.starts_with(&[0x89, b'P', b'N', b'G']) {
+        return Some("png");
+    }
+    if head.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("jpg");
+    }
+    if head.starts_with(b"GIF8") {
+        return Some("gif");
+    }
+    // EMF: record type 1 (header), and the signature " EMF" at offset 40.
+    if head.len() >= 44 && head.starts_with(&[1, 0, 0, 0]) && &head[40..44] == b" EMF" {
+        return Some("emf");
+    }
+    // WMF: the placeable header, or a plain header (type 1 or 2, header size 9).
+    if head.starts_with(&[0xD7, 0xCD, 0xC6, 0x9A])
+        || (head.len() >= 4
+            && matches!(head[0], 1 | 2)
+            && head[1] == 0
+            && head[2] == 9
+            && head[3] == 0)
+    {
+        return Some("wmf");
+    }
+    let text = String::from_utf8_lossy(head);
+    let t = text.trim_start_matches('\u{feff}').trim_start();
+    if t.starts_with("<svg") || (t.starts_with("<?xml") && text.contains("<svg")) {
+        return Some("svg");
+    }
+    None
+}
+
+/// A text as the alt text of a Markdown image (`![alt](..)`): the characters that mean something
+/// to Markdown become spaces, runs of white space one space.
+fn md_alt(alt: &str) -> String {
+    let alt_md = alt.replace(
+        [
+            '[', ']', '(', ')', '<', '>', '\\', '`', '*', '_', '$', '~', '|', '&', '!',
+        ],
+        " ",
+    );
+    alt_md.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// The `t` text (`w:t`, `a:t`) under `n`, in order.
 fn collect_t_text(n: &Node, out: &mut String, depth: usize) {
     if depth > 64 || out.len() > 4096 {
@@ -3049,9 +3288,28 @@ fn math_text(n: &Node, depth: usize) -> String {
     s
 }
 
-/// The `Choice` of an `mc:AlternateContent` (the `Fallback` only when there is none).
-fn alt_content(n: &Node) -> Option<&Node> {
-    n.child("Choice").or_else(|| n.child("Fallback"))
+/// The namespaces (as the prefixes Word writes them) whose content the Word reader reads inside an
+/// `mc:Choice`: the text boxes, groups and canvases of a drawing (`wps`, `wpg`, `wpc`), the
+/// extensions of the drawing and of the text (`wp14`, `w14`, `w15`, `w16*`), formulas (`m`, `a14`)
+/// and the always-understood ones. Anything else (chart extensions `cx`, ink `p14`, ..) is
+/// something the reader cannot show, so the `Fallback` (usually a picture of it) is read instead.
+const DOCX_READS: &[&str] = &[
+    "w", "wp", "a", "pic", "r", "m", "v", "o", "wps", "wpg", "wpc", "wp14", "w14", "w15", "w16",
+    "w16se", "w16cid", "w16du", "w16sdtdh", "w16sdtfl", "a14",
+];
+
+/// The part of an `mc:AlternateContent` to read (ECMA-376 part 3, Markup Compatibility): the first
+/// `Choice` whose `Requires` namespaces are **all** ones the reader understands (`reads`: their
+/// prefixes, as the producing application writes them), else the `Fallback`; `None` when there is
+/// neither. A `Choice` with no `Requires` requires nothing.
+fn alt_content<'n>(n: &'n Node, reads: &[&str]) -> Option<&'n Node> {
+    let readable = |c: &Node| {
+        c.attr("Requires")
+            .is_none_or(|r| r.split_whitespace().all(|p| reads.contains(&p)))
+    };
+    n.nodes()
+        .find(|c| c.name == "Choice" && readable(c))
+        .or_else(|| n.child("Fallback"))
 }
 
 fn collect_rows<'n>(t: &'n Node, out: &mut Vec<&'n Node>, depth: usize) {
@@ -3101,6 +3359,10 @@ struct Media<'n> {
     graphic: Option<Graphic>,
     /// The relationship of the chart part (`c:chart r:id`).
     chart_rid: Option<String>,
+    /// An embedded object (`o:OLEObject`): its `ProgID` (`Excel.Sheet.12`), empty when it has none.
+    ole: Option<String>,
+    /// The scan stopped at the depth limit with elements still unread.
+    cut: bool,
 }
 
 /// What a `drawing`'s `a:graphicData` holds when it is not a picture.
@@ -3125,6 +3387,7 @@ fn graphic_of(uri: &str) -> Graphic {
 
 fn scan_media<'n>(n: &'n Node, m: &mut Media<'n>, depth: usize) {
     if depth > 64 {
+        m.cut |= n.nodes().next().is_some();
         return;
     }
     for c in n.nodes() {
@@ -3143,6 +3406,12 @@ fn scan_media<'n>(n: &'n Node, m: &mut Media<'n>, depth: usize) {
                     }
                 }
                 scan_media(c, m, depth + 1);
+            }
+            "OLEObject" => {
+                if m.ole.is_none() {
+                    let id = c.attr("ProgID").map(clean).unwrap_or_default();
+                    m.ole = Some(id.trim().chars().take(80).collect());
+                }
             }
             "chart" => {
                 if m.chart_rid.is_none() {
@@ -3181,7 +3450,7 @@ fn scan_media<'n>(n: &'n Node, m: &mut Media<'n>, depth: usize) {
                 }
             }
             "AlternateContent" => {
-                if let Some(ch) = alt_content(c) {
+                if let Some(ch) = alt_content(c, DOCX_READS) {
                     scan_media(ch, m, depth + 1);
                 }
             }

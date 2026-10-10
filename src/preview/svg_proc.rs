@@ -33,6 +33,16 @@
 // catches what grows between two looks of the parent (a few GB/s) and, on Linux, a refused
 // allocation (`RLIMIT_AS`) that would otherwise abort the process.
 //
+// **The drawing clock starts when the child says it is ready, not when it is started.** The first
+// thing a new child writes, once it has hardened itself and armed its guards and before it reads a
+// byte, is `READY`. Until then the parent is waiting for the *process* (on macOS the first run of a
+// freshly installed executable is vetted by the system first: 2.2 s measured for the 150 MB debug
+// binary, and longer on a busy machine), which says nothing about the SVG, so that wait is bounded
+// separately and generously (`START_LIMIT`) and the drawing limit (`WALL_LIMIT`) runs from the
+// moment `READY` is seen. A child that never says it (or says something else first) is stopped when
+// that bound passes, so it can still not hang the parent. A reused idle child said it long ago.
+//
+//   start   : "KSRDY"                                                       (child -> parent, once)
 //   request : "KSV1" u32 max_px | u32 base_len, base bytes | u64 data_len, data      (little endian)
 //   response: "KSR1" u8 status (0 = drawn, else `SvgFail::code`) [| u32 w, u32 h, w*h*4 RGBA bytes]
 
@@ -59,6 +69,18 @@ pub const CHILD_FLAG: &str = "--internal-svg-render";
 /// mermaid-sized diagram: about 1 s); every hostile file measured needed tens of seconds or never
 /// finished. 5 s is the point where a user has already given up waiting for one picture.
 pub const WALL_LIMIT: Duration = Duration::from_secs(5);
+
+/// How long a new child may take to become ready, from the moment it is started (the drawing's own
+/// limit, `WALL_LIMIT`, starts only after that). The slowest start measured is the first run of an
+/// executable the system has not seen: 2.2 s for the debug binary on an idle Mac, several times that
+/// under load (every build and test on the machine shares the vetting). 30 s is about ten times
+/// the idle figure: a start that has taken longer is a child that is not coming, and waiting
+/// longer only delays the failure. It is a bound, never "wait for ever": the preview moving on
+/// (cancellation) and konoma leaving still stop the wait at once.
+pub const START_LIMIT: Duration = Duration::from_secs(30);
+
+/// What a new child writes when it is ready for its first request.
+const READY: &[u8; 5] = b"KSRDY";
 
 /// Resident-memory limit for one drawing. The largest legitimate drawing is a 4096 x 4096 canvas:
 /// the pixmap (64 MiB) and the straight-alpha copy (64 MiB) plus a few layers, a few hundred MiB
@@ -107,7 +129,10 @@ const CHILD_ADDRESS_SPACE: u64 = 8 << 30;
 /// The limits one supervised drawing runs under (a parameter so tests can use small ones).
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
+    /// For the drawing itself, from the moment the child is ready.
     pub wall: Duration,
+    /// For the child's start-up: from the start of the process until it says it is ready.
+    pub start: Duration,
     pub rss: u64,
 }
 
@@ -115,6 +140,7 @@ impl Default for Limits {
     fn default() -> Self {
         Limits {
             wall: WALL_LIMIT,
+            start: START_LIMIT,
             rss: RSS_LIMIT,
         }
     }
@@ -327,6 +353,14 @@ fn acquire_slot(cancelled: &dyn Fn() -> bool) -> Result<SlotGuard, RunError> {
     }
 }
 
+/// What the reader thread passes on to the supervisor.
+enum Msg {
+    /// The child said it is ready for its first request.
+    Ready,
+    /// One whole (or cut-off) answer.
+    Answer(Vec<u8>),
+}
+
 /// What the reader thread and the supervisor agree on about one child's output.
 #[derive(Default)]
 struct Link {
@@ -345,8 +379,11 @@ struct Worker {
     child: Child,
     pid: u32,
     stdin: ChildStdin,
-    /// Whole responses, framed by the reader thread. Disconnected = the child's output ended.
-    answers: Receiver<Vec<u8>>,
+    /// `READY` and whole responses, framed by the reader thread, in the order the child wrote them.
+    /// Disconnected = the child's output ended (or broke the protocol).
+    answers: Receiver<Msg>,
+    /// The supervisor has seen `READY`. A reused child has.
+    ready: bool,
     link: Arc<Link>,
     /// Drawings this child has answered.
     served: u32,
@@ -383,6 +420,17 @@ impl Worker {
         // the child, and the supervisor can wait on a channel with a timeout. One answer per
         // request: `read_answer` refuses to read one nobody asked for.
         std::thread::spawn(move || {
+            // The first thing a child says is that it is ready; anything else (an answer nobody
+            // asked for, garbage, the end of the output) marks a child to be rid of. Exactly
+            // `READY.len()` bytes are read, so a child cannot make this thread wait for more.
+            let mut first = [0u8; READY.len()];
+            if read_up_to(&mut stdout, &mut first) != first.len() || &first != READY {
+                reader_link.tainted.store(true, Ordering::SeqCst);
+                return;
+            }
+            if tx.send(Msg::Ready).is_err() {
+                return;
+            }
             let mut asked = || {
                 let ok = reader_link.expecting.swap(false, Ordering::SeqCst);
                 if !ok {
@@ -392,7 +440,7 @@ impl Worker {
             };
             while let Some(answer) = read_answer_if(&mut stdout, &mut asked) {
                 let complete = answer_is_complete(&answer);
-                if tx.send(answer).is_err() || !complete {
+                if tx.send(Msg::Answer(answer)).is_err() || !complete {
                     break;
                 }
             }
@@ -406,6 +454,7 @@ impl Worker {
             pid,
             stdin,
             answers,
+            ready: false,
             link,
             served: 0,
             idle_since: None,
@@ -656,7 +705,10 @@ enum Ended {
     /// The child's output ended with no (complete) answer: it died.
     Gone,
     Cancelled,
+    /// The drawing ran past its limit.
     TimedOut,
+    /// A new child did not become ready within the start-up bound.
+    StartTimedOut,
     OutOfMemory,
 }
 
@@ -674,12 +726,16 @@ fn supervise(
     peak_rss: &mut u64,
 ) -> Ended {
     let head = header(req);
-    let started = Instant::now();
+    // Runs from the start of the child until it is ready (the start-up bound), then from the moment
+    // it said so (the drawing's limit). A child that is already ready (a reused one) has only the
+    // second part.
+    let mut started = Instant::now();
     let pid = worker.pid;
     let Worker {
         stdin,
         answers,
         link,
+        ready,
         ..
     } = worker;
     // Set before the request leaves, so the reader never mistakes the answer for unsolicited output.
@@ -697,14 +753,24 @@ fn supervise(
         let mut reusable = true;
         let ended = loop {
             match answers.recv_timeout(POLL_INTERVAL) {
-                Ok(bytes) => break Ended::Answered(bytes, true),
+                // The reader passes on one `READY`, first (a second one is read as an answer, which
+                // it is not, and a first one that is not `READY` ends the child's output).
+                Ok(Msg::Ready) => {
+                    *ready = true;
+                    started = Instant::now();
+                }
+                Ok(Msg::Answer(bytes)) => break Ended::Answered(bytes, true),
                 Err(RecvTimeoutError::Disconnected) => break Ended::Gone,
                 Err(RecvTimeoutError::Timeout) => {}
             }
             if cancelled() || SHUTTING_DOWN.load(Ordering::SeqCst) {
                 break Ended::Cancelled;
             }
-            if started.elapsed() >= limits.wall {
+            if !*ready {
+                if started.elapsed() >= limits.start {
+                    break Ended::StartTimedOut;
+                }
+            } else if started.elapsed() >= limits.wall {
                 break Ended::TimedOut;
             }
             if let Some(rss) = rss_bytes(pid) {
@@ -750,6 +816,9 @@ pub fn run_with(
     req: &Request,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<DynamicImage, RunError> {
+    if request_too_large(req.data) {
+        return Err(SvgFail::TooLarge.into());
+    }
     let _slot = acquire_slot(cancelled)?;
     loop {
         let (mut worker, reused) = match take_idle(exe) {
@@ -763,6 +832,8 @@ pub fn run_with(
         return match ended {
             Ended::Cancelled => Err(RunError::Cancelled),
             Ended::TimedOut => Err(SvgFail::Timeout.into()),
+            // Not this SVG's fault, and not a verdict on it either: the child never came up.
+            Ended::StartTimedOut => Err(SvgFail::Crashed.into()),
             Ended::OutOfMemory => Err(SvgFail::Memory.into()),
             Ended::Gone => {
                 // A reused child that was gone when it was used ended while it sat idle (its own
@@ -800,6 +871,21 @@ fn crash_or_memory(peak_rss: u64, limits: Limits) -> SvgFail {
     } else {
         SvgFail::Crashed
     }
+}
+
+/// Whether `data` is more than the child would read. The child ends instead of answering when a
+/// request is over [`MAX_REQUEST_BYTES`], which the parent would report as a crash; the
+/// application's own entry points refuse such an SVG first (`svg_guard::precheck`), this keeps
+/// the supervisor honest for any other caller. A plain SVG over `MAX_SVG_BYTES` is refused by the
+/// child's own check anyway; a gzip stream (whose size after decompression is what that limit is
+/// about) gets the request limit.
+fn request_too_large(data: &[u8]) -> bool {
+    let limit = if data.starts_with(&[0x1f, 0x8b]) {
+        MAX_REQUEST_BYTES
+    } else {
+        super::svg_guard::MAX_SVG_BYTES as u64
+    };
+    data.len() as u64 > limit
 }
 
 /// [`run_with`] with the default limits and konoma's own binary.
@@ -910,6 +996,11 @@ pub fn child_main(args: &[std::ffi::OsString]) -> i32 {
     watch_parent();
     let mut stdin = std::io::stdin().lock();
     let mut out = answer_sink();
+    // Everything that has to happen before the first request is done: from here on the parent
+    // counts the drawing's time (see the module comment).
+    if out.write_all(READY).and_then(|_| out.flush()).is_err() {
+        return 3;
+    }
     loop {
         // Waiting for a request: if nobody asks again soon, this child is not needed.
         #[cfg(unix)]

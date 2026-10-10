@@ -56,7 +56,8 @@ sidebar:
 | `Enter` | リンクを開く / チェックボックスをトグル |
 | `Ctrl-t` | フォーカス中の**ローカル**リンクを別タブで開く(アンカーはその場で移動・URL はどちらもブラウザで開く) |
 | `Space` | フォーカス中チェックボックスをトグル |
-| `R` | 装飾表示 ⇄ raw ソース(Markdown/Mermaid と Word/OpenDocument 文書 — raw は変換後の Markdown)。このプレビューが diff の `preview` 表現である間は、代わりに diff へ戻る |
+| `J` `K` | プレゼン(PowerPoint / OpenDocument)のみ: 次 / 前のスライド。絵の表示でも文字表示でも効く(それ以外と 1 枚だけのデッキでは何もしない。アクション `page_next` / `page_prev`) |
+| `R` | 装飾表示 ⇄ raw ソース(Markdown/Mermaid と Word/OpenDocument 文書 — raw は変換後の Markdown)。プレゼンでは スライドの絵 ⇄ 文字表示(今のスライドは保つ)。このプレビューが diff の `preview` 表現である間は、代わりに diff へ戻る |
 | `o` | Markdown プレビューの見出しアウトライン(`Enter` で見出しへジャンプ) |
 | `v` / `V` | 文字単位 / 行単位の選択 → `y` でコピー |
 | `y` → `c` | フォーカス中の Markdown コードブロックをコピー(`Tab` でフォーカス。`y` メニューの他の項目はパスコピー) |
@@ -71,7 +72,7 @@ sidebar:
 |---|---|
 | `+` `-` / `0` `=` | ズーム / フィットに戻す |
 | `h j k l` | パン |
-| `J` `K` | PDF ページ送り / 戻し |
+| `J` `K`(`PageDown` `PageUp` も) | PDF ページ送り / 戻し(アクション `page_next` / `page_prev`。旧名 `pdf_next_page` / `pdf_prev_page` も可) |
 | `R` | diff へ戻る — このプレビューが diff の `preview` 表現である時だけ(diff から開いた、または `n`/`N` で来た場合)。通常の画像/PDF/SVG プレビューでは何もせず、ヒントも出ない |
 | `Ctrl-n` / `Ctrl-p` | 次 / 前のファイルをプレビュー(ツリー表示順・端で wrap) |
 | `m` `'` / `e` / `q` | ブックマーク / エディタ / 戻る |
@@ -83,7 +84,7 @@ sidebar:
 | `h j k l` | セル移動 |
 | `Ctrl-n` / `Ctrl-p` | 次 / 前のファイルをプレビュー(ツリー表示順・端で wrap) |
 | `g` `G` / `0` `$` | 先頭/末尾行 / 先頭/末尾列 |
-| `J` `K` | 表計算のみ: 次 / 前のシート(表示シート 2 枚以上の時。アクション `sheet_next` / `sheet_prev`) |
+| `J` `K` | 表計算のみ: 次 / 前のシート(表示シート 2 枚以上の時。アクション `page_next` / `page_prev`。旧名 `sheet_next` / `sheet_prev` も可) |
 | `/` / `n` `N` | セル検索(大小無視) / 次・前の一致へ(端で wrap) |
 | `y` → `c r C f` | セル / 行 / 列 / フルパスをコピー |
 | `Enter` | カーソル位置のセルをポップアップで開く — 切り詰められていない全文を折返し表示（`Enter` / `q` / `Esc` で閉じる）。`.zip` / `.tar` の一覧や表計算(番地・表示文字列・生の値・型・数式・書式)でも同様。 |
@@ -97,7 +98,7 @@ sidebar:
 | ハブ: `c` / `x` / `Enter` | コミット / 変更破棄 / diff を開く |
 | ハブ: `l` / `g` / `b` / `w` | log / コミットグラフ / ブランチ / ワークツリー |
 | diff: `s` / `R` / `n` `N` / `x` | レイアウト巡回(unified⇄split⇄auto — 変更された画像/PDF/SVG では代わりに auto⇄side⇄stack、`[git] media_diff`) / そのファイルが実際に持つ表現だけを巡回(Markdown・SVG はソース⇄整形⇄プレビュー、画像/PDF は整形⇄プレビューのみ — 整形が並べて表示そのもの・`[ui] diff_view`) / 次/前の変更ファイル / 破棄 |
-| diff(画像/PDF/SVG): `J` `K` | 複数ページの PDF なら両側同時にページ送り(それ以外・単一ページでは何もしない) |
+| diff(画像/PDF/SVG): `J` `K`(`PageDown` `PageUp` も。スクロールの代わり) | 複数ページの PDF なら両側同時にページ送り(それ以外・単一ページでは何もしない。アクション `page_next` / `page_prev`。旧名 `media_diff_page_next` / `_prev` も可) |
 | フォロー diff: `f` | スコープ切替: 開始以降(既定) ⇄ フル git diff |
 | log・グラフ: `Enter` / `y` | コミット詳細(全文+diff) / コミット情報コピー |
 | グラフ: `s` / `x` `0` / `b` | 基準ブランチ固定 / 解除 / ブランチ選択パネル |

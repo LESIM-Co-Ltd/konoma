@@ -202,34 +202,48 @@ impl Sim {
         self
     }
 
-    /// Wait for the next inline-Markdown-image decode result and apply it (the run loop's
-    /// `rx.md_img.try_recv()` step), then redraw — which is what feeds a decoded image back into
-    /// `ensure_md_image`'s "request an encode" branch on the next frame.
+    /// Wait for the next inline-Markdown-image decode result **that applies** and apply it (the
+    /// run loop's `rx.md_img.try_recv()` step), then redraw, which is what feeds a decoded image
+    /// back into `ensure_md_image`'s "request an encode" branch on the next frame. A result of an
+    /// earlier request for the same path (a decode cancelled by leaving the document, which then
+    /// came back) is stale by design and is skipped, exactly as the run loop ignores it.
     #[track_caller]
     fn drain_md_images(&mut self) {
         let rx = self
             .md_img_rx
             .as_ref()
             .expect("with_media() を呼んでいない");
-        let res = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("decode worker が結果を返す");
-        assert!(self.app.apply_md_image(res), "現世代の結果は適用される");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let res = rx
+                .recv_timeout(left)
+                .expect("decode worker が現世代の結果を返す");
+            if self.app.apply_md_image(res) {
+                break;
+            }
+        }
         self.draw();
     }
 
-    /// Wait for the next inline-image encode result and apply it (the run loop's
-    /// `rx.md_enc.try_recv()` step), then redraw.
+    /// Wait for the next inline-image encode result **that applies** and apply it (the run loop's
+    /// `rx.md_enc.try_recv()` step), then redraw. Results for a dropped entry are skipped.
     #[track_caller]
     fn drain_md_encodes(&mut self) {
         let rx = self
             .md_enc_rx
             .as_ref()
             .expect("with_media() を呼んでいない");
-        let res = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("encode worker が結果を返す");
-        assert!(self.app.apply_md_encode(res), "現世代の結果は適用される");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let res = rx
+                .recv_timeout(left)
+                .expect("encode worker が現世代の結果を返す");
+            if self.app.apply_md_encode(res) {
+                break;
+            }
+        }
         self.draw();
     }
 
@@ -9634,16 +9648,11 @@ fn install_blocking_pre_commit_hook(dir: &std::path::Path) {
     let hooks = dir.join(".git").join("hooks");
     std::fs::create_dir_all(&hooks).unwrap();
     let hook = hooks.join("pre-commit");
-    std::fs::write(
+    // Git execs this hook; see `write_executable` for why it is not `fs::write` + chmod.
+    crate::test_support::write_executable(
         &hook,
         "#!/bin/sh\nn=0\nwhile [ -f \"$(git rev-parse --git-dir)/BLOCK\" ] && [ $n -lt 1000 ]; do\n  sleep 0.02\n  n=$((n+1))\ndone\nexit 0\n",
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    );
 }
 
 /// Stage and commit through the real key path with the background runner attached: `o` `s` `c`
@@ -17730,6 +17739,101 @@ fn e2e_sheet_j_and_k_switch_sheets_and_stop_at_the_ends() {
     s.see("Quarterly");
 }
 
+/// Config with `[keys.<surface>]` entries (old action names included).
+fn cfg_keys(surface: &str, entries: &[(&str, &str)]) -> Config {
+    let mut cfg = cfg_en();
+    let table = entries
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
+    cfg.keys.surfaces.insert(surface.to_string(), table);
+    cfg
+}
+
+/// `[keys]` written with the pre-`page_next` names (`sheet_next` / `sheet_prev`) still rebinds the
+/// spreadsheet's sheet switch, and the new names do the same.
+#[test]
+fn e2e_keys_old_and_new_page_names_rebind_sheet_switching() {
+    for (next, prev) in [("sheet_next", "sheet_prev"), ("page_next", "page_prev")] {
+        let Some((dir, root)) = sheet_sandbox("sheet_alias", "xlsx") else {
+            return;
+        };
+        let cfg = cfg_keys("preview_table", &[("L", next), ("H", prev), ("J", "noop")]);
+        let mut s = Sim::with_config(&root, cfg);
+        s.select("book.xlsx");
+        s.enter();
+        s.see("Sales (1/2)");
+        s.key('J'); // unbound by the config
+        s.see("Sales (1/2)");
+        s.key('L');
+        see_cjk(&mut s, "売上 (2/2)");
+        s.key('H');
+        s.see("Sales (1/2)");
+        drop(dir);
+    }
+}
+
+/// Same for the PDF page keys: `pdf_next_page` / `pdf_prev_page` (and the new names) still turn
+/// the pages, and the default `J`/`K` turn them too.
+#[test]
+fn e2e_keys_old_and_new_page_names_rebind_pdf_paging() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    for (next, prev) in [
+        ("pdf_next_page", "pdf_prev_page"),
+        ("page_next", "page_prev"),
+    ] {
+        let dir = sandbox("pdf_page_alias");
+        std::fs::copy(&pdf, dir.join("doc.pdf")).unwrap();
+        let cfg = cfg_keys("preview_image", &[("L", next), ("H", prev)]);
+        let mut s = Sim::with_config(&canon(&dir), cfg).with_media();
+        s.select("doc.pdf");
+        s.enter();
+        s.drain_media();
+        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        s.key('L');
+        assert_eq!(s.app.pdf_page_indicator(), Some((2, 3)), "{next}");
+        s.key('H');
+        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        s.key('J'); // the default still works
+        assert_eq!(s.app.pdf_page_indicator(), Some((2, 3)), "{next}");
+        s.key('K');
+        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+    }
+}
+
+/// Same for the media diff's PDF page keys (`media_diff_page_next` / `_prev`).
+#[cfg(feature = "git")]
+#[test]
+fn e2e_keys_old_and_new_page_names_rebind_media_diff_paging() {
+    let Some(pdf) = sample_path_or_skip("sample.pdf") else {
+        return;
+    };
+    let bytes = std::fs::read(&pdf).unwrap();
+    for (next, prev) in [
+        ("media_diff_page_next", "media_diff_page_prev"),
+        ("page_next", "page_prev"),
+    ] {
+        let dir = sandbox("media_diff_page_alias");
+        init_git_repo(&dir);
+        let doc = dir.join("doc.pdf");
+        std::fs::write(&doc, &bytes).unwrap();
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
+        std::fs::write(&doc, &bytes).unwrap();
+        let cfg = cfg_keys("preview_git_diff", &[("L", next), ("H", prev)]);
+        let mut s = Sim::with_config(&canon(&dir), cfg).with_picker();
+        s.app.open_git_diff(&doc);
+        s.draw();
+        assert_eq!(s.app.diff_media_page(), 1, "{next}");
+        s.key('L');
+        assert_eq!(s.app.diff_media_page(), 2, "{next}");
+        s.key('H');
+        assert_eq!(s.app.diff_media_page(), 1, "{next}");
+    }
+}
+
 #[test]
 fn e2e_sheet_switch_reruns_an_active_search_on_the_new_sheet() {
     let Some((mut s, _dir)) = open_book("sheet_search_switch", "xlsx") else {
@@ -20217,6 +20321,12 @@ mod survivors;
 
 #[cfg(test)]
 mod word;
+
+#[cfg(test)]
+mod slides;
+
+#[cfg(test)]
+mod deck_view;
 
 #[cfg(test)]
 mod math_ctx;

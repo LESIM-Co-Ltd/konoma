@@ -142,9 +142,16 @@ you came from, since a worktree's directory rarely does.
   password-protected, damaged or too-large file says why it cannot be shown, and a conversion cut at the size limit
   says so in the title. The old binary `.doc` is not previewed (`e` opens it). Checked against LibreOffice-made files
   only — not yet against files made by Microsoft Word.
+- **PowerPoint / OpenDocument presentations** (`.pptx`/`.pptm`/`.ppsx`/`.ppsm`/`.potx`/`.potm`/`.odp`/`.otp`) open as
+  **pictures of the slides**, drawn by konoma itself (no external tool): shapes, text, pictures (including EMF / WMF),
+  gradients, groups, tables, charts and SmartArt, with the speaker notes under each slide and hidden slides marked.
+  `J`/`K` jump to the next / previous slide (status line `slide 3/12`); `R` switches to a **text view** of the slides
+  (the default on half-block terminals without a graphics protocol). Office fonts are substituted, so line breaks can differ
+  from PowerPoint; 3-D charts are drawn with depth but without perspective. The old binary `.ppt` is not previewed (`e` opens it). Compared against
+  LibreOffice's renderings, not against PowerPoint itself.
 - **Open Office documents in their app**: `e` on a Word / Excel / PowerPoint / OpenDocument file opens it
   in Microsoft Office, LibreOffice or the OS default instead of handing the zip to `$EDITOR`.
-  (Word and OpenDocument text have an in-terminal preview — see above; PowerPoint files are open-with-`e` only.)
+  (Word, spreadsheets, presentations and OpenDocument have an in-terminal preview — see above; only the old binary `.doc` / `.ppt` have none.)
 - **Config-driven delegation**: declare how each format is previewed in TOML — delegate to a
   built-in renderer or an external command. Unsupported formats safely show `[can not preview]`
   full-screen instead of crashing.
@@ -165,8 +172,8 @@ you came from, since a worktree's directory rarely does.
 - **Drag & drop**: drop files from your desktop or another terminal onto the tree and konoma asks
   whether to copy (`c`) or move (`m`) them into the directory under the cursor.
 - **Optional dependencies**: nothing but a plain `cargo install` is required. The tools konoma can
-  use — `git`, `ffmpeg`, `lazygit`, `jj`/`lazyjj` for the jj backend, and an Office app (Microsoft Office or LibreOffice) for `e` on Office files — are each optional, and a
-  missing one costs you that one feature, never the app.
+  use — `git`, `ffmpeg`, `lazygit`, `jj`/`lazyjj` for the jj backend, an Office app (Microsoft Office or LibreOffice) for `e` on Office files, and the
+  Carlito/Caladea fonts for PowerPoint's line breaks — are each optional, and a missing one costs you that one feature, never the app.
 
 ## Status
 
@@ -249,6 +256,8 @@ brew install git ffmpeg                   # macOS
 sudo apt install git ffmpeg               # Debian / Ubuntu
 brew install jj                           # only if you work in jj (preview)
 brew install lazygit lazyjj               # only if you want `!` to open a TUI
+brew install --cask font-carlito font-caladea                       # PowerPoint decks: line breaks as in PowerPoint (macOS)
+sudo apt install fonts-crosextra-carlito fonts-crosextra-caladea    # the same on Debian / Ubuntu
 ```
 
 `git` is what the git suite runs on, and `jj` likewise for the jj backend — without either, konoma
@@ -277,11 +286,16 @@ instructions](https://docs.jj-vcs.dev/latest/install-and-setup/) (a prebuilt bin
 - **lazyjj** — the external tool `!` launches inside a jj repository, the way lazygit is for git.
   Any other TUI works too: set `[jj] tool` (e.g. `"jjui"`).
 
+- **Carlito / Caladea** — free fonts with the same character widths as Calibri and Cambria, the default
+  PowerPoint fonts (which may not be redistributed). With them installed, the text of a deck breaks
+  lines where PowerPoint breaks them; without them konoma draws it in Helvetica Neue / Arial / Georgia,
+  which are about 10% wider, so a line can break elsewhere. konoma finds them by itself — nothing to configure.
+
 - **Microsoft Office / LibreOffice** — what `e` launches on a Word, Excel, PowerPoint or OpenDocument file
   (macOS: Microsoft Office, then LibreOffice, then the default app via `open`; Linux: `libreoffice`, then
-  `soffice`, then `xdg-open`). Optional and only for `e`: the spreadsheet and Word / OpenDocument previews themselves need no Office app.
+  `soffice`, then `xdg-open`). Optional and only for `e`: the spreadsheet, Word and presentation previews themselves need no Office app.
 
-Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, Word documents and code need nothing extra — konoma renders
+Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, Word documents, presentations and code need nothing extra — konoma renders
 them itself, in pure Rust. (On macOS only, a PDF the built-in renderer cannot draw falls back to the
 system's own `qlmanage`/`sips` for its first page — already installed, nothing to add.)
 

@@ -31,6 +31,13 @@ pub fn context(app: &App) -> Vec<Span<'static>> {
     if let Some((cur, total)) = app.pdf_page_indicator() {
         spans.push(Span::from(format!("  {cur}/{total}")).bold());
     }
+    // A presentation shows the slide at the top of the view (hidden slides count).
+    if let Some((cur, total)) = app.slide_position() {
+        let t = tr(app.lang, crate::i18n::Msg::SlideChip)
+            .replace("{cur}", &cur.to_string())
+            .replace("{total}", &total.to_string());
+        spans.push(Span::from(format!("  {t}")).bold());
+    }
     spans
 }
 
@@ -165,10 +172,12 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
     }
     // While this preview *is* the diff's own `Preview` representation, `R` returns to the diff
     // instead of toggling raw source (`docs/FEATURE-MD-RENDERED-DIFF.md` §4).
-    let r_help = if app.preview_is_diff_representation() {
-        l(crate::i18n::Msg::HintReturnToDiff)
+    let r_help = if app.is_deck() {
+        app.deck_view_help().map(l)
+    } else if app.preview_is_diff_representation() {
+        Some(l(crate::i18n::Msg::HintReturnToDiff))
     } else {
-        l(crate::i18n::Msg::MdRawToggleHelp)
+        Some(l(crate::i18n::Msg::MdRawToggleHelp))
     };
     // A Word document has links and code blocks only (no checkboxes, diagrams or `<details>`: see
     // `ensure_md_cache`), so its Tab/Enter rows name just those.
@@ -183,8 +192,14 @@ pub fn help_sections(app: &App) -> Vec<crate::ui::help::HelpSection> {
             crate::i18n::Msg::OpenLinkHint,
         )
     };
+    // Same predicate the `J`/`K` handler gates on ([[hint-shown-iff-key-acts]]).
+    if app.slide_can_turn() {
+        sec = sec.row("J / K", l(crate::i18n::Msg::SlideSwitchHelp));
+    }
+    if let Some(r_help) = r_help {
+        sec = sec.row("R", r_help);
+    }
     sec = sec
-        .row("R", r_help)
         .row("o", l(crate::i18n::Msg::HintOutline))
         .row("Tab / ⇧Tab", l(tab_msg))
         .row("Enter", l(enter_msg))
@@ -316,6 +331,10 @@ pub fn footer_hints(app: &App) -> Vec<String> {
             hint(lang, "jk", crate::i18n::Msg::Scroll),
             hint(lang, "Tab", crate::i18n::Msg::HintFocus),
         ];
+        // `J/K` only acts on a presentation of 2+ slides - the same predicate as the handler.
+        if app.slide_can_turn() {
+            v.push(hint(lang, "J/K", crate::i18n::Msg::HintSlide));
+        }
         match app.md_focused_kind() {
             Some(MdFocus::LocalLink) => {
                 v.push(hint(lang, "↵", crate::i18n::Msg::HintOpen));
@@ -348,12 +367,19 @@ pub fn footer_hints(app: &App) -> Vec<String> {
         }
         // R normally goes decorated → raw source; while this preview *is* the diff's own `Preview`
         // representation, it instead returns to the diff (`App::diff_preview_raw_hint`, §4).
-        let r_msg = app
-            .diff_preview_raw_hint()
-            .unwrap_or(crate::i18n::Msg::HintRawSource);
+        // A presentation's `R` switches its slide pictures / text (only when it has pictures);
+        // everything else goes to the raw source.
+        let r_msg = if app.is_deck() {
+            app.deck_view_hint()
+        } else {
+            Some(
+                app.diff_preview_raw_hint()
+                    .unwrap_or(crate::i18n::Msg::HintRawSource),
+            )
+        };
+        v.push(hint(lang, "o", crate::i18n::Msg::HintOutline));
+        v.extend(r_msg.map(|m| hint(lang, "R", m)));
         v.extend([
-            hint(lang, "o", crate::i18n::Msg::HintOutline),
-            hint(lang, "R", r_msg),
             hint(lang, "/", crate::i18n::Msg::HintSearch),
             hint(lang, "F", crate::i18n::Msg::StFollow),
             hint(lang, "C-n/p", crate::i18n::Msg::HintFileJump),
@@ -376,6 +402,8 @@ pub fn footer_hints(app: &App) -> Vec<String> {
     } else if app.preview_search_query().is_some() {
         v.push(format!("n/N:{}", tr(lang, crate::i18n::Msg::Match)));
     }
+    // (No `J/K` here: a presentation is always on the decorated branch above, and `J`/`K` do not act
+    // in a raw view -- `slide_can_turn` needs the decorated cache.)
     v.push(hint(lang, "/", crate::i18n::Msg::HintSearch));
     // Range-selection copy (v=char / V=line) is windowed (Code/Text/raw Markdown) only.
     // Short label on purpose: the footer is one line shared with every other hint, so the
@@ -697,7 +725,11 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         // A Word document that did not load: say why (encrypted / too large / corrupt / not a
         // Word format), with the file name. Principle #3: never a crash, never raw bytes.
         Some(PreviewKind::Document(path)) => {
-            let mut body = doc_error_text(app.lang, app.document_error());
+            let mut body = doc_error_text(
+                app.lang,
+                app.document_error(),
+                crate::app::is_presentation_path(path),
+            );
             // "Press `e` to open it in an Office app" only while `e` really does that
             // ([[hint-shown-iff-key-acts]]: the same predicate as the footer's `e` hint, so not
             // with `[external] office_apps = false` nor with an `[editor] ext` rule for the file).
@@ -1209,8 +1241,15 @@ fn render_decorated_body(
     // longest line width (mermaid is already fitted to the inner width, so its rule lines don't
     // break even after wrapping downstream). The line bodies themselves are returned by md_slice
     // below, only for the visible range — no full-document clone / full reflow every frame.
+    // The viewport height is read by the layout itself (a slide picture is sized to fit it).
+    app.tab.preview_viewport = inner.height;
+    app.tab.preview_viewport_drawn = true;
+    // A presentation laid out again at another size keeps its slide (not its scroll row).
+    app.keep_slide_across_relayout(inner.width);
     let (total_rows, max_line_cols) = app.md_layout(inner.width);
     let wrap = app.cfg.ui.wrap;
+    // `R` on a presentation asked to keep a slide: now the other view's rows exist.
+    app.apply_pending_slide();
 
     // A follow jump into a decorated Markdown document, or a fresh `Rendered` diff open/cycle,
     // requested a scroll to its first change-gutter mark (`docs/FEATURE-MD-RENDERED-DIFF.md` §2/§3)
@@ -1238,7 +1277,10 @@ fn render_decorated_body(
         }
     }
 
-    let max_v = total_rows.saturating_sub(inner.height as usize) as u16;
+    // The end of the scroll range: the last page, or for a presentation the last slide's heading.
+    let max_v = app
+        .slide_scroll_limit(total_rows, inner.height as usize)
+        .min(u16::MAX as usize) as u16;
     app.tab.preview_scroll = app.tab.preview_scroll.min(max_v);
     app.tab.preview_viewport = inner.height;
     // Remember the wrapped-row total so `e` can map the scroll position back to an approximate source
@@ -1893,12 +1935,18 @@ fn sheet_error_limit(msg: crate::i18n::Msg) -> String {
         }
     };
     match msg {
-        Msg::SheetErrTooLargeFile | Msg::DocErrTooLargeFile => bytes(l.max_file_bytes),
-        Msg::SheetErrTooLargeEntries | Msg::DocErrTooLargeEntries => {
-            group_thousands(l.max_entries as u64)
+        Msg::SheetErrTooLargeFile | Msg::DocErrTooLargeFile | Msg::DocErrTooLargeFileSlides => {
+            bytes(l.max_file_bytes)
         }
-        Msg::SheetErrTooLargeEntry | Msg::DocErrTooLargeEntry => bytes(l.max_part_bytes),
-        Msg::SheetErrTooLargePackage | Msg::DocErrTooLargePackage => bytes(l.max_total_bytes),
+        Msg::SheetErrTooLargeEntries
+        | Msg::DocErrTooLargeEntries
+        | Msg::DocErrTooLargeEntriesSlides => group_thousands(l.max_entries as u64),
+        Msg::SheetErrTooLargeEntry | Msg::DocErrTooLargeEntry | Msg::DocErrTooLargeEntrySlides => {
+            bytes(l.max_part_bytes)
+        }
+        Msg::SheetErrTooLargePackage
+        | Msg::DocErrTooLargePackage
+        | Msg::DocErrTooLargePackageSlides => bytes(l.max_total_bytes),
         Msg::SheetErrTooLargeArea => group_thousands(l.max_dense_cells),
         Msg::SheetErrTooLargeText => bytes(l.max_text_bytes),
         _ => String::new(),
@@ -1923,20 +1971,30 @@ fn group_thousands(n: u64) -> String {
 fn doc_error_text(
     lang: crate::i18n::Lang,
     err: Option<&crate::preview::office::OfficeError>,
+    presentation: bool,
 ) -> String {
     use crate::i18n::Msg;
     use crate::preview::office::OfficeError;
     let msg = match err {
+        None | Some(OfficeError::Corrupt(_)) if presentation => Msg::DocErrCorruptSlides,
         None | Some(OfficeError::Corrupt(_)) => Msg::DocErrCorrupt,
+        Some(OfficeError::Encrypted) if presentation => Msg::DocErrEncryptedSlides,
         Some(OfficeError::Encrypted) => Msg::DocErrEncrypted,
-        Some(OfficeError::TooLarge { what }) => match *what {
-            "file" => Msg::DocErrTooLargeFile,
-            "entries" => Msg::DocErrTooLargeEntries,
-            "entry" => Msg::DocErrTooLargeEntry,
-            "package" => Msg::DocErrTooLargePackage,
-            _ => Msg::DocErrTooLargeOther,
+        Some(OfficeError::TooLarge { what }) => match (*what, presentation) {
+            ("file", false) => Msg::DocErrTooLargeFile,
+            ("file", true) => Msg::DocErrTooLargeFileSlides,
+            ("entries", false) => Msg::DocErrTooLargeEntries,
+            ("entries", true) => Msg::DocErrTooLargeEntriesSlides,
+            ("entry", false) => Msg::DocErrTooLargeEntry,
+            ("entry", true) => Msg::DocErrTooLargeEntrySlides,
+            ("package", false) => Msg::DocErrTooLargePackage,
+            ("package", true) => Msg::DocErrTooLargePackageSlides,
+            (_, false) => Msg::DocErrTooLargeOther,
+            (_, true) => Msg::DocErrTooLargeOtherSlides,
         },
+        Some(OfficeError::Unsupported) if presentation => Msg::DocErrUnsupportedSlides,
         Some(OfficeError::Unsupported) => Msg::DocErrUnsupported,
+        Some(OfficeError::Io(_)) if presentation => Msg::DocErrIoSlides,
         Some(OfficeError::Io(_)) => Msg::DocErrIo,
     };
     tr(lang, msg).replace("{n}", &sheet_error_limit(msg))
@@ -2771,5 +2829,160 @@ mod sheet_error_tests {
         assert_eq!(group_thousands(1_000), "1,000");
         assert_eq!(group_thousands(8_000_000), "8,000,000");
         assert_eq!(group_thousands(10_000), "10,000");
+    }
+}
+
+#[cfg(test)]
+mod doc_error_tests {
+    use super::doc_error_text;
+    use crate::i18n::{tr, Lang, Msg};
+    use crate::preview::office::OfficeError;
+
+    fn every_error() -> Vec<Option<OfficeError>> {
+        let mut v = vec![
+            None,
+            Some(OfficeError::Encrypted),
+            Some(OfficeError::Corrupt("x".into())),
+            Some(OfficeError::Unsupported),
+            Some(OfficeError::Io("x".into())),
+        ];
+        for what in ["file", "entries", "entry", "package", "other"] {
+            v.push(Some(OfficeError::TooLarge { what }));
+        }
+        v
+    }
+
+    /// The tag follows the kind of file: a presentation never reads "[document]" (and the other
+    /// way round), whichever way it failed.
+    #[test]
+    fn the_tag_of_every_failure_follows_the_file_kind() {
+        for (lang, doc, slide) in [
+            (Lang::En, "[document]", "[presentation]"),
+            (Lang::Jp, "[文書]", "[プレゼン]"),
+        ] {
+            for e in every_error() {
+                let d = doc_error_text(lang, e.as_ref(), false);
+                let p = doc_error_text(lang, e.as_ref(), true);
+                assert!(d.starts_with(doc), "{e:?}: {d}");
+                assert!(p.starts_with(slide), "{e:?}: {p}");
+                assert!(!p.contains("{n}") && !d.contains("{n}"), "{e:?}");
+            }
+        }
+    }
+
+    /// `(error, presentation text, document text, the limit the text names)` for every failure.
+    fn expected() -> Vec<(Option<OfficeError>, Msg, Msg, String)> {
+        use crate::preview::office::container::Limits;
+        let l = Limits::default();
+        const MIB: u64 = 1024 * 1024;
+        const GIB: u64 = 1024 * MIB;
+        let size = |b: u64| {
+            if b.is_multiple_of(GIB) {
+                format!("{} GiB", b / GIB)
+            } else {
+                format!("{} MiB", b / MIB)
+            }
+        };
+        let thousands = |n: u64| format!("{},{:03}", n / 1000, n % 1000);
+        let none = String::new;
+        vec![
+            (None, Msg::DocErrCorruptSlides, Msg::DocErrCorrupt, none()),
+            (
+                Some(OfficeError::Corrupt("x".into())),
+                Msg::DocErrCorruptSlides,
+                Msg::DocErrCorrupt,
+                none(),
+            ),
+            (
+                Some(OfficeError::Encrypted),
+                Msg::DocErrEncryptedSlides,
+                Msg::DocErrEncrypted,
+                none(),
+            ),
+            (
+                Some(OfficeError::Unsupported),
+                Msg::DocErrUnsupportedSlides,
+                Msg::DocErrUnsupported,
+                none(),
+            ),
+            (
+                Some(OfficeError::Io("x".into())),
+                Msg::DocErrIoSlides,
+                Msg::DocErrIo,
+                none(),
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "file" }),
+                Msg::DocErrTooLargeFileSlides,
+                Msg::DocErrTooLargeFile,
+                size(l.max_file_bytes),
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "entries" }),
+                Msg::DocErrTooLargeEntriesSlides,
+                Msg::DocErrTooLargeEntries,
+                thousands(l.max_entries as u64),
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "entry" }),
+                Msg::DocErrTooLargeEntrySlides,
+                Msg::DocErrTooLargeEntry,
+                size(l.max_part_bytes),
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "package" }),
+                Msg::DocErrTooLargePackageSlides,
+                Msg::DocErrTooLargePackage,
+                size(l.max_total_bytes),
+            ),
+            (
+                Some(OfficeError::TooLarge { what: "other" }),
+                Msg::DocErrTooLargeOtherSlides,
+                Msg::DocErrTooLargeOther,
+                none(),
+            ),
+            (
+                Some(OfficeError::TooLarge {
+                    what: "something new",
+                }),
+                Msg::DocErrTooLargeOtherSlides,
+                Msg::DocErrTooLargeOther,
+                none(),
+            ),
+        ]
+    }
+
+    /// Each failure has its own words, with its own limit filled in, in both languages and for
+    /// both kinds of file; and no two different failures read alike.
+    #[test]
+    fn every_failure_reads_as_its_own_text_with_its_own_limit() {
+        for lang in [Lang::En, Lang::Jp] {
+            let mut seen_p: Vec<(Msg, String)> = Vec::new();
+            let mut seen_d: Vec<(Msg, String)> = Vec::new();
+            for (e, ps, ds, limit) in expected() {
+                let p = doc_error_text(lang, e.as_ref(), true);
+                let d = doc_error_text(lang, e.as_ref(), false);
+                assert_eq!(p, tr(lang, ps).replace("{n}", &limit), "{e:?} slides");
+                assert_eq!(d, tr(lang, ds).replace("{n}", &limit), "{e:?} document");
+                if !limit.is_empty() {
+                    assert!(p.contains(&limit) && d.contains(&limit), "{e:?}: {limit}");
+                }
+                if !seen_p.iter().any(|(m, _)| *m == ps) {
+                    seen_p.push((ps, p));
+                }
+                if !seen_d.iter().any(|(m, _)| *m == ds) {
+                    seen_d.push((ds, d));
+                }
+            }
+            // 9 distinct reasons, 9 distinct texts, either kind.
+            for seen in [&seen_p, &seen_d] {
+                assert_eq!(seen.len(), 9);
+                for (i, (_, a)) in seen.iter().enumerate() {
+                    for (_, b) in &seen[i + 1..] {
+                        assert_ne!(a, b);
+                    }
+                }
+            }
+        }
     }
 }

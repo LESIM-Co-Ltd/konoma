@@ -599,10 +599,30 @@ pub(crate) fn check_render_budget(tree: &usvg::Tree, scale: f32) -> bool {
         filter_work: 0.0,
         raster_px: 0.0,
         nodes: 0,
+        work_limit: MAX_FILTER_WORK,
     };
     // The filter work is checked as it is added up (`Budget::filter`), so there is no total to
     // check again here.
     cx.group(tree.root(), 0.0, 0)
+}
+
+/// The filter work `tree` would be charged at `scale`, with no limit (what [`check_render_budget`]
+/// compares with `MAX_FILTER_WORK`); for the writers of SVG that calibrate their own budgets
+/// against this one.
+#[cfg(test)]
+pub(crate) fn filter_work_estimate(tree: &usvg::Tree, scale: f32) -> f64 {
+    let size = tree.size();
+    let canvas_px = (f64::from(size.width() * scale) * f64::from(size.height() * scale)).max(1.0);
+    let mut cx = Budget {
+        scale: f64::from(scale),
+        canvas_px,
+        filter_work: 0.0,
+        raster_px: 0.0,
+        nodes: 0,
+        work_limit: f64::INFINITY,
+    };
+    cx.group(tree.root(), 0.0, 0);
+    cx.filter_work
 }
 
 struct Budget {
@@ -612,6 +632,8 @@ struct Budget {
     filter_work: f64,
     raster_px: f64,
     nodes: usize,
+    /// The filter work past which the tree is refused.
+    work_limit: f64,
 }
 
 impl Budget {
@@ -741,7 +763,7 @@ impl Budget {
                 _ => 3.0,
             };
             self.filter_work += region * per_px;
-            if self.filter_work > MAX_FILTER_WORK {
+            if self.filter_work > self.work_limit {
                 return false;
             }
         }

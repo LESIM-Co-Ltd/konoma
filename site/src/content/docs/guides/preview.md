@@ -120,7 +120,7 @@ grid, read by konoma itself — no Excel, LibreOffice or other tool needed:
   (konoma shows what is stored); hidden *sheets* are not.
 - `J` / `K` switch to the next / previous sheet (only when the workbook has two
   or more visible sheets). The cursor goes back to `A1` on each sheet. Rebind them
-  with the `sheet_next` / `sheet_prev` actions.
+  with the `page_next` / `page_prev` actions (the old names `sheet_next` / `sheet_prev` still work).
 - `Enter` opens the cell popup: address, displayed text, raw value, type,
   formula and format. `/` search and the `y` copy menu (`c` / `r` / `C`) work on
   the displayed text. Search covers the sheet on screen only, and keeps at most
@@ -146,14 +146,14 @@ Press `e` to open the file in an Office app instead — see
 ### Open Office documents with `e`
 
 On a Word (`docx docm dotx dotm doc odt ott`), Excel (the seven spreadsheet types
-above) or PowerPoint (`pptx pptm ppsx potx ppt odp`) file, `e` opens it in a GUI
+above) or PowerPoint (`pptx pptm ppsx ppsm potx potm ppt odp otp`) file, `e` opens it in a GUI
 app rather than handing the zip to `$EDITOR`: on macOS Microsoft Office, then
 LibreOffice, then the default app (`open`); on Linux `libreoffice`, then
 `soffice`, then `xdg-open`. The terminal is not blocked. An `[editor] ext` entry
 for the extension takes priority, and `[external] office_apps = false` turns this
-off (it does not fall back to `$EDITOR`). PowerPoint files have no
-in-terminal preview — `e` is how you open them (and the old binary `.doc`).
-An Office app is optional; the spreadsheet and Word previews work without one.
+off (it does not fall back to `$EDITOR`). The old binary `.doc` and `.ppt`
+have no in-terminal preview — `e` is how you open them.
+An Office app is optional; the spreadsheet, Word and presentation previews work without one.
 
 ## Word and OpenDocument documents
 
@@ -183,6 +183,51 @@ title. Inside a table cell, `*`, `` ` `` and `~~` that appear two or more times 
 replaced by look-alike characters. The old binary `.doc` is not previewed (`e`
 opens it). So far this has been checked against LibreOffice-made files, not files
 made by Microsoft Word.
+
+## PowerPoint and OpenDocument presentations
+
+`.pptx`, `.pptm`, `.ppsx`, `.ppsm`, `.potx`, `.potm`, `.odp` and `.otp` open as
+**pictures of the slides**, drawn by konoma itself — no PowerPoint or LibreOffice
+needed. Each slide sits under its heading line (`## Slide 3: Title`), with its
+speaker notes as a quote under the picture:
+
+- **What is drawn**: shapes (all the preset shapes and freeform geometry), text
+  (bullets, autofit, vertical text), pictures including EMF / WMF, solid, gradient,
+  pattern and picture fills, shadows, glow and reflection, groups, connectors,
+  tables, charts (bar, line, pie, area, scatter, radar, bubble ...), SmartArt (from
+  the drawing PowerPoint saves with it), backgrounds, layouts and masters. OpenDocument
+  presentations are drawn the same way. **Hidden slides** are shown and marked `(hidden)`.
+- `J` / `K` jump to the next / previous slide, and the status line shows `slide 3/12`.
+  On a one-slide deck, or anywhere that is not a presentation, they do nothing (and the
+  footer does not offer them). They are the `page_next` / `page_prev` actions — the same
+  ones that turn a PDF page or a sheet.
+- `R` switches between the pictures and the **text view**, keeping the current slide.
+  The text view is the slides as Markdown: the title first, then text, bullets, tables,
+  pictures, equations and `[chart: title]` markers in reading order (by position on the
+  slide, a two-column slide column by column), so `v` / `V` select and `y` copies text
+  (handy for handing a deck to an AI). On a half-block terminal (no kitty, iTerm2 or
+  sixel graphics) a slide picture is unreadable, so the text view is the default there
+  and `R` shows the pictures anyway.
+
+Limits to know:
+
+- **Fonts are substituted.** Office fonts (Calibri, Yu Gothic ...) are replaced by faces
+  that exist on macOS and Linux, so text can be a little wider or narrower and lines can
+  break in a different place than in PowerPoint. For Calibri and Cambria, the most common ones,
+  install the free Carlito and Caladea (same widths; `brew install --cask font-carlito font-caladea`,
+  or `fonts-crosextra-carlito` / `fonts-crosextra-caladea` on Debian / Ubuntu): konoma uses them by itself
+  and the lines then break where PowerPoint breaks them.
+- 3-D charts are drawn with depth but without perspective, and 3-D shape effects are not drawn. A SmartArt diagram is
+  drawn from the drawing part PowerPoint saves with it; a file without one shows its text
+  in the text view only. LibreOffice's own `svm` pictures and EMF+-only pictures are not drawn.
+- The file itself is never written. A password-protected, damaged or too-large file says
+  why it cannot be shown, and a deck cut at its limits (1,000 slides, 5,000 shapes on a
+  slide) shows what it could and says so in the title. A slide too heavy to draw within the
+  drawing budgets (huge freeform shapes, thousands of effects) is drawn smaller on a big
+  terminal; effects or shapes past the budget are left out, and the title then says so.
+  The old binary `.ppt` is not previewed (`e` opens it).
+- Compared against LibreOffice's renderings of PowerPoint- and LibreOffice-made decks, not
+  against PowerPoint itself.
 
 ## Images, SVG, GIF, video, PDF
 

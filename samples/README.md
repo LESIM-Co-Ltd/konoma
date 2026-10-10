@@ -26,6 +26,10 @@ and are covered by the project's MIT license.
 - `sample.docx` / `sample.ja.docx` / `sample.odt` — original Word and OpenDocument text documents for the
   document preview (headings, lists, tables, images). Written for konoma and exported with LibreOffice;
   `sample.ja.docx` is the Japanese version (`.ja` suffix, like the other walkthrough demos).
+- `sample.pptx` / `sample.ja.pptx` / `sample.odp` — original PowerPoint and OpenDocument presentations for the
+  slide preview (a title slide, nested bullets, a two-column slide, a table, a picture with a caption, grouped shapes,
+  a hidden slide with speaker notes, hyperlinks). Written for konoma and exported with LibreOffice; `sample.ja.pptx`
+  is the Japanese version. Turn slides with `J`/`K`; `R` switches to the text view.
 - `sample.zip` / `sample.tar.gz` — exercise the archive-listing preview (entry name / size /
   modified date in the same table renderer). Built by simply packing a few of this directory's
   *other* sample files with the system `zip`/`tar` tools (`sample.zip` = `code/hello.rs`,
@@ -41,7 +45,7 @@ and are covered by the project's MIT license.
 - `sample.svg`, the text / Markdown files, and everything under `code/` — written by hand
   for konoma.
 - The walkthrough demos are **English by default**; the Japanese versions use a `.ja` suffix
-  (`markdown.ja.md`, `mermaid.ja.md`, `links.ja.md`, `long-lines.ja.txt`, `tutorial.ja.md`, `sample.ja.docx`). `japanese.txt` and the
+  (`markdown.ja.md`, `mermaid.ja.md`, `links.ja.md`, `long-lines.ja.txt`, `tutorial.ja.md`, `sample.ja.docx`, `sample.ja.pptx`). `japanese.txt` and the
   full-width cells in `sample.csv` stay as CJK demos (they exercise konoma's CJK-width handling).
 
 If you add new sample files, only commit material you have the right to redistribute

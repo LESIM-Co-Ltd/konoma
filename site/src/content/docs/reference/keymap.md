@@ -57,7 +57,8 @@ information contextually inside the app.
 | `Enter` | open focused link / toggle focused checkbox |
 | `Ctrl-t` | open the focused **local** link in a new tab (anchors jump in place instead; URLs open in the browser either way) |
 | `Space` | toggle focused checkbox |
-| `R` | toggle rendered ⇄ raw source (Markdown/Mermaid, and Word/OpenDocument documents — raw is the converted Markdown); while this preview *is* a diff's `preview` presentation, returns to that diff instead |
+| `J` `K` | presentations only (PowerPoint / OpenDocument): next / previous slide, in the picture view and the text view alike (no-op elsewhere and on a one-slide deck; actions `page_next` / `page_prev`) |
+| `R` | toggle rendered ⇄ raw source (Markdown/Mermaid, and Word/OpenDocument documents — raw is the converted Markdown); on a presentation, slide pictures ⇄ text view, keeping the current slide; while this preview *is* a diff's `preview` presentation, returns to that diff instead |
 | `o` | heading outline of a Markdown preview (`Enter` jumps to a heading) |
 | `v` / `V` | select by character / by line, then `y` copies |
 | `y` → `c` | copy the focused Markdown code block (`Tab` focuses one; the rest of the `y` menu copies paths) |
@@ -72,7 +73,7 @@ information contextually inside the app.
 |---|---|
 | `+` `-` / `0` `=` | zoom / reset to fit |
 | `h j k l` | pan |
-| `J` `K` | PDF page down / up |
+| `J` `K` (also `PageDown` `PageUp`) | PDF page down / up (actions `page_next` / `page_prev`; the old `pdf_next_page` / `pdf_prev_page` still work) |
 | `R` | back to the diff — only while this preview *is* a diff's `preview` representation (opened from there, or via `n`/`N`); a no-op, and hidden, on an ordinary image/PDF/SVG preview |
 | `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
 | `m` `'` / `e` / `q` | bookmark / editor / back |
@@ -84,7 +85,7 @@ information contextually inside the app.
 | `h j k l` | move by cell |
 | `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
 | `g` `G` / `0` `$` | first/last row / first/last column |
-| `J` `K` | spreadsheets only: next / previous sheet (needs 2+ visible sheets; actions `sheet_next` / `sheet_prev`) |
+| `J` `K` | spreadsheets only: next / previous sheet (needs 2+ visible sheets; actions `page_next` / `page_prev`; the old `sheet_next` / `sheet_prev` still work) |
 | `/` / `n` `N` | search cells (case-insensitive) / next, previous match (wraps) |
 | `y` → `c r C f` | copy cell / row / column / full path |
 | `Enter` | Open the cursor cell in a popup — the full, untruncated value, wrapped and scrollable (`Enter` / `q` / `Esc` closes). Also works on `.zip` / `.tar` listings and spreadsheets (address, displayed text, raw value, type, formula, format). |
@@ -98,7 +99,7 @@ information contextually inside the app.
 | Hub: `c` / `x` / `Enter` | commit / discard file / open diff |
 | Hub: `l` / `g` / `b` / `w` | log / commit graph / branches / worktrees |
 | Diff: `s` / `R` / `n` `N` / `x` | layout unified⇄split⇄auto — or, for a changed image/PDF/SVG (`[ui] diff_view = "rendered"` shows it side by side), auto⇄side⇄stack instead (`[git] media_diff`) / cycle the presentations that file actually has (source⇄rendered⇄preview for Markdown/SVG, rendered⇄preview for an image/PDF — `[ui] diff_view`) / next/prev changed file / discard |
-| Diff (image/PDF/SVG): `J` `K` | turn a multi-page PDF's page, both sides together (no-op on a single-page PDF or any other kind) |
+| Diff (image/PDF/SVG): `J` `K` (also `PageDown` `PageUp`, in place of scrolling) | turn a multi-page PDF's page, both sides together (no-op on a single-page PDF or any other kind; actions `page_next` / `page_prev`, the old `media_diff_page_next` / `_prev` still work) |
 | Follow diff: `f` | toggle scope: since follow-start (default) ⇄ full git diff |
 | Log & graph: `Enter` / `y` | commit detail (full message + diff) / copy commit info |
 | Graph: `s` / `x` `0` / `b` | pin base branch / unpin / branch picker |

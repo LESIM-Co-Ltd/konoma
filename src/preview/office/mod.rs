@@ -10,6 +10,7 @@
 //! This module has no UI, `App` or i18n dependency: [`OfficeError`] carries no user-facing text
 //! (the caller maps each variant to a translated message).
 
+pub(crate) mod chart_xml;
 pub mod container;
 pub mod docx;
 mod docx_styles;
@@ -23,6 +24,8 @@ pub(crate) mod mathml;
 pub mod numfmt;
 mod ods_formula;
 pub(crate) mod omml;
+pub(crate) mod slide_draw;
+pub(crate) mod slide_order;
 pub mod workbook;
 pub(crate) mod xlsx;
 
@@ -121,6 +124,12 @@ impl std::error::Error for OfficeError {}
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_chart_3d;
+#[cfg(test)]
+mod tests_chart_dump;
+#[cfg(test)]
+mod tests_chart_xml;
+#[cfg(test)]
 mod tests_complex;
 #[cfg(test)]
 mod tests_docx;
@@ -133,6 +142,8 @@ mod tests_docx_robust;
 #[cfg(test)]
 mod tests_fidelity;
 #[cfg(test)]
+mod tests_fidelity_rank;
+#[cfg(test)]
 mod tests_fx34b;
 #[cfg(test)]
 mod tests_limits;
@@ -143,13 +154,35 @@ mod tests_mathml;
 #[cfg(test)]
 mod tests_numfmt;
 #[cfg(test)]
+mod tests_odp;
+#[cfg(test)]
+mod tests_odp_robust;
+#[cfg(test)]
 mod tests_ods;
 #[cfg(test)]
 mod tests_odt;
 #[cfg(test)]
 mod tests_odt_more;
 #[cfg(test)]
+mod tests_pptx;
+#[cfg(test)]
+mod tests_pptx_golden;
+#[cfg(test)]
+mod tests_pptx_real;
+#[cfg(test)]
+mod tests_pptx_robust;
+#[cfg(test)]
 mod tests_review_fix;
+#[cfg(test)]
+mod tests_slide_dump;
+#[cfg(test)]
+mod tests_slide_order_mut;
+#[cfg(test)]
+mod tests_slides_mut;
+#[cfg(test)]
+mod tests_slides_r2;
+#[cfg(test)]
+mod tests_slides_review;
 #[cfg(test)]
 mod tests_survivors;
 #[cfg(test)]

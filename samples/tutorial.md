@@ -25,6 +25,7 @@ walks through every link and checkbox in this document. Try it:
 - [sample.pdf](./sample.pdf) — PDF pages: turn with `J`/`K`
 - [sample.xlsx](./sample.xlsx) — a spreadsheet as a table, cells in their Excel formats: switch sheets with `J`/`K`
 - [sample.docx](./sample.docx) — a Word document as formatted text (headings, lists, tables, images, math)
+- [sample.pptx](./sample.pptx) — a presentation drawn as slide pictures: turn slides with `J`/`K`, `R` for the text view
 
 Focus one with `Tab`, press `Enter` to open it, then `q` to come back here.
 
@@ -99,8 +100,8 @@ sudo apt install ffmpeg
   decodes those itself, including what an iPhone records by default.
 - **git** — the whole git suite in section 6. You almost certainly have it already.
 
-Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables, **spreadsheets and Word
-documents** (xlsx/ods, docx/odt), **PDF**, **H.264 and
+Images, SVG, Markdown, Mermaid diagrams, LaTeX math, CSV tables, **spreadsheets, Word
+documents and presentations** (xlsx/ods, docx/odt, pptx/odp), **PDF**, **H.264 and
 HEVC video thumbnails**, and code need **nothing extra** — they are rendered inside
 konoma, in pure Rust.
 (On macOS only, a PDF the built-in renderer can't handle falls back to the

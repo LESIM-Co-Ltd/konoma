@@ -7,6 +7,29 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- **PowerPoint / OpenDocument presentation preview**: `.pptx`/`.pptm`/`.ppsx`/`.ppsm`/`.potx`/`.potm`/`.odp`/`.otp` open
+  as **pictures of the slides**, drawn by konoma itself (no PowerPoint or LibreOffice needed): its own DrawingML / ODF to SVG
+  renderer, drawn by the same supervised drawing process as any untrusted SVG. Shapes (all preset shapes, freeform
+  geometry), text (font substitution, bullets, autofit, vertical text), pictures including EMF / WMF, solid / gradient /
+  pattern / picture fills, shadows, glow and reflection, groups, connectors, tables, charts (bar, line, pie, area,
+  scatter, radar, bubble ...; 3-D charts with depth, without perspective), SmartArt (from the drawing PowerPoint saves), backgrounds,
+  layouts and masters. Each slide sits under its heading line (`## Slide 3: Title`, hidden slides marked `(hidden)`) with
+  the speaker notes as a quote under it. `J` / `K` (`page_next` / `page_prev`) jump to the next / previous slide and the
+  status line shows `slide 3/12`; the footer and `?` help offer `J/K:slide` only where it acts. `R` switches between the
+  pictures and the **text view** (the slides as Markdown: title first, then text, bullets, tables, pictures, equations and
+  `[chart: title]` markers in reading order — by position on the slide, a two-column slide column by column), keeping the
+  current slide; on a half-block terminal (no kitty / iTerm2 / sixel graphics) the text view is the default and `R` shows
+  the pictures anyway. A deck has no "converted Markdown" source view any more (a Word document's `R` still shows it).
+  `e` opens a deck in PowerPoint / LibreOffice / the OS default. The default `document` rule matches these extensions.
+  Known limits: Office fonts are substituted (Calibri, Yu Gothic ... by faces that exist on macOS / Linux), so line
+  breaks can differ from PowerPoint (installing the free Carlito / Caladea, metric-compatible with Calibri / Cambria, fixes
+  the common case; konoma uses them when present); 3-D charts have depth but no perspective and 3-D shape effects are not drawn; SmartArt is drawn only from
+  its saved drawing part (a deck saved by PowerPoint 2007, which does not store that drawing, shows the SmartArt text in the
+  text view only); LibreOffice's `svm` metafile and EMF+-only pictures are not drawn; the old binary `.ppt` is not
+  previewed. A slide too heavy to draw within the drawing process's time and memory budgets (huge freeform geometry,
+  thousands of effects) is drawn smaller on a big terminal; effects or shapes past the budget are left out, and the
+  preview's title then says `truncated`; a very large deck keeps every slide's heading and picture but may leave out
+  the text of the later slides in the text view. Compared against LibreOffice's renderings of PowerPoint- and LibreOffice-made decks, not against PowerPoint itself.
 - **Word / OpenDocument preview**: `.docx`/`.docm`/`.dotx`/`.dotm`/`.odt`/`.ott` are converted to Markdown by konoma
   itself (no external tool) and drawn by the Markdown renderer, so `o`, `Tab`, `/` and math all work. Headings, bold /
   italic / strikethrough, bullets and numbering exactly as the document shows them (`(a)`, `ア`, `①`, `第1条` ...),
@@ -27,7 +50,7 @@ All notable changes to konoma are documented in this file. The format is based o
 - **Spreadsheet preview**: `.xlsx`/`.xlsm`/`.xltx`/`.xltm`/`.xlsb`/`.xls`/`.ods` open in the table view, read by konoma
   itself (pure Rust, no external tool). Cells are shown the way Excel shows them (thousands separators, percent,
   currency, dates, times, Japanese eras), with column letters and row numbers; the title carries the sheet name
-  `(1/3)`, `+N hidden` and the cursor's address. `J`/`K` (`sheet_next`/`sheet_prev`) switch sheets; the `Enter`
+  `(1/3)`, `+N hidden` and the cursor's address. `J`/`K` (`page_next`/`page_prev`) switch sheets; the `Enter`
   popup shows address, displayed text, raw value, type, formula and format; `/` search and `y` copy use the displayed
   text. Password-protected, oversized (file > 256 MiB) or corrupt files say why they cannot be shown. Formulas are
   not evaluated and macros never run. New `builtin = "spreadsheet"` and a default rule for the seven extensions.
@@ -45,11 +68,16 @@ All notable changes to konoma are documented in this file. The format is based o
   Excel's notation (`SUM(B3:B4)` rather than `of:=SUM([.B3:.B4])`). The "too large" messages quote the limits that are
   actually enforced, and the title's `(capped)` / the empty table's `(empty)` are translated on a Japanese screen.
 - **`e` on an Office document opens it in a GUI app** (docx/docm/dotx/dotm/doc/odt/ott, xlsx/xlsm/xltx/xltm/xlsb/xls/ods,
-  pptx/pptm/ppsx/potx/ppt/odp) instead of handing the zip to `$EDITOR`: Microsoft Office (macOS only), then
+  pptx/pptm/ppsx/ppsm/potx/potm/ppt/odp/otp) instead of handing the zip to `$EDITOR`: Microsoft Office (macOS only), then
   LibreOffice, then the OS default (`open` / `xdg-open`). The launch runs off the UI thread and the footer says
   which app opened it. `[external] office_apps = false` opens nothing (and the footer no longer offers `e` there); an explicit `[editor.ext]` entry wins.
 
 ### Changed
+- **One action for "next / previous page"**: `page_next` / `page_prev` now turn a PDF's page, a spreadsheet's sheet and
+  an image/PDF diff's PDF page (and, with the presentation preview above, a slide; what they turn depends on the
+  preview on screen). The old action names
+  (`pdf_next_page`, `pdf_prev_page`, `sheet_next`, `sheet_prev`, `media_diff_page_next`, `media_diff_page_prev`) still
+  work in `[keys]` as aliases, and no default key changes (`J`/`K`, `PageDown`/`PageUp` on an image).
 - **A table is now spaced like any other block**: a blank row separates a table from the block before it and from the block after it
   (GFM and HTML tables, also inside quotes, lists, alerts and `<details>`, and in Word / OpenDocument conversions). Until now a
   table owed no gap, so its top border sat directly under the previous paragraph, list or code block and the next paragraph,
@@ -80,6 +108,8 @@ All notable changes to konoma are documented in this file. The format is based o
   thread never parses the file (a 200 KB `<text>` used to freeze it for 16 s on a Mac with 1,000 fonts installed; the time grows with the number of fonts).
 
 ### Fixed
+- The tab bar and the status rows are drawn after the preview body, so the busy label (the sign that work is in
+  progress) no longer lags the preview by one frame.
 - **Private temp directories could be taken over** (command output `{out}`, PDF pages, video thumbnails): their names
   are predictable, an existing directory was used as found and symlinks were followed, so on a shared `/tmp` another
   user could read or redirect what konoma wrote there. A directory is now used only when konoma created it (an existing

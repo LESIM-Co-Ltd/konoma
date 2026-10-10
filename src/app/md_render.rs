@@ -94,9 +94,13 @@ impl App {
         // If the fence diagram's target row count (fit-to-view) changed, only rebuild documents
         // that contain a diagram (a viewport height change does not rebuild every md every time).
         let fence_rows = self.mermaid_fit_rows();
+        // The same for slide pictures: their height is fitted to the viewport.
+        let slide_rows = self.slide_fit_rows();
         if matches!(&self.md_cache, Some(c) if c.path == path && c.width == width && c.source == want_source
             && (c.fence_rows == fence_rows
-                || !c.images.iter().any(|p| crate::preview::markdown::is_mermaid_fence_url(&p.url))))
+                || !c.images.iter().any(|p| crate::preview::markdown::is_mermaid_fence_url(&p.url)))
+            && (c.slide_rows == slide_rows
+                || !c.images.iter().any(|p| self.document_picture_is_slide(&p.url))))
         {
             return;
         }
@@ -352,6 +356,7 @@ impl App {
             max_line_cols,
             row_prefix,
             fence_rows,
+            slide_rows,
             anchors,
             details_states: crate::preview::markdown::current_details_states(),
             pre_src: decorated.pre_src,
@@ -410,6 +415,7 @@ impl App {
             max_line_cols: 0,
             row_prefix: Vec::new(),
             fence_rows: 0,
+            slide_rows: 0,
             anchors: Vec::new(),
             details_states: Vec::new(),
             pre_src: String::new(),
@@ -681,6 +687,7 @@ impl App {
         // (a fetch is kicked off separately, in `ensure_md_cache`) unless it has already failed.
         // Anything else (no backend / missing file / data: URL) degrades to text (principle #3).
         let font = self.picker.as_ref().map(|p| p.font_size());
+        let slide_rows = self.slide_fit_rows();
         let base_dir = path.parent().map(|p| p.to_path_buf());
         let avail = width.saturating_sub(2);
         // `max_cols`: the caller's own width budget for *this one* image, when it has a
@@ -712,6 +719,19 @@ impl App {
                     };
                 }
                 return match self.document_picture_dims(url) {
+                    // A slide: the full text width (it is a vector drawing, so it may be enlarged),
+                    // as tall as the viewport leaves room for after its heading.
+                    Some((pw, ph)) if self.document_picture_is_slide(url) => {
+                        let (cols, rows) = slide_cells(
+                            pw,
+                            ph,
+                            font.width,
+                            font.height,
+                            max_cols.unwrap_or(avail),
+                            slide_rows,
+                        );
+                        ImageSlot::Inline { cols, rows }
+                    }
                     // Only a raster is refused from its header: an SVG's intrinsic size is not a
                     // pixel count (it is drawn at `svg_max_px`, by the supervised process), the
                     // same as a file SVG.
