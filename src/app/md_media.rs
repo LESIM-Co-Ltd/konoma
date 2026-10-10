@@ -762,12 +762,12 @@ impl App {
                     })
                 })
                 .unwrap_or((Err(ImageFailure::Corrupt), None));
-                // Nobody wants it any more: no result (its entry is gone, or about to be).
-                if still.as_ref().err() == Some(&ImageFailure::Cancelled) {
-                    return;
-                }
-                // The preview moved on while the picture was being drawn: the entry stays but is
-                // told so, and is forgotten (see `apply_md_image`) so it is asked for again.
+                // The preview moved on while the picture was being drawn (or its drawing was
+                // stopped): always report it, cancelled included. The entry may be gone (the result
+                // is then ignored) or still in the cache (a ticket also goes stale when another
+                // file or tab starts a media load, which does not clear the cache): only the
+                // receiving side knows, and it forgets the entry (see `apply_md_image`) so the
+                // picture is asked for again. Staying silent would leave the entry "loading" for good.
                 let still = match still {
                     Err(_) if moved_on() => Err(ImageFailure::Cancelled),
                     other => other,
@@ -1335,11 +1335,9 @@ impl App {
                     })
                 })
                 .unwrap_or((Err(ImageFailure::Corrupt), None));
-                // A cancelled first decode is forgotten by nobody waiting; a cancelled re-raster
-                // still reports, or its entry would stay "re-rastering" for good.
-                if still.as_ref().err() == Some(&ImageFailure::Cancelled) && !reraster {
-                    return;
-                }
+                // A cancelled decode reports like any other result, first decode and re-raster
+                // alike: the entry may still be in the cache (a stale ticket does not remove it),
+                // and the receiving side (`apply_md_image`) forgets it or ignores a gone one.
                 let still = match still {
                     Err(_) if moved_on() => Err(ImageFailure::Cancelled),
                     other => other,

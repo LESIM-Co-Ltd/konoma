@@ -629,9 +629,51 @@ fn the_worker_remembers_nothing_for_a_request_the_user_moved_on_from() {
     app.media_gen_shared
         .store(app.media_gen + 1, std::sync::atomic::Ordering::Relaxed);
     app.spawn_office_picture_decode(url, PathBuf::from(url), Some(4096));
-    // A cancelled first decode sends nothing; give the worker time to finish.
-    let _ = rx.recv_timeout(Duration::from_millis(1500));
+    // A cancelled first decode reports itself (the receiving side decides what to do with it).
+    let res = rx.recv_timeout(Duration::from_secs(60)).expect("answer");
+    assert_eq!(
+        res.image.as_ref().err().map(String::as_str),
+        Some(ImageFailure::Cancelled.code())
+    );
     assert_eq!(cap.get(Instant::now()), None);
+}
+
+/// **The bug.** A first decode cancelled because the media generation moved on (another tab or
+/// file started a media load) while its entry stayed in the cache sent nothing, so the entry stayed
+/// "loading" for good and the event loop polled fast until the document was reopened.
+#[test]
+fn a_slide_cancelled_by_a_media_generation_bump_is_forgotten_and_asked_for_again() {
+    let (mut app, _dir, _cap, rx) = app_with_slide(Default::default());
+    let url = "office-img://deck/slide-1";
+    let key = PathBuf::from(url);
+    app.md_image_cache
+        .insert(key.clone(), MdImgEntry::default());
+    assert!(app.md_images_loading(), "premise: waiting for the decode");
+    app.media_gen_shared
+        .store(app.media_gen + 1, std::sync::atomic::Ordering::Relaxed);
+    app.spawn_office_picture_decode(url, key.clone(), Some(4096));
+    let res = rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("a cancelled decode still reports");
+    assert!(!app.apply_md_image(res));
+    assert!(!app.md_image_cache.contains_key(&key), "forgotten");
+    assert!(!app.md_images_loading(), "no longer waiting");
+}
+
+/// A cancelled result for an entry that is gone is ignored (it must not revive the entry).
+#[test]
+fn a_cancelled_result_for_a_removed_entry_is_ignored() {
+    let (mut app, _dir, _cap, _rx) = app_with_slide(Default::default());
+    let key = PathBuf::from("office-img://deck/slide-1");
+    let redraw = app.apply_md_image(MdImageResult {
+        path: key.clone(),
+        image: Err(ImageFailure::Cancelled.code().to_string()),
+        svg: None,
+        reraster: false,
+        frames: None,
+    });
+    assert!(!redraw);
+    assert!(app.md_image_cache.is_empty());
 }
 
 // ---- pixel work that is pending but is not "loading" -----------------------------------------

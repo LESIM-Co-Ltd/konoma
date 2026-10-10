@@ -374,19 +374,23 @@ fn drawing_a_picture_sets_its_decode_priority_to_the_current_pass() {
     );
 }
 
-/// A decode whose entry was dropped before its turn never runs: no result is produced for it.
+/// A decode whose ticket went stale before its turn never runs: it reports itself cancelled (no
+/// pixels), and the receiving side forgets the entry or ignores a gone one.
 #[test]
-fn a_decode_whose_entry_went_away_produces_nothing() {
+fn a_withdrawn_decode_reports_cancelled_without_decoding() {
     let (mut app, dir, img_rx, _enc_rx) = setup("konoma_raster_withdrawn");
     let p = dir.join("a.png");
     crate::test_support::write_solid_png(&p, 24, 16, [1, 2, 3]);
     app.md_image_cache.insert(p.clone(), MdImgEntry::default());
     app.md_image_cache[&p].wish.cancel_now();
     assert!(app.spawn_md_decode(p.clone()));
-    assert!(
-        img_rx
-            .recv_timeout(std::time::Duration::from_millis(800))
-            .is_err(),
+    let res = img_rx
+        .recv_timeout(WAIT)
+        .expect("a cancelled decode reports");
+    assert_eq!(res.path, p);
+    assert_eq!(
+        res.image.as_ref().err().map(String::as_str),
+        Some(crate::preview::image::ImageFailure::Cancelled.code()),
         "a withdrawn request must not decode"
     );
     // The control: the same request, still wanted, is answered.
@@ -1149,6 +1153,64 @@ fn a_file_picture_failing_after_the_preview_moved_on_is_reported_cancelled() {
         !app.md_image_cache.contains_key(&key),
         "forgotten, asked for again"
     );
+}
+
+/// **The bug.** A first decode of a picture file cancelled because the preview moved on (another tab
+/// or file started a media load; a stale ticket) while its entry stayed in the cache sent no result, so the entry
+/// stayed "loading" for good (the fast poll never stopped). The result is always sent now, the
+/// entry is forgotten, and the picture is asked for again when it is next drawn.
+#[test]
+fn a_file_picture_cancelled_by_a_generation_bump_is_forgotten_and_asked_for_again() {
+    use crate::preview::image::ImageFailure;
+    let png = {
+        let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let (mut app, dir, img_rx, _enc_rx) = setup_with("konoma_raster_gen_bump", &[("a.png", png)]);
+    app.tab.preview_path = Some(dir.join("doc.md"));
+    let key = dir.join("a.png");
+    app.md_image_cache
+        .insert(key.clone(), MdImgEntry::default());
+    assert!(app.md_images_loading(), "premise: waiting for the decode");
+    // The decode's ticket goes stale (the preview moved on, e.g. another tab or file started a
+    // media load) while the entry stays in the cache: the decode ends cancelled.
+    app.md_image_cache[&key].wish.cancel_now();
+    assert!(app.spawn_md_decode(key.clone()));
+    let res = img_rx
+        .recv_timeout(WAIT)
+        .expect("a cancelled decode still reports");
+    assert_eq!(
+        res.image.as_ref().err().map(String::as_str),
+        Some(ImageFailure::Cancelled.code())
+    );
+    assert_eq!(res.path, key);
+    app.apply_md_image(res);
+    assert!(!app.md_image_cache.contains_key(&key), "forgotten");
+    assert!(!app.md_images_loading(), "no longer waiting");
+    // Drawn again later: the picture is asked for again.
+    app.ensure_md_image("a.png", 10, 4, 0, 4);
+    assert!(app.md_image_cache.contains_key(&key), "asked for again");
+    let res = img_rx.recv_timeout(WAIT).expect("the second decode runs");
+    assert!(res.image.is_ok(), "{:?}", res.image.err());
+}
+
+/// A cancelled result for an entry that was removed meanwhile is ignored.
+#[test]
+fn a_cancelled_file_picture_result_for_a_removed_entry_is_ignored() {
+    let (mut app, _dir, _img_rx, _enc_rx) = setup("konoma_raster_cancel_gone");
+    let redraw = app.apply_md_image(MdImageResult {
+        path: PathBuf::from("/nonexistent/a.png"),
+        image: Err(crate::preview::image::ImageFailure::Cancelled
+            .code()
+            .to_string()),
+        svg: None,
+        reraster: false,
+        frames: None,
+    });
+    assert!(!redraw);
+    assert!(app.md_image_cache.is_empty());
 }
 
 // ---- decodes in flight versus pictures whose pixels were dropped ------------------------------
