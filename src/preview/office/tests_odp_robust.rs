@@ -1,5 +1,6 @@
 //! OpenDocument presentation reader tests: limits, hostile and damaged input, speed.
 
+use super::docx::odt::odp::MAX_MASTER_NODES;
 use super::docx::pptx::*;
 use super::docx::*;
 use super::tests::{deflated, tmp, write};
@@ -522,6 +523,10 @@ fn many_master_pages_are_capped() {
         .collect();
     let s = fr_nopos("outline", &tbx(&tp("x")));
     let d = doc(&Op::new(&page_with("dp1", "M10", &s)).master(&masters));
+    assert!(
+        d.truncated,
+        "the pages past the cap are left out, and it says so"
+    );
     assert_eq!(d.markdown, "## Slide 1\n\nx");
     let d = doc(&Op::new(&page_with("dp1", "M2999", &s)).master(&masters));
     assert_eq!(d.markdown, "## Slide 1\n\nx");
@@ -748,4 +753,178 @@ fn a_picture_path_cannot_leave_the_package_or_be_a_directory() {
     .part("x.png", &tiny_png(1));
     let d = doc(&o);
     assert!(d.images.is_empty());
+}
+
+// ---------------------------------------------------------------------------------------------
+// the memory the master pages keep
+// ---------------------------------------------------------------------------------------------
+
+/// The text of every shape drawn under and on a slide, flattened.
+fn drawn_texts(d: &Document, slide: usize) -> Vec<String> {
+    use super::slide_draw::Item;
+    fn walk(items: &[Item], out: &mut Vec<String>) {
+        for i in items {
+            match i {
+                Item::Shape(s) => out.push(
+                    s.text
+                        .iter()
+                        .flat_map(|t| &t.paragraphs)
+                        .flat_map(|p| &p.runs)
+                        .map(|r| r.text.as_str())
+                        .collect(),
+                ),
+                Item::Group(g) => walk(&g.items, out),
+                Item::Picture(_) => {}
+            }
+        }
+    }
+    let sc = &d.slide_scenes[slide];
+    let mut v = Vec::new();
+    for u in &sc.underlay {
+        walk(u, &mut v);
+    }
+    walk(&sc.items, &mut v);
+    v
+}
+
+/// A master page named `name` with one text shape reading `mark`, then `pad` raw XML.
+fn marked_master(name: &str, mark: &str, pad: &str) -> String {
+    format!(
+        r#"<style:master-page style:name="{name}">{}{pad}</style:master-page>"#,
+        tf(1.0, 1.0, 5.0, 1.0, mark)
+    )
+}
+
+fn marked_deck(masters: &str, uses: &[&str]) -> Op {
+    let pages: String = uses
+        .iter()
+        .map(|m| page_with("dp1", m, &tf(1.0, 5.0, 5.0, 1.0, "OWN")))
+        .collect();
+    Op::new(&pages).master(masters)
+}
+
+fn has(d: &Document, slide: usize, text: &str) -> bool {
+    drawn_texts(d, slide).iter().any(|t| t == text)
+}
+
+#[test]
+fn a_master_page_that_exactly_fits_the_xml_budget_is_kept() {
+    let m = marked_master("Default", "MMARK", "");
+    let o = with_opts(|o| o.max_master_xml = m.len() as u64);
+    let d = load_op(&marked_deck(&m, &["Default"]), &o).unwrap();
+    assert!(!d.truncated);
+    assert!(has(&d, 0, "MMARK") && has(&d, 0, "OWN"));
+}
+
+#[test]
+fn a_master_page_one_byte_over_the_xml_budget_is_left_out_and_the_slide_is_still_drawn() {
+    let m = marked_master("Default", "MMARK", "");
+    let o = with_opts(|o| o.max_master_xml = m.len() as u64 - 1);
+    let d = load_op(&marked_deck(&m, &["Default"]), &o).unwrap();
+    assert!(d.truncated);
+    assert_eq!(d.slide_scenes.len(), 1);
+    assert!(!has(&d, 0, "MMARK"), "{:?}", drawn_texts(&d, 0));
+    assert!(has(&d, 0, "OWN"));
+    assert!(d.markdown.contains("OWN"), "{}", d.markdown);
+}
+
+#[test]
+fn the_xml_budget_is_a_total_over_the_master_pages() {
+    // 50 small masters, a budget for ten: the first ten are kept, the rest left out.
+    let masters: String = (0..50)
+        .map(|i| marked_master(&format!("M{i}"), &format!("MM{i}"), ""))
+        .collect();
+    let one = marked_master("M0", "MM0", "").len();
+    // (The names differ in length: M0..M9 are shorter than M10..M49, so a budget of ten of the
+    // longer ones keeps at least these.)
+    let o = with_opts(|o| o.max_master_xml = (one * 10 + 40) as u64);
+    let d = load_op(&marked_deck(&masters, &["M0", "M9", "M49"]), &o).unwrap();
+    assert!(d.truncated);
+    assert!(has(&d, 0, "MM0"), "{:?}", drawn_texts(&d, 0));
+    assert!(has(&d, 1, "MM9"));
+    assert!(!has(&d, 2, "MM49"), "{:?}", drawn_texts(&d, 2));
+    assert!(has(&d, 2, "OWN"));
+    // With room for all of them none is left out.
+    let all = load_op(&marked_deck(&masters, &["M49"]), &DocOptions::default()).unwrap();
+    assert!(!all.truncated);
+    assert!(has(&all, 0, "MM49"));
+}
+
+#[test]
+fn one_huge_master_page_is_left_out_and_the_small_ones_after_it_are_kept() {
+    let huge = marked_master("Huge", "HUGE", &"<draw:g/>".repeat(20_000));
+    let small = marked_master("Small", "SMALL", "");
+    let o = with_opts(|o| o.max_master_xml = (small.len() * 4) as u64);
+    let d = load_op(
+        &marked_deck(&format!("{huge}{small}"), &["Huge", "Small"]),
+        &o,
+    )
+    .unwrap();
+    assert!(d.truncated);
+    assert!(!has(&d, 0, "HUGE") && has(&d, 0, "OWN"));
+    assert!(has(&d, 1, "SMALL"), "{:?}", drawn_texts(&d, 1));
+}
+
+#[test]
+fn a_huge_master_page_before_a_small_one_does_not_use_up_the_budget() {
+    // The page that was left out is not counted: the small one after it fits exactly.
+    let huge = marked_master("Huge", "HUGE", &"<draw:g/>".repeat(1_000));
+    let small = marked_master("Small", "SMALL", "");
+    let o = with_opts(|o| o.max_master_xml = small.len() as u64);
+    let d = load_op(&marked_deck(&format!("{huge}{small}"), &["Small"]), &o).unwrap();
+    assert!(d.truncated);
+    assert!(has(&d, 0, "SMALL"));
+}
+
+#[test]
+fn the_node_count_of_the_master_pages_is_bounded_too() {
+    // A page of tiny elements is a few MB of XML (well inside the byte budget) but a node each.
+    // The page is 1 node, the shape 3 more: it fits with exactly the cap and not with one more.
+    let at = |g: usize| {
+        let m = marked_master("Default", "MMARK", &"<draw:g/>".repeat(g));
+        load_op(&marked_deck(&m, &["Default"]), &DocOptions::default()).unwrap()
+    };
+    let fits = at(MAX_MASTER_NODES - 4);
+    assert!(!fits.truncated);
+    assert!(has(&fits, 0, "MMARK"));
+    let over = at(MAX_MASTER_NODES - 3);
+    assert!(over.truncated);
+    assert!(!has(&over, 0, "MMARK") && has(&over, 0, "OWN"));
+}
+
+#[test]
+fn the_node_count_is_a_total_over_the_master_pages() {
+    // Two pages that fit the cap alone but not together: the first is kept.
+    let each = MAX_MASTER_NODES / 2 + 10;
+    let a = marked_master("A", "AAA", &"<draw:g/>".repeat(each));
+    let b = marked_master("B", "BBB", &"<draw:g/>".repeat(each));
+    let d = load_op(
+        &marked_deck(&format!("{a}{b}"), &["A", "B"]),
+        &DocOptions::default(),
+    )
+    .unwrap();
+    assert!(d.truncated);
+    assert!(has(&d, 0, "AAA") && !has(&d, 1, "BBB") && has(&d, 1, "OWN"));
+}
+
+#[test]
+fn master_styles_with_no_master_page_and_other_children_are_not_truncated() {
+    let d = doc(&marked_deck(
+        r#"<draw:layer-set><draw:layer draw:name="layout"/></draw:layer-set>"#,
+        &["Nope"],
+    ));
+    assert!(!d.truncated);
+    assert!(has(&d, 0, "OWN"));
+}
+
+#[test]
+fn master_pages_after_other_children_and_unnamed_pages_are_read() {
+    let m = format!(
+        r#"<draw:layer-set><draw:layer draw:name="layout"/></draw:layer-set><style:master-page>{}</style:master-page>{}"#,
+        tf(1.0, 1.0, 5.0, 1.0, "NONAME"),
+        marked_master("Default", "MMARK", "")
+    );
+    let d = doc(&marked_deck(&m, &["Default"]));
+    assert!(!d.truncated);
+    assert!(has(&d, 0, "MMARK") && !has(&d, 0, "NONAME"));
 }

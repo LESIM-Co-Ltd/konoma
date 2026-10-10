@@ -154,7 +154,10 @@ pub struct DocOptions {
     /// kept (they stay for the slides that show them, and a parsed part is several times its XML
     /// in memory: measured about 8 times for shapes with text and effects, so 16 MiB is about
     /// 130 MB). A layout or master that would go over is not read (its slides are drawn without
-    /// it, and the document is marked truncated). A real master is tens of KB.
+    /// it, and the document is marked truncated). A real master is tens of KB. The same total
+    /// bounds the `style:master-page`s of an OpenDocument presentation (parsed trees of those
+    /// measured about 13 times their XML, so 16 MiB can reach 200 MB there; the node count of
+    /// `odp::MAX_MASTER_NODES` bounds the tiny-element case).
     pub max_master_xml: u64,
 }
 

@@ -63,6 +63,12 @@ const MAX_MASTERS: usize = 1_000;
 /// Most nodes / bytes of one `style:page-layout` read (a real one is a handful of elements).
 const PAGE_LAYOUT_NODES: usize = 1_000;
 const PAGE_LAYOUT_BYTES: usize = 1024 * 1024;
+/// Most nodes of all the master pages kept together. Measured (1,000 master pages of 40 shapes
+/// with a line of text each: 120,000 nodes, 6.7 MB of XML): the kept trees took about 90 MB, 13
+/// times their XML and 0.75 KB a node, so this is about 150 MB at the most. It is also what bounds
+/// XML made of tiny elements, which [`DocOptions::max_master_xml`] (bytes of XML) alone would let
+/// through as millions of nodes. A real master page is a few hundred nodes.
+pub(in crate::preview::office) const MAX_MASTER_NODES: usize = 200_000;
 /// Most frames of the notes page read.
 const MAX_NOTE_FRAMES: usize = 8;
 /// Most bytes of a chart object's `content.xml` read to find its title.
@@ -392,6 +398,9 @@ struct Masters {
     /// The `style:master-page` elements themselves, by name, for the drawing (their shapes and
     /// their background style).
     pages: HashMap<String, Node>,
+    /// A master page was left out for a budget ([`MAX_MASTERS`], [`MAX_MASTER_NODES`],
+    /// [`DocOptions::max_master_xml`]): its slides are drawn without it.
+    truncated: bool,
 }
 
 /// The size of each `style:page-layout` among the children of the `office:automatic-styles` just
@@ -456,10 +465,98 @@ fn read_page_layouts(
     }
 }
 
+/// Reads the `style:master-page`s among the children of the `office:master-styles` just opened,
+/// through the end of that element, into `out`. Each page is read on its own and the pages kept
+/// together are within [`DocOptions::max_master_xml`] bytes of XML (the same budget the PowerPoint
+/// reader gives its layouts and masters: they stay parsed for the whole deck, and a parsed tree
+/// is many times its XML in memory) and [`MAX_MASTER_NODES`] nodes. A page over what is left, or
+/// past [`MAX_MASTERS`], is skipped and `out.truncated` says so: the slides that use it are drawn
+/// without it, and the smaller pages after it are still read. Every other child is skipped
+/// unread. Fails only when the XML is damaged.
+fn read_master_pages(
+    rd: &mut XmlReader<impl BufRead>,
+    opts: &DocOptions,
+    layouts: &HashMap<String, Rect>,
+    layout_margins: &HashMap<String, [i64; 4]>,
+    out: &mut Masters,
+) -> Result<(), OfficeError> {
+    let mut buf = Vec::new();
+    // XML bytes and nodes of the pages kept so far.
+    let mut kept_xml: u64 = 0;
+    let mut kept_nodes: usize = 0;
+    loop {
+        buf.clear();
+        let from = rd.position();
+        let (e, empty) = match rd.read_event_into(&mut buf).map_err(xml_err)? {
+            Event::Start(e) => (e.into_owned(), false),
+            Event::Empty(e) => (e.into_owned(), true),
+            Event::End(_) => return Ok(()),
+            Event::Eof => {
+                return Err(OfficeError::Corrupt(
+                    "xml: unexpected end of document".into(),
+                ))
+            }
+            _ => continue,
+        };
+        if e.local_name().as_ref() != b"master-page" {
+            if !empty {
+                skip_rest(rd)?;
+            }
+            continue;
+        }
+        if out.frames.len() >= MAX_MASTERS {
+            out.truncated = true;
+            if !empty {
+                skip_rest(rd)?;
+            }
+            continue;
+        }
+        let nodes_left = MAX_MASTER_NODES - kept_nodes;
+        let xml_left = opts.max_master_xml.saturating_sub(kept_xml);
+        let mut budget = Budget::odf(nodes_left, usize::try_from(xml_left).unwrap_or(usize::MAX));
+        let tree = read_element(rd, &e, empty, &mut budget)?;
+        // (The bytes of the page itself, tags and all; what the budget counted is a little less.)
+        let xml = rd.position().saturating_sub(from);
+        let Tree::Ok(page) = tree else {
+            out.truncated = true;
+            continue;
+        };
+        if xml > xml_left {
+            out.truncated = true;
+            continue;
+        }
+        let Some(name) = page.attr("name").map(str::to_string) else {
+            continue;
+        };
+        kept_xml += xml;
+        kept_nodes += nodes_left - budget.nodes;
+        let mut m = Master::new();
+        for f in page.nodes() {
+            if f.name != "frame" && !SHAPES.contains(&f.name.as_str()) {
+                continue;
+            }
+            if let (Some(class), Some(r)) = (f.attr("class"), own_rect(f)) {
+                m.entry(class.to_string()).or_insert(r);
+            }
+        }
+        if let Some(r) = page.attr("page-layout-name").and_then(|l| layouts.get(l)) {
+            out.size.insert(name.clone(), *r);
+        }
+        if let Some(m) = page
+            .attr("page-layout-name")
+            .and_then(|l| layout_margins.get(l))
+        {
+            out.margins.insert(name.clone(), *m);
+        }
+        out.frames.insert(name.clone(), m);
+        out.pages.insert(name, page);
+    }
+}
+
 /// The frames and the page size of each master page of `styles.xml` (`office:master-styles`, and
 /// the `style:page-layout`s of its automatic styles). A damaged part costs the inherited positions,
 /// not the presentation.
-fn read_masters(src: impl BufRead) -> Masters {
+fn read_masters(src: impl BufRead, opts: &DocOptions) -> Masters {
     let mut layouts: HashMap<String, Rect> = HashMap::new();
     let mut layout_margins: HashMap<String, [i64; 4]> = HashMap::new();
     let mut out = Masters::default();
@@ -496,41 +593,9 @@ fn read_masters(src: impl BufRead) -> Masters {
             }
             continue;
         }
-        let mut budget = Budget::odf(500_000, 16 * 1024 * 1024);
-        let Ok(Tree::Ok(node)) = read_element(&mut rd, &e, empty, &mut budget) else {
-            return out;
-        };
-        for kid in node.kids {
-            let Kid::N(page) = kid else { continue };
-            if page.name != "master-page" {
-                continue;
-            }
-            let Some(name) = page.attr("name").map(str::to_string) else {
-                continue;
-            };
-            if out.frames.len() >= MAX_MASTERS {
-                break;
-            }
-            let mut m = Master::new();
-            for f in page.nodes() {
-                if f.name != "frame" && !SHAPES.contains(&f.name.as_str()) {
-                    continue;
-                }
-                if let (Some(class), Some(r)) = (f.attr("class"), own_rect(f)) {
-                    m.entry(class.to_string()).or_insert(r);
-                }
-            }
-            if let Some(r) = page.attr("page-layout-name").and_then(|l| layouts.get(l)) {
-                out.size.insert(name.clone(), *r);
-            }
-            if let Some(m) = page
-                .attr("page-layout-name")
-                .and_then(|l| layout_margins.get(l))
-            {
-                out.margins.insert(name.clone(), *m);
-            }
-            out.frames.insert(name.clone(), m);
-            out.pages.insert(name, page);
+        if !empty {
+            // (A damaged part keeps the master pages read before the damage.)
+            let _ = read_master_pages(&mut rd, opts, &layouts, &layout_margins, &mut out);
         }
         return out;
     }
@@ -569,7 +634,7 @@ pub(in super::super) fn convert(
         let _ = st.read(r);
     }
     let masters = match pkg.part("styles.xml", cap)? {
-        Some(r) => read_masters(r),
+        Some(r) => read_masters(r, opts),
         None => Masters::default(),
     };
 
@@ -583,6 +648,7 @@ pub(in super::super) fn convert(
         media,
     );
     let mut od = Od::new(conv, st);
+    od.c.truncated |= masters.truncated;
     od.slides = true;
     od.c.split_bullet_lists = true;
     od.c.reserve_slide_headings();

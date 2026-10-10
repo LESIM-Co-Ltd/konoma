@@ -60,7 +60,7 @@ use crate::preview::office::{mathml, omml};
 // The presentation reader builds on this module's walk (lists, paragraphs, tables, frames), so it
 // is a child: it sees the private items it uses.
 #[path = "odp.rs"]
-pub(super) mod odp;
+pub(in crate::preview::office) mod odp;
 
 /// Longest object directory name followed (bytes).
 const OBJECT_DIR_MAX: usize = 512;
