@@ -76,6 +76,9 @@ pub(super) fn line_width(st: &RStyle, text: &str) -> f64 {
     total
 }
 
+/// Horizontal padding `Out::text` adds to the measured text width to make its box, px.
+pub(super) const TEXT_BOX_PAD: f64 = 6.0;
+
 /// Size (w, h) in px of a possibly multi-line text.
 pub(super) fn measure(st: &RStyle, text: &str) -> (f64, f64) {
     let mut w = 0.0f64;
@@ -116,7 +119,7 @@ impl Out {
         rot_deg: f64,
     ) -> (f64, f64, f64, f64) {
         let (tw, th) = measure(st, text);
-        let w = tw + 6.0;
+        let w = tw + TEXT_BOX_PAD;
         let left = match ah {
             HAlign::Left => x,
             HAlign::Center => x - w / 2.0,

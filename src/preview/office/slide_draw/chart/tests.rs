@@ -1772,7 +1772,9 @@ fn a_long_chart_title_wraps_at_four_fifths_of_the_chart_width() {
     assert!(title.0.contains('\n'), "not wrapped: {}", title.0);
     // The same words in the same order, only the breaks differ.
     assert_eq!(title.0.replace('\n', " "), long);
-    assert!(title.1 .2 <= W * 0.8 + 1.0, "box {} wide", title.1 .2);
+    // The box (not just the text) stays within the share, whatever fonts measure it; the one
+    // exception would be a single word wider than the share, which these words are not.
+    assert!(title.1 .2 <= W * 0.8, "box {} wide", title.1 .2);
     assert!(title.1 .0 >= 0.0 && title.1 .0 + title.1 .2 <= W);
     // A short one stays on one line; an unspaced (CJK) one breaks between characters.
     m.title.as_mut().unwrap().text = "Short".into();
@@ -1786,5 +1788,5 @@ fn a_long_chart_title_wraps_at_four_fifths_of_the_chart_width() {
         .unwrap();
     assert!(t.0.contains('\n'));
     assert_eq!(t.0.replace('\n', ""), "あ".repeat(60));
-    assert!(t.1 .2 <= W * 0.8 + 1.0);
+    assert!(t.1 .2 <= W * 0.8, "box {} wide", t.1 .2);
 }

@@ -364,7 +364,12 @@ pub(super) fn draw(o: &mut Out, m: &ChartModel) {
     let mut title_draw: Option<(f64, f64, RStyle, String)> = None;
     if let Some(t) = title {
         let st = resolve(m, &t.style, TITLE_PT, true);
-        let wrapped = wrap_title(&st, &t.text, w * TITLE_MAX_SHARE);
+        // The drawn box is the text plus `TEXT_BOX_PAD`, and it is the box that must stay within the share.
+        let wrapped = wrap_title(
+            &st,
+            &t.text,
+            w * TITLE_MAX_SHARE - super::text::TEXT_BOX_PAD,
+        );
         let (tw, th) = measure(&st, &wrapped);
         let (x, y) = match t.layout {
             Some(l) if l.x.is_some() || l.y.is_some() => (
