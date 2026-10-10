@@ -1430,3 +1430,515 @@ fn a_picture_of_no_size_or_an_unmeasurable_one_draws_nothing() {
         assert!(!r.svg.contains("NaN") && !r.svg.contains("inf"), "{what}");
     }
 }
+
+// ---- picture placement (`image_el`) ------------------------------------------------------------
+
+/// The first `<use>` of a picture in `svg`.
+fn first_use(svg: &str) -> &str {
+    let at = svg.find("<use href=\"#im").expect("a picture is drawn");
+    let rest = &svg[at..];
+    &rest[..rest.find("/>").unwrap()]
+}
+
+/// The matrix `[width, height, x, y]` of the first picture in `svg`, in slide px.
+fn use_matrix(svg: &str) -> [f64; 4] {
+    let el = first_use(svg);
+    let m = el.find("matrix(").expect("with a matrix") + "matrix(".len();
+    let n: Vec<f64> = el[m..el[m..].find(')').unwrap() + m]
+        .split_whitespace()
+        .map(|v| v.parse().unwrap())
+        .collect();
+    assert_eq!((n[1], n[2]), (0.0, 0.0), "no skew: {n:?}");
+    [n[0], n[3], n[4], n[5]]
+}
+
+/// The picture "p" in the frame (100, 100, 200 x 100 px), changed by `change`.
+fn placed(change: impl FnOnce(&mut PictureItem)) -> super::super::Rendered {
+    use super::super::hardening_tests::by_key;
+    let media = by_key(vec![("p", two_halves_png(8, 8))]);
+    let mut p = PictureItem::new(Xfrm::rect(e(100.0), e(100.0), e(200.0), e(100.0)), "p");
+    change(&mut p);
+    render_svg(&scene(vec![Item::Picture(p)]), &*media)
+}
+
+fn assert_matrix(r: &super::super::Rendered, want: [f64; 4], what: &str) {
+    let got = use_matrix(&r.svg);
+    for (g, w) in got.iter().zip(want) {
+        assert!((g - w).abs() < 0.01, "{what}: {got:?} against {want:?}");
+    }
+}
+
+#[test]
+fn a_picture_is_placed_by_its_frame_its_crop_and_its_stretch_inset() {
+    let crop = |c: Rect4| placed(|p| p.image.crop = c);
+    let inset = |f: Rect4| placed(|p| p.image.mode = ImageMode::Stretch { fill_rect: f });
+    // Frame 200 x 100 at (100, 100); without crop the picture is the frame.
+    assert_matrix(&placed(|_| {}), [200.0, 100.0, 100.0, 100.0], "plain");
+    // srcRect: the part that is shown is what is left after cutting a fraction off each side, so
+    // the whole picture is the frame divided by that part and shifted back by the cut at the
+    // left / top.
+    let fw = 200.0 / 0.75;
+    assert_matrix(
+        &crop((0.25, 0.0, 0.0, 0.0)),
+        [fw, 100.0, 100.0 - 0.25 * fw, 100.0],
+        "crop left",
+    );
+    let fh = 100.0 / 0.9;
+    assert_matrix(
+        &crop((0.0, 0.1, 0.0, 0.0)),
+        [200.0, fh, 100.0, 100.0 - 0.1 * fh],
+        "crop top",
+    );
+    assert_matrix(
+        &crop((0.0, 0.0, 0.5, 0.0)),
+        [400.0, 100.0, 100.0, 100.0],
+        "crop right",
+    );
+    assert_matrix(
+        &crop((0.0, 0.0, 0.0, 0.2)),
+        [200.0, 125.0, 100.0, 100.0],
+        "crop bottom",
+    );
+    // a negative crop adds empty space round the picture: it is smaller than the frame
+    assert_matrix(
+        &crop((-0.25, 0.0, 0.0, 0.0)),
+        [160.0, 100.0, 140.0, 100.0],
+        "pad left",
+    );
+    let fh = 100.0 / 1.5;
+    assert_matrix(
+        &crop((0.0, -0.5, 0.0, 0.0)),
+        [200.0, fh, 100.0, 100.0 + 0.5 * fh],
+        "pad top",
+    );
+    assert_matrix(
+        &crop((0.0, 0.0, -1.0, 0.0)),
+        [100.0, 100.0, 100.0, 100.0],
+        "pad right",
+    );
+    assert_matrix(
+        &crop((0.0, 0.0, 0.0, -1.0)),
+        [200.0, 50.0, 100.0, 100.0],
+        "pad bottom",
+    );
+    // fillRect: the picture fills the frame less an inset (fractions of the frame) on each side
+    assert_matrix(
+        &inset((0.1, 0.0, 0.0, 0.0)),
+        [180.0, 100.0, 120.0, 100.0],
+        "inset left",
+    );
+    assert_matrix(
+        &inset((0.0, 0.2, 0.0, 0.0)),
+        [200.0, 80.0, 100.0, 120.0],
+        "inset top",
+    );
+    assert_matrix(
+        &inset((0.0, 0.0, 0.3, 0.0)),
+        [140.0, 100.0, 100.0, 100.0],
+        "inset right",
+    );
+    assert_matrix(
+        &inset((0.0, 0.0, 0.0, 0.1)),
+        [200.0, 90.0, 100.0, 100.0],
+        "inset bottom",
+    );
+    assert_matrix(
+        &inset((0.1, 0.2, 0.3, 0.1)),
+        [120.0, 70.0, 120.0, 120.0],
+        "inset all",
+    );
+    // both: the crop is of the inset area (120 x 70 at (120, 120))
+    let r = placed(|p| {
+        p.image.crop = (0.25, 0.1, 0.0, 0.2);
+        p.image.mode = ImageMode::Stretch {
+            fill_rect: (0.1, 0.2, 0.3, 0.1),
+        };
+    });
+    assert_matrix(
+        &r,
+        [160.0, 100.0, 120.0 - 0.25 * 160.0, 120.0 - 0.1 * 100.0],
+        "both",
+    );
+    // an infinite inset or crop counts as none
+    assert_matrix(
+        &crop((f64::NAN, f64::INFINITY, 0.0, 0.0)),
+        [200.0, 100.0, 100.0, 100.0],
+        "not a number",
+    );
+    // a crop that leaves nothing is stretched from a thousandth of the picture, never divided by zero
+    assert_matrix(
+        &crop((0.5, 0.0, 0.5, 0.0)),
+        [200.0 / 0.001, 100.0, 100.0 - 0.5 * 200.0 / 0.001, 100.0],
+        "nothing left",
+    );
+}
+
+#[test]
+fn a_flipped_picture_keeps_its_placement_inside_a_flipped_group() {
+    let plain = placed(|_| {});
+    let flipped = placed(|p| p.xfrm.flip_h = true);
+    assert!(flipped.svg.contains("scale(-1 1)"), "{}", flipped.svg);
+    assert!(!plain.svg.contains("scale(-1 1)"));
+    // the matrix is in the frame's own system: the flip is the group's
+    assert_eq!(use_matrix(&plain.svg), use_matrix(&flipped.svg));
+    let v = placed(|p| p.xfrm.flip_v = true);
+    assert!(v.svg.contains("scale(1 -1)"));
+    assert_eq!(use_matrix(&plain.svg), use_matrix(&v.svg));
+}
+
+#[test]
+fn a_picture_is_charged_for_the_area_it_is_drawn_over_at_the_model_raster() {
+    let k2 = (1280.0f64 / 960.0).powi(2);
+    let area = |r: &super::super::Rendered| r.features.pic_px2;
+    let r = placed(|_| {});
+    assert!(
+        (area(&r) - 200.0 * 100.0 * k2).abs() < 1e-6 * area(&r),
+        "{}",
+        area(&r)
+    );
+    // the whole picture counts, not just the part of it in the frame
+    let r = placed(|p| p.image.crop = (0.25, 0.0, 0.0, 0.0));
+    let want = 200.0 / 0.75 * 100.0 * k2;
+    assert!((area(&r) - want).abs() < 1e-6 * want, "{}", area(&r));
+    let r = placed(|p| {
+        p.image.mode = ImageMode::Stretch {
+            fill_rect: (0.1, 0.2, 0.3, 0.1),
+        }
+    });
+    let want = 120.0 * 70.0 * k2;
+    assert!((area(&r) - want).abs() < 1e-6 * want, "{}", area(&r));
+    // two pictures add up
+    let media = super::super::hardening_tests::by_key(vec![("p", two_halves_png(8, 8))]);
+    let two = vec![
+        super::super::hardening_tests::pic("p", 0.0, 0.0, 200.0, 100.0),
+        super::super::hardening_tests::pic("p", 300.0, 0.0, 200.0, 100.0),
+    ];
+    let r = render_svg(&scene(two), &*media);
+    assert!(
+        (area(&r) - 2.0 * 200.0 * 100.0 * k2).abs() < 1e-6 * area(&r),
+        "{}",
+        area(&r)
+    );
+}
+
+#[test]
+fn a_picture_is_translucent_only_below_full_opacity() {
+    let opacity = |alpha: f64| {
+        let r = placed(|p| p.image.alpha = alpha);
+        let el = first_use(&r.svg).to_string();
+        el.split(" opacity=\"")
+            .nth(1)
+            .map(|rest| rest[..rest.find('"').unwrap()].to_string())
+    };
+    assert_eq!(opacity(0.5).as_deref(), Some("0.5"));
+    assert_eq!(opacity(0.0).as_deref(), Some("0"));
+    assert_eq!(opacity(-1.0).as_deref(), Some("0"), "clamped to 0");
+    assert_eq!(opacity(1.0), None, "opaque: no attribute");
+    assert_eq!(opacity(2.0), None, "clamped to 1");
+    assert_eq!(opacity(f64::NAN), None, "not a number is opaque");
+}
+
+/// [`red_emf`] with a record that is shorter than a record header after the rectangle: the
+/// converter drops what follows and says so.
+fn cut_emf() -> Vec<u8> {
+    let mut b = red_emf(100, 50);
+    // overwrite the end-of-file record (its first 8 bytes) with a record of size 4
+    let n = b.len();
+    b[n - 20..n - 16].copy_from_slice(&99u32.to_le_bytes());
+    b[n - 16..n - 12].copy_from_slice(&4u32.to_le_bytes());
+    b
+}
+
+#[test]
+fn a_metafile_that_was_cut_marks_the_picture_truncated() {
+    use super::super::tests::media_of;
+    let scene_of = |emf: Vec<u8>| {
+        let p = PictureItem::new(Xfrm::rect(e(100.0), e(100.0), e(200.0), e(100.0)), "m");
+        render_svg(&scene(vec![Item::Picture(p)]), &media_of(emf))
+    };
+    let whole = scene_of(red_emf(100, 50));
+    assert!(!whole.truncated, "control: a whole metafile");
+    let cut = scene_of(cut_emf());
+    assert!(cut.svg.contains("data:image/svg+xml"), "still drawn");
+    assert!(cut.truncated, "what the converter dropped is said");
+    // the same through a tile (the size of the cell comes from the conversion)
+    let f = ImageFill {
+        mode: ImageMode::Tile {
+            sx: 1.0,
+            sy: 1.0,
+            tx: 0.0,
+            ty: 0.0,
+            align: RectAlign::TopLeft,
+            flip: TileFlip::None,
+        },
+        ..ImageFill::stretch("m")
+    };
+    let tiled = render_svg(&image_shape(f, 400.0, 200.0), &media_of(cut_emf()));
+    assert!(tiled.truncated);
+}
+
+/// A box in px: x, y, width, height.
+type Bx = (f64, f64, f64, f64);
+/// A line from one point to another, relative to its box.
+type Run2 = ((f64, f64), (f64, f64));
+
+/// The markup of the arrow head drawn at the tail (the end) of a line of 4 px, from `(x, y)` of
+/// `w` x `h` px, flipped as given; the head is 20 px long and 12 px wide.
+fn tail_head(kind: ArrowKind, (x, y, w, h): Bx, (from, to): Run2) -> String {
+    let at = |(px, py): (f64, f64)| Pt::new(e(px), e(py));
+    let path = GeomPath {
+        w: 0.0,
+        h: 0.0,
+        stroke: true,
+        cmds: vec![PathCmd::MoveTo(at(from)), PathCmd::LineTo(at(to))],
+        ..Default::default()
+    };
+    let xf = Xfrm::rect(e(x), e(y), e(w), e(h));
+    let mut s = ShapeItem::new(xf, Geometry::Paths(vec![path]));
+    let mut l = Line::solid(e(4.0), Rgba::rgb(255, 0, 0));
+    l.tail = Some(Arrow {
+        kind,
+        w: ArrowSize::Med,
+        len: ArrowSize::Lg,
+    });
+    s.line = Some(l);
+    let r = render_svg(&scene(vec![Item::Shape(s)]), &no_media);
+    // the markup of the head comes after the line: the last element that is filled with the line
+    // colour at its own opacity (or the stroked chevron, or the ellipse)
+    let at = r
+        .svg
+        .rfind("<ellipse")
+        .or_else(|| {
+            r.svg.rfind("<path d=\"M").filter(|_| {
+                r.svg
+                    .contains("stroke-linecap=\"round\" stroke-linejoin=\"round\"/>")
+            })
+        })
+        .or_else(|| r.svg.rfind("<path "))
+        .expect("a head");
+    r.svg[at..].split("/>").next().unwrap().to_string()
+}
+
+fn numbers(s: &str) -> Vec<f64> {
+    s.split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+        .filter(|t| !t.is_empty() && *t != "-" && *t != ".")
+        .filter_map(|t| t.parse().ok())
+        .collect()
+}
+
+/// The corners of a head path, whichever one the path starts at.
+fn corners(head: &str) -> Vec<(f64, f64)> {
+    let d = head
+        .split("d=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    let mut pts: Vec<(f64, f64)> = numbers(d).chunks(2).map(|c| (c[0], c[1])).collect();
+    pts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    pts
+}
+
+/// The head's corners expected when its tip is `tip` and it points along `dir`: `(along, across)`
+/// per corner, along being measured from the tip backwards, across to either side.
+fn expected(tip: (f64, f64), dir: (f64, f64), local: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let across = (-dir.1, dir.0);
+    let mut pts: Vec<(f64, f64)> = local
+        .iter()
+        .map(|(u, v)| {
+            (
+                tip.0 + dir.0 * u + across.0 * v,
+                tip.1 + dir.1 * u + across.1 * v,
+            )
+        })
+        .collect();
+    pts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    pts
+}
+
+fn assert_corners(got: &[(f64, f64)], want: &[(f64, f64)], what: &str) {
+    assert_eq!(got.len(), want.len(), "{what}: {got:?} against {want:?}");
+    for (g, w) in got.iter().zip(want) {
+        assert!(
+            (g.0 - w.0).abs() < 0.02 && (g.1 - w.1).abs() < 0.02,
+            "{what}: {got:?} against {want:?}"
+        );
+    }
+}
+
+/// The lines the head tests draw: the box, the line in it, where its tip is and which way it
+/// points.
+#[allow(clippy::type_complexity)]
+fn head_lines() -> Vec<(&'static str, Bx, Run2, (f64, f64), (f64, f64))> {
+    vec![
+        (
+            "right",
+            (100.0, 200.0, 600.0, 10.0),
+            ((0.0, 0.0), (600.0, 0.0)),
+            (700.0, 200.0),
+            (1.0, 0.0),
+        ),
+        (
+            "down",
+            (200.0, 100.0, 10.0, 400.0),
+            ((0.0, 0.0), (0.0, 400.0)),
+            (200.0, 500.0),
+            (0.0, 1.0),
+        ),
+        (
+            "left",
+            (100.0, 200.0, 600.0, 10.0),
+            ((600.0, 0.0), (0.0, 0.0)),
+            (100.0, 200.0),
+            (-1.0, 0.0),
+        ),
+        (
+            "up",
+            (200.0, 100.0, 10.0, 400.0),
+            ((0.0, 400.0), (0.0, 0.0)),
+            (200.0, 100.0),
+            (0.0, -1.0),
+        ),
+        (
+            "slanted",
+            (100.0, 100.0, 300.0, 400.0),
+            ((0.0, 0.0), (300.0, 400.0)),
+            (400.0, 500.0),
+            (0.6, 0.8),
+        ),
+    ]
+}
+
+#[test]
+fn filled_arrow_heads_are_drawn_from_the_tip_back_along_the_line() {
+    // 20 px long (Lg x a 4 px line), 12 px wide (Med x 4)
+    type Corners = &'static [(f64, f64)];
+    let kinds: [(&str, ArrowKind, Corners); 3] = [
+        (
+            "triangle",
+            ArrowKind::Triangle,
+            &[(0.0, 0.0), (-20.0, -6.0), (-20.0, 6.0)],
+        ),
+        (
+            "stealth",
+            ArrowKind::Stealth,
+            &[(0.0, 0.0), (-20.0, -6.0), (-14.0, 0.0), (-20.0, 6.0)],
+        ),
+        (
+            "diamond",
+            ArrowKind::Diamond,
+            &[(0.0, 0.0), (-10.0, -6.0), (-20.0, 0.0), (-10.0, 6.0)],
+        ),
+    ];
+    for (name, kind, local) in kinds {
+        for (dir_name, rect, path, tip, dir) in head_lines() {
+            let head = tail_head(kind.clone(), rect, path);
+            assert_corners(
+                &corners(&head),
+                &expected(tip, dir, local),
+                &format!("{name} {dir_name}"),
+            );
+        }
+    }
+}
+
+#[test]
+fn an_oval_head_is_an_ellipse_behind_the_tip_turned_to_the_line() {
+    for (dir_name, rect, path, tip, dir) in head_lines() {
+        let head = tail_head(ArrowKind::Oval, rect, path);
+        let n = numbers(&head);
+        // cx, cy, rx, ry, then the rotation (degrees) about the centre
+        let centre = expected(tip, dir, &[(-10.0, 0.0)])[0];
+        assert!(
+            (n[0] - centre.0).abs() < 0.02 && (n[1] - centre.1).abs() < 0.02,
+            "{dir_name}: {n:?}"
+        );
+        assert!(
+            (n[2] - 10.0).abs() < 0.02 && (n[3] - 6.0).abs() < 0.02,
+            "{dir_name}: {n:?}"
+        );
+        let turn = dir.1.atan2(dir.0).to_degrees();
+        assert!(
+            (n[4] - turn).abs() < 0.02,
+            "{dir_name}: {n:?} turned {turn}"
+        );
+        assert!(
+            (n[5] - centre.0).abs() < 0.02 && (n[6] - centre.1).abs() < 0.02,
+            "{dir_name}"
+        );
+    }
+}
+
+#[test]
+fn a_chevron_head_is_the_open_path_from_one_side_through_the_tip_to_the_other() {
+    for (dir_name, rect, path, tip, dir) in head_lines() {
+        let head = tail_head(ArrowKind::Arrow, rect, path);
+        let d = head
+            .split("d=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let n = numbers(d);
+        let want = expected(tip, dir, &[(-20.0, -6.0), (0.0, 0.0), (-20.0, 6.0)]);
+        // in order: the path is not closed, so the order is the drawing
+        let across = (-dir.1, dir.0);
+        let first = (
+            tip.0 - dir.0 * 20.0 - across.0 * 6.0,
+            tip.1 - dir.1 * 20.0 - across.1 * 6.0,
+        );
+        assert!(
+            (n[0] - first.0).abs() < 0.02 && (n[1] - first.1).abs() < 0.02,
+            "{dir_name}: {n:?}"
+        );
+        assert!(
+            (n[2] - tip.0).abs() < 0.02 && (n[3] - tip.1).abs() < 0.02,
+            "{dir_name}: {n:?}"
+        );
+        let mut got: Vec<(f64, f64)> = n.chunks(2).map(|c| (c[0], c[1])).collect();
+        got.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_corners(&got, &want, dir_name);
+    }
+}
+
+#[test]
+fn a_custom_head_is_its_path_scaled_to_the_head_with_its_x_axis_towards_the_tip() {
+    let tri = |w: f64, h: f64, (x, y): (f64, f64)| {
+        // a triangle with its tip on the right middle of a path space of x by y
+        ArrowKind::Custom(vec![GeomPath {
+            w,
+            h,
+            fill_mode: PathFill::Norm,
+            stroke: false,
+            cmds: vec![
+                PathCmd::MoveTo(Pt::new(0.0, 0.0)),
+                PathCmd::LineTo(Pt::new(x, y / 2.0)),
+                PathCmd::LineTo(Pt::new(0.0, y)),
+                PathCmd::Close,
+            ],
+        }])
+    };
+    let local = [(0.0, 0.0), (-20.0, -6.0), (-20.0, 6.0)];
+    // a path space of 10 x 10 as declared, and of 1 x 1 when no size (or a negative one) is
+    // declared; the commands of the second are in that unit space
+    let cases = [
+        ("10 x 10", tri(10.0, 10.0, (10.0, 10.0))),
+        ("no size", tri(0.0, 0.0, (1.0, 1.0))),
+        ("no width", tri(0.0, 1.0, (1.0, 1.0))),
+        ("no height", tri(1.0, 0.0, (1.0, 1.0))),
+        ("negative", tri(-3.0, -3.0, (1.0, 1.0))),
+        ("20 x 4", tri(20.0, 4.0, (20.0, 4.0))),
+    ];
+    for (name, kind) in cases {
+        for (dir_name, rect, path, tip, dir) in head_lines() {
+            let head = tail_head(kind.clone(), rect, path);
+            assert_corners(
+                &corners(&head),
+                &expected(tip, dir, &local),
+                &format!("{name} {dir_name}"),
+            );
+        }
+    }
+}
