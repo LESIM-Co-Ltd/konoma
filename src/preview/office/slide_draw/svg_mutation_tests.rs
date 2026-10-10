@@ -1101,3 +1101,332 @@ fn once_the_time_budget_is_as_good_as_used_up_nothing_after_the_left_out_shape_i
         "with the budget used up the square after the left-out shape is not drawn"
     );
 }
+
+/// An SVG picture of exactly `len` bytes (a comment pads it), 10 x 10 px.
+fn padded_svg(len: usize) -> Vec<u8> {
+    let (head, tail) = (
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><!--"#,
+        r#"--><rect width="10" height="10"/></svg>"#,
+    );
+    let mut s = String::from(head);
+    s.push_str(&"x".repeat(len - head.len() - tail.len()));
+    s.push_str(tail);
+    assert_eq!(s.len(), len);
+    s.into_bytes()
+}
+
+/// The slide the shrinking tests draw: three vector pictures that take all of the embedded-image
+/// allowance but `room` bytes, then the big raster picture `big` (key "big"). Returns the media,
+/// the items and the room that is really left (the three fillers are of equal size).
+fn slide_with_room_left(
+    big: Vec<u8>,
+    room: usize,
+) -> (super::super::hardening_tests::Media, Vec<Item>, usize) {
+    use super::super::hardening_tests::{by_key, pic};
+    let each = (super::super::svg::MAX_EMBEDDED_IMAGE_BYTES - room) / 3;
+    let left = super::super::svg::MAX_EMBEDDED_IMAGE_BYTES - 3 * each;
+    let media = by_key(vec![
+        ("f0", padded_svg(each)),
+        ("f1", padded_svg(each)),
+        ("f2", padded_svg(each)),
+        ("big", big),
+    ]);
+    let items = vec![
+        pic("f0", 0.0, 0.0, 10.0, 10.0),
+        pic("f1", 20.0, 0.0, 10.0, 10.0),
+        pic("f2", 40.0, 0.0, 10.0, 10.0),
+        pic("big", 100.0, 100.0, 400.0, 300.0),
+    ];
+    (media, items, left)
+}
+
+/// The raster picture embedded last in `svg`: its MIME type and its decoded size.
+fn last_embedded_raster(svg: &str) -> Option<(String, (u32, u32), usize)> {
+    use base64::Engine;
+    let at = svg.rfind("data:image/")?;
+    let rest = &svg[at + "data:image/".len()..];
+    let (mime, rest) = rest.split_once(";base64,")?;
+    if mime == "svg+xml" {
+        return None;
+    }
+    let b64 = &rest[..rest.find('"')?];
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    let img = image::load_from_memory(&bytes).ok()?;
+    Some((mime.to_string(), (img.width(), img.height()), bytes.len()))
+}
+
+#[test]
+fn an_embedded_raster_is_reduced_to_the_first_size_that_fits_and_never_enlarged() {
+    use super::super::hardening_tests::noise_png;
+    // 800 x 600 noise: about 700 KB as a JPEG at full size, about 320 KB at 640 x 480.
+    let (media, items, left) = slide_with_room_left(noise_png(800, 600, 7), 500_000);
+    let r = render_svg(&scene(items), &*media);
+    assert!(r.truncated, "a reduced picture is reported");
+    assert!(!r.svg.contains("#e6e6e6"), "reduced, not given up");
+    let (mime, (w, h), bytes) = last_embedded_raster(&r.svg).expect("the reduced picture");
+    assert_eq!(mime, "jpeg", "no transparency: a JPEG");
+    assert!(bytes <= left, "{bytes} bytes in the {left} that are left");
+    // the longer side is brought down to the first of 2048, 1280, 640 that makes it fit: the first
+    // two are no reduction at all for a picture of 800 px (never enlarged), only 640 fits
+    assert_eq!((w, h), (640, 480));
+}
+
+#[test]
+fn a_raster_that_fits_after_no_reduction_is_embedded_at_its_own_size() {
+    use super::super::hardening_tests::noise_png;
+    // Room for the full-size JPEG (702 KB) but not for the PNG (1.4 MB): the first size tried is
+    // the picture's own, not a reduced one.
+    let (media, items, left) = slide_with_room_left(noise_png(800, 600, 7), 900_000);
+    let r = render_svg(&scene(items), &*media);
+    assert!(r.truncated);
+    let (mime, (w, h), bytes) = last_embedded_raster(&r.svg).expect("the re-encoded picture");
+    assert_eq!(mime, "jpeg");
+    assert!(bytes <= left);
+    assert_eq!((w, h), (800, 600));
+}
+
+#[test]
+fn reducing_a_raster_is_charged_to_the_decode_allowance_by_its_pixels() {
+    use super::super::hardening_tests::noise_png;
+    use super::super::svg::render_with;
+    let (media, items, _) = slide_with_room_left(noise_png(800, 600, 7), 500_000);
+    let sc = scene(items);
+    let px = 800 * 600;
+    // exactly the pixels it decodes to: reduced
+    let enough = render_with(&sc, &*media, &|| false, px, u64::MAX);
+    assert!(enough.truncated);
+    assert!(!enough.svg.contains("#e6e6e6"), "reduced");
+    assert!(last_embedded_raster(&enough.svg).is_some());
+    // one pixel short: the picture is not decoded and is given up
+    let short = render_with(&sc, &*media, &|| false, px - 1, u64::MAX);
+    assert!(short.truncated);
+    assert!(short.svg.contains("#e6e6e6"), "a placeholder");
+    assert!(last_embedded_raster(&short.svg).is_none());
+    // the pixels are width times height (not their sum or ratio): a tenth of the allowance
+    let tenth = render_with(&sc, &*media, &|| false, px / 10, u64::MAX);
+    assert!(tenth.svg.contains("#e6e6e6"));
+}
+
+#[test]
+fn reducing_a_raster_stops_when_the_slide_is_cancelled() {
+    use super::super::hardening_tests::noise_png;
+    use super::super::svg::render_with;
+    let (media, items, _) = slide_with_room_left(noise_png(800, 600, 7), 500_000);
+    let sc = scene(items);
+    let r = render_with(&sc, &*media, &|| true, u64::MAX, u64::MAX);
+    assert!(r.cancelled);
+    assert!(last_embedded_raster(&r.svg).is_none());
+}
+
+/// One line of `chars` letters that is not wrapped, `lines` times.
+fn long_line_text(lines: usize, chars: usize) -> SlideScene {
+    let mut s = ShapeItem::new(Xfrm::rect(0.0, 0.0, e(900.0), e(500.0)), Geometry::Rect);
+    s.text = Some(TextBody {
+        wrap: false,
+        paragraphs: (0..lines)
+            .map(|_| Paragraph {
+                runs: vec![Run::text("x".repeat(chars), 6.0)],
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    });
+    scene(vec![Item::Shape(s)])
+}
+
+#[test]
+fn a_text_box_is_cut_to_the_lines_that_fit_the_time_budget() {
+    let max = super::super::cost::MAX_CHILD_MS;
+    let ms = |r: &super::super::Rendered| r.features.predict().at(1.0);
+    // two lines of 40 000 letters fit (about 1260 ms), a third would not
+    let two = render_svg(&long_line_text(2, 40_000), &no_media);
+    assert!(!two.truncated && ms(&two) < max, "{}", ms(&two));
+    assert_eq!(two.svg.matches("<tspan").count(), 2);
+    let three = render_svg(&long_line_text(3, 40_000), &no_media);
+    assert!(three.truncated, "the third line is left out and said so");
+    // the lines that fit are drawn (the shape is not given up for the one line too many)
+    assert_eq!(three.svg.matches("<tspan").count(), 2);
+    assert!(ms(&three) <= max * 1.0001, "{}", ms(&three));
+    // and the same when there are many more
+    let many = render_svg(&long_line_text(30, 40_000), &no_media);
+    assert!(many.truncated);
+    assert_eq!(many.svg.matches("<tspan").count(), 2);
+}
+
+#[test]
+fn pictures_past_the_time_budget_are_placeholders_not_missing() {
+    use super::super::hardening_tests::{by_key, pic};
+    // a picture of a million bytes costs the process 50 ms to parse each time it is used
+    let media = by_key(vec![("v", padded_svg(1_000_000))]);
+    let items: Vec<Item> = (0..40)
+        .map(|i| {
+            pic(
+                "v",
+                (i % 10) as f64 * 90.0,
+                (i / 10) as f64 * 90.0,
+                80.0,
+                80.0,
+            )
+        })
+        .collect();
+    let r = render_svg(&scene(items), &*media);
+    let max = super::super::cost::MAX_CHILD_MS;
+    let (drawn, placeholders) = (
+        r.svg.matches("<use ").count(),
+        r.svg.matches("#e6e6e6").count(),
+    );
+    assert!(r.truncated);
+    assert!(drawn >= 20, "what fits is drawn: {drawn}");
+    assert!(placeholders >= 1, "the rest is shown as placeholders");
+    assert_eq!(drawn + placeholders, 40, "every picture is accounted for");
+    assert!(r.features.predict().at(1.0) <= max, "inside the budget");
+    // the same pictures in less than the budget are all drawn
+    let few: Vec<Item> = (0..10)
+        .map(|i| pic("v", i as f64 * 90.0, 0.0, 80.0, 80.0))
+        .collect();
+    let r = render_svg(&scene(few), &*media);
+    assert!(!r.truncated);
+    assert_eq!(r.svg.matches("<use ").count(), 10);
+    assert!(!r.svg.contains("#e6e6e6"));
+}
+
+#[test]
+fn the_filter_allowance_cannot_be_passed_without_the_time_budget_noticing() {
+    // `leaf` checks the filter work against its allowance and the predicted time against its
+    // budget. The first check can never be the only one to refuse a shape: the work allowance
+    // alone already costs more than the whole time budget. If the constants are changed so
+    // that it can, `W::over_filter_work` needs a test of its own.
+    let at_allowance = super::super::cost::Features {
+        filter_units: super::super::svg::MAX_FILTER_WORK,
+        ..Default::default()
+    };
+    assert!(
+        at_allowance.predict().at(1.0) > super::super::cost::MAX_CHILD_MS,
+        "{}",
+        at_allowance.predict().at(1.0)
+    );
+}
+
+/// A single-rectangle EMF, `w` x `h` px, filled red.
+fn red_emf(w: i32, h: i32) -> Vec<u8> {
+    let words =
+        |v: &[i64]| -> Vec<u8> { v.iter().flat_map(|x| (*x as u32).to_le_bytes()).collect() };
+    let rec = |ty: u32, payload: &[i64]| -> Vec<u8> {
+        let p = words(payload);
+        let mut r = ty.to_le_bytes().to_vec();
+        r.extend(((p.len() + 8) as u32).to_le_bytes());
+        r.extend(p);
+        r
+    };
+    let mut recs = Vec::new();
+    recs.extend(rec(39, &[1, 0, 0x0000FF, 0])); // red brush
+    recs.extend(rec(37, &[1])); // select it
+    recs.extend(rec(37, &[0x8000_0008])); // no pen
+    recs.extend(rec(43, &[0, 0, w as i64, h as i64])); // rectangle
+    recs.extend(rec(14, &[0, 20, 0])); // end of file
+    let frame = [
+        0,
+        0,
+        (w as f64 * 26.4583) as i64,
+        (h as f64 * 26.4583) as i64,
+    ];
+    let mut out = words(&[1, 88, 0, 0, (w - 1) as i64, (h - 1) as i64]);
+    out.extend(words(&frame));
+    out.extend(words(&[0x464D_4520, 0x10000, 0, 6, 0, 0, 0, 0]));
+    out.extend(words(&[960, 960, 254, 254]));
+    assert_eq!(out.len(), 88);
+    let total = (88 + recs.len()) as u32;
+    out[48..52].copy_from_slice(&total.to_le_bytes());
+    out.extend(recs);
+    out
+}
+
+#[test]
+fn a_metafile_picture_is_converted_and_drawn_not_a_placeholder() {
+    use super::super::tests::{at, media_of, raster};
+    let emf = red_emf(100, 50);
+    // stretched into a box
+    let p = PictureItem::new(Xfrm::rect(e(100.0), e(100.0), e(200.0), e(100.0)), "m");
+    let r = render_svg(&scene(vec![Item::Picture(p)]), &media_of(emf.clone()));
+    assert!(
+        r.svg.contains("data:image/svg+xml;base64,"),
+        "converted to an SVG"
+    );
+    assert!(!r.svg.contains("#e6e6e6"), "no placeholder");
+    let px = at(&raster(&r), 200, 150);
+    assert!(px[0] > 200 && px[1] < 60 && px[2] < 60, "{px:?}");
+    // tiled: the cell is the metafile's own size, which only the conversion knows
+    let f = ImageFill {
+        mode: ImageMode::Tile {
+            sx: 1.0,
+            sy: 1.0,
+            tx: 0.0,
+            ty: 0.0,
+            align: RectAlign::TopLeft,
+            flip: TileFlip::None,
+        },
+        ..ImageFill::stretch("m")
+    };
+    let r = render_svg(&image_shape(f, 400.0, 200.0), &media_of(emf));
+    assert!(
+        !r.svg.contains("#e6e6e6"),
+        "a tile of a metafile is not a placeholder"
+    );
+    assert!(r.svg.contains("<use "));
+}
+
+#[test]
+fn a_picture_of_no_size_or_an_unmeasurable_one_draws_nothing() {
+    use super::super::hardening_tests::by_key;
+    let media = by_key(vec![("p", two_halves_png(8, 8))]);
+    let draw = |w: f64, h: f64, fill_rect: Rect4| {
+        let mut p = PictureItem::new(Xfrm::rect(e(10.0), e(10.0), w, h), "p");
+        p.image.mode = ImageMode::Stretch { fill_rect };
+        render_svg(&scene(vec![Item::Picture(p)]), &*media)
+    };
+    let none = (0.0, 0.0, 0.0, 0.0);
+    let ok = draw(e(100.0), e(50.0), none);
+    assert_eq!(
+        ok.svg.matches("<use ").count(),
+        1,
+        "control: an ordinary picture"
+    );
+    let cases = [
+        ("zero width", e(0.0), e(50.0), none),
+        ("zero height", e(100.0), e(0.0), none),
+        ("negative width", e(-100.0), e(50.0), none),
+        ("negative height", e(100.0), e(-50.0), none),
+        ("infinite width", f64::INFINITY, e(50.0), none),
+        ("infinite height", e(100.0), f64::INFINITY, none),
+        (
+            "negative infinite height",
+            e(100.0),
+            f64::NEG_INFINITY,
+            none,
+        ),
+        ("NaN width", f64::NAN, e(50.0), none),
+        ("NaN height", e(100.0), f64::NAN, none),
+        // an inset that takes more than the box has
+        (
+            "inset wider than the box",
+            e(100.0),
+            e(50.0),
+            (1.5, 0.0, 0.0, 0.0),
+        ),
+        (
+            "inset taller than the box",
+            e(100.0),
+            e(50.0),
+            (0.0, 1.5, 0.0, 0.0),
+        ),
+    ];
+    for (what, w, h, fill_rect) in cases {
+        let r = draw(w, h, fill_rect);
+        assert_eq!(
+            r.svg.matches("<use ").count(),
+            0,
+            "{what}: nothing is drawn"
+        );
+        assert!(!r.svg.contains("NaN") && !r.svg.contains("inf"), "{what}");
+    }
+}
