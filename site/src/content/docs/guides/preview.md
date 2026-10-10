@@ -213,7 +213,10 @@ Limits to know:
 
 - **Fonts are substituted.** Office fonts (Calibri, Yu Gothic ...) are replaced by faces
   that exist on macOS and Linux, so text can be a little wider or narrower and lines can
-  break in a different place than in PowerPoint.
+  break in a different place than in PowerPoint. For Calibri and Cambria, the most common ones,
+  install the free Carlito and Caladea (same widths; `brew install --cask font-carlito font-caladea`,
+  or `fonts-crosextra-carlito` / `fonts-crosextra-caladea` on Debian / Ubuntu): konoma uses them by itself
+  and the lines then break where PowerPoint breaks them.
 - 3-D charts are drawn with depth but without perspective, and 3-D shape effects are not drawn. A SmartArt diagram is
   drawn from the drawing part PowerPoint saves with it; a file without one shows its text
   in the text view only. LibreOffice's own `svm` pictures and EMF+-only pictures are not drawn.

@@ -179,7 +179,9 @@ Office アプリは任意で、表計算・Word・プレゼンのプレビュー
 知っておく制限:
 
 - **フォントは代替されます。** Office のフォント(Calibri・游ゴシックなど)は macOS / Linux にある
-  書体に置き換えるため、字幅が少し違い、PowerPoint と改行位置が変わることがあります。
+  書体に置き換えるため、字幅が少し違い、PowerPoint と改行位置が変わることがあります。いちばん多い Calibri・Cambria は、
+  同じ字幅の無料フォント Carlito・Caladea を入れると(`brew install --cask font-carlito font-caladea`、
+  Debian / Ubuntu は `fonts-crosextra-carlito` / `fonts-crosextra-caladea`)konoma が自動で使い、PowerPoint と同じ位置で改行します。
 - 3D グラフは奥行きをつけて描きますが遠近法は使わず、図形の 3D 効果は描きません。SmartArt は PowerPoint が一緒に保存した描画
   パーツから描くので、それが無いファイルは文字表示にだけ文字が出ます。LibreOffice 独自の `svm` 画像と
   EMF+ だけの画像は描きません。

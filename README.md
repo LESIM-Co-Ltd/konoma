@@ -172,8 +172,8 @@ you came from, since a worktree's directory rarely does.
 - **Drag & drop**: drop files from your desktop or another terminal onto the tree and konoma asks
   whether to copy (`c`) or move (`m`) them into the directory under the cursor.
 - **Optional dependencies**: nothing but a plain `cargo install` is required. The tools konoma can
-  use — `git`, `ffmpeg`, `lazygit`, `jj`/`lazyjj` for the jj backend, and an Office app (Microsoft Office or LibreOffice) for `e` on Office files — are each optional, and a
-  missing one costs you that one feature, never the app.
+  use — `git`, `ffmpeg`, `lazygit`, `jj`/`lazyjj` for the jj backend, an Office app (Microsoft Office or LibreOffice) for `e` on Office files, and the
+  Carlito/Caladea fonts for PowerPoint's line breaks — are each optional, and a missing one costs you that one feature, never the app.
 
 ## Status
 
@@ -256,6 +256,8 @@ brew install git ffmpeg                   # macOS
 sudo apt install git ffmpeg               # Debian / Ubuntu
 brew install jj                           # only if you work in jj (preview)
 brew install lazygit lazyjj               # only if you want `!` to open a TUI
+brew install --cask font-carlito font-caladea                       # PowerPoint decks: line breaks as in PowerPoint (macOS)
+sudo apt install fonts-crosextra-carlito fonts-crosextra-caladea    # the same on Debian / Ubuntu
 ```
 
 `git` is what the git suite runs on, and `jj` likewise for the jj backend — without either, konoma
@@ -283,6 +285,11 @@ instructions](https://docs.jj-vcs.dev/latest/install-and-setup/) (a prebuilt bin
   `--ignore-working-copy`, so it never snapshots your working copy.
 - **lazyjj** — the external tool `!` launches inside a jj repository, the way lazygit is for git.
   Any other TUI works too: set `[jj] tool` (e.g. `"jjui"`).
+
+- **Carlito / Caladea** — free fonts with the same character widths as Calibri and Cambria, the default
+  PowerPoint fonts (which may not be redistributed). With them installed, the text of a deck breaks
+  lines where PowerPoint breaks them; without them konoma draws it in Helvetica Neue / Arial / Georgia,
+  which are about 10% wider, so a line can break elsewhere. konoma finds them by itself — nothing to configure.
 
 - **Microsoft Office / LibreOffice** — what `e` launches on a Word, Excel, PowerPoint or OpenDocument file
   (macOS: Microsoft Office, then LibreOffice, then the default app via `open`; Linux: `libreoffice`, then

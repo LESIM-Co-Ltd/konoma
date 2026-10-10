@@ -22,7 +22,8 @@ All notable changes to konoma are documented in this file. The format is based o
   the pictures anyway. A deck has no "converted Markdown" source view any more (a Word document's `R` still shows it).
   `e` opens a deck in PowerPoint / LibreOffice / the OS default. The default `document` rule matches these extensions.
   Known limits: Office fonts are substituted (Calibri, Yu Gothic ... by faces that exist on macOS / Linux), so line
-  breaks can differ from PowerPoint; 3-D charts have depth but no perspective and 3-D shape effects are not drawn; SmartArt is drawn only from
+  breaks can differ from PowerPoint (installing the free Carlito / Caladea, metric-compatible with Calibri / Cambria, fixes
+  the common case; konoma uses them when present); 3-D charts have depth but no perspective and 3-D shape effects are not drawn; SmartArt is drawn only from
   its saved drawing part (a deck saved by PowerPoint 2007, which does not store that drawing, shows the SmartArt text in the
   text view only); LibreOffice's `svm` metafile and EMF+-only pictures are not drawn; the old binary `.ppt` is not
   previewed. A slide too heavy to draw within the drawing process's time and memory budgets (huge freeform geometry,
