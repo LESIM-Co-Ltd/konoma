@@ -202,6 +202,23 @@ fn is_generic(s: &str) -> bool {
     )
 }
 
+/// A typeface name as a quoted CSS string that usvg's font-family parser reads back as the same
+/// name. That parser ends a string at the next quote character of the kind that opened it and
+/// does not unescape anything (a backslash only stops a quote from ending the string, and is kept
+/// in the name), so escaping cannot work: the name is quoted with the kind of quote it does not
+/// contain; a name with both kinds loses its single quotes, and backslashes (which would hide the
+/// closing quote) are dropped.
+pub(super) fn quote_name(name: &str) -> String {
+    let clean: String = name.chars().filter(|c| *c != '\\').collect();
+    if !clean.contains('\'') {
+        format!("'{clean}'")
+    } else if !clean.contains('"') {
+        format!("\"{clean}\"")
+    } else {
+        format!("'{}'", clean.replace('\'', ""))
+    }
+}
+
 /// The CSS `font-family` value of a stack (names quoted, generics bare). Not XML-escaped.
 pub fn css_family(stack: &[String]) -> String {
     stack
@@ -210,7 +227,7 @@ pub fn css_family(stack: &[String]) -> String {
             if is_generic(s) {
                 s.clone()
             } else {
-                format!("'{s}'")
+                quote_name(s)
             }
         })
         .collect::<Vec<_>>()
@@ -471,6 +488,48 @@ mod tests {
         assert!(css.starts_with("'Calibri', 'Carlito'"));
         assert!(css.ends_with("sans-serif"));
         assert!(!css.contains("'sans-serif'"));
+    }
+
+    /// What usvg's parser reads back from a quoted name.
+    fn read_back(css: &str) -> Vec<String> {
+        svgtypes::parse_font_families(css)
+            .expect("the list parses")
+            .into_iter()
+            .map(|f| match f {
+                svgtypes::FontFamily::Named(n) => n,
+                other => format!("{other}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_name_with_a_quote_is_read_back_as_itself() {
+        // (Both kinds of quote and backslashes, as an XML attribute can carry them.)
+        assert_eq!(quote_name("Plain Name"), "'Plain Name'");
+        assert_eq!(quote_name("Bob's Font"), "\"Bob's Font\"");
+        assert_eq!(quote_name("The \"Font\""), "'The \"Font\"'");
+        assert_eq!(quote_name("Both ' and \""), "'Both  and \"'");
+        assert_eq!(quote_name("Back\\slash"), "'Backslash'");
+        assert_eq!(quote_name("End\\"), "'End'");
+        for name in [
+            "Plain Name",
+            "Bob's Font",
+            "The \"Font\"",
+            "Back\\slash",
+            "End\\",
+            "a, b",
+            "Both ' and \"",
+        ] {
+            let css = css_family(&[name.to_string(), "sans-serif".to_string()]);
+            let got = read_back(&css);
+            assert_eq!(got.len(), 2, "{css}");
+            let want: String = name
+                .chars()
+                .filter(|c| *c != '\\')
+                .filter(|c| !(name.contains('"') && name.contains('\'') && *c == '\''))
+                .collect();
+            assert_eq!(got[0], want, "{css}");
+        }
     }
 
     #[test]

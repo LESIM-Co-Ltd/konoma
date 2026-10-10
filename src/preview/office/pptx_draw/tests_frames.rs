@@ -1099,3 +1099,118 @@ fn a_chart_without_a_theme_override_is_unchanged() {
     assert!(has_fill(g, Rgba::rgb(0x44, 0x72, 0xC4)));
     assert!(!has_fill(g, Rgba::rgb(0xFF, 0, 0)));
 }
+
+// ---------------------------------------------------------------------------------------------
+// recursion bounds of SmartArt drawings
+// ---------------------------------------------------------------------------------------------
+
+/// Runs `f` on a thread with the default stack size (what the deck loader has in production), so
+/// that a recursion that is not bounded aborts the test process instead of passing by luck.
+fn on_default_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .spawn(f)
+        .unwrap()
+        .join()
+        .expect("the load panicked")
+}
+
+fn one_dsp_sp(text: &str) -> String {
+    dsp_sp((0, 0, 1_000_000, 1_000_000), "", &solid("FF0000"), "", text)
+}
+
+/// A deck with one diagram frame whose drawing part is `drawing_shapes`, loaded on a default stack.
+fn load_diagram_on_default_stack(frames: String, drawing_shapes: String) -> Document {
+    on_default_stack(move || {
+        let d = dgm_deck(&frames);
+        load(
+            &d,
+            &[
+                ("ppt/diagrams/data1.xml", dgm_data(Some("rIdDr"))),
+                ("ppt/diagrams/drawing1.xml", dsp_drawing(&drawing_shapes)),
+            ],
+            &DocOptions::default(),
+        )
+    })
+}
+
+#[test]
+fn a_smartart_drawing_that_points_back_at_itself_is_refused_not_recursed() {
+    // The drawing holds a shape and a diagram frame naming the same data model again.
+    let doc = load_diagram_on_default_stack(
+        dgm_frame(0, 0, 4_000_000, 2_000_000),
+        one_dsp_sp("Kept") + &dgm_frame(0, 0, 1_000_000, 1_000_000),
+    );
+    let sc = &doc.slide_scenes[0];
+    assert!(sc.truncated);
+    assert!(doc.truncated);
+    assert_eq!(texts(&the_group(sc).items), ["Kept"]);
+}
+
+#[test]
+fn a_self_referencing_diagram_inside_a_group_of_the_drawing_is_refused_too() {
+    let shapes = format!(
+        "<dsp:grpSp>{}{}</dsp:grpSp>",
+        one_dsp_sp("In group"),
+        dgm_frame(0, 0, 1_000_000, 1_000_000)
+    );
+    let doc = load_diagram_on_default_stack(dgm_frame(0, 0, 4_000_000, 2_000_000), shapes);
+    let sc = &doc.slide_scenes[0];
+    assert!(sc.truncated);
+    assert_eq!(texts(&the_group(sc).items), ["In group"]);
+}
+
+#[test]
+fn a_diagram_after_a_refused_one_still_draws() {
+    // (The refusal state is reset: a second, ordinary diagram on the slide is drawn.)
+    let two = dgm_frame(0, 0, 2_000_000, 1_000_000) + &dgm_frame(0, 0, 2_000_000, 1_000_000);
+    let doc = load_diagram_on_default_stack(two, one_dsp_sp("Plain"));
+    let sc = &doc.slide_scenes[0];
+    assert!(!sc.truncated);
+    assert_eq!(sc.items.len(), 2);
+}
+
+fn nested_groups(n: usize, inner: &str) -> String {
+    let mut s = inner.to_string();
+    for _ in 0..n {
+        s = format!("<dsp:grpSp>{s}</dsp:grpSp>");
+    }
+    s
+}
+
+#[test]
+fn groups_inside_a_diagram_draw_up_to_the_depth_bound() {
+    let doc = load_diagram_on_default_stack(
+        dgm_frame(0, 0, 4_000_000, 2_000_000),
+        nested_groups(10, &one_dsp_sp("Deep")),
+    );
+    let sc = &doc.slide_scenes[0];
+    assert!(!sc.truncated);
+    assert_eq!(texts(&the_group(sc).items), ["Deep"]);
+}
+
+#[test]
+fn groups_inside_a_diagram_count_from_the_frames_own_depth() {
+    // The diagram frame sits in a slide group; the drawing's groups continue the count instead of
+    // restarting it. 18 nested groups are within the bound on their own (20) but not on top of the
+    // slide group and the diagram's own level.
+    let slide_group = format!(
+        "<p:grpSp><p:nvGrpSpPr><p:cNvPr id=\"9\" name=\"G\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>{}</p:grpSp>",
+        dgm_frame(0, 0, 4_000_000, 2_000_000)
+    );
+    let alone = load_diagram_on_default_stack(
+        dgm_frame(0, 0, 4_000_000, 2_000_000),
+        nested_groups(18, &one_dsp_sp("x")),
+    );
+    assert!(!alone.slide_scenes[0].truncated);
+    let nested = load_diagram_on_default_stack(slide_group, nested_groups(19, &one_dsp_sp("x")));
+    assert!(nested.slide_scenes[0].truncated);
+}
+
+#[test]
+fn a_very_deep_group_nest_in_a_diagram_is_cut_not_overflowed() {
+    let doc = load_diagram_on_default_stack(
+        dgm_frame(0, 0, 4_000_000, 2_000_000),
+        nested_groups(100, &one_dsp_sp("x")),
+    );
+    assert!(doc.slide_scenes[0].truncated);
+}

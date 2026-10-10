@@ -64,11 +64,11 @@ mod tests;
 #[cfg(test)]
 mod tests_chart_labels_dump;
 #[cfg(test)]
+mod tests_corpus_regressions;
+#[cfg(test)]
 mod tests_frames;
 #[cfg(test)]
 mod tests_frames_dump;
-#[cfg(test)]
-mod tests_corpus_regressions;
 #[cfg(test)]
 mod tests_names;
 #[cfg(test)]
@@ -167,6 +167,8 @@ pub(super) struct Sb<'a> {
     /// Relationships that exist only while one SmartArt drawing is built: the ids its pictures
     /// were given in place of the drawing part's own (see `frames`).
     pub extra_rels: HashMap<String, Rel>,
+    /// A SmartArt drawing is being built (a diagram frame inside it is refused, see `frames`).
+    pub in_diagram: bool,
     /// The relationships of the slide, the layout and the master.
     pub rels: [&'a HashMap<String, Rel>; 3],
     /// The part whose shapes are being built (an index into `rels`).
@@ -289,6 +291,7 @@ pub(super) fn build_scene(
             rels: &mut *inp.parts.rels,
         },
         extra_rels: HashMap::new(),
+        in_diagram: false,
         rels: [inp.rels, &inh.layout.rels, &inh.master.rels],
         cur: 0,
         inh: None,

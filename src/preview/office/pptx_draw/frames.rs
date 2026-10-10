@@ -269,7 +269,22 @@ impl Sb<'_> {
     }
 
     /// A SmartArt diagram (`dgm:relIds`) as a group of scene items, from its saved drawing part.
-    pub(super) fn frame_diagram(&mut self, frame: &Node, xfrm: sd::Xfrm, out: &mut Vec<sd::Item>) {
+    ///
+    /// `depth` is the nesting depth of the frame in its own tree: the drawing's shapes continue
+    /// counting from it (never restart), and a diagram frame inside a drawing is refused (a
+    /// drawing never holds one; a forged drawing that points back at itself would recurse until
+    /// the stack ran out).
+    pub(super) fn frame_diagram(
+        &mut self,
+        frame: &Node,
+        xfrm: sd::Xfrm,
+        depth: usize,
+        out: &mut Vec<sd::Item>,
+    ) {
+        if self.in_diagram {
+            self.truncated = true;
+            return;
+        }
         if xfrm.w <= 0.0 || xfrm.h <= 0.0 {
             return;
         }
@@ -327,7 +342,9 @@ impl Sb<'_> {
         let mut kids = Vec::new();
         // (The drawing is in the frame's own space: an enclosing group's map does not apply.)
         self.group_maps.push(GroupMap::identity());
-        self.build_nodes(tree.nodes(), 1, &mut kids);
+        self.in_diagram = true;
+        self.build_nodes(tree.nodes(), depth + 1, &mut kids);
+        self.in_diagram = false;
         self.group_maps.pop();
         self.extra_rels.clear();
         if kids.is_empty() {

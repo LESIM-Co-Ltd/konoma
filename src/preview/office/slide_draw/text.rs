@@ -26,7 +26,9 @@
 //! (`（「『【〔〈《`): the offending character moves to the other line together with its
 //! neighbour. A word wider than the line is broken between characters; with `wrap = false`
 //! nothing is broken except at forced breaks. Not done: hanging punctuation, hyphenation, bidi
-//! reordering inside a line beyond reversing the atoms of right-to-left paragraphs.
+//! reordering of the atoms of a line: a right-to-left paragraph keeps its atoms in logical order
+//! and the positions are mirrored (the start edge is the right one); the characters inside one
+//! fragment are reordered by the shaper.
 //!
 //! # Tabs
 //!

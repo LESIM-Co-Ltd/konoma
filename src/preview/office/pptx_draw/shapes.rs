@@ -107,7 +107,7 @@ impl<'a> Sb<'a> {
                 "cxnSp" => out.extend(self.build_sp(n, true)),
                 "pic" => out.extend(self.build_pic(n)),
                 "grpSp" => out.extend(self.build_group(n, depth)),
-                "graphicFrame" => self.build_frame(n, out),
+                "graphicFrame" => self.build_frame(n, depth, out),
                 "controls" | "control" => {
                     // (ActiveX controls: wrappers whose `p:pic` is the picture PowerPoint shows.)
                     self.items -= 1;
@@ -441,7 +441,7 @@ impl<'a> Sb<'a> {
 
     /// A `p:graphicFrame`: an embedded object's picture; tables, charts and SmartArt go to their
     /// own functions.
-    fn build_frame(&mut self, f: &Node, out: &mut Vec<sd::Item>) {
+    fn build_frame(&mut self, f: &Node, depth: usize, out: &mut Vec<sd::Item>) {
         if hidden(f.child("nvGraphicFramePr")) {
             return;
         }
@@ -463,7 +463,7 @@ impl<'a> Sb<'a> {
         } else if uri.contains("/chart") || data.child("chart").is_some() {
             self.frame_chart(f, xfrm, out);
         } else if uri.ends_with("/diagram") {
-            self.frame_diagram(f, xfrm, out);
+            self.frame_diagram(f, xfrm, depth, out);
         } else if let Some(rid) = find_blip(data, 0) {
             // An embedded object (`p:oleObj`) is drawn as the picture of what it contains.
             let rels = self.rels_at(self.cur);
