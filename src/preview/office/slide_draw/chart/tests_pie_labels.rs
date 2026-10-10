@@ -281,3 +281,6 @@ fn random_pies_keep_leader_lines_off_the_text_and_labels_off_each_other() {
         }
     }
 }
+
+#[path = "pie_mutation_tests.rs"]
+mod mutation;

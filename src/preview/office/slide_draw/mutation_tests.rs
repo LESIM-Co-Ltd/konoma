@@ -226,3 +226,12 @@ fn channel_transforms_work_in_linear_light() {
         }
     }
 }
+
+#[path = "svg_mutation_tests.rs"]
+mod svg_mutation;
+
+#[path = "path_mutation_tests.rs"]
+mod path_mutation;
+
+#[path = "cost_mutation_tests.rs"]
+mod cost_mutation;

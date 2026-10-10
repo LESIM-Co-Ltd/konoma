@@ -1564,3 +1564,6 @@ fn a_break_before_and_after_the_text_centres_the_text_line_when_it_overflows() {
     let l = layout(&b, 900.0, h);
     assert!((l.lines[1].top + l.lines[1].height / 2.0 - h / 2.0).abs() < 0.01);
 }
+
+#[path = "text_mutation_tests.rs"]
+mod mutation;
