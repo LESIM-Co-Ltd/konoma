@@ -73,9 +73,18 @@ impl SlideRasterCap {
     pub(super) fn lower_permanent(&self, px: u32) {
         use std::sync::atomic::Ordering::Relaxed;
         let px = px.max(1);
-        let _ = self
-            .permanent
-            .fetch_update(Relaxed, Relaxed, |c| (c == 0 || px < c).then_some(px));
+        let mut current = self.permanent.load(Relaxed);
+        // compare_exchange_weak loop (fetch_update is deprecated on 1.99, try_update needs
+        // newer than the MSRV): stop as soon as the stored limit is already lower.
+        while current == 0 || px < current {
+            match self
+                .permanent
+                .compare_exchange_weak(current, px, Relaxed, Relaxed)
+            {
+                Ok(_) => break,
+                Err(seen) => current = seen,
+            }
+        }
     }
 
     /// Lowers the limit to `px` for [`TIMEOUT_CAP_LIFETIME`] from `now`. A limit that is still
