@@ -14,9 +14,9 @@ use crate::preview::office::tests_docx::{tiny_png, REL_BASE};
 use crate::preview::office::tests_pptx::PNS;
 
 mod dump;
-mod dump_e3;
+mod dump_samples;
 mod pic_fx;
-mod shapes_e3;
+mod shape_reading;
 mod tabs;
 
 // ---------------------------------------------------------------------------------------------
@@ -1785,7 +1785,7 @@ fn exact_presets_keep_their_cheap_forms_and_the_others_are_evaluated() {
     assert!(matches!(g("roundRect"), sd::Geometry::Paths(_)));
     assert_eq!(g("nonsense"), sd::Geometry::Rect);
     // A custom geometry with no path is evaluated too (it draws nothing); one that is not
-    // readable (too many guides) is the box -- see `shapes_e3`.
+    // readable (too many guides) is the box -- see `shape_reading`.
     let d = D::new(&shape(
         "",
         &format!(

@@ -62,15 +62,13 @@ pub(super) mod theme;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod tests_f2_dump;
-#[cfg(test)]
-mod tests_f3_dump;
+mod tests_chart_labels_dump;
 #[cfg(test)]
 mod tests_frames;
 #[cfg(test)]
 mod tests_frames_dump;
 #[cfg(test)]
-mod tests_g1;
+mod tests_corpus_regressions;
 #[cfg(test)]
 mod tests_names;
 #[cfg(test)]

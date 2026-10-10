@@ -1,30 +1,30 @@
-//! Dumps for a human (ignored tests) of the shape/effect work: the self-made and sample decks and
+//! Dumps for a human (ignored tests) of the shape and effect features: the self-made and sample decks and
 //! a corpus selection, konoma beside LibreOffice's picture. They write into
-//! `docs/render-check/e3/`. `E3_ONLY=<substring,...>` limits the decks, `E3_CORPUS=src/file.pptx,...`
-//! picks corpus decks, `E3_SLIDES=<n>` the slides drawn per corpus deck.
+//! `docs/render-check/feature-dump/`. `DUMP_ONLY=<substring,...>` limits the decks, `DUMP_CORPUS=src/file.pptx,...`
+//! picks corpus decks, `DUMP_SLIDES=<n>` the slides drawn per corpus deck.
 
 use std::path::Path;
 
 use super::dump::{clear_dir, dump_deck, root, CACHE};
 
-const OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/e3";
+const OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/feature-dump";
 
 fn wanted(name: &str) -> bool {
-    std::env::var("E3_ONLY").map_or(true, |f| f.split(',').any(|p| name.contains(p)))
+    std::env::var("DUMP_ONLY").map_or(true, |f| f.split(',').any(|p| name.contains(p)))
 }
 
 #[test]
-#[ignore = "writes docs/render-check/e3/*.png for a human to look at"]
-fn e3_dump_decks() {
+#[ignore = "writes docs/render-check/feature-dump/*.png for a human to look at"]
+fn dump_sample_decks() {
     let out = Path::new(OUT);
-    if std::env::var("E3_ONLY").is_err() && std::env::var("E3_CORPUS").is_err() {
+    if std::env::var("DUMP_ONLY").is_err() && std::env::var("DUMP_CORPUS").is_err() {
         clear_dir(out);
     }
     let _ = std::fs::create_dir_all(out);
     let own = Path::new(CACHE).join("pptx-ref/own");
     let selfmade = Path::new(CACHE).join("pptx-ref/selfmade");
     let gen = Path::new(CACHE).join("slide-corpus-gen");
-    let corpus_only = std::env::var("E3_CORPUS").is_ok() && std::env::var("E3_ONLY").is_err();
+    let corpus_only = std::env::var("DUMP_CORPUS").is_ok() && std::env::var("DUMP_ONLY").is_err();
     if !corpus_only {
         for (name, pptx, refd) in [
             (
@@ -65,8 +65,8 @@ fn e3_dump_decks() {
             }
         }
     }
-    if let Ok(list) = std::env::var("E3_CORPUS") {
-        let n: usize = std::env::var("E3_SLIDES")
+    if let Ok(list) = std::env::var("DUMP_CORPUS") {
+        let n: usize = std::env::var("DUMP_SLIDES")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(4);
@@ -82,20 +82,20 @@ fn e3_dump_decks() {
     }
 }
 
-/// `E3_SVG=<pptx path>` and `E3_SVG_SLIDE=<n>` (1-based): writes the slide's SVG to
-/// `E3_SVG_OUT`, for looking at the markup.
+/// `DUMP_SVG=<pptx path>` and `DUMP_SVG_SLIDE=<n>` (1-based): writes the slide's SVG to
+/// `DUMP_SVG_OUT`, for looking at the markup.
 #[test]
 #[ignore = "writes one SVG for a human to look at"]
-fn e3_dump_svg() {
+fn dump_slide_svg() {
     use super::super::super::{load_presentation, DocOptions};
-    let Ok(path) = std::env::var("E3_SVG") else {
+    let Ok(path) = std::env::var("DUMP_SVG") else {
         return;
     };
-    let n: usize = std::env::var("E3_SVG_SLIDE")
+    let n: usize = std::env::var("DUMP_SVG_SLIDE")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
-    let Ok(out) = std::env::var("E3_SVG_OUT") else {
+    let Ok(out) = std::env::var("DUMP_SVG_OUT") else {
         return;
     };
     let doc = load_presentation(Path::new(&path), &DocOptions::default()).expect("loads");
@@ -110,11 +110,11 @@ fn e3_dump_svg() {
     std::fs::write(out, r.svg).unwrap();
 }
 
-/// A slide of the features of this work in one picture (vertical text, autofit, symbol bullets,
-/// effects, rectangular gradient): `docs/render-check/e3/synthetic-1.png`.
+/// A slide of the shape and text features in one picture (vertical text, autofit, symbol bullets,
+/// effects, rectangular gradient): `docs/render-check/feature-dump/synthetic-1.png`.
 #[test]
-#[ignore = "writes docs/render-check/e3/synthetic-1.png for a human to look at"]
-fn e3_dump_synthetic() {
+#[ignore = "writes docs/render-check/feature-dump/synthetic-1.png for a human to look at"]
+fn dump_feature_slide() {
     use super::{para, shape, xf, D, RECT};
     let fill = |c: &str| format!(r#"<a:solidFill><a:srgbClr val="{c}"/></a:solidFill>"#);
     let ln = r#"<a:ln w="9525"><a:solidFill><a:srgbClr val="334455"/></a:solidFill></a:ln>"#;

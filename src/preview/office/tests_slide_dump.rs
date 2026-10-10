@@ -7,13 +7,18 @@
 //!   cargo test --release --bin konoma slide_dump -- --ignored --nocapture
 //! ```
 //!
+//! `SLIDE_DUMP_SLIDES=@charts` draws the slides with charts or SmartArt of every such deck of the
+//! corpus (`pptx-corpus/index.json`): `source/stem:C` below, which is also usable by hand.
+//!
 //! Environment:
 //! - `SLIDE_DUMP_SLIDES` (required): comma-separated `source/stem:N`. `source` is a folder of
 //!   `NoCode/.cache/pptx-corpus/` (`poi`, `libreoffice`, `python-pptx`, ..); `stem` is the file name
 //!   without `.pptx` / `.odp` (the LibreOffice-made ODP decks are named `odp__<name>`), also looked up in
 //!   `slide-corpus-gen/` (self-made decks, give any `source`, e.g. `selfmade/draw-shapes:3`),
 //!   `samples/` and `testdata/office/`. `N` is the slide number (1-based); `*` is the first 12
-//!   slides, for which only the files of `SLIDE_DUMP_SVG` are written (no pictures, no score).
+//!   slides, for which only the files of `SLIDE_DUMP_SVG` are written (no pictures, no score);
+//!   `C` is the slides that are drawn as groups (charts, SmartArt), at most `CHART_SLIDES`, or all
+//!   of a deck of that many slides or fewer.
 //! - `SLIDE_DUMP_OUT`: the folder of the side-by-side pictures
 //!   `<tag>-<source>-<stem>-NNN.png` (konoma left, LibreOffice right, 640 px each). Default
 //!   `docs/render-check/slide-dump/` of the main checkout.
@@ -41,17 +46,30 @@ const CACHE: &str = "/Users/shuhei/work/NoCode/.cache";
 const DEFAULT_OUT: &str = "/Users/shuhei/work/konoma/docs/render-check/slide-dump";
 /// Slides drawn for `N = *`.
 const ALL_SLIDES: usize = 12;
+/// Most slides of one deck that `C` / `@charts` picks.
+const CHART_SLIDES: usize = 10;
 /// Width of one half of a side-by-side picture.
 const HALF: u32 = 640;
 /// Width the slide is rasterized at (the reference is 1280 px wide).
 const FULL_W: u32 = 1280;
 
-/// One `source/stem:N` of `SLIDE_DUMP_SLIDES`; `slide` is `None` for `*`.
+/// Which slides of a deck one spec asks for.
+#[derive(Debug, PartialEq)]
+enum Pick {
+    /// `N`: that slide.
+    One(usize),
+    /// `*`: the first `ALL_SLIDES`, SVG files only.
+    All,
+    /// `C`: the slides drawn as groups (charts, SmartArt).
+    Charts,
+}
+
+/// One `source/stem:N` of `SLIDE_DUMP_SLIDES`.
 #[derive(Debug, PartialEq)]
 struct Spec<'a> {
     source: &'a str,
     stem: &'a str,
-    slide: Option<usize>,
+    slide: Pick,
 }
 
 fn parse_spec(item: &str) -> Result<Spec<'_>, String> {
@@ -61,13 +79,13 @@ fn parse_spec(item: &str) -> Result<Spec<'_>, String> {
     let (source, stem) = deck
         .split_once('/')
         .ok_or_else(|| format!("{item}: want source/stem:N"))?;
-    let slide = if n == "*" {
-        None
-    } else {
-        match n.parse::<usize>() {
-            Ok(v) if v >= 1 => Some(v),
-            _ => return Err(format!("{item}: the slide is a number from 1, or *")),
-        }
+    let slide = match n {
+        "*" => Pick::All,
+        "C" => Pick::Charts,
+        _ => match n.parse::<usize>() {
+            Ok(v) if v >= 1 => Pick::One(v),
+            _ => return Err(format!("{item}: the slide is a number from 1, *, or C")),
+        },
     };
     Ok(Spec {
         source,
@@ -94,6 +112,26 @@ fn find_deck(source: &str, stem: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// The `source/stem:C` specs of `@charts`: every `.pptx` of the corpus index with charts or SmartArt.
+fn chart_decks() -> Vec<String> {
+    let path = Path::new(CACHE).join("pptx-corpus/index.json");
+    let index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).expect("pptx-corpus/index.json"))
+            .expect("index.json parses");
+    let mut out = Vec::new();
+    for e in index.as_array().expect("index.json is a list") {
+        let has = |k: &str| e[k].as_bool().unwrap_or(false);
+        let Some(file) = e["file"].as_str().filter(|f| f.ends_with(".pptx")) else {
+            continue;
+        };
+        if let (true, Some((src, name))) = (has("charts") || has("smartart"), file.split_once('/'))
+        {
+            out.push(format!("{src}/{}:C", name.trim_end_matches(".pptx")));
+        }
+    }
+    out
 }
 
 fn on_white(img: &image::DynamicImage) -> RgbaImage {
@@ -132,10 +170,14 @@ fn a_spec_names_a_source_a_deck_and_a_slide_or_all() {
         Ok(Spec {
             source: "poi",
             stem: "customGeo",
-            slide: Some(5)
+            slide: Pick::One(5)
         })
     );
-    assert_eq!(parse_spec("libreoffice/odp__16-9:*").unwrap().slide, None);
+    assert_eq!(
+        parse_spec("libreoffice/odp__16-9:*").unwrap().slide,
+        Pick::All
+    );
+    assert_eq!(parse_spec("poi/charts:C").unwrap().slide, Pick::Charts);
     for bad in ["customGeo:5", "poi/customGeo", "poi/customGeo:0", "poi/x:y"] {
         assert!(parse_spec(bad).is_err(), "{bad}");
     }
@@ -152,7 +194,18 @@ fn slide_dump() {
     if let Some(d) = &svg_dir {
         std::fs::create_dir_all(d).expect("SLIDE_DUMP_SVG");
     }
-    for item in list.split(',').filter(|s| !s.is_empty()) {
+    let items: Vec<String> = list
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .flat_map(|s| {
+            if s == "@charts" {
+                chart_decks()
+            } else {
+                vec![s.to_string()]
+            }
+        })
+        .collect();
+    for item in &items {
         let spec = parse_spec(item).unwrap_or_else(|e| panic!("{e}"));
         let Spec {
             source,
@@ -170,9 +223,18 @@ fn slide_dump() {
             .map(|i| (i.key.clone(), Arc::new(i.bytes.clone())))
             .collect();
         let lookup = |k: &str| media.get(k).cloned();
+        let has_group =
+            |sc: &sd::SlideScene| sc.items.iter().any(|i| matches!(i, sd::Item::Group(_)));
         let slides: Vec<usize> = match slide {
-            Some(n) => vec![n],
-            None => (1..=doc.slide_scenes.len().min(ALL_SLIDES)).collect(),
+            Pick::One(n) => vec![n],
+            Pick::All => (1..=doc.slide_scenes.len().min(ALL_SLIDES)).collect(),
+            Pick::Charts => {
+                let small = doc.slide_scenes.len() <= CHART_SLIDES;
+                (1..=doc.slide_scenes.len())
+                    .filter(|n| small || has_group(&doc.slide_scenes[n - 1]))
+                    .take(CHART_SLIDES)
+                    .collect()
+            }
         };
         let leaf = if path.extension().is_some_and(|e| e == "odp") {
             format!("{stem}-odp")
@@ -199,7 +261,7 @@ fn slide_dump() {
                         .expect("write png");
                 }
             }
-            if slide.is_none() {
+            if slide == Pick::All {
                 continue;
             }
             let reference = image::open(
