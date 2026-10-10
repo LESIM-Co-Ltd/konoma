@@ -306,6 +306,7 @@ impl App {
                 // present (its own guard against reviving an evicted entry), so the insert has to
                 // happen here, not inside it.
                 self.md_image_cache.entry(p.cache_key.clone()).or_default();
+                let request = self.begin_md_request(&p.cache_key);
                 // No transparency handling here: each side draws with exactly the same pixels the
                 // ordinary preview would for that kind — a PDF's own renderer composites its pages
                 // onto opaque white before this ever sees them (`preview::pdf::pixmap_to_dynamic_
@@ -318,6 +319,7 @@ impl App {
                     svg: p.svg,
                     reraster: false,
                     frames: p.frames,
+                    request,
                 });
                 MediaDiffSide::Picture(MediaDiffPicture {
                     natural_px: p.natural_px,

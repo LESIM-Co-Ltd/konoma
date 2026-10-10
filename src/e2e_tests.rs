@@ -202,34 +202,48 @@ impl Sim {
         self
     }
 
-    /// Wait for the next inline-Markdown-image decode result and apply it (the run loop's
-    /// `rx.md_img.try_recv()` step), then redraw — which is what feeds a decoded image back into
-    /// `ensure_md_image`'s "request an encode" branch on the next frame.
+    /// Wait for the next inline-Markdown-image decode result **that applies** and apply it (the
+    /// run loop's `rx.md_img.try_recv()` step), then redraw, which is what feeds a decoded image
+    /// back into `ensure_md_image`'s "request an encode" branch on the next frame. A result of an
+    /// earlier request for the same path (a decode cancelled by leaving the document, which then
+    /// came back) is stale by design and is skipped, exactly as the run loop ignores it.
     #[track_caller]
     fn drain_md_images(&mut self) {
         let rx = self
             .md_img_rx
             .as_ref()
             .expect("with_media() を呼んでいない");
-        let res = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("decode worker が結果を返す");
-        assert!(self.app.apply_md_image(res), "現世代の結果は適用される");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let res = rx
+                .recv_timeout(left)
+                .expect("decode worker が現世代の結果を返す");
+            if self.app.apply_md_image(res) {
+                break;
+            }
+        }
         self.draw();
     }
 
-    /// Wait for the next inline-image encode result and apply it (the run loop's
-    /// `rx.md_enc.try_recv()` step), then redraw.
+    /// Wait for the next inline-image encode result **that applies** and apply it (the run loop's
+    /// `rx.md_enc.try_recv()` step), then redraw. Results for a dropped entry are skipped.
     #[track_caller]
     fn drain_md_encodes(&mut self) {
         let rx = self
             .md_enc_rx
             .as_ref()
             .expect("with_media() を呼んでいない");
-        let res = rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("encode worker が結果を返す");
-        assert!(self.app.apply_md_encode(res), "現世代の結果は適用される");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let res = rx
+                .recv_timeout(left)
+                .expect("encode worker が現世代の結果を返す");
+            if self.app.apply_md_encode(res) {
+                break;
+            }
+        }
         self.draw();
     }
 

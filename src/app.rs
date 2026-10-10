@@ -1795,6 +1795,10 @@ pub struct App {
     /// `reserve_proto_slot` can tell "wanted by the picture currently being drawn" (never recycle)
     /// from "left over from an earlier position" (fair game).
     md_frame: u64,
+    /// Last request id handed out by `App::begin_md_request` (ids start at 1). Every decode,
+    /// rebuild and re-raster of an inline picture is stamped with a fresh one, so a result can be
+    /// matched to the request that is still wanted (`MdImgEntry::request`).
+    md_request_seq: u64,
     /// Number of frames `ui::render` has begun (bumped at the top of every one, whatever it draws).
     draw_seq: u64,
     /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
@@ -2570,6 +2574,18 @@ struct MdImgEntry {
     /// the picture, and dropping the entry (document closed, file changed) withdraws a decode that
     /// has not run yet.
     wish: crate::preview::image::DecodeWish,
+    /// Id of the one background decode / rebuild / re-raster that is still wanted for this entry
+    /// (`App::begin_md_request`; 0 = none was ever started, as for an entry placed by hand in a
+    /// test). A result carrying any other id belongs to an earlier life of the same path (the entry
+    /// was dropped, then asked for again) and is ignored by `apply_md_image`, so a stale
+    /// "cancelled" cannot forget the new entry and a stale picture cannot fill it. At most one
+    /// request runs per entry, so this is also the identity of the in-flight one.
+    request: u64,
+    /// Id of the first request ever started for this entry, constant for its life: an encode
+    /// result carries it so that one computed for a dropped entry is not applied to a new one of
+    /// the same path (`request` cannot do this: a re-raster legitimately changes it while an
+    /// encode of the previous pixels may still be running). 0 = never started.
+    born: u64,
 }
 
 impl MdImgEntry {
@@ -2802,6 +2818,8 @@ pub struct MdEncodeRequest {
     /// `Some((id, is_tmux))` on a kitty terminal: build konoma's own compressed transmit under this
     /// slot's **fixed** id (see `MdImgEntry::kitty_ids`). None everywhere else = ratatui-image.
     kitty: Option<(u32, bool)>,
+    /// `MdImgEntry::born` of the entry the request was made for.
+    born: u64,
 }
 
 /// Result of a background inline-image encode, delivered to the run loop.
@@ -2812,6 +2830,9 @@ pub struct MdEncodeResult {
     /// `enc_inflight` latched on, freezing all re-encodes of that image and keeping
     /// `md_images_loading()` true forever (busy spinner + 16ms polling — idle CPU 0% broken).
     image: Option<InlineImage>,
+    /// `MdImgEntry::born` of the entry the request was made for; `apply_md_encode` drops a result
+    /// whose entry has since been replaced.
+    born: u64,
 }
 
 /// Background worker that encodes inline-image protocols (the whole image or a cropped band) with a
@@ -2823,7 +2844,7 @@ pub fn md_encode_worker(
     tx: std::sync::mpsc::Sender<MdEncodeResult>,
 ) {
     while let Ok(req) = rx.recv() {
-        let (path, key) = (req.path.clone(), req.key);
+        let (path, key, born) = (req.path.clone(), req.key, req.born);
         let picker = &picker; // borrow: so the move closure doesn't consume picker across loop iterations
                               // Wrap the whole request handling in a panic catch: even if one new_protocol/crop
                               // panics, don't kill the worker thread (killing it would stop every future encode,
@@ -2871,7 +2892,15 @@ pub fn md_encode_worker(
             }
         })
         .flatten();
-        if tx.send(MdEncodeResult { path, key, image }).is_err() {
+        if tx
+            .send(MdEncodeResult {
+                path,
+                key,
+                image,
+                born,
+            })
+            .is_err()
+        {
             break;
         }
     }
@@ -2935,6 +2964,9 @@ pub struct MdImageResult {
     /// so the existing layout-sizing code path is unchanged). None for everything else, including a
     /// static/single-frame GIF, which already fell back to the plain still-image decode.
     frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
+    /// The `MdImgEntry::request` this result answers (see there); `apply_md_image` drops it when
+    /// the entry has moved on to another request.
+    request: u64,
 }
 
 /// Result of a background remote-image download (curl → local cache file), delivered to the run loop.
@@ -3452,6 +3484,7 @@ impl App {
             md_image_cache: std::collections::HashMap::new(),
             md_kitty_ids: std::collections::HashMap::new(),
             md_frame: 0,
+            md_request_seq: 0,
             draw_seq: 0,
             detail_cells_cache: std::collections::HashMap::new(),
             tree_stale: false,
@@ -7491,3 +7524,7 @@ mod deck_view_tests;
 // Inline-image cache behaviour around eviction, failure reasons and the decode queue.
 #[cfg(test)]
 mod md_raster_tests;
+
+// Identity of inline-image requests: a result of an earlier request never touches a newer entry.
+#[cfg(test)]
+mod md_request_tests;

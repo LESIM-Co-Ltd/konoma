@@ -250,6 +250,7 @@ fn a_panicked_rebuild_stops_the_loading_state() {
         svg: None,
         reraster: true,
         frames: None,
+        request: app.md_request_for_test(&key),
     });
     assert!(!app.md_images_loading());
     assert!(app.md_image_cache[&key].failed);
@@ -664,6 +665,7 @@ fn a_landing_picture_evicts_the_oldest_ones_over_budget() {
         svg: None,
         reraster: false,
         frames: None,
+        request: app.md_request_for_test(&fresh),
     }));
     assert!(app.md_image_cache[&PathBuf::from("/x/old1.png")].evicted);
     assert!(app.md_image_cache[&PathBuf::from("/x/old2.png")].evicted);
@@ -1208,6 +1210,7 @@ fn a_cancelled_file_picture_result_for_a_removed_entry_is_ignored() {
         svg: None,
         reraster: false,
         frames: None,
+        request: app.md_request_for_test(&PathBuf::from("/nonexistent/a.png")),
     });
     assert!(!redraw);
     assert!(app.md_image_cache.is_empty());

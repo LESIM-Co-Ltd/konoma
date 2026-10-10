@@ -671,6 +671,7 @@ fn a_cancelled_result_for_a_removed_entry_is_ignored() {
         svg: None,
         reraster: false,
         frames: None,
+        request: app.md_request_for_test(&key),
     });
     assert!(!redraw);
     assert!(app.md_image_cache.is_empty());

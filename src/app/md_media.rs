@@ -130,6 +130,28 @@ impl App {
         self.md_frame = self.md_frame.saturating_add(1);
     }
 
+    /// Start a new request (decode, rebuild of evicted pixels or re-raster) for the existing entry
+    /// `path` and return its id, which the worker puts into its `MdImageResult` (and encodes carry
+    /// the entry's `born`). The entry then answers to this id alone: whatever an earlier request of
+    /// the same path is still running is stale from here on (`MdImgEntry::request`).
+    pub(super) fn begin_md_request(&mut self, path: &Path) -> u64 {
+        self.md_request_seq += 1;
+        let id = self.md_request_seq;
+        if let Some(e) = self.md_image_cache.get_mut(path) {
+            e.request = id;
+            if e.born == 0 {
+                e.born = id;
+            }
+        }
+        id
+    }
+
+    /// Test-only: the request id an entry currently answers to (0 = none / no entry).
+    #[cfg(test)]
+    pub fn md_request_for_test(&self, path: &Path) -> u64 {
+        self.md_image_cache.get(path).map_or(0, |e| e.request)
+    }
+
     /// Apply a completed background decode of an inline Markdown image. Returns whether to redraw.
     pub fn apply_md_image(&mut self, res: MdImageResult) -> bool {
         // The entry is always pre-placed at kick time (ensure_mermaid_fence_render /
@@ -138,7 +160,14 @@ impl App {
         // it (with or_default, the old diagram's raster would be re-inserted and linger until the
         // next enter_preview, and on top of that the md_cache invalidation below would needlessly
         // do a full rebuild once for **an unrelated current document**).
-        if !self.md_image_cache.contains_key(&res.path) {
+        let Some(entry) = self.md_image_cache.get(&res.path) else {
+            return false;
+        };
+        // A result of an earlier request: the entry it was made for was dropped and the path asked
+        // for again (or a newer request superseded it). Nothing in it may touch the current
+        // entry, whatever it says: a stale "cancelled" would forget the new entry, a stale picture
+        // would fill it and a stale re-raster would clear the in-flight flag of the newer one.
+        if entry.request != res.request {
             return false;
         }
         // The drawing process was stopped because the preview moved on: forget the entry, so the
@@ -302,6 +331,7 @@ impl App {
         let slot = reserve_proto_slot(&mut entry.zoom, enc_key, frame, MD_ZOOM_SLOTS);
         let kitty = kitty_id_for(ids, &key_path, &enc_key, slot, use_kitty).map(|id| (id, is_tmux));
         entry.enc_inflight = true;
+        let born = entry.born;
         let _ = tx.send(MdEncodeRequest {
             path: key_path,
             key: enc_key,
@@ -310,6 +340,7 @@ impl App {
             cols,
             rows,
             kitty,
+            born,
         });
     }
 
@@ -351,6 +382,7 @@ impl App {
             return FenceSharpen::NotNeeded;
         }
         entry.reraster_inflight = true;
+        let request = self.begin_md_request(key_path);
         let target = needed_px.min(4096);
         let kp = key_path.clone();
         // A second copy for the panic-fallback result below: `job` (built next) moves its own copy
@@ -366,6 +398,7 @@ impl App {
                 svg: None,
                 reraster: true,
                 frames: None,
+                request,
             }
         };
         if let Some(tx) = img_tx {
@@ -386,6 +419,7 @@ impl App {
                     svg: None,
                     reraster: true,
                     frames: None,
+                    request,
                 });
                 let _ = tx.send(res);
             });
@@ -508,6 +542,7 @@ impl App {
             }
             self.md_image_cache
                 .insert(key.clone(), MdImgEntry::default());
+            let request = self.begin_md_request(&key);
             std::thread::spawn(move || {
                 // Even if render() (rasterize_trusted = resvg) panics, don't kill the thread — always
                 // return a result: otherwise the entry stays stuck at decoded=None && !failed and
@@ -520,12 +555,14 @@ impl App {
                     svg,
                     reraster: false,
                     frames: None,
+                    request,
                 });
             });
             false
         } else {
             self.md_image_cache
                 .insert(key.clone(), MdImgEntry::default());
+            let request = self.begin_md_request(&key);
             let (image, svg) = render();
             self.apply_md_image(MdImageResult {
                 path: key,
@@ -533,6 +570,7 @@ impl App {
                 svg,
                 reraster: false,
                 frames: None,
+                request,
             });
             true
         }
@@ -571,6 +609,7 @@ impl App {
             }
             self.md_image_cache
                 .insert(key.clone(), MdImgEntry::default());
+            let request = self.begin_md_request(&key);
             std::thread::spawn(move || {
                 let (image, svg) = crate::preview::markdown::catch_silent(render)
                     .unwrap_or_else(|| (Err("math render panicked".to_string()), None));
@@ -580,12 +619,14 @@ impl App {
                     svg,
                     reraster: false,
                     frames: None,
+                    request,
                 });
             });
             false
         } else {
             self.md_image_cache
                 .insert(key.clone(), MdImgEntry::default());
+            let request = self.begin_md_request(&key);
             let (image, svg) = render();
             self.apply_md_image(MdImageResult {
                 path: key,
@@ -593,6 +634,7 @@ impl App {
                 svg,
                 reraster: false,
                 frames: None,
+                request,
             });
             true
         }
@@ -611,6 +653,11 @@ impl App {
         let Some(entry) = self.md_image_cache.get_mut(&res.path) else {
             return false;
         };
+        // Encoded for an entry that has since been dropped and re-created under the same path:
+        // it must neither clear the new entry's in-flight flag nor fill (or degrade) its slots.
+        if entry.born != res.born {
+            return false;
+        }
         entry.enc_inflight = false;
         let key = res.key;
         let mut stored = false;
@@ -732,6 +779,7 @@ impl App {
             .get(&path)
             .map(|e| e.wish.ticket())
             .unwrap_or_default();
+        let request = self.begin_md_request(&path);
         let (gen, latest) = (self.media_gen, self.media_gen_shared.clone());
         let stale = ticket.clone();
         std::thread::Builder::new()
@@ -779,6 +827,7 @@ impl App {
                     svg: None,
                     reraster: false,
                     frames,
+                    request,
                 });
             })
             .is_ok()
@@ -866,6 +915,7 @@ impl App {
         if let Some(e) = self.md_image_cache.get_mut(&path) {
             e.reraster_inflight = true;
         }
+        let request = self.begin_md_request(&path);
         let kp = path.clone();
         let started = std::thread::Builder::new()
             .name("konoma-md-rebuild".into())
@@ -883,6 +933,7 @@ impl App {
                         svg: None,
                         reraster: true,
                         frames: None,
+                        request,
                     }
                 };
                 let res = crate::preview::markdown::compute_or_fallback(job, || MdImageResult {
@@ -891,6 +942,7 @@ impl App {
                     svg: None,
                     reraster: true,
                     frames: None,
+                    request,
                 });
                 let _ = tx.send(res);
             })
@@ -1105,6 +1157,7 @@ impl App {
         let slot = reserve_proto_slot(entry.slots_mut(&enc_key), enc_key, frame, MD_PROTO_SLOTS);
         let kitty = kitty_id_for(ids, &path, &enc_key, slot, use_kitty).map(|id| (id, is_tmux));
         entry.enc_inflight = true;
+        let born = entry.born;
         let _ = enc_tx.send(MdEncodeRequest {
             path,
             key: enc_key,
@@ -1113,6 +1166,7 @@ impl App {
             cols,
             rows,
             kitty,
+            born,
         });
     }
 
@@ -1258,6 +1312,7 @@ impl App {
             .get(&key)
             .map(|e| e.wish.ticket())
             .unwrap_or_default();
+        let request = self.begin_md_request(&key);
         let (gen, latest) = (self.media_gen, self.media_gen_shared.clone());
         let stale = ticket.clone();
         std::thread::Builder::new()
@@ -1348,6 +1403,7 @@ impl App {
                     svg: None,
                     reraster,
                     frames,
+                    request,
                 });
             })
             .is_ok()
