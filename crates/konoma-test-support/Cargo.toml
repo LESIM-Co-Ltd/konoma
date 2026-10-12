@@ -1,0 +1,9 @@
+[package]
+name = "konoma-test-support"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Test-only helpers shared by konoma and its crates (temp-dir guards, sample lookup)"
+publish = false

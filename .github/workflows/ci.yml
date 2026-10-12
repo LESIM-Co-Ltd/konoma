@@ -49,16 +49,16 @@ jobs:
 
       # Default features include `git`. Warnings are denied (the project's DoD is zero warnings).
       - name: Clippy (default features)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Clippy (no default features)
-        run: cargo clippy --all-targets --no-default-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 
       - name: Test (default features)
-        run: cargo test
+        run: cargo test --workspace
 
       - name: Test (no default features)
-        run: cargo test --no-default-features
+        run: cargo test --workspace --no-default-features
 
   # Full clippy + test suite on Linux (x86_64). konoma is cross-platform Unix code, so the same
   # bar applies here. The suite uses a headless test backend, so no terminal/display is needed; the
@@ -148,13 +148,13 @@ jobs:
           jj --version
 
       - name: Clippy (default features)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Clippy (no default features)
-        run: cargo clippy --all-targets --no-default-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 
       - name: Test (default features)
-        run: cargo test
+        run: cargo test --workspace
 
       # Checks that the font install above actually worked, rather than assuming it. konoma falls
       # back to an embedded face when the machine resolves no sans-serif, so a botched font list
@@ -164,10 +164,10 @@ jobs:
       # here it is run by name, on a host whose fonts we just chose. It reuses the binary the step
       # above built, so it costs seconds.
       - name: Check the runner really has a usable sans-serif
-        run: cargo test -- --ignored --exact preview::svg::tests::the_system_resolves_sans_serif_without_the_fallback
+        run: cargo test -p konoma-svg -- --ignored --exact svg::tests::the_system_resolves_sans_serif_without_the_fallback
 
       - name: Test (no default features)
-        run: cargo test --no-default-features
+        run: cargo test --workspace --no-default-features
 
   # Cross-compile check for macOS x86_64 (the arm64 host covers aarch64 above; Linux is fully
   # covered by check-linux). Windows (x86_64-pc-windows-msvc) is intentionally excluded: konoma

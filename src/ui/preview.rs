@@ -17,6 +17,7 @@ use ratatui_image::{FilterType, Image, Resize, StatefulImage};
 
 use crate::app::{App, ScrollExtent};
 use crate::i18n::tr;
+use crate::preview::image::ImageFailureMessage;
 use crate::preview::{text, PreviewKind};
 use crate::ui::status::{hint, page_hint};
 

@@ -97,26 +97,6 @@ fn private_temp_dir() -> PathBuf {
     super::private_dir::private_dir("cmd")
 }
 
-/// The unit-test process never reaches `main`'s exit cleanup, so it removes its own private
-/// directories when the process exits (libtest ends through `process::exit`). Every module that
-/// creates a `konoma-<kind>-<pid>` directory calls this first.
-#[cfg(all(test, unix))]
-pub(crate) fn register_test_exit_cleanup() {
-    static REGISTERED: std::sync::Once = std::sync::Once::new();
-    REGISTERED.call_once(|| {
-        extern "C" fn at_exit() {
-            remove_private_temp_dir();
-        }
-        // SAFETY: registers a plain `extern "C" fn()` that only removes directories.
-        unsafe {
-            libc::atexit(at_exit);
-        }
-    });
-}
-
-#[cfg(not(all(test, unix)))]
-pub(crate) fn register_test_exit_cleanup() {}
-
 /// Removes this process's whole private temp directory (every delegated command's `{out}` and every
 /// converted document's raw view). Called on every exit path — after the run loop, from the panic
 /// hook, and from the signal thread — because `App::clear_command_out` only covers the active tab

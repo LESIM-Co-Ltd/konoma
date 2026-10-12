@@ -693,8 +693,8 @@ fn write_png_noise(path: &Path, side: u32) {
     img.save(path).unwrap();
 }
 
-fn tmp(prefix: &str) -> crate::test_support::TmpDir {
-    let dir = crate::test_support::unique_tmp(prefix);
+fn tmp(prefix: &str) -> konoma_test_support::TmpDir {
+    let dir = konoma_test_support::unique_tmp(prefix);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -1225,7 +1225,7 @@ fn the_budgets_depth_cap_is_beyond_what_usvg_will_build() {
 
 #[test]
 fn embedded_rasters_are_charged_by_their_pixels() {
-    use super::super::hostile_tests::png_header_only;
+    use konoma_test_support::png_header_only;
     let image = |w: u32, h: u32| {
         format!(
             r#"<image width="10" height="10" href="data:image/png;base64,{}"/>"#,

@@ -16,7 +16,7 @@ use std::sync::Mutex;
 /// Whether `meta` (from `symlink_metadata`, so a symlink is never a directory here) describes a
 /// directory that only `euid` can use: a real directory, owned by `euid`, no group/other bits.
 #[cfg(unix)]
-pub(crate) fn dir_is_private(meta: &std::fs::Metadata, euid: u32) -> bool {
+pub fn dir_is_private(meta: &std::fs::Metadata, euid: u32) -> bool {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     meta.file_type().is_dir() && meta.uid() == euid && meta.permissions().mode() & 0o077 == 0
 }
@@ -78,12 +78,12 @@ fn create_fresh(path: &Path) -> io::Result<()> {
 
 /// The private directories this process has chosen, by kind.
 #[derive(Default)]
-pub(crate) struct PrivateDirs {
+pub struct PrivateDirs {
     chosen: Vec<(String, PathBuf)>,
 }
 
 impl PrivateDirs {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self { chosen: Vec::new() }
     }
 
@@ -92,7 +92,7 @@ impl PrivateDirs {
     /// that name is taken by something unsafe; later calls return the same path (recreating it if
     /// it was removed, and re-picking if it was replaced by something unsafe). Err only when no
     /// safe directory could be made.
-    pub(crate) fn ensure(&mut self, base: &Path, kind: &str) -> io::Result<PathBuf> {
+    pub fn ensure(&mut self, base: &Path, kind: &str) -> io::Result<PathBuf> {
         let idx = self.chosen.iter().position(|(k, _)| k == kind);
         if let Some(i) = idx {
             let path = &self.chosen[i].1;
@@ -125,7 +125,7 @@ impl PrivateDirs {
     }
 
     /// Removes the directories this registry chose, and only those.
-    pub(crate) fn remove_all(&self) {
+    pub fn remove_all(&self) {
         for (_, path) in &self.chosen {
             remove_chosen(path);
         }
@@ -144,8 +144,8 @@ static GLOBAL: Mutex<PrivateDirs> = Mutex::new(PrivateDirs::new());
 /// This process's private directory of `kind` (`cmd`, `pdf`, `vthumb`) under the system temp dir,
 /// created on demand. When no safe directory can be made the returned path does not exist, so
 /// every write into it fails instead of landing somewhere hostile.
-pub(crate) fn private_dir(kind: &str) -> PathBuf {
-    super::command::register_test_exit_cleanup();
+pub fn private_dir(kind: &str) -> PathBuf {
+    register_test_exit_cleanup();
     let mut g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
     g.ensure(&system_temp(), kind)
         .unwrap_or_else(|_| unavailable_path(kind))
@@ -160,8 +160,31 @@ fn unavailable_path(kind: &str) -> PathBuf {
     system_temp().join(format!("konoma-{kind}-unavailable-{}", random_suffix()))
 }
 
+/// The unit-test process never reaches `main`'s exit cleanup, so it removes its own private
+/// directories when the process exits (libtest ends through `process::exit`). Every call that
+/// creates a `konoma-<kind>-<pid>` directory registers this first.
+///
+/// Active under this crate's own tests and under the `test-hooks` feature (which the root
+/// package's `[dev-dependencies]` turn on), so the root package's tests clean up too.
+#[cfg(all(any(test, feature = "test-hooks"), unix))]
+fn register_test_exit_cleanup() {
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| {
+        extern "C" fn at_exit() {
+            remove_all_private_dirs();
+        }
+        // SAFETY: registers a plain `extern "C" fn()` that only removes directories.
+        unsafe {
+            libc::atexit(at_exit);
+        }
+    });
+}
+
+#[cfg(not(all(any(test, feature = "test-hooks"), unix)))]
+fn register_test_exit_cleanup() {}
+
 /// Removes every private directory this process chose (and nothing else). Never creates one.
-pub(crate) fn remove_all_private_dirs() {
+pub fn remove_all_private_dirs() {
     let g = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
     g.remove_all();
 }
@@ -169,7 +192,7 @@ pub(crate) fn remove_all_private_dirs() {
 /// Creates `path` exclusively with owner-only permissions and writes `data`. Refuses to follow a
 /// symlink at `path` and to reuse an existing file (`O_NOFOLLOW | O_EXCL`).
 #[cfg(unix)]
-pub(crate) fn create_private_file(path: &Path, data: &[u8]) -> io::Result<()> {
+pub fn create_private_file(path: &Path, data: &[u8]) -> io::Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt;
     let mut f = std::fs::OpenOptions::new()
@@ -182,14 +205,14 @@ pub(crate) fn create_private_file(path: &Path, data: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-pub(crate) fn create_private_file(path: &Path, data: &[u8]) -> io::Result<()> {
+pub fn create_private_file(path: &Path, data: &[u8]) -> io::Result<()> {
     std::fs::write(path, data)
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use crate::test_support::unique_tmp;
+    use konoma_test_support::unique_tmp;
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     fn mode(p: &Path) -> u32 {

@@ -1729,6 +1729,9 @@ dependencies = [
  "ignore",
  "image",
  "infer",
+ "konoma-base",
+ "konoma-svg",
+ "konoma-test-support",
  "libc",
  "log",
  "mermaid-text",
@@ -1766,6 +1769,34 @@ dependencies = [
  "ureq",
  "zip",
 ]
+
+[[package]]
+name = "konoma-base"
+version = "0.1.0"
+dependencies = [
+ "konoma-test-support",
+ "libc",
+]
+
+[[package]]
+name = "konoma-svg"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "flate2",
+ "image",
+ "konoma-test-support",
+ "libc",
+ "ratex-katex-fonts",
+ "resvg",
+ "skrifa 0.44.0",
+ "svgtypes",
+ "unicode-width",
+]
+
+[[package]]
+name = "konoma-test-support"
+version = "0.1.0"
 
 [[package]]
 name = "kqueue"
