@@ -1540,7 +1540,7 @@ mod tests {
 
     // -----------------------------------------------------------------------------------------
     // jj display-layer coverage (2026-08-19 audit). See the matching section in `ui::status`'s
-    // tests for the full rationale; the short version: the data layer (`src/vcs/jj.rs`) is well
+    // tests for the full rationale; the short version: the data layer (`crates/konoma-vcs-core/src/vcs/jj.rs`) is well
     // tested, but nothing checked that jj's own `?`-help wording and `jj bookmarks` render
     // actually reach the screen instead of git's. Every test below is paired with git.
     // -----------------------------------------------------------------------------------------

@@ -1923,7 +1923,7 @@ mod tests {
     /// Prints the whole corpus with konoma's measurement next to resvg's. Not an assertion — it is
     /// how the threshold in `measurement_matches_resvg` was chosen, and how it gets re-checked.
     #[test]
-    #[ignore = "reporting only: cargo test -- --ignored --nocapture measurement_report"]
+    #[ignore = "reporting only: cargo test -p konoma-svg -- --ignored --nocapture measurement_report"]
     fn measurement_report() {
         let Some(m) = metrics() else { return };
         eprintln!(

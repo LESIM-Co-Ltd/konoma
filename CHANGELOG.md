@@ -6,6 +6,14 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+### Changed
+- **The repository is now a Cargo workspace.** The parts that do not depend on the application moved into library crates
+  under `crates/`: `konoma-svg` (SVG drawing and fonts), `konoma-mermaid-core`, `konoma-math-core`, `konoma-media-core`
+  (PDF and video), `konoma-office-core`, `konoma-vcs-core` (git and jj), and `konoma-markdown-core` (the Markdown block
+  model), on top of `konoma-base`, plus `konoma-test-support` for tests. The `konoma` binary behaves exactly as before.
+  They are not published to crates.io yet. To check from source, use `cargo test --workspace` (a plain `cargo test` only
+  covers the `konoma` package).
+
 ## [0.31.0] - 2026-10-12
 
 ### Added

@@ -1079,9 +1079,9 @@ fn synthetic_panel_diagram() -> Diagram {
 // 8. Looking at it
 // ---------------------------------------------------------------------------------------------
 
-/// `KONOMA_GALLERY=/some/dir cargo test -- --ignored er_tests::gallery`
+/// `KONOMA_GALLERY=/some/dir cargo test -p konoma-mermaid-core -- --ignored er_tests::gallery`
 #[test]
-#[ignore = "writes SVG files for a person to look at: KONOMA_GALLERY=<dir> cargo test -- --ignored gallery"]
+#[ignore = "writes SVG files for a person to look at: KONOMA_GALLERY=<dir> cargo test -p konoma-mermaid-core -- --ignored gallery"]
 fn gallery() {
     let dir = std::env::var("KONOMA_GALLERY").expect("set KONOMA_GALLERY to a directory");
     std::fs::create_dir_all(&dir).expect("create the gallery directory");

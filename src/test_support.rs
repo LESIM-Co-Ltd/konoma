@@ -379,14 +379,16 @@ pub(crate) fn clear_test_trashed() {
 // Regression guard: nothing outside this module should call `std::env::temp_dir()` to build a
 // *fixed*-name path ever again (that's exactly the bug this module was written to fix — see the
 // module doc). Scans `src/**/*.rs`'s own text, so it catches a reintroduced fixed name wherever it
-// lands, not just in the files that had one at the time this guard was written.
+// lands, not just in the files that had one at the time this guard was written. The scan covers
+// the host's `src/` and every `crates/*/src` (the code that moved out of `src/` is still code).
 #[cfg(test)]
 mod guard {
     use std::path::{Path, PathBuf};
 
-    /// Files this guard does not scan at all:
-    ///   - `test_support.rs` itself: the one legitimate `std::env::temp_dir()` call is
-    ///     `unique_tmp`'s own implementation above.
+    /// Files this guard does not scan (paths relative to the repository root):
+    ///   - `src/test_support.rs` and `crates/konoma-test-support/src/lib.rs`: the one legitimate
+    ///     `std::env::temp_dir()` call is `unique_tmp`'s own implementation (it moved into the
+    ///     latter; the former re-exports it).
     ///   - Three **production** (non-test) one-shot temp-file paths that are already unique on
     ///     their own terms (pid + an atomic/monotonic counter baked into the filename itself —
     ///     `konoma-pdf-…` / `konoma-cmd-…` / `konoma-vthumb-…`), just not routed through this
@@ -394,10 +396,13 @@ mod guard {
     ///     not exist). Editing these to use `unique_tmp` is explicitly out of scope for this
     ///     guard — it must never ask for it.
     const EXEMPT_FILES: &[&str] = &[
-        "test_support.rs",
-        "preview/pdf.rs",
-        "preview/command.rs",
-        "preview/video.rs",
+        "src/test_support.rs",
+        "crates/konoma-test-support/src/lib.rs",
+        // (`pdf.rs` and `video.rs` live in `konoma-media-core` now; `src/preview/{pdf,video}.rs`
+        // are one-line re-exports with nothing to scan.)
+        "crates/konoma-media-core/src/pdf.rs",
+        "src/preview/command.rs",
+        "crates/konoma-media-core/src/video.rs",
     ];
 
     /// Recursively collect every `.rs` file under `dir` (plain `std::fs`, no extra dependency —
@@ -544,21 +549,26 @@ mod guard {
     /// source, which is why every heuristic here (word-boundary identifier matching, an explicit
     /// path-builder/mutator vocabulary, a function-boundary trace cutoff) errs toward under- rather
     /// than over-detection.
-    fn find_offenders(src_dir: &Path) -> (usize, Vec<String>) {
+    ///
+    /// `src_dir` is one source directory and `label` its path relative to the repository root
+    /// (`src` or `crates/<name>/src`), so the exemptions mean the same thing wherever the code
+    /// lives. The first number is how many `.rs` files the walk found (exempt ones included).
+    fn find_offenders(src_dir: &Path, label: &str) -> (usize, Vec<String>) {
         let mut rs_files = Vec::new();
         collect_rs_files(src_dir, &mut rs_files);
-        let mut files_scanned = 0usize;
+        let files_scanned = rs_files.len();
         let mut offenders = Vec::new();
         for path in &rs_files {
-            let rel = path
-                .strip_prefix(src_dir)
-                .unwrap()
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = format!(
+                "{label}/{}",
+                path.strip_prefix(src_dir)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            );
             if EXEMPT_FILES.iter().any(|f| rel == *f) {
                 continue;
             }
-            files_scanned += 1;
             let Ok(text) = std::fs::read_to_string(path) else {
                 continue;
             };
@@ -605,17 +615,51 @@ mod guard {
         (files_scanned, offenders)
     }
 
-    /// Safety valve for the scan itself: if the directory walk broke (wrong path, `src/` moved),
-    /// it must fail LOUD by finding too few files — not silently scan zero and vacuously pass.
-    /// `src/` currently has 60+ `.rs` files (minus the 4 exempt ones); 20 is a conservative floor.
+    /// Every source directory the guard covers, as `(label relative to the repository root, path)`:
+    /// the host's `src` first, then `crates/<name>/src` for each crate.
+    fn source_dirs() -> Vec<(String, PathBuf)> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut dirs = vec![("src".to_string(), root.join("src"))];
+        let mut crates: Vec<String> = std::fs::read_dir(root.join("crates"))
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.path().join("Cargo.toml").is_file())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        crates.sort();
+        for name in crates {
+            dirs.push((
+                format!("crates/{name}/src"),
+                root.join("crates").join(&name).join("src"),
+            ));
+        }
+        dirs
+    }
+
+    /// Safety valve for the scan itself: if the directory walk broke (wrong path, `src/` or
+    /// `crates/` moved), it must fail LOUD by finding too few files — not silently scan zero and
+    /// vacuously pass. Two independent floors, so that either search breaking is caught on its own:
+    /// the host's `src/` alone has 60+ `.rs` files (20 is a conservative floor), and `crates/` must
+    /// yield at least one crate, each with at least one `.rs` file.
     #[test]
     fn scan_finds_at_least_20_source_files() {
-        let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let (files_scanned, _) = find_offenders(&src_dir);
+        let dirs = source_dirs();
+        let (host_label, host_dir) = &dirs[0];
+        let (host_files, _) = find_offenders(host_dir, host_label);
         assert!(
-            files_scanned >= 20,
-            "スキャン対象が少なすぎる(安全弁): {files_scanned} 件 — src/ の探索が壊れている可能性"
+            host_files >= 20,
+            "スキャン対象が少なすぎる(安全弁): {host_files} 件 — src/ の探索が壊れている可能性"
         );
+        assert!(
+            dirs.len() > 1,
+            "crates/*/ が1つも見つからない(安全弁) — crates/ の探索が壊れている可能性"
+        );
+        for (label, dir) in &dirs[1..] {
+            let (n, _) = find_offenders(dir, label);
+            assert!(n >= 1, "{label} に .rs ファイルが見つからない(安全弁)");
+        }
     }
 
     /// The guard itself: every `temp_dir()` call that targets a specific path, outside the exempt
@@ -623,8 +667,14 @@ mod guard {
     /// instead, which doesn't call `temp_dir()` by name at the call site at all).
     #[test]
     fn no_fixed_name_temp_dirs_outside_unique_tmp() {
-        let src_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let (files_scanned, offenders) = find_offenders(&src_dir);
+        let dirs = source_dirs();
+        let mut files_scanned = 0usize;
+        let mut offenders = Vec::new();
+        for (label, dir) in &dirs {
+            let (n, mut o) = find_offenders(dir, label);
+            files_scanned += n;
+            offenders.append(&mut o);
+        }
         assert!(
             files_scanned >= 20,
             "スキャン対象が少なすぎる(安全弁): {files_scanned} 件"

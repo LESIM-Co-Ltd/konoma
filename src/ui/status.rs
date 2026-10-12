@@ -1094,7 +1094,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------------------------
-    // jj display-layer coverage (2026-08-19 audit). `src/vcs/jj.rs` (the data layer) is well
+    // jj display-layer coverage (2026-08-19 audit). `crates/konoma-vcs-core/src/vcs/jj.rs` (the data layer) is well
     // tested, but nothing checked that jj's own words actually reach the footer/chip on screen
     // instead of git's — the `?` help bug fixed on 2026-08-18 slipped through exactly this hole.
     // Each test below is **paired**: it checks jj's text shows up and git's does not, then checks

@@ -248,6 +248,9 @@ fn fix_picker_font_size(picker: Picker, window_size: Option<(u16, u16, u16, u16)
 static ALLOC: preview::svg_proc::GuardAlloc = preview::svg_proc::GuardAlloc;
 
 fn main() -> Result<()> {
+    // First of all: this process is the application, so the crates' test-only seams that change
+    // behaviour (compiled in by `test-hooks` when `cargo test` builds this binary) stay off.
+    konoma_base::process::mark_app_main();
     // The drawing process of `preview::svg_proc`: konoma started by itself to draw an SVG that came
     // from a file, so that whatever such a file does cannot take the program down. It must run
     // before anything else is touched (arguments, configuration, the terminal), and it is not an
@@ -2622,6 +2625,38 @@ mod tests {
     /// `e2e_tests::extract_ui_config_field_names` already use elsewhere in this codebase. It fails
     /// if `main` stops calling `resolve_startup` at all, or if that call is ever moved below
     /// `ratatui::init()`.
+    /// `main` declares the process to be the application before anything else (so before the
+    /// drawing-child branch): the test-only seams of the workspace crates that change behaviour
+    /// are guarded by `!is_app_main()`, and `cargo test` compiles them into this very binary
+    /// (feature `test-hooks`). Pinned by reading `main`'s own source, as the test below does.
+    #[test]
+    fn main_marks_the_app_process_first() {
+        let src = include_str!("main.rs");
+        let main_start = src
+            .find("\nfn main() -> Result<()> {")
+            .expect("fn main not found");
+        let body = &src[main_start..];
+        let mark = body
+            .find("konoma_base::process::mark_app_main();")
+            .expect("main must call mark_app_main");
+        let child = body
+            .find("preview::svg_proc::CHILD_FLAG")
+            .expect("main must branch to the drawing child");
+        assert!(
+            mark < child,
+            "mark_app_main must run before the child branch"
+        );
+        // No other statement may precede it: nothing but comments between the `{` and the call.
+        let before = &body["\nfn main() -> Result<()> {".len()..mark];
+        assert!(
+            before.lines().all(|l| {
+                let t = l.trim();
+                t.is_empty() || t.starts_with("//")
+            }),
+            "mark_app_main must be the first statement of main, found: {before:?}"
+        );
+    }
+
     #[test]
     fn resolve_startup_runs_before_terminal_init_in_main() {
         let src = include_str!("main.rs");

@@ -169,6 +169,11 @@ fn unavailable_path(kind: &str) -> PathBuf {
 #[cfg(all(any(test, feature = "test-hooks"), unix))]
 fn register_test_exit_cleanup() {
     static REGISTERED: std::sync::Once = std::sync::Once::new();
+    // The application's own `main` process has its own exit cleanup and must not carry the test
+    // process's (a `cargo test` build of the binary has this compiled in via `test-hooks`).
+    if crate::process::is_app_main() {
+        return;
+    }
     REGISTERED.call_once(|| {
         extern "C" fn at_exit() {
             remove_all_private_dirs();
@@ -406,5 +411,71 @@ mod tests {
         create_private_file(&ok, b"data").unwrap();
         assert_eq!(std::fs::read(&ok).unwrap(), b"data");
         assert_eq!(mode(&ok), 0o600);
+    }
+
+    // ---- the exit-time cleanup of the test process, seen from outside --------------------------
+
+    const CHILD_ENV: &str = "KONOMA_TEST_PRIVATE_DIR_CHILD";
+
+    /// Helper run only as a child of `test_process_removes_its_private_dir_on_exit` (ignored: a
+    /// normal run skips it; without the environment variable it does nothing).
+    #[test]
+    #[ignore = "helper of test_process_removes_its_private_dir_on_exit (runs as a child process)"]
+    fn private_dir_child_helper() {
+        if std::env::var_os(CHILD_ENV).is_none() {
+            return;
+        }
+        let dir = private_dir("cmd");
+        assert!(
+            dir.is_dir(),
+            "the child could not create its private directory"
+        );
+        println!("CHILD_PRIVATE_DIR={}", dir.display());
+    }
+
+    /// The test process removes the private directory it made when it exits. Seen from outside: run
+    /// this test executable again (only the helper above, in its own `TMPDIR`), and look at the
+    /// directory after the child is gone. Fails if the exit cleanup is not active in this build
+    /// (for the host package: if `konoma-base`'s `test-hooks` is not enabled in its
+    /// `[dev-dependencies]`).
+    #[test]
+    fn test_process_removes_its_private_dir_on_exit() {
+        let tmp = unique_tmp("pd_exit_child");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "private_dir::tests::private_dir_child_helper",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD_ENV, "1")
+            .env("TMPDIR", &*tmp)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "child failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let made = stdout
+            .lines()
+            .find_map(|l| l.split_once("CHILD_PRIVATE_DIR=").map(|(_, p)| p))
+            .unwrap_or_else(|| panic!("the child did not report a directory: {stdout}"));
+        let made = std::path::Path::new(made);
+        assert!(made.starts_with(&*tmp), "{made:?} is not under {tmp:?}");
+        assert!(
+            std::fs::symlink_metadata(made).is_err(),
+            "the child left {made:?} behind"
+        );
+        let left: Vec<_> = std::fs::read_dir(&*tmp)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert!(left.is_empty(), "the child left {left:?} in its TMPDIR");
     }
 }

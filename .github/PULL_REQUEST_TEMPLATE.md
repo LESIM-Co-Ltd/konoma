@@ -7,9 +7,9 @@
 ## Checklist
 
 - [ ] `cargo fmt --all` is clean
-- [ ] `cargo clippy --all-targets -- -D warnings` (git feature) passes
-- [ ] `cargo clippy --all-targets --no-default-features -- -D warnings` passes
-- [ ] `cargo test` and `cargo test --no-default-features` are green
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` (git feature) passes
+- [ ] `cargo clippy --workspace --all-targets --no-default-features -- -D warnings` passes
+- [ ] `cargo test --workspace` and `cargo test --workspace --no-default-features` are green
 - [ ] Behavior change is covered by a test (or the reason it can't be is noted)
 - [ ] `CHANGELOG.md` updated under `[Unreleased]` for user-facing changes
 - [ ] Docs updated if a key, config option, or preview kind changed

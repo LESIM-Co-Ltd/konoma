@@ -39,7 +39,6 @@ pub(super) struct Moment {
 }
 
 /// The calendar fields of `secs` seconds since 1970-01-01 00:00:00 UTC.
-#[cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code))] // (`now` is fixed there)
 pub(super) fn moment_of(secs: i64) -> Moment {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
@@ -76,9 +75,22 @@ pub(super) fn set_now_for_tests(m: Option<Moment>) {
     NOW.with(|n| n.set(m));
 }
 
-/// The moment a current-date field shows.
-#[cfg(not(any(test, feature = "test-hooks")))]
+/// The moment a current-date field shows. Under test (and only in a process that is not the
+/// application itself, see [`konoma_base::process`]) it is fixed, so that no result depends on
+/// the day the tests run.
 pub(super) fn now() -> Moment {
+    #[cfg(any(test, feature = "test-hooks"))]
+    if !konoma_base::process::is_app_main() {
+        return NOW.with(|n| n.get()).unwrap_or(Moment {
+            year: 2026,
+            month: 10,
+            day: 9,
+            weekday: 4,
+            hour: 12,
+            minute: 34,
+            second: 56,
+        });
+    }
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
@@ -87,7 +99,6 @@ pub(super) fn now() -> Moment {
 
 /// Seconds the local time zone is ahead of UTC at `secs` (0 when the system cannot say).
 #[cfg(unix)]
-#[cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code))] // (`now` is fixed there)
 pub(super) fn local_offset(secs: i64) -> i64 {
     // (`time_t` is 64 bits wide on every target konoma supports; where it is narrower the
     // cast wraps, which only matters 68 years from now.)
@@ -105,24 +116,9 @@ pub(super) fn local_offset(secs: i64) -> i64 {
 }
 
 /// Seconds the local time zone is ahead of UTC (no time zone database off Unix: UTC).
-#[cfg(all(not(unix), not(any(test, feature = "test-hooks"))))]
+#[cfg(not(unix))]
 fn local_offset(_secs: i64) -> i64 {
     0
-}
-
-/// The moment a current-date field shows (under test: fixed, so that no result depends on the day
-/// the tests run).
-#[cfg(any(test, feature = "test-hooks"))]
-pub(super) fn now() -> Moment {
-    NOW.with(|n| n.get()).unwrap_or(Moment {
-        year: 2026,
-        month: 10,
-        day: 9,
-        weekday: 4,
-        hour: 12,
-        minute: 34,
-        second: 56,
-    })
 }
 
 /// A locale: lower-case language and upper-case country (either may be empty).
@@ -153,7 +149,11 @@ fn locale_of(style: &Node) -> Locale {
 /// The system locale as `ja-JP` / `en_US.UTF-8` says it (English without a country when unknown).
 fn system_locale() -> Locale {
     #[cfg(any(test, feature = "test-hooks"))]
-    let tag = TEST_LOCALE.with(|l| l.borrow().clone());
+    let tag = if konoma_base::process::is_app_main() {
+        sys_locale::get_locale()
+    } else {
+        TEST_LOCALE.with(|l| l.borrow().clone())
+    };
     #[cfg(not(any(test, feature = "test-hooks")))]
     let tag = sys_locale::get_locale();
     let tag = tag.unwrap_or_default();

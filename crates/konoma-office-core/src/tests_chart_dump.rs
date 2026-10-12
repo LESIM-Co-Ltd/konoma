@@ -1,5 +1,5 @@
 //! `#[ignore]` dump of every chart of the local corpora next to the LibreOffice reference, for
-//! looking at (`cargo test chart_dump -- --ignored`). Needs files under `NoCode/.cache` that are
+//! looking at (`cargo test -p konoma-office-core chart_dump -- --ignored`). Needs files under `NoCode/.cache` that are
 //! not in the repository; the images go to `docs/render-check/charts/` of the main tree.
 
 use std::io::Read;

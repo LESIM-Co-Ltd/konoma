@@ -464,7 +464,7 @@ mod in_slide {
 /// Converts every metafile of the local PowerPoint corpus, rasterizes it and writes it next to
 /// LibreOffice's rendering of the same file. Local only: the corpus is not in the repository.
 ///
-/// `cargo test -- --ignored dump_metafile_corpus`; needs the files extracted to
+/// `cargo test -p konoma-office-core -- --ignored dump_metafile_corpus`; needs the files extracted to
 /// `NoCode/.cache/slide-c2-work/meta` and (optionally) LibreOffice's PNGs in `.../lo`.
 #[test]
 #[ignore]

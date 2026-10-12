@@ -1052,9 +1052,9 @@ fn orthogonal_full_corpus() -> Vec<(&'static str, &'static str)> {
 /// and for why the `theme` argument is inert here.
 ///
 /// `#[ignore]`d like [`gallery`] — run explicitly:
-/// `cargo test --features git -- --ignored orthogonal_design_reference_dump`.
+/// `cargo test -p konoma-mermaid-core -- --ignored orthogonal_design_reference_dump`.
 #[test]
-#[ignore = "writes PNG/SVG files for a person to look at: cargo test -- --ignored orthogonal_design_reference_dump"]
+#[ignore = "writes PNG/SVG files for a person to look at: cargo test -p konoma-mermaid-core -- --ignored orthogonal_design_reference_dump"]
 fn orthogonal_design_reference_dump() {
     let dir = konoma_test_support::repo_root().join("docs/render-check");
     std::fs::create_dir_all(&dir).expect("create docs/render-check");
@@ -2202,9 +2202,9 @@ fn orthogonal_state_composite_with_an_internal_cycle_falls_back_to_a_valid_route
 /// Writes the corpus out as SVG files so a person can look at them. Not a check — §6 is explicit
 /// that comparing pictures is for eyes, not for assertions.
 ///
-/// `KONOMA_GALLERY=/some/dir cargo test -- --ignored state_tests::gallery`
+/// `KONOMA_GALLERY=/some/dir cargo test -p konoma-mermaid-core -- --ignored state_tests::gallery`
 #[test]
-#[ignore = "writes SVG files for a person to look at: KONOMA_GALLERY=<dir> cargo test -- --ignored gallery"]
+#[ignore = "writes SVG files for a person to look at: KONOMA_GALLERY=<dir> cargo test -p konoma-mermaid-core -- --ignored gallery"]
 fn gallery() {
     let dir = std::env::var("KONOMA_GALLERY").expect("set KONOMA_GALLERY to a directory");
     std::fs::create_dir_all(&dir).expect("create the gallery directory");

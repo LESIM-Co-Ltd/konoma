@@ -2483,12 +2483,12 @@ fn synthetic_chart_diagram() -> Diagram {
 /// Writes the corpus out as SVG files for a person to look at (§6: konoma against mermaid.js is a
 /// question a person answers by looking, never an automatic judgement).
 ///
-/// `KONOMA_GALLERY=/some/dir cargo test -- --ignored render::chart::tests::gallery`
+/// `KONOMA_GALLERY=/some/dir cargo test -p konoma-mermaid-core -- --ignored render::chart::tests::gallery`
 ///
 /// `KONOMA_GALLERY_THEME` picks the palette (default `dark`); the light ones are the ones §4-1
 /// says are hardest to get right, so they are worth looking at separately.
 #[test]
-#[ignore = "writes SVG files for a person to look at: KONOMA_GALLERY=<dir> cargo test -- --ignored gallery"]
+#[ignore = "writes SVG files for a person to look at: KONOMA_GALLERY=<dir> cargo test -p konoma-mermaid-core -- --ignored gallery"]
 fn gallery() {
     let dir = std::env::var("KONOMA_GALLERY").expect("set KONOMA_GALLERY to a directory");
     std::fs::create_dir_all(&dir).expect("create the gallery directory");

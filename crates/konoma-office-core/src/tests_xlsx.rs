@@ -2062,7 +2062,7 @@ fn an_empty_or_rootless_sheet_part_is_an_empty_sheet() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// speed (run by hand: `cargo test --release -- --ignored bench_xlsx --nocapture`)
+// speed (run by hand: `cargo test -p konoma-office-core --release -- --ignored bench_xlsx --nocapture`)
 // ---------------------------------------------------------------------------------------------
 
 #[test]

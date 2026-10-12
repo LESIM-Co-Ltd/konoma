@@ -4892,7 +4892,7 @@ fn orthogonal_splines_routing_is_deterministic_and_does_not_panic() {
 
 /// Re-dumps [`routing_signature`] for the five sources [`splines_routing_signature_is_pinned`]
 /// pins, so a deliberate change to that test's expectations starts from real output rather than a
-/// hand-edited guess. Run with `cargo test -- --ignored --nocapture` and copy the printed constants
+/// hand-edited guess. Run with `cargo test -p konoma-mermaid-core -- --ignored --nocapture` and copy the printed constants
 /// in by hand — this does not write anywhere on disk, unlike `KONOMA_UPDATE_SNAPSHOTS=1`, which is
 /// the point (see that test's doc comment).
 #[test]
@@ -9330,9 +9330,9 @@ fn orthogonal_full_corpus() -> Vec<(&'static str, &'static str)> {
 /// left behind).
 ///
 /// `#[ignore]`d like [`state_tests::gallery`] — run explicitly:
-/// `cargo test --features git -- --ignored orthogonal_design_reference_dump`.
+/// `cargo test -p konoma-mermaid-core -- --ignored orthogonal_design_reference_dump`.
 #[test]
-#[ignore = "writes PNG/SVG files for a person to look at: cargo test -- --ignored orthogonal_design_reference_dump"]
+#[ignore = "writes PNG/SVG files for a person to look at: cargo test -p konoma-mermaid-core -- --ignored orthogonal_design_reference_dump"]
 fn orthogonal_design_reference_dump() {
     let dir = konoma_test_support::repo_root().join("docs/render-check");
     std::fs::create_dir_all(&dir).expect("create docs/render-check");
@@ -9566,9 +9566,9 @@ fn write_catalog_png(
 /// the page would keep shipping it. Removing the language directory takes `settings/` with it.
 ///
 /// `#[ignore]`d like [`orthogonal_design_reference_dump`] — run explicitly:
-/// `cargo test -- --ignored site_mermaid_catalog_dump`.
+/// `cargo test -p konoma-mermaid-core -- --ignored site_mermaid_catalog_dump`.
 #[test]
-#[ignore = "writes PNG files for the docs site: cargo test -- --ignored site_mermaid_catalog_dump"]
+#[ignore = "writes PNG files for the docs site: cargo test -p konoma-mermaid-core -- --ignored site_mermaid_catalog_dump"]
 fn site_mermaid_catalog_dump() {
     for (lang, sample) in [
         ("en", "samples/mermaid.md"),
@@ -10922,7 +10922,7 @@ fn dump_fences_under_orthogonal(md_path: &str, stem: &str) {
 /// Dumps the "大きさ" flowchart (`samples/mermaid.ja.md` fence 3) to `docs/render-check` for
 /// structural comparison against the round3 handoff's 3a SVG, and every other
 /// `samples/mermaid.ja.md` fence for the same visual spot-check. Run explicitly with
-/// `cargo test --features git dump_mermaid_ja_corpus_under_orthogonal -- --ignored --nocapture`.
+/// `cargo test -p konoma-mermaid-core dump_mermaid_ja_corpus_under_orthogonal -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn dump_mermaid_ja_corpus_under_orthogonal() {
@@ -10934,7 +10934,7 @@ fn dump_mermaid_ja_corpus_under_orthogonal() {
 /// probe.md` (`CORPUS`'s own `long-edge` source, standalone, for the exact regression this session's
 /// pass-through-reservation fix closes) to `docs/render-check`, for the general-corpus checks
 /// `docs/FEATURE-MERMAID-RENDERER.md` §10-3's own implementation notes on this session's three
-/// findings describe. Run explicitly with `cargo test --features git
+/// findings describe. Run explicitly with `cargo test -p konoma-mermaid-core
 /// dump_render_check_probes_under_orthogonal -- --ignored --nocapture`.
 #[test]
 #[ignore]

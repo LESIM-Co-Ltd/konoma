@@ -16,7 +16,7 @@ updates:
       # silently ignores the patch, so this one is upgraded manually.
       - dependency-name: "mermaid-text"
       # konoma measures mermaid text with skrifa at the exact version usvg reads glyph metrics
-      # with (see the note above `skrifa` in Cargo.toml and src/preview/mermaid/text_metrics.rs).
+      # with (see the note above `skrifa` in Cargo.toml and crates/konoma-svg/src/text_metrics.rs).
       # A bump of skrifa alone puts measurement and drawing on different versions and adds a
       # second copy of the crate, so skrifa only moves together with resvg/usvg, by hand.
       - dependency-name: "skrifa"

@@ -8015,22 +8015,41 @@ plain body
     #[test]
     fn the_replaced_renderer_is_no_longer_a_dependency() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("Cargo.toml");
-        for line in manifest.lines() {
-            let l = line.trim();
-            if l.starts_with('#') {
-                continue;
+        // The manifests: the root's and every crate's under `crates/` (the dependency could come
+        // back through any of them).
+        let mut manifests = vec![root.join("Cargo.toml")];
+        let mut source_roots = vec![root.join("src")];
+        let crate_dirs: Vec<_> = std::fs::read_dir(root.join("crates"))
+            .expect("crates/")
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.join("Cargo.toml").is_file())
+            .collect();
+        // Safety valve: a broken search of `crates/` must not make this vacuously pass.
+        assert!(!crate_dirs.is_empty(), "no crate found under crates/");
+        for dir in &crate_dirs {
+            manifests.push(dir.join("Cargo.toml"));
+            source_roots.push(dir.join("src"));
+        }
+        for manifest in &manifests {
+            let text = std::fs::read_to_string(manifest).expect("Cargo.toml");
+            for line in text.lines() {
+                let l = line.trim();
+                if l.starts_with('#') {
+                    continue;
+                }
+                assert!(
+                    !l.contains("mermaid-rs-renderer"),
+                    "{} still declares the crate stage 5b removed: {l}",
+                    manifest.display()
+                );
             }
-            assert!(
-                !l.contains("mermaid-rs-renderer"),
-                "Cargo.toml still declares the crate stage 5b removed: {l}"
-            );
         }
 
         // …and nothing calls it. A `use` that survived would not compile, but a stale doc link or
         // a feature-gated call would, so the whole source tree is read.
         let mut offenders: Vec<String> = Vec::new();
-        let mut stack = vec![root.join("src")];
+        let mut stack = source_roots;
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;

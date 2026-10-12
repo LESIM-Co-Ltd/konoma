@@ -1,6 +1,6 @@
 //! The text Markdown of the decks in the repository must not change when the drawing side of the
 //! PowerPoint reader changes: the goldens in `testdata/office/golden/` were written by the reader
-//! as it was before the drawing model was added. `KONOMA_WRITE_GOLDEN=1 cargo test -- --ignored
+//! as it was before the drawing model was added. `KONOMA_WRITE_GOLDEN=1 cargo test -p konoma-office-core -- --ignored
 //! write_goldens` rewrites them (only to be done on purpose).
 
 use std::path::PathBuf;

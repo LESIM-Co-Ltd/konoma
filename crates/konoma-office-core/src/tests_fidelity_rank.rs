@@ -1,7 +1,7 @@
 //! Review instrument (ignored test): ranks every slide of every local corpus deck by how far
 //! konoma's drawing is from the LibreOffice reference picture.
 //!
-//! Run: `cargo test --release --lib fidelity_rank -- --ignored --nocapture`
+//! Run: `cargo test -p konoma-office-core --release --lib fidelity_rank -- --ignored --nocapture`
 //!
 //! Output: `NoCode/.cache/fidelity-rank/{ranking.csv,summary.md}` and the side-by-side pictures of the
 //! worst slides under `docs/render-check/rank/` (konoma left, LibreOffice right).

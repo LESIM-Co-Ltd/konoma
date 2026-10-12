@@ -3988,9 +3988,9 @@ fn every_palette_draws_every_case() {
 // 5. Looking at it
 // ---------------------------------------------------------------------------------------------
 
-/// `KONOMA_GALLERY=/some/dir cargo test -- --ignored kinds_tests::gallery`
+/// `KONOMA_GALLERY=/some/dir cargo test -p konoma-mermaid-core -- --ignored kinds_tests::gallery`
 #[test]
-#[ignore = "writes SVG files for a person to look at: KONOMA_GALLERY=<dir> cargo test -- --ignored gallery"]
+#[ignore = "writes SVG files for a person to look at: KONOMA_GALLERY=<dir> cargo test -p konoma-mermaid-core -- --ignored gallery"]
 fn gallery() {
     let dir = std::env::var("KONOMA_GALLERY").expect("set KONOMA_GALLERY to a directory");
     std::fs::create_dir_all(&dir).expect("create the gallery directory");
@@ -4011,7 +4011,7 @@ fn _words(label: &Label) -> String {
     label.lines.join(" ")
 }
 
-/// `cargo test --release -- --ignored kinds_tests::render_time` — what a diagram costs.
+/// `cargo test -p konoma-mermaid-core --release -- --ignored kinds_tests::render_time` — what a diagram costs.
 ///
 /// §6-A records stage 1's measurement (p50 0.72 ms against the crate's 13.2 ms) and §8 records the
 /// crate's p90 at 86.8 ms and its worst case at 662 ms. This is the same measurement over
@@ -4019,7 +4019,7 @@ fn _words(label: &Label) -> String {
 /// Reported rather than asserted: a timing threshold in a test suite is a flake, and the number is
 /// for `docs/STATUS.md`.
 #[test]
-#[ignore = "a measurement, not an assertion: cargo test --release -- --ignored render_time"]
+#[ignore = "a measurement, not an assertion: cargo test -p konoma-mermaid-core --release -- --ignored render_time"]
 fn render_time() {
     if !text_metrics::fonts_available() {
         return;

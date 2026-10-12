@@ -2296,10 +2296,14 @@ fn run_git(root: &Path, args: &[&str]) -> anyhow::Result<()> {
     // assertions flaky depending on which machine/locale runs the suite. Pin the *child*
     // process's locale to `C` so the message is always the untranslated source string,
     // regardless of the ambient environment the test binary itself runs under. `#[cfg(any(test, feature = "test-hooks"))]`
-    // means this is compiled only into test binaries (or a host's test build), never the shipped binary — real users
+    // means this is compiled only into test binaries (or a host's test build), never the shipped binary — and
+    // `is_app_main()` keeps it off in the application's own `main` process even when a test build compiled it
+    // in (`cargo test` builds the `konoma` binary with `test-hooks` too) — real users
     // still see git's messages translated to their own locale exactly as before.
     #[cfg(any(test, feature = "test-hooks"))]
-    cmd.env("LC_ALL", "C");
+    if !konoma_base::process::is_app_main() {
+        cmd.env("LC_ALL", "C");
+    }
     let out = cmd
         .output()
         .with_context(|| format!("failed to launch git {}", args.join(" ")))?;

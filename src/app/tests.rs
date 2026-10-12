@@ -23350,7 +23350,7 @@ fn ui_confirm_jj_sync_gates_the_only_write() {
     );
 }
 
-/// The jj backend never shells out to `git` — `src/vcs/jj.rs` only ever runs the `jj` executable —
+/// The jj backend never shells out to `git` — `crates/konoma-vcs-core/src/vcs/jj.rs` only ever runs the `jj` executable —
 /// so a machine with no `git` executable at all must not block `o` on a jj workspace. Before the fix,
 /// `open_git_view` probed `git_binary_available()` before it had even decided which backend would
 /// answer, so this refused with `GitNotInstalled` on a directory the tree was already rendering jj's

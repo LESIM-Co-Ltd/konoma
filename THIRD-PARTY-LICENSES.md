@@ -8944,11 +8944,11 @@ konoma draws the PowerPoint/OpenDocument preset shapes from `presetShapeDefiniti
 the machine-readable definition of the DrawingML preset geometries published with
 ECMA-376 Part 1 (5th edition, December 2016;
 https://ecma-international.org/wp-content/uploads/ECMA-376-1_5th_edition_december_2016.zip).
-The file is embedded **unmodified** at `src/preview/office/slide_draw/presets/presetShapeDefinitions.xml`
+The file is embedded **unmodified** at `crates/konoma-office-core/src/slide_draw/presets/presetShapeDefinitions.xml`
 and parsed at run time; it is not a Cargo dependency, so `cargo-about` cannot see it and
 this notice is maintained by hand. **It is not under konoma's MIT licence**; it stays under
 the Ecma copyright licence below, which is also kept next to the file in
-`src/preview/office/slide_draw/presets/NOTICE.md`.
+`crates/konoma-office-core/src/slide_draw/presets/NOTICE.md`.
 
 ```
 COPYRIGHT NOTICE
@@ -8979,9 +8979,9 @@ This document and the information contained herein is provided on an “AS IS”
 ### Preset pattern bitmaps (OpenPresentation, MIT)
 
 The 54 8 x 8 bitmaps of the DrawingML preset patterns (`a:pattFill`) in
-`src/preview/office/slide_draw/patterns.rs` are the tiles measured from desktop PowerPoint and
+`crates/konoma-office-core/src/slide_draw/patterns.rs` are the tiles measured from desktop PowerPoint and
 published as `pattern-fills.ts` in https://github.com/OpenPresentation/opf (MIT licence). The
-Wingdings 2 and Webdings code tables in `src/preview/office/slide_draw/symbol_font.rs` were
+Wingdings 2 and Webdings code tables in `crates/konoma-office-core/src/slide_draw/symbol_font.rs` were
 read from the Unicode document L2/11-052 (https://www.unicode.org/L2/L2011/11052-wingding.pdf)
 and are konoma's own transcription.
 

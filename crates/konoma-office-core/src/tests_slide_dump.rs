@@ -4,7 +4,7 @@
 //! ```text
 //! SLIDE_DUMP_SLIDES="poi/customGeo:5,libreoffice/odp__16-9:1" \
 //! SLIDE_DUMP_OUT=/path/to/dir \
-//!   cargo test --release --bin konoma slide_dump -- --ignored --nocapture
+//!   cargo test -p konoma-office-core --release slide_dump -- --ignored --nocapture
 //! ```
 //!
 //! `SLIDE_DUMP_SLIDES=@charts` draws the slides with charts or SmartArt of every such deck of the

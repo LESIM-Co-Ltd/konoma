@@ -147,6 +147,15 @@ jobs:
           sudo install -m 0755 "$tmp/jj" /usr/local/bin/jj
           jj --version
 
+      # Each crate under `crates/` must build on its own (not only as part of the whole workspace,
+      # where another member's features can switch on what this one forgot to declare).
+      - name: Each crate builds on its own
+        run: |
+          for d in crates/*/; do
+            cargo check -p "$(basename "$d")" || exit 1
+          done
+          cargo check -p konoma-vcs-core --features git
+
       - name: Clippy (default features)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
