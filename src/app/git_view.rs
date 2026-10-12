@@ -1596,7 +1596,7 @@ impl App {
             self.tab.git_graph_all,
             &self.tab.root,
             self.tab.git_graph_base.as_deref(),
-            self.lang,
+            &crate::i18n::worktree_labels(self.lang),
             refs,
         );
         // Also strip hidden branches from a row's decoration (refs) (keeping it consistent with the

@@ -12,3 +12,8 @@ description = "Test-only helpers shared by konoma and its crates (temp-dir guard
 
 [dependencies]
 zip.workspace = true
+# `zip` is built with `default-features = false`, which leaves `flate2` with no compression
+# backend unless something else picks one; inside the workspace another crate always did, so
+# the crate only failed to build on its own (`cargo test -p ...`, and `cargo publish`). The
+# workspace `flate2` keeps its default `rust_backend`.
+flate2.workspace = true

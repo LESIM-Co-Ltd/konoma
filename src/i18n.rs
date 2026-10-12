@@ -2152,6 +2152,21 @@ pub fn slide_labels(lang: Lang) -> konoma_office_core::docx::SlideLabels {
     }
 }
 
+/// The words the VCS core writes into the commit graph's "uncommitted changes" row (its heading and
+/// the three counts of the breakdown) in `lang`: the core owns no translations, the host hands them in.
+pub fn worktree_labels(lang: Lang) -> konoma_vcs_core::git::WorktreeLabels {
+    let (staged, unstaged, untracked) = match lang {
+        Lang::En => ("staged", "unstaged", "untracked"),
+        Lang::Jp => ("ステージ済", "未ステージ", "未追跡"),
+    };
+    konoma_vcs_core::git::WorktreeLabels {
+        uncommitted: tr(lang, Msg::UncommittedChanges).to_string(),
+        staged: staged.to_string(),
+        unstaged: unstaged.to_string(),
+        untracked: untracked.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

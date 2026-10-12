@@ -1720,9 +1720,7 @@ dependencies = [
  "csv",
  "emojis",
  "flate2",
- "git2",
  "globset",
- "ignore",
  "image",
  "infer",
  "konoma-base",
@@ -1732,6 +1730,7 @@ dependencies = [
  "konoma-office-core",
  "konoma-svg",
  "konoma-test-support",
+ "konoma-vcs-core",
  "libc",
  "mermaid-text",
  "notify",
@@ -1857,7 +1856,21 @@ dependencies = [
 name = "konoma-test-support"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "zip",
+]
+
+[[package]]
+name = "konoma-vcs-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "git2",
+ "ignore",
+ "konoma-base",
+ "konoma-test-support",
+ "ratatui",
+ "similar",
 ]
 
 [[package]]

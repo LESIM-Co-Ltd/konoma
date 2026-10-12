@@ -420,7 +420,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_marker_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        git2::Repository::init(&dir).unwrap();
+        konoma_vcs_core::git2::Repository::init(&dir).unwrap();
         std::fs::write(dir.join("foo.txt"), b"x").unwrap(); // untracked → 'U'
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
         let mut term = Terminal::new(TestBackend::new(40, 8)).unwrap();
@@ -485,7 +485,7 @@ mod tests {
         let dir = unique_tmp("konoma_branch_title_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        git2::Repository::init(&dir).unwrap();
+        konoma_vcs_core::git2::Repository::init(&dir).unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
         app.refresh_git_if_needed();
         assert!(app.git_branch().is_some(), "ブランチ名が取得できない");

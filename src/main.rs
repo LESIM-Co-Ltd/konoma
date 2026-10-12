@@ -3236,7 +3236,7 @@ mod tests {
         let dir = unique_tmp("konoma_git_help_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        git2::Repository::init(&dir).unwrap();
+        konoma_vcs_core::git2::Repository::init(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
         app.open_git_view();
@@ -3273,7 +3273,7 @@ mod tests {
         let dir = unique_tmp("konoma_tab_gitview_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        git2::Repository::init(&dir).unwrap();
+        konoma_vcs_core::git2::Repository::init(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), b"x").unwrap();
         let mut app = App::new(dir.canonicalize().unwrap(), Config::default()).unwrap();
 

@@ -2651,7 +2651,7 @@ mod tests {
 
     /// The invariant `legend_from_rows` (and the graph's row-selection color lookup) depends on:
     /// for every row that has a node, `node_col` must index the exact cell in `graph` holding the
-    /// glyph [`crate::ui::icons::node_glyph`] draws for that row's `NodeKind`, under
+    /// glyph [`crate::glyph::node_glyph`] draws for that row's `NodeKind`, under
     /// [`crate::vcs::VcsKind::Jj`]. `git.rs` has this same check for `lay_out_lanes` fed synthetic
     /// `DagCommit`s; this is its counterpart fed rows `graph()` itself produced from real jj
     /// output, so a mistake in how `graph()` maps a `Row` to a `DagCommit` — not just in
@@ -2681,7 +2681,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("node_col={col} is out of range for {r:?}"));
             assert_eq!(
                 cell.0,
-                crate::ui::icons::node_glyph(kind, crate::vcs::VcsKind::Jj).to_string(),
+                crate::glyph::node_glyph(kind, crate::vcs::VcsKind::Jj).to_string(),
                 "node_col must locate the cell holding this row's own glyph: {r:?}"
             );
         }
