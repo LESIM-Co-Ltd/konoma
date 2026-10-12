@@ -1724,12 +1724,12 @@ dependencies = [
  "flate2",
  "git2",
  "globset",
- "hayro",
- "hayro-syntax",
  "ignore",
  "image",
  "infer",
  "konoma-base",
+ "konoma-math-core",
+ "konoma-media-core",
  "konoma-mermaid-core",
  "konoma-svg",
  "konoma-test-support",
@@ -1741,23 +1741,13 @@ dependencies = [
  "quick-xml",
  "ratatui",
  "ratatui-image",
- "ratex-katex-fonts",
- "ratex-layout",
- "ratex-parser",
- "ratex-svg",
- "ratex-types",
- "re_mp4",
  "resvg",
- "rust_h264",
- "rust_h265",
  "serde",
  "serde_json",
  "signal-hook",
  "similar",
  "skrifa 0.44.0",
  "svgtypes",
- "symphonia-core",
- "symphonia-format-mkv",
  "syntect",
  "sys-locale",
  "tar",
@@ -1776,6 +1766,38 @@ version = "0.1.0"
 dependencies = [
  "konoma-test-support",
  "libc",
+]
+
+[[package]]
+name = "konoma-math-core"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "konoma-svg",
+ "konoma-test-support",
+ "ratex-layout",
+ "ratex-parser",
+ "ratex-svg",
+ "ratex-types",
+ "resvg",
+]
+
+[[package]]
+name = "konoma-media-core"
+version = "0.1.0"
+dependencies = [
+ "hayro",
+ "hayro-syntax",
+ "image",
+ "konoma-base",
+ "konoma-svg",
+ "konoma-test-support",
+ "re_mp4",
+ "resvg",
+ "rust_h264",
+ "rust_h265",
+ "symphonia-core",
+ "symphonia-format-mkv",
 ]
 
 [[package]]

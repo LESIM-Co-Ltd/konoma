@@ -225,33 +225,16 @@ pub(crate) fn count_media_diff_dispatch_calls<T>(f: impl FnOnce() -> T) -> (T, u
     )
 }
 
-/// Writes `contents` to `path` as an executable file that this process never holds open for
-/// writing. Writing the file here and then running it races with other test threads: a thread that
-/// forks while the write fd is open hands the fd to its child until that child execs, and running
-/// the file in that window fails with ETXTBSY ("Text file busy") on Linux. So the bytes go to a
-/// staging file that is never run, a `cp` child makes the real file (its write fd lives and dies
-/// inside `cp`), and only `chmod` touches `path` here.
-#[cfg(unix)]
-pub(crate) fn write_executable(path: &std::path::Path, contents: impl AsRef<[u8]>) {
-    use std::os::unix::fs::PermissionsExt;
-    let mut staged = path.as_os_str().to_owned();
-    staged.push(".staged");
-    let staged = PathBuf::from(staged);
-    std::fs::write(&staged, contents).unwrap();
-    let status = std::process::Command::new("cp")
-        .arg(&staged)
-        .arg(path)
-        .status()
-        .unwrap();
-    assert!(status.success(), "cp failed: {status}");
-    let _ = std::fs::remove_file(&staged);
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
-
 // `TmpDir`, `unique_tmp` and `sample_path_or_skip` live in the `konoma-test-support` crate (so the
 // tests of the crates under `crates/` can use them too); re-exported so every `crate::test_support::...`
 // path in this package keeps working.
+#[cfg(unix)]
+pub(crate) use konoma_test_support::write_executable;
 pub(crate) use konoma_test_support::{sample_path_or_skip, unique_tmp, TmpDir};
+// Only the end-to-end tests (all `git`-gated) build PDFs by hand now that the PDF renderer's own
+// tests live in `konoma-media-core`.
+#[cfg(feature = "git")]
+pub(crate) use konoma_test_support::build_minimal_one_page_pdf;
 
 /// Initializes a bare git repository at `dir` via `git2` (no commits) with a fixed, sandboxed
 /// identity (`user.name`/`user.email`) and `commit.gpgsign` forced off, so a test-machine's real
@@ -294,49 +277,6 @@ pub(crate) fn write_solid_png(path: &std::path::Path, w: u32, h: u32, px: [u8; 3
     image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(w, h, image::Rgb(px)))
         .save(path)
         .unwrap();
-}
-
-/// Serializes a minimal, valid, single-page PDF (hand-built, no external tool needed) from its bare
-/// essentials — a page size in points and a raw content-stream body — factoring out the
-/// object/xref/trailer plumbing shared by every hand-built PDF fixture in this crate (a Catalog, a
-/// one-page Pages tree, and a single Content stream holding `content` verbatim, with `/Length` set
-/// to its exact byte length). Passing `content: b""` produces a genuinely blank page (`/Length 0`,
-/// no operators) — the PDF-syntax-level blank a page needs to look like, as opposed to a
-/// corrupted/truncated file.
-pub(crate) fn build_minimal_one_page_pdf(w_pt: u32, h_pt: u32, content: &[u8]) -> Vec<u8> {
-    let mut content_obj = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
-    content_obj.extend_from_slice(content);
-    content_obj.extend_from_slice(b"\nendstream");
-    let objs: [Vec<u8>; 4] = [
-        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
-        format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w_pt} {h_pt}] /Contents 4 0 R /Resources << >> >>"
-        )
-        .into_bytes(),
-        content_obj,
-    ];
-    let mut out = Vec::new();
-    out.extend_from_slice(b"%PDF-1.4\n");
-    let mut offsets = vec![0usize];
-    for (i, body) in objs.iter().enumerate() {
-        offsets.push(out.len());
-        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
-        out.extend_from_slice(body);
-        out.extend_from_slice(b"\nendobj\n");
-    }
-    let xref_offset = out.len();
-    let n = objs.len() + 1;
-    out.extend_from_slice(format!("xref\n0 {n}\n").as_bytes());
-    out.extend_from_slice(b"0000000000 65535 f \n");
-    for off in &offsets[1..] {
-        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
-    }
-    out.extend_from_slice(
-        format!("trailer\n<< /Size {n} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
-            .as_bytes(),
-    );
-    out
 }
 
 /// Runs `jj` inside `dir`, isolated from the running machine's real jj configuration (`HOME`
