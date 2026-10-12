@@ -172,8 +172,8 @@ use super::{
     math_url, mermaid_diagram_col, mermaid_fence_url, mermaid_placeholder_lines, next_details_open,
     normalize_cell, pad_to_width, parse_cell_segments_with_math, prefix_link_icons,
     render_html_block, render_mermaid_block, render_table_cells, scan_inline_math, scan_math_spans,
-    task_prefix_state, BlockAligns, CellAttrs, CellImage, CellSeg, CodeStyle, ColAlign,
-    ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot, MermaidSlot, SourceRun,
+    task_prefix_state, AlertKindColor, BlockAligns, CellAttrs, CellImage, CellSeg, CodeStyle,
+    ColAlign, ImagePlacement, ImageSlot, KonomaStyles, MathPart, MathSlot, MermaidSlot, SourceRun,
     TableCells,
 };
 

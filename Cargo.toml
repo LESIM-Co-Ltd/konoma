@@ -263,6 +263,7 @@ konoma-math-core = { path = "crates/konoma-math-core", version = "0.1.0" }
 konoma-media-core = { path = "crates/konoma-media-core", version = "0.1.0" }
 konoma-office-core = { path = "crates/konoma-office-core", version = "0.1.0" }
 konoma-vcs-core = { path = "crates/konoma-vcs-core", version = "0.1.0" }
+konoma-markdown-core = { path = "crates/konoma-markdown-core", version = "0.1.0" }
 
 # Exit-time cleanup of the private temp dir (`preview::command`): `libc::atexit` for the test
 # process, `signal-hook` to catch SIGTERM/SIGHUP/SIGINT on a thread. `libc` is also used to
@@ -289,6 +290,7 @@ konoma-base = { path = "crates/konoma-base", features = ["test-hooks"] }
 konoma-svg = { path = "crates/konoma-svg", features = ["test-hooks"] }
 konoma-office-core = { path = "crates/konoma-office-core", features = ["test-hooks"] }
 konoma-vcs-core = { path = "crates/konoma-vcs-core", features = ["test-hooks"] }
+konoma-markdown-core = { path = "crates/konoma-markdown-core", features = ["test-hooks"] }
 
 [features]
 default = ["git"]

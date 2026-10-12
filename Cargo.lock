@@ -1724,6 +1724,7 @@ dependencies = [
  "image",
  "infer",
  "konoma-base",
+ "konoma-markdown-core",
  "konoma-math-core",
  "konoma-media-core",
  "konoma-mermaid-core",
@@ -1763,6 +1764,16 @@ version = "0.1.0"
 dependencies = [
  "konoma-test-support",
  "libc",
+]
+
+[[package]]
+name = "konoma-markdown-core"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-test-support",
+ "pulldown-cmark",
+ "similar",
 ]
 
 [[package]]
