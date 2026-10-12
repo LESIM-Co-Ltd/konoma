@@ -1,0 +1,58 @@
+[package]
+name = "konoma-office-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's Office readers: spreadsheets, Word and PowerPoint/OpenDocument files read in pure Rust, and the slide drawing"
+
+[dependencies]
+# Optional: the test modules shared with the host (feature `test-hooks`) build on it.
+konoma-test-support = { path = "../konoma-test-support", version = "0.1.0", optional = true }
+konoma-base = { path = "../konoma-base", version = "0.1.0" }
+konoma-svg = { path = "../konoma-svg", version = "0.1.0" }
+konoma-math-core = { path = "../konoma-math-core", version = "0.1.0" }
+
+# Spreadsheet preview (xlsx/xlsm/xltx/xltm/xlsb/xls/ods): pure-Rust readers. xlsx/xlsm/xltx/xltm are read
+# by konoma itself in one pass (xlsx.rs); for xlsb/xls/ods the values, sheet list,
+# visibility and formulas come from calamine, and the per-cell number formats (which calamine does
+# not expose) are read by konoma's own "format pass" (fmt_*.rs). In the tests calamine is also
+# the oracle the xlsx reader is compared with. No optional features (chrono is not needed: date
+# arithmetic lives in konoma's own numfmt).
+calamine.workspace = true
+# Text of the character set a metafile font declares (Shift_JIS, GBK, ...). Already in the graph
+# through calamine; the PowerPoint EMF/WMF pictures need it directly.
+encoding_rs.workspace = true
+# Compound File Binary reader: used to detect a password-protected OOXML package (an
+# `/EncryptedPackage` stream inside a CFB container) and, in later stages, by the xls format pass.
+# Already in the graph through `infer`; named here because konoma reads it directly.
+cfb.workspace = true
+# XML reader for the xlsx reader and the format passes. quick-xml never expands DTD-defined entities (a `<!ENTITY>`
+# declaration arrives as an ignored DocType event; an undefined `&x;` is an error), so there is no
+# billion-laughs path. Same 0.41 line calamine uses (one copy in the graph).
+quick-xml.workspace = true
+# The package container (ooxml / odf) is a zip.
+zip.workspace = true
+image.workspace = true
+resvg.workspace = true
+base64.workspace = true
+flate2.workspace = true
+skrifa.workspace = true
+svgtypes.workspace = true
+# The current-date field of an OpenDocument slide reads the system locale and time zone.
+sys-locale.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }
+# The hardening tests ask the SVG guard for its work estimates (test-only functions there).
+konoma-svg = { path = "../konoma-svg", features = ["test-hooks"] }
+serde_json.workspace = true
+
+[features]
+# Keeps the `cfg(test)` seams (the fixed date of a date field, ...) active when another package's
+# tests call into this crate. Enabled by the root package's `[dev-dependencies]`.
+test-hooks = ["dep:konoma-test-support", "konoma-svg/test-hooks"]

@@ -1417,7 +1417,7 @@ mod smaller_retry {
     /// too generous).
     #[test]
     fn a_real_slide_refused_at_a_big_raster_is_drawn_smaller() {
-        use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+        use crate::preview::office::slide_draw::test_scenes::shadowed_slide;
         let drawn = crate::preview::office::slide_draw::render_svg_cancellable(
             &shadowed_slide(2),
             &|_| None,

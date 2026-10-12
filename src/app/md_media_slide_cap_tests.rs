@@ -590,9 +590,7 @@ fn app_with_slide(
 
 #[test]
 fn the_worker_stores_the_writers_cap_for_the_slide_it_drew() {
-    use crate::preview::office::slide_draw::{
-        hardening_tests::shadowed_slide, render_svg_cancellable,
-    };
+    use crate::preview::office::slide_draw::{render_svg_cancellable, test_scenes::shadowed_slide};
     let scene = shadowed_slide(2);
     let expected = render_svg_cancellable(&scene, &|_| None, &|| false).max_raster_px();
     assert!(expected > 0 && expected < 4096, "premise: {expected}");

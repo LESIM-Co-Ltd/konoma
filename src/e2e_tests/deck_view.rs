@@ -1443,13 +1443,13 @@ fn e2e_deck_a_terminal_too_small_for_the_body_draws_a_tiny_frame() {
 /// terminal the drawing process would refuse them, at the size `Rendered::max_raster_px` says it
 /// draws them.
 fn heavy_deck(n: usize) -> Document {
-    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    use crate::preview::office::slide_draw::test_scenes::shadowed_slide;
     deck_doc_with(n, (0..n).map(|_| shadowed_slide(2)).collect())
 }
 
 /// The cap the writer reports for [`heavy_deck`]'s slides.
 fn heavy_cap() -> u32 {
-    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    use crate::preview::office::slide_draw::test_scenes::shadowed_slide;
     crate::preview::office::slide_draw::render_svg_cancellable(
         &shadowed_slide(2),
         &|_| None,
@@ -1536,7 +1536,7 @@ fn e2e_deck_a_heavy_slide_on_a_growing_terminal_is_not_redrawn_for_a_size_it_can
 
 #[test]
 fn e2e_deck_a_light_slide_keeps_the_full_frame_beside_a_heavy_one() {
-    use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+    use crate::preview::office::slide_draw::test_scenes::shadowed_slide;
     let scenes = vec![shadowed_slide(2), scene(RED)];
     let Some((mut s, _d)) = open_with(
         "dv_heavy_and_light",

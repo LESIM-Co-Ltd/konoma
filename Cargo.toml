@@ -233,25 +233,6 @@ zip.workspace = true
 # このモジュールはそもそも unpack を一切呼ばない(詳細は preview/archive.rs)。
 tar.workspace = true
 
-# Spreadsheet preview (xlsx/xlsm/xltx/xltm/xlsb/xls/ods): pure-Rust readers. xlsx/xlsm/xltx/xltm are read
-# by konoma itself in one pass (preview/office/xlsx.rs); for xlsb/xls/ods the values, sheet list,
-# visibility and formulas come from calamine, and the per-cell number formats (which calamine does
-# not expose) are read by konoma's own "format pass" (preview/office/). In the tests calamine is also
-# the oracle the xlsx reader is compared with. No optional features (chrono is not needed: date
-# arithmetic lives in konoma's own numfmt).
-calamine.workspace = true
-# Text of the character set a metafile font declares (Shift_JIS, GBK, ...). Already in the graph
-# through calamine; the PowerPoint EMF/WMF pictures need it directly.
-encoding_rs.workspace = true
-# Compound File Binary reader: used to detect a password-protected OOXML package (an
-# `/EncryptedPackage` stream inside a CFB container) and, in later stages, by the xls format pass.
-# Already in the graph through `infer`; named here because konoma reads it directly.
-cfb.workspace = true
-# XML reader for the xlsx reader and the format passes. quick-xml never expands DTD-defined entities (a `<!ENTITY>`
-# declaration arrives as an ignored DocType event; an undefined `&x;` is an error), so there is no
-# billion-laughs path. Same 0.41 line calamine uses (one copy in the graph).
-quick-xml.workspace = true
-
 # git (任意機能。MVP は git2 を試す。コマンド委譲でも可)
 git2 = { workspace = true, optional = true }
 
@@ -284,6 +265,7 @@ konoma-svg = { path = "crates/konoma-svg", version = "0.1.0" }
 konoma-mermaid-core = { path = "crates/konoma-mermaid-core", version = "0.1.0" }
 konoma-math-core = { path = "crates/konoma-math-core", version = "0.1.0" }
 konoma-media-core = { path = "crates/konoma-media-core", version = "0.1.0" }
+konoma-office-core = { path = "crates/konoma-office-core", version = "0.1.0" }
 
 # Exit-time cleanup of the private temp dir (`preview::command`): `libc::atexit` for the test
 # process, `signal-hook` to catch SIGTERM/SIGHUP/SIGINT on a thread. `libc` is also used to
@@ -299,6 +281,8 @@ signal-hook.workspace = true
 # binary. The mermaid layout cross-validation (`cross-validate/reference_data.json`) reads JSON in
 # `konoma-mermaid-core`'s own dev-dependencies.
 serde_json.workspace = true
+# Test-only: builds a password-protected container in the Office tests (`e2e_tests`).
+cfb.workspace = true
 # Test-only helpers shared with the crates under `crates/` (path only: never published).
 konoma-test-support = { path = "crates/konoma-test-support" }
 # `test-hooks` keeps the crates' `cfg(test)` seams (exit-time temp cleanup, the decode gate, ...)
@@ -306,6 +290,7 @@ konoma-test-support = { path = "crates/konoma-test-support" }
 # features never reach a normal build.
 konoma-base = { path = "crates/konoma-base", features = ["test-hooks"] }
 konoma-svg = { path = "crates/konoma-svg", features = ["test-hooks"] }
+konoma-office-core = { path = "crates/konoma-office-core", features = ["test-hooks"] }
 
 [features]
 default = ["git"]

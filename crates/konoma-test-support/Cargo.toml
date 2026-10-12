@@ -6,4 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Test-only helpers shared by konoma and its crates (temp-dir guards, sample lookup)"
-publish = false
+# Published (not `publish = false`): konoma-office-core's `test-hooks` feature builds the test
+# modules it shares with the host on these helpers, and crates.io needs every dependency of a
+# published crate, optional ones included, to be published too.
+
+[dependencies]
+zip.workspace = true

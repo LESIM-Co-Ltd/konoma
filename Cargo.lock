@@ -1715,12 +1715,10 @@ dependencies = [
  "anyhow",
  "arboard",
  "base64 0.23.1",
- "calamine",
  "cfb",
  "crossterm",
  "csv",
  "emojis",
- "encoding_rs",
  "flate2",
  "git2",
  "globset",
@@ -1731,6 +1729,7 @@ dependencies = [
  "konoma-math-core",
  "konoma-media-core",
  "konoma-mermaid-core",
+ "konoma-office-core",
  "konoma-svg",
  "konoma-test-support",
  "libc",
@@ -1738,7 +1737,6 @@ dependencies = [
  "notify",
  "nucleo-matcher",
  "pulldown-cmark",
- "quick-xml",
  "ratatui",
  "ratatui-image",
  "resvg",
@@ -1816,6 +1814,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "konoma-office-core"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "calamine",
+ "cfb",
+ "encoding_rs",
+ "flate2",
+ "image",
+ "konoma-base",
+ "konoma-math-core",
+ "konoma-svg",
+ "konoma-test-support",
+ "libc",
+ "quick-xml",
+ "resvg",
+ "serde_json",
+ "skrifa 0.44.0",
+ "svgtypes",
+ "sys-locale",
+ "zip",
+]
+
+[[package]]
 name = "konoma-svg"
 version = "0.1.0"
 dependencies = [
@@ -1834,6 +1856,9 @@ dependencies = [
 [[package]]
 name = "konoma-test-support"
 version = "0.1.0"
+dependencies = [
+ "zip",
+]
 
 [[package]]
 name = "kqueue"

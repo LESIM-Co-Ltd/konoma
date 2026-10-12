@@ -943,7 +943,7 @@ impl MediaJob {
                 use crate::preview::office::docx::{load_document_cancellable, DocOptions};
                 use crate::preview::office::OfficeError;
                 let opts = DocOptions {
-                    lang,
+                    labels: crate::i18n::slide_labels(lang),
                     ..DocOptions::default()
                 };
                 let slides = office_doc::is_presentation_path(&p);

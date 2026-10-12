@@ -14,6 +14,8 @@ pub mod math;
 pub mod media_diff;
 pub mod mermaid;
 pub mod office;
+#[cfg(test)]
+mod office_host_tests;
 pub mod pdf;
 pub(crate) use konoma_base::private_dir;
 pub mod svg;

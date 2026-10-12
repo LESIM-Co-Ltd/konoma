@@ -2142,6 +2142,16 @@ pub fn tr(lang: Lang, msg: Msg) -> &'static str {
     }
 }
 
+/// The words the Office core writes into a converted presentation (the slide heading, the hidden
+/// mark, the notes label) in `lang`: the core owns no translations, the host hands them in.
+pub fn slide_labels(lang: Lang) -> konoma_office_core::docx::SlideLabels {
+    konoma_office_core::docx::SlideLabels {
+        heading: tr(lang, Msg::SlideHeading).to_string(),
+        hidden_suffix: tr(lang, Msg::SlideHiddenSuffix).to_string(),
+        notes: tr(lang, Msg::SlideNotesLabel).to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
