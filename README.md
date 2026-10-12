@@ -85,6 +85,16 @@ in-between split view.
 </p>
 <p align="center"><b>GitHub-flavored</b> — alerts, autolinks, emoji, and footnotes</p>
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/slides.png" alt="A PowerPoint deck drawn as a picture of its slide: clustered, stacked and percent column charts and a clustered bar chart" width="860">
+</p>
+<p align="center"><b>Presentations</b> — PowerPoint and OpenDocument slides drawn as pictures by konoma itself: charts, shapes, tables and pictures; <code>R</code> switches to the text view</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/LESIM-Co-Ltd/konoma/main/assets/spreadsheet.png" alt="An Excel workbook shown as a table, every cell in its display format: thousands separators, currency, percent, dates and times" width="860">
+</p>
+<p align="center"><b>Spreadsheets</b> — Excel and OpenDocument sheets as navigable tables, every cell in its display format</p>
+
 ## Agent watch — konoma follows your AI's edits
 
 Press `F` and konoma stops being a browser you drive: whenever a file changes on
