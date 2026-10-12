@@ -1,6 +1,6 @@
 ---
 title: プレビューを使い倒す
-description: 操作できるチェックボックス付き Markdown・テーブル・画像・PDF・CSV・コード — 検索・選択・コピーのすべて。
+description: 操作できるチェックボックス付き Markdown・テーブル・画像・PDF・CSV・表計算・Word 文書・スライド・コード — 検索・選択・コピーのすべて。
 sidebar:
   order: 2
 ---

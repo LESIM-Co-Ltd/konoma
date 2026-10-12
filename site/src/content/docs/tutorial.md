@@ -40,6 +40,11 @@ inverted block) walks through every link and checkbox in the document.
 `Enter` opens the focused link — local paths open inside konoma (and `q`
 brings you back), URLs open in your browser.
 
+The in-konoma tutorial lists sample files to try this on, Office documents
+included: `sample.xlsx` opens as a table in its Excel formats (`J`/`K` switch
+sheets), `sample.docx` as formatted text, and `sample.pptx` as pictures of the
+slides (`J`/`K` turn slides, `R` switches to the text view).
+
 ## 3. Toggle checkboxes
 
 In a Markdown file with a task list (`- [ ]` items), `Tab` onto a checkbox

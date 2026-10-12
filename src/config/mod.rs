@@ -797,7 +797,7 @@ pub struct PreviewConfig {
 pub struct Rule {
     pub glob: Option<String>,
     pub mime: Option<String>,
-    pub builtin: Option<String>, // "markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "archive" | "spreadsheet" | "text"
+    pub builtin: Option<String>, // "markdown" | "mermaid" | "image" | "svg" | "video" | "pdf" | "code" | "archive" | "spreadsheet" | "document" | "text"
     pub command: Option<String>, // template: {path} {out}
     pub render_as: Option<String>, // how to treat the command's output: "image" | "text"
     pub detached: bool, // opens in a separate process so it doesn't block the TUI (video, etc.)

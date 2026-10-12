@@ -79,3 +79,6 @@ launched in, **uppercase = global** across everything.
 konoma deliberately has no built-in editor. `e` opens the file in your editor
 (`[editor]` config → `$VISUAL` → `$EDITOR` → `vim`), per-extension overrides
 included, and returns to the preview with the content refreshed when you quit.
+On a Word, Excel, PowerPoint or OpenDocument file `e` opens the Office app instead
+(Microsoft Office, then LibreOffice, then the system default) — see
+[Previews](../preview/).
