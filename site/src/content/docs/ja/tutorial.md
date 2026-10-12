@@ -37,6 +37,11 @@ konoma konoma/samples        # tutorial.ja.md を開く
 リンクとチェックボックスを順に巡回します。`Enter` で開く — ローカルパスは konoma 内で
 (`q` で戻れます)、URL はブラウザで開きます。
 
+konoma 内で読むチュートリアルには、試せるサンプルファイルが並んでいます。Office 文書も
+あります: `sample.xlsx` は Excel の表示書式どおりの表(`J`/`K` でシート切替)、
+`sample.ja.docx` は書式つきの文章、`sample.ja.pptx` はスライドの絵(`J`/`K` で
+スライド送り・`R` で文字の表示)として開きます。
+
 ## 3. チェックボックスを切り替える
 
 タスクリスト(`- [ ]`)のある Markdown で、`Tab` でチェックボックスへ → `Space`。

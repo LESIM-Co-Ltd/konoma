@@ -5,7 +5,7 @@
 # konoma
 
 > Terminal file browser built for AI pair-programming — full-screen previews
-> (Markdown, images, PDF, CSV), a git suite, and an agent-watch mode that
+> (Markdown, images, PDF, CSV, spreadsheets, Word and PowerPoint), a git suite, and an agent-watch mode that
 > follows your AI's edits.
 > macOS & Linux · Rust · MIT
 
@@ -36,8 +36,9 @@ cargo install konoma    # or compile from crates.io
 konoma [DIR]            # opens DIR (defaults to the current directory)
 ```
 
-**There is nothing else to install.** Images, PDF, SVG, Mermaid diagrams, LaTeX math, CSV and
-H.264/HEVC video thumbnails are all rendered by konoma itself, in pure Rust. Two optional extras
+**There is nothing else to install.** Images, PDF, SVG, Mermaid diagrams, LaTeX math, CSV,
+spreadsheets, Word documents, slide decks and H.264/HEVC video thumbnails are all rendered by
+konoma itself, in pure Rust. Two optional extras
 add the rest: `git` enables the in-app git suite and `ffmpeg` covers the remaining video formats —
 a missing one costs you that one feature, never the app. See [Install](#install) for every
 installation route and [Requirements and optional tools](#requirements-and-optional-tools) for

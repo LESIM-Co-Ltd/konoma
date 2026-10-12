@@ -1,6 +1,6 @@
 ---
 title: Previews in depth
-description: Markdown with interactive checkboxes, tables, images, PDF, CSV, code — and how to search, select and copy from all of them.
+description: Markdown with interactive checkboxes, tables, images, PDF, CSV, spreadsheets, Word documents, slide decks, code — and how to search, select and copy from all of them.
 sidebar:
   order: 2
 ---

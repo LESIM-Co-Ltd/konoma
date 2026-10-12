@@ -77,3 +77,5 @@ vim のマーク流で、スコープが2つ: **小文字=起動ディレクト�
 konoma は意図してエディタを内蔵しません。`e` でファイルをあなたのエディタ
 (`[editor]` 設定 → `$VISUAL` → `$EDITOR` → `vim`・拡張子ごとの上書きも可)で
 開き、終了するとプレビューに戻って内容が更新されています。
+Word・Excel・PowerPoint・OpenDocument のファイルでは、`e` は Office アプリで開きます
+(Microsoft Office → LibreOffice → OS の既定アプリの順。[プレビュー](../preview/)を参照)。
