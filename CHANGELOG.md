@@ -6,6 +6,8 @@ All notable changes to konoma are documented in this file. The format is based o
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-12
+
 ### Added
 - **PowerPoint / OpenDocument presentation preview**: `.pptx`/`.pptm`/`.ppsx`/`.ppsm`/`.potx`/`.potm`/`.odp`/`.otp` open
   as **pictures of the slides**, drawn by konoma itself (no PowerPoint or LibreOffice needed): its own DrawingML / ODF to SVG
@@ -108,6 +110,11 @@ All notable changes to konoma are documented in this file. The format is based o
   thread never parses the file (a 200 KB `<text>` used to freeze it for 16 s on a Mac with 1,000 fonts installed; the time grows with the number of fonts).
 
 ### Fixed
+- **Mixed Latin and CJK labels were measured narrower than drawn on Linux with CJK fonts installed** (Mermaid boxes,
+  slide text wrapping): konoma added each missing character's fallback width one by one, while the renderer draws the
+  whole run in the first fallback face that covers it (Latin and digits included). With Noto CJK the labels came out
+  about 5% wider than their boxes; macOS hid it because Hiragino's Latin widths are close. Text is now measured the
+  way it is drawn.
 - The tab bar and the status rows are drawn after the preview body, so the busy label (the sign that work is in
   progress) no longer lags the preview by one frame.
 - **Private temp directories could be taken over** (command output `{out}`, PDF pages, video thumbnails): their names
@@ -2697,7 +2704,8 @@ Initial release.
 - Tabs, path copy, a fully configurable keymap with conflict detection, and an
   optional quit-confirmation dialog.
 
-[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.6...v0.29.0
 [0.28.6]: https://github.com/LESIM-Co-Ltd/konoma/compare/v0.28.5...v0.28.6
