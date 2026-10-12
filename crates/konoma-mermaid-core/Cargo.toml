@@ -1,0 +1,39 @@
+[package]
+name = "konoma-mermaid-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's own mermaid renderer: parsers for every diagram kind, a vendored dagre layout engine, and the SVG writer"
+
+[lib]
+# The tree used to be modules of the `konoma` binary, where rustdoc examples are never run. Some
+# doc comments (the vendored dagre's) still carry upstream's examples, which name the `dagre`
+# crate and cannot compile here.
+doctest = false
+
+[dependencies]
+# The SVG colour parser usvg itself uses: a `classDef` / `style` colour is accepted only if usvg
+# would not fall back to black for it (`render/style.rs`). Same version as in the `konoma` package.
+svgtypes.workspace = true
+konoma-base = { path = "../konoma-base", version = "0.1.0" }
+konoma-svg = { path = "../konoma-svg", version = "0.1.0" }
+# `src/layout/` (the vendored dagre layout engine) emits one `trace!` call. The facade is a no-op
+# unless a logger is installed and konoma installs none, but keeping the call means the vendored
+# subtree stays byte-identical to upstream there. No new package: `log` is already in Cargo.lock
+# via symphonia/ignore.
+log.workspace = true
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }
+# The layout cross-validation test (`src/layout/cross_validate.rs`) parses
+# `cross-validate/reference_data.json`, the recorded output of the real `@dagrejs/dagre`
+# JavaScript implementation; the catalog dump test writes its manifest as JSON.
+serde.workspace = true
+serde_json.workspace = true
+# Rasterizing the SVGs the tests draw (`usvg` is named by the tests that inspect the tree).
+resvg.workspace = true
+# The Unicode text diagram, drawn by the catalog dump test (the host's `render_mermaid_file` is a
+# thin panic-safe wrapper around the same call).
+mermaid-text.workspace = true

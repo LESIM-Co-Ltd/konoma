@@ -156,6 +156,17 @@ pub fn unique_tmp(prefix: &str) -> TmpDir {
     }
 }
 
+/// The repository root (`crates/konoma-test-support/../..`), for tests of the crates under
+/// `crates/` that read `samples/` or write under `docs/` / `site/`: their working directory is
+/// the crate's own directory, not the repository root.
+pub fn repo_root() -> PathBuf {
+    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    here.parent()
+        .and_then(std::path::Path::parent)
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or(here)
+}
+
 /// Resolves a fixture bundled under the repo's `samples/` directory, anchored at
 /// `CARGO_MANIFEST_DIR` (baked in at compile time) rather than a bare relative path — a plain
 /// `Path::new("samples/…")` resolves against the test binary's **cwd**, which is only the crate

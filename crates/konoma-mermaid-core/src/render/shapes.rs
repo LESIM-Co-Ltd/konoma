@@ -1,0 +1,1309 @@
+//! How big a node is, what its outline looks like, and where an edge should meet it.
+//!
+//! # The sizes are mermaid's, taken from mermaid's source
+//!
+//! `docs/FEATURE-MERMAID-RENDERER.md` §0-1 says konoma does not chase a pixel match, but the
+//! *proportions* are not a matter of taste: a diamond that is sized like a rectangle makes every
+//! branch in the diagram look wrong, and mermaid's own formulas are the only description of those
+//! proportions that is not a guess. Each `size_*` function below cites the file it came from in
+//! `mermaid@11.17.2`, and the padding they all read is mermaid's `flowchart.padding`, whose schema
+//! default is 15 (`flowDb.ts` reads `config.flowchart?.padding || 8`, and the schema always
+//! supplies 15, so 8 is unreachable for a flowchart).
+//!
+//! The one that matters most is the diamond: mermaid gives it `s = w + h` where `w` and `h` are
+//! the padded label, and draws a square of side `s` rotated 45°. Sizing it as `w × h` instead
+//! makes the branch labels collide with the box on every decision node.
+//!
+//! # Two families, one interface
+//!
+//! [`Glyph`] is what a node is drawn as, and it has three kinds of member: the fifteen a
+//! flowchart can ask for, wrapped in [`Glyph::Flow`]; the six a state diagram adds — the two
+//! `[*]` markers, a choice diamond, a fork/join bar, a note, and a state box with a rule under
+//! its first line; and the two compartmented boxes stage 3 adds, [`Glyph::ClassBox`] and
+//! [`Glyph::ErBox`]. Everything downstream of this module (layout, clipping, emission, the
+//! geometric invariants) is written against `Glyph` and knows nothing about which family a node
+//! came from, which is what lets each stage reuse the pipeline whole rather than growing a
+//! second one.
+//!
+//! # Shapes konoma folds together
+//!
+//! §2-4 settles that all 53 names must be *recognised* but need not be *drawn* apart. The parser
+//! already folds the 53 onto the fifteen [`Shape`] variants; this module draws fourteen of them
+//! and lets [`Shape::Text`] draw no outline at all. Nothing is folded further, so a shape a reader
+//! wrote is a shape they see.
+//!
+//! # Intersections
+//!
+//! dagre routes edges between node *rectangles* — it knows nothing about outlines — so its first
+//! and last waypoints sit on a bounding box. `edges::clip` throws those two away and asks this
+//! module where the line really leaves the shape, which is what makes a branch come out of a
+//! diamond's slanted side instead of its bounding box's flat one. The polygon case takes the
+//! nearest of *all* the sides' crossings along the ray, which is
+//! [`layout::intersect::intersect_polygon`]'s contract.
+
+use std::f64::consts::PI;
+
+use crate::flowchart::Shape;
+use crate::layout::intersect::{intersect_ellipse, intersect_polygon, intersect_rect};
+use crate::layout::Point;
+use crate::text_metrics::FONT_SIZE;
+
+use super::labels;
+
+/// mermaid's `flowchart.padding`. Schema default 15 (`config.schema.yaml`).
+pub const PADDING: f64 = 15.0;
+
+/// Corner radius of `A(text)`. mermaid's `themeVariables.radius`, default 5 (`roundedRect.ts`).
+pub const CORNER_RADIUS: f64 = 5.0;
+
+/// Half the gap between the two rings of `A(((text)))` (`doubleCircle.ts`).
+pub const DOUBLE_CIRCLE_GAP: f64 = 5.0;
+
+/// Width of the side frames of `A[[text]]` (`subroutine.ts`'s `FRAME_WIDTH`).
+pub const SUBROUTINE_FRAME: f64 = 8.0;
+
+/// How many segments approximate each half-circle cap of a stadium when intersecting it.
+/// mermaid uses 50; the cap is only ever a few tens of px across, so 24 puts the worst-case
+/// deviation well under a tenth of a pixel.
+const CAP_SEGMENTS: usize = 24;
+
+/// Radius of the dot `[*]` becomes. `stateStart.ts` draws a circle of `r = 7`.
+pub const STATE_MARKER_RADIUS: f64 = 7.0;
+
+/// Radius of the filled core inside the end marker (`stateEnd.ts`'s inner circle).
+pub const STATE_END_INNER_RADIUS: f64 = 4.0;
+
+/// Side of the square a `<<choice>>` diamond is cut from. `choice.ts` uses 40 and draws no text.
+pub const CHOICE_SIZE: f64 = 40.0;
+
+/// Long side of a `<<fork>>` / `<<join>>` bar (`forkJoin.ts`).
+pub const BAR_LENGTH: f64 = 70.0;
+
+/// Short side of a `<<fork>>` / `<<join>>` bar (`forkJoin.ts`).
+pub const BAR_THICKNESS: f64 = 10.0;
+
+/// How far a note's folded corner reaches in from its top-right corner.
+///
+/// konoma's own: mermaid draws a note as a plain rectangle. The fold is the one thing that says
+/// "this is an aside, not a state" without a colour the terminal might be showing through
+/// (§0-1 is what allows the difference).
+pub const NOTE_FOLD: f64 = 10.0;
+
+/// Space between a sequence participant's name and the sides of its box.
+pub const PARTICIPANT_PAD_X: f64 = 14.0;
+
+/// Space above and below a sequence participant's name.
+pub const PARTICIPANT_PAD_Y: f64 = 10.0;
+
+/// The narrowest a sequence participant's box may be.
+///
+/// Same reasoning as [`super::panel::ER_MIN_WIDTH`]: a row of boxes of wildly different widths
+/// reads as noise, and a one-letter participant beside a sentence-long one is the common case.
+/// mermaid pins its own at a flat `sequence.width` of 150, which is far too wide for a terminal.
+pub const PARTICIPANT_MIN_WIDTH: f64 = 62.0;
+
+/// Height of the band a sequence `actor`'s stick figure is drawn in, above its name.
+pub const ACTOR_FIGURE_HEIGHT: f64 = 32.0;
+
+/// Radius of that figure's head.
+pub const ACTOR_HEAD_RADIUS: f64 = 6.0;
+
+/// How far a mindmap cloud's bumps and a bang's spikes reach past the box that holds the words.
+pub const BUMP: f64 = 6.0;
+
+/// Space above and below the words of a mindmap node drawn with no border.
+pub const UNDERLINE_GAP: f64 = 3.0;
+
+/// Radius of a user journey's mood face.
+pub const FACE_RADIUS: f64 = 11.0;
+
+/// How far a block arrow's head reaches past its body.
+pub const ARROW_HEAD: f64 = 10.0;
+
+/// Radius of a git graph's commit dot.
+pub const COMMIT_RADIUS: f64 = 8.0;
+
+/// How far each pointed end of a git graph's tag runs, horizontally.
+///
+/// mermaid points only the end nearest the commit and leaves the other flat
+/// (`gitGraphRenderer.ts`'s `tag-label-bkg` polygon). konoma points **both** ends, because every
+/// other glyph here draws its label centred on the node and a one-sided point would put the words
+/// off-centre in the shape they sit in — the whole of `svg::emit_node`'s text placement would need
+/// a per-glyph exception to say otherwise. Two points and the hole still read as a tag, which is
+/// the bar §0-1 sets.
+pub const TAG_POINT: f64 = 7.0;
+
+/// Blank space between a tag's words and where its pointed end begins.
+pub const TAG_PAD_X: f64 = 5.0;
+
+/// Blank space above and below a tag's words.
+pub const TAG_PAD_Y: f64 = 3.0;
+
+/// How far a [`Glyph::ChamferedRect`] cuts each corner back, along both axes. `[ui]
+/// mermaid_routing = "konoma-orthogonal"`'s handoff spec (`docs/FEATURE-MERMAID-RENDERER.md` §10-1) fixes
+/// this at 6px — enough to read as a cut corner rather than a rounded one, small enough that a
+/// port still lands well inside the flat run that survives on every side.
+pub const CHAMFER: f64 = 6.0;
+
+/// Half the height of the short flat edge each of a tag's points is truncated to.
+///
+/// mermaid truncates its point the same way (its left edge spans `2 * PY`): a needle-sharp point
+/// disappears into the stroke at a terminal's scale.
+pub const TAG_TIP: f64 = 3.0;
+
+/// Radius of the hole punched in a tag, near its leading point (mermaid's `tag-hole`).
+pub const TAG_HOLE_RADIUS: f64 = 1.5;
+
+/// What a node is drawn as.
+///
+/// See the module docs: one enum over both diagram families, so that everything downstream is
+/// written once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Glyph {
+    /// One of a flowchart's fifteen outlines.
+    Flow(Shape),
+    /// The `[*]` an arrow leaves: a filled dot.
+    StateStart,
+    /// The `[*]` an arrow enters: a ring around a filled dot.
+    StateEnd,
+    /// `state x <<choice>>`: a diamond with no text.
+    Choice,
+    /// `state x <<fork>>` / `<<join>>`: a solid bar. `horizontal` is true when the bar lies
+    /// across the page, which is what a top-to-bottom diagram wants.
+    Bar {
+        /// Whether the long axis is horizontal.
+        horizontal: bool,
+    },
+    /// A `note left of` / `note right of`: a box with a folded corner.
+    Note,
+    /// A state box whose label arrived as more than one description, drawn with a rule under
+    /// the first of them (mermaid's `SHAPE_STATE_WITH_DESC`).
+    TitledBox,
+    /// A class diagram's `classBox`: a square-cornered rectangle divided into compartments. What
+    /// goes in them is the node's [`Panel`](super::panel::Panel), which is also what sized it.
+    ClassBox,
+    /// An ER diagram's `erBox`: a name band over a grid of attributes. Sized by its panel too.
+    ErBox,
+    /// A sequence diagram's `participant`: a rounded box with a minimum width, sitting at the head
+    /// of a lifeline.
+    Participant,
+    /// A sequence diagram's `actor`: a stick figure with the name underneath it, and **no box**.
+    ///
+    /// mermaid draws the figure too; the crate konoma is replacing draws a second plain box, so
+    /// `actor Alice` and `participant Alice` come out identical there. The name lives in the
+    /// node's [`Panel`](super::panel::Panel), which is also what sized the node — the figure needs
+    /// a band of its own above the text, and a centred label cannot express that.
+    Actor,
+
+    // --- stage 5: the marks a data chart is made of -------------------------------------------
+    //
+    // Seven kinds, and not one of them is a box with a word in it. What they have in common with
+    // everything above is that they are *kinds*, with no continuous geometry of their own: an
+    // angle, a ribbon's four corners and a graticule's ring count live in [`Mark`], for the same
+    // reason a compartment's rows live in a `Panel` — a bounding box cannot say them, and putting
+    // them here would cost `Glyph` its `Eq` and `Hash`.
+    /// A pie slice. Its angles come from [`Mark::Wedge`] and its radius from the node's box.
+    Wedge,
+    /// A rectangle painted in a series colour: a bar, a treemap tile, a packet field, a Sankey
+    /// node's column, a legend swatch.
+    ChartBar,
+    /// A small filled disc marking one datum. No outline — at four pixels across, a stroke is
+    /// most of the mark.
+    ChartPoint,
+    /// A Sankey flow: a band whose two ends have different heights, sized by [`Mark::Ribbon`].
+    Ribbon,
+    /// Words and nothing else, in a box that is exactly the words.
+    ///
+    /// Not `Flow(Shape::Text)`, which pads its box by `PADDING` on every side: a tick label whose
+    /// box is fifteen pixels wider than its ink cannot be checked for overlapping its neighbour,
+    /// and overlapping tick labels are the commonest way a chart becomes unreadable.
+    ChartLabel,
+    /// The rectangle a plot is drawn inside — an outline in the axis colour, with nothing behind
+    /// it, because §1 forbids painting over the terminal.
+    PlotFrame,
+    /// A radar chart's background: concentric rings and the spokes, from [`Mark::Graticule`].
+    Graticule,
+
+    // --- stage 5b: the marks the last eleven languages needed --------------------------------
+    /// A mindmap's `)text(` — a rounded outline with bumps along it.
+    Cloud,
+    /// A mindmap's `))text((` — the spiky one.
+    Bang,
+    /// A mindmap node written with no brackets at all: the words with a rule under them, which
+    /// is what mermaid's `no-border` draws and what makes an unadorned mindmap read as a tree.
+    Underline,
+    /// A user journey's score: a face, from [`Mark::Face`]. Five moods, and the *only* thing that
+    /// distinguishes a journey diagram from a table of numbers.
+    Face,
+    /// A block diagram's `<["Label"]>(right)` — a rectangle with arrowheads on the sides
+    /// [`Mark::BlockArrow`] names.
+    BlockArrow,
+    /// A git graph's `type: REVERSE` — a commit dot with a cross through it.
+    Reverted,
+    /// A git graph's `tag:` — a ticket with a hole punched in it, holding the tag's own words.
+    ///
+    /// A tag is not a caption: it is a name someone pinned onto a commit, and a reader picks the
+    /// two or three tagged commits out of a history by looking for the shape. Drawn as bare words
+    /// it is indistinguishable from the commit's id, which is what this glyph exists to fix.
+    Tag,
+
+    // --- `[ui] mermaid_routing = "konoma-orthogonal"` (stage 1) --------------------------------------
+    /// A flowchart decision node (`A{text}`), drawn with its four corners chamfered instead of as
+    /// a diamond, when `[ui] mermaid_routing` is `"konoma-orthogonal"`.
+    ///
+    /// A diamond's flat sides shrink to a single point at top/bottom/left/right, which leaves no
+    /// straight run for a right-angle line to land on perpendicularly. mermaid's own `question.ts`
+    /// answers that by doubling the box (`w + h` on a side) and rotating it 45°; konoma's
+    /// orthogonal mode answers it instead by keeping the *ordinary* rectangle's box — sized and
+    /// padded exactly like [`Shape::Rect`] (`docs/FEATURE-MERMAID-RENDERER.md` §10-1: "サイズも
+    /// 矩形と同じ計り方…菱形の2倍拡大をしない") — and cutting each corner back by [`CHAMFER`] px so a
+    /// flat run survives on every side for a port to sit on.
+    ChamferedRect,
+}
+
+/// Continuous geometry a chart mark needs that its bounding box cannot express.
+///
+/// The same idea as [`super::panel::Panel`], and for the same reason: [`Glyph`] says *what kind of
+/// mark*, the node's `size` says *how big*, and anything left over — an angle, a ribbon's four
+/// corners — goes here, so that `Glyph` stays a plain enumeration that a `match` can be exhaustive
+/// over and a `HashSet` can hold.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Mark {
+    /// A pie slice, in degrees clockwise from twelve o'clock.
+    Wedge {
+        /// Where the slice begins.
+        start: f64,
+        /// How far round it goes.
+        sweep: f64,
+    },
+    /// A Sankey flow. All four are y offsets from the node's centre; the node's width is the
+    /// horizontal span between the two ends.
+    Ribbon {
+        /// Top of the left end.
+        left_top: f64,
+        /// Bottom of the left end.
+        left_bottom: f64,
+        /// Top of the right end.
+        right_top: f64,
+        /// Bottom of the right end.
+        right_bottom: f64,
+    },
+    /// A user journey's mood, 1 (unhappy) to 5 (happy). Out-of-range values are clamped, which
+    /// is what upstream's face picker does too.
+    Face {
+        /// The score written on the task.
+        score: f64,
+    },
+    /// Which sides of a block arrow carry a head.
+    BlockArrow {
+        /// A head on the left edge.
+        left: bool,
+        /// A head on the right edge.
+        right: bool,
+        /// A head on the top edge.
+        up: bool,
+        /// A head on the bottom edge.
+        down: bool,
+    },
+    /// A radar chart's rings and spokes.
+    Graticule {
+        /// How many rings, the outermost included.
+        rings: usize,
+        /// How many spokes radiate from the centre.
+        spokes: usize,
+        /// Whether a ring is a copy of the spoke polygon rather than a circle.
+        polygon: bool,
+    },
+}
+
+impl From<Shape> for Glyph {
+    fn from(shape: Shape) -> Glyph {
+        Glyph::Flow(shape)
+    }
+}
+
+impl Default for Glyph {
+    fn default() -> Glyph {
+        Glyph::Flow(Shape::default())
+    }
+}
+
+/// A width and a height, in px.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Size {
+    /// Width.
+    pub w: f64,
+    /// Height.
+    pub h: f64,
+}
+
+impl Size {
+    /// Convenience constructor.
+    pub fn new(w: f64, h: f64) -> Size {
+        Size { w, h }
+    }
+}
+
+/// The bounding box a node of this shape needs for a label of size `label`.
+///
+/// This is the size handed to dagre, which lays out rectangles; the outline is drawn inside it.
+/// For the slanted shapes that means the box is wider than mermaid's intermediate `w`, because
+/// mermaid's own `updateNodeBounds` measures the drawn polygon, overhang included.
+fn flow_size(shape: Shape, label: Size) -> Size {
+    let (lw, lh) = (label.w, label.h);
+    match shape {
+        // squareRect.ts -> drawRect.ts: labelPaddingX = padding*2, labelPaddingY = padding,
+        // and drawRect doubles each again.
+        Shape::Rect => Size::new(lw + PADDING * 4.0, lh + PADDING * 2.0),
+        // roundedRect.ts -> drawRect.ts: both paddings are padding*1, doubled by drawRect.
+        Shape::RoundedRect => Size::new(lw + PADDING * 2.0, lh + PADDING * 2.0),
+        // stadium.ts: h gets ONE padding (not two), and w carries a quarter of h for the caps.
+        Shape::Stadium => {
+            let h = lh + PADDING;
+            Size::new(lw + h / 4.0 + PADDING, h)
+        }
+        // circle.ts. Two things to know about this line:
+        //
+        //  * Upstream reads `options?.padding ?? halfPadding`, and the flowchart renderer passes
+        //    no `padding`, so mermaid effectively uses padding/2. konoma uses the whole padding,
+        //    which is the only place in this file that knowingly leaves mermaid's number.
+        //  * The radius follows the label's **width alone**, in konoma as in mermaid. A tall
+        //    label — several `<br>`s — therefore overflows the ring at top and bottom. That is
+        //    upstream's behaviour and it is recorded here (and in
+        //    `tests::every_shape_holds_the_label_it_was_sized_for`, which exempts circles for
+        //    exactly this reason) rather than quietly diverged from.
+        Shape::Circle => {
+            let r = lw / 2.0 + PADDING;
+            Size::new(r * 2.0, r * 2.0)
+        }
+        // doubleCircle.ts: the outer ring already uses the whole padding upstream.
+        Shape::DoubleCircle => {
+            let r = lw / 2.0 + PADDING;
+            Size::new(r * 2.0, r * 2.0)
+        }
+        // question.ts: w and h each get one padding, and the drawn square's side is their SUM.
+        Shape::Diamond => {
+            let s = (lw + PADDING) + (lh + PADDING);
+            Size::new(s, s)
+        }
+        // hexagon.ts: h gets one padding, the slanted ends are h/4 wide each, and w gets one more.
+        Shape::Hexagon => {
+            let h = lh + PADDING;
+            Size::new(lw + h / 2.0 + PADDING, h)
+        }
+        // subroutine.ts: one padding, plus a frame on each side.
+        Shape::Subroutine => Size::new(lw + 2.0 * SUBROUTINE_FRAME + PADDING, lh + PADDING),
+        // cylinder.ts: the ellipse's ry follows the width, and the drawn path stands 2*ry taller
+        // than the `h` upstream computes.
+        Shape::Cylinder => {
+            let w = lw + PADDING;
+            let ry = cylinder_ry(w);
+            Size::new(w, lh + PADDING + 3.0 * ry)
+        }
+        // trapezoid.ts / leanRight.ts / leanLeft.ts: one padding each way; the slant adds h/2 of
+        // overhang on each side, so the drawn box is `w + h` wide.
+        Shape::Trapezoid | Shape::LeanRight | Shape::LeanLeft => {
+            let h = lh + PADDING;
+            Size::new(lw + PADDING + h, h)
+        }
+        // invertedTrapezoid.ts is the odd one out: it doubles BOTH paddings where trapezoid.ts
+        // doubles neither. That asymmetry is upstream's, not a transcription slip.
+        Shape::InvTrapezoid => {
+            let h = lh + PADDING * 2.0;
+            Size::new(lw + PADDING * 2.0 + h, h)
+        }
+        // rectLeftInvArrow.ts: the notch on the left is h/4 deep and sticks out of the label box.
+        Shape::Odd => {
+            let h = lh + PADDING;
+            Size::new(lw + PADDING + h / 4.0, h)
+        }
+        // text.ts: one padding, no outline.
+        Shape::Text => Size::new(lw + PADDING, lh + PADDING),
+    }
+}
+
+/// `ry` of a cylinder's end ellipse for a body of width `w` (`cylinder.ts`).
+fn cylinder_ry(w: f64) -> f64 {
+    let rx = w / 2.0;
+    rx / (2.5 + w / 50.0)
+}
+
+/// What to draw for a shape whose bounding box is `size`, in coordinates relative to the centre.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outline {
+    /// Axis-aligned rectangle, corner radius `r` (0 for a square corner).
+    Rect {
+        /// Width.
+        w: f64,
+        /// Height.
+        h: f64,
+        /// Corner radius.
+        r: f64,
+    },
+    /// A circle centred on the node.
+    Circle {
+        /// Radius.
+        r: f64,
+    },
+    /// Two concentric circles.
+    DoubleCircle {
+        /// Outer radius.
+        outer: f64,
+        /// Inner radius.
+        inner: f64,
+    },
+    /// A closed polygon.
+    Polygon(Vec<Point>),
+    /// A rectangle with a vertical rule `inset` from each side.
+    Subroutine {
+        /// Width.
+        w: f64,
+        /// Height.
+        h: f64,
+        /// Distance from each side to its rule.
+        inset: f64,
+    },
+    /// A cylinder standing on end: a body `w` wide and `h` tall whose caps are ellipses of
+    /// vertical radius `ry`.
+    Cylinder {
+        /// Width.
+        w: f64,
+        /// Total height, caps included.
+        h: f64,
+        /// Vertical radius of a cap.
+        ry: f64,
+    },
+    /// A mindmap cloud: a rounded box with bumps along its outline.
+    Cloud {
+        /// Width.
+        w: f64,
+        /// Height.
+        h: f64,
+    },
+    /// A rule under the words, and nothing else.
+    Underline {
+        /// Width of the rule.
+        w: f64,
+        /// Height of the box the rule sits at the bottom of.
+        h: f64,
+    },
+    /// A journey score, drawn as a face.
+    Face {
+        /// Radius.
+        r: f64,
+        /// The mood, 1 to 5.
+        score: f64,
+    },
+    /// A circle with a cross through it — a reverted commit.
+    Crossed {
+        /// Radius.
+        r: f64,
+    },
+    /// A git graph's tag: a ticket with a point at each end and a hole near the leading one.
+    Tag {
+        /// Width of the bounding box.
+        w: f64,
+        /// Height of the bounding box.
+        h: f64,
+        /// How far each pointed end runs, horizontally.
+        point: f64,
+        /// Half the height of the flat edge each point is truncated to.
+        tip: f64,
+        /// Radius of the hole.
+        hole: f64,
+    },
+    /// A filled dot with no outline — the `[*]` an arrow leaves.
+    Disc {
+        /// Radius.
+        r: f64,
+    },
+    /// A ring around a filled dot — the `[*]` an arrow enters.
+    Target {
+        /// Radius of the ring.
+        outer: f64,
+        /// Radius of the filled core.
+        inner: f64,
+    },
+    /// A solid bar — `<<fork>>` and `<<join>>`.
+    Bar {
+        /// Width.
+        w: f64,
+        /// Height.
+        h: f64,
+    },
+    /// A box with its top-right corner folded over — a note.
+    Note {
+        /// Width.
+        w: f64,
+        /// Height.
+        h: f64,
+        /// How far the fold reaches in from the corner, along both axes.
+        fold: f64,
+    },
+    /// A stick figure standing in the top `figure_h` of the box, with the name below it.
+    Actor {
+        /// Width of the bounding box.
+        w: f64,
+        /// Height of the bounding box.
+        h: f64,
+        /// Height of the band the figure occupies, measured down from the top.
+        figure_h: f64,
+    },
+    /// A pie slice: a sector of radius `r`, from `start` to `start + sweep` degrees clockwise
+    /// from twelve o'clock.
+    Wedge {
+        /// Radius.
+        r: f64,
+        /// Where the slice begins, in degrees.
+        start: f64,
+        /// How far round it goes, in degrees.
+        sweep: f64,
+    },
+    /// A Sankey flow, as four y offsets from the centre across a span of `w`.
+    Ribbon {
+        /// Horizontal span.
+        w: f64,
+        /// Top of the left end.
+        left_top: f64,
+        /// Bottom of the left end.
+        left_bottom: f64,
+        /// Top of the right end.
+        right_top: f64,
+        /// Bottom of the right end.
+        right_bottom: f64,
+    },
+    /// A radar background: `rings` rings of radius `r * i / rings`, and `spokes` spokes.
+    Graticule {
+        /// Outer radius.
+        r: f64,
+        /// How many rings.
+        rings: usize,
+        /// How many spokes.
+        spokes: usize,
+        /// Whether the rings are polygons rather than circles.
+        polygon: bool,
+    },
+    /// Nothing is drawn.
+    None,
+}
+
+/// The outline of `shape` inside a bounding box of `size`.
+fn flow_outline(shape: Shape, size: Size) -> Outline {
+    let (w, h) = (size.w, size.h);
+    match shape {
+        Shape::Rect => Outline::Rect { w, h, r: 0.0 },
+        Shape::RoundedRect => Outline::Rect {
+            w,
+            h,
+            r: CORNER_RADIUS,
+        },
+        Shape::Stadium => Outline::Rect { w, h, r: h / 2.0 },
+        Shape::Circle => Outline::Circle { r: w / 2.0 },
+        Shape::DoubleCircle => Outline::DoubleCircle {
+            outer: w / 2.0,
+            inner: (w / 2.0 - DOUBLE_CIRCLE_GAP).max(0.0),
+        },
+        Shape::Subroutine => Outline::Subroutine {
+            w,
+            h,
+            inset: SUBROUTINE_FRAME,
+        },
+        Shape::Cylinder => Outline::Cylinder {
+            w,
+            h,
+            ry: cylinder_ry(w),
+        },
+        Shape::Text => Outline::None,
+        _ => Outline::Polygon(flow_polygon(shape, size)),
+    }
+}
+
+/// The vertices of a polygonal shape, relative to the node centre, in boundary order.
+///
+/// Shapes that are not polygons return their own boundary sampled densely enough to intersect
+/// against (the stadium) or an empty list.
+fn flow_polygon(shape: Shape, size: Size) -> Vec<Point> {
+    let (w, h) = (size.w, size.h);
+    let (hw, hh) = (w / 2.0, h / 2.0);
+    match shape {
+        // question.ts, recentred: a square of side `s` on its corner.
+        Shape::Diamond => vec![
+            Point::new(0.0, -hh),
+            Point::new(hw, 0.0),
+            Point::new(0.0, hh),
+            Point::new(-hw, 0.0),
+        ],
+        // hexagon.ts with m = h/4.
+        Shape::Hexagon => {
+            let m = h / 4.0;
+            vec![
+                Point::new(-hw + m, -hh),
+                Point::new(hw - m, -hh),
+                Point::new(hw, 0.0),
+                Point::new(hw - m, hh),
+                Point::new(-hw + m, hh),
+                Point::new(-hw, 0.0),
+            ]
+        }
+        // trapezoid.ts: the wide side is the bottom. The drawn box is `inner + h` wide, so the
+        // inner top edge spans +/- (w - h)/2.
+        Shape::Trapezoid => {
+            let t = (hw - hh).max(0.0);
+            vec![
+                Point::new(-hw, hh),
+                Point::new(hw, hh),
+                Point::new(t, -hh),
+                Point::new(-t, -hh),
+            ]
+        }
+        // invertedTrapezoid.ts: the wide side is the top.
+        Shape::InvTrapezoid => {
+            let t = (hw - hh).max(0.0);
+            vec![
+                Point::new(-t, hh),
+                Point::new(t, hh),
+                Point::new(hw, -hh),
+                Point::new(-hw, -hh),
+            ]
+        }
+        // leanRight.ts: a parallelogram leaning right.
+        Shape::LeanRight => {
+            let t = (hw - hh).max(0.0);
+            vec![
+                Point::new(-hw, hh),
+                Point::new(t, hh),
+                Point::new(hw, -hh),
+                Point::new(-t, -hh),
+            ]
+        }
+        // leanLeft.ts: the same, mirrored.
+        Shape::LeanLeft => {
+            let t = (hw - hh).max(0.0);
+            vec![
+                Point::new(-t, hh),
+                Point::new(hw, hh),
+                Point::new(t, -hh),
+                Point::new(-hw, -hh),
+            ]
+        }
+        // rectLeftInvArrow.ts: a rectangle with a V notched into its left side, h/4 deep.
+        Shape::Odd => {
+            let notch = h / 4.0;
+            vec![
+                Point::new(-hw, -hh),
+                Point::new(-hw + notch, 0.0),
+                Point::new(-hw, hh),
+                Point::new(hw, hh),
+                Point::new(hw, -hh),
+            ]
+        }
+        // stadium.ts approximates its own caps the same way, with 50 segments.
+        Shape::Stadium => {
+            let r = hh;
+            let a = (hw - r).max(0.0);
+            let mut pts = vec![Point::new(-a, -r), Point::new(a, -r)];
+            for i in 1..CAP_SEGMENTS {
+                let t = -PI / 2.0 + PI * i as f64 / CAP_SEGMENTS as f64;
+                pts.push(Point::new(a + r * t.cos(), r * t.sin()));
+            }
+            pts.push(Point::new(a, r));
+            pts.push(Point::new(-a, r));
+            for i in 1..CAP_SEGMENTS {
+                let t = PI / 2.0 + PI * i as f64 / CAP_SEGMENTS as f64;
+                pts.push(Point::new(-a + r * t.cos(), r * t.sin()));
+            }
+            pts
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Where a line aimed at `target` leaves a `shape` of `size` centred on `center`.
+///
+/// This is the step that makes an edge come out of the shape the reader sees rather than out of
+/// the bounding box dagre reasoned about.
+fn flow_intersect(shape: Shape, center: Point, size: Size, target: &Point) -> Point {
+    match shape {
+        // circle.ts / doubleCircle.ts both clip against the outer ring.
+        Shape::Circle | Shape::DoubleCircle => {
+            intersect_ellipse(center.x, center.y, size.w / 2.0, size.h / 2.0, target)
+        }
+        // drawRect.ts, subroutine's frame and cylinder.ts all clip against the box. (Upstream's
+        // cylinder nudges the result towards the cap; the difference is under a pixel and the
+        // nudge can land a point inside the shape, which invariant (2) forbids.)
+        Shape::Rect | Shape::RoundedRect | Shape::Subroutine | Shape::Cylinder | Shape::Text => {
+            intersect_rect(center.x, center.y, size.w, size.h, target)
+        }
+        _ => {
+            let verts: Vec<Point> = flow_polygon(shape, size)
+                .into_iter()
+                .map(|p| Point::new(center.x + p.x, center.y + p.y))
+                .collect();
+            if verts.len() < 3 {
+                return intersect_rect(center.x, center.y, size.w, size.h, target);
+            }
+            intersect_polygon(&verts, &center, target)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The `Glyph` layer: one interface over both diagram families
+// ---------------------------------------------------------------------------------------------
+
+/// The bounding box a node drawn as `glyph` needs for a label of size `label`.
+///
+/// The state markers ignore the label entirely, because mermaid draws no text inside them —
+/// see [`Glyph`].
+pub fn size(glyph: Glyph, label: Size) -> Size {
+    match glyph {
+        Glyph::Flow(shape) => flow_size(shape, label),
+        // stateStart.ts / stateEnd.ts: a fixed dot, whatever the state was called.
+        Glyph::StateStart | Glyph::StateEnd => {
+            Size::new(STATE_MARKER_RADIUS * 2.0, STATE_MARKER_RADIUS * 2.0)
+        }
+        // choice.ts: a fixed 40x40 square on its corner, with no text.
+        Glyph::Choice => Size::new(CHOICE_SIZE, CHOICE_SIZE),
+        // forkJoin.ts: a bar whose long axis follows the diagram's own axis.
+        Glyph::Bar { horizontal } => {
+            if horizontal {
+                Size::new(BAR_LENGTH, BAR_THICKNESS)
+            } else {
+                Size::new(BAR_THICKNESS, BAR_LENGTH)
+            }
+        }
+        // A note is a rounded-rect-shaped box with room for the fold at its corner.
+        Glyph::Note => Size::new(
+            (label.w + PADDING * 2.0).max(NOTE_FOLD * 3.0),
+            (label.h + PADDING * 2.0).max(NOTE_FOLD * 2.0),
+        ),
+        // The rule sits between the label's first and second line, so no extra height is needed.
+        Glyph::TitledBox => Size::new(label.w + PADDING * 2.0, label.h + PADDING * 2.0),
+        // A box that holds a table is measured by its table. `panel::class_panel` /
+        // `panel::er_panel` decide the width from the widest row and the height from how many
+        // rows there are, and the caller passes that size straight through here — a second
+        // opinion about it would be a second thing to keep in step (see `panel`'s module docs).
+        Glyph::ClassBox | Glyph::ErBox => label,
+        // A participant's box is its name plus padding, floored at a width that keeps a row of
+        // them even.
+        Glyph::Participant => Size::new(
+            (label.w + PARTICIPANT_PAD_X * 2.0).max(PARTICIPANT_MIN_WIDTH),
+            label.h + PARTICIPANT_PAD_Y * 2.0,
+        ),
+        // Sized by its panel, like the two compartmented boxes, and for the same reason: the
+        // figure's band and the name's band are two rows, not one centred label.
+        Glyph::Actor => label,
+        // Every chart mark is sized by the chart, not by a label: a bar's height is its value
+        // against the axis scale, a tile's area is its share of the whole, a wedge's radius is the
+        // room the pie was given. Passing the size straight through is the same contract the two
+        // compartmented boxes have — one place decides, and nothing here second-guesses it.
+        Glyph::Wedge
+        | Glyph::ChartBar
+        | Glyph::ChartPoint
+        | Glyph::Ribbon
+        | Glyph::PlotFrame
+        | Glyph::Graticule => label,
+        // …with one exception, and it is the point of the glyph: a chart label's box **is** its
+        // ink, with no padding at all, so that "two tick labels do not overlap" is a statement
+        // about what a reader sees.
+        Glyph::ChartLabel => label,
+
+        // A cloud and a bang are a rectangle plus the room their bumps and spikes stick out into.
+        // Without it the outline crosses its own words, which is the one thing a decorated shape
+        // must not do.
+        Glyph::Cloud | Glyph::Bang => Size::new(
+            label.w + PADDING * 2.0 + BUMP * 2.0,
+            label.h + PADDING * 2.0 + BUMP * 2.0,
+        ),
+        // The rule is drawn at the bottom of the box, so the box is the words plus a little room
+        // for it and no side padding at all — a mindmap's default node is *text*.
+        Glyph::Underline => Size::new(label.w + PADDING, label.h + UNDERLINE_GAP * 2.0),
+        // A face is a fixed disc: its size says nothing, its expression says everything.
+        Glyph::Face => Size::new(FACE_RADIUS * 2.0, FACE_RADIUS * 2.0),
+        // A block arrow is its label plus a head's worth of room on every side that has one. The
+        // heads are in the mark, which `size` does not see, so all four are allowed for — an
+        // arrow whose label ran into its own point would be worse than one that is slightly wide.
+        Glyph::BlockArrow => Size::new(
+            label.w + PADDING * 2.0 + ARROW_HEAD * 2.0,
+            label.h + PADDING * 2.0 + ARROW_HEAD * 2.0,
+        ),
+        // A commit dot, whatever it is called.
+        Glyph::Reverted => Size::new(COMMIT_RADIUS * 2.0, COMMIT_RADIUS * 2.0),
+        // A tag is its words, the room its two points run into, and a little air.
+        Glyph::Tag => Size::new(
+            label.w + (TAG_PAD_X + TAG_POINT) * 2.0,
+            label.h + TAG_PAD_Y * 2.0,
+        ),
+        // Sized exactly like an ordinary rectangle — see the glyph's own docs for why this must
+        // NOT double the box the way `Shape::Diamond` does.
+        Glyph::ChamferedRect => flow_size(Shape::Rect, label),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// §10-8: the node box under `Routing::Orthogonal`
+// ---------------------------------------------------------------------------------------------
+//
+// `size` above is mermaid's, and every number in it is mermaid's. This section is konoma's own,
+// and none of it is: the design reference (`docs/mermaid-theme/handoff/round5-Konoma-Flowchart-
+// Routing.dc.html`, transcribed as `docs/FEATURE-MERMAID-RENDERER.md` §10-8) fixes a node's box at
+// a declared 36px tall and a multiple of 8px wide, because the router downstream of it is
+// orthogonal: a long flat face along the flow axis is what lets several edges land perpendicular
+// without the eviction rule having to grow the node, and one height for every one-line node makes
+// a straight lane's centre line the same number on every rank.
+//
+// It exists **beside** `size` rather than inside it so that `Routing::Splines` cannot be changed
+// by editing it. Every caller reaches it through `orthogonal_node`, which returns `None` for a
+// glyph N3 puts out of scope, and the splines path is then the one it always was.
+
+/// §10-8 N2 ("左右パディング各 20px"): the blank space a node box keeps on each side of its words.
+pub const ORTHO_PAD_X: f64 = 20.0;
+
+/// §10-8 N1 ("上下パディング各 11px"): the blank space a node box keeps above and below its words.
+/// With [`text_metrics::FONT_SIZE`] this is what makes a one-line node exactly 36px tall.
+pub const ORTHO_PAD_Y: f64 = 11.0;
+
+/// §10-8 N2 ("最低 96px"): the narrowest a node box gets, however short its label.
+pub const ORTHO_MIN_WIDTH: f64 = 96.0;
+
+/// §10-8 N2 ("8px 単位に切り上げ"): the grid every node width is rounded up onto.
+pub const ORTHO_WIDTH_STEP: f64 = 8.0;
+
+/// §10-8 N2 ("上限 240px"): the width past which a label wraps instead of the box growing.
+///
+/// A cap, not a clamp — N2 is explicit that a single unbreakable run wider than this keeps its box
+/// ("折り返し後も超える場合のみ上限を撤廃・切らない・省略記号なし"), because a truncated label is a
+/// diagram that lies and an over-wide one is only ugly.
+pub const ORTHO_MAX_WIDTH: f64 = 240.0;
+
+/// Whether §10-8 N1–N3 sizes a node drawn as `glyph`.
+///
+/// The rule is about **boxes**: a glyph whose outline *is* its bounding rectangle, which is every
+/// shape the design reference actually draws (a flowchart `[...]`/`(...)`, a state box, a state box
+/// with a rule under its title, and the chamfered rectangle a decision node becomes under this
+/// routing — N3 names that one explicitly as in scope).
+///
+/// Everything else keeps mermaid's own [`size`], in two groups and for two different reasons:
+///
+/// * N3's own exclusions — [`Glyph::Choice`], the two `[*]` markers, a fork/join bar, and a
+///   composite-state or subgraph frame — have sizes the design fixes elsewhere (§10-5 S1/S4) or
+///   derives from their contents. `state::spec_of` overrides the first four before this is ever
+///   consulted, and a frame is not a `SpecNode` at all; they are listed in the `matches!` below
+///   only to make the exclusion visible where a reader looks for it.
+/// * A shape with geometry of its own — a circle, a stadium's caps, a hexagon's slants, a
+///   cylinder, a subroutine's frames, a trapezoid — is **not** covered, because §10-8 says nothing
+///   about them and a rule written for a rectangle produces a wrong picture when applied to one:
+///   96×36 turns mermaid's circle into an ellipse. Leaving them on mermaid's formulas keeps the
+///   only description of those proportions that is not a guess (this module's own opening note).
+pub fn orthogonal_covers(glyph: Glyph) -> bool {
+    matches!(
+        glyph,
+        Glyph::Flow(Shape::Rect | Shape::RoundedRect) | Glyph::ChamferedRect | Glyph::TitledBox
+    )
+}
+
+/// §10-8 N3: how much more horizontal padding `glyph` keeps than [`ORTHO_PAD_X`], per side.
+///
+/// Only a chamfered rectangle has any: its corner is cut back by [`CHAMFER`] along both axes, so
+/// the same 20px of blank space measured from the *box* leaves less than 20px of it beside the
+/// words on the line the cut passes through. N3 spells the compensation out — "面取り 6px 分の
+/// 左右パディング +6px".
+fn ortho_extra_pad_x(glyph: Glyph) -> f64 {
+    if glyph == Glyph::ChamferedRect {
+        CHAMFER
+    } else {
+        0.0
+    }
+}
+
+/// §10-8 N1: the height of a box holding `lines` lines of body text.
+///
+/// `14k + 6(k−1) + 22`, written as the padding it is. Equal to `k * labels::ortho_line_pitch() +
+/// 2*ORTHO_PAD_Y - ORTHO_LINE_GAP`, and `orthogonal_box_height_is_the_label_block_plus_padding`
+/// pins the two spellings together so the box a label is given and the block
+/// [`super::svg::emit_text`] centres inside it cannot drift.
+pub fn ortho_height(lines: usize) -> f64 {
+    let k = lines.max(1) as f64;
+    FONT_SIZE as f64 * k + labels::ORTHO_LINE_GAP * (k - 1.0) + ORTHO_PAD_Y * 2.0
+}
+
+/// §10-8 N2: `text_width` grown by `glyph`'s padding, floored at [`ORTHO_MIN_WIDTH`] and rounded up
+/// onto the [`ORTHO_WIDTH_STEP`] grid.
+///
+/// Order matters and is N2's own: pad, then floor, then round. Rounding last is what makes "every
+/// node width is a multiple of 8" true without exception — flooring after it could hand back a 96
+/// that had never been through the grid (96 is on it, but a future minimum need not be), and
+/// rounding a floored value can only ever leave it on the grid or above it.
+pub fn ortho_width(glyph: Glyph, text_width: f64) -> f64 {
+    let padded = text_width + (ORTHO_PAD_X + ortho_extra_pad_x(glyph)) * 2.0;
+    let floored = padded.max(ORTHO_MIN_WIDTH);
+    (floored / ORTHO_WIDTH_STEP).ceil() * ORTHO_WIDTH_STEP
+}
+
+/// The label and box §10-8 gives a node drawn as `glyph` whose source text is `text`, or `None`
+/// when N3 leaves `glyph` on mermaid's own [`size`].
+///
+/// This is the single entry point both languages' `spec_of` calls — the flowchart's in
+/// `super::spec_of`, the state diagram's in `super::state::spec_of` — so N5 ("複合状態の内部ノードにも
+/// N1〜N4 をそのまま適用") is true by construction rather than by a second implementation that has
+/// to be kept in step: a state nested three composites deep reaches exactly this function, with
+/// nothing about its depth in scope.
+///
+/// The label comes back **with** the size because N2's cap can change it: a label wider than the
+/// cap is re-wrapped ([`labels::Label::measure_wrapped`]), and the box is then sized from the
+/// wrapped lines. Returning the pair is what keeps the box and the words in it the same
+/// measurement — handing back only a size would leave the caller to re-measure and hope.
+pub fn orthogonal_node(glyph: Glyph, text: &str) -> Option<(labels::Label, Size)> {
+    if !orthogonal_covers(glyph) {
+        return None;
+    }
+    let budget = ORTHO_MAX_WIDTH - (ORTHO_PAD_X + ortho_extra_pad_x(glyph)) * 2.0;
+    let label = labels::Label::measure_wrapped(text, budget, FONT_SIZE as f64);
+    let size = orthogonal_label_box(glyph, &label);
+    Some((label, size))
+}
+
+/// §10-8 N1 and N2 applied to a label that has already been measured and wrapped — the
+/// **label-derived** half of N4's `max(ラベル由来, ポート由来)`.
+///
+/// Split out of [`orthogonal_node`] so that a check downstream of the layout can ask the question
+/// N4 actually poses — "is this box the label's own, or has the eviction rule grown it?" — from
+/// the label the node ended up carrying, without re-deriving N1/N2 a second time somewhere else.
+pub fn orthogonal_label_box(glyph: Glyph, label: &labels::Label) -> Size {
+    Size::new(
+        ortho_width(glyph, label.width),
+        ortho_height(label.lines.len()),
+    )
+}
+
+/// The outline of `glyph` inside a bounding box of `size`.
+///
+/// `mark` carries the continuous geometry the box cannot say — see [`Mark`]. Every glyph that
+/// needs one draws **nothing** without it, rather than guessing: a wedge with no angles is not a
+/// full circle, it is a bug, and a silent full circle would be a lying picture.
+pub fn outline(glyph: Glyph, size: Size, mark: Option<Mark>) -> Outline {
+    match glyph {
+        Glyph::Wedge => match mark {
+            Some(Mark::Wedge { start, sweep }) => Outline::Wedge {
+                r: size.w / 2.0,
+                start,
+                sweep,
+            },
+            _ => Outline::None,
+        },
+        Glyph::Ribbon => match mark {
+            Some(Mark::Ribbon {
+                left_top,
+                left_bottom,
+                right_top,
+                right_bottom,
+            }) => Outline::Ribbon {
+                w: size.w,
+                left_top,
+                left_bottom,
+                right_top,
+                right_bottom,
+            },
+            _ => Outline::None,
+        },
+        Glyph::Graticule => match mark {
+            Some(Mark::Graticule {
+                rings,
+                spokes,
+                polygon,
+            }) => Outline::Graticule {
+                r: size.w / 2.0,
+                rings,
+                spokes,
+                polygon,
+            },
+            _ => Outline::None,
+        },
+        Glyph::ChartBar | Glyph::PlotFrame => Outline::Rect {
+            w: size.w,
+            h: size.h,
+            r: 0.0,
+        },
+        Glyph::ChartPoint => Outline::Disc {
+            r: size.w.min(size.h) / 2.0,
+        },
+        Glyph::ChartLabel => Outline::None,
+        Glyph::Face => match mark {
+            Some(Mark::Face { score }) => Outline::Face {
+                r: size.w.min(size.h) / 2.0,
+                score,
+            },
+            _ => Outline::None,
+        },
+        Glyph::BlockArrow => match mark {
+            Some(Mark::BlockArrow {
+                left,
+                right,
+                up,
+                down,
+            }) => Outline::Polygon(block_arrow_polygon(size, left, right, up, down)),
+            _ => Outline::None,
+        },
+        _ => flow_outline_or_glyph(glyph, size),
+    }
+}
+
+/// The outline of a block arrow: a rectangle whose sides with a head are pushed out into one.
+///
+/// Walked clockwise from the top-left corner, inserting a triangle wherever a head was asked for,
+/// so the result is one closed polygon and the invariant tests can treat it like any other.
+fn block_arrow_polygon(size: Size, left: bool, right: bool, up: bool, down: bool) -> Vec<Point> {
+    let (hw, hh) = (size.w / 2.0, size.h / 2.0);
+    let (bw, bh) = (
+        hw - if left || right { ARROW_HEAD } else { 0.0 },
+        hh - if up || down { ARROW_HEAD } else { 0.0 },
+    );
+    let mut p: Vec<Point> = Vec::new();
+    p.push(Point::new(-bw, -bh));
+    if up {
+        p.push(Point::new(-bw * 0.5, -bh));
+        p.push(Point::new(0.0, -hh));
+        p.push(Point::new(bw * 0.5, -bh));
+    }
+    p.push(Point::new(bw, -bh));
+    if right {
+        p.push(Point::new(bw, -bh * 0.5));
+        p.push(Point::new(hw, 0.0));
+        p.push(Point::new(bw, bh * 0.5));
+    }
+    p.push(Point::new(bw, bh));
+    if down {
+        p.push(Point::new(bw * 0.5, bh));
+        p.push(Point::new(0.0, hh));
+        p.push(Point::new(-bw * 0.5, bh));
+    }
+    p.push(Point::new(-bw, bh));
+    if left {
+        p.push(Point::new(-bw, bh * 0.5));
+        p.push(Point::new(-hw, 0.0));
+        p.push(Point::new(-bw, -bh * 0.5));
+    }
+    p
+}
+
+fn flow_outline_or_glyph(glyph: Glyph, size: Size) -> Outline {
+    match glyph {
+        Glyph::Flow(shape) => flow_outline(shape, size),
+        Glyph::StateStart => Outline::Disc { r: size.w / 2.0 },
+        Glyph::StateEnd => Outline::Target {
+            outer: size.w / 2.0,
+            inner: STATE_END_INNER_RADIUS.min(size.w / 2.0),
+        },
+        Glyph::Choice => Outline::Polygon(flow_polygon(Shape::Diamond, size)),
+        Glyph::Bar { .. } => Outline::Bar {
+            w: size.w,
+            h: size.h,
+        },
+        Glyph::Note => Outline::Note {
+            w: size.w,
+            h: size.h,
+            fold: NOTE_FOLD.min(size.w / 2.0).min(size.h / 2.0),
+        },
+        Glyph::TitledBox => Outline::Rect {
+            w: size.w,
+            h: size.h,
+            r: CORNER_RADIUS,
+        },
+        // Square corners, unlike everything else konoma rounds: a UML class and an ER entity are
+        // drawn square everywhere they are drawn at all, and the corner is the only thing that
+        // tells a compartmented box from a subgraph frame at a glance.
+        Glyph::ClassBox | Glyph::ErBox => Outline::Rect {
+            w: size.w,
+            h: size.h,
+            r: 0.0,
+        },
+        Glyph::Participant => Outline::Rect {
+            w: size.w,
+            h: size.h,
+            r: CORNER_RADIUS,
+        },
+        Glyph::Actor => Outline::Actor {
+            w: size.w,
+            h: size.h,
+            figure_h: ACTOR_FIGURE_HEIGHT.min(size.h),
+        },
+        Glyph::Cloud => Outline::Cloud {
+            w: size.w,
+            h: size.h,
+        },
+        Glyph::Bang => Outline::Polygon(bang_polygon(size)),
+        Glyph::Underline => Outline::Underline {
+            w: size.w,
+            h: size.h,
+        },
+        Glyph::Reverted => Outline::Crossed {
+            r: size.w.min(size.h) / 2.0,
+        },
+        Glyph::Tag => Outline::Tag {
+            w: size.w,
+            h: size.h,
+            // A box narrower than its own two points would turn inside out, so the run is capped
+            // at the half-width. Nothing sizes a tag that small, and a glyph that draws a valid
+            // shape for every box it is handed is one fewer thing a caller can get wrong.
+            point: TAG_POINT.min(size.w / 2.0),
+            tip: TAG_TIP.min(size.h / 2.0),
+            hole: TAG_HOLE_RADIUS,
+        },
+        Glyph::ChamferedRect => Outline::Polygon(chamfered_rect_polygon(size)),
+        // Handled by `outline` before it delegates here.
+        Glyph::Wedge
+        | Glyph::ChartBar
+        | Glyph::ChartPoint
+        | Glyph::Ribbon
+        | Glyph::ChartLabel
+        | Glyph::PlotFrame
+        | Glyph::Graticule
+        | Glyph::Face
+        | Glyph::BlockArrow => Outline::None,
+    }
+}
+
+/// The eight vertices of a [`Glyph::ChamferedRect`], relative to the node centre, in boundary
+/// order: an ordinary axis-aligned rectangle with each corner cut on a 45° chamfer of [`CHAMFER`]
+/// px.
+///
+/// A box smaller than two chamfers on a side clamps the chamfer to half that side rather than
+/// crossing itself — the same defensive `min` [`super::edges::fix_corners`]'s corner radius takes,
+/// for a decision node whose label is short enough that padding alone would otherwise be enough.
+fn chamfered_rect_polygon(size: Size) -> Vec<Point> {
+    let (hw, hh) = (size.w / 2.0, size.h / 2.0);
+    let c = CHAMFER.min(hw).min(hh);
+    vec![
+        Point::new(-hw + c, -hh),
+        Point::new(hw - c, -hh),
+        Point::new(hw, -hh + c),
+        Point::new(hw, hh - c),
+        Point::new(hw - c, hh),
+        Point::new(-hw + c, hh),
+        Point::new(-hw, hh - c),
+        Point::new(-hw, -hh + c),
+    ]
+}
+
+/// The spikes of a `))text((`.
+///
+/// Sixteen points alternating between the box and a little outside it. Enough teeth to read as an
+/// explosion at the size a terminal shows, few enough that each one is still a triangle.
+fn bang_polygon(size: Size) -> Vec<Point> {
+    const TEETH: usize = 16;
+    let (rx, ry) = (size.w / 2.0, size.h / 2.0);
+    (0..TEETH * 2)
+        .map(|i| {
+            let a = std::f64::consts::TAU * i as f64 / (TEETH * 2) as f64;
+            let k = if i % 2 == 0 {
+                1.0
+            } else {
+                1.0 - BUMP / rx.max(1.0)
+            };
+            Point::new(rx * k * a.cos(), ry * k * a.sin())
+        })
+        .collect()
+}
+
+/// The outline of a git graph's tag: a rectangle whose two ends are drawn out into truncated
+/// points, walked clockwise from the top of the leading one.
+///
+/// Takes `point` and `tip` rather than reading the constants, so that the shape [`svg`] draws is
+/// built from the numbers [`Outline::Tag`] carries and there is no second copy of the capping to
+/// drift (`docs/FEATURE-MERMAID-RENDERER.md` §6-A item 19).
+///
+/// The hole is not part of it — a polygon is a boundary, and a hole punched inside one is a second
+/// mark drawn on top of it.
+///
+/// [`svg`]: super::svg
+pub fn tag_points(w: f64, h: f64, point: f64, tip: f64) -> Vec<Point> {
+    let (hw, hh) = (w / 2.0, h / 2.0);
+    vec![
+        Point::new(-hw, -tip),
+        Point::new(-hw + point, -hh),
+        Point::new(hw - point, -hh),
+        Point::new(hw, -tip),
+        Point::new(hw, tip),
+        Point::new(hw - point, hh),
+        Point::new(-hw + point, hh),
+        Point::new(-hw, tip),
+    ]
+}
+
+/// Where a tag's hole is punched, relative to the node centre: inside the leading point, where a
+/// string would go through it.
+pub fn tag_hole_center(w: f64, point: f64) -> Point {
+    Point::new(-w / 2.0 + point * 0.6, 0.0)
+}
+
+/// The vertices of a polygonal glyph, relative to the node centre, in boundary order. Empty for
+/// a glyph whose boundary is not a polygon.
+pub fn polygon(glyph: Glyph, size: Size) -> Vec<Point> {
+    match glyph {
+        Glyph::Flow(shape) => flow_polygon(shape, size),
+        Glyph::Choice => flow_polygon(Shape::Diamond, size),
+        Glyph::Bang => bang_polygon(size),
+        // The same capping `outline` applies, so the boundary the invariants sample is the
+        // boundary the page shows.
+        Glyph::Tag => tag_points(
+            size.w,
+            size.h,
+            TAG_POINT.min(size.w / 2.0),
+            TAG_TIP.min(size.h / 2.0),
+        ),
+        Glyph::ChamferedRect => chamfered_rect_polygon(size),
+        _ => Vec::new(),
+    }
+}
+
+/// Where a line aimed at `target` leaves a `glyph` of `size` centred on `center`.
+pub fn intersect(glyph: Glyph, center: Point, size: Size, target: &Point) -> Point {
+    match glyph {
+        Glyph::Flow(shape) => flow_intersect(shape, center, size, target),
+        Glyph::StateStart | Glyph::StateEnd => {
+            intersect_ellipse(center.x, center.y, size.w / 2.0, size.h / 2.0, target)
+        }
+        Glyph::Choice => flow_intersect(Shape::Diamond, center, size, target),
+        // A bar, a note and a titled box all clip against their box. The note's folded corner is
+        // a detail of the drawing: cutting the line there would leave a visible gap where the
+        // fold is, and the fold is at most ten pixels of a corner an edge rarely meets.
+        Glyph::Bar { .. }
+        | Glyph::Note
+        | Glyph::TitledBox
+        | Glyph::ClassBox
+        | Glyph::ErBox
+        | Glyph::Participant
+        | Glyph::Actor
+        // A chart mark is never an edge's endpoint: a grid line runs the width of the plot, a
+        // line plot passes *through* its own points, and a radar curve closes on itself. Clipping
+        // against the box is the harmless answer for a question nothing asks.
+        | Glyph::Wedge
+        | Glyph::ChartBar
+        | Glyph::ChartPoint
+        | Glyph::Ribbon
+        | Glyph::ChartLabel
+        | Glyph::PlotFrame
+        | Glyph::Graticule
+        // A cloud, a bang, an underline and a block arrow all clip against their box: the bumps
+        // and the spikes are a decoration a few pixels deep, and cutting a line to them would put
+        // an arrowhead inside a tooth.
+        | Glyph::Cloud
+        | Glyph::Bang
+        | Glyph::Underline
+        | Glyph::BlockArrow
+        // A tag is never an edge's endpoint either: it hangs above its commit and nothing is
+        // drawn to it.
+        | Glyph::Tag => intersect_rect(center.x, center.y, size.w, size.h, target),
+        // A commit dot is a circle, and a line between two commits ends on it.
+        Glyph::Face | Glyph::Reverted => {
+            intersect_ellipse(center.x, center.y, size.w / 2.0, size.h / 2.0, target)
+        }
+        Glyph::ChamferedRect => {
+            let verts: Vec<Point> = chamfered_rect_polygon(size)
+                .into_iter()
+                .map(|p| Point::new(center.x + p.x, center.y + p.y))
+                .collect();
+            intersect_polygon(&verts, &center, target)
+        }
+    }
+}

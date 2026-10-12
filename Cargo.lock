@@ -1730,10 +1730,10 @@ dependencies = [
  "image",
  "infer",
  "konoma-base",
+ "konoma-mermaid-core",
  "konoma-svg",
  "konoma-test-support",
  "libc",
- "log",
  "mermaid-text",
  "notify",
  "nucleo-matcher",
@@ -1776,6 +1776,21 @@ version = "0.1.0"
 dependencies = [
  "konoma-test-support",
  "libc",
+]
+
+[[package]]
+name = "konoma-mermaid-core"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-svg",
+ "konoma-test-support",
+ "log",
+ "mermaid-text",
+ "resvg",
+ "serde",
+ "serde_json",
+ "svgtypes",
 ]
 
 [[package]]

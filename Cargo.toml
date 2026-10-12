@@ -361,15 +361,10 @@ similar.workspace = true
 nucleo-matcher.workspace = true
 ignore.workspace = true
 
-# `src/preview/mermaid/layout/` (the vendored dagre layout engine) emits one `trace!`
-# call. The facade is a no-op unless a logger is installed and konoma installs none,
-# but keeping the call means the vendored subtree stays byte-identical to upstream
-# there. No new package: `log` is already in Cargo.lock via symphonia/ignore.
-log.workspace = true
-
 # Crates of this workspace (stage 1 of the plugin architecture: code moves out of `src/` unchanged).
 konoma-base = { path = "crates/konoma-base", version = "0.1.0" }
 konoma-svg = { path = "crates/konoma-svg", version = "0.1.0" }
+konoma-mermaid-core = { path = "crates/konoma-mermaid-core", version = "0.1.0" }
 
 # Exit-time cleanup of the private temp dir (`preview::command`): `libc::atexit` for the test
 # process, `signal-hook` to catch SIGTERM/SIGHUP/SIGINT on a thread. `libc` is also used to
@@ -381,11 +376,9 @@ libc.workspace = true
 signal-hook.workspace = true
 
 [dev-dependencies]
-# Only the mermaid layout cross-validation test (`src/preview/mermaid/layout/
-# cross_validate.rs`) reads JSON: it parses `cross-validate/reference_data.json`,
-# the recorded output of the real `@dagrejs/dagre` JavaScript implementation.
-# A dev-dependency keeps serde_json out of the shipped binary; it is already in
-# Cargo.lock via re_mp4, so this adds no package.
+# Test-only JSON reading (the Office fixtures). A dev-dependency keeps serde_json out of the shipped
+# binary. The mermaid layout cross-validation (`cross-validate/reference_data.json`) reads JSON in
+# `konoma-mermaid-core`'s own dev-dependencies.
 serde_json.workspace = true
 # Test-only helpers shared with the crates under `crates/` (path only: never published).
 konoma-test-support = { path = "crates/konoma-test-support" }

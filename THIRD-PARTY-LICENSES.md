@@ -8900,7 +8900,7 @@ at `fonts/OFL.txt` in `ratex-katex-fonts`.
 
 konoma's mermaid renderer lays diagrams out with a vendored copy of the `dagre`
 crate, version 0.1.1 (https://github.com/kookyleo/dagre-rs, archived). The source
-lives in `src/preview/mermaid/layout/` and ships inside the konoma crate; it is not
+lives in `crates/konoma-mermaid-core/src/layout/` and ships inside the konoma-mermaid-core crate; it is not
 a Cargo dependency, because `[patch.crates-io]` is stripped by `cargo publish` and
 konoma has to be able to fix the layout engine in a released build. `cargo-about`
 walks the dependency graph, so it cannot see this code -- the notice below is
@@ -8909,9 +8909,9 @@ maintained by hand.
 The vendored files were modified by the konoma authors (edition-2024 let-chains
 desugared for konoma's edition 2021, module paths rewritten, unused graph algorithms
 dropped). Every file says so in its header and
-`src/preview/mermaid/layout/PROVENANCE.md` lists each change, as Apache-2.0 section
+`crates/konoma-mermaid-core/src/layout/PROVENANCE.md` lists each change, as Apache-2.0 section
 4(b) requires. Upstream ships no `NOTICE` file, so there is none to reproduce here.
-The full license text is in `src/preview/mermaid/layout/LICENSE-APACHE` and is also
+The full license text is in `crates/konoma-mermaid-core/src/layout/LICENSE-APACHE` and is also
 reproduced above under "Apache License 2.0".
 
 ```
