@@ -225,6 +225,29 @@ pub(crate) fn count_media_diff_dispatch_calls<T>(f: impl FnOnce() -> T) -> (T, u
     )
 }
 
+/// Writes `contents` to `path` as an executable file that this process never holds open for
+/// writing. Writing the file here and then running it races with other test threads: a thread that
+/// forks while the write fd is open hands the fd to its child until that child execs, and running
+/// the file in that window fails with ETXTBSY ("Text file busy") on Linux. So the bytes go to a
+/// staging file that is never run, a `cp` child makes the real file (its write fd lives and dies
+/// inside `cp`), and only `chmod` touches `path` here.
+#[cfg(unix)]
+pub(crate) fn write_executable(path: &std::path::Path, contents: impl AsRef<[u8]>) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut staged = path.as_os_str().to_owned();
+    staged.push(".staged");
+    let staged = PathBuf::from(staged);
+    std::fs::write(&staged, contents).unwrap();
+    let status = std::process::Command::new("cp")
+        .arg(&staged)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "cp failed: {status}");
+    let _ = std::fs::remove_file(&staged);
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 /// Owning guard for a path returned by [`unique_tmp`]: removes it (recursively, if it turned out to
 /// be a directory; as a single file otherwise) when dropped, so a fixture can never outlive the test
 /// that created it. Derefs to `Path`, so the overwhelming majority of call sites (`.join(...)`,

@@ -418,6 +418,10 @@ code_theme = "TwoDark"
 #              Tracked changes show the final text; comments, headers and footers are not shown. R shows the converted
 #              Markdown (select with v/V, copy with y). The document file itself is never written. `.doc` is not previewed
 #              (e opens it in an Office app).
+#              Presentations (.pptx/.pptm/.ppsx/.ppsm/.potx/.potm/.odp/.otp) take the same route, one section per
+#              slide, but open as pictures of the slides (drawn by konoma), speaker notes as a quote under each slide,
+#              hidden slides marked. J/K = next/previous slide; R = the text view (title, text, tables ... in reading
+#              order; the default on half-block terminals). Office fonts are substituted, so line breaks can differ.
 # command:  delegate to an external command. {path}=the target file, {out}=an output path (temp file).
 #           An empty (or whitespace-only) command means "no command to delegate to" — the rule
 #           degrades to `[can not preview: <ext>]`, exactly like an unmatched rule. It never falls
@@ -458,7 +462,7 @@ glob = "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}"   # Spreadsheet as a table (cells 
 builtin = "spreadsheet"
 
 [[preview.rules]]
-glob = "*.{docx,docm,dotx,dotm,odt,ott}"   # Word / OpenDocument text converted to Markdown and drawn like a .md. R = the converted Markdown.
+glob = "*.{docx,docm,dotx,dotm,odt,ott,pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}"   # Word / OpenDocument text converted to Markdown and drawn like a .md (R = the converted Markdown); presentations drawn as slide pictures (J/K = slide, R = text view).
 builtin = "document"
 
 [[preview.rules]]
@@ -543,8 +547,13 @@ builtin = "pdf"
 #                  "preview_next_file" "preview_prev_file" (Ctrl-n/Ctrl-p: preview the next/prev file in tree order
 #                    = file paging. Directories are skipped; wraps at the ends.)
 #                  "toggle_outline" (o: open the heading outline of a Markdown preview; Enter jumps to a heading)
+#                  "toggle_markdown_raw" (R: decorated ⇄ raw source; on a presentation, the slide pictures ⇄ the text view)
 #                  "image_zoom_in" "image_zoom_out" "image_zoom_reset"
-#                  "sheet_next" "sheet_prev" (J/K on a spreadsheet table: next/previous sheet; only with 2+ visible sheets)
+#                  "page_next" "page_prev" (J/K, and PageDown/PageUp on an image and in an image/PDF/SVG diff, where they turn the page
+#                    instead of scrolling: next/previous PDF page, spreadsheet
+#                    sheet, presentation slide, or — on an image/PDF/SVG diff — PDF page on both sides together; does nothing where
+#                    there is nothing to turn. The former names "pdf_next_page" "pdf_prev_page" "sheet_next"
+#                    "sheet_prev" "media_diff_page_next" "media_diff_page_prev" still work as aliases.)
 #   Table        : "table_copy_cell" "table_copy_row" "table_copy_column" (y → c/r/C: copy from a CSV/TSV/archive table)
 #                  "toggle_table_cell" (Enter in a table preview: full-text popup for the cursor cell — the grid
 #                    truncates wide cells with "…", this shows the untruncated value, wrapped and scrollable with
@@ -553,8 +562,6 @@ builtin = "pdf"
 #   Git          : "git_stage" "git_unstage" "git_stage_all" "git_unstage_all" "git_discard"
 #                  "git_commit" "git_worktree_diff" "git_open_log" "git_open_graph"
 #                  "git_open_branches" "git_launch_tool" "cycle_diff_layout" "cycle_diff_view" "git_diff_discard"
-#                  "media_diff_page_next" "media_diff_page_prev" (J/K on an image/PDF/SVG diff: turn
-#                    a multi-page PDF's page on both sides together; no-op everywhere else)
 #                  "jj_sync" (R, in the hub: let jj snapshot the working copy — konoma's only
 #                    write to a jj repository, and only after a confirmation. Does nothing in a
 #                    git repository.)

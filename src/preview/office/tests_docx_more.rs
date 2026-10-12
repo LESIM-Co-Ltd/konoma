@@ -129,6 +129,26 @@ fn pictures_inside_alternate_content_are_taken_once() {
 }
 
 #[test]
+fn an_embedded_object_without_a_picture_leaves_a_mark() {
+    let obj = |inner: &str| format!(r#"<w:r><w:object>{inner}</w:object></w:r>"#);
+    let d = conv(&Dx::new(&para(&obj(
+        r#"<o:OLEObject Type="Embed" ProgID="Excel.Sheet.12" r:id="rId9"/>"#,
+    ))));
+    assert_eq!(d.markdown, "\\[object: Excel.Sheet.12]");
+    let d = conv(&Dx::new(&para(&obj(r#"<o:OLEObject r:id="rId9"/>"#))));
+    assert_eq!(d.markdown, "\\[object]");
+    // With its preview picture the picture is what shows.
+    let d = conv(&with_image(
+        &para(&obj(
+            r#"<v:shape><v:imagedata r:id="rId9"/></v:shape><o:OLEObject ProgID="Excel.Sheet.12" r:id="rId8"/>"#,
+        )),
+        "image1.png",
+        tiny_png(1),
+    ));
+    assert!(d.markdown.starts_with("![]("), "{}", d.markdown);
+}
+
+#[test]
 fn an_external_or_missing_or_unsupported_picture_is_a_placeholder() {
     // linked (never fetched)
     let linked = r#"<w:r><w:drawing><wp:inline><wp:docPr id="1" name="P" descr="remote"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:link="rId5"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"#;
@@ -621,13 +641,38 @@ fn a_text_box_with_several_paragraphs_and_a_text_box_in_a_cell() {
 }
 
 #[test]
-fn alternate_content_at_the_body_level_takes_the_choice_only() {
-    let ac = format!(
-        r#"<mc:AlternateContent><mc:Choice Requires="x">{}</mc:Choice><mc:Fallback>{}</mc:Fallback></mc:AlternateContent>"#,
-        p("choice"),
+fn alternate_content_at_the_body_level_takes_a_choice_it_understands() {
+    let ac = |requires: &str| {
+        format!(
+            r#"<mc:AlternateContent><mc:Choice Requires="{requires}">{}</mc:Choice><mc:Fallback>{}</mc:Fallback></mc:AlternateContent>"#,
+            p("choice"),
+            p("fallback")
+        )
+    };
+    for r in ["wps", "wpg", "w14", "w15 wp14", "a14 m", ""] {
+        assert_eq!(md(&ac(r)), "choice", "{r:?}");
+    }
+    // A namespace the reader cannot read (chart extensions, ink, anything unknown): the Fallback.
+    for r in ["x", "cx1", "p14", "wps cx1", "w14 x"] {
+        assert_eq!(md(&ac(r)), "fallback", "{r:?}");
+    }
+}
+
+#[test]
+fn the_next_choice_is_taken_when_the_first_is_not_readable_and_no_fallback_means_nothing() {
+    let two = format!(
+        r#"<mc:AlternateContent><mc:Choice Requires="cx1">{}</mc:Choice><mc:Choice Requires="wps">{}</mc:Choice><mc:Fallback>{}</mc:Fallback></mc:AlternateContent>"#,
+        p("first"),
+        p("second"),
         p("fallback")
     );
-    assert_eq!(md(&ac), "choice");
+    assert_eq!(md(&two), "second");
+    let none = format!(
+        r#"{}<mc:AlternateContent><mc:Choice Requires="cx1">{}</mc:Choice></mc:AlternateContent>"#,
+        p("before"),
+        p("lost")
+    );
+    assert_eq!(md(&none), "before");
 }
 
 #[test]

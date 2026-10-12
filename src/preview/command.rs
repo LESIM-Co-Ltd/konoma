@@ -844,15 +844,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn empty_template_end_to_end_never_executes_the_previewed_file() {
-        use std::os::unix::fs::PermissionsExt;
-
         let marker = tmp("empty_template_marker.txt");
         let _ = std::fs::remove_file(&marker);
         let script = tmp("empty_template_script.sh");
-        std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
-        let mut perms = std::fs::metadata(&script).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script, perms).unwrap();
+        crate::test_support::write_executable(
+            &script,
+            format!("#!/bin/sh\ntouch {}\n", marker.display()),
+        );
 
         let out = tmp("empty_template_out.txt");
         let _ = std::fs::remove_file(&out);
@@ -1165,12 +1163,10 @@ mod tests {
             );
             return;
         }
-        use std::os::unix::fs::PermissionsExt;
         let dir = crate::test_support::unique_tmp("konoma_exit_cleanup_real");
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("sleeper");
-        std::fs::write(&exe, "#!/bin/sh\nexec sleep 60\n").unwrap();
-        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::write_executable(&exe, "#!/bin/sh\nexec sleep 60\n");
         let mut child = super::super::svg_proc::TestWorker::start(&exe).expect("a child");
         assert!(!child.ended());
         let temp = write_private_temp(b"converted text").unwrap();

@@ -698,7 +698,7 @@ struct WorkerRx {
 /// the Markdown-inline animations is sooner), and by a plain idle timeout when nothing is going on.
 fn poll_timeout(app: &App) -> Duration {
     if app.is_media_loading()
-        || app.md_images_loading()
+        || app.md_pixels_pending()
         || app.kitty_build_pending()
         || app.filter_pool_scan_in_flight()
     {
@@ -1783,10 +1783,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::ImageZoomIn => app.image_zoom_by(1.25),
         Action::ImageZoomOut => app.image_zoom_by(1.0 / 1.25),
         Action::ImageZoomReset => app.image_zoom_reset(),
-        Action::PdfNextPage => app.pdf_next_page(),
-        Action::PdfPrevPage => app.pdf_prev_page(),
-        Action::SheetNext => app.sheet_next(),
-        Action::SheetPrev => app.sheet_prev(),
+        Action::PageNext => app.page_turn(1),
+        Action::PagePrev => app.page_turn(-1),
         Action::PreviewFileNext => app.preview_jump_file(1),
         Action::PreviewFilePrev => app.preview_jump_file(-1),
         Action::TableCopy(kind) => app.table_copy(kind),
@@ -1810,10 +1808,6 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::CycleDiffView => app.cycle_diff_view(),
         #[cfg(feature = "git")]
         Action::ToggleFollowDiffScope => app.toggle_follow_diff_scope(),
-        #[cfg(feature = "git")]
-        Action::MediaDiffPageNext => app.media_diff_page_turn(1),
-        #[cfg(feature = "git")]
-        Action::MediaDiffPagePrev => app.media_diff_page_turn(-1),
         #[cfg(feature = "git")]
         Action::GitStage => app.git_view_stage(),
         #[cfg(feature = "git")]

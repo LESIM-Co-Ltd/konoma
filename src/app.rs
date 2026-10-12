@@ -38,6 +38,7 @@ mod md_text;
 mod media_diff;
 mod media_load;
 mod office_doc;
+pub(crate) use office_doc::is_presentation_path;
 mod office_open;
 pub use office_open::OfficeOpenResult;
 mod outline;
@@ -832,7 +833,7 @@ enum MediaJob {
     /// Open a Word document and convert it to Markdown (+ its pictures). Always yields a payload:
     /// the document, or the reason it could not be opened. Runs on the Office worker slot, so it
     /// is serialised with workbook loads and stops when its generation is superseded.
-    Document(PathBuf),
+    Document(PathBuf, crate::i18n::Lang),
     /// Run a non-detached `PreviewKind::Command` delegation (`preview::command::run_capture`).
     /// `as_image` (the resolved `render_as == Some("image")`) decides whether the produced artifact
     /// is decoded as an image (`MediaPayload::Static`) or shown as text (`MediaPayload::CommandText`).
@@ -872,11 +873,7 @@ impl MediaJob {
                 let img =
                     match crate::preview::svg::rasterize_untrusted(&data, &p, max_px, &cancelled) {
                         Ok(img) => img,
-                        Err(why) => {
-                            return Some(MediaPayload::ImageFailed(
-                                crate::preview::image::ImageFailure::Svg(why),
-                            ))
-                        }
+                        Err(why) => return Some(MediaPayload::ImageFailed(why.into())),
                     };
                 Some(MediaPayload::Vector {
                     img,
@@ -941,14 +938,23 @@ impl MediaJob {
                     Err(e) => MediaPayload::WorkbookFailed(e),
                 })
             }
-            MediaJob::Document(p) => {
+            MediaJob::Document(p, lang) => {
+                use crate::preview::office::docx::pptx::load_presentation_cancellable;
                 use crate::preview::office::docx::{load_document_cancellable, DocOptions};
                 use crate::preview::office::OfficeError;
-                let opts = DocOptions::default();
+                let opts = DocOptions {
+                    lang,
+                    ..DocOptions::default()
+                };
+                let slides = office_doc::is_presentation_path(&p);
                 // The reader sits on third-party parsers: a panic on a pathological file becomes a
                 // "corrupt" reason instead of killing the thread (principle #3).
                 let loaded = crate::preview::markdown::catch_silent(|| {
-                    load_document_cancellable(&p, &opts, cancel.as_ref())
+                    if slides {
+                        load_presentation_cancellable(&p, &opts, cancel.as_ref())
+                    } else {
+                        load_document_cancellable(&p, &opts, cancel.as_ref())
+                    }
                 })
                 .unwrap_or_else(|| Err(OfficeError::Corrupt("reader panicked".into())));
                 Some(match loaded {
@@ -1789,6 +1795,10 @@ pub struct App {
     /// `reserve_proto_slot` can tell "wanted by the picture currently being drawn" (never recycle)
     /// from "left over from an earlier position" (fair game).
     md_frame: u64,
+    /// Last request id handed out by `App::begin_md_request` (ids start at 1). Every decode,
+    /// rebuild and re-raster of an inline picture is stamped with a fresh one, so a result can be
+    /// matched to the request that is still wanted (`MdImgEntry::request`).
+    md_request_seq: u64,
     /// Number of frames `ui::render` has begun (bumped at the top of every one, whatever it draws).
     draw_seq: u64,
     /// Render cache for the tree's detail columns (`ui.details`): path → formatted cells.
@@ -2149,6 +2159,8 @@ struct MdCache {
     /// Effective mermaid target rows the cache was built with (fit-to-view). A viewport change
     /// only invalidates documents that actually contain fence diagrams.
     fence_rows: u16,
+    /// Rows a slide picture may be tall (fit-to-view) the cache was built with.
+    slide_rows: u16,
     /// In-page anchor map (GitHub slug → decorated logical-line index) for `[x](#slug)` jumps.
     anchors: Vec<(String, usize)>,
     /// Effective open/closed state of each `<details>` block (document order) as rendered — the base
@@ -2466,6 +2478,19 @@ struct MdProtoSlot {
 /// by the latest overlay pass are never evicted, so a screenful always stays whole.
 const MD_IMAGE_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
+/// The same budget while a presentation shows its slide pictures. A slide is drawn at the size of
+/// its frame (up to `SLIDE_RASTER_MAX_PX` on the long side, 4096 x 2304 x 4 = 38 MB), so a deck
+/// would otherwise keep a dozen of the largest ones; half the general budget still holds more
+/// slides than anyone scrolls back over (the screen's slide is never evicted) and a dropped slide
+/// is drawn again from its scene when it is needed.
+const MD_SLIDE_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The longest edge, in pixels, a slide picture is drawn at. It is the SVG rasterizer's own hard
+/// limit (`svg::HARD_MAX_PX`, 4096), not a second knob: `[ui] svg_max_px` stays the *floor* of a
+/// slide's raster (a user who wants denser slides than their frame needs raises it), the frame's
+/// pixel size (`cells x cell size`) is what a slide is drawn at otherwise, and this caps both.
+const SLIDE_RASTER_MAX_PX: u32 = 4096;
+
 /// Most rebuilds of evicted pixels that run at once. A resize makes every evicted picture on the
 /// screen want its pixels back in the same frame; each rebuild is a thread and a decode, so the rest
 /// wait (and ask again) instead of all starting together.
@@ -2539,12 +2564,28 @@ struct MdImgEntry {
     /// only while that is the last frame drawn, so a wish nobody renews (the picture scrolled out
     /// of view, the preview was left) lapses by itself instead of keeping the loop ticking.
     rebuild_wanted: Option<u64>,
+    /// For a slide picture: the longest edge, in pixels, its frame needs (0 = not asked yet). The
+    /// first decode, a rebuild of evicted pixels and the re-raster of a frame that outgrew the
+    /// raster all draw at this size (`App::note_slide_raster_wish`).
+    want_px: u32,
     /// Why the decode failed, for the text that replaces the picture (None = no specific reason).
     fail: Option<crate::preview::image::ImageFailure>,
     /// This entry's place in the decode queue: its priority is the last overlay pass that asked for
     /// the picture, and dropping the entry (document closed, file changed) withdraws a decode that
     /// has not run yet.
     wish: crate::preview::image::DecodeWish,
+    /// Id of the one background decode / rebuild / re-raster that is still wanted for this entry
+    /// (`App::begin_md_request`; 0 = none was ever started, as for an entry placed by hand in a
+    /// test). A result carrying any other id belongs to an earlier life of the same path (the entry
+    /// was dropped, then asked for again) and is ignored by `apply_md_image`, so a stale
+    /// "cancelled" cannot forget the new entry and a stale picture cannot fill it. At most one
+    /// request runs per entry, so this is also the identity of the in-flight one.
+    request: u64,
+    /// Id of the first request ever started for this entry, constant for its life: an encode
+    /// result carries it so that one computed for a dropped entry is not applied to a new one of
+    /// the same path (`request` cannot do this: a re-raster legitimately changes it while an
+    /// encode of the previous pixels may still be running). 0 = never started.
+    born: u64,
 }
 
 impl MdImgEntry {
@@ -2777,6 +2818,8 @@ pub struct MdEncodeRequest {
     /// `Some((id, is_tmux))` on a kitty terminal: build konoma's own compressed transmit under this
     /// slot's **fixed** id (see `MdImgEntry::kitty_ids`). None everywhere else = ratatui-image.
     kitty: Option<(u32, bool)>,
+    /// `MdImgEntry::born` of the entry the request was made for.
+    born: u64,
 }
 
 /// Result of a background inline-image encode, delivered to the run loop.
@@ -2787,6 +2830,9 @@ pub struct MdEncodeResult {
     /// `enc_inflight` latched on, freezing all re-encodes of that image and keeping
     /// `md_images_loading()` true forever (busy spinner + 16ms polling — idle CPU 0% broken).
     image: Option<InlineImage>,
+    /// `MdImgEntry::born` of the entry the request was made for; `apply_md_encode` drops a result
+    /// whose entry has since been replaced.
+    born: u64,
 }
 
 /// Background worker that encodes inline-image protocols (the whole image or a cropped band) with a
@@ -2798,7 +2844,7 @@ pub fn md_encode_worker(
     tx: std::sync::mpsc::Sender<MdEncodeResult>,
 ) {
     while let Ok(req) = rx.recv() {
-        let (path, key) = (req.path.clone(), req.key);
+        let (path, key, born) = (req.path.clone(), req.key, req.born);
         let picker = &picker; // borrow: so the move closure doesn't consume picker across loop iterations
                               // Wrap the whole request handling in a panic catch: even if one new_protocol/crop
                               // panics, don't kill the worker thread (killing it would stop every future encode,
@@ -2846,7 +2892,15 @@ pub fn md_encode_worker(
             }
         })
         .flatten();
-        if tx.send(MdEncodeResult { path, key, image }).is_err() {
+        if tx
+            .send(MdEncodeResult {
+                path,
+                key,
+                image,
+                born,
+            })
+            .is_err()
+        {
             break;
         }
     }
@@ -2910,6 +2964,9 @@ pub struct MdImageResult {
     /// so the existing layout-sizing code path is unchanged). None for everything else, including a
     /// static/single-frame GIF, which already fell back to the plain still-image decode.
     frames: Option<Vec<(image::DynamicImage, std::time::Duration)>>,
+    /// The `MdImgEntry::request` this result answers (see there); `apply_md_image` drops it when
+    /// the entry has moved on to another request.
+    request: u64,
 }
 
 /// Result of a background remote-image download (curl → local cache file), delivered to the run loop.
@@ -3159,6 +3216,15 @@ pub(crate) struct PerTab {
     pdf_pages: Option<u32>,
     // --- Markdown/Mermaid raw-source display (`R`) / Tab focus / inline-diagram in-place zoom & full-screen return ---
     md_raw: bool,
+    /// A presentation's chosen view (`R`): `Some(true)` = the text, `Some(false)` = the slide
+    /// pictures, `None` = the terminal's default (`App::deck_picture_view`). Reset per file.
+    deck_text_view: Option<bool>,
+    /// The slide (0-based) `R` asked to keep: scrolled to by the next draw, once the other view's
+    /// layout exists (`App::apply_pending_slide`).
+    deck_pending_slide: Option<usize>,
+    /// Whether the preview body has been drawn for this tab at least once, so `preview_viewport`
+    /// is a measured height (possibly 0 on a tiny terminal) and not the initial "not drawn yet" 0.
+    pub(crate) preview_viewport_drawn: bool,
     focused_item: Option<usize>,
     fence_zoom: f64,
     fence_center: (f64, f64),
@@ -3282,6 +3348,9 @@ impl Default for PerTab {
             pdf_page: 1,
             pdf_pages: None,
             md_raw: false,
+            deck_text_view: None,
+            deck_pending_slide: None,
+            preview_viewport_drawn: false,
             focused_item: None,
             // A fence's in-place zoom starts at 1.0=fit (same as App::new used to set it to 1.0).
             fence_zoom: 1.0,
@@ -3415,6 +3484,7 @@ impl App {
             md_image_cache: std::collections::HashMap::new(),
             md_kitty_ids: std::collections::HashMap::new(),
             md_frame: 0,
+            md_request_seq: 0,
             draw_seq: 0,
             detail_cells_cache: std::collections::HashMap::new(),
             tree_stale: false,
@@ -4353,6 +4423,8 @@ impl App {
         // A new file starts decorated, and this must hold *before* the load: a Word document that
         // lands synchronously (no media_tx) decides there whether to build its raw view.
         self.tab.md_raw = false;
+        self.tab.deck_text_view = None;
+        self.tab.deck_pending_slide = None;
         self.set_preview_kind(Some(kind.clone()));
         self.start_media_load(&kind, path);
         self.tab.fence_return = None; // A normal preview transition means the fence-return info is no longer needed
@@ -4918,6 +4990,12 @@ impl App {
         // A document still converting (also in a saved raw view) or failed has no text to switch
         // between; the footer does not offer `R` then.
         if self.document_text_missing() {
+            return;
+        }
+        // A presentation's `R` switches between its slide pictures and its text; it has no raw
+        // Markdown view (a Word document does).
+        if self.is_deck() {
+            self.toggle_deck_view();
             return;
         }
         if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
@@ -6040,6 +6118,9 @@ fn centered_rect(cells: (u16, u16), inner: Rect, allow_upscale: bool) -> Rect {
 
 /// Max reserved rows for one inline Markdown image; a taller image is scaled down (keeping aspect) so it never dominates the viewport.
 const MD_IMAGE_MAX_ROWS: u16 = 24;
+/// Rows around a slide picture that are not the picture: its heading line and the blank line
+/// between the heading and the picture.
+const SLIDE_CHROME_ROWS: u16 = 2;
 
 /// Where a Markdown image URL points **in the local filesystem**, without asking whether the file
 /// is actually there. `None` for anything that is not a local file reference: `data:` URLs, and
@@ -6138,6 +6219,7 @@ fn md_decode_image_why(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
+    use crate::preview::svg::RasterError;
     use crate::preview::svg_guard::SvgFail;
     match crate::preview::image::decode_static_capped_why(path, MD_IMAGE_MAX_SIDE) {
         Ok(img) => Ok(img),
@@ -6146,9 +6228,165 @@ fn md_decode_image_why(
         Err(e) if !crate::preview::svg::file_can_be_svg(path) => Err(e),
         Err(e) => match crate::preview::svg::rasterize(path, svg_max_px, cancelled) {
             Ok(img) => Ok(img),
-            Err(SvgFail::Invalid) => Err(e),
-            Err(f) => Err(ImageFailure::Svg(f)),
+            Err(RasterError::Failed(SvgFail::Invalid)) => Err(e),
+            Err(f) => Err(f.into()),
         },
+    }
+}
+
+/// Runs `attempt` at `start_px` and, when `shrink` is set and the drawing process refused the
+/// picture as too heavy, too slow or too memory-hungry (costs that grow with the square of the
+/// raster size), again at a smaller size, never below `floor_px`. Cost and memory refusals are
+/// the same on every run and fail fast, so they halve the side each time. A time-out is the
+/// expensive kind (it holds the decode gate for the whole time limit) and says as much about the
+/// machine's load as about the slide: the first one is retried once at half the side (a quarter
+/// of the work), and a second goes straight to the floor, so a loaded machine is held for at most
+/// three time limits, not one per halving. Any other failure is final, and so is a request the
+/// user moved on from. A crash is not retried smaller: it is a stack overflow (the same at any
+/// size) or an allocation failure under memory pressure (an immediate retry meets the same
+/// pressure); [`cap_lesson`] makes its cap expire so the slide is tried again later.
+///
+/// Returns the last result, the size it was made at, and the refusals on the way as
+/// `(size, failure)` (the last failure included), which [`record_slide_attempts`] turns into what
+/// the slide remembers.
+fn decode_with_smaller_retries(
+    start_px: u32,
+    floor_px: u32,
+    shrink: bool,
+    cancelled: &dyn Fn() -> bool,
+    mut attempt: impl FnMut(u32) -> Result<image::DynamicImage, crate::preview::image::ImageFailure>,
+) -> (
+    Result<image::DynamicImage, crate::preview::image::ImageFailure>,
+    u32,
+    Vec<(u32, crate::preview::image::ImageFailure)>,
+) {
+    use crate::preview::image::ImageFailure;
+    use crate::preview::svg_guard::SvgFail;
+    let floor = floor_px.min(start_px);
+    let mut px = start_px;
+    let mut timeouts = 0u32;
+    let mut trail = Vec::new();
+    loop {
+        let res = attempt(px);
+        if let Err(f) = &res {
+            trail.push((px, *f));
+        }
+        let refused = match &res {
+            Err(ImageFailure::Svg(
+                f @ (SvgFail::TooHeavy | SvgFail::Timeout | SvgFail::Memory),
+            )) => Some(*f),
+            _ => None,
+        };
+        let Some(why) = refused.filter(|_| shrink && px > floor && !cancelled()) else {
+            return (res, px, trail);
+        };
+        px = if why == SvgFail::Timeout {
+            timeouts += 1;
+            if timeouts == 1 {
+                (px / 2).max(floor)
+            } else {
+                floor
+            }
+        } else {
+            (px / 2).max(floor)
+        };
+    }
+}
+
+/// Decodes a picture with `attempt`, and when it is a slide (`cap` is Some) draws it again
+/// smaller if the drawing process refuses it, then teaches `cap` what happened (see
+/// [`decode_with_smaller_retries`] and [`record_slide_attempts`]). Anything that is not a slide
+/// is attempted once at `start_px`. `clock` is read when a refusal is recorded (not before the
+/// drawing starts), so an expiring cap counts its lifetime from the refusal.
+fn decode_with_cap(
+    cap: Option<&crate::app::office_doc::SlideRasterCap>,
+    start_px: u32,
+    floor_px: u32,
+    moved_on: &dyn Fn() -> bool,
+    clock: &dyn Fn() -> std::time::Instant,
+    attempt: impl FnMut(u32) -> Result<image::DynamicImage, crate::preview::image::ImageFailure>,
+) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
+    let (res, used, trail) =
+        decode_with_smaller_retries(start_px, floor_px, cap.is_some(), moved_on, attempt);
+    if let Some(cap) = cap {
+        record_slide_attempts(cap, &trail, &res, used, floor_px, moved_on(), clock);
+    }
+    res
+}
+
+/// What one refused attempt of a slide's draw says about the slide's raster size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CapLesson {
+    /// The same at this size on every run: the cap is kept for good.
+    Permanent,
+    /// Says as much about the machine's load as about the slide: the cap expires.
+    Expiring,
+    /// Does not depend on the raster size (drawing smaller would not help). It says nothing
+    /// about what size the slide can be drawn at, so it is not retried smaller and teaches no
+    /// size, but when the draw never worked the same request must not be made again at once (a
+    /// failed sharpening redraw is asked for again by every frame otherwise): the cap is held at
+    /// the floor for a while, like a time-out.
+    SizeIndependent,
+    /// Nobody wants the result (cancelled): nothing is learned.
+    Nothing,
+}
+
+/// Classifies a failure of a slide's draw. An exhaustive match on purpose (no catch-all): a new
+/// failure kind has to be given a decision here.
+fn cap_lesson(failure: crate::preview::image::ImageFailure) -> CapLesson {
+    use crate::preview::image::ImageFailure;
+    use crate::preview::svg_guard::SvgFail;
+    match failure {
+        // Costs that grow with the raster size and are the same on every run.
+        ImageFailure::Svg(SvgFail::TooHeavy | SvgFail::Memory) => CapLesson::Permanent,
+        // Timeout: the clock, i.e. the load. Crashed: the drawing process died by itself, which is
+        // an allocation failure (transient under memory pressure) or a stack overflow (not size
+        // dependent, but then the next try after the lifetime costs one more crash, no more).
+        ImageFailure::Svg(SvgFail::Timeout | SvgFail::Crashed) => CapLesson::Expiring,
+        // Decided by the picture itself, whatever size it is drawn at.
+        ImageFailure::Svg(
+            SvgFail::TooDeep | SvgFail::TooLarge | SvgFail::TooComplex | SvgFail::Invalid,
+        )
+        | ImageFailure::TooLarge
+        | ImageFailure::Corrupt
+        | ImageFailure::UnsupportedFormat => CapLesson::SizeIndependent,
+        ImageFailure::Cancelled => CapLesson::Nothing,
+    }
+}
+
+/// Teaches `cap` what the attempts of one slide draw showed. Each refused size lowers the cap to
+/// the size tried next (the one that worked, or the one after it also failed); the last failure
+/// of a draw that never worked caps it at `floor_px` (the raster already shown, or the base
+/// size), so a sharpening redraw does not ask for more again and again. What each failure means
+/// is decided by [`cap_lesson`]; an expiring cap starts its lifetime when it is recorded
+/// (`clock`); so does a failure that does not depend on the size (see [`CapLesson::SizeIndependent`]). A cancelled attempt says nothing about the slide, and neither does the last
+/// attempt of a request the user moved on from (the refusals confirmed before it still count).
+fn record_slide_attempts(
+    cap: &crate::app::office_doc::SlideRasterCap,
+    trail: &[(u32, crate::preview::image::ImageFailure)],
+    result: &Result<image::DynamicImage, crate::preview::image::ImageFailure>,
+    used: u32,
+    floor_px: u32,
+    moved_on: bool,
+    clock: &dyn Fn() -> std::time::Instant,
+) {
+    let floor = floor_px.min(trail.first().map_or(used, |t| t.0));
+    // The user moved on during the last attempt: it is not a confirmed refusal.
+    let confirmed = trail.len().saturating_sub(usize::from(moved_on));
+    for (i, (_, failure)) in trail.iter().enumerate().take(confirmed) {
+        let next = match trail.get(i + 1) {
+            Some((px, _)) => *px,
+            None if result.is_ok() => used,
+            None => floor,
+        };
+        match cap_lesson(*failure) {
+            CapLesson::Permanent => cap.lower_permanent(next),
+            CapLesson::Expiring => cap.lower_timed_out(next, clock()),
+            // Only the final failure of a draw that never worked (`next` is then the floor, the
+            // raster already shown): the sizes before it were refusals, not this.
+            CapLesson::SizeIndependent => cap.lower_timed_out(next, clock()),
+            CapLesson::Nothing => {}
+        }
     }
 }
 
@@ -6162,6 +6400,7 @@ fn md_decode_bytes_why(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<image::DynamicImage, crate::preview::image::ImageFailure> {
     use crate::preview::image::ImageFailure;
+    use crate::preview::svg::RasterError;
     use crate::preview::svg_guard::SvgFail;
     match crate::preview::image::decode_static_bytes_capped_why(bytes, MD_IMAGE_MAX_SIDE) {
         Ok(img) => Ok(img),
@@ -6169,8 +6408,8 @@ fn md_decode_bytes_why(
         Err(e) if !crate::preview::svg::can_begin_svg(bytes) => Err(e),
         Err(e) => match crate::preview::svg::rasterize_embedded(bytes, svg_max_px, cancelled) {
             Ok(img) => Ok(img),
-            Err(SvgFail::Invalid) => Err(e),
-            Err(f) => Err(ImageFailure::Svg(f)),
+            Err(RasterError::Failed(SvgFail::Invalid)) => Err(e),
+            Err(f) => Err(f.into()),
         },
     }
 }
@@ -6446,6 +6685,24 @@ fn md_image_cells(
         cols = (cols * s).round().max(1.0);
     }
     (cols as u16, rows as u16)
+}
+
+/// Cell box of a slide picture of `pw`x`ph` pixels: the full width `avail_cols` (a slide is a vector
+/// drawing, so it is enlarged or shrunk to the width), with the aspect ratio kept in the terminal's
+/// cells (`fw`x`fh` px each), and no taller than `max_rows` (the width then shrinks to match).
+fn slide_cells(pw: u32, ph: u32, fw: u16, fh: u16, avail_cols: u16, max_rows: u16) -> (u16, u16) {
+    let (fw, fh) = (fw.max(1) as f64, fh.max(1) as f64);
+    let (pw, ph) = (pw.max(1) as f64, ph.max(1) as f64);
+    let avail = avail_cols.max(1) as f64;
+    let maxr = max_rows.max(1) as f64;
+    // Cell rows for a picture `cols` wide: rows * fh / (cols * fw) = ph / pw.
+    let rows_for = |cols: f64| (cols * fw * ph / (pw * fh)).round().max(1.0);
+    let rows = rows_for(avail);
+    if rows <= maxr {
+        return (avail as u16, rows as u16);
+    }
+    let cols = (maxr * fh * pw / (ph * fw)).round().clamp(1.0, avail);
+    (cols as u16, maxr as u16)
 }
 
 /// Cell box for an inline mermaid diagram, sized so the diagram's **own text matches the
@@ -7260,6 +7517,14 @@ mod md_table_gap_tests;
 #[cfg(test)]
 mod survivor_tests;
 
+// A presentation's slide pictures: their box, their size and how a converted deck becomes them.
+#[cfg(test)]
+mod deck_view_tests;
+
 // Inline-image cache behaviour around eviction, failure reasons and the decode queue.
 #[cfg(test)]
 mod md_raster_tests;
+
+// Identity of inline-image requests: a result of an earlier request never touches a newer entry.
+#[cfg(test)]
+mod md_request_tests;

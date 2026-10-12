@@ -49,8 +49,10 @@ konoma の本領を発揮するゲートは OS ではなく **端末** です:
 `ffmpegthumbnailer`/`ffmpeg`(konoma 自身がデコードできない動画=VP9・
 AV1・旧世代コーデック・`.avi` のサムネイル)・jj で作業しているなら `jj`(プレビュー版。無ければ git に
 落ちるだけ)・`!` で TUI を開きたいなら `lazygit` / `lazyjj`・`e` で Word/Excel/PowerPoint を開きたいなら Office アプリ
-(Microsoft Office か LibreOffice。表計算と Word のプレビュー自体には不要)。
-画像・SVG・Markdown・Mermaid・LaTeX 数式・CSV・表計算・Word 文書・コード・**PDF**
+(Microsoft Office か LibreOffice。表計算・Word・プレゼンのプレビュー自体には不要)・
+PowerPoint のデッキの文字を PowerPoint と同じ位置で改行させたいなら無料のフォント Carlito / Caladea
+(再配布できない Calibri・Cambria と同じ字幅。無ければ約 1 割幅の広い書体で描きます)。
+画像・SVG・Markdown・Mermaid・LaTeX 数式・CSV・表計算・Word 文書・プレゼン・コード・**PDF**
 (`J`/`K` で全ページ)・**H.264/HEVC 動画のサムネイル**
 (`.mp4`/`.m4v`/`.mov` と `.mkv`/`.webm`)は Rust ネイティブで動作 —
 **追加インストールは一切不要**です。
@@ -95,6 +97,7 @@ AV1・旧世代コーデック・`.avi` のサムネイル)・jj で作業して
    brew install git ffmpeg
    brew install jj               # jj で作業している場合だけ(プレビュー)
    brew install lazygit lazyjj   # `!` で TUI を開きたい場合だけ
+   brew install --cask font-carlito font-caladea   # PowerPoint のデッキを PowerPoint と同じ位置で改行
    ```
    PDF はこれ無しで全ページ描画できます(純 Rust の `hayro`・`J`/`K` で
    ページ送り)。hayro が扱えない稀な PDF は macOS 同梱の `qlmanage`/`sips`
@@ -147,6 +150,7 @@ AV1・旧世代コーデック・`.avi` のサムネイル)・jj で作業して
    旧世代コーデックのためのものです。
    ```sh
    sudo apt install ffmpeg git
+   sudo apt install fonts-crosextra-carlito fonts-crosextra-caladea   # PowerPoint のデッキを PowerPoint と同じ位置で改行
    ```
 5. **起動** — その端末の中で:
    ```sh

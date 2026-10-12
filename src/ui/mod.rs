@@ -80,29 +80,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     idx += 1;
     let bottom = areas[idx];
 
-    if let Some(top) = top {
-        // Tabs on the left, context on the right (split). To let them coexist on the same row, the
-        // tab bar is given a width with the context display's share excluded (so the overflow
-        // visible-window plan doesn't encroach on the right side).
-        if show_tabs {
-            let mut tab_area = top;
-            if split {
-                let ctx = status::context_width(app).saturating_add(1); // 1 = spacing
-                tab_area.width = top.width.saturating_sub(ctx);
-            }
-            tabbar::render(frame, app, tab_area);
-        }
-        if split {
-            status::render_context(frame, app, top);
-        }
-    }
-    // Bottom row: split=key hints only / bottom=context + hints combined.
-    if split {
-        status::render_footer(frame, app, bottom);
-    } else {
-        status::render_combined(frame, app, bottom);
-    }
-
     // Git-related full-screen views go into content in place of tree/preview.
     // Priority: commit detail > git log > changes hub (detail overlays on top of log).
     if app.is_git_detail() {
@@ -124,6 +101,33 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             Mode::Tree => tree::render(frame, app, content),
             Mode::Preview => preview::render(frame, app, content),
         }
+    }
+
+    // The tab bar and the status rows are drawn **after** the content: what they say depends on
+    // state the content's layout pass settles (a presentation's slide chip and `J/K` hint read the
+    // freshly built heading positions and the clamped scroll), so drawn first they would trail the
+    // body by one frame. The areas never overlap, so the order is invisible otherwise.
+    if let Some(top) = top {
+        // Tabs on the left, context on the right (split). To let them coexist on the same row, the
+        // tab bar is given a width with the context display's share excluded (so the overflow
+        // visible-window plan doesn't encroach on the right side).
+        if show_tabs {
+            let mut tab_area = top;
+            if split {
+                let ctx = status::context_width(app).saturating_add(1); // 1 = spacing
+                tab_area.width = top.width.saturating_sub(ctx);
+            }
+            tabbar::render(frame, app, tab_area);
+        }
+        if split {
+            status::render_context(frame, app, top);
+        }
+    }
+    // Bottom row: split=key hints only / bottom=context + hints combined.
+    if split {
+        status::render_footer(frame, app, bottom);
+    } else {
+        status::render_combined(frame, app, bottom);
     }
 
     // `?` help overlays on top of everything.

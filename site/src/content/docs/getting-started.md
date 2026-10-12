@@ -52,7 +52,9 @@ The gate for konoma's full experience is the **terminal**, not the OS:
 decode itself — VP9, AV1, the older codecs, `.avi`), `jj` if you work in jj
 (preview — without it konoma simply falls back to git), and `lazygit` /
 `lazyjj` only if you want `!` to open a TUI inside the hub. An Office app (Microsoft Office or LibreOffice) only
-if you want `e` to open Word / Excel / PowerPoint files (the spreadsheet and Word previews themselves need none). Images, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, Word documents, code,
+if you want `e` to open Word / Excel / PowerPoint files (the spreadsheet, Word and presentation previews themselves need none). The free
+Carlito / Caladea fonts if you want a PowerPoint deck's text to break lines where PowerPoint does (they have the widths of Calibri and Cambria,
+which may not be redistributed; without them konoma draws the text in a font about 10% wider). Images, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, Word documents, presentations, code,
 **PDF** (any page, via `J`/`K`) and **H.264 / HEVC video thumbnails**
 (`.mp4`/`.m4v`/`.mov` and `.mkv`/`.webm`) render natively in Rust — **nothing else to
 install at all**.
@@ -98,6 +100,7 @@ konoma with image previews.
    brew install git ffmpeg
    brew install jj          # only if you work in jj (preview)
    brew install lazygit lazyjj   # only if you want `!` to open a TUI
+   brew install --cask font-carlito font-caladea   # PowerPoint decks: line breaks as in PowerPoint
    ```
    PDF pages render without any of this (pure-Rust `hayro`, any page via
    `J`/`K`), and macOS's own `qlmanage`/`sips` — already installed — cover the
@@ -154,6 +157,7 @@ Commands below use `apt` (Ubuntu/Debian); adapt for your package manager.
    `ffmpeg` covers VP9/AV1 and the older codecs.
    ```sh
    sudo apt install ffmpeg git
+   sudo apt install fonts-crosextra-carlito fonts-crosextra-caladea   # PowerPoint decks: line breaks as in PowerPoint
    ```
 5. **Run it** inside that terminal:
    ```sh

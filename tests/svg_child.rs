@@ -13,6 +13,53 @@ use std::time::{Duration, Instant};
 
 const FLAG: &str = "--internal-svg-render";
 
+/// The first thing the child writes, before it has read anything: it is ready for requests.
+const READY: &[u8] = b"KSRDY";
+
+/// `out` without the `READY` the child starts with (which it must have written, first).
+fn after_ready(out: Vec<u8>) -> Vec<u8> {
+    assert!(out.starts_with(READY), "the child did not start with READY");
+    out[READY.len()..].to_vec()
+}
+
+/// How long a test waits for a child it drives by hand before it kills it and fails (a stale or
+/// misbehaving child would otherwise block a plain `read_to_end` / `wait` for ever).
+const WAIT: Duration = Duration::from_secs(60);
+
+/// Reads `from` to its end on a helper thread; past [`WAIT`] the child is killed and the test fails.
+fn drain(child: &mut std::process::Child, mut from: impl Read + Send + 'static) -> Vec<u8> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let r = from.read_to_end(&mut buf);
+        let _ = tx.send(r.map(|_| buf));
+    });
+    match rx.recv_timeout(WAIT) {
+        Ok(r) => r.unwrap(),
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("no answer from the child within {WAIT:?} (killed it); is the binary stale?");
+        }
+    }
+}
+
+/// Waits for `child` to end, at most [`WAIT`]; past that it is killed and the test fails.
+fn finish(child: &mut std::process::Child) -> std::process::ExitStatus {
+    let t = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if t.elapsed() > WAIT {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the child did not end within {WAIT:?} (killed it)");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn konoma() -> Command {
     Command::new(env!("CARGO_BIN_EXE_konoma"))
 }
@@ -41,11 +88,11 @@ fn run(input: &[u8]) -> (bool, Vec<u8>) {
     let w = std::thread::spawn(move || {
         let _ = stdin.write_all(&data);
     });
-    let mut out = Vec::new();
-    child.stdout.take().unwrap().read_to_end(&mut out).unwrap();
-    let status = child.wait().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let out = drain(&mut child, stdout);
+    let status = finish(&mut child);
     let _ = w.join();
-    (status.success(), out)
+    (status.success(), after_ready(out))
 }
 
 fn svg(body: &str) -> String {
@@ -325,11 +372,11 @@ fn the_drawing_mode_touches_neither_the_terminal_nor_the_temp_dir() {
     std::thread::spawn(move || {
         let _ = stdin.write_all(&req);
     });
-    let mut out = Vec::new();
-    child.stdout.take().unwrap().read_to_end(&mut out).unwrap();
-    let mut err = Vec::new();
-    child.stderr.take().unwrap().read_to_end(&mut err).unwrap();
-    assert!(child.wait().unwrap().success());
+    let stdout = child.stdout.take().unwrap();
+    let out = after_ready(drain(&mut child, stdout));
+    let stderr = child.stderr.take().unwrap();
+    let err = drain(&mut child, stderr);
+    assert!(finish(&mut child).success());
     assert_eq!(
         out.len(),
         13 + 40 * 20 * 4,

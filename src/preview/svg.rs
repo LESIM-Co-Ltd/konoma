@@ -209,14 +209,42 @@ pub(crate) fn file_can_be_svg(path: &Path) -> bool {
     can_begin_svg(&head[..n])
 }
 
+/// Why a supervised rasterization produced no picture: the SVG was refused or failed
+/// ([`SvgFail`]), or the caller stopped waiting (`cancelled` turned true). A cancellation is not a
+/// verdict on the SVG, so it is a separate case that no layer may fold into a failure reason
+/// (folding it into `Invalid` once made a request the user scrolled away from look like a
+/// damaged picture).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum RasterError {
+    /// The SVG could not be drawn, for this reason.
+    Failed(SvgFail),
+    /// The caller no longer wanted the picture; the drawing process was stopped.
+    Cancelled,
+}
+
+impl From<SvgFail> for RasterError {
+    fn from(f: SvgFail) -> Self {
+        RasterError::Failed(f)
+    }
+}
+
+impl From<RasterError> for super::image::ImageFailure {
+    fn from(e: RasterError) -> Self {
+        match e {
+            RasterError::Failed(f) => Self::Svg(f),
+            RasterError::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
 /// Rasterize the SVG file at `path` with a max side of `max_px` in a supervised child process.
 /// Blocks: call from a worker thread. `cancelled` is polled while waiting; when it turns true the
-/// child is stopped and the result is `Err(Invalid)` (the caller is no longer interested).
+/// child is stopped and the result is `Err(RasterError::Cancelled)`.
 pub fn rasterize(
     path: &Path,
     max_px: u32,
     cancelled: &dyn Fn() -> bool,
-) -> Result<DynamicImage, SvgFail> {
+) -> Result<DynamicImage, RasterError> {
     let data = read_limited(path)?;
     rasterize_untrusted(&data, path, max_px, cancelled)
 }
@@ -231,7 +259,7 @@ pub fn rasterize_untrusted(
     path: &Path,
     max_px: u32,
     cancelled: &dyn Fn() -> bool,
-) -> Result<DynamicImage, SvgFail> {
+) -> Result<DynamicImage, RasterError> {
     rasterize_untrusted_in(data, resources_dir_of(path).as_deref(), max_px, cancelled)
 }
 
@@ -243,7 +271,7 @@ pub fn rasterize_embedded(
     data: &[u8],
     max_px: u32,
     cancelled: &dyn Fn() -> bool,
-) -> Result<DynamicImage, SvgFail> {
+) -> Result<DynamicImage, RasterError> {
     rasterize_untrusted_in(data, None, max_px, cancelled)
 }
 
@@ -272,19 +300,19 @@ fn rasterize_untrusted_in(
     base: Option<&Path>,
     max_px: u32,
     cancelled: &dyn Fn() -> bool,
-) -> Result<DynamicImage, SvgFail> {
+) -> Result<DynamicImage, RasterError> {
     svg_guard::precheck(data)?;
     #[cfg(test)]
     if svg_proc::child_exe().is_none() {
         // Unit tests of the callers run the same guarded drawing in this process; the tests of
         // the child itself start the real binary through `svg_proc::run_with`.
-        return rasterize_guarded(data, base, max_px);
+        return Ok(rasterize_guarded(data, base, max_px)?);
     }
     let req = svg_proc::Request { data, base, max_px };
     match svg_proc::run(&req, cancelled) {
         Ok(img) => Ok(img),
-        Err(svg_proc::RunError::Failed(f)) => Err(f),
-        Err(svg_proc::RunError::Cancelled) => Err(SvgFail::Invalid),
+        Err(svg_proc::RunError::Failed(f)) => Err(RasterError::Failed(f)),
+        Err(svg_proc::RunError::Cancelled) => Err(RasterError::Cancelled),
     }
 }
 
@@ -735,7 +763,7 @@ mod tests {
         assert!(!is_svg(Path::new("/dev/zero")));
         assert_eq!(
             rasterize(Path::new("/dev/zero"), 100, &|| false).err(),
-            Some(SvgFail::Invalid)
+            Some(RasterError::Failed(SvgFail::Invalid))
         );
         assert!(t.elapsed() < std::time::Duration::from_secs(2));
     }
@@ -756,7 +784,7 @@ mod tests {
         assert!(!is_svg(&fifo));
         assert_eq!(
             rasterize(&fifo, 100, &|| false).err(),
-            Some(SvgFail::Invalid)
+            Some(RasterError::Failed(SvgFail::Invalid))
         );
         assert!(
             t.elapsed() < std::time::Duration::from_secs(2),
@@ -778,14 +806,14 @@ mod tests {
         assert!(!is_svg(&over));
         assert_eq!(
             rasterize(&over, 100, &|| false).err(),
-            Some(SvgFail::TooLarge)
+            Some(RasterError::Failed(SvgFail::TooLarge))
         );
         // The same size, in memory.
         let big = vec![b' '; svg_guard::MAX_SVG_BYTES + 1];
         assert!(intrinsic_size_bytes(&big).is_none());
         assert_eq!(
             rasterize_untrusted(&big, Path::new("x.svg"), 100, &|| false).err(),
-            Some(SvgFail::TooLarge)
+            Some(RasterError::Failed(SvgFail::TooLarge))
         );
     }
 

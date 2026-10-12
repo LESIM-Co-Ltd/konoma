@@ -250,6 +250,7 @@ fn a_panicked_rebuild_stops_the_loading_state() {
         svg: None,
         reraster: true,
         frames: None,
+        request: app.md_request_for_test(&key),
     });
     assert!(!app.md_images_loading());
     assert!(app.md_image_cache[&key].failed);
@@ -374,19 +375,23 @@ fn drawing_a_picture_sets_its_decode_priority_to_the_current_pass() {
     );
 }
 
-/// A decode whose entry was dropped before its turn never runs: no result is produced for it.
+/// A decode whose ticket went stale before its turn never runs: it reports itself cancelled (no
+/// pixels), and the receiving side forgets the entry or ignores a gone one.
 #[test]
-fn a_decode_whose_entry_went_away_produces_nothing() {
+fn a_withdrawn_decode_reports_cancelled_without_decoding() {
     let (mut app, dir, img_rx, _enc_rx) = setup("konoma_raster_withdrawn");
     let p = dir.join("a.png");
     crate::test_support::write_solid_png(&p, 24, 16, [1, 2, 3]);
     app.md_image_cache.insert(p.clone(), MdImgEntry::default());
     app.md_image_cache[&p].wish.cancel_now();
     assert!(app.spawn_md_decode(p.clone()));
-    assert!(
-        img_rx
-            .recv_timeout(std::time::Duration::from_millis(800))
-            .is_err(),
+    let res = img_rx
+        .recv_timeout(WAIT)
+        .expect("a cancelled decode reports");
+    assert_eq!(res.path, p);
+    assert_eq!(
+        res.image.as_ref().err().map(String::as_str),
+        Some(crate::preview::image::ImageFailure::Cancelled.code()),
         "a withdrawn request must not decode"
     );
     // The control: the same request, still wanted, is answered.
@@ -660,6 +665,7 @@ fn a_landing_picture_evicts_the_oldest_ones_over_budget() {
         svg: None,
         reraster: false,
         frames: None,
+        request: app.md_request_for_test(&fresh),
     }));
     assert!(app.md_image_cache[&PathBuf::from("/x/old1.png")].evicted);
     assert!(app.md_image_cache[&PathBuf::from("/x/old2.png")].evicted);
@@ -1149,4 +1155,287 @@ fn a_file_picture_failing_after_the_preview_moved_on_is_reported_cancelled() {
         !app.md_image_cache.contains_key(&key),
         "forgotten, asked for again"
     );
+}
+
+/// **The bug.** A first decode of a picture file cancelled because the preview moved on (another tab
+/// or file started a media load; a stale ticket) while its entry stayed in the cache sent no result, so the entry
+/// stayed "loading" for good (the fast poll never stopped). The result is always sent now, the
+/// entry is forgotten, and the picture is asked for again when it is next drawn.
+#[test]
+fn a_file_picture_cancelled_by_a_generation_bump_is_forgotten_and_asked_for_again() {
+    use crate::preview::image::ImageFailure;
+    let png = {
+        let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let (mut app, dir, img_rx, _enc_rx) = setup_with("konoma_raster_gen_bump", &[("a.png", png)]);
+    app.tab.preview_path = Some(dir.join("doc.md"));
+    let key = dir.join("a.png");
+    app.md_image_cache
+        .insert(key.clone(), MdImgEntry::default());
+    assert!(app.md_images_loading(), "premise: waiting for the decode");
+    // The decode's ticket goes stale (the preview moved on, e.g. another tab or file started a
+    // media load) while the entry stays in the cache: the decode ends cancelled.
+    app.md_image_cache[&key].wish.cancel_now();
+    assert!(app.spawn_md_decode(key.clone()));
+    let res = img_rx
+        .recv_timeout(WAIT)
+        .expect("a cancelled decode still reports");
+    assert_eq!(
+        res.image.as_ref().err().map(String::as_str),
+        Some(ImageFailure::Cancelled.code())
+    );
+    assert_eq!(res.path, key);
+    app.apply_md_image(res);
+    assert!(!app.md_image_cache.contains_key(&key), "forgotten");
+    assert!(!app.md_images_loading(), "no longer waiting");
+    // Drawn again later: the picture is asked for again.
+    app.ensure_md_image("a.png", 10, 4, 0, 4);
+    assert!(app.md_image_cache.contains_key(&key), "asked for again");
+    let res = img_rx.recv_timeout(WAIT).expect("the second decode runs");
+    assert!(res.image.is_ok(), "{:?}", res.image.err());
+}
+
+/// A cancelled result for an entry that was removed meanwhile is ignored.
+#[test]
+fn a_cancelled_file_picture_result_for_a_removed_entry_is_ignored() {
+    let (mut app, _dir, _img_rx, _enc_rx) = setup("konoma_raster_cancel_gone");
+    let redraw = app.apply_md_image(MdImageResult {
+        path: PathBuf::from("/nonexistent/a.png"),
+        image: Err(crate::preview::image::ImageFailure::Cancelled
+            .code()
+            .to_string()),
+        svg: None,
+        reraster: false,
+        frames: None,
+        request: app.md_request_for_test(&PathBuf::from("/nonexistent/a.png")),
+    });
+    assert!(!redraw);
+    assert!(app.md_image_cache.is_empty());
+}
+
+// ---- decodes in flight versus pictures whose pixels were dropped ------------------------------
+
+/// A picture whose pixels the cache dropped waits for a rebuild; no decode runs for it. Counting it
+/// as "in flight" filled the cap of 16 after enough pictures had been seen, and nothing new was
+/// ever started. The same holds for a formula or a diagram (the other users of the cap).
+#[test]
+fn pictures_with_dropped_pixels_are_not_decodes_in_flight() {
+    let (mut app, _dir, _img_rx, _enc_rx) = setup("konoma_raster_inflight");
+    let dropped = || MdImgEntry {
+        evicted: true,
+        layout_px: Some((10, 10)),
+        ..Default::default()
+    };
+    for i in 0..40 {
+        app.md_image_cache.insert(
+            PathBuf::from(crate::preview::markdown::math_url(&format!("x^{i}"), false)),
+            dropped(),
+        );
+        app.md_image_cache.insert(
+            PathBuf::from(crate::preview::markdown::mermaid_fence_url(&format!(
+                "graph TD; A{i}-->B"
+            ))),
+            dropped(),
+        );
+        app.md_image_cache.insert(
+            PathBuf::from(format!("office-img://abc/p{i}.png")),
+            dropped(),
+        );
+    }
+    assert_eq!(app.synthetic_renders_in_flight(), 0);
+    assert_eq!(app.office_pictures_in_flight(), 0);
+    // A first decode that is really running still counts.
+    app.md_image_cache.insert(
+        PathBuf::from("office-img://abc/new.png"),
+        MdImgEntry::default(),
+    );
+    app.md_image_cache.insert(
+        PathBuf::from(crate::preview::markdown::math_url("new", false)),
+        MdImgEntry::default(),
+    );
+    assert_eq!(app.office_pictures_in_flight(), 1);
+    assert_eq!(app.synthetic_renders_in_flight(), 1);
+    // And one that failed does not.
+    app.md_image_cache.insert(
+        PathBuf::from("office-img://abc/bad.png"),
+        MdImgEntry {
+            failed: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(app.office_pictures_in_flight(), 1);
+}
+
+/// The limits slide pictures are drawn and kept under.
+#[test]
+fn the_slide_raster_limits_are_what_they_are_documented_to_be() {
+    assert_eq!(SLIDE_RASTER_MAX_PX, 4096);
+    assert_eq!(
+        SLIDE_RASTER_MAX_PX, MD_IMAGE_MAX_SIDE,
+        "the decoder's own side limit"
+    );
+    assert_eq!(MD_SLIDE_CACHE_BYTES, 256 * 1024 * 1024);
+    const { assert!(MD_SLIDE_CACHE_BYTES < MD_IMAGE_CACHE_BYTES) };
+}
+
+/// A viewport of 0 rows is a real height once the body has been drawn (a tiny terminal): the slide
+/// gets the least a picture takes, not the ordinary picture cap that stands for "not drawn yet".
+#[test]
+fn slide_fit_rows_tells_a_zero_height_from_not_drawn_yet() {
+    let (mut app, _dir, _img_rx, _enc_rx) = setup("konoma_raster_fit_rows");
+    app.tab.preview_viewport = 0;
+    app.tab.preview_viewport_drawn = false;
+    assert_eq!(
+        app.slide_fit_rows(),
+        MD_IMAGE_MAX_ROWS,
+        "before the first draw"
+    );
+    app.tab.preview_viewport_drawn = true;
+    assert_eq!(app.slide_fit_rows(), 1, "drawn, and no row to spare");
+    for (viewport, rows) in [(1, 1), (2, 1), (3, 1), (4, 2), (30, 28)] {
+        app.tab.preview_viewport = viewport;
+        assert_eq!(app.slide_fit_rows(), rows, "viewport {viewport}");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// A slide the drawing process refuses at a big raster is drawn smaller, not given up on
+// ---------------------------------------------------------------------------------------------
+
+mod smaller_retry {
+    use super::*;
+    use crate::preview::image::ImageFailure;
+    use crate::preview::svg_guard::SvgFail;
+    use std::cell::RefCell;
+
+    fn px_image() -> image::DynamicImage {
+        image::DynamicImage::new_rgba8(2, 2)
+    }
+
+    /// Runs the retry loop with an `attempt` that fails with `fail` at every size above `works_at`
+    /// (and succeeds at or below it); returns the result's kind and the sizes tried in order.
+    fn run(
+        start: u32,
+        floor: u32,
+        shrink: bool,
+        works_at: u32,
+        fail: ImageFailure,
+    ) -> (Result<(), ImageFailure>, u32, Vec<u32>) {
+        let tried = RefCell::new(Vec::new());
+        let (res, used, _) = decode_with_smaller_retries(start, floor, shrink, &|| false, |px| {
+            tried.borrow_mut().push(px);
+            if px <= works_at {
+                Ok(px_image())
+            } else {
+                Err(fail)
+            }
+        });
+        (res.map(|_| ()), used, tried.into_inner())
+    }
+
+    #[test]
+    fn a_heavy_or_slow_slide_is_retried_at_half_the_size_until_it_is_drawn() {
+        for fail in [SvgFail::TooHeavy, SvgFail::Timeout, SvgFail::Memory] {
+            let (res, used, tried) = run(4096, 1280, true, 2048, ImageFailure::Svg(fail));
+            assert_eq!(res, Ok(()), "{fail:?}");
+            assert_eq!(tried, [4096, 2048], "{fail:?}");
+            assert_eq!(used, 2048);
+        }
+    }
+
+    #[test]
+    fn the_retries_stop_at_the_floor_and_the_last_failure_is_what_is_reported() {
+        let heavy = ImageFailure::Svg(SvgFail::TooHeavy);
+        let (res, used, tried) = run(4096, 1280, true, 0, heavy);
+        assert_eq!(res, Err(heavy));
+        // Halved, and the last step is the floor itself, never below it.
+        assert_eq!(tried, [4096, 2048, 1280]);
+        assert_eq!(used, 1280);
+    }
+
+    #[test]
+    fn a_slide_that_works_at_the_first_size_is_drawn_once() {
+        let (res, used, tried) = run(3000, 1280, true, u32::MAX, ImageFailure::Cancelled);
+        assert_eq!(res, Ok(()));
+        assert_eq!((used, tried), (3000, vec![3000]));
+    }
+
+    #[test]
+    fn other_failures_are_final() {
+        for fail in [
+            ImageFailure::Svg(SvgFail::Crashed),
+            ImageFailure::Svg(SvgFail::TooLarge),
+            ImageFailure::Svg(SvgFail::TooDeep),
+            ImageFailure::Svg(SvgFail::TooComplex),
+            ImageFailure::Svg(SvgFail::Invalid),
+            ImageFailure::TooLarge,
+            ImageFailure::Corrupt,
+            ImageFailure::UnsupportedFormat,
+            ImageFailure::Cancelled,
+        ] {
+            let (res, used, tried) = run(4096, 1280, true, 0, fail);
+            assert_eq!(res, Err(fail), "{fail:?}");
+            assert_eq!((used, tried), (4096, vec![4096]), "{fail:?}");
+        }
+    }
+
+    #[test]
+    fn a_picture_that_is_not_a_slide_is_never_retried() {
+        let heavy = ImageFailure::Svg(SvgFail::TooHeavy);
+        let (res, _, tried) = run(4096, 1280, false, 0, heavy);
+        assert_eq!(res, Err(heavy));
+        assert_eq!(tried, [4096]);
+    }
+
+    #[test]
+    fn a_request_the_user_moved_on_from_is_not_retried() {
+        let n = RefCell::new(0);
+        let (res, _, _) = decode_with_smaller_retries(4096, 1280, true, &|| true, |_| {
+            *n.borrow_mut() += 1;
+            Err(ImageFailure::Svg(SvgFail::Timeout))
+        });
+        assert!(res.is_err());
+        assert_eq!(*n.borrow(), 1);
+    }
+
+    #[test]
+    fn a_floor_above_the_start_or_equal_to_it_means_no_retry() {
+        let heavy = ImageFailure::Svg(SvgFail::TooHeavy);
+        // The raster already shown is as big as the wish: nothing smaller is worth drawing.
+        for floor in [1280, 5000, u32::MAX] {
+            let (res, used, tried) = run(1280, floor, true, 0, heavy);
+            assert_eq!(res, Err(heavy));
+            assert_eq!((used, tried), (1280, vec![1280]), "floor {floor}");
+        }
+    }
+
+    /// The real drawing process: a slide refused as too heavy at a big raster is drawn at a
+    /// smaller one by the retry loop (the writer's own cap is bypassed, as if its estimate were
+    /// too generous).
+    #[test]
+    fn a_real_slide_refused_at_a_big_raster_is_drawn_smaller() {
+        use crate::preview::office::slide_draw::hardening_tests::shadowed_slide;
+        let drawn = crate::preview::office::slide_draw::render_svg_cancellable(
+            &shadowed_slide(2),
+            &|_| None,
+            &|| false,
+        );
+        let svg = drawn.svg.into_bytes();
+        let never = || false;
+        let heavy = ImageFailure::Svg(SvgFail::TooHeavy);
+        // The premise: at 4096 px this slide is refused, at 1280 it is not.
+        assert_eq!(md_decode_bytes_why(&svg, 4096, &never).err(), Some(heavy));
+        assert!(md_decode_bytes_why(&svg, 1280, &never).is_ok());
+        let (res, used, _) = decode_with_smaller_retries(4096, 1280, true, &never, |px| {
+            md_decode_bytes_why(&svg, px, &never)
+        });
+        let img = res.expect("drawn at a smaller size");
+        assert!((1280..4096).contains(&used), "{used}");
+        use image::GenericImageView;
+        let (w, h) = img.dimensions();
+        assert!(w.max(h) <= used && w.max(h) > 0, "{w}x{h} at {used}");
+    }
 }

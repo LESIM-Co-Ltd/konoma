@@ -113,7 +113,9 @@ fn para(text: &str) -> String {
 /// redrawing after each batch, until the pipeline has gone quiet.
 #[track_caller]
 fn settle_images(s: &mut Sim) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    // Idle-based: the limit restarts whenever a result arrives (see deck_view's `settle`).
+    let idle = std::time::Duration::from_secs(120);
+    let mut deadline = std::time::Instant::now() + idle;
     loop {
         let imgs: Vec<_> = s.md_img_rx.as_ref().unwrap().try_iter().collect();
         let encs: Vec<_> = s.md_enc_rx.as_ref().unwrap().try_iter().collect();
@@ -125,8 +127,11 @@ fn settle_images(s: &mut Sim) {
             s.app.apply_md_encode(r);
         }
         s.draw();
-        if !any && !s.app.md_images_loading() {
+        if !any && !s.app.md_pixels_pending() {
             return;
+        }
+        if any {
+            deadline = std::time::Instant::now() + idle;
         }
         assert!(std::time::Instant::now() < deadline, "images never settled");
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -936,7 +941,9 @@ fn e2e_word_the_worker_shows_loading_then_the_document() {
     assert_eq!(s.app.workbook_loads_started(), 1);
     assert!(s.app.document_ready() && !s.app.is_document_loading());
     s.see("Word reader sample");
-    s.dont_see("loading");
+    // The document's own spinner is gone (the status row may already say "loading images": it is
+    // drawn after the body, which has just started the pictures).
+    s.dont_see("loading document");
 }
 
 #[test]
@@ -2555,18 +2562,18 @@ fn e2e_word_a_picture_heavy_document_stays_within_the_cache_budget() {
     const N: u32 = 10;
     let dir = sandbox("w_lru_many");
     let pics: Vec<(String, Vec<u8>)> = (0..N)
-        .map(|i| (format!("p{i}.png"), flat_png(600 + i, 600)))
+        .map(|i| (format!("p{i}.png"), flat_png(200 + i, 200)))
         .collect();
     build_docx_with_pictures(&canon(&dir).join("many.docx"), &pics);
     let mut s = open_with_media(&dir, "many.docx");
-    // Room for two of them (600 x 600 x 4 bytes each).
-    s.app.set_md_cache_budget_for_test(2 * 600 * 604 * 4);
+    // Room for two of them (200 x 200 x 4 bytes each, small because encoding is slow in a debug build).
+    s.app.set_md_cache_budget_for_test(2 * 200 * 204 * 4);
     s.drain_media();
     assert!(s.app.document_ready());
     assert_eq!(s.app.document_picture_count_for_test(), N as usize);
     settle_images(&mut s);
     // Read the whole document, a screen at a time.
-    for _ in 0..60 {
+    for _ in 0..40 {
         s.key('j');
         s.key('j');
         s.key('j');
@@ -2585,6 +2592,61 @@ fn e2e_word_a_picture_heavy_document_stays_within_the_cache_budget() {
     let first = s.app.office_pictures_with_pixels_for_test();
     assert!(first >= 1, "the pictures in view are drawn again");
     assert!(first < N as usize, "and the rest are still held back");
+}
+
+/// A document of many pictures read to the end with a cache that holds about one of them: every
+/// picture is drawn when it comes on screen, however many were drawn (and dropped) before. Once
+/// enough dropped pictures had piled up, they used to count as decodes "in flight" and no further
+/// picture was ever started.
+#[test]
+fn e2e_word_every_picture_of_a_long_document_is_drawn_after_many_were_dropped() {
+    const N: u32 = 24;
+    let dir = sandbox("w_lru_long");
+    let pics: Vec<(String, Vec<u8>)> = (0..N)
+        .map(|i| (format!("p{i}.png"), flat_png(100 + i, 100)))
+        .collect();
+    build_docx_with_pictures(&canon(&dir).join("long.docx"), &pics);
+    let mut s = open_with_media(&dir, "long.docx");
+    s.app.set_md_cache_budget_for_test(130 * 130 * 4);
+    s.drain_media();
+    assert!(s.app.document_ready());
+    assert_eq!(s.app.document_picture_count_for_test(), N as usize);
+    settle_images(&mut s);
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..150 {
+        let (top, height) = (
+            s.app.preview_scroll_for_test() as usize,
+            s.app.preview_viewport_for_test() as usize,
+        );
+        let on_screen = |s: &Sim, line: usize| {
+            let (row, rows) = s.app.md_visual_span_for_test(line);
+            row < top + height && row + rows > top
+        };
+        for p in office_placements(&s) {
+            if !on_screen(&s, p.line) {
+                continue;
+            }
+            assert!(
+                s.app.office_picture_pixels_for_test(&p.url).is_some(),
+                "{} is on screen but was not drawn (evicted: {}, in flight: {})",
+                p.url,
+                s.app.office_pictures_evicted_for_test(),
+                s.app.office_pictures_in_flight_for_test()
+            );
+            seen.insert(p.url);
+        }
+        for _ in 0..4 {
+            s.key('j');
+        }
+        settle_images(&mut s);
+    }
+    assert_eq!(seen.len(), N as usize, "every picture was on screen once");
+    assert!(
+        s.app.office_pictures_evicted_for_test() > 16,
+        "the cap was never reached: {}",
+        s.app.office_pictures_evicted_for_test()
+    );
+    assert_eq!(s.app.office_pictures_in_flight_for_test(), 0);
 }
 
 /// A dropped picture is made again through the same defences as the first decode.

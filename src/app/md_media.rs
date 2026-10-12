@@ -1,3 +1,4 @@
+use super::office_doc::PictureSource;
 use super::*;
 
 /// Cap on how many mermaid-fence/math renders may be in flight (spawned, result not yet applied) at
@@ -129,6 +130,28 @@ impl App {
         self.md_frame = self.md_frame.saturating_add(1);
     }
 
+    /// Start a new request (decode, rebuild of evicted pixels or re-raster) for the existing entry
+    /// `path` and return its id, which the worker puts into its `MdImageResult` (and encodes carry
+    /// the entry's `born`). The entry then answers to this id alone: whatever an earlier request of
+    /// the same path is still running is stale from here on (`MdImgEntry::request`).
+    pub(super) fn begin_md_request(&mut self, path: &Path) -> u64 {
+        self.md_request_seq += 1;
+        let id = self.md_request_seq;
+        if let Some(e) = self.md_image_cache.get_mut(path) {
+            e.request = id;
+            if e.born == 0 {
+                e.born = id;
+            }
+        }
+        id
+    }
+
+    /// Test-only: the request id an entry currently answers to (0 = none / no entry).
+    #[cfg(test)]
+    pub fn md_request_for_test(&self, path: &Path) -> u64 {
+        self.md_image_cache.get(path).map_or(0, |e| e.request)
+    }
+
     /// Apply a completed background decode of an inline Markdown image. Returns whether to redraw.
     pub fn apply_md_image(&mut self, res: MdImageResult) -> bool {
         // The entry is always pre-placed at kick time (ensure_mermaid_fence_render /
@@ -137,7 +160,14 @@ impl App {
         // it (with or_default, the old diagram's raster would be re-inserted and linger until the
         // next enter_preview, and on top of that the md_cache invalidation below would needlessly
         // do a full rebuild once for **an unrelated current document**).
-        if !self.md_image_cache.contains_key(&res.path) {
+        let Some(entry) = self.md_image_cache.get(&res.path) else {
+            return false;
+        };
+        // A result of an earlier request: the entry it was made for was dropped and the path asked
+        // for again (or a newer request superseded it). Nothing in it may touch the current
+        // entry, whatever it says: a stale "cancelled" would forget the new entry, a stale picture
+        // would fill it and a stale re-raster would clear the in-flight flag of the newer one.
+        if entry.request != res.request {
             return false;
         }
         // The drawing process was stopped because the preview moved on: forget the entry, so the
@@ -301,6 +331,7 @@ impl App {
         let slot = reserve_proto_slot(&mut entry.zoom, enc_key, frame, MD_ZOOM_SLOTS);
         let kitty = kitty_id_for(ids, &key_path, &enc_key, slot, use_kitty).map(|id| (id, is_tmux));
         entry.enc_inflight = true;
+        let born = entry.born;
         let _ = tx.send(MdEncodeRequest {
             path: key_path,
             key: enc_key,
@@ -309,6 +340,7 @@ impl App {
             cols,
             rows,
             kitty,
+            born,
         });
     }
 
@@ -350,6 +382,7 @@ impl App {
             return FenceSharpen::NotNeeded;
         }
         entry.reraster_inflight = true;
+        let request = self.begin_md_request(key_path);
         let target = needed_px.min(4096);
         let kp = key_path.clone();
         // A second copy for the panic-fallback result below: `job` (built next) moves its own copy
@@ -365,6 +398,7 @@ impl App {
                 svg: None,
                 reraster: true,
                 frames: None,
+                request,
             }
         };
         if let Some(tx) = img_tx {
@@ -385,6 +419,7 @@ impl App {
                     svg: None,
                     reraster: true,
                     frames: None,
+                    request,
                 });
                 let _ = tx.send(res);
             });
@@ -452,7 +487,7 @@ impl App {
     /// result yet (i.e. a background thread is running for them right now). Both kinds share the
     /// same one-shot-thread-per-request shape and compete for the same `MAX_SYNTHETIC_RENDERS_IN_FLIGHT`
     /// cap.
-    fn synthetic_renders_in_flight(&self) -> usize {
+    pub(super) fn synthetic_renders_in_flight(&self) -> usize {
         self.md_image_cache
             .iter()
             .filter(|(k, e)| {
@@ -507,6 +542,7 @@ impl App {
             }
             self.md_image_cache
                 .insert(key.clone(), MdImgEntry::default());
+            let request = self.begin_md_request(&key);
             std::thread::spawn(move || {
                 // Even if render() (rasterize_trusted = resvg) panics, don't kill the thread — always
                 // return a result: otherwise the entry stays stuck at decoded=None && !failed and
@@ -519,12 +555,14 @@ impl App {
                     svg,
                     reraster: false,
                     frames: None,
+                    request,
                 });
             });
             false
         } else {
             self.md_image_cache
                 .insert(key.clone(), MdImgEntry::default());
+            let request = self.begin_md_request(&key);
             let (image, svg) = render();
             self.apply_md_image(MdImageResult {
                 path: key,
@@ -532,6 +570,7 @@ impl App {
                 svg,
                 reraster: false,
                 frames: None,
+                request,
             });
             true
         }
@@ -570,6 +609,7 @@ impl App {
             }
             self.md_image_cache
                 .insert(key.clone(), MdImgEntry::default());
+            let request = self.begin_md_request(&key);
             std::thread::spawn(move || {
                 let (image, svg) = crate::preview::markdown::catch_silent(render)
                     .unwrap_or_else(|| (Err("math render panicked".to_string()), None));
@@ -579,12 +619,14 @@ impl App {
                     svg,
                     reraster: false,
                     frames: None,
+                    request,
                 });
             });
             false
         } else {
             self.md_image_cache
                 .insert(key.clone(), MdImgEntry::default());
+            let request = self.begin_md_request(&key);
             let (image, svg) = render();
             self.apply_md_image(MdImageResult {
                 path: key,
@@ -592,6 +634,7 @@ impl App {
                 svg,
                 reraster: false,
                 frames: None,
+                request,
             });
             true
         }
@@ -610,6 +653,11 @@ impl App {
         let Some(entry) = self.md_image_cache.get_mut(&res.path) else {
             return false;
         };
+        // Encoded for an entry that has since been dropped and re-created under the same path:
+        // it must neither clear the new entry's in-flight flag nor fill (or degrade) its slots.
+        if entry.born != res.born {
+            return false;
+        }
         entry.enc_inflight = false;
         let key = res.key;
         let mut stored = false;
@@ -731,6 +779,7 @@ impl App {
             .get(&path)
             .map(|e| e.wish.ticket())
             .unwrap_or_default();
+        let request = self.begin_md_request(&path);
         let (gen, latest) = (self.media_gen, self.media_gen_shared.clone());
         let stale = ticket.clone();
         std::thread::Builder::new()
@@ -761,12 +810,12 @@ impl App {
                     })
                 })
                 .unwrap_or((Err(ImageFailure::Corrupt), None));
-                // Nobody wants it any more: no result (its entry is gone, or about to be).
-                if still.as_ref().err() == Some(&ImageFailure::Cancelled) {
-                    return;
-                }
-                // The preview moved on while the picture was being drawn: the entry stays but is
-                // told so, and is forgotten (see `apply_md_image`) so it is asked for again.
+                // The preview moved on while the picture was being drawn (or its drawing was
+                // stopped): always report it, cancelled included. The entry may be gone (the result
+                // is then ignored) or still in the cache (a ticket also goes stale when another
+                // file or tab starts a media load, which does not clear the cache): only the
+                // receiving side knows, and it forgets the entry (see `apply_md_image`) so the
+                // picture is asked for again. Staying silent would leave the entry "loading" for good.
                 let still = match still {
                     Err(_) if moved_on() => Err(ImageFailure::Cancelled),
                     other => other,
@@ -778,6 +827,7 @@ impl App {
                     svg: None,
                     reraster: false,
                     frames,
+                    request,
                 });
             })
             .is_ok()
@@ -849,7 +899,7 @@ impl App {
             // same entry as the first decode (the defences of the first decode apply again).
             let url = path.to_string_lossy().to_string();
             if crate::preview::markdown::is_office_image_url(&url) {
-                return self.start_office_picture_thread(&url, path);
+                return self.start_office_picture_thread(&url, path, false);
             }
             return self.spawn_md_decode(path);
         };
@@ -865,6 +915,7 @@ impl App {
         if let Some(e) = self.md_image_cache.get_mut(&path) {
             e.reraster_inflight = true;
         }
+        let request = self.begin_md_request(&path);
         let kp = path.clone();
         let started = std::thread::Builder::new()
             .name("konoma-md-rebuild".into())
@@ -882,6 +933,7 @@ impl App {
                         svg: None,
                         reraster: true,
                         frames: None,
+                        request,
                     }
                 };
                 let res = crate::preview::markdown::compute_or_fallback(job, || MdImageResult {
@@ -890,6 +942,7 @@ impl App {
                     svg: None,
                     reraster: true,
                     frames: None,
+                    request,
                 });
                 let _ = tx.send(res);
             })
@@ -912,7 +965,12 @@ impl App {
         if let Some(b) = self.md_cache_budget_for_test {
             return self.evict_md_images_to(b);
         }
-        self.evict_md_images_to(MD_IMAGE_CACHE_BYTES);
+        let budget = if self.deck_picture_view() {
+            MD_SLIDE_CACHE_BYTES
+        } else {
+            MD_IMAGE_CACHE_BYTES
+        };
+        self.evict_md_images_to(budget);
     }
 
     /// `evict_md_images_over_budget` with the budget as a parameter (tests use a small one).
@@ -1006,6 +1064,8 @@ impl App {
             };
             p
         };
+        // A slide is drawn at the size of the frame it is placed in (`cols` x `full_rows` cells).
+        let slide_px = self.slide_raster_px(url, cols, full_rows);
         // A picture of a Word document: decode it from the bytes held in memory (never a file).
         if crate::preview::markdown::is_office_image_url(url)
             && !self.md_image_cache.contains_key(&path)
@@ -1017,8 +1077,11 @@ impl App {
             if self.office_pictures_in_flight() >= MAX_SYNTHETIC_RENDERS_IN_FLIGHT {
                 return;
             }
-            self.spawn_office_picture_decode(url, path);
+            self.spawn_office_picture_decode(url, path, slide_px);
             return;
+        }
+        if let Some(px) = slide_px {
+            self.note_slide_raster_wish(url, &path, px);
         }
         // Kick off a one-time background decode.
         if !self.md_image_cache.contains_key(&path) {
@@ -1094,6 +1157,7 @@ impl App {
         let slot = reserve_proto_slot(entry.slots_mut(&enc_key), enc_key, frame, MD_PROTO_SLOTS);
         let kitty = kitty_id_for(ids, &path, &enc_key, slot, use_kitty).map(|id| (id, is_tmux));
         entry.enc_inflight = true;
+        let born = entry.born;
         let _ = enc_tx.send(MdEncodeRequest {
             path,
             key: enc_key,
@@ -1102,32 +1166,104 @@ impl App {
             cols,
             rows,
             kitty,
+            born,
         });
     }
 
-    /// How many pictures of the open document are being decoded right now (cached, not yet decoded
-    /// and not failed).
+    /// How many pictures of the open document are being decoded for the first time right now
+    /// (cached, not yet decoded, not failed, pixels never dropped).
     pub(super) fn office_pictures_in_flight(&self) -> usize {
         self.md_image_cache
             .iter()
             .filter(|(k, e)| {
+                // An entry whose pixels the cache dropped (`evicted`) has no decode running for
+                // it: it waits for a rebuild (limited by `MD_MAX_REBUILDS`). Counting it as
+                // "in flight" filled the cap with idle entries after enough pictures had been
+                // seen, and no new picture was ever started.
                 e.decoded.is_none()
                     && !e.failed
+                    && !e.evicted
                     && crate::preview::markdown::is_office_image_url(&k.to_string_lossy())
             })
             .count()
     }
 
+    /// The longest edge, in pixels, slide picture `url` should be drawn at to fill a frame of
+    /// `cols` x `rows` cells without the terminal enlarging it: the frame's pixel size, never below
+    /// `[ui] svg_max_px` and never above `SLIDE_RASTER_MAX_PX`. `None` for anything that is not a
+    /// slide of the open presentation, or while the cell size is unknown (no image backend).
+    pub(super) fn slide_raster_px(&self, url: &str, cols: u16, rows: u16) -> Option<u32> {
+        if !crate::preview::markdown::is_office_image_url(url)
+            || !self.document_picture_is_slide(url)
+        {
+            return None;
+        }
+        let font = self.picker.as_ref()?.font_size();
+        let frame_w = u32::from(cols) * u32::from(font.width.max(1));
+        let frame_h = u32::from(rows) * u32::from(font.height.max(1));
+        Some(
+            frame_w
+                .max(frame_h)
+                .max(self.cfg.ui.svg_max_px)
+                .min(SLIDE_RASTER_MAX_PX),
+        )
+    }
+
+    /// [`Self::slide_raster_px`] for the end-to-end tests.
+    #[cfg(test)]
+    pub fn slide_raster_px_for_test(&self, url: &str, cols: u16, rows: u16) -> Option<u32> {
+        self.slide_raster_px(url, cols, rows)
+    }
+
+    /// Records the pixel size slide `path` is wanted at and, when its pixels are already there but
+    /// smaller than the frame now needs (the terminal grew, the font shrank), starts a sharper
+    /// redraw of the slide's scene. One redraw at a time per slide; the old pixels keep showing
+    /// until the new ones land, and a failed redraw leaves them.
+    fn note_slide_raster_wish(&mut self, url: &str, path: &Path, px: u32) {
+        use image::GenericImageView;
+        let cap = self.slide_raster_cap(url);
+        let Some(entry) = self.md_image_cache.get_mut(path) else {
+            return;
+        };
+        entry.want_px = px;
+        // A heavy slide cannot be drawn as big as the frame wants (see `Rendered::max_raster_px`).
+        let px = cap.map_or(px, |c| px.min(c));
+        let Some(decoded) = entry.decoded.as_ref() else {
+            return; // evicted or still decoding: the rebuild / first decode draws at `want_px`
+        };
+        let (w, h) = decoded.dimensions();
+        let cur = w.max(h);
+        if cur + cur / 8 >= px
+            || entry.reraster_inflight
+            || entry.rebuilding
+            || entry.failed
+            || self.md_img_tx.is_none()
+        {
+            return;
+        }
+        entry.reraster_inflight = true;
+        if !self.start_office_picture_thread(url, path.to_path_buf(), true) {
+            if let Some(e) = self.md_image_cache.get_mut(path) {
+                e.reraster_inflight = false;
+            }
+        }
+    }
+
     /// Starts the one-time background decode of a Word document's picture from its in-memory
     /// bytes. The cache entry is placed first (its presence is the "decode in flight" marker, as
     /// for a file image); a picture the document does not hold is left uncached (nothing to draw).
-    fn spawn_office_picture_decode(&mut self, url: &str, key: PathBuf) {
-        if self.document_picture_bytes(url).is_none() {
+    fn spawn_office_picture_decode(&mut self, url: &str, key: PathBuf, slide_px: Option<u32>) {
+        if self.document_picture_source(url).is_none() {
             return;
         }
-        self.md_image_cache
-            .insert(key.clone(), MdImgEntry::default());
-        if !self.start_office_picture_thread(url, key.clone()) {
+        self.md_image_cache.insert(
+            key.clone(),
+            MdImgEntry {
+                want_px: slide_px.unwrap_or(0),
+                ..MdImgEntry::default()
+            },
+        );
+        if !self.start_office_picture_thread(url, key.clone(), false) {
             // The thread could not start: end the wait instead of latching "loading".
             if let Some(e) = self.md_image_cache.get_mut(&key) {
                 e.failed = true;
@@ -1139,19 +1275,44 @@ impl App {
     /// `key` (which already exists: a first decode just placed it, a rebuild of dropped pixels
     /// keeps its own). Returns false when there is nothing to decode (the document no longer
     /// holds the picture) or the thread could not be started; the caller ends the wait.
-    fn start_office_picture_thread(&mut self, url: &str, key: PathBuf) -> bool {
-        let Some(bytes) = self.document_picture_bytes(url) else {
+    fn start_office_picture_thread(&mut self, url: &str, key: PathBuf, reraster: bool) -> bool {
+        let Some(source) = self.document_picture_source(url) else {
             return false;
         };
         let Some(tx) = self.md_img_tx.clone() else {
             return true;
         };
-        let svg_max_px = self.cfg.ui.svg_max_px;
+        // A slide is drawn at the pixel size its frame needs (never below `svg_max_px`); any other
+        // picture of a document at `svg_max_px`.
+        let want_px = self.md_image_cache.get(&key).map_or(0, |e| e.want_px);
+        // The smallest size a failed slide is retried at: the raster already on screen when this
+        // is a sharpening redraw (a retry must never replace it by something smaller), else the
+        // configured base size.
+        let retry_floor = if reraster {
+            use image::GenericImageView;
+            self.md_image_cache
+                .get(&key)
+                .and_then(|e| e.decoded.as_ref())
+                .map(|d| {
+                    let (w, h) = d.dimensions();
+                    w.max(h)
+                })
+                .unwrap_or(0)
+                .max(self.cfg.ui.svg_max_px)
+        } else {
+            self.cfg.ui.svg_max_px
+        };
+        let svg_max_px = if want_px > 0 {
+            want_px.max(self.cfg.ui.svg_max_px).min(SLIDE_RASTER_MAX_PX)
+        } else {
+            self.cfg.ui.svg_max_px
+        };
         let ticket = self
             .md_image_cache
             .get(&key)
             .map(|e| e.wish.ticket())
             .unwrap_or_default();
+        let request = self.begin_md_request(&key);
         let (gen, latest) = (self.media_gen, self.media_gen_shared.clone());
         let stale = ticket.clone();
         std::thread::Builder::new()
@@ -1166,6 +1327,46 @@ impl App {
                     || latest.load(std::sync::atomic::Ordering::Relaxed) != gen || stale.is_stale();
                 let (still, frames) = crate::preview::markdown::catch_silent(|| {
                     crate::preview::image::with_decode_ticket(ticket, || {
+                        let mut svg_px = svg_max_px;
+                        let mut slide_cap = None;
+                        // A slide has no bytes yet: draw its scene to an SVG here (off the UI
+                        // thread, under the decode gate) and let the supervised drawing process
+                        // rasterize it like any other untrusted SVG of a document.
+                        let bytes = match source {
+                            PictureSource::Bytes(b) => b,
+                            PictureSource::Slide {
+                                scene,
+                                media,
+                                render_truncated,
+                                raster_cap,
+                            } => {
+                                let drawn =
+                                    crate::preview::office::slide_draw::render_svg_cancellable(
+                                        &scene,
+                                        &|k| media.get(k).cloned(),
+                                        &moved_on,
+                                    );
+                                // The preview moved on: nothing to show, nothing to remember.
+                                if drawn.cancelled {
+                                    return (Err(ImageFailure::Cancelled), None);
+                                }
+                                if drawn.truncated {
+                                    render_truncated
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                // The raster size is cut to what the drawing process's work
+                                // budget allows for this slide's effects (they are counted at the
+                                // square of the scale): effects stay, the slide is just drawn
+                                // smaller. A size an earlier attempt found too heavy stays out
+                                // (see below), and one that only timed out stays out for a while.
+                                raster_cap.lower_permanent(drawn.max_raster_px());
+                                if let Some(cap) = raster_cap.get(std::time::Instant::now()) {
+                                    svg_px = svg_px.min(cap);
+                                }
+                                slide_cap = Some(raster_cap);
+                                Arc::new(drawn.svg.into_bytes())
+                            }
+                        };
                         if bytes.starts_with(b"GIF8") {
                             if let Some((frames, _)) =
                                 crate::preview::image::decode_gif_bytes_inline(&bytes)
@@ -1174,13 +1375,24 @@ impl App {
                                 return (Ok(first), Some(frames));
                             }
                         }
-                        (md_decode_bytes_why(&bytes, svg_max_px, &moved_on), None)
+                        // A slide whose picture the drawing process refuses as too heavy or
+                        // too slow at this size is drawn again smaller before it is given up on;
+                        // the size that worked becomes the slide's raster cap.
+                        let res = super::decode_with_cap(
+                            slide_cap.as_deref(),
+                            svg_px,
+                            retry_floor,
+                            &moved_on,
+                            &std::time::Instant::now,
+                            |px| md_decode_bytes_why(&bytes, px, &moved_on),
+                        );
+                        (res, None)
                     })
                 })
                 .unwrap_or((Err(ImageFailure::Corrupt), None));
-                if still.as_ref().err() == Some(&ImageFailure::Cancelled) {
-                    return;
-                }
+                // A cancelled decode reports like any other result, first decode and re-raster
+                // alike: the entry may still be in the cache (a stale ticket does not remove it),
+                // and the receiving side (`apply_md_image`) forgets it or ignores a gone one.
                 let still = match still {
                     Err(_) if moved_on() => Err(ImageFailure::Cancelled),
                     other => other,
@@ -1189,8 +1401,9 @@ impl App {
                     path: key,
                     image: still.map_err(|f| f.code().to_string()),
                     svg: None,
-                    reraster: false,
+                    reraster,
                     frames,
+                    request,
                 });
             })
             .is_ok()
@@ -1429,6 +1642,14 @@ impl App {
         min.map(|d| d.clamp(Duration::from_millis(10), Duration::from_millis(100)))
     }
 }
+
+#[cfg(test)]
+#[path = "md_media_mutation_tests.rs"]
+mod mutation_tests;
+
+#[cfg(test)]
+#[path = "md_media_slide_cap_tests.rs"]
+mod slide_cap_tests;
 
 #[cfg(test)]
 mod tmux_detection_tests {

@@ -7642,6 +7642,7 @@ fn inline_kitty_transmit_is_much_smaller_than_the_uncompressed_protocol() {
                 cols: 60,
                 rows: 15,
                 kitty,
+                born: 0,
             })
             .unwrap();
     }
@@ -14126,6 +14127,7 @@ fn encode_worker_scales_fence_diagrams_up_to_grid() {
                     cols: 40,
                     rows: 10,
                     kitty,
+                    born: 0,
                 })
                 .unwrap();
         };
@@ -15088,6 +15090,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
         path: key.clone(),
         key: MdEncodeKey::Full { cols: 10, rows: 5 },
         image: None,
+        born: 0,
     });
     assert!(redraw);
     {
@@ -15127,6 +15130,7 @@ fn failed_encode_clears_inflight_and_degrades_safely() {
             crop,
         },
         image: None,
+        born: 0,
     });
     let e2 = app.md_image_cache.get(&key2).unwrap();
     assert!(!e2.enc_inflight);
@@ -15340,6 +15344,7 @@ fn stale_md_image_result_is_dropped() {
         svg: None,
         reraster: false,
         frames: None,
+        request: app.md_request_for_test(&stale),
     });
     assert!(!redraw, "陳腐化結果は再描画も要求しない");
     assert!(
@@ -15387,6 +15392,7 @@ fn apply_md_image_with_a_panic_shaped_reraster_failure_clears_inflight_without_d
         svg: None,
         reraster: true,
         frames: None,
+        request: app.md_request_for_test(&key),
     };
     let redraw = app.apply_md_image(panic_fallback);
     assert!(redraw);
@@ -25274,13 +25280,14 @@ fn an_inline_svg_that_the_drawing_process_stopped_says_why() {
         app.md_image_cache
             .insert(path.clone(), MdImgEntry::default());
         assert!(app.apply_md_image(MdImageResult {
-            path,
+            path: path.clone(),
             image: Err(crate::preview::image::ImageFailure::Svg(why)
                 .code()
                 .to_string()),
             svg: None,
             reraster: false,
             frames: None,
+            request: app.md_request_for_test(&path),
         }));
         let text = md_text(&app.decorated_lines(80));
         assert!(
@@ -25368,6 +25375,7 @@ fn a_cancelled_inline_svg_drawing_leaves_no_failed_entry() {
         svg: None,
         reraster: false,
         frames: None,
+        request: app.md_request_for_test(&p),
     });
     assert!(!redraw);
     assert!(!app.md_image_cache.contains_key(&p));

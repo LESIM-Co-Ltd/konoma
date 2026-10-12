@@ -2330,3 +2330,38 @@ fn shipped_example_configs_keys_land_on_the_struct_that_owns_them() {
         }
     }
 }
+
+/// Every Word, OpenDocument text, PowerPoint and OpenDocument presentation extension goes to the
+/// document reader by the default rules, in any case; the old binary formats do not.
+#[test]
+fn cfg_default_rules_send_every_word_and_presentation_extension_to_the_document_reader() {
+    let cfg = Config::default();
+    let is_doc = |name: &str| {
+        let p = std::path::PathBuf::from(format!("/nonexistent/{name}"));
+        matches!(cfg.resolve_preview_with(&p, &[]), PreviewKind::Document(_))
+    };
+    for ext in [
+        "docx", "docm", "dotx", "dotm", "odt", "ott", "pptx", "pptm", "ppsx", "ppsm", "potx",
+        "potm", "odp", "otp",
+    ] {
+        for name in [format!("d.{ext}"), format!("D.{}", ext.to_uppercase())] {
+            assert!(is_doc(&name), "{name}");
+        }
+    }
+    for name in [
+        "d.doc",
+        "d.ppt",
+        "d.pps",
+        "d.pot",
+        "d.dot",
+        "d.rtf",
+        "d.pptx.bak",
+        "d.odg",
+        "d.odf",
+        "d.odpx",
+        "pptx",
+        "d.xlsx",
+    ] {
+        assert!(!is_doc(name), "{name}");
+    }
+}
