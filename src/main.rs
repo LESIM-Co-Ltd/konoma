@@ -2611,20 +2611,6 @@ mod tests {
         assert_eq!((fixed.font_size().width, fixed.font_size().height), (9, 34));
     }
 
-    // --- structural guard: validation must run before ratatui::init() touches the terminal --
-
-    /// The property this whole fix exists for: `main`'s body must resolve+validate the startup
-    /// target **before** `ratatui::init()` grabs the terminal (raw mode + the alternate screen).
-    /// That can't be asserted by actually running `main` — doing so would enable raw mode / grab
-    /// the alternate screen for real, inside `cargo test`, which is unsafe to do from a unit test
-    /// (no real tty, parallel test threads sharing the process's stdio). See the project's
-    /// tmux-based real-terminal verification (`stty -g` before/after) for the live proof instead.
-    ///
-    /// What this test *can* pin, honestly: the **code order** inside `fn main`, via a self-scan of
-    /// `main.rs`'s own source — the same technique `test_support::guard` and
-    /// `e2e_tests::extract_ui_config_field_names` already use elsewhere in this codebase. It fails
-    /// if `main` stops calling `resolve_startup` at all, or if that call is ever moved below
-    /// `ratatui::init()`.
     /// `main` declares the process to be the application before anything else (so before the
     /// drawing-child branch): the test-only seams of the workspace crates that change behaviour
     /// are guarded by `!is_app_main()`, and `cargo test` compiles them into this very binary
@@ -2657,6 +2643,20 @@ mod tests {
         );
     }
 
+    // --- structural guard: validation must run before ratatui::init() touches the terminal --
+
+    /// The property this whole fix exists for: `main`'s body must resolve+validate the startup
+    /// target **before** `ratatui::init()` grabs the terminal (raw mode + the alternate screen).
+    /// That can't be asserted by actually running `main` — doing so would enable raw mode / grab
+    /// the alternate screen for real, inside `cargo test`, which is unsafe to do from a unit test
+    /// (no real tty, parallel test threads sharing the process's stdio). See the project's
+    /// tmux-based real-terminal verification (`stty -g` before/after) for the live proof instead.
+    ///
+    /// What this test *can* pin, honestly: the **code order** inside `fn main`, via a self-scan of
+    /// `main.rs`'s own source — the same technique `test_support::guard` and
+    /// `e2e_tests::extract_ui_config_field_names` already use elsewhere in this codebase. It fails
+    /// if `main` stops calling `resolve_startup` at all, or if that call is ever moved below
+    /// `ratatui::init()`.
     #[test]
     fn resolve_startup_runs_before_terminal_init_in_main() {
         let src = include_str!("main.rs");
