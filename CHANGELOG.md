@@ -15,6 +15,8 @@ All notable changes to konoma are documented in this file. The format is based o
   settings live in its table and replace the matching `[ui]` keys, which are still read when the plugin table does not set
   the value: `[plugins.csv] rainbow` (and `[plugins.spreadsheet] rainbow`), `[plugins.code] syntax_highlight`,
   `[plugins.svg] max_px`, `[plugins.mermaid] mode` / `theme` / `curve` / `routing` / `rows`, `[plugins.math] mode` / `color`.
+  A value of another type than the plugin declares (`[plugins.csv] rainbow = "yes"`) is named at startup and the plugin's
+  default is used.
 - **A plugin's own actions are part of konoma's key system.** What a plugin declares (`Manifest::actions`: a key, a short label, a
   help text, a footer priority, whether it writes) now gets its key, its `w:width`-style entry in the footer, a section of the
   `?` help under the plugin's name and a place in the `Space` menu, with no code of the plugin's own. Whether an action works
@@ -23,9 +25,17 @@ All notable changes to konoma are documented in this file. The format is based o
   and `Outcome::Redraw` asks for the view again. `[keys.<plugin id>]` rebinds an action's key (`W = "width"`) or takes it away
   (`w = "noop"`). A plugin cannot take a key of the host's layers: the action is registered without the key, stays in the
   `Space` menu, and the startup message says so. A plugin built for another plugin API version is switched off with a message.
-  `[plugins.<id>] read_only = true` stops a plugin's writing actions. The plugin API gained `Manifest::shows` (what the main
+  `[plugins.<id>] read_only = true` stops the actions a plugin declares as writing (the standard plugins declare no actions yet,
+  so it does not touch them). The plugin API gained `Manifest::shows` (what the main
   view shows, so a text-only plugin can use `s`), `Act::context`, function keys `F1` to `F12`, `&str` where a translated text is
   expected, and test helpers (`view_table`, `view_document`, `view_image`, `open_bytes`, `check_hints`).
+  The host draws a plugin by what it declares (`Manifest::shows`, `converts`, `file_text`, `unavailable`) and by the type of view
+  it returns, not by its id, so another plugin can stand in for a standard one (a text view a plugin makes is read in windows
+  like a file; what the host shows when a plugin cannot show a file is the plugin's own `Manifest::unavailable`); how to add a
+  plugin of your own comes in a later stage. Only the standard `mermaid` and `math` plugins' own SVG is trusted: any other
+  plugin's SVG is drawn by the supervised child process, and an SVG that names no directory reads no file. `[plugins.math] color`
+  is checked inside the `math` plugin as well. A plugin that reads heavily (one that names a work group) is read again only when
+  its file's modification time or size changed.
 - **`O` lists the pages** of a PDF, a workbook and a presentation with two or more pages ("Page n", the sheet names, "Slide n: title"; the current page is marked and selected), and `Enter` goes to the chosen one. On a Markdown or Word document `O` is still the heading outline; on a one-page file it does nothing (and the hint is not shown).
 - **`konoma <file>`** opens the file's folder as the tree with the file selected and previewed at once (`q` goes back to the
   tree, as for any preview). With saved tabs (`restore_tabs`) the tabs come back first and the file opens in the tab that is on
@@ -92,7 +102,7 @@ All notable changes to konoma are documented in this file. The format is based o
   after one choice (the overlay stayed open for reverse and folders-first). The bookmark list deletes
   with `Space` `d` (`Ctrl-d` is the half page), and the graph's branch panel toggles a branch with `x` (`Space` is the menu).
 - **`R` is the operation `cycle_representation`** (it was `toggle_markdown_raw`): it cycles whatever the preview can be shown as — a
-  Markdown document's rendering and its source, a presentation's pictures and its text, a diff's presentations. `toggle_markdown_raw`
+  Markdown document's rendering and its source, a presentation's pictures and its text, a diff's presentations, and the representations a plugin declares when it declares two or more (the standard tables have one, so `R` is not offered there). `toggle_markdown_raw`
   is still read in `[keys]` and does the same; the startup message says to write the new name.
 - **The `Space` menu names a pair of operations by direction.** Where the footer has room for only `[ ]:tab`, the menu says
   `previous tab` / `next tab` / `tab list`, `previous page` / `next page` (`sheet`, `slide`), `next changed file`, `zoom in` /
@@ -124,33 +134,17 @@ All notable changes to konoma are documented in this file. The format is based o
   `konoma-widgets` (display parts for ratatui: the Markdown document renderer, windowed file reading, kitty graphics
   transmit, image layout, diff rows and icon glyphs) and `konoma-test-support` for tests. The `konoma` binary behaves as before. They are not published to crates.io yet. To check
   from source, use `cargo test --workspace` (a plain `cargo test` only covers the `konoma` package).
-- **A plugin installed under another id is drawn like the standard plugin of the same display type.** The host now picks a
-  plugin's screen from what the plugin declares (`Manifest::shows`, `converts`, `file_text`, `unavailable`) and from the view
-  it returns, not from its id: a replacement for `markdown`, `csv`, `spreadsheet`, `presentation`, `code`, a picture plugin,
-  and so on, registered under its own id with the standard one switched off, gets the same document widget, table, image
-  pipeline, windowed reader, page keys and `R` as the standard one. A text view a plugin makes (`TextSource::Lines` or
-  `Owned`) is read in windows like a file (caret, `v`/`V`, `/`, line numbers, `y`), in the colors the plugin gave it. What
-  the host shows when a plugin cannot show a file is the plugin's own declaration (`Manifest::unavailable`) rather than a
-  text per standard id. What you see with the standard plugins does not change.
 
 ### Fixed
-- **A picture drawn again no longer changes how it looks.** An SVG in an image diff was drawn the first time with its folder as the base for relative references (a `<image href="dot.png">` showed), but sharpened on zoom or rebuilt after being dropped from memory by a process that reads no file, so the referenced picture vanished. Every drawing of the same SVG (the first, the sharper one, the rebuilt one) now goes through one function with the same base.
 - Going back to a tab that was showing a later page of a PDF (say 3/3) could draw page 1 under the `3/3` indicator. The tab
   restore reloaded the file with the page reset to 1 and put the saved page back only afterwards; it now restores the tab's
   page first and then opens the file, so the picture is the page the indicator names.
-- An SVG of a Git diff (a changed `.svg`) that was dropped from memory to stay within the picture budget was drawn again in
-  konoma's own process, without the limits a file's SVG gets. The SVGs a picture keeps to draw again (the old and new
-  sides of a diff, and every SVG a plugin other than the standard `mermaid` and `math` returns) are now drawn again by the
-  same supervised child process as the first time, which reads no file.
+- An SVG of a Git image diff (a changed `.svg`) that was dropped from memory to stay within the picture budget was drawn
+  again in konoma's own process, without the limits a file's SVG gets and without its folder as the base for relative
+  references (an `<image href="dot.png">` in it vanished). It is now drawn again the way it was drawn the first time: by the
+  supervised child process, with the same base.
 - A `.mmd` / `.mermaid` file was read whole, however large. It is now refused above 1 MiB (the same limit as a Markdown file)
   and when it is not a regular file, with the reason shown.
-- A plugin's `trusted: true` on an SVG was believed. Now only the standard plugins that draw their own SVG (`mermaid`,
-  `math`) are believed; any other plugin's SVG is drawn by the child process, and an SVG that names no directory reads no
-  file (it used to read relative to the file being shown).
-- The `[plugins.math] color` setting is checked inside the `math` plugin as well, before it is put into the drawing.
-- A workbook, Word document or presentation was read again on every change event that reached the preview (an event for
-  `.git`, or for an unrelated file), however large it was. A plugin that reads heavily (one that names a work group) is
-  now read again only when its file's modification time or size changed.
 
 ## [0.31.0] - 2026-10-12
 

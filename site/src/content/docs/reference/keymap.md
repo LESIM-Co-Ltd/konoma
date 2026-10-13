@@ -100,7 +100,7 @@ when it has no key of its own.
 | `Enter` | open focused link / toggle focused checkbox or `<details>` / open a focused diagram full screen |
 | `Ctrl-t` | open the focused **local** link in a new tab (anchors jump in place instead; URLs open in the browser either way) |
 | `J` `K` | presentations: next / previous slide, in the picture view and the text view alike (no-op elsewhere and on a one-slide deck; actions `page_next` / `page_prev`) |
-| `R` | cycle the representation: rendered ⇄ raw source (Markdown/Mermaid, and Word/OpenDocument documents — raw is the converted Markdown); on a presentation, slide pictures ⇄ text view, keeping the current slide; while this preview *is* a diff's `preview` presentation, returns to that diff instead |
+| `R` | cycle the representation: rendered ⇄ raw source (Markdown/Mermaid, and Word/OpenDocument documents — raw is the converted Markdown); on a presentation, slide pictures ⇄ text view, keeping the current slide; while this preview *is* a diff's `preview` presentation, returns to that diff instead; a plugin that declares two or more representations is cycled through them in the declared order |
 | `O` | heading outline of a Markdown preview (`Enter` jumps to a heading); on a PDF, a workbook or a presentation with 2+ pages, the list of its pages (`Enter` goes to the page) |
 | `+` `-` `=` | zoom a focused diagram in place / zoom out / fit |
 | `v` / `V` | select by character / by line, then `y` copies (`q` or `Esc` leaves the selection) |
@@ -133,6 +133,7 @@ when it has no key of its own.
 | `g` `G` / `0` `$` | first/last row / first/last column |
 | `J` `K` | spreadsheets only: next / previous sheet (needs 2+ visible sheets; actions `page_next` / `page_prev`; the old `sheet_next` / `sheet_prev` still work) |
 | `O` | spreadsheets with 2+ visible sheets: the list of the sheets (`Enter` goes to the chosen one) |
+| `R` | cycle the representations a plugin declares — only when it declares two or more. The standard tables have one, so `R` is not offered here (action `cycle_representation`) |
 | `/` / `n` `N` | search cells (case-insensitive) / next, previous match (wraps) |
 | `y` → `c r C f` | copy cell / row / column / full path |
 | `Enter` | Open the cursor cell in a popup — the full, untruncated value, wrapped and scrollable (`Enter` / `q` / `Esc` closes). Also works on `.zip` / `.tar` listings and spreadsheets (address, displayed text, raw value, type, formula, format). |
@@ -180,7 +181,7 @@ log, graph, branches, worktrees (jj has no worktree screen, so its cycle skips i
 |---|---|
 | `y` | the copy menu of the screen: the tree and previews copy paths (`n r f p @`, and `c` for a focused code block) · a table copies `c` cell · `r` row · `C` column · `f` path · a commit `s h t m a d` · a branch `n` name |
 | `,` | the sort and display options of the screen (see the tree, text and diff tables above) |
-| `Space` | the tree: the file menu (`n r d c x p D`). Everywhere else: every operation that acts on the screen now, built automatically — an operation you rebound or that has no single key is still here. The items come in the order of the screen's footer (the operations used most first) and carry the footer's short labels |
+| `Space` | the tree: the file menu (`n r d c x p D`). Everywhere else: every operation that acts on the screen now, built automatically — an operation you rebound or that has no single key is still here. The items come in the order of the screen's footer (the operations used most first) and carry the footer's short labels — except that a pair of operations is named by direction (`previous tab` / `next tab`, `previous page` / `next page`, ...) so that no two items read the same |
 
 A chord in `[keys.<context>]` (`"y x"`, `", x"`, `"space x"`) changes that context's menu only; see
 [Configuration](../configuration/#menus-and-chords).
