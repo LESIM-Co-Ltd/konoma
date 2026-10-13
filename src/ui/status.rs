@@ -664,17 +664,19 @@ mod tests {
             "リンクフォーカス中に Space が出ている: {toks:?}"
         );
 
-        // Task focused: Space/↵:toggle.
+        // Task focused: ↵:toggle (`Space` is no longer a toggle key, so it is not named).
         app.md_focus_move(1);
         assert_eq!(app.md_focused_kind(), Some(crate::app::MdFocus::Task));
         let toks = hint_tokens(&app);
-        assert!(toks.iter().any(|t| t == "Space/↵:toggle"), "{toks:?}");
+        assert!(toks.iter().any(|t| t == "↵:toggle"), "{toks:?}");
+        assert!(!toks.iter().any(|t| t.starts_with("Space")), "{toks:?}");
 
-        // <details> summary focused: Space/↵:toggle too.
+        // <details> summary focused: ↵:toggle too.
         app.md_focus_move(1);
         assert_eq!(app.md_focused_kind(), Some(crate::app::MdFocus::Details));
         let toks = hint_tokens(&app);
-        assert!(toks.iter().any(|t| t == "Space/↵:toggle"), "{toks:?}");
+        assert!(toks.iter().any(|t| t == "↵:toggle"), "{toks:?}");
+        assert!(!toks.iter().any(|t| t.starts_with("Space")), "{toks:?}");
     }
 
     /// Case (f): a focused code block has no Enter action (only `y c` copies it) — no `↵:` hint.
@@ -1036,16 +1038,15 @@ mod tests {
                 .map(|s| s.content.as_ref())
                 .collect();
             // The hub footer is generated from the operations that act on a read-only backend:
-            // the diff, the log/graph, bookmarks, `R:sync` and the tool, then `q:close`.
+            // the diff (`l` opens it like `Enter`), bookmarks, `s:sync` and the tool, then
+            // `h/q:close`. The log and the graph have no default key.
             let expected = [
-                format!("Enter:{}", tr(lang, Msg::HintDiff)),
+                format!("l/Enter:{}", tr(lang, Msg::HintDiff)),
                 format!("d:{}", tr(lang, Msg::FtDiffAll)),
-                format!("l:{}", tr(lang, Msg::FtLog)),
-                format!("g:{}", tr(lang, Msg::FtGraph)),
                 format!("b:{}", tr(lang, Msg::HintBookmarks)),
-                format!("R:{}", tr(lang, Msg::FtSync)),
+                format!("s:{}", tr(lang, Msg::FtSync)),
                 format!("!:{}", tr(lang, Msg::FtTool)),
-                format!("q:{}", tr(lang, Msg::FtClose)),
+                format!("h/q:{}", tr(lang, Msg::FtClose)),
             ]
             .join("  ");
             assert_eq!(
@@ -1078,8 +1079,8 @@ mod tests {
             .collect();
         assert_eq!(
             footer,
-            "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  Enter:diff  d:diff-all  \
-             l:log  g:graph  b:branch  w:worktrees  !:tool  q:close"
+            "s/S:stage(all)  u/U:unstage(all)  x:discard  c:commit  l/Enter:diff  d:diff-all  \
+             b:branch  w:worktrees  !:tool  h/q:close"
         );
         for word in ["stage", "unstage", "commit", "worktree"] {
             assert!(
@@ -1113,7 +1114,7 @@ mod tests {
             .collect();
         assert_eq!(
             footer,
-            "j/k:nav  l/Enter:detail  a:all revisions  b:bookmarks  q/Esc:back"
+            "j/k:nav  l/Enter:detail  a:all revisions  b:bookmarks  h/q/Esc:back"
         );
         assert!(
             !footer.contains("base"),
@@ -1137,7 +1138,7 @@ mod tests {
             .collect();
         assert_eq!(
             footer,
-            "j/k:nav  l/Enter:detail  s:base  0/x:base off  b:branches  q/Esc:back"
+            "j/k:nav  l/Enter:detail  s:base  x:base off  b:branches  h/q/Esc:back"
         );
         assert!(
             !footer.contains("all revisions"),
@@ -1165,7 +1166,7 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
-        assert_eq!(footer, "j/k:nav  /:search  q/Esc:back");
+        assert_eq!(footer, "j/k:nav  /:search  h/q/Esc:back");
         for word in ["checkout", "new", "delete"] {
             assert!(
                 !footer.contains(word),
@@ -1191,7 +1192,7 @@ mod tests {
             .collect();
         assert_eq!(
             footer,
-            "j/k:nav  l/Enter:checkout  n:new  d:delete  /:search  q/Esc:back"
+            "j/k:nav  l/Enter:checkout  c:new  d:delete  /:search  h/q/Esc:back"
         );
     }
 
@@ -1337,7 +1338,7 @@ mod tests {
         assert_eq!(
             footer,
             format!(
-                "j/k:scroll  n/N:next/prev file  h/l:hscroll  s:unified/split/auto  q/Esc:back  R:{}",
+                "j/k:scroll  C-n/C-p:next/prev file  h/l:hscroll  s:unified/split/auto  q/Esc:back  R:{}",
                 tr(Lang::En, Msg::DiffViewPreview)
             )
         );
@@ -1372,7 +1373,7 @@ mod tests {
         assert_eq!(
             footer,
             format!(
-                "n/N:{}  x:discard  q/Esc:back",
+                "C-n/C-p:{}  x:discard  q/Esc:back",
                 tr(Lang::En, Msg::HintNextPrevFile),
             )
         );

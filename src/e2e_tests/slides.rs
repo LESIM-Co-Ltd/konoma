@@ -837,7 +837,7 @@ fn e2e_slides_the_outline_puts_any_slide_at_the_top_the_last_ones_too() {
         return;
     };
     for target in [5usize, 6, 7, 2] {
-        s.key('o');
+        s.key('O');
         assert!(s.app.is_outline(), "{}", s.screen());
         while s.app.outline_sel() + 1 < target {
             s.key('j');

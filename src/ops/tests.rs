@@ -328,12 +328,12 @@ fn a_hint_for_an_operation_that_does_not_act_is_not_shown() {
     assert!(
         !tokens_of(&app, Context::Tree)
             .iter()
-            .any(|t| t == &format!("o:{git}")),
-        "o:git is offered outside a repository"
+            .any(|t| t == &format!("p:{git}")),
+        "p:git is offered outside a repository"
     );
     assert!(
-        !help_text(&app, Context::Tree).iter().any(|(k, _)| k == "o"),
-        "the help lists o outside a repository"
+        !help_text(&app, Context::Tree).iter().any(|(k, _)| k == "p"),
+        "the help lists p outside a repository"
     );
 }
 
@@ -352,7 +352,7 @@ fn a_repository_offers_the_hub_and_a_changed_file_its_diff() {
     app.ensure_git_status_now();
     assert_eq!(gate(&app, Context::Tree, Action::OpenGitView), Gate::On);
     let git = crate::i18n::tr(app.lang, Msg::HintGit);
-    assert!(tokens_of(&app, Context::Tree).contains(&format!("o:{git}")));
+    assert!(tokens_of(&app, Context::Tree).contains(&format!("p:{git}")));
 
     // The cursor decides whether `d` has a diff to open.
     let sel = |app: &mut App, name: &str| {
@@ -469,10 +469,8 @@ fn fixed_keys_have_a_default_operation_per_context() {
         fixed_action(Context::Document, K::BackTab),
         Some(Action::LinkFocusPrev)
     );
-    assert_eq!(
-        fixed_action(Context::Document, K::Char(' ')),
-        Some(Action::ToggleFocusedItem)
-    );
+    // `Space` is not a fixed key any more: `Enter` toggles the focused checkbox.
+    assert_eq!(fixed_action(Context::Document, K::Char(' ')), None);
     assert_eq!(fixed_action(Context::Table, K::Tab), None);
     #[cfg(feature = "git")]
     for b in Backend::ALL {

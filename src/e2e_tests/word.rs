@@ -250,8 +250,8 @@ fn e2e_word_a_japanese_document_opens_and_reads_in_japanese() {
         see_cjk(&mut s, want);
     }
     s.dont_see("can not preview");
-    // The outline (`o`) lists the Japanese headings.
-    s.key('o');
+    // The outline (`O`) lists the Japanese headings.
+    s.key('O');
     assert!(s.app.is_outline());
     see_cjk(&mut s, "図と脚注");
 }
@@ -573,7 +573,7 @@ fn e2e_word_the_outline_lists_the_headings_and_jumps() {
     let Some((mut s, _d)) = open_doc_sized("w_outline", EN, (90, 26), cfg_en()) else {
         return;
     };
-    s.key('o');
+    s.key('O');
     assert!(s.app.is_outline());
     for h in [
         "Word reader sample",
@@ -1200,7 +1200,7 @@ fn e2e_odt_a_japanese_document_opens_and_reads_in_japanese() {
         see_cjk(&mut s, want);
     }
     s.dont_see("can not preview");
-    s.key('o');
+    s.key('O');
     assert!(s.app.is_outline());
     see_cjk(&mut s, "図と脚注");
 }

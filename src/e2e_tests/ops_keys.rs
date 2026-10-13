@@ -29,7 +29,7 @@ fn e2e_enter_on_a_jj_bookmark_list_is_refused_like_every_other_write() {
         !crate::vcs::caps(&s.app.tab.root).write,
         "sanity: this fixture must resolve to the read-only jj backend"
     );
-    s.key('o');
+    s.key('p');
     s.key('b');
     assert!(
         s.app.is_git_branches(),
@@ -67,7 +67,7 @@ fn e2e_enter_on_a_git_branch_list_still_checks_out() {
     seed_repo(&dir);
     let root = canon(&dir);
     let mut s = Sim::new(&root).with_async_git_ops();
-    s.key('o');
+    s.key('p');
     s.key('b');
     assert!(s.app.is_git_branches());
     // Move onto `feature-x`, the branch that is not checked out (the list starts on the current one).
@@ -99,7 +99,7 @@ fn e2e_enter_on_a_git_branch_list_still_checks_out() {
     );
 }
 
-/// `o` outside a repository: the footer does not offer it and pressing it says why.
+/// `p` outside a repository: the footer does not offer it and pressing it says why.
 #[test]
 fn e2e_git_hub_key_is_not_offered_outside_a_repository() {
     let dir = sandbox("ops_o_outside_repo");
@@ -108,8 +108,8 @@ fn e2e_git_hub_key_is_not_offered_outside_a_repository() {
     // Wait for the first status scan to land, as it does within a frame or two in the app.
     s.app.ensure_git_status_now();
     s.draw();
-    s.dont_see("o:git");
-    s.key('o');
+    s.dont_see("p:git");
+    s.key('p');
     assert!(!s.app.is_git_view());
     assert!(
         s.app.flash.as_deref().is_some_and(
@@ -128,7 +128,7 @@ fn e2e_git_hub_key_and_diff_key_are_offered_inside_a_repository() {
     let mut s = Sim::with_config(&canon(&dir), cfg_en());
     s.app.ensure_git_status_now();
     s.draw();
-    s.see("o:git");
+    s.see("p:git");
     s.select("new.txt");
     s.see("d:diff");
     s.select("b.rs"); // unchanged
@@ -191,8 +191,8 @@ fn e2e_fixed_keys_keep_their_meaning_on_the_screens() {
     s.esc();
     assert_eq!(s.app.key_context(), Some(crate::keymap::Context::Table));
     s.key('q');
-    // Markdown: Tab focuses the first item, Space on a checkbox toggles it (writes the file),
-    // Esc goes back to the tree.
+    // Markdown: Tab focuses the first item, Enter on a checkbox toggles it (writes the file) and
+    // Space does not, Esc goes back to the tree.
     s.select("a.md");
     s.enter();
     s.tab();
@@ -200,8 +200,14 @@ fn e2e_fixed_keys_keep_their_meaning_on_the_screens() {
     s.key(' ');
     let src = std::fs::read_to_string(dir.join("a.md")).unwrap();
     assert!(
+        src.contains("- [ ] one"),
+        "Space is not the toggle any more: {src}"
+    );
+    s.enter();
+    let src = std::fs::read_to_string(dir.join("a.md")).unwrap();
+    assert!(
         src.contains("- [x] one"),
-        "Space toggled the focused checkbox: {src}"
+        "Enter toggled the focused checkbox: {src}"
     );
     s.esc();
     assert_eq!(s.app.tab.mode, Mode::Tree);
@@ -237,7 +243,12 @@ fn e2e_dump_footer_and_help_when_asked() {
     std::fs::write(dir.join("d.csv"), "a,b\n1,2\n").unwrap();
     write_solid_png(&dir.join("p.png"), 8, 8, [10, 20, 30]);
     let root = canon(&dir);
-    let mut s = Sim::with_config_sized(&root, cfg_en(), 200, 130)
+    // The hub's `g` / `l` have no default key: bind them to reach the graph and the log.
+    #[cfg_attr(not(feature = "git"), allow(unused_mut))]
+    let mut cfg = cfg_en();
+    #[cfg(feature = "git")]
+    hub_screen_keys(&mut cfg);
+    let mut s = Sim::with_config_sized(&root, cfg, 200, 130)
         .with_picker()
         .with_media();
     shot("tree", &mut s);
@@ -261,7 +272,7 @@ fn e2e_dump_footer_and_help_when_asked() {
         s.key('d');
         shot("diff", &mut s);
         s.key('q');
-        s.key('o');
+        s.key('p');
         shot("git hub", &mut s);
         s.key('l');
         shot("git log", &mut s);

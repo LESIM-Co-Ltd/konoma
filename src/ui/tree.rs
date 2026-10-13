@@ -481,8 +481,8 @@ mod tests {
             .find(|s| s.title == tr(app.lang, crate::i18n::Msg::TreeSection))
             .expect("ツリー節が無い");
         assert!(
-            tree.rows.iter().any(|(k, _)| k == "o"),
-            "git 変更ハブ(o)の行が無い: {:?}",
+            tree.rows.iter().any(|(k, _)| k == "p"),
+            "git 変更ハブ(p)の行が無い: {:?}",
             tree.rows
         );
         // No section is empty (confirms the policy of never creating a title-only section).

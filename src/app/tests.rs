@@ -23559,7 +23559,7 @@ fn worktree_create_is_gated_even_if_the_normally_unreachable_surface_is_forced_o
     let res = crate::handle_key(
         &mut app,
         crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Char('n'),
+            crossterm::event::KeyCode::Char('c'),
             crossterm::event::KeyModifiers::NONE,
         ),
     );

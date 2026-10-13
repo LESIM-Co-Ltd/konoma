@@ -534,7 +534,7 @@ code_theme = "TwoDark"
 #   text_visual   : the text preview's visual selection (v / V)
 #   image         : images and PDF pages      diff : a file's git/jj diff
 #   table         : CSV/TSV/archive/spreadsheet tables    table_cell : the full-cell popup (Enter in a table)
-#   git.changes   : the Git changes hub (o)   git.log / git.graph / git.branches / git.detail
+#   git.changes   : the Git changes hub (p)   git.log / git.graph / git.branches / git.detail
 #   git.graph_picker : the graph's branch-visibility panel (b)
 #   git.worktrees : the linked-worktree list (w, in the changes hub)
 #   jj.changes ... : the same screens opened for a jj repository (jj.log jj.graph jj.graph_picker

@@ -210,15 +210,19 @@ fn text_and_document_start_with_the_same_keys() {
 
 #[cfg(feature = "git")]
 #[test]
-fn git_and_jj_start_with_the_same_tables() {
+fn git_and_jj_start_with_the_same_tables_but_for_the_changes_screens_s() {
     for scheme in [KeyScheme::Vim, KeyScheme::Less] {
         let m = KeyMap::defaults(scheme);
         for s in Screen::ALL {
-            assert_eq!(
-                m.contexts[&Context::Screen(Backend::Git, s)],
-                m.contexts[&Context::Screen(Backend::Jj, s)],
-                "{s:?}"
-            );
+            let mut git = m.contexts[&Context::Screen(Backend::Git, s)].clone();
+            let mut jj = m.contexts[&Context::Screen(Backend::Jj, s)].clone();
+            if s == Screen::Changes {
+                // The one difference: `s` stages in git and syncs in jj.
+                let s_key = KeyPress::ch('s');
+                assert_eq!(git.remove(&s_key), Some(Binding::Run(Action::GitStage)));
+                assert_eq!(jj.remove(&s_key), Some(Binding::Run(Action::JjSync)));
+            }
+            assert_eq!(git, jj, "{s:?}");
         }
     }
 }
@@ -227,11 +231,10 @@ fn git_and_jj_start_with_the_same_tables() {
 #[test]
 fn a_context_can_unbind_a_key_its_layer_gives_and_global_still_applies() {
     let m = KeyMap::defaults(KeyScheme::Vim);
-    // The hub has no `G` although the list layer gives one.
+    // The hub and the log get `G` and `g` from the list layer.
     let hub = Context::Screen(Backend::Git, Screen::Changes);
-    assert_eq!(at(&m, hub, 'G'), Resolution::Unbound);
-    assert_eq!(at(&m, hub, 'g'), run(Action::GitOpenGraph));
-    // The log gets both from the layer.
+    assert_eq!(at(&m, hub, 'G'), run(Action::Navigate(Motion::Bottom)));
+    assert_eq!(at(&m, hub, 'g'), run(Action::Navigate(Motion::Top)));
     let log = Context::Screen(Backend::Git, Screen::Log);
     assert_eq!(at(&m, log, 'G'), run(Action::Navigate(Motion::Bottom)));
     // Unbinding in config hides the layer's binding...
@@ -511,8 +514,8 @@ fn a_conflict_in_a_table_that_covers_several_contexts_counts_once() {
     );
     assert_eq!(m.conflicts.len(), 1);
     // Both were refused, though.
-    assert_eq!(at(&m, Context::Text, 't'), run(Action::TabNew));
-    assert_eq!(at(&m, Context::Document, 't'), run(Action::TabNew));
+    assert_eq!(at(&m, Context::Text, 't'), run(Action::TabNewAfter));
+    assert_eq!(at(&m, Context::Document, 't'), run(Action::TabNewAfter));
 }
 
 #[test]
@@ -575,6 +578,6 @@ fn the_conflict_flash_says_where_and_what() {
     let m = KeyMap::from_config(KeyScheme::Vim, &cfg_of(&[("tree", &[("t", "refresh")])]));
     let c = &m.conflicts[0];
     assert_eq!(c.key, KeyPress::ch('t'));
-    assert_eq!(c.kept, "tab_new");
+    assert_eq!(c.kept, "tab_new_after");
     assert_eq!(c.dropped, "refresh in [keys.tree]");
 }

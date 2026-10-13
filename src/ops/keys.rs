@@ -31,8 +31,7 @@ pub fn fixed_action(ctx: Context, code: KeyCode) -> Option<Action> {
         .map(|f| f.action)
 }
 
-/// Whether `code` is one of the keys that never reach the keymap (`keymap::is_fixed_key` plus
-/// `Space`, which is only fixed while a checkbox or `<details>` of a document is focused).
+/// Whether `code` is one of the keys that never reach the keymap (`keymap::is_fixed_key`).
 pub fn is_fixed_code(code: KeyCode) -> bool {
     matches!(
         code,
@@ -77,7 +76,6 @@ pub fn fixed_bindings(ctx: Context) -> Vec<Fixed> {
     if matches!(ctx, Context::Text | Context::Document) {
         v.push(own(KeyCode::Tab, Action::LinkFocusNext));
         v.push(own(KeyCode::BackTab, Action::LinkFocusPrev));
-        v.push(own(KeyCode::Char(' '), Action::ToggleFocusedItem));
     }
     v
 }

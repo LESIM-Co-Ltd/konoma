@@ -2133,8 +2133,7 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
     false
 }
 
-/// The fixed keys (arrows, `Home`/`End`, `Esc`, `Enter`, `Tab`/`Shift-Tab`, and `Space` while a
-/// checkbox or `<details>` of a document is focused). They cannot be rebound, but each has a
+/// The fixed keys (arrows, `Home`/`End`, `Esc`, `Enter`, `Tab`/`Shift-Tab`). They cannot be rebound, but each has a
 /// default operation per context (`ops::keys::fixed_bindings`) and runs through `dispatch_action`
 /// like every other key, so the same guards apply (`ops::gate`, `writes_repository`): `Enter` on a
 /// jj bookmark list no longer reaches the checkout.
@@ -2148,18 +2147,13 @@ fn handle_fixed_key(
     let Some(ctx) = ctx else {
         return Ok(None);
     };
-    let is_space = key.code == KeyCode::Char(' ');
-    if !is_space && !ops::keys::is_fixed_code(key.code) {
+    if !ops::keys::is_fixed_code(key.code) {
         return Ok(None);
     }
+    // A fixed key with no operation on this screen simply does nothing.
     let Some(action) = ops::keys::fixed_action(ctx, key.code) else {
-        // `Space` with nothing to toggle belongs to the keymap (less's `Space` pages); every other
-        // fixed key simply does nothing on this screen.
-        return Ok(if is_space { None } else { Some(false) });
+        return Ok(Some(false));
     };
-    if is_space && !ops::action_enabled(app, ctx, action) {
-        return Ok(None);
-    }
     dispatch_action(app, action, sfc).map(Some)
 }
 
