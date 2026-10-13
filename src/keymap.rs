@@ -155,11 +155,13 @@ pub enum Action {
     PreviewCopySelectionRef,
     /// `v`/`V`/`q` (in preview-visual): exit selection without copying.
     PreviewExitVisual,
-    /// `R`: toggle a Markdown/Mermaid preview between its decorated render and raw source (selectable).
-    ToggleMarkdownRaw,
+    /// `R`: cycle the representation of the preview — a Markdown document between its decorated
+    /// render and its raw source, a slide deck between pictures and text, a diff between its
+    /// presentations. (Named `toggle_markdown_raw` before; that name is still read.)
+    CycleRepresentation,
     /// `R` in `Surface::PreviewImage`: returns to the diff while this image/PDF/SVG preview *is*
     /// its own `Preview` representation, and is a no-op otherwise — `App::image_return_to_diff`'s
-    /// own doc comment on why this is a separate action from `ToggleMarkdownRaw`.
+    /// own doc comment on why this is a separate action from `CycleRepresentation`.
     ImageReturnToDiff,
     /// Tab/BackTab/Enter (triggered as fixed keys; not listed in the keymap).
     LinkFocusNext,
@@ -1408,7 +1410,7 @@ impl KeyMap {
         ptext.insert(KeyPress::ch('r'), run(Action::Refresh));
         ptext.insert(KeyPress::ch('v'), run(Action::PreviewEnterVisual));
         ptext.insert(KeyPress::ch('V'), run(Action::PreviewEnterVisualLine));
-        ptext.insert(KeyPress::ch('R'), run(Action::ToggleMarkdownRaw));
+        ptext.insert(KeyPress::ch('R'), run(Action::CycleRepresentation));
         // Ctrl-t = open the focused Markdown link in a new tab (Enter still opens in the same tab).
         // Consistent with the TUI convention (fzf/Telescope's Ctrl-t = new tab) + konoma's t = new
         // tab. Ctrl+letter is reliable in every terminal + tmux (unlike Ctrl+Enter, no kitty
@@ -1456,7 +1458,7 @@ impl KeyMap {
         pimg.insert(KeyPress::ch('q'), run(Action::PreviewBack));
         // R: while this image/PDF/SVG preview *is* the diff's own `Preview` representation
         // (`PerTab::preview_from_diff`), returns to the diff; a no-op otherwise
-        // (`App::image_return_to_diff`'s own doc comment — **not** `Action::ToggleMarkdownRaw`,
+        // (`App::image_return_to_diff`'s own doc comment — **not** `Action::CycleRepresentation`,
         // whose non-diff fallthrough (`toggle_md_raw`) is a real, if unadvertised, bug on this
         // context for a standalone `.mmd` image preview, `docs/FEATURE-MEDIA-DIFF.md` §6).
         pimg.insert(KeyPress::ch('R'), run(Action::ImageReturnToDiff));
@@ -1825,6 +1827,17 @@ impl KeyMap {
             }
         }
 
+        // An old operation name that was renamed (not merely aliased by a merge): say what to write.
+        if cfg
+            .surfaces
+            .values()
+            .any(|t| t.values().any(|a| a == "toggle_markdown_raw"))
+        {
+            renames.push((
+                "toggle_markdown_raw".to_string(),
+                "cycle_representation".to_string(),
+            ));
+        }
         if cfg.surfaces.get("sort").is_some_and(|t| !t.is_empty()) {
             renames.push((
                 "[keys.sort]".to_string(),
@@ -2794,7 +2807,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "preview_copy_selection" => Action::PreviewCopySelection,
         "preview_copy_selection_ref" => Action::PreviewCopySelectionRef,
         "preview_exit_visual" => Action::PreviewExitVisual,
-        "toggle_markdown_raw" => Action::ToggleMarkdownRaw,
+        "cycle_representation" | "toggle_markdown_raw" => Action::CycleRepresentation,
         "image_return_to_diff" => Action::ImageReturnToDiff,
         "link_focus_next" => Action::LinkFocusNext,
         "link_focus_prev" => Action::LinkFocusPrev,
@@ -3012,7 +3025,7 @@ pub fn action_name(a: Action) -> String {
         Action::PreviewCopySelection => "preview_copy_selection",
         Action::PreviewCopySelectionRef => "preview_copy_selection_ref",
         Action::PreviewExitVisual => "preview_exit_visual",
-        Action::ToggleMarkdownRaw => "toggle_markdown_raw",
+        Action::CycleRepresentation => "cycle_representation",
         Action::ImageReturnToDiff => "image_return_to_diff",
         Action::LinkFocusNext => "link_focus_next",
         Action::LinkFocusPrev => "link_focus_prev",

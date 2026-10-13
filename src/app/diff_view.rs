@@ -378,7 +378,7 @@ impl App {
     /// `main.rs`'s `Action::PreviewBack` already routing `q` back through `close_git_diff` whenever
     /// this flag is set. Falls through to the ordinary `toggle_md_raw` for every other preview
     /// (including a plain non-diff Markdown one), so rebinding nothing and adding no new keymap
-    /// entry keeps this a drop-in replacement for `main.rs`'s old `Action::ToggleMarkdownRaw` arm.
+    /// entry keeps this a drop-in replacement for `main.rs`'s old `Action::CycleRepresentation` arm.
     pub fn toggle_md_raw_or_return_to_diff(&mut self) {
         #[cfg(feature = "git")]
         if self.tab.preview_from_diff {

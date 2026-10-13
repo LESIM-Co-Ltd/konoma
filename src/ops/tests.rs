@@ -635,3 +635,73 @@ fn a_label_that_depends_on_the_state_is_a_function_of_it() {
         Some(Msg::HintCloseTab)
     );
 }
+
+/// No two items of a `Space` menu carry the same label, in any context and either language: a
+/// pair of operations (`[` / `]`, `J` / `K`, `Ctrl-n` / `Ctrl-p` ...) reads "tab", "tab" in the
+/// footer, where the width is short and the keys name the direction, but a menu line has room to
+/// say which one it is.
+#[test]
+fn space_menu_items_never_share_a_label() {
+    let (mut app, _d) = app();
+    let mut seen_pairs = 0;
+    let mut clashes: Vec<String> = Vec::new();
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        app.lang = lang;
+        for ctx in Context::all() {
+            let items = crate::ops::menu::declared_actions_menu(&app, ctx);
+            for (i, a) in items.iter().enumerate() {
+                for b in &items[i + 1..] {
+                    seen_pairs += 1;
+                    if a.label == b.label {
+                        clashes.push(format!(
+                            "{lang:?} {ctx:?}: {:?} and {:?} are both `{}`",
+                            a.action, b.action, a.label
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(clashes.is_empty(), "{}", clashes.join("\n"));
+    assert!(
+        seen_pairs > 100,
+        "the check looked at too little: {seen_pairs}"
+    );
+}
+
+/// The help popup is 64 cells wide inside (`ui::help::render`) and does not wrap, so a longer row
+/// is cut. These descriptions were written for the stage-2 keys (`/ n N` over changes, `Tab` over
+/// the Git screens, `o`) and must fit; the older long rows (`Enter` on a document and others) were
+/// already cut in v0.31.0 and are not pinned here.
+#[test]
+fn the_help_rows_of_the_new_keys_fit_the_popup() {
+    use unicode_width::UnicodeWidthStr;
+    let (mut app, _d) = app();
+    let mut checked = 0;
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Jp] {
+        app.lang = lang;
+        let watched: Vec<String> = [
+            Msg::SearchHint,
+            Msg::GitScreensHelp,
+            Msg::JjScreensHelp,
+            Msg::OpenAppHelp,
+        ]
+        .iter()
+        .map(|m| crate::i18n::tr(lang, *m).to_string())
+        .collect();
+        for ctx in Context::all() {
+            for sec in crate::ops::help::sections_for(&app, ctx) {
+                for (k, d) in &sec.rows {
+                    if !watched.contains(d) {
+                        continue;
+                    }
+                    checked += 1;
+                    let pad = if k.chars().count() >= 16 { 2 } else { 0 };
+                    let w = 2 + 16.max(k.chars().count()) + pad + d.width();
+                    assert!(w <= 64, "{lang:?} {ctx:?}: `{k}` | {d} is {w} cells");
+                }
+            }
+        }
+    }
+    assert!(checked >= 10, "the check looked at too little: {checked}");
+}

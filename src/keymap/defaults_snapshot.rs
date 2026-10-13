@@ -104,7 +104,7 @@ document | N | search_prev
 document | O | toggle_outline
 document | P | paste_jump
 document | Q | quit
-document | R | toggle_markdown_raw
+document | R | cycle_representation
 document | T | toggle_tab_list
 document | V | preview_enter_visual_line
 document | Y | preview_copy_selection_ref
@@ -843,7 +843,7 @@ text | N | search_prev
 text | O | toggle_outline
 text | P | paste_jump
 text | Q | quit
-text | R | toggle_markdown_raw
+text | R | cycle_representation
 text | T | toggle_tab_list
 text | V | preview_enter_visual_line
 text | Y | preview_copy_selection_ref

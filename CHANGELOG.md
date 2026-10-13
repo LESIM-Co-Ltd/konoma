@@ -7,6 +7,14 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Added
+- **Plugins.** The viewers are now standard plugins built into konoma: `markdown`, `mermaid`, `math` (formulas inside Markdown),
+  `svg`, `image`, `csv` (CSV and TSV), `spreadsheet`, `document` (Word), `presentation`, `archive`, `code`, `video` and `pdf`.
+  What you see does not change. `konoma --plugins` lists which plugin shows which files (your `[[preview.rules]]` first,
+  then the standard plugins), and `[plugins.<id>] enabled = false` switches one off: its files go on to plain text if they
+  read as text, otherwise to `[can not preview]`. An unknown id in `[plugins.*]` is reported at startup. A plugin's own
+  settings live in its table and replace the matching `[ui]` keys, which are still read when the plugin table does not set
+  the value: `[plugins.csv] rainbow` (and `[plugins.spreadsheet] rainbow`), `[plugins.code] syntax_highlight`,
+  `[plugins.svg] max_px`, `[plugins.mermaid] mode` / `theme` / `curve` / `routing` / `rows`, `[plugins.math] mode` / `color`.
 - **A plugin's own actions are part of konoma's key system.** What a plugin declares (`Manifest::actions`: a key, a short label, a
   help text, a footer priority, whether it writes) now gets its key, its `w:width`-style entry in the footer, a section of the
   `?` help under the plugin's name and a place in the `Space` menu, with no code of the plugin's own. Whether an action works
@@ -27,14 +35,6 @@ All notable changes to konoma are documented in this file. The format is based o
   `config: [ui] md_alerts is an old name — write [plugins.markdown] alerts instead` until you move it. A key a plugin does not
   have (`[plugins.markdown] foo = 1`) is reported and ignored. What is wrong comes first on the footer and the hints last; what
   does not fit the terminal width is counted as `(+n more)` instead of being cut off.
-- **Plugins.** The viewers are now standard plugins built into konoma: `markdown`, `mermaid`, `math` (formulas inside Markdown),
-  `svg`, `image`, `csv` (CSV and TSV), `spreadsheet`, `document` (Word), `presentation`, `archive`, `code`, `video` and `pdf`.
-  What you see does not change. `konoma --plugins` lists which plugin shows which files (your `[[preview.rules]]` first,
-  then the standard plugins), and `[plugins.<id>] enabled = false` switches one off: its files go on to plain text if they
-  read as text, otherwise to `[can not preview]`. An unknown id in `[plugins.*]` is reported at startup. A plugin's own
-  settings live in its table and replace the matching `[ui]` keys, which are still read when the plugin table does not set
-  the value: `[plugins.csv] rainbow` (and `[plugins.spreadsheet] rainbow`), `[plugins.code] syntax_highlight`,
-  `[plugins.svg] max_px`, `[plugins.mermaid] mode` / `theme` / `curve` / `routing` / `rows`, `[plugins.math] mode` / `color`.
 - **`o` opens the file in another app** (the `open` verb; `e` edits). In the tree, in every preview and diff, and on a row of the
   changes list: an Office file goes to the Office apps (Microsoft's, then LibreOffice, then the OS default, the same chain `e`
   already used for Office files), anything else to the OS default (`open` / `xdg-open`). It runs on a worker, so the screen
@@ -54,7 +54,7 @@ All notable changes to konoma are documented in this file. The format is based o
   or edited). Action name: `list_filter_start`.
 - **`n` / `N` step through the changes when nothing is being searched**: in a code or text preview to the next / previous block of
   the git change gutter, in a rendered document to the next / previous changed block, in a diff to the next / previous change
-  block of the file (`diff_next_change`, `diff_prev_change`; moving between changed files stays on `Ctrl-n` / `Ctrl-p`). While a
+  block of the file (`diff_next_change`, `diff_prev_change`; moving between changed files is on `Ctrl-n` / `Ctrl-p` now). While a
   search is active they step through its matches as before. The footer offers `n/N:change` only when the file has a change.
 - **`r` reads again everywhere** (it was the tree's only): a preview, a diff, and the changes list, the log, the graph, the branch
   and worktree lists.
@@ -91,6 +91,15 @@ All notable changes to konoma are documented in this file. The format is based o
   footer's short labels. The old sort overlay is gone: `open_sort_menu` opens the `,` menu of the screen you are on, which closes
   after one choice (the overlay stayed open for reverse and folders-first). The bookmark list deletes
   with `Space` `d` (`Ctrl-d` is the half page), and the graph's branch panel toggles a branch with `x` (`Space` is the menu).
+- **`R` is the operation `cycle_representation`** (it was `toggle_markdown_raw`): it cycles whatever the preview can be shown as — a
+  Markdown document's rendering and its source, a presentation's pictures and its text, a diff's presentations. `toggle_markdown_raw`
+  is still read in `[keys]` and does the same; the startup message says to write the new name.
+- **The `Space` menu names a pair of operations by direction.** Where the footer has room for only `[ ]:tab`, the menu says
+  `previous tab` / `next tab` / `tab list`, `previous page` / `next page` (`sheet`, `slide`), `next changed file`, `zoom in` /
+  `zoom out`, `stage the file` / `stage all` and so on; no two items of a menu read the same any more. The footer's short labels are unchanged.
+- **The `?` help names only what works now.** The copy section lists `y c` (copy the code block) only while a code block is focused,
+  the titles of the log and graph screens no longer carry the `l` / `g` keys they do not have, and the descriptions of `/ n N`, `o`
+  and the `Tab` screen cycle were shortened so they are not cut off at the popup's width.
 - **Key tables are per context, not per screen.** `[keys.<context>]` is keyed by what you are looking at: `text` (source and
   plain text) and `document` (rendered Markdown, Word, slides, a mermaid diagram) are separate, and the version-control screens
   exist per backend (`"git.changes"` / `"jj.changes"`, quoted because of the dot). A key is looked up in the context's own table,

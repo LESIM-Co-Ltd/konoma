@@ -114,7 +114,7 @@ pub fn decl(a: Action) -> Decl {
         A::PreviewCopySelection => d(Some(M::CopyHint), None),
         A::PreviewCopySelectionRef => d(Some(M::WkAtRef), Some(M::AtRefHelp)),
         A::PreviewExitVisual => d(Some(M::FtCancel), None),
-        A::ToggleMarkdownRaw => d(Some(M::HintRawSource), Some(M::MdRawToggleHelp)),
+        A::CycleRepresentation => d(Some(M::HintRawSource), Some(M::MdRawToggleHelp)),
         A::ImageReturnToDiff => d(Some(M::HintReturnToDiff), Some(M::HintReturnToDiff)),
         A::LinkFocusNext | A::LinkFocusPrev => d(Some(M::HintFocus), Some(M::FocusMdLink)),
         A::LinkOpen => d(Some(M::HintOpen), Some(M::OpenLinkHint)),
@@ -308,7 +308,7 @@ pub fn text(app: &App, ctx: Context, a: Action) -> OpText {
             t.label = Some(M::HintPageList);
             t.help = Some(M::HintPageList);
         }
-        A::ToggleMarkdownRaw => {
+        A::CycleRepresentation => {
             let (label, help) = if app.is_deck() {
                 (app.deck_view_hint(), app.deck_view_help())
             } else if app.preview_is_diff_representation() {
@@ -392,4 +392,96 @@ pub fn text(app: &App, ctx: Context, a: Action) -> OpText {
         _ => {}
     }
     t
+}
+
+/// What `a` is called in a `Space` menu when the footer's short label would not tell it apart
+/// from its pair: the footer has room for `[ ]:tab` because the keys say which way, but a menu
+/// line shows one operation per row, so it names the direction (`previous tab` / `next tab`).
+/// `None` = the footer's label (or the declaration's) is used as it is. Only the operations whose
+/// footer label is shared with another operation of the same screen are listed here; a test pins
+/// that no two items of any menu read the same.
+pub fn menu_label(app: &App, ctx: Context, a: Action) -> Option<Msg> {
+    #[cfg(not(feature = "git"))]
+    let _ = ctx;
+    use Action as A;
+    use Msg as M;
+    Some(match a {
+        A::TabPrev => M::MenuPrevTab,
+        A::TabNext => M::MenuNextTab,
+        A::ToggleTabList => M::MenuTabList,
+        A::CloseTabOrQuit => {
+            if app.tab_count() > 1 {
+                M::HintCloseTab
+            } else {
+                M::MenuCloseLastTab
+            }
+        }
+        A::Quit => M::MenuQuitApp,
+        A::PageNext | A::PagePrev => {
+            let next = a == A::PageNext;
+            match app.tab.preview_kind {
+                Some(ref k) if k.is_spreadsheet() => {
+                    if next {
+                        M::MenuNextSheet
+                    } else {
+                        M::MenuPrevSheet
+                    }
+                }
+                Some(ref k) if k.is_office_document() => {
+                    if next {
+                        M::MenuNextSlide
+                    } else {
+                        M::MenuPrevSlide
+                    }
+                }
+                _ => {
+                    if next {
+                        M::MenuNextPage
+                    } else {
+                        M::MenuPrevPage
+                    }
+                }
+            }
+        }
+        A::PreviewFileNext => M::MenuNextFile,
+        A::PreviewFilePrev => M::MenuPrevFile,
+        // In a diff `Ctrl-n` / `Ctrl-p` move between the changed files; elsewhere `n` / `N`
+        // with nothing searched move between the changes.
+        #[cfg(feature = "git")]
+        A::JumpNextChange if ctx == Context::Diff => M::MenuNextChangedFile,
+        #[cfg(feature = "git")]
+        A::JumpPrevChange if ctx == Context::Diff => M::MenuPrevChangedFile,
+        A::JumpNextChange => M::MenuNextChange,
+        A::JumpPrevChange => M::MenuPrevChange,
+        #[cfg(feature = "git")]
+        A::DiffNextChange => M::MenuNextChange,
+        #[cfg(feature = "git")]
+        A::DiffPrevChange => M::MenuPrevChange,
+        A::OpenInNewTab => M::MenuOpenInNewTab,
+        #[cfg(feature = "git")]
+        A::WorktreeGotoNewTab => M::MenuOpenInNewTab,
+        A::ImageZoomIn => M::MenuZoomIn,
+        A::ImageZoomOut => M::MenuZoomOut,
+        A::PreviewEnterVisual => M::MenuSelectChars,
+        A::PreviewEnterVisualLine => M::MenuSelectLines,
+        A::LinkFocusNext => M::MenuFocusNext,
+        A::LinkFocusPrev => M::MenuFocusPrev,
+        #[cfg(feature = "git")]
+        A::GitScreenNext => M::MenuNextScreen,
+        #[cfg(feature = "git")]
+        A::GitScreenPrev => M::MenuPrevScreen,
+        #[cfg(feature = "git")]
+        A::GitGraphPickerMoveDown => M::MenuMoveDown,
+        #[cfg(feature = "git")]
+        A::GitGraphPickerMoveUp => M::MenuMoveUp,
+        #[cfg(feature = "git")]
+        A::GitStage => M::MenuStageFile,
+        #[cfg(feature = "git")]
+        A::GitStageAll => M::MenuStageAll,
+        #[cfg(feature = "git")]
+        A::GitUnstage => M::MenuUnstageFile,
+        #[cfg(feature = "git")]
+        A::GitUnstageAll => M::MenuUnstageAll,
+        _ => return None,
+    })
 }

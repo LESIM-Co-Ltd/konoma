@@ -7179,6 +7179,54 @@ fn e2e_markdown_edit_lands_on_tab_focused_item() {
     );
 }
 
+/// The help's copy menu lists `y c` (copy the code block) only while it acts: a hint is shown only
+/// when its key does what the label says. Not for a document with no code block, not for a plain
+/// text file, and (as with the footer and the menu) not before a code block is focused.
+#[test]
+fn e2e_help_lists_copy_code_only_while_a_code_block_is_focused() {
+    // The row of the Copy path section (not the Tab row, which always names `y c` in its text).
+    fn help(s: &Sim) -> String {
+        crate::ui::help::help_lines(&s.app)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|x| x.content.as_ref())
+                    .collect::<String>()
+            })
+            .filter(|l| l.trim_start().starts_with("y c "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let dir = sandbox("help_copy_code");
+    seed_files(&dir);
+    std::fs::write(dir.join("code.md"), "# t\n\n```rust\nfn main() {}\n```\n").unwrap();
+    std::fs::write(dir.join("plain.md"), "# t\n\njust words\n").unwrap();
+    std::fs::write(dir.join("a.txt"), "just text\n").unwrap();
+    let mut s = Sim::new(&canon(&dir));
+
+    // A document with a code block, before the block is focused: the key does not act yet.
+    s.select("code.md");
+    s.enter();
+    s.see("rust");
+    assert!(help(&s).is_empty(), "{}", help(&s));
+    // Focused: the key acts, so the help lists it (and the menu it opens agrees).
+    s.tab();
+    assert!(s.app.md_focused_code());
+    assert!(help(&s).contains("code block"), "{}", help(&s));
+    s.key('q');
+
+    // A document with no code block, and a plain text file: never.
+    s.select("plain.md");
+    s.enter();
+    s.tab();
+    assert!(help(&s).is_empty(), "{}", help(&s));
+    s.key('q');
+    s.select("a.txt");
+    s.enter();
+    assert!(help(&s).is_empty(), "{}", help(&s));
+}
+
 #[test]
 fn e2e_md_code_block_tab_focus_and_copy() {
     // Tab cycles link → code block → task in document order, and while a code block is focused,
@@ -16950,7 +16998,7 @@ fn e2e_media_diff_page_missing_placeholder_draws() {
 
 /// `R` on `Surface::PreviewImage` is a no-op while this preview is **not** the diff's own
 /// `Preview` representation (`App::image_return_to_diff`) — a real bug had it bound to
-/// `Action::ToggleMarkdownRaw`, whose non-diff fallthrough (`toggle_md_raw`) silently flips
+/// `Action::CycleRepresentation`, whose non-diff fallthrough (`toggle_md_raw`) silently flips
 /// `md_raw` for a standalone `.mmd` file's full-screen image preview (`[ui] mermaid = "image"`),
 /// even though no hint on that surface ever advertised `R` doing anything there
 /// ([[hint-shown-iff-key-acts]]). Checked for both a `.mmd` preview (the kind that actually
@@ -17945,6 +17993,43 @@ fn cfg_keys(surface: &str, entries: &[(&str, &str)]) -> Config {
         .collect();
     cfg.keys.surfaces.insert(surface.to_string(), table);
     cfg
+}
+
+/// `R` is `cycle_representation`; the old name `toggle_markdown_raw` is still read, behaves the
+/// same, and the startup notice says to write the new name. A rebound key works under both.
+#[test]
+fn e2e_keys_old_and_new_name_of_the_representation_key() {
+    for (name, notice) in [
+        ("toggle_markdown_raw", true),
+        ("cycle_representation", false),
+    ] {
+        let dir = sandbox("repr_alias");
+        seed_files(&dir);
+        std::fs::write(dir.join("guide.md"), "# Heading\n\nsome **bold** text\n").unwrap();
+        // `R` is dropped and `W` takes the operation: only the name decides what `W` does.
+        // The raw source is a `text` view, so both tables carry it.
+        let mut cfg = cfg_keys("document", &[("W", name), ("R", "noop")]);
+        let text = cfg.keys.surfaces["document"].clone();
+        cfg.keys.surfaces.insert("text".to_string(), text);
+        let mut s = Sim::with_config(&canon(&dir), cfg);
+        let report = s.app.keymap_report().unwrap_or_default();
+        assert_eq!(
+            report.contains(
+                "toggle_markdown_raw is an old name — write cycle_representation instead"
+            ),
+            notice,
+            "{name}: {report}"
+        );
+        s.select("guide.md");
+        s.enter();
+        assert!(!s.app.is_raw_source());
+        s.key('R'); // unbound by the config
+        assert!(!s.app.is_raw_source(), "{name}");
+        s.key('W');
+        assert!(s.app.is_raw_source(), "{name}: W cycles to the raw source");
+        s.key('W');
+        assert!(!s.app.is_raw_source(), "{name}: and back");
+    }
 }
 
 /// `[keys]` written with the pre-`page_next` names (`sheet_next` / `sheet_prev`) still rebinds the

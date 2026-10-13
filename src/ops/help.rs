@@ -330,7 +330,7 @@ fn text_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
     v.push(r(SELECT));
     v.push(r(&[Action::PreviewCopySelectionRef]));
     v.push(r(PAGE_TURN));
-    v.push(r(&[Action::ToggleMarkdownRaw]));
+    v.push(r(&[Action::CycleRepresentation]));
     v.push(r(&[Action::ToggleOutline]));
     // The keys of the focused Markdown item are the reference for "press Tab, then ...": listed
     // for every decorated document, whether or not an item is focused right now.

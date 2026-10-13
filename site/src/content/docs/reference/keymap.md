@@ -118,6 +118,7 @@ when it has no key of its own.
 | `+` `-` / `=` | zoom / reset to fit |
 | `h j k l` | pan |
 | `J` `K` (also `PageDown` `PageUp`) | PDF page down / up (actions `page_next` / `page_prev`; the old `pdf_next_page` / `pdf_prev_page` still work) |
+| `O` | PDF with 2+ pages: the list of its pages (`Enter` goes to the chosen page; a one-page file does nothing) |
 | `R` | back to the diff — only while this preview *is* a diff's `preview` representation (opened from there, or via `Ctrl-n`/`Ctrl-p`); a no-op, and hidden, on an ordinary image/PDF/SVG preview |
 | `,` | `p` path style |
 | `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
@@ -131,6 +132,7 @@ when it has no key of its own.
 | `Ctrl-n` / `Ctrl-p` | preview the next / previous file (tree order, wraps) |
 | `g` `G` / `0` `$` | first/last row / first/last column |
 | `J` `K` | spreadsheets only: next / previous sheet (needs 2+ visible sheets; actions `page_next` / `page_prev`; the old `sheet_next` / `sheet_prev` still work) |
+| `O` | spreadsheets with 2+ visible sheets: the list of the sheets (`Enter` goes to the chosen one) |
 | `/` / `n` `N` | search cells (case-insensitive) / next, previous match (wraps) |
 | `y` → `c r C f` | copy cell / row / column / full path |
 | `Enter` | Open the cursor cell in a popup — the full, untruncated value, wrapped and scrollable (`Enter` / `q` / `Esc` closes). Also works on `.zip` / `.tar` listings and spreadsheets (address, displayed text, raw value, type, formula, format). |

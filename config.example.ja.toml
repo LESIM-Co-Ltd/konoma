@@ -588,16 +588,17 @@ code_theme = "TwoDark"
 #                    j/k + Enter で選んで開く(または当該キーを config で退避)。
 #   プレビュー   : "preview_back"(q) "search_start"(/) "search_next" / "search_prev"(n / N: 次/前の一致 —
 #                    検索していないときは次/前の変更箇所)
+#                  "preview_copy_selection"(v / V で選択中の y: 選択したテキストをコピー)
 #                  "preview_copy_selection_ref"(Y: 選択/キャレットの @path#L 参照コピー)
 #                  "link_open"(Enter: リンクを同タブで開く。フォーカス中のチェックボックス/<details> は切り替える)
-#                  "toggle_focused_item"(同じ切り替えを独立した操作にしたもの: キー無し、Space メニューの t)
+#                  "toggle_focused_item"(同じ切り替えを独立した操作にしたもの: キー無し、Space メニューにある)
 #                  "link_focus_next" "link_focus_prev"(Tab / Shift-Tab)
 #                  "open_link_new_tab"(Ctrl-t: ローカルリンクを別タブで開く。
 #                    同一文書内の #アンカーはその場で移動・URL/mailto/tel はブラウザ等で外部に開く)
 #                  "preview_next_file" "preview_prev_file"(Ctrl-n/Ctrl-p: ツリー表示順で次/前の
 #                    ファイルをプレビュー=ファイル送り。ディレクトリはスキップ・端で wrap)
 #                  "toggle_outline"(O: Markdown プレビューの見出しアウトライン、または 2 ページ以上の PDF・ブック・プレゼンのページ一覧を開く。Enter でジャンプ)
-#                  "toggle_markdown_raw"(R: 表現の巡回 — 装飾表示 ⇄ 生のソース。プレゼンではスライドの絵 ⇄ 文字の表示)
+#                  "cycle_representation"(R: 表現の巡回 — 装飾表示 ⇄ 生のソース。プレゼンではスライドの絵 ⇄ 文字の表示。diff ではその表現の巡回。旧名 "toggle_markdown_raw" も読める)
 #                  "image_zoom_in"(+) "image_zoom_out"(-) "image_zoom_reset"(=)
 #                  "page_next" "page_prev"(J/K と、画像面・画像/PDF/SVG の diff 面の PageDown/PageUp(diff ではスクロールの代わりにページを送る): PDF の次/前のページ・表計算の次/前のシート・プレゼンの次/前のスライド・
 #                    画像/PDF/SVG の diff では複数ページの PDF の両側同時のページ送り。送るものが無い所では何もしない。
