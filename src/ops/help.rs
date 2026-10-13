@@ -708,7 +708,7 @@ pub fn sections_for(app: &App, ctx: Context) -> Vec<HelpSection> {
             continue;
         }
         seen.push(id);
-        if let Some(sec) = crate::ui::help::leader_section(app, id, &help_key(k)) {
+        if let Some(sec) = crate::ui::help::leader_section(app, ctx, id, &help_key(k)) {
             out.push(sec);
         }
     }

@@ -94,6 +94,9 @@ pub enum Action {
     TreeActivate,
     TreeLeave,
     ToggleHidden,
+    /// Toggle line wrapping of the text and document preview for this session (`[ui] wrap` says
+    /// the start-up value). Lives in the `,` menu.
+    ToggleWrap,
     ToggleInfo,
     RequestEdit,
     OpenGitView,
@@ -680,6 +683,12 @@ pub enum LeaderId {
     /// `y` copy of the branch list (the selected branch's name).
     #[cfg(feature = "git")]
     BranchCopy,
+    /// `,` sorting and display options. Its content depends on where you are (the tree sorts, a
+    /// preview wraps, a diff follows), so each context has its own menu.
+    Options,
+    /// `Space` outside the tree: every operation that acts in the context. Built from the
+    /// operation declarations and `ops::gate` when it opens (`ops::menu`), not stored.
+    Actions,
 }
 
 /// One leader-menu item (suffix key + command + i18n label).
@@ -807,7 +816,16 @@ pub struct KeyMap {
     pub basic: ContextMap,
     /// Layer 0: tabs/help etc. Every context inherits these as a fallback.
     pub global: ContextMap,
+    /// The menus every context that opens them shares: `y`'s copy menus and the tree's `Space`
+    /// file menu.
     pub leaders: HashMap<LeaderId, LeaderMenu>,
+    /// A context's own version of a menu: the `,` menus (which differ per context) and the
+    /// copies made when `[keys.<context>]` writes `y x` or `space x` for one context only. It
+    /// wins over `leaders`; see [`KeyMap::menu`].
+    pub ctx_menus: HashMap<(Context, LeaderId), LeaderMenu>,
+    /// The operations each context has by default, whatever the config did to their keys: the
+    /// `Space` menu lists them even when a key was moved away or lost to a conflict.
+    pub default_ops: HashMap<Context, Vec<Action>>,
     pub conflicts: Vec<KeyConflict>,
     /// Warnings for ignored config such as unknown context names/actions or fixed-key rebinds (for the startup flash).
     pub warnings: Vec<String>,
@@ -1213,6 +1231,9 @@ impl KeyMap {
         let mut basic: ContextMap = HashMap::new();
         basic.insert(KeyPress::ch('j'), nav(Motion::Down));
         basic.insert(KeyPress::ch('k'), nav(Motion::Up));
+        // `Space` = the menu of this context's operations (the tree and its range selection own
+        // the file menu instead). It opens only when the context has an operation that acts.
+        basic.insert(KeyPress::ch(' '), Binding::Leader(LeaderId::Actions));
 
         // =====================================================================
         // Layer 2: per view type.
@@ -1285,8 +1306,9 @@ impl KeyMap {
         tree.insert(KeyPress::ch('/'), run(Action::FilterStart));
         tree.insert(KeyPress::ch('.'), run(Action::ToggleHidden));
         tree.insert(KeyPress::ch('r'), run(Action::Refresh));
-        // `s` (sort menu) and `p` (path style) have no default key now: both move into the `,`
-        // menu (B3b). The actions stay (`open_sort_menu`, `cycle_path_style`) for `[keys]`.
+        // `s` (sort menu) and `p` (path style) have no default key: both live in the `,` menu.
+        // The actions stay (`open_sort_menu`, `cycle_path_style`) for `[keys]`.
+        tree.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         tree.insert(KeyPress::ch('i'), run(Action::ToggleInfo));
         tree.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         tree.insert(KeyPress::ch('m'), run(Action::MarkSet));
@@ -1334,7 +1356,8 @@ impl KeyMap {
         ptext.insert(KeyPress::ch('/'), run(Action::SearchStart));
         ptext.insert(KeyPress::ch('n'), run(Action::SearchNext));
         ptext.insert(KeyPress::ch('N'), run(Action::SearchPrev));
-        ptext.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
+        // `p` is the project's screen on every context (B3c); the path style is in the `,` menu.
+        ptext.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         ptext.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         ptext.insert(KeyPress::ch('v'), run(Action::PreviewEnterVisual));
         ptext.insert(KeyPress::ch('V'), run(Action::PreviewEnterVisualLine));
@@ -1390,7 +1413,7 @@ impl KeyMap {
         // whose non-diff fallthrough (`toggle_md_raw`) is a real, if unadvertised, bug on this
         // context for a standalone `.mmd` image preview, `docs/FEATURE-MEDIA-DIFF.md` §6).
         pimg.insert(KeyPress::ch('R'), run(Action::ImageReturnToDiff));
-        pimg.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
+        pimg.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         pimg.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         // Ctrl-n/Ctrl-p = file paging (J/K are already assigned to PDF page paging, hence Ctrl here).
         pimg.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
@@ -1409,7 +1432,7 @@ impl KeyMap {
         // handler no-ops unless the workbook has 2+ visible sheets, so CSV/archive tables ignore them).
         ptbl.insert(KeyPress::ch('J'), run(Action::PageNext));
         ptbl.insert(KeyPress::ch('K'), run(Action::PagePrev));
-        ptbl.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
+        ptbl.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         ptbl.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         // Ctrl-n/Ctrl-p = file paging (same keys as text/image).
         ptbl.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
@@ -1430,8 +1453,9 @@ impl KeyMap {
             let mut pgit: ContextMap = HashMap::new();
             pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
             pgit.insert(KeyPress::ch('x'), run(Action::GitDiffDiscard));
-            // The follow scope (`toggle_follow_diff_scope`) has no default key now: it moves
-            // into the `,` menu (B3b), and its old `f` was layer 1's less-style page key.
+            // The follow scope (`toggle_follow_diff_scope`) has no default key: it lives in the
+            // `,` menu (its old `f` was the less-style page key).
+            pgit.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
             // Ctrl-n / Ctrl-p = switch to the next/previous changed file's diff (cycle through
             // changes without leaving the view; layer 1's "next/previous file"). `n` / `N` are
             // left free for "next/previous change" within the file (B3c).
@@ -1489,11 +1513,12 @@ impl KeyMap {
                 contexts.insert(Context::Screen(backend, Screen::Graph), ggraph);
                 contexts.insert(Context::Screen(backend, Screen::Log), glog);
 
-                // The graph's branch visibility panel: j/k/g/G navigate + Space:toggle / a:all /
+                // The graph's branch visibility panel: j/k/g/G navigate + x:toggle / a:all /
                 // c:current-only (it was `n`, which is layer 1's next match). Enter and `l`:apply,
-                // `q` and `h`: cancel (Esc is a fixed key).
+                // `q` and `h`: cancel (Esc is a fixed key). The toggle was `Space`, which is the
+                // operation menu everywhere now.
                 let mut gpick: ContextMap = HashMap::new();
-                gpick.insert(KeyPress::ch(' '), run(Action::GitGraphPickerToggle));
+                gpick.insert(KeyPress::ch('x'), run(Action::GitGraphPickerToggle));
                 gpick.insert(KeyPress::ch('a'), run(Action::GitGraphPickerAll));
                 gpick.insert(KeyPress::ch('c'), run(Action::GitGraphPickerCurrentOnly));
                 gpick.insert(KeyPress::ch('l'), run(Action::GitGraphPickerApply));
@@ -1556,11 +1581,11 @@ impl KeyMap {
         contexts.insert(Context::Sort, sort);
 
         // --- Bookmark list. Enter→BookmarkJump is a fixed key. Plain letters are reserved for
-        // bookmark-name jumps (main's Unbound fallback), so edit/delete are placed on Ctrl-modified
-        // keys instead. ---
+        // bookmark-name jumps (main's Unbound fallback), so editing is on a Ctrl-modified key and
+        // deleting is only in the `Space` menu. ---
         let mut bm: ContextMap = HashMap::new();
         bm.insert(KeyPress::ctrl_ch('e'), run(Action::BookmarkEdit));
-        bm.insert(KeyPress::ctrl_ch('d'), run(Action::BookmarkDelete));
+        // Deleting a bookmark is in the list's `Space` menu (`d`): `Ctrl-d` is layer 1's half page.
         bm.insert(KeyPress::ch('q'), run(Action::BookmarkClose));
         bm.insert(KeyPress::ch('\''), run(Action::BookmarkClose));
         contexts.insert(Context::Bookmarks, bm);
@@ -1643,16 +1668,29 @@ impl KeyMap {
         #[cfg(feature = "git")]
         leaders.insert(LeaderId::BranchCopy, branch_copy_leader_default());
 
-        KeyMap {
+        // The `,` menus: one per context that has one.
+        let mut ctx_menus: HashMap<(Context, LeaderId), LeaderMenu> = HashMap::new();
+        for (c, menu) in options_menus_default() {
+            ctx_menus.insert((c, LeaderId::Options), menu);
+        }
+
+        let mut km = KeyMap {
             contexts,
             types,
             basic,
             global,
             leaders,
+            ctx_menus,
+            default_ops: HashMap::new(),
             conflicts: Vec::new(),
             warnings: Vec::new(),
             renames: Vec::new(),
-        }
+        };
+        km.default_ops = Context::all()
+            .into_iter()
+            .map(|c| (c, km.bound_actions(c).into_iter().map(|(_, a)| a).collect()))
+            .collect();
+        km
     }
 
     /// defaults → merge config → validate conflicts (§6/§7). Always falls back and returns green (never panics).
@@ -1690,7 +1728,10 @@ impl KeyMap {
                 warnings.push(format!("unknown key surface: {name}"));
             }
         }
-        // Old names first, so a table written under the new name overrides them.
+        // Old names first, so a table written under the new name overrides them. `global` goes
+        // before the contexts: a menu entry in `global` reaches every copy of the menu, and a
+        // context's own entry for the same key must come after it to win.
+        new_tables.sort_by_key(|(targets, _)| !targets.contains(&KeyTarget::Global));
         for (targets, table) in old_tables.into_iter().chain(new_tables) {
             let mut entries: Vec<(&String, &String)> = table.iter().collect();
             entries.sort();
@@ -1699,6 +1740,12 @@ impl KeyMap {
             }
         }
 
+        if cfg.surfaces.get("sort").is_some_and(|t| !t.is_empty()) {
+            renames.push((
+                "[keys.sort]".to_string(),
+                "the `,` menu (e.g. [keys.tree] \", n\" = \"sort_name\")".to_string(),
+            ));
+        }
         map.validate(&defaults);
         map.warnings = warnings;
         map.renames = renames;
@@ -1748,26 +1795,98 @@ impl KeyMap {
                 }
                 for &target in targets {
                     self.set_key(target, kp, action);
+                    // The old `[keys.sort]` table re-letters the sort menu; that menu is now the
+                    // tree's `,` menu, so its sort entries (and removals) carry over to it.
+                    if target == KeyTarget::Context(Context::Sort)
+                        && action.is_none_or(|a| {
+                            matches!(
+                                a,
+                                Action::SortSet(_)
+                                    | Action::SortToggleReverse
+                                    | Action::SortToggleDirsFirst
+                            )
+                        })
+                    {
+                        let _ = self.set_menu_entry(
+                            KeyTarget::Context(Context::Tree),
+                            KeyPress::ch(','),
+                            kp,
+                            action,
+                        );
+                    }
                 }
             }
             KeyChord::Chord(pre, suf) => {
-                let lead = match leader_for_prefix(pre) {
-                    Some(l) => l,
-                    None => {
-                        warnings.push(format!(
-                            "unsupported chord prefix (only `space`/`y` leaders are supported): {chord_str:?}"
-                        ));
-                        return;
-                    }
-                };
-                let menu = match self.leaders.get_mut(&lead) {
-                    Some(m) => m,
-                    None => return,
-                };
-                match action {
-                    Some(a) => menu.set(suf, a),
-                    None => menu.remove(suf),
+                if prefix_menu(pre).is_none() {
+                    warnings.push(format!(
+                        "unsupported chord prefix (only `space`, `y` and `,` open menus): {chord_str:?}"
+                    ));
+                    return;
                 }
+                // One entry may cover several contexts (an old table name does): it is refused
+                // only when it reached none of them, and then it says so once.
+                let mut reached = false;
+                let mut why = String::new();
+                for &target in targets {
+                    match self.set_menu_entry(target, pre, suf, action) {
+                        Ok(()) => reached = true,
+                        Err(w) => why = w,
+                    }
+                }
+                if !reached {
+                    warnings.push(format!("{why}: {chord_str:?}"));
+                }
+            }
+        }
+    }
+
+    /// Put `suf` (or remove it, `None`) in the menu that `pre` opens, for `target`. `global`
+    /// changes the shared menu and every context's own copy of it (what `[keys.global] "y x"`
+    /// always did); a context changes only its own copy of the menu `pre` opens *there* — the
+    /// `y` of the tree and the `y` of a table are different menus.
+    fn set_menu_entry(
+        &mut self,
+        target: KeyTarget,
+        pre: KeyPress,
+        suf: KeyPress,
+        action: Option<Action>,
+    ) -> std::result::Result<(), String> {
+        let edit = |m: &mut LeaderMenu| match action {
+            Some(a) => m.set(suf, a),
+            None => m.remove(suf),
+        };
+        match target {
+            KeyTarget::Global => {
+                let id = prefix_menu(pre).ok_or_else(|| "no such menu".to_string())?;
+                if let Some(m) = self.leaders.get_mut(&id) {
+                    edit(m);
+                }
+                for ((_, mid), m) in self.ctx_menus.iter_mut() {
+                    if *mid == id {
+                        edit(m);
+                    }
+                }
+                Ok(())
+            }
+            KeyTarget::Context(c) => {
+                let id = match self.local(c, pre) {
+                    Some(Binding::Leader(id)) => *id,
+                    _ => return Err(format!("`{}` opens no menu in {}", pre.label(), c.header())),
+                };
+                if id == LeaderId::Actions {
+                    return Err(format!(
+                        "the Space menu of {} lists its operations itself (bind the operation to a key there instead)",
+                        c.header()
+                    ));
+                }
+                let base = self
+                    .ctx_menus
+                    .get(&(c, id))
+                    .or_else(|| self.leaders.get(&id))
+                    .cloned()
+                    .ok_or_else(|| format!("{} has no menu to change", c.header()))?;
+                edit(self.ctx_menus.entry((c, id)).or_insert(base));
+                Ok(())
             }
         }
     }
@@ -1943,9 +2062,19 @@ impl KeyMap {
         self.conflicts = conflicts;
     }
 
-    /// The command a key runs inside an open leader menu.
-    pub fn resolve_leader(&self, id: LeaderId, kp: KeyPress) -> Resolution {
-        match self.leaders.get(&id).and_then(|m| m.find(kp)) {
+    /// The menu `id` is in `ctx`: the context's own copy when it has one, else the shared one.
+    /// `None` for a menu that is built when it opens (`LeaderId::Actions`, see `ops::menu`) and
+    /// for a context that has no such menu.
+    pub fn menu(&self, ctx: Context, id: LeaderId) -> Option<&LeaderMenu> {
+        self.ctx_menus
+            .get(&(ctx, id))
+            .or_else(|| self.leaders.get(&id))
+    }
+
+    /// The command a key runs inside the open menu `id` of `ctx`. (The `Space` menu outside the
+    /// tree is built from the app's state: `ops::menu::find` answers for it.)
+    pub fn resolve_leader(&self, ctx: Context, id: LeaderId, kp: KeyPress) -> Resolution {
+        match self.menu(ctx, id).and_then(|m| m.find(kp)) {
             Some(a) => Resolution::Action(a),
             None => Resolution::Unbound,
         }
@@ -1958,7 +2087,7 @@ impl KeyMap {
     /// layer, then `global`.
     pub fn resolve(&self, ctx: Context, pending: Option<LeaderId>, kp: KeyPress) -> Resolution {
         if let Some(id) = pending {
-            return self.resolve_leader(id, kp);
+            return self.resolve_leader(ctx, id, kp);
         }
         if let Some(b) = self.local(ctx, kp) {
             return binding_to_resolution(b);
@@ -1987,6 +2116,23 @@ impl KeyMap {
             }
         });
         out.sort_by_key(|k| display_order(*k));
+        out
+    }
+
+    /// Every `(key, operation)` pair that resolves in `ctx` right now (config applied), in the
+    /// order of `display_order`. Menus, `Unbound` marks and shadowed keys are left out.
+    pub fn bound_actions(&self, ctx: Context) -> Vec<(KeyPress, Action)> {
+        let mut out: Vec<(KeyPress, Action)> = Vec::new();
+        self.each_key_of(ctx, |k, b| {
+            if let Binding::Run(a) = b {
+                if self.resolve(ctx, None, k) == Resolution::Action(*a)
+                    && !out.iter().any(|(o, _)| *o == k)
+                {
+                    out.push((k, *a));
+                }
+            }
+        });
+        out.sort_by_key(|(k, _)| display_order(*k));
         out
     }
 
@@ -2092,12 +2238,16 @@ enum KeyTarget {
     Context(Context),
 }
 
-/// Leader prefix key → LeaderId (only Space/y are accepted).
-fn leader_for_prefix(kp: KeyPress) -> Option<LeaderId> {
+/// The key that opens a menu, as `[keys.global]` writes it in a chord → the menu it changes
+/// there: `space x` is the file menu, `y x` the copy menu, `, x` the `,` menu. In one context's
+/// table the menu is whatever the key opens *in that context* (`KeyMap::set_menu_entry`).
+fn prefix_menu(kp: KeyPress) -> Option<LeaderId> {
     if kp == KeyPress::ch(' ') {
         Some(LeaderId::File)
     } else if kp == KeyPress::ch('y') {
         Some(LeaderId::Copy)
+    } else if kp == KeyPress::ch(',') {
+        Some(LeaderId::Options)
     } else {
         None
     }
@@ -2112,6 +2262,8 @@ fn leader_name(id: LeaderId) -> &'static str {
         LeaderId::GitCopy => "git_copy",
         #[cfg(feature = "git")]
         LeaderId::BranchCopy => "branch_copy",
+        LeaderId::Options => "options",
+        LeaderId::Actions => "actions",
     }
 }
 
@@ -2303,6 +2455,54 @@ fn branch_copy_leader_default() -> LeaderMenu {
     }
 }
 
+/// The `,` menus: what each context lets you sort and show. The letters of the tree's menu are
+/// the old sort menu's (`n s m e` the key, `r` the direction, `.` the folders first).
+fn options_menus_default() -> Vec<(Context, LeaderMenu)> {
+    let item = |c: char, action: Action| LeaderItem {
+        key: KeyPress::ch(c),
+        action,
+        label: leader_label(action),
+    };
+    let menu = |ctx: Context, items: Vec<LeaderItem>| {
+        (
+            ctx,
+            LeaderMenu {
+                id: LeaderId::Options,
+                title: Msg::WkOptionsTitle,
+                items,
+            },
+        )
+    };
+    let path = || item('p', Action::CyclePathStyle);
+    let wrap = || item('w', Action::ToggleWrap);
+    #[cfg_attr(not(feature = "git"), allow(unused_mut))]
+    let mut v = vec![
+        menu(
+            Context::Tree,
+            vec![
+                item('n', Action::SortSet(SortKey::Name)),
+                item('s', Action::SortSet(SortKey::Size)),
+                item('m', Action::SortSet(SortKey::Modified)),
+                item('e', Action::SortSet(SortKey::Ext)),
+                item('r', Action::SortToggleReverse),
+                item('.', Action::SortToggleDirsFirst),
+                path(),
+                item('h', Action::ToggleHidden),
+            ],
+        ),
+        menu(Context::Text, vec![path(), wrap()]),
+        menu(Context::Document, vec![path(), wrap()]),
+        menu(Context::Image, vec![path()]),
+        menu(Context::Table, vec![path()]),
+    ];
+    #[cfg(feature = "git")]
+    v.push(menu(
+        Context::Diff,
+        vec![item('f', Action::ToggleFollowDiffScope), path()],
+    ));
+    v
+}
+
 fn file_leader_default() -> LeaderMenu {
     LeaderMenu {
         id: LeaderId::File,
@@ -2380,6 +2580,17 @@ fn leader_label(a: Action) -> Msg {
         Action::GitCopy(GitCopyKind::Date) => Msg::WkDate,
         #[cfg(feature = "git")]
         Action::CopyBranchName => Msg::WkBranchName,
+        Action::SortSet(SortKey::Name) => Msg::FtSortName,
+        Action::SortSet(SortKey::Size) => Msg::FtSortSize,
+        Action::SortSet(SortKey::Modified) => Msg::FtSortMod,
+        Action::SortSet(SortKey::Ext) => Msg::FtSortExt,
+        Action::SortToggleReverse => Msg::FtSortReverse,
+        Action::SortToggleDirsFirst => Msg::FtSortDirs,
+        Action::CyclePathStyle => Msg::HintPath,
+        Action::ToggleHidden => Msg::HintHidden,
+        Action::ToggleWrap => Msg::HintWrap,
+        #[cfg(feature = "git")]
+        Action::ToggleFollowDiffScope => Msg::HintFollowScope,
         _ => Msg::Empty,
     }
 }
@@ -2452,6 +2663,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "tree_activate" => Action::TreeActivate,
         "tree_leave" => Action::TreeLeave,
         "toggle_hidden" => Action::ToggleHidden,
+        "toggle_wrap" => Action::ToggleWrap,
         "toggle_info" => Action::ToggleInfo,
         "request_edit" => Action::RequestEdit,
         "open_git_view" => Action::OpenGitView,
@@ -2662,6 +2874,7 @@ pub fn action_name(a: Action) -> String {
         Action::TreeActivate => "tree_activate",
         Action::TreeLeave => "tree_leave",
         Action::ToggleHidden => "toggle_hidden",
+        Action::ToggleWrap => "toggle_wrap",
         Action::ToggleInfo => "toggle_info",
         Action::RequestEdit => "request_edit",
         Action::OpenGitView => "open_git_view",
@@ -3541,7 +3754,8 @@ mod tests {
         );
         assert_eq!(
             m.resolve(Context::Bookmarks, None, KeyPress::ctrl_ch('d')),
-            Resolution::Action(Action::BookmarkDelete)
+            Resolution::Unbound,
+            "Ctrl-d is layer 1's half page; deleting is in the list's Space menu"
         );
         assert_eq!(
             m.resolve(Context::Bookmarks, None, KeyPress::ch('\'')),
@@ -3635,7 +3849,7 @@ mod tests {
         for ctx in [Context::Text, Context::Document, Context::Table] {
             assert_eq!(
                 m.resolve(ctx, None, KeyPress::ch(' ')),
-                Resolution::Unbound,
+                Resolution::EnterLeader(LeaderId::Actions),
                 "{ctx:?}"
             );
         }

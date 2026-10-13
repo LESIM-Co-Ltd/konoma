@@ -3,7 +3,8 @@
 //! `KONOMA_PRINT_SNAPSHOTS=1 cargo test print_the_default_snapshots -- --nocapture`.
 
 /// The default keys of the vim scheme.
-pub const VIM: &str = r"bookmarks | ' | bookmark_close
+pub const VIM: &str = r"bookmarks | Space | leader:actions
+bookmarks | ' | bookmark_close
 bookmarks | 1 | tab_goto
 bookmarks | 2 | tab_goto
 bookmarks | 3 | tab_goto
@@ -24,9 +25,10 @@ bookmarks | j | navigate:down
 bookmarks | k | navigate:up
 bookmarks | q | bookmark_close
 bookmarks | t | tab_new_after
-bookmarks | Ctrl-d | bookmark_delete
 bookmarks | Ctrl-e | bookmark_edit
+diff | Space | leader:actions
 diff | $ | navigate:line_end
+diff | , | leader:options
 diff | 0 | navigate:line_home
 diff | 1 | tab_goto
 diff | 2 | tab_goto
@@ -66,9 +68,11 @@ diff | Ctrl-p | jump_prev_change
 diff | Ctrl-u | navigate:half_up
 diff | PageDown | navigate:page_down
 diff | PageUp | navigate:page_up
+document | Space | leader:actions
 document | $ | navigate:line_end
 document | ' | mark_jump
 document | + | image_zoom_in
+document | , | leader:options
 document | - | image_zoom_out
 document | / | search_start
 document | 0 | navigate:line_home
@@ -105,7 +109,6 @@ document | k | navigate:up
 document | l | navigate:right
 document | m | mark_set
 document | n | search_next
-document | p | cycle_path_style
 document | q | preview_back
 document | t | tab_new_after
 document | v | preview_enter_visual
@@ -119,6 +122,7 @@ document | Ctrl-t | open_link_new_tab
 document | Ctrl-u | navigate:half_up
 document | PageDown | navigate:page_down
 document | PageUp | navigate:page_up
+git.branches | Space | leader:actions
 git.branches | / | branch_filter_start
 git.branches | 1 | tab_goto
 git.branches | 2 | tab_goto
@@ -147,6 +151,7 @@ git.branches | l | branch_checkout
 git.branches | q | git_close
 git.branches | t | tab_new_after
 git.branches | y | leader:branch_copy
+git.changes | Space | leader:actions
 git.changes | ! | git_launch_tool
 git.changes | 1 | tab_goto
 git.changes | 2 | tab_goto
@@ -182,6 +187,7 @@ git.changes | u | git_unstage
 git.changes | w | git_open_worktrees
 git.changes | x | git_discard
 git.changes | y | leader:copy
+git.detail | Space | leader:actions
 git.detail | $ | navigate:line_end
 git.detail | 0 | navigate:line_home
 git.detail | 1 | tab_goto
@@ -216,6 +222,7 @@ git.detail | Ctrl-f | navigate:page_down
 git.detail | Ctrl-u | navigate:half_up
 git.detail | PageDown | navigate:page_down
 git.detail | PageUp | navigate:page_up
+git.graph | Space | leader:actions
 git.graph | 1 | tab_goto
 git.graph | 2 | tab_goto
 git.graph | 3 | tab_goto
@@ -245,7 +252,7 @@ git.graph | s | git_graph_set_base
 git.graph | t | tab_new_after
 git.graph | x | git_graph_clear_base
 git.graph | y | leader:git_copy
-git.graph_picker | Space | git_graph_picker_toggle
+git.graph_picker | Space | leader:actions
 git.graph_picker | 1 | tab_goto
 git.graph_picker | 2 | tab_goto
 git.graph_picker | 3 | tab_goto
@@ -274,6 +281,8 @@ git.graph_picker | k | navigate:up
 git.graph_picker | l | git_graph_picker_apply
 git.graph_picker | q | git_close
 git.graph_picker | t | tab_new_after
+git.graph_picker | x | git_graph_picker_toggle
+git.log | Space | leader:actions
 git.log | 1 | tab_goto
 git.log | 2 | tab_goto
 git.log | 3 | tab_goto
@@ -299,6 +308,7 @@ git.log | l | git_open_detail
 git.log | q | git_close
 git.log | t | tab_new_after
 git.log | y | leader:git_copy
+git.worktrees | Space | leader:actions
 git.worktrees | / | worktree_filter_start
 git.worktrees | 1 | tab_goto
 git.worktrees | 2 | tab_goto
@@ -344,6 +354,7 @@ global | T | toggle_tab_list
 global | [ | tab_prev
 global | ] | tab_next
 global | t | tab_new_after
+help | Space | leader:actions
 help | 1 | tab_goto
 help | 2 | tab_goto
 help | 3 | tab_goto
@@ -366,8 +377,10 @@ help | j | navigate:down
 help | k | navigate:up
 help | q | toggle_help
 help | t | tab_new_after
+image | Space | leader:actions
 image | ' | mark_jump
 image | + | image_zoom_in
+image | , | leader:options
 image | - | image_zoom_out
 image | 1 | tab_goto
 image | 2 | tab_goto
@@ -395,7 +408,6 @@ image | j | navigate:down
 image | k | navigate:up
 image | l | navigate:right
 image | m | mark_set
-image | p | cycle_path_style
 image | q | preview_back
 image | t | tab_new_after
 image | y | leader:copy
@@ -422,6 +434,7 @@ info | ] | tab_next
 info | i | info_close
 info | q | info_close
 info | t | tab_new_after
+jj.branches | Space | leader:actions
 jj.branches | / | branch_filter_start
 jj.branches | 1 | tab_goto
 jj.branches | 2 | tab_goto
@@ -450,6 +463,7 @@ jj.branches | l | branch_checkout
 jj.branches | q | git_close
 jj.branches | t | tab_new_after
 jj.branches | y | leader:branch_copy
+jj.changes | Space | leader:actions
 jj.changes | ! | git_launch_tool
 jj.changes | 1 | tab_goto
 jj.changes | 2 | tab_goto
@@ -485,6 +499,7 @@ jj.changes | u | git_unstage
 jj.changes | w | git_open_worktrees
 jj.changes | x | git_discard
 jj.changes | y | leader:copy
+jj.detail | Space | leader:actions
 jj.detail | $ | navigate:line_end
 jj.detail | 0 | navigate:line_home
 jj.detail | 1 | tab_goto
@@ -519,6 +534,7 @@ jj.detail | Ctrl-f | navigate:page_down
 jj.detail | Ctrl-u | navigate:half_up
 jj.detail | PageDown | navigate:page_down
 jj.detail | PageUp | navigate:page_up
+jj.graph | Space | leader:actions
 jj.graph | 1 | tab_goto
 jj.graph | 2 | tab_goto
 jj.graph | 3 | tab_goto
@@ -548,7 +564,7 @@ jj.graph | s | git_graph_set_base
 jj.graph | t | tab_new_after
 jj.graph | x | git_graph_clear_base
 jj.graph | y | leader:git_copy
-jj.graph_picker | Space | git_graph_picker_toggle
+jj.graph_picker | Space | leader:actions
 jj.graph_picker | 1 | tab_goto
 jj.graph_picker | 2 | tab_goto
 jj.graph_picker | 3 | tab_goto
@@ -577,6 +593,8 @@ jj.graph_picker | k | navigate:up
 jj.graph_picker | l | git_graph_picker_apply
 jj.graph_picker | q | git_close
 jj.graph_picker | t | tab_new_after
+jj.graph_picker | x | git_graph_picker_toggle
+jj.log | Space | leader:actions
 jj.log | 1 | tab_goto
 jj.log | 2 | tab_goto
 jj.log | 3 | tab_goto
@@ -602,6 +620,7 @@ jj.log | l | git_open_detail
 jj.log | q | git_close
 jj.log | t | tab_new_after
 jj.log | y | leader:git_copy
+jj.worktrees | Space | leader:actions
 jj.worktrees | / | worktree_filter_start
 jj.worktrees | 1 | tab_goto
 jj.worktrees | 2 | tab_goto
@@ -630,6 +649,7 @@ jj.worktrees | l | worktree_goto
 jj.worktrees | q | worktree_close
 jj.worktrees | t | tab_new_after
 jj.worktrees | Ctrl-t | worktree_goto_new_tab
+outline | Space | leader:actions
 outline | 1 | tab_goto
 outline | 2 | tab_goto
 outline | 3 | tab_goto
@@ -676,8 +696,10 @@ sort | n | sort_name
 sort | r | sort_toggle_reverse
 sort | s | sort_size
 sort | t | tab_new_after
+table | Space | leader:actions
 table | $ | navigate:line_end
 table | ' | mark_jump
+table | , | leader:options
 table | / | search_start
 table | 0 | navigate:line_home
 table | 1 | tab_goto
@@ -708,7 +730,6 @@ table | k | navigate:up
 table | l | navigate:right
 table | m | mark_set
 table | n | search_next
-table | p | cycle_path_style
 table | q | preview_back
 table | t | tab_new_after
 table | y | leader:table_copy
@@ -720,6 +741,7 @@ table | Ctrl-p | preview_prev_file
 table | Ctrl-u | navigate:half_up
 table | PageDown | navigate:page_down
 table | PageUp | navigate:page_up
+table_cell | Space | leader:actions
 table_cell | 1 | tab_goto
 table_cell | 2 | tab_goto
 table_cell | 3 | tab_goto
@@ -744,6 +766,7 @@ table_cell | q | toggle_table_cell
 table_cell | t | tab_new_after
 table_cell | PageDown | navigate:page_down
 table_cell | PageUp | navigate:page_up
+tabs | Space | leader:actions
 tabs | 1 | tab_goto
 tabs | 2 | tab_goto
 tabs | 3 | tab_goto
@@ -765,9 +788,11 @@ tabs | j | navigate:down
 tabs | k | navigate:up
 tabs | q | toggle_tab_list
 tabs | t | tab_new_after
+text | Space | leader:actions
 text | $ | navigate:line_end
 text | ' | mark_jump
 text | + | image_zoom_in
+text | , | leader:options
 text | - | image_zoom_out
 text | / | search_start
 text | 0 | navigate:line_home
@@ -804,7 +829,6 @@ text | k | navigate:up
 text | l | navigate:right
 text | m | mark_set
 text | n | search_next
-text | p | cycle_path_style
 text | q | preview_back
 text | t | tab_new_after
 text | v | preview_enter_visual
@@ -818,6 +842,7 @@ text | Ctrl-t | open_link_new_tab
 text | Ctrl-u | navigate:half_up
 text | PageDown | navigate:page_down
 text | PageUp | navigate:page_up
+text_visual | Space | leader:actions
 text_visual | $ | navigate:line_end
 text_visual | 0 | navigate:line_home
 text_visual | 1 | tab_goto
@@ -856,6 +881,7 @@ text_visual | PageDown | navigate:page_down
 text_visual | PageUp | navigate:page_up
 tree | Space | leader:file
 tree | ' | mark_jump
+tree | , | leader:options
 tree | . | toggle_hidden
 tree | / | filter_start
 tree | 1 | tab_goto
@@ -1019,4 +1045,20 @@ table_copy | c | table_copy_cell
 table_copy | r | table_copy_row
 table_copy | C | table_copy_column
 table_copy | f | copy_full
+options@diff | f | toggle_follow_diff_scope
+options@diff | p | cycle_path_style
+options@document | p | cycle_path_style
+options@document | w | toggle_wrap
+options@image | p | cycle_path_style
+options@table | p | cycle_path_style
+options@text | p | cycle_path_style
+options@text | w | toggle_wrap
+options@tree | n | sort_name
+options@tree | s | sort_size
+options@tree | m | sort_modified
+options@tree | e | sort_ext
+options@tree | r | sort_toggle_reverse
+options@tree | . | sort_toggle_dirs_first
+options@tree | p | cycle_path_style
+options@tree | h | toggle_hidden
 ";

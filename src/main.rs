@@ -1688,6 +1688,10 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         }
         return Ok(false);
     }
+    #[cfg(test)]
+    {
+        app.last_dispatched = Some(action);
+    }
     match action {
         Action::Noop => {}
         Action::Navigate(m) => dispatch_navigate(app, sfc, m),
@@ -1735,6 +1739,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::TreeActivate => app.tree_activate()?,
         Action::TreeLeave => app.tree_leave()?,
         Action::ToggleHidden => app.toggle_hidden()?,
+        Action::ToggleWrap => app.toggle_wrap(),
         Action::ToggleInfo => app.toggle_info(),
         Action::RequestEdit => app.request_edit(),
         Action::OpenGitView => app.open_git_view(),
@@ -2199,9 +2204,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
     // 2) Waiting on a which-key leader: resolve from leaders (an unknown suffix cancels and does
     // not fall through — §5).
     if let Some(lead) = app.pending_leader.take() {
-        return match app.keymaps.resolve_leader(lead, kp) {
-            Resolution::Action(a) => dispatch_action(app, a, sfc),
-            _ => Ok(false),
+        // Any key that is not in the menu (`Esc` and `q` included) only closes it.
+        return match ctx.and_then(|c| ops::menu::find(app, c, lead, kp)) {
+            Some(a) => dispatch_action(app, a, sfc),
+            None => Ok(false),
         };
     }
 
@@ -2221,7 +2227,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             // selectable
             // (whichkey_spans switches it in based on surface/focus). Coexists with the existing
             // path-copy n/r/f/p/@.
-            app.pending_leader = Some(id);
+            // A menu with nothing to offer here does not open.
+            if ops::menu::opens(app, ctx, id) {
+                app.pending_leader = Some(id);
+            }
             Ok(false)
         }
         Resolution::Action(a) => dispatch_action(app, a, sfc),
@@ -3236,17 +3245,18 @@ mod tests {
         assert!(app.is_bookmark_list());
         handle_key(&mut app, key('\'')).unwrap();
         assert!(!app.is_bookmark_list(), "' 再押下で閉じる");
-        // Ctrl+D = delete the selected row (a plain d is reserved for jumping). Move down to e's
+        // Space d (the list's operation menu) = delete the selected row (a plain d is reserved for jumping). Move down to e's
         // row with j, then delete it.
         handle_key(&mut app, key('\'')).unwrap();
         let before = app.bookmark_list_items().len();
         handle_key(&mut app, key('j')).unwrap();
-        handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-        )
-        .unwrap();
-        assert_eq!(app.bookmark_list_items().len(), before - 1, "Ctrl+D で削除");
+        handle_key(&mut app, key(' ')).unwrap();
+        handle_key(&mut app, key('d')).unwrap();
+        assert_eq!(
+            app.bookmark_list_items().len(),
+            before - 1,
+            "Space d で削除"
+        );
         assert!(app.bookmarks.get('e').is_none(), "消えたのは選択行の e");
         // A directory bookmark moves root.
         handle_key(&mut app, key('a')).unwrap();

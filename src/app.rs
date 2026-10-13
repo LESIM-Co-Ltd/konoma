@@ -1815,6 +1815,9 @@ pub struct App {
     /// which-key leader-pending state (`Space`=file management / `y`=path copy). After the press, a
     /// which-key menu is shown in the footer and the next keystroke confirms/cancels (a generalization of the old two-key pending_chord).
     pub pending_leader: Option<crate::keymap::LeaderId>,
+    /// The last operation `dispatch_action` let through the gate (tests: a menu item really ran).
+    #[cfg(test)]
+    pub last_dispatched: Option<crate::keymap::Action>,
 
     /// A transient message (copy result, etc.). Cleared on the next key input. Shown in the status line.
     pub flash: Option<String>,
@@ -3463,6 +3466,8 @@ impl App {
             wb_dispatches: 0,
             keymaps,
             pending_leader: None,
+            #[cfg(test)]
+            last_dispatched: None,
             flash: None,
             show_help: false,
             show_info: false,
@@ -3777,7 +3782,9 @@ impl App {
             // sort order itself never applies to `C`'s list, which stays a fixed path order).
             self.refilter_after_visibility_change(anchor);
         }
-        self.sort_menu = keep_open;
+        // Only the overlay stays open for the toggles. The same sort actions also run from the
+        // `,` menu, where the menu is already closed and must not turn the overlay on.
+        self.sort_menu = self.sort_menu && keep_open;
         Ok(())
     }
     /// Current sort display for the top context bar (e.g. `sort: mod ↑`).
@@ -5740,6 +5747,17 @@ impl App {
 
     pub fn cycle_path_style(&mut self) {
         self.path_style = self.path_style.next();
+    }
+
+    /// Toggle line wrapping of the text and document preview for this session (`,` then `w`;
+    /// `[ui] wrap` is the value it starts with). The decorated document caches its line breaks,
+    /// so the cache is dropped; a horizontal offset means nothing once the lines wrap.
+    pub fn toggle_wrap(&mut self) {
+        self.cfg.ui.wrap = !self.cfg.ui.wrap;
+        self.md_cache = None;
+        if self.cfg.ui.wrap {
+            self.tab.preview_hscroll = 0;
+        }
     }
 
     /// Toggle the `?` help. When opening, reset scroll to the top.

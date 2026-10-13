@@ -67,15 +67,21 @@ fn render_sections(sections: &[HelpSection]) -> Vec<Line<'static>> {
 
 /// Build the help section for one leader (`y`/`Space`) from the actual keymap (with config applied).
 /// `prefix` is the trigger-key string to display (e.g. "y" / "Space"). Each view reuses this for the File/Copy sections.
-pub fn leader_section(app: &App, id: LeaderId, prefix: &str) -> Option<HelpSection> {
-    let menu = app.keymaps.leaders.get(&id)?;
-    let title = tr(app.lang, menu.title);
-    let mut sec = HelpSection::new(title.to_string());
+pub fn leader_section(
+    app: &App,
+    ctx: crate::keymap::Context,
+    id: LeaderId,
+    prefix: &str,
+) -> Option<HelpSection> {
+    let menu = crate::ops::menu::menu(app, ctx, id, crate::ops::menu::View::Help)?;
+    if menu.items.is_empty() {
+        return None;
+    }
+    let mut sec = HelpSection::new(menu.title);
     for it in &menu.items {
-        let label = tr(app.lang, super::status::relabel_for_backend(app, it.label));
         sec = sec.row(
             format!("{prefix} {}", leader_key_str(it.key)),
-            label.to_string(),
+            it.label.clone(),
         );
     }
     Some(sec)

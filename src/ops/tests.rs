@@ -262,14 +262,14 @@ fn rebinding_a_key_changes_the_footer_and_the_help() {
         "default: .:hidden"
     );
 
-    let (after, _d2) = app_with(cfg_keys("tree", &[(",", "toggle_hidden"), (".", "noop")]));
+    let (after, _d2) = app_with(cfg_keys("tree", &[("H", "toggle_hidden"), (".", "noop")]));
     let toks = tokens_of(&after, Context::Tree);
-    assert!(toks.contains(&format!(",:{hidden}")), "{toks:?}");
+    assert!(toks.contains(&format!("H:{hidden}")), "{toks:?}");
     assert!(!toks.contains(&format!(".:{hidden}")), "{toks:?}");
     let desc = crate::i18n::tr(after.lang, Msg::ToggleHidden);
     let rows = help_text(&after, Context::Tree);
     assert!(
-        rows.iter().any(|(k, d)| k == "," && d == desc),
+        rows.iter().any(|(k, d)| k == "H" && d == desc),
         "help row for the moved key: {rows:?}"
     );
     assert!(

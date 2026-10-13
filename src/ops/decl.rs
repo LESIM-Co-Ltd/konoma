@@ -65,6 +65,7 @@ pub fn decl(a: Action) -> Decl {
         A::TreeActivate => d(None, Some(M::ExpandInPlace)),
         A::TreeLeave => d(Some(M::HintUp), Some(M::ToParent)),
         A::ToggleHidden => d(Some(M::HintHidden), Some(M::ToggleHidden)),
+        A::ToggleWrap => d(Some(M::HintWrap), Some(M::ToggleWrapHelp)),
         A::ToggleInfo => d(Some(M::HintInfo), Some(M::TreeFileInfo)),
         A::RequestEdit => Decl {
             label: Some(M::HintEdit),

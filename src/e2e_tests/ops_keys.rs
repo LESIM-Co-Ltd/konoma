@@ -147,13 +147,13 @@ fn e2e_a_rebound_key_is_what_the_footer_and_the_help_show() {
     let dir = sandbox("ops_rebind_screen");
     std::fs::write(dir.join("a.txt"), "x\n").unwrap();
     std::fs::write(dir.join(".hidden"), "x\n").unwrap();
-    let cfg = cfg_keys("tree", &[(",", "toggle_hidden"), (".", "noop")]);
+    let cfg = cfg_keys("tree", &[("H", "toggle_hidden"), (".", "noop")]);
     let mut s = Sim::with_config_sized(&canon(&dir), cfg, 200, 50);
-    s.see(",:hidden");
+    s.see("H:hidden");
     s.dont_see(".:hidden");
     // The key does what the footer says.
     s.dont_see(".hidden");
-    s.key(',');
+    s.key('H');
     s.see(".hidden");
     s.key('.');
     s.see(".hidden"); // `.` is unbound now: nothing changes
@@ -161,7 +161,7 @@ fn e2e_a_rebound_key_is_what_the_footer_and_the_help_show() {
     let help = s.screen();
     assert!(
         help.lines()
-            .any(|l| l.contains("  ,") && l.contains("toggle hidden")),
+            .any(|l| l.contains("  H") && l.contains("toggle hidden")),
         "the help names the new key: {help}"
     );
 }
@@ -198,6 +198,7 @@ fn e2e_fixed_keys_keep_their_meaning_on_the_screens() {
     s.tab();
     assert!(s.app.focused_item().is_some(), "Tab focuses the checkbox");
     s.key(' ');
+    s.esc(); // Space opens the operation menu
     let src = std::fs::read_to_string(dir.join("a.md")).unwrap();
     assert!(
         src.contains("- [ ] one"),

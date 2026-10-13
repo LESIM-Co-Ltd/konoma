@@ -81,7 +81,16 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         A::ToggleFocusedItem => when(app.md_focused_task() || app.md_focused_details().is_some()),
         A::CopyCodeBlock => when(app.md_focused_code()),
         // `Tab` moves between the links and checkboxes of a decorated document only.
-        A::LinkFocusNext | A::LinkFocusPrev => when(ctx == Context::Document),
+        A::LinkFocusNext | A::LinkFocusPrev => {
+            when(ctx == Context::Document && !app.document_text_missing())
+        }
+        // A document that has no text yet (still loading, or failed to convert) has nothing to
+        // search.
+        A::SearchStart | A::SearchNext | A::SearchPrev
+            if matches!(ctx, Context::Text | Context::Document) =>
+        {
+            when(!app.document_text_missing())
+        }
         A::ImageZoomIn | A::ImageZoomOut | A::ImageZoomReset => match ctx {
             // The inline diagram of a document is zoomed in place: only while one is focused.
             Context::Text | Context::Document => {
@@ -97,13 +106,18 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         // The outline lists the headings of a decorated document; anywhere else the handler
         // answers "no headings". Closing an open outline always acts.
         A::ToggleOutline => {
-            if app.is_outline() || (app.is_decorated_kind() && !app.is_raw_source()) {
+            if app.is_outline()
+                || (app.is_decorated_kind() && !app.is_raw_source() && !app.document_text_missing())
+            {
                 Gate::On
             } else {
                 Gate::Off(Some(Msg::OutlineEmpty))
             }
         }
         A::PreviewEnterVisual | A::PreviewEnterVisualLine => when(app.is_windowed()),
+
+        // Wrapping is a property of the text and the decorated document.
+        A::ToggleWrap => when(matches!(ctx, Context::Text | Context::Document)),
 
         // --- `e` ---
         A::RequestEdit => gate_edit(app),

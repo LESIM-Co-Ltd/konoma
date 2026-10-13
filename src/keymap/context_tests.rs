@@ -168,7 +168,8 @@ fn layer_one_gives_j_and_k_to_every_context_with_a_cursor() {
 fn the_layers_are_where_the_design_puts_them() {
     let m = KeyMap::defaults(KeyScheme::Vim);
     // Layer 1.
-    assert_eq!(m.basic.len(), 2);
+    // j, k and the operation menu on `Space`.
+    assert_eq!(m.basic.len(), 3);
     // Layer 2: the scrolling keys live in the type tables, not in the contexts' own tables.
     assert!(m.types[&ViewType::Text].contains_key(&KeyPress::ch('g')));
     assert!(!m.contexts[&Context::Text].contains_key(&KeyPress::ch('g')));
@@ -557,7 +558,10 @@ fn global_and_the_unchanged_names_are_read_as_before() {
             ("help", &[("Z", "refresh")]),
         ]),
     );
-    assert!(m.warnings.is_empty() && m.renames.is_empty());
+    // `[keys.sort]` is read (it re-letters the sort overlay and the tree's `,` menu) and says so.
+    assert!(m.warnings.is_empty());
+    assert_eq!(m.renames.len(), 1, "{:?}", m.renames);
+    assert_eq!(m.renames[0].0, "[keys.sort]");
     assert_eq!(at(&m, Context::Tree, 'W'), run(Action::TabClose));
     for ctx in [
         Context::TreeVisual,
