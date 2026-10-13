@@ -2983,7 +2983,10 @@ fn code_file_decorates_with_colored_syntax() {
     app.tab.selected = i;
     app.tree_activate().unwrap();
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Code(_))),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_code_plugin),
         "Code 種別に解決されない"
     );
     let lines = app.decorated_lines(80);

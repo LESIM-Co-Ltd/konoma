@@ -660,28 +660,9 @@ impl UiConfig {
     }
 }
 
-/// Clamps a configured tab-stop width to a value safe for `preview::code::expand_tabs`, which
-/// allocates a `String` of exactly `tab_width` bytes (plus loops that many times) for the marker
-/// of a tab at column 0. `0` keeps its documented special meaning ("expansion disabled, raw tabs
-/// kept") and passes through unchanged — it is not an error value. Any other value is clamped to a
-/// realistic tab-stop range (`1..=16`); outside that range (an accidental huge value such as a
-/// typo'd `1000000000`, or the reported `9223372036854775807`) it falls back to the default (`4`)
-/// instead of being used for the allocation, since an unclamped huge value can exhaust memory and
-/// abort the process via `handle_alloc_error` — a hard abort that `catch_unwind` cannot catch, not
-/// a normal panic.
-///
-/// Not a method on `UiConfig` (unlike e.g. `UiConfig::math_color`): this mirrors `svg_max_px`'s
-/// existing pattern in the same file (`preview/svg.rs::HARD_MAX_PX`) of clamping at the sole point
-/// of use rather than through an config-level accessor, since `expand_tabs` is `tab_width`'s only
-/// consumer. `pub(crate)` so `preview::code::expand_tabs` can apply the rule directly to whatever
-/// raw `[ui] tab_width` value it is handed.
-pub(crate) fn clamp_tab_width(raw: usize) -> usize {
-    match raw {
-        0 => 0,
-        1..=16 => raw,
-        _ => 4,
-    }
-}
+// The rule lives with `expand_tabs`, its only consumer; the config tests pin it from here.
+#[cfg(test)]
+pub(crate) use konoma_code_core::clamp_tab_width;
 
 /// Default tree sort (`[ui.sort]`). Changeable at runtime via the `s` sort menu.
 #[derive(Debug, Clone, Deserialize)]
@@ -1157,7 +1138,7 @@ mod tests {
 
         let p = tmp("MAIN.RS", b"fn main() {}\n");
         let kind = Config::default().resolve_preview(&p);
-        assert!(matches!(kind, PreviewKind::Code(_)), "got {kind:?}");
+        assert!(kind.is_code_plugin(), "got {kind:?}");
         std::fs::remove_file(&p).ok();
     }
 

@@ -12126,7 +12126,7 @@ fn e2e_ui_preview_loading_indicator_vs_progressive_for_cold_language() {
     // and false-positive the `dont_see("loading")` check below.
     let dir = sandbox("ui_cold_lang_cfg");
     // A fabricated extension registered as `code` via a custom rule, so it is both (a) guaranteed
-    // never warmed by any other test in this binary and (b) still classified as `PreviewKind::Code`
+    // never warmed by any other test in this binary and (b) still shown by the `code` plugin
     // (an unrecognized extension with no custom rule would fall through to Text, where
     // syntax-highlight warm-up — and so `preview_loading` — never applies).
     std::fs::write(dir.join("f.zzzcoldlang"), "UNIQUEBODYTEXT123\n").unwrap();

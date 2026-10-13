@@ -453,10 +453,21 @@ impl App {
     pub fn is_plugin_loading(&self) -> bool {
         matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
             && !self.shows_media_plugin()
+            // Text is read by the host in windows, so the file is on screen (plain) before the
+            // plugin has answered; there is no "Loading..." screen for it.
+            && !self.shows_code_plugin()
             && self
                 .plugin
                 .as_ref()
                 .is_some_and(|p| matches!(p.phase, PluginPhase::Loading))
+    }
+
+    /// Whether the show holds a text view.
+    fn plugin_view_is_text(&self) -> bool {
+        matches!(
+            self.plugin.as_ref().and_then(|p| p.view.as_ref()),
+            Some(View::Text(_))
+        )
     }
 
     /// The table the plugin returned, if the show has one on screen.
@@ -866,6 +877,9 @@ impl App {
         if let Picture::Decoded(payload) = res.picture {
             self.apply_payload(*payload);
         }
+        if self.plugin_view_is_text() {
+            self.text_view_landed();
+        }
         match outcome {
             Some(Outcome::Flash(msg)) => {
                 self.flash = Some(msg.get(self.plugin_lang()).to_string());
@@ -889,6 +903,11 @@ impl App {
     pub(super) fn land_plugin_result(&mut self, res: PluginResult) -> bool {
         if !self.install_plugin_result(res) {
             return false;
+        }
+        // Only a table has a cursor and a search of its own to settle; a text view is searched
+        // by the host's window reader, which a plugin landing does not touch.
+        if self.shows_code_plugin() {
+            return true;
         }
         // The file landed after the transition that asked for it: the cursor the tab saved may be
         // past the end of what was read, and a search in force runs on the new cells.

@@ -505,11 +505,9 @@ impl App {
         let resolved = self.diff_target_kind(path);
         let windowed_text = matches!(
             resolved,
-            PreviewKind::Markdown(_)
-                | PreviewKind::Code(_)
-                | PreviewKind::Text(_)
-                | PreviewKind::Mermaid(_)
-        ) || matches!(&resolved, PreviewKind::Command { render_as, .. } if render_as.as_deref() != Some("image"));
+            PreviewKind::Markdown(_) | PreviewKind::Text(_) | PreviewKind::Mermaid(_)
+        ) || resolved.is_code_plugin()
+            || matches!(&resolved, PreviewKind::Command { render_as, .. } if render_as.as_deref() != Some("image"));
         !windowed_text
     }
 

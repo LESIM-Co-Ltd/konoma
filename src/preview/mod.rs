@@ -38,8 +38,6 @@ pub enum PreviewKind {
     Markdown(PathBuf),
     /// Built-in Mermaid renderer (standalone .mmd/.mermaid files; draws Unicode box lines via mermaid-text).
     Mermaid(PathBuf),
-    /// Built-in code highlighting (syntect).
-    Code(PathBuf),
     /// Built-in spreadsheet preview (xlsx / xlsm / xltx / xltm / xlsb / xls / ods): the visible
     /// sheets are shown through the table grid with cells formatted as Excel shows them. The
     /// workbook is parsed on a worker thread (`MediaJob::Workbook`).
@@ -51,7 +49,9 @@ pub enum PreviewKind {
     /// A file shown by a plugin through the plugin API (`docs/FEATURE-PLUGIN-ARCHITECTURE.md`): the
     /// plugin's `Session` returns a display type and the host draws it. The plugins wired so far
     /// are `csv` (CSV/TSV as a grid; `hint` is `"csv"` or `"tsv"`, the old `builtin` name) and
-    /// `archive` (zip / tar / tar.gz listing as a grid), both opened by `app/plugin_host.rs`, and
+    /// `archive` (zip / tar / tar.gz listing as a grid), both opened by `app/plugin_host.rs`,
+    /// `code` (source and config files as colored text: the host reads the file in windows and the
+    /// plugin's styler colors the visible lines), and
     /// the picture plugins `image`, `svg`, `pdf` and `video`, whose `ImageView` goes through the
     /// host's image pipeline (`app/media_plugin.rs`). Transitional: it grows as the other kinds
     /// move onto plugins, and the enum goes when the last one has.
@@ -98,6 +98,11 @@ impl PreviewKind {
             id: id.to_string(),
             hint: None,
         }
+    }
+
+    /// Whether this is a file the `code` plugin shows.
+    pub fn is_code_plugin(&self) -> bool {
+        self.is_plugin(konoma_code::CODE_ID)
     }
 
     /// A picture file shown by the `image` plugin.

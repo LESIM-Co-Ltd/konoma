@@ -1,0 +1,16 @@
+[package]
+name = "konoma-code"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's code plugin: source and config files shown as text colored by syntect"
+
+[dependencies]
+konoma-code-core = { path = "../konoma-code-core", version = "0.1.0" }
+konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
+ratatui.workspace = true
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }

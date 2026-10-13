@@ -52,6 +52,7 @@ mod search;
 mod session_actions;
 mod tab_lifecycle;
 mod table_actions;
+mod text_plugin;
 
 use md_text::*;
 // Referenced by `main`'s watcher/run loop as `crate::app::FsBurstKinds` (it builds the value; the
@@ -4527,8 +4528,8 @@ impl App {
         // Determine whether we're in the heavy-highlight-wait state: if it's Code, highlighting
         // is enabled, and the grammar isn't compiled yet (cold), a loading display / staged
         // display is needed just for the first time. If already warm, it colors instantly from the start.
-        self.hl_pending = self.cfg.ui.syntax_highlight
-            && matches!(self.tab.preview_kind, Some(PreviewKind::Code(_)))
+        self.hl_pending = crate::plugins::syntax_highlight_on(&self.cfg)
+            && self.shows_code_plugin()
             && !crate::preview::code::is_ext_warm(self.current_preview_ext());
         self.hl_warming = false;
         // Code/Text are always windowed. Markdown/Mermaid become windowed only in raw display
@@ -4544,10 +4545,9 @@ impl App {
                 self.tab.preview_kind,
                 Some(PreviewKind::Command { ref render_as, .. }) if render_as.as_deref() != Some("image")
             );
-        let windowed_kind = matches!(
-            self.tab.preview_kind,
-            Some(PreviewKind::Code(_)) | Some(PreviewKind::Text(_))
-        ) || self.is_raw_source()
+        let windowed_kind = self.shows_code_plugin()
+            || matches!(self.tab.preview_kind, Some(PreviewKind::Text(_)))
+            || self.is_raw_source()
             || is_text_command;
         if !windowed_kind {
             return;
@@ -4630,7 +4630,8 @@ impl App {
         if self.filter_pool_scanning_current() {
             v.push(crate::i18n::Msg::BusyFilterScan);
         }
-        if self.media_loading {
+        // (The `code` plugin's answer is not media: the text is on screen before it lands.)
+        if self.media_loading && !self.shows_code_plugin() {
             // Name what is being read: "media" is wrong for a Word document or a workbook.
             v.push(match self.tab.preview_kind {
                 Some(PreviewKind::Document(_)) => crate::i18n::Msg::BusyDocument,
@@ -4848,7 +4849,11 @@ impl App {
             // A plugin's file (CSV/TSV, an archive listing) can change from an external edit. Open
             // it again (the old table stays on screen until the new one lands) and clamp the
             // cursor within range (preserving its position).
-            if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. })) {
+            // (The `code` plugin has nothing to read again: its styler works on the lines the
+            // window reader has just reopened.)
+            if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. }))
+                && !self.shows_code_plugin()
+            {
                 self.reload_plugin();
                 self.clamp_table_cursor();
             }
@@ -5546,12 +5551,12 @@ impl App {
         let top = self.tab.preview_byte_top;
         let path = self.tab.preview_path.clone().unwrap_or_default();
         // Whether to attach syntax: plain if highlighting is disabled (off-switch) / progressive is still waiting (hl_pending).
-        // Code is always a target. Text is a target only "when an existing grammar can be resolved
+        // The `code` plugin's files are always a target. Text is a target only "when an existing grammar can be resolved
         // from the extension/filename" = colors config files like .bashrc/Makefile/Dockerfile while
         // keeping truly plain text uncolored.
         // Only while progressive is waiting is it "plain text before the swap", so it isn't cached (it's replaced by the colored version later).
         let syntax_kind = match &self.tab.preview_kind {
-            Some(PreviewKind::Code(_)) => true,
+            Some(k) if k.is_code_plugin() => true,
             Some(PreviewKind::Text(p)) => crate::preview::code::has_named_syntax(p),
             // Markdown/Mermaid in raw source display (`R`) is colored by the file's grammar (.md→Markdown, etc.).
             Some(PreviewKind::Markdown(p)) | Some(PreviewKind::Mermaid(p)) if self.tab.md_raw => {
@@ -5568,14 +5573,18 @@ impl App {
         } else {
             path.clone()
         };
-        let want_syntax = self.cfg.ui.syntax_highlight
+        let syntax_on = crate::plugins::syntax_highlight_on(&self.cfg);
+        // The `code` plugin colors through the styler it returned; until its first result lands
+        // the window is plain and uncached.
+        let want_syntax = syntax_on
             && syntax_kind
+            && !self.code_plugin_pending()
             && (!self.hl_pending || self.loading_is_indicator());
         // Only the plain text while progressive is waiting is left uncached (since it gets
         // replaced by the colored version later). Everything else is cached by (path, top, height)
         // even as plain text = never re-reads the file every frame. `styled` is part of the key so
         // the colored and plain versions are never confused.
-        let cacheable = want_syntax || !(self.cfg.ui.syntax_highlight && syntax_kind);
+        let cacheable = want_syntax || !(syntax_on && syntax_kind);
         let mut content: Vec<Line<'static>> = if cacheable {
             let hit = matches!(
                 &self.win_cache,
@@ -5590,7 +5599,7 @@ impl App {
                     .unwrap_or_default();
                 let lines = if want_syntax {
                     let src = raw.join("\n");
-                    crate::preview::code::highlight(&src, &hl_path, &self.cfg.ui.theme.code_theme)
+                    self.style_text_window(&src, self.tab.preview_top_line, &hl_path)
                 } else {
                     raw.into_iter().map(Line::from).collect()
                 };
@@ -7535,6 +7544,9 @@ mod md_snapshot_tests;
 
 #[cfg(test)]
 mod plugin_host_tests;
+
+#[cfg(test)]
+mod text_plugin_tests;
 // The same kind of safety net, over the new Markdown block model instead of rendering — see its
 // own module doc comment. Reuses `md_snapshot_tests`'s corpus/preprocessing/compare machinery
 // directly (a sibling, not a descendant, so those are `pub(super)` there).
