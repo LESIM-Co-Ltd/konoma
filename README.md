@@ -170,10 +170,11 @@ you came from, since a worktree's directory rarely does.
   built-in renderer or an external command. Unsupported formats safely show `[can not preview]`
   full-screen instead of crashing.
 - **Features are plugins**: every viewer (Markdown, Mermaid, math, images, SVG, PDF, video, CSV, archives, spreadsheets,
-  Word, presentations, code) is a standard plugin built into konoma, and the version-control screens follow the same key
-  design. `konoma --plugins` lists which plugin shows which files, and `[plugins.<id>] enabled = false` switches one off.
-  Your `[[preview.rules]]` are tried first and the standard plugins decide the rest. The keys of a plugin's own actions
-  can be rebound in `[keys.<plugin id>]`. (Swapping in a plugin of your own is not available yet.)
+  Word, presentations, code) is a standard plugin built into konoma. `konoma --plugins` lists which plugin shows which
+  files, and `[plugins.<id>] enabled = false` switches one off. Your `[[preview.rules]]` are tried first and the standard
+  plugins decide the rest. The keys of a plugin's own actions can be rebound in `[keys.<plugin id>]`. (Swapping in a plugin
+  of your own is not available yet.) The Git / jj screens are not plugins yet — they are still part of konoma itself and
+  move later — but they follow the same key design.
 - **One key design**: the same key means the same thing everywhere — `/` search, `n`/`N` next match or change, `r` reload,
   `y` copy menu, `e` edit, `o` open in another app, `p` the project screen, `,` sort and display options, `Space` the menu of
   every operation on the screen you are looking at. Every default can be changed in `[keys]`; the `?` help and the
@@ -196,7 +197,7 @@ you came from, since a worktree's directory rarely does.
 - **Drag & drop**: drop files from your desktop or another terminal onto the tree and konoma asks
   whether to copy (`c`) or move (`m`) them into the directory under the cursor.
 - **Optional dependencies**: nothing but a plain `cargo install` is required. The tools konoma can
-  use — `git`, `ffmpeg`, `lazygit`, `jj`/`lazyjj` for the jj backend, an Office app (Microsoft Office or LibreOffice) for `e` on Office files, and the
+  use — `git`, `ffmpeg`, `lazygit`, `jj`/`lazyjj` for the jj backend, an Office app (Microsoft Office or LibreOffice) for `e` / `o` on Office files, and the
   Carlito/Caladea fonts for PowerPoint's line breaks — are each optional, and a missing one costs you that one feature, never the app.
 
 ## Status
@@ -317,9 +318,9 @@ instructions](https://docs.jj-vcs.dev/latest/install-and-setup/) (a prebuilt bin
   lines where PowerPoint breaks them; without them konoma draws it in Helvetica Neue / Arial / Georgia,
   which are about 10% wider, so a line can break elsewhere. konoma finds them by itself — nothing to configure.
 
-- **Microsoft Office / LibreOffice** — what `e` launches on a Word, Excel, PowerPoint or OpenDocument file
+- **Microsoft Office / LibreOffice** — what `e` and `o` launch on a Word, Excel, PowerPoint or OpenDocument file
   (macOS: Microsoft Office, then LibreOffice, then the default app via `open`; Linux: `libreoffice`, then
-  `soffice`, then `xdg-open`). Optional and only for `e`: the spreadsheet, Word and presentation previews themselves need no Office app.
+  `soffice`, then `xdg-open`). Optional and only for `e` / `o`: the spreadsheet, Word and presentation previews themselves need no Office app.
 
 Images, **PDF**, SVG, Markdown, Mermaid, LaTeX math, CSV, spreadsheets, Word documents, presentations and code need nothing extra — konoma renders
 them itself, in pure Rust. (On macOS only, a PDF the built-in renderer cannot draw falls back to the

@@ -1583,10 +1583,10 @@ mod tests {
         );
     }
 
-    /// (git.rs item 8) The `?` help's graph section shows `JjGraphLabel` ("jj graph (g)") and
+    /// (git.rs item 8) The `?` help's graph section shows `JjGraphLabel` ("jj graph") and
     /// `JjGraphAllRow` ("show every revision"), and none of git's base-pinning rows
     /// (`GraphSetBaseHelp`/`GraphClearBaseHelp`). Paired with a git repository's graph help, whose
-    /// label is `GitGraphLabel` ("Git graph (g)") — same key notation, different backend word, so
+    /// label is `GitGraphLabel` ("Git graph") — same key notation, different backend word, so
     /// the pairing has to compare the full label text, not just presence of "(g)".
     #[test]
     fn graph_help_shows_jj_section_and_all_revisions_row() {

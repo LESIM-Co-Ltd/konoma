@@ -529,6 +529,12 @@ fn check_space_menu_like_the_footer(s: &Sim) -> Context {
         };
         for a in &tok.actions {
             if let Some(it) = declared.iter().find(|i| i.action == *a) {
+                // A pair the footer calls by one word (`[ ]:tab`) is named by direction in the
+                // menu (`previous tab`): the menu's own label, which is pinned to be distinct.
+                if let Some(m) = crate::ops::decl::menu_label(&s.app, ctx, *a) {
+                    assert_eq!(it.label, crate::i18n::tr(s.app.lang, m), "{ctx:?}: {a:?}");
+                    continue;
+                }
                 assert_eq!(
                     it.label, label,
                     "{ctx:?}: {a:?} is `{}` in the menu but `{}` in the footer ({})",

@@ -51,7 +51,9 @@ pub struct Menu {
 pub enum View {
     /// The which-key line and the key handler: an item that does not act is not offered.
     Open,
-    /// The `?` help: the fixed menus show every item (the code-block copy included).
+    /// The `?` help: the same items as `Open` today (a hint is shown only while its key acts, so
+    /// the code-block copy is listed only while a code block is focused). Kept as its own entry so
+    /// a caller says which of the two it is.
     Help,
 }
 
@@ -79,15 +81,13 @@ pub fn opens(app: &App, ctx: Context, id: LeaderId) -> bool {
 }
 
 /// A menu kept in the keymap (`y`, `,`, the tree's `Space`).
-fn fixed_menu(app: &App, ctx: Context, id: LeaderId, view: View) -> Option<Menu> {
+fn fixed_menu(app: &App, ctx: Context, id: LeaderId, _view: View) -> Option<Menu> {
     let m = app.keymaps.menu(ctx, id)?;
-    // `,` offers what acts here; the copy and file menus have always listed all their items
-    // (the code-block copy only while a code block is focused).
+    // `,` offers what acts here; the copy and file menus list all their items (the code-block
+    // copy only while a code block is focused: the menu, the footer and the help alike).
     let gated = |a: Action| match id {
         LeaderId::Options => action_enabled(app, ctx, a),
-        _ => {
-            view == View::Help || !matches!(a, Action::CopyCodeBlock) || action_enabled(app, ctx, a)
-        }
+        _ => !matches!(a, Action::CopyCodeBlock) || action_enabled(app, ctx, a),
     };
     let items = m
         .items
@@ -170,13 +170,18 @@ fn short_label(a: Action) -> Option<Msg> {
     })
 }
 
-/// What `a` is called in a menu of `ctx`: the footer's label for it (`prio` is the footer plan,
+/// What `a` is called in a menu of `ctx`: the menu's own label where the footer's would not tell
+/// it apart from its pair (`decl::menu_label`), else the footer's label for it (`prio` is the footer plan,
 /// `footer::priority`), else the declaration's label as it reads now, else a short label of the
 /// menu's own. Never the help's sentence. `None` = the operation is not named, so it is not
 /// offered.
 fn label_of(app: &App, ctx: Context, a: Action, prio: &[(Action, Option<Msg>)]) -> Option<Msg> {
-    prio.iter()
-        .find_map(|(p, l)| (*p == a).then_some(*l).flatten())
+    // The few operations whose footer label is shared with their pair say which way in a menu.
+    decl::menu_label(app, ctx, a)
+        .or_else(|| {
+            prio.iter()
+                .find_map(|(p, l)| (*p == a).then_some(*l).flatten())
+        })
         .or_else(|| decl::text(app, ctx, a).label)
         .or_else(|| short_label(a))
         .or_else(|| special_label(a))

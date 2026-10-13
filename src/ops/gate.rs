@@ -101,7 +101,7 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
             }
             _ => Gate::On,
         },
-        A::ToggleMarkdownRaw => when(
+        A::CycleRepresentation => when(
             app.preview_is_diff_representation()
                 || (app.is_decorated_kind() && !app.document_text_missing())
                 || app.repr_step().is_some(),

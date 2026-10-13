@@ -444,10 +444,7 @@ fn e2e_tab_walks_the_git_screens_both_ways() {
         .find(|r| r.actions.contains(&Action::GitScreenNext))
         .expect("a help row for Tab");
     assert_eq!(row.keys_text, "Tab / ⇧Tab");
-    assert_eq!(
-        row.desc,
-        "switch between the changes, log, graph, branches and worktrees screens"
-    );
+    assert_eq!(row.desc, "cycle changes/log/graph/branches/worktrees");
 }
 
 /// jj lists no worktrees, so its cycle goes changes, log, graph, bookmarks and round.
@@ -475,10 +472,7 @@ fn e2e_tab_skips_the_worktrees_in_a_jj_repository() {
         .iter()
         .find(|r| r.actions.contains(&Action::GitScreenNext))
         .expect("a help row for Tab");
-    assert_eq!(
-        row.desc,
-        "switch between the changes, log, graph and bookmarks screens"
-    );
+    assert_eq!(row.desc, "cycle changes/log/graph/bookmarks");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1044,6 +1038,6 @@ fn e2e_the_help_names_the_new_keys_where_they_act() {
     s.select("notes.txt");
     s.enter();
     s.key('?');
-    s.see("open the file in another app");
+    s.see("open in another app");
     s.see("refresh");
 }

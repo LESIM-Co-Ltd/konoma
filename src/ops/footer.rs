@@ -218,7 +218,7 @@ fn table(_app: &App) -> Vec<Foot> {
         Foot::Dyn(search_status),
         Foot::GroupOp(PAGE_TURN),
         Foot::Op(Action::ToggleOutline),
-        Foot::Op(Action::ToggleMarkdownRaw),
+        Foot::Op(Action::CycleRepresentation),
         Foot::Op(Action::SearchStart),
         Foot::Leader(LeaderId::TableCopy, Msg::CopyHint),
         Foot::Group(ENDS, Msg::HintEnds),
@@ -300,7 +300,7 @@ fn text_preview(app: &App) -> Vec<Foot> {
         }
         v.extend([
             Foot::Op(Action::ToggleOutline),
-            Foot::Op(Action::ToggleMarkdownRaw),
+            Foot::Op(Action::CycleRepresentation),
             Foot::Op(Action::SearchStart),
             Foot::Dyn(change_status),
             Foot::Op(Action::ToggleFollow),
@@ -333,7 +333,7 @@ fn text_preview(app: &App) -> Vec<Foot> {
     #[cfg(feature = "git")]
     v.push(Foot::Op(Action::ToggleFollowDiffScope));
     v.extend([
-        Foot::Op(Action::ToggleMarkdownRaw),
+        Foot::Op(Action::CycleRepresentation),
         Foot::Group(FILE_JUMP, Msg::HintFileJump),
         Foot::Op(Action::PreviewBack),
         Foot::Op(Action::ToggleHelp),

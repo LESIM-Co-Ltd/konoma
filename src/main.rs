@@ -1855,7 +1855,7 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::PreviewCopySelection => app.preview_copy_selection(),
         Action::PreviewCopySelectionRef => app.preview_copy_selection_ref(),
         Action::PreviewExitVisual => app.preview_exit_visual(),
-        Action::ToggleMarkdownRaw => app.toggle_md_raw_or_return_to_diff(),
+        Action::CycleRepresentation => app.toggle_md_raw_or_return_to_diff(),
         Action::ImageReturnToDiff => app.image_return_to_diff(),
         Action::LinkFocusNext => app.md_focus_move(1),
         Action::LinkFocusPrev => app.md_focus_move(-1),

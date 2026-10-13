@@ -72,7 +72,7 @@ pub fn markdown_manifest() -> Manifest {
         .setting(SettingDecl::new(
             "task_states",
             Value::List(vec![s(" "), s("x")]),
-            t!(en: "Checkbox states Space cycles through", ja: "Space で巡回するチェックボックスの状態"),
+            t!(en: "Checkbox states Enter cycles through", ja: "Enter で巡回するチェックボックスの状態"),
         ))
         .setting(SettingDecl::new(
             "autolink",
