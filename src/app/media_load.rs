@@ -529,7 +529,7 @@ impl App {
     /// sheet was loading (`search_pending`) lands on its first hit like a search on a loaded
     /// sheet, and says so when there is none; otherwise the current hit stays current when it
     /// still is one (else the next hit after it) and the cursor does not move.
-    fn rescan_table_search(&mut self) {
+    pub(super) fn rescan_table_search(&mut self) {
         let Some(q) = self.tab.preview_search.clone() else {
             return;
         };

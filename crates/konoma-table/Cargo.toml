@@ -1,0 +1,33 @@
+[package]
+name = "konoma-table"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's table plugins: CSV/TSV files and zip/tar/tar.gz listings shown as a grid"
+
+[dependencies]
+konoma-base = { path = "../konoma-base", version = "0.1.0" }
+konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
+anyhow.workspace = true
+# CSV/TSV parsing. Pure Rust, no external dependencies (distribution stays easy, PRD §5): quoted
+# commas, embedded newlines and ragged rows are handled (a naive split breaks on them).
+csv.workspace = true
+# Archive (zip/tar/tar.gz) listing: entry metadata only (name, size, modified), never extracted;
+# `src/archive.rs` has the safety boundary. zip's default features pull optional decompression
+# codecs (bzip2 among them, a C library) that listing has no use for.
+zip.workspace = true
+# `default-features = false` drops tar's `xattr` (restoring attributes on unpack, which is never done).
+tar.workspace = true
+# The gzip layer of `.tar.gz`.
+flate2.workspace = true
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }
+
+[features]
+# Keeps the `cfg(test)` seams (the parse counter) active when another package's tests call into
+# this crate (a `cfg(test)` is only true while this crate's own tests build). Enabled by the root
+# package's `[dev-dependencies]` only.
+test-hooks = []

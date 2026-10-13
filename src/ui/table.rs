@@ -52,6 +52,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         0
     };
 
+    // Decided once per frame: it reads the plugin's view (or the csv plugin's setting for a sheet).
+    let rainbow = app.table_rainbow();
     let title = build_title(app, &t, cur_row, cur_col);
     let block = Block::bordered().title(title);
     let inner = block.inner(area);
@@ -106,7 +108,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
         Span::styled(
             text,
             Style::default()
-                .fg(column_color(app, col))
+                .fg(column_color(rainbow, col))
                 .add_modifier(Modifier::BOLD),
         )
     });
@@ -128,8 +130,8 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // modifier rather than a background so as not to blot out the rainbow column color). The current match is at the cursor, so reversal makes it clear.
     for r in top..row_end {
         let mut line = compose_line(&cols, |col, w| {
-            let text = fit_to_width(t.cell(r, col), w);
-            let mut style = Style::default().fg(column_color(app, col));
+            let text = fit_to_width(&t.cell(r, col), w);
+            let mut style = Style::default().fg(column_color(rainbow, col));
             if app.table_cell_is_hit(r, col) {
                 style = style
                     .add_modifier(Modifier::UNDERLINED)
@@ -308,8 +310,8 @@ fn build_title(app: &App, t: &Grid<'_>, cur_row: usize, cur_col: usize) -> Strin
 }
 
 /// Column color: rainbow when enabled, else the terminal default foreground.
-fn column_color(app: &App, col: usize) -> Color {
-    if app.cfg.ui.csv_rainbow {
+fn column_color(rainbow: bool, col: usize) -> Color {
+    if rainbow {
         RAINBOW[col % RAINBOW.len()]
     } else {
         Color::Reset
@@ -346,7 +348,7 @@ fn leftmost_visible(
 fn col_width(t: Grid<'_>, col: usize, visible_rows: usize, top: usize) -> usize {
     let mut w = head(&t.header(col)).width();
     for r in top..(top + visible_rows).min(t.nrows()) {
-        w = w.max(flat_width(t.cell(r, col)));
+        w = w.max(flat_width(&t.cell(r, col)));
     }
     w.clamp(MIN_COL_W, MAX_COL_W)
 }
@@ -519,7 +521,7 @@ mod tests {
             ncols,
             truncated: false,
         };
-        let g = Grid::Csv(&t);
+        let g = Grid::Plugin(&t);
         let mut checked = 0;
         for width in [1u16, 5, 20, 40, 80, 200, 1000] {
             for cur in (0..ncols).step_by(3).chain([ncols - 1]) {
@@ -544,10 +546,10 @@ mod tests {
             truncated: false,
         };
         // At least 1 column even when extremely narrow.
-        let cols = fit_columns(Grid::Csv(&t), 0, 1, 0, 1);
+        let cols = fit_columns(Grid::Plugin(&t), 0, 1, 0, 1);
         assert!(!cols.is_empty());
         // Both columns when wide enough.
-        let cols = fit_columns(Grid::Csv(&t), 0, 1, 0, 80);
+        let cols = fit_columns(Grid::Plugin(&t), 0, 1, 0, 80);
         assert_eq!(cols.len(), 2);
     }
 
@@ -782,7 +784,7 @@ mod survivor_tests {
             ncols,
             truncated: false,
         };
-        let g = Grid::Csv(&t);
+        let g = Grid::Plugin(&t);
         let cur = ncols - 1;
         for k in 1..=ncols {
             let exact = (5 * k + COL_GAP * (k - 1)) as u16;

@@ -12181,13 +12181,11 @@ fn csv_resolves_to_table_preview() {
     let (app, _dir) = app_with_table();
     assert!(
         matches!(
-            app.tab.preview_kind,
-            Some(PreviewKind::Table {
-                delimiter: b',',
-                ..
-            })
+            &app.tab.preview_kind,
+            Some(PreviewKind::Plugin { id, hint, .. })
+                if id == "csv" && hint.as_deref() == Some("csv")
         ),
-        "*.csv は Table(カンマ区切り)に解決される"
+        "*.csv は csv プラグイン(カンマ区切り)に解決される"
     );
     assert!(app.is_table_preview(), "パース成功でテーブル面が有効");
     assert_eq!(app.surface(), crate::keymap::Surface::PreviewTable);
@@ -12225,13 +12223,13 @@ fn zip_resolves_to_archive_table_preview() {
     let (app, _dir) = app_with_archive_zip();
     assert!(
         matches!(
-            app.tab.preview_kind,
-            Some(PreviewKind::Archive {
-                kind: crate::preview::archive::ArchiveKind::Zip,
-                ..
-            })
+            &app.tab.preview_kind,
+            Some(PreviewKind::Plugin { id, path, .. })
+                if id == "archive"
+                    && crate::preview::archive::ArchiveKind::from_path(path)
+                        == Some(crate::preview::archive::ArchiveKind::Zip)
         ),
-        "*.zip は Archive(Zip) に解決される"
+        "*.zip は archive プラグイン(Zip) に解決される"
     );
     assert!(app.is_table_preview(), "一覧化成功でテーブル面が有効");
     assert_eq!(app.surface(), crate::keymap::Surface::PreviewTable);
@@ -17995,17 +17993,21 @@ fn tab_switch_parses_a_table_preview_only_once() {
         .position(|e| e.path.ends_with("data.csv"))
         .unwrap();
     app.tree_activate().unwrap();
-    assert!(matches!(
-        app.tab.preview_kind,
-        Some(PreviewKind::Table { .. })
-    ));
+    assert!(app
+        .tab
+        .preview_kind
+        .as_ref()
+        .is_some_and(|k| k.is_plugin("csv")));
     app.tab_new().unwrap();
 
     // Switch back to tab 1 (the table) = load_active runs.
     crate::preview::table::PARSE_CALLS.with(|c| c.set(0));
     app.tab_cycle(1);
     assert!(
-        matches!(app.tab.preview_kind, Some(PreviewKind::Table { .. })),
+        app.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("csv")),
         "表タブへ戻っている"
     );
     assert_eq!(
@@ -18013,7 +18015,7 @@ fn tab_switch_parses_a_table_preview_only_once() {
         1,
         "タブ切替での CSV 全行パースは1回だけ(旧実装は load_active と reload_preview で2回)"
     );
-    assert!(app.table_data.is_some(), "表の中身は復元されている");
+    assert!(app.table_data().is_some(), "表の中身は復元されている");
 }
 
 /// Returning to a media tab must reuse the decoded image instead of redoing the work that produced it

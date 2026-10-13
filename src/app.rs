@@ -41,8 +41,10 @@ mod office_doc;
 pub(crate) use office_doc::is_presentation_path;
 pub(crate) mod office_open;
 pub use office_open::OfficeOpenResult;
+pub use plugin_host::PluginResult;
 mod outline;
 mod paste_jump;
+mod plugin_host;
 mod preview_visual;
 mod search;
 mod session_actions;
@@ -1692,9 +1694,14 @@ pub struct App {
     /// externally edited file is always re-read.
     media_cache: Option<MediaCache>,
 
-    /// Parsed CSV/TSV table (Some while a table preview is active and parsing succeeded).
-    /// None while not a table, or when parsing failed (then the preview degrades to raw text).
-    table_data: Option<crate::preview::table::TableData>,
+    /// The plugin display that is open (`PreviewKind::Plugin`): the plugin's `Session`, its layout and
+    /// the view it returned (`app/plugin_host.rs`). Lives on `App` (like `workbook`): the data can be
+    /// large, so a tab switch opens it again instead of cloning it into every tab snapshot. Assigned
+    /// only through the helpers in `plugin_host.rs`, and dropped by `set_preview_kind` whenever the
+    /// preview is not a plugin's.
+    plugin: Option<plugin_host::PluginShow>,
+    /// Where plugin results go (`None` in tests: the plugin's work runs on the spot).
+    plugin_tx: Option<std::sync::mpsc::Sender<PluginResult>>,
     /// The opened spreadsheet while a `PreviewKind::Spreadsheet` preview is active and its worker
     /// finished successfully: every visible sheet by name, and the cells of **the one sheet on
     /// screen** (`PerTab::sheet_idx`) — moving to another sheet loads that one and drops this one.
@@ -3458,7 +3465,8 @@ impl App {
             #[cfg(test)]
             md_cache_budget_for_test: None,
             media_cache: None,
-            table_data: None,
+            plugin: None,
+            plugin_tx: None,
             workbook: None,
             workbook_error: None,
             document: None,
@@ -4482,12 +4490,13 @@ impl App {
         if self.is_visual() {
             self.exit_visual_cancel();
         }
-        // CSV/TSV/archives are parsed into a table. Reset the cursor/scroll to the start before loading.
+        // A plugin's file (CSV/TSV, an archive listing) is opened on a worker. Reset the cursor/scroll
+        // to the start before loading.
         self.tab.table_cur_row = 0;
         self.tab.table_cur_col = 0;
         self.tab.table_top_row = 0;
         self.tab.table_left_col = 0;
-        self.load_table();
+        self.load_plugin();
         self.tab.mode = Mode::Preview;
     }
 
@@ -4820,13 +4829,11 @@ impl App {
         if matches!(self.tab.mode, Mode::Preview) {
             self.setup_windowed();
             self.reload_media_if_changed();
-            // CSV/TSV/archive content can change from an external edit. Re-parse and clamp the
+            // A plugin's file (CSV/TSV, an archive listing) can change from an external edit. Open
+            // it again (the old table stays on screen until the new one lands) and clamp the
             // cursor within range (preserving its position).
-            if matches!(
-                self.tab.preview_kind,
-                Some(PreviewKind::Table { .. }) | Some(PreviewKind::Archive { .. })
-            ) {
-                self.load_table();
+            if matches!(self.tab.preview_kind, Some(PreviewKind::Plugin { .. })) {
+                self.reload_plugin();
                 self.clamp_table_cursor();
             }
         }
@@ -5104,7 +5111,7 @@ impl App {
         self.tab.search_idx = 0;
         self.tab.search_pending = false;
         self.tab.came_from_git_view = false;
-        self.table_data = None;
+        self.drop_plugin();
         self.set_workbook(None);
         self.workbook_error = None;
         self.set_document(None);
@@ -7506,6 +7513,9 @@ mod tests;
 // `#[test]` functions exercising `App` behavior.
 #[cfg(test)]
 mod md_snapshot_tests;
+
+#[cfg(test)]
+mod plugin_host_tests;
 // The same kind of safety net, over the new Markdown block model instead of rendering — see its
 // own module doc comment. Reuses `md_snapshot_tests`'s corpus/preprocessing/compare machinery
 // directly (a sibling, not a descendant, so those are `pub(super)` there).

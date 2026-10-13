@@ -154,20 +154,8 @@ pub fn file_info(path: &Path) -> Result<FileInfo> {
     })
 }
 
-/// Format a byte count as human-readable (base 1024, "B/KB/MB/GB/TB/PB").
-pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    let mut v = bytes as f64;
-    let mut i = 0;
-    while v >= 1024.0 && i < UNITS.len() - 1 {
-        v /= 1024.0;
-        i += 1;
-    }
-    format!("{v:.1} {}", UNITS[i])
-}
+// Byte-count formatting lives in `konoma-base` (the table plugin lists archive sizes with it); re-exported here.
+pub use konoma_base::size::human_size;
 
 /// Just the rwx part of permissions, "rwxr-xr-x" (low 9 bits, for column display).
 pub fn permission_rwx(mode: u32) -> String {

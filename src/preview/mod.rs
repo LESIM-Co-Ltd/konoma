@@ -53,9 +53,6 @@ pub enum PreviewKind {
     Pdf(PathBuf),
     /// Built-in code highlighting (syntect).
     Code(PathBuf),
-    /// Built-in CSV/TSV table preview: aligned grid with rainbow columns and a movable cell cursor.
-    /// `delimiter` is the field separator byte (`b','` for csv, `b'\t'` for tsv).
-    Table { path: PathBuf, delimiter: u8 },
     /// Built-in spreadsheet preview (xlsx / xlsm / xltx / xltm / xlsb / xls / ods): the visible
     /// sheets are shown through the table grid with cells formatted as Excel shows them. The
     /// workbook is parsed on a worker thread (`MediaJob::Workbook`).
@@ -64,12 +61,17 @@ pub enum PreviewKind {
     /// Markdown on a worker thread (`MediaJob::Document`) and drawn by the Markdown renderer. The
     /// converted text lives on `App`, never in the file on disk.
     Document(PathBuf),
-    /// Built-in archive listing (zip / tar / tar.gz / tgz): entries (name/size/modified) rendered
-    /// through the same table grid as CSV/TSV. Metadata only — never extracts/decompresses entry
-    /// content (see `preview/archive.rs`'s module docs for the security boundary).
-    Archive {
+    /// A file shown by a plugin through the plugin API (`docs/FEATURE-PLUGIN-ARCHITECTURE.md`): the
+    /// plugin's `Session` returns a display type and the host draws it (`app/plugin_host.rs`). The
+    /// plugins wired so far are `csv` (CSV/TSV as a grid; `hint` is `"csv"` or `"tsv"`, the old
+    /// `builtin` name) and `archive` (zip / tar / tar.gz listing as a grid). Transitional: it grows
+    /// as the other kinds move onto plugins, and the enum goes when the last one has.
+    Plugin {
         path: PathBuf,
-        kind: archive::ArchiveKind,
+        /// The plugin id.
+        id: String,
+        /// The note the binding rule handed over.
+        hint: Option<String>,
     },
     /// Built-in plain-text display (extension not registered but judged to be text).
     Text(PathBuf),
@@ -95,6 +97,12 @@ pub enum PreviewKind {
 }
 
 impl PreviewKind {
+    /// Whether this is a file shown by the plugin `id`.
+    #[cfg(test)]
+    pub fn is_plugin(&self, id: &str) -> bool {
+        matches!(self, PreviewKind::Plugin { id: own, .. } if own == id)
+    }
+
     /// Unsupported fallback. Displays safely with the extension attached.
     pub fn can_not_preview(path: &Path) -> Self {
         let ext = path
@@ -118,7 +126,7 @@ impl PreviewKind {
 /// open the file to sniff it (the mime-glob rule match via `infer::get_from_path`, and the
 /// no-rule-matched fallback via `text::is_probably_text`) — so the hang could happen before a
 /// `PreviewKind` was even chosen, not only inside the Text/Code windowed reader. Since every
-/// downstream opener (`start_media_load` / `setup_windowed` / `load_table`, and the render
+/// downstream opener (`start_media_load` / `setup_windowed` / `load_plugin`, and the render
 /// side's raw-text fallbacks) dispatches purely on the resolved `PreviewKind`, forcing it to
 /// `CanNotPreview` here closes every `File::open` path in the one place all of them share —
 /// entering preview on a FIFO or device (`konoma /dev`, Enter on a named pipe, following a
@@ -166,14 +174,12 @@ mod tests {
             cfg.resolve_preview(Path::new("/nonexistent/a.xlsxx")),
             PreviewKind::Spreadsheet(_)
         ));
-        assert!(matches!(
-            cfg.resolve_preview(Path::new("/nonexistent/a.csv")),
-            PreviewKind::Table { .. }
-        ));
-        assert!(matches!(
-            cfg.resolve_preview(Path::new("/nonexistent/a.zip")),
-            PreviewKind::Archive { .. }
-        ));
+        assert!(cfg
+            .resolve_preview(Path::new("/nonexistent/a.csv"))
+            .is_plugin("csv"));
+        assert!(cfg
+            .resolve_preview(Path::new("/nonexistent/a.zip"))
+            .is_plugin("archive"));
     }
 
     #[test]

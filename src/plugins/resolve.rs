@@ -75,22 +75,13 @@ pub(crate) fn user_rules(rules: &[Rule], path: &Path) -> Vec<UserRule> {
     out
 }
 
-/// The field separator of a table plugin's input: the note wins, otherwise the extension.
-fn delimiter(hint: Option<&str>, path: &Path) -> u8 {
-    match hint {
-        Some("tsv") => b'\t',
-        Some(_) => b',',
-        None => {
-            let tsv = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("tsv"));
-            if tsv {
-                b'\t'
-            } else {
-                b','
-            }
-        }
+/// The old `builtin` name of a CSV/TSV input: the note wins, otherwise the extension decides (the
+/// same rule the plugin applies to the byte, `konoma_table::delimiter`).
+fn csv_note(hint: Option<&str>, path: &Path) -> &'static str {
+    if konoma_table::delimiter(hint, path) == b'\t' {
+        "tsv"
+    } else {
+        "csv"
     }
 }
 
@@ -108,15 +99,23 @@ fn kind_of(res: Resolution, rules: &[Rule], preview_commands: bool, path: &Path)
             "video" => PreviewKind::Video(p),
             "pdf" => PreviewKind::Pdf(p),
             "code" => PreviewKind::Code(p),
-            "csv" => PreviewKind::Table {
-                delimiter: delimiter(hint.as_deref(), path),
+            // The separator is settled here, as it always was, and handed over as the note.
+            "csv" => PreviewKind::Plugin {
+                hint: Some(csv_note(hint.as_deref(), path).to_string()),
+                id,
                 path: p,
             },
             "spreadsheet" => PreviewKind::Spreadsheet(p),
             // Word and presentations are one display until the plugins are wired in.
             "document" | "presentation" => PreviewKind::Document(p),
+            // A name that is not a zip / tar / tar.gz (a user rule can aim any glob at the
+            // archive plugin) is the safe "can not preview", as before.
             "archive" => match archive::ArchiveKind::from_path(path) {
-                Some(kind) => PreviewKind::Archive { path: p, kind },
+                Some(_) => PreviewKind::Plugin {
+                    path: p,
+                    id,
+                    hint: None,
+                },
                 None => PreviewKind::can_not_preview(path),
             },
             TEXT_ID => PreviewKind::Text(p),

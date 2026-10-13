@@ -1,14 +1,16 @@
+use super::plugin_host::PluginShow;
 use super::search::SEARCH_MATCH_CAP;
 use super::*;
 use crate::preview::office::{CellType, NumFmtRef};
-use crate::preview::table::{cell_address, Grid, TableData};
+use crate::preview::table::{cell_address, Grid};
 
 /// What the table renderer shows right now, built from borrowed *fields* (not `&self`) so callers
 /// can keep reading the grid while writing a different field such as `tab.table_cur_row`.
 /// A loaded workbook wins (it is only ever set while a spreadsheet preview is active); otherwise
-/// the CSV/TSV/archive table. `None` while loading, after a failed load, or with no visible sheet.
+/// the table a plugin returned (CSV/TSV, an archive listing). `None` while loading, after a failed
+/// load, or with no visible sheet.
 fn grid_of<'a>(
-    table: &'a Option<TableData>,
+    plugin: &'a Option<PluginShow>,
     workbook: &'a Option<Box<crate::preview::office::Workbook>>,
     sheet_idx: usize,
 ) -> Option<Grid<'a>> {
@@ -21,7 +23,10 @@ fn grid_of<'a>(
             .filter(|s| s.loaded)
             .map(Grid::Sheet);
     }
-    table.as_ref().map(Grid::Csv)
+    match plugin.as_ref()?.view.as_ref()? {
+        konoma_plugin::view::View::Table(t) => Some(Grid::Plugin(&*t.grid)),
+        _ => None,
+    }
 }
 
 /// Frees `value` on a thread of its own (one, shared, so holding a key does not start a thread
@@ -448,36 +453,17 @@ fn bytes_contain(h: &[u8], n: &[u8]) -> bool {
 impl App {
     // ---- CSV/TSV table preview ------------------------------------------
 
-    /// Parse the current Table/Archive-kind preview into `table_data` (None on failure = raw-text
-    /// fallback / can-not-preview). Does not touch the cursor/scroll (callers reset or restore
-    /// those as appropriate).
-    pub(super) fn load_table(&mut self) {
-        self.table_data = None;
-        match self.tab.preview_kind.clone() {
-            Some(PreviewKind::Table { path, delimiter }) => {
-                if let Ok(t) = crate::preview::table::parse(&path, delimiter) {
-                    self.table_data = Some(t);
-                }
-            }
-            // Listing an archive relies on third-party crates (zip/tar). Even an unlikely panic is
-            // swallowed by catch_silent, and a failure becomes None (→ safely degrades to [can not preview]).
-            Some(PreviewKind::Archive { path, kind }) => {
-                self.table_data = crate::preview::markdown::catch_silent(|| {
-                    crate::preview::archive::list(&path, kind)
-                })
-                .and_then(Result::ok);
-            }
-            _ => {}
-        }
-    }
-
     /// Clamp the cell cursor into the table's bounds (after a reload/restore that may have shrunk it).
     pub(super) fn clamp_table_cursor(&mut self) {
-        // A spreadsheet that is still loading (or failed) has nothing to clamp against yet: keep the
-        // saved sheet number and cursor so they apply when the workbook lands.
+        // A spreadsheet (or a plugin's table) that is still loading has nothing to clamp against
+        // yet: keep the saved sheet number and cursor so they apply when it lands. (A failed load
+        // has no table either, and the cursor is irrelevant then.)
         if matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_)))
             && self.grid().is_none()
         {
+            return;
+        }
+        if self.is_plugin_loading() {
             return;
         }
         if let Some(wb) = &self.workbook {
@@ -496,9 +482,10 @@ impl App {
         }
     }
 
-    /// Whether a CSV/TSV/archive table preview is active **and parsed** (routes the PreviewTable
-    /// surface / renderer). A Table/Archive kind whose parse failed returns false → the preview
-    /// degrades to raw text (CSV/TSV) or a can-not-preview-style hint (archive).
+    /// Whether a plugin's table preview (CSV/TSV, an archive listing) is active **and read** (routes
+    /// the PreviewTable surface / renderer). One that failed returns false → the preview degrades to
+    /// raw text (CSV/TSV) or a can-not-preview-style hint (archive); one still loading shows the
+    /// loading screen.
     ///
     /// A spreadsheet counts as soon as its workbook is open with at least one visible sheet, even
     /// while the cells of the sheet just switched to are still being read: the surface (keys,
@@ -506,7 +493,7 @@ impl App {
     /// (`is_sheet_loading`) or the reason the sheet could not be read until the grid is there.
     pub fn is_table_preview(&self) -> bool {
         match self.tab.preview_kind {
-            Some(PreviewKind::Table { .. } | PreviewKind::Archive { .. }) => self.grid().is_some(),
+            Some(PreviewKind::Plugin { .. }) => self.plugin_table().is_some(),
             Some(PreviewKind::Spreadsheet(_)) => {
                 self.workbook.as_ref().is_some_and(|w| !w.sheets.is_empty())
             }
@@ -530,6 +517,10 @@ impl App {
             self.set_document(None);
             self.document_error = None;
         }
+        // Likewise a plugin's show: App-level, only while the kind is a plugin's.
+        if !matches!(kind, Some(PreviewKind::Plugin { .. })) {
+            self.drop_plugin();
+        }
         self.tab.preview_kind = kind;
     }
 
@@ -550,26 +541,52 @@ impl App {
             || (self.workbook.is_none() && self.workbook_error.is_none())
     }
 
-    /// The field-separator byte of the active table (`,` by default). A spreadsheet never gets
-    /// here: its copy is built from the cells (tab-joined) in `table_copy_text`.
+    /// The field-separator byte of the active table (`,` by default, the tab for a TSV). A
+    /// spreadsheet never gets here: its copy is built from the cells (tab-joined) in
+    /// `table_copy_text`.
     fn table_delimiter(&self) -> u8 {
-        match self.tab.preview_kind {
-            Some(PreviewKind::Table { delimiter, .. }) => delimiter,
+        match &self.tab.preview_kind {
+            Some(PreviewKind::Plugin { path, hint, .. }) => {
+                konoma_table::delimiter(hint.as_deref(), path)
+            }
             _ => b',',
         }
     }
 
-    /// The parsed CSV/TSV/archive table (None for a spreadsheet or when not a table preview).
-    /// Prefer [`App::grid`] in code that should work for both.
+    /// The plugin's table read back into a `TableData` (None for a spreadsheet or when not a table
+    /// preview). Prefer [`App::grid`] in code that should work for both.
     #[cfg(test)]
-    pub fn table_data(&self) -> Option<&crate::preview::table::TableData> {
-        self.table_data.as_ref()
+    pub fn table_data(&self) -> Option<crate::preview::table::TableData> {
+        let t = self.plugin_table()?;
+        let g = &t.grid;
+        let ncols = g.ncols();
+        Some(crate::preview::table::TableData {
+            headers: (0..ncols)
+                .map(|c| g.header(c).unwrap_or_default())
+                .collect(),
+            rows: (0..g.nrows())
+                .map(|r| (0..g.row_len(r)).map(|c| g.cell(r, c)).collect())
+                .collect(),
+            ncols,
+            truncated: g.truncated(),
+        })
     }
 
     /// What the table renderer shows: the CSV/TSV/archive table, or the current sheet of the loaded
     /// spreadsheet. None while a workbook is still loading / failed to load / has no visible sheet.
     pub fn grid(&self) -> Option<Grid<'_>> {
-        grid_of(&self.table_data, &self.workbook, self.tab.sheet_idx)
+        grid_of(&self.plugin, &self.workbook, self.tab.sheet_idx)
+    }
+
+    /// Whether the columns are colored in turn. A plugin's table says so in its view (`rainbow`); a
+    /// spreadsheet sheet follows the `csv` plugin's setting (`[plugins.csv] rainbow`, or the old
+    /// `[ui] csv_rainbow`) until the spreadsheet is a plugin of its own.
+    pub fn table_rainbow(&self) -> bool {
+        match self.plugin_table() {
+            Some(t) => t.rainbow,
+            None => crate::plugins::effective_settings(&self.cfg, konoma_table::CSV_ID)
+                .bool("rainbow", true),
+        }
     }
 
     /// Whether a spreadsheet preview is on screen (a sheet is showing).
@@ -595,10 +612,12 @@ impl App {
         self.workbook.as_deref()
     }
 
-    /// A spreadsheet's worker has not delivered yet (the file is being opened, another sheet is
-    /// being read, or the sheet on screen is being re-read after an outside edit).
+    /// A spreadsheet's worker (or a plugin's first `open`) has not delivered yet (the file is being
+    /// opened, another sheet is being read, or the sheet on screen is being re-read after an outside
+    /// edit).
     pub(super) fn sheet_load_in_flight(&self) -> bool {
-        matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) && self.media_loading
+        (matches!(self.tab.preview_kind, Some(PreviewKind::Spreadsheet(_))) && self.media_loading)
+            || self.is_plugin_loading()
     }
 
     /// How many sheets of the open workbook hold cells (at most one: the sheet on screen); `None`
@@ -774,8 +793,10 @@ impl App {
                         .join("\n"),
                 });
             }
-            Grid::Csv(t) => t,
+            Grid::Plugin(_) => g,
         };
+        // A table with no data rows (a header-only file) copies its header; a ragged row copies
+        // the cells it has, no padding.
         let sep = (self.table_delimiter() as char).to_string();
         Some(match kind {
             TableCopyKind::Cell => {
@@ -787,18 +808,20 @@ impl App {
             }
             TableCopyKind::Row => {
                 if t.nrows() == 0 {
-                    t.headers.join(&sep)
+                    (0..t.ncols())
+                        .map(|c| t.header(c))
+                        .collect::<Vec<_>>()
+                        .join(&sep)
                 } else {
-                    t.rows.get(r).map(|row| row.join(&sep)).unwrap_or_default()
+                    (0..t.row_len(r))
+                        .map(|c| t.cell(r, c))
+                        .collect::<Vec<_>>()
+                        .join(&sep)
                 }
             }
             TableCopyKind::Column => {
                 let mut vals = vec![t.header(c).to_string()];
-                vals.extend(
-                    t.rows
-                        .iter()
-                        .map(|row| row.get(c).cloned().unwrap_or_default()),
-                );
+                vals.extend((0..t.nrows()).map(|r| t.cell(r, c).into_owned()));
                 vals.join("\n")
             }
         })
@@ -820,7 +843,7 @@ impl App {
         self.tab.search_matches.clear();
         self.tab.search_truncated = false;
         let needle = Needle::new(q);
-        let Some(g) = grid_of(&self.table_data, &self.workbook, self.tab.sheet_idx) else {
+        let Some(g) = grid_of(&self.plugin, &self.workbook, self.tab.sheet_idx) else {
             return;
         };
         let (matches, truncated) = match g {
@@ -844,12 +867,12 @@ impl App {
                     }
                 },
             ),
-            Grid::Csv(t) => scan_rows(
+            Grid::Plugin(t) => scan_rows(
                 t.nrows(),
-                |r| row_weight(t.ncols, (0..t.ncols).map(|c| t.cell(r, c).len()).sum()),
+                |r| row_weight(t.ncols(), (0..t.ncols()).map(|c| t.cell(r, c).len()).sum()),
                 |r, out| {
-                    for c in 0..t.ncols {
-                        if needle.found_in(t.cell(r, c)) {
+                    for c in 0..t.ncols() {
+                        if needle.found_in(&t.cell(r, c)) {
                             out.push((0, r, c));
                         }
                     }
@@ -867,11 +890,7 @@ impl App {
     pub fn table_cell_is_hit(&self, row: usize, col: usize) -> bool {
         matches!(
             self.tab.preview_kind,
-            Some(
-                PreviewKind::Table { .. }
-                    | PreviewKind::Archive { .. }
-                    | PreviewKind::Spreadsheet(_)
-            )
+            Some(PreviewKind::Plugin { .. } | PreviewKind::Spreadsheet(_))
         ) && self
             .tab
             .search_matches
@@ -921,14 +940,14 @@ impl App {
         let text = match g {
             // A spreadsheet cell: the address, what Excel shows, and everything behind it.
             Grid::Sheet(sheet) => self.sheet_cell_detail(sheet, r, c),
-            Grid::Csv(t) if t.nrows() == 0 => String::new(), // a header-only file: the content is empty.
-            Grid::Csv(t) => t.cell(r, c).to_string(),
+            Grid::Plugin(t) if t.nrows() == 0 => String::new(), // a header-only file: the content is empty.
+            Grid::Plugin(t) => t.cell(r, c).to_string(),
         };
         Some(TableCellView {
             // For a sheet the "header" is the cell address (`B3`), the natural name of the cell.
             header: match g {
                 Grid::Sheet(_) => cell_address(r, c),
-                Grid::Csv(_) => g.header(c).to_string(),
+                Grid::Plugin(_) => g.header(c).to_string(),
             },
             row: r + 1,
             col: c + 1,

@@ -553,7 +553,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // final kind-summary match below instead.
     // A spreadsheet parsing on the worker shows the same spinner (a *re*load keeps the previous
     // sheet on screen instead — `is_sheet_loading` is only true while nothing is showing yet).
-    if app.is_sheet_loading() || app.is_document_loading() {
+    if app.is_sheet_loading() || app.is_document_loading() || app.is_plugin_loading() {
         render_media_loading(frame, app, area);
         return;
     }
@@ -710,9 +710,38 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             // it): keep it safe rather than exhaustiveness-forcing a panic.
             None => (tr(app.lang, crate::i18n::Msg::Loading).to_string(), false),
         },
-        // Tables are already drawn via the dedicated path above. Reaching here means the parse
-        // failed = show the raw CSV/TSV as text (safe degradation).
-        Some(PreviewKind::Table { path, .. }) => (load_body(path, app.lang), true),
+        // A plugin's table is already drawn via the dedicated path above. Reaching here means the
+        // plugin failed: a CSV/TSV shows its raw text (safe degradation), an archive says it
+        // cannot be listed rather than dumping the raw zip/tar byte stream as text (principle #3),
+        // and any other plugin says why.
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_table::CSV_ID => {
+            (load_body(path, app.lang), true)
+        }
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_table::ARCHIVE_ID => (
+            format!(
+                "{}\n{}",
+                tr(app.lang, crate::i18n::Msg::ArchiveListUnavailable),
+                path.display()
+            ),
+            false,
+        ),
+        Some(PreviewKind::Plugin { path, .. }) => (
+            format!(
+                "{}\n{}",
+                app.plugin_failure().map_or_else(
+                    || "[can not preview]".to_string(),
+                    |f| f
+                        .message
+                        .get(match app.lang {
+                            crate::i18n::Lang::Jp => "ja",
+                            crate::i18n::Lang::En => "en",
+                        })
+                        .to_string()
+                ),
+                path.display()
+            ),
+            false,
+        ),
         // A spreadsheet that did not load: say why (encrypted / too large / corrupt / unsupported),
         // with the file name. Principle #3: never a crash, never raw bytes.
         Some(PreviewKind::Spreadsheet(path)) => (
@@ -745,17 +774,6 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             (format!("{body}\n{}", path.display()), false)
         }
-        // Archives are also already drawn via the dedicated path (is_table_preview) above. Reaching
-        // here means listing failed (a corrupted file/unsupported format). Rather than dumping the
-        // raw zip/tar byte stream as text, shows the target file + a hint (principle #3).
-        Some(PreviewKind::Archive { path, .. }) => (
-            format!(
-                "{}\n{}",
-                tr(app.lang, crate::i18n::Msg::ArchiveListUnavailable),
-                path.display()
-            ),
-            false,
-        ),
         Some(PreviewKind::CanNotPreview { ext }) => (format!("[can not preview: {ext}]"), false),
         // GitDiff is already drawn via the dedicated path above (unreachable here). Kept safe for exhaustiveness.
         Some(PreviewKind::GitDiff(_)) => ("(git diff)".to_string(), false),

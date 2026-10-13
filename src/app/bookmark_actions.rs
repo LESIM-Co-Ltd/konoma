@@ -1501,7 +1501,7 @@ impl App {
 
     /// The tab-switch variant: refresh the tree / git status / derived views, but **do not reload the
     /// preview**. `load_active` has just rebuilt it from disk itself (`setup_windowed` reopens the file,
-    /// `load_table` re-parses it, `md_cache = None` makes the next draw re-read the source, and
+    /// `load_plugin` reads it again, `md_cache = None` makes the next draw re-read the source, and
     /// `start_media_load` re-reads the media), so going through `reload_preview` here only repeated the
     /// same work — a second full CSV parse for a table tab, a second window open for a text tab.
     /// Returns nothing on purpose: the caller (`load_active`) has nowhere to propagate a failure

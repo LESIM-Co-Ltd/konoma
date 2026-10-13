@@ -1457,14 +1457,18 @@ fn cfg_preview_default_svg() {
 fn cfg_preview_default_csv_tsv_delimiters() {
     let c = tmp("cfgp_data.csv", b"a,b,c\n1,2,3\n");
     match Config::default().resolve_preview(&c) {
-        PreviewKind::Table { delimiter, .. } => assert_eq!(delimiter, b','),
-        other => panic!("expected Table for csv, got {other:?}"),
+        PreviewKind::Plugin { id, hint, path } if id == "csv" => {
+            assert_eq!(konoma_table::delimiter(hint.as_deref(), &path), b',')
+        }
+        other => panic!("expected the csv plugin for csv, got {other:?}"),
     }
     std::fs::remove_file(&c).ok();
     let t = tmp("cfgp_data.tsv", b"a\tb\tc\n1\t2\t3\n");
     match Config::default().resolve_preview(&t) {
-        PreviewKind::Table { delimiter, .. } => assert_eq!(delimiter, b'\t'),
-        other => panic!("expected Table for tsv, got {other:?}"),
+        PreviewKind::Plugin { id, hint, path } if id == "csv" => {
+            assert_eq!(konoma_table::delimiter(hint.as_deref(), &path), b'\t')
+        }
+        other => panic!("expected the csv plugin for tsv, got {other:?}"),
     }
     std::fs::remove_file(&t).ok();
 }

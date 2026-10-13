@@ -41,7 +41,7 @@ impl App {
     fn load_active(&mut self) {
         let mut t = std::mem::take(&mut self.tabs[self.active_tab]);
         // preview_path/preview_kind are read below (table-hits check, media block, setup_windowed,
-        // load_table) before the bulk `self.tab = t` restore at the end of this function, so they
+        // load_plugin) before the bulk `self.tab = t` restore at the end of this function, so they
         // are restored early here (mirroring `self.tab.md_raw = t.md_raw;` further down).
         self.tab.preview_path = t.preview_path.clone();
         self.tab.preview_kind = t.preview_kind.clone();
@@ -167,8 +167,9 @@ impl App {
         // isn't carried over). The range is clamped on the next render/move.
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
-        // For a CSV/TSV table, re-parse the body and restore the saved cursor/scroll, then clamp it.
-        self.load_table();
+        // For a plugin's file (CSV/TSV, an archive listing), open it again, then restore the saved
+        // cursor/scroll and clamp it (a worker's result clamps again when it lands).
+        self.load_plugin();
         self.tab = t;
         self.clamp_table_cursor();
 

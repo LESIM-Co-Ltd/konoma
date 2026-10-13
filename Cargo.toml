@@ -218,20 +218,7 @@ arboard.workspace = true
 globset.workspace = true
 infer.workspace = true
 
-# CSV/TSV プレビュー(テーブル表示)。純 Rust・外部依存なし=配布容易性(PRD §5)を維持。
-# 引用符内カンマ・改行埋め込み・可変列数を正しく扱う(素朴な split では壊れる)。
-csv.workspace = true
-
-# アーカイブ(zip/tar/tar.gz)の中身一覧プレビュー。展開はしない=メタデータ(名前/サイズ/更新日)のみ
-# 読む(preview/archive.rs のモジュール doc に安全境界の詳細)。zip の既定 feature は任意の展開コーデック
-# (bzip2 等・C ライブラリを引きうる)を有効化するが、`by_index_raw` はエントリの圧縮方式に関わらず
-# 非展開の生リーダーでメタデータを返すため default-features=false で足りる(実機検証済)。
-zip.workspace = true
-# default-features=false で既定 feature の xattr(展開時の拡張属性復元。unpack 専用)を落とす。
-# エントリ列挙(`Archive::entries`)はこれを使わない。>=0.4.45 は過去の展開時シンボリックリンク/
-# パストラバーサル勧告(RUSTSEC-2018-0002 / 2021-0080 / 2026-0067 / 2026-0068)の修正版だが、
-# このモジュールはそもそも unpack を一切呼ばない(詳細は preview/archive.rs)。
-tar.workspace = true
+# CSV/TSV and archive (zip/tar/tar.gz) listings are read by the `konoma-table` plugin crate (below).
 
 # 非同期 (画像デコード・外部コマンドのオフロード)
 tokio.workspace = true
@@ -265,6 +252,7 @@ konoma-office-core = { path = "crates/konoma-office-core", version = "0.1.0" }
 konoma-vcs-core = { path = "crates/konoma-vcs-core", version = "0.1.0" }
 konoma-markdown-core = { path = "crates/konoma-markdown-core", version = "0.1.0" }
 konoma-plugin = { path = "crates/konoma-plugin", version = "0.1.0" }
+konoma-table = { path = "crates/konoma-table", version = "0.1.0" }
 
 # Exit-time cleanup of the private temp dir (`preview::command`): `libc::atexit` for the test
 # process, `signal-hook` to catch SIGTERM/SIGHUP/SIGINT on a thread. `libc` is also used to
@@ -282,6 +270,8 @@ signal-hook.workspace = true
 serde_json.workspace = true
 # Test-only: builds a password-protected container in the Office tests (`e2e_tests`).
 cfb.workspace = true
+# Test-only: writes the zip fixtures of the archive tests (the listing itself is in `konoma-table`).
+zip.workspace = true
 # Test-only helpers shared with the crates under `crates/` (path only: never published).
 konoma-test-support = { path = "crates/konoma-test-support" }
 # `test-hooks` keeps the crates' `cfg(test)` seams (exit-time temp cleanup, the decode gate, ...)
@@ -292,6 +282,7 @@ konoma-svg = { path = "crates/konoma-svg", features = ["test-hooks"] }
 konoma-office-core = { path = "crates/konoma-office-core", features = ["test-hooks"] }
 konoma-vcs-core = { path = "crates/konoma-vcs-core", features = ["test-hooks"] }
 konoma-markdown-core = { path = "crates/konoma-markdown-core", features = ["test-hooks"] }
+konoma-table = { path = "crates/konoma-table", features = ["test-hooks"] }
 
 [features]
 default = ["git"]

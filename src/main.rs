@@ -44,7 +44,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use app::{
     App, FileOpResult, FilterPoolResult, FsBurstKinds, GitOpResult, IgnoredResult, KittyResult,
     MdDiffResult, MdEncodeRequest, MdEncodeResult, MdImageResult, MediaDiffResult, MediaResult,
-    RemoteFetch, SortKey, StatusResult,
+    PluginResult, RemoteFetch, SortKey, StatusResult,
 };
 use keymap::{Action, KeyPress, Motion, Resolution, Surface};
 
@@ -408,6 +408,9 @@ fn main() -> Result<()> {
     // tree cannot be walked inside the <60ms draw budget; the scan starts synchronously and hands
     // over only what didn't fit (see `App::start_filter`).
     let (pool_tx, pool_rx) = std::sync::mpsc::channel::<FilterPoolResult>();
+    // A plugin's work (`open` with its first `view`, later `view`s and `act`s): the one channel
+    // every plugin's results come back through (`app/plugin_host.rs`).
+    let (plugin_tx, plugin_rx) = std::sync::mpsc::channel::<PluginResult>();
 
     let start_dir = dir.clone();
     let mut app = App::new(dir, cfg)?;
@@ -423,6 +426,7 @@ fn main() -> Result<()> {
     app.attach_office_opener(office_tx);
     app.attach_gitop_runner(gitop_tx);
     app.attach_filter_pool_loader(pool_tx);
+    app.attach_plugin_runner(plugin_tx);
     // Report a config load error + keymap conflicts/ignored settings via a startup message
     // (silently falling back to the default would go unnoticed). If both are present, combine
     // them into one line.
@@ -470,6 +474,7 @@ fn main() -> Result<()> {
             office: office_rx,
             gitop: gitop_rx,
             pool: pool_rx,
+            plugin: plugin_rx,
         },
     );
 
@@ -697,6 +702,7 @@ struct WorkerRx {
     office: std::sync::mpsc::Receiver<app::OfficeOpenResult>,
     gitop: std::sync::mpsc::Receiver<GitOpResult>,
     pool: std::sync::mpsc::Receiver<FilterPoolResult>,
+    plugin: std::sync::mpsc::Receiver<PluginResult>,
 }
 
 /// How long the run loop may block waiting for input before it comes back round to apply worker
@@ -1026,6 +1032,15 @@ fn run(
         // result list fills in while the user is still typing.
         while let Ok(result) = rx.pool.try_recv() {
             if app.apply_filter_pool(result) {
+                needs_redraw = true;
+            }
+        }
+
+        // Apply a plugin worker's result (an `open` that did not fit the first frame's budget, a
+        // later `view` or `act`; stale generations are dropped). Re-render because applying it
+        // replaces the "Loading..." screen with the plugin's display.
+        while let Ok(result) = rx.plugin.try_recv() {
+            if app.apply_plugin_result(result) {
                 needs_redraw = true;
             }
         }

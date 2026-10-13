@@ -222,6 +222,19 @@ pub trait Grid: Send + Sync {
     fn ncols(&self) -> usize;
     fn header(&self, col: usize) -> Option<String>;
     fn cell(&self, row: usize, col: usize) -> String;
+    /// The cell as a borrowed string, for a grid that keeps its cells as text. The host reads
+    /// every cell when it searches, and this lets it do so without copying each one. Return `None`
+    /// (the default) if the text is made on demand; the host then calls [`Grid::cell`].
+    fn cell_str(&self, row: usize, col: usize) -> Option<&str> {
+        let _ = (row, col);
+        None
+    }
+    /// How many cells `row` really has, for a ragged table whose short rows are padded when drawn.
+    /// The host copies a row with this many cells and no padding. The default is every column.
+    fn row_len(&self, row: usize) -> usize {
+        let _ = row;
+        self.ncols()
+    }
     /// Whether the table was cut at a limit.
     fn truncated(&self) -> bool {
         false
