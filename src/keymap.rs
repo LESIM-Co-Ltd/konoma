@@ -99,6 +99,9 @@ pub enum Action {
     ToggleWrap,
     ToggleInfo,
     RequestEdit,
+    /// `o`: open the file in another app (layer 3, the `open` verb of the plugin that shows it:
+    /// an Office app for Office files, else the OS default application). Runs on a worker.
+    OpenExternal,
     OpenGitView,
     Refresh,
     CyclePathStyle,
@@ -205,6 +208,14 @@ pub enum Action {
     /// In a follow-opened diff: toggle between the diff since follow-start and the full git diff.
     #[cfg(feature = "git")]
     ToggleFollowDiffScope,
+    /// `n` / `N` in a diff (when it is not the media side-by-side view): scroll to the next /
+    /// previous change block of the file. (In a text or decorated preview `n` / `N` are
+    /// `SearchNext` / `SearchPrev`, which jump to the next / previous change while no search is
+    /// active.)
+    #[cfg(feature = "git")]
+    DiffNextChange,
+    #[cfg(feature = "git")]
+    DiffPrevChange,
     // --- Git changes hub (p) ---
     #[cfg(feature = "git")]
     GitStage,
@@ -266,6 +277,18 @@ pub enum Action {
     /// Graph branch panel: move the cursor row down one in priority order (`J`).
     #[cfg(feature = "git")]
     GitGraphPickerMoveDown,
+
+    /// `Tab` / `Shift-Tab` on a version-control list screen: switch to the next / previous screen
+    /// of the cycle (changes, log, graph, branches, worktrees; jj has no worktrees).
+    #[cfg(feature = "git")]
+    GitScreenNext,
+    #[cfg(feature = "git")]
+    GitScreenPrev,
+    /// `/` on the changes, log and graph screens: filter the rows by the text they show (the
+    /// branch and worktree lists have their own `BranchFilterStart` / `WorktreeFilterStart`; the
+    /// three share one filter).
+    #[cfg(feature = "git")]
+    ListFilterStart,
 
     // --- Git branches ---
     #[cfg(feature = "git")]
@@ -408,6 +431,10 @@ pub enum Surface {
     BranchFilter,
     #[cfg(feature = "git")]
     WorktreeFilter,
+    /// The `/` filter of the changes list, the log or the graph (which one is
+    /// `App::filtering_list`).
+    #[cfg(feature = "git")]
+    ListFilter,
 
     // --- Confirm modal (y/n/c/m/! fixed) ---
     DialogConfirmDelete,
@@ -466,6 +493,8 @@ impl Surface {
             Surface::DialogInput | Surface::Filter | Surface::Search | Surface::Mark => true,
             #[cfg(feature = "git")]
             Surface::BranchFilter => true,
+            #[cfg(feature = "git")]
+            Surface::ListFilter => true,
             #[cfg(feature = "git")]
             Surface::WorktreeFilter => true,
             _ => false,
@@ -1131,7 +1160,7 @@ impl Context {
             | Surface::DialogConfirmQuit
             | Surface::DialogConfirmBookmark => return None,
             #[cfg(feature = "git")]
-            Surface::BranchFilter | Surface::WorktreeFilter => return None,
+            Surface::BranchFilter | Surface::WorktreeFilter | Surface::ListFilter => return None,
             Surface::Help => Context::Help,
             Surface::Sort => Context::Sort,
             Surface::Bookmarks => Context::Bookmarks,
@@ -1311,11 +1340,17 @@ impl KeyMap {
         tree.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         tree.insert(KeyPress::ch('i'), run(Action::ToggleInfo));
         tree.insert(KeyPress::ch('e'), run(Action::RequestEdit));
+        // `o` = open in another app (layer 3): the Office apps for an Office file, else the OS
+        // default. `e` edits, `o` opens.
+        tree.insert(KeyPress::ch('o'), run(Action::OpenExternal));
         tree.insert(KeyPress::ch('m'), run(Action::MarkSet));
         tree.insert(KeyPress::ch('\''), run(Action::MarkJump));
         tree.insert(KeyPress::ch('d'), run(Action::OpenGitDiffCursor));
         // `p` = the project's screen (the Git hub for now); it was `o`.
         tree.insert(KeyPress::ch('p'), run(Action::OpenGitView));
+        // `!` = the project's own tool (lazygit / lazyjj), from the tree as from a preview.
+        #[cfg(feature = "git")]
+        tree.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
         tree.insert(KeyPress::ch('a'), run(Action::SetAnchor));
         tree.insert(KeyPress::ch('A'), run(Action::ResetAnchor));
         tree.insert(KeyPress::ch('v'), run(Action::EnterVisual));
@@ -1356,9 +1391,14 @@ impl KeyMap {
         ptext.insert(KeyPress::ch('/'), run(Action::SearchStart));
         ptext.insert(KeyPress::ch('n'), run(Action::SearchNext));
         ptext.insert(KeyPress::ch('N'), run(Action::SearchPrev));
-        // `p` is the project's screen on every context (B3c); the path style is in the `,` menu.
+        // `p` is the project's screen on every context (below); the path style is in the `,` menu.
         ptext.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         ptext.insert(KeyPress::ch('e'), run(Action::RequestEdit));
+        ptext.insert(KeyPress::ch('o'), run(Action::OpenExternal));
+        ptext.insert(KeyPress::ch('p'), run(Action::OpenGitView));
+        #[cfg(feature = "git")]
+        ptext.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
+        ptext.insert(KeyPress::ch('r'), run(Action::Refresh));
         ptext.insert(KeyPress::ch('v'), run(Action::PreviewEnterVisual));
         ptext.insert(KeyPress::ch('V'), run(Action::PreviewEnterVisualLine));
         ptext.insert(KeyPress::ch('R'), run(Action::ToggleMarkdownRaw));
@@ -1415,6 +1455,11 @@ impl KeyMap {
         pimg.insert(KeyPress::ch('R'), run(Action::ImageReturnToDiff));
         pimg.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         pimg.insert(KeyPress::ch('e'), run(Action::RequestEdit));
+        pimg.insert(KeyPress::ch('o'), run(Action::OpenExternal));
+        pimg.insert(KeyPress::ch('p'), run(Action::OpenGitView));
+        #[cfg(feature = "git")]
+        pimg.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
+        pimg.insert(KeyPress::ch('r'), run(Action::Refresh));
         // Ctrl-n/Ctrl-p = file paging (J/K are already assigned to PDF page paging, hence Ctrl here).
         pimg.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
         pimg.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
@@ -1434,6 +1479,11 @@ impl KeyMap {
         ptbl.insert(KeyPress::ch('K'), run(Action::PagePrev));
         ptbl.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
         ptbl.insert(KeyPress::ch('e'), run(Action::RequestEdit));
+        ptbl.insert(KeyPress::ch('o'), run(Action::OpenExternal));
+        ptbl.insert(KeyPress::ch('p'), run(Action::OpenGitView));
+        #[cfg(feature = "git")]
+        ptbl.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
+        ptbl.insert(KeyPress::ch('r'), run(Action::Refresh));
         // Ctrl-n/Ctrl-p = file paging (same keys as text/image).
         ptbl.insert(KeyPress::ctrl_ch('n'), run(Action::PreviewFileNext));
         ptbl.insert(KeyPress::ctrl_ch('p'), run(Action::PreviewFilePrev));
@@ -1453,12 +1503,22 @@ impl KeyMap {
             let mut pgit: ContextMap = HashMap::new();
             pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
             pgit.insert(KeyPress::ch('x'), run(Action::GitDiffDiscard));
+            // `e` opens the editor at the change block on screen; `o` opens the file in another
+            // app; `p` / `!` reach the project's screen and tool; `r` reads the diff again.
+            pgit.insert(KeyPress::ch('e'), run(Action::RequestEdit));
+            pgit.insert(KeyPress::ch('o'), run(Action::OpenExternal));
+            pgit.insert(KeyPress::ch('p'), run(Action::OpenGitView));
+            pgit.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
+            pgit.insert(KeyPress::ch('r'), run(Action::Refresh));
+            // `n` / `N` = the next / previous change block of this file (layer 1).
+            pgit.insert(KeyPress::ch('n'), run(Action::DiffNextChange));
+            pgit.insert(KeyPress::ch('N'), run(Action::DiffPrevChange));
             // The follow scope (`toggle_follow_diff_scope`) has no default key: it lives in the
             // `,` menu (its old `f` was the less-style page key).
             pgit.insert(KeyPress::ch(','), Binding::Leader(LeaderId::Options));
             // Ctrl-n / Ctrl-p = switch to the next/previous changed file's diff (cycle through
             // changes without leaving the view; layer 1's "next/previous file"). `n` / `N` are
-            // left free for "next/previous change" within the file (B3c).
+            // the next / previous change block within the file.
             pgit.insert(KeyPress::ctrl_ch('n'), run(Action::JumpNextChange));
             pgit.insert(KeyPress::ctrl_ch('p'), run(Action::JumpPrevChange));
             pgit.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
@@ -1478,12 +1538,18 @@ impl KeyMap {
                 gchg.insert(KeyPress::ch('b'), run(Action::GitOpenBranches));
                 gchg.insert(KeyPress::ch('w'), run(Action::GitOpenWorktrees));
                 // The log and the graph have no default key here: `g` / `l` are layer 1's
-                // top and open (the hub's `Tab` cycle reaches the screens in B3c). The actions
-                // stay (`git_open_log`, `git_open_graph`) for `[keys]`.
+                // top and open (the screens' `Tab` cycle reaches them). The actions stay
+                // (`git_open_log`, `git_open_graph`) for `[keys]`.
                 // `l` opens the selected file's diff (`Enter`'s operation), `h` goes back.
                 gchg.insert(KeyPress::ch('l'), run(Action::GitOpenSelectedDiff));
                 gchg.insert(KeyPress::ch('h'), run(Action::GitClose));
                 gchg.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
+                // The row is a file: edit it, open it in another app, in a new tab; filter rows.
+                gchg.insert(KeyPress::ch('e'), run(Action::RequestEdit));
+                gchg.insert(KeyPress::ch('o'), run(Action::OpenExternal));
+                gchg.insert(KeyPress::ctrl_ch('t'), run(Action::OpenInNewTab));
+                gchg.insert(KeyPress::ch('/'), run(Action::ListFilterStart));
+                gchg.insert(KeyPress::ch('r'), run(Action::Refresh));
                 // jj has no staging area, and its changes screen syncs (fetch + rebase) on `s`
                 // where git stages: the same key, a different meaning per backend.
                 if backend == Backend::Jj {
@@ -1499,6 +1565,8 @@ impl KeyMap {
                 glog.insert(KeyPress::ch('l'), run(Action::GitOpenDetail));
                 glog.insert(KeyPress::ch('h'), run(Action::GitClose));
                 glog.insert(KeyPress::ch('q'), run(Action::GitClose));
+                glog.insert(KeyPress::ch('/'), run(Action::ListFilterStart));
+                glog.insert(KeyPress::ch('r'), run(Action::Refresh));
                 // y→ copy commit info (short/full hash, subject, full message, author, date). Shared by
                 // log/graph.
                 glog.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::GitCopy));
@@ -1532,6 +1600,7 @@ impl KeyMap {
                 // Git branches. Enter→BranchCheckout is a fixed key.
                 let mut gbr: ContextMap = HashMap::new();
                 gbr.insert(KeyPress::ch('/'), run(Action::BranchFilterStart));
+                gbr.insert(KeyPress::ch('r'), run(Action::Refresh));
                 gbr.insert(KeyPress::ch('l'), run(Action::BranchCheckout));
                 // `c` = create (`n` is layer 1's next match).
                 gbr.insert(KeyPress::ch('c'), run(Action::BranchCreate));
@@ -1552,6 +1621,7 @@ impl KeyMap {
                 // worktree (`Enter`'s operation) and `h` back.
                 let mut gwt: ContextMap = HashMap::new();
                 gwt.insert(KeyPress::ch('/'), run(Action::WorktreeFilterStart));
+                gwt.insert(KeyPress::ch('r'), run(Action::Refresh));
                 gwt.insert(KeyPress::ch('c'), run(Action::WorktreeCreate));
                 gwt.insert(KeyPress::ch('l'), run(Action::WorktreeGoto));
                 gwt.insert(KeyPress::ch('h'), run(Action::WorktreeClose));
@@ -2666,6 +2736,7 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         "toggle_wrap" => Action::ToggleWrap,
         "toggle_info" => Action::ToggleInfo,
         "request_edit" => Action::RequestEdit,
+        "open_external" => Action::OpenExternal,
         "open_git_view" => Action::OpenGitView,
         "refresh" => Action::Refresh,
         "cycle_path_style" => Action::CyclePathStyle,
@@ -2807,6 +2878,16 @@ pub fn action_from_str(s: &str) -> Option<Action> {
         #[cfg(feature = "git")]
         "git_graph_picker_move_down" => Action::GitGraphPickerMoveDown,
         #[cfg(feature = "git")]
+        "diff_next_change" => Action::DiffNextChange,
+        #[cfg(feature = "git")]
+        "diff_prev_change" => Action::DiffPrevChange,
+        #[cfg(feature = "git")]
+        "git_screen_next" => Action::GitScreenNext,
+        #[cfg(feature = "git")]
+        "git_screen_prev" => Action::GitScreenPrev,
+        #[cfg(feature = "git")]
+        "list_filter_start" => Action::ListFilterStart,
+        #[cfg(feature = "git")]
         "branch_filter_start" => Action::BranchFilterStart,
         #[cfg(feature = "git")]
         "branch_checkout" => Action::BranchCheckout,
@@ -2877,6 +2958,7 @@ pub fn action_name(a: Action) -> String {
         Action::ToggleWrap => "toggle_wrap",
         Action::ToggleInfo => "toggle_info",
         Action::RequestEdit => "request_edit",
+        Action::OpenExternal => "open_external",
         Action::OpenGitView => "open_git_view",
         Action::Refresh => "refresh",
         Action::CyclePathStyle => "cycle_path_style",
@@ -3004,6 +3086,16 @@ pub fn action_name(a: Action) -> String {
         #[cfg(feature = "git")]
         Action::GitGraphPickerMoveDown => "git_graph_picker_move_down",
         #[cfg(feature = "git")]
+        Action::DiffNextChange => "diff_next_change",
+        #[cfg(feature = "git")]
+        Action::DiffPrevChange => "diff_prev_change",
+        #[cfg(feature = "git")]
+        Action::GitScreenNext => "git_screen_next",
+        #[cfg(feature = "git")]
+        Action::GitScreenPrev => "git_screen_prev",
+        #[cfg(feature = "git")]
+        Action::ListFilterStart => "list_filter_start",
+        #[cfg(feature = "git")]
         Action::BranchFilterStart => "branch_filter_start",
         #[cfg(feature = "git")]
         Action::BranchCheckout => "branch_checkout",
@@ -3094,19 +3186,21 @@ mod tests {
             m.resolve(Context::Tree, None, KeyPress::ch('A')),
             Resolution::Action(Action::ResetAnchor)
         );
-        // `p` opens the project's screen; `o` (its old key), `s` and `p`'s old meaning (the path
-        // style) have no default key in the tree.
+        // `p` opens the project's screen; `o` (its old key) now opens the file in another app;
+        // `s` and `p`'s old meaning (the path style) have no default key in the tree.
         assert_eq!(
             m.resolve(Context::Tree, None, KeyPress::ch('p')),
             Resolution::Action(Action::OpenGitView)
         );
-        for c in ['o', 's'] {
-            assert_eq!(
-                m.resolve(Context::Tree, None, KeyPress::ch(c)),
-                Resolution::Unbound,
-                "{c}"
-            );
-        }
+        assert_eq!(
+            m.resolve(Context::Tree, None, KeyPress::ch('o')),
+            Resolution::Action(Action::OpenExternal)
+        );
+        assert_eq!(
+            m.resolve(Context::Tree, None, KeyPress::ch('s')),
+            Resolution::Unbound,
+            "s"
+        );
     }
 
     #[test]
@@ -3708,7 +3802,7 @@ mod tests {
         );
         assert_eq!(
             m.resolve(Context::Text, None, KeyPress::ch('o')),
-            Resolution::Unbound
+            Resolution::Action(Action::OpenExternal)
         );
         // In the outline overlay: j/k move, O/q close.
         assert_eq!(
@@ -4076,7 +4170,7 @@ mod tests {
             Resolution::Action(Action::GitWorktreeDiff)
         );
         // `l` opens (`Enter`'s operation), `h` goes back, `g` is the top: the log and the graph
-        // have no default key here (they are reached from the hub in B3c).
+        // have no default key here (the screens' `Tab` cycle reaches them).
         assert_eq!(
             m.resolve(gs(Screen::Changes), None, KeyPress::ch('l')),
             Resolution::Action(Action::GitOpenSelectedDiff)
@@ -4323,7 +4417,7 @@ mod tests {
             );
         }
         // Ctrl-n / Ctrl-p inside the diff view = cycle through changed files (the same Actions as
-        // the tree's n/N). `n` / `N` are free there (they become "next change" in B3c), and the
+        // the tree's n/N). `n` / `N` are the next / previous change block of the file, and the
         // follow scope (`f`) has no default key (it moves into the `,` menu in B3b).
         #[cfg(feature = "git")]
         {
@@ -4338,13 +4432,18 @@ mod tests {
                     kp.label()
                 );
             }
-            for c in ['n', 'N', 'f'] {
+            for (c, a) in [('n', Action::DiffNextChange), ('N', Action::DiffPrevChange)] {
                 assert_eq!(
                     m.resolve(Context::Diff, None, KeyPress::ch(c)),
-                    Resolution::Unbound,
+                    Resolution::Action(a),
                     "diff ビューの {c}"
                 );
             }
+            assert_eq!(
+                m.resolve(Context::Diff, None, KeyPress::ch('f')),
+                Resolution::Unbound,
+                "diff ビューの f"
+            );
         }
         // Config-string round trip.
         for s in [

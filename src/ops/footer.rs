@@ -75,6 +75,10 @@ const TOGGLE_ITEM: &[Action] = &[Action::ToggleFocusedItem, Action::LinkOpen];
 const VISUAL_EXIT: &[Action] = &[Action::PreviewExitVisual, Action::Cancel];
 const ALL_FILES: &[Action] = &[Action::ToggleChangedFilter, Action::TreeLeave];
 const SELECT: &[Action] = &[Action::PreviewEnterVisual, Action::PreviewEnterVisualLine];
+#[cfg(feature = "git")]
+const DIFF_CHANGES: &[Action] = &[Action::DiffNextChange, Action::DiffPrevChange];
+#[cfg(feature = "git")]
+const SCREENS: &[Action] = &[Action::GitScreenNext, Action::GitScreenPrev];
 const CHANGED_KEYS: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange];
 
 /// The footer plan for `ctx` while nothing more specific is going on. State that changes what a
@@ -165,6 +169,9 @@ fn tree(app: &App) -> Vec<Foot> {
         Foot::Op(Action::OpenGitDiffCursor),
         Foot::Op(Action::ToggleChangedFilter),
         Foot::Op(Action::ToggleFollow),
+        Foot::Op(Action::OpenExternal),
+        #[cfg(feature = "git")]
+        Foot::Op(Action::GitLaunchTool),
         Foot::Leader(LeaderId::Copy, Msg::CopyHint),
         Foot::Op(Action::TabNew),
         Foot::Op(Action::OpenInNewTab),
@@ -206,6 +213,7 @@ fn table(_app: &App) -> Vec<Foot> {
         Foot::Op(Action::PreviewBack),
         Foot::Op(Action::ToggleHelp),
         Foot::Op(Action::RequestEdit),
+        Foot::Op(Action::OpenExternal),
         Foot::Group(TABS, Msg::HintTab),
         Foot::Leader(LeaderId::Options, Msg::HintOptions),
     ]
@@ -222,6 +230,7 @@ fn image(_app: &App) -> Vec<Foot> {
         Foot::Op(Action::PreviewBack),
         Foot::Op(Action::ToggleHelp),
         Foot::Op(Action::RequestEdit),
+        Foot::Op(Action::OpenExternal),
         Foot::Group(TABS, Msg::HintTab),
         Foot::Leader(LeaderId::Options, Msg::HintOptions),
     ]
@@ -245,6 +254,7 @@ fn text_preview(app: &App) -> Vec<Foot> {
             Foot::Op(Action::PreviewBack),
             Foot::Op(Action::ToggleHelp),
             Foot::Op(Action::RequestEdit),
+            Foot::Op(Action::OpenExternal),
             Foot::Group(TABS, Msg::HintTab),
             Foot::Leader(LeaderId::Options, Msg::HintOptions),
         ];
@@ -280,11 +290,13 @@ fn text_preview(app: &App) -> Vec<Foot> {
             Foot::Op(Action::ToggleOutline),
             Foot::Op(Action::ToggleMarkdownRaw),
             Foot::Op(Action::SearchStart),
+            Foot::Dyn(change_status),
             Foot::Op(Action::ToggleFollow),
             Foot::Group(FILE_JUMP, Msg::HintFileJump),
             Foot::Op(Action::PreviewBack),
             Foot::Op(Action::ToggleHelp),
             Foot::Op(Action::RequestEdit),
+            Foot::Op(Action::OpenExternal),
             Foot::Group(ENDS, Msg::HintEnds),
             Foot::Group(TABS, Msg::HintTab),
             Foot::Leader(LeaderId::Options, Msg::HintOptions),
@@ -297,6 +309,7 @@ fn text_preview(app: &App) -> Vec<Foot> {
         Foot::Group(SCROLL, Msg::Scroll),
         Foot::Dyn(search_status),
         Foot::Op(Action::SearchStart),
+        Foot::Dyn(change_status),
     ];
     // Range-selection copy (v=char / V=line) is windowed (Code/Text/raw Markdown) only. The label
     // of `Y` is the short one here (the long wording is the help's).
@@ -313,6 +326,7 @@ fn text_preview(app: &App) -> Vec<Foot> {
         Foot::Op(Action::PreviewBack),
         Foot::Op(Action::ToggleHelp),
         Foot::Op(Action::RequestEdit),
+        Foot::Op(Action::OpenExternal),
         Foot::Group(ENDS, Msg::HintEnds),
         Foot::Group(HSCROLL, Msg::HintHscroll),
         Foot::Group(LINE_ENDS, Msg::HintLineEnds),
@@ -338,6 +352,15 @@ fn search_status(app: &App, ctx: Context) -> Option<String> {
     app.preview_search_query()
         .is_some()
         .then(|| format!("{keys}:{label}"))
+}
+
+/// `n/N:change` while no search is active and the file on screen has a change to step to.
+fn change_status(app: &App, ctx: Context) -> Option<String> {
+    if app.preview_search_query().is_some() || !app.preview_has_changes() {
+        return None;
+    }
+    let keys = join_keys(app, ctx, SEARCH_MATCH);
+    (!keys.is_empty()).then(|| format!("{keys}:{}", tr(app.lang, Msg::HintChange)))
 }
 
 /// `y c:copy code`: the copy menu's key followed by the code-block item's key.
@@ -374,6 +397,7 @@ fn diff(app: &App) -> Vec<Foot> {
         v.push(Foot::Group(SCROLL, Msg::Scroll));
     }
     v.push(Foot::Group(NEXT_PREV_CHANGE, Msg::HintNextPrevFile));
+    v.push(Foot::Group(DIFF_CHANGES, Msg::HintChange));
     if media {
         v.push(Foot::Op(Action::CycleDiffLayout));
         v.push(Foot::GroupOp(PAGE_TURN));
@@ -391,6 +415,8 @@ fn diff(app: &App) -> Vec<Foot> {
         v.push(Foot::Op(Action::CycleDiffView));
     }
     v.push(Foot::Leader(LeaderId::Options, Msg::HintOptions));
+    v.push(Foot::Op(Action::RequestEdit));
+    v.push(Foot::Op(Action::OpenExternal));
     v
 }
 
@@ -421,11 +447,15 @@ fn screen(_app: &App, b: Backend, s: Screen) -> Vec<Foot> {
             Foot::Op(Action::GitOpenWorktrees),
             Foot::Op(Action::JjSync),
             Foot::Op(Action::GitLaunchTool),
+            Foot::Op(Action::ListFilterStart),
+            Foot::Group(SCREENS, Msg::FtScreens),
             Foot::As(Action::GitClose, Msg::FtClose),
         ],
         Screen::Log => vec![
             nav,
             Foot::Op(Action::GitOpenDetail),
+            Foot::Op(Action::ListFilterStart),
+            Foot::Group(SCREENS, Msg::FtScreens),
             Foot::Union(BACK, Msg::GitBack),
         ],
         Screen::Graph => {
@@ -438,6 +468,8 @@ fn screen(_app: &App, b: Backend, s: Screen) -> Vec<Foot> {
                 v.push(Foot::Op(Action::GitGraphClearBase));
                 v.push(Foot::As(Action::GitGraphOpenPicker, Msg::GitBranches));
             }
+            v.push(Foot::Op(Action::ListFilterStart));
+            v.push(Foot::Group(SCREENS, Msg::FtScreens));
             v.push(Foot::Union(BACK, Msg::GitBack));
             v
         }
@@ -458,6 +490,7 @@ fn screen(_app: &App, b: Backend, s: Screen) -> Vec<Foot> {
             Foot::Op(Action::BranchCreate),
             Foot::Op(Action::BranchDelete),
             Foot::Op(Action::BranchFilterStart),
+            Foot::Group(SCREENS, Msg::FtScreens),
             Foot::Union(BACK, Msg::GitBack),
         ],
         Screen::Worktrees => vec![
@@ -467,6 +500,7 @@ fn screen(_app: &App, b: Backend, s: Screen) -> Vec<Foot> {
             Foot::Op(Action::WorktreeGotoNewTab),
             Foot::Op(Action::WorktreeShowChanges),
             Foot::Op(Action::WorktreeFilterStart),
+            Foot::Group(SCREENS, Msg::FtScreens),
             Foot::Union(WT_BACK, Msg::GitBack),
         ],
         Screen::Detail => vec![

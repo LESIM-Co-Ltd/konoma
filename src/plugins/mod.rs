@@ -23,7 +23,7 @@ use konoma_plugin::{
 };
 
 pub(crate) use listing::plugins_table;
-pub(crate) use resolve::{resolve_kind, user_rules};
+pub(crate) use resolve::{plugin_id_of, resolve_kind, user_rules};
 
 /// Host-internal pseudo plugins. They own no file binding: a `[[preview.rules]]` entry that asks
 /// for plain text, an external command, or an unknown renderer is aimed at one of them, so the
@@ -183,6 +183,27 @@ pub(crate) fn standard_manifests() -> Vec<Manifest> {
     // `math` only takes the formulas inside Markdown, so it has no file to edit or open.
     out.insert(2, math);
     out
+}
+
+/// The `open` verb of the plugin that shows `path`: the chain `o` walks. A file no plugin takes
+/// (plain text, an unknown type) or a plugin that declares none opens with the OS default.
+pub(crate) fn open_verb(
+    rules: &[crate::config::Rule],
+    disabled: &[String],
+    path: &std::path::Path,
+) -> VerbDecl {
+    plugin_id_of(rules, disabled, path)
+        .and_then(|id| {
+            with_registry(disabled, |r| {
+                r.manifest(&id)
+                    .and_then(|m| m.verbs.iter().find(|v| v.verb == Verb::Open).cloned())
+            })
+        })
+        .unwrap_or_else(|| {
+            VerbDecl::new(Verb::Open)
+                .launcher(Launcher::OsDefault)
+                .mode(LaunchMode::Gui)
+        })
 }
 
 /// The host-internal pseudo plugins (see [`TEXT_ID`]).

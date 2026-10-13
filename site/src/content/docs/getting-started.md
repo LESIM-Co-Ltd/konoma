@@ -192,8 +192,8 @@ Two habits carry you everywhere:
    links. Press `Tab` to focus a link, `Enter` to follow it, `q` to come back.
 4. Select an image or PDF — full-screen pixels; `+`/`-` zooms, `J`/`K` turns
    PDF pages.
-5. In a git repository, press `o` — the changes hub. `Enter` on a file shows its
-   full-screen diff; `l` is the log; `g` is the commit graph. `q` backs out.
+5. In a git repository, press `p` — the changes hub. `Enter` on a file shows its
+   full-screen diff; `Tab` walks on to the log and the commit graph. `q` backs out.
 6. Press `m` then `a` to bookmark where you are; press `'` to see the bookmark
    list and jump.
 

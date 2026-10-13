@@ -48,14 +48,15 @@ slides (`J`/`K` turn slides, `R` switches to the text view).
 ## 3. Toggle checkboxes
 
 In a Markdown file with a task list (`- [ ]` items), `Tab` onto a checkbox
-and press `Space`. The checkbox toggles **and the state is written back to
+and press `Enter`. The checkbox toggles **and the state is written back to
 the file** — verified against the file on disk first, so a concurrently
 editing agent is never clobbered. `R` shows the raw source if you want to
 see the change.
 
 ## 4. Search and copy
 
-- `/` searches inside any text preview; `n`/`N` jump between matches.
+- `/` searches inside any text preview; `n`/`N` jump between matches (with nothing searched, between
+  the file's changes).
 - In code/text (and raw Markdown), move the caret with `h j k l`, select with
   `v` (characters) or `V` (lines), copy with `y`.
 - `Y` copies an `@path#L12-34` reference — paste it into an AI-agent chat to
@@ -68,16 +69,17 @@ see the change.
 - `/` filters as you type; `Esc` clears.
 - `Space` opens the file menu: create (`n`), rename (`r`), delete (`d` — to
   the trash, after a confirmation), copy/cut/paste (`c`/`x`/`p`).
-- `.` shows dotfiles, `s` sorts, `i` shows file info.
+- `.` shows dotfiles, `,` opens the sort and display menu, `i` shows file info, `o` opens the file in
+  its own app.
 - `m` + a letter bookmarks the cursor item (lowercase = this project,
   uppercase = global); `'` opens the bookmark list — press a letter to jump.
   Both work from previews too, where they act on the file being shown.
 
 ## 6. Git, live
 
-In a git repository: `o` opens the changes hub (stage with `s`, commit with
+In a git repository: `p` opens the changes hub (stage with `s`, commit with
 `c`), `Enter` on a file shows its full-screen diff (`s` cycles
-unified/split), `l` is the log and `g` the commit graph — try `s` on a
+unified/split), and `Tab` walks on to the log and the commit graph — try `s` on a
 commit there to pin its branch straight along lane 0. Changed files are
 colored in the tree, and code previews get a change gutter.
 
@@ -88,9 +90,9 @@ The flagship workflow — konoma on the left, a coding agent on the right:
 - `F` turns on **follow mode**: every file the agent changes appears as a
   diff, automatically — and the diff shows **what changed since you pressed
   `F`**, not the whole uncommitted diff, so edits you made earlier stay out of
-  the way. Press `f` to switch between that and the full `git diff`.
+  the way. Open the `,` menu and press `f` to switch between that and the full `git diff`.
 - Follow is sticky: scrolling and `n`/`N` keep following. `q` stops it.
-- While a diff is shown, `n`/`N` cycle through the files changed in this
+- While a diff is shown, `Ctrl-n`/`Ctrl-p` cycle through the files changed in this
   follow session.
 - `C` lists every uncommitted file; `y` → `@` and `Y` copy references for
   the conversation.

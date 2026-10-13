@@ -20542,6 +20542,9 @@ mod ops_keys;
 mod menus;
 
 #[cfg(test)]
+mod newkeys;
+
+#[cfg(test)]
 mod word;
 
 #[cfg(test)]

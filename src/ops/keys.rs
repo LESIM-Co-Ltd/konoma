@@ -77,6 +77,19 @@ pub fn fixed_bindings(ctx: Context) -> Vec<Fixed> {
         v.push(own(KeyCode::Tab, Action::LinkFocusNext));
         v.push(own(KeyCode::BackTab, Action::LinkFocusPrev));
     }
+    // `Tab` / `Shift-Tab` walk the version-control screens: changes, log, graph, branches,
+    // worktrees (the commit detail and the branch panel are not stops of the cycle).
+    #[cfg(feature = "git")]
+    if matches!(
+        ctx,
+        Context::Screen(
+            _,
+            Screen::Changes | Screen::Log | Screen::Graph | Screen::Branches | Screen::Worktrees
+        )
+    ) {
+        v.push(own(KeyCode::Tab, Action::GitScreenNext));
+        v.push(own(KeyCode::BackTab, Action::GitScreenPrev));
+    }
     v
 }
 

@@ -41,6 +41,7 @@ fn all_surfaces() -> Vec<Surface> {
     v.extend([
         Surface::BranchFilter,
         Surface::WorktreeFilter,
+        Surface::ListFilter,
         Surface::GitDetail,
         Surface::GitLog,
         Surface::GitGraph,
@@ -97,6 +98,8 @@ fn surface_ordinal(s: Surface) -> usize {
         Surface::GitWorktrees => 30,
         #[cfg(feature = "git")]
         Surface::PreviewGitDiff => 31,
+        #[cfg(feature = "git")]
+        Surface::ListFilter => 32,
     }
 }
 
@@ -106,7 +109,7 @@ fn the_surface_list_is_complete() {
     let mut ords: Vec<usize> = all.iter().map(|&s| surface_ordinal(s)).collect();
     ords.sort_unstable();
     let expected: Vec<usize> = if cfg!(feature = "git") {
-        (0..32).collect()
+        (0..33).collect()
     } else {
         (0..22).collect()
     };
@@ -341,7 +344,11 @@ fn only_in_this_build(snapshot: &str) -> String {
             let ctx = l.split(" | ").next().unwrap_or("");
             let ctx = ctx.trim_start_matches(['-', '+', ' ']);
             cfg!(feature = "git")
-                || !(ctx == "diff" || ctx.starts_with("git.") || ctx.starts_with("jj."))
+                || !(ctx == "diff"
+                    || ctx.starts_with("git.")
+                    || ctx.starts_with("jj.")
+                    // `!` launches the project's tool, which is a version-control operation.
+                    || l.ends_with("| git_launch_tool"))
         })
         .map(|l| format!("{l}\n"))
         .collect()
@@ -462,6 +469,9 @@ fn the_git_screens_use_a_layer_four_key_only_where_no_layer_reserves_it() {
         ("y", "copy menu"),
         ("Ctrl-t", "open in a new tab"),
         ("!", "launch the project tool"),
+        ("r", "refresh (layer 1)"),
+        ("e", "edit the row's file (layer 3)"),
+        ("o", "open the row's file in another app (layer 3)"),
         ("J", "reorder in the branch panel"),
         ("K", "reorder in the branch panel"),
     ];
@@ -560,15 +570,18 @@ fn layer_one_keys_mean_the_same_in_every_context() {
                 action_name(Action::SearchStart),
                 "branch_filter_start".to_string(),
                 "worktree_filter_start".to_string(),
+                "list_filter_start".to_string(),
             ],
             // n / N : the next / previous match or change.
             "n" => vec![
                 action_name(Action::SearchNext),
                 action_name(Action::JumpNextChange),
+                "diff_next_change".to_string(),
             ],
             "N" => vec![
                 action_name(Action::SearchPrev),
                 action_name(Action::JumpPrevChange),
+                "diff_prev_change".to_string(),
             ],
             "v" => vec![
                 action_name(Action::EnterVisual),

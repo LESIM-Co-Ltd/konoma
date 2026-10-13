@@ -250,7 +250,7 @@ impl App {
         self.dialog_is_text_input()
             || self.is_filtering()
             || self.is_searching()
-            || self.git_branch_filtering()
+            || self.filtering_list().is_some()
     }
     /// Whether the currently open dialog is the Input (text input) kind.
     fn dialog_is_text_input(&self) -> bool {
@@ -267,8 +267,8 @@ impl App {
             self.filter_input_push(ch);
         } else if self.is_searching() {
             self.search_input_push(ch);
-        } else if self.git_branch_filtering() {
-            self.git_branch_filter_push(ch);
+        } else if let Some(l) = self.filtering_list() {
+            self.list_filter_push(l, ch);
         }
     }
 

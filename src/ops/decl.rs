@@ -72,6 +72,11 @@ pub fn decl(a: Action) -> Decl {
             help: Some(M::EditExternalEnv),
             launch: true,
         },
+        A::OpenExternal => Decl {
+            label: Some(M::HintOpenApp),
+            help: Some(M::OpenAppHelp),
+            launch: true,
+        },
         A::OpenGitView => d(Some(M::HintGit), Some(M::TreeGitChangesHub)),
         A::Refresh => d(None, Some(M::Refresh)),
         A::CyclePathStyle => d(Some(M::HintPath), Some(M::CyclePathStyle)),
@@ -135,6 +140,11 @@ pub fn decl(a: Action) -> Decl {
         #[cfg(feature = "git")]
         A::ToggleFollowDiffScope => d(Some(M::HintFollowScope), Some(M::HintFollowScope)),
 
+        #[cfg(feature = "git")]
+        A::DiffNextChange | A::DiffPrevChange => {
+            d(Some(M::HintChange), Some(M::DiffChangeJumpHelp))
+        }
+
         // The changes hub
         #[cfg(feature = "git")]
         A::GitStage | A::GitStageAll => d(Some(M::FtStage), Some(M::StageHint)),
@@ -180,6 +190,12 @@ pub fn decl(a: Action) -> Decl {
         A::GitGraphPickerMoveUp | A::GitGraphPickerMoveDown => d(Some(M::FtReorder), None),
         #[cfg(feature = "git")]
         A::GitGraphPickerApply => d(Some(M::FtApply), None),
+
+        // The version-control screens
+        #[cfg(feature = "git")]
+        A::GitScreenNext | A::GitScreenPrev => d(Some(M::FtScreens), Some(M::GitScreensHelp)),
+        #[cfg(feature = "git")]
+        A::ListFilterStart => d(Some(M::HintSearch), Some(M::ListFilterHelp)),
 
         // Branches and worktrees
         #[cfg(feature = "git")]

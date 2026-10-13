@@ -1742,8 +1742,14 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::ToggleWrap => app.toggle_wrap(),
         Action::ToggleInfo => app.toggle_info(),
         Action::RequestEdit => app.request_edit(),
+        Action::OpenExternal => app.open_in_other_app(),
         Action::OpenGitView => app.open_git_view(),
-        Action::Refresh => app.refresh()?,
+        Action::Refresh => {
+            app.refresh()?;
+            // The log, the graph, the branch and worktree lists read again too.
+            #[cfg(feature = "git")]
+            app.reload_front_list();
+        }
         Action::CyclePathStyle => app.cycle_path_style(),
         Action::OpenSortMenu => app.open_sort_menu(),
         Action::MarkSet => app.start_mark_set(),
@@ -1808,8 +1814,16 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
             }
         }
         Action::SearchStart => app.start_search(),
-        Action::SearchNext => app.search_next(1),
-        Action::SearchPrev => app.search_next(-1),
+        // `n` / `N` step through the matches of a search; with no search active a text or document
+        // preview steps through its changes instead (layer 1).
+        Action::SearchNext | Action::SearchPrev => {
+            let dir = if action == Action::SearchNext { 1 } else { -1 };
+            if sfc == Surface::PreviewText && app.preview_search_query().is_none() {
+                app.change_jump(dir);
+            } else {
+                app.search_next(dir);
+            }
+        }
         Action::PreviewEnterVisual => app.preview_enter_visual(false),
         Action::PreviewEnterVisualLine => app.preview_enter_visual(true),
         Action::PreviewCopySelection => app.preview_copy_selection(),
@@ -1821,6 +1835,8 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
         Action::LinkFocusPrev => app.md_focus_move(-1),
         Action::LinkOpen => app.md_activate_focused()?,
         Action::OpenLinkNewTab => app.md_open_focused_link_new_tab()?,
+        #[cfg(feature = "git")]
+        Action::OpenInNewTab if sfc == Surface::GitChanges => app.git_view_open_in_new_tab()?,
         Action::OpenInNewTab => app.tab_new_from_selection()?,
         Action::ImageZoomIn => app.image_zoom_by(1.25),
         Action::ImageZoomOut => app.image_zoom_by(1.0 / 1.25),
@@ -1856,6 +1872,20 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
                 app.md_toggle_focused_task();
             } else if let Some(ord) = app.md_focused_details() {
                 app.toggle_details(ord);
+            }
+        }
+        #[cfg(feature = "git")]
+        Action::DiffNextChange => app.diff_change_jump(1),
+        #[cfg(feature = "git")]
+        Action::DiffPrevChange => app.diff_change_jump(-1),
+        #[cfg(feature = "git")]
+        Action::GitScreenNext => app.git_screen_cycle(1),
+        #[cfg(feature = "git")]
+        Action::GitScreenPrev => app.git_screen_cycle(-1),
+        #[cfg(feature = "git")]
+        Action::ListFilterStart => {
+            if let Some(l) = app.front_list() {
+                app.list_filter_start(l);
             }
         }
         #[cfg(feature = "git")]
@@ -1960,6 +1990,19 @@ fn dispatch_action(app: &mut App, action: Action, sfc: Surface) -> Result<bool> 
     Ok(false)
 }
 
+/// The list screen a `/` filter belongs to, as the surface its movement keys are dispatched on.
+#[cfg(feature = "git")]
+fn list_surface(l: app::list_filter::ListId) -> Surface {
+    use app::list_filter::ListId;
+    match l {
+        ListId::Changes => Surface::GitChanges,
+        ListId::Log => Surface::GitLog,
+        ListId::Graph => Surface::GitGraph,
+        ListId::Branches => Surface::GitBranches,
+        ListId::Worktrees => Surface::GitWorktrees,
+    }
+}
+
 /// Key handling for text-input surfaces (filter / search / mark / branch filter / dialog input).
 /// Intercepts character and editing keys and does not apply the keymap (requirement 4).
 fn handle_text_input(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bool> {
@@ -2009,6 +2052,21 @@ fn handle_text_input(app: &mut App, sfc: Surface, key: KeyEvent) -> Result<bool>
             (KeyCode::Char(c), false) => app.git_branch_filter_push(c),
             _ => {}
         },
+        #[cfg(feature = "git")]
+        Surface::ListFilter => {
+            let Some(l) = app.filtering_list() else {
+                return Ok(false);
+            };
+            match (code, ctrl) {
+                (KeyCode::Esc, _) => app.list_filter_clear(l),
+                (KeyCode::Enter, _) => app.list_filter_commit(l),
+                (KeyCode::Backspace, _) => app.list_filter_backspace(l),
+                (KeyCode::Down, _) => dispatch_navigate(app, list_surface(l), Motion::Down),
+                (KeyCode::Up, _) => dispatch_navigate(app, list_surface(l), Motion::Up),
+                (KeyCode::Char(c), false) => app.list_filter_push(l, c),
+                _ => {}
+            }
+        }
         #[cfg(feature = "git")]
         Surface::WorktreeFilter => match (code, ctrl) {
             (KeyCode::Esc, _) => app.git_worktree_filter_clear(),
@@ -2103,10 +2161,29 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
         Surface::PreviewTextVisual => app.preview_exit_visual(),
         #[cfg(feature = "git")]
         Surface::GitDetail => app.close_git_detail(),
+        // Esc with a query clears the filter; without one, closes the list (as the branch list does).
         #[cfg(feature = "git")]
-        Surface::GitLog => app.close_git_log(),
+        Surface::GitLog => {
+            if app
+                .list_filter_query(app::list_filter::ListId::Log)
+                .is_empty()
+            {
+                app.close_git_log();
+            } else {
+                app.list_filter_clear(app::list_filter::ListId::Log);
+            }
+        }
         #[cfg(feature = "git")]
-        Surface::GitGraph => app.close_git_graph(),
+        Surface::GitGraph => {
+            if app
+                .list_filter_query(app::list_filter::ListId::Graph)
+                .is_empty()
+            {
+                app.close_git_graph();
+            } else {
+                app.list_filter_clear(app::list_filter::ListId::Graph);
+            }
+        }
         #[cfg(feature = "git")]
         Surface::GitGraphPicker => app.git_graph_picker_cancel(),
         #[cfg(feature = "git")]
@@ -2130,7 +2207,16 @@ fn handle_esc(app: &mut App, sfc: Surface) -> bool {
             }
         }
         #[cfg(feature = "git")]
-        Surface::GitChanges => app.close_git_view(),
+        Surface::GitChanges => {
+            if app
+                .list_filter_query(app::list_filter::ListId::Changes)
+                .is_empty()
+            {
+                app.close_git_view();
+            } else {
+                app.list_filter_clear(app::list_filter::ListId::Changes);
+            }
+        }
         #[cfg(feature = "git")]
         Surface::PreviewGitDiff => app.close_git_diff(),
         _ => {}

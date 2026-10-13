@@ -141,6 +141,10 @@ const ZOOM_ALL: &[Action] = &[
     Action::ImageZoomReset,
 ];
 const PAGE_TURN: &[Action] = &[Action::PageNext, Action::PagePrev];
+#[cfg(feature = "git")]
+const DIFF_CHANGES: &[Action] = &[Action::DiffNextChange, Action::DiffPrevChange];
+#[cfg(feature = "git")]
+const SCREENS: &[Action] = &[Action::GitScreenNext, Action::GitScreenPrev];
 const CHANGES: &[Action] = &[Action::JumpNextChange, Action::JumpPrevChange];
 const SEARCH: &[Action] = &[Action::SearchStart];
 const SEARCH_MATCH: &[Action] = &[Action::SearchNext, Action::SearchPrev];
@@ -267,7 +271,10 @@ fn tree_rows() -> Vec<Row> {
         r(&[Action::ToggleHidden]),
         r(&[Action::ToggleInfo]),
         r(&[Action::RequestEdit]),
+        r(&[Action::OpenExternal]),
         r(&[Action::OpenGitView]),
+        #[cfg(feature = "git")]
+        r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
         r(&[Action::ToggleChangedFilter]),
         r(CHANGES),
         r(&[Action::Refresh]),
@@ -307,6 +314,7 @@ fn text_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
                 r(FILE_JUMP),
                 r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
                 r(&[Action::RequestEdit]),
+                r(&[Action::OpenExternal]),
                 r(BACK_PREVIEW),
             ],
         );
@@ -341,6 +349,11 @@ fn text_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
     v.push(r(FILE_JUMP));
     v.push(r(BOOKMARKS).d(Msg::PreviewBookmarkHint));
     v.push(r(&[Action::RequestEdit]));
+    v.push(r(&[Action::OpenExternal]));
+    v.push(r(&[Action::OpenGitView]));
+    #[cfg(feature = "git")]
+    v.push(r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool));
+    v.push(r(&[Action::Refresh]));
     v.push(r(PAGE_KEYS));
     v.push(r(HALF_KEYS));
     v.push(r(&[Action::CyclePathStyle]));
@@ -358,6 +371,11 @@ fn image_rows() -> Vec<Row> {
         r(FILE_JUMP),
         r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
         r(&[Action::RequestEdit]),
+        r(&[Action::OpenExternal]),
+        r(&[Action::OpenGitView]),
+        #[cfg(feature = "git")]
+        r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
+        r(&[Action::Refresh]),
         r(&[Action::CyclePathStyle]),
         r(BACK_PREVIEW),
     ]
@@ -376,6 +394,11 @@ fn table_rows() -> Vec<Row> {
         r(FILE_JUMP),
         r(BOOKMARKS).d(Msg::PreviewBookmarkHint),
         r(&[Action::RequestEdit]),
+        r(&[Action::OpenExternal]),
+        r(&[Action::OpenGitView]),
+        #[cfg(feature = "git")]
+        r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool),
+        r(&[Action::Refresh]),
         r(&[Action::CyclePathStyle]),
         r(BACK_PREVIEW),
     ]
@@ -395,7 +418,14 @@ fn diff_rows(app: &App) -> Vec<Row> {
     v.push(r(PAGE_TURN));
     v.push(r(&[Action::CycleDiffView]));
     v.push(r(CHANGES));
+    v.push(r(DIFF_CHANGES));
     v.push(r(&[Action::ToggleFollowDiffScope]));
+    v.push(r(&[Action::RequestEdit]));
+    v.push(r(&[Action::OpenExternal]));
+    v.push(r(&[Action::OpenGitView]));
+    #[cfg(feature = "git")]
+    v.push(r(&[Action::GitLaunchTool]).d(Msg::GitExternalTool));
+    v.push(r(&[Action::Refresh]));
     if !media_or_summary {
         v.push(r(PAGE_KEYS));
         v.push(r(HALF_KEYS));
@@ -427,6 +457,13 @@ fn screen_rows(b: Backend, s: Screen) -> (Msg, Vec<Row>) {
                 r(SCROLL).d(Msg::GitMove),
                 r(ENDS),
                 r(&[Action::GitOpenDetail]).d(Msg::GitCommitDetail),
+                r(&[Action::ListFilterStart]),
+                r(&[Action::Refresh]),
+                r(SCREENS).d(if jj {
+                    Msg::JjScreensHelp
+                } else {
+                    Msg::GitScreensHelp
+                }),
                 r(BACK_GIT).d(Msg::BackToChanges),
             ],
         ),
@@ -444,6 +481,13 @@ fn screen_rows(b: Backend, s: Screen) -> (Msg, Vec<Row>) {
                 v.push(r(&[Action::GitGraphClearBase]));
                 v.push(r(&[Action::GitGraphOpenPicker]));
             }
+            v.push(r(&[Action::ListFilterStart]));
+            v.push(r(&[Action::Refresh]));
+            v.push(r(SCREENS).d(if jj {
+                Msg::JjScreensHelp
+            } else {
+                Msg::GitScreensHelp
+            }));
             v.push(r(BACK_GIT).d(Msg::BackToChanges));
             (
                 if jj {
@@ -477,6 +521,12 @@ fn screen_rows(b: Backend, s: Screen) -> (Msg, Vec<Row>) {
                 r(&[Action::BranchCreate]),
                 r(&[Action::BranchDelete]),
                 r(&[Action::BranchFilterStart]),
+                r(&[Action::Refresh]),
+                r(SCREENS).d(if jj {
+                    Msg::JjScreensHelp
+                } else {
+                    Msg::GitScreensHelp
+                }),
                 r(BACK_GIT).d(Msg::BackToChanges),
             ],
         ),
@@ -490,6 +540,12 @@ fn screen_rows(b: Backend, s: Screen) -> (Msg, Vec<Row>) {
                 r(&[Action::WorktreeGotoNewTab]),
                 r(&[Action::WorktreeShowChanges]),
                 r(&[Action::WorktreeFilterStart]),
+                r(&[Action::Refresh]),
+                r(SCREENS).d(if jj {
+                    Msg::JjScreensHelp
+                } else {
+                    Msg::GitScreensHelp
+                }),
                 r(BACK_WT).d(Msg::BackToChanges),
             ],
         ),
@@ -513,6 +569,16 @@ fn screen_rows(b: Backend, s: Screen) -> (Msg, Vec<Row>) {
                 }),
                 r(&[Action::GitOpenWorktrees]),
                 r(&[Action::JjSync]),
+                r(&[Action::RequestEdit]),
+                r(&[Action::OpenExternal]),
+                r(&[Action::OpenInNewTab]).d(Msg::OpenInNewTabHelp),
+                r(&[Action::ListFilterStart]),
+                r(&[Action::Refresh]),
+                r(SCREENS).d(if jj {
+                    Msg::JjScreensHelp
+                } else {
+                    Msg::GitScreensHelp
+                }),
                 r(&[Action::GitLaunchTool]).d(if jj {
                     Msg::JjExternalTool
                 } else {

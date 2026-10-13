@@ -98,18 +98,18 @@ A horizontal rule (`---`) becomes a full-width line:
 - [ ] An open task (rendered with the Nerd Font checkbox icon; `[ ]` when `ui.icons = false`)
 - [x] A done task (checked icon; `[x]` when `ui.icons = false`)
 
-Checkboxes are interactive: `Tab` to focus (same cycle as links), then `Space` or `Enter`
+Checkboxes are interactive: `Tab` to focus (same cycle as links), then `Enter`
 toggles it — written back to this file. `[ui] md_task_states` can cycle custom states like
 `[" ", "/", "x"]` (shown as `[/]` in brackets).
 
 ## HTML blocks
 
 `<details>` becomes a collapsible section with a `▸`/`▾` marker: `Tab` focuses the summary,
-then `Space` or `Enter` opens/closes it. By default the `open` attribute is honored like
+then `Enter` opens/closes it. By default the `open` attribute is honored like
 GitHub (`[ui] md_details` can force it always open/closed).
 
 <details>
-<summary>Closed details (like "click to expand" — open with Tab→Space)</summary>
+<summary>Closed details (like "click to expand" — open with Tab→Enter)</summary>
 The body is rendered as Markdown. **Bold** and lists work too:
 
 - an item inside the fold
