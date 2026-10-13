@@ -1435,6 +1435,16 @@ impl App {
             && changed.iter().all(|p| self.is_ignored(p))
     }
 
+    /// Whether the background scan has answered for this root: until then `git_branch()` /
+    /// `git_has_changes()` are "not known yet", not "no repository / no changes". The gate of the
+    /// tree's version-control keys (`ops::gate`) uses this so it never refuses on a cache that is
+    /// merely empty because the first scan has not landed.
+    pub fn git_state_known(&self) -> bool {
+        self.git_status_pending.is_none()
+            && !self.git_status_dirty
+            && self.git_status_for.as_ref() == Some(&self.tab.root)
+    }
+
     /// The current branch name (None if not a repo). Used for the tree's title display.
     pub fn git_branch(&self) -> Option<&str> {
         self.git_branch.as_deref()

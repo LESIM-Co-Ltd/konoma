@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, Mode};
+use crate::app::App;
 use crate::i18n::tr;
 use crate::keymap::{KeyPress, LeaderId};
 
@@ -34,28 +34,10 @@ impl HelpSection {
     }
 }
 
-/// Help body (lines). **View-specific sections are owned by each view** (`tree`/`preview`). Here we just gather the active
-/// view's sections + the common ones (Tabs/Copy/Global) and format them into a Line sequence. Reflects configured keys and language.
+/// Help body (lines): the sections of the screen the help was opened over, generated from the
+/// operations that act there and the keys they are bound to (`ops::help`).
 pub fn help_lines(app: &App) -> Vec<Line<'static>> {
-    // If a git overlay (o/L/G/b/detail) is in front, show its git-specific section (mode stays
-    // Tree/Preview underneath, so branching on mode alone would hide the git keys — the bug this
-    // fixes). Otherwise use the section for the normal mode.
-    let git_active = app.is_git_view()
-        || app.is_git_log()
-        || app.is_git_graph()
-        || app.is_git_branches()
-        || app.is_git_worktrees()
-        || app.is_git_detail();
-    let mut sections = if git_active {
-        crate::ui::git::help_sections(app)
-    } else {
-        match app.tab.mode {
-            Mode::Tree => crate::ui::tree::help_sections(app),
-            Mode::Preview => crate::ui::preview::help_sections(app),
-        }
-    };
-    sections.extend(common_sections(app));
-    render_sections(&sections)
+    render_sections(&crate::ops::help::sections(app))
 }
 
 /// Turn the sections into a Line sequence. Heading = bold underline, row = "  key (16-wide) description (dim)", with blank lines between.
@@ -71,8 +53,11 @@ fn render_sections(sections: &[HelpSection]) -> Vec<Line<'static>> {
                 .underlined(),
         ));
         for (key, desc) in &sec.rows {
+            // A key column wider than its 16 cells (`Ctrl-f / Ctrl-b  ·  PageDown / PageUp`) still
+            // leaves a gap before the description.
+            let pad = if key.chars().count() >= 16 { "  " } else { "" };
             out.push(Line::from(vec![
-                Span::from(format!("  {key:<16}")).bold(),
+                Span::from(format!("  {key:<16}{pad}")).bold(),
                 Span::from(desc.clone()).dim(),
             ]));
         }
@@ -96,34 +81,11 @@ pub fn leader_section(app: &App, id: LeaderId, prefix: &str) -> Option<HelpSecti
     Some(sec)
 }
 
-/// Turn a leader's suffix key into a display string (handles Space/modifiers/special keys).
-fn leader_key_str(kp: KeyPress) -> String {
-    kp.label()
-}
-
-/// Common operations that work in any mode (tabs, path copy, common keys). The copy keys reflect the config.
-fn common_sections(app: &App) -> Vec<HelpSection> {
-    let lang = app.lang;
-    let l = |m| tr(lang, m);
-    let mut out = vec![HelpSection::new(l(crate::i18n::Msg::HelpTabs))
-        .row("t", l(crate::i18n::Msg::HelpNewTab))
-        .row("I", l(crate::i18n::Msg::HelpNewTabAfter))
-        .row("[ / ]", l(crate::i18n::Msg::PrevNextTab))
-        .row("1 - 9", l(crate::i18n::Msg::HelpJumpTab))
-        .row("T", l(crate::i18n::Msg::HelpTabList))];
-    // Path copy comes from the `y` leader (reflects config). The title is "Copy path".
-    if let Some(sec) = leader_section(app, LeaderId::Copy, "y") {
-        out.push(sec);
-    }
-    out.push(
-        HelpSection::new(l(crate::i18n::Msg::HelpGlobal))
-            .row("p", l(crate::i18n::Msg::CyclePathStyle))
-            .row("P", l(crate::i18n::Msg::PasteJumpHelp))
-            .row("?", l(crate::i18n::Msg::ToggleHelp))
-            .row("q", l(crate::i18n::Msg::QuitOrCloseTab))
-            .row("Q", l(crate::i18n::Msg::Quit)),
-    );
-    out
+/// Turn a key into the display string every which-key menu and help row uses (`Space`,
+/// `Ctrl-t`, `Enter`, `⇧Tab`). The one implementation: the footer's which-key line and the help
+/// share it.
+pub(crate) fn leader_key_str(kp: KeyPress) -> String {
+    crate::ops::keys::help_key(kp)
 }
 
 /// Render the full key list in a centered popup. `area` is the whole screen.

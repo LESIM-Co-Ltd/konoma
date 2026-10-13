@@ -810,7 +810,7 @@ fn e2e_word_the_raw_view_help_and_footer_are_the_text_ones() {
     s.see("e:open");
     s.key('?');
     let help = s.screen();
-    assert!(help.contains("v / V → y"), "{help}");
+    assert!(help.contains("v / V"), "{help}");
     // `Y` is the file reference only (the converted text has no lines in the .docx).
     assert!(help.contains("copy the @path reference"), "{help}");
     assert!(!help.contains("@path#L reference of caret"), "{help}");

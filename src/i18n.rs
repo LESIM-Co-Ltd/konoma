@@ -68,6 +68,7 @@ pub enum Msg {
     /// Worktree list's empty-state row (shown when a filter narrows the list to zero rows).
     GitNoWorktreesItem,
     /// `?` help section title for the worktree list.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitWorktreesLabel,
     /// Flash on `w` (open the worktree list) when there is nothing to show (not a repo / git off —
     /// a real repository always has at least the main worktree).
@@ -78,8 +79,6 @@ pub enum Msg {
     WorktreeUnavailable,
     /// Flash when the selected worktree is already the one this tab is in.
     WorktreeAlreadyCurrent,
-    /// Footer/help hint for the worktree list's own keys.
-    WorktreesNavHint,
     /// Inner-mode chip label while the worktree list is open.
     StWorktrees,
     /// Persistent chip shown whenever the current root is inside a **linked worktree** (never for
@@ -87,12 +86,16 @@ pub enum Msg {
     /// kept as a `Msg` for the usual catalog sweep/consistency.
     StWorktreeChip,
     /// `?` help row label for `Enter` in the worktree list.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitWorktreeSwitch,
     /// Changes-hub `?` help row label for `w` (short noun, matching `GitBranches`'s "branches").
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitWorktreesRow,
     /// `?` help row label for `d` in the worktree list (show the selected worktree's diff).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     WorktreeShowChangesHelp,
     /// `?` help row label for `n` in the worktree list (create a new linked worktree).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     WorktreeCreateHelp,
     /// Input-dialog title for `n` in the worktree list. Asks for a branch name only — new vs.
     /// existing is auto-detected (`git::branch_tip`), no separate prompt for it.
@@ -113,6 +116,7 @@ pub enum Msg {
     BmEmpty,
     GitNoChanges,
     BatchRename,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitCommitWorktreeDetail,
     CommitMessage,
     Committed,
@@ -120,7 +124,6 @@ pub enum Msg {
     Create,
     Created,
     CreatedBranch,
-    StScrollHintCtrl,
     CutDone,
     DeleteTarget,
     DeleteBranch,
@@ -135,10 +138,14 @@ pub enum Msg {
     StRenameHint,
     StSearchHint,
     TreeFile,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitBranchesLabel,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitChangesLabel,
     TreeGitChangesHub,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitGraphLabel,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitLogLabel,
     TreeGitStatus,
     BmGlobal,
@@ -151,6 +158,7 @@ pub enum Msg {
     Pasted,
     Duplicated,
     InfoPerm,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     PreviewGitDiff,
     PreviewImage,
     PreviewTextMarkdown,
@@ -158,7 +166,6 @@ pub enum Msg {
     Renamed,
     TreeSelection,
     InfoSize,
-    StPagerSpaceHint,
     Staged,
     StagedAll,
     SwitchedTo,
@@ -173,7 +180,6 @@ pub enum Msg {
     ScrollTop,
     ScrollBot,
     ScrollAll,
-    StSortHint,
     StPathAbs,
     TreeAddedStaged,
     AlreadyAtStartDir,
@@ -181,13 +187,16 @@ pub enum Msg {
     AnchorReset,
     TreeAnchorRoot,
     GitBack,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     BackToGitView,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     BackToChanges,
     BackToTree,
     TreeBookmarkHint,
     PreviewBookmarkHint,
     BookmarkTargetMissing,
     Bookmarked,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitBranches,
     DlgCopyKey,
     StCopyMoveHint,
@@ -196,10 +205,14 @@ pub enum Msg {
     CannotDeleteCurrentBranch,
     CannotEditDirectory,
     CannotPasteIntoSelf,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitCheckout,
     ClipboardEmpty,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitCloseView,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitCommit,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitCommitDetail,
     CopiedPrefix,
     /// Prefix for "the tree will not auto-refresh because the filesystem watch failed" (path follows).
@@ -210,16 +223,21 @@ pub enum Msg {
     HintCopyCode,
     CutHint,
     CyclePathStyle,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitDelete,
     TreeDeleted,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitDetail,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitDiffAll,
     TreeDiffFile,
     DiffAuto,
     DiffSideBySide,
     DiffUnified,
     InfoDirectory,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitDiscardFile,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     DiscardWholeFile,
     TreeDragDrop,
     TreeDropFiles,
@@ -232,12 +250,15 @@ pub enum Msg {
     EnterDirectory,
     Etc,
     ExpandInPlace,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitExternalTool,
     Failed,
     InfoFile,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitFileDiff,
     TreeFileInfo,
     TreeFilter,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitFilterByName,
     FocusMdLink,
     FocusDocLink,
@@ -247,42 +268,26 @@ pub enum Msg {
     GitToolFailed,
     GlobalApp,
     HScroll,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitHScrollEnds,
-    StCloseHint,
     InfoClose,
     AnchorNotFound,
     OutlineEmpty,
     InvalidMarkKey,
     Items,
     InfoItems,
-    VisualOpsHint,
-    BranchesNavHint,
-    GitNavDetailHint,
-    GitNavDetailCommitHint,
     GraphBaseSet,
     GraphBaseCleared,
     GraphBaseNeedsCommit,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GraphSetBaseHelp,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GraphClearBaseHelp,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GraphBranchesHelp,
     GraphLegendHidden,
     GraphPickerTitle,
-    GraphPickerFooter,
     GraphPickerHeadLocked,
-    DiffScrollHint,
-    DiffScrollDiscardHint,
-    /// `DiffScrollDiscardHint` without the `s:unified/split/auto` segment — the diff's `Rendered`
-    /// presentation (`docs/FEATURE-MD-RENDERED-DIFF.md` §2) has no split view of its own, so `s`
-    /// does nothing there and the hint must not advertise it (`App::diff_rendered_active`).
-    /// `h/l:hscroll` still applies here — used when `[ui] wrap` is off (the `Rendered`
-    /// presentation is wrap-aware, unlike `Source`, which always scrolls horizontally regardless
-    /// of `wrap`; see `DiffScrollDiscardHintRenderedWrap` for the `wrap = true` case).
-    DiffScrollDiscardHintRendered,
-    /// `DiffScrollDiscardHintRendered` without `h/l:hscroll` — used while `[ui] wrap` is on (the
-    /// default), where horizontal scroll is a no-op in the `Rendered` presentation, matching the
-    /// ordinary decorated Markdown footer's identical wrap-gated `h/l` hint
-    /// ([[hint-shown-iff-key-acts]]).
-    DiffScrollDiscardHintRenderedWrap,
     HelpJumpTab,
     JustNow,
     Keymap,
@@ -292,6 +297,7 @@ pub enum Msg {
     KeymapConflictDetail,
     /// Startup note suffix: `{n}` more of the same kind were left out.
     KeymapMore,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitLayout,
     LineStartEnd,
     /// The tree listing could not be rebuilt on a path that cannot propagate the error (the
@@ -306,6 +312,7 @@ pub enum Msg {
     StListingStale,
     Loading,
     Local,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitLogGraph,
     DlgMove,
     MarkHint,
@@ -313,10 +320,12 @@ pub enum Msg {
     MessageEmpty,
     TreeModified,
     GitMove,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitMoveCommit,
     TreeMoveUpDown,
     DlgCancel,
     NameEmpty,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GitNewBranch,
     HelpNewTab,
     HelpNewTabAfter,
@@ -347,14 +356,15 @@ pub enum Msg {
     ResetRoot,
     ResetFit,
     Root,
-    StGitHubKeys,
     Scroll,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     Scroll10Lines,
     SearchHint,
     SearchCodeTextOnly,
     TableSearchHelp,
     SelLabel,
     SortHint,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     StageHint,
     Symlink,
     ToParent,
@@ -363,6 +373,7 @@ pub enum Msg {
     ToggleHelp,
     TopBottom,
     TrailingSlashFolder,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     UnstageHint,
     Untracked,
     VisualRangeHint,
@@ -450,9 +461,6 @@ pub enum Msg {
     /// Copy-menu label for the underlying commit ID in a system that names commits some other way.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     WkCommitId,
-    /// Graph keys for a backend with a narrower default range: `GitNavDetailCommitHint` plus `a`.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    JjGraphNavHint,
     /// Flash on `a` in the graph when the backend already draws everything.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     GraphAlreadyAll,
@@ -465,23 +473,6 @@ pub enum Msg {
     /// The pointer list's chip when jj is answering: it lists bookmarks, not branches.
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     StBookmark,
-    /// Pointer-list keys for a backend that cannot write: no checkout, no create, no delete.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    BookmarksNavHint,
-    /// Hub keys for a backend that cannot write: no staging, no commit, no worktrees, and jj's
-    /// pointers are bookmarks.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    StJjHubKeys,
-    /// Diff-view keys for a backend that cannot write: `DiffScrollDiscardHint` without `x:discard`.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    DiffScrollNoDiscardHint,
-    /// `DiffScrollNoDiscardHint`'s `Rendered`-presentation counterpart — see
-    /// `DiffScrollDiscardHintRendered`.
-    DiffScrollNoDiscardHintRendered,
-    /// `DiffScrollNoDiscardHintRendered` without `h/l:hscroll` — see
-    /// `DiffScrollDiscardHintRenderedWrap`.
-    #[cfg_attr(not(feature = "git"), allow(dead_code))]
-    DiffScrollNoDiscardHintRenderedWrap,
     StGit,
     /// Flash when a write is asked of a backend that only reads (jj).
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -589,18 +580,10 @@ pub enum Msg {
     /// own gate, [[hint-shown-iff-key-acts]]).
     DiffViewCycleHelpPair,
     // --- Media diff (`docs/FEATURE-MEDIA-DIFF.md`) — the image/PDF/SVG side-by-side "diff" ---
-    /// GitDiff footer, media side-by-side / binary-summary / computing states: the base set of
-    /// keys that always act (`n/N`, `x`) for a backend that **can** discard. `s`/`J`/`K`/`R` are
-    /// appended dynamically (mirrors how `R:<label>` is appended to the plain-text hints) —
-    /// [[hint-shown-iff-key-acts]].
-    DiffMediaHintDiscard,
-    /// `DiffMediaHintDiscard` without `x:discard`, for a backend that cannot write (jj).
-    DiffMediaHintNoDiscard,
-    /// The `n/N` fragment shared by the media/binary-summary footer's dynamic prefix
-    /// (`ui/status.rs::mode_footer` composes `n/N:<this>` itself, mirroring `hint()`'s own
-    /// `"{keys}:{msg}"` shape) — kept separate from `DiffMediaHintDiscard`/`NoDiscard` so `s`/`J`/
-    /// `K`/`R` can be inserted **between** it and the (`x:discard`/)`q/Esc:back` suffix, matching
-    /// `docs/FEATURE-MEDIA-DIFF.md` §6's key order.
+    /// The label of the `n/N` footer token of the diff screens (`ops::footer`'s diff plan puts it
+    /// first, ahead of `s`/`J`/`K`/`R` and the (`x:discard`/)`q/Esc:back` tail, matching
+    /// `docs/FEATURE-MEDIA-DIFF.md` §6's key order).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     HintNextPrevFile,
     /// `s`'s footer label / flash text when the media diff's layout would cycle to "auto".
     MediaLayoutAuto,
@@ -610,6 +593,7 @@ pub enum Msg {
     MediaLayoutStack,
     /// `?` help row description for `s` in the media diff (`docs/FEATURE-MEDIA-DIFF.md` §1's
     /// "自動 → 左右 → 上下 → 自動").
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     MediaLayoutCycleHelp,
     /// Media diff caption: "Before" (old side). Constructed only by `ui/preview.rs::draw_media_
     /// caption` (git-gated) — `#[cfg_attr(not(feature = "git"), allow(dead_code))]` on this and
@@ -682,13 +666,10 @@ pub enum Msg {
     // --- Table-cell full-text popup (`Enter`) ---
     StTableCell,
     TableCellTitle,
-    TableCellActions,
     HintViewCell,
     TableCellViewHelp,
     TableCellEmpty,
     // --- Text/code preview selection (v = character range / V = line) ---
-    PreviewVisualHint,
-    PreviewVisualLineHint,
     /// Long, explanatory wording for the `?` help screen only. The footer wants the short
     /// `HintSelect` instead — a full sentence there eats the whole line and pushes the sibling
     /// hints off into the `…`.
@@ -701,7 +682,6 @@ pub enum Msg {
     /// which-key label for `y → c`: copy the focused Markdown code block.
     WkCodeBlock,
     StChangedOnly,
-    ChangedFilterHint,
     NoChangedFiles,
     JumpTargetHidden,
     StFollow,
@@ -709,6 +689,7 @@ pub enum Msg {
     FollowOff,
     FollowShowSince,
     FollowShowFull,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     HintFollowScope,
     ChangedFilterHelp,
     JumpChangeHelp,
@@ -842,8 +823,6 @@ pub enum Msg {
     MermaidPanAffordance,
     /// Status chip for the `?` help overlay (`internal_mode() == Some(InternalMode::Help)`).
     StHelp,
-    /// Footer hint for the help overlay (its own j/k/g/G/q keys, not the surface behind it).
-    StHelpHint,
     /// `o`/`d` etc. when `[external] git = false` (Git views unavailable by config, not because this
     /// isn't a repo).
     ExternalGitDisabled,
@@ -914,6 +893,70 @@ pub enum Msg {
     /// aware), the decorated view only ever copies the current file's `@path` (no line numbers — the
     /// notion of "caret line" doesn't apply to a Tab-focused item).
     AtRefPathHelp,
+    // --- Footer labels and help section titles of the operation declarations (`ops`) ---
+    FtRangeCommit,
+    FtThisDir,
+    FtAll,
+    FtCancel,
+    FtClose,
+    FtExtend,
+    FtOps,
+    FtTopBottom,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtNav,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtDiscard,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtDiffLayout,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtStage,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtUnstage,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtCommit,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtDiffAll,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtLog,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtGraph,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtBranch,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtTool,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtDetail,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtBase,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtBaseOff,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtAllRevisions,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtCurrentOnly,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtReorder,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtApply,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtNew,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtSwitch,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    FtSync,
+    FtSortName,
+    FtSortSize,
+    FtSortMod,
+    FtSortExt,
+    FtSortReverse,
+    FtSortDirs,
+    FtPreview,
+    FtNextPrev,
+    FtAllFiles,
+    FtCopyLines,
+    HelpHalfPage,
+    HelpMove,
+    HelpLaunch,
 }
 
 /// English table.
@@ -927,7 +970,6 @@ fn en(msg: Msg) -> &'static str {
         WorktreeIsBare => "bare repository — it has no checkout",
         WorktreeUnavailable => "worktree is missing (run `git worktree prune`)",
         WorktreeAlreadyCurrent => "already in this worktree",
-        WorktreesNavHint => "j/k:nav  Enter:switch  n:new  Ctrl-t:new tab  d:diff  /:search  q/Esc:back",
         StWorktrees => "WORKTREES",
         StWorktreeChip => "WT",
         GitWorktreeSwitch => "switch to it",
@@ -957,7 +999,6 @@ fn en(msg: Msg) -> &'static str {
         Create => "Create",
         Created => "Created",
         CreatedBranch => "Created branch",
-        StScrollHintCtrl => "Ctrl-f/Ctrl-b page, Ctrl-d/Ctrl-u half (PgDn/Up too)",
         CutDone => "Cut",
         DeleteTarget => "Delete",
         DeleteBranch => "Delete branch",
@@ -995,7 +1036,6 @@ fn en(msg: Msg) -> &'static str {
         Renamed => "Renamed",
         TreeSelection => "Selection",
         InfoSize => "Size",
-        StPagerSpaceHint => "Space/b page, d/u half (PgDn/Up too)",
         Staged => "Staged",
         StagedAll => "Staged all",
         SwitchedTo => "Switched to",
@@ -1012,7 +1052,6 @@ fn en(msg: Msg) -> &'static str {
         ScrollTop => "Top",
         ScrollBot => "Bot",
         ScrollAll => "All",
-        StSortHint => "[n]ame [s]ize [m]od [e]xt  [r]everse [.]dirs-1st  Esc",
         StPathAbs => "abs",
         TreeAddedStaged => "added (staged)",
         AlreadyAtStartDir => "already at start dir",
@@ -1099,21 +1138,12 @@ fn en(msg: Msg) -> &'static str {
         GlobalApp => "global",
         HScroll => "horizontal scroll",
         GitHScrollEnds => "hscroll / line ends",
-        StCloseHint => "i / Esc / q : close",
         InfoClose => "i / Esc / q close",
         AnchorNotFound => "no heading for anchor: ",
         OutlineEmpty => "no headings in this document",
         InvalidMarkKey => "invalid mark key",
         Items => "items",
         InfoItems => "items",
-        VisualOpsHint => "j/k:extend  a:this-dir  A:all  v:commit  Space:ops(d/r/c/x)  Esc:cancel",
-        BranchesNavHint => "j/k:nav  Enter:checkout  n:new  d:delete  /:search  q/Esc:back",
-        BookmarksNavHint => "j/k:nav  /:search  q/Esc:back",
-        GitNavDetailHint => "j/k:nav  Enter:detail  q/Esc:back",
-        GitNavDetailCommitHint => {
-            "j/k:nav  Enter:detail  s:base  x/0:base off  b:branches  q/Esc:back"
-        }
-        JjGraphNavHint => "j/k:nav  Enter:detail  a:all revisions  b:bookmarks  q/Esc:back",
         GraphBaseSet => "base: ",
         GraphBaseCleared => "base cleared",
         GraphBaseNeedsCommit => "select a commit to set as base",
@@ -1122,17 +1152,7 @@ fn en(msg: Msg) -> &'static str {
         GraphBranchesHelp => "choose which branches are shown",
         GraphLegendHidden => "hidden",
         GraphPickerTitle => "Graph branches",
-        GraphPickerFooter => {
-            "Space:toggle  J/K:reorder  a:all  n:current only  Enter:apply  q:cancel"
-        }
         GraphPickerHeadLocked => "current branch (HEAD) is always shown",
-        DiffScrollHint => "j/k:scroll  h/l:hscroll  s:unified/split/auto  g/G:ends  q/Esc:back",
-        DiffScrollDiscardHint => "j/k:scroll  n/N:next/prev file  h/l:hscroll  s:unified/split/auto  x:discard  q/Esc:back",
-        DiffScrollDiscardHintRendered => "j/k:scroll  n/N:next/prev file  h/l:hscroll  x:discard  q/Esc:back",
-        DiffScrollDiscardHintRenderedWrap => "j/k:scroll  n/N:next/prev file  x:discard  q/Esc:back",
-        DiffScrollNoDiscardHint => "j/k:scroll  n/N:next/prev file  h/l:hscroll  s:unified/split/auto  q/Esc:back",
-        DiffScrollNoDiscardHintRendered => "j/k:scroll  n/N:next/prev file  h/l:hscroll  q/Esc:back",
-        DiffScrollNoDiscardHintRenderedWrap => "j/k:scroll  n/N:next/prev file  q/Esc:back",
         HelpJumpTab => "jump to tab by number",
         JustNow => "just now",
         Keymap => "keymap",
@@ -1186,8 +1206,6 @@ fn en(msg: Msg) -> &'static str {
         ResetRoot => "reset root to start directory",
         ResetFit => "reset to fit",
         Root => "root",
-        StGitHubKeys => "s/S:stage(all) u/U:unstage(all) x:discard c:commit Enter:diff d:diff-all l:log g:graph b:branch w:worktrees !:tool q:close",
-        StJjHubKeys => "Enter:diff d:diff-all l:log g:graph b:bookmarks R:sync !:tool q:close",
         Scroll => "scroll",
         Scroll10Lines => "scroll 10 lines",
         SearchHint => "search (code/text); next / prev match",
@@ -1263,19 +1281,15 @@ fn en(msg: Msg) -> &'static str {
         TableColsHelp => "first / last column",
         StTableCell => "CELL",
         TableCellTitle => "Cell",
-        TableCellActions => "j/k:scroll  g/G:top/bottom  q/Esc:close",
         HintViewCell => "view cell",
         TableCellViewHelp => "view the full cell text (wraps; scroll with j/k)",
         TableCellEmpty => "no cell to view",
-        PreviewVisualHint => "h / j / k / l: extend    y: copy    Y: @ref    v / Esc: cancel",
-        PreviewVisualLineHint => "j / k / g / G: extend    y: copy lines    Y: @ref    V / Esc: cancel",
         PreviewSelectHelp => "v: select a character range   V: select whole lines (copy with y)",
         HintSelect => "select",
         StVisualLine => "V-LINE",
         WkAtRef => "@ref",
         WkCodeBlock => "code block",
         StChangedOnly => "CHANGED",
-        ChangedFilterHint => "Enter: preview  n / N: next / prev  C / h: all files",
         NoChangedFiles => "no changed files",
         JumpTargetHidden => "target is inside a hidden directory (`.` to show hidden files)",
         StFollow => "FOLLOW",
@@ -1373,8 +1387,6 @@ fn en(msg: Msg) -> &'static str {
         DiffComputing => "computing diff…",
         DiffViewCycleHelp => "cycle diff view (source → rendered → preview)",
         DiffViewCycleHelpPair => "cycle diff view (source ⇄ preview)",
-        DiffMediaHintDiscard => "x:discard  q/Esc:back",
-        DiffMediaHintNoDiscard => "q/Esc:back",
         HintNextPrevFile => "next/prev file",
         MediaLayoutAuto => "auto",
         MediaLayoutSide => "side by side",
@@ -1511,7 +1523,6 @@ fn en(msg: Msg) -> &'static str {
         MermaidZoomAffordance => "+/-: zoom",
         MermaidPanAffordance => "hjkl:pan  0:fit",
         StHelp => "HELP",
-        StHelpHint => "j/k:scroll  g/G:top/bottom  q/Esc:close",
         ExternalGitDisabled => "git integration is disabled (config: [external] git = false)",
         GitNotInstalled => "git is not installed — git integration is off",
         ExternalGitToolDisabled => "external git tool is disabled (config: [external] git_tool = false)",
@@ -1536,6 +1547,48 @@ fn en(msg: Msg) -> &'static str {
         HintFullScreen => "full screen",
         HintFocus => "focus",
         AtRefPathHelp => "copy the @path reference",
+        FtRangeCommit => "commit",
+        FtThisDir => "this-dir",
+        FtAll => "all",
+        FtCancel => "cancel",
+        FtClose => "close",
+        FtExtend => "extend",
+        FtOps => "ops",
+        FtTopBottom => "top/bottom",
+        FtNav => "nav",
+        FtDiscard => "discard",
+        FtDiffLayout => "unified/split/auto",
+        FtStage => "stage(all)",
+        FtUnstage => "unstage(all)",
+        FtCommit => "commit",
+        FtDiffAll => "diff-all",
+        FtLog => "log",
+        FtGraph => "graph",
+        FtBranch => "branch",
+        FtTool => "tool",
+        FtDetail => "detail",
+        FtBase => "base",
+        FtBaseOff => "base off",
+        FtAllRevisions => "all revisions",
+        FtCurrentOnly => "current only",
+        FtReorder => "reorder",
+        FtApply => "apply",
+        FtNew => "new",
+        FtSwitch => "switch",
+        FtSync => "sync",
+        FtSortName => "name",
+        FtSortSize => "size",
+        FtSortMod => "mod",
+        FtSortExt => "ext",
+        FtSortReverse => "reverse",
+        FtSortDirs => "dirs-1st",
+        FtPreview => "preview",
+        FtNextPrev => "next / prev",
+        FtAllFiles => "all files",
+        FtCopyLines => "copy lines",
+        HelpHalfPage => "half page",
+        HelpMove => "Movement",
+        HelpLaunch => "Launch",
     }
 }
 
@@ -1550,7 +1603,6 @@ fn jp(msg: Msg) -> &'static str {
         WorktreeIsBare => "ベアリポジトリ（実体のチェックアウトがありません）",
         WorktreeUnavailable => "ワークツリーが見つかりません（`git worktree prune` を実行してください）",
         WorktreeAlreadyCurrent => "既にこのワークツリーにいます",
-        WorktreesNavHint => "j/k:移動  Enter:切替  n:新規  Ctrl-t:新規タブ  d:diff  /:検索  q/Esc:戻る",
         StWorktrees => "ワークツリー",
         StWorktreeChip => "WT",
         GitWorktreeSwitch => "切り替える",
@@ -1580,7 +1632,6 @@ fn jp(msg: Msg) -> &'static str {
         Create => "作成",
         Created => "作成",
         CreatedBranch => "ブランチ作成",
-        StScrollHintCtrl => "Ctrl-f/Ctrl-b ページ, Ctrl-d/Ctrl-u ハーフ (PgDn/Up 共通)",
         CutDone => "カット",
         DeleteTarget => "削除対象",
         DeleteBranch => "ブランチ削除",
@@ -1618,7 +1669,6 @@ fn jp(msg: Msg) -> &'static str {
         Renamed => "リネーム",
         TreeSelection => "選択",
         InfoSize => "サイズ",
-        StPagerSpaceHint => "Space/b ページ, d/u ハーフ (PgDn/Up 共通)",
         Staged => "ステージ",
         StagedAll => "全てステージ",
         SwitchedTo => "切替",
@@ -1633,7 +1683,6 @@ fn jp(msg: Msg) -> &'static str {
         ScrollTop => "先頭",
         ScrollBot => "末尾",
         ScrollAll => "全体",
-        StSortHint => "[n]名前 [s]ｻｲｽﾞ [m]更新 [e]拡張子  [r]反転 [.]ﾌｫﾙﾀﾞ先頭  Esc",
         StPathAbs => "絶対",
         TreeAddedStaged => "追加(ステージ済)",
         AlreadyAtStartDir => "既に起動位置が基準",
@@ -1720,19 +1769,12 @@ fn jp(msg: Msg) -> &'static str {
         GlobalApp => "グローバル",
         HScroll => "横スクロール(非折返し時)",
         GitHScrollEnds => "横スクロール / 行頭・行末",
-        StCloseHint => "i / Esc / q : 閉じる",
         InfoClose => "i / Esc / q 閉じる",
         AnchorNotFound => "見出しが見つかりません: ",
         OutlineEmpty => "この文書に見出しはありません",
         InvalidMarkKey => "無効なマークキー",
         Items => "件",
         InfoItems => "項目",
-        VisualOpsHint => "j/k:範囲  a:同階層  A:全部  v:確定  Space:操作(d/r/c/x)  Esc:取消",
-        BranchesNavHint => "j/k:移動  Enter:切替  n:新規  d:削除  /:検索  q/Esc:戻る",
-        BookmarksNavHint => "j/k:移動  /:検索  q/Esc:戻る",
-        GitNavDetailHint => "j/k:移動  Enter:詳細  q/Esc:戻る",
-        GitNavDetailCommitHint => "j/k:移動  Enter:詳細  s:基準  x/0:基準解除  b:ブランチ  q/Esc:戻る",
-        JjGraphNavHint => "j/k:移動  Enter:詳細  a:全リビジョン  b:ブックマーク  q/Esc:戻る",
         GraphBaseSet => "基準: ",
         GraphBaseCleared => "基準を解除しました",
         GraphBaseNeedsCommit => "基準にするコミットを選んでください",
@@ -1741,15 +1783,7 @@ fn jp(msg: Msg) -> &'static str {
         GraphBranchesHelp => "表示するブランチを選ぶ",
         GraphLegendHidden => "非表示",
         GraphPickerTitle => "グラフのブランチ",
-        GraphPickerFooter => "Space:切替  J/K:並替  a:全部  n:現在のみ  Enter:適用  q:取消",
         GraphPickerHeadLocked => "現在ブランチ(HEAD)は常に表示されます",
-        DiffScrollHint => "j/k:スクロール  h/l:横移動  s:縦/横/Auto  g/G:先頭/末尾  q/Esc:戻る",
-        DiffScrollDiscardHint => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  s:縦/横/Auto  x:破棄  q/Esc:戻る",
-        DiffScrollDiscardHintRendered => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  x:破棄  q/Esc:戻る",
-        DiffScrollDiscardHintRenderedWrap => "j/k:スクロール  n/N:次/前の変更  x:破棄  q/Esc:戻る",
-        DiffScrollNoDiscardHint => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  s:縦/横/Auto  q/Esc:戻る",
-        DiffScrollNoDiscardHintRendered => "j/k:スクロール  n/N:次/前の変更  h/l:横移動  q/Esc:戻る",
-        DiffScrollNoDiscardHintRenderedWrap => "j/k:スクロール  n/N:次/前の変更  q/Esc:戻る",
         HelpJumpTab => "番号でタブへジャンプ",
         JustNow => "たった今",
         Keymap => "キーマップ",
@@ -1803,8 +1837,6 @@ fn jp(msg: Msg) -> &'static str {
         ResetRoot => "ルートを起動ディレクトリへ戻す",
         ResetFit => "フィットに戻す",
         Root => "ルート",
-        StGitHubKeys => "s/S:ステージ(全) u/U:解除(全) x:破棄 c:コミット Enter:差分 d:全変更差分 l:ログ g:グラフ b:ブランチ w:ワークツリー !:ツール q:閉じる",
-        StJjHubKeys => "Enter:差分  d:全差分  l:ログ  g:グラフ  b:ブックマーク  R:同期  !:ツール  q:閉じる",
         Scroll => "スクロール",
         Scroll10Lines => "10 行スクロール",
         SearchHint => "検索(コード/テキスト); 次 / 前の一致",
@@ -1880,19 +1912,15 @@ fn jp(msg: Msg) -> &'static str {
         TableColsHelp => "先頭 / 末尾の列",
         StTableCell => "セル",
         TableCellTitle => "セル",
-        TableCellActions => "j/k:スクロール  g/G:先頭/末尾  q/Esc:閉じる",
         HintViewCell => "セル表示",
         TableCellViewHelp => "セルの全文を表示(折返し・j/k でスクロール)",
         TableCellEmpty => "表示できるセルがありません",
-        PreviewVisualHint => "h / j / k / l: 範囲拡張    y: コピー    Y: @参照    v / Esc: 取消",
-        PreviewVisualLineHint => "j / k / g / G: 範囲拡張    y: 行コピー    Y: @参照    V / Esc: 取消",
         PreviewSelectHelp => "v: 文字範囲を選択   V: 行を選択(y でコピー)",
         HintSelect => "選択",
         StVisualLine => "行ビジュアル",
         WkAtRef => "@参照",
         WkCodeBlock => "コードブロック",
         StChangedOnly => "変更のみ",
-        ChangedFilterHint => "Enter: プレビュー  n / N: 次 / 前  C / h: 全ファイル",
         NoChangedFiles => "変更ファイルはありません",
         JumpTargetHidden => "対象が隠しディレクトリ配下です(`.` で隠しファイル表示)",
         StFollow => "追尾",
@@ -1985,8 +2013,6 @@ fn jp(msg: Msg) -> &'static str {
         DiffComputing => "差分を計算中…",
         DiffViewCycleHelp => "表現を切り替え（ソース → 整形 → プレビュー）",
         DiffViewCycleHelpPair => "表現を切り替え（ソース ⇄ プレビュー）",
-        DiffMediaHintDiscard => "x:破棄  q/Esc:戻る",
-        DiffMediaHintNoDiscard => "q/Esc:戻る",
         HintNextPrevFile => "次/前の変更",
         MediaLayoutAuto => "自動",
         MediaLayoutSide => "左右",
@@ -2118,7 +2144,6 @@ fn jp(msg: Msg) -> &'static str {
         MermaidZoomAffordance => "+/-: ズーム",
         MermaidPanAffordance => "hjkl:パン  0:フィット",
         StHelp => "ヘルプ",
-        StHelpHint => "j/k:スクロール  g/G:先頭/末尾  q/Esc:閉じる",
         ExternalGitDisabled => "git 連携は無効です(設定: [external] git = false)",
         GitNotInstalled => "git が見つかりません — git 連携はオフです",
         ExternalGitToolDisabled => "外部 git ツールは無効です(設定: [external] git_tool = false)",
@@ -2143,6 +2168,48 @@ fn jp(msg: Msg) -> &'static str {
         HintFullScreen => "全画面",
         HintFocus => "フォーカス",
         AtRefPathHelp => "@パス参照をコピー",
+        FtRangeCommit => "確定",
+        FtThisDir => "同階層",
+        FtAll => "全部",
+        FtCancel => "取消",
+        FtClose => "閉じる",
+        FtExtend => "範囲",
+        FtOps => "操作",
+        FtTopBottom => "先頭/末尾",
+        FtNav => "移動",
+        FtDiscard => "破棄",
+        FtDiffLayout => "縦/横/Auto",
+        FtStage => "ステージ(全)",
+        FtUnstage => "解除(全)",
+        FtCommit => "コミット",
+        FtDiffAll => "全差分",
+        FtLog => "ログ",
+        FtGraph => "グラフ",
+        FtBranch => "ブランチ",
+        FtTool => "ツール",
+        FtDetail => "詳細",
+        FtBase => "基準",
+        FtBaseOff => "基準解除",
+        FtAllRevisions => "全リビジョン",
+        FtCurrentOnly => "現在のみ",
+        FtReorder => "並替",
+        FtApply => "適用",
+        FtNew => "新規",
+        FtSwitch => "切替",
+        FtSync => "同期",
+        FtSortName => "名前",
+        FtSortSize => "サイズ",
+        FtSortMod => "更新",
+        FtSortExt => "拡張子",
+        FtSortReverse => "反転",
+        FtSortDirs => "フォルダ先頭",
+        FtPreview => "プレビュー",
+        FtNextPrev => "次 / 前",
+        FtAllFiles => "全ファイル",
+        FtCopyLines => "行コピー",
+        HelpHalfPage => "半ページ",
+        HelpMove => "移動 (Movement)",
+        HelpLaunch => "起動 (Launch)",
     }
 }
 
@@ -2259,7 +2326,6 @@ mod tests {
         Msg::WorktreeIsBare,
         Msg::WorktreeUnavailable,
         Msg::WorktreeAlreadyCurrent,
-        Msg::WorktreesNavHint,
         Msg::StWorktrees,
         Msg::StWorktreeChip,
         Msg::GitWorktreeSwitch,
@@ -2289,7 +2355,6 @@ mod tests {
         Msg::Create,
         Msg::Created,
         Msg::CreatedBranch,
-        Msg::StScrollHintCtrl,
         Msg::CutDone,
         Msg::DeleteTarget,
         Msg::DeleteBranch,
@@ -2327,7 +2392,6 @@ mod tests {
         Msg::Renamed,
         Msg::TreeSelection,
         Msg::InfoSize,
-        Msg::StPagerSpaceHint,
         Msg::Staged,
         Msg::StagedAll,
         Msg::SwitchedTo,
@@ -2342,7 +2406,6 @@ mod tests {
         Msg::ScrollTop,
         Msg::ScrollBot,
         Msg::ScrollAll,
-        Msg::StSortHint,
         Msg::StPathAbs,
         Msg::TreeAddedStaged,
         Msg::AlreadyAtStartDir,
@@ -2429,17 +2492,12 @@ mod tests {
         Msg::GlobalApp,
         Msg::HScroll,
         Msg::GitHScrollEnds,
-        Msg::StCloseHint,
         Msg::InfoClose,
         Msg::AnchorNotFound,
         Msg::OutlineEmpty,
         Msg::InvalidMarkKey,
         Msg::Items,
         Msg::InfoItems,
-        Msg::VisualOpsHint,
-        Msg::BranchesNavHint,
-        Msg::GitNavDetailHint,
-        Msg::GitNavDetailCommitHint,
         Msg::GraphBaseSet,
         Msg::GraphBaseCleared,
         Msg::GraphBaseNeedsCommit,
@@ -2448,14 +2506,7 @@ mod tests {
         Msg::GraphBranchesHelp,
         Msg::GraphLegendHidden,
         Msg::GraphPickerTitle,
-        Msg::GraphPickerFooter,
         Msg::GraphPickerHeadLocked,
-        Msg::DiffScrollHint,
-        Msg::DiffScrollDiscardHint,
-        Msg::DiffScrollDiscardHintRendered,
-        Msg::DiffScrollDiscardHintRenderedWrap,
-        Msg::DiffScrollNoDiscardHintRendered,
-        Msg::DiffScrollNoDiscardHintRenderedWrap,
         Msg::HelpJumpTab,
         Msg::JustNow,
         Msg::Keymap,
@@ -2508,7 +2559,6 @@ mod tests {
         Msg::ResetRoot,
         Msg::ResetFit,
         Msg::Root,
-        Msg::StGitHubKeys,
         Msg::Scroll,
         Msg::Scroll10Lines,
         Msg::SearchHint,
@@ -2555,10 +2605,6 @@ mod tests {
         Msg::StDiff,
         Msg::StDrop,
         Msg::StFilter,
-        Msg::DiffScrollNoDiscardHint,
-        Msg::StJjHubKeys,
-        Msg::BookmarksNavHint,
-        Msg::JjGraphNavHint,
         Msg::GraphAlreadyAll,
         Msg::GraphShowingAll,
         Msg::GraphShowingDefault,
@@ -2640,8 +2686,6 @@ mod tests {
         Msg::DiffComputing,
         Msg::DiffViewCycleHelp,
         Msg::DiffViewCycleHelpPair,
-        Msg::DiffMediaHintDiscard,
-        Msg::DiffMediaHintNoDiscard,
         Msg::HintNextPrevFile,
         Msg::MediaLayoutAuto,
         Msg::MediaLayoutSide,
@@ -2684,19 +2728,15 @@ mod tests {
         Msg::TableColsHelp,
         Msg::StTableCell,
         Msg::TableCellTitle,
-        Msg::TableCellActions,
         Msg::HintViewCell,
         Msg::TableCellViewHelp,
         Msg::TableCellEmpty,
-        Msg::PreviewVisualHint,
-        Msg::PreviewVisualLineHint,
         Msg::PreviewSelectHelp,
         Msg::HintSelect,
         Msg::StVisualLine,
         Msg::WkAtRef,
         Msg::WkCodeBlock,
         Msg::StChangedOnly,
-        Msg::ChangedFilterHint,
         Msg::NoChangedFiles,
         Msg::JumpTargetHidden,
         Msg::StFollow,
@@ -2819,7 +2859,6 @@ mod tests {
         Msg::StQuit,
         Msg::StQuitHint,
         Msg::StHelp,
-        Msg::StHelpHint,
         Msg::ExternalGitDisabled,
         Msg::GitNotInstalled,
         Msg::ExternalGitToolDisabled,
@@ -2844,6 +2883,48 @@ mod tests {
         Msg::HintFullScreen,
         Msg::HintFocus,
         Msg::AtRefPathHelp,
+        Msg::FtRangeCommit,
+        Msg::FtThisDir,
+        Msg::FtAll,
+        Msg::FtCancel,
+        Msg::FtClose,
+        Msg::FtExtend,
+        Msg::FtOps,
+        Msg::FtTopBottom,
+        Msg::FtNav,
+        Msg::FtDiscard,
+        Msg::FtDiffLayout,
+        Msg::FtStage,
+        Msg::FtUnstage,
+        Msg::FtCommit,
+        Msg::FtDiffAll,
+        Msg::FtLog,
+        Msg::FtGraph,
+        Msg::FtBranch,
+        Msg::FtTool,
+        Msg::FtDetail,
+        Msg::FtBase,
+        Msg::FtBaseOff,
+        Msg::FtAllRevisions,
+        Msg::FtCurrentOnly,
+        Msg::FtReorder,
+        Msg::FtApply,
+        Msg::FtNew,
+        Msg::FtSwitch,
+        Msg::FtSync,
+        Msg::FtSortName,
+        Msg::FtSortSize,
+        Msg::FtSortMod,
+        Msg::FtSortExt,
+        Msg::FtSortReverse,
+        Msg::FtSortDirs,
+        Msg::FtPreview,
+        Msg::FtNextPrev,
+        Msg::FtAllFiles,
+        Msg::FtCopyLines,
+        Msg::HelpHalfPage,
+        Msg::HelpMove,
+        Msg::HelpLaunch,
     ];
 
     #[test]

@@ -1752,7 +1752,7 @@ fn e2e_git_hub_stage_and_diff() {
     s.key('s');
     s.key('u');
     // Enter opens the diff; q returns to the hub. `s.see("diff")` alone has no detection power
-    // here: the hub's own footer legend (`StGitHubKeys`) always contains the literal substring
+    // here: the hub's own footer legend (the `Enter:diff` token) always contains the literal substring
     // "diff" (the "Enter:diff" hint), so it would still pass even if `Enter` were a complete
     // no-op that left the hub showing. Assert the actual state transition via `is_git_diff_preview`
     // instead — the same accessor used elsewhere in this file for the same purpose.
@@ -18886,7 +18886,9 @@ fn e2e_office_help_row_for_e_matches_what_e_does() {
         );
         std::fs::write(dir.join("c.csv"), "a,b\n1,2\n").unwrap();
         let root = canon(&dir);
-        let mut s = Sim::with_config(&root, cfg);
+        // Tall enough for the whole help: the `e` row sits in the launch section, below the
+        // screen's own operations.
+        let mut s = Sim::with_config_sized(&root, cfg, 100, 60);
         s.select(if open { "b.xlsx" } else { "c.csv" });
         if open {
             s.enter();
@@ -20431,6 +20433,9 @@ mod survivors;
 
 #[cfg(test)]
 mod key_context;
+
+#[cfg(test)]
+mod ops_keys;
 
 #[cfg(test)]
 mod word;

@@ -317,6 +317,7 @@ impl App {
     /// ([[hint-shown-iff-key-acts]])", generalized to "only when it would actually change anything":
     /// `None` when the target has just one representation (mirrors `cycle_diff_view`'s own no-op
     /// gate exactly), otherwise the `Msg` naming whichever presentation `R` would switch *to*.
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn diff_view_cycle_hint(&self) -> Option<crate::i18n::Msg> {
         let PreviewKind::GitDiff(path) = self.tab.preview_kind.as_ref()? else {
             return None;
@@ -344,6 +345,7 @@ impl App {
     /// `R` to do), `DiffViewCycleHelpPair` ("source ⇄ preview") for a target with two (also used
     /// for Image/PDF's `Rendered ⇄ Preview`), and `DiffViewCycleHelp` ("source → rendered →
     /// preview") for a target with three (Markdown, and SVG).
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
     pub fn diff_view_help_hint(&self) -> Option<crate::i18n::Msg> {
         let PreviewKind::GitDiff(path) = self.tab.preview_kind.as_ref()? else {
             return None;
@@ -390,18 +392,6 @@ impl App {
         if self.tab.preview_from_diff {
             self.return_to_diff_from_preview();
         }
-    }
-
-    /// `R`'s meaning in `Surface::PreviewText` right now — `Some(HintDiff)` while `preview_from_diff`
-    /// is set (this preview *is* the diff's `Preview` representation), otherwise the ordinary raw/
-    /// rendered toggle hint `ui/preview.rs::footer_hints` already computes for every other Markdown/
-    /// Mermaid preview. Kept here (rather than inlined at the one call site) so the "which case am I
-    /// in" logic lives next to `toggle_md_raw_or_return_to_diff`, the key handler it mirrors.
-    pub fn diff_preview_raw_hint(&self) -> Option<crate::i18n::Msg> {
-        if self.tab.preview_from_diff {
-            return Some(crate::i18n::Msg::HintReturnToDiff);
-        }
-        None
     }
 
     /// Enters the diff's `Preview` representation for `path` — an ordinary content preview
