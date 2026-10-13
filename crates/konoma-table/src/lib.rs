@@ -106,6 +106,7 @@ impl Session for TableSession {
             // The host titles a table with the file's path and the cursor position.
             title: None,
             rainbow: cx.settings.bool("rainbow", true),
+            addressed: false,
         }))
     }
 }

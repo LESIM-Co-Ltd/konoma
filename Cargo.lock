@@ -1726,10 +1726,13 @@ dependencies = [
  "konoma-code",
  "konoma-code-core",
  "konoma-markdown-core",
+ "konoma-math",
  "konoma-math-core",
  "konoma-media",
  "konoma-media-core",
+ "konoma-mermaid",
  "konoma-mermaid-core",
+ "konoma-office",
  "konoma-office-core",
  "konoma-plugin",
  "konoma-svg",
@@ -1800,6 +1803,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "konoma-math"
+version = "0.1.0"
+dependencies = [
+ "konoma-math-core",
+ "konoma-plugin",
+]
+
+[[package]]
 name = "konoma-math-core"
 version = "0.1.0"
 dependencies = [
@@ -1843,6 +1854,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "konoma-mermaid"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-mermaid-core",
+ "konoma-plugin",
+ "konoma-test-support",
+ "mermaid-text",
+]
+
+[[package]]
 name = "konoma-mermaid-core"
 version = "0.1.0"
 dependencies = [
@@ -1855,6 +1877,16 @@ dependencies = [
  "serde",
  "serde_json",
  "svgtypes",
+]
+
+[[package]]
+name = "konoma-office"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-office-core",
+ "konoma-plugin",
+ "konoma-test-support",
 ]
 
 [[package]]

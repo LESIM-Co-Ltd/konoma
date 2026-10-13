@@ -1148,8 +1148,8 @@ impl App {
                     diff_marks: Vec::new(),
                 }
             }
-            Some(PreviewKind::Mermaid(_)) => DecoratedMarkdown {
-                lines: crate::preview::markdown::render_mermaid_file(&src, width),
+            Some(k) if k.is_mermaid_file() => DecoratedMarkdown {
+                lines: self.mermaid_text_lines(&src, width),
                 images: Vec::new(),
                 remote_urls: Vec::new(),
                 mermaid_fences: Vec::new(),

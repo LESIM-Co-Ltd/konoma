@@ -56,7 +56,6 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
     match a {
         // --- What a "page" is depends on the preview (the predicate `App::page_turn` gates on) ---
         A::PageNext | A::PagePrev => when(match app.tab.preview_kind {
-            Some(PreviewKind::Spreadsheet(_)) => app.sheet_can_switch(),
             #[cfg(feature = "git")]
             Some(PreviewKind::GitDiff(_)) => app.media_diff_can_page(),
             Some(PreviewKind::Document(_)) => app.slide_can_turn(),

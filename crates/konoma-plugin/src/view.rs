@@ -240,6 +240,18 @@ pub trait Grid: Send + Sync {
     fn truncated(&self) -> bool {
         false
     }
+    /// Calls `f(col, text)` for each cell of `row` that has something to search, in column order.
+    /// The host searches a table with this. The default visits every column; a sparse grid (a
+    /// sheet 16,000 columns wide with a few cells per row) overrides it to visit only the cells
+    /// that exist, so a search costs what the sheet holds and not what it spans.
+    fn visit_row(&self, row: usize, f: &mut dyn FnMut(usize, &str)) {
+        for col in 0..self.ncols() {
+            match self.cell_str(row, col) {
+                Some(text) => f(col, text),
+                None => f(col, &self.cell(row, col)),
+            }
+        }
+    }
     /// The detail lines for the cell popup (type, shown value, raw value, format).
     fn detail(&self, row: usize, col: usize) -> Option<CellDetail> {
         let _ = (row, col);
@@ -256,9 +268,17 @@ pub struct CellDetail {
 /// A table view.
 pub struct TableView {
     pub grid: Arc<dyn Grid>,
+    /// A note the host puts after the file name in the table's frame title (a spreadsheet's sheet
+    /// name and position, for example). `None` keeps the host's own title: the file name and the
+    /// cursor position.
     pub title: Option<String>,
     /// Color the columns in turn.
     pub rainbow: bool,
+    /// Whether the cells have spreadsheet addresses. The host then draws a row-number gutter, puts
+    /// the cursor cell's address (`B3`) in the title, names the full-cell popup by it, and copies
+    /// only what is shown: a row is the shown cells joined by tabs, a column has no header line.
+    /// The grid's [`Grid::header`] is the column letters.
+    pub addressed: bool,
 }
 
 impl fmt::Debug for TableView {
@@ -268,6 +288,7 @@ impl fmt::Debug for TableView {
             .field("cols", &self.grid.ncols())
             .field("title", &self.title)
             .field("rainbow", &self.rainbow)
+            .field("addressed", &self.addressed)
             .finish()
     }
 }

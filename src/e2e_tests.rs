@@ -3750,10 +3750,11 @@ fn e2e_standalone_mmd_preview_never_gets_a_gutter() {
     s.select("a.mmd");
     s.enter();
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Mermaid(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(crate::preview::PreviewKind::is_mermaid_file),
         "前提: .mmd は Mermaid kind のはず"
     );
     let marks = s.app.md_diff_marks_for_test().unwrap_or_default();
@@ -20076,6 +20077,38 @@ fn e2e_sheet_holding_j_runs_one_load_at_a_time_and_ends_on_the_last_sheet() {
     s.see("S5 (5/6)");
 }
 
+/// The key held down for twenty repeats on a big workbook: one read runs (the first press), the
+/// other nineteen wait as one request, and the sheet that ends up on screen is the last one asked
+/// for. The reads are never started side by side (the most a held `J` may start is two: the first
+/// press and the last).
+#[test]
+fn e2e_sheet_twenty_presses_of_j_start_two_reads_and_end_on_the_last_sheet() {
+    let dir = sandbox("sheet_hold_j20");
+    let book = canon(&dir).join("h.xlsx");
+    numbered_book(&book, 25, |_| String::new());
+    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_media();
+    s.select("h.xlsx");
+    s.enter();
+    s.drain_media();
+    assert_eq!(s.app.workbook_loads_started(), 1);
+    for _ in 0..20 {
+        s.key('J');
+    }
+    assert_eq!(
+        s.app.workbook_loads_started(),
+        2,
+        "twenty presses started ONE read; the other nineteen wait as one request"
+    );
+    assert!(s.app.is_sheet_loading());
+    let arrived = drain_media_until_current(&mut s);
+    assert_eq!(arrived, 2, "the stale answer, then the last request's");
+    assert_eq!(s.app.workbook_loads_started(), 3);
+    s.see("S21 (21/25)");
+    s.see("sheet 21");
+    assert!(!s.app.is_sheet_loading());
+    assert_eq!(s.app.loaded_sheet_count(), Some(1));
+}
+
 /// Moving on to another file while a load runs drops the waiting request too.
 #[test]
 fn e2e_sheet_leaving_the_book_drops_the_waiting_load() {
@@ -20104,7 +20137,7 @@ fn e2e_sheet_leaving_the_book_drops_the_waiting_load() {
     );
     s.draw();
     s.see("plain");
-    assert!(s.app.workbook_for_test().is_none());
+    assert!(s.app.loaded_sheet_count().is_none());
 }
 
 /// A search confirmed while the sheet is being loaded is run when it arrives, and the cursor goes

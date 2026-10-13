@@ -1,0 +1,16 @@
+[package]
+name = "konoma-office"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "konoma's Office plugins: spreadsheets (xlsx, xlsb, xls, ods) shown as a sheet-by-sheet table"
+
+[dependencies]
+konoma-base = { path = "../konoma-base", version = "0.1.0" }
+konoma-plugin = { path = "../konoma-plugin", version = "0.1.0" }
+konoma-office-core = { path = "../konoma-office-core", version = "0.1.0" }
+
+[dev-dependencies]
+konoma-test-support = { path = "../konoma-test-support" }

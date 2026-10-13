@@ -290,7 +290,8 @@ pub fn text(app: &App, ctx: Context, a: Action) -> OpText {
         A::PageNext | A::PagePrev => {
             use crate::preview::PreviewKind;
             match app.tab.preview_kind {
-                Some(PreviewKind::Spreadsheet(_)) => {
+                // A workbook's pages are its sheets.
+                Some(ref k) if k.is_spreadsheet() => {
                     t.label = Some(M::HintSheet);
                     t.help = Some(M::SheetSwitchHelp);
                 }

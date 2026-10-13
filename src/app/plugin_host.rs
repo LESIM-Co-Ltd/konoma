@@ -27,6 +27,14 @@
 //!   channel and the old "loading" look (spinner, the old page kept on screen) is unchanged.
 //! - A panic in the plugin is caught on the worker and reported as a failure, so the loading mark
 //!   can never stick.
+//! - **Work groups.** A plugin whose reads can hold gigabytes names an exclusive work group in its
+//!   manifest (`Manifest::work_group`; the Office plugins share `office`). The jobs of one group run
+//!   one at a time; a job asked for meanwhile waits in the group's slot, a newer one replaces it,
+//!   and the running one is cancelled the usual way (the generation moved). Holding `J` over a big
+//!   workbook therefore starts one read and one waiting request, whatever the key repeat does.
+//! - **Pages.** A table plugin with pages (a workbook's sheets) is turned with
+//!   [`App::plugin_turn_page`]: the grid of the page being left is released off the UI thread and
+//!   the show is "Loading..." until the page lands.
 
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
@@ -62,8 +70,8 @@ pub(crate) struct PluginShow {
     /// `None` while a job holds it on the worker (or when the plugin failed).
     pub session: Option<Box<dyn Session>>,
     /// What the session reported about its representations and pages. The page count is the
-    /// host's (`PerTab::page_count`); the rest is read by the plugins wired in the next steps.
-    #[allow(dead_code)]
+    /// host's (`PerTab::page_count`); the sheet names of a workbook are read from here for the
+    /// "Loading..." title.
     pub layout: Layout,
     /// The latest view. It stays on screen while the same file is read again.
     pub view: Option<View>,
@@ -90,6 +98,14 @@ pub(crate) enum PluginJob {
 /// What a worker calls with the layout `open` learned.
 pub(super) type LayoutAnnounce = Box<dyn Fn(&Layout) + Send>;
 
+/// The state of one exclusive work group (`Manifest::work_group`): whether one of its jobs is
+/// running, and the newest job asked for since.
+#[derive(Default)]
+pub(crate) struct GroupSlot {
+    busy: bool,
+    queued: Option<PluginWork>,
+}
+
 /// One job with everything it needs, owned (it moves to a thread).
 pub(crate) struct PluginWork {
     pub(super) id: String,
@@ -112,6 +128,8 @@ pub(crate) struct PluginWork {
     pub(super) decode_cancel: Option<crate::preview::office::Cancel>,
     /// Called with the layout as soon as `open` returns, before the first `view`.
     pub(super) on_layout: Option<LayoutAnnounce>,
+    /// The plugin's exclusive work group, if it names one.
+    pub(super) group: Option<String>,
 }
 
 /// What became of a picture a worker decoded.
@@ -138,6 +156,8 @@ pub struct PluginResult {
     pub(super) req: ViewReq,
     /// The picture the view held, decoded on the worker.
     pub(super) picture: Picture,
+    /// The work group the job ran in: it is free again once this result has arrived.
+    pub(super) group: Option<String>,
 }
 
 /// The layout a worker learned from `open`, sent ahead of the (slower) first picture when the UI
@@ -159,11 +179,36 @@ impl PluginResult {
             failure: Some(failure),
             req,
             picture: Picture::None,
+            group: None,
         }
     }
 }
 
 impl PluginResult {
+    /// Test-only: what a worker answers with: a view, or why there is none.
+    #[cfg(test)]
+    pub(super) fn answer(
+        gen: u64,
+        id: &str,
+        layout: Option<Layout>,
+        view: Option<View>,
+        failure: Option<Failure>,
+        req: ViewReq,
+    ) -> PluginResult {
+        PluginResult {
+            gen,
+            id: id.to_string(),
+            session: None,
+            layout,
+            view,
+            outcome: None,
+            failure,
+            req,
+            picture: Picture::None,
+            group: None,
+        }
+    }
+
     /// Test-only: the picture this result stands for: the decoded picture, or the reason it could
     /// not be made (a failed read of an SVG file is an `ImageFailed` like a failed decode).
     #[cfg(test)]
@@ -217,6 +262,7 @@ impl PluginWork {
             expects_picture,
             decode_cancel,
             on_layout,
+            group: _,
         } = self;
         let term = TermCaps { pixels };
         let view_of = |mut session: Box<dyn Session>, req: ViewReq| {
@@ -224,7 +270,6 @@ impl PluginWork {
                 .with_cancel(cancel.clone())
                 .with_term(term)
                 .with_external(external);
-            let layout = session.layout();
             let mut picture = Picture::None;
             let (view, failure) = match session.view(&req, &cx) {
                 Ok(View::Image(iv)) => {
@@ -249,6 +294,8 @@ impl PluginWork {
                 Ok(v) => (Some(v), None),
                 Err(f) => (None, Some(f)),
             };
+            // Asked **after** the view: what a read learns (a workbook's sheets) is in the layout.
+            let layout = session.layout();
             PluginResult {
                 gen,
                 id: id.clone(),
@@ -259,6 +306,7 @@ impl PluginWork {
                 failure,
                 req,
                 picture,
+                group: None,
             }
         };
         match job {
@@ -302,6 +350,7 @@ impl PluginWork {
                     failure,
                     req,
                     picture: Picture::None,
+                    group: None,
                 }
             }
         }
@@ -523,8 +572,9 @@ impl App {
             self.drop_plugin();
             return;
         };
-        // The picture plugins are started with the media load (`start_media_load`), which comes
-        // first and owns their show; this is not the place to touch it.
+        // The picture plugins (a mermaid file among them) are started with the media load
+        // (`start_media_load`), which comes first and owns their show; this is not the place to
+        // touch it.
         if self
             .tab
             .preview_kind
@@ -560,10 +610,14 @@ impl App {
         self.start_plugin_open(id, plugin, input, keep_previous);
     }
 
-    /// The request a view is asked with: the size of the preview area as far as it is known.
+    /// The request a view is asked with: the size of the preview area as far as it is known, and
+    /// the page the tab is on (counted from 0; a plugin without pages ignores it).
     pub(super) fn plugin_view_req(&self) -> ViewReq {
         let rows = self.tab.preview_viewport.max(1);
-        ViewReq::new(80, rows)
+        ViewReq {
+            page: Some(self.tab.page.max(1).saturating_sub(1) as usize),
+            ..ViewReq::new(80, rows)
+        }
     }
 
     /// A job for the plugin `id` on the file `path`, with everything the worker needs from the
@@ -580,7 +634,11 @@ impl App {
             konoma_media::VIDEO_ID => self.cfg.external.video,
             _ => false,
         };
+        let group = crate::plugins::shared_registry(&self.cfg.plugin_disabled())
+            .manifest(&id)
+            .and_then(|m| m.work_group.clone());
         PluginWork {
+            group,
             settings: crate::plugins::effective_settings(&self.cfg, &id),
             lang: self.plugin_lang().to_string(),
             pixels: self.terminal_draws_pixels(),
@@ -645,11 +703,37 @@ impl App {
 
     /// Give `work` a new generation (everything older is stale), run it, and either apply its
     /// result on the spot (no channel; or it came within the first-frame budget of a
-    /// `Wait::Result`) or leave it to the run loop.
-    pub(super) fn dispatch_plugin_work(&mut self, mut work: PluginWork, wait: Wait) {
+    /// `Wait::Result`) or leave it to the run loop. Returns whether the result was applied on the
+    /// spot.
+    ///
+    /// A plugin in an exclusive work group (`Manifest::work_group`) waits while another job of the
+    /// group runs: the job is parked in the group's slot (replacing an older parked one) and
+    /// started when the running one's result arrives (`release_plugin_group`). The running job is
+    /// told to stop by the generation having moved.
+    pub(super) fn dispatch_plugin_work(&mut self, mut work: PluginWork, wait: Wait) -> bool {
         self.bump_media_gen();
         work.gen = self.media_gen;
-        let (shared, gen) = (self.media_gen_shared.clone(), work.gen);
+        self.media_loading = true;
+        if self.media_tx.is_some() {
+            if let Some(group) = work.group.clone() {
+                let slot = self.plugin_groups.entry(group).or_default();
+                if slot.busy {
+                    if let Some(older) = slot.queued.replace(work) {
+                        super::table_actions::discard_in_background(older);
+                    }
+                    return false;
+                }
+                slot.busy = true;
+            }
+        }
+        self.spawn_plugin_work(work, wait)
+    }
+
+    /// Run `work` (its group, if any, is already marked busy): on a thread of its own, or on the
+    /// spot without a channel.
+    fn spawn_plugin_work(&mut self, mut work: PluginWork, wait: Wait) -> bool {
+        let gen = work.gen;
+        let shared = self.media_gen_shared.clone();
         let cancel = {
             let shared = shared.clone();
             Cancel::from_fn(move || shared.load(std::sync::atomic::Ordering::Relaxed) != gen)
@@ -658,13 +742,20 @@ impl App {
             shared.clone(),
             gen,
         ));
-        self.media_loading = true;
+        let group = work.group.clone();
+        #[cfg(test)]
+        if group.is_some() {
+            self.plugin_group_dispatches += 1;
+        }
         let Some(tx) = self.media_tx.clone() else {
             // No worker attached (tests): run here, apply now.
             let result = work.run(cancel);
             self.install_plugin_result(result);
-            return;
+            return true;
         };
+        // A job of a work group (a workbook's sheet: seconds and gigabytes) is never waited for:
+        // the screen says "Loading..." and the answer comes through the channel, as it always did.
+        let wait = if group.is_some() { Wait::Nothing } else { wait };
         let handoff = matches!(wait, Wait::Result(_)).then(|| Arc::new(Handoff::new()));
         let gate = matches!(wait, Wait::Layout(_)).then(|| Arc::new(LayoutGate::new()));
         if let Some(gate) = &gate {
@@ -697,15 +788,17 @@ impl App {
             gate.clone(),
             tx,
             cancel.clone(),
+            group.clone(),
         );
         let spawned = std::thread::Builder::new()
             .name("konoma-plugin".into())
             .spawn(move || {
-                let (work, handoff, gate, tx, cancel) = worker;
+                let (work, handoff, gate, tx, cancel, group) = worker;
                 let taken = work.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(work) = taken {
-                    let result =
+                    let mut result =
                         crate::preview::image::with_decode_ticket(ticket, || work.run(cancel));
+                    result.group = group;
                     match &handoff {
                         Some(h) => h.deliver(result, &tx),
                         None => {
@@ -726,19 +819,60 @@ impl App {
                 let result = work.run(cancel);
                 self.install_plugin_result(result);
             }
-            return;
+            if let Some(group) = &group {
+                self.release_plugin_group(group);
+            }
+            return true;
         }
         match wait {
-            Wait::Nothing => {}
-            Wait::Result(budget) => {
-                if let Some(result) = handoff.and_then(|h| h.wait(budget)) {
+            Wait::Nothing => false,
+            Wait::Result(budget) => match handoff.and_then(|h| h.wait(budget)) {
+                Some(result) => {
+                    let group = result.group.clone();
                     self.install_plugin_result(result);
+                    if let Some(group) = group {
+                        self.release_plugin_group(&group);
+                    }
+                    true
                 }
-            }
+                None => false,
+            },
             Wait::Layout(budget) => {
                 if let Some(layout) = gate.and_then(|g| g.wait(budget)) {
                     self.adopt_plugin_layout(&layout);
                 }
+                false
+            }
+        }
+    }
+
+    /// The job that held the work group `group` has delivered its result (current or not): the
+    /// group is free, and the job parked behind it starts, unless the preview moved on since it
+    /// was asked for (the generation changed) and it is dropped.
+    pub(super) fn release_plugin_group(&mut self, group: &str) {
+        let Some(slot) = self.plugin_groups.get_mut(group) else {
+            return;
+        };
+        slot.busy = false;
+        let Some(next) = slot.queued.take() else {
+            return;
+        };
+        if next.gen != self.media_gen {
+            super::table_actions::discard_in_background(next);
+            return;
+        }
+        if let Some(slot) = self.plugin_groups.get_mut(group) {
+            slot.busy = true;
+        }
+        self.spawn_plugin_work(next, Wait::Nothing);
+    }
+
+    /// Forget every job parked in a work group (the preview they were asked for is gone). A job
+    /// that is running keeps its group busy until its result arrives.
+    pub(super) fn drop_queued_plugin_work(&mut self) {
+        for slot in self.plugin_groups.values_mut() {
+            if let Some(job) = slot.queued.take() {
+                super::table_actions::discard_in_background(job);
             }
         }
     }
@@ -760,6 +894,55 @@ impl App {
         let work = self.plugin_work(id, path, PluginJob::View { session }, req);
         self.dispatch_plugin_work(work, Wait::Result(Duration::ZERO));
         true
+    }
+
+    /// Show the page the tab is on (`PerTab::page`) of the table plugin that is open: a workbook's
+    /// next sheet. The grid of the page being left is released off the UI thread (a big sheet is
+    /// hundreds of MB, and only one sheet is held at a time) and the show reads "Loading..." until
+    /// the page lands; the session is reused when a job does not hold it, else the plugin is opened
+    /// again (it is cheap: a page is read by `view`). Returns whether the page landed on the spot
+    /// (no worker, or an answer within no time), for the caller to settle the cursor and search.
+    pub(super) fn plugin_turn_page(&mut self) -> bool {
+        let Some(PreviewKind::Plugin { path, id, hint }) = self.tab.preview_kind.clone() else {
+            return false;
+        };
+        let registry = crate::plugins::shared_registry(&self.cfg.plugin_disabled());
+        let plugin = if registry.is_enabled(&id) {
+            registry.plugin(&id)
+        } else {
+            None
+        };
+        let Some(plugin) = plugin else {
+            return false;
+        };
+        let kept = self
+            .plugin
+            .as_mut()
+            .filter(|p| p.id == id && p.path == path)
+            .map(|show| {
+                if let Some(old) = show.view.take() {
+                    super::table_actions::discard_in_background(old);
+                }
+                show.phase = PluginPhase::Loading;
+                show.session.take()
+            });
+        let Some(session) = kept else {
+            // Nothing of this file is open (the show was dropped): open it afresh, at this page.
+            self.open_plugin(false);
+            return false;
+        };
+        let job = match session {
+            Some(session) => PluginJob::View { session },
+            None => PluginJob::Open {
+                plugin,
+                input: Input::File {
+                    path: path.clone(),
+                    hint,
+                },
+            },
+        };
+        let work = self.plugin_work(id, path, job, self.plugin_view_req());
+        self.dispatch_plugin_work(work, Wait::Result(Duration::ZERO))
     }
 
     /// Run a declared action of the open session. Returns false when there is no session to ask.
@@ -793,6 +976,10 @@ impl App {
             if let Some(n) = count {
                 self.tab.page = self.tab.page.clamp(1, n.max(1));
             }
+        } else if layout.pages.is_none() {
+            // The content has no pages (a workbook that failed to open has no sheets to switch
+            // between): the page keys have nothing to turn.
+            self.tab.page_count = None;
         }
     }
 
@@ -848,12 +1035,17 @@ impl App {
         let mut image_failure = None;
         match (res.view, res.failure) {
             (Some(view), _) => {
-                show.view = Some(view);
+                // The view replaced may hold a big grid: it is freed off the UI thread.
+                if let Some(old) = show.view.replace(view) {
+                    super::table_actions::discard_in_background(old);
+                }
                 show.req = res.req;
                 show.phase = PluginPhase::Ready;
             }
             (None, Some(failure)) => {
-                show.view = None;
+                if let Some(old) = show.view.take() {
+                    super::table_actions::discard_in_background(old);
+                }
                 image_failure = image_failure_of(&id, &failure);
                 show.phase = PluginPhase::Failed(failure);
             }
@@ -907,6 +1099,13 @@ impl App {
         // Only a table has a cursor and a search of its own to settle; a text view is searched
         // by the host's window reader, which a plugin landing does not touch.
         if self.shows_code_plugin() {
+            return true;
+        }
+        // A read that failed ends the wait of a search confirmed meanwhile: a later successful
+        // read runs the search where it stands, as if it had never been waiting.
+        if self.plugin_failure().is_some() {
+            self.tab.search_pending = false;
+            self.clamp_table_cursor();
             return true;
         }
         // The file landed after the transition that asked for it: the cursor the tab saved may be

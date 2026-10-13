@@ -24841,7 +24841,7 @@ fn table_search_highlight_is_exactly_the_matching_cells() {
 // Spreadsheet preview: what the App does with a worker's answer, and how the title reads
 // ---------------------------------------------------------------------------------------------
 
-use crate::preview::office::{OfficeError, Sheet, Workbook};
+use crate::preview::office::{Sheet, Workbook};
 
 /// A workbook of one sheet with the given shape (cells stay empty: the title and the cap marker
 /// only depend on the dimensions and the truncation flags).
@@ -24859,8 +24859,8 @@ fn shaped_workbook(nrows: usize, ncols: usize, rows_cut: bool, cols_cut: bool) -
     }
 }
 
-/// An English-UI App previewing `b.xlsx` as a spreadsheet (the file is never read: the workbook,
-/// when there is one, is put in by hand).
+/// An English-UI App previewing `b.xlsx` as a spreadsheet (the file is never read: the plugin's
+/// show, when there is one, is put in by hand).
 fn app_previewing_a_sheet(name: &str) -> (App, crate::test_support::TmpDir) {
     let dir = unique_tmp(name);
     std::fs::create_dir_all(&dir).unwrap();
@@ -24871,9 +24871,108 @@ fn app_previewing_a_sheet(name: &str) -> (App, crate::test_support::TmpDir) {
     cfg.ui.lang = "en".into();
     let mut app = App::new(root, cfg).unwrap();
     app.tab.preview_path = Some(book.clone());
-    app.tab.preview_kind = Some(PreviewKind::Spreadsheet(book));
+    app.tab.preview_kind = Some(PreviewKind::spreadsheet(book));
     app.tab.mode = Mode::Preview;
     (app, dir)
+}
+
+/// The layout the spreadsheet plugin reports for a workbook of the given sheets.
+fn sheet_layout(wb: &Workbook) -> konoma_plugin::view::Layout {
+    use konoma_plugin::view::{Layout, PageLayout};
+    Layout {
+        pages: Some(PageLayout::Separate {
+            count: Some(wb.sheets.len()),
+            titles: wb.sheets.iter().map(|s| s.name.clone()).collect(),
+        }),
+        ..Layout::default()
+    }
+}
+
+/// What the spreadsheet plugin's worker answers with for `wb` (sheet 0 on screen), for the
+/// current generation.
+fn sheet_result(app: &App, wb: Workbook) -> MediaResult {
+    use konoma_plugin::view::{View, ViewReq};
+    let layout = sheet_layout(&wb);
+    let view = View::Table(konoma_office::table_view(wb, 0, "en", true));
+    MediaResult {
+        gen: app.media_gen,
+        wb_worker: false,
+        payload: Some(MediaPayload::Plugin(Box::new(
+            plugin_host::PluginResult::answer(
+                app.media_gen,
+                konoma_office::SPREADSHEET_ID,
+                Some(layout),
+                Some(view),
+                None,
+                ViewReq::default(),
+            ),
+        ))),
+    }
+}
+
+/// What the worker answers when the workbook could not be read.
+fn sheet_failure_result(app: &App, failure: konoma_plugin::Failure) -> MediaResult {
+    MediaResult {
+        gen: app.media_gen,
+        wb_worker: false,
+        payload: Some(MediaPayload::Plugin(Box::new(
+            plugin_host::PluginResult::answer(
+                app.media_gen,
+                konoma_office::SPREADSHEET_ID,
+                Some(konoma_plugin::view::Layout::single()),
+                None,
+                Some(failure),
+                konoma_plugin::view::ViewReq::default(),
+            ),
+        ))),
+    }
+}
+
+/// Puts the sheet of `wb` on screen the way a landed read does (a `Ready` show of the table).
+fn show_sheet(app: &mut App, wb: Workbook) {
+    let layout = sheet_layout(&wb);
+    let view = konoma_plugin::view::View::Table(konoma_office::table_view(wb, 0, "en", true));
+    let path = app.tab.preview_path.clone().unwrap();
+    app.plugin = Some(plugin_host::PluginShow {
+        id: konoma_office::SPREADSHEET_ID.to_string(),
+        path,
+        phase: plugin_host::PluginPhase::Ready,
+        session: None,
+        layout,
+        view: Some(view),
+        req: konoma_plugin::view::ViewReq::default(),
+    });
+}
+
+/// A show that has asked for the workbook and is waiting for the answer.
+fn show_sheet_loading(app: &mut App) {
+    let path = app.tab.preview_path.clone().unwrap();
+    app.plugin = Some(plugin_host::PluginShow {
+        id: konoma_office::SPREADSHEET_ID.to_string(),
+        path,
+        phase: plugin_host::PluginPhase::Loading,
+        session: None,
+        layout: konoma_plugin::view::Layout::single(),
+        view: None,
+        req: konoma_plugin::view::ViewReq::default(),
+    });
+}
+
+/// The failure the real spreadsheet plugin gives for the workbook at `path`.
+fn spreadsheet_failure(path: &std::path::Path) -> konoma_plugin::Failure {
+    use konoma_plugin::{Input, OpenCx, Plugin, ViewCx};
+    let mut session = konoma_office::SpreadsheetPlugin
+        .open(
+            Input::File {
+                path: path.to_path_buf(),
+                hint: None,
+            },
+            &OpenCx::bare(),
+        )
+        .unwrap();
+    session
+        .view(&konoma_plugin::view::ViewReq::default(), &ViewCx::bare())
+        .expect_err("the workbook cannot be shown")
 }
 
 /// The text of a 90x26 frame drawn from `app`.
@@ -24909,7 +25008,7 @@ fn sheet_title_marks_a_capped_sheet_for_either_kind_of_cut() {
         (true, true, true),
     ] {
         let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_capped");
-        app.workbook = Some(Box::new(shaped_workbook(5, 3, rows_cut, cols_cut)));
+        show_sheet(&mut app, shaped_workbook(5, 3, rows_cut, cols_cut));
         let title = title_row(&drawn_screen(&mut app));
         assert_eq!(
             title.contains("(capped)"),
@@ -24926,7 +25025,7 @@ fn sheet_title_marks_a_capped_sheet_for_either_kind_of_cut() {
 fn sheet_title_names_no_cell_when_the_sheet_has_no_rows_or_no_columns() {
     for (nrows, ncols) in [(0, 0), (3, 0), (0, 3)] {
         let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_no_addr");
-        app.workbook = Some(Box::new(shaped_workbook(nrows, ncols, false, false)));
+        show_sheet(&mut app, shaped_workbook(nrows, ncols, false, false));
         let title = title_row(&drawn_screen(&mut app));
         assert!(
             title.contains(&format!("S (1/1)  {nrows}×{ncols}")),
@@ -24937,18 +25036,31 @@ fn sheet_title_names_no_cell_when_the_sheet_has_no_rows_or_no_columns() {
 }
 
 /// "Loading" is exactly: a spreadsheet is being previewed, nothing is loaded and no error is
-/// known **and a worker is still out** (`media_loading`). Without the worker it is the empty
-/// workbook, not a spinner that would never end.
+/// known **and a worker is still out** (`media_loading`). Without the worker it is the reason the
+/// workbook gave (here: every sheet is hidden), not a spinner that would never end.
 #[test]
 fn sheet_loading_needs_a_worker_that_is_still_out() {
     let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_wait_state");
+    // A workbook whose sheets are all hidden: the real plugin's reason for it.
+    let hidden = app
+        .tab
+        .preview_path
+        .clone()
+        .unwrap()
+        .with_file_name("h.xlsx");
+    konoma_test_support::build_xlsx(&hidden, &[("Secret", "hidden", "", "")]);
+    let reason = spreadsheet_failure(&hidden);
+
     app.media_loading = true;
     assert!(app.is_sheet_loading());
     let s = drawn_screen(&mut app);
     assert!(s.contains("loading"), "{s}");
     assert!(!s.contains("nothing to show"), "{s}");
 
-    app.media_loading = false;
+    // The worker answered with the reason: nothing is loading, and the reason is on screen.
+    show_sheet_loading(&mut app);
+    let r = sheet_failure_result(&app, reason);
+    app.apply_media(r);
     assert!(!app.is_sheet_loading(), "no worker out: not loading");
     let s = drawn_screen(&mut app);
     assert!(s.contains("nothing to show"), "{s}");
@@ -24956,28 +25068,18 @@ fn sheet_loading_needs_a_worker_that_is_still_out() {
 
     // A loaded workbook or a known error is never "loading", worker or not.
     app.media_loading = true;
-    app.workbook = Some(Box::new(shaped_workbook(1, 1, false, false)));
-    assert!(!app.is_sheet_loading());
-    app.workbook = None;
-    app.workbook_error = Some(OfficeError::Encrypted);
-    assert!(!app.is_sheet_loading());
+    assert!(!app.is_sheet_loading(), "a known error is not loading");
+    show_sheet(&mut app, shaped_workbook(1, 1, false, false));
+    assert!(!app.is_sheet_loading(), "a loaded workbook is not loading");
     // And never for a preview that is not a spreadsheet.
-    app.workbook_error = None;
+    app.drop_plugin();
     app.tab.preview_kind = Some(PreviewKind::CanNotPreview { ext: "x".into() });
     assert!(!app.is_sheet_loading());
 }
 
-fn workbook_result(app: &App, payload: MediaPayload) -> MediaResult {
-    MediaResult {
-        gen: app.media_gen,
-        wb_worker: false,
-        payload: Some(payload),
-    }
-}
-
 /// A worker's workbook that arrives for the *current* job but while the preview is something else
 /// (a CSV here — the job's generation is still current because a non-media preview starts no job
-/// of its own) is dropped: the kind check is what keeps a late workbook out of another preview.
+/// of its own) is dropped: the plugin check is what keeps a late workbook out of another preview.
 /// The same goes for a failure, which must not leave an error behind either.
 #[test]
 fn a_workbook_result_is_not_adopted_by_a_preview_that_is_not_a_spreadsheet() {
@@ -24992,22 +25094,23 @@ fn a_workbook_result_is_not_adopted_by_a_preview_that_is_not_a_spreadsheet() {
     app.load_table();
     assert!(app.is_table_preview() && !app.is_sheet_preview());
 
-    let r = workbook_result(
-        &app,
-        MediaPayload::Workbook(Box::new(shaped_workbook(2, 2, false, false))),
-    );
+    let r = sheet_result(&app, shaped_workbook(2, 2, false, false));
     app.apply_media(r);
     assert!(
-        app.workbook.is_none(),
+        app.loaded_sheet_count().is_none(),
         "the CSV preview did not take the workbook"
     );
     assert!(!app.is_sheet_preview());
     assert!(app.table_data().is_some());
     assert!(app.workbook_matches_preview());
 
-    let r = workbook_result(&app, MediaPayload::WorkbookFailed(OfficeError::Encrypted));
+    let r = sheet_failure_result(
+        &app,
+        konoma_plugin::Failure::unsupported(konoma_plugin::Tr::new("encrypted")),
+    );
     app.apply_media(r);
     assert!(app.sheet_error().is_none(), "nor did it take the failure");
+    assert!(app.plugin_failure().is_none());
     assert!(app.workbook_matches_preview());
     assert!(app.is_table_preview(), "the CSV is still shown");
 }
@@ -25017,26 +25120,45 @@ fn a_workbook_result_is_not_adopted_by_a_preview_that_is_not_a_spreadsheet() {
 #[test]
 fn a_failed_workbook_result_replaces_the_previous_workbook_and_a_good_one_the_error() {
     let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_result_swap");
-    app.workbook = Some(Box::new(shaped_workbook(2, 2, false, false)));
+    show_sheet(&mut app, shaped_workbook(2, 2, false, false));
     assert!(app.is_sheet_preview());
 
-    let r = workbook_result(
-        &app,
-        MediaPayload::WorkbookFailed(OfficeError::Corrupt("x".into())),
-    );
+    let broken = konoma_plugin::Failure::corrupt(konoma_plugin::Tr::new("damaged"));
+    let r = sheet_failure_result(&app, broken.clone());
     app.apply_media(r);
-    assert!(app.workbook.is_none(), "the old workbook is gone");
-    assert_eq!(app.sheet_error(), Some(&OfficeError::Corrupt("x".into())));
+    assert_eq!(
+        app.loaded_sheet_count(),
+        Some(0),
+        "the old workbook is gone"
+    );
+    assert_eq!(app.sheet_error(), Some(&broken));
     assert!(!app.is_sheet_preview() && !app.is_table_preview());
 
-    let r = workbook_result(
-        &app,
-        MediaPayload::Workbook(Box::new(shaped_workbook(3, 1, false, false))),
-    );
+    let r = sheet_result(&app, shaped_workbook(3, 1, false, false));
     app.apply_media(r);
     assert!(app.sheet_error().is_none(), "a good load clears the error");
     assert!(app.is_sheet_preview());
     assert_eq!(app.grid().map(|g| g.nrows()), Some(3));
+}
+
+/// A workbook's sheets are pages (the page keys turn them), but their position is already in the
+/// table's frame title (`S (1/2)`): the status bar does not add the PDF-style `1/2` chip to it.
+#[test]
+fn a_sheets_position_is_in_the_title_and_not_a_status_chip() {
+    let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_no_chip");
+    let mut wb = shaped_workbook(2, 2, false, false);
+    let mut second = Sheet::default();
+    second.name = "T".into();
+    wb.sheets.push(second);
+    show_sheet(&mut app, wb);
+    app.tab.page_count = Some(2);
+    assert!(app.can_turn_pages() && app.is_table_preview());
+    let chip: String = crate::ui::preview::context(&app)
+        .iter()
+        .map(|s| s.content.to_string())
+        .collect();
+    assert!(!chip.contains("1/2"), "{chip:?}");
+    assert!(title_row(&drawn_screen(&mut app)).contains("S (1/2)"));
 }
 
 /// A result of an older job (a newer one has been started since) is ignored altogether.
@@ -25044,15 +25166,10 @@ fn a_failed_workbook_result_replaces_the_previous_workbook_and_a_good_one_the_er
 fn a_workbook_result_of_a_superseded_job_is_ignored() {
     let (mut app, _d) = app_previewing_a_sheet("konoma_sheet_result_stale");
     app.media_loading = true;
-    let stale = MediaResult {
-        gen: app.media_gen.wrapping_add(1),
-        wb_worker: false,
-        payload: Some(MediaPayload::Workbook(Box::new(shaped_workbook(
-            1, 1, false, false,
-        )))),
-    };
+    let mut stale = sheet_result(&app, shaped_workbook(1, 1, false, false));
+    stale.gen = app.media_gen.wrapping_add(1);
     assert!(!app.apply_media(stale));
-    assert!(app.workbook.is_none());
+    assert!(app.loaded_sheet_count().is_none());
     assert!(app.is_sheet_loading(), "still waiting for the current job");
 }
 

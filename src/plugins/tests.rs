@@ -94,7 +94,7 @@ fn old_from_rule(rule: &Rule, path: &Path) -> PreviewKind {
     if let Some(builtin) = rule.builtin.as_deref() {
         return match builtin {
             "markdown" => PreviewKind::Markdown(p),
-            "mermaid" => PreviewKind::Mermaid(p),
+            "mermaid" => PreviewKind::mermaid(p),
             "image" => PreviewKind::image(p),
             "svg" => PreviewKind::svg(p),
             "video" => PreviewKind::video(p),
@@ -114,7 +114,7 @@ fn old_from_rule(rule: &Rule, path: &Path) -> PreviewKind {
                 },
                 None => PreviewKind::can_not_preview(path),
             },
-            "spreadsheet" => PreviewKind::Spreadsheet(p),
+            "spreadsheet" => PreviewKind::plugin("spreadsheet", p),
             "document" => PreviewKind::Document(p),
             "text" => PreviewKind::Text(p),
             _ => PreviewKind::can_not_preview(path),
@@ -401,16 +401,13 @@ fn old_builtin_names_read_as_plugins() {
         cfg.resolve_preview(Path::new("/nonexistent/x.q"))
     };
     assert!(matches!(one("markdown", ""), PreviewKind::Markdown(_)));
-    assert!(matches!(one("mermaid", ""), PreviewKind::Mermaid(_)));
+    assert!(one("mermaid", "").is_mermaid_file());
     assert!(one("image", "").is_plugin("image"));
     assert!(one("svg", "").is_plugin("svg"));
     assert!(one("video", "").is_plugin("video"));
     assert!(one("pdf", "").is_plugin("pdf"));
     assert!(one("code", "").is_code_plugin());
-    assert!(matches!(
-        one("spreadsheet", ""),
-        PreviewKind::Spreadsheet(_)
-    ));
+    assert!(one("spreadsheet", "").is_spreadsheet());
     assert!(matches!(one("document", ""), PreviewKind::Document(_)));
     assert!(matches!(one("text", ""), PreviewKind::Text(_)));
     let separator = |kind: PreviewKind| match kind {
@@ -685,7 +682,18 @@ fn the_standard_declarations_register_and_keep_the_expected_order() {
 }
 
 /// The standard plugins that are wired to the display: really opened, not declarations only.
-const WIRED: &[&str] = &["csv", "archive", "code", "image", "svg", "pdf", "video"];
+const WIRED: &[&str] = &[
+    "csv",
+    "archive",
+    "spreadsheet",
+    "code",
+    "image",
+    "svg",
+    "pdf",
+    "video",
+    "mermaid",
+    "math",
+];
 
 #[test]
 fn the_declared_plugins_refuse_to_open_until_they_are_wired() {

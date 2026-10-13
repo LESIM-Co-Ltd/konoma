@@ -50,14 +50,10 @@ impl App {
         // the whole bundle at the end — hoist this tab's own saved value first so that happens
         // against the *target* tab's leftover output, not whatever tab was live a moment ago.
         self.tab.command_out = t.command_out.clone();
-        // A spreadsheet's worker reads the sheet this tab was showing, so its sheet number is
-        // needed by `start_media_load` below (the bulk restore at the end comes too late).
-        self.tab.sheet_idx = t.sheet_idx;
-        // The parsed spreadsheet is App-level (too big to clone into every tab snapshot): drop the
-        // previous tab's and let the media block below re-read this tab's on the worker. The sheet
-        // number and cursor come back with `self.tab = t` and are clamped when the workbook lands.
-        self.set_workbook(None);
-        self.workbook_error = None;
+        // The parsed Word document is App-level (too big to clone into every tab snapshot): drop
+        // the previous tab's and let the media block below re-read this tab's on the worker. (A
+        // spreadsheet's sheet is the plugin show's, dropped by `clear_image` below and opened
+        // again by `load_plugin`.)
         self.set_document(None);
         self.document_error = None;
         // root/open_dir/entries/selected/show_hidden/tree_viewport/mode/preview_scroll/
@@ -147,8 +143,6 @@ impl App {
                 // revert it to this tab's stale pre-restore leftover — same reasoning as the
                 // `t.page` clamp above.
                 t.command_out = self.tab.command_out.clone();
-                // Likewise a synchronously landed workbook may have clamped the sheet number.
-                t.sheet_idx = self.tab.sheet_idx;
                 if reused {
                     // Restore doesn't go through apply_payload, so the sharp reraster that would
                     // normally fire there doesn't run. This prevents an SVG/mermaid that left its
@@ -178,9 +172,24 @@ impl App {
         // isn't carried over). The range is clamped on the next render/move.
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
-        // For a plugin's file (CSV/TSV, an archive listing), open it again, then restore the saved
-        // cursor/scroll and clamp it (a worker's result clamps again when it lands).
+        // For a plugin's file (CSV/TSV, an archive listing, a workbook), open it again, then
+        // restore the saved cursor/scroll and clamp it (a worker's result clamps again when it
+        // lands). A workbook is opened at the sheet this tab was showing: the tab's own page is
+        // put back **before** opening (the bulk restore at the end comes too late), and what a
+        // load that landed on the spot clamped (the file may have lost sheets) is what is kept.
+        if matches!(t.preview_kind, Some(PreviewKind::Plugin { .. })) && !self.shows_media_plugin()
+        {
+            t.page = t.page.max(1);
+            self.tab.page = t.page;
+        }
         self.load_plugin();
+        if matches!(t.preview_kind, Some(PreviewKind::Plugin { .. })) && !self.shows_media_plugin()
+        {
+            t.page = self.tab.page;
+            if self.tab.page_count.is_some() {
+                t.page_count = self.tab.page_count;
+            }
+        }
         self.tab = t;
         self.clamp_table_cursor();
 
@@ -332,13 +341,11 @@ impl App {
         self.tab.git_view_sel = 0;
         self.tab.git_view_entries.clear();
         self.tab.came_from_git_view = false;
-        // A new tab shows no spreadsheet (the source tab's was snapshotted by save_active; its
-        // workbook is re-read on the worker when that tab is activated again).
-        self.set_workbook(None);
-        self.workbook_error = None;
+        // A new tab shows no Word document (the source tab's was snapshotted by save_active; it is
+        // re-read on the worker when that tab is activated again). Its page starts at the first.
         self.set_document(None);
         self.document_error = None;
-        self.tab.sheet_idx = 0;
+        self.tab.page = 1;
         // A new tab also starts the diff-view state from scratch (part of the PerTab duplication
         // set) — otherwise it would silently inherit whichever presentation the tab it was opened
         // from happened to be showing, despite having no diff of its own open at all yet.

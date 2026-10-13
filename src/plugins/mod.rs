@@ -4,7 +4,7 @@
 //! This step only settles **who** shows a file: the decision is made by `konoma_plugin::Registry`
 //! (user rules first, then the standard plugins in registration order, then plain text, then
 //! "can not preview"), and the result is mapped onto today's `PreviewKind`. The plugins that are
-//! wired to the display (`csv`, `archive`, `code`, and the picture plugins `image`, `svg`, `pdf`, `video`) are opened by the host's Session mechanism
+//! wired to the display (`csv`, `archive`, `spreadsheet`, `code`, and the picture plugins `image`, `svg`, `pdf`, `video`) are opened by the host's Session mechanism
 //! (`app/plugin_host.rs`) and show as `PreviewKind::Plugin`; the rest are still declarations only.
 
 mod listing;
@@ -163,55 +163,12 @@ pub(crate) fn standard_manifests() -> Vec<Manifest> {
             s("center"),
             t!(en: "Image alignment: left, center or right", ja: "画像の寄せ: left・center・right"),
         ));
-    let mermaid = standard("mermaid", t!(en: "Mermaid", ja: "Mermaid"))
-        .bind(Bind::files(["*.{mmd,mermaid}"]))
-        .bind(Bind::embed("fence:mermaid"))
-        .setting(SettingDecl::new(
-            "mode",
-            s("image"),
-            t!(en: "image draws a picture, text draws box characters", ja: "image は絵、text は罫線文字で描く"),
-        ))
-        .setting(SettingDecl::new(
-            "theme",
-            s("dark"),
-            t!(en: "Color theme of the diagram", ja: "図の配色"),
-        ))
-        .setting(SettingDecl::new(
-            "curve",
-            s("basis"),
-            t!(en: "Line shape of the edges", ja: "線の形"),
-        ))
-        .setting(SettingDecl::new(
-            "routing",
-            s("splines"),
-            t!(en: "Edge routing: splines or konoma-orthogonal", ja: "配線: splines か konoma-orthogonal"),
-        ))
-        .setting(SettingDecl::new(
-            "rows",
-            konoma_plugin::Value::Int(24),
-            t!(en: "Largest height of an inline diagram, in rows", ja: "インライン図の最大の高さ(行)"),
-        ));
-    let math = standard("math", t!(en: "Math", ja: "数式"))
-        .bind(Bind::embed("fence:math"))
-        .bind(Bind::embed("math"))
-        .setting(SettingDecl::new(
-            "mode",
-            s("image"),
-            t!(en: "image draws a picture, text keeps the source", ja: "image は絵、text はソースのまま"),
-        ))
-        .setting(SettingDecl::new(
-            "color",
-            s("#d0d0d0"),
-            t!(en: "Color of the formulas", ja: "数式の色"),
-        ));
+    let mermaid = konoma_mermaid::mermaid_manifest();
+    let math = konoma_math::math_manifest();
     let svg = konoma_media::svg_manifest();
     let image = konoma_media::image_manifest();
     let csv = konoma_table::csv_manifest();
-    let spreadsheet = office(
-        standard("spreadsheet", t!(en: "Spreadsheet", ja: "表計算")),
-        OfficeKind::Excel,
-        "*.{xlsx,xlsm,xltx,xltm,xlsb,xls,ods}",
-    );
+    let spreadsheet = konoma_office::spreadsheet_manifest();
     let document = office(
         standard("document", t!(en: "Word document", ja: "Word 文書")),
         OfficeKind::Word,
@@ -304,6 +261,9 @@ fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
         konoma_media::PDF_ID => Arc::new(konoma_media::PdfPlugin),
         konoma_media::VIDEO_ID => Arc::new(konoma_media::VideoPlugin),
         konoma_code::CODE_ID => Arc::new(konoma_code::CodePlugin),
+        konoma_office::SPREADSHEET_ID => Arc::new(konoma_office::SpreadsheetPlugin),
+        konoma_mermaid::MERMAID_ID => Arc::new(konoma_mermaid::MermaidPlugin),
+        konoma_math::MATH_ID => Arc::new(konoma_math::MathPlugin),
         _ => Arc::new(Declared(m)),
     }
 }
@@ -404,6 +364,12 @@ pub(crate) fn effective_settings(cfg: &crate::config::Config, id: &str) -> Setti
     if id == konoma_table::CSV_ID {
         fill_missing("rainbow", b(cfg.ui.csv_rainbow));
     }
+    if id == konoma_office::SPREADSHEET_ID {
+        // A sheet's columns follow `[plugins.csv] rainbow` (and the old `[ui] csv_rainbow`) until
+        // the sheet is given a value of its own.
+        let csv = effective_settings(cfg, konoma_table::CSV_ID);
+        fill_missing("rainbow", b(csv.bool("rainbow", true)));
+    }
     if id == konoma_code::CODE_ID {
         fill_missing("syntax_highlight", b(cfg.ui.syntax_highlight));
         // The theme is shared with the Markdown code blocks, so it stays `[ui.theme] code_theme`;
@@ -416,7 +382,62 @@ pub(crate) fn effective_settings(cfg: &crate::config::Config, id: &str) -> Setti
             konoma_plugin::Value::Int(i64::from(cfg.ui.svg_max_px)),
         );
     }
+    if id == konoma_mermaid::MERMAID_ID {
+        fill_missing("mode", s(&cfg.ui.mermaid));
+        fill_missing("theme", s(&cfg.ui.mermaid_theme));
+        fill_missing("curve", s(&cfg.ui.mermaid_curve));
+        fill_missing("routing", s(&cfg.ui.mermaid_routing));
+        fill_missing(
+            "rows",
+            konoma_plugin::Value::Int(i64::from(cfg.ui.mermaid_rows)),
+        );
+    }
+    if id == konoma_math::MATH_ID {
+        fill_missing("mode", s(&cfg.ui.math));
+        fill_missing("color", s(cfg.ui.math_color()));
+        // A color from `[plugins.math]` is held to the same test as the old `[ui] math_color`: one
+        // the rasterizer would paint black (invisible on a dark terminal) falls back to the default.
+        let color = crate::config::visible_math_color(settings.str("color", ""));
+        settings.set("color", s(color));
+    }
     settings
+}
+
+/// `[plugins.<id>] <key>` when it is a string, otherwise the old `[ui]` value `old`. The same rule
+/// [`effective_settings`] applies, without building the settings: the draw path asks these on
+/// every frame.
+fn plugin_str<'a>(cfg: &'a crate::config::Config, id: &str, key: &str, old: &'a str) -> &'a str {
+    match cfg.plugins.get(id).and_then(|t| t.get(key)) {
+        Some(toml::Value::String(v)) => v,
+        _ => old,
+    }
+}
+
+/// Whether the mermaid diagrams are drawn as text (`[plugins.mermaid] mode`, or `[ui] mermaid`).
+pub(crate) fn mermaid_mode_is_text(cfg: &crate::config::Config) -> bool {
+    plugin_str(cfg, konoma_mermaid::MERMAID_ID, "mode", &cfg.ui.mermaid) == "text"
+}
+
+/// Whether formulas are kept as text (`[plugins.math] mode`, or `[ui] math`).
+pub(crate) fn math_mode_is_text(cfg: &crate::config::Config) -> bool {
+    plugin_str(cfg, konoma_math::MATH_ID, "mode", &cfg.ui.math) == "text"
+}
+
+/// The largest height of an inline diagram, in rows (`[plugins.mermaid] rows`, or
+/// `[ui] mermaid_rows`). `0`, a negative number or one past `u16` is the default, 24.
+pub(crate) fn mermaid_rows(cfg: &crate::config::Config) -> u16 {
+    let raw = match cfg
+        .plugins
+        .get(konoma_mermaid::MERMAID_ID)
+        .and_then(|t| t.get("rows"))
+    {
+        Some(toml::Value::Integer(n)) => *n,
+        _ => i64::from(cfg.ui.mermaid_rows),
+    };
+    match u16::try_from(raw) {
+        Ok(0) | Err(_) => konoma_mermaid::DEFAULT_ROWS as u16,
+        Ok(n) => n,
+    }
 }
 
 /// Whether code and config files are colored: `[plugins.code] syntax_highlight`, or the old

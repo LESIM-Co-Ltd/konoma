@@ -119,6 +119,7 @@ impl Session for StandSession {
             grid: Arc::new(Rows(self.script.rows + self.page)),
             title: None,
             rainbow: true,
+            addressed: false,
         }))
     }
 

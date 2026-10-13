@@ -93,19 +93,20 @@ fn kind_of(res: Resolution, rules: &[Rule], preview_commands: bool, path: &Path)
         Resolution::CanNotPreview { .. } => PreviewKind::can_not_preview(path),
         Resolution::Plugin { id, hint } => match id.as_str() {
             "markdown" => PreviewKind::Markdown(p),
-            "mermaid" => PreviewKind::Mermaid(p),
             konoma_media::IMAGE_ID
             | konoma_media::SVG_ID
             | konoma_media::VIDEO_ID
-            | konoma_media::PDF_ID => PreviewKind::plugin(&id, p),
+            | konoma_media::PDF_ID
+            | konoma_mermaid::MERMAID_ID => PreviewKind::plugin(&id, p),
             konoma_code::CODE_ID => PreviewKind::plugin(&id, p),
+            // A workbook: the sheets are the plugin's pages, read one at a time.
+            konoma_office::SPREADSHEET_ID => PreviewKind::plugin(&id, p),
             // The separator is settled here, as it always was, and handed over as the note.
             "csv" => PreviewKind::Plugin {
                 hint: Some(csv_note(hint.as_deref(), path).to_string()),
                 id,
                 path: p,
             },
-            "spreadsheet" => PreviewKind::Spreadsheet(p),
             // Word and presentations are one display until the plugins are wired in.
             "document" | "presentation" => PreviewKind::Document(p),
             // A name that is not a zip / tar / tar.gz (a user rule can aim any glob at the
