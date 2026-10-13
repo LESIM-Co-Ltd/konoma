@@ -284,7 +284,7 @@ fn shared() -> Vec<(&'static str, &'static str)> {
         ("Global", "? Q F P t T [ ] 1 2 3 4 5 6 7 8 9"),
         (
             "Base",
-            "j k h l g G 0 $ q / n N v V y Y r m ' , Space Ctrl-d Ctrl-u Ctrl-f Ctrl-b Ctrl-n Ctrl-p Ctrl-t Up Down Left Right Esc Enter",
+            "j k h l g G 0 $ q / n N v V y Y r m ' , Space Ctrl-d Ctrl-u Ctrl-f Ctrl-b Ctrl-n Ctrl-p Ctrl-t Up Down Left Right Esc Enter PageUp PageDown Home End",
         ),
         ("Verb", "e o p !"),
         ("Type", "J K O"),
@@ -317,7 +317,7 @@ fn every_context_table_is_exactly_the_shared_part_plus_its_own_layer_two() {
     assert_eq!(table("diff"), with(&[("Type", "s R")]));
     // "list" and every unknown name (a plugin's screen, `git.changes`).
     for ctx in ["list", "git.changes", "my.screen", ""] {
-        assert_eq!(table(ctx), with(&[("Type", "R")]), "{ctx}");
+        assert_eq!(table(ctx), with(&[("Type", "Tab Shift-Tab R")]), "{ctx}");
     }
 }
 

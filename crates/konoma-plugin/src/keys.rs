@@ -239,6 +239,11 @@ pub fn reserved(context: &str) -> Vec<(KeySpec, Layer)> {
             KeyCode::Right,
             KeyCode::Esc,
             KeyCode::Enter,
+            // Aliases of the page keys and of `g`/`G`.
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Home,
+            KeyCode::End,
         ],
     ));
     // Layer 3.
@@ -256,7 +261,11 @@ pub fn reserved(context: &str) -> Vec<(KeySpec, Layer)> {
         "table" => v.extend(chars(Layer::Type, "R")),
         "diff" => v.extend(chars(Layer::Type, "sR")),
         // "list" and every plugin screen.
-        _ => v.extend(chars(Layer::Type, "R")),
+        _ => {
+            // `Tab`/`Shift-Tab` walk the version-control screens (the host's).
+            v.extend(named(Layer::Type, &[KeyCode::Tab, KeyCode::BackTab]));
+            v.extend(chars(Layer::Type, "R"));
+        }
     }
     let mut seen = Vec::new();
     v.retain(|(k, _)| {

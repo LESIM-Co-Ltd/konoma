@@ -1179,14 +1179,6 @@ fn every_default_key_with_a_layer_meaning_is_reserved_for_plugins() {
                 | A::ToggleInfo
         )
     };
-    // `PageUp`/`PageDown`/`Home`/`End` are aliases of keys that are reserved (`Ctrl-b`/`Ctrl-f`,
-    // `g`/`G`) but are not in the plugin crate's tables themselves: the one known gap, left out here.
-    let in_scope = |kp: KeyPress| {
-        !matches!(
-            kp.code,
-            KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
-        )
-    };
     let spec = |kp: KeyPress| -> KeySpec {
         match kp.code {
             KeyCode::Char(c) if kp.ctrl => KeySpec::ctrl(c),
@@ -1197,6 +1189,10 @@ fn every_default_key_with_a_layer_meaning_is_reserved_for_plugins() {
             KeyCode::Esc => KeySpec::key(PKey::Esc),
             KeyCode::Up => KeySpec::key(PKey::Up),
             KeyCode::Down => KeySpec::key(PKey::Down),
+            KeyCode::PageUp => KeySpec::key(PKey::PageUp),
+            KeyCode::PageDown => KeySpec::key(PKey::PageDown),
+            KeyCode::Home => KeySpec::key(PKey::Home),
+            KeyCode::End => KeySpec::key(PKey::End),
             KeyCode::Left => KeySpec::key(PKey::Left),
             KeyCode::Right => KeySpec::key(PKey::Right),
             other => panic!("unexpected key {other:?}"),
@@ -1229,9 +1225,6 @@ fn every_default_key_with_a_layer_meaning_is_reserved_for_plugins() {
     for (ctx, name) in contexts {
         let table: Vec<KeySpec> = reserved(name).into_iter().map(|(k, _)| k).collect();
         let mut check = |kp: KeyPress, why: String| {
-            if !in_scope(kp) {
-                return;
-            }
             checked += 1;
             if !table.contains(&spec(kp)) {
                 missing.push(format!(
@@ -1250,13 +1243,6 @@ fn every_default_key_with_a_layer_meaning_is_reserved_for_plugins() {
             check(kp, format!("the {id:?} menu"));
         }
         for f in crate::ops::keys::fixed_bindings(ctx) {
-            // Known gap, left out here: `Tab` / `Shift-Tab` walk the version-control screens, but
-            // the plugin crate's "list" table does not reserve them (a plugin on a `git.*` screen
-            // could take them).
-            #[cfg(feature = "git")]
-            if matches!(f.action, Action::GitScreenNext | Action::GitScreenPrev) {
-                continue;
-            }
             check(f.key, format!("fixed, {:?}", f.action));
         }
     }
