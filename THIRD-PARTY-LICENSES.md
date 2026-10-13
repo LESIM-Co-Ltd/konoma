@@ -9,7 +9,7 @@ regenerate it with `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.md`.
 
 ## Overview
 
-- MIT License (376)
+- MIT License (386)
 - Apache License 2.0 (13)
 - BSD 3-Clause "New" or "Revised" License (11)
 - Unicode License v3 (6)
@@ -5967,12 +5967,21 @@ SOFTWARE.
 Used by:
 - konoma 0.31.0
 - konoma-base 0.1.0
+- konoma-code 0.1.0
+- konoma-code-core 0.1.0
+- konoma-markdown 0.1.0
 - konoma-markdown-core 0.1.0
+- konoma-math 0.1.0
 - konoma-math-core 0.1.0
+- konoma-media 0.1.0
 - konoma-media-core 0.1.0
+- konoma-mermaid 0.1.0
 - konoma-mermaid-core 0.1.0
+- konoma-office 0.1.0
 - konoma-office-core 0.1.0
+- konoma-plugin 0.1.0
 - konoma-svg 0.1.0
+- konoma-table 0.1.0
 - konoma-vcs-core 0.1.0
 - konoma-widgets 0.1.0
 
