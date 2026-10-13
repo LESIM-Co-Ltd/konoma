@@ -63,7 +63,8 @@ pub enum PageLayout {
 pub struct ViewReq {
     /// The representation (`None` = the default).
     pub repr: Option<String>,
-    /// The page (`None` = the first or the whole).
+    /// The page, counted from 0 (`None` = the first or the whole). A page past the end is clamped
+    /// to the last one.
     pub page: Option<usize>,
     /// The size of the area in cells.
     pub cols: u16,
@@ -222,6 +223,19 @@ pub trait Grid: Send + Sync {
     fn ncols(&self) -> usize;
     fn header(&self, col: usize) -> Option<String>;
     fn cell(&self, row: usize, col: usize) -> String;
+    /// The cell as a borrowed string, for a grid that keeps its cells as text. The host reads
+    /// every cell when it searches, and this lets it do so without copying each one. Return `None`
+    /// (the default) if the text is made on demand; the host then calls [`Grid::cell`].
+    fn cell_str(&self, row: usize, col: usize) -> Option<&str> {
+        let _ = (row, col);
+        None
+    }
+    /// How many cells `row` really has, for a ragged table whose short rows are padded when drawn.
+    /// The host copies a row with this many cells and no padding. The default is every column.
+    fn row_len(&self, row: usize) -> usize {
+        let _ = row;
+        self.ncols()
+    }
     /// Whether the table was cut at a limit.
     fn truncated(&self) -> bool {
         false
@@ -264,6 +278,20 @@ pub struct ImageView {
     pub data: ImageData,
     /// Redraw sharply at the zoomed size (vector sources).
     pub sharp_zoom: bool,
+    /// The longest side, in pixels, the host should rasterize a vector source at (`None` = the
+    /// host's own default). The SVG plugin carries its `max_px` setting here.
+    pub raster_max_px: Option<u32>,
+}
+
+impl ImageView {
+    /// An image with no sharp zoom and the host's default raster size.
+    pub fn new(data: ImageData) -> ImageView {
+        ImageView {
+            data,
+            sharp_zoom: false,
+            raster_max_px: None,
+        }
+    }
 }
 
 /// The pixels (or the way to get them) of an image.

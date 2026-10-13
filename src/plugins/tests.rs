@@ -95,21 +95,23 @@ fn old_from_rule(rule: &Rule, path: &Path) -> PreviewKind {
         return match builtin {
             "markdown" => PreviewKind::Markdown(p),
             "mermaid" => PreviewKind::Mermaid(p),
-            "image" => PreviewKind::Image(p),
-            "svg" => PreviewKind::Svg(p),
-            "video" => PreviewKind::Video(p),
-            "pdf" => PreviewKind::Pdf(p),
+            "image" => PreviewKind::image(p),
+            "svg" => PreviewKind::svg(p),
+            "video" => PreviewKind::video(p),
+            "pdf" => PreviewKind::pdf(p),
             "code" => PreviewKind::Code(p),
-            "csv" => PreviewKind::Table {
+            // The note is the old `builtin` name: the separator settled when the file is decided.
+            "csv" | "tsv" => PreviewKind::Plugin {
                 path: p,
-                delimiter: b',',
-            },
-            "tsv" => PreviewKind::Table {
-                path: p,
-                delimiter: b'\t',
+                id: "csv".to_string(),
+                hint: Some(builtin.to_string()),
             },
             "archive" => match archive::ArchiveKind::from_path(path) {
-                Some(kind) => PreviewKind::Archive { path: p, kind },
+                Some(_) => PreviewKind::Plugin {
+                    path: p,
+                    id: "archive".to_string(),
+                    hint: None,
+                },
                 None => PreviewKind::can_not_preview(path),
             },
             "spreadsheet" => PreviewKind::Spreadsheet(p),
@@ -360,11 +362,8 @@ fn one_user_rule_no_longer_replaces_the_standard_assignments() {
         kind_of_name(&cfg, "a.md"),
         PreviewKind::Markdown(_)
     ));
-    assert!(matches!(kind_of_name(&cfg, "a.pdf"), PreviewKind::Pdf(_)));
-    assert!(matches!(
-        kind_of_name(&cfg, "a.zip"),
-        PreviewKind::Archive { .. }
-    ));
+    assert!(kind_of_name(&cfg, "a.pdf").is_plugin("pdf"));
+    assert!(kind_of_name(&cfg, "a.zip").is_plugin("archive"));
 }
 
 #[test]
@@ -403,10 +402,10 @@ fn old_builtin_names_read_as_plugins() {
     };
     assert!(matches!(one("markdown", ""), PreviewKind::Markdown(_)));
     assert!(matches!(one("mermaid", ""), PreviewKind::Mermaid(_)));
-    assert!(matches!(one("image", ""), PreviewKind::Image(_)));
-    assert!(matches!(one("svg", ""), PreviewKind::Svg(_)));
-    assert!(matches!(one("video", ""), PreviewKind::Video(_)));
-    assert!(matches!(one("pdf", ""), PreviewKind::Pdf(_)));
+    assert!(one("image", "").is_plugin("image"));
+    assert!(one("svg", "").is_plugin("svg"));
+    assert!(one("video", "").is_plugin("video"));
+    assert!(one("pdf", "").is_plugin("pdf"));
     assert!(matches!(one("code", ""), PreviewKind::Code(_)));
     assert!(matches!(
         one("spreadsheet", ""),
@@ -414,14 +413,14 @@ fn old_builtin_names_read_as_plugins() {
     ));
     assert!(matches!(one("document", ""), PreviewKind::Document(_)));
     assert!(matches!(one("text", ""), PreviewKind::Text(_)));
-    match one("csv", "") {
-        PreviewKind::Table { delimiter, .. } => assert_eq!(delimiter, b','),
+    let separator = |kind: PreviewKind| match kind {
+        PreviewKind::Plugin { id, hint, path } if id == "csv" => {
+            konoma_table::delimiter(hint.as_deref(), &path)
+        }
         other => panic!("{other:?}"),
-    }
-    match one("tsv", "") {
-        PreviewKind::Table { delimiter, .. } => assert_eq!(delimiter, b'\t'),
-        other => panic!("{other:?}"),
-    }
+    };
+    assert_eq!(separator(one("csv", "")), b',');
+    assert_eq!(separator(one("tsv", "")), b'\t');
     // `archive` on a name that is not an archive is the safe "can not preview", as before.
     assert!(matches!(
         one("archive", ""),
@@ -556,10 +555,7 @@ fn enabled_false_hands_the_file_to_the_next_step() {
         PreviewKind::CanNotPreview { .. }
     ));
     // Others are untouched.
-    assert!(matches!(
-        cfg.resolve_preview(&csv),
-        PreviewKind::Table { .. }
-    ));
+    assert!(cfg.resolve_preview(&csv).is_plugin("csv"));
     // `enabled = true` and absent behave the same.
     let on = cfg_from("[plugins.markdown]\nenabled = true\n");
     assert!(matches!(on.resolve_preview(&md), PreviewKind::Markdown(_)));
@@ -627,10 +623,7 @@ fn unknown_plugin_ids_and_a_bad_enabled_are_reported() {
     assert!(ja.contains("未知のプラグイン `nope`"), "{ja}");
     // A bad `enabled` does not switch anything off.
     assert_eq!(cfg.plugin_disabled(), ["nope"]);
-    assert!(matches!(
-        kind_of_name(&cfg, "a.csv"),
-        PreviewKind::Table { .. }
-    ));
+    assert!(kind_of_name(&cfg, "a.csv").is_plugin("csv"));
     // No problem: no message.
     assert_eq!(Config::default().plugin_report(Lang::En), None);
     assert_eq!(
@@ -691,17 +684,46 @@ fn the_standard_declarations_register_and_keep_the_expected_order() {
     assert!(at("spreadsheet") < at("document"));
 }
 
+/// The standard plugins that are wired to the display: really opened, not declarations only.
+const WIRED: &[&str] = &["csv", "archive", "image", "svg", "pdf", "video"];
+
 #[test]
 fn the_declared_plugins_refuse_to_open_until_they_are_wired() {
     use konoma_plugin::testing::open_file;
     let r = build_registry(&[]);
     for id in r.ids() {
+        if WIRED.contains(&id) {
+            continue;
+        }
         let plugin = r.plugin(id).unwrap();
         let err = open_file(&*plugin, Path::new("/nonexistent/x")).err();
         assert!(
             matches!(err, Some(f) if f.kind == konoma_plugin::FailureKind::Unsupported),
             "{id}"
         );
+    }
+}
+
+#[test]
+fn the_wired_plugins_are_the_real_ones_and_open_their_files() {
+    use konoma_plugin::testing::open_file;
+    let r = build_registry(&[]);
+    let dir = unique_tmp("konoma_plugins_wired");
+    std::fs::create_dir_all(&dir).unwrap();
+    let csv = dir.join("a.csv");
+    std::fs::write(&csv, "h\n1\n").unwrap();
+    let session = open_file(&*r.plugin("csv").unwrap(), &csv);
+    assert!(session.is_ok(), "csv opens a csv");
+    // A file that is not an archive is refused by the archive plugin on its own terms (a
+    // declaration-only plugin would say "not opened through the plugin API yet").
+    let txt = dir.join("a.txt");
+    std::fs::write(&txt, "x").unwrap();
+    let err = open_file(&*r.plugin("archive").unwrap(), &txt)
+        .err()
+        .unwrap();
+    assert!(!err.message.en().contains("declared"), "{err}");
+    for id in WIRED {
+        assert!(r.ids().contains(id), "{id} is registered");
     }
 }
 
@@ -945,4 +967,19 @@ fn a_decision_asks_for_the_content_only_when_a_rule_needs_it() {
     let _ = with_registry(&[], |r| r.resolve_file(&[], &facts));
     assert_eq!(mime_calls.get(), 1, "a name rule needs no sniff");
     assert_eq!(text_calls.get(), 1);
+}
+
+#[test]
+fn the_picture_plugins_are_the_real_ones_and_open_any_file_path() {
+    use konoma_plugin::testing::open_file;
+    let r = build_registry(&[]);
+    // Opening a picture plugin reads nothing that can fail on its own terms except the PDF's page
+    // count (which is simply unknown for a file that is not there): the work is in `view`.
+    for id in ["image", "svg", "pdf", "video"] {
+        let plugin = r.plugin(id).unwrap();
+        let session = open_file(&*plugin, Path::new("/nonexistent/x"));
+        assert!(session.is_ok(), "{id}: {:?}", session.err());
+    }
+    // The declarations are the ones the crate itself makes.
+    assert_eq!(r.plugin("svg").unwrap().manifest().id, konoma_media::SVG_ID);
 }

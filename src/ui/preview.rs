@@ -28,7 +28,7 @@ pub fn context(app: &App) -> Vec<Span<'static>> {
         spans.push(Span::from(format!("  x{:.2}", app.tab.image_zoom)).bold());
     }
     // PDF also shows the page position (e.g. 2/5), only when the total page count is known.
-    if let Some((cur, total)) = app.pdf_page_indicator() {
+    if let Some((cur, total)) = app.page_indicator() {
         spans.push(Span::from(format!("  {cur}/{total}")).bold());
     }
     // A presentation shows the slide at the top of the view (hidden slides count).
@@ -157,24 +157,21 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // final kind-summary match below instead.
     // A spreadsheet parsing on the worker shows the same spinner (a *re*load keeps the previous
     // sheet on screen instead — `is_sheet_loading` is only true while nothing is showing yet).
-    if app.is_sheet_loading() || app.is_document_loading() {
+    if app.is_sheet_loading() || app.is_document_loading() || app.is_plugin_loading() {
         render_media_loading(frame, app, area);
         return;
     }
     if app.is_media_loading()
         && !app.is_image_preview()
-        && matches!(
-            app.tab.preview_kind,
-            Some(
-                PreviewKind::Image(_)
-                    | PreviewKind::Svg(_)
-                    | PreviewKind::Video(_)
-                    | PreviewKind::Pdf(_)
-                    | PreviewKind::Mermaid(_)
-                    | PreviewKind::MermaidFence(_)
-                    | PreviewKind::Command { .. }
-            )
-        )
+        && (app.shows_media_plugin()
+            || matches!(
+                app.tab.preview_kind,
+                Some(
+                    PreviewKind::Mermaid(_)
+                        | PreviewKind::MermaidFence(_)
+                        | PreviewKind::Command { .. }
+                )
+            ))
     {
         render_media_loading(frame, app, area);
         return;
@@ -182,7 +179,7 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Images take a dedicated path: draw the frame, then draw StatefulImage inside it.
     // An uninitialized backend / decode failure (app.image=None) falls back to text.
-    if matches!(app.tab.preview_kind, Some(PreviewKind::Image(_))) {
+    if app.shows_plugin(konoma_media::IMAGE_ID) {
         render_image(frame, app, area);
         return;
     }
@@ -191,17 +188,16 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     // failure (image_src=None, including an unsupported terminal or a missing external tool), fall
     // through to the text path below and show a safe fallback (design principle #3 "unsupported is
     // safe" — graceful degradation).
-    if matches!(
-        app.tab.preview_kind,
-        Some(
-            PreviewKind::Svg(_)
-                | PreviewKind::Video(_)
-                | PreviewKind::Pdf(_)
-                | PreviewKind::Mermaid(_)
-                | PreviewKind::MermaidFence(_)
-                | PreviewKind::Command { .. }
-        )
-    ) && app.is_image_preview()
+    if (app.shows_media_plugin()
+        || matches!(
+            app.tab.preview_kind,
+            Some(
+                PreviewKind::Mermaid(_)
+                    | PreviewKind::MermaidFence(_)
+                    | PreviewKind::Command { .. }
+            )
+        ))
+        && app.is_image_preview()
     {
         render_image(frame, app, area);
         return;
@@ -249,34 +245,38 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             // Unreachable (already branched to the decorated path above), but kept safe for exhaustiveness.
             (load_body(p, app.lang), true)
         }
-        Some(PreviewKind::Image(p)) => (format!("[image] {}", p.display()), false),
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::IMAGE_ID => {
+            (format!("[image] {}", path.display()), false)
+        }
         // An SVG that failed to rasterize / whose terminal is unsupported. Shows the raw XML as text (a safe fallback).
         // When the cause is known (too deep, too heavy, took too long, ...) a line says so first.
-        Some(PreviewKind::Svg(p)) => match app.image_failure().and_then(|f| f.message(app.lang)) {
-            Some(why) => (format!("{why}\n\n{}", load_body(p, app.lang)), true),
-            None => (load_body(p, app.lang), true),
-        },
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::SVG_ID => {
+            match app.image_failure().and_then(|f| f.message(app.lang)) {
+                Some(why) => (format!("{why}\n\n{}", load_body(path, app.lang)), true),
+                None => (load_body(path, app.lang), true),
+            }
+        }
         // Rendering failed in the full-screen fence view (an unsupported diagram kind, etc.). Shows guidance (q returns to the md).
         Some(PreviewKind::MermaidFence(_)) => (
             tr(app.lang, crate::i18n::Msg::MermaidUnavailable).to_string(),
             false,
         ),
         // A video whose thumbnail couldn't be extracted (no ffmpeg family/unsupported terminal/failure). Shows the target file + an install hint.
-        Some(PreviewKind::Video(p)) => (
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::VIDEO_ID => (
             format!(
                 "{}\n{}",
                 tr(app.lang, crate::i18n::Msg::VideoThumbUnavailable),
-                p.display()
+                path.display()
             ),
             false,
         ),
         // A PDF that couldn't be rasterized (neither hayro nor — on macOS, for page 1 —
         // qlmanage/sips worked, or the terminal is unsupported). Shows the target file + a hint.
-        Some(PreviewKind::Pdf(p)) => (
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_media::PDF_ID => (
             format!(
                 "{}\n{}",
                 tr(app.lang, crate::i18n::Msg::PdfPreviewUnavailable),
-                p.display()
+                path.display()
             ),
             false,
         ),
@@ -314,9 +314,38 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             // it): keep it safe rather than exhaustiveness-forcing a panic.
             None => (tr(app.lang, crate::i18n::Msg::Loading).to_string(), false),
         },
-        // Tables are already drawn via the dedicated path above. Reaching here means the parse
-        // failed = show the raw CSV/TSV as text (safe degradation).
-        Some(PreviewKind::Table { path, .. }) => (load_body(path, app.lang), true),
+        // A plugin's table is already drawn via the dedicated path above. Reaching here means the
+        // plugin failed: a CSV/TSV shows its raw text (safe degradation), an archive says it
+        // cannot be listed rather than dumping the raw zip/tar byte stream as text (principle #3),
+        // and any other plugin says why.
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_table::CSV_ID => {
+            (load_body(path, app.lang), true)
+        }
+        Some(PreviewKind::Plugin { id, path, .. }) if id == konoma_table::ARCHIVE_ID => (
+            format!(
+                "{}\n{}",
+                tr(app.lang, crate::i18n::Msg::ArchiveListUnavailable),
+                path.display()
+            ),
+            false,
+        ),
+        Some(PreviewKind::Plugin { path, .. }) => (
+            format!(
+                "{}\n{}",
+                app.plugin_failure().map_or_else(
+                    || "[can not preview]".to_string(),
+                    |f| f
+                        .message
+                        .get(match app.lang {
+                            crate::i18n::Lang::Jp => "ja",
+                            crate::i18n::Lang::En => "en",
+                        })
+                        .to_string()
+                ),
+                path.display()
+            ),
+            false,
+        ),
         // A spreadsheet that did not load: say why (encrypted / too large / corrupt / unsupported),
         // with the file name. Principle #3: never a crash, never raw bytes.
         Some(PreviewKind::Spreadsheet(path)) => (
@@ -349,17 +378,6 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             (format!("{body}\n{}", path.display()), false)
         }
-        // Archives are also already drawn via the dedicated path (is_table_preview) above. Reaching
-        // here means listing failed (a corrupted file/unsupported format). Rather than dumping the
-        // raw zip/tar byte stream as text, shows the target file + a hint (principle #3).
-        Some(PreviewKind::Archive { path, .. }) => (
-            format!(
-                "{}\n{}",
-                tr(app.lang, crate::i18n::Msg::ArchiveListUnavailable),
-                path.display()
-            ),
-            false,
-        ),
         Some(PreviewKind::CanNotPreview { ext }) => (format!("[can not preview: {ext}]"), false),
         // GitDiff is already drawn via the dedicated path above (unreachable here). Kept safe for exhaustiveness.
         Some(PreviewKind::GitDiff(_)) => ("(git diff)".to_string(), false),

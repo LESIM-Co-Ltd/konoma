@@ -345,7 +345,9 @@ impl App {
     /// rounded down. Image/SVG/PDF's own empty-diff check is instead bypassed by `follow_jump`'s
     /// `media_side_by_side`, since their `Rendered` presentation is worth opening.
     pub(super) fn follow_previews_instead_of_diff(&self, path: &Path) -> bool {
-        matches!(self.cfg.resolve_preview(path), PreviewKind::Video(_))
+        self.cfg
+            .resolve_preview(path)
+            .is_plugin(konoma_media::VIDEO_ID)
     }
 
     /// After a follow jump, scroll the (windowed) preview to the **first changed hunk** instead of the

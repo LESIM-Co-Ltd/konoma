@@ -41,7 +41,7 @@ impl App {
     fn load_active(&mut self) {
         let mut t = std::mem::take(&mut self.tabs[self.active_tab]);
         // preview_path/preview_kind are read below (table-hits check, media block, setup_windowed,
-        // load_table) before the bulk `self.tab = t` restore at the end of this function, so they
+        // load_plugin) before the bulk `self.tab = t` restore at the end of this function, so they
         // are restored early here (mirroring `self.tab.md_raw = t.md_raw;` further down).
         self.tab.preview_path = t.preview_path.clone();
         self.tab.preview_kind = t.preview_kind.clone();
@@ -97,7 +97,7 @@ impl App {
         self.diff_follow_scope = false;
         // Images don't carry over their heavy state (protocol/source image/GIF frames) — for an
         // image-type preview, restore it by reloading instead.
-        // (clear_image also resets tab.image_center/tab.pdf_page/tab.pdf_pages to their defaults,
+        // (clear_image also resets tab.image_center/tab.page/tab.page_count to their defaults,
         // but `self.tab = t` at the end of this function overwrites them with the restored values,
         // so this is harmless as long as nothing in between reads them.)
         self.clear_image();
@@ -115,15 +115,15 @@ impl App {
                 // A GIF plays from its first frame.
                 // For PDF, put the saved page back before start_media_load (that generation
                 // rasterizes that page).
-                // Clamp `t.pdf_page` right here: use the same clamped value both as the argument
+                // Clamp `t.page` right here: use the same clamped value both as the argument
                 // to restore_media_cache below and as the final value carried by `self.tab = t` at the end.
-                t.pdf_page = t.pdf_page.max(1);
-                // pdf_pages: a plain copy with no transformation. Not read here, so leave it to the
+                t.page = t.page.max(1);
+                // page_count: a plain copy with no transformation. Not read here, so leave it to the
                 // bulk restore at the end.
                 // If it's the same file, same mtime, same page — e.g. returning to a tab you just
                 // viewed — reuse the stashed decoded image as-is (skip re-launching external
                 // tools/re-rasterizing for PDF/video).
-                let reused = self.restore_media_cache(&path, t.pdf_page);
+                let reused = self.restore_media_cache(&path, t.page);
                 if !reused {
                     self.start_media_load(&kind, &path);
                 }
@@ -134,7 +134,7 @@ impl App {
                 // Carry a synchronously-regenerated command_out (the sync-fallback path used by
                 // tests without a media_tx) back into `t`, or the bulk `self.tab = t` below would
                 // revert it to this tab's stale pre-restore leftover — same reasoning as the
-                // `t.pdf_page` clamp above.
+                // `t.page` clamp above.
                 t.command_out = self.tab.command_out.clone();
                 // Likewise a synchronously landed workbook may have clamped the sheet number.
                 t.sheet_idx = self.tab.sheet_idx;
@@ -167,8 +167,9 @@ impl App {
         // isn't carried over). The range is clamped on the next render/move.
         self.preview_visual_anchor = None;
         self.preview_visual_linewise = false;
-        // For a CSV/TSV table, re-parse the body and restore the saved cursor/scroll, then clamp it.
-        self.load_table();
+        // For a plugin's file (CSV/TSV, an archive listing), open it again, then restore the saved
+        // cursor/scroll and clamp it (a worker's result clamps again when it lands).
+        self.load_plugin();
         self.tab = t;
         self.clamp_table_cursor();
 

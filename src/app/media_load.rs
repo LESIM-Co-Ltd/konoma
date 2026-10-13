@@ -42,7 +42,9 @@ impl App {
     }
 
     /// Decode a still image and place it in image_src (the ThreadProtocol is built asynchronously at render time).
-    /// Still images (PNG/JPG) decode fast, so this stays synchronous. On decode failure / no backend, image_src=None.
+    /// On decode failure / no backend, image_src=None. Test seam only: the real path decodes on the
+    /// media worker (`app/media_plugin.rs`).
+    #[cfg(test)]
     pub(super) fn load_image(&mut self, path: &Path) {
         if self.picker.is_none() || self.img_tx.is_none() {
             return; // no backend: the render side falls back to text
@@ -101,39 +103,21 @@ impl App {
         // the mtime comparison).
         self.preview_media_mtime = file_mtime(path);
         match kind {
-            PreviewKind::Image(_) if Self::looks_like_gif(path) => {
-                self.spawn_or_sync_media(MediaJob::Gif(path.to_path_buf()))
+            // The picture plugins (image, svg, pdf, video): the plugin's view is asked for and
+            // decoded on the media worker (`app/media_plugin.rs`).
+            //
+            // - A still image decodes on the worker (never on the UI thread) and needs the decode
+            //   backend as well as a picker; a GIF's frames are expanded there too.
+            // - An SVG is drawn by a supervised child process and keeps its source for sharp zoom.
+            // - Video and PDF always run the job: `hayro` (PDF) and the H.264/H.265 decoders
+            //   (video) are pure Rust and never touch an external process, so they must work
+            //   regardless of `[external] pdf` / `video`. Those flags only decide whether the
+            //   fallback (qlmanage/sips for page 1, ffmpegthumbnailer/ffmpeg) may launch; with the
+            //   flag off and a file the built-in code declines, `image_src` stays None and the
+            //   render side shows the same unavailable hint as a missing tool would.
+            PreviewKind::Plugin { id, .. } if kind.is_media_plugin() => {
+                self.start_media_plugin(id, path)
             }
-            // Still images: without a worker channel (tests) they decode inline, otherwise on the
-            // worker like every other media kind (the encode is made async at render time).
-            PreviewKind::Image(_) if self.media_tx.is_none() => self.load_image(path),
-            // A very large image decodes for seconds: never on the UI thread.
-            PreviewKind::Image(_) => {
-                if self.picker.is_some() && self.img_tx.is_some() {
-                    self.spawn_or_sync_media(MediaJob::Still(path.to_path_buf()))
-                }
-            }
-            PreviewKind::Svg(_) => {
-                self.spawn_or_sync_media(MediaJob::Svg(path.to_path_buf(), self.cfg.ui.svg_max_px))
-            }
-            // Video: always spawn the job — H.264 in mp4/m4v/mov is decoded in pure Rust
-            // (`preview::video::thumbnail`'s first step) and never touches an external process, so
-            // it must work regardless of `[external] video`, exactly like PDF/hayro below. That flag
-            // only controls whether the job's *fallback* (ffmpegthumbnailer/ffmpeg, for HEVC/VP9/AV1
-            // and non-mp4 containers) may launch. With the flag off and a file the built-in decoder
-            // declines, `image_src` stays None and the render side shows the same
-            // `VideoThumbUnavailable` hint as a missing tool would — no new UI state needed.
-            PreviewKind::Video(_) => self
-                .spawn_or_sync_media(MediaJob::Video(path.to_path_buf(), self.cfg.external.video)),
-            // PDF: always spawn the job — `hayro` (the primary renderer, `preview::pdf::render_page`)
-            // is pure Rust and never touches an external process, so it must work regardless of
-            // `[external] pdf`. That flag now only controls whether the job's *fallback*
-            // (macOS's bundled qlmanage/sips, tried only if hayro itself fails on page 1) may run.
-            PreviewKind::Pdf(_) => self.spawn_or_sync_media(MediaJob::Pdf(
-                path.to_path_buf(),
-                self.tab.pdf_page,
-                self.cfg.external.pdf,
-            )),
             // A spreadsheet: parsed on the worker (no graphics backend needed — the table is drawn
             // with ordinary text). The display language picks the locale that decides what
             // locale-dependent built-in number formats look like.
@@ -281,7 +265,7 @@ impl App {
 
     /// Run a media-load job on a separate thread (when media_tx is present). Otherwise run it synchronously.
     /// If there is no backend (picker), do nothing (the render side falls back).
-    fn spawn_or_sync_media(&mut self, job: MediaJob) {
+    pub(super) fn spawn_or_sync_media(&mut self, job: MediaJob) {
         self.spawn_or_sync_media_gated(job, true);
     }
 
@@ -431,6 +415,10 @@ impl App {
                 Some(MediaPayload::Document(doc)) => {
                     super::table_actions::discard_in_background(doc)
                 }
+                // A picture plugin's session is dropped off the UI thread too.
+                Some(MediaPayload::Plugin(landed)) => {
+                    super::table_actions::discard_in_background(landed)
+                }
                 _ => {}
             }
             return false;
@@ -506,6 +494,7 @@ impl App {
                     self.tab.search_pending = false;
                 }
             }
+            MediaPayload::Plugin(landed) => self.land_media_plugin(landed),
             MediaPayload::Document(doc) => self.land_document(doc),
             MediaPayload::DocumentFailed(e) => {
                 if matches!(self.tab.preview_kind, Some(PreviewKind::Document(_))) {
@@ -529,7 +518,7 @@ impl App {
     /// sheet was loading (`search_pending`) lands on its first hit like a search on a loaded
     /// sheet, and says so when there is none; otherwise the current hit stays current when it
     /// still is one (else the next hit after it) and the cursor does not move.
-    fn rescan_table_search(&mut self) {
+    pub(super) fn rescan_table_search(&mut self) {
         let Some(q) = self.tab.preview_search.clone() else {
             return;
         };
@@ -683,45 +672,55 @@ impl App {
     /// Still images are judged by image_src, GIFs by gif_frames (image_src is not used). SVGs are already rasterized.
     pub fn is_image_preview(&self) -> bool {
         (self.image_src.is_some() || self.is_gif_active())
-            && matches!(
-                self.tab.preview_kind,
-                Some(
-                    PreviewKind::Image(_)
-                        | PreviewKind::Svg(_)
-                        | PreviewKind::Video(_)
-                        | PreviewKind::Pdf(_)
-                        | PreviewKind::Mermaid(_)
-                        | PreviewKind::MermaidFence(_)
-                        // A delegated command counts only when it actually produced image_src —
-                        // text-mode ones never do (they never call set_static_image), so the
-                        // `image_src.is_some()` half of this && is what actually disambiguates them.
-                        | PreviewKind::Command { .. }
-                )
-            )
+            && (self
+                .tab
+                .preview_kind
+                .as_ref()
+                .is_some_and(PreviewKind::is_media_plugin)
+                || matches!(
+                    self.tab.preview_kind,
+                    Some(
+                        PreviewKind::Mermaid(_)
+                            | PreviewKind::MermaidFence(_)
+                            // A delegated command counts only when it actually produced image_src —
+                            // text-mode ones never do (they never call set_static_image), so the
+                            // `image_src.is_some()` half of this && is what actually disambiguates them.
+                            | PreviewKind::Command { .. }
+                    )
+                ))
     }
 
-    /// Whether the current preview is a PDF (used to enable page-navigation keys / footer hints).
-    pub fn is_pdf_preview(&self) -> bool {
-        matches!(self.tab.preview_kind, Some(PreviewKind::Pdf(_)))
+    /// Whether the preview is a file the picture plugins (`image`, `svg`, `pdf`, `video`) show.
+    pub fn shows_media_plugin(&self) -> bool {
+        self.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(PreviewKind::is_media_plugin)
     }
 
-    /// (current, total) page for the PDF preview, or None when not a PDF or the page count is
-    /// unknown (page_count/hayro-syntax failed to parse the file at all — single-page fallback,
-    /// navigation disabled). Used for the footer/status indicator.
-    pub fn pdf_page_indicator(&self) -> Option<(u32, u32)> {
-        if !self.is_pdf_preview() {
-            return None;
-        }
-        let total = self.tab.pdf_pages?;
-        Some((self.tab.pdf_page.min(total), total))
+    /// Whether the preview is a file the plugin `id` shows.
+    pub fn shows_plugin(&self, id: &str) -> bool {
+        self.tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin(id))
     }
 
-    /// Whether PDF page navigation is possible (a known multi-page PDF). The page count comes from
-    /// `page_count` (`hayro-syntax`, pure Rust, nothing installed needed), and rendering any given
-    /// page is `hayro`'s job too — the only fallback left (macOS `qlmanage`/`sips`) is first-page-
-    /// only, so navigating past page 1 depends on `hayro` alone, never on an installed tool.
-    pub fn pdf_can_navigate(&self) -> bool {
-        matches!(self.tab.pdf_pages, Some(n) if n > 1)
+    /// (current, total) page of a preview made of separate pages (a PDF), or None when it has none
+    /// or the plugin does not know how many (the file could not be parsed at all — single-page
+    /// fallback, navigation disabled). Used for the footer/status indicator.
+    pub fn page_indicator(&self) -> Option<(u32, u32)> {
+        let total = self.tab.page_count?;
+        Some((self.tab.page.min(total), total))
+    }
+
+    /// Whether the page keys turn pages of the preview: a known multi-page one. The page count is
+    /// what the plugin reported in its layout (for a PDF, a pure-Rust read of the page tree; nothing
+    /// installed is needed), and rendering any given page is `hayro`'s job too — the only fallback
+    /// left (macOS `qlmanage`/`sips`) is first-page-only, so navigating past page 1 depends on
+    /// `hayro` alone, never on an installed tool.
+    pub fn can_turn_pages(&self) -> bool {
+        matches!(self.tab.page_count, Some(n) if n > 1)
     }
 
     /// `page_next` / `page_prev` (`J` / `K`): turn the "page" of whatever preview is on screen.
@@ -743,47 +742,48 @@ impl App {
             Some(PreviewKind::Document(_)) => self.slide_turn(dir),
             _ => {
                 if dir >= 0 {
-                    self.pdf_next_page()
+                    self.next_page()
                 } else {
-                    self.pdf_prev_page()
+                    self.prev_page()
                 }
             }
         }
     }
 
-    /// Go to the next PDF page (clamped to the last page). Re-rasterizes that page on demand (one at a time).
-    pub fn pdf_next_page(&mut self) {
-        self.pdf_goto(self.tab.pdf_page.saturating_add(1));
+    /// Go to the next page (clamped to the last page). The plugin draws that page on demand (one at a time).
+    pub fn next_page(&mut self) {
+        self.goto_page(self.tab.page.saturating_add(1));
     }
 
-    /// Go to the previous PDF page (clamped to page 1).
-    pub fn pdf_prev_page(&mut self) {
-        self.pdf_goto(self.tab.pdf_page.saturating_sub(1));
+    /// Go to the previous page (clamped to page 1).
+    pub fn prev_page(&mut self) {
+        self.goto_page(self.tab.page.saturating_sub(1));
     }
 
-    /// Jump to a 1-based page (clamped to [1, total]). No-op if not a navigable PDF or already there.
-    /// Kicks off an off-thread rasterization of the new page and resets the view to fit (each page shows whole).
-    fn pdf_goto(&mut self, page: u32) {
-        if !self.pdf_can_navigate() {
+    /// Jump to a 1-based page (clamped to [1, total]). No-op if the preview has no pages to turn or
+    /// is already there. Asks the plugin for the new page on the media worker and resets the view
+    /// to fit (each page shows whole).
+    fn goto_page(&mut self, page: u32) {
+        if !self.can_turn_pages() {
             return;
         }
-        let Some(total) = self.tab.pdf_pages else {
+        let Some(total) = self.tab.page_count else {
             return;
         };
         let page = page.clamp(1, total);
-        if page == self.tab.pdf_page {
+        if page == self.tab.page {
             return;
         }
-        self.tab.pdf_page = page;
+        self.tab.page = page;
         // Reset to fit so the whole new page is visible (set_static_image doesn't touch zoom/center,
         // so reset it explicitly).
         self.tab.image_zoom = 1.0;
         self.tab.image_center = (0.5, 0.5);
         self.image_crop = None;
-        if let Some(PreviewKind::Pdf(p)) = self.tab.preview_kind.clone() {
+        if let Some(PreviewKind::Plugin { id, path, .. }) = self.tab.preview_kind.clone() {
             // Keep showing the old page's image until the new one arrives (staleness judged by
             // media_gen; the spinner overlays on top).
-            self.spawn_or_sync_media(MediaJob::Pdf(p, self.tab.pdf_page, self.cfg.external.pdf));
+            self.start_media_plugin(&id, &path);
         }
     }
 
@@ -835,7 +835,11 @@ impl App {
         }
         // A file's SVG is drawn by a supervised child process; a mermaid diagram (konoma's own
         // output) in this one.
-        let untrusted = matches!(self.tab.preview_kind, Some(PreviewKind::Svg(_)));
+        let untrusted = self
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin(konoma_media::SVG_ID));
         self.spawn_or_sync_media(MediaJob::SvgReraster(svg.clone(), base, want, untrusted));
     }
 

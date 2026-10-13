@@ -381,11 +381,11 @@ fn new_side_real_decodable_png_over_cap_still_degrades_to_summary() {
 #[test]
 fn classify_kind_actually_gates_the_ready_vs_summary_branch() {
     assert_eq!(
-        classify_kind(&PreviewKind::Video(PathBuf::from("x.mp4"))),
+        classify_kind(&PreviewKind::video(PathBuf::from("x.mp4"))),
         None
     );
     assert_eq!(
-        classify_kind(&PreviewKind::Image(PathBuf::from("x.png"))),
+        classify_kind(&PreviewKind::image(PathBuf::from("x.png"))),
         Some(MediaDiffKind::Image)
     );
 }

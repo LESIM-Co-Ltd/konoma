@@ -1717,7 +1717,6 @@ dependencies = [
  "base64 0.23.1",
  "cfb",
  "crossterm",
- "csv",
  "emojis",
  "flate2",
  "globset",
@@ -1726,11 +1725,13 @@ dependencies = [
  "konoma-base",
  "konoma-markdown-core",
  "konoma-math-core",
+ "konoma-media",
  "konoma-media-core",
  "konoma-mermaid-core",
  "konoma-office-core",
  "konoma-plugin",
  "konoma-svg",
+ "konoma-table",
  "konoma-test-support",
  "konoma-vcs-core",
  "libc",
@@ -1749,7 +1750,6 @@ dependencies = [
  "svgtypes",
  "syntect",
  "sys-locale",
- "tar",
  "tokio",
  "toml",
  "trash",
@@ -1789,6 +1789,17 @@ dependencies = [
  "ratex-svg",
  "ratex-types",
  "resvg",
+]
+
+[[package]]
+name = "konoma-media"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "konoma-media-core",
+ "konoma-plugin",
+ "konoma-svg",
+ "konoma-test-support",
 ]
 
 [[package]]
@@ -1870,6 +1881,20 @@ dependencies = [
  "skrifa 0.44.0",
  "svgtypes",
  "unicode-width",
+]
+
+[[package]]
+name = "konoma-table"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "csv",
+ "flate2",
+ "konoma-base",
+ "konoma-plugin",
+ "konoma-test-support",
+ "tar",
+ "zip",
 ]
 
 [[package]]

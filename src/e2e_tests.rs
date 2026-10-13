@@ -48,6 +48,9 @@ struct Sim {
     media_rx: Option<std::sync::mpsc::Receiver<crate::app::MediaResult>>,
     /// Receiver for background remote (http/https) Markdown image fetches (`with_media`). Drained by `drain_remote`.
     md_remote_rx: Option<std::sync::mpsc::Receiver<crate::app::RemoteFetch>>,
+    /// Receiver for a plugin's background work (`with_async_plugins`, the run loop's `rx.plugin`).
+    /// `None` = the plugin's work runs on the spot (every test that doesn't opt in).
+    plugin_rx: Option<std::sync::mpsc::Receiver<crate::app::PluginResult>>,
     /// Receiver for background Markdown block-diff computation (`with_async_md_diff` —
     /// `docs/STATUS.md` ★未修正 item 4). `None` = the synchronous fallback in `spawn_or_sync_md_diff`
     /// is used (every test that doesn't explicitly opt in, matching every other `with_async_*`).
@@ -88,11 +91,38 @@ impl Sim {
             md_enc_rx: None,
             media_rx: None,
             md_remote_rx: None,
+            plugin_rx: None,
             #[cfg(feature = "git")]
             md_diff_rx: None,
         };
         sim.draw();
         sim
+    }
+
+    /// Opt in to the **real background path** for plugins (`App::attach_plugin_runner`, as `main`
+    /// does): a plugin's `open` runs on a worker and the first frame waits only its budget. Results
+    /// that miss it are applied by `drain_plugin`.
+    fn with_async_plugins(mut self) -> Sim {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.app.attach_plugin_runner(tx);
+        self.plugin_rx = Some(rx);
+        self
+    }
+
+    /// Wait for the next plugin result and apply it (the run loop's `rx.plugin.try_recv()` step),
+    /// then redraw. Returns whether it applied.
+    #[track_caller]
+    fn drain_plugin(&mut self) -> bool {
+        let rx = self
+            .plugin_rx
+            .as_ref()
+            .expect("with_async_plugins() を呼んでいない");
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("plugin worker が結果を返す");
+        let applied = self.app.apply_plugin_result(res);
+        self.draw();
+        applied
     }
 
     /// Opt in to the **real background path** for file operations (copy/move/duplicate/delete):
@@ -11297,6 +11327,55 @@ fn e2e_csv_rainbow_columns_use_distinct_foreground_colors() {
     s.key('q');
 }
 
+/// The rainbow columns can be switched off by the plugin's own setting (`[plugins.csv] rainbow`) or
+/// by the old `[ui] csv_rainbow`; both end as the same uncolored table on the screen.
+#[test]
+fn e2e_csv_rainbow_off_by_either_setting_draws_one_color() {
+    for (label, toml_text) in [
+        ("plugin table", "[plugins.csv]\nrainbow = false\n"),
+        ("old ui name", "[ui]\ncsv_rainbow = false\n"),
+    ] {
+        let dir = sandbox("csv_rainbow_off_either");
+        std::fs::write(dir.join("wide.csv"), "colA,colB,colC,colD\n1,2,3,4\n").unwrap();
+        let cfg: Config = toml::from_str(toml_text).unwrap();
+        let mut s = Sim::with_config(&canon(&dir), cfg);
+        s.select("wide.csv");
+        s.enter();
+        s.see("TABLE");
+        let (header_row, _) = s.find_text("colA").expect("header row is drawn");
+        assert_eq!(
+            s.distinct_fg_in_row(header_row),
+            1,
+            "{label}: no rainbow = one foreground color on the header row"
+        );
+        s.key('q');
+    }
+}
+
+/// With the plugin's work on a worker (as in `main`), a CSV still opens through real keystrokes: the
+/// table is there for the first frame or lands when the worker's result is applied, and the cursor
+/// the user had saved is clamped to what was read.
+#[test]
+fn e2e_csv_opens_through_the_plugin_worker() {
+    let dir = sandbox("csv_plugin_worker");
+    std::fs::write(dir.join("t.csv"), "h1,h2\na,b\nc,d\n").unwrap();
+    let mut s = Sim::new(&canon(&dir)).with_async_plugins();
+    s.select("t.csv");
+    s.enter();
+    while s.app.is_plugin_loading() {
+        assert!(s.drain_plugin());
+    }
+    s.see("TABLE");
+    s.see("h1");
+    s.see("c");
+    s.key('j');
+    assert_eq!(s.app.table_cursor(), (1, 0));
+    s.key('l');
+    assert_eq!(s.app.table_cursor(), (1, 1));
+    s.key('q');
+    assert!(!s.app.is_table_preview());
+}
+
 // =============================================================================
 // H3 (docs/archive/AUDIT-TESTS-2026-08.md): full `[ui]` config-field coverage table.
 //
@@ -17154,10 +17233,11 @@ fn e2e_follow_jump_into_changed_video_still_opens_ordinary_preview() {
         "動画は今までどおり通常プレビューへ(diff は開かない)"
     );
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Video(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("video")),
         "通常のビデオプレビューのはず: {:?}",
         s.app.tab.preview_kind
     );
@@ -17229,10 +17309,11 @@ fn e2e_follow_view_file_still_opens_ordinary_preview_for_image() {
         "follow_view=\"file\" は画像でも常に通常プレビューのはず"
     );
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Image(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(|k| k.is_plugin("image")),
         "通常の画像プレビューのはず: {:?}",
         s.app.tab.preview_kind
     );
@@ -17743,15 +17824,15 @@ fn e2e_keys_old_and_new_page_names_rebind_pdf_paging() {
         s.select("doc.pdf");
         s.enter();
         s.drain_media();
-        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((1, 3)), "{next}");
         s.key('L');
-        assert_eq!(s.app.pdf_page_indicator(), Some((2, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((2, 3)), "{next}");
         s.key('H');
-        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((1, 3)), "{next}");
         s.key('J'); // the default still works
-        assert_eq!(s.app.pdf_page_indicator(), Some((2, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((2, 3)), "{next}");
         s.key('K');
-        assert_eq!(s.app.pdf_page_indicator(), Some((1, 3)), "{next}");
+        assert_eq!(s.app.page_indicator(), Some((1, 3)), "{next}");
     }
 }
 

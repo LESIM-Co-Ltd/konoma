@@ -59,7 +59,7 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
             #[cfg(feature = "git")]
             Some(PreviewKind::GitDiff(_)) => app.media_diff_can_page(),
             Some(PreviewKind::Document(_)) => app.slide_can_turn(),
-            _ => app.pdf_can_navigate(),
+            _ => app.can_turn_pages(),
         }),
 
         // --- The decorated document: what the focused item lets a key do ---

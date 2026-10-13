@@ -3,8 +3,9 @@
 //! Stage 2 of the plugin architecture (`docs/FEATURE-PLUGIN-ARCHITECTURE.md` §3-2, §4-4, §7-2).
 //! This step only settles **who** shows a file: the decision is made by `konoma_plugin::Registry`
 //! (user rules first, then the standard plugins in registration order, then plain text, then
-//! "can not preview"), and the result is mapped onto today's `PreviewKind`, which still carries the
-//! display. The plugins' `open` is not called yet.
+//! "can not preview"), and the result is mapped onto today's `PreviewKind`. The plugins that are
+//! wired to the display (`csv`, `archive`, and the picture plugins `image`, `svg`, `pdf`, `video`) are opened by the host's Session mechanism
+//! (`app/plugin_host.rs`) and show as `PreviewKind::Plugin`; the rest are still declarations only.
 
 mod listing;
 mod resolve;
@@ -12,7 +13,7 @@ mod resolve;
 mod tests;
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use konoma_plugin::registry::{PluginOrigin, Registry};
 use konoma_plugin::t;
@@ -203,21 +204,9 @@ pub(crate) fn standard_manifests() -> Vec<Manifest> {
             s("#d0d0d0"),
             t!(en: "Color of the formulas", ja: "数式の色"),
         ));
-    let svg = standard("svg", t!(en: "SVG", ja: "SVG"))
-        .bind(Bind::files(["*.svg"]))
-        .setting(SettingDecl::new(
-            "max_px",
-            konoma_plugin::Value::Int(800),
-            t!(en: "Longest side of the drawing, in pixels", ja: "描画の長辺(px)"),
-        ));
-    let image = standard("image", t!(en: "Image", ja: "画像")).bind(Bind::mime("image/*"));
-    let csv = standard("csv", t!(en: "CSV / TSV", ja: "CSV / TSV"))
-        .bind(Bind::files(["*.csv", "*.tsv"]))
-        .setting(SettingDecl::new(
-            "rainbow",
-            b(true),
-            t!(en: "Color the columns", ja: "列を色分けする"),
-        ));
+    let svg = konoma_media::svg_manifest();
+    let image = konoma_media::image_manifest();
+    let csv = konoma_table::csv_manifest();
     let spreadsheet = office(
         standard("spreadsheet", t!(en: "Spreadsheet", ja: "表計算")),
         OfficeKind::Excel,
@@ -236,8 +225,7 @@ pub(crate) fn standard_manifests() -> Vec<Manifest> {
         OfficeKind::PowerPoint,
         "*.{pptx,pptm,ppsx,ppsm,potx,potm,odp,otp}",
     );
-    let archive = standard("archive", t!(en: "Archive", ja: "アーカイブ"))
-        .bind(Bind::files(["*.{zip,tar,tgz}", "*.tar.gz"]));
+    let archive = konoma_table::archive_manifest();
     let code = standard("code", t!(en: "Source code", ja: "ソースコード"))
         .bind(Bind::files([
             "*.{rs,ts,tsx,js,py,go,toml,json,sh,yaml,yml,c,cpp,h}",
@@ -247,8 +235,8 @@ pub(crate) fn standard_manifests() -> Vec<Manifest> {
             b(true),
             t!(en: "Color code and config files", ja: "コードと設定ファイルに色を付ける"),
         ));
-    let video = standard("video", t!(en: "Video", ja: "動画")).bind(Bind::mime("video/*"));
-    let pdf = standard("pdf", t!(en: "PDF", ja: "PDF")).bind(Bind::files(["*.pdf"]));
+    let video = konoma_media::video_manifest();
+    let pdf = konoma_media::pdf_manifest();
 
     let mut out: Vec<Manifest> = [
         md,
@@ -292,12 +280,26 @@ fn internal_manifests() -> Vec<Manifest> {
     ]
 }
 
+/// The implementation behind a standard manifest: the plugins wired to the display are real, the
+/// others are declarations only.
+fn plugin_of(m: Manifest) -> Arc<dyn Plugin> {
+    match m.id.as_str() {
+        konoma_table::CSV_ID => Arc::new(konoma_table::CsvPlugin),
+        konoma_table::ARCHIVE_ID => Arc::new(konoma_table::ArchivePlugin),
+        konoma_media::IMAGE_ID => Arc::new(konoma_media::ImagePlugin),
+        konoma_media::SVG_ID => Arc::new(konoma_media::SvgPlugin),
+        konoma_media::PDF_ID => Arc::new(konoma_media::PdfPlugin),
+        konoma_media::VIDEO_ID => Arc::new(konoma_media::VideoPlugin),
+        _ => Arc::new(Declared(m)),
+    }
+}
+
 /// A registry of the standard plugins, with `disabled` ids switched off.
 pub(crate) fn build_registry(disabled: &[String]) -> Registry {
     let mut r = Registry::new();
     for m in standard_manifests().into_iter().chain(internal_manifests()) {
         // The declarations are static; a refusal would be a bug that `tests` catches.
-        let _ = r.register(Arc::new(Declared(m)), PluginOrigin::Standard);
+        let _ = r.register(plugin_of(m), PluginOrigin::Standard);
     }
     for id in disabled {
         if !is_internal(id) {
@@ -307,19 +309,31 @@ pub(crate) fn build_registry(disabled: &[String]) -> Registry {
     r
 }
 
-fn all_enabled() -> &'static Registry {
-    static R: OnceLock<Registry> = OnceLock::new();
-    R.get_or_init(|| build_registry(&[]))
+/// The registry with `disabled` ids switched off, built **once** per distinct set of disabled ids
+/// for the process and shared (`Arc`): the deciding of a file, the opening of a plugin and the
+/// media-diff worker all use the same one, and nothing builds a registry per call.
+pub(crate) fn shared_registry(disabled: &[String]) -> Arc<Registry> {
+    static CACHE: OnceLock<Mutex<BTreeMap<Vec<String>, Arc<Registry>>>> = OnceLock::new();
+    // Host-internal pseudo plugins cannot be switched off: they do not make a different registry.
+    let mut key: Vec<String> = disabled
+        .iter()
+        .filter(|id| !is_internal(id))
+        .cloned()
+        .collect();
+    key.sort();
+    key.dedup();
+    let cache = CACHE.get_or_init(Mutex::default);
+    // A poisoned lock only means another thread panicked while holding it; the map is still sound.
+    let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+    Arc::clone(
+        map.entry(key.clone())
+            .or_insert_with(|| Arc::new(build_registry(&key))),
+    )
 }
 
-/// Run `f` with the registry that has `disabled` ids switched off. With nothing disabled (the
-/// normal case) the registry is built once for the process.
+/// Run `f` with the registry that has `disabled` ids switched off (see [`shared_registry`]).
 pub(crate) fn with_registry<T>(disabled: &[String], f: impl FnOnce(&Registry) -> T) -> T {
-    if disabled.iter().all(|id| is_internal(id)) {
-        f(all_enabled())
-    } else {
-        f(&build_registry(disabled))
-    }
+    f(&shared_registry(disabled))
 }
 
 /// `[plugins.<id>]` as read from the config: the raw tables. `enabled` is read by the host; every
@@ -363,11 +377,33 @@ fn value_of(v: &toml::Value) -> konoma_plugin::Value {
     }
 }
 
+/// What a plugin receives as `OpenCx::settings`: its `[plugins.<id>]` table, with the old `[ui]`
+/// items it replaces filled in under their new names (S2-12). The new name wins when both are set.
+/// Each plugin that is wired to the display adds its old names here.
+pub(crate) fn effective_settings(cfg: &crate::config::Config, id: &str) -> Settings {
+    let mut settings = cfg.plugin_settings(id);
+    let mut fill_missing = |key: &str, value: konoma_plugin::Value| {
+        if settings.get(key).is_none() {
+            settings.set(key, value);
+        }
+    };
+    if id == konoma_table::CSV_ID {
+        fill_missing("rainbow", b(cfg.ui.csv_rainbow));
+    }
+    if id == konoma_media::SVG_ID {
+        fill_missing(
+            "max_px",
+            konoma_plugin::Value::Int(i64::from(cfg.ui.svg_max_px)),
+        );
+    }
+    settings
+}
+
 /// Problems in `[plugins.<id>]` worth a startup message: an id nobody registered, `enabled` that
 /// is not a boolean, an attempt to disable a host-internal piece.
 pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> Vec<String> {
     use crate::i18n::Lang;
-    let registry = all_enabled();
+    let registry = shared_registry(&[]);
     let ids = registry.ids();
     let mut out = Vec::new();
     for (id, table) in tables {
