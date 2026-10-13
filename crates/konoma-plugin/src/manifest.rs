@@ -100,8 +100,10 @@ pub struct Manifest {
     pub settings: Vec<SettingDecl>,
     /// Names of the plugin's own screens (each is a key **context** of its own: `<id>.<screen>`).
     pub screens: Vec<String>,
-    /// What the plugin's main view shows. Empty means "anything": the keys of an action that
-    /// names no context are then checked against every display type.
+    /// What the plugin's main view shows (see [`Manifest::shows`]). Empty means "anything" for
+    /// the check of the keys (an action that names no context is checked against every display
+    /// type) but **no screen is attached**: a plugin that is given files with `binds` and shows
+    /// nothing is reported at startup (`NoteKind::ShowsNotDeclared`, `testing::check_manifest`).
     pub shows: Vec<ViewKind>,
     /// The exclusive work group the plugin's jobs belong to, if any. See [`Manifest::work_group`].
     pub work_group: Option<String>,
@@ -140,8 +142,13 @@ impl Manifest {
         self
     }
 
-    /// Declare that the main view shows this kind of thing (call it once per kind). The keys of
-    /// the plugin's actions are checked against the keys reserved for these kinds only.
+    /// Declare that the main view shows this kind of thing (call it once per kind). The host
+    /// chooses the plugin's screen (the text window, the table, the picture pipeline, the
+    /// document widget) from these declarations, so a plugin that is given files by
+    /// [`Manifest::bind`] **must** declare at least one: with none the host attaches no screen,
+    /// and says so at startup. The keys of the plugin's actions are checked against the keys
+    /// reserved for the declared kinds only (when none is declared, against every kind). A view
+    /// of a kind that was not declared is not drawn: the host shows a message naming it.
     pub fn shows(mut self, kind: ViewKind) -> Manifest {
         if !self.shows.contains(&kind) {
             self.shows.push(kind);
@@ -176,6 +183,17 @@ impl Manifest {
     pub fn unavailable(mut self, how: Unavailable) -> Manifest {
         self.unavailable = how;
         self
+    }
+
+    /// Whether the plugin is given files (a name, a glob or a content type sniffed from the file)
+    /// but declares no kind of view: the host would attach no screen to them.
+    pub fn assigns_files_without_shows(&self) -> bool {
+        self.shows.is_empty()
+            && self.binds.iter().any(|b| {
+                b.targets
+                    .iter()
+                    .any(|t| matches!(t, Target::Glob(_) | Target::FileName(_) | Target::Mime(_)))
+            })
     }
 
     pub fn bind(mut self, bind: Bind) -> Manifest {

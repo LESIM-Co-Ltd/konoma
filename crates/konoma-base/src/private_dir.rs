@@ -199,6 +199,18 @@ pub fn remove_all_private_dirs() {
 #[cfg(unix)]
 pub fn create_private_file(path: &Path, data: &[u8]) -> io::Result<()> {
     use std::io::Write as _;
+    create_private_file_via(path, data, |f, d| f.write_all(d))
+}
+
+/// [`create_private_file`] with the write step given. If the write fails, the file this call
+/// created is removed again (it was made exclusively, so it is ours): a failed write leaves
+/// nothing behind.
+#[cfg(unix)]
+fn create_private_file_via(
+    path: &Path,
+    data: &[u8],
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> io::Result<()>,
+) -> io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let mut f = std::fs::OpenOptions::new()
         .write(true)
@@ -206,7 +218,12 @@ pub fn create_private_file(path: &Path, data: &[u8]) -> io::Result<()> {
         .custom_flags(libc::O_NOFOLLOW)
         .mode(0o600)
         .open(path)?;
-    f.write_all(data)
+    if let Err(e) = write(&mut f, data) {
+        drop(f);
+        let _ = std::fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -411,6 +428,30 @@ mod tests {
         create_private_file(&ok, b"data").unwrap();
         assert_eq!(std::fs::read(&ok).unwrap(), b"data");
         assert_eq!(mode(&ok), 0o600);
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_file_behind() {
+        let base = unique_tmp("pd_failed_write");
+        std::fs::create_dir_all(&base).unwrap();
+        let target = base.join("out-fail");
+        let err = create_private_file_via(&target, b"data", |f, d| {
+            use std::io::Write as _;
+            // Part of it is written, then the disk gives out.
+            f.write_all(&d[..2])?;
+            Err(io::Error::other("no space left"))
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "no space left");
+        assert!(!target.exists(), "the half-written file is removed");
+        // The path is free again.
+        create_private_file(&target, b"data").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"data");
+        // A file that was already there is not ours to remove when the create is refused.
+        let theirs = base.join("theirs");
+        std::fs::write(&theirs, b"precious").unwrap();
+        assert!(create_private_file_via(&theirs, b"x", |_, _| Ok(())).is_err());
+        assert_eq!(std::fs::read(&theirs).unwrap(), b"precious");
     }
 
     // ---- the exit-time cleanup of the test process, seen from outside --------------------------

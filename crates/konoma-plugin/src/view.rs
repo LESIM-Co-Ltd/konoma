@@ -6,10 +6,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::input::{LazyResource, Origin, Resources};
+use crate::manifest::ViewKind;
 use crate::style::Line;
 use crate::text::Tr;
 
 /// How a session can be shown: its representations and its pages.
+///
+/// **`R` and the representations.** With two or more [`ReprDecl`]s the host gives the plugin `R`
+/// for free: it asks for the next one in the declared order (wrapping after the last) and names
+/// it with the plugin's label in the footer and the help. The ids are only names to the host.
+/// There is **one exception**: a document ([`ViewKind::Document`]) that declares exactly the two
+/// representations `"rendered"` and `"source"` (in either order), and a standalone diagram file,
+/// get the host's own rendered / source toggle (the host's wording; the source is shown in its
+/// windowed reader, so it can be searched and copied). A document that declares one
+/// representation or none has no `R`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Layout {
     /// Named representations (for example a picture and a text form). Empty means just one.
@@ -29,7 +39,9 @@ impl Layout {
     }
 }
 
-/// One named representation.
+/// One named representation. The `id` is the name the plugin is asked for ([`ViewReq::repr`]);
+/// any string will do, `"source"` included, except that a document declaring exactly `"rendered"`
+/// and `"source"` gets the host's rendered / source toggle (see [`Layout`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReprDecl {
     pub id: String,
@@ -106,6 +118,34 @@ pub enum View {
 }
 
 impl View {
+    /// The display type this view is (`None` for a [`View::Message`], a notice every plugin may
+    /// show in place of its content). A [`View::Reopen`] is a document.
+    pub fn kind(&self) -> Option<ViewKind> {
+        match self {
+            View::Text(_) => Some(ViewKind::Text),
+            View::Document(_) | View::Reopen(_) => Some(ViewKind::Document),
+            View::Table(_) => Some(ViewKind::Table),
+            View::Image(_) => Some(ViewKind::Image),
+            View::List(_) => Some(ViewKind::List),
+            View::Diff(_) => Some(ViewKind::Diff),
+            View::Message(_) => None,
+        }
+    }
+
+    /// Whether a plugin that declared `shows` ([`crate::Manifest::shows`]) may return this view.
+    /// A message always fits. A text view also fits a plugin that declares a document or a
+    /// picture: the source of a document and the text form of a diagram or formula are texts by
+    /// convention (their `R`).
+    pub fn fits(&self, shows: &[ViewKind]) -> bool {
+        match self.kind() {
+            None => true,
+            Some(ViewKind::Text) => shows
+                .iter()
+                .any(|k| matches!(k, ViewKind::Text | ViewKind::Document | ViewKind::Image)),
+            Some(kind) => shows.contains(&kind),
+        }
+    }
+
     /// A text view of ready-made lines (strings, spans or [`Line`]s).
     pub fn text<I>(lines: I) -> View
     where

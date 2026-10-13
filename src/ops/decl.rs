@@ -323,7 +323,7 @@ pub fn text(app: &App, ctx: Context, a: Action) -> OpText {
                 (app.deck_view_hint(), app.deck_view_help())
             } else if app.preview_is_diff_representation() {
                 (Some(M::HintReturnToDiff), Some(M::HintReturnToDiff))
-            } else if app.is_decorated_kind() {
+            } else if app.host_source_view() {
                 (
                     Some(if app.is_md_raw() {
                         M::HintRendered

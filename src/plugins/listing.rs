@@ -2,6 +2,7 @@
 
 use konoma_plugin::registry::PluginOrigin;
 use konoma_plugin::{Priority, Target};
+use unicode_width::UnicodeWidthStr;
 
 use super::{build_registry, disabled_ids, is_internal, table_problems, user_rules};
 use crate::config::Config;
@@ -82,7 +83,7 @@ pub(crate) fn plugins_table(cfg: &Config) -> String {
     let mut widths = head.map(str::len);
     for row in &rows {
         for (w, cell) in widths.iter_mut().zip(row) {
-            *w = (*w).max(cell.chars().count());
+            *w = (*w).max(UnicodeWidthStr::width(cell.as_str()));
         }
     }
     let line = |cells: [&str; 5]| {
@@ -94,7 +95,9 @@ pub(crate) fn plugins_table(cfg: &Config) -> String {
             if i == 4 {
                 s.push_str(cell);
             } else {
-                s.push_str(&format!("{cell:<w$}"));
+                // Padded by display width (a wide character takes two columns), not by `char`s.
+                s.push_str(cell);
+                s.push_str(&" ".repeat(w.saturating_sub(UnicodeWidthStr::width(*cell))));
             }
         }
         s.push('\n');

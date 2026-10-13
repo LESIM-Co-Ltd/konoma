@@ -25,22 +25,40 @@ pub(crate) struct ReprStep {
 }
 
 impl App {
-    /// Whether the representations of the open plugin are the host's own to walk, or one of the
-    /// standard shapes whose `R` has its own code and wording.
-    fn repr_cycle_is_standard(&self, reprs: &[konoma_plugin::view::ReprDecl]) -> bool {
-        // A presentation: slides / text, keeping the slide.
-        if self.deck_has_pictures() {
+    /// Whether the host's own `rendered` / `source` toggle (the host's wording, the source shown
+    /// in its windowed reader, `R` = `toggle_md_raw`) is what `R` does on the open file. **The one
+    /// predicate for that**: the request a plugin is asked with (`plugin_view_req`, the first
+    /// request of an open), the footer / help / menu gate, the label and the handler all use it.
+    ///
+    /// It holds for a standalone diagram file (`mermaid`), and for a document (a Markdown file, a
+    /// Word document) whose plugin declares **exactly** the representations `rendered` and
+    /// `source`, in either order. Every other representation id, `"source"` included, is just a
+    /// name to the host, which walks it like any other ([`App::repr_step`]); a document that
+    /// declares one representation or none has no `R` at all. Before the plugin has answered (its
+    /// layout is not known yet) a document is assumed to be the standard shape.
+    pub(crate) fn host_source_view(&self) -> bool {
+        if self.shows_plugin(konoma_mermaid::MERMAID_ID) {
             return true;
         }
-        // A document or diagram whose `R` is the rendered / source (or picture / text) switch.
-        if self.is_decorated_kind() {
-            if self.shows_plugin(konoma_mermaid::MERMAID_ID) {
-                return true;
-            }
-            let ids: Vec<&str> = reprs.iter().map(|r| r.id.as_str()).collect();
-            return ids == [konoma_markdown::REPR_RENDERED, konoma_markdown::REPR_SOURCE];
+        if !self.holds_document() {
+            return false;
         }
-        false
+        let Some(show) = self.plugin.as_ref().filter(|p| self.shows_plugin_file(p)) else {
+            return true;
+        };
+        let reprs = &show.layout.reprs;
+        if reprs.is_empty() && !matches!(show.phase, PluginPhase::Ready) {
+            return true;
+        }
+        let has = |id: &str| reprs.iter().any(|r| r.id == id);
+        reprs.len() == 2 && has(konoma_markdown::REPR_RENDERED) && has(konoma_markdown::REPR_SOURCE)
+    }
+
+    /// Whether the representations of the open plugin are the host's own to walk, or one of the
+    /// standard shapes whose `R` has its own code and wording: a presentation's slides / text, and
+    /// [`App::host_source_view`].
+    fn repr_cycle_is_standard(&self) -> bool {
+        self.deck_has_pictures() || self.host_source_view()
     }
 
     /// The representation the open plugin shows now: the tab's choice, else the plugin's default
@@ -72,7 +90,7 @@ impl App {
             return None;
         }
         let reprs = &show.layout.reprs;
-        if reprs.len() < 2 || self.repr_cycle_is_standard(reprs) {
+        if reprs.len() < 2 || self.repr_cycle_is_standard() {
             return None;
         }
         let next = &reprs[(self.current_repr_index(&show.layout) + 1) % reprs.len()];

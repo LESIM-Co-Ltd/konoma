@@ -39,9 +39,28 @@ pub fn view_text(session: &mut dyn Session, req: &ViewReq) -> Result<Vec<String>
     }
 }
 
-/// The key problems of a plugin's manifest (see [`keys::validate`]).
-pub fn check_manifest(plugin: &dyn Plugin) -> Vec<KeyIssue> {
-    keys::validate(&plugin.manifest())
+/// One problem found in a manifest by [`check_manifest`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ManifestIssue {
+    /// A key problem (see [`keys::validate`]).
+    Key(KeyIssue),
+    /// The plugin is given files by `binds` but declares no `shows`: the host would attach no
+    /// screen to them (the same finding the registry reports at startup).
+    ShowsNotDeclared,
+}
+
+/// The problems of a plugin's manifest: the key problems (see [`keys::validate`]) and files
+/// assigned without a declared `shows`. Empty means the host reads the manifest as intended.
+pub fn check_manifest(plugin: &dyn Plugin) -> Vec<ManifestIssue> {
+    let manifest = plugin.manifest();
+    let mut out: Vec<ManifestIssue> = keys::validate(&manifest)
+        .into_iter()
+        .map(ManifestIssue::Key)
+        .collect();
+    if manifest.assigns_files_without_shows() {
+        out.push(ManifestIssue::ShowsNotDeclared);
+    }
+    out
 }
 
 /// The table view of a session as text: the header (column titles; empty strings when the grid has

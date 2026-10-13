@@ -10,6 +10,7 @@ impl Plugin for Hexdump {
     fn manifest(&self) -> Manifest {
         Manifest::new("hexdump", env!("CARGO_PKG_VERSION"))
             .bind(Bind::files(["*.bin"]))
+            .shows(ViewKind::Text)
             .action(
                 Act::new("width")
                     .key("w")
@@ -103,4 +104,35 @@ fn missing_file_is_an_io_failure() {
         .err()
         .unwrap();
     assert_eq!(err.kind, konoma_plugin::FailureKind::Io);
+}
+
+#[test]
+fn a_plugin_given_files_without_shows_is_reported() {
+    use konoma_plugin::registry::{NoteKind, PluginOrigin, Registry};
+    use konoma_plugin::testing::ManifestIssue;
+    use std::sync::Arc;
+
+    /// The hello world as it was written before `shows` was needed.
+    struct NoShows;
+    impl Plugin for NoShows {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("noshows", "0.1.0").bind(Bind::files(["*.bin"]))
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+            Err(Failure::unsupported(Tr::new("unused")))
+        }
+    }
+    assert_eq!(
+        check_manifest(&NoShows),
+        vec![ManifestIssue::ShowsNotDeclared]
+    );
+    let mut r = Registry::new();
+    r.register(Arc::new(NoShows), PluginOrigin::User).unwrap();
+    assert!(r
+        .notes()
+        .iter()
+        .any(|n| n.plugin == "noshows" && n.kind == NoteKind::ShowsNotDeclared));
+    // Declared, it is clean; a plugin with no files at all (an embed, a verb) is not asked to.
+    r.register(Arc::new(Hexdump), PluginOrigin::User).unwrap();
+    assert!(!r.notes().iter().any(|n| n.plugin == "hexdump"));
 }

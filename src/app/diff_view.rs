@@ -170,12 +170,18 @@ impl App {
             PreviewKind::Command { ref render_as, .. } if render_as.as_deref() != Some("image") => {
                 vec![Source, Preview]
             }
-            PreviewKind::Plugin { ref id, .. }
-                if id == konoma_media::IMAGE_ID || id == konoma_media::PDF_ID =>
+            // A plugin that shows pictures, by the format of the file (not by the plugin's id).
+            ref k @ PreviewKind::Plugin { .. }
+                if matches!(
+                    super::media_diff::classify_kind(k),
+                    Some(MediaDiffKind::Image | MediaDiffKind::Pdf)
+                ) =>
             {
                 vec![Rendered, Preview]
             }
-            PreviewKind::Plugin { ref id, .. } if id == konoma_media::SVG_ID => {
+            ref k @ PreviewKind::Plugin { .. }
+                if super::media_diff::classify_kind(k) == Some(MediaDiffKind::Svg) =>
+            {
                 vec![Source, Rendered, Preview]
             }
             // Everything else (named one by one, so a new kind has to say what its diff offers):
@@ -386,7 +392,9 @@ impl App {
             return;
         }
         // A plugin that declares several representations: the host walks them.
-        if self.cycle_repr() {
+        // (When the walk is the key's business but the session is busy, nothing happens: the
+        // host's own toggle must not answer for a plugin whose representations it does not own.)
+        if self.cycle_repr() || self.repr_step().is_some() {
             return;
         }
         self.toggle_md_raw();

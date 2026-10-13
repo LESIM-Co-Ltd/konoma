@@ -1525,3 +1525,145 @@ fn an_svg_side_lands_as_an_entry_that_is_drawn_again_only_by_the_child() {
         "and marked as a file's: drawn again relative to it"
     );
 }
+
+// ---- the side-by-side view follows the declaration and the format, not the plugin's id ----
+
+/// A config in which the plugin `plugin` (registered under `name`) is present, and the standard
+/// plugins `disabled` are off.
+fn replaced(name: &str, plugin: Arc<dyn konoma_plugin::Plugin>, disabled: &[&str]) -> Config {
+    let mut cfg = Config::default();
+    let marker = crate::plugins::test_plugins::register(name, plugin);
+    let off = || {
+        let mut t = toml::Table::new();
+        t.insert("enabled".into(), toml::Value::Boolean(false));
+        t
+    };
+    cfg.plugins.insert(marker, off());
+    for id in disabled {
+        cfg.plugins.insert((*id).to_string(), off());
+    }
+    cfg
+}
+
+fn picture_under(id: &'static str, ext: &'static str) -> Arc<dyn konoma_plugin::Plugin> {
+    use crate::plugins::test_views::{Pic, Picture};
+    Arc::new(Picture {
+        id,
+        ext,
+        pic: Pic::Pages(1),
+    })
+}
+
+#[test]
+fn a_picture_plugin_under_another_id_gets_the_side_by_side_view_for_a_png() {
+    let dir = unique_tmp("konoma_media_diff_replaced_image");
+    std::fs::create_dir_all(&dir).unwrap();
+    let png = dir.join("pic.png");
+    crate::test_support::write_solid_png(&png, 2, 2, [1, 1, 1]);
+    let cfg = replaced(
+        "md_replaced_image",
+        picture_under("x-image", "png"),
+        &["image"],
+    );
+    let kind = cfg.resolve_preview(&png);
+    assert!(kind.is_plugin("x-image"), "the stand-in shows the png");
+    assert_eq!(classify_kind(&kind), Some(MediaDiffKind::Image));
+
+    // The worker pairs the two sides of a change like it does for the standard plugin.
+    let mut r = req(png.clone(), dir.to_path_buf(), DiffBaseline::Empty);
+    r.plugin_disabled = cfg.plugin_disabled();
+    assert!(
+        matches!(
+            App::compute_media_diff(&r),
+            MediaDiffComputed::Ready {
+                kind: MediaDiffKind::Image,
+                ..
+            }
+        ),
+        "a picture plugin under another id is laid side by side"
+    );
+
+    // The diff view offers `Rendered` (the side-by-side view) and `Preview` for it.
+    let mut app = App::new(dir.to_path_buf(), cfg).unwrap();
+    assert!(app.diff_media_capable(&png));
+    #[cfg(feature = "git")]
+    {
+        app.open_git_diff(&png);
+        assert_eq!(
+            app.diff_representations(&png),
+            vec![DiffView::Rendered, DiffView::Preview]
+        );
+        assert!(app.diff_media_active());
+    }
+    let _ = &mut app;
+}
+
+#[test]
+fn a_plugin_that_shows_a_diagrams_text_is_not_laid_side_by_side() {
+    // A picture plugin whose file is text (a diagram source) has no picture format: the text diff
+    // stays (the standard `mermaid` plugin is such a plugin).
+    let dir = unique_tmp("konoma_media_diff_diagram_text");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mmd = dir.join("d.mmd");
+    std::fs::write(&mmd, "graph TD\n A-->B\n").unwrap();
+    let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    assert!(!app.diff_media_capable(&mmd));
+    let cfg = replaced(
+        "md_diagram_text",
+        picture_under("x-diag", "mmd"),
+        &["mermaid"],
+    );
+    assert_eq!(classify_kind(&cfg.resolve_preview(&mmd)), None);
+}
+
+#[test]
+fn the_format_is_judged_by_name_then_content() {
+    let p = |s: &str| PathBuf::from(s);
+    assert_eq!(media_format(&p("a.svg"), None), Some(MediaDiffKind::Svg));
+    assert_eq!(media_format(&p("a.PDF"), None), Some(MediaDiffKind::Pdf));
+    assert_eq!(media_format(&p("a.webp"), None), Some(MediaDiffKind::Image));
+    // No telling name: the bytes decide (a PNG, a PDF, an SVG, a video, text).
+    let png: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+    assert_eq!(
+        media_format(&p("blob"), Some(png)),
+        Some(MediaDiffKind::Image)
+    );
+    assert_eq!(
+        media_format(&p("blob"), Some(b"%PDF-1.7\n")),
+        Some(MediaDiffKind::Pdf)
+    );
+    assert_eq!(
+        media_format(&p("blob"), Some(b"<?xml version=\"1.0\"?><svg></svg>")),
+        Some(MediaDiffKind::Svg)
+    );
+    assert_eq!(media_format(&p("clip.mp4"), None), None);
+    assert_eq!(media_format(&p("blob"), Some(b"hello")), None);
+}
+
+#[test]
+fn follow_opens_the_plain_preview_for_a_video_whatever_the_plugin_is_called() {
+    let dir = unique_tmp("konoma_follow_replaced_video");
+    std::fs::create_dir_all(&dir).unwrap();
+    let clip = dir.join("clip.mp4");
+    std::fs::write(&clip, b"\0\0\0\x18ftypmp42\0\0\0\0mp42isom\0\0").unwrap();
+    // The standard plugins: a video is not diffed.
+    let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    assert!(app.follow_previews_instead_of_diff(&clip));
+    // A plugin of another id in place of `video`: the same.
+    let cfg = replaced(
+        "follow_replaced_video",
+        picture_under("x-video", "mp4"),
+        &["video"],
+    );
+    assert!(cfg.resolve_preview(&clip).is_plugin("x-video"));
+    let app = App::new(dir.to_path_buf(), cfg).unwrap();
+    assert!(app.follow_previews_instead_of_diff(&clip));
+    // A picture the host lays side by side, and a diagram's text, still open their diffs.
+    let png = dir.join("p.png");
+    crate::test_support::write_solid_png(&png, 2, 2, [1, 1, 1]);
+    let mmd = dir.join("d.mmd");
+    std::fs::write(&mmd, "graph TD\n A-->B\n").unwrap();
+    let app = App::new(dir.to_path_buf(), Config::default()).unwrap();
+    assert!(!app.follow_previews_instead_of_diff(&png));
+    assert!(!app.follow_previews_instead_of_diff(&mmd));
+}

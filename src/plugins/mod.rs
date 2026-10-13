@@ -32,7 +32,7 @@ use konoma_plugin::{
 pub(crate) use acts::{ActBinding, PluginAct, PluginKeys};
 pub(crate) use command::CommandPlugin;
 pub(crate) use listing::plugins_table;
-pub(crate) use profile::{profile_of, unavailable_of, Profile};
+pub(crate) use profile::{profile_of, register, shows_of, unavailable_of, Profile};
 pub(crate) use resolve::{plugin_id_of, resolve_kind, user_rules};
 
 /// Host-internal pseudo plugins. They own no file binding: a `[[preview.rules]]` entry that asks
@@ -200,7 +200,7 @@ pub(crate) fn build_registry(disabled: &[String]) -> Registry {
     let mut r = Registry::new();
     for m in standard_manifests().into_iter().chain(internal_manifests()) {
         // The declarations are static; a refusal would be a bug that `tests` catches.
-        let _ = r.register(plugin_of(m), PluginOrigin::Standard);
+        let _ = register(&mut r, plugin_of(m), PluginOrigin::Standard);
     }
     for id in disabled {
         // Tests add plugins of their own through a name in the `disabled` list (the registry is
@@ -208,8 +208,7 @@ pub(crate) fn build_registry(disabled: &[String]) -> Registry {
         // `test_plugins`.
         #[cfg(test)]
         if let Some(plugin) = test_plugins::lookup(id) {
-            profile::record(&plugin.manifest());
-            let _ = r.register(plugin, PluginOrigin::User);
+            let _ = register(&mut r, plugin, PluginOrigin::User);
             continue;
         }
         if !is_internal(id) {
@@ -263,7 +262,7 @@ pub(crate) fn disabled_ids(tables: &PluginTables) -> Vec<String> {
 pub(crate) fn settings_of(table: &toml::Table) -> Settings {
     let mut out = Settings::new();
     for (k, v) in table {
-        if k != "enabled" {
+        if !HOST_PLUGIN_KEYS.contains(&k.as_str()) {
             out.set(k.clone(), value_of(v));
         }
     }
@@ -534,6 +533,10 @@ pub(crate) fn value_type_mismatch(
     (!fits).then(|| ValueType::of(default))
 }
 
+/// The keys of `[plugins.<id>]` that are the host's own, not the plugin's settings: `enabled`
+/// (read by [`disabled_ids`]) and `read_only` (`App::plugin_is_read_only`). Both are booleans.
+pub(crate) const HOST_PLUGIN_KEYS: &[&str] = &["enabled", "read_only"];
+
 /// Problems in `[plugins.<id>]` worth a startup message: an id nobody registered, `enabled` that
 /// is not a boolean, an attempt to disable a host-internal piece.
 pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> Vec<String> {
@@ -557,7 +560,8 @@ pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> 
         // startup, and ignored (`enabled` is the host's own key).
         if let Some(manifest) = registry.manifest(id) {
             for (key, value) in table {
-                if key == "enabled" {
+                // The host's own keys are checked below, not by a declaration.
+                if HOST_PLUGIN_KEYS.contains(&key.as_str()) {
                     continue;
                 }
                 let Some(decl) = manifest.settings.iter().find(|d| d.name == *key) else {
@@ -582,12 +586,14 @@ pub(crate) fn table_problems(tables: &PluginTables, lang: crate::i18n::Lang) -> 
                 }
             }
         }
-        match table.get("enabled") {
-            None | Some(toml::Value::Boolean(_)) => {}
-            Some(_) => out.push(match lang {
-                Lang::Jp => format!("[plugins.{id}] の enabled は true か false"),
-                Lang::En => format!("[plugins.{id}] enabled must be true or false"),
-            }),
+        for key in HOST_PLUGIN_KEYS {
+            match table.get(*key) {
+                None | Some(toml::Value::Boolean(_)) => {}
+                Some(_) => out.push(match lang {
+                    Lang::Jp => format!("[plugins.{id}] の {key} は true か false"),
+                    Lang::En => format!("[plugins.{id}] {key} must be true or false"),
+                }),
+            }
         }
         if is_internal(id) && matches!(table.get("enabled"), Some(toml::Value::Boolean(false))) {
             out.push(match lang {

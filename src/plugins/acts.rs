@@ -90,6 +90,8 @@ pub enum PluginNote {
         declared: ApiVersion,
         host: ApiVersion,
     },
+    /// The plugin is given files but declares no `shows`: the host attaches no screen to them.
+    ShowsNotDeclared { plugin: String },
     /// `[keys.<plugin>]` names an action the plugin does not declare.
     UnknownAction { plugin: String, action: String },
     /// `[keys.<plugin>]` has a key that is not usable (does not parse, reserved, taken).
@@ -158,6 +160,9 @@ impl PluginKeys {
                     plugin: note.plugin,
                     declared,
                     host,
+                },
+                NoteKind::ShowsNotDeclared => PluginNote::ShowsNotDeclared {
+                    plugin: note.plugin,
                 },
             });
         }
@@ -334,6 +339,12 @@ impl PluginKeys {
                     Lang::En,
                 ) => format!(
                     "{plugin}: built for plugin API {declared} (this konoma speaks {host}); switched off"
+                ),
+                (PluginNote::ShowsNotDeclared { plugin }, Lang::Jp) => format!(
+                    "{plugin}: ファイルを割り当てていますが shows を宣言していないので画面が付きません(Manifest::shows)"
+                ),
+                (PluginNote::ShowsNotDeclared { plugin }, Lang::En) => format!(
+                    "{plugin}: it is given files but declares no `shows`, so it gets no screen (Manifest::shows)"
                 ),
                 (PluginNote::UnknownAction { plugin, action }, Lang::Jp) => {
                     format!("[keys.{plugin}] 未知の操作 `{action}`(無視)")

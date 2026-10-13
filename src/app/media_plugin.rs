@@ -160,7 +160,10 @@ impl App {
         // A still image needs the decode backend too (its encode is made asynchronously at render
         // time); every other picture only needs a graphics backend. An animation is a "GIF" to
         // the host when its first bytes say so.
-        let still = id == konoma_media::IMAGE_ID && !Self::looks_like_gif(path);
+        // Decided by the file's format (the judgment a media diff uses), not by the plugin's id; the
+        // type the plugin returns is not known before it runs.
+        let still = super::media_diff::media_format(path, None) == Some(MediaDiffKind::Image)
+            && !Self::looks_like_gif(path);
         if self.picker.is_none() || (still && self.img_tx.is_none()) {
             return; // the render side falls back to text or a message
         }

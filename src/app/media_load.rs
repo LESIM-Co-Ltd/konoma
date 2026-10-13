@@ -275,6 +275,13 @@ impl App {
             .store(self.media_gen, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Test-only: another media job (a sharper redraw of a vector picture, a Markdown image...)
+    /// starting moves the generation on; this is that effect alone.
+    #[cfg(test)]
+    pub fn another_media_job_starts_for_test(&mut self) {
+        self.bump_media_gen();
+    }
+
     /// Test-only: Office loads started on a thread so far (the jobs of the Office plugins' work
     /// group: a workbook's sheets, a Word document, a presentation).
     #[cfg(test)]
@@ -294,9 +301,12 @@ impl App {
             }
         }
         if result.gen != self.media_gen {
-            // Stale: we've already moved on to another file. A plugin's session (and a document
-            // nobody wants) is dropped off the UI thread like any other.
-            if let Some(MediaPayload::Plugin(res)) = result.payload {
+            // Stale: the preview moved on, or another media job started. A plugin's view (and a
+            // document nobody wants) is dropped off the UI thread like any other. **The session
+            // is not the answer's to throw away**: it belongs to the show, and a job that was
+            // out with it when the generation moved on hands it back (see `reclaim_plugin_session`).
+            if let Some(MediaPayload::Plugin(mut res)) = result.payload {
+                self.reclaim_plugin_session(&mut res);
                 super::table_actions::discard_in_background(res);
             }
             return false;
@@ -318,6 +328,43 @@ impl App {
                 true
             }
             None => true, // failure: clear loading and let the render side fall back (raw XML/message)
+        }
+    }
+
+    /// A stale plugin answer still carries the session the job took from the show. If that show is
+    /// still the open one, has answered before and holds no session (nothing else took it), the
+    /// session goes back, with what it said works now: otherwise the show would stay on screen
+    /// with its keys shown and dead. The view, the picture and the document of the stale job are not
+    /// applied; its outcome is.
+    fn reclaim_plugin_session(&mut self, res: &mut super::plugin_host::PluginResult) {
+        let Some(show) = self.plugin.as_ref() else {
+            return;
+        };
+        if res.session.is_none()
+            || show.id != res.id
+            || show.session.is_some()
+            || !matches!(show.phase, super::plugin_host::PluginPhase::Ready)
+            || !self.shows_plugin_file(show)
+        {
+            return;
+        }
+        if let Some(show) = self.plugin.as_mut() {
+            show.session = res.session.take();
+            show.enabled = std::mem::take(&mut res.enabled).into_iter().collect();
+        }
+        // What an action asked for is still true of the session it ran on (its state changed): a
+        // view that no longer matches is drawn again, a file to read again is read again.
+        match res.outcome.take() {
+            Some(konoma_plugin::Outcome::Flash(msg)) => {
+                self.flash = Some(msg.get(self.plugin_lang()).to_string());
+            }
+            Some(konoma_plugin::Outcome::Reload) => self.reload_plugin(),
+            Some(konoma_plugin::Outcome::Redraw) => {
+                if let Some(req) = self.plugin.as_ref().map(|p| p.req.clone()) {
+                    self.plugin_request_view(req);
+                }
+            }
+            Some(konoma_plugin::Outcome::Unhandled) | None => {}
         }
     }
 

@@ -103,7 +103,7 @@ pub fn gate(app: &App, ctx: Context, a: Action) -> Gate {
         },
         A::CycleRepresentation => when(
             app.preview_is_diff_representation()
-                || (app.is_decorated_kind() && !app.document_text_missing())
+                || ((app.host_source_view() || app.is_deck()) && !app.document_text_missing())
                 || app.repr_step().is_some(),
         ),
         A::ImageReturnToDiff => {

@@ -960,6 +960,32 @@ fn the_plugins_table_lists_user_rules_first_and_marks_disabled_plugins() {
 }
 
 #[test]
+fn the_plugins_table_aligns_wide_characters_by_display_width() {
+    use unicode_width::UnicodeWidthStr;
+    let mut cfg = cfg_from("");
+    cfg.preview.rules = vec![Rule {
+        glob: Some(format!("{}/*.md", "資料".repeat(30))),
+        command: Some("cat {path}".into()),
+        ..Rule::default()
+    }];
+    let out = plugins_table(&cfg);
+    let lines: Vec<&str> = out.lines().collect();
+    let head = lines
+        .iter()
+        .position(|l| l.starts_with("ASSIGNMENT"))
+        .unwrap();
+    let wide = lines[head + 1];
+    assert!(wide.contains("資料"), "{wide}");
+    // The second column starts at the same display column on the wide row and on the header.
+    let start = |l: &str, word: &str| UnicodeWidthStr::width(&l[..l.find(word).unwrap()]);
+    assert_eq!(start(wide, "command"), start(lines[head], "PLUGIN"));
+    assert_eq!(
+        start(lines[head + 2], "markdown"),
+        start(lines[head], "PLUGIN")
+    );
+}
+
+#[test]
 fn the_plugins_table_shows_problems_with_the_plugin_tables() {
     let out = plugins_table(&cfg_from("[plugins.bogus]\nx = 1\n"));
     assert!(
@@ -1144,4 +1170,57 @@ fn a_plugin_the_user_added_never_takes_the_place_of_a_standard_id_in_the_table()
     profile::record(&Imposter.manifest());
     assert!(profile_of("mermaid").own_svg && profile_of("mermaid").image);
     assert!(!profile_of("mermaid").text);
+}
+
+#[test]
+fn a_plugin_registered_the_ordinary_way_has_its_profile_under_its_own_id() {
+    // The road a plugin added at stage 3 takes: `plugins::register` into a registry, nothing else.
+    struct Own;
+    impl Plugin for Own {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("profile-own", "0.1.0")
+                .bind(konoma_plugin::Bind::files(["*.own"]))
+                .shows(konoma_plugin::ViewKind::Table)
+                .converts()
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn konoma_plugin::Session>, Failure> {
+            Err(Failure::unsupported(t!(en: "no")))
+        }
+    }
+    struct Screenless;
+    impl Plugin for Screenless {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("profile-screenless", "0.1.0").bind(konoma_plugin::Bind::files(["*.sl"]))
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn konoma_plugin::Session>, Failure> {
+            Err(Failure::unsupported(t!(en: "no")))
+        }
+    }
+    assert!(
+        !profile_of("profile-own").table,
+        "unknown before it is registered"
+    );
+    let mut r = konoma_plugin::registry::Registry::new();
+    register(&mut r, std::sync::Arc::new(Own), PluginOrigin::User).unwrap();
+    register(&mut r, std::sync::Arc::new(Screenless), PluginOrigin::User).unwrap();
+    let p = profile_of("profile-own");
+    assert!(p.table && p.converts && !p.text && !p.unscreened);
+    assert_eq!(
+        shows_of("profile-own"),
+        vec![konoma_plugin::ViewKind::Table]
+    );
+    // A plugin given files that shows nothing is known as such.
+    assert!(profile_of("profile-screenless").unscreened);
+    // A refused registration (a duplicate id) records nothing: the standard profile stays.
+    struct Dup;
+    impl Plugin for Dup {
+        fn manifest(&self) -> Manifest {
+            Manifest::new("profile-own", "9.9.9").shows(konoma_plugin::ViewKind::Text)
+        }
+        fn open(&self, _: Input, _: &OpenCx) -> Result<Box<dyn konoma_plugin::Session>, Failure> {
+            Err(Failure::unsupported(t!(en: "no")))
+        }
+    }
+    assert!(register(&mut r, std::sync::Arc::new(Dup), PluginOrigin::User).is_err());
+    assert!(profile_of("profile-own").table && !profile_of("profile-own").text);
 }

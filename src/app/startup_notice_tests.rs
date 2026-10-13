@@ -452,3 +452,30 @@ fn a_whole_number_fits_a_declared_number_but_not_the_other_way() {
     assert!(crate::plugins::value_type_mismatch(&Value::Float(1.5), &Value::Int(2)).is_none());
     assert!(crate::plugins::value_type_mismatch(&Value::Int(1), &Value::Float(2.5)).is_some());
 }
+
+/// `read_only` is the host's own key of `[plugins.<id>]`, like `enabled`: no "unknown setting",
+/// a type notice when it is not a boolean, and a misspelling is still unknown.
+#[test]
+fn read_only_is_a_host_key_of_a_plugin_table() {
+    let ok = cfg_from("[plugins.csv]\nread_only = true\n");
+    assert_eq!(ok.plugin_report(Lang::En), None);
+    let bad = cfg_from("[plugins.csv]\nread_only = \"yes\"\n")
+        .plugin_report(Lang::En)
+        .unwrap();
+    assert!(
+        bad.contains("[plugins.csv] read_only must be true or false"),
+        "{bad}"
+    );
+    assert!(!bad.contains("unknown setting"), "{bad}");
+    let typo = cfg_from("[plugins.csv]\nread_onyl = true\n")
+        .plugin_report(Lang::En)
+        .unwrap();
+    assert!(
+        typo.contains("unknown setting `read_onyl` in [plugins.csv]"),
+        "{typo}"
+    );
+    // The plugin is not handed the host's keys as settings.
+    let cfg = cfg_from("[plugins.csv]\nread_only = true\nrainbow = false\n");
+    let settings = effective_settings(&cfg, "csv");
+    assert!(settings.get("read_only").is_none() && settings.get("rainbow").is_some());
+}

@@ -197,3 +197,173 @@ fn a_plugin_with_one_representation_gets_no_hint_and_r_does_nothing() {
         s.key('?');
     }
 }
+
+// ---- the names of the representations are the plugin's own -------------------------------------
+
+use crate::plugins::test_views::{DocFileOrdered, Named};
+
+fn open_named(
+    name: &str,
+    file: &str,
+    plugin: Arc<dyn Plugin>,
+    media: bool,
+) -> (Sim, crate::test_support::TmpDir) {
+    let dir = sandbox(name);
+    std::fs::write(dir.join(file), "# Title\n\nbody text\n").unwrap();
+    let cfg = cfg_for(name, plugin);
+    let mut s = Sim::with_config_sized(&canon(&dir), cfg, 100, 30);
+    if media {
+        s = s.with_media();
+    }
+    s.select(file);
+    s.enter();
+    settle(&mut s);
+    (s, dir)
+}
+
+/// A table, a text and a picture plugin that call their first representation `source` are walked
+/// by the host like any other: `R` goes to the next one, and a reload of the file (a change on
+/// disk) keeps the representation.
+#[test]
+fn a_representation_called_source_is_just_a_name_for_a_table_a_text_and_a_picture() {
+    for (name, file, shape) in [
+        ("rcn_tbl", "a.ntbl", Shape::Table),
+        ("rcn_txt", "a.ntxt", Shape::Text),
+        ("rcn_img", "a.nimg", Shape::Image),
+    ] {
+        let ext: &'static str = Box::leak(
+            file.rsplit('.')
+                .next()
+                .unwrap()
+                .to_string()
+                .into_boxed_str(),
+        );
+        let id: &'static str = Box::leak(format!("x-{name}").into_boxed_str());
+        let (mut s, _d) = open_named(
+            name,
+            file,
+            Arc::new(Named {
+                id,
+                ext,
+                shape,
+                ids: &["source", "pretty"],
+            }),
+            matches!(shape, Shape::Image),
+        );
+        assert_eq!(r_hint(&s).as_deref(), Some("R:Show pretty"), "{name}");
+        let first = |s: &Sim| match shape {
+            Shape::Image => Some(red(s)),
+            _ => None,
+        };
+        let before = (s.screen(), first(&s));
+        r(&mut s);
+        assert_eq!(r_hint(&s).as_deref(), Some("R:Show source"), "{name}");
+        assert_ne!(
+            (s.screen(), first(&s)),
+            before,
+            "{name}: R changed the screen"
+        );
+        let pretty = (s.screen(), first(&s));
+        match shape {
+            Shape::Table => s.see("pretty"),
+            Shape::Text => s.see("this is pretty"),
+            _ => assert_eq!(first(&s), Some((155, 0)), "{name}"),
+        }
+        // The file changes on disk and is read again: the representation is kept.
+        let path = _d.join(file);
+        std::fs::write(&path, "changed\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(30))
+            .unwrap();
+        s.app.reload_preview();
+        settle(&mut s);
+        assert_eq!(
+            (s.screen(), first(&s)),
+            pretty,
+            "{name}: kept across a reload"
+        );
+        assert_eq!(r_hint(&s).as_deref(), Some("R:Show source"), "{name}");
+        r(&mut s);
+        assert_eq!(
+            r_hint(&s).as_deref(),
+            Some("R:Show pretty"),
+            "{name}: wraps"
+        );
+    }
+}
+
+/// A document that declares `rendered` and `source` in the other order is the same standard shape:
+/// the host's own wording and its own toggle (the source in the windowed reader).
+#[test]
+fn a_document_declaring_source_before_rendered_gets_the_standard_toggle() {
+    let (mut s, _d) = open_named(
+        "rcn_doc_rev",
+        "a.ndoc",
+        Arc::new(DocFileOrdered {
+            id: "x-rcn-doc-rev",
+            ext: "ndoc",
+            ids: &["source", "rendered"],
+        }),
+        false,
+    );
+    // The host's wording ("Raw source" / "Rendered" of the catalog), not "Show ..." of the plugin.
+    assert!(s.app.host_source_view());
+    assert!(
+        s.app.repr_step().is_none(),
+        "the host's own toggle, not the walk"
+    );
+    let hint = crate::ui::preview::footer_hints(&s.app)
+        .into_iter()
+        .find(|h| h.starts_with("R:"))
+        .expect("R is offered");
+    assert!(!hint.contains("Show"), "{hint}");
+    s.key('R');
+    settle(&mut s);
+    assert!(s.app.is_md_raw(), "R switched to the source view");
+    s.key('R');
+    settle(&mut s);
+    assert!(!s.app.is_md_raw());
+}
+
+/// A document that declares one representation gets no `R` hint, and the key does nothing; a
+/// document that names two others is walked by the host with the plugin's labels.
+#[test]
+fn a_document_with_one_representation_has_no_r_and_one_with_other_names_is_walked() {
+    let (mut s, _d) = open_named(
+        "rcn_doc_one",
+        "a.ndoc",
+        Arc::new(DocFileOrdered {
+            id: "x-rcn-doc-one",
+            ext: "ndoc",
+            ids: &["rendered"],
+        }),
+        false,
+    );
+    assert!(!s.app.host_source_view());
+    assert_eq!(r_hint(&s), None);
+    let before = s.screen();
+    s.key('R');
+    settle(&mut s);
+    assert_eq!(s.screen(), before, "R changed nothing");
+    assert!(!s.app.is_md_raw());
+
+    let (s, _d) = open_named(
+        "rcn_doc_two",
+        "a.ndoc",
+        Arc::new(DocFileOrdered {
+            id: "x-rcn-doc-two",
+            ext: "ndoc",
+            ids: &["source", "pretty"],
+        }),
+        false,
+    );
+    assert!(!s.app.host_source_view(), "not the standard pair of names");
+    assert_eq!(r_hint(&s).as_deref(), Some("R:Show pretty"));
+    assert!(
+        !s.app.is_md_raw(),
+        "`source` here is a name of the plugin's"
+    );
+}

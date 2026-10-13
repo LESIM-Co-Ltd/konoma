@@ -5,15 +5,18 @@
 //! plugin installed under another id (a replacement for a standard one) is drawn the same way as
 //! long as it declares and returns the same display types.
 //!
-//! The table is filled whenever a registry is built (`build_registry`) with every plugin it
-//! registers, standard or not; the standard ones are in it from the first lookup. Ids are unique
-//! across the plugins of a process (the registry refuses a duplicate), so one table serves all
-//! registries.
+//! The declarations come from the registry: **every plugin is registered through [`register`]**
+//! (the one place that calls `Registry::register`), which records what the registered manifest
+//! declares, standard or not, so a plugin added by any road has its profile from the moment it is
+//! in a registry. The standard ones are also in the table before any registry is built. Ids are
+//! unique across the plugins of a process (the registry refuses a duplicate), so one table serves
+//! all registries.
 
 use std::collections::BTreeMap;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
-use konoma_plugin::{Manifest, Unavailable, ViewKind};
+use konoma_plugin::registry::{PluginOrigin, RegistryError};
+use konoma_plugin::{Manifest, Plugin, Unavailable, ViewKind};
 
 /// The declared character of a plugin's main view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -35,6 +38,9 @@ pub struct Profile {
     /// math). Decided by where the plugin comes from: the plugins a user adds never have it, and
     /// neither does a standard plugin whose SVG comes from a file or a document.
     pub own_svg: bool,
+    /// It is given files but declares no `shows`: the host attaches no screen to them (reported
+    /// at startup; a view it returns is explained on screen).
+    pub unscreened: bool,
 }
 
 impl Profile {
@@ -47,6 +53,7 @@ impl Profile {
             text: has(ViewKind::Text),
             converts: m.converts,
             file_text: m.file_text,
+            unscreened: m.assigns_files_without_shows(),
             own_svg: standard
                 && matches!(
                     m.id.as_str(),
@@ -56,17 +63,31 @@ impl Profile {
     }
 }
 
-type Entries = BTreeMap<String, (Profile, Unavailable)>;
+/// What is kept for one plugin.
+struct Entry {
+    profile: Profile,
+    unavailable: Unavailable,
+    shows: Vec<ViewKind>,
+}
+
+impl Entry {
+    fn of(m: &Manifest, standard: bool) -> Entry {
+        Entry {
+            profile: Profile::of(m, standard),
+            unavailable: m.unavailable.clone(),
+            shows: m.shows.clone(),
+        }
+    }
+}
+
+type Entries = BTreeMap<String, Entry>;
 
 fn table() -> &'static RwLock<Entries> {
     static T: OnceLock<RwLock<Entries>> = OnceLock::new();
     T.get_or_init(|| {
         let mut m = Entries::new();
         for manifest in super::standard_manifests() {
-            m.insert(
-                manifest.id.clone(),
-                (Profile::of(&manifest, true), manifest.unavailable.clone()),
-            );
+            m.insert(manifest.id.clone(), Entry::of(&manifest, true));
         }
         RwLock::new(m)
     })
@@ -82,18 +103,38 @@ fn standard_ids() -> &'static Vec<String> {
     })
 }
 
-/// Remember what `manifest` declares (called for every plugin a registry registers). Only the
-/// plugins a test adds need it today; a registered user plugin (stage 3) calls it the same way.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Register `plugin` in `registry` and remember what it declares. **The only way the host adds a
+/// plugin to a registry** (the standard ones, the stand-ins of the tests, and the plugins a user
+/// installs at stage 3 alike), so the profile table cannot fall behind the registry.
+pub(crate) fn register(
+    registry: &mut konoma_plugin::registry::Registry,
+    plugin: Arc<dyn Plugin>,
+    origin: PluginOrigin,
+) -> Result<(), RegistryError> {
+    let id = plugin.manifest().id;
+    registry.register(plugin, origin)?;
+    // The standard plugins are in the table from the start. What is recorded for the others is
+    // the manifest as registered (keys the registry dropped are gone).
+    if origin != PluginOrigin::Standard {
+        if let Some(manifest) = registry.manifest(&id) {
+            record(manifest);
+        }
+    }
+    Ok(())
+}
+
+/// Remember what `manifest` (of a plugin that is not a standard one) declares.
 pub(crate) fn record(manifest: &Manifest) {
-    let entry = (Profile::of(manifest, false), manifest.unavailable.clone());
     let mut t = table().write().unwrap_or_else(|e| e.into_inner());
-    // The standard plugins are in the table from the start, and a plugin that is not one never
-    // takes the place of an id they own (the registry refuses a duplicate id as well).
+    // A plugin that is not a standard one never takes the place of an id they own.
     if standard_ids().contains(&manifest.id) {
         return;
     }
-    if t.get(&manifest.id) != Some(&entry) {
+    let entry = Entry::of(manifest, false);
+    if t.get(&manifest.id)
+        .map(|e| (&e.profile, &e.unavailable, &e.shows))
+        != Some((&entry.profile, &entry.unavailable, &entry.shows))
+    {
         t.insert(manifest.id.clone(), entry);
     }
 }
@@ -104,7 +145,7 @@ pub(crate) fn profile_of(id: &str) -> Profile {
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(id)
-        .map(|(p, _)| *p)
+        .map(|e| e.profile)
         .unwrap_or_default()
 }
 
@@ -114,6 +155,16 @@ pub(crate) fn unavailable_of(id: &str) -> Unavailable {
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(id)
-        .map(|(_, u)| u.clone())
+        .map(|e| e.unavailable.clone())
+        .unwrap_or_default()
+}
+
+/// The display types the plugin `id` declared (`Manifest::shows`).
+pub(crate) fn shows_of(id: &str) -> Vec<ViewKind> {
+    table()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id)
+        .map(|e| e.shows.clone())
         .unwrap_or_default()
 }

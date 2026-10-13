@@ -62,6 +62,9 @@ pub enum NoteKind {
         declared: ApiVersion,
         host: ApiVersion,
     },
+    /// The plugin is given files (`binds`) but declares no `shows`, so the host attaches no
+    /// screen to them.
+    ShowsNotDeclared,
 }
 
 /// A user binding (a `[[preview.rules]]` entry read as "this target goes to that plugin").
@@ -214,6 +217,9 @@ impl Registry {
                 declared: manifest.api,
                 host: ApiVersion::CURRENT,
             });
+        }
+        if manifest.assigns_files_without_shows() {
+            notes.push(NoteKind::ShowsNotDeclared);
         }
         if self.entries.iter().any(|e| e.id == manifest.id) {
             return Err(RegistryError::DuplicateId(manifest.id));

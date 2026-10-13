@@ -61,6 +61,11 @@ pub(crate) struct Variant {
     pub writes: bool,
     /// Counts the `act` calls that reached the session.
     pub calls: Arc<AtomicUsize>,
+    /// Do not declare `shows` (the hello world as it was first written), under the id
+    /// `hexdump-ns` so the declaration table of the other tests is not touched.
+    pub no_shows: bool,
+    /// Declare `shows(Text)` but answer with a table (under the id `hexdump-wrong`).
+    pub wrong_view: bool,
 }
 
 /// The hello-world plugin of the design (4-10), plus what the host's tests need around it.
@@ -76,10 +81,19 @@ impl Plugin for Hexdump {
         if self.0.writes {
             width = width.writes();
         }
-        let mut m = Manifest::new("hexdump", "0.1.0")
+        let id = if self.0.no_shows {
+            "hexdump-ns"
+        } else if self.0.wrong_view {
+            "hexdump-wrong"
+        } else {
+            "hexdump"
+        };
+        let mut m = Manifest::new(id, "0.1.0")
             .bind(Bind::files(["*.bin"]))
-            .shows(ViewKind::Text)
             .action(width);
+        if !self.0.no_shows {
+            m = m.shows(ViewKind::Text);
+        }
         if self.0.extra_acts {
             m = m
                 .action(
@@ -116,6 +130,18 @@ struct Dump {
 
 impl Session for Dump {
     fn view(&mut self, _: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
+        if self.v.wrong_view {
+            return Ok(View::Table(konoma_plugin::view::TableView {
+                grid: Arc::new(super::test_views::Cells {
+                    rows: vec![vec!["a".into()]],
+                    ncols: 1,
+                    first_row_is_header: false,
+                }),
+                title: None,
+                rainbow: false,
+                addressed: false,
+            }));
+        }
         Ok(View::text(self.bytes.chunks(self.width).map(|chunk| {
             chunk
                 .iter()

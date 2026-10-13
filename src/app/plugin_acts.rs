@@ -68,11 +68,16 @@ impl App {
     }
 
     /// Whether the session says `p` works now. False before the first answer (while the file is
-    /// loading) and when the plugin could not open the file.
+    /// loading), when the plugin could not open the file, and **while a job holds the session**
+    /// (the key would be ignored, so its hint is not shown: [[hint-shown-iff-key-acts]]).
     pub fn plugin_act_enabled(&self, p: PluginAct) -> bool {
         self.plugin
             .as_ref()
-            .filter(|s| s.id == p.plugin() && matches!(s.phase, plugin_host::PluginPhase::Ready))
+            .filter(|s| {
+                s.id == p.plugin()
+                    && matches!(s.phase, plugin_host::PluginPhase::Ready)
+                    && s.session.is_some()
+            })
             .and_then(|s| s.enabled.get(p.act()))
             .copied()
             .unwrap_or(false)
@@ -95,8 +100,8 @@ impl App {
     }
 
     /// Run a declared action of the open plugin on the worker. While a job still holds the
-    /// session (the previous key is being answered) the press is ignored; the footer keeps the
-    /// last answer of `enabled` meanwhile.
+    /// session (the previous key is being answered) the press is ignored, and so is its hint: the
+    /// gate is off meanwhile (`plugin_act_enabled`).
     pub fn run_plugin_action(&mut self, p: PluginAct) {
         let _ = self.plugin_act(p.act());
     }

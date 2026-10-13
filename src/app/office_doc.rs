@@ -645,6 +645,13 @@ impl App {
             // Source view: the reader holds the old text (a converted document's temp file, or the
             // file as it was). Ask the session for the source again and reopen the reader.
             self.show_source_view();
+        } else if let (Some(want), Some(layout)) = (self.tab.repr.clone(), layout.as_ref()) {
+            // A representation the tab came back in, asked for as the default because the layout
+            // was not known yet (`source` is assumed to be the host's own until the plugin says
+            // otherwise): the plugin declares it as one of its own, so ask for it now.
+            if asked != Some(want.as_str()) && layout.reprs.iter().any(|r| r.id == want) {
+                self.plugin_view_now(self.plugin_view_req());
+            }
         }
     }
 

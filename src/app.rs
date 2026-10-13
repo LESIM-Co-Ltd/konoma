@@ -1682,7 +1682,7 @@ pub struct App {
     /// heavily (declares a work group: the Office ones) is opened again on an FS event only when
     /// this changes (`App::plugin_file_unchanged`): an event for `.git` or for another file must
     /// not re-read a workbook of hundreds of megabytes.
-    plugin_stamp: Option<(std::time::SystemTime, u64)>,
+    plugin_stamp: Option<FileStamp>,
     /// Failure reason for the current `PreviewKind::Command` attempt (detached-launch error,
     /// non-zero exit, missing tool, `{out}` never produced, ...). None on success/in-flight/every
     /// other preview kind. Reset by `clear_image` (the same "starting a fresh attempt" checkpoint
@@ -5200,7 +5200,9 @@ impl App {
     /// document: `rendered` / `source`), then resets the caret/scroll/selection so the new view
     /// starts at the top and rebuilds the windowed reader (source) / decoration (rendered).
     pub fn toggle_md_raw(&mut self) {
-        if !self.is_decorated_kind() {
+        // Only where the toggle is the host's own (a document that declares exactly `rendered` and
+        // `source`, a diagram file) or a presentation's.
+        if !(self.host_source_view() || self.is_deck()) {
             return;
         }
         // A document still converting (also in a saved raw view) or failed has no text to switch
@@ -7022,10 +7024,29 @@ fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-/// The modification time and size of `path` (both, so a copy that keeps the mtime still shows).
-fn file_stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+/// What identifies the content of a file as far as the metadata can tell: the modification time,
+/// the size, the **inode and device** (a file replaced by a rename is another file) and the change
+/// time (`ctime`, which a program cannot set back: `touch -r` restores the modification time of
+/// a file whose content was rewritten, but not this).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileStamp {
+    modified: std::time::SystemTime,
+    len: u64,
+    dev: u64,
+    ino: u64,
+    ctime: (i64, i64),
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    use std::os::unix::fs::MetadataExt;
     let m = std::fs::metadata(path).ok()?;
-    Some((m.modified().ok()?, m.len()))
+    Some(FileStamp {
+        modified: m.modified().ok()?,
+        len: m.len(),
+        dev: m.dev(),
+        ino: m.ino(),
+        ctime: (m.ctime(), m.ctime_nsec()),
+    })
 }
 
 /// Assemble the copy string (a pure function; does not touch the clipboard).

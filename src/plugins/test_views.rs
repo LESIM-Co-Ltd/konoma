@@ -112,6 +112,57 @@ impl Session for DocFileSession {
     }
 }
 
+/// A [`DocFile`] that declares its representations in the order (and the number) of `ids`: the
+/// views are the same (`source` is the file as text, anything else is the rendered document).
+pub(crate) struct DocFileOrdered {
+    pub id: &'static str,
+    pub ext: &'static str,
+    pub ids: &'static [&'static str],
+}
+
+impl Plugin for DocFileOrdered {
+    fn manifest(&self) -> Manifest {
+        manifest(self.id, self.ext, ViewKind::Document)
+    }
+
+    fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let inner = DocFile {
+            id: self.id,
+            ext: self.ext,
+            takes_markdown: false,
+        }
+        .open(input, cx)?;
+        Ok(Box::new(Reordered {
+            inner,
+            ids: self.ids,
+        }))
+    }
+}
+
+struct Reordered {
+    inner: Box<dyn Session>,
+    ids: &'static [&'static str],
+}
+
+impl Session for Reordered {
+    fn layout(&self) -> Layout {
+        Layout {
+            reprs: self
+                .ids
+                .iter()
+                .map(|id| ReprDecl::new(*id, Tr::new(format!("Show {id}"))))
+                .collect(),
+            default_repr: self.ids.first().map(|s| s.to_string()),
+            default_repr_without_pixels: None,
+            pages: None,
+        }
+    }
+
+    fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        self.inner.view(req, cx)
+    }
+}
+
 // ---- a document converted from the file, handed over as Markdown (Word's shape) ----------------
 
 /// A plugin that converts its file and answers "open this again as Markdown" (Word's shape): the
@@ -222,11 +273,11 @@ impl Session for DeckSession {
 
 // ---- a table with pages (the spreadsheet's shape) and a plain table (the CSV's shape) -----------
 
-struct Cells {
-    rows: Vec<Vec<String>>,
-    ncols: usize,
+pub(crate) struct Cells {
+    pub(crate) rows: Vec<Vec<String>>,
+    pub(crate) ncols: usize,
     /// The first row names the columns (a CSV); otherwise the columns are lettered (a sheet).
-    first_row_is_header: bool,
+    pub(crate) first_row_is_header: bool,
 }
 
 impl Grid for Cells {
@@ -619,6 +670,44 @@ impl Plugin for Multi {
             reprs: self.reprs,
             pages: self.pages,
             path,
+            ids: None,
+        }))
+    }
+}
+
+/// Like [`Multi`], with representations of **the plugin's own names** (`ids`, the first is the
+/// default): a table, text or picture plugin that calls one of them `source`, or a document that
+/// declares its `rendered` and `source` in the other order.
+pub(crate) struct Named {
+    pub id: &'static str,
+    pub ext: &'static str,
+    pub shape: Shape,
+    pub ids: &'static [&'static str],
+}
+
+impl Plugin for Named {
+    fn manifest(&self) -> Manifest {
+        Multi {
+            id: self.id,
+            ext: self.ext,
+            shape: self.shape,
+            reprs: 0,
+            pages: 1,
+        }
+        .manifest()
+    }
+
+    fn open(&self, input: Input, _: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        let path = match &input {
+            Input::File { path, .. } => path.clone(),
+            _ => PathBuf::new(),
+        };
+        Ok(Box::new(MultiSession {
+            shape: self.shape,
+            reprs: self.ids.len(),
+            pages: 1,
+            path,
+            ids: Some(self.ids.to_vec()),
         }))
     }
 }
@@ -628,11 +717,30 @@ struct MultiSession {
     reprs: usize,
     pages: usize,
     path: PathBuf,
+    /// The names of the representations when the plugin chose its own.
+    ids: Option<Vec<&'static str>>,
 }
 
 impl Session for MultiSession {
     fn layout(&self) -> Layout {
         let labels = [Tr::new("Alpha"), Tr::new("Beta"), Tr::new("Gamma")];
+        if let Some(ids) = &self.ids {
+            return Layout {
+                reprs: ids
+                    .iter()
+                    .map(|id| ReprDecl::new(*id, Tr::new(format!("Show {id}"))))
+                    .collect(),
+                default_repr: ids.first().map(|s| s.to_string()),
+                default_repr_without_pixels: ids.first().map(|s| s.to_string()),
+                pages: match self.shape {
+                    Shape::Doc => Some(PageLayout::Anchored {
+                        heading_level: 1,
+                        count: 1,
+                    }),
+                    _ => None,
+                },
+            };
+        }
         let reprs: Vec<ReprDecl> = if self.reprs == 0 {
             Vec::new()
         } else {
@@ -660,8 +768,16 @@ impl Session for MultiSession {
     }
 
     fn view(&mut self, req: &ViewReq, _: &ViewCx) -> Result<View, Failure> {
-        let repr = req.repr.clone().unwrap_or_else(|| "alpha".into());
-        let idx = MULTI_REPRS.iter().position(|r| *r == repr).unwrap_or(0);
+        let first = self
+            .ids
+            .as_ref()
+            .and_then(|ids| ids.first().copied())
+            .unwrap_or("alpha");
+        let repr = req.repr.clone().unwrap_or_else(|| first.into());
+        let idx = match &self.ids {
+            Some(ids) => ids.iter().position(|r| *r == repr).unwrap_or(0),
+            None => MULTI_REPRS.iter().position(|r| *r == repr).unwrap_or(0),
+        };
         let page = req.page.unwrap_or(0).min(self.pages.max(1) - 1);
         Ok(match self.shape {
             Shape::Doc => View::Document(DocumentView {

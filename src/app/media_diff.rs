@@ -710,19 +710,87 @@ fn live_cache_keys(outcome: &MediaDiffOutcome) -> HashSet<PathBuf> {
 /// The [`MediaDiffKind`] a resolved [`PreviewKind`] maps to, or `None` for anything that isn't
 /// picture-capable (video/archive/table/text/code/markdown/unsupported/…) — those degrade to
 /// [`MediaDiffComputed::Summary`] instead of being paired up.
-fn classify_kind(kind: &PreviewKind) -> Option<MediaDiffKind> {
+///
+/// Decided by what the plugin **declares** (it shows pictures: `Profile::image`) and by the
+/// **format** of the file ([`media_format`]), never by the plugin's id: a plugin installed in place
+/// of `image`, `svg` or `pdf` gets the side-by-side view for the same files.
+pub(super) fn classify_kind(kind: &PreviewKind) -> Option<MediaDiffKind> {
+    classify_kind_with(kind, None)
+}
+
+/// [`classify_kind`] with the bytes of the file at hand (the worker has them, also for a file that
+/// is gone and was read from the VCS).
+fn classify_kind_with(kind: &PreviewKind, bytes: Option<&[u8]>) -> Option<MediaDiffKind> {
     match kind {
-        PreviewKind::Plugin { id, .. } => match id.as_str() {
-            konoma_media::IMAGE_ID => Some(MediaDiffKind::Image),
-            konoma_media::SVG_ID => Some(MediaDiffKind::Svg),
-            konoma_media::PDF_ID => Some(MediaDiffKind::Pdf),
-            _ => None,
-        },
-        PreviewKind::Text(_)
+        PreviewKind::Plugin { path, .. } if kind.profile().image => media_format(path, bytes),
+        PreviewKind::Plugin { .. }
+        | PreviewKind::Text(_)
         | PreviewKind::GitDiff(_)
         | PreviewKind::MermaidFence(_)
         | PreviewKind::Command { .. }
         | PreviewKind::CanNotPreview { .. } => None,
+    }
+}
+
+/// Whether the head of the file holds a NUL byte (not text). A file that cannot be read is not.
+pub(super) fn is_binary_file(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = vec![0u8; FORMAT_HEAD];
+    let n = f.read(&mut buf).unwrap_or(0);
+    buf[..n].contains(&0)
+}
+
+/// How many bytes of a file are read to tell its format when the name does not.
+const FORMAT_HEAD: usize = 512;
+
+/// The format of a picture file as far as a media diff is concerned: an SVG, a PDF, or a raster
+/// image the host decodes; `None` for anything else (a video, a diagram's text, a file that is
+/// not a picture). The name decides when it can (the extension of an SVG, a PDF or a format the
+/// image decoder knows); otherwise the content does (`bytes`, or the head of the file at `path`).
+/// This is the one judgment both the host's classification of a file and its decoding of the old
+/// version from git share.
+pub(crate) fn media_format(path: &Path, bytes: Option<&[u8]>) -> Option<MediaDiffKind> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    match ext.as_str() {
+        "svg" => return Some(MediaDiffKind::Svg),
+        "pdf" => return Some(MediaDiffKind::Pdf),
+        e if image::ImageFormat::from_extension(e).is_some() => return Some(MediaDiffKind::Image),
+        _ => {}
+    }
+    let head: Vec<u8>;
+    let bytes = match bytes {
+        Some(b) => b,
+        None => {
+            use std::io::Read;
+            let Ok(mut f) = std::fs::File::open(path) else {
+                return None;
+            };
+            let mut buf = vec![0u8; FORMAT_HEAD];
+            let n = f.read(&mut buf).unwrap_or(0);
+            buf.truncate(n);
+            head = buf;
+            &head
+        }
+    };
+    let bytes = &bytes[..bytes.len().min(FORMAT_HEAD)];
+    match infer::get(bytes).map(|t| t.mime_type()) {
+        Some("application/pdf") => Some(MediaDiffKind::Pdf),
+        Some(m) if m.starts_with("image/") => Some(MediaDiffKind::Image),
+        // XML is how an SVG is detected when the name does not say; any other known type is not
+        // a picture.
+        Some(m) if m != "text/xml" => None,
+        _ => {
+            let text = String::from_utf8_lossy(bytes);
+            (text.trim_start().starts_with("<svg") || text.contains("<svg"))
+                .then_some(MediaDiffKind::Svg)
+        }
     }
 }
 
@@ -890,7 +958,12 @@ fn classify_and_decode_media_diff(
         )
     };
 
-    let Some(kind) = classify_kind(&preview_kind) else {
+    let sniffed = if new_exists {
+        new_bytes.as_deref()
+    } else {
+        old_bytes.as_deref()
+    };
+    let Some(kind) = classify_kind_with(&preview_kind, sniffed) else {
         return MediaDiffComputed::Summary {
             base,
             same_bytes,

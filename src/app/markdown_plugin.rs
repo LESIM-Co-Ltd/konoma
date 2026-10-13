@@ -131,9 +131,11 @@ impl App {
         self.load_plugin();
     }
 
-    /// Whether the source representation (`R`) is the one chosen.
+    /// Whether the host's source representation (`R`) is the one chosen: the tab's choice is
+    /// `source` **and** `source` is the host's own (`App::host_source_view`; a plugin that merely
+    /// names one of its representations `source` is not).
     pub fn is_md_raw(&self) -> bool {
-        self.tab.repr.as_deref() == Some(REPR_SOURCE)
+        self.tab.repr.as_deref() == Some(REPR_SOURCE) && self.host_source_view()
     }
 
     /// Whether the plugin handed its source over as a string (a converted document has no file

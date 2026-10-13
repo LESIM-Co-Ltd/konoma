@@ -1,5 +1,7 @@
 //! The hello-world plugin of the design (4-10) as a **user plugin in the host**: a `hexdump` that
-//! declares one action (`w`, "width") and nothing else gets its key, its footer entry, its row in
+//! declares the files it takes (`*.bin`), that it shows text (`shows(ViewKind::Text)`: without it
+//! the host attaches no screen, says so at startup and on the file) and one action (`w`, "width")
+//! gets its key, its footer entry, its row in
 //! the `?` help and its place in the `Space` menu from the declaration alone, and the key re-draws
 //! the view. Driven through the real `handle_key`; the plugin is registered the way the stage-3
 //! registration will (`plugins::test_plugins`), never in the shipped registry.
@@ -395,4 +397,145 @@ fn e2e_hexdump_the_host_shows_what_the_shared_rule_says() {
         let has_width = footer(&s).contains("w:width");
         assert_eq!(has_width, by_rule.iter().any(|x| x == "width"), "{file}");
     }
+}
+
+/// The hello world as it was first written, without `shows`: the host would attach no screen, so
+/// it says so at startup (naming the plugin) and, on the file, on the screen (not a silent blank).
+#[test]
+fn e2e_hexdump_without_shows_is_named_at_startup_and_on_screen() {
+    let (s, _dir) = open(
+        "e2e_hexdump_noshows",
+        Variant {
+            no_shows: true,
+            ..Variant::default()
+        },
+        &[],
+        "a.bin",
+    );
+    let note = s
+        .app
+        .startup_flash(None, 400)
+        .expect("a startup message about the missing shows");
+    assert!(
+        note.contains("hexdump-ns") && note.contains("shows"),
+        "{note}"
+    );
+    s.see("returned a text view but declares no `shows`");
+    s.see("hexdump-ns");
+}
+
+/// A plugin that answers with a display type it did not declare is told on the screen, naming the
+/// plugin, what it returned and what it declared (not a silent blank).
+#[test]
+fn e2e_hexdump_a_view_of_an_undeclared_type_is_explained_on_screen() {
+    let (s, _dir) = open(
+        "e2e_hexdump_wrong",
+        Variant {
+            wrong_view: true,
+            ..Variant::default()
+        },
+        &[],
+        "a.bin",
+    );
+    s.see("plugin hexdump-wrong returned a table view but declares only text");
+    // In Japanese too.
+    let dir = files("e2e_hexdump_wrong_ja");
+    let marker = test_plugins::register(
+        "e2e_hexdump_wrong_ja",
+        Arc::new(Hexdump(Variant {
+            wrong_view: true,
+            ..Variant::default()
+        })),
+    );
+    let mut cfg = test_plugins::marker_config(&marker);
+    cfg.ui.lang = "ja".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("a.bin");
+    s.enter();
+    // (The test screen spaces out wide characters: read the failure itself.)
+    assert_eq!(
+        s.app
+            .plugin_failure()
+            .map(|f| f.message.get("ja").to_string()),
+        Some(
+            "プラグイン hexdump-wrong は table の表示を返しましたが、text しか宣言していません"
+                .to_string()
+        )
+    );
+}
+
+/// While a job holds the session (the key was just pressed and the worker has not answered), a
+/// second press would be ignored, so the hint and the gate are off: they are shown only while the
+/// key acts.
+#[test]
+fn e2e_hexdump_the_hint_is_off_while_the_action_is_running() {
+    let dir = files("e2e_hexdump_running");
+    let marker =
+        test_plugins::register("e2e_hexdump_running", Arc::new(Hexdump(Variant::default())));
+    let mut cfg = test_plugins::marker_config(&marker);
+    cfg.ui.lang = "en".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg).with_async_plugins();
+    s.select("a.bin");
+    s.enter();
+    for _ in 0..5 {
+        if s.screen().contains("00 01 02 03") {
+            break;
+        }
+        s.drain_plugin();
+    }
+    assert!(footer(&s).contains("w:width"));
+    s.key('w');
+    // The answer has not been applied: the session is out with the job.
+    assert!(!s.app.plugin_act_enabled(width()), "running");
+    assert!(!footer(&s).contains("w:width"), "footer: {}", footer(&s));
+    for _ in 0..5 {
+        if s.app.plugin_act_enabled(width()) {
+            break;
+        }
+        s.drain_plugin();
+    }
+    assert!(s.app.plugin_act_enabled(width()));
+    assert!(footer(&s).contains("w:width"), "footer: {}", footer(&s));
+}
+
+/// Another media job moving the generation on while an action of the plugin is out on the worker
+/// makes the action's answer stale. The answer carries the session, which belongs to the show: it
+/// goes back to the show (the keys keep working), only the stale view and outcome are dropped.
+#[test]
+fn e2e_hexdump_a_stale_answer_gives_the_session_back() {
+    let dir = files("e2e_hexdump_stale");
+    let marker = test_plugins::register("e2e_hexdump_stale", Arc::new(Hexdump(Variant::default())));
+    let mut cfg = test_plugins::marker_config(&marker);
+    cfg.ui.lang = "en".into();
+    let mut s = Sim::with_config(&canon(&dir), cfg).with_async_plugins();
+    s.select("a.bin");
+    s.enter();
+    for _ in 0..5 {
+        if s.screen().contains("00 01 02 03") {
+            break;
+        }
+        s.drain_plugin();
+    }
+    s.key('w');
+    s.app.another_media_job_starts_for_test();
+    // The stale answer hands the session back and its redraw is asked for again.
+    for _ in 0..5 {
+        if s.app.plugin_act_enabled(width()) && !s.screen().contains("00 01 02 03 04 05 06 07 08") {
+            break;
+        }
+        s.drain_plugin();
+    }
+    assert!(s.app.plugin_act_enabled(width()), "the session is lost");
+    s.dont_see("00 01 02 03 04 05 06 07 08");
+    assert!(footer(&s).contains("w:width"), "footer: {}", footer(&s));
+    // And the key still acts: width 8 became 16 again.
+    s.key('w');
+    for _ in 0..5 {
+        if s.screen().contains("00 01 02 03 04 05 06 07 08") {
+            break;
+        }
+        s.drain_plugin();
+    }
+    s.see("00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f");
+    assert!(s.app.plugin_act_enabled(width()));
 }

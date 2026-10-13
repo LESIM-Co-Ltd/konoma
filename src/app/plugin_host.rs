@@ -99,6 +99,49 @@ pub(crate) struct PluginShow {
     pub enabled: std::collections::HashMap<String, bool>,
 }
 
+/// The view itself, or the failure that says the plugin returned a display type it did not declare
+/// in `Manifest::shows` (so the host has no screen of that type for it): the message names the
+/// plugin, the type it returned and what it declared, and is drawn like any failure. A message
+/// view always fits; a plugin that is given files but declares nothing (`unscreened`) has no
+/// screen for any type. The host-internal plugins and the ones that take no files (an embedded
+/// formula) are not asked to declare.
+fn undeclared_view(
+    id: &str,
+    declared: &[konoma_plugin::ViewKind],
+    unscreened: bool,
+    view: View,
+) -> Result<View, Failure> {
+    let Some(got) = view.kind() else {
+        return Ok(view);
+    };
+    let checked = !declared.is_empty() || unscreened;
+    if !checked || crate::plugins::is_internal(id) || view.fits(declared) {
+        return Ok(view);
+    }
+    let kind = got.context();
+    let tr = if declared.is_empty() {
+        konoma_plugin::Tr::new(format!(
+            "plugin {id} returned a {kind} view but declares no `shows`"
+        ))
+        .ja(format!(
+            "プラグイン {id} は {kind} の表示を返しましたが、shows を宣言していません"
+        ))
+    } else {
+        let list = declared
+            .iter()
+            .map(|k| k.context())
+            .collect::<Vec<_>>()
+            .join(", ");
+        konoma_plugin::Tr::new(format!(
+            "plugin {id} returned a {kind} view but declares only {list}"
+        ))
+        .ja(format!(
+            "プラグイン {id} は {kind} の表示を返しましたが、{list} しか宣言していません"
+        ))
+    };
+    Err(Failure::unsupported(tr))
+}
+
 /// What a worker is asked to do.
 pub(crate) enum PluginJob {
     /// `open`, then the first `view`.
@@ -450,7 +493,9 @@ impl PluginWork {
         let term = TermCaps { pixels };
         // Whether the `trusted` claim of an SVG this plugin returns is believed: by where the
         // plugin comes from, never by what it says.
-        let trust_own_svg = crate::plugins::profile_of(&id).own_svg;
+        let profile = crate::plugins::profile_of(&id);
+        let trust_own_svg = profile.own_svg;
+        let (declared_shows, unscreened) = (crate::plugins::shows_of(&id), profile.unscreened);
         let view_of = |mut session: Box<dyn Session>, req: ViewReq| {
             let cx = ViewCx::new(&settings, &lang)
                 .with_cancel(cancel.clone())
@@ -459,7 +504,10 @@ impl PluginWork {
             let mut picture = Picture::None;
             let mut document = None;
             let mut made_text = None;
-            let (view, failure) = match session.view(&req, &cx) {
+            let viewed = session
+                .view(&req, &cx)
+                .and_then(|v| undeclared_view(&id, &declared_shows, unscreened, v));
+            let (view, failure) = match viewed {
                 Ok(View::Image(iv)) => {
                     picture = match super::media_plugin::decode_image_view(
                         iv,
@@ -902,13 +950,13 @@ impl App {
     /// the page the tab is on (counted from 0; a plugin without pages ignores it).
     pub(super) fn plugin_view_req(&self) -> ViewReq {
         let rows = self.tab.preview_viewport.max(1);
-        // The source view is the host's own for a standalone diagram file (no plugin round trip),
-        // and the picture plugins have no such representation.
-        let repr = self
-            .tab
-            .repr
-            .clone()
-            .filter(|r| !(r == super::markdown_plugin::REPR_SOURCE && !self.holds_document()));
+        // The source view is the host's own for a standalone diagram file (no plugin round trip);
+        // any other `source` is a representation the plugin declared, asked for like the rest.
+        let repr = self.tab.repr.clone().filter(|r| {
+            !(r == super::markdown_plugin::REPR_SOURCE
+                && self.host_source_view()
+                && !self.holds_document())
+        });
         ViewReq {
             repr,
             page: Some(self.tab.page.max(1).saturating_sub(1) as usize),
@@ -1006,7 +1054,9 @@ impl App {
         // chose: the document is what the source view returns to (`land_document` asks for the
         // source once it is there).
         let mut req = self.plugin_view_req();
-        if req.repr.as_deref() == Some(super::markdown_plugin::REPR_SOURCE) {
+        if req.repr.as_deref() == Some(super::markdown_plugin::REPR_SOURCE)
+            && self.host_source_view()
+        {
             req.repr = None;
         }
         // A document read from the file as it is (the Markdown plugin) is waited for longer; the
@@ -1548,7 +1598,7 @@ impl App {
     }
 
     /// Whether the preview on screen is the file `show` was opened for.
-    fn shows_plugin_file(&self, show: &PluginShow) -> bool {
+    pub(super) fn shows_plugin_file(&self, show: &PluginShow) -> bool {
         match &self.tab.preview_kind {
             Some(PreviewKind::Plugin { id, path, .. }) => *id == show.id && *path == show.path,
             // A delegated command: the host's `command` plugin, on the file the rule matched.

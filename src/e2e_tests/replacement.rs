@@ -485,6 +485,52 @@ fn a_heavy_plugin_is_read_again_only_when_its_file_changed() {
     );
 }
 
+/// A file rewritten with the same length and its modification time put back (`touch -r`) is still
+/// another file: its change time and, for a replacement by rename, its inode, differ.
+#[test]
+fn a_heavy_plugin_is_read_again_when_only_the_change_time_or_the_inode_says_so() {
+    let dir = sandbox("repl_heavy_ctime");
+    let file = dir.join("big.xsheet");
+    std::fs::write(&file, "a,b\n1,2\n").unwrap();
+    let plugin = TableLike {
+        heavy: true,
+        ..TableLike::new("x-heavy-ctime", "xsheet", true)
+    };
+    let opens = plugin.opens.clone();
+    let cfg = cfg_with(&[("repl_heavy_ctime", Arc::new(plugin))], &[]);
+    let mut s = Sim::with_config(&canon(&dir), cfg);
+    s.select("big.xsheet");
+    s.enter();
+    let count = || opens.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(count(), 1);
+    let kept = std::fs::metadata(&file).unwrap().modified().unwrap();
+    let put_back = |f: &std::path::Path| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(f)
+            .unwrap()
+            .set_modified(kept)
+            .unwrap();
+    };
+    // The same length, the same modification time: only the change time moved.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&file, "a,b\n3,4\n").unwrap();
+    put_back(&file);
+    assert_eq!(std::fs::metadata(&file).unwrap().len(), 8);
+    s.app.reload_preview();
+    assert_eq!(count(), 2, "read again: the change time differs");
+    // Replaced by a rename of another file with the same length and the same time: the inode.
+    let other = dir.join("other.tmp");
+    std::fs::write(&other, "a,b\n5,6\n").unwrap();
+    put_back(&other);
+    std::fs::rename(&other, &file).unwrap();
+    s.app.reload_preview();
+    assert_eq!(count(), 3, "read again: another file stands there");
+    // Nothing changed since: not read again.
+    s.app.reload_preview();
+    assert_eq!(count(), 3);
+}
+
 #[test]
 fn a_light_plugin_is_read_again_by_every_reload_as_it_always_was() {
     let dir = sandbox("repl_light");
