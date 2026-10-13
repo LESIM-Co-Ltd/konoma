@@ -103,9 +103,13 @@ impl App {
         // the mtime comparison).
         self.preview_media_mtime = file_mtime(path);
         match kind {
-            // The picture plugins (image, svg, pdf, video): the plugin's view is asked for and
-            // decoded on the media worker (`app/media_plugin.rs`).
+            // The picture plugins (image, svg, pdf, video, mermaid): the plugin's view is asked for
+            // and decoded on the media worker (`app/media_plugin.rs`).
             //
+            // - A standalone .mmd/.mermaid draws as a picture in image mode only (it is the
+            //   mermaid plugin's SVG, trusted, kept for sharp zoom); in text mode, with no image
+            //   backend, or when the diagram cannot be drawn, the host's decorated path shows the
+            //   plugin's text diagram instead (principle #3).
             // - A still image decodes on the worker (never on the UI thread) and needs the decode
             //   backend as well as a picker; a GIF's frames are expanded there too.
             // - An SVG is drawn by a supervised child process and keeps its source for sharp zoom.
@@ -133,29 +137,15 @@ impl App {
             PreviewKind::Document(_) => {
                 self.spawn_office_job(MediaJob::Document(path.to_path_buf(), self.lang));
             }
-            // A standalone .mmd/.mermaid: in image mode, convert to SVG in pure Rust → rasterize
-            // (on a separate thread). In text mode / with no backend, do nothing — the decorated
-            // text path draws it instead (principle #3).
-            PreviewKind::Mermaid(_) if self.mermaid_image_mode() => {
-                self.spawn_or_sync_media(MediaJob::Mermaid(
-                    path.to_path_buf(),
-                    self.mermaid_px(),
-                    self.cfg.ui.mermaid_theme.clone(),
-                    self.cfg.ui.mermaid_curve.clone(),
-                    self.cfg.ui.mermaid_routing.clone(),
-                ))
-            }
             // Full-screen fence display: re-fetch the fence body from the md by ordinal (count-guard,
-            // the same shape as code copy).
+            // the same shape as code copy). The SVG comes from the plugin that takes the
+            // `fence:mermaid` kind (`embed_plugin.rs`).
             PreviewKind::MermaidFence(ord) => {
-                if let Some(code) = self.mermaid_fence_code(path, *ord) {
-                    self.spawn_or_sync_media(MediaJob::MermaidSrc(
-                        code,
-                        self.mermaid_px(),
-                        self.cfg.ui.mermaid_theme.clone(),
-                        self.cfg.ui.mermaid_curve.clone(),
-                        self.cfg.ui.mermaid_routing.clone(),
-                    ));
+                if let (Some(code), Some(embed)) = (
+                    self.mermaid_fence_code(path, *ord),
+                    self.embed_render(embed_plugin::FENCE_MERMAID),
+                ) {
+                    self.spawn_or_sync_media(MediaJob::MermaidSrc(code, self.mermaid_px(), embed));
                 }
             }
             // External command delegation. `detached` spawns-and-forgets right here, synchronously
@@ -199,8 +189,14 @@ impl App {
 
     /// Whether mermaid renders as an image: config says so **and** the terminal has an image backend.
     /// Everything else (config `"text"`, no backend, render failure) degrades to the text diagram.
+    ///
+    /// "Config says so" is the mermaid plugin's `mode` (`[plugins.mermaid] mode`, or the old
+    /// `[ui] mermaid`), and the plugin has to be switched on: a switched-off plugin draws nothing, so
+    /// the fences and files fall back to the text diagram, the same as for a diagram it cannot draw.
     pub fn mermaid_image_mode(&self) -> bool {
-        self.cfg.ui.mermaid != "text" && self.picker.is_some()
+        !crate::plugins::mermaid_mode_is_text(&self.cfg)
+            && self.picker.is_some()
+            && self.embed_plugin_enabled(embed_plugin::FENCE_MERMAID)
     }
 
     /// Base raster target (max edge px) for mermaid diagrams — same knob as SVG previews.
@@ -211,7 +207,9 @@ impl App {
     /// Whether math ($…$ / $$…$$) renders as an image (`[ui] math` != "text" and a graphics backend).
     /// Off → math stays as raw LaTeX inline (the delimiters are left in the text).
     pub fn math_image_mode(&self) -> bool {
-        self.cfg.ui.math != "text" && self.picker.is_some()
+        !crate::plugins::math_mode_is_text(&self.cfg)
+            && self.picker.is_some()
+            && self.embed_plugin_enabled(embed_plugin::MATH)
     }
 
     /// Raster target (max edge px) for a math equation. Generous so the once-rendered raster stays
@@ -220,12 +218,10 @@ impl App {
         1024
     }
 
-    /// Validated `[ui] mermaid_rows`: max rows of an inline diagram (0/invalid → default 24).
+    /// Validated mermaid `rows` (`[plugins.mermaid] rows`, or the old `[ui] mermaid_rows`): max
+    /// rows of an inline diagram (0/invalid → default 24).
     fn mermaid_rows_cap(&self) -> u16 {
-        match self.cfg.ui.mermaid_rows {
-            0 => 24,
-            v => v,
-        }
+        crate::plugins::mermaid_rows(&self.cfg)
     }
 
     /// Rows a slide picture may be tall: what the viewport leaves after the slide's heading (and
@@ -690,8 +686,7 @@ impl App {
                 || matches!(
                     self.tab.preview_kind,
                     Some(
-                        PreviewKind::Mermaid(_)
-                            | PreviewKind::MermaidFence(_)
+                        PreviewKind::MermaidFence(_)
                             // A delegated command counts only when it actually produced image_src —
                             // text-mode ones never do (they never call set_static_image), so the
                             // `image_src.is_some()` half of this && is what actually disambiguates them.

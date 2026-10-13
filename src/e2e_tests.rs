@@ -3749,10 +3749,11 @@ fn e2e_standalone_mmd_preview_never_gets_a_gutter() {
     s.select("a.mmd");
     s.enter();
     assert!(
-        matches!(
-            s.app.tab.preview_kind,
-            Some(crate::preview::PreviewKind::Mermaid(_))
-        ),
+        s.app
+            .tab
+            .preview_kind
+            .as_ref()
+            .is_some_and(crate::preview::PreviewKind::is_mermaid_file),
         "前提: .mmd は Mermaid kind のはず"
     );
     let marks = s.app.md_diff_marks_for_test().unwrap_or_default();

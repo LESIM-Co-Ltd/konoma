@@ -356,8 +356,8 @@ fn main() -> Result<()> {
     // tens-of-ms freeze on the first diagram display).
     if picker.is_some() {
         std::thread::spawn(preview::svg::warm_fontdb);
-        if cfg.ui.mermaid != "text" {
-            std::thread::spawn(preview::markdown::warm_mermaid);
+        if !plugins::mermaid_mode_is_text(&cfg) {
+            std::thread::spawn(konoma_mermaid::warm);
         }
     }
 

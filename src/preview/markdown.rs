@@ -208,6 +208,9 @@ pub fn render_markdown_tasks(
 
 // The mermaid -> SVG entry points live in `konoma-mermaid-core`; re-exported so the
 // `preview::markdown::mermaid_to_svg*` paths are unchanged.
+// The app draws the SVG through the `mermaid` plugin and warms it with `konoma_mermaid::warm`; only the
+// tests call these entry points directly.
+#[cfg(test)]
 pub use konoma_mermaid_core::{mermaid_to_svg_flow, warm_mermaid};
 // Only the tests call the variants below (the app always knows both `mermaid_curve` and
 // `mermaid_routing`); the other `mermaid_to_svg_*` variants are used by the crate's own tests.
@@ -2718,7 +2721,10 @@ fn pad_to_width(mut spans: Vec<Span<'static>>, w: usize, code_bg: Option<Color>)
     Line::from(spans).style(Style::new().bg(bg))
 }
 
-/// For standalone .mmd / .mermaid files. Renders the entire contents as a single Mermaid diagram.
+/// The Unicode text diagram of a whole file. The `mermaid` plugin owns the standalone file's text
+/// diagram now (`App::mermaid_text_lines`); this is the Markdown renderer's own block render, which
+/// the tests hold the plugin's lines equal to.
+#[cfg(test)]
 pub fn render_mermaid_file(src: &str, width: u16) -> Vec<Line<'static>> {
     render_mermaid_block(src, width)
 }

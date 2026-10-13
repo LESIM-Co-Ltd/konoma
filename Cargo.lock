@@ -1726,9 +1726,11 @@ dependencies = [
  "konoma-code",
  "konoma-code-core",
  "konoma-markdown-core",
+ "konoma-math",
  "konoma-math-core",
  "konoma-media",
  "konoma-media-core",
+ "konoma-mermaid",
  "konoma-mermaid-core",
  "konoma-office-core",
  "konoma-plugin",
@@ -1800,6 +1802,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "konoma-math"
+version = "0.1.0"
+dependencies = [
+ "konoma-math-core",
+ "konoma-plugin",
+]
+
+[[package]]
 name = "konoma-math-core"
 version = "0.1.0"
 dependencies = [
@@ -1840,6 +1850,17 @@ dependencies = [
  "rust_h265",
  "symphonia-core",
  "symphonia-format-mkv",
+]
+
+[[package]]
+name = "konoma-mermaid"
+version = "0.1.0"
+dependencies = [
+ "konoma-base",
+ "konoma-mermaid-core",
+ "konoma-plugin",
+ "konoma-test-support",
+ "mermaid-text",
 ]
 
 [[package]]

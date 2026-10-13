@@ -137,6 +137,11 @@ impl App {
         if self.picker.is_none() || (still && self.img_tx.is_none()) {
             return; // the render side falls back to text or a message
         }
+        // A mermaid file is a picture only in image mode (`mode`, and an image backend, settled
+        // above and here); otherwise the render side draws the plugin's text diagram.
+        if id == konoma_mermaid::MERMAID_ID && !self.mermaid_image_mode() {
+            return;
+        }
         self.start_media_plugin_with(plugin, id, path);
     }
 

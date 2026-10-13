@@ -1437,7 +1437,7 @@ fn cfg_preview_default_mermaid_extensions() {
     for name in ["cfgp_a.mmd", "cfgp_b.mermaid"] {
         let p = tmp(name, b"graph TD; A-->B\n");
         let kind = Config::default().resolve_preview(&p);
-        assert!(matches!(kind, PreviewKind::Mermaid(_)), "{name}: {kind:?}");
+        assert!(kind.is_mermaid_file(), "{name}: {kind:?}");
         std::fs::remove_file(&p).ok();
     }
 }

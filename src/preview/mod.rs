@@ -10,6 +10,7 @@ pub mod gitdiff;
 pub mod image;
 pub mod kitty;
 pub mod markdown;
+#[cfg(test)]
 pub mod math;
 pub mod media_diff;
 pub mod mermaid;
@@ -36,8 +37,6 @@ use std::path::{Path, PathBuf};
 pub enum PreviewKind {
     /// Built-in Markdown renderer (decorated by konoma's own block-model renderer; mermaid fences inside the md are composited via mermaid-text).
     Markdown(PathBuf),
-    /// Built-in Mermaid renderer (standalone .mmd/.mermaid files; draws Unicode box lines via mermaid-text).
-    Mermaid(PathBuf),
     /// Built-in spreadsheet preview (xlsx / xlsm / xltx / xltm / xlsb / xls / ods): the visible
     /// sheets are shown through the table grid with cells formatted as Excel shows them. The
     /// workbook is parsed on a worker thread (`MediaJob::Workbook`).
@@ -52,8 +51,9 @@ pub enum PreviewKind {
     /// `archive` (zip / tar / tar.gz listing as a grid), both opened by `app/plugin_host.rs`,
     /// `code` (source and config files as colored text: the host reads the file in windows and the
     /// plugin's styler colors the visible lines), and
-    /// the picture plugins `image`, `svg`, `pdf` and `video`, whose `ImageView` goes through the
-    /// host's image pipeline (`app/media_plugin.rs`). Transitional: it grows as the other kinds
+    /// the picture plugins `image`, `svg`, `pdf`, `video` and `mermaid`, whose `ImageView` goes
+    /// through the host's image pipeline (`app/media_plugin.rs`; a `.mmd` file shown as text is
+    /// drawn by the host's decorated path from the plugin's text view). Transitional: it grows as the other kinds
     /// move onto plugins, and the enum goes when the last one has.
     Plugin {
         path: PathBuf,
@@ -117,6 +117,12 @@ impl PreviewKind {
         Self::plugin(konoma_media::SVG_ID, path)
     }
 
+    /// A standalone mermaid file shown by the `mermaid` plugin.
+    #[cfg(test)]
+    pub fn mermaid(path: PathBuf) -> Self {
+        Self::plugin(konoma_mermaid::MERMAID_ID, path)
+    }
+
     /// A video file shown by the `video` plugin.
     #[cfg(test)]
     pub fn video(path: PathBuf) -> Self {
@@ -129,13 +135,15 @@ impl PreviewKind {
         Self::plugin(konoma_media::PDF_ID, path)
     }
 
-    /// Whether this is a file the picture plugins show (`image`, `svg`, `pdf`, `video`): the ones
-    /// whose result is an image in the host's image pipeline.
+    /// Whether this is a file the picture plugins show (`image`, `svg`, `pdf`, `video`, `mermaid`):
+    /// the ones whose result is an image in the host's image pipeline. A `mermaid` file shown as
+    /// text (`mode = "text"`, or a terminal with no image backend) never loads a picture; the
+    /// callers that start a load check the mode.
     pub fn is_media_plugin(&self) -> bool {
         matches!(self, PreviewKind::Plugin { id, .. } if Self::is_media_plugin_id(id))
     }
 
-    /// Whether `id` names one of the picture plugins (`image`, `svg`, `pdf`, `video`).
+    /// Whether `id` names one of the picture plugins (`image`, `svg`, `pdf`, `video`, `mermaid`).
     pub fn is_media_plugin_id(id: &str) -> bool {
         matches!(
             id,
@@ -143,7 +151,13 @@ impl PreviewKind {
                 | konoma_media::SVG_ID
                 | konoma_media::PDF_ID
                 | konoma_media::VIDEO_ID
+                | konoma_mermaid::MERMAID_ID
         )
+    }
+
+    /// Whether this is a standalone `.mmd` / `.mermaid` file (the `mermaid` plugin's).
+    pub fn is_mermaid_file(&self) -> bool {
+        self.is_plugin(konoma_mermaid::MERMAID_ID)
     }
 
     /// Unsupported fallback. Displays safely with the extension attached.

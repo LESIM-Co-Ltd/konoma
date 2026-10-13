@@ -26,6 +26,7 @@ mod bookmark_actions;
 mod copy_actions;
 mod dialog_actions;
 mod diff_view;
+mod embed_plugin;
 mod file_actions;
 mod follow;
 mod git_view;
@@ -801,13 +802,11 @@ pub struct KittyResult {
 
 /// Heavy media loading to run on a separate thread (pure work that does not reference App).
 enum MediaJob {
-    /// Render a standalone mermaid file to SVG (pure Rust) and rasterize it (max-edge px, theme,
-    /// curve, routing). None (unsupported diagram / parse failure) → the caller's text-diagram
-    /// fallback shows.
-    Mermaid(PathBuf, u32, String, String, String),
     /// Render mermaid source text (a ```mermaid fence opened full-screen) and rasterize it
-    /// (source, max-edge px, theme, curve, routing).
-    MermaidSrc(String, u32, String, String, String),
+    /// (source, max-edge px, the plugin that takes `fence:mermaid` with its settings). None
+    /// (unsupported diagram / parse failure / the plugin switched off) → the caller's
+    /// "unavailable" screen shows.
+    MermaidSrc(String, u32, embed_plugin::EmbedRender),
     /// Re-rasterize the retained SVG source at a new max-edge px (sharp zoom). The path is only
     /// the base for relative resources inside the SVG (mermaid output has none).
     /// The `bool` is whether the SVG came from a file (drawn by a supervised child process) rather
@@ -847,22 +846,18 @@ impl MediaJob {
         cancel: Option<crate::preview::office::Cancel>,
     ) -> Option<MediaPayload> {
         match self {
-            MediaJob::Mermaid(p, max_px, theme, curve, routing) => {
-                let code = std::fs::read_to_string(&p).ok()?;
-                MediaJob::MermaidSrc(code, max_px, theme, curve, routing).run()
-            }
-            MediaJob::MermaidSrc(code, max_px, theme, curve, routing) => {
-                let svg =
-                    crate::preview::markdown::mermaid_to_svg_flow(&code, &theme, &curve, &routing)?;
-                let data = svg.into_bytes();
-                let img = crate::preview::svg::rasterize_trusted(
-                    &data,
-                    Path::new("mermaid.svg"),
+            MediaJob::MermaidSrc(code, max_px, embed) => {
+                let (img, svg) = embed.picture(
+                    embed_plugin::FENCE_MERMAID,
+                    &code,
+                    false,
                     max_px,
-                )?;
+                    "mermaid",
+                    "mermaid.svg",
+                );
                 Some(MediaPayload::Vector {
-                    img,
-                    svg: std::sync::Arc::new(data),
+                    img: img.ok()?,
+                    svg: svg?,
                 })
             }
             MediaJob::SvgReraster(svg, p, max_px, untrusted) => {
@@ -4973,22 +4968,18 @@ impl App {
     /// Such a preview is windowed like a code file, so the 2D caret selection/copy applies.
     pub fn is_raw_source(&self) -> bool {
         self.tab.md_raw
-            && matches!(
+            && (matches!(
                 self.tab.preview_kind,
-                Some(PreviewKind::Markdown(_))
-                    | Some(PreviewKind::Mermaid(_))
-                    | Some(PreviewKind::Document(_))
-            )
+                Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Document(_))
+            ) || self.shows_plugin(konoma_mermaid::MERMAID_ID))
     }
 
     /// Whether the current preview is Markdown/Mermaid (has a decorated render, so `R` can toggle raw source).
     pub fn is_decorated_kind(&self) -> bool {
         matches!(
             self.tab.preview_kind,
-            Some(PreviewKind::Markdown(_))
-                | Some(PreviewKind::Mermaid(_))
-                | Some(PreviewKind::Document(_))
-        )
+            Some(PreviewKind::Markdown(_)) | Some(PreviewKind::Document(_))
+        ) || self.shows_plugin(konoma_mermaid::MERMAID_ID)
     }
 
     /// Whether raw source view is currently on (for the footer/title indicator).
@@ -5232,7 +5223,9 @@ impl App {
     }
 
     fn kind_loads_media(&self, kind: &PreviewKind) -> bool {
-        kind.is_media_plugin()
+        // A mermaid file loads a picture in image mode only (in text mode it draws via the
+        // decorated path).
+        (kind.is_media_plugin() && (!kind.is_mermaid_file() || self.mermaid_image_mode()))
             // A spreadsheet is parsed on the media worker: a tab switch / mtime-changed reload
             // must re-read it exactly like the picture plugins.
             || matches!(
@@ -5241,8 +5234,7 @@ impl App {
                 // A Word document is converted on the same worker; a tab switch / mtime-changed
                 // reload re-reads it exactly like a spreadsheet.
                 | PreviewKind::Document(_)
-        ) || (matches!(kind, PreviewKind::Mermaid(_) | PreviewKind::MermaidFence(_))
-            && self.mermaid_image_mode())
+        ) || (matches!(kind, PreviewKind::MermaidFence(_)) && self.mermaid_image_mode())
             // A non-detached delegated command (image or text render_as): its output is a
             // function of the source file, so a tab switch / mtime-changed reload must re-run it
             // exactly like every other media kind. `detached=true` is deliberately excluded — that
@@ -5552,7 +5544,12 @@ impl App {
             Some(k) if k.is_code_plugin() => true,
             Some(PreviewKind::Text(p)) => crate::preview::code::has_named_syntax(p),
             // Markdown/Mermaid in raw source display (`R`) is colored by the file's grammar (.md→Markdown, etc.).
-            Some(PreviewKind::Markdown(p)) | Some(PreviewKind::Mermaid(p)) if self.tab.md_raw => {
+            Some(PreviewKind::Markdown(p)) if self.tab.md_raw => {
+                crate::preview::code::has_named_syntax(p)
+            }
+            Some(PreviewKind::Plugin { id, path: p, .. })
+                if id == konoma_mermaid::MERMAID_ID && self.tab.md_raw =>
+            {
                 crate::preview::code::has_named_syntax(p)
             }
             // The converted Markdown of a Word document (`R`): colored as Markdown.
@@ -7523,6 +7520,9 @@ mod tests;
 // `#[test]` functions exercising `App` behavior.
 #[cfg(test)]
 mod md_snapshot_tests;
+
+#[cfg(test)]
+mod embed_plugin_tests;
 
 #[cfg(test)]
 mod plugin_host_tests;

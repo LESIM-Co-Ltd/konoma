@@ -93,11 +93,11 @@ fn kind_of(res: Resolution, rules: &[Rule], preview_commands: bool, path: &Path)
         Resolution::CanNotPreview { .. } => PreviewKind::can_not_preview(path),
         Resolution::Plugin { id, hint } => match id.as_str() {
             "markdown" => PreviewKind::Markdown(p),
-            "mermaid" => PreviewKind::Mermaid(p),
             konoma_media::IMAGE_ID
             | konoma_media::SVG_ID
             | konoma_media::VIDEO_ID
-            | konoma_media::PDF_ID => PreviewKind::plugin(&id, p),
+            | konoma_media::PDF_ID
+            | konoma_mermaid::MERMAID_ID => PreviewKind::plugin(&id, p),
             konoma_code::CODE_ID => PreviewKind::plugin(&id, p),
             // The separator is settled here, as it always was, and handed over as the note.
             "csv" => PreviewKind::Plugin {

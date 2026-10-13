@@ -523,8 +523,9 @@ impl App {
             self.drop_plugin();
             return;
         };
-        // The picture plugins are started with the media load (`start_media_load`), which comes
-        // first and owns their show; this is not the place to touch it.
+        // The picture plugins (a mermaid file among them) are started with the media load
+        // (`start_media_load`), which comes first and owns their show; this is not the place to
+        // touch it.
         if self
             .tab
             .preview_kind

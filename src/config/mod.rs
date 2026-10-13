@@ -647,16 +647,21 @@ impl UiConfig {
     /// fully-transparent color falls back to the light-gray default. Returning the *original* string is
     /// safe because usvg re-parses it identically.
     pub fn math_color(&self) -> &str {
-        use std::str::FromStr;
-        let c = self.math_color.trim();
-        let visible = svgtypes::Color::from_str(c)
-            .map(|col| col.alpha != 0)
-            .unwrap_or(false);
-        if visible {
-            c
-        } else {
-            "#d0d0d0"
-        }
+        visible_math_color(&self.math_color)
+    }
+}
+
+/// [`UiConfig::math_color`]'s test, for any value (`[plugins.math] color` is held to it too).
+pub(crate) fn visible_math_color(value: &str) -> &str {
+    use std::str::FromStr;
+    let c = value.trim();
+    let visible = svgtypes::Color::from_str(c)
+        .map(|col| col.alpha != 0)
+        .unwrap_or(false);
+    if visible {
+        c
+    } else {
+        "#d0d0d0"
     }
 }
 

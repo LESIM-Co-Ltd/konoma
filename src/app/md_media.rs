@@ -512,20 +512,21 @@ impl App {
             return false;
         }
         let max_px = self.mermaid_px();
-        let theme = self.cfg.ui.mermaid_theme.clone();
-        let curve = self.cfg.ui.mermaid_curve.clone();
-        let routing = self.cfg.ui.mermaid_routing.clone();
-        let render = move || -> (Result<image::DynamicImage, String>, Option<std::sync::Arc<Vec<u8>>>) {
-            let Some(svg) =
-                crate::preview::markdown::mermaid_to_svg_flow(&code, &theme, &curve, &routing)
-            else {
-                return (Err("mermaid render failed".to_string()), None);
-            };
-            let data = std::sync::Arc::new(svg.into_bytes());
-            let img =
-                crate::preview::svg::rasterize_trusted(&data, Path::new("mermaid.svg"), max_px)
-                    .ok_or_else(|| "rasterize failed".to_string());
-            (img, Some(data))
+        // The plugin that takes the `fence:mermaid` kind draws the SVG (`embed_plugin.rs`); none
+        // (switched off) is the same "cannot be drawn" as a failed render.
+        let embed = self.embed_render(crate::app::embed_plugin::FENCE_MERMAID);
+        let render = move || -> crate::app::embed_plugin::EmbedPicture {
+            match &embed {
+                Some(e) => e.picture(
+                    crate::app::embed_plugin::FENCE_MERMAID,
+                    &code,
+                    false,
+                    max_px,
+                    "mermaid",
+                    "mermaid.svg",
+                ),
+                None => (Err("mermaid render failed".to_string()), None),
+            }
         };
         if let Some(tx) = self.md_img_tx.clone() {
             // Bounded concurrency (MAX_SYNTHETIC_RENDERS_IN_FLIGHT): at capacity, skip this pass
@@ -587,20 +588,23 @@ impl App {
             return false;
         }
         let max_px = self.math_px();
-        // Move the glyph color (already sanitized) into the worker. RaTeX's default is pure black,
-        // which is invisible on a dark terminal, so paint it a color that stands out against the
-        // terminal background (config `[ui] math_color`, default a light gray).
-        let color = self.cfg.ui.math_color().to_string();
-        let render =
-            move || -> (Result<image::DynamicImage, String>, Option<std::sync::Arc<Vec<u8>>>) {
-                let Some(svg) = crate::preview::math::latex_to_svg(&latex, display, &color) else {
-                    return (Err("math render failed".to_string()), None);
-                };
-                let data = std::sync::Arc::new(svg.into_bytes());
-                let img = crate::preview::svg::rasterize_trusted(&data, Path::new("math.svg"), max_px)
-                    .ok_or_else(|| "rasterize failed".to_string());
-                (img, Some(data))
-            };
+        // The plugin that takes the `math` kind draws the SVG (`embed_plugin.rs`). Its `color`
+        // setting is the glyph color (RaTeX paints pure black, invisible on a dark terminal; the
+        // default is a light gray, from `[plugins.math] color` or the old `[ui] math_color`).
+        let embed = self.embed_render(crate::app::embed_plugin::MATH);
+        let render = move || -> crate::app::embed_plugin::EmbedPicture {
+            match &embed {
+                Some(e) => e.picture(
+                    crate::app::embed_plugin::MATH,
+                    &latex,
+                    display,
+                    max_px,
+                    "math",
+                    "math.svg",
+                ),
+                None => (Err("math render failed".to_string()), None),
+            }
+        };
         if let Some(tx) = self.md_img_tx.clone() {
             // See the identical guard in ensure_mermaid_fence_render for why skipping here (without
             // inserting a placeholder) is safe and self-corrects on the next rebuild.
