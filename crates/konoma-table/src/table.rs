@@ -8,6 +8,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use konoma_plugin::Cancel;
 
 /// Cap on the number of data rows read for the preview. CSVs can be arbitrarily large;
 /// we bound memory/parse time and mark the table `truncated` so the UI can say so.
@@ -61,6 +62,41 @@ thread_local! {
 /// Reads byte records and lossily decodes to UTF-8, so a stray non-UTF-8 byte degrades to `�`
 /// rather than failing the whole preview (principle #3). The first record becomes the header.
 pub fn parse(path: &Path, delimiter: u8) -> Result<TableData> {
+    parse_cancellable(path, delimiter, &Cancel::never())
+}
+
+/// Test-only record of how far each parse got, by path: `(rows read, ended by a cancel)` of every
+/// parse of that path. A process-wide counter would be shared by parallel tests; the path is not.
+#[cfg(any(test, feature = "test-hooks"))]
+pub static PARSE_LOG: std::sync::Mutex<Vec<(std::path::PathBuf, usize, bool)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(any(test, feature = "test-hooks"))]
+fn log_parse(path: &Path, rows: usize, cancelled: bool) {
+    if let Ok(mut log) = PARSE_LOG.lock() {
+        log.push((path.to_path_buf(), rows, cancelled));
+    }
+}
+
+/// How many rows are read between two looks at the [`Cancel`].
+pub const CANCEL_CHECK_ROWS: usize = 1024;
+
+/// The error a cancelled read returns (`err.is::<Cancelled>()`), so that the caller can tell it
+/// from a corrupt file.
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+/// [`parse`], looking at `cancel` every [`CANCEL_CHECK_ROWS`] rows: a read the host no longer wants
+/// stops with [`Cancelled`] instead of holding the whole grid in memory to the end.
+pub fn parse_cancellable(path: &Path, delimiter: u8, cancel: &Cancel) -> Result<TableData> {
     #[cfg(any(test, feature = "test-hooks"))]
     PARSE_CALLS.with(|c| c.set(c.get() + 1));
     let mut rdr = csv::ReaderBuilder::new()
@@ -94,11 +130,18 @@ pub fn parse(path: &Path, delimiter: u8) -> Result<TableData> {
             truncated = true;
             break;
         }
+        if rows.len().is_multiple_of(CANCEL_CHECK_ROWS) && cancel.is_cancelled() {
+            #[cfg(any(test, feature = "test-hooks"))]
+            log_parse(path, rows.len(), true);
+            return Err(Cancelled.into());
+        }
         let row = decode(&rec);
         ncols = ncols.max(row.len());
         rows.push(row);
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
+    log_parse(path, rows.len(), false);
     Ok(TableData {
         headers,
         rows,

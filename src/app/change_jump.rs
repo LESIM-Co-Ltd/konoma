@@ -59,6 +59,21 @@ impl App {
         v
     }
 
+    /// Whether the decorated document has any change block: the cheap answer to "is `doc_blocks`
+    /// non-empty" (the footer asks every frame, so no range is cloned or sorted for it).
+    fn doc_has_changes(&self) -> bool {
+        let Some(c) = self.md_cache.as_ref() else {
+            return false;
+        };
+        if self.tab.preview_path.as_ref() != Some(&c.path) {
+            return false;
+        }
+        match c.source {
+            MdCacheSource::File => !c.preview_gutter_marks.is_empty(),
+            MdCacheSource::Diff => !c.diff_marks.is_empty(),
+        }
+    }
+
     /// The decorated document's change blocks as the scroll rows they start at (needs the layout
     /// the drawing built), and the last scroll position the view can take.
     fn doc_blocks(&self) -> Blocks {
@@ -133,7 +148,7 @@ impl App {
                 .is_some_and(|c| &c.path == path && !c.marks.is_empty());
         }
         if self.shows_document() {
-            return !self.doc_blocks().rows.is_empty();
+            return self.doc_has_changes();
         }
         false
     }
@@ -203,7 +218,7 @@ impl App {
             return false;
         }
         if self.diff_rendered_active() {
-            return !self.doc_blocks().rows.is_empty();
+            return self.doc_has_changes();
         }
         self.diff_cache.as_ref().is_some_and(|c| {
             c.lines

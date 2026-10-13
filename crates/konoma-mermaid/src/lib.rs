@@ -153,7 +153,10 @@ impl Plugin for MermaidPlugin {
         mermaid_manifest()
     }
 
-    fn open(&self, input: Input, _cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+    fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        if cx.cancel.is_cancelled() {
+            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
+        }
         let source = match input {
             Input::File { path, .. } => Source::File(path),
             Input::Embed { kind, source, .. } if kind == FENCE_KIND => Source::Text(source),
@@ -247,7 +250,13 @@ impl Session for MermaidSession {
             Some(_) => false,
             None => cx.settings.str("mode", DEFAULT_MODE) == "text",
         };
+        if cx.cancel.is_cancelled() {
+            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
+        }
         let code = self.code()?;
+        if cx.cancel.is_cancelled() {
+            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
+        }
         if want_text {
             return Ok(View::Text(TextView {
                 source: TextSource::Lines(text_diagram(&code, req.cols)),
@@ -255,6 +264,9 @@ impl Session for MermaidSession {
                 file_lines: false,
                 syntax_name: None,
             }));
+        }
+        if cx.cancel.is_cancelled() {
+            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
         }
         let svg = konoma_mermaid_core::mermaid_to_svg_flow(
             &code,

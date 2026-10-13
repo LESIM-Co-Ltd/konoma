@@ -118,3 +118,30 @@ fn modifiers_survive_the_conversion() {
     assert!(m.contains(Modifier::UNDERLINED));
     assert!(!m.contains(Modifier::DIM));
 }
+
+#[test]
+fn a_cancelled_open_or_view_is_a_cancel() {
+    use konoma_plugin::{Cancel, FailureKind};
+    let cancelled = || Cancel::from_fn(|| true);
+    let dir = konoma_test_support::unique_tmp("konoma_code_cancel");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("a.rs");
+    std::fs::write(&path, "fn main() {}\n").unwrap();
+    let input = || Input::File {
+        path: path.clone(),
+        hint: None,
+    };
+    let err = CodePlugin
+        .open(input(), &OpenCx::bare().with_cancel(cancelled()))
+        .err()
+        .expect("a cancelled open");
+    assert_eq!(err.kind, FailureKind::Cancelled);
+    let mut session = CodePlugin.open(input(), &OpenCx::bare()).unwrap();
+    let err = session
+        .view(
+            &ViewReq::default(),
+            &ViewCx::bare().with_cancel(cancelled()),
+        )
+        .unwrap_err();
+    assert_eq!(err.kind, FailureKind::Cancelled);
+}

@@ -186,6 +186,9 @@ impl Plugin for MarkdownPlugin {
     }
 
     fn open(&self, input: Input, cx: &OpenCx) -> Result<Box<dyn Session>, Failure> {
+        if cx.cancel.is_cancelled() {
+            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
+        }
         match input {
             Input::File { path, .. } => {
                 let (markdown, truncated) = read_limited(&path).map_err(|e| {
@@ -196,6 +199,10 @@ impl Plugin for MarkdownPlugin {
                     ))
                     .with_detail(e.to_string())
                 })?;
+                // The read is the long step: look again before the text is wrapped up.
+                if cx.cancel.is_cancelled() {
+                    return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
+                }
                 let origin = Origin::File(path);
                 Ok(Box::new(MarkdownSession {
                     options: doc_options(cx.settings, &origin),
@@ -258,7 +265,10 @@ impl Session for MarkdownSession {
         }
     }
 
-    fn view(&mut self, req: &ViewReq, _cx: &ViewCx) -> Result<View, Failure> {
+    fn view(&mut self, req: &ViewReq, cx: &ViewCx) -> Result<View, Failure> {
+        if cx.cancel.is_cancelled() {
+            return Err(Failure::cancelled(t!(en: "cancelled", ja: "中止しました")));
+        }
         if req.repr.as_deref() == Some(REPR_SOURCE) {
             let (source, file_lines) = match self.file() {
                 Some(path) => (TextSource::File(path), true),
