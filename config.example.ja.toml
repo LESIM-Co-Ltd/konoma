@@ -495,7 +495,7 @@ code_theme = "TwoDark"
 #   text_visual   : テキストプレビューのビジュアル選択中(v / V)
 #   image         : 画像・PDF のページ       diff : 1 ファイルの git/jj 差分
 #   table         : CSV/TSV/アーカイブ/表計算の表   table_cell : セル全文ポップアップ(表の Enter)
-#   git.changes   : Git 変更ハブ(o)        git.log / git.graph / git.branches / git.detail
+#   git.changes   : Git 変更ハブ(p)        git.log / git.graph / git.branches / git.detail
 #   git.graph_picker : グラフのブランチ表示パネル(b)
 #   git.worktrees : リンクワークツリー一覧(w・変更ハブ内)
 #   jj.changes ... : 同じ画面を jj リポジトリで開いたとき(jj.log jj.graph jj.graph_picker

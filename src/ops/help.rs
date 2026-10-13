@@ -334,7 +334,7 @@ fn text_rows(app: &App, ctx: Context) -> (Msg, Vec<Row>) {
         // A Word document has no diagrams, checkboxes or `<details>`.
         if !app.is_document() {
             v.push(r(ZOOM_ALL).d(Msg::MermaidZoomHelp).ungated());
-            v.push(r(&[Action::ToggleFocusedItem]).ungated());
+            v.push(r(TOGGLE_ITEM).d(Msg::MdTaskToggleHelp).ungated());
             v.push(r(TOGGLE_ITEM).d(Msg::HintDetailsToggle).ungated());
         }
     }
@@ -498,6 +498,7 @@ fn screen_rows(b: Backend, s: Screen) -> (Msg, Vec<Row>) {
             // reads refuses them (`ops::gate`), so they are simply not listed for jj.
             let v = vec![
                 r(SCROLL).d(Msg::GitMove),
+                r(ENDS),
                 r(STAGE).d(Msg::StageHint),
                 r(UNSTAGE).d(Msg::UnstageHint),
                 r(&[Action::GitDiscard]),

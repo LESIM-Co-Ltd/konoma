@@ -19,7 +19,8 @@ fn e2e_key_context_follows_what_is_on_screen() {
     let dir = sandbox("key_context_screens");
     seed_files(&dir);
     write_solid_png(&dir.join("pic.png"), 4, 4, [1, 1, 1]);
-    let mut s = Sim::with_config(&canon(&dir), cfg_en()).with_picker();
+    let mut s = // The sort menu has no default key (it moves into the `,` menu); bind it.
+    Sim::with_config(&canon(&dir), cfg_keys("tree", "s", "open_sort_menu")).with_picker();
     assert_eq!(s.app.key_context(), Some(Context::Tree));
 
     // Tree overlays and modes.
@@ -146,9 +147,12 @@ mod git {
     fn e2e_key_context_of_the_version_control_screens_follows_the_backend() {
         let dir = sandbox("key_context_git");
         seed_repo(&dir);
-        let mut s = Sim::with_config(&canon(&dir), cfg_en());
+        // The hub's `g` / `l` have no default key; bind them to reach the graph and the log.
+        let mut cfg = cfg_en();
+        hub_screen_keys(&mut cfg);
+        let mut s = Sim::with_config(&canon(&dir), cfg);
         let ctx = |b, sc| Some(Context::Screen(b, sc));
-        s.key('o');
+        s.key('p');
         assert_eq!(s.app.key_context(), ctx(Backend::Git, Screen::Changes));
         // The same screen opened for jj is another context.
         s.app.git_vcs = crate::vcs::VcsKind::Jj;
@@ -193,7 +197,7 @@ mod git {
             let dir = sandbox("key_context_backend_binding");
             seed_repo(&dir);
             let mut s = Sim::with_config(&canon(&dir), cfg);
-            s.key('o');
+            s.key('p');
             if jj {
                 s.app.git_vcs = crate::vcs::VcsKind::Jj;
             }
@@ -303,12 +307,13 @@ fn e2e_the_startup_flash_shows_the_first_ignored_setting_and_the_first_conflict(
     let en = report(cfg.clone(), Lang::En).unwrap();
     assert!(en.contains("1 key conflict(s) (using defaults)"), "{en}");
     assert!(
-        en.contains("t: kept tab_new, dropped refresh in [keys.tree]"),
+        en.contains("t: kept tab_new_after, dropped refresh in [keys.tree]"),
         "{en}"
     );
     let jp = report(cfg, Lang::Jp).unwrap();
     assert!(
-        jp.contains("キー衝突1件") && jp.contains("tab_new を維持し refresh in [keys.tree] を破棄"),
+        jp.contains("キー衝突1件")
+            && jp.contains("tab_new_after を維持し refresh in [keys.tree] を破棄"),
         "{jp}"
     );
 

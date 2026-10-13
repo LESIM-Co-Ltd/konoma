@@ -24,13 +24,12 @@ use crate::app::GitCopyKind;
 use crate::app::{CopyKind, SortKey, TableCopyKind};
 use crate::i18n::Msg;
 
-/// The pre-context keymap, kept as the oracle for the equivalence tests (B1; deleted in B3).
 #[cfg(test)]
 mod context_tests;
 #[cfg(test)]
-mod equivalence_tests;
+mod defaults_snapshot;
 #[cfg(test)]
-mod legacy;
+mod defaults_tests;
 
 // =============================================================================
 // Motion (shared movement/scroll amount). Per-Surface interpretation lives on the dispatch_action side (Stage 3).
@@ -203,7 +202,7 @@ pub enum Action {
     /// In a follow-opened diff: toggle between the diff since follow-start and the full git diff.
     #[cfg(feature = "git")]
     ToggleFollowDiffScope,
-    // --- Git changes hub (o) ---
+    // --- Git changes hub (p) ---
     #[cfg(feature = "git")]
     GitStage,
     #[cfg(feature = "git")]
@@ -678,6 +677,9 @@ pub enum LeaderId {
     /// `y` commit-info copy (git log/graph/detail).
     #[cfg(feature = "git")]
     GitCopy,
+    /// `y` copy of the branch list (the selected branch's name).
+    #[cfg(feature = "git")]
+    BranchCopy,
 }
 
 /// One leader-menu item (suffix key + command + i18n label).
@@ -1182,13 +1184,10 @@ impl KeyMap {
     /// Build the built-in default keymap (§2). `scheme` only swaps the page/half rows of the
     /// scrolling contexts.
     ///
-    /// The default keys are exactly those of the old one-table-per-surface keymap (plugin stage 2 /
-    /// B1 only restructured them; B3 changes keys on purpose). They are now spread over layers:
-    /// layer 1 (`basic`) holds what every context with a cursor shares, layer 2 (`types`) what
-    /// contexts showing the same kind of thing share, and each context's own table holds the rest,
-    /// including every place where a context deliberately differs from the layers above it (those
-    /// are the entries B3 removes). The equivalence tests compare the result with the old keymap
-    /// key by key.
+    /// The default keys follow the layers of the key design (`docs/FEATURE-PLUGIN-ARCHITECTURE.md`
+    /// §10-3): layer 1 (`basic`) holds what every context with a cursor shares, layer 2 (`types`)
+    /// what contexts showing the same kind of thing share, and each context's own table holds the
+    /// rest. `defaults_tests` pins the result key by key.
     pub fn defaults(scheme: KeyScheme) -> KeyMap {
         let nav = |m: Motion| Binding::Run(Action::Navigate(m));
         let run = |a: Action| Binding::Run(a);
@@ -1286,14 +1285,15 @@ impl KeyMap {
         tree.insert(KeyPress::ch('/'), run(Action::FilterStart));
         tree.insert(KeyPress::ch('.'), run(Action::ToggleHidden));
         tree.insert(KeyPress::ch('r'), run(Action::Refresh));
-        tree.insert(KeyPress::ch('s'), run(Action::OpenSortMenu));
+        // `s` (sort menu) and `p` (path style) have no default key now: both move into the `,`
+        // menu (B3b). The actions stay (`open_sort_menu`, `cycle_path_style`) for `[keys]`.
         tree.insert(KeyPress::ch('i'), run(Action::ToggleInfo));
         tree.insert(KeyPress::ch('e'), run(Action::RequestEdit));
-        tree.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         tree.insert(KeyPress::ch('m'), run(Action::MarkSet));
         tree.insert(KeyPress::ch('\''), run(Action::MarkJump));
         tree.insert(KeyPress::ch('d'), run(Action::OpenGitDiffCursor));
-        tree.insert(KeyPress::ch('o'), run(Action::OpenGitView));
+        // `p` = the project's screen (the Git hub for now); it was `o`.
+        tree.insert(KeyPress::ch('p'), run(Action::OpenGitView));
         tree.insert(KeyPress::ch('a'), run(Action::SetAnchor));
         tree.insert(KeyPress::ch('A'), run(Action::ResetAnchor));
         tree.insert(KeyPress::ch('v'), run(Action::EnterVisual));
@@ -1322,7 +1322,9 @@ impl KeyMap {
         visual.insert(KeyPress::ch('a'), run(Action::VisualSelectSiblings));
         visual.insert(KeyPress::ch('A'), run(Action::VisualSelectAll));
         visual.insert(KeyPress::ch(' '), Binding::Leader(LeaderId::File));
-        visual.insert(KeyPress::ch('q'), run(Action::Quit)); // preserves the old Visual q=quit (regression guard)
+        // `q` cancels the selection, like `Esc` (it used to quit the app: the one exception to
+        // layer 1's "q = go back one step").
+        visual.insert(KeyPress::ch('q'), run(Action::Cancel));
         contexts.insert(Context::TreeVisual, visual);
 
         // --- Preview: text / markdown. `text` and `document` carry the same keys for now (they
@@ -1360,8 +1362,8 @@ impl KeyMap {
         // Bookmarks: `m` registers the previewed file, `'` opens the list (same action as the tree).
         ptext.insert(KeyPress::ch('m'), run(Action::MarkSet));
         ptext.insert(KeyPress::ch('\''), run(Action::MarkJump));
-        // Heading outline (Markdown preview). `o` toggles it open/closed.
-        ptext.insert(KeyPress::ch('o'), run(Action::ToggleOutline));
+        // Heading outline (Markdown preview). `O` toggles it open/closed (`o` is the verb "open").
+        ptext.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
         // J/K = next/previous slide of a presentation (the same keys as the PDF page / sheet turn;
         // `App::page_turn` does nothing for any other text preview).
         ptext.insert(KeyPress::ch('J'), run(Action::PageNext));
@@ -1388,7 +1390,6 @@ impl KeyMap {
         // whose non-diff fallthrough (`toggle_md_raw`) is a real, if unadvertised, bug on this
         // context for a standalone `.mmd` image preview, `docs/FEATURE-MEDIA-DIFF.md` §6).
         pimg.insert(KeyPress::ch('R'), run(Action::ImageReturnToDiff));
-        pimg.insert(KeyPress::ch('0'), run(Action::ImageZoomReset));
         pimg.insert(KeyPress::ch('p'), run(Action::CyclePathStyle));
         pimg.insert(KeyPress::ch('e'), run(Action::RequestEdit));
         // Ctrl-n/Ctrl-p = file paging (J/K are already assigned to PDF page paging, hence Ctrl here).
@@ -1429,18 +1430,13 @@ impl KeyMap {
             let mut pgit: ContextMap = HashMap::new();
             pgit.insert(KeyPress::ch('q'), run(Action::PreviewBack));
             pgit.insert(KeyPress::ch('x'), run(Action::GitDiffDiscard));
-            // f = toggle the range of a follow-opened diff (since follow-start ⇄ full). No-op for
-            // a non-follow diff.
-            // Under `ui.keys = "less"` the paging rows used to overwrite this `f` (they were
-            // inserted after it): `f` is page-down there and the follow scope is not reachable by
-            // key. Kept as it was; B3 moves the follow scope to the `,` menu, which dissolves it.
-            if scheme == KeyScheme::Vim {
-                pgit.insert(KeyPress::ch('f'), run(Action::ToggleFollowDiffScope));
-            }
-            // n/N = switch to the next/previous changed file's diff (cycle through changes without
-            // leaving the view; same meaning as the tree's n/N).
-            pgit.insert(KeyPress::ch('n'), run(Action::JumpNextChange));
-            pgit.insert(KeyPress::ch('N'), run(Action::JumpPrevChange));
+            // The follow scope (`toggle_follow_diff_scope`) has no default key now: it moves
+            // into the `,` menu (B3b), and its old `f` was layer 1's less-style page key.
+            // Ctrl-n / Ctrl-p = switch to the next/previous changed file's diff (cycle through
+            // changes without leaving the view; layer 1's "next/previous file"). `n` / `N` are
+            // left free for "next/previous change" within the file (B3c).
+            pgit.insert(KeyPress::ctrl_ch('n'), run(Action::JumpNextChange));
+            pgit.insert(KeyPress::ctrl_ch('p'), run(Action::JumpPrevChange));
             pgit.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
             contexts.insert(Context::Diff, pgit);
 
@@ -1457,13 +1453,18 @@ impl KeyMap {
                 gchg.insert(KeyPress::ch('d'), run(Action::GitWorktreeDiff));
                 gchg.insert(KeyPress::ch('b'), run(Action::GitOpenBranches));
                 gchg.insert(KeyPress::ch('w'), run(Action::GitOpenWorktrees));
-                gchg.insert(KeyPress::ch('l'), run(Action::GitOpenLog));
-                // The hub's `g` opens the graph instead of "top" and it has no "bottom" (`G`):
-                // both differ from the list layer (B3 removes them).
-                gchg.insert(KeyPress::ch('g'), run(Action::GitOpenGraph));
-                gchg.insert(KeyPress::ch('G'), Binding::Unbound);
+                // The log and the graph have no default key here: `g` / `l` are layer 1's
+                // top and open (the hub's `Tab` cycle reaches the screens in B3c). The actions
+                // stay (`git_open_log`, `git_open_graph`) for `[keys]`.
+                // `l` opens the selected file's diff (`Enter`'s operation), `h` goes back.
+                gchg.insert(KeyPress::ch('l'), run(Action::GitOpenSelectedDiff));
+                gchg.insert(KeyPress::ch('h'), run(Action::GitClose));
                 gchg.insert(KeyPress::ch('!'), run(Action::GitLaunchTool));
-                gchg.insert(KeyPress::ch('R'), run(Action::JjSync));
+                // jj has no staging area, and its changes screen syncs (fetch + rebase) on `s`
+                // where git stages: the same key, a different meaning per backend.
+                if backend == Backend::Jj {
+                    gchg.insert(KeyPress::ch('s'), run(Action::JjSync));
+                }
                 gchg.insert(KeyPress::ch('q'), run(Action::GitClose));
                 // y→ copies the selected changed file's path (reuses the same path-copy menu as the tree).
                 gchg.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::Copy));
@@ -1472,6 +1473,7 @@ impl KeyMap {
                 // Git log / graph (identical). Enter→GitOpenDetail is a fixed key.
                 let mut glog: ContextMap = HashMap::new();
                 glog.insert(KeyPress::ch('l'), run(Action::GitOpenDetail));
+                glog.insert(KeyPress::ch('h'), run(Action::GitClose));
                 glog.insert(KeyPress::ch('q'), run(Action::GitClose));
                 // y→ copy commit info (short/full hash, subject, full message, author, date). Shared by
                 // log/graph.
@@ -1481,20 +1483,21 @@ impl KeyMap {
                 let mut ggraph = glog.clone();
                 ggraph.insert(KeyPress::ch('s'), run(Action::GitGraphSetBase));
                 ggraph.insert(KeyPress::ch('a'), run(Action::GitGraphToggleAll));
+                // `x` only: `0` is layer 1's line start (it used to clear the base too).
                 ggraph.insert(KeyPress::ch('x'), run(Action::GitGraphClearBase));
-                // `0` also clears it (the vim feel of "line-home = return to the anchor". Coexists with
-                // `x`; both resolve to the same Action).
-                ggraph.insert(KeyPress::ch('0'), run(Action::GitGraphClearBase));
                 ggraph.insert(KeyPress::ch('b'), run(Action::GitGraphOpenPicker));
                 contexts.insert(Context::Screen(backend, Screen::Graph), ggraph);
                 contexts.insert(Context::Screen(backend, Screen::Log), glog);
 
                 // The graph's branch visibility panel: j/k/g/G navigate + Space:toggle / a:all /
-                // n:current-only. Enter:apply / q·Esc:cancel are fixed keys.
+                // c:current-only (it was `n`, which is layer 1's next match). Enter and `l`:apply,
+                // `q` and `h`: cancel (Esc is a fixed key).
                 let mut gpick: ContextMap = HashMap::new();
                 gpick.insert(KeyPress::ch(' '), run(Action::GitGraphPickerToggle));
                 gpick.insert(KeyPress::ch('a'), run(Action::GitGraphPickerAll));
-                gpick.insert(KeyPress::ch('n'), run(Action::GitGraphPickerCurrentOnly));
+                gpick.insert(KeyPress::ch('c'), run(Action::GitGraphPickerCurrentOnly));
+                gpick.insert(KeyPress::ch('l'), run(Action::GitGraphPickerApply));
+                gpick.insert(KeyPress::ch('h'), run(Action::GitClose));
                 // Reorder priority (uppercase J/K). Lowercase j/k move the cursor.
                 gpick.insert(KeyPress::ch('K'), run(Action::GitGraphPickerMoveUp));
                 gpick.insert(KeyPress::ch('J'), run(Action::GitGraphPickerMoveDown));
@@ -1505,12 +1508,13 @@ impl KeyMap {
                 let mut gbr: ContextMap = HashMap::new();
                 gbr.insert(KeyPress::ch('/'), run(Action::BranchFilterStart));
                 gbr.insert(KeyPress::ch('l'), run(Action::BranchCheckout));
-                gbr.insert(KeyPress::ch('n'), run(Action::BranchCreate));
+                // `c` = create (`n` is layer 1's next match).
+                gbr.insert(KeyPress::ch('c'), run(Action::BranchCreate));
                 gbr.insert(KeyPress::ch('d'), run(Action::BranchDelete));
+                gbr.insert(KeyPress::ch('h'), run(Action::GitClose));
                 gbr.insert(KeyPress::ch('q'), run(Action::GitClose));
-                // y→ copy the selected branch name (there's only one target, so it copies directly with
-                // no menu).
-                gbr.insert(KeyPress::ch('y'), run(Action::CopyBranchName));
+                // y→ the copy menu, whose one item is the selected branch's name.
+                gbr.insert(KeyPress::ch('y'), Binding::Leader(LeaderId::BranchCopy));
                 contexts.insert(Context::Screen(backend, Screen::Branches), gbr);
 
                 // Git worktrees (`w` from the changes hub). `Enter`→worktree_goto and `Esc`→
@@ -1518,11 +1522,14 @@ impl KeyMap {
                 // checkout); `WorktreeGoto` has no default key binding here, same as
                 // `GitOpenSelectedDiff` — it still round-trips through action_from_str/action_name so a
                 // user can rebind another key to it. Ctrl-t (config-rebindable, unlike Enter) opens the
-                // selection in a new tab. `n` opens the "new worktree" input dialog, same idiom as
-                // `BranchCreate`'s `n` in `[keys."git.branches"]` above.
+                // selection in a new tab. `c` opens the "new worktree" input dialog, same idiom as
+                // `BranchCreate`'s `c` in `[keys."git.branches"]` above. `l` goes to the selected
+                // worktree (`Enter`'s operation) and `h` back.
                 let mut gwt: ContextMap = HashMap::new();
                 gwt.insert(KeyPress::ch('/'), run(Action::WorktreeFilterStart));
-                gwt.insert(KeyPress::ch('n'), run(Action::WorktreeCreate));
+                gwt.insert(KeyPress::ch('c'), run(Action::WorktreeCreate));
+                gwt.insert(KeyPress::ch('l'), run(Action::WorktreeGoto));
+                gwt.insert(KeyPress::ch('h'), run(Action::WorktreeClose));
                 gwt.insert(KeyPress::ctrl_ch('t'), run(Action::WorktreeGotoNewTab));
                 gwt.insert(KeyPress::ch('d'), run(Action::WorktreeShowChanges));
                 gwt.insert(KeyPress::ch('q'), run(Action::WorktreeClose));
@@ -1565,12 +1572,12 @@ impl KeyMap {
         tl.insert(KeyPress::ch('q'), run(Action::ToggleTabList));
         contexts.insert(Context::Tabs, tl);
 
-        // --- Heading outline list (`o` toggles it open/closed. Enter=jump is a fixed key) ---
+        // --- Heading outline list (`O` toggles it open/closed. Enter=jump is a fixed key) ---
         let mut outline: ContextMap = HashMap::new();
         outline.insert(KeyPress::ch('g'), nav(Motion::Top));
         outline.insert(KeyPress::ch('G'), nav(Motion::Bottom));
         outline.insert(KeyPress::ch('q'), run(Action::ToggleOutline));
-        outline.insert(KeyPress::ch('o'), run(Action::ToggleOutline));
+        outline.insert(KeyPress::ch('O'), run(Action::ToggleOutline));
         contexts.insert(Context::Outline, outline);
 
         // --- Info ---
@@ -1607,12 +1614,9 @@ impl KeyMap {
         // F = follow mode (auto-jump to externally changed files). Global so it can be toggled from
         // either Tree or Preview.
         global.insert(KeyPress::ch('F'), run(Action::ToggleFollow));
-        global.insert(KeyPress::ch('t'), run(Action::TabNew));
-        // I = "insert" a new tab next to this one (tab_new_after), landing right of the active
-        // tab instead of at the end. Chosen because it's a letter no context uses for anything
-        // else, so it's never shadowed by a context-specific binding; `t` keeps appending at the
-        // end (unchanged for every existing caller).
-        global.insert(KeyPress::ch('I'), run(Action::TabNewAfter));
+        // t = a new tab right of the active one (`tab_new_after`). Appending at the end
+        // (`tab_new`) and the old `I` have no default key now; both actions stay for `[keys]`.
+        global.insert(KeyPress::ch('t'), run(Action::TabNewAfter));
         global.insert(KeyPress::ch('T'), run(Action::ToggleTabList));
         // P = read a path/GitHub link from the clipboard and jump there (reveal + preview). Global
         // so it works from either Tree or Preview. Changeable via `[keys.global]`.
@@ -1636,6 +1640,8 @@ impl KeyMap {
         leaders.insert(LeaderId::TableCopy, table_copy_leader_default());
         #[cfg(feature = "git")]
         leaders.insert(LeaderId::GitCopy, git_copy_leader_default());
+        #[cfg(feature = "git")]
+        leaders.insert(LeaderId::BranchCopy, branch_copy_leader_default());
 
         KeyMap {
             contexts,
@@ -2104,6 +2110,8 @@ fn leader_name(id: LeaderId) -> &'static str {
         LeaderId::TableCopy => "table_copy",
         #[cfg(feature = "git")]
         LeaderId::GitCopy => "git_copy",
+        #[cfg(feature = "git")]
+        LeaderId::BranchCopy => "branch_copy",
     }
 }
 
@@ -2151,10 +2159,6 @@ fn apply_scheme_paging(m: &mut ContextMap, scheme: KeyScheme) {
         KeyScheme::Less => {
             m.insert(
                 KeyPress::ch('f'),
-                Binding::Run(Action::Navigate(Motion::PageDown)),
-            );
-            m.insert(
-                KeyPress::ch(' '),
                 Binding::Run(Action::Navigate(Motion::PageDown)),
             );
             m.insert(
@@ -2285,6 +2289,20 @@ fn git_copy_leader_default() -> LeaderMenu {
     }
 }
 
+/// The `y` copy menu of the branch list: the name of the selected branch.
+#[cfg(feature = "git")]
+fn branch_copy_leader_default() -> LeaderMenu {
+    LeaderMenu {
+        id: LeaderId::BranchCopy,
+        title: Msg::WkBranchCopyTitle,
+        items: vec![LeaderItem {
+            key: KeyPress::ch('n'),
+            action: Action::CopyBranchName,
+            label: Msg::WkBranchName,
+        }],
+    }
+}
+
 fn file_leader_default() -> LeaderMenu {
     LeaderMenu {
         id: LeaderId::File,
@@ -2360,6 +2378,8 @@ fn leader_label(a: Action) -> Msg {
         Action::GitCopy(GitCopyKind::Author) => Msg::WkAuthor,
         #[cfg(feature = "git")]
         Action::GitCopy(GitCopyKind::Date) => Msg::WkDate,
+        #[cfg(feature = "git")]
+        Action::CopyBranchName => Msg::WkBranchName,
         _ => Msg::Empty,
     }
 }
@@ -2861,18 +2881,33 @@ mod tests {
             m.resolve(Context::Tree, None, KeyPress::ch('A')),
             Resolution::Action(Action::ResetAnchor)
         );
+        // `p` opens the project's screen; `o` (its old key), `s` and `p`'s old meaning (the path
+        // style) have no default key in the tree.
         assert_eq!(
-            m.resolve(Context::Tree, None, KeyPress::ch('o')),
+            m.resolve(Context::Tree, None, KeyPress::ch('p')),
             Resolution::Action(Action::OpenGitView)
         );
+        for c in ['o', 's'] {
+            assert_eq!(
+                m.resolve(Context::Tree, None, KeyPress::ch(c)),
+                Resolution::Unbound,
+                "{c}"
+            );
+        }
     }
 
     #[test]
-    fn visual_q_quits() {
-        // Regression guard: preserve the old Visual mode's q = quit the app.
+    fn visual_q_cancels_the_selection_and_does_not_quit() {
+        // Regression guard: `q` in the tree's range selection used to quit the app. It is layer 1's
+        // "go back one step" now: the same as `Esc`, which cancels the selection.
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
             m.resolve(Context::TreeVisual, None, KeyPress::ch('q')),
+            Resolution::Action(Action::Cancel)
+        );
+        // `Q` is still the one key that quits, from the selection too.
+        assert_eq!(
+            m.resolve(Context::TreeVisual, None, KeyPress::ch('Q')),
             Resolution::Action(Action::Quit)
         );
     }
@@ -3071,12 +3106,12 @@ mod tests {
     }
 
     #[test]
-    fn shift_i_opens_new_tab_after_current_via_global() {
-        // I = insert a new tab right of the currently active one (tab_new_after). Global, so it
-        // resolves the same way from Tree/Preview *and* from the Bookmarks/Tabs list surfaces
-        // (neither binds `I` for anything of its own, so it falls through to global rather than
-        // being available as a bookmark-name jump letter — same treatment as t/T/F/Q). `t` keeps
-        // appending.
+    fn t_opens_a_new_tab_after_the_current_one_via_global() {
+        // t = insert a new tab right of the currently active one (tab_new_after; it was `I`).
+        // Global, so it resolves the same way from Tree/Preview *and* from the Bookmarks/Tabs
+        // list surfaces (neither binds `t` for anything of its own, so it falls through to global
+        // rather than being available as a bookmark-name jump letter — same treatment as
+        // T/F/Q). Appending at the end (`tab_new`) and `I` have no default key.
         let m = KeyMap::defaults(KeyScheme::Vim);
         for sfc in [
             Context::Tree,
@@ -3085,11 +3120,18 @@ mod tests {
             Context::Tabs,
         ] {
             assert_eq!(
-                m.resolve(sfc, None, KeyPress::ch('I')),
+                m.resolve(sfc, None, KeyPress::ch('t')),
                 Resolution::Action(Action::TabNewAfter),
-                "I が {sfc:?} で tab_new_after に解決する"
+                "t が {sfc:?} で tab_new_after に解決する"
+            );
+            assert_eq!(
+                m.resolve(sfc, None, KeyPress::ch('I')),
+                Resolution::Unbound,
+                "I は {sfc:?} で既定のキーではない"
             );
         }
+        // The actions keep their names, so `[keys]` can bind either to any key.
+        assert_eq!(action_from_str("tab_new"), Some(Action::TabNew));
         assert_eq!(action_from_str("tab_new_after"), Some(Action::TabNewAfter));
         assert_eq!(action_name(Action::TabNewAfter), "tab_new_after");
     }
@@ -3398,10 +3440,10 @@ mod tests {
     fn validate_global_shadow() {
         let cfg = cfg_with("tree", &[("t", "refresh")]);
         let m = KeyMap::from_config(KeyScheme::Vim, &cfg);
-        // t reverts to Global's TabNew (the per-surface override is discarded).
+        // t reverts to Global's TabNewAfter (the per-surface override is discarded).
         assert_eq!(
             m.resolve(Context::Tree, None, KeyPress::ch('t')),
-            Resolution::Action(Action::TabNew)
+            Resolution::Action(Action::TabNewAfter)
         );
         assert_eq!(
             m.conflicts
@@ -3446,12 +3488,20 @@ mod tests {
     #[test]
     fn outline_key_resolves_and_action_round_trips() {
         let m = KeyMap::from_config(KeyScheme::Vim, &KeysFileConfig::default());
-        // `o` in a Markdown/text preview opens the outline.
+        // `O` in a Markdown/text preview opens the outline (`o` is the verb "open" now).
         assert_eq!(
-            m.resolve(Context::Text, None, KeyPress::ch('o')),
+            m.resolve(Context::Text, None, KeyPress::ch('O')),
             Resolution::Action(Action::ToggleOutline)
         );
-        // In the outline overlay: j/k move, o/q close.
+        assert_eq!(
+            m.resolve(Context::Text, None, KeyPress::ch('o')),
+            Resolution::Unbound
+        );
+        // In the outline overlay: j/k move, O/q close.
+        assert_eq!(
+            m.resolve(Context::Outline, None, KeyPress::ch('O')),
+            Resolution::Action(Action::ToggleOutline)
+        );
         assert_eq!(
             m.resolve(Context::Outline, None, KeyPress::ch('j')),
             Resolution::Action(Action::Navigate(Motion::Down))
@@ -3577,10 +3627,32 @@ mod tests {
     #[test]
     fn less_scheme_preview_paging() {
         let m = KeyMap::defaults(KeyScheme::Less);
+        // `f` pages; `Space` does not (it is the operation menu, not a page key).
         assert_eq!(
-            m.resolve(Context::Text, None, KeyPress::ch(' ')),
+            m.resolve(Context::Text, None, KeyPress::ch('f')),
             Resolution::Action(Action::Navigate(Motion::PageDown))
         );
+        for ctx in [Context::Text, Context::Document, Context::Table] {
+            assert_eq!(
+                m.resolve(ctx, None, KeyPress::ch(' ')),
+                Resolution::Unbound,
+                "{ctx:?}"
+            );
+        }
+        #[cfg(feature = "git")]
+        {
+            // The diff's `f` was the follow scope, which collided with this page key; it is the
+            // page key alone now.
+            assert_eq!(
+                m.resolve(Context::Diff, None, KeyPress::ch('f')),
+                Resolution::Action(Action::Navigate(Motion::PageDown))
+            );
+            let vim = KeyMap::defaults(KeyScheme::Vim);
+            assert_eq!(
+                vim.resolve(Context::Diff, None, KeyPress::ch('f')),
+                Resolution::Unbound
+            );
+        }
         assert_eq!(
             m.resolve(Context::Text, None, KeyPress::ch('d')),
             Resolution::Action(Action::Navigate(Motion::HalfDown))
@@ -3648,7 +3720,7 @@ mod tests {
         let m = KeyMap::defaults(KeyScheme::Vim);
         assert_eq!(
             m.resolve(Context::Tree, None, KeyPress::ch('t')),
-            Resolution::Action(Action::TabNew)
+            Resolution::Action(Action::TabNewAfter)
         );
         assert_eq!(
             m.resolve(Context::Tree, None, KeyPress::ch('1')),
@@ -3765,9 +3837,18 @@ mod tests {
             ),
             Resolution::Action(Action::GitCopy(GitCopyKind::FullHash))
         );
-        // branches: y→ copy the branch name (directly).
+        // branches: y→ the copy menu, whose item `n` copies the branch name (it used to copy
+        // directly).
         assert_eq!(
             m.resolve(gs(Screen::Branches), None, KeyPress::ch('y')),
+            Resolution::EnterLeader(LeaderId::BranchCopy)
+        );
+        assert_eq!(
+            m.resolve(
+                gs(Screen::Branches),
+                Some(LeaderId::BranchCopy),
+                KeyPress::ch('n')
+            ),
             Resolution::Action(Action::CopyBranchName)
         );
     }
@@ -3780,14 +3861,42 @@ mod tests {
             m.resolve(gs(Screen::Changes), None, KeyPress::ch('d')),
             Resolution::Action(Action::GitWorktreeDiff)
         );
+        // `l` opens (`Enter`'s operation), `h` goes back, `g` is the top: the log and the graph
+        // have no default key here (they are reached from the hub in B3c).
         assert_eq!(
             m.resolve(gs(Screen::Changes), None, KeyPress::ch('l')),
-            Resolution::Action(Action::GitOpenLog)
+            Resolution::Action(Action::GitOpenSelectedDiff)
+        );
+        assert_eq!(
+            m.resolve(gs(Screen::Changes), None, KeyPress::ch('h')),
+            Resolution::Action(Action::GitClose)
         );
         assert_eq!(
             m.resolve(gs(Screen::Changes), None, KeyPress::ch('g')),
-            Resolution::Action(Action::GitOpenGraph)
+            Resolution::Action(Action::Navigate(Motion::Top))
         );
+        assert_eq!(
+            m.resolve(gs(Screen::Changes), None, KeyPress::ch('G')),
+            Resolution::Action(Action::Navigate(Motion::Bottom))
+        );
+        assert_eq!(action_from_str("git_open_log"), Some(Action::GitOpenLog));
+        assert_eq!(
+            action_from_str("git_open_graph"),
+            Some(Action::GitOpenGraph)
+        );
+        // `s` stages in git and syncs in jj; `R` is neither (it is the representation cycle).
+        assert_eq!(
+            m.resolve(gs(Screen::Changes), None, KeyPress::ch('s')),
+            Resolution::Action(Action::GitStage)
+        );
+        let jj = Context::Screen(Backend::Jj, Screen::Changes);
+        assert_eq!(
+            m.resolve(jj, None, KeyPress::ch('s')),
+            Resolution::Action(Action::JjSync)
+        );
+        for c in [gs(Screen::Changes), jj] {
+            assert_eq!(m.resolve(c, None, KeyPress::ch('R')), Resolution::Unbound);
+        }
         assert_eq!(
             m.resolve(gs(Screen::Changes), None, KeyPress::ch('!')),
             Resolution::Action(Action::GitLaunchTool)
@@ -3826,9 +3935,23 @@ mod tests {
             m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('/')),
             Resolution::Action(Action::WorktreeFilterStart)
         );
+        // `c` creates (`n` is layer 1's next match, so it is not bound in the list).
+        assert_eq!(
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('c')),
+            Resolution::Action(Action::WorktreeCreate)
+        );
         assert_eq!(
             m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('n')),
-            Resolution::Action(Action::WorktreeCreate)
+            Resolution::Unbound
+        );
+        // `l` goes to the selected worktree (`Enter`'s operation), `h` goes back.
+        assert_eq!(
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('l')),
+            Resolution::Action(Action::WorktreeGoto)
+        );
+        assert_eq!(
+            m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('h')),
+            Resolution::Action(Action::WorktreeClose)
         );
         assert_eq!(
             m.resolve(gs(Screen::Worktrees), None, KeyPress::ctrl_ch('t')),
@@ -3842,11 +3965,10 @@ mod tests {
             m.resolve(gs(Screen::Worktrees), None, KeyPress::ch('q')),
             Resolution::Action(Action::WorktreeClose)
         );
-        // `WorktreeGoto` has no default binding here (Enter is fixed elsewhere), but it still
-        // round-trips through the config-string layer.
+        // `WorktreeGoto` (`l`, and the fixed `Enter`) round-trips through the config-string layer.
         assert_eq!(action_from_str("worktree_goto"), Some(Action::WorktreeGoto));
         assert_eq!(action_name(Action::WorktreeGoto), "worktree_goto");
-        // `WorktreeCreate` (`n`, the row just resolved above) round-trips too.
+        // `WorktreeCreate` (`c`, the row just resolved above) round-trips too.
         assert_eq!(
             action_from_str("worktree_create"),
             Some(Action::WorktreeCreate)
@@ -3986,23 +4108,30 @@ mod tests {
                 "Y が {sfc:?} で @参照コピーに解決する"
             );
         }
-        // n/N inside the diff view = cycle through changed files (resolve to the same Action as
-        // the tree's n/N).
+        // Ctrl-n / Ctrl-p inside the diff view = cycle through changed files (the same Actions as
+        // the tree's n/N). `n` / `N` are free there (they become "next change" in B3c), and the
+        // follow scope (`f`) has no default key (it moves into the `,` menu in B3b).
         #[cfg(feature = "git")]
-        for (k, a) in [('n', Action::JumpNextChange), ('N', Action::JumpPrevChange)] {
-            assert_eq!(
-                m.resolve(Context::Diff, None, KeyPress::ch(k)),
-                Resolution::Action(a),
-                "diff ビューの {k} が変更間ジャンプに解決する"
-            );
+        {
+            for (kp, a) in [
+                (KeyPress::ctrl_ch('n'), Action::JumpNextChange),
+                (KeyPress::ctrl_ch('p'), Action::JumpPrevChange),
+            ] {
+                assert_eq!(
+                    m.resolve(Context::Diff, None, kp),
+                    Resolution::Action(a),
+                    "diff ビューの {} が変更間ジャンプに解決する",
+                    kp.label()
+                );
+            }
+            for c in ['n', 'N', 'f'] {
+                assert_eq!(
+                    m.resolve(Context::Diff, None, KeyPress::ch(c)),
+                    Resolution::Unbound,
+                    "diff ビューの {c}"
+                );
+            }
         }
-        // f inside the diff view = toggle the follow range (since follow-start ⇄ full).
-        #[cfg(feature = "git")]
-        assert_eq!(
-            m.resolve(Context::Diff, None, KeyPress::ch('f')),
-            Resolution::Action(Action::ToggleFollowDiffScope),
-            "diff ビューの f がフォロー範囲トグルに解決する"
-        );
         // Config-string round trip.
         for s in [
             "toggle_changed_filter",
@@ -4045,15 +4174,19 @@ mod tests {
     /// leak onto the log surface.
     #[cfg(feature = "git")]
     #[test]
-    fn graph_base_clears_with_x_and_zero() {
+    fn graph_base_clears_with_x_only() {
         let m = KeyMap::defaults(KeyScheme::Vim);
-        for k in ['x', '0'] {
-            assert_eq!(
-                m.resolve(gs(Screen::Graph), None, KeyPress::ch(k)),
-                Resolution::Action(Action::GitGraphClearBase),
-                "グラフの `{k}` が基準解除に解決する"
-            );
-        }
+        assert_eq!(
+            m.resolve(gs(Screen::Graph), None, KeyPress::ch('x')),
+            Resolution::Action(Action::GitGraphClearBase),
+            "グラフの `x` が基準解除に解決する"
+        );
+        // `0` is layer 1's line start, not a second way to clear the base: the graph does not
+        // bind it (it used to).
+        assert_eq!(
+            m.resolve(gs(Screen::Graph), None, KeyPress::ch('0')),
+            Resolution::Unbound
+        );
         assert_eq!(
             m.resolve(gs(Screen::Graph), None, KeyPress::ch('s')),
             Resolution::Action(Action::GitGraphSetBase)
@@ -4080,6 +4213,29 @@ mod tests {
     /// where only one side was added. In fact, the graph's base-pinning/branch-panel 8 actions
     /// existed only in `action_name` and not in `action_from_str`, so they could not be reassigned
     /// via config (detected by this test on 2026-07-20).
+    #[test]
+    fn actions_without_a_default_key_still_round_trip() {
+        // Operations whose default key was taken away (they stay for `[keys]`) are not collected
+        // by `keymap_actions_round_trip`, which only sees what is bound by default.
+        #[cfg_attr(not(feature = "git"), allow(unused_mut))]
+        let mut pairs: Vec<(&str, Action)> = vec![
+            ("tab_new", Action::TabNew),
+            ("open_sort_menu", Action::OpenSortMenu),
+            ("toggle_focused_item", Action::ToggleFocusedItem),
+        ];
+        #[cfg(feature = "git")]
+        pairs.extend([
+            ("git_open_log", Action::GitOpenLog),
+            ("git_open_graph", Action::GitOpenGraph),
+            ("toggle_follow_diff_scope", Action::ToggleFollowDiffScope),
+            ("jj_sync", Action::JjSync),
+        ]);
+        for (s, a) in pairs {
+            assert_eq!(action_from_str(s), Some(a), "{s}");
+            assert_eq!(action_name(a), s, "{a:?}");
+        }
+    }
+
     #[test]
     fn keymap_actions_round_trip() {
         let m = KeyMap::defaults(KeyScheme::Vim);

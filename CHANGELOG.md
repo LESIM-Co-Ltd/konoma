@@ -7,6 +7,20 @@ All notable changes to konoma are documented in this file. The format is based o
 ## [Unreleased]
 
 ### Changed
+- **Default keys are rearranged by layer** (the key redesign; every key can be put back in `[keys]`, and each operation keeps its
+  name). The ones that moved: the Git hub is `p` in the tree (it was `o`); the heading outline is `O` (it was `o`); `t` opens the
+  new tab right of the current one (it was `I`; appending at the end, `tab_new`, and `I` have no default key); the diff switches
+  the changed file with `Ctrl-n` / `Ctrl-p` (it was `n` / `N`, which are free there); an image's `0` is gone (`=` resets the
+  fit); in the tree's range selection `q` cancels the selection like `Esc` (it quit the app; `Q` still quits); in a jj changes
+  screen `s` syncs (it was `R`, and git's `s` still stages); the branch list's `y` opens a menu whose item copies the
+  branch name; `Space` is no longer the key that toggles a checkbox or `<details>` (`Enter` does, as it already did) or pages
+  down under `ui.keys = "less"` (`f` does); the branch and worktree lists create with `c` (it was `n`, the next match);
+  the graph's base is cleared by `x` only (`0` is the line start); the graph's branch panel shows the current branch only
+  with `c` (it was `n`) and applies with `l`; in every list of the Git screens `l` opens (what `Enter` does) and `h` goes
+  back. The tree's `s` (sort menu) and `p` (path style), the diff's `f` (the follow scope) and the hub's `g` / `l` (graph, log)
+  have no default key for now: they move to the `,` menu and the hub's `Tab` cycle in the next steps, and meanwhile
+  `[keys]` can bind them (`open_sort_menu`, `cycle_path_style`, `toggle_follow_diff_scope`, `git_open_graph`, `git_open_log`).
+  The footer and the `?` help show the new keys by themselves.
 - **Key tables are now per context, not per screen** (the default keys are unchanged). `[keys.<context>]` is keyed by what you
   are looking at: `text` (source and plain text) and `document` (rendered Markdown, Word, slides, a mermaid diagram) are
   separate, and the version-control screens exist per backend (`"git.changes"` / `"jj.changes"`, quoted because of the dot).
